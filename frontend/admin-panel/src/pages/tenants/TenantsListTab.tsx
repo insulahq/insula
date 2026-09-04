@@ -204,9 +204,9 @@ export default function TenantsListTab() {
                     <th className="hidden md:table-cell px-3 py-3 text-xs">CPU</th>
                     <th className="hidden md:table-cell px-3 py-3 text-xs">Memory</th>
                     <th className="hidden md:table-cell px-3 py-3 text-xs">Storage</th>
-                    <th className="hidden xl:table-cell px-3 py-3 text-xs">Worker</th>
+                    <th className="hidden xl:table-cell px-3 py-3 text-xs">Placement</th>
                     <th className="hidden xl:table-cell px-3 py-3 text-xs">Tier</th>
-                    <SortableHeader label="Created" sortKey="createdAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden lg:table-cell" />
+                    <SortableHeader label="Expires" sortKey="subscriptionExpiresAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden lg:table-cell" />
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
@@ -282,9 +282,23 @@ export default function TenantsListTab() {
                       <MetricsCell metrics={metricsMap[tenant.id]} loading={metricsLoading} resource="storage" tenantStatus={tenant.status} />
                       <td className="hidden px-3 py-3.5 text-xs xl:table-cell">
                         {tenant.nodeName ? (
-                          <span className="font-mono text-gray-700 dark:text-gray-300">{tenant.nodeName}</span>
+                          <span
+                            className="font-mono text-gray-700 dark:text-gray-300"
+                            title={`Pinned to node ${tenant.nodeName}`}
+                          >
+                            {tenant.nodeName}
+                          </span>
                         ) : (
-                          <span className="text-gray-400 dark:text-gray-500">—</span>
+                          // Not pinned is NOT the same as unknown. A bare "—"
+                          // read as missing data, which is what the column
+                          // actually showed for everyone while nodeName was
+                          // being stripped by the response schema.
+                          <span
+                            className="italic text-gray-500 dark:text-gray-400"
+                            title="No node pin — the Kubernetes scheduler places this tenant's workloads"
+                          >
+                            auto
+                          </span>
                         )}
                       </td>
                       <td className="hidden px-3 py-3.5 text-xs xl:table-cell">
@@ -294,9 +308,7 @@ export default function TenantsListTab() {
                           <span className="rounded-full bg-gray-100 px-2 py-0.5 font-medium text-gray-700 dark:bg-gray-700 dark:text-gray-300">local</span>
                         )}
                       </td>
-                      <td className="hidden px-5 py-3.5 text-sm text-gray-500 dark:text-gray-400 lg:table-cell">
-                        {tenant.createdAt ? new Date(tenant.createdAt).toLocaleDateString() : '—'}
-                      </td>
+                      <ExpiryCell expiresAt={tenant.subscriptionExpiresAt ?? null} />
                     </tr>
                   ))}
                   {tenants.length === 0 && (
@@ -486,6 +498,55 @@ function MetricsCell({
         <span className={`inline-block h-1.5 w-1.5 rounded-full ${dotColor}`} />
         {display}
       </span>
+    </td>
+  );
+}
+
+/**
+ * Subscription expiry. Replaced the Created column, which told an operator
+ * nothing actionable — every tenant was created at some point, but only some
+ * are about to lapse.
+ *
+ * Colour carries the urgency so a lapsing tenant is visible without reading
+ * dates: red once past, amber inside 30 days, plain otherwise. `null` means no
+ * expiry was ever set, which is a real and common state (perpetual tenants) —
+ * rendered as "never", not as a dash, so it is not confused with missing data.
+ */
+function ExpiryCell({ expiresAt }: { expiresAt: string | null }) {
+  if (!expiresAt) {
+    return (
+      <td className="hidden px-5 py-3.5 text-sm lg:table-cell">
+        <span className="italic text-gray-400 dark:text-gray-500" title="No subscription expiry set">
+          never
+        </span>
+      </td>
+    );
+  }
+
+  const when = new Date(expiresAt);
+  if (Number.isNaN(when.getTime())) {
+    return (
+      <td className="hidden px-5 py-3.5 text-sm lg:table-cell">
+        <span className="text-gray-400 dark:text-gray-500">—</span>
+      </td>
+    );
+  }
+
+  const days = Math.ceil((when.getTime() - Date.now()) / 86_400_000);
+  const tone = days < 0
+    ? 'text-red-600 dark:text-red-400 font-medium'
+    : days <= 30
+      ? 'text-amber-600 dark:text-amber-400 font-medium'
+      : 'text-gray-500 dark:text-gray-400';
+  const title = days < 0
+    ? `Expired ${Math.abs(days)} day(s) ago`
+    : days === 0
+      ? 'Expires today'
+      : `Expires in ${days} day(s)`;
+
+  return (
+    <td className="hidden px-5 py-3.5 text-sm lg:table-cell">
+      <span className={tone} title={title}>{when.toLocaleDateString()}</span>
     </td>
   );
 }

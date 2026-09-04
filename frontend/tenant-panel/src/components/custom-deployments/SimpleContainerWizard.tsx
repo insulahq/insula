@@ -10,6 +10,14 @@ import { useCreateCustomDeployment, useUpdateCustomDeployment, useValidateCustom
 import type { CreateCustomDeploymentSimpleInput, CustomDeploymentIssue, CustomDeploymentSpec } from '@insula/api-contracts';
 import type { CustomDeploymentRow } from '@/hooks/use-custom-deployments';
 import { Tooltip } from '@/components/ui/Tooltip';
+import {
+  PrivateRegistryFields,
+  EMPTY_PULL_CREDENTIAL,
+  pullCredentialComplete,
+  pullCredentialPartial,
+  toPullCredentialInput,
+  type PullCredentialDraft,
+} from './PrivateRegistryFields';
 
 interface Props {
   readonly tenantId: string;
@@ -60,6 +68,10 @@ export function SimpleContainerWizard({ tenantId, existingNames, onClose, onCrea
   const [env, setEnv] = useState<EnvRow[]>(initState.env);
   const [cpuRequest, setCpuRequest] = useState(initState.cpuRequest);
   const [memoryRequest, setMemoryRequest] = useState(initState.memoryRequest);
+  // Create-time registry credential. Edit mode uses the existing
+  // rotate/revoke modal instead — the deployment already exists there.
+  const [usePrivateRegistry, setUsePrivateRegistry] = useState(false);
+  const [pullCredential, setPullCredential] = useState<PullCredentialDraft>(EMPTY_PULL_CREDENTIAL);
   const [issues, setIssues] = useState<readonly CustomDeploymentIssue[]>([]);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [validateState, setValidateState] = useState<'idle' | 'success' | 'warning' | 'error'>('idle');
@@ -76,6 +88,9 @@ export function SimpleContainerWizard({ tenantId, existingNames, onClose, onCrea
     volumes: volumes.filter((v) => v.name && v.containerPath),
     env: env.filter((e) => e.name).map((e) => ({ name: e.name, value: e.value })),
     resources: { cpuRequest, memoryRequest },
+    ...(usePrivateRegistry && pullCredentialComplete(pullCredential)
+      ? { pull_credential: toPullCredentialInput(pullCredential) }
+      : {}),
   });
 
   const nameError = (() => {
@@ -100,13 +115,25 @@ export function SimpleContainerWizard({ tenantId, existingNames, onClose, onCrea
     return null;
   })();
 
+  // A half-filled credential must BLOCK, not be silently dropped — dropping it
+  // produces exactly the ImagePullBackOff this field exists to prevent.
+  const credentialError = usePrivateRegistry && pullCredentialPartial(pullCredential)
+    ? 'Fill in registry host, username and token — or clear all three.'
+    : null;
+
   const isPending = isEdit ? updateMutation.isPending : createMutation.isPending;
-  const canSubmit = Boolean(name && image && !nameError && !cpuError && !memoryError && !isPending);
+  const canSubmit = Boolean(
+    name && image && !nameError && !cpuError && !memoryError && !credentialError && !isPending
+    && (!usePrivateRegistry || pullCredentialComplete(pullCredential)),
+  );
 
   const runValidate = async () => {
     setSubmitError(null);
     try {
-      const r = await validateMutation.mutateAsync(buildInput());
+      // Same as the compose editor: validate is a dry run, keep the token off
+      // the wire for it.
+      const { pull_credential: _omitted, ...dryRun } = buildInput();
+      const r = await validateMutation.mutateAsync(dryRun as CreateCustomDeploymentSimpleInput);
       setIssues(r.data.issues);
       const errs = r.data.issues.filter(i => i.severity === 'error').length;
       const warns = r.data.issues.filter(i => i.severity === 'warning').length;
@@ -178,7 +205,7 @@ export function SimpleContainerWizard({ tenantId, existingNames, onClose, onCrea
             </Field>
             <Field
               label="Image"
-              tooltip="Docker image reference (e.g. nginx:1.27, ghcr.io/owner/image:tag). Public images work immediately. For private registries, save the deployment first then add a PAT via the registry key button."
+              tooltip="Docker image reference (e.g. nginx:1.27, ghcr.io/owner/image:tag). Public images work immediately. For a private registry, tick the box below and supply a token — it is applied before the first pull."
             >
               <input
                 type="text"
@@ -190,6 +217,18 @@ export function SimpleContainerWizard({ tenantId, existingNames, onClose, onCrea
               />
             </Field>
           </div>
+
+          {/* Private registry — create only. In edit mode the deployment
+              exists, so the rotate/revoke modal is the right surface. */}
+          {!isEdit && (
+            <PrivateRegistryFields
+              enabled={usePrivateRegistry}
+              onEnabledChange={setUsePrivateRegistry}
+              value={pullCredential}
+              onChange={setPullCredential}
+              error={credentialError}
+            />
+          )}
 
           {/* Ports */}
           <section>

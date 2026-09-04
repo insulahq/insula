@@ -400,6 +400,30 @@ export const customDeploymentSpecSchema = z.object({
  * Including it in the tenant input would let a tenant set their own
  * `allowRoot:true` via the create API.
  */
+/**
+ * A registry PAT. Defined HERE, above the create schemas, because both the
+ * create bodies and `submitPullCredentialSchema` (further down) use it and a
+ * `const` referenced before its declaration is a TDZ error at module load, not
+ * a compile error.
+ *
+ * Write-only in every context — the server stores it envelope-encrypted and
+ * echoes back only `tokenLastFour`. Deliberately no `.regex()` on `token`: a
+ * failing regex puts the offending value in the Zod issue message, which is
+ * how a PAT ends up in an API error body and a log line.
+ */
+export const pullCredentialInputSchema = z.object({
+  /** Registry host (`ghcr.io`, `docker.io`, `registry.example.com`,
+   *  `registry.example.com:5000`). No scheme, no path. Optional
+   *  port suffix accepted for on-prem registries on non-default
+   *  ports (Harbor, GitLab Container Registry self-hosted, etc.). */
+  registry_host: z.string().min(1).max(253)
+    .regex(/^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?(:[0-9]{1,5})?$/, {
+      message: 'registry_host must be a lowercase DNS name with optional `:port`, no scheme or path',
+    }),
+  username: z.string().min(1).max(255),
+  token: z.string().min(1).max(4096),
+});
+
 export const createCustomDeploymentSimpleSchema = z.object({
   mode: z.literal('simple'),
   name: z.string().min(1).max(63).regex(CUSTOM_NAME_RE, {
@@ -418,6 +442,15 @@ export const createCustomDeploymentSimpleSchema = z.object({
   run_as_group: uidGidSchema.optional(),
   read_only_root_filesystem: z.boolean().optional(),
   pull_credential_id: uuidField.optional(),
+  /**
+   * Supply the registry PAT inline so the FIRST pull works. Without this a
+   * private image always hit ImagePullBackOff on create: the credential table
+   * is keyed by `deployment_id`, so nothing could be stored until the
+   * deployment already existed, and `pull_credential_id` below could never be
+   * satisfied. The service persists this and materialises the pull Secret
+   * BEFORE the first deploy. Write-only; never echoed back.
+   */
+  pull_credential: pullCredentialInputSchema.optional(),
 });
 
 /**
@@ -438,6 +471,15 @@ export const createCustomDeploymentComposeSchema = z.object({
    *  filename → UTF-8 content. */
   env_files: z.record(z.string().min(1).max(255), z.string().max(64 * 1024)).optional(),
   pull_credential_id: uuidField.optional(),
+  /**
+   * Supply the registry PAT inline so the FIRST pull works. Without this a
+   * private image always hit ImagePullBackOff on create: the credential table
+   * is keyed by `deployment_id`, so nothing could be stored until the
+   * deployment already existed, and `pull_credential_id` below could never be
+   * satisfied. The service persists this and materialises the pull Secret
+   * BEFORE the first deploy. Write-only; never echoed back.
+   */
+  pull_credential: pullCredentialInputSchema.optional(),
 });
 
 export const createCustomDeploymentSchema = z.discriminatedUnion('mode', [
@@ -566,18 +608,7 @@ export const checkUpdatesBatchResultSchema = z.object({
 /** Submit a PAT. Write-only — the server stores it envelope-encrypted
  *  and never returns the cleartext. The response shape (`pullCredentialResponseSchema`)
  *  echoes only `lastFour` + `registryHost`. */
-export const submitPullCredentialSchema = z.object({
-  /** Registry host (`ghcr.io`, `docker.io`, `registry.example.com`,
-   *  `registry.example.com:5000`). No scheme, no path. Optional
-   *  port suffix accepted for on-prem registries on non-default
-   *  ports (Harbor, GitLab Container Registry self-hosted, etc.). */
-  registry_host: z.string().min(1).max(253)
-    .regex(/^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?(:[0-9]{1,5})?$/, {
-      message: 'registry_host must be a lowercase DNS name with optional `:port`, no scheme or path',
-    }),
-  username: z.string().min(1).max(255),
-  token: z.string().min(1).max(4096),
-});
+export const submitPullCredentialSchema = pullCredentialInputSchema;
 
 export const pullCredentialResponseSchema = z.object({
   id: uuidField,

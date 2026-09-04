@@ -1346,6 +1346,48 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         }
       }
 
+      // Image-pull Secret self-heal. The credential ROW travels in a tenant
+      // bundle; the `image-pull-<id>` dockerconfigjson Secret does not — so
+      // after a restore (or a namespace recreation, or a hand-deleted Secret)
+      // the row is there and the Secret is gone, and the Pod hits
+      // ImagePullBackOff referencing something that no longer exists.
+      // `deployToCluster` rebuilds it on every deploy, which covers the happy
+      // path; this covers everything that is not a deploy.
+      //
+      // One sweep at startup, then hourly. Idempotent and read-mostly: it only
+      // writes when a Secret is actually missing.
+      {
+        try {
+          const { createK8sClients } = await import('./modules/k8s-provisioner/k8s-client.js');
+          const { reconcilePullSecrets } = await import('./modules/custom-deployments/pull-secret-reconciler.js');
+          const k8s = createK8sClients(process.env.KUBECONFIG_PATH);
+          const sweep = async (): Promise<void> => {
+            try {
+              const s = await reconcilePullSecrets(app.db, k8s);
+              // Only log when there was something to do — an hourly "0 of 0"
+              // is noise that trains operators to ignore the line.
+              if (s.repaired > 0 || s.failures.length > 0) {
+                app.log.info({
+                  module: 'pull-secret-reconciler',
+                  examined: s.examined,
+                  repaired: s.repaired,
+                  skipped: s.skipped,
+                  failures: s.failures,
+                }, 'image-pull Secret reconcile');
+              }
+            } catch (err) {
+              app.log.warn({ module: 'pull-secret-reconciler', err }, 'image-pull Secret reconcile failed');
+            }
+          };
+          void sweep();
+          const pullSecretTimer = setInterval(() => { void sweep(); }, 60 * 60 * 1000);
+          pullSecretTimer.unref();
+          app.addHook('onClose', () => { clearInterval(pullSecretTimer); });
+        } catch (err) {
+          app.log.warn({ err }, 'image-pull Secret reconciler not started (no k8s client)');
+        }
+      }
+
       // Mail archive scheduler — ticks every 60s, fires
       // startMailArchive({ mode: 'no_downtime' }) when the
       // operator-configured interval (system_settings.mail_archive_

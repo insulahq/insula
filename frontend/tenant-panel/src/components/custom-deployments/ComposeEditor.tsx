@@ -10,6 +10,14 @@ import { useState, Suspense, lazy, Component, type ReactNode } from 'react';
 import { AlertCircle, AlertTriangle, CheckCircle, FileText, Loader2, X } from 'lucide-react';
 import clsx from 'clsx';
 import { Tooltip } from '@/components/ui/Tooltip';
+import {
+  PrivateRegistryFields,
+  EMPTY_PULL_CREDENTIAL,
+  pullCredentialComplete,
+  pullCredentialPartial,
+  toPullCredentialInput,
+  type PullCredentialDraft,
+} from './PrivateRegistryFields';
 import { useCreateCustomDeployment, useValidateCustomDeployment, useDeleteCustomDeployment } from '@/hooks/use-custom-deployments';
 import { apiFetch } from '@/lib/api-client';
 import type { CreateCustomDeploymentComposeInput, CustomDeploymentIssue, CustomDeploymentSpec } from '@insula/api-contracts';
@@ -134,6 +142,11 @@ export function ComposeEditor({ tenantId, existingNames, onClose, onCreated, exi
   const [issues, setIssues] = useState<readonly CustomDeploymentIssue[]>([]);
   const [spec, setSpec] = useState<CustomDeploymentSpec | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  // One credential covers the whole stack. Multi-registry stacks still need
+  // the per-deployment rotate modal afterwards — the store is keyed by
+  // deployment, not by registry.
+  const [usePrivateRegistry, setUsePrivateRegistry] = useState(false);
+  const [pullCredential, setPullCredential] = useState<PullCredentialDraft>(EMPTY_PULL_CREDENTIAL);
   const [jsonSchema, setJsonSchema] = useState<unknown>(null);
   const [validateState, setValidateState] = useState<'idle' | 'success' | 'warning' | 'error'>('idle');
 
@@ -162,6 +175,9 @@ export function ComposeEditor({ tenantId, existingNames, onClose, onCreated, exi
     mode: 'compose',
     name,
     compose_yaml: yaml,
+    ...(usePrivateRegistry && pullCredentialComplete(pullCredential)
+      ? { pull_credential: toPullCredentialInput(pullCredential) }
+      : {}),
   });
 
   const runValidate = async () => {
@@ -171,8 +187,10 @@ export function ComposeEditor({ tenantId, existingNames, onClose, onCreated, exi
       // tolerates missing name in the compose body. We still send
       // `name` if the user typed one so the deploy-name length cap
       // can run.
-      const body = buildInput();
-      const r = await validateMutation.mutateAsync(body);
+      // Validate is a dry run and never uses the credential, so don't put the
+      // token on the wire for it — send only what the check needs.
+      const { pull_credential: _omitted, ...body } = buildInput();
+      const r = await validateMutation.mutateAsync(body as CreateCustomDeploymentComposeInput);
       setIssues(r.data.issues);
       setSpec(r.data.spec);
       setRightTab(r.data.ok ? 'spec' : 'issues');
@@ -203,7 +221,15 @@ export function ComposeEditor({ tenantId, existingNames, onClose, onCreated, exi
 
   const errorCount = issues.filter((i) => i.severity === 'error').length;
   const warningCount = issues.filter((i) => i.severity === 'warning').length;
-  const canSubmit = Boolean(name && yaml.trim() && !nameError && errorCount === 0 && !createMutation.isPending && !deleteMutation.isPending);
+  // Half-filled must block rather than be dropped — see the wizard.
+  const credentialError = usePrivateRegistry && pullCredentialPartial(pullCredential)
+    ? 'Fill in registry host, username and token — or clear all three.'
+    : null;
+  const canSubmit = Boolean(
+    name && yaml.trim() && !nameError && errorCount === 0 && !credentialError
+    && (!usePrivateRegistry || pullCredentialComplete(pullCredential))
+    && !createMutation.isPending && !deleteMutation.isPending,
+  );
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
@@ -243,6 +269,16 @@ export function ComposeEditor({ tenantId, existingNames, onClose, onCreated, exi
             data-testid="custom-compose-name"
           />
           {nameError && <span className="text-xs text-red-600 dark:text-red-400">{nameError}</span>}
+        </div>
+
+        <div className="border-b border-gray-200 px-6 py-2 dark:border-gray-700">
+          <PrivateRegistryFields
+            enabled={usePrivateRegistry}
+            onEnabledChange={setUsePrivateRegistry}
+            value={pullCredential}
+            onChange={setPullCredential}
+            error={credentialError}
+          />
         </div>
 
         <div className="flex flex-1 overflow-hidden">
