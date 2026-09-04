@@ -41,6 +41,39 @@ describe('resolveTagDigest', () => {
     expect(String(fetchImpl.mock.calls[0][0])).toContain('registry-1.docker.io');
   });
 
+  // SSRF. `registryHost` is tenant input and this runs at validate/create
+  // time from a pod with cluster-wide reach. CRS 934110/934190 used to catch
+  // some of these at the edge; that family is now excluded on the
+  // custom-deployment endpoints (a compose file legitimately names internal
+  // hosts), so this validator is the only control. It must refuse BEFORE any
+  // socket is opened — assert fetch was never called, not just the reason.
+  it.each([
+    ['169.254.169.254', 'cloud metadata / IMDS'],
+    ['127.0.0.1', 'loopback'],
+    ['10.0.0.5', 'RFC1918'],
+    ['192.168.1.10', 'RFC1918'],
+    ['172.16.0.9', 'RFC1918'],
+    ['localhost', 'loopback name'],
+    ['kubernetes.default.svc', 'in-cluster service'],
+    ['vmsingle.monitoring.svc.cluster.local', 'in-cluster service'],
+  ])('refuses an internal registry host %s (%s) without fetching', async (host) => {
+    const fetchImpl = vi.fn(async () => res(200, { 'docker-content-digest': DIGEST_A }));
+    const ref: ParsedImageReference = { registryHost: host, repository: 'x/y', tag: '1', digest: null };
+    const r = await resolveTagDigest(ref, '1', { fetchImpl: fetchImpl as never });
+    expect(r.digest).toBeNull();
+    expect(r.reason).toBe('registry host is not a public address');
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('still allows ordinary public registries', async () => {
+    const fetchImpl = vi.fn(async () => res(200, { 'docker-content-digest': DIGEST_A }));
+    for (const host of ['ghcr.io', 'quay.io', 'registry.example.test', 'registry.example.test:5000']) {
+      const ref: ParsedImageReference = { registryHost: host, repository: 'x/y', tag: '1', digest: null };
+      const r = await resolveTagDigest(ref, '1', { fetchImpl: fetchImpl as never });
+      expect(r.digest).toBe(DIGEST_A);
+    }
+  });
+
   it('falls back to GET when the registry rejects HEAD', async () => {
     const fetchImpl = vi.fn()
       .mockResolvedValueOnce(res(405))

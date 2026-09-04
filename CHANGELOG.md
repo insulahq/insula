@@ -12,6 +12,29 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **Custom container stacks could not be validated or deployed.** The CRS
+  934xxx "Application Attack Generic" family blocked
+  `POST …/custom-deployments/validate` and `…/custom-deployments` at the WAF
+  edge — 934190 ("scheme-less localhost or internal hostname") matched
+  `http://localhost/health`, which is the healthcheck in the platform's *own*
+  default compose template, shipped pre-filled in the compose editor. The
+  editor's untouched default stack was refused for every tenant. The family is
+  now excluded on the four deploy endpoint groups alongside 932xxx (rule
+  9000108), because a container spec legitimately contains service URLs,
+  internal hostnames, config templates and Node/Ruby/Perl entrypoints.
+  Traversal (930100/930110), restricted-files (930130) and the 941/942/933
+  families remain enforced on every field.
+
+### Security
+- Registry manifest lookups are SSRF-guarded. `resolveTagDigest()` fetches
+  `https://<registryHost>/v2/…` with a host taken from the tenant's own image
+  reference; the `WWW-Authenticate` realm had been validated since it was
+  written, but the manifest URL itself had not. Both now go through the same
+  validator, so `image: 169.254.169.254/x:1` or `image: kubernetes.default.svc/x:1`
+  is refused before a socket opens. This replaces the partial, incidental cover
+  the excluded 934xxx rules had been providing.
+
 ## [2026.9.5] - 2026-09-03
 
 ### Added

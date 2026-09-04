@@ -222,6 +222,54 @@ data:
     # restricted-files (930130) and the 941/942/933 families still cover
     # every field. The probe asserts SQLi on /deployments still 403s.
     #
+    # ── 934xxx "Application Attack Generic" — the SAME argument ──────
+    #
+    # Added 2026-09-04 after the family blocked the compose editor. Measured
+    # on production (waf_logs, POST …/custom-deployments/validate) and
+    # reproduced on DEV:
+    #
+    #   934190  'SSRF: Scheme-less localhost or internal hostname detected'
+    #           @pmFromFile ssrf-no-scheme.data — the dictionary holds
+    #           `localhost/`, `host.docker.internal/`,
+    #           `kubernetes.default.svc.cluster.local/`, …
+    #   934110  'SSRF: Cloud provider metadata URL in Parameter'
+    #           @pmFromFile ssrf.data
+    #
+    # What actually tripped it: `http://localhost/health`. That string is
+    # in the platform's OWN default compose template, shipped pre-filled in
+    # the compose editor, as the `web` service healthcheck. So the editor's
+    # untouched default stack could not be validated OR created — the same
+    # shape as the 932160 `/dev/stderr` case above, where the platform's own
+    # catalog default was the thing being refused.
+    #
+    # This is not a localhost special case, it is the whole family. A
+    # container spec is *defined* by text these rules match:
+    #   934100/934101 Node.js injection  — a node entrypoint / `require(`
+    #   934130        prototype pollution — `__proto__` in a JSON env value
+    #   934140/934150 Perl / Ruby injection — a Rails or Perl entrypoint
+    #   934160        Node.js DoS
+    #   934170        PHP data scheme
+    #   934180/934200 SSTI — `{{ … }}`, the single most common config
+    #                 templating idiom in an env value
+    #   934210/934220 ORM lookup injection — `$ne`/`$where` in a Mongo URI
+    #   934110/934120/934190 SSRF — service URLs and internal hostnames,
+    #                 which is HOW compose services address each other
+    #                 (`http://api:3000`, `redis://cache:6379`)
+    # Excluding 934190 alone would just move the treadmill one id along —
+    # exactly the mistake 9000108/9000109/9000110 made with 932xxx. Take
+    # the family.
+    #
+    # ⚠ The SSRF exclusion is only defensible because the guard now lives
+    # in code. `resolveTagDigest()` fetches
+    # `https://<registryHost>/v2/…/manifests/<tag>` at validate/create time
+    # with a registry host taken from the tenant's own image reference —
+    # a genuine tenant-driven outbound fetch that the WAF was incidentally
+    # (and only partially) covering. That call goes through
+    # `shared/ssrf-guard.ts:guardedFetch` as of the same change, which
+    # refuses loopback, RFC1918, link-local and IMDS targets after DNS
+    # resolution. Do not re-widen this exclusion without checking that
+    # guard is still on the path — `image-digest.test.ts` asserts it.
+    #
     # Covers, including all subpaths: deployments (and …/<id>/terminal —
     # the app terminal), custom-deployments (+ /validate), tenant cron-jobs
     # (+ /run) and admin cron-jobs (+ /bulk).
@@ -235,7 +283,8 @@ data:
          nolog,\
          chain,\
          ctl:ruleRemoveTargetById=930120;ARGS,\
-         ctl:ruleRemoveById=932000-932999"
+         ctl:ruleRemoveById=932000-932999,\
+         ctl:ruleRemoveById=934000-934999"
         SecRule REQUEST_URI "@rx ^/api/v1/(tenants/[^/]+/(deployments|custom-deployments|cron-jobs)|admin/cron-jobs)(/|\?|$)"
 
     # ── Custom containers: env values, commands, mount paths and

@@ -24,6 +24,7 @@
 import {
   DOCKER_HUB_INDEX_HOST,
   fetchBearerToken,
+  isRealmUrlBlocked,
   timedFetch,
 } from './update-checker.js';
 import type { ParsedImageReference } from './image-reference.js';
@@ -65,6 +66,22 @@ export async function resolveTagDigest(
   const fetchImpl = opts.fetchImpl ?? fetch;
   const host = ref.registryHost === 'docker.io' ? DOCKER_HUB_INDEX_HOST : ref.registryHost;
   const url = `https://${host}/v2/${ref.repository}/manifests/${encodeURIComponent(tag)}`;
+
+  // SSRF: `host` comes from the TENANT's image reference, and this runs at
+  // validate/create time, so `image: 169.254.169.254/x:1` or
+  // `image: kubernetes.default.svc/x:1` would otherwise make platform-api
+  // issue a request into the cluster from a pod with broad reach. The
+  // WWW-Authenticate realm below has been guarded since it was written; the
+  // manifest URL itself was not — the same validator now covers both.
+  //
+  // Until 2026-09-04 CRS 934110/934190 caught part of this at the edge by
+  // accident. That family is now excluded on the custom-deployment endpoints
+  // (a compose file legitimately contains internal hostnames), so this is the
+  // only control left. Do not remove it.
+  if (isRealmUrlBlocked(url)) {
+    return { digest: null, reason: 'registry host is not a public address' };
+  }
+
   const headers = { accept: MANIFEST_ACCEPT };
 
   const read = async (method: 'HEAD' | 'GET'): Promise<Response | null> => {
