@@ -12,6 +12,25 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- `ci-mail-image-pin-check.sh` — asserts every `stalwartlabs/stalwart` reference
+  in `k8s/` and `backend/src` names the same tag, and that the stalwart-cli
+  version + sha256 agree across both pins. `archive.ts` already carried the
+  scar ("v0.16.5 while the server ran v0.16.14 — eleven releases of silent
+  drift"); the unit test added then asserts the resolver against a literal in
+  its own file, so nothing compared the files to each other. Now something does.
+- **Compose validation errors now carry a line number.** The backend resolves
+  each issue's dotted path (`services.db.deploy.resources.limits.memory`) back
+  to the line it came from, the editor renders those as inline squiggles you
+  can hover, and each entry in the Issues pane gets a **line N** button that
+  scrolls the editor to it. Previously an issue said *what* was wrong but never
+  *where*, so finding it in a 60-line stack meant reading the whole file.
+  Unresolvable paths get no line rather than a guessed one. Validator issues
+  are translated from normalized-spec coordinates
+  (`services.db.resources.memoryLimit`) back to compose ones
+  (`…deploy.resources.limits.memory`) first, so two errors about the same field
+  no longer disagree about whether it has a line.
+
 ### Fixed
 - **Rotating the Stalwart admin password showed the OLD password in the admin
   panel.** The rotation patches the Kubernetes Secret, but platform-api served
@@ -25,27 +44,32 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   and HA-safe in a way an in-process cache would not be. Falls back to the
   mounted file if the read fails, so a missing RBAC grant degrades instead of
   breaking the reveal.
-
-
-### Removed
-- `mail-admin/rotate.ts` and its test — a dead, restart-based Stalwart
-  admin-password rotation superseded by the in-flight JMAP `Principal/set` path
-  in `rotate-jmap.ts`, which is what the route actually calls. Nothing imported
-  it but its own test. It also carried a latent defect that shows why it was
-  never exercised: it verified the rotation by POSTing to `/api/oauth`, an
-  endpoint that returns 404 on Stalwart 0.16.16 and 0.16.20 alike, so the poll
-  could never have succeeded. Correcting a module no caller reaches would only
-  have preserved an obsolete second model of how rotation works; the live path
-  verifies against `GET /jmap/session` and needs no restart.
-
-
-### Security
-- **Bulwark webmail 1.7.8 → 1.9.2**, which fixes GHSA-24w9-8r42-8jwm: a
-  DNS-rebinding SSRF reachable through the **unauthenticated**
-  `/api/fetch-ical` endpoint. The public-host check ran before `fetch()` opened
-  its socket, so a hostname under attacker control could rebind to loopback,
-  RFC-1918 or cloud-metadata addresses in between and return up to 10 MB of the
-  internal response. Redirect targets are now validated the same way.
+- **DKIM status showed every RSA selector as "invalid"** in Email Management →
+  Email Domains, on domains whose keys existed and whose mail was being signed
+  and delivered normally. Stalwart wraps any TXT value too long for one line in
+  parentheses, and an RSA public key always is; the zone-file parser worked
+  line by line, so it matched only the record's opening line — which carries
+  `_domainkey` and `TXT` but no quoted fragments — and skipped the
+  continuation lines because they lack `_domainkey`. The selector was reported
+  invalid with a blank TXT value and no public key. Ed25519 keys fit on one
+  line, which is why the platform's own apex looked healthy while every tenant
+  domain, which gets only the RSA selector, showed invalid. Parenthesised
+  records are now folded into one logical line before parsing. Display-only —
+  signing was never affected.
+- **Clicking Validate on an untouched compose editor failed with a raw regex.**
+  The stack name is optional for the preview, but the editor sent `name: ""`
+  and `.optional()` accepts `undefined`, not an empty string — so the blank
+  field hit the DNS-name pattern and returned
+  `Invalid string: must match pattern /^[a-z0-9]…/` about a field the tenant
+  had not filled in. The editor now omits the key when blank, which is what
+  its own comment had claimed all along.
+- Name validation errors describe the rule instead of printing the regex. The
+  compose stack name and the inline config/secret names all had bare
+  `.regex()` calls with no message, so Zod emitted the pattern verbatim.
+- The single-container wizard no longer lets you click **Validate** before
+  entering a name — simple mode requires one, so doing so produced a backend
+  error about a field the form had not asked for yet. The button now explains
+  what is missing.
 
 ### Changed
 - **Stalwart 0.16.16 → 0.16.20.** Four patch releases, no migration — every one
@@ -65,43 +89,24 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 - Bulwark's image is digest-pinned, which hides the version. The manifest now
   records the version, how to re-resolve the digest, and why 1.9.2 is a floor.
 
-### Added
-- `ci-mail-image-pin-check.sh` — asserts every `stalwartlabs/stalwart` reference
-  in `k8s/` and `backend/src` names the same tag, and that the stalwart-cli
-  version + sha256 agree across both pins. `archive.ts` already carried the
-  scar ("v0.16.5 while the server ran v0.16.14 — eleven releases of silent
-  drift"); the unit test added then asserts the resolver against a literal in
-  its own file, so nothing compared the files to each other. Now something does.
+### Removed
+- `mail-admin/rotate.ts` and its test — a dead, restart-based Stalwart
+  admin-password rotation superseded by the in-flight JMAP `Principal/set` path
+  in `rotate-jmap.ts`, which is what the route actually calls. Nothing imported
+  it but its own test. It also carried a latent defect that shows why it was
+  never exercised: it verified the rotation by POSTing to `/api/oauth`, an
+  endpoint that returns 404 on Stalwart 0.16.16 and 0.16.20 alike, so the poll
+  could never have succeeded. Correcting a module no caller reaches would only
+  have preserved an obsolete second model of how rotation works; the live path
+  verifies against `GET /jmap/session` and needs no restart.
 
-
-### Added
-- **Compose validation errors now carry a line number.** The backend resolves
-  each issue's dotted path (`services.db.deploy.resources.limits.memory`) back
-  to the line it came from, the editor renders those as inline squiggles you
-  can hover, and each entry in the Issues pane gets a **line N** button that
-  scrolls the editor to it. Previously an issue said *what* was wrong but never
-  *where*, so finding it in a 60-line stack meant reading the whole file.
-  Unresolvable paths get no line rather than a guessed one. Validator issues
-  are translated from normalized-spec coordinates
-  (`services.db.resources.memoryLimit`) back to compose ones
-  (`…deploy.resources.limits.memory`) first, so two errors about the same field
-  no longer disagree about whether it has a line.
-
-### Fixed
-- **Clicking Validate on an untouched compose editor failed with a raw regex.**
-  The stack name is optional for the preview, but the editor sent `name: ""`
-  and `.optional()` accepts `undefined`, not an empty string — so the blank
-  field hit the DNS-name pattern and returned
-  `Invalid string: must match pattern /^[a-z0-9]…/` about a field the tenant
-  had not filled in. The editor now omits the key when blank, which is what
-  its own comment had claimed all along.
-- Name validation errors describe the rule instead of printing the regex. The
-  compose stack name and the inline config/secret names all had bare
-  `.regex()` calls with no message, so Zod emitted the pattern verbatim.
-- The single-container wizard no longer lets you click **Validate** before
-  entering a name — simple mode requires one, so doing so produced a backend
-  error about a field the form had not asked for yet. The button now explains
-  what is missing.
+### Security
+- **Bulwark webmail 1.7.8 → 1.9.2**, which fixes GHSA-24w9-8r42-8jwm: a
+  DNS-rebinding SSRF reachable through the **unauthenticated**
+  `/api/fetch-ical` endpoint. The public-host check ran before `fetch()` opened
+  its socket, so a hostname under attacker control could rebind to loopback,
+  RFC-1918 or cloud-metadata addresses in between and return up to 10 MB of the
+  internal response. Redirect targets are now validated the same way.
 
 ## [2026.9.6] - 2026-09-04
 
