@@ -194,9 +194,16 @@ named — a stack mixing a private registry with public images (`redis:7`, say)
 never offers your token to the public one.
 
 To rotate or remove a credential later, use the registry-key button on the
-container's row. In a compose stack the credential covers the whole stack; if
-your services pull from more than one private registry, add the extra
-credential from that button after the stack is created.
+container's row. Saving again from that button **replaces** the stored
+credential — it does not add a second one.
+
+A stack has **one** credential, for one registry host, and every service in the
+stack is given it. That is fine for the normal case: services pulling from the
+private registry use it, and services pulling public images (`redis:7`,
+`postgres:17`) ignore it and pull anonymously. What is *not* supported is a
+stack whose services pull private images from **two different** registries —
+only the host you named will authenticate. Publish the odd image out to the
+same registry, or make it public.
 
 ### CPU and memory for a stack
 
