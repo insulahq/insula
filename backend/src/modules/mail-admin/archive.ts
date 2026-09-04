@@ -679,7 +679,7 @@ async function safeScaleBackUp(deps: ArchiveDeps, replicas: number): Promise<voi
  * the server. `resolveStalwartImage` therefore asks the cluster what is
  * actually running and only falls back to this literal.
  */
-const STALWART_IMAGE_FALLBACK = 'docker.io/stalwartlabs/stalwart:v0.16.16';
+const STALWART_IMAGE_FALLBACK = 'docker.io/stalwartlabs/stalwart:v0.16.20';
 
 /**
  * The image the archive Job should run `stalwart -e` / `-i` with.

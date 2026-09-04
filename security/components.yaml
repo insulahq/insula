@@ -138,7 +138,7 @@ components:
     name: Stalwart mail server (SMTP/IMAP/JMAP)
     tier: "0"
     kind: image
-    pinned: "v0.16.16"
+    pinned: "v0.16.20"
     pin_source: k8s/base/stalwart-mail/stalwart/deployment.yaml
     pin_check: true
     repos: [stalwartlabs/stalwart]
@@ -273,7 +273,7 @@ components:
     name: Bulwark webmail (JMAP-native SPA)
     tier: "0"
     kind: image
-    pinned: "sha256:1ea45e292e7baf84eccdfe3d7ed96fe4487f2b95025a6ab569706915f6798979"
+    pinned: "sha256:0e8d1339277033b6569a76c6f8192396e6edd66fd917d64d9ed505e8b81dac6d"
     pin_source: k8s/base/bulwark/deployment.yaml
     pin_check: true
     repos: [bulwarkmail/webmail]
@@ -514,7 +514,12 @@ components:
     # re-verified. Bumping librocksdb-sys on its own is never correct.
     tracks:
       component: stalwart
-      verified_against: "v0.16.16"
+      # Re-verified 2026-09-04 for the v0.16.16 -> v0.16.20 bump by diffing
+      # Stalwart's OWN Cargo.lock at both tags: librocksdb-sys 0.17.3+10.4.2 and
+      # rocksdb 0.24.0 are identical across them, so this binary still links the
+      # same C++ rocksdb as the store it opens. Do NOT move this field without
+      # re-running that comparison — the number agreeing is the whole point.
+      verified_against: "v0.16.20"
       crate: librocksdb-sys
       crate_version: "0.17.3+10.4.2"
     owner: platform

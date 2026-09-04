@@ -25,7 +25,7 @@ function appsReturning(containers: Array<{ name?: string; image?: string }>): Ap
   } as unknown as AppsStub;
 }
 
-const FALLBACK = 'docker.io/stalwartlabs/stalwart:v0.16.16';
+const FALLBACK = 'docker.io/stalwartlabs/stalwart:v0.16.20';
 
 describe('resolveStalwartImage', () => {
   it('uses the image the live Deployment is actually running', async () => {
@@ -40,10 +40,10 @@ describe('resolveStalwartImage', () => {
     // containers[0] would ship the archive Job an rsync image.
     const apps = appsReturning([
       { name: 'rsyncd', image: 'ghcr.io/insulahq/insula/rsyncd:latest' },
-      { name: 'stalwart', image: 'docker.io/stalwartlabs/stalwart:v0.16.16' },
+      { name: 'stalwart', image: 'docker.io/stalwartlabs/stalwart:v0.16.20' },
     ]);
     await expect(resolveStalwartImage(apps, {})).resolves.toBe(
-      'docker.io/stalwartlabs/stalwart:v0.16.16',
+      'docker.io/stalwartlabs/stalwart:v0.16.20',
     );
   });
 

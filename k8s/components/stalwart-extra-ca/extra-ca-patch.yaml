@@ -23,7 +23,7 @@ spec:
         # to a plain copy, and the rehash is the only step that can fail, which is
         # why it is guarded and only reached when a CA was actually added.
         - name: merge-ca-trust
-          image: docker.io/stalwartlabs/stalwart:v0.16.16
+          image: docker.io/stalwartlabs/stalwart:v0.16.20
           imagePullPolicy: IfNotPresent
           command:
             - /bin/sh
