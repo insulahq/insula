@@ -10,6 +10,14 @@ import { useCreateCustomDeployment, useUpdateCustomDeployment, useValidateCustom
 import type { CreateCustomDeploymentSimpleInput, CustomDeploymentIssue, CustomDeploymentSpec } from '@insula/api-contracts';
 import type { CustomDeploymentRow } from '@/hooks/use-custom-deployments';
 import { Tooltip } from '@/components/ui/Tooltip';
+import {
+  PrivateRegistryFields,
+  EMPTY_PULL_CREDENTIAL,
+  pullCredentialComplete,
+  pullCredentialPartial,
+  toPullCredentialInput,
+  type PullCredentialDraft,
+} from './PrivateRegistryFields';
 
 interface Props {
   readonly tenantId: string;
@@ -60,7 +68,10 @@ export function SimpleContainerWizard({ tenantId, existingNames, onClose, onCrea
   const [env, setEnv] = useState<EnvRow[]>(initState.env);
   const [cpuRequest, setCpuRequest] = useState(initState.cpuRequest);
   const [memoryRequest, setMemoryRequest] = useState(initState.memoryRequest);
-  const [showAdvanced, setShowAdvanced] = useState(false);
+  // Create-time registry credential. Edit mode uses the existing
+  // rotate/revoke modal instead — the deployment already exists there.
+  const [usePrivateRegistry, setUsePrivateRegistry] = useState(false);
+  const [pullCredential, setPullCredential] = useState<PullCredentialDraft>(EMPTY_PULL_CREDENTIAL);
   const [issues, setIssues] = useState<readonly CustomDeploymentIssue[]>([]);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [validateState, setValidateState] = useState<'idle' | 'success' | 'warning' | 'error'>('idle');
@@ -77,6 +88,9 @@ export function SimpleContainerWizard({ tenantId, existingNames, onClose, onCrea
     volumes: volumes.filter((v) => v.name && v.containerPath),
     env: env.filter((e) => e.name).map((e) => ({ name: e.name, value: e.value })),
     resources: { cpuRequest, memoryRequest },
+    ...(usePrivateRegistry && pullCredentialComplete(pullCredential)
+      ? { pull_credential: toPullCredentialInput(pullCredential) }
+      : {}),
   });
 
   const nameError = (() => {
@@ -101,13 +115,25 @@ export function SimpleContainerWizard({ tenantId, existingNames, onClose, onCrea
     return null;
   })();
 
+  // A half-filled credential must BLOCK, not be silently dropped — dropping it
+  // produces exactly the ImagePullBackOff this field exists to prevent.
+  const credentialError = usePrivateRegistry && pullCredentialPartial(pullCredential)
+    ? 'Fill in registry host, username and token — or clear all three.'
+    : null;
+
   const isPending = isEdit ? updateMutation.isPending : createMutation.isPending;
-  const canSubmit = Boolean(name && image && !nameError && !cpuError && !memoryError && !isPending);
+  const canSubmit = Boolean(
+    name && image && !nameError && !cpuError && !memoryError && !credentialError && !isPending
+    && (!usePrivateRegistry || pullCredentialComplete(pullCredential)),
+  );
 
   const runValidate = async () => {
     setSubmitError(null);
     try {
-      const r = await validateMutation.mutateAsync(buildInput());
+      // Same as the compose editor: validate is a dry run, keep the token off
+      // the wire for it.
+      const { pull_credential: _omitted, ...dryRun } = buildInput();
+      const r = await validateMutation.mutateAsync(dryRun as CreateCustomDeploymentSimpleInput);
       setIssues(r.data.issues);
       const errs = r.data.issues.filter(i => i.severity === 'error').length;
       const warns = r.data.issues.filter(i => i.severity === 'warning').length;
@@ -179,7 +205,7 @@ export function SimpleContainerWizard({ tenantId, existingNames, onClose, onCrea
             </Field>
             <Field
               label="Image"
-              tooltip="Docker image reference (e.g. nginx:1.27, ghcr.io/owner/image:tag). Public images work immediately. For private registries, save the deployment first then add a PAT via the registry key button."
+              tooltip="Docker image reference (e.g. nginx:1.27, ghcr.io/owner/image:tag). Public images work immediately. For a private registry, tick the box below and supply a token — it is applied before the first pull."
             >
               <input
                 type="text"
@@ -191,6 +217,18 @@ export function SimpleContainerWizard({ tenantId, existingNames, onClose, onCrea
               />
             </Field>
           </div>
+
+          {/* Private registry — create only. In edit mode the deployment
+              exists, so the rotate/revoke modal is the right surface. */}
+          {!isEdit && (
+            <PrivateRegistryFields
+              enabled={usePrivateRegistry}
+              onEnabledChange={setUsePrivateRegistry}
+              value={pullCredential}
+              onChange={setPullCredential}
+              error={credentialError}
+            />
+          )}
 
           {/* Ports */}
           <section>
@@ -337,28 +375,36 @@ export function SimpleContainerWizard({ tenantId, existingNames, onClose, onCrea
             ))}
           </section>
 
-          {/* Resources */}
-          <button type="button" className="text-xs text-blue-600 hover:underline dark:text-blue-400" onClick={() => setShowAdvanced(!showAdvanced)}>
-            {showAdvanced ? 'Hide' : 'Show'} advanced (resources)
-          </button>
-          {showAdvanced && (
+          {/* Resources — a first-class section, not behind a disclosure.
+              The defaults (100m / 128Mi) are hello-world sized, so a tenant
+              who never opened the old "advanced" toggle deployed a real app
+              into 128Mi and met an OOMKill with no idea the dial existed. */}
+          <section>
+            <SectionHeader
+              title="Resources"
+              tooltip="CPU and memory guaranteed to your container. The defaults suit a small service; give a real application more. Your plan's quota is the ceiling across all your deployments."
+            >
+              <span className="text-[10px] text-gray-400 dark:text-gray-500">
+                default 100m CPU · 128Mi memory
+              </span>
+            </SectionHeader>
             <div className="grid grid-cols-2 gap-4">
               <Field
                 label="CPU request"
                 tooltip="Minimum CPU guaranteed to your container. 100m = 0.1 vCPU, 500m = 0.5 vCPU, 1 = 1 full vCPU. Your container may burst above this if the node has spare capacity, but is guaranteed this floor."
               >
-                <input type="text" className={inputCls(Boolean(cpuError))} value={cpuRequest} onChange={(e) => setCpuRequest(e.target.value)} />
+                <input type="text" className={inputCls(Boolean(cpuError))} value={cpuRequest} onChange={(e) => setCpuRequest(e.target.value)} placeholder="100m" data-testid="custom-simple-cpu" />
                 {cpuError && <FieldError>{cpuError}</FieldError>}
               </Field>
               <Field
                 label="Memory request"
                 tooltip="Minimum RAM guaranteed to your container. 128Mi = 128 mebibytes, 512Mi = 512 MiB, 1Gi = 1 GiB. If the container exceeds the cluster memory limit it will be OOM-killed and restarted automatically."
               >
-                <input type="text" className={inputCls(Boolean(memoryError))} value={memoryRequest} onChange={(e) => setMemoryRequest(e.target.value)} />
+                <input type="text" className={inputCls(Boolean(memoryError))} value={memoryRequest} onChange={(e) => setMemoryRequest(e.target.value)} placeholder="128Mi" data-testid="custom-simple-memory" />
                 {memoryError && <FieldError>{memoryError}</FieldError>}
               </Field>
             </div>
-          )}
+          </section>
 
           {/* Issues panel */}
           {(errorIssues.length > 0 || warningIssues.length > 0) && (

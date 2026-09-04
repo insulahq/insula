@@ -258,6 +258,16 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
                   isSystem: { type: 'boolean' },
                   createdBy: { type: ['string', 'null'] },
                   subscriptionExpiresAt: { type: ['string', 'null'] },
+                  // `listTenants` does a bare `.select()`, so these were always
+                  // in the row — but a Fastify response schema STRIPS anything
+                  // it does not declare, and these two were missing. The admin
+                  // tenants table has been rendering the node column as `—` for
+                  // every tenant, and the tier column as `local` for every
+                  // tenant (the ternary's else branch), including real HA ones.
+                  // Verified against the live API 2026-09-04: the list returned
+                  // 14 keys and neither of these was among them.
+                  nodeName: { type: ['string', 'null'] },
+                  storageTier: { type: 'string' },
                   createdAt: { type: 'string' },
                   updatedAt: { type: 'string' },
                 },

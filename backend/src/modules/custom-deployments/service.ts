@@ -27,6 +27,7 @@ import {
   scaleCustomDeployment,
 } from './k8s-deployer.js';
 import { checkImageReachable } from './image-reachability.js';
+import { parseImageReference } from './image-reference.js';
 import {
   upsertPullCredential,
   getPullCredential,
@@ -133,16 +134,49 @@ export async function validateSimpleSpec(
  * is a hard error (404), a private image only warns (401) — never a false block.
  * Best-effort: a registry outage degrades to a warning, never throws.
  */
-async function checkSpecImagesReachable(spec: CustomDeploymentSpec): Promise<CustomDeploymentIssue[]> {
+async function checkSpecImagesReachable(
+  spec: CustomDeploymentSpec,
+  cred?: { registryHost: string; username: string; password: string },
+): Promise<CustomDeploymentIssue[]> {
   const issues: CustomDeploymentIssue[] = [];
   for (const [name, svc] of Object.entries(spec.services)) {
     try {
-      issues.push(...await checkImageReachable(svc.image, `services.${name}.image`));
+      // ONLY send the credential to the registry it belongs to. A compose
+      // stack routinely mixes registries (`ghcr.io/acme/app` + `redis:7`), and
+      // the probe authenticates by replying to the registry's own
+      // WWW-Authenticate challenge — so passing the credential unconditionally
+      // would hand a tenant's ghcr.io PAT to Docker Hub's auth realm. The
+      // dockerconfigjson Secret is already host-scoped; this makes the
+      // pre-flight match it.
+      const authCreds = cred && imageIsOnRegistry(svc.image, cred.registryHost)
+        ? { username: cred.username, password: cred.password }
+        : undefined;
+      issues.push(...await checkImageReachable(svc.image, `services.${name}.image`, authCreds));
     } catch {
       // A probe implementation error must never block a deployment.
     }
   }
   return issues;
+}
+
+/**
+ * Does this image reference live on `registryHost`?
+ *
+ * Docker Hub is the awkward case: a bare `redis:7` normalises to `docker.io`,
+ * while operators type `docker.io`, `index.docker.io` or
+ * `registry-1.docker.io` interchangeably. Treat those as one host so a genuine
+ * Docker Hub credential still applies; everything else is an exact,
+ * case-insensitive hostname match.
+ */
+const DOCKER_HUB_ALIASES = new Set(['docker.io', 'index.docker.io', 'registry-1.docker.io']);
+
+export function imageIsOnRegistry(image: string, registryHost: string): boolean {
+  const ref = parseImageReference(image);
+  if (!ref) return false;
+  const a = ref.registryHost.toLowerCase();
+  const b = registryHost.trim().toLowerCase();
+  if (DOCKER_HUB_ALIASES.has(a) && DOCKER_HUB_ALIASES.has(b)) return true;
+  return a === b;
 }
 
 /**
@@ -178,6 +212,7 @@ export async function createSimpleDeployment(
     );
   }
   await assertCustomContainersAllowed(db, tenantId);
+  if (input.pull_credential) await assertInlineCredentialAllowed(db);
 
   const { namespace, nodeName, storageTier } = await loadTenantContext(db, tenantId);
 
@@ -198,9 +233,18 @@ export async function createSimpleDeployment(
     );
   }
 
-  // Pre-flight the image: fail fast on a malformed or nonexistent reference
-  // rather than deploying it and waiting for ImagePullBackOff.
-  const imageIssues = await checkSpecImagesReachable(spec);
+  // Pre-flight the image with the supplied PAT when there is one: a creds-less
+  // probe of a private image can only ever return 401 (a warning), so a WRONG
+  // token would sail through create and surface as ImagePullBackOff. With the
+  // credential the 404-vs-401 distinction is meaningful again.
+  const probeCreds = input.pull_credential
+    ? {
+        registryHost: input.pull_credential.registry_host,
+        username: input.pull_credential.username,
+        password: input.pull_credential.token,
+      }
+    : undefined;
+  const imageIssues = await checkSpecImagesReachable(spec, probeCreds);
   if (imageIssues.some((i) => i.severity === 'error')) {
     throw new ApiError('CUSTOM_DEPLOYMENT_INVALID', firstErrorIssue(imageIssues), 422, { issues: imageIssues });
   }
@@ -237,6 +281,19 @@ export async function createSimpleDeployment(
     storagePath,
     status: 'deploying',
   });
+
+  // Credential BEFORE deploy — deployToCluster reads the row to build the
+  // pull Secret, so writing it afterwards would miss the very first pull.
+  // On failure, drop the row: a half-created deployment the tenant never
+  // asked for is worse than a clean 4xx.
+  if (input.pull_credential) {
+    try {
+      await persistInlinePullCredential(db, id, toPatSubmission(input.pull_credential));
+    } catch (err) {
+      await db.delete(deployments).where(eq(deployments.id, id));
+      throw err;
+    }
+  }
 
   await deployToCluster(db, k8s, id, namespace, input.name, storagePath, spec, nodeName, storageTier);
 
@@ -310,6 +367,7 @@ export async function createComposeDeployment(
     );
   }
   await assertCustomContainersAllowed(db, tenantId);
+  if (input.pull_credential) await assertInlineCredentialAllowed(db);
 
   if (!input.name) {
     throw new ApiError('MISSING_REQUIRED_FIELD', 'Stack name is required to create a deployment.', 400, { field: 'name' });
@@ -344,7 +402,18 @@ export async function createComposeDeployment(
 
   // Pre-flight every service image — reject a malformed or nonexistent reference
   // instead of deploying the stack and waiting for ImagePullBackOff.
-  const imageIssues = await checkSpecImagesReachable(parsed.spec);
+  // Same as the simple path: probe with the PAT when one was supplied so a
+  // wrong token is a create-time error, not a later ImagePullBackOff.
+  const imageIssues = await checkSpecImagesReachable(
+    parsed.spec,
+    input.pull_credential
+      ? {
+          registryHost: input.pull_credential.registry_host,
+          username: input.pull_credential.username,
+          password: input.pull_credential.token,
+        }
+      : undefined,
+  );
   if (imageIssues.some((i) => i.severity === 'error')) {
     throw new ApiError('CUSTOM_DEPLOYMENT_INVALID', firstErrorIssue(imageIssues), 422, { issues: imageIssues });
   }
@@ -390,6 +459,17 @@ export async function createComposeDeployment(
     storagePath,
     status: 'deploying',
   });
+
+  // Same ordering rule as the simple path: the pull Secret is built from this
+  // row inside deployToCluster.
+  if (input.pull_credential) {
+    try {
+      await persistInlinePullCredential(db, id, toPatSubmission(input.pull_credential));
+    } catch (err) {
+      await db.delete(deployments).where(eq(deployments.id, id));
+      throw err;
+    }
+  }
 
   await deployToCluster(db, k8s, id, namespace, input.name, storagePath, finalSpec, nodeName, storageTier);
   return getCustomDeployment(db, tenantId, id);
@@ -533,14 +613,73 @@ export async function updateCustomDeployment(
 }
 
 /**
+ * Refuse a create carrying an inline PAT when the platform has private
+ * registries turned off. Runs BEFORE the image pre-flight, not after: the
+ * pre-flight AUTHENTICATES to the registry with this token, so checking it
+ * afterwards would let a tenant make the platform use a credential the
+ * operator has forbidden — and would insert a deployment row only to delete
+ * it again.
+ */
+async function assertInlineCredentialAllowed(db: Database): Promise<void> {
+  const settings = await getSettings(db);
+  if (!settings.customDeploymentsAllowPrivateRegistries) {
+    throw new ApiError(
+      'PRIVATE_REGISTRIES_DISABLED',
+      'Private registries are administratively disabled on this platform.',
+      403,
+    );
+  }
+  if (!process.env.PLATFORM_ENCRYPTION_KEY) {
+    throw new ApiError(
+      'ENCRYPTION_KEY_MISSING',
+      'Platform is not configured for credential storage.',
+      500,
+    );
+  }
+}
+
+/**
+ * Persist an inline create-time PAT for a deployment that was just inserted.
+ *
+ * Must run BEFORE `deployToCluster` — that function reads the credential row
+ * and materialises the dockerconfigjson Secret, so a row written afterwards
+ * would miss the first pull and the tenant would still see ImagePullBackOff,
+ * which is the whole bug this closes.
+ *
+ * Errors are NOT swallowed. A tenant who supplied a PAT did so because the
+ * image is private; quietly deploying without it just produces an
+ * ImagePullBackOff with no explanation. The caller deletes the half-created
+ * row so create stays all-or-nothing.
+ */
+async function persistInlinePullCredential(
+  db: Database,
+  deploymentId: string,
+  submission: PatSubmission,
+): Promise<void> {
+  // `assertInlineCredentialAllowed` has already run at the top of create, so
+  // both the operator gate and the key are known good here. Re-read the key
+  // rather than threading it through — upsertPullCredential rejects an empty
+  // one anyway.
+  await upsertPullCredential(db, deploymentId, submission, process.env.PLATFORM_ENCRYPTION_KEY ?? '');
+}
+
+/** Map an inline create-time credential onto the store's submission shape. */
+function toPatSubmission(
+  input: { registry_host: string; username: string; token: string },
+): PatSubmission {
+  return { registryHost: input.registry_host, username: input.username, token: input.token };
+}
+
+/**
  * DR helper: redeploy a custom-deployment ROW's k8s workload from its stored
- * spec, with NO spec change. Used by the DR recover reconcile to bring restored
- * custom deployments back up on a re-created tenant — the `deployments` row +
- * its `customSpec` jsonb survive the bundle restore, but the k8s Deployment does
- * not. Reuses the exact create/update deploy path (loadTenantContext →
- * deployToCluster) so image-pull secrets, storage, and node/quota placement are
- * materialised identically to a normal deploy. Throws on a non-custom row or a
- * spec-less row so the caller can record a per-workload failure.
+ * spec, with NO spec change. Used by the DR recover reconcile and the bundle
+ * restore executor to bring restored custom deployments back up on a re-created
+ * tenant — the `deployments` row + its `customSpec` jsonb survive the bundle
+ * restore, but the k8s Deployment does not. Reuses the exact create/update
+ * deploy path (loadTenantContext → deployToCluster) so image-pull secrets,
+ * storage, and node/quota placement are materialised identically to a normal
+ * deploy. Throws on a non-custom row or a spec-less row so the caller can
+ * record a per-workload failure.
  */
 export async function redeployCustomDeploymentRow(
   db: Database,

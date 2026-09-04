@@ -175,6 +175,65 @@ container images instead of catalog apps. Two ways:
     Click **New Stack (compose)** to define several services together using a
     Docker-Compose-style editor. Good for an app plus its database, cache, etc.
 
+### Private images
+
+If the image lives in a private registry, tick **This image is in a private
+registry** while creating the container or stack and fill in the registry host
+(`ghcr.io`, `docker.io`, `registry.example.test:5000`), your username, and a
+token with read access to the package. The credential is stored encrypted and
+applied *before* the first pull, so a private image starts on the first
+attempt — you no longer have to create the container, watch it fail, and add
+the token afterwards.
+
+The token is checked against the registry before the container is created, so a
+wrong, expired or under-scoped token is reported while you are still in the
+form rather than showing up later as `ImagePullBackOff`. If the registry is
+temporarily unreachable the check is skipped with a warning rather than
+blocking you. It is only ever sent to the registry host you
+named — a stack mixing a private registry with public images (`redis:7`, say)
+never offers your token to the public one.
+
+To rotate or remove a credential later, use the registry-key button on the
+container's row. Saving again from that button **replaces** the stored
+credential — it does not add a second one.
+
+A stack has **one** credential, for one registry host, and every service in the
+stack is given it. That is fine for the normal case: services pulling from the
+private registry use it, and services pulling public images (`redis:7`,
+`postgres:17`) ignore it and pull anonymously. What is *not* supported is a
+stack whose services pull private images from **two different** registries —
+only the host you named will authenticate. Publish the odd image out to the
+same registry, or make it public.
+
+### CPU and memory for a stack
+
+In the compose editor, give each service a `deploy.resources` block — it is the
+only place CPU and memory can be set for a compose service, and without one a
+service gets a small default (100m CPU / 128Mi memory) that is not enough for a
+real application:
+
+```yaml
+services:
+  web:
+    image: ghcr.io/acme/app:1.4
+    deploy:
+      resources:
+        reservations:      # guaranteed to this service
+          cpus: "0.1"
+          memory: 128M
+        limits:            # hard ceiling — exceeding memory restarts it
+          cpus: "0.5"
+          memory: 512M
+```
+
+`cpus` is in decimal cores (`"0.5"` is half a core). `memory` uses Docker's
+units, so `512M` and `1G` mean 512 MiB and 1 GiB. If you give only `limits`,
+the reservation matches them. The compose `cpus:` and `mem_limit:` fields from
+older Compose versions are not accepted — the editor will point you here.
+
+Your plan's quota is the ceiling for everything you run, so a stack asking for
+more than it allows will be refused when it deploys.
+
 Custom containers appear in the same table with a **Mode** column (Docker or
 Compose) and an **Updates** column. Use the row's actions to upgrade the image
 tag, **Preview** the running container without a route, **Stop**/**Start**, or
