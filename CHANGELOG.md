@@ -12,6 +12,33 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **Rotating the Stalwart admin password showed the OLD password in the admin
+  panel.** The rotation patches the Kubernetes Secret, but platform-api served
+  the reveal endpoint from its *volume mount* of that Secret — and kubelet
+  refreshes a mounted Secret up to ~60s late. The credentials query is
+  deliberately `staleTime: 0` + `refetchOnMount: 'always'`, so the refetch that
+  fires straight after a rotation re-read the stale file and overwrote the
+  correct password the mutation had just seeded. The panel showed the previous
+  password until a reload more than a minute later. The reveal endpoint now
+  reads the Secret through the API — removing the window rather than racing it,
+  and HA-safe in a way an in-process cache would not be. Falls back to the
+  mounted file if the read fails, so a missing RBAC grant degrades instead of
+  breaking the reveal.
+
+
+### Removed
+- `mail-admin/rotate.ts` and its test — a dead, restart-based Stalwart
+  admin-password rotation superseded by the in-flight JMAP `Principal/set` path
+  in `rotate-jmap.ts`, which is what the route actually calls. Nothing imported
+  it but its own test. It also carried a latent defect that shows why it was
+  never exercised: it verified the rotation by POSTing to `/api/oauth`, an
+  endpoint that returns 404 on Stalwart 0.16.16 and 0.16.20 alike, so the poll
+  could never have succeeded. Correcting a module no caller reaches would only
+  have preserved an obsolete second model of how rotation works; the live path
+  verifies against `GET /jmap/session` and needs no restart.
+
+
 ### Security
 - **Bulwark webmail 1.7.8 → 1.9.2**, which fixes GHSA-24w9-8r42-8jwm: a
   DNS-rebinding SSRF reachable through the **unauthenticated**
