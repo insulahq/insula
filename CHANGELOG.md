@@ -13,6 +13,9 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Added
+- The compose editor's starter stack now names the private-registry checkbox,
+  links the published tenant guide, and lists the other supported and rejected
+  compose fields, so it works as a map rather than a dead end.
 - **Compose stacks can set CPU and memory.** `deploy.resources.{limits,reservations}.{cpus,memory}`
   is now parsed and mapped to Kubernetes requests/limits — reservations become
   requests, limits become limits, and a block with only `limits` mirrors them
@@ -38,6 +41,16 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   `auto` when the scheduler places the tenant.
 
 ### Fixed
+- **The compose editor's own starter stack greeted every tenant with a warning
+  about itself.** It shipped `traefik/whoami:latest` and `redis:7-alpine`,
+  both moving tags, so the platform's own `UNPINNED_TAG_ADVISORY` fired the
+  moment anyone clicked **Validate**. Pinned to real immutable tags, and a test
+  now runs the shipped template through the real parser *and* validator and
+  fails on any error or warning — the same class of bug as the CRS 934190
+  block, where the platform's default violated the platform's own rules.
+- The starter template pointed at a repository path
+  (`docs/features/CUSTOM_CONTAINERS_USER_GUIDE.md`) that a tenant cannot open.
+  It now links the published guide.
 - **Custom container stacks could not be validated or deployed.** The CRS
   934xxx "Application Attack Generic" family blocked
   `POST …/custom-deployments/validate` and `…/custom-deployments` at the WAF
