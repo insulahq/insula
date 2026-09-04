@@ -12,6 +12,94 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **Compose stacks can set CPU and memory.** `deploy.resources.{limits,reservations}.{cpus,memory}`
+  is now parsed and mapped to Kubernetes requests/limits — reservations become
+  requests, limits become limits, and a block with only `limits` mirrors them
+  into requests (what Kubernetes itself does). Compose binary units are
+  honoured (`512M` → `512Mi`, `1G` → `1024Mi`), CPU is normalised to
+  millicores. The compose JSON Schema carries the new fields, so the editor
+  autocompletes and documents them, and the pre-filled default stack
+  demonstrates both forms.
+- **Private-registry credentials can be supplied when creating a custom
+  deployment**, in both the single-container wizard and the compose editor.
+  The credential is stored and the pull Secret materialised *before* the first
+  deploy, so a private image now pulls on the first attempt. When a token is
+  given, the pre-flight image check uses it, and a registry that rejects the
+  token fails the create with `IMAGE_CREDENTIAL_REJECTED` instead of the
+  container surfacing it later as ImagePullBackOff. A creds-less 401 still only
+  warns — that just means the image is private.
+- **Image-pull Secret reconciler.** An idempotent hourly sweep (plus one at
+  startup) recreates any `image-pull-<id>` Secret that is missing for a stored
+  credential. Scoped per tenant on the restore path.
+- The admin **Tenants** table now shows subscription **Expires** (colour-coded:
+  red past due, amber within 30 days, "never" when unset) in place of Created,
+  and the Worker column is now **Placement**, showing the pinned node or
+  `auto` when the scheduler places the tenant.
+- The compose editor's starter stack now names the private-registry checkbox,
+  links the published tenant guide, and lists the other supported and rejected
+  compose fields, so it works as a map rather than a dead end.
+
+### Fixed
+- **Custom container stacks could not be validated or deployed.** The CRS
+  934xxx "Application Attack Generic" family blocked
+  `POST …/custom-deployments/validate` and `…/custom-deployments` at the WAF
+  edge — 934190 ("scheme-less localhost or internal hostname") matched
+  `http://localhost/health`, which is the healthcheck in the platform's *own*
+  default compose template, shipped pre-filled in the compose editor. The
+  editor's untouched default stack was refused for every tenant. The family is
+  now excluded on the four deploy endpoint groups alongside 932xxx (rule
+  9000108), because a container spec legitimately contains service URLs,
+  internal hostnames, config templates and Node/Ruby/Perl entrypoints.
+  Traversal (930100/930110), restricted-files (930130) and the 941/942/933
+  families remain enforced on every field.
+- **Every compose service silently ran at 100m CPU / 128Mi memory.** `deploy:`
+  was neither parsed nor rejected, so `deploy.resources` — the only way the
+  compose spec expresses CPU/memory — was dropped without a word, and the
+  rejection hint for the legacy `cpus:` / `mem_limit:` fields pointed at a
+  "`resources` block" that did not exist anywhere. There was in fact no way to
+  give a compose service more than the hello-world default.
+- The remaining Swarm-only `deploy:` keys are now warned about instead of
+  ignored. `deploy.replicas: 3` in particular said nothing while producing one
+  pod.
+- **CPU and memory are no longer hidden behind "Show advanced"** in the
+  single-container wizard. They are a first-class *Resources* section showing
+  the defaults inline, so a tenant deploying a real application sees the dial
+  before meeting an OOMKill instead of after.
+- **Restoring a custom deployment left it in the database and nowhere in the
+  cluster.** The restore executor upserted rows only; `custom-deployments`
+  has no reconciler that creates a missing workload (its reconciler is
+  status-only), and the dockerconfigjson Secret never travels in a bundle.
+  Restore now re-applies custom workloads through the same path DR recover
+  uses and rebuilds their pull Secrets, reporting per-workload outcomes in the
+  restore item's progress message. Deployments the tenant had stopped are left
+  stopped.
+- **The admin Tenants list never returned `nodeName` or `storageTier`.** Both
+  columns are rendered from them, but the Fastify response schema did not
+  declare either field and Fastify strips undeclared properties — so the node
+  column showed `—` for every tenant and the tier column showed `local` for
+  every tenant, including real HA ones. Both fields are optional in the
+  contract, so TypeScript could never catch it.
+- **The compose editor's own starter stack greeted every tenant with a warning
+  about itself.** It shipped `traefik/whoami:latest` and `redis:7-alpine`,
+  both moving tags, so the platform's own `UNPINNED_TAG_ADVISORY` fired the
+  moment anyone clicked **Validate**. Pinned to real immutable tags, and a test
+  now runs the shipped template through the real parser *and* validator and
+  fails on any error or warning — the same class of bug as the CRS 934190
+  block, where the platform's default violated the platform's own rules.
+- The starter template pointed at a repository path
+  (`docs/features/CUSTOM_CONTAINERS_USER_GUIDE.md`) that a tenant cannot open.
+  It now links the published guide.
+
+### Security
+- Registry manifest lookups are SSRF-guarded. `resolveTagDigest()` fetches
+  `https://<registryHost>/v2/…` with a host taken from the tenant's own image
+  reference; the `WWW-Authenticate` realm had been validated since it was
+  written, but the manifest URL itself had not. Both now go through the same
+  validator, so `image: 169.254.169.254/x:1` or `image: kubernetes.default.svc/x:1`
+  is refused before a socket opens. This replaces the partial, incidental cover
+  the excluded 934xxx rules had been providing.
+
 ## [2026.9.5] - 2026-09-03
 
 ### Added

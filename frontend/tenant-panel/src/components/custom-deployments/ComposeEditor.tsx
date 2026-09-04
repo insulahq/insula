@@ -10,6 +10,14 @@ import { useState, Suspense, lazy, Component, type ReactNode } from 'react';
 import { AlertCircle, AlertTriangle, CheckCircle, FileText, Loader2, X } from 'lucide-react';
 import clsx from 'clsx';
 import { Tooltip } from '@/components/ui/Tooltip';
+import {
+  PrivateRegistryFields,
+  EMPTY_PULL_CREDENTIAL,
+  pullCredentialComplete,
+  pullCredentialPartial,
+  toPullCredentialInput,
+  type PullCredentialDraft,
+} from './PrivateRegistryFields';
 import { useCreateCustomDeployment, useValidateCustomDeployment, useDeleteCustomDeployment } from '@/hooks/use-custom-deployments';
 import { apiFetch } from '@/lib/api-client';
 import type { CreateCustomDeploymentComposeInput, CustomDeploymentIssue, CustomDeploymentSpec } from '@insula/api-contracts';
@@ -55,7 +63,13 @@ interface Props {
   readonly existingDeployment?: CustomDeploymentRow;
 }
 
-const DEFAULT_COMPOSE = `# Deployable as-is for testing. Docs: docs/features/CUSTOM_CONTAINERS_USER_GUIDE.md
+const DEFAULT_COMPOSE = `# Deployable as-is. Full guide:
+# https://insulahq.github.io/tenant/deployments-and-applications/
+#
+# Private image? Tick "This image is in a private registry" ABOVE this editor
+# and enter the host, username and token. One credential covers the whole
+# stack, and it is applied before the first pull. Public images in the same
+# stack are unaffected — they still pull anonymously.
 #
 # All declared ports become cluster-internal ClusterIP Services.
 # To expose a port externally, add an Ingress Route in the Routes tab after deploying.
@@ -67,13 +81,30 @@ const DEFAULT_COMPOSE = `# Deployable as-is for testing. Docs: docs/features/CUS
 #
 # Services in the same stack reach each other by service name:
 #   http://api:3000  •  redis://cache:6379
+#
+# CPU and memory: use deploy.resources on each service, as below. Without it a
+# service gets 100m CPU / 128Mi memory — enough for a hello-world, not for a
+# real app. reservations = guaranteed (the k8s request), limits = hard cap
+# (exceeding the memory limit OOM-kills the container). cpus is decimal cores;
+# memory takes Docker's binary units (512M, 1G). Give only limits and the
+# reservation matches them. Your plan's quota is the ceiling for the stack.
 services:
   web:
-    image: traefik/whoami:latest
+    # Pin a real tag. A moving tag (:latest, :7, :24.04) can be re-published
+    # under you, so the platform flags it with an advisory on validate.
+    image: traefik/whoami:v1.10.2
     ports:
       - "80"                 # exposed externally via an Ingress Route
     environment:
       WHOAMI_PORT_NUMBER: "80"
+    deploy:
+      resources:
+        reservations:        # guaranteed to this service
+          cpus: "0.1"
+          memory: 128M
+        limits:              # hard ceiling
+          cpus: "0.5"
+          memory: 512M
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost/health"]
       interval: 10s
@@ -84,10 +115,15 @@ services:
         condition: service_healthy
 
   cache:
-    image: redis:7-alpine
+    image: redis:7.4.1-alpine
     # no ports: — not exposed; reachable cluster-internally as redis://cache:6379
     volumes:
       - cache-data:/data
+    deploy:
+      resources:
+        limits:              # limits only — the reservation matches them
+          cpus: "0.25"
+          memory: 256M
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -96,6 +132,11 @@ services:
 
 volumes:
   cache-data: {}    # stored as a subPath on your tenant storage
+
+# Also supported per service: command, entrypoint, env_file, user, working_dir,
+# read_only, tmpfs, restart, stop_grace_period, labels, configs, secrets.
+# Rejected (with a hint telling you what to use instead): build, privileged,
+# network_mode, devices, pid/ipc, links, and bind-mount volumes.
 `;
 
 type RightTab = 'issues' | 'spec';
@@ -114,6 +155,11 @@ export function ComposeEditor({ tenantId, existingNames, onClose, onCreated, exi
   const [issues, setIssues] = useState<readonly CustomDeploymentIssue[]>([]);
   const [spec, setSpec] = useState<CustomDeploymentSpec | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  // One credential covers the whole stack. Multi-registry stacks still need
+  // the per-deployment rotate modal afterwards — the store is keyed by
+  // deployment, not by registry.
+  const [usePrivateRegistry, setUsePrivateRegistry] = useState(false);
+  const [pullCredential, setPullCredential] = useState<PullCredentialDraft>(EMPTY_PULL_CREDENTIAL);
   const [jsonSchema, setJsonSchema] = useState<unknown>(null);
   const [validateState, setValidateState] = useState<'idle' | 'success' | 'warning' | 'error'>('idle');
 
@@ -142,6 +188,9 @@ export function ComposeEditor({ tenantId, existingNames, onClose, onCreated, exi
     mode: 'compose',
     name,
     compose_yaml: yaml,
+    ...(usePrivateRegistry && pullCredentialComplete(pullCredential)
+      ? { pull_credential: toPullCredentialInput(pullCredential) }
+      : {}),
   });
 
   const runValidate = async () => {
@@ -151,8 +200,10 @@ export function ComposeEditor({ tenantId, existingNames, onClose, onCreated, exi
       // tolerates missing name in the compose body. We still send
       // `name` if the user typed one so the deploy-name length cap
       // can run.
-      const body = buildInput();
-      const r = await validateMutation.mutateAsync(body);
+      // Validate is a dry run and never uses the credential, so don't put the
+      // token on the wire for it — send only what the check needs.
+      const { pull_credential: _omitted, ...body } = buildInput();
+      const r = await validateMutation.mutateAsync(body as CreateCustomDeploymentComposeInput);
       setIssues(r.data.issues);
       setSpec(r.data.spec);
       setRightTab(r.data.ok ? 'spec' : 'issues');
@@ -183,7 +234,15 @@ export function ComposeEditor({ tenantId, existingNames, onClose, onCreated, exi
 
   const errorCount = issues.filter((i) => i.severity === 'error').length;
   const warningCount = issues.filter((i) => i.severity === 'warning').length;
-  const canSubmit = Boolean(name && yaml.trim() && !nameError && errorCount === 0 && !createMutation.isPending && !deleteMutation.isPending);
+  // Half-filled must block rather than be dropped — see the wizard.
+  const credentialError = usePrivateRegistry && pullCredentialPartial(pullCredential)
+    ? 'Fill in registry host, username and token — or clear all three.'
+    : null;
+  const canSubmit = Boolean(
+    name && yaml.trim() && !nameError && errorCount === 0 && !credentialError
+    && (!usePrivateRegistry || pullCredentialComplete(pullCredential))
+    && !createMutation.isPending && !deleteMutation.isPending,
+  );
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
@@ -225,12 +284,22 @@ export function ComposeEditor({ tenantId, existingNames, onClose, onCreated, exi
           {nameError && <span className="text-xs text-red-600 dark:text-red-400">{nameError}</span>}
         </div>
 
+        <div className="border-b border-gray-200 px-6 py-2 dark:border-gray-700">
+          <PrivateRegistryFields
+            enabled={usePrivateRegistry}
+            onEnabledChange={setUsePrivateRegistry}
+            value={pullCredential}
+            onChange={setPullCredential}
+            error={credentialError}
+          />
+        </div>
+
         <div className="flex flex-1 overflow-hidden">
           {/* Editor */}
           <div className="flex w-2/3 flex-col border-r border-gray-200 dark:border-gray-700">
             <div className="flex items-center gap-1 border-b border-gray-200 px-4 py-1.5 text-xs font-medium text-gray-700 dark:border-gray-700 dark:text-gray-300">
               compose.yaml
-              <Tooltip text="Paste a Compose 3.7–3.9 file here. Supported: services, image, ports, environment, depends_on, healthcheck, named volumes. Bind mounts and most advanced Compose features are rejected for security reasons. To see the real visitor IP, make your app trust proxy ranges 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 (+ your external LB IP if enabled) and read X-Forwarded-For." />
+              <Tooltip text="Paste a Compose 3.7–3.9 file here. Supported: services, image, ports, environment, depends_on, healthcheck, named volumes, and deploy.resources for CPU/memory. Bind mounts and most advanced Compose features are rejected for security reasons. To see the real visitor IP, make your app trust proxy ranges 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 (+ your external LB IP if enabled) and read X-Forwarded-For." />
             </div>
             <EditorErrorBoundary fallback={<TextareaFallback value={yaml} onChange={setYaml} />}>
               <Suspense fallback={<TextareaFallback value={yaml} onChange={setYaml} />}>
