@@ -247,7 +247,9 @@ spec:
             - name: restore-tmp
               mountPath: /restore-tmp
         - name: feature-css-injector
-          image: ghcr.io/bulwarkmail/webmail@sha256:1ea45e292e7baf84eccdfe3d7ed96fe4487f2b95025a6ab569706915f6798979
+          # Same digest as the `bulwark` container below — see the note there
+          # for the version and how to re-resolve it. Both must move together.
+          image: ghcr.io/bulwarkmail/webmail@sha256:0e8d1339277033b6569a76c6f8192396e6edd66fd917d64d9ed505e8b81dac6d
           imagePullPolicy: IfNotPresent
           # busybox-style sh is available in the Bulwark image (Alpine
           # base). The script is intentionally tiny + has no error
@@ -287,10 +289,23 @@ spec:
               readOnly: true
       containers:
         - name: bulwark
-          # ghcr.io/bulwarkmail/webmail@sha256:1ea45e29... — Bulwark
-          # 1.7.8 stable (2026-07; resolved via docker pull + RepoDigests). Bump
-          # per ADR-039.
-          image: ghcr.io/bulwarkmail/webmail@sha256:1ea45e292e7baf84eccdfe3d7ed96fe4487f2b95025a6ab569706915f6798979
+          # Bulwark 1.9.2 stable (2026-08-26). Bump per ADR-039.
+          #
+          # The tag is NOT in the reference, so record it here: resolving a
+          # digest back to a version means querying GHCR, which is exactly the
+          # step someone skips. Verify with:
+          #   curl -sI -H "Authorization: Bearer $(curl -s \
+          #     'https://ghcr.io/token?scope=repository:bulwarkmail/webmail:pull' \
+          #     | jq -r .token)" -H 'Accept: application/vnd.oci.image.index.v1+json' \
+          #     https://ghcr.io/v2/bulwarkmail/webmail/manifests/1.9.2 \
+          #     | grep -i docker-content-digest
+          #
+          # 1.9.2 carries the fix for GHSA-24w9-8r42-8jwm: a DNS-rebinding SSRF
+          # in the UNAUTHENTICATED /api/fetch-ical endpoint (the public-host
+          # check ran before fetch() opened its socket, so a hostname could
+          # rebind to loopback/RFC-1918/metadata in between and return up to
+          # 10MB of the internal response). Do not roll back past it.
+          image: ghcr.io/bulwarkmail/webmail@sha256:0e8d1339277033b6569a76c6f8192396e6edd66fd917d64d9ed505e8b81dac6d
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false

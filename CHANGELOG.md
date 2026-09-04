@@ -12,6 +12,37 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Security
+- **Bulwark webmail 1.7.8 → 1.9.2**, which fixes GHSA-24w9-8r42-8jwm: a
+  DNS-rebinding SSRF reachable through the **unauthenticated**
+  `/api/fetch-ical` endpoint. The public-host check ran before `fetch()` opened
+  its socket, so a hostname under attacker control could rebind to loopback,
+  RFC-1918 or cloud-metadata addresses in between and return up to 10 MB of the
+  internal response. Redirect targets are now validated the same way.
+
+### Changed
+- **Stalwart 0.16.16 → 0.16.20.** Four patch releases, no migration — every one
+  states that upgrading within 0.16.x is a binary/image replacement. The
+  0.16.19 `ALTER TABLE` note applies only to MySQL/MariaDB data stores; this
+  platform runs Stalwart on embedded RocksDB, so it does not apply. Brings ACME
+  order-failure logging and retry fixes (mail TLS runs through Stalwart's
+  http-acme), DANE and MTA-STS delivery fixes, and a `/api/discover` fix for
+  master-user names containing `%`.
+- **stalwart-cli v1.0.4 → v1.0.12**, version and sha256 moved together across
+  both pins. The archive is checksum-verified by the Job, so a version bumped
+  without its hash fails that check rather than running an unverified binary.
+- Bulwark's image is digest-pinned, which hides the version. The manifest now
+  records the version, how to re-resolve the digest, and why 1.9.2 is a floor.
+
+### Added
+- `ci-mail-image-pin-check.sh` — asserts every `stalwartlabs/stalwart` reference
+  in `k8s/` and `backend/src` names the same tag, and that the stalwart-cli
+  version + sha256 agree across both pins. `archive.ts` already carried the
+  scar ("v0.16.5 while the server ran v0.16.14 — eleven releases of silent
+  drift"); the unit test added then asserts the resolver against a literal in
+  its own file, so nothing compared the files to each other. Now something does.
+
+
 ### Added
 - **Compose validation errors now carry a line number.** The backend resolves
   each issue's dotted path (`services.db.deploy.resources.limits.memory`) back
