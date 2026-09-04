@@ -22,12 +22,32 @@ list of accounts, and the other tabs are cross-tenant views:
 
 | Tab | What it shows |
 |-----|---------------|
-| **Tenants** | Every account, searchable, with live CPU / memory / storage usage, assigned worker node, and storage tier (local / HA). Usage figures are collected when the list loads and re-used for 15 seconds, so what you see reflects the cluster now rather than the last background sweep. Each row has a small **Login** button beside the name — the same [Login as Tenant](#header-actions) action as the detail page, without opening it first. |
+| **Tenants** | Every account, searchable, with live CPU / memory / storage usage, **Placement**, storage tier (local / HA) and subscription **Expires**. Usage figures are collected when the list loads and re-used for 15 seconds, so what you see reflects the cluster now rather than the last background sweep. Each row has a small **Login** button beside the name — the same [Login as Tenant](#header-actions) action as the detail page, without opening it first. |
 | **Domains** | All domains across all tenants — filter by tenant, bulk-verify, bulk-delete. → [Domains & DNS](domains-and-dns.md) |
 | **Workloads** | Every deployment across all tenants, with a `custom` tag for bring-your-own-container deployments. → [Catalogs & applications](catalogs-and-applications.md) |
 | **Users** | Sub-users across all tenants. |
 | **Email Accounts** | Mailboxes across all tenants. → [Email](email.md) |
 | **Cron Jobs** | Scheduled jobs across all tenants. |
+
+### Reading the Placement and Expires columns
+
+**Placement** is the node the tenant's workloads are pinned to. Most tenants
+show `auto`, which means no pin is set and Kubernetes schedules them wherever
+there is room — that is the normal state, not a missing value. A node name
+appears once you pin the tenant from **Nodes & storage**.
+
+**Expires** is the subscription expiry date, colour-coded so a lapsing account
+is visible without reading dates:
+
+| Shown | Meaning |
+|-------|---------|
+| Grey date | Expires more than 30 days out |
+| Amber date | Expires within 30 days |
+| Red date | Already past — the subscription has lapsed |
+| `never` | No expiry was ever set. Common and intentional for perpetual accounts. |
+
+Sorting applies to the page you are looking at, not the whole tenant list, so
+sort after narrowing with the search box if you have many accounts.
 
 The **SYSTEM** tenant always appears in the list with an amber `SYSTEM`
 badge. It owns the platform's apex domain and reserved mailboxes

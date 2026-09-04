@@ -175,6 +175,56 @@ container images instead of catalog apps. Two ways:
     Click **New Stack (compose)** to define several services together using a
     Docker-Compose-style editor. Good for an app plus its database, cache, etc.
 
+### Private images
+
+If the image lives in a private registry, tick **This image is in a private
+registry** while creating the container or stack and fill in the registry host
+(`ghcr.io`, `docker.io`, `registry.example.test:5000`), your username, and a
+token with read access to the package. The credential is stored encrypted and
+applied *before* the first pull, so a private image starts on the first
+attempt — you no longer have to create the container, watch it fail, and add
+the token afterwards.
+
+The token is checked against the registry as part of validation, so a wrong or
+expired token is reported while you are still in the form rather than showing
+up later as `ImagePullBackOff`. It is only ever sent to the registry host you
+named — a stack mixing a private registry with public images (`redis:7`, say)
+never offers your token to the public one.
+
+To rotate or remove a credential later, use the registry-key button on the
+container's row. In a compose stack the credential covers the whole stack; if
+your services pull from more than one private registry, add the extra
+credential from that button after the stack is created.
+
+### CPU and memory for a stack
+
+In the compose editor, give each service a `deploy.resources` block — it is the
+only place CPU and memory can be set for a compose service, and without one a
+service gets a small default (100m CPU / 128Mi memory) that is not enough for a
+real application:
+
+```yaml
+services:
+  web:
+    image: ghcr.io/acme/app:1.4
+    deploy:
+      resources:
+        reservations:      # guaranteed to this service
+          cpus: "0.1"
+          memory: 128M
+        limits:            # hard ceiling — exceeding memory restarts it
+          cpus: "0.5"
+          memory: 512M
+```
+
+`cpus` is in decimal cores (`"0.5"` is half a core). `memory` uses Docker's
+units, so `512M` and `1G` mean 512 MiB and 1 GiB. If you give only `limits`,
+the reservation matches them. The compose `cpus:` and `mem_limit:` fields from
+older Compose versions are not accepted — the editor will point you here.
+
+Your plan's quota is the ceiling for everything you run, so a stack asking for
+more than it allows will be refused when it deploys.
+
 Custom containers appear in the same table with a **Mode** column (Docker or
 Compose) and an **Updates** column. Use the row's actions to upgrade the image
 tag, **Preview** the running container without a route, **Stop**/**Start**, or
