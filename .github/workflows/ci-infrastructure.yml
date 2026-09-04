@@ -172,6 +172,14 @@ jobs:
       - name: Verify bootstrap.sh firewall rules
         run: ./scripts/ci-firewall-check.sh
 
+  mail-image-pin-check:
+    name: Mail image pins agree (Stalwart + stalwart-cli)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Verify Stalwart and stalwart-cli pins are consistent
+        run: ./scripts/ci-mail-image-pin-check.sh
+
   migration-coverage-guard:
     name: Migration coverage (install-time host shape → host-migration)
     runs-on: ubuntu-latest
