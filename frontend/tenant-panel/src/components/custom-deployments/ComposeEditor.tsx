@@ -63,7 +63,13 @@ interface Props {
   readonly existingDeployment?: CustomDeploymentRow;
 }
 
-const DEFAULT_COMPOSE = `# Deployable as-is for testing. Docs: docs/features/CUSTOM_CONTAINERS_USER_GUIDE.md
+const DEFAULT_COMPOSE = `# Deployable as-is. Full guide:
+# https://insulahq.github.io/tenant/deployments-and-applications/
+#
+# Private image? Tick "This image is in a private registry" ABOVE this editor
+# and enter the host, username and token. One credential covers the whole
+# stack, and it is applied before the first pull. Public images in the same
+# stack are unaffected — they still pull anonymously.
 #
 # All declared ports become cluster-internal ClusterIP Services.
 # To expose a port externally, add an Ingress Route in the Routes tab after deploying.
@@ -84,7 +90,9 @@ const DEFAULT_COMPOSE = `# Deployable as-is for testing. Docs: docs/features/CUS
 # reservation matches them. Your plan's quota is the ceiling for the stack.
 services:
   web:
-    image: traefik/whoami:latest
+    # Pin a real tag. A moving tag (:latest, :7, :24.04) can be re-published
+    # under you, so the platform flags it with an advisory on validate.
+    image: traefik/whoami:v1.10.2
     ports:
       - "80"                 # exposed externally via an Ingress Route
     environment:
@@ -107,7 +115,7 @@ services:
         condition: service_healthy
 
   cache:
-    image: redis:7-alpine
+    image: redis:7.4.1-alpine
     # no ports: — not exposed; reachable cluster-internally as redis://cache:6379
     volumes:
       - cache-data:/data
@@ -124,6 +132,11 @@ services:
 
 volumes:
   cache-data: {}    # stored as a subPath on your tenant storage
+
+# Also supported per service: command, entrypoint, env_file, user, working_dir,
+# read_only, tmpfs, restart, stop_grace_period, labels, configs, secrets.
+# Rejected (with a hint telling you what to use instead): build, privileged,
+# network_mode, devices, pid/ipc, links, and bind-mount volumes.
 `;
 
 type RightTab = 'issues' | 'spec';
