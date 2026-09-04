@@ -67,6 +67,13 @@ const DEFAULT_COMPOSE = `# Deployable as-is for testing. Docs: docs/features/CUS
 #
 # Services in the same stack reach each other by service name:
 #   http://api:3000  •  redis://cache:6379
+#
+# CPU and memory: use deploy.resources on each service, as below. Without it a
+# service gets 100m CPU / 128Mi memory — enough for a hello-world, not for a
+# real app. reservations = guaranteed (the k8s request), limits = hard cap
+# (exceeding the memory limit OOM-kills the container). cpus is decimal cores;
+# memory takes Docker's binary units (512M, 1G). Give only limits and the
+# reservation matches them. Your plan's quota is the ceiling for the stack.
 services:
   web:
     image: traefik/whoami:latest
@@ -74,6 +81,14 @@ services:
       - "80"                 # exposed externally via an Ingress Route
     environment:
       WHOAMI_PORT_NUMBER: "80"
+    deploy:
+      resources:
+        reservations:        # guaranteed to this service
+          cpus: "0.1"
+          memory: 128M
+        limits:              # hard ceiling
+          cpus: "0.5"
+          memory: 512M
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost/health"]
       interval: 10s
@@ -88,6 +103,11 @@ services:
     # no ports: — not exposed; reachable cluster-internally as redis://cache:6379
     volumes:
       - cache-data:/data
+    deploy:
+      resources:
+        limits:              # limits only — the reservation matches them
+          cpus: "0.25"
+          memory: 256M
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -230,7 +250,7 @@ export function ComposeEditor({ tenantId, existingNames, onClose, onCreated, exi
           <div className="flex w-2/3 flex-col border-r border-gray-200 dark:border-gray-700">
             <div className="flex items-center gap-1 border-b border-gray-200 px-4 py-1.5 text-xs font-medium text-gray-700 dark:border-gray-700 dark:text-gray-300">
               compose.yaml
-              <Tooltip text="Paste a Compose 3.7–3.9 file here. Supported: services, image, ports, environment, depends_on, healthcheck, named volumes. Bind mounts and most advanced Compose features are rejected for security reasons. To see the real visitor IP, make your app trust proxy ranges 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 (+ your external LB IP if enabled) and read X-Forwarded-For." />
+              <Tooltip text="Paste a Compose 3.7–3.9 file here. Supported: services, image, ports, environment, depends_on, healthcheck, named volumes, and deploy.resources for CPU/memory. Bind mounts and most advanced Compose features are rejected for security reasons. To see the real visitor IP, make your app trust proxy ranges 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 (+ your external LB IP if enabled) and read X-Forwarded-For." />
             </div>
             <EditorErrorBoundary fallback={<TextareaFallback value={yaml} onChange={setYaml} />}>
               <Suspense fallback={<TextareaFallback value={yaml} onChange={setYaml} />}>
