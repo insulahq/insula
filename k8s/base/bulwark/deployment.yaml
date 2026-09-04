@@ -289,16 +289,15 @@ spec:
               readOnly: true
       containers:
         - name: bulwark
-          # Bulwark 1.9.2 stable (2026-08-26). Bump per ADR-039.
+          # Bulwark 1.9.2 stable (2026-08-26). Bump per ADR-039; the digest is
+          # also recorded in security/components.yaml (component `bulwark`),
+          # which ci-component-watch-check.sh asserts against this file.
           #
-          # The tag is NOT in the reference, so record it here: resolving a
-          # digest back to a version means querying GHCR, which is exactly the
-          # step someone skips. Verify with:
-          #   curl -sI -H "Authorization: Bearer $(curl -s \
-          #     'https://ghcr.io/token?scope=repository:bulwarkmail/webmail:pull' \
-          #     | jq -r .token)" -H 'Accept: application/vnd.oci.image.index.v1+json' \
-          #     https://ghcr.io/v2/bulwarkmail/webmail/manifests/1.9.2 \
-          #     | grep -i docker-content-digest
+          # The tag is NOT in the reference, so record it here — resolving a
+          # digest back to a version means a registry query, which is exactly
+          # the step someone skips. (No URL in this comment on purpose:
+          # ci-image-org-check.sh scans k8s/ for image orgs and reads a registry
+          # URL in a comment as a rogue image reference.)
           #
           # 1.9.2 carries the fix for GHSA-24w9-8r42-8jwm: a DNS-rebinding SSRF
           # in the UNAUTHENTICATED /api/fetch-ical endpoint (the public-host

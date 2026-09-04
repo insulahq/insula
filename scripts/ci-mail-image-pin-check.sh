@@ -11,6 +11,14 @@
 # three copies could still march off in different directions and every test
 # would stay green. Nothing compared the files. Now something does.
 #
+# RELATIONSHIP TO security/components.yaml
+# ----------------------------------------
+# The component-watch ledger (ADR-050) already asserts that each component's
+# `pinned` value appears in its ONE `pin_source` file. That is a different
+# check: it ties the ledger to a single manifest. This ties the manifests and
+# the backend constant to EACH OTHER, which is where the historical drift
+# happened. Both are needed; neither subsumes the other.
+#
 # Checked here:
 #   1. Every `stalwartlabs/stalwart:<tag>` reference in k8s/ and backend/src
 #      names the SAME tag. That covers the Deployment, the extra-CA component

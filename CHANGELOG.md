@@ -24,7 +24,11 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 - **Stalwart 0.16.16 → 0.16.20.** Four patch releases, no migration — every one
   states that upgrading within 0.16.x is a binary/image replacement. The
   0.16.19 `ALTER TABLE` note applies only to MySQL/MariaDB data stores; this
-  platform runs Stalwart on embedded RocksDB, so it does not apply. Brings ACME
+  platform runs Stalwart on embedded RocksDB, so it does not apply. The
+  RocksDB-checkpoint coupling was re-verified rather than assumed: Stalwart's
+  own `Cargo.lock` pins the same `librocksdb-sys 0.17.3+10.4.2` / `rocksdb
+  0.24.0` at both tags, so the checkpoint binary still links the same C++
+  rocksdb as the store it opens. Brings ACME
   order-failure logging and retry fixes (mail TLS runs through Stalwart's
   http-acme), DANE and MTA-STS delivery fixes, and a `/api/discover` fix for
   master-user names containing `%`.
