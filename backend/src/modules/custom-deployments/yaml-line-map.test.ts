@@ -134,3 +134,57 @@ describe('withResolvedLines', () => {
     expect(out[0].line).toBe(99);
   });
 });
+
+// The validator works on the NORMALIZED spec, so its paths are in spec
+// coordinates while the tenant's document is in compose coordinates. Before
+// this translation, `MEMORY_LIMIT_BELOW_REQUEST` (validator) had no line while
+// `COMPOSE_RESOURCE_LIMIT_BELOW_RESERVATION` (parser) — the SAME field — did.
+// Two errors about one line, one of them pointing nowhere.
+describe('normalized-spec paths translate to compose paths', () => {
+  const DOC2 = [
+    /*  1 */ 'services:',
+    /*  2 */ '  db:',
+    /*  3 */ '    image: mysql:8.4.3',
+    /*  4 */ '    deploy:',
+    /*  5 */ '      resources:',
+    /*  6 */ '        reservations:',
+    /*  7 */ '          cpus: "1"',
+    /*  8 */ '          memory: 1G',
+    /*  9 */ '        limits:',
+    /* 10 */ '          cpus: "0.5"',
+    /* 11 */ '          memory: 256M',
+    /* 12 */ '    restart: always',
+    /* 13 */ '    working_dir: /app',
+  ].join('\n');
+
+  it.each([
+    ['services.db.resources.memoryLimit', 11],
+    ['services.db.resources.cpuLimit', 10],
+    ['services.db.resources.memoryRequest', 8],
+    ['services.db.resources.cpuRequest', 7],
+    ['services.db.restartPolicy', 12],
+    ['services.db.workingDir', 13],
+  ])('%s resolves to line %i', (path, line) => {
+    expect(withResolvedLines(DOC2, [{ path }])[0].line).toBe(line);
+  });
+
+  it('prefers the literal path when the document already uses it', () => {
+    // A compose file may legitimately contain a key that also looks like a
+    // spec path; the untranslated form must win so we never skip past a real
+    // match to a translated one.
+    const doc = ['services:', '  db:', '    image: x:1'].join('\n');
+    expect(withResolvedLines(doc, [{ path: 'services.db.image' }])[0].line).toBe(3);
+  });
+
+  it('still declines when neither form is present', () => {
+    expect(withResolvedLines(DOC2, [{ path: 'services.other.resources.memoryLimit' }])[0].line)
+      .toBeUndefined();
+  });
+
+  // Ambiguous mappings are deliberately absent — `env[3]` could be a list entry
+  // or a map key depending on which compose form the tenant wrote.
+  it('does not guess at env indices', () => {
+    const doc = ['services:', '  db:', '    environment:', '      FOO: bar'].join('\n');
+    expect(withResolvedLines(doc, [{ path: 'services.db.env[0].value' }])[0].line).toBeUndefined();
+  });
+});
