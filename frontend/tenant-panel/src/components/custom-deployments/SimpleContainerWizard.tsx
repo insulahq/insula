@@ -60,7 +60,6 @@ export function SimpleContainerWizard({ tenantId, existingNames, onClose, onCrea
   const [env, setEnv] = useState<EnvRow[]>(initState.env);
   const [cpuRequest, setCpuRequest] = useState(initState.cpuRequest);
   const [memoryRequest, setMemoryRequest] = useState(initState.memoryRequest);
-  const [showAdvanced, setShowAdvanced] = useState(false);
   const [issues, setIssues] = useState<readonly CustomDeploymentIssue[]>([]);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [validateState, setValidateState] = useState<'idle' | 'success' | 'warning' | 'error'>('idle');
@@ -337,28 +336,36 @@ export function SimpleContainerWizard({ tenantId, existingNames, onClose, onCrea
             ))}
           </section>
 
-          {/* Resources */}
-          <button type="button" className="text-xs text-blue-600 hover:underline dark:text-blue-400" onClick={() => setShowAdvanced(!showAdvanced)}>
-            {showAdvanced ? 'Hide' : 'Show'} advanced (resources)
-          </button>
-          {showAdvanced && (
+          {/* Resources — a first-class section, not behind a disclosure.
+              The defaults (100m / 128Mi) are hello-world sized, so a tenant
+              who never opened the old "advanced" toggle deployed a real app
+              into 128Mi and met an OOMKill with no idea the dial existed. */}
+          <section>
+            <SectionHeader
+              title="Resources"
+              tooltip="CPU and memory guaranteed to your container. The defaults suit a small service; give a real application more. Your plan's quota is the ceiling across all your deployments."
+            >
+              <span className="text-[10px] text-gray-400 dark:text-gray-500">
+                default 100m CPU · 128Mi memory
+              </span>
+            </SectionHeader>
             <div className="grid grid-cols-2 gap-4">
               <Field
                 label="CPU request"
                 tooltip="Minimum CPU guaranteed to your container. 100m = 0.1 vCPU, 500m = 0.5 vCPU, 1 = 1 full vCPU. Your container may burst above this if the node has spare capacity, but is guaranteed this floor."
               >
-                <input type="text" className={inputCls(Boolean(cpuError))} value={cpuRequest} onChange={(e) => setCpuRequest(e.target.value)} />
+                <input type="text" className={inputCls(Boolean(cpuError))} value={cpuRequest} onChange={(e) => setCpuRequest(e.target.value)} placeholder="100m" data-testid="custom-simple-cpu" />
                 {cpuError && <FieldError>{cpuError}</FieldError>}
               </Field>
               <Field
                 label="Memory request"
                 tooltip="Minimum RAM guaranteed to your container. 128Mi = 128 mebibytes, 512Mi = 512 MiB, 1Gi = 1 GiB. If the container exceeds the cluster memory limit it will be OOM-killed and restarted automatically."
               >
-                <input type="text" className={inputCls(Boolean(memoryError))} value={memoryRequest} onChange={(e) => setMemoryRequest(e.target.value)} />
+                <input type="text" className={inputCls(Boolean(memoryError))} value={memoryRequest} onChange={(e) => setMemoryRequest(e.target.value)} placeholder="128Mi" data-testid="custom-simple-memory" />
                 {memoryError && <FieldError>{memoryError}</FieldError>}
               </Field>
             </div>
-          )}
+          </section>
 
           {/* Issues panel */}
           {(errorIssues.length > 0 || warningIssues.length > 0) && (

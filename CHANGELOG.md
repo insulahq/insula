@@ -12,6 +12,16 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **Compose stacks can set CPU and memory.** `deploy.resources.{limits,reservations}.{cpus,memory}`
+  is now parsed and mapped to Kubernetes requests/limits — reservations become
+  requests, limits become limits, and a block with only `limits` mirrors them
+  into requests (what Kubernetes itself does). Compose binary units are
+  honoured (`512M` → `512Mi`, `1G` → `1024Mi`), CPU is normalised to
+  millicores. The compose JSON Schema carries the new fields, so the editor
+  autocompletes and documents them, and the pre-filled default stack
+  demonstrates both forms.
+
 ### Fixed
 - **Custom container stacks could not be validated or deployed.** The CRS
   934xxx "Application Attack Generic" family blocked
@@ -25,6 +35,19 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   internal hostnames, config templates and Node/Ruby/Perl entrypoints.
   Traversal (930100/930110), restricted-files (930130) and the 941/942/933
   families remain enforced on every field.
+- **Every compose service silently ran at 100m CPU / 128Mi memory.** `deploy:`
+  was neither parsed nor rejected, so `deploy.resources` — the only way the
+  compose spec expresses CPU/memory — was dropped without a word, and the
+  rejection hint for the legacy `cpus:` / `mem_limit:` fields pointed at a
+  "`resources` block" that did not exist anywhere. There was in fact no way to
+  give a compose service more than the hello-world default.
+- The remaining Swarm-only `deploy:` keys are now warned about instead of
+  ignored. `deploy.replicas: 3` in particular said nothing while producing one
+  pod.
+- **CPU and memory are no longer hidden behind "Show advanced"** in the
+  single-container wizard. They are a first-class *Resources* section showing
+  the defaults inline, so a tenant deploying a real application sees the dial
+  before meeting an OOMKill instead of after.
 
 ### Security
 - Registry manifest lookups are SSRF-guarded. `resolveTagDigest()` fetches

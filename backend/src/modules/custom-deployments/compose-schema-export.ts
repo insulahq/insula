@@ -166,11 +166,65 @@ const TMPFS_SCHEMA: Record<string, unknown> = {
   ],
 };
 
+/**
+ * `deploy.resources` is the compose-spec way to ask for CPU/memory, and the
+ * only one this platform honours — the compose v2 `cpus:` / `mem_limit:`
+ * fields are rejected with a hint pointing here. Descriptions are written for
+ * the editor hover, since that is where a tenant actually reads them.
+ */
+const RESOURCE_SIDE_SCHEMA = (which: 'cap' | 'guarantee'): Record<string, unknown> => ({
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    cpus: {
+      type: ['string', 'number'],
+      description: which === 'cap'
+        ? 'Hard CPU cap in decimal cores, e.g. "0.5" (half a core) or "2". Becomes the k8s CPU limit.'
+        : 'CPU guaranteed to this service, in decimal cores, e.g. "0.25". Becomes the k8s CPU request.',
+    },
+    memory: {
+      type: ['string', 'number'],
+      description: which === 'cap'
+        ? 'Hard memory cap, e.g. 512M or 1G (binary units, as in Docker). Exceeding it OOM-kills the container.'
+        : 'Memory guaranteed to this service, e.g. 128M. Becomes the k8s memory request.',
+    },
+  },
+});
+
+const DEPLOY_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  additionalProperties: false,
+  description: 'Only `resources` is honoured; the other Swarm keys are ignored with a warning.',
+  properties: {
+    resources: {
+      type: 'object',
+      additionalProperties: false,
+      description: 'CPU/memory for this service. Omit for the platform default (100m CPU / 128Mi memory).',
+      properties: {
+        limits: RESOURCE_SIDE_SCHEMA('cap'),
+        reservations: RESOURCE_SIDE_SCHEMA('guarantee'),
+      },
+    },
+    replicas: {
+      type: 'integer',
+      description: 'IGNORED — each compose service runs as a single-replica Deployment on this platform.',
+    },
+    mode: { type: 'string', description: 'IGNORED (Swarm-only).' },
+    placement: { type: 'object', description: 'IGNORED (Swarm-only).' },
+    restart_policy: { type: 'object', description: 'IGNORED — use the service-level `restart:` field.' },
+    update_config: { type: 'object', description: 'IGNORED (Swarm-only).' },
+    rollback_config: { type: 'object', description: 'IGNORED (Swarm-only).' },
+    endpoint_mode: { type: 'string', description: 'IGNORED (Swarm-only).' },
+    labels: { description: 'IGNORED — use the service-level `labels:` field.' },
+  },
+};
+
 const SERVICE_SCHEMA: Record<string, unknown> = {
   type: 'object',
   required: ['image'],
   additionalProperties: false,
   properties: {
+    deploy: DEPLOY_SCHEMA,
     image: { type: 'string', minLength: 1, maxLength: 500 },
     command: { type: 'array', items: { type: 'string' }, description: 'Docker CMD (k8s args)' },
     entrypoint: { type: 'array', items: { type: 'string' }, description: 'Docker ENTRYPOINT (k8s command)' },

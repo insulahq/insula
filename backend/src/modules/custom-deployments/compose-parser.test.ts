@@ -654,3 +654,151 @@ services:
     expect(r.issues.find((i) => i.code === 'COMPOSE_USER_INVALID')).toBeDefined();
   });
 });
+
+// `deploy:` used to be neither parsed nor rejected — silently dropped — so
+// `deploy.resources`, the ONLY way the compose spec expresses CPU/memory,
+// did nothing and every service in every stack ran at the 100m/128Mi
+// default. The rejection hint for the legacy `cpus:`/`mem_limit:` fields
+// pointed at a "`resources` block" that existed nowhere. These assert the
+// mapping, and that the ignored `deploy:` keys are WARNED about rather than
+// dropped mutely — a tenant asking for `replicas: 3` and getting one pod has
+// no other way to notice.
+describe('parseCompose — deploy.resources', () => {
+  const svc = (body: string) => parse(`services:\n  web:\n    image: nginx:1.27\n${body}`);
+
+  it('defaults to 100m/128Mi with no deploy block', () => {
+    const r = svc('');
+    expect(r.spec?.services.web.resources).toEqual({ cpuRequest: '100m', memoryRequest: '128Mi' });
+  });
+
+  it('maps reservations to requests and limits to limits', () => {
+    const r = svc([
+      '    deploy:',
+      '      resources:',
+      '        reservations:',
+      '          cpus: "0.25"',
+      '          memory: 256M',
+      '        limits:',
+      '          cpus: "1.5"',
+      '          memory: 1G',
+    ].join('\n'));
+    expect(r.issues.filter(i => i.severity === 'error')).toEqual([]);
+    expect(r.spec?.services.web.resources).toEqual({
+      cpuRequest: '250m',
+      memoryRequest: '256Mi',
+      cpuLimit: '1500m',
+      memoryLimit: '1024Mi',
+    });
+  });
+
+  // k8s itself defaults requests to limits when only limits are given, so the
+  // rendered spec matches what the same file does anywhere else.
+  it('mirrors limits into requests when only limits are given', () => {
+    const r = svc([
+      '    deploy:',
+      '      resources:',
+      '        limits:',
+      '          cpus: "0.5"',
+      '          memory: 512M',
+    ].join('\n'));
+    expect(r.spec?.services.web.resources).toEqual({
+      cpuRequest: '500m',
+      memoryRequest: '512Mi',
+      cpuLimit: '500m',
+      memoryLimit: '512Mi',
+    });
+  });
+
+  it('leaves limits unset when only reservations are given', () => {
+    const r = svc([
+      '    deploy:',
+      '      resources:',
+      '        reservations:',
+      '          cpus: "0.2"',
+      '          memory: 200M',
+    ].join('\n'));
+    expect(r.spec?.services.web.resources).toEqual({ cpuRequest: '200m', memoryRequest: '200Mi' });
+  });
+
+  // Docker treats k/m/g as BINARY, which is why they map to Ki/Mi/Gi.
+  it.each([
+    ['512M', '512Mi'],
+    ['512m', '512Mi'],
+    ['1G', '1024Mi'],
+    ['1g', '1024Mi'],
+    ['1024k', '1Mi'],
+    ['268435456', '256Mi'],
+    ['512Mi', '512Mi'],
+  ])('parses memory %s as %s', (input, want) => {
+    const r = svc(`    deploy:\n      resources:\n        limits:\n          memory: ${input}`);
+    expect(r.spec?.services.web.resources.memoryLimit).toBe(want);
+  });
+
+  it.each([['0.5', '500m'], ['2', '2000m'], ['0.001', '1m']])(
+    'parses cpus %s as %s', (input, want) => {
+      const r = svc(`    deploy:\n      resources:\n        limits:\n          cpus: "${input}"`);
+      expect(r.spec?.services.web.resources.cpuLimit).toBe(want);
+    });
+
+  it('errors on an unparseable quantity rather than silently defaulting', () => {
+    const r = svc([
+      '    deploy:',
+      '      resources:',
+      '        limits:',
+      '          cpus: "lots"',
+      '          memory: "a bit"',
+    ].join('\n'));
+    const codes = r.issues.filter(i => i.severity === 'error').map(i => i.code);
+    expect(codes).toEqual(['COMPOSE_RESOURCE_VALUE', 'COMPOSE_RESOURCE_VALUE']);
+  });
+
+  // k8s rejects a Pod whose request exceeds its limit; catching it here means
+  // the tenant sees it in the Issues pane instead of as a ReplicaFailure.
+  it('errors when a limit is below the reservation', () => {
+    const r = svc([
+      '    deploy:',
+      '      resources:',
+      '        reservations:',
+      '          cpus: "1"',
+      '          memory: 1G',
+      '        limits:',
+      '          cpus: "0.5"',
+      '          memory: 256M',
+    ].join('\n'));
+    const codes = r.issues.filter(i => i.severity === 'error').map(i => i.code);
+    expect(codes).toEqual([
+      'COMPOSE_RESOURCE_LIMIT_BELOW_RESERVATION',
+      'COMPOSE_RESOURCE_LIMIT_BELOW_RESERVATION',
+    ]);
+  });
+
+  it('warns rather than silently ignoring deploy.replicas', () => {
+    const r = svc('    deploy:\n      replicas: 3');
+    const w = r.issues.find(i => i.code === 'COMPOSE_DEPLOY_REPLICAS_IGNORED');
+    expect(w?.severity).toBe('warning');
+    expect(w?.message).toContain('single-replica');
+    expect(r.issues.filter(i => i.severity === 'error')).toEqual([]);
+  });
+
+  it('does not warn for the no-op replicas: 1', () => {
+    const r = svc('    deploy:\n      replicas: 1');
+    expect(r.issues.find(i => i.code === 'COMPOSE_DEPLOY_REPLICAS_IGNORED')).toBeUndefined();
+  });
+
+  it.each(['mode', 'placement', 'update_config', 'rollback_config', 'endpoint_mode', 'restart_policy'])(
+    'warns that deploy.%s is ignored', (key) => {
+      const body = key === 'endpoint_mode' || key === 'mode'
+        ? `    deploy:\n      ${key}: vip`
+        : `    deploy:\n      ${key}:\n        x: y`;
+      const r = svc(body);
+      expect(r.issues.some(i => i.code === 'COMPOSE_DEPLOY_FIELD_IGNORED' && i.path?.endsWith(key))).toBe(true);
+    });
+
+  // The old hint named a "`resources` block" that did not exist anywhere.
+  it('points the legacy cpus/mem_limit rejections at deploy.resources', () => {
+    const r = svc('    cpus: 0.5\n    mem_limit: 512m');
+    const hints = r.issues.filter(i => i.code === 'COMPOSE_FIELD_REJECTED').map(i => i.hint ?? '');
+    expect(hints.some(h => h.includes('deploy.resources.limits.cpus'))).toBe(true);
+    expect(hints.some(h => h.includes('deploy.resources.limits.memory'))).toBe(true);
+  });
+});

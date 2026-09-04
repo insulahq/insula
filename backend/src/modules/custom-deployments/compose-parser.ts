@@ -28,6 +28,11 @@
 //     depends_on (string list or condition map)
 //     user, working_dir, read_only, tmpfs, stop_grace_period
 //     labels, configs, secrets, init
+//     deploy.resources.{limits,reservations}.{cpus,memory}
+//       → k8s requests/limits. Other `deploy:` keys are Swarm-only and
+//         warned about; `replicas` in particular is called out rather than
+//         dropped mutely, since a tenant asking for 3 and getting 1 has no
+//         other way to notice.
 //
 // Rejected fields produce one Issue per occurrence with a clear
 // error code so the editor can underline the offending line.
@@ -53,6 +58,7 @@ import {
   type CustomDeploymentHealthCheck,
   type CustomDeploymentTmpfs,
   type CustomDeploymentIssue,
+  type CustomDeploymentResources,
   type CustomDeploymentConfigMap,
   type CustomDeploymentSecret,
   type CustomDeploymentVolumeDef,
@@ -534,6 +540,9 @@ function parseService(
   const readOnlyRootFilesystem = raw.read_only === true;
   const workingDir = typeof raw.working_dir === 'string' ? raw.working_dir : undefined;
 
+  // ─── deploy.resources → k8s requests/limits ───
+  const resources = parseDeployBlock(raw.deploy, `${path}.deploy`, issues);
+
   // ─── per-service configs / secrets → additional volumeMounts ───
   const configMountEntries = parseServiceFileMounts(
     raw.configs, `${path}.configs`, 'configMap', '/<name>', issues,
@@ -550,7 +559,7 @@ function parseService(
     env,
     ports,
     volumeMounts,
-    resources: { cpuRequest: '100m', memoryRequest: '128Mi' },
+    resources,
     ...(healthCheck ? { healthCheck } : {}),
     restartPolicy,
     ...(runAsUser !== undefined ? { runAsUser } : {}),
@@ -563,6 +572,225 @@ function parseService(
     ...(labels ? { labels } : {}),
     capAdd,
     ...(hasSysctls ? { sysctls } : {}),
+  };
+}
+
+// ─── deploy.resources ──────────────────────────────────────────────────────
+
+/**
+ * Platform default when a service declares no resources. Every compose
+ * service used to get exactly this, with no way to change it: `deploy` was
+ * neither parsed nor rejected, so a `deploy.resources` block — the ONLY way
+ * the compose spec expresses CPU/memory — was silently dropped and every
+ * service in every stack ran at 100m/128Mi. The rejection hint for the
+ * legacy `cpus:`/`mem_limit:` fields pointed at "the platform's `resources`
+ * block", which did not exist either. Both fixed here.
+ */
+const DEFAULT_RESOURCES: CustomDeploymentResources = { cpuRequest: '100m', memoryRequest: '128Mi' };
+
+/** `deploy:` keys we knowingly drop. Warned about, never silently ignored. */
+const IGNORED_DEPLOY_KEYS = [
+  'mode', 'placement', 'update_config', 'rollback_config', 'endpoint_mode', 'labels',
+] as const;
+
+/**
+ * Compose `cpus` is decimal cores (`'0.50'`, `2`). Normalise to millicores so
+ * the value always matches RESOURCE_QTY_RE and reads unambiguously in the
+ * rendered spec — `500m`, never `0.5`.
+ */
+function composeCpuToMillicores(raw: unknown): string | null {
+  const n = typeof raw === 'number' ? raw : parseFloat(String(raw ?? '').trim());
+  if (!Number.isFinite(n) || n <= 0) return null;
+  const milli = Math.round(n * 1000);
+  if (milli < 1) return null;
+  return `${milli}m`;
+}
+
+/**
+ * Compose `memory` accepts `b`, `k`/`kb`, `m`/`mb`, `g`/`gb` — all BINARY in
+ * docker (1k = 1024), which is why they map onto Ki/Mi/Gi and not k/M/G.
+ * k8s-native suffixes are accepted too, since that is what the simple-mode
+ * form shows and tenants copy between the two. Result is always whole MiB.
+ */
+function composeMemoryToMi(raw: unknown): string | null {
+  const s = String(raw ?? '').trim();
+  if (!s) return null;
+  const m = /^([0-9]+(?:\.[0-9]+)?)\s*(b|k|kb|ki|m|mb|mi|g|gb|gi|t|tb|ti)?$/i.exec(s);
+  if (!m) return null;
+  const value = parseFloat(m[1]);
+  if (!Number.isFinite(value) || value <= 0) return null;
+  const unit = (m[2] ?? 'b').toLowerCase();
+  const factor =
+    unit.startsWith('t') ? 1024 ** 4
+      : unit.startsWith('g') ? 1024 ** 3
+        : unit.startsWith('m') ? 1024 ** 2
+          : unit.startsWith('k') ? 1024
+            : 1;
+  const mib = Math.ceil((value * factor) / (1024 ** 2));
+  if (mib < 1) return null;
+  return `${mib}Mi`;
+}
+
+/** Numeric comparison for the request ≤ limit check. */
+function milliOf(qty: string): number { return parseInt(qty.replace(/m$/, ''), 10); }
+function miOf(qty: string): number { return parseInt(qty.replace(/Mi$/, ''), 10); }
+
+/**
+ * Parse `deploy:` into k8s resources.
+ *
+ *   deploy.resources.reservations → requests  (the soft guarantee)
+ *   deploy.resources.limits       → limits    (the hard cap)
+ *
+ * When only `limits` is given — the common case — requests mirror limits,
+ * which is what k8s itself does for a container with limits and no requests.
+ * When only `reservations` is given, limits are left unset and the service
+ * layer applies its 2×CPU / 1.5×memory default.
+ */
+function parseDeployBlock(
+  rawDeploy: unknown,
+  path: string,
+  issues: CustomDeploymentIssue[],
+): CustomDeploymentResources {
+  if (rawDeploy === undefined) return DEFAULT_RESOURCES;
+  if (typeof rawDeploy !== 'object' || rawDeploy === null || Array.isArray(rawDeploy)) {
+    issues.push({
+      severity: 'error',
+      code: 'COMPOSE_FIELD_TYPE',
+      path,
+      message: `${path} must be a mapping.`,
+    });
+    return DEFAULT_RESOURCES;
+  }
+  const deploy = rawDeploy as Record<string, unknown>;
+
+  // `replicas` is the one that would silently mislead: a tenant writing
+  // `replicas: 3` and getting one pod has no way to tell. Say so.
+  if (deploy.replicas !== undefined && Number(deploy.replicas) !== 1) {
+    issues.push({
+      severity: 'warning',
+      code: 'COMPOSE_DEPLOY_REPLICAS_IGNORED',
+      path: `${path}.replicas`,
+      message: `\`replicas: ${String(deploy.replicas)}\` is ignored — each compose service runs as a single-replica Deployment on this platform.`,
+      hint: 'Scale by giving the service more CPU/memory under `deploy.resources`, or split the work across separate services.',
+    });
+  }
+  for (const key of IGNORED_DEPLOY_KEYS) {
+    if (deploy[key] !== undefined) {
+      issues.push({
+        severity: 'warning',
+        code: 'COMPOSE_DEPLOY_FIELD_IGNORED',
+        path: `${path}.${key}`,
+        message: `\`deploy.${key}\` is a Swarm-only setting and is ignored; scheduling and rollout are managed by Kubernetes.`,
+      });
+    }
+  }
+  // `deploy.restart_policy` overlaps the service-level `restart:`, which IS
+  // honoured. Point at the one that works rather than dropping it mutely.
+  if (deploy.restart_policy !== undefined) {
+    issues.push({
+      severity: 'warning',
+      code: 'COMPOSE_DEPLOY_FIELD_IGNORED',
+      path: `${path}.restart_policy`,
+      message: '`deploy.restart_policy` is ignored.',
+      hint: 'Use the service-level `restart:` field, which maps to the Pod restart policy.',
+    });
+  }
+
+  if (deploy.resources === undefined) return DEFAULT_RESOURCES;
+  if (typeof deploy.resources !== 'object' || deploy.resources === null) {
+    issues.push({
+      severity: 'error',
+      code: 'COMPOSE_FIELD_TYPE',
+      path: `${path}.resources`,
+      message: `${path}.resources must be a mapping with \`limits\` and/or \`reservations\`.`,
+    });
+    return DEFAULT_RESOURCES;
+  }
+  const res = deploy.resources as Record<string, unknown>;
+
+  const readSide = (side: 'limits' | 'reservations'): { cpu: string | null; mem: string | null } => {
+    const rawSide = res[side];
+    if (rawSide === undefined) return { cpu: null, mem: null };
+    if (typeof rawSide !== 'object' || rawSide === null) {
+      issues.push({
+        severity: 'error',
+        code: 'COMPOSE_FIELD_TYPE',
+        path: `${path}.resources.${side}`,
+        message: `${path}.resources.${side} must be a mapping.`,
+      });
+      return { cpu: null, mem: null };
+    }
+    const o = rawSide as Record<string, unknown>;
+    let cpu: string | null = null;
+    let mem: string | null = null;
+    if (o.cpus !== undefined) {
+      cpu = composeCpuToMillicores(o.cpus);
+      if (!cpu) {
+        issues.push({
+          severity: 'error',
+          code: 'COMPOSE_RESOURCE_VALUE',
+          path: `${path}.resources.${side}.cpus`,
+          message: `'${String(o.cpus)}' is not a valid CPU quantity.`,
+          hint: 'Use decimal cores, e.g. `cpus: "0.5"` (half a core) or `cpus: "2"`.',
+        });
+      }
+    }
+    if (o.memory !== undefined) {
+      mem = composeMemoryToMi(o.memory);
+      if (!mem) {
+        issues.push({
+          severity: 'error',
+          code: 'COMPOSE_RESOURCE_VALUE',
+          path: `${path}.resources.${side}.memory`,
+          message: `'${String(o.memory)}' is not a valid memory quantity.`,
+          hint: 'Use a compose size, e.g. `memory: 512M` or `memory: 1G` (binary units, as in Docker).',
+        });
+      }
+    }
+    for (const k of Object.keys(o)) {
+      if (k !== 'cpus' && k !== 'memory') {
+        issues.push({
+          severity: 'warning',
+          code: 'COMPOSE_DEPLOY_FIELD_IGNORED',
+          path: `${path}.resources.${side}.${k}`,
+          message: `\`${k}\` is not supported; only \`cpus\` and \`memory\` are mapped.`,
+        });
+      }
+    }
+    return { cpu, mem };
+  };
+
+  const limits = readSide('limits');
+  const reservations = readSide('reservations');
+
+  // Only `limits`? Mirror them into requests — that is k8s's own behaviour
+  // for a container with limits and no requests, so the rendered spec matches
+  // what the tenant would get running the same file anywhere else.
+  const cpuRequest = reservations.cpu ?? limits.cpu ?? DEFAULT_RESOURCES.cpuRequest;
+  const memoryRequest = reservations.mem ?? limits.mem ?? DEFAULT_RESOURCES.memoryRequest;
+
+  if (limits.cpu && milliOf(limits.cpu) < milliOf(cpuRequest)) {
+    issues.push({
+      severity: 'error',
+      code: 'COMPOSE_RESOURCE_LIMIT_BELOW_RESERVATION',
+      path: `${path}.resources.limits.cpus`,
+      message: `CPU limit ${limits.cpu} is below the reservation ${cpuRequest}; the Pod would be rejected by Kubernetes.`,
+    });
+  }
+  if (limits.mem && miOf(limits.mem) < miOf(memoryRequest)) {
+    issues.push({
+      severity: 'error',
+      code: 'COMPOSE_RESOURCE_LIMIT_BELOW_RESERVATION',
+      path: `${path}.resources.limits.memory`,
+      message: `Memory limit ${limits.mem} is below the reservation ${memoryRequest}; the Pod would be rejected by Kubernetes.`,
+    });
+  }
+
+  return {
+    cpuRequest,
+    memoryRequest,
+    ...(limits.cpu ? { cpuLimit: limits.cpu } : {}),
+    ...(limits.mem ? { memoryLimit: limits.mem } : {}),
   };
 }
 
@@ -1351,11 +1579,17 @@ function rejectHint(field: string): string | undefined {
       return 'Use `depends_on` and service-name DNS for service-to-service connections.';
     case 'runtime': return 'Only the default container runtime is available.';
     case 'mac_address': return 'Host network customisation is not permitted.';
+    // These are the pre-Swarm compose v2 fields. The hint used to point at
+    // "the platform's `resources` block", which did not exist anywhere — and
+    // `deploy:` was silently dropped, so there was in fact NO way to set
+    // CPU/memory on a compose service. Point at the real, spec-standard one.
     case 'cpus':
-    case 'mem_limit':
-    case 'mem_reservation':
     case 'cpu_shares':
-      return 'Use the platform\'s `resources` block instead of compose\'s legacy CPU/memory fields.';
+      return 'Use `deploy.resources.limits.cpus` / `deploy.resources.reservations.cpus` — e.g. `deploy: {resources: {limits: {cpus: "0.5"}}}`.';
+    case 'mem_limit':
+      return 'Use `deploy.resources.limits.memory` — e.g. `deploy: {resources: {limits: {memory: 512M}}}`.';
+    case 'mem_reservation':
+      return 'Use `deploy.resources.reservations.memory` — e.g. `deploy: {resources: {reservations: {memory: 128M}}}`.';
     default: return undefined;
   }
 }
