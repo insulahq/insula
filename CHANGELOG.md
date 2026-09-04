@@ -12,6 +12,21 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **Rotating the Stalwart admin password showed the OLD password in the admin
+  panel.** The rotation patches the Kubernetes Secret, but platform-api served
+  the reveal endpoint from its *volume mount* of that Secret — and kubelet
+  refreshes a mounted Secret up to ~60s late. The credentials query is
+  deliberately `staleTime: 0` + `refetchOnMount: 'always'`, so the refetch that
+  fires straight after a rotation re-read the stale file and overwrote the
+  correct password the mutation had just seeded. The panel showed the previous
+  password until a reload more than a minute later. The reveal endpoint now
+  reads the Secret through the API — removing the window rather than racing it,
+  and HA-safe in a way an in-process cache would not be. Falls back to the
+  mounted file if the read fails, so a missing RBAC grant degrades instead of
+  breaking the reveal.
+
+
 ### Removed
 - `mail-admin/rotate.ts` and its test — a dead, restart-based Stalwart
   admin-password rotation superseded by the in-flight JMAP `Principal/set` path
