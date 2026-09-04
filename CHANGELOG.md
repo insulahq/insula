@@ -12,6 +12,31 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **Compose validation errors now carry a line number.** The backend resolves
+  each issue's dotted path (`services.db.deploy.resources.limits.memory`) back
+  to the line it came from, the editor renders those as inline squiggles you
+  can hover, and each entry in the Issues pane gets a **line N** button that
+  scrolls the editor to it. Previously an issue said *what* was wrong but never
+  *where*, so finding it in a 60-line stack meant reading the whole file.
+  Unresolvable paths get no line rather than a guessed one.
+
+### Fixed
+- **Clicking Validate on an untouched compose editor failed with a raw regex.**
+  The stack name is optional for the preview, but the editor sent `name: ""`
+  and `.optional()` accepts `undefined`, not an empty string — so the blank
+  field hit the DNS-name pattern and returned
+  `Invalid string: must match pattern /^[a-z0-9]…/` about a field the tenant
+  had not filled in. The editor now omits the key when blank, which is what
+  its own comment had claimed all along.
+- Name validation errors describe the rule instead of printing the regex. The
+  compose stack name and the inline config/secret names all had bare
+  `.regex()` calls with no message, so Zod emitted the pattern verbatim.
+- The single-container wizard no longer lets you click **Validate** before
+  entering a name — simple mode requires one, so doing so produced a backend
+  error about a field the form had not asked for yet. The button now explains
+  what is missing.
+
 ## [2026.9.6] - 2026-09-04
 
 ### Added

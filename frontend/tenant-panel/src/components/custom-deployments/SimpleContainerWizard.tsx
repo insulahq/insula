@@ -440,7 +440,18 @@ export function SimpleContainerWizard({ tenantId, existingNames, onClose, onCrea
           <button
             type="button"
             onClick={runValidate}
-            disabled={!image || validateMutation.isPending}
+            // Simple mode REQUIRES a name (unlike compose, where it is
+            // optional for the preview), so validating without one returned a
+            // backend Zod error about a field the tenant had not reached yet.
+            // Gate the button and say why instead.
+            disabled={!image || !name || Boolean(nameError) || validateMutation.isPending}
+            title={!image
+              ? 'Enter an image first'
+              : !name
+                ? 'Enter a deployment name first'
+                : nameError
+                  ? `Fix the deployment name: ${nameError}`
+                  : 'Dry-run this configuration without creating anything'}
             className={clsx(
               'inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium disabled:opacity-50',
               validateState === 'success' && 'border-green-500 bg-green-50 text-green-700 hover:bg-green-100 dark:border-green-500 dark:bg-green-900/40 dark:text-green-200 dark:hover:bg-green-900/60',
