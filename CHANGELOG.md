@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.9.6] - 2026-09-04
+
 ### Added
 - **Compose stacks can set CPU and memory.** `deploy.resources.{limits,reservations}.{cpus,memory}`
   is now parsed and mapped to Kubernetes requests/limits — reservations become
