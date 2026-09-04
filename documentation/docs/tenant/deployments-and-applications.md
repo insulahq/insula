@@ -205,6 +205,29 @@ stack whose services pull private images from **two different** registries —
 only the host you named will authenticate. Publish the odd image out to the
 same registry, or make it public.
 
+### Reading validation errors
+
+**Validate** runs your stack through the parser without creating anything. It is
+safe to press at any time, including before you have named the stack.
+
+Each problem it finds appears in the **Issues** panel with:
+
+- a **line N** button — click it and the editor scrolls to that line and puts
+  the cursor there;
+- the **code** (e.g. `COMPOSE_FIELD_REJECTED`), stable enough to search for;
+- the **path** into your document (e.g.
+  `services.db.deploy.resources.limits.memory`), which tells you the exact
+  field even when several services look alike;
+- a **hint** on what to use instead, where one applies.
+
+The same problems appear as underlines in the editor itself — hover one to read
+the message without leaving the YAML.
+
+If an issue has no **line** button, the problem is not in the YAML: it is
+either a form field beside the editor (the stack name) or something the parser
+could not place. Red entries block deployment; orange ones are advisory and you
+can deploy anyway.
+
 ### CPU and memory for a stack
 
 In the compose editor, give each service a `deploy.resources` block — it is the

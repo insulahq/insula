@@ -7,7 +7,7 @@
 // to load (e.g. in low-end environments or during tests).
 
 import { useState, Suspense, lazy, Component, type ReactNode } from 'react';
-import { AlertCircle, AlertTriangle, CheckCircle, FileText, Loader2, X } from 'lucide-react';
+import { AlertCircle, AlertTriangle, CheckCircle, CornerDownRight, FileText, Loader2, X } from 'lucide-react';
 import clsx from 'clsx';
 import { Tooltip } from '@/components/ui/Tooltip';
 import {
@@ -160,6 +160,10 @@ export function ComposeEditor({ tenantId, existingNames, onClose, onCreated, exi
   // deployment, not by registry.
   const [usePrivateRegistry, setUsePrivateRegistry] = useState(false);
   const [pullCredential, setPullCredential] = useState<PullCredentialDraft>(EMPTY_PULL_CREDENTIAL);
+  // Bumping this scrolls the editor to a line and focuses it. Stored as an
+  // object so clicking the SAME issue twice still re-reveals — a bare number
+  // would compare equal and the effect would not re-run.
+  const [reveal, setReveal] = useState<{ line: number; nonce: number } | null>(null);
   const [jsonSchema, setJsonSchema] = useState<unknown>(null);
   const [validateState, setValidateState] = useState<'idle' | 'success' | 'warning' | 'error'>('idle');
 
@@ -196,14 +200,20 @@ export function ComposeEditor({ tenantId, existingNames, onClose, onCreated, exi
   const runValidate = async () => {
     setSubmitError(null);
     try {
-      // Validate without a name (the editor preview path) — backend
-      // tolerates missing name in the compose body. We still send
-      // `name` if the user typed one so the deploy-name length cap
-      // can run.
-      // Validate is a dry run and never uses the credential, so don't put the
-      // token on the wire for it — send only what the check needs.
-      const { pull_credential: _omitted, ...body } = buildInput();
-      const r = await validateMutation.mutateAsync(body as CreateCustomDeploymentComposeInput);
+      // OMIT `name` when it is blank rather than sending ''. The schema marks
+      // it optional, but optional accepts `undefined` — an empty string still
+      // hits the DNS-name regex, so clicking Validate on an untouched editor
+      // returned "Invalid string: must match pattern /^[a-z0-9]…/" against a
+      // field the tenant had not filled in yet and had no reason to. The
+      // comment here used to claim we validated without a name; now we do.
+      // Validate is also a dry run that never uses the credential, so the
+      // token stays off the wire for it.
+      const { pull_credential: _omitted, name: typedName, ...rest } = buildInput();
+      const body = {
+        ...rest,
+        ...(typedName ? { name: typedName } : {}),
+      } as CreateCustomDeploymentComposeInput;
+      const r = await validateMutation.mutateAsync(body);
       setIssues(r.data.issues);
       setSpec(r.data.spec);
       setRightTab(r.data.ok ? 'spec' : 'issues');
@@ -308,6 +318,10 @@ export function ComposeEditor({ tenantId, existingNames, onClose, onCreated, exi
                     value={yaml}
                     onChange={setYaml}
                     jsonSchema={jsonSchema}
+                    markers={issues
+                      .filter((i): i is typeof i & { line: number } => typeof i.line === 'number')
+                      .map((i) => ({ line: i.line, severity: i.severity, code: i.code, message: i.message }))}
+                    revealLine={reveal}
                   />
                 ) : (
                   <TextareaFallback value={yaml} onChange={setYaml} />
@@ -350,24 +364,47 @@ export function ComposeEditor({ tenantId, existingNames, onClose, onCreated, exi
                     </p>
                   )}
                   <ul className="space-y-2">
-                    {issues.map((iss, i) => (
-                      <li key={i} className={clsx(
-                        'rounded-md border-l-4 px-3 py-2',
-                        iss.severity === 'error' ? 'border-red-500 bg-red-50 dark:bg-red-900/20'
-                          : iss.severity === 'warning' ? 'border-amber-500 bg-amber-50 dark:bg-amber-900/20'
-                            : 'border-gray-300 bg-gray-50 dark:bg-gray-800',
-                      )}>
-                        <div className="flex items-start gap-2">
-                          <AlertTriangle size={12} className="mt-0.5 shrink-0" />
-                          <div className="flex-1">
-                            <div className="font-mono font-semibold">{iss.code}</div>
-                            <div className="text-gray-600 dark:text-gray-300">{iss.message}</div>
-                            {iss.path && <div className="mt-0.5 font-mono text-[10px] text-gray-500">{iss.path}</div>}
-                            {iss.hint && <div className="mt-0.5 text-gray-500 dark:text-gray-400">↪ {iss.hint}</div>}
+                    {issues.map((iss, i) => {
+                      const line = typeof iss.line === 'number' ? iss.line : null;
+                      return (
+                        <li key={i} className={clsx(
+                          'rounded-md border-l-4 px-3 py-2',
+                          iss.severity === 'error' ? 'border-red-500 bg-red-50 dark:bg-red-900/20'
+                            : iss.severity === 'warning' ? 'border-amber-500 bg-amber-50 dark:bg-amber-900/20'
+                              : 'border-gray-300 bg-gray-50 dark:bg-gray-800',
+                        )}>
+                          <div className="flex items-start gap-2">
+                            <AlertTriangle size={12} className="mt-0.5 shrink-0" />
+                            <div className="flex-1">
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                {/* Line first — it is the only part that tells
+                                    the tenant WHERE to look. Clicking scrolls
+                                    the editor there and focuses it. */}
+                                {line !== null && (
+                                  <button
+                                    type="button"
+                                    onClick={() => setReveal({ line, nonce: Date.now() })}
+                                    title={`Jump to line ${line}`}
+                                    className="inline-flex items-center gap-0.5 rounded bg-gray-200 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-gray-700 hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600"
+                                    data-testid={`compose-issue-line-${line}`}
+                                  >
+                                    <CornerDownRight size={9} />line {line}
+                                  </button>
+                                )}
+                                <span className="font-mono font-semibold">{iss.code}</span>
+                              </div>
+                              <div className="mt-0.5 text-gray-600 dark:text-gray-300">{iss.message}</div>
+                              {iss.path && (
+                                <div className="mt-0.5 font-mono text-[10px] text-gray-500 dark:text-gray-400">
+                                  {iss.path}
+                                </div>
+                              )}
+                              {iss.hint && <div className="mt-0.5 text-gray-500 dark:text-gray-400">↪ {iss.hint}</div>}
+                            </div>
                           </div>
-                        </div>
-                      </li>
-                    ))}
+                        </li>
+                      );
+                    })}
                   </ul>
                 </>
               )}

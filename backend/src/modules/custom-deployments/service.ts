@@ -49,6 +49,7 @@ import {
 } from './schema.js';
 import { CUSTOM_SPEC_VERSION } from './schema.js';
 import { parseCompose } from './compose-parser.js';
+import { withResolvedLines } from './yaml-line-map.js';
 
 type CallerRole = ValidatorContext['callerRole'];
 
@@ -326,7 +327,10 @@ export async function validateComposeSpec(
   }
   const parsed = parseCompose({ composeYaml: input.composeYaml, envFiles: input.envFiles });
   if (!parsed.spec) {
-    return { ok: false, issues: parsed.issues, spec: null };
+    // Attach a line to every issue whose path we can locate in the submitted
+    // YAML. Without this the editor could say WHAT was wrong but not WHERE,
+    // which in a 60-line stack means hunting by eye.
+    return { ok: false, issues: withResolvedLines(input.composeYaml, parsed.issues), spec: null };
   }
   const semantic = validateCustomSpec(parsed.spec, {
     callerRole: ctx.role,
@@ -335,7 +339,10 @@ export async function validateComposeSpec(
     deploymentName: input.name,
   });
   // Merge parser + validator + image-reachability issues for the editor's pane.
-  const allIssues = [...parsed.issues, ...semantic.issues, ...await checkSpecImagesReachable(parsed.spec)];
+  const allIssues = withResolvedLines(
+    input.composeYaml,
+    [...parsed.issues, ...semantic.issues, ...await checkSpecImagesReachable(parsed.spec)],
+  );
   return { ok: !allIssues.some((i) => i.severity === 'error'), issues: allIssues, spec: parsed.spec };
 }
 
@@ -382,7 +389,7 @@ export async function createComposeDeployment(
       'CUSTOM_DEPLOYMENT_INVALID',
       firstErrorIssue(parsed.issues),
       422,
-      { issues: parsed.issues },
+      { issues: withResolvedLines(input.compose_yaml, parsed.issues) },
     );
   }
   const validation = validateCustomSpec(parsed.spec, {
@@ -396,7 +403,7 @@ export async function createComposeDeployment(
       'CUSTOM_DEPLOYMENT_INVALID',
       firstErrorIssue([...parsed.issues, ...validation.issues]),
       422,
-      { issues: [...parsed.issues, ...validation.issues] },
+      { issues: withResolvedLines(input.compose_yaml, [...parsed.issues, ...validation.issues]) },
     );
   }
 
