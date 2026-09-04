@@ -185,9 +185,11 @@ applied *before* the first pull, so a private image starts on the first
 attempt — you no longer have to create the container, watch it fail, and add
 the token afterwards.
 
-The token is checked against the registry as part of validation, so a wrong or
-expired token is reported while you are still in the form rather than showing
-up later as `ImagePullBackOff`. It is only ever sent to the registry host you
+The token is checked against the registry before the container is created, so a
+wrong, expired or under-scoped token is reported while you are still in the
+form rather than showing up later as `ImagePullBackOff`. If the registry is
+temporarily unreachable the check is skipped with a warning rather than
+blocking you. It is only ever sent to the registry host you
 named — a stack mixing a private registry with public images (`redis:7`, say)
 never offers your token to the public one.
 

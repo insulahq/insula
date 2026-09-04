@@ -8,7 +8,9 @@
 //
 // Failure taxonomy is deliberate to avoid false rejections:
 //   - unparseable / 404 tag-not-found  → ERROR (the user got the name wrong)
-//   - 401/403 access denied            → WARNING (likely private; attach creds)
+//   - 401/403 access denied, NO creds  → WARNING (likely private; attach creds)
+//   - 401/403 access denied, WITH creds→ ERROR (the token itself is rejected —
+//                                        the kubelet will fail the same pull)
 //   - unreachable / 429 / 5xx / no-hdr → WARNING (transient; pulled at deploy)
 //
 // Runs creds-less by default: a public typo returns 404 (hard error) while a
@@ -65,6 +67,22 @@ export async function checkImageReachable(
     }];
   }
   if (r.includes('denied') || r.includes('401') || r.includes('403')) {
+    // Denied WITH a credential attached is a different fact from denied
+    // without one. Creds-less, 401 only means "this image is private", which
+    // is not an error — that is why this branch warns. But if the tenant
+    // supplied a token for this very registry and the registry still refuses,
+    // the token is wrong, expired, or lacks read scope on the package, and the
+    // kubelet will fail the pull for exactly the same reason a minute later.
+    // Say so now, while the tenant is still looking at the form.
+    if (authCreds) {
+      return [{
+        severity: 'error',
+        code: 'IMAGE_CREDENTIAL_REJECTED',
+        path,
+        message: `The registry rejected the supplied credentials for '${image}' (${reason}).`,
+        hint: 'Check the username and token, and that the token has read access to this package. A token that cannot read the image now will not be able to pull it at deploy time either.',
+      }];
+    }
     return [{
       severity: 'warning',
       code: 'IMAGE_ACCESS_DENIED',
