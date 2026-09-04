@@ -21,6 +21,19 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   millicores. The compose JSON Schema carries the new fields, so the editor
   autocompletes and documents them, and the pre-filled default stack
   demonstrates both forms.
+- **Private-registry credentials can be supplied when creating a custom
+  deployment**, in both the single-container wizard and the compose editor.
+  The credential is stored and the pull Secret materialised *before* the first
+  deploy, so a private image now pulls on the first attempt. When a token is
+  given, the pre-flight image check uses it — a wrong token fails at create
+  instead of surfacing later as ImagePullBackOff.
+- **Image-pull Secret reconciler.** An idempotent hourly sweep (plus one at
+  startup) recreates any `image-pull-<id>` Secret that is missing for a stored
+  credential. Scoped per tenant on the restore path.
+- The admin **Tenants** table now shows subscription **Expires** (colour-coded:
+  red past due, amber within 30 days, "never" when unset) in place of Created,
+  and the Worker column is now **Placement**, showing the pinned node or
+  `auto` when the scheduler places the tenant.
 
 ### Fixed
 - **Custom container stacks could not be validated or deployed.** The CRS
@@ -48,6 +61,20 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   single-container wizard. They are a first-class *Resources* section showing
   the defaults inline, so a tenant deploying a real application sees the dial
   before meeting an OOMKill instead of after.
+- **Restoring a custom deployment left it in the database and nowhere in the
+  cluster.** The restore executor upserted rows only; `custom-deployments`
+  has no reconciler that creates a missing workload (its reconciler is
+  status-only), and the dockerconfigjson Secret never travels in a bundle.
+  Restore now re-applies custom workloads through the same path DR recover
+  uses and rebuilds their pull Secrets, reporting per-workload outcomes in the
+  restore item's progress message. Deployments the tenant had stopped are left
+  stopped.
+- **The admin Tenants list never returned `nodeName` or `storageTier`.** Both
+  columns are rendered from them, but the Fastify response schema did not
+  declare either field and Fastify strips undeclared properties — so the node
+  column showed `—` for every tenant and the tier column showed `local` for
+  every tenant, including real HA ones. Both fields are optional in the
+  contract, so TypeScript could never catch it.
 
 ### Security
 - Registry manifest lookups are SSRF-guarded. `resolveTagDigest()` fetches
