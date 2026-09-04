@@ -62,6 +62,25 @@ The collapsible **Stalwart admin UI** card embeds the upstream Stalwart
 web admin for everything the panel doesn't surface natively — advanced
 filters, log inspection, manual DKIM rotation.
 
+### Stalwart admin credentials
+
+**Show Stalwart Credentials** reveals the fallback-admin username and password
+used to sign in to that embedded admin UI. It is `super_admin`-only: the other
+admin roles cannot see it, because holding this password means being able to
+talk to Stalwart directly and bypass the platform's audit trail.
+
+**Rotate Password** issues a fresh one. The rotation is applied to Stalwart
+in-flight, so nothing restarts and no mail is interrupted. The panel shows the
+new password as soon as the rotation returns — including when the credentials
+section is already open — so copy it then. It remains retrievable afterwards
+via *Show Stalwart Credentials*.
+
+!!! warning "Capture the password before you navigate away"
+    The password is stored so you can reveal it again, but the rotation itself
+    is not reversible: the previous password stops working immediately. If a
+    saved browser credential or a bookmarked session still holds the old one,
+    update it.
+
 ### Choosing the webmail engine
 
 Two webmail engines ship, and the selector is **platform-wide** — every

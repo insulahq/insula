@@ -53,3 +53,57 @@ function readPasswordFromFile(env: NodeJS.ProcessEnv): string | undefined {
     return undefined;
   }
 }
+
+/**
+ * Same credentials, but read from the Kubernetes Secret rather than from the
+ * volume mount of it.
+ *
+ * WHY BOTH EXIST
+ * --------------
+ * Rotation patches `platform/platform-stalwart-creds`, and platform-api mounts
+ * that Secret at `STALWART_ADMIN_CREDS_DIR`. **Kubelet refreshes a mounted
+ * Secret lazily — up to ~60s.** For everything that merely authenticates to
+ * Stalwart, that lag is harmless: the call retries and succeeds a moment later.
+ *
+ * For the admin UI's "Show Stalwart Credentials" it was not harmless, and
+ * produced a reproducible wrong answer. The rotate mutation seeds React Query
+ * with the new password, but the credentials query is deliberately
+ * `staleTime: 0` + `refetchOnMount: 'always'` — so the refetch that fires
+ * straight after re-read the not-yet-refreshed FILE and overwrote the correct
+ * value with the OLD password. The operator saw the previous password, and it
+ * only corrected itself after a reload more than a minute later, which is
+ * exactly the reported symptom. The freshness setting intended to guarantee
+ * correctness was what broke it.
+ *
+ * Reading the Secret through the API removes the window instead of racing it,
+ * and is HA-safe: an in-process cache on the rotating replica would still serve
+ * the old value from the other replicas.
+ *
+ * Falls back to the file/env reader on any failure, so a missing RBAC grant or
+ * an API blip degrades to the previous behaviour rather than breaking the
+ * reveal entirely.
+ */
+export async function readStalwartCredentialsAuthoritative(
+  env: NodeJS.ProcessEnv,
+  readSecret: (ns: string, name: string) => Promise<Record<string, string> | undefined>,
+): Promise<StalwartCredentialsResponse> {
+  const ns = env.STALWART_CREDS_SECRET_NAMESPACE?.trim() || 'platform';
+  const name = env.STALWART_CREDS_SECRET_NAME?.trim() || 'platform-stalwart-creds';
+  try {
+    const data = await readSecret(ns, name);
+    const b64 = data?.ADMIN_SECRET_PLAIN;
+    if (b64) {
+      const password = Buffer.from(b64, 'base64').toString('utf8').trim();
+      if (password) {
+        const rawUsername = env.STALWART_ADMIN_USER?.trim();
+        return stalwartCredentialsResponseSchema.parse({
+          username: rawUsername && rawUsername.length > 0 ? rawUsername : 'admin',
+          password,
+        });
+      }
+    }
+  } catch {
+    // Fall through — the mounted file is still correct once kubelet catches up.
+  }
+  return readStalwartCredentials(env);
+}
