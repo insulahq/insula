@@ -39,10 +39,18 @@ export const crowdsecDecisionSchema = z.object({
   duration: z.string(),
   /** When the decision expires (LAPI doesn't always provide an absolute time — best-effort derived). */
   expiresAt: z.string().datetime().nullable(),
-  /** True if this was added by the platform-api UI (origin=cscli AND scenario starts with "admin-panel:"). */
+  /**
+   * True if a human added this through the admin panel (origin=cscli AND
+   * scenario starts with "admin-panel:"). Mutually exclusive with
+   * autoBanned — the auto-ban scheduler goes through the same addBan
+   * helper, so its scenario also starts with "admin-panel:", and without
+   * the exclusion every automatic ban rendered as an operator action.
+   */
   manualByOperator: z.boolean(),
   /** True if this is a long-duration "static" ban (origin=cscli AND scenario starts with "admin-panel-static:"). */
   staticByOperator: z.boolean(),
+  /** True if the WAF auto-ban scheduler added this (scenario starts with "admin-panel:autoban-scheduler:"). */
+  autoBanned: z.boolean(),
   /** True if simulated (won't actually be enforced). */
   simulated: z.boolean(),
 });
@@ -57,6 +65,8 @@ export const crowdsecListDecisionsQuerySchema = z.object({
   manualOnly: z.coerce.boolean().optional(),
   /** Filter to only static (long-duration) operator-added bans. */
   staticOnly: z.coerce.boolean().optional(),
+  /** Filter to only bans added by the auto-ban scheduler. */
+  autoOnly: z.coerce.boolean().optional(),
 });
 export type CrowdsecListDecisionsQuery = z.infer<typeof crowdsecListDecisionsQuerySchema>;
 

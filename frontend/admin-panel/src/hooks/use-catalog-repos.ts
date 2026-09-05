@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import type { CreateCatalogRepoRequest } from '@insula/api-contracts';
 import { apiFetch } from '@/lib/api-client';
 
 export interface CatalogRepo {
@@ -17,12 +18,8 @@ interface CatalogReposResponse {
   readonly data: readonly CatalogRepo[];
 }
 
-interface AddCatalogRepoInput {
-  readonly name: string;
-  readonly url: string;
-  readonly branch?: string;
-  readonly auth_token?: string;
-}
+/** Shared contract — createCatalogRepoSchema is what the backend parses with. */
+type AddCatalogRepoInput = CreateCatalogRepoRequest;
 
 export function useCatalogRepos() {
   return useQuery({

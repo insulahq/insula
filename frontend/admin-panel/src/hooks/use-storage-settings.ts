@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import type { StorageLifecycleSettingsRequest } from '@insula/api-contracts';
 import { apiFetch } from '@/lib/api-client';
 
 /**
@@ -24,20 +25,8 @@ export interface StorageLifecycleSettings {
   readonly retentionPreArchiveDays: number;
 }
 
-export interface StorageLifecycleSettingsUpdate {
-  readonly backend?: 'hostpath' | 's3' | 'azure';
-  readonly hostpathRoot?: string;
-  readonly s3Bucket?: string | null;
-  readonly s3Region?: string | null;
-  readonly s3Endpoint?: string | null;
-  readonly s3AccessKeyId?: string | null;
-  readonly s3SecretAccessKey?: string | null;
-  readonly azureContainer?: string | null;
-  readonly azureConnectionString?: string | null;
-  readonly retentionManualDays?: number;
-  readonly retentionPreResizeDays?: number;
-  readonly retentionPreArchiveDays?: number;
-}
+/** Wire shape from @insula/api-contracts. */
+type StorageLifecycleSettingsUpdate = StorageLifecycleSettingsRequest;
 
 export function useStorageLifecycleSettings() {
   return useQuery({

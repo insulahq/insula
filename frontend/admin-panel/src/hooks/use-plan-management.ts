@@ -1,26 +1,13 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
+import type { CreatePlanRequest } from '@insula/api-contracts';
 import { apiFetch } from '@/lib/api-client';
 
-interface CreatePlanInput {
-  readonly code: string;
-  readonly name: string;
-  readonly description?: string;
-  readonly cpu_limit: string;
-  readonly memory_limit: string;
-  readonly storage_limit: string;
-  readonly bandwidth_gb_limit?: number;
-  readonly monthly_price_usd: string;
-  readonly max_sub_users?: number;
-  readonly max_mailboxes?: number;
-  readonly max_mailbox_size_mb?: number;
-  readonly allow_custom_containers?: boolean;
-  readonly features?: Record<string, unknown>;
-}
+// CreatePlanRequest comes from @insula/api-contracts (createPlanSchema) — the shape the backend parses with.
 
 export function useCreatePlan() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (input: CreatePlanInput) =>
+    mutationFn: (input: CreatePlanRequest) =>
       apiFetch<{ data: unknown }>('/api/v1/admin/plans', { method: 'POST', body: JSON.stringify(input) }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['plans'] }); },
   });
@@ -29,7 +16,7 @@ export function useCreatePlan() {
 export function useUpdatePlan() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, ...input }: Partial<CreatePlanInput> & { id: string; status?: string }) =>
+    mutationFn: ({ id, ...input }: Partial<CreatePlanRequest> & { id: string; status?: string }) =>
       apiFetch<{ data: unknown }>(`/api/v1/admin/plans/${id}`, { method: 'PATCH', body: JSON.stringify(input) }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['plans'] }); },
   });
