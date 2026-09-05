@@ -149,7 +149,24 @@ To undo either one, remove the entry from its table in **Banned IPs**.
 strictly authentication is enforced:
 
 - **Providers** — add, edit, test, enable/disable OIDC providers, each
-  scoped to the **admin** panel or the **tenant** panel.
+  scoped to the **admin** panel or the **tenant** panel. The provider form
+  shows the **Redirect URI** to register at your identity provider, and it
+  changes with the Panel Scope you pick.
+
+!!! warning "The redirect URI follows the panel, not the address bar"
+    A **tenant**-scoped provider's redirect URI is on the *tenant* panel host —
+    `https://tenant.<your-domain>/api/v1/auth/oidc/callback` — not the admin
+    host you are looking at while you configure it. Each panel calls the API
+    on its own origin, and the callback is derived from that.
+
+    Register the URI shown in the form. Registering the admin host for a tenant
+    provider produces `Unregistered redirect_uri` at the IdP, with no useful
+    error in the panel. Do **not** register the panel's `/login` URL — that is
+    an internal parameter, never the IdP redirect URI.
+
+    If the field says no panel URL is configured, set it under
+    **Platform Settings → Identity** first; the redirect URI cannot be
+    determined without it.
 - **Authentication settings** — per panel: *disable local (password)
   auth* (forces SSO — only allowed once a scoped provider is enabled), and
   *protect via OAuth2 Proxy* (block unauthenticated access entirely).

@@ -33,8 +33,26 @@ integration harness can authenticate without out-of-band setup:
 | tenant_id | client_secret | redirect_uri | Used by |
 |-----------|---------------|--------------|---------|
 | `hosting-platform-admin` | `staging-secret-admin` | `https://admin.<DOMAIN>/api/v1/auth/oidc/callback` | Admin panel SSO via platform `/auth/oidc/*` |
-| `hosting-platform-client` | `staging-secret-client` | `https://admin.<DOMAIN>/api/v1/auth/oidc/callback` | Tenant panel SSO via platform `/auth/oidc/*` |
+| `hosting-platform-tenant` | `staging-secret-tenant` | `https://tenant.<DOMAIN>/api/v1/auth/oidc/callback` | Tenant panel SSO via platform `/auth/oidc/*` |
 | `hosting-platform-oauth2-proxy` | `$OAUTH2_PROXY_CLIENT_SECRET` (env-substituted from the `oauth2-proxy-config` Secret created by bootstrap.sh) | `https://admin.<DOMAIN>/oauth2/callback` | Admin-only UIs gated by oauth2-proxy (Longhorn, Stalwart web-admin) |
+
+!!! warning "The redirect URI follows the PANEL, not the admin host"
+    Each panel calls the API **same-origin** — `API_URL` is deliberately left
+    empty in `k8s/base/{admin,tenant}-deployment.yaml` — and the backend builds
+    the callback from the `Host` header of the `/auth/oidc/authorize` request
+    (`backend/src/modules/oidc/routes.ts`). So a **tenant**-scoped client's
+    redirect URI is on `tenant.<DOMAIN>`, not `admin.<DOMAIN>`. This table said
+    `admin.` for the tenant client until 2026-09-05; registering that value
+    yields `Unregistered redirect_uri` at Dex with no useful error in the panel.
+
+    The `redirect_uri` **query parameter** the panel sends (`.../login`) is a
+    different thing — it is where the backend bounces the browser after it has
+    exchanged the code, and it is never registered at the IdP.
+
+    The client id and secret above were also wrong here: the overlays define
+    `hosting-platform-tenant` / `staging-secret-tenant`, not `…-client`.
+    `scripts/ci-dex-redirect-uri-check.sh` now enforces the redirect-URI half
+    of this across every overlay.
 
 ## Static password test users
 
