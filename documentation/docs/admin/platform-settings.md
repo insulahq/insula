@@ -144,6 +144,12 @@ itself is described in [Tenants](tenants.md).
 - **Sources** — what triggers a notification (one entry per event type),
   with its default channels and rate limit. (Subscription-expiry reminders
   are configured here — see [Plans & subscriptions](plans-and-subscriptions.md).)
+
+    **Every source starts with every delivery channel enabled**, including any
+    channel added in a future release. Turn a channel off per source here when
+    you do not want it; nothing re-enables it afterwards. A channel only
+    actually delivers once a provider exists for it, so enabling *ntfy* on a
+    source is inert until you add an ntfy provider under **Providers**.
 - **Providers** — the transport endpoints that deliver them: SMTP relays
   for email, and **ntfy push** for phone/desktop push notifications.
 
@@ -152,8 +158,10 @@ itself is described in [Tenants](tenants.md).
     [ntfy.sh](https://ntfy.sh) or your own self-hosted ntfy server (any
     reachable URL, in-cluster included), pick a topic, and — for private
     topics — an access token or username/password (stored encrypted).
-    Mark it **Default for ntfy**, use **Test** to publish a check message,
-    then enable the *ntfy* channel on the Sources you want pushed.
+    Mark it **Default for ntfy** and use **Test** to publish a check message.
+    The *ntfy* channel is already enabled on every Source, so pushes start as
+    soon as a default provider exists — turn it off on any Source you do not
+    want pushed.
     ntfy is a **topic broadcast**: one message per event for everyone
     subscribed to the topic (it does not appear in per-user notification
     preferences), with priority mapped from the event severity and a
