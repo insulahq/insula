@@ -5222,6 +5222,53 @@ volumes:
     type: hostPath
 deployment:
   initContainers:
+    # The mount alone is NOT enough, verified on a live node 2026-09-05.
+    #
+    # The kubelet creates a hostPath directory as root:root 0755, and Traefik
+    # runs as uid 65532 with a read-only rootfs. It therefore cannot create
+    # access.log inside it, and — critically — it does not treat that as fatal:
+    #
+    #   WRN Unable to create access logger
+    #       error="...open /var/log/traefik/access.log: permission denied"
+    #
+    # Traefik then starts, serves traffic and reports Ready with no access log
+    # at all, so the CrowdSec agent tails a file that never appears and detects
+    # nothing while looking perfectly healthy. An init container fixes the
+    # ownership per pod, which means every node gets it — including nodes added
+    # to the cluster later, which a host-side mkdir in this script would miss.
+    - name: prepare-access-log
+      image: alpine/k8s:1.33.13
+      imagePullPolicy: IfNotPresent
+      securityContext:
+        # Root is required to chown a root-owned directory, and nothing less
+        # will do. It is scoped as tightly as the job allows: two capabilities,
+        # a read-only rootfs, no privilege escalation, and a single chown.
+        runAsUser: 0
+        runAsNonRoot: false
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+          add: ["CHOWN", "DAC_OVERRIDE"]
+      resources:
+        requests:
+          cpu: 10m
+          memory: 16Mi
+        limits:
+          memory: 64Mi
+      volumeMounts:
+        - name: traefik-access-log
+          mountPath: /var/log/traefik
+      command:
+        - /bin/sh
+        - -c
+        # chown only, never `install -d` or chmod: changing the MODE of a
+        # directory owned by someone else additionally needs CAP_FOWNER, and
+        # the kubelet already creates it 0755, which is what we want.
+        - |
+          set -eu
+          mkdir -p /var/log/traefik
+          chown 65532:65532 /var/log/traefik
     - name: wait-for-plugin-registry
       image: alpine/k8s:1.33.13
       imagePullPolicy: IfNotPresent
@@ -5518,29 +5565,37 @@ generate_crowdsec_agent_credentials() {
     return 0
   fi
   log "Generating CrowdSec agent credentials..."
-  # Machine name must be stable; the password is 32 bytes of urandom, same
-  # shape as the bouncer key above.
-  # Prefix only — the pod name is appended by the DaemonSet.
+  # The password is 32 bytes of urandom, same shape as the bouncer key above.
   user="insula-agent"
   pass=$(head -c 32 /dev/urandom | base64 | tr -d '/+=' | head -c 40)
-  # platform-system, not crowdsec: the agent lives there because the crowdsec
-  # namespace enforces Pod Security `baseline`, which forbids the hostPath it
-  # needs. A Secret in the wrong namespace produces a pod stuck on
-  # FailedMount — visible, but only after a deploy.
-  kctl create namespace platform-system >/dev/null 2>&1 || true
-  kctl create secret generic "${secret_name}" -n platform-system \
-    --from-literal=username="${user}" \
-    --from-literal=password="${pass}" >/dev/null
-  # NOTE: the Secret holds a username PREFIX, not a final machine name. The
-  # DaemonSet appends its pod name so every node registers a distinct machine
-  # ("<prefix>-<pod>"), which is what makes `cscli machines list` usable for
-  # spotting a node that stopped parsing. A single shared machine name would
-  # let three nodes overwrite each other's heartbeat, so a dead agent would
-  # look alive.
+  # Written to BOTH namespaces, with the same values in each.
   #
-  # Registration therefore happens agent-side on first start (the container
-  # self-registers with its own name), not here — there is no fixed set of
-  # names to pre-create, and node count changes over a cluster's life.
+  #  - platform-system: the agent DaemonSet lives there, because the crowdsec
+  #    namespace enforces Pod Security `baseline`, which forbids the hostPath
+  #    it needs to read Traefik's access log.
+  #  - crowdsec: the LAPI reads the same credentials to CREATE the machine.
+  #    Its entrypoint runs `cscli machines add "$AGENT_USERNAME"` whenever
+  #    AGENT_USERNAME and AGENT_PASSWORD are both set.
+  #
+  # Both are required. Without the LAPI copy the machine is never registered
+  # and the agent authenticates as something that does not exist — while
+  # staying up and reporting healthy. Secrets are namespace-scoped, so there is
+  # no way to share one object across the two.
+  #
+  # The name is a WHOLE machine name, not a prefix: the LAPI registers exactly
+  # one machine and the agent must present exactly that name, so every node's
+  # agent shares this identity. The cost is that `cscli machines list` shows
+  # one row for the whole fleet and heartbeats merge, so a single dead agent on
+  # a multi-node cluster does not stand out. Per-node identity needs LAPI
+  # auto-registration, which the image does not expose — tracked as ROADMAP R31.
+  kctl create namespace platform-system >/dev/null 2>&1 || true
+  kctl create namespace crowdsec >/dev/null 2>&1 || true
+  local ns
+  for ns in platform-system crowdsec; do
+    kctl create secret generic "${secret_name}" -n "${ns}" \
+      --from-literal=username="${user}" \
+      --from-literal=password="${pass}" >/dev/null
+  done
 }
 
 generate_crowdsec_bouncer_key() {
