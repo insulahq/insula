@@ -5520,20 +5520,23 @@ generate_crowdsec_agent_credentials() {
   log "Generating CrowdSec agent credentials..."
   # Machine name must be stable; the password is 32 bytes of urandom, same
   # shape as the bouncer key above.
-  user="insula-agent-$(head -c 8 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+  # Prefix only — the pod name is appended by the DaemonSet.
+  user="insula-agent"
   pass=$(head -c 32 /dev/urandom | base64 | tr -d '/+=' | head -c 40)
   kctl create namespace crowdsec >/dev/null 2>&1 || true
   kctl create secret generic "${secret_name}" -n crowdsec \
     --from-literal=username="${user}" \
     --from-literal=password="${pass}" >/dev/null
-  # Register the machine on the LAPI so the agent can authenticate. The LAPI
-  # pod may not be up yet on a fresh install; the agent retries, and a later
-  # bootstrap re-run is idempotent because the Secret is reused above.
-  if kctl get deploy -n crowdsec crowdsec >/dev/null 2>&1; then
-    kctl exec -n crowdsec deploy/crowdsec -- \
-      cscli machines add "${user}" --password "${pass}" --force >/dev/null 2>&1 \
-      || log "CrowdSec LAPI not ready — agent machine will register on first agent start."
-  fi
+  # NOTE: the Secret holds a username PREFIX, not a final machine name. The
+  # DaemonSet appends its pod name so every node registers a distinct machine
+  # ("<prefix>-<pod>"), which is what makes `cscli machines list` usable for
+  # spotting a node that stopped parsing. A single shared machine name would
+  # let three nodes overwrite each other's heartbeat, so a dead agent would
+  # look alive.
+  #
+  # Registration therefore happens agent-side on first start (the container
+  # self-registers with its own name), not here — there is no fixed set of
+  # names to pre-create, and node count changes over a cluster's life.
 }
 
 generate_crowdsec_bouncer_key() {

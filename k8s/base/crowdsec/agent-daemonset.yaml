@@ -30,6 +30,29 @@
 # single-writer LAPI stays the only writer, so this does not change the HA
 # story described in deployment.yaml.
 #
+# MULTI-NODE: DETECTION DILUTES WITH NODE COUNT — READ BEFORE SCALING OUT
+#
+# Scenario buckets are evaluated IN THE AGENT, per node. Only finished alerts
+# ship to the LAPI, never raw events. So on a cluster whose ingress is fronted
+# by round-robin DNS (staging today: 3 A records), one scanner's requests are
+# spread across nodes and each agent sees roughly 1/N of them. A burst that
+# would trip a threshold on one node can fail to trip it on any of three.
+#
+# This does not fail loudly. Every agent is Running, parsing, and reporting
+# healthy; there are simply fewer alerts than the traffic warrants — the
+# detection degrades quietly as the cluster grows, which is the worst shape a
+# regression can take.
+#
+# Current state: production and DEV are single-node, so they are unaffected
+# today. Staging is 3-node and IS affected.
+#
+# There is no distributed-bucket mode in CrowdSec; the options are to scale the
+# scenario thresholds down by node count (via a scenario override), to pin a
+# client to a node (not possible with round-robin DNS), or to accept reduced
+# sensitivity. Tracked as R30 rather than guessed at here, because the right
+# answer depends on the threshold values in the hub scenarios and should be
+# measured against real traffic, not assumed.
+#
 # BLAST RADIUS — read before promoting a scenario out of simulation
 #
 # The bouncer sits on the shared `websecure` entrypoint and is attached to 18
@@ -123,12 +146,24 @@ spec:
               value: "true"
             - name: LOCAL_API_URL
               value: "http://crowdsec.crowdsec.svc.cluster.local:8080"
-            # Registration credentials for this agent against the LAPI.
-            - name: AGENT_USERNAME
+            # Per-POD machine identity. Every DaemonSet replica sharing one
+            # machine name would collide in `cscli machines list`, and their
+            # heartbeats would overwrite each other's last-seen — so a dead
+            # agent on one node looks alive because another node checked in.
+            # On a single-node cluster that is invisible; on staging (3 nodes)
+            # it is the difference between noticing a node stopped parsing and
+            # not.
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: AGENT_USERNAME_PREFIX
               valueFrom:
                 secretKeyRef:
                   name: crowdsec-agent-credentials
                   key: username
+            - name: AGENT_USERNAME
+              value: "$(AGENT_USERNAME_PREFIX)-$(POD_NAME)"
             - name: AGENT_PASSWORD
               valueFrom:
                 secretKeyRef:
