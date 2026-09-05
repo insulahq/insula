@@ -163,3 +163,12 @@ did what. Filter by action type, resource type, HTTP method, free-text
 path search, date range, tenant, or actor, with cursor pagination and
 color-coded badges. The [Dashboard](index.md) 5xx card and Posture's
 Security Events tab both deep-link here.
+
+Wherever the panel attributes an action to someone — the audit log's
+**Actor** column, the **Added by** column on WAF allowlists and rule
+exclusions, step-up authentication events, and secret-coverage entries —
+it shows the person's **name and email address**, not their internal user
+ID. Automated and unauthenticated actions are labelled *System* and
+*Anonymous* respectively. If an account has since been deleted, the
+original ID is shown shortened, with the full value on hover, so the
+historical record stays intact rather than silently becoming blank.
