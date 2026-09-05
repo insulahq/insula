@@ -12,6 +12,25 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- `ci-mail-image-pin-check.sh` — asserts every `stalwartlabs/stalwart` reference
+  in `k8s/` and `backend/src` names the same tag, and that the stalwart-cli
+  version + sha256 agree across both pins. `archive.ts` already carried the
+  scar ("v0.16.5 while the server ran v0.16.14 — eleven releases of silent
+  drift"); the unit test added then asserts the resolver against a literal in
+  its own file, so nothing compared the files to each other. Now something does.
+- **Compose validation errors now carry a line number.** The backend resolves
+  each issue's dotted path (`services.db.deploy.resources.limits.memory`) back
+  to the line it came from, the editor renders those as inline squiggles you
+  can hover, and each entry in the Issues pane gets a **line N** button that
+  scrolls the editor to it. Previously an issue said *what* was wrong but never
+  *where*, so finding it in a 60-line stack meant reading the whole file.
+  Unresolvable paths get no line rather than a guessed one. Validator issues
+  are translated from normalized-spec coordinates
+  (`services.db.resources.memoryLimit`) back to compose ones
+  (`…deploy.resources.limits.memory`) first, so two errors about the same field
+  no longer disagree about whether it has a line.
+
 ### Changed
 - **Email pages lead with Storage Usage instead of "Mail Server: Stalwart".**
   That tile showed a constant — it never changed and told the operator nothing
@@ -34,24 +53,54 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   pass through unchanged.
 
 
-### Added
-- `ci-mail-image-pin-check.sh` — asserts every `stalwartlabs/stalwart` reference
-  in `k8s/` and `backend/src` names the same tag, and that the stalwart-cli
-  version + sha256 agree across both pins. `archive.ts` already carried the
-  scar ("v0.16.5 while the server ran v0.16.14 — eleven releases of silent
-  drift"); the unit test added then asserts the resolver against a literal in
-  its own file, so nothing compared the files to each other. Now something does.
-- **Compose validation errors now carry a line number.** The backend resolves
-  each issue's dotted path (`services.db.deploy.resources.limits.memory`) back
-  to the line it came from, the editor renders those as inline squiggles you
-  can hover, and each entry in the Issues pane gets a **line N** button that
-  scrolls the editor to it. Previously an issue said *what* was wrong but never
-  *where*, so finding it in a 60-line stack meant reading the whole file.
-  Unresolvable paths get no line rather than a guessed one. Validator issues
-  are translated from normalized-spec coordinates
-  (`services.db.resources.memoryLimit`) back to compose ones
-  (`…deploy.resources.limits.memory`) first, so two errors about the same field
-  no longer disagree about whether it has a line.
+- **Stalwart 0.16.16 → 0.16.20.** Four patch releases, no migration — every one
+  states that upgrading within 0.16.x is a binary/image replacement. The
+  0.16.19 `ALTER TABLE` note applies only to MySQL/MariaDB data stores; this
+  platform runs Stalwart on embedded RocksDB, so it does not apply. The
+  RocksDB-checkpoint coupling was re-verified rather than assumed: Stalwart's
+  own `Cargo.lock` pins the same `librocksdb-sys 0.17.3+10.4.2` / `rocksdb
+  0.24.0` at both tags, so the checkpoint binary still links the same C++
+  rocksdb as the store it opens. Brings ACME
+  order-failure logging and retry fixes (mail TLS runs through Stalwart's
+  http-acme), DANE and MTA-STS delivery fixes, and a `/api/discover` fix for
+  master-user names containing `%`.
+- **stalwart-cli v1.0.4 → v1.0.12**, version and sha256 moved together across
+  both pins. The archive is checksum-verified by the Job, so a version bumped
+  without its hash fails that check rather than running an unverified binary.
+- Bulwark's image is digest-pinned, which hides the version. The manifest now
+  records the version, how to re-resolve the digest, and why 1.9.2 is a floor.
+- **Every notification source now defaults to every delivery channel**, including
+  channels added in future releases. `defaultChannels` was seeded per-source, so
+  when the *ntfy* channel shipped, all 50 sources silently kept delivering only
+  to email and in-app — a channel nobody could reach without editing 50 rows by
+  hand. The seed and the column default are now derived from the channel enum
+  itself, and migration `0099` backfills existing rows additively (it only adds
+  missing channels; a channel an operator turned off stays off).
+- **The Ban button in WAF Events adds a static, long-term block**, not a
+  temporary one. An operator banning an IP they just watched attack the platform
+  meant it permanently; the button wrote a decision that expired on the CrowdSec
+  auto-ban schedule instead, so the IP quietly came back. The modal now takes an
+  explicit ban target and WAF Events passes `static`.
+- **Notification Sources is a real table**: searchable across every field a row
+  shows (id, name, description, audience, severity, GDPR basis, channels),
+  sortable by any column, and multi-selectable with a bulk action bar that can
+  enable or disable a channel — or activate/deactivate — across the selection.
+  Mandatory sources are excluded from selection since they cannot be edited.
+  Bulk changes are issued one PATCH at a time rather than fanned out with
+  `Promise.all`, which would fire N concurrent writes at a rate-limited endpoint
+  and hide a partial write behind the first rejection; failures are counted and
+  the selection is kept so only they need retrying.
+
+### Removed
+- `mail-admin/rotate.ts` and its test — a dead, restart-based Stalwart
+  admin-password rotation superseded by the in-flight JMAP `Principal/set` path
+  in `rotate-jmap.ts`, which is what the route actually calls. Nothing imported
+  it but its own test. It also carried a latent defect that shows why it was
+  never exercised: it verified the rotation by POSTing to `/api/oauth`, an
+  endpoint that returns 404 on Stalwart 0.16.16 and 0.16.20 alike, so the poll
+  could never have succeeded. Correcting a module no caller reaches would only
+  have preserved an obsolete second model of how rotation works; the live path
+  verifies against `GET /jmap/session` and needs no restart.
 
 ### Fixed
 - **Rotating the Stalwart admin password showed the OLD password in the admin
@@ -92,35 +141,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   entering a name — simple mode requires one, so doing so produced a backend
   error about a field the form had not asked for yet. The button now explains
   what is missing.
-
-### Changed
-- **Stalwart 0.16.16 → 0.16.20.** Four patch releases, no migration — every one
-  states that upgrading within 0.16.x is a binary/image replacement. The
-  0.16.19 `ALTER TABLE` note applies only to MySQL/MariaDB data stores; this
-  platform runs Stalwart on embedded RocksDB, so it does not apply. The
-  RocksDB-checkpoint coupling was re-verified rather than assumed: Stalwart's
-  own `Cargo.lock` pins the same `librocksdb-sys 0.17.3+10.4.2` / `rocksdb
-  0.24.0` at both tags, so the checkpoint binary still links the same C++
-  rocksdb as the store it opens. Brings ACME
-  order-failure logging and retry fixes (mail TLS runs through Stalwart's
-  http-acme), DANE and MTA-STS delivery fixes, and a `/api/discover` fix for
-  master-user names containing `%`.
-- **stalwart-cli v1.0.4 → v1.0.12**, version and sha256 moved together across
-  both pins. The archive is checksum-verified by the Job, so a version bumped
-  without its hash fails that check rather than running an unverified binary.
-- Bulwark's image is digest-pinned, which hides the version. The manifest now
-  records the version, how to re-resolve the digest, and why 1.9.2 is a floor.
-
-### Removed
-- `mail-admin/rotate.ts` and its test — a dead, restart-based Stalwart
-  admin-password rotation superseded by the in-flight JMAP `Principal/set` path
-  in `rotate-jmap.ts`, which is what the route actually calls. Nothing imported
-  it but its own test. It also carried a latent defect that shows why it was
-  never exercised: it verified the rotation by POSTing to `/api/oauth`, an
-  endpoint that returns 404 on Stalwart 0.16.16 and 0.16.20 alike, so the poll
-  could never have succeeded. Correcting a module no caller reaches would only
-  have preserved an obsolete second model of how rotation works; the live path
-  verifies against `GET /jmap/session` and needs no restart.
 
 ### Security
 - **Bulwark webmail 1.7.8 → 1.9.2**, which fixes GHSA-24w9-8r42-8jwm: a
