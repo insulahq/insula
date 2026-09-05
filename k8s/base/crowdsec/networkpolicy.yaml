@@ -26,6 +26,23 @@ spec:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: platform
+        # The log-processing agent DaemonSet ships alerts to this LAPI from
+        # inside this same namespace. Omitting it would not fail loudly: the
+        # agent would parse logs, detect probes and then silently fail to
+        # deliver a single alert, with the pod still Running and Ready. That
+        # is the identical shape as the platform-suspended outage — a pod that
+        # looks healthy because nothing on the delivery path is checked.
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: crowdsec-agent
+        # The retention CronJob prunes via cscli against this same LAPI. Third
+        # time this omission would have bitten in one change — the placeholder
+        # pages, the agent, and now this — so state the rule plainly: anything
+        # that talks to the LAPI must be listed here, and the symptom of
+        # forgetting is never an error, only silence.
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: crowdsec-retention
       ports:
         - protocol: TCP
           port: 8080

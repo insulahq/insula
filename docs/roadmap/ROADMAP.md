@@ -1153,3 +1153,41 @@ reports itself clean. Sequence:
 so a route validating via a Fastify JSON schema reads as unvalidated (`recycle-pod`
 did). Its coverage line is printed with every run for the same reason — a clean
 section (2) means "nothing found in the covered slice", never "no drift".
+
+---
+
+## R30 — CrowdSec scenario buckets dilute across nodes
+
+Scenario evaluation happens **in the agent**, per node: only finished alerts ship to
+the LAPI, never raw events. Where ingress is fronted by round-robin DNS (staging today
+publishes 3 A records), one client's requests spread across nodes and each agent sees
+roughly 1/N of them. A burst that would trip `http-probing` on a single node can fail
+to trip it on any of three.
+
+**It degrades silently.** Every agent stays Running, parsing and healthy; there are
+simply fewer alerts than the traffic warrants. Detection sensitivity drops as the
+cluster grows, with no error anywhere — the worst shape a regression can take.
+
+Unaffected today: production and DEV are single-node. **Staging is 3-node and is
+affected.**
+
+CrowdSec has no distributed-bucket mode, so the options are:
+
+1. **Scale thresholds by node count** via a scenario override (`.../scenarios/*.yaml`
+   with a lower `capacity`). Simple, but it trades false negatives for false positives
+   and needs re-tuning whenever a node is added or removed.
+2. **Pin a client to a node** so its whole burst lands in one bucket. Not possible with
+   round-robin DNS; would need a real L4 load balancer with source-IP affinity
+   (relevant to R24, PROXY-protocol support).
+3. **Accept reduced sensitivity** on multi-node and rely on the community blocklist
+   plus ModSecurity for those clusters.
+
+Pick against **measured** traffic, not assumption: instrument the alert rate on staging
+first and compare it with the same traffic replayed single-node. The hub scenarios'
+`capacity`/`leakspeed` values decide how much dilution actually matters, and guessing
+at them is how you end up with either a silent detector or a page every hour.
+
+Related: the per-pod machine identity added alongside this (each agent registers as
+`<prefix>-<pod>`) is what makes a node that stopped parsing visible in
+`cscli machines list` — without it, three nodes overwrite each other's heartbeat and a
+dead agent looks alive.
