@@ -12,6 +12,20 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Changed
+- **Email pages lead with Storage Usage instead of "Mail Server: Stalwart".**
+  That tile showed a constant — it never changed and told the operator nothing
+  they could act on, while holding the most prominent slot in the row. The new
+  first tile shows how much disk the mail data is actually using.
+- **Per-node mail storage reports real free space instead of "Scheduled (PVC
+  requests)".** Mail runs on `local-path`, where a PVC request reserves nothing
+  and enforces nothing — a 30Gi request sat beside 63 MB of actual mail — and
+  *Headroom* was computed as `total − scheduled`, so the fiction propagated
+  into the one number an operator would act on. Both are replaced by the node
+  filesystem's actual free bytes, read from the kubelet Summary API. Null (not
+  0) when that read fails, since "0 B free" reads as a full disk.
+
+
 ### Added
 - `ci-mail-image-pin-check.sh` — asserts every `stalwartlabs/stalwart` reference
   in `k8s/` and `backend/src` names the same tag, and that the stalwart-cli

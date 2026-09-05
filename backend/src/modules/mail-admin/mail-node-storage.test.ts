@@ -48,10 +48,19 @@ function buildDeps(opts: {
   standbyReports?: Record<string, { sizeBytes: number; reportedAt: string }>;
   placement: { activeNode: string | null; primaryNode: string | null; secondaryNode: string | null; tertiaryNode: string | null };
   duBytes?: number | null;
+  /** nodeName → kubelet node.fs.availableBytes. Absent = that node's read fails. */
+  freeByNode?: Record<string, number>;
+  /** Make the kubelet proxy throw, to prove one bad node does not poison the rest. */
+  freeThrows?: boolean;
 }) {
   const core = {
     listNode: vi.fn().mockResolvedValue({ items: opts.nodes }),
     listPersistentVolume: vi.fn().mockResolvedValue({ items: opts.pvs }),
+    connectGetNodeProxyWithPath: vi.fn().mockImplementation(async ({ name }: { name: string }) => {
+      if (opts.freeThrows) throw new Error('kubelet unreachable');
+      const avail = opts.freeByNode?.[name];
+      return avail == null ? {} : { node: { fs: { availableBytes: avail } } };
+    }),
     listNamespacedPod: vi.fn().mockResolvedValue({
       items: opts.duBytes != null
         ? [{ metadata: { name: 'stalwart-mail-abc' }, status: { phase: 'Running' } }]
@@ -129,17 +138,54 @@ describe('mail-node-storage', () => {
     expect(cards[0].totalBytes).toBe(150 * 1024 ** 3);
   });
 
-  it('scheduledBytes sums local-path PVCs pinned to the node', async () => {
+  /**
+   * Replaced `scheduledBytes` (sum of PVC requests). On local-path a PVC
+   * request reserves nothing and enforces nothing — a 30Gi request sat beside
+   * 63MB of actual mail — and headroom was derived from it, so the fiction
+   * reached the one number an operator acts on. `freeBytes` is what `df` says.
+   */
+  it('freeBytes comes from the kubelet Summary API, per node', async () => {
     const cards = await getMailNodeStorage(buildDeps({
       nodes: [node('staging1')],
-      pvs: [
-        pv('pv-1', 'staging1', 30),
-        pv('pv-2', 'staging1', 20),
-        pv('pv-3', 'staging2', 100), // different node — should NOT count
-      ],
+      pvs: [],
+      placement: { activeNode: 'staging1', primaryNode: null, secondaryNode: null, tertiaryNode: null },
+      freeByNode: { staging1: 900 * 1024 ** 3 },
+    }));
+    expect(cards[0].freeBytes).toBe(900 * 1024 ** 3);
+  });
+
+  // Null, never 0 — "0 B free" reads as a full disk, the opposite of unknown.
+  it('freeBytes is null when the kubelet read fails', async () => {
+    const cards = await getMailNodeStorage(buildDeps({
+      nodes: [node('staging1')],
+      pvs: [],
+      placement: { activeNode: 'staging1', primaryNode: null, secondaryNode: null, tertiaryNode: null },
+      freeThrows: true,
+    }));
+    expect(cards[0].freeBytes).toBeNull();
+    // The rest of the card still renders — a kubelet blip must not blank it.
+    expect(cards[0].totalBytes).not.toBeNull();
+  });
+
+  it('one unreachable node does not null out the others', async () => {
+    const cards = await getMailNodeStorage(buildDeps({
+      nodes: [node('staging1'), node('staging2')],
+      pvs: [],
+      placement: { activeNode: 'staging1', primaryNode: 'staging2', secondaryNode: null, tertiaryNode: null },
+      freeByNode: { staging1: 100 * 1024 ** 3 }, // staging2 absent → its read yields nothing
+    }));
+    const byName = Object.fromEntries(cards.map((c) => [c.nodeName, c.freeBytes]));
+    expect(byName.staging1).toBe(100 * 1024 ** 3);
+    expect(byName.staging2).toBeNull();
+  });
+
+  it('no longer reports scheduledBytes at all', async () => {
+    const cards = await getMailNodeStorage(buildDeps({
+      nodes: [node('staging1')],
+      pvs: [pv('pv-1', 'staging1', 30)],
       placement: { activeNode: 'staging1', primaryNode: null, secondaryNode: null, tertiaryNode: null },
     }));
-    expect(cards[0].scheduledBytes).toBe(50 * 1024 ** 3);
+    expect(cards[0]).not.toHaveProperty('scheduledBytes');
   });
 
   it('mailUsed: active node uses du output', async () => {

@@ -7,10 +7,11 @@
  *
  *   - total       — node's allocatable ephemeral-storage capacity
  *                   (the kubelet's view of "headroom for new pods")
- *   - scheduled   — sum of PVC requests bound to PVs pinned on this
- *                   node (informational: local-path doesn't enforce
- *                   quotas, but the number tells the operator how
- *                   much disk they've already reserved)
+ *   - free        — actual free bytes on the node filesystem, read from
+ *                   the kubelet Summary API (node.fs.availableBytes).
+ *                   Replaced `scheduled` (sum of PVC requests), which was
+ *                   fiction on local-path: the request reserves nothing and
+ *                   enforces nothing, and headroom was derived from it.
  *   - mailUsed    — bytes actually consumed by mail data on this node:
  *                     * active node: du of /var/lib/mail-stack inside
  *                       the running stalwart-mail pod
@@ -40,8 +41,18 @@ export interface MailNodeStorage {
   readonly isStandby: boolean;
   /** Node allocatable ephemeral-storage capacity (kubelet). Null when API readout failed. */
   readonly totalBytes: number | null;
-  /** Sum of PVC requests bound to PVs pinned to this node. Null on failure. */
-  readonly scheduledBytes: number | null;
+  /**
+   * Real free space on the node's filesystem, from the kubelet Summary API.
+   * Null when the read failed.
+   *
+   * Replaces the old `scheduledBytes` (sum of PVC requests). That number was
+   * meaningless here: mail runs on `local-path`, which provisions a plain
+   * directory and enforces no quota, so a 30Gi PVC request reserved nothing
+   * and bore no relation to the 63MB actually on disk. Worse, headroom was
+   * computed as `total - scheduled`, so the fiction propagated into the one
+   * number an operator would act on. This is what `df` reports.
+   */
+  readonly freeBytes: number | null;
   /** Mail data actually consumed on this node. Null when unknown. */
   readonly mailUsedBytes: number | null;
   /** ISO timestamp of the data source (standby report time, or "live" for active). */
@@ -113,19 +124,18 @@ export async function getMailNodeStorage(
   //    sizeBytes in step 5 without one query per node.
   const standbyReports = await readStandbyReports(db, log);
 
-  // 4. List all PVs once so step 6 is O(N_PVs) not O(nodes × PVs).
-  //    `pvsResolved=false` carries the API-failure signal forward so
-  //    the per-node card reports scheduledBytes=null (not a misleading
-  //    0 B) when the list call failed.
-  let allPvs: PvShape[] = [];
-  let pvsResolved = true;
-  try {
-    // PVs are cluster-scoped — listPersistentVolume not listNamespaced.
-    const pvList = await core.listPersistentVolume({}) as { items?: PvShape[] };
-    allPvs = pvList.items ?? [];
-  } catch (err) {
-    log.warn('mail-node-storage: listPersistentVolume failed:', err);
-    pvsResolved = false;
+  // 4. Real free space per node, from the kubelet Summary API through the
+  //    API-server proxy. One call per mail-relevant node (there are at most a
+  //    handful), and a failure on one node degrades that card to null rather
+  //    than the whole response.
+  const freeByNode = new Map<string, number>();
+  for (const nodeName of roleMap.keys()) {
+    try {
+      const raw = await readNodeFsAvailableBytes(core, nodeName);
+      if (raw !== null) freeByNode.set(nodeName, raw);
+    } catch (err) {
+      log.warn(`mail-node-storage: kubelet summary for ${nodeName} failed:`, err);
+    }
   }
 
   // 5. Resolve mailUsed for the active node via exec (single du call).
@@ -138,7 +148,7 @@ export async function getMailNodeStorage(
   for (const [nodeName, roleSet] of roleMap) {
     const node = allNodes.find((n) => nodeHostname(n) === nodeName) ?? null;
     const totalBytes = node ? nodeTotalBytes(node) : null;
-    const scheduledBytes = pvsResolved ? sumPvcRequestsOnNode(allPvs, nodeName) : null;
+    const freeBytes = freeByNode.get(nodeName) ?? null;
 
     const isActive = roleSet.has('active');
     const isStandby = roleSet.has('standby');
@@ -162,7 +172,7 @@ export async function getMailNodeStorage(
       isActive,
       isStandby,
       totalBytes,
-      scheduledBytes,
+      freeBytes,
       mailUsedBytes,
       mailUsedReportedAt,
     });
@@ -187,21 +197,33 @@ interface NodeShape {
   };
 }
 
-interface PvShape {
-  spec?: {
-    capacity?: { storage?: string };
-    nodeAffinity?: {
-      required?: {
-        nodeSelectorTerms?: Array<{
-          matchExpressions?: Array<{ key?: string; operator?: string; values?: string[] }>;
-        }>;
-      };
-    };
-  };
-}
 
 function nodeHostname(n: NodeShape): string {
   return n.metadata?.labels?.['kubernetes.io/hostname'] ?? n.metadata?.name ?? '';
+}
+
+/**
+ * Free bytes on a node's filesystem, via `/api/v1/nodes/<n>/proxy/stats/summary`.
+ *
+ * Goes through the API-server proxy rather than dialling kubelet:10250
+ * directly, so it needs no node certificates and no extra network path — the
+ * same client that lists nodes serves it.
+ *
+ * Returns null when the field is absent rather than 0: a card showing "0 B
+ * free" would read as a full disk, which is the opposite of "unknown".
+ */
+async function readNodeFsAvailableBytes(
+  core: import('@kubernetes/client-node').CoreV1Api,
+  nodeName: string,
+): Promise<number | null> {
+  const api = core as unknown as {
+    connectGetNodeProxyWithPath?: (p: { name: string; path: string }) => Promise<unknown>;
+  };
+  if (typeof api.connectGetNodeProxyWithPath !== 'function') return null;
+  const res = await api.connectGetNodeProxyWithPath({ name: nodeName, path: 'stats/summary' });
+  const parsed = typeof res === 'string' ? JSON.parse(res) : res;
+  const avail = (parsed as { node?: { fs?: { availableBytes?: unknown } } })?.node?.fs?.availableBytes;
+  return typeof avail === 'number' && Number.isFinite(avail) ? avail : null;
 }
 
 function nodeTotalBytes(n: NodeShape): number | null {
@@ -216,41 +238,6 @@ function nodeTotalBytes(n: NodeShape): number | null {
   }
 }
 
-/**
- * Sum the storage capacity of all PVs pinned to `nodeName` via
- * spec.nodeAffinity.required.nodeSelectorTerms[*].matchExpressions[*]
- * where key='kubernetes.io/hostname' and the node is in values[].
- *
- * Only local-path PVs typically have this affinity; cross-node
- * provisioners (Longhorn, CSI) leave it empty so they contribute 0. // ci-no-longhorn: ignore
- */
-function sumPvcRequestsOnNode(pvs: ReadonlyArray<PvShape>, nodeName: string): number {
-  let sum = 0;
-  for (const pv of pvs) {
-    const terms = pv.spec?.nodeAffinity?.required?.nodeSelectorTerms ?? [];
-    let pinsHere = false;
-    for (const t of terms) {
-      for (const m of t.matchExpressions ?? []) {
-        if (m.key !== 'kubernetes.io/hostname') continue;
-        if (m.operator !== 'In') continue;
-        if (Array.isArray(m.values) && m.values.includes(nodeName)) {
-          pinsHere = true;
-          break;
-        }
-      }
-      if (pinsHere) break;
-    }
-    if (!pinsHere) continue;
-    const capStr = pv.spec?.capacity?.storage;
-    if (!capStr) continue;
-    try {
-      sum += parseQuantity(capStr);
-    } catch {
-      /* skip unparseable */
-    }
-  }
-  return sum;
-}
 
 interface StandbyReport {
   sizeBytes: number;
