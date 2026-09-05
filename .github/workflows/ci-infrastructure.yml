@@ -180,6 +180,14 @@ jobs:
       - name: Verify admin-only Ingresses have an auth gate
         run: ./scripts/ci-admin-auth-check.sh
 
+  oauth2-proxy-args-check:
+    name: OAuth2-Proxy args complete in every overlay
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Verify every oauth2-proxy args list carries the two-panel flags
+        run: ./scripts/ci-oauth2-proxy-args-check.sh
+
   firewall-check:
     name: Firewall-rule guardrail
     runs-on: ubuntu-latest
