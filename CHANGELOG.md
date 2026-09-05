@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.9.7] - 2026-09-05
+
 ### Added
 - `ci-mail-image-pin-check.sh` — asserts every `stalwartlabs/stalwart` reference
   in `k8s/` and `backend/src` names the same tag, and that the stalwart-cli
@@ -51,7 +53,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   to nobody keeps a shortened id with the full value in the tooltip, because a
   deleted admin is exactly when that record matters; `anonymous` and `system`
   pass through unchanged.
-
 
 - **Stalwart 0.16.16 → 0.16.20.** Four patch releases, no migration — every one
   states that upgrading within 0.16.x is a binary/image replacement. The
