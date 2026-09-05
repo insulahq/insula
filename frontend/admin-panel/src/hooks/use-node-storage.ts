@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import type { PatchNodeDiskRequest } from '@insula/api-contracts';
 import { apiFetch } from '@/lib/api-client';
 
 export interface NodeDiskInfo {
@@ -34,10 +35,8 @@ export function useNodeStorage(name: string | undefined) {
   });
 }
 
-export interface PatchDiskInput {
-  readonly storageReserved?: number;
-  readonly allowScheduling?: boolean;
-}
+/** Wire shape from @insula/api-contracts. */
+type PatchDiskInput = PatchNodeDiskRequest;
 
 export function usePatchNodeDisk(nodeName: string) {
   const qc = useQueryClient();

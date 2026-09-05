@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import type { CreateImapSyncJobRequest } from '@insula/api-contracts';
+import type { CreateImapSyncJobRequest, CreateLoginPasswordRequest} from '@insula/api-contracts';
 import { apiFetch } from '@/lib/api-client';
 
 // ─── Email Domains ───
@@ -464,11 +464,8 @@ export interface AdminCreateLoginPasswordResult {
   readonly allowedIps: readonly string[];
 }
 
-export interface AdminCreateLoginPasswordInput {
-  readonly label: string;
-  readonly expiresAt?: string | null;
-  readonly allowedIps?: readonly string[];
-}
+/** Wire shape from @insula/api-contracts. */
+type AdminCreateLoginPasswordInput = CreateLoginPasswordRequest;
 
 export function useAdminLoginPasswords(mailboxId?: string) {
   return useQuery({

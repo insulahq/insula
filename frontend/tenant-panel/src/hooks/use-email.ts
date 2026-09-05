@@ -1,4 +1,4 @@
-import type { MailUsageResponse, EmailConnectionInfo, CreateImapSyncJobRequest, UpdateImapSyncJobRequest} from '@insula/api-contracts';
+import type { MailUsageResponse, EmailConnectionInfo, CreateImapSyncJobRequest, UpdateImapSyncJobRequest, CreateLoginPasswordRequest} from '@insula/api-contracts';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
 
@@ -283,11 +283,8 @@ export interface CreateLoginPasswordResult {
   readonly allowedIps: readonly string[];
 }
 
-export interface CreateLoginPasswordInput {
-  readonly label: string;
-  readonly expiresAt?: string | null;
-  readonly allowedIps?: readonly string[];
-}
+/** Wire shape from @insula/api-contracts. */
+type CreateLoginPasswordInput = CreateLoginPasswordRequest;
 
 export function useLoginPasswords(tenantId: string, mailboxId?: string) {
   return useQuery({

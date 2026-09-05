@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { authenticate, requireRole, requirePanel } from '../../middleware/auth.js';
-import { updateClusterNodeSchema, drainNodeRequestSchema } from '@insula/api-contracts';
+import { updateClusterNodeSchema, drainNodeRequestSchema, patchNodeDiskSchema} from '@insula/api-contracts';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -279,7 +279,12 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
   }, async (request) => {
     const { name, diskKey } = request.params as { name: string; diskKey: string };
     validateNodeName(name);
-    const body = (request.body ?? {}) as { storageReserved?: number; allowScheduling?: boolean };
+    const parsedDisk = patchNodeDiskSchema.safeParse(request.body ?? {});
+    if (!parsedDisk.success) {
+      throw new ApiError('INVALID_FIELD', parsedDisk.error.issues
+        .map((i) => (i.path.length ? `${i.path.join('.')}: ${i.message}` : i.message)).join('; '), 400);
+    }
+    const body = parsedDisk.data;
     const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
     const k8s = createK8sClients(kubeconfigPath);
     const ops: Array<{ op: string; path: string; value: unknown }> = [];
