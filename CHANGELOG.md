@@ -46,6 +46,35 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   host never appears, and the docs were wrong — so there was no way to get it
   right except by reading the backend. When the relevant panel URL is not
   configured the field says so rather than offering a plausible wrong value.
+- **The admin panel could not add an OIDC provider, for either panel scope.**
+  `use-oidc-settings.ts` declared its own `CreateProviderInput` with
+  `tenant_id` / `tenant_secret` while the API requires `client_id` /
+  `client_secret`, so **POST** returned
+  `400 display_name, issuer_url, client_id, client_secret, and panel_scope are required`
+  and **PATCH** returned `200` while silently not writing the client id or
+  secret — the update skips fields that arrive as `undefined`. Editing a
+  provider's Client ID appeared to work and changed nothing.
+
+  Origin: `0000_tenant_rename.sql` bulk-renamed `oidc_providers.client_id` →
+  `tenant_id` by mistake; `0001_rename_oidc_client_id.sql` reverted the column
+  and the backend. The panel's hand-written copy of the request shape never
+  followed, and because it was internally consistent, nothing failed to
+  compile.
+
+  The provider request shape now lives in `@insula/api-contracts`
+  (`createOidcProviderSchema` / `updateOidcProviderSchema`, both `.strict()`),
+  the backend parses with it instead of a truthiness check — so a wrong field
+  name now says which field rather than "something is missing" — and both the
+  hook and the backend service alias the shared type. `.strict()` matters most
+  on PATCH: an unknown key there is not a 400 you notice, it is a field that
+  silently does not change.
+
+### Added
+- `scripts/ci-frontend-api-types-check.sh` — ratchet on hand-written API
+  request types in frontend hooks. There are 45 of them; each is a shape `tsc`
+  can never check against the backend, which is what made the bug above
+  invisible. Migrating them all is a large refactor, so the guard grandfathers
+  the current set and fails only when the count grows.
 
 ### Fixed
 - **WAF auto-ban never banned anything, on any cluster.** The scheduler tracked
