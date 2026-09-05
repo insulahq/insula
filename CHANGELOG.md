@@ -12,6 +12,23 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **The CrowdSec log-processing agent could not start.** It was placed in the
+  `crowdsec` namespace, which enforces Pod Security `baseline` — that forbids
+  hostPath volumes outright, and the agent needs one to read Traefik's access
+  log. The DaemonSet sat at 0/1 with `violates PodSecurity "baseline:latest"`
+  and **no pod object was ever created**, so there was nothing to inspect
+  logs on. Found by deploying it to DEV; no manifest-level check catches this.
+
+  The namespace's own comment had stated the precondition — *"baseline is
+  enough … (we don't run the log-acquisition modules)"* — and the agent
+  invalidated exactly that. Rather than relax the namespace and take the LAPI's
+  posture down with it, the agent moves to `platform-system`, where the
+  platform's other host-reading DaemonSets already live (`security-probe`
+  mounts 11 host paths there). The LAPI NetworkPolicy gains a
+  namespaceSelector + podSelector pair, because a bare podSelector only matches
+  pods in the policy's own namespace and would have silently matched nothing.
+
 ### Added
 - **HTTP reconnaissance detection — CrowdSec `http-probing` and
   `http-crawl-non-statics`.** Scanning was invisible to every security surface:
