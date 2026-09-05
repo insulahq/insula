@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { identityEmailSchema } from './shared.js';
 
 /**
  * Sub-user (tenant-panel team member) API contracts.
@@ -24,7 +25,7 @@ export type SubUserRole = z.infer<typeof subUserRoleSchema>;
 // ─── Create ─────────────────────────────────────────────────────────────────
 
 export const createSubUserSchema = z.object({
-  email: z.string().email('email must be a valid email address'),
+  email: identityEmailSchema,
   full_name: z.string().min(1, 'full_name is required').max(255),
   password: z.string().min(8, 'password must be at least 8 characters').max(255),
   /**

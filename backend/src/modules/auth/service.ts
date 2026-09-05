@@ -1,8 +1,9 @@
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import bcrypt from 'bcrypt';
 import type { Database } from '../../db/index.js';
 import { users, tenants } from '../../db/schema.js';
 import { invalidToken } from '../../shared/errors.js';
+import { normalizeEmail } from '../../lib/email-normalize.js';
 
 const SALT_ROUNDS = 12;
 
@@ -24,10 +25,15 @@ export async function authenticateUser(
   email: string,
   password: string,
 ) {
+  // Case-insensitive, exact match preferred. Addresses are stored lowercased
+  // (migration 0103) but a cluster upgraded mid-flight can still hold mixed
+  // case, and operators type their address however they please.
+  const lookupEmail = normalizeEmail(email);
   const [user] = await db
     .select()
     .from(users)
-    .where(eq(users.email, email))
+    .where(sql`lower(${users.email}) = ${lookupEmail}`)
+    .orderBy(sql`(${users.email} = ${lookupEmail}) DESC`)
     .limit(1);
 
   if (!user) {

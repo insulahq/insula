@@ -73,3 +73,28 @@ export const uuidField = z.string().uuid();
 
 /** GitHub repository URL pattern — shared by workload-repos and application-repos */
 export const githubUrlPattern = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+$/;
+
+// ─── Identity email ──────────────────────────────────────────────────────────
+
+/**
+ * An email address used as an ACCOUNT IDENTITY, normalised to lowercase.
+ *
+ * Every account lookup compares this value, and an identity provider is free to
+ * vary the casing it asserts between logins. Before this was normalised, an IdP
+ * returning `Staff@Example.test` for an account stored as `staff@example.test`
+ * matched nothing — and on the OIDC tenant path that does not fail the login, it
+ * falls through to auto-provisioning and creates an ENTIRELY NEW TENANT for
+ * someone who already had an account.
+ *
+ * The domain part is case-insensitive per RFC 5321. The local part is
+ * technically case-sensitive, but no mainstream provider treats it that way, and
+ * operators universally expect addresses to compare case-insensitively.
+ *
+ * Use this for identity fields only (login, user create, tenant primary email).
+ * A plain `z.string().email()` is still right for a free-text contact address
+ * that is displayed rather than matched.
+ */
+export const identityEmailSchema = z
+  .string()
+  .email()
+  .transform((v) => v.trim().toLowerCase());

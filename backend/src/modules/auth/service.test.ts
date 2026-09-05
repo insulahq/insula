@@ -56,7 +56,10 @@ describe('authenticateUser', () => {
     return {
       select: vi.fn().mockReturnValue({
         from: vi.fn().mockReturnValue({
+          // The user lookup chains .orderBy() before .limit() (case-insensitive
+          // match, exact preferred); the tenant lookup goes straight to .limit().
           where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(usersList) }),
             limit: vi.fn().mockResolvedValue(usersList),
           }),
         }),
@@ -137,7 +140,7 @@ describe('authenticateUser', () => {
     const db = {
       select: vi.fn().mockReturnValue({
         from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({ limit }),
+          where: vi.fn().mockReturnValue({ orderBy: vi.fn().mockReturnValue({ limit }), limit }),
         }),
       }),
       update: vi.fn().mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }) }),
@@ -165,7 +168,7 @@ describe('authenticateUser', () => {
     const db = {
       select: vi.fn().mockReturnValue({
         from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({ limit }),
+          where: vi.fn().mockReturnValue({ orderBy: vi.fn().mockReturnValue({ limit }), limit }),
         }),
       }),
       update: vi.fn().mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }) }),
@@ -182,20 +185,24 @@ describe('authenticateUser', () => {
     const updateSet = vi.fn().mockReturnValue({ where: updateWhere });
     const updateFn = vi.fn().mockReturnValue({ set: updateSet });
 
+    const successRows = [{
+        id: 'u1',
+        email: 'user@example.com',
+        passwordHash: await hashNewPassword(password),
+        fullName: 'Test User',
+        roleName: 'super_admin',
+        panel: 'admin',
+        tenantId: null,
+        status: 'active',
+    }];
+    const limitFn = vi.fn().mockResolvedValue(successRows);
     const db = {
       select: vi.fn().mockReturnValue({
         from: vi.fn().mockReturnValue({
+          // .orderBy() is chained by the case-insensitive user lookup.
           where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{
-              id: 'u1',
-              email: 'user@example.com',
-              passwordHash: await hashNewPassword(password),
-              fullName: 'Test User',
-              roleName: 'super_admin',
-              panel: 'admin',
-              tenantId: null,
-              status: 'active',
-            }]),
+            orderBy: vi.fn().mockReturnValue({ limit: limitFn }),
+            limit: limitFn,
           }),
         }),
       }),

@@ -1,8 +1,8 @@
 import { z } from 'zod';
-import { paginatedResponseSchema } from './shared.js';
+import { paginatedResponseSchema, identityEmailSchema } from './shared.js';
 
 export const createAdminUserSchema = z.object({
-  email: z.string().email(),
+  email: identityEmailSchema,
   full_name: z.string().min(1).max(255),
   password: z.string().min(8).max(128),
   role_name: z.enum(['admin', 'support', 'billing', 'read_only']),
