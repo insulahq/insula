@@ -55,7 +55,7 @@ export default function Login() {
   const { state: authState, retryNow } = useAuthStatus('admin');
   const authStatus = authState.kind === 'ready' ? authState.status : null;
 
-  const { login, error, setTokenAndUser, token: existingToken, passkeyChallenge, clearPasskeyChallenge } = useAuth();
+  const { login, error, setTokenAndUser, passkeyChallenge, clearPasskeyChallenge } = useAuth();
   const passkey = usePasskey();
   const [passkeyError, setPasskeyError] = useState<string | null>(null);
   const navigate = useNavigate();
