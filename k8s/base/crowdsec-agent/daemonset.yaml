@@ -162,24 +162,26 @@ spec:
               value: "true"
             - name: LOCAL_API_URL
               value: "http://crowdsec.crowdsec.svc.cluster.local:8080"
-            # Per-POD machine identity. Every DaemonSet replica sharing one
-            # machine name would collide in `cscli machines list`, and their
-            # heartbeats would overwrite each other's last-seen — so a dead
-            # agent on one node looks alive because another node checked in.
-            # On a single-node cluster that is invisible; on staging (3 nodes)
-            # it is the difference between noticing a node stopped parsing and
-            # not.
-            - name: POD_NAME
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.name
-            - name: AGENT_USERNAME_PREFIX
+            # The WHOLE machine name, taken verbatim from the Secret — never a
+            # prefix with the pod name appended.
+            #
+            # The LAPI registers exactly one machine: its entrypoint runs
+            # `cscli machines add "$AGENT_USERNAME"` from the identical Secret
+            # in the crowdsec namespace. The name presented here must match
+            # that EXACTLY, or the agent authenticates as a machine that was
+            # never created — and it stays up and reports healthy while its
+            # alerts go nowhere.
+            #
+            # The whole fleet therefore shares one identity, so `cscli machines
+            # list` cannot tell you which node stopped parsing. That is a real
+            # cost, and it is forced by the mechanism: a per-node name has
+            # nothing to register it. Lifting it needs LAPI auto-registration,
+            # which this image exposes no env var for — ROADMAP R31.
+            - name: AGENT_USERNAME
               valueFrom:
                 secretKeyRef:
                   name: crowdsec-agent-credentials
                   key: username
-            - name: AGENT_USERNAME
-              value: "$(AGENT_USERNAME_PREFIX)-$(POD_NAME)"
             - name: AGENT_PASSWORD
               valueFrom:
                 secretKeyRef:

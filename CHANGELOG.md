@@ -48,6 +48,14 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   requested as such alongside `crowdsecurity/rdns`, which is what verifies a
   crawler's reverse DNS. Neither failure stopped the agent reporting healthy.
 
+  And the LAPI would have rejected the agent regardless: it knew only
+  `localhost`, because nothing ever registered the agent's machine. The image's
+  entrypoint registers `$AGENT_USERNAME` **LAPI-side**, so the LAPI now carries
+  the same credentials, and the agent presents the machine name verbatim instead
+  of appending its pod name — the two must match exactly. One consequence is
+  that the fleet shares a single machine identity; `cscli machines list` cannot
+  single out a node that stopped parsing (ROADMAP R31).
+
   Host-migration `2026.9.9/0003` creates the agent's credentials Secret on
   already-installed clusters. `bootstrap.sh` generates it, but bootstrap runs at
   *install* time — every existing cluster would otherwise ship the DaemonSet and

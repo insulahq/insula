@@ -1187,7 +1187,35 @@ first and compare it with the same traffic replayed single-node. The hub scenari
 `capacity`/`leakspeed` values decide how much dilution actually matters, and guessing
 at them is how you end up with either a silent detector or a page every hour.
 
-Related: the per-pod machine identity added alongside this (each agent registers as
-`<prefix>-<pod>`) is what makes a node that stopped parsing visible in
-`cscli machines list` — without it, three nodes overwrite each other's heartbeat and a
-dead agent looks alive.
+Related: **R31**, below — the fleet currently shares ONE machine identity, so
+`cscli machines list` cannot show you which node stopped parsing.
+
+---
+
+## R31 — Per-node identity for the CrowdSec agents
+
+Every agent pod authenticates as the same machine (`insula-agent`).
+
+This is forced by the mechanism, not chosen. The LAPI registers exactly one machine —
+`cscli machines add "$AGENT_USERNAME"` in the crowdsec image's own entrypoint, run
+whenever `AGENT_USERNAME`/`AGENT_PASSWORD` are set — and the agent must present exactly
+that name. A per-pod or per-node name has nothing to register it.
+
+**Cost:** on a multi-node cluster all agents share one row in `cscli machines list` and
+their heartbeats merge, so a single agent that has stopped parsing looks alive. Detection
+still works — the surviving agents keep filling their buckets — but the *silent detector*
+failure mode this platform keeps hitting is exactly the one that becomes invisible here.
+
+**The fix** is LAPI auto-registration: `api.server.auto_registration` with a shared token
+and `allowed_ranges` scoped to the cluster pod CIDR. Agents then self-register under any
+name, and `<prefix>-<node>` becomes possible.
+
+`AutoRegister` exists in the 1.7.8 config struct (`cscli config show --key
+Config.API.Server` reports `AutoRegister: nil`), but the docker entrypoint exposes **no
+env var** for it — the only lever is writing `/etc/crowdsec/config.yaml.local`. That
+directory is an `emptyDir` the entrypoint populates at start, so a mount there risks a
+LAPI that will not boot: strictly worse than merged heartbeats. Verify on DEV before
+adopting, and treat "the LAPI still starts" as the first assertion.
+
+Prerequisite for R30 — you cannot reason about per-node bucket dilution without
+per-node visibility.

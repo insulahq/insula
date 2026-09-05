@@ -5565,29 +5565,37 @@ generate_crowdsec_agent_credentials() {
     return 0
   fi
   log "Generating CrowdSec agent credentials..."
-  # Machine name must be stable; the password is 32 bytes of urandom, same
-  # shape as the bouncer key above.
-  # Prefix only — the pod name is appended by the DaemonSet.
+  # The password is 32 bytes of urandom, same shape as the bouncer key above.
   user="insula-agent"
   pass=$(head -c 32 /dev/urandom | base64 | tr -d '/+=' | head -c 40)
-  # platform-system, not crowdsec: the agent lives there because the crowdsec
-  # namespace enforces Pod Security `baseline`, which forbids the hostPath it
-  # needs. A Secret in the wrong namespace produces a pod stuck on
-  # FailedMount — visible, but only after a deploy.
-  kctl create namespace platform-system >/dev/null 2>&1 || true
-  kctl create secret generic "${secret_name}" -n platform-system \
-    --from-literal=username="${user}" \
-    --from-literal=password="${pass}" >/dev/null
-  # NOTE: the Secret holds a username PREFIX, not a final machine name. The
-  # DaemonSet appends its pod name so every node registers a distinct machine
-  # ("<prefix>-<pod>"), which is what makes `cscli machines list` usable for
-  # spotting a node that stopped parsing. A single shared machine name would
-  # let three nodes overwrite each other's heartbeat, so a dead agent would
-  # look alive.
+  # Written to BOTH namespaces, with the same values in each.
   #
-  # Registration therefore happens agent-side on first start (the container
-  # self-registers with its own name), not here — there is no fixed set of
-  # names to pre-create, and node count changes over a cluster's life.
+  #  - platform-system: the agent DaemonSet lives there, because the crowdsec
+  #    namespace enforces Pod Security `baseline`, which forbids the hostPath
+  #    it needs to read Traefik's access log.
+  #  - crowdsec: the LAPI reads the same credentials to CREATE the machine.
+  #    Its entrypoint runs `cscli machines add "$AGENT_USERNAME"` whenever
+  #    AGENT_USERNAME and AGENT_PASSWORD are both set.
+  #
+  # Both are required. Without the LAPI copy the machine is never registered
+  # and the agent authenticates as something that does not exist — while
+  # staying up and reporting healthy. Secrets are namespace-scoped, so there is
+  # no way to share one object across the two.
+  #
+  # The name is a WHOLE machine name, not a prefix: the LAPI registers exactly
+  # one machine and the agent must present exactly that name, so every node's
+  # agent shares this identity. The cost is that `cscli machines list` shows
+  # one row for the whole fleet and heartbeats merge, so a single dead agent on
+  # a multi-node cluster does not stand out. Per-node identity needs LAPI
+  # auto-registration, which the image does not expose — tracked as ROADMAP R31.
+  kctl create namespace platform-system >/dev/null 2>&1 || true
+  kctl create namespace crowdsec >/dev/null 2>&1 || true
+  local ns
+  for ns in platform-system crowdsec; do
+    kctl create secret generic "${secret_name}" -n "${ns}" \
+      --from-literal=username="${user}" \
+      --from-literal=password="${pass}" >/dev/null
+  done
 }
 
 generate_crowdsec_bouncer_key() {
