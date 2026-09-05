@@ -16,36 +16,58 @@ set -euo pipefail
 # so the DaemonSet ships and then sits at 0/1 with FailedMount — visibly broken,
 # but only after a deploy, and only if someone looks.
 #
-# The agent lives in platform-system (the crowdsec namespace enforces Pod
-# Security `baseline`, which forbids the hostPath it needs), so the Secret goes
-# there too. A Secret in the wrong namespace is the same failure with a more
-# confusing symptom.
+# It is needed in TWO namespaces. The agent DaemonSet lives in platform-system
+# (the crowdsec namespace enforces Pod Security `baseline`, which forbids the
+# hostPath it needs); the LAPI in crowdsec reads the same credentials to CREATE
+# the machine. Missing either one fails silently in its own way — FailedMount on
+# one side, an agent authenticating as a non-existent machine on the other.
 #
-# The machine NAME is not stored here: the DaemonSet appends its pod name to
-# this prefix so each node registers distinctly. Only the shared password lives
-# in the Secret.
+# The username is a WHOLE machine name, not a prefix. The LAPI registers
+# exactly one machine and the agent must present exactly that name, so the
+# fleet shares one identity (ROADMAP R31 tracks per-node identity).
 
 KUBECTL="${KUBECTL:-kubectl}"
-NS="platform-system"
 SECRET="crowdsec-agent-credentials"
+# BOTH namespaces, same values. platform-system runs the agent DaemonSet (the
+# crowdsec namespace enforces Pod Security `baseline`, which forbids its
+# hostPath); crowdsec runs the LAPI, whose entrypoint CREATES the machine from
+# these same credentials. Without the LAPI copy the machine is never registered
+# and the agent authenticates as something that does not exist, while staying up
+# and reporting healthy. Secrets are namespace-scoped — one object cannot serve
+# both.
+NAMESPACES="platform-system crowdsec"
 
 command -v "$KUBECTL" >/dev/null 2>&1 || { echo "crowdsec-agent-credentials: kubectl not found — skipping"; exit 0; }
 
-if ! "$KUBECTL" get namespace "$NS" >/dev/null 2>&1; then
-  echo "crowdsec-agent-credentials: namespace ${NS} absent — nothing to do"
-  exit 0
+# Reuse an existing password from EITHER namespace so a partially-applied run
+# (or an install that predates the LAPI copy) converges to one shared value
+# instead of minting a second, mismatched credential.
+pass=""
+for ns in $NAMESPACES; do
+  if existing="$("$KUBECTL" get secret "$SECRET" -n "$ns" -o jsonpath='{.data.password}' 2>/dev/null)" \
+     && [ -n "$existing" ]; then
+    pass="$(printf '%s' "$existing" | base64 -d 2>/dev/null || true)"
+    [ -n "$pass" ] && break
+  fi
+done
+
+if [ -z "$pass" ]; then
+  # 32 bytes of urandom, same shape as the bouncer key bootstrap.sh generates.
+  pass="$(head -c 32 /dev/urandom | base64 | tr -d '/+=' | head -c 40)"
 fi
 
-if "$KUBECTL" get secret "$SECRET" -n "$NS" >/dev/null 2>&1; then
-  echo "crowdsec-agent-credentials: already present — no change"
-  exit 0
-fi
+changed=0
+for ns in $NAMESPACES; do
+  "$KUBECTL" get namespace "$ns" >/dev/null 2>&1 || continue
+  if "$KUBECTL" get secret "$SECRET" -n "$ns" >/dev/null 2>&1; then
+    continue
+  fi
+  "$KUBECTL" create secret generic "$SECRET" -n "$ns" \
+    --from-literal=username="insula-agent" \
+    --from-literal=password="$pass" >/dev/null
+  echo "crowdsec-agent-credentials: created in ${ns}"
+  changed=1
+done
 
-# 32 bytes of urandom, same shape as the bouncer key bootstrap.sh generates.
-pass="$(head -c 32 /dev/urandom | base64 | tr -d '/+=' | head -c 40)"
-
-"$KUBECTL" create secret generic "$SECRET" -n "$NS" \
-  --from-literal=username="insula-agent" \
-  --from-literal=password="$pass" >/dev/null
-
-echo "crowdsec-agent-credentials: created in ${NS}"
+[ "$changed" -eq 0 ] && echo "crowdsec-agent-credentials: already present — no change"
+exit 0

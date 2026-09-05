@@ -71,6 +71,27 @@ spec:
               value: "true"
             - name: LOCAL_API_URL
               value: "http://127.0.0.1:8080"
+            # Registers the log-processing agent's machine. The LAPI entrypoint
+            # runs `cscli machines add "$AGENT_USERNAME" --password ... --force`
+            # whenever both are set, guarded only by DISABLE_LOCAL_API — so it
+            # runs here despite DISABLE_AGENT=true above (verified against the
+            # image's /docker_start.sh, 2026-09-05).
+            #
+            # Without this the LAPI knows only `localhost`, and the agent
+            # DaemonSet authenticates as a machine that was never created. The
+            # agent stays up and reports healthy; its alerts simply never
+            # arrive. Same Secret, same values as the agent — the names must
+            # match EXACTLY.
+            - name: AGENT_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: crowdsec-agent-credentials
+                  key: username
+            - name: AGENT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: crowdsec-agent-credentials
+                  key: password
             - name: BOUNCER_KEY_traefik
               # The bouncer key is mounted from a Secret + referenced
               # by env so CrowdSec auto-registers the bouncer on

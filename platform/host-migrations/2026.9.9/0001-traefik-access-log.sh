@@ -46,8 +46,13 @@ fi
 args="$("$KUBECTL" get daemonset "$DS" -n "$NS" \
   -o jsonpath='{.spec.template.spec.containers[0].args}' 2>/dev/null || echo '')"
 
+# Test for the FILEPATH flag, not a bare `--accesslog`. `--accesslog=true` on
+# its own logs to stdout, which the agent cannot read (the kubelet wraps stdout
+# in the CRI envelope and the parser needs bare JSON). A cluster in that state
+# is exactly the one this migration must still fix, so it must not be mistaken
+# for a finished one.
 case "$args" in
-  *--accesslog*)
+  *--accesslog.filepath*)
     echo "traefik-access-log: already enabled — no change"
     exit 0
     ;;
@@ -65,12 +70,25 @@ echo "traefik-access-log: enabling JSON access log on ${NS}/${DS}"
 # promoted out of simulation. Referer aids triage. Everything else is dropped:
 # this log is read by a DaemonSet and lands in node-local files, so it must
 # never carry Cookie or Authorization.
+#
+# The log must go to a FILE on a hostPath, not stdout: the agent is a separate
+# DaemonSet and reads it through the node filesystem. Enabling `--accesslog`
+# alone would send it to the container's stdout, where the kubelet wraps every
+# line in the CRI envelope and the crowdsecurity/traefik parser — which expects
+# bare JSON — could not read it.
+#
+# Making the directory WRITABLE is 0004's job, and it is not optional: without
+# it Traefik only warns and serves on with no log at all. The two run in order
+# in the same converger pass.
 "$KUBECTL" patch daemonset "$DS" -n "$NS" --type=json -p '[
   {"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--accesslog=true"},
+  {"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--accesslog.filepath=/var/log/traefik/access.log"},
   {"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--accesslog.format=json"},
   {"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--accesslog.fields.headers.defaultmode=drop"},
   {"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--accesslog.fields.headers.names.User-Agent=keep"},
-  {"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--accesslog.fields.headers.names.Referer=keep"}
+  {"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--accesslog.fields.headers.names.Referer=keep"},
+  {"op":"add","path":"/spec/template/spec/volumes/-","value":{"name":"traefik-access-log","hostPath":{"path":"/var/log/traefik","type":"DirectoryOrCreate"}}},
+  {"op":"add","path":"/spec/template/spec/containers/0/volumeMounts/-","value":{"name":"traefik-access-log","mountPath":"/var/log/traefik"}}
 ]' >/dev/null
 
 echo "traefik-access-log: enabled — Traefik pods will roll to pick it up"
