@@ -91,7 +91,13 @@ four tabs:
 - **WAF Events** — the cluster-wide ModSecurity / CRS event stream, with
   source-IP and date-range filters. The block button on a row adds the source
   to the **static blocklist** — a permanent entry, not a timed ban (see below).
-- **Banned IPs** — active CrowdSec ban decisions plus a static blocklist.
+- **Banned IPs** — active CrowdSec ban decisions plus a static blocklist. Each
+  row is tagged with where it came from: **auto-ban** (added by the auto-ban
+  scheduler), **manual** (an operator clicked Add ban), **static** (the
+  permanent list); untagged rows come from the community blocklist or a
+  CrowdSec scenario. Filters narrow the table to any one of the three. The tag
+  matters when you are deciding whether to lift a ban — an auto-ban will be
+  re-applied if the source keeps tripping the same rules, a manual one will not.
 - **WAF Exclusions** — per-route CRS rule exclusions and IP allowlists.
 - **WAF Settings** — CrowdSec status and Console enrollment, auto-ban
   calibration, and the **L4 host-firewall enforcement** toggle.

@@ -361,11 +361,15 @@ export async function runOnce(deps: SchedulerDeps): Promise<void> {
     try {
       // addBan uses the operator path — actor='autoban-scheduler' so audit
       // logs distinguish auto-bans from operator bans. The scenario prefix
-      // (admin-panel:) is set by addBan; we want auto-ban: instead, but
-      // changing addBan's prefix breaks the existing UI manualByOperator
-      // detection. Instead: prepend AUTO_BAN_REASON_PREFIX to the reason
-      // string so the scenario becomes admin-panel:autoban-scheduler:auto-ban:<reason>.
-      // The UI's autoban detection key off the prefix in the reason segment.
+      // (admin-panel:) is set by addBan; AUTO_BAN_REASON_PREFIX is prepended
+      // to the reason so the scenario becomes
+      // admin-panel:autoban-scheduler:auto-ban:<reason>.
+      //
+      // The classifier keys off the ACTOR segment, not this reason prefix —
+      // see AUTO_BAN_SCENARIO_PREFIX in security-hardening/crowdsec.ts. An
+      // earlier version of this comment claimed the UI already detected
+      // auto-bans from the reason prefix; it did not, and every automatic ban
+      // rendered in the Banned IPs table as `manual`.
       const reason = `${AUTO_BAN_REASON_PREFIX}rules ${d.ruleIds.join(',')} count ${d.eventCount}`;
       await addBan(
         deps.kubeconfigPath,

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { __test } from './crowdsec.js';
 
-const { parseLapiDecision, parseDurationToAbsolute, MANUAL_BAN_REASON_PREFIX } = __test;
+const { parseLapiDecision, parseDurationToAbsolute, MANUAL_BAN_REASON_PREFIX, AUTO_BAN_SCENARIO_PREFIX } = __test;
 
 describe('parseDurationToAbsolute', () => {
   it('returns null for empty / unparseable inputs', () => {
@@ -113,5 +113,57 @@ describe('parseLapiDecision', () => {
       value: '1.2.3.4', scenario: 'test', duration: '1h', simulated: true,
     });
     expect(d!.simulated).toBe(true);
+  });
+});
+
+describe('parseLapiDecision — auto-ban classification', () => {
+  /**
+   * The auto-ban scheduler bans through the same addBan helper an operator
+   * does, with actor='autoban-scheduler', so its scenario also starts with
+   * MANUAL_BAN_REASON_PREFIX. Before AUTO_BAN_SCENARIO_PREFIX existed, every
+   * automatic ban came back manualByOperator=true and the Banned IPs table
+   * rendered it as though a human had clicked it. This is the exact scenario
+   * string observed on the DEV cluster on 2026-09-05.
+   */
+  const autoScenario = 'admin-panel:autoban-scheduler:auto-ban:rules 920450,930120 count 6';
+
+  const decide = (scenario: string) => parseLapiDecision({
+    id: 5, origin: 'cscli', type: 'ban', scope: 'Ip',
+    value: '203.0.113.77', scenario, duration: '1h',
+  });
+
+  it('flags a scheduler ban as autoBanned', () => {
+    expect(decide(autoScenario)!.autoBanned).toBe(true);
+  });
+
+  it('does NOT also call it a manual operator ban', () => {
+    expect(decide(autoScenario)!.manualByOperator).toBe(false);
+  });
+
+  it('still flags a real operator ban as manual, and not auto', () => {
+    const d = decide(`${MANUAL_BAN_REASON_PREFIX}user-123:probing /.env`)!;
+    expect(d.manualByOperator).toBe(true);
+    expect(d.autoBanned).toBe(false);
+  });
+
+  it('cannot be spoofed by an operator typing the reason prefix', () => {
+    // The actor segment comes from the authenticated caller, so a reason of
+    // "auto-ban: ..." from a human still classifies as manual.
+    const d = decide(`${MANUAL_BAN_REASON_PREFIX}user-123:auto-ban:pretending`)!;
+    expect(d.autoBanned).toBe(false);
+    expect(d.manualByOperator).toBe(true);
+  });
+
+  it('does not flag community/scenario decisions as auto-ban', () => {
+    const d = parseLapiDecision({
+      id: 9, origin: 'CAPI', type: 'ban', scope: 'Ip',
+      value: '198.51.100.9', scenario: 'crowdsecurity/http-probing', duration: '4h',
+    })!;
+    expect(d.autoBanned).toBe(false);
+    expect(d.manualByOperator).toBe(false);
+  });
+
+  it('AUTO_BAN_SCENARIO_PREFIX extends the manual prefix (why the exclusion is needed)', () => {
+    expect(AUTO_BAN_SCENARIO_PREFIX.startsWith(MANUAL_BAN_REASON_PREFIX)).toBe(true);
   });
 });
