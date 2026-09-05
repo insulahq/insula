@@ -1219,3 +1219,54 @@ adopting, and treat "the LAPI still starts" as the first assertion.
 
 Prerequisite for R30 — you cannot reason about per-node bucket dilution without
 per-node visibility.
+
+---
+
+## R32 — oauth2-proxy leaves an unauthenticated visitor at a bare 401
+
+Turning on *protect via OAuth2 Proxy* for **either** panel answers an
+unauthenticated browser with `401`, not a redirect to sign in. Measured on DEV
+2026-09-05: admin and tenant behave identically, so this is not specific to the
+tenant panel and was not introduced by the redirect-URI fix in #404/#406.
+
+**Why.** The Traefik ForwardAuth middleware points at oauth2-proxy's
+`/oauth2/auth`, which is the *auth-check* endpoint — it is designed to answer
+`202`/`401` for nginx's `auth_request`, where the redirect is supplied by
+`error_page 401 = @oauth2_signin`. Traefik ForwardAuth has no equivalent: it
+passes the 401 straight through to the browser. `ingress-reconciler.ts` already
+emits the `/oauth2` prefix route the sign-in needs, so the routing half is in
+place — nothing performs the hop to `/oauth2/start`.
+
+**Options**, cheapest first:
+1. A Traefik `errors` middleware on the panel routes mapping `401` to
+   `/oauth2/start?rd=…` on the same host.
+2. Point ForwardAuth at a path that already 302s, if oauth2-proxy exposes one
+   that preserves the original URL.
+3. Serve the sign-in hop from the panel's own nginx.
+
+Verify with an unauthenticated `curl -D-` against the panel root: the pass
+condition is a `302` to `/oauth2/start`, never a `401`. Note the API stays
+reachable throughout (`--skip-auth-route=^/api/`), so this is a browser-UX
+failure, not a lockout.
+
+---
+
+## R33 — Dex does not restart when its ConfigMap changes
+
+Dex reads `config.yaml` once at startup. Nothing rolls the Deployment when the
+ConfigMap changes, so a config edit lands in the cluster and has **no effect**
+until something unrelated restarts the pod.
+
+Measured on DEV 2026-09-05: the tenant-panel `redirectURIs` fix had been merged
+and applied, `kubectl get cm` showed the new value, and sign-in still failed with
+`Unregistered redirect_uri` — the running pod was **9 days old**. Deleting it
+fixed it instantly.
+
+This is silent in the worst way: Flux reports the revision applied, the
+ConfigMap is visibly correct, and only the running process disagrees.
+
+**Fix:** stamp a hash of the rendered config onto the pod template
+(`checksum/config: <sha256>`), the standard Helm/Kustomize idiom, so any content
+change rolls the Deployment. Audit the other ConfigMap-driven Deployments for
+the same gap while there — Dex is unlikely to be the only one.
+
