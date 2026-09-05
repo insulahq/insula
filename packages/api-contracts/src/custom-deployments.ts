@@ -319,7 +319,7 @@ export const customVolumeDefSchema = z.object({
 
 /** Inline ConfigMap (compose `configs` or simple-form file injection). */
 export const customConfigMapSchema = z.object({
-  name: z.string().regex(CUSTOM_NAME_RE),
+  name: z.string().regex(CUSTOM_NAME_RE, { message: 'Name must be DNS-compatible: lowercase letters, digits, and hyphens (max 63 chars, must start and end with letter/digit)' }),
   /** UTF-8 inline content. Phase 1 cap: 1 MiB per ConfigMap. */
   content: z.string().max(1024 * 1024),
   /** Default file mode for mounted entries (`0644`). */
@@ -328,7 +328,7 @@ export const customConfigMapSchema = z.object({
 
 /** Inline Secret (compose `secrets`). Stored encrypted at rest. */
 export const customSecretSchema = z.object({
-  name: z.string().regex(CUSTOM_NAME_RE),
+  name: z.string().regex(CUSTOM_NAME_RE, { message: 'Name must be DNS-compatible: lowercase letters, digits, and hyphens (max 63 chars, must start and end with letter/digit)' }),
   /** UTF-8 inline content. Phase 1 cap: 1 MiB per Secret. */
   content: z.string().max(1024 * 1024),
   mode: z.number().int().min(0).max(0o777).default(0o400),
@@ -465,7 +465,12 @@ export const createCustomDeploymentSimpleSchema = z.object({
 export const createCustomDeploymentComposeSchema = z.object({
   mode: z.literal('compose'),
   /** Optional during the editor preview/validate path; required for actual deployment. */
-  name: z.string().max(63).regex(CUSTOM_NAME_RE).optional(),
+  /** Optional so the editor can validate the YAML before a name is typed.
+   *  NOTE: optional accepts `undefined`, NOT `''` — an empty string still hits
+   *  the regex. The editor must OMIT the key, not send a blank one. */
+  name: z.string().max(63).regex(CUSTOM_NAME_RE, {
+    message: 'Name must be DNS-compatible: lowercase letters, digits, and hyphens (max 63 chars, must start and end with letter/digit)',
+  }).optional(),
   compose_yaml: z.string().min(1).max(256 * 1024),
   /** Files referenced by compose `env_file:` directives. Map of
    *  filename → UTF-8 content. */
@@ -545,6 +550,14 @@ export const customDeploymentIssueSchema = z.object({
   message: z.string().max(2048),
   /** Optional hint for the UI on how to fix it. */
   hint: z.string().max(2048).optional(),
+  /**
+   * 1-based line in the submitted `compose_yaml` that `path` points at, when
+   * the backend could resolve it confidently. Absent for form-field issues
+   * (`name`), for simple-mode deployments, and whenever the path could not be
+   * located — a line number aimed at the wrong field is worse than none,
+   * because the tenant edits that field and the error persists.
+   */
+  line: z.number().int().min(1).optional(),
 });
 
 /** Rendered k8s manifest preview, for the editor's "Rendered" tab. */

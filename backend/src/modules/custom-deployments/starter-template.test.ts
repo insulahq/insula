@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { parseCompose } from './compose-parser.js';
 import { validateCustomSpec } from './validator.js';
+import { createCustomDeploymentComposeSchema } from './schema.js';
 
 /**
  * The compose editor ships a pre-filled starter stack. It is the first thing
@@ -73,5 +74,57 @@ describe('the shipped compose starter template', () => {
       expect(svc.image, `${name} must not use a moving tag`).not.toMatch(/:latest$/);
       expect(svc.image, `${name} must carry an explicit tag`).toMatch(/:.+$/);
     }
+  });
+});
+
+/**
+ * The layer the test above does NOT cover, and which is where the starter
+ * actually broke in production.
+ *
+ * Running the template through the parser proves the YAML is fine. It says
+ * nothing about the REQUEST the editor sends — and the editor sent
+ * `name: ""`, because `name` is `.optional()` (which accepts `undefined`, not
+ * an empty string) and `buildInput()` always included the field. So an
+ * untouched editor's first click on Validate returned
+ * "Invalid string: must match pattern /^[a-z0-9]…/" about a field the tenant
+ * had never touched. Green parser tests, broken feature.
+ *
+ * These assert the body shape instead of the YAML.
+ */
+describe('the compose validate request body', () => {
+  const compose_yaml = 'services:\n  web:\n    image: nginx:1.27.3\n';
+
+  it('parses when `name` is OMITTED — the untouched-editor case', () => {
+    const r = createCustomDeploymentComposeSchema.safeParse({ mode: 'compose', compose_yaml });
+    expect(r.success).toBe(true);
+  });
+
+  // This is the bug, pinned. If it ever passes, `.optional()` has been changed
+  // to tolerate '' and the editor's omit-when-blank logic can be dropped —
+  // until then, the editor MUST NOT send a blank name.
+  it('REJECTS an empty-string `name`, which is why the editor omits it', () => {
+    const r = createCustomDeploymentComposeSchema.safeParse({ mode: 'compose', name: '', compose_yaml });
+    expect(r.success).toBe(false);
+  });
+
+  it('accepts a real name', () => {
+    const r = createCustomDeploymentComposeSchema.safeParse({ mode: 'compose', name: 'my-stack', compose_yaml });
+    expect(r.success).toBe(true);
+  });
+
+  // The message a tenant reads must describe the rule, not dump the regex.
+  it('explains what a valid name looks like instead of printing the pattern', () => {
+    const r = createCustomDeploymentComposeSchema.safeParse({ mode: 'compose', name: 'Bad Name', compose_yaml });
+    expect(r.success).toBe(false);
+    const msg = r.success ? '' : r.error.issues.map((i) => i.message).join(' ');
+    expect(msg).toContain('DNS-compatible');
+    expect(msg).not.toContain('must match pattern');
+  });
+
+  it('the shipped template itself passes the request schema with no name', () => {
+    const r = createCustomDeploymentComposeSchema.safeParse({
+      mode: 'compose', compose_yaml: shippedTemplate(),
+    });
+    expect(r.success).toBe(true);
   });
 });

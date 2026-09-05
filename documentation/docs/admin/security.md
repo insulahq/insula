@@ -89,11 +89,29 @@ one-click buttons. The deep operator context lives in the
 four tabs:
 
 - **WAF Events** — the cluster-wide ModSecurity / CRS event stream, with
-  source-IP and date-range filters.
+  source-IP and date-range filters. The block button on a row adds the source
+  to the **static blocklist** — a permanent entry, not a timed ban (see below).
 - **Banned IPs** — active CrowdSec ban decisions plus a static blocklist.
 - **WAF Exclusions** — per-route CRS rule exclusions and IP allowlists.
 - **WAF Settings** — CrowdSec status and Console enrollment, auto-ban
   calibration, and the **L4 host-firewall enforcement** toggle.
+
+### Two ways to block an address
+
+They are not interchangeable, and the panel keeps them apart:
+
+| | Where it lives | Expires? | Use it when |
+|---|---|---|---|
+| **Ban (CrowdSec decision)** | *Banned IPs* → Add ban | **Yes** — you choose a duration | Reacting to a burst you expect to pass |
+| **Static blocklist** | *Banned IPs* → Static Blocklist, and the block button on any **WAF Events** row | **No** — until you remove it | You have judged the source itself unwelcome |
+
+Blocking from a WAF event uses the **static** list on purpose. A block made
+from evidence of an attack is a decision about that source, and a timed ban
+would lapse quietly while you believed the address was still handled. The
+dialog says *Permanent — until removed* and offers no duration, so the two are
+hard to confuse.
+
+To undo either one, remove the entry from its table in **Banned IPs**.
 
 !!! note "Adding an exclusion always works, by design"
     A rule exclusion necessarily contains the pattern it excludes, so the
@@ -145,3 +163,12 @@ did what. Filter by action type, resource type, HTTP method, free-text
 path search, date range, tenant, or actor, with cursor pagination and
 color-coded badges. The [Dashboard](index.md) 5xx card and Posture's
 Security Events tab both deep-link here.
+
+Wherever the panel attributes an action to someone — the audit log's
+**Actor** column, the **Added by** column on WAF allowlists and rule
+exclusions, step-up authentication events, and secret-coverage entries —
+it shows the person's **name and email address**, not their internal user
+ID. Automated and unauthenticated actions are labelled *System* and
+*Anonymous* respectively. If an account has since been deleted, the
+original ID is shown shortened, with the full value on hover, so the
+historical record stays intact rather than silently becoming blank.

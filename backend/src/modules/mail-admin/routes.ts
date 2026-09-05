@@ -29,7 +29,7 @@ import { assertInternalBearer, INTERNAL_BEARER_ROUTE } from './internal-bearer.j
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import * as service from './service.js';
-import { readStalwartCredentials } from './credentials.js';
+import { readStalwartCredentials, readStalwartCredentialsAuthoritative } from './credentials.js';
 import { rotateAdminPasswordViaJmap } from './rotate-jmap.js';
 import { rotateWebmailMasterPassword } from './rotate-webmail-master.js';
 import { readStalwartMasterUser, MASTER_SENTINEL_DOMAIN } from './stalwart-master-user.js';
@@ -268,7 +268,21 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
   // audit trails by talking to Stalwart's JMAP/web-admin directly).
   app.get('/admin/mail/stalwart-credentials', { preHandler: requireRole('super_admin') }, async (req) => {
     try {
-      return success(readStalwartCredentials(process.env));
+      // Read the Secret itself, not platform-api's mount of it. Kubelet
+      // refreshes a mounted Secret up to ~60s late, and the admin panel's
+      // credentials query is staleTime:0 / refetchOnMount:'always' — so right
+      // after a rotation that refetch used to read the stale FILE and replace
+      // the correct password the mutation had just seeded with the OLD one.
+      // Falls back to the file/env reader if the API read fails.
+      return success(await readStalwartCredentialsAuthoritative(
+        process.env,
+        async (ns, name) => {
+          const { createK8sClients } = await import('../k8s-provisioner/k8s-client.js');
+          const k8s = createK8sClients(process.env.KUBECONFIG_PATH);
+          const res = await k8s.core.readNamespacedSecret({ name, namespace: ns });
+          return res.data as Record<string, string> | undefined;
+        },
+      ));
     } catch (err) {
       // Audit the *attempt*, not the creds.
       app.log.warn({ err, userId: req.user?.sub }, 'mail-admin: stalwart-credentials read failed');

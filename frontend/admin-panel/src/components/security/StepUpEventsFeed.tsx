@@ -9,6 +9,7 @@
  * Read-only — drill-down is "View all in Audit Logs" link.
  */
 import { Link } from 'react-router-dom';
+import UserLabel from '@/components/ui/UserLabel';
 import { CheckCircle2, XCircle, ExternalLink } from 'lucide-react';
 import { useAuditLogs } from '@/hooks/use-audit-logs';
 
@@ -69,7 +70,7 @@ export default function StepUpEventsFeed() {
                       {new Date(e.createdAt).toLocaleString()}
                     </td>
                     <td className="py-2 pr-3 font-mono text-gray-700 dark:text-gray-300">{e.actionType}</td>
-                    <td className="py-2 pr-3 text-gray-700 dark:text-gray-300">{e.actorId}</td>
+                    <td className="py-2 pr-3 text-gray-700 dark:text-gray-300"><UserLabel userId={e.actorId} /></td>
                     <td className="py-2 pr-3 font-mono text-gray-600 dark:text-gray-400">{e.ipAddress ?? '—'}</td>
                     <td className="py-2 pr-3">
                       {failed ? (

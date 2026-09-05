@@ -144,6 +144,22 @@ itself is described in [Tenants](tenants.md).
 - **Sources** — what triggers a notification (one entry per event type),
   with its default channels and rate limit. (Subscription-expiry reminders
   are configured here — see [Plans & subscriptions](plans-and-subscriptions.md).)
+  The table is **searchable** (the box matches the id, name, description,
+  audience, severity and channels — so typing `ntfy` finds every source
+  pushed to your phone) and **sortable** by any column header. Tick the
+  checkboxes to select rows and a **bulk action bar** appears at the bottom:
+  enable or disable a channel across the selection, or activate/deactivate
+  the selected sources in one go. **Mandatory** sources cannot be selected —
+  they are locked by design, so they are never silently included in a bulk
+  change. Bulk changes are applied one source at a time; if any of them
+  fails, the panel reports exactly how many succeeded and keeps your
+  selection so you can retry just the rest.
+
+    **Every source starts with every delivery channel enabled**, including any
+    channel added in a future release. Turn a channel off per source here when
+    you do not want it; nothing re-enables it afterwards. A channel only
+    actually delivers once a provider exists for it, so enabling *ntfy* on a
+    source is inert until you add an ntfy provider under **Providers**.
 - **Providers** — the transport endpoints that deliver them: SMTP relays
   for email, and **ntfy push** for phone/desktop push notifications.
 
@@ -152,8 +168,10 @@ itself is described in [Tenants](tenants.md).
     [ntfy.sh](https://ntfy.sh) or your own self-hosted ntfy server (any
     reachable URL, in-cluster included), pick a topic, and — for private
     topics — an access token or username/password (stored encrypted).
-    Mark it **Default for ntfy**, use **Test** to publish a check message,
-    then enable the *ntfy* channel on the Sources you want pushed.
+    Mark it **Default for ntfy** and use **Test** to publish a check message.
+    The *ntfy* channel is already enabled on every Source, so pushes start as
+    soon as a default provider exists — turn it off on any Source you do not
+    want pushed.
     ntfy is a **topic broadcast**: one message per event for everyone
     subscribed to the topic (it does not appear in per-user notification
     preferences), with priority mapped from the event severity and a

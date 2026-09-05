@@ -12,6 +12,157 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- `ci-mail-image-pin-check.sh` — asserts every `stalwartlabs/stalwart` reference
+  in `k8s/` and `backend/src` names the same tag, and that the stalwart-cli
+  version + sha256 agree across both pins. `archive.ts` already carried the
+  scar ("v0.16.5 while the server ran v0.16.14 — eleven releases of silent
+  drift"); the unit test added then asserts the resolver against a literal in
+  its own file, so nothing compared the files to each other. Now something does.
+- **Compose validation errors now carry a line number.** The backend resolves
+  each issue's dotted path (`services.db.deploy.resources.limits.memory`) back
+  to the line it came from, the editor renders those as inline squiggles you
+  can hover, and each entry in the Issues pane gets a **line N** button that
+  scrolls the editor to it. Previously an issue said *what* was wrong but never
+  *where*, so finding it in a 60-line stack meant reading the whole file.
+  Unresolvable paths get no line rather than a guessed one. Validator issues
+  are translated from normalized-spec coordinates
+  (`services.db.resources.memoryLimit`) back to compose ones
+  (`…deploy.resources.limits.memory`) first, so two errors about the same field
+  no longer disagree about whether it has a line.
+
+### Changed
+- **Email pages lead with Storage Usage instead of "Mail Server: Stalwart".**
+  That tile showed a constant — it never changed and told the operator nothing
+  they could act on, while holding the most prominent slot in the row. The new
+  first tile shows how much disk the mail data is actually using.
+- **Per-node mail storage reports real free space instead of "Scheduled (PVC
+  requests)".** Mail runs on `local-path`, where a PVC request reserves nothing
+  and enforces nothing — a 30Gi request sat beside 63 MB of actual mail — and
+  *Headroom* was computed as `total − scheduled`, so the fiction propagated
+  into the one number an operator would act on. Both are replaced by the node
+  filesystem's actual free bytes, read from the kubelet Summary API. Null (not
+  0) when that read fails, since "0 B free" reads as a full disk.
+- **"Added by" / "Actor" columns show the person, not a UUID.** WAF IP
+  allowlists, WAF rule exclusions, step-up events, secrets coverage and the
+  audit log all recorded who acted as a raw user id — the audit log showed
+  eight characters of one, which identified nobody. They now render
+  `Full Name (email)` from a single shared, cached lookup. An id that resolves
+  to nobody keeps a shortened id with the full value in the tooltip, because a
+  deleted admin is exactly when that record matters; `anonymous` and `system`
+  pass through unchanged.
+
+
+- **Stalwart 0.16.16 → 0.16.20.** Four patch releases, no migration — every one
+  states that upgrading within 0.16.x is a binary/image replacement. The
+  0.16.19 `ALTER TABLE` note applies only to MySQL/MariaDB data stores; this
+  platform runs Stalwart on embedded RocksDB, so it does not apply. The
+  RocksDB-checkpoint coupling was re-verified rather than assumed: Stalwart's
+  own `Cargo.lock` pins the same `librocksdb-sys 0.17.3+10.4.2` / `rocksdb
+  0.24.0` at both tags, so the checkpoint binary still links the same C++
+  rocksdb as the store it opens. Brings ACME
+  order-failure logging and retry fixes (mail TLS runs through Stalwart's
+  http-acme), DANE and MTA-STS delivery fixes, and a `/api/discover` fix for
+  master-user names containing `%`.
+- **stalwart-cli v1.0.4 → v1.0.12**, version and sha256 moved together across
+  both pins. The archive is checksum-verified by the Job, so a version bumped
+  without its hash fails that check rather than running an unverified binary.
+- Bulwark's image is digest-pinned, which hides the version. The manifest now
+  records the version, how to re-resolve the digest, and why 1.9.2 is a floor.
+- **Every notification source now defaults to every delivery channel**, including
+  channels added in future releases. `defaultChannels` was seeded per-source, so
+  when the *ntfy* channel shipped, all 50 sources silently kept delivering only
+  to email and in-app — a channel nobody could reach without editing 50 rows by
+  hand. The seed and the column default are now derived from the channel enum
+  itself, and migration `0099` backfills existing rows additively (it only adds
+  missing channels; a channel an operator turned off stays off).
+- **The Ban button in WAF Events adds a static, long-term block**, not a
+  temporary one. An operator banning an IP they just watched attack the platform
+  meant it permanently; the button wrote a decision that expired on the CrowdSec
+  auto-ban schedule instead, so the IP quietly came back. The modal now takes an
+  explicit ban target and WAF Events passes `static`.
+- **Notification Sources is a real table**: searchable across every field a row
+  shows (id, name, description, audience, severity, GDPR basis, channels),
+  sortable by any column, and multi-selectable with a bulk action bar that can
+  enable or disable a channel — or activate/deactivate — across the selection.
+  Mandatory sources are excluded from selection since they cannot be edited.
+  Bulk changes are issued one PATCH at a time rather than fanned out with
+  `Promise.all`, which would fire N concurrent writes at a rate-limited endpoint
+  and hide a partial write behind the first rejection; failures are counted and
+  the selection is kept so only they need retrying.
+
+### Removed
+- `mail-admin/rotate.ts` and its test — a dead, restart-based Stalwart
+  admin-password rotation superseded by the in-flight JMAP `Principal/set` path
+  in `rotate-jmap.ts`, which is what the route actually calls. Nothing imported
+  it but its own test. It also carried a latent defect that shows why it was
+  never exercised: it verified the rotation by POSTing to `/api/oauth`, an
+  endpoint that returns 404 on Stalwart 0.16.16 and 0.16.20 alike, so the poll
+  could never have succeeded. Correcting a module no caller reaches would only
+  have preserved an obsolete second model of how rotation works; the live path
+  verifies against `GET /jmap/session` and needs no restart.
+
+### Fixed
+- **The notification template-coverage guard never ran on notification changes,
+  then failed the release promote.** `ci-infrastructure.yml`'s path filter did not
+  list `backend/src/modules/notifications/**`, so the guard that exists to protect
+  the (category × channel) template matrix sat out all four PRs that edited it and
+  only fired on the promote, where every path changes. The path is now listed in
+  both trigger blocks. The failure it caught was real: the seed file had started
+  importing a *runtime* value from `@insula/api-contracts`, and the guard executes
+  that file through node's type-stripping loader, which resolves no `node_modules`
+  — so the seed could not even load. The seed now rebuilds the channel list from a
+  total `Record<NotificationChannelId, true>`, which keeps the compile-time
+  guarantee (add a channel to the enum without listing it and tsc fails) with no
+  runtime import. Verified the guard passes in a bare checkout with no
+  `node_modules`, and that tsc still fails when a channel is added but not listed.
+- **Rotating the Stalwart admin password showed the OLD password in the admin
+  panel.** The rotation patches the Kubernetes Secret, but platform-api served
+  the reveal endpoint from its *volume mount* of that Secret — and kubelet
+  refreshes a mounted Secret up to ~60s late. The credentials query is
+  deliberately `staleTime: 0` + `refetchOnMount: 'always'`, so the refetch that
+  fires straight after a rotation re-read the stale file and overwrote the
+  correct password the mutation had just seeded. The panel showed the previous
+  password until a reload more than a minute later. The reveal endpoint now
+  reads the Secret through the API — removing the window rather than racing it,
+  and HA-safe in a way an in-process cache would not be. Falls back to the
+  mounted file if the read fails, so a missing RBAC grant degrades instead of
+  breaking the reveal.
+- **DKIM status showed every RSA selector as "invalid"** in Email Management →
+  Email Domains, on domains whose keys existed and whose mail was being signed
+  and delivered normally. Stalwart wraps any TXT value too long for one line in
+  parentheses, and an RSA public key always is; the zone-file parser worked
+  line by line, so it matched only the record's opening line — which carries
+  `_domainkey` and `TXT` but no quoted fragments — and skipped the
+  continuation lines because they lack `_domainkey`. The selector was reported
+  invalid with a blank TXT value and no public key. Ed25519 keys fit on one
+  line, which is why the platform's own apex looked healthy while every tenant
+  domain, which gets only the RSA selector, showed invalid. Parenthesised
+  records are now folded into one logical line before parsing. Display-only —
+  signing was never affected.
+- **Clicking Validate on an untouched compose editor failed with a raw regex.**
+  The stack name is optional for the preview, but the editor sent `name: ""`
+  and `.optional()` accepts `undefined`, not an empty string — so the blank
+  field hit the DNS-name pattern and returned
+  `Invalid string: must match pattern /^[a-z0-9]…/` about a field the tenant
+  had not filled in. The editor now omits the key when blank, which is what
+  its own comment had claimed all along.
+- Name validation errors describe the rule instead of printing the regex. The
+  compose stack name and the inline config/secret names all had bare
+  `.regex()` calls with no message, so Zod emitted the pattern verbatim.
+- The single-container wizard no longer lets you click **Validate** before
+  entering a name — simple mode requires one, so doing so produced a backend
+  error about a field the form had not asked for yet. The button now explains
+  what is missing.
+
+### Security
+- **Bulwark webmail 1.7.8 → 1.9.2**, which fixes GHSA-24w9-8r42-8jwm: a
+  DNS-rebinding SSRF reachable through the **unauthenticated**
+  `/api/fetch-ical` endpoint. The public-host check ran before `fetch()` opened
+  its socket, so a hostname under attacker control could rebind to loopback,
+  RFC-1918 or cloud-metadata addresses in between and return up to 10 MB of the
+  internal response. Redirect targets are now validated the same way.
+
 ## [2026.9.6] - 2026-09-04
 
 ### Added
