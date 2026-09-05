@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import type { CreateImapSyncJobRequest } from '@insula/api-contracts';
 import { apiFetch } from '@/lib/api-client';
 
 // ─── Email Domains ───
@@ -398,20 +399,8 @@ export interface ImapSyncJob {
   readonly updatedAt: string;
 }
 
-export interface CreateImapSyncJobInput {
-  readonly mailbox_id: string;
-  readonly source_host: string;
-  readonly source_port: number;
-  readonly source_username: string;
-  readonly source_password: string;
-  readonly source_ssl: boolean;
-  readonly options?: {
-    readonly automap?: boolean;
-    readonly noFolderSizes?: boolean;
-    readonly dryRun?: boolean;
-    readonly excludeFolders?: readonly string[];
-  };
-}
+/** Wire shape from @insula/api-contracts. */
+type CreateImapSyncJobInput = CreateImapSyncJobRequest;
 
 export function useImapSyncJobs(tenantId?: string) {
   return useQuery({

@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import type { CreateDnsServerRequest, CreateDnsProviderGroupRequest } from '@insula/api-contracts';
 import { apiFetch } from '@/lib/api-client';
 
 // ─── DNS Servers ────────────────────────────────────────────────────────────
@@ -25,16 +26,8 @@ export function useDnsServers() {
   });
 }
 
-interface CreateDnsServerInput {
-  readonly display_name: string;
-  readonly provider_type: string;
-  readonly connection_config: Record<string, unknown>;
-  readonly zone_default_kind?: 'Native' | 'Master';
-  readonly is_default?: boolean;
-  readonly enabled?: boolean;
-  readonly group_id?: string;
-  readonly role?: 'primary' | 'secondary';
-}
+/** Wire shape from @insula/api-contracts. */
+type CreateDnsServerInput = CreateDnsServerRequest;
 
 export function useCreateDnsServer() {
   const qc = useQueryClient();
@@ -98,11 +91,8 @@ export function useDnsProviderGroups() {
   });
 }
 
-interface CreateDnsProviderGroupInput {
-  readonly name: string;
-  readonly is_default?: boolean;
-  readonly ns_hostnames?: string[];
-}
+/** Wire shape from @insula/api-contracts. */
+type CreateDnsProviderGroupInput = CreateDnsProviderGroupRequest;
 
 export function useCreateDnsProviderGroup() {
   const qc = useQueryClient();

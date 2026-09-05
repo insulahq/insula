@@ -163,5 +163,8 @@ export type DomainListResponse = z.infer<typeof domainListResponseSchema>;
 export type DomainDeletePreview = z.infer<typeof domainDeletePreviewSchema>;
 export type CreateDnsProviderGroupInput = z.infer<typeof createDnsProviderGroupSchema>;
 export type UpdateDnsProviderGroupInput = z.infer<typeof updateDnsProviderGroupSchema>;
+/** Wire shapes (z.input) for the DNS provider-group endpoints. */
+export type CreateDnsProviderGroupRequest = z.input<typeof createDnsProviderGroupSchema>;
+export type UpdateDnsProviderGroupRequest = z.input<typeof updateDnsProviderGroupSchema>;
 export type MigrateDnsInput = z.infer<typeof migrateDnsSchema>;
 export type DnsProviderGroupResponse = z.infer<typeof dnsProviderGroupResponseSchema>;

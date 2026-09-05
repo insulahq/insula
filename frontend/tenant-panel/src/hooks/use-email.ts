@@ -1,4 +1,4 @@
-import type { MailUsageResponse, EmailConnectionInfo } from '@insula/api-contracts';
+import type { MailUsageResponse, EmailConnectionInfo, CreateImapSyncJobRequest, UpdateImapSyncJobRequest} from '@insula/api-contracts';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
 
@@ -566,20 +566,8 @@ export interface ImapSyncJob {
   readonly updatedAt: string;
 }
 
-export interface CreateImapSyncJobInput {
-  readonly mailbox_id: string;
-  readonly source_host: string;
-  readonly source_port: number;
-  readonly source_username: string;
-  readonly source_password: string;
-  readonly source_ssl: boolean;
-  readonly options?: {
-    readonly automap?: boolean;
-    readonly noFolderSizes?: boolean;
-    readonly dryRun?: boolean;
-    readonly excludeFolders?: readonly string[];
-  };
-}
+/** Wire shape from @insula/api-contracts. */
+type CreateImapSyncJobInput = CreateImapSyncJobRequest;
 
 export function useImapSyncJobs(tenantId?: string) {
   return useQuery({
@@ -653,19 +641,8 @@ export function useResyncImapSyncJob(tenantId: string) {
   });
 }
 
-export interface UpdateImapSyncJobInput {
-  readonly source_host?: string;
-  readonly source_port?: number;
-  readonly source_username?: string;
-  readonly source_password?: string;
-  readonly source_ssl?: boolean;
-  readonly options?: {
-    readonly automap?: boolean;
-    readonly noFolderSizes?: boolean;
-    readonly dryRun?: boolean;
-    readonly excludeFolders?: readonly string[];
-  };
-}
+/** Wire shape from @insula/api-contracts. */
+type UpdateImapSyncJobInput = UpdateImapSyncJobRequest;
 
 // Update source settings on a terminal (non-running) job.
 export function useUpdateImapSyncJob(tenantId: string) {
