@@ -29,6 +29,16 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   namespaceSelector + podSelector pair, because a bare podSelector only matches
   pods in the policy's own namespace and would have silently matched nothing.
 
+  Traefik could not actually write the access log. The kubelet creates a
+  hostPath directory as `root:root 0755`, Traefik runs as uid 65532 with a
+  read-only rootfs, and it treats the resulting `permission denied` as a
+  WARNING — starting normally, serving traffic and reporting Ready with no
+  access log at all. The agent would then have tailed a file that never
+  appeared and detected nothing, on fresh installs and upgrades alike. A
+  `prepare-access-log` init container now chowns the directory on every node.
+  Host-migration `2026.9.9/0001` was also missing `--accesslog.filepath` and
+  the volume entirely, so it had only ever configured stdout logging.
+
   Host-migration `2026.9.9/0003` creates the agent's credentials Secret on
   already-installed clusters. `bootstrap.sh` generates it, but bootstrap runs at
   *install* time — every existing cluster would otherwise ship the DaemonSet and

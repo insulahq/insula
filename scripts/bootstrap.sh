@@ -5222,6 +5222,53 @@ volumes:
     type: hostPath
 deployment:
   initContainers:
+    # The mount alone is NOT enough, verified on a live node 2026-09-05.
+    #
+    # The kubelet creates a hostPath directory as root:root 0755, and Traefik
+    # runs as uid 65532 with a read-only rootfs. It therefore cannot create
+    # access.log inside it, and — critically — it does not treat that as fatal:
+    #
+    #   WRN Unable to create access logger
+    #       error="...open /var/log/traefik/access.log: permission denied"
+    #
+    # Traefik then starts, serves traffic and reports Ready with no access log
+    # at all, so the CrowdSec agent tails a file that never appears and detects
+    # nothing while looking perfectly healthy. An init container fixes the
+    # ownership per pod, which means every node gets it — including nodes added
+    # to the cluster later, which a host-side mkdir in this script would miss.
+    - name: prepare-access-log
+      image: alpine/k8s:1.33.13
+      imagePullPolicy: IfNotPresent
+      securityContext:
+        # Root is required to chown a root-owned directory, and nothing less
+        # will do. It is scoped as tightly as the job allows: two capabilities,
+        # a read-only rootfs, no privilege escalation, and a single chown.
+        runAsUser: 0
+        runAsNonRoot: false
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+          add: ["CHOWN", "DAC_OVERRIDE"]
+      resources:
+        requests:
+          cpu: 10m
+          memory: 16Mi
+        limits:
+          memory: 64Mi
+      volumeMounts:
+        - name: traefik-access-log
+          mountPath: /var/log/traefik
+      command:
+        - /bin/sh
+        - -c
+        # chown only, never `install -d` or chmod: changing the MODE of a
+        # directory owned by someone else additionally needs CAP_FOWNER, and
+        # the kubelet already creates it 0755, which is what we want.
+        - |
+          set -eu
+          mkdir -p /var/log/traefik
+          chown 65532:65532 /var/log/traefik
     - name: wait-for-plugin-registry
       image: alpine/k8s:1.33.13
       imagePullPolicy: IfNotPresent
