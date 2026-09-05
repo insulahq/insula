@@ -6769,7 +6769,19 @@ generate_platform_secrets() {
 
   # Hostnames are bare-apex across all environments (no env prefix).
   # See apply_platform_manifests for the matching design choice.
-  local issuer_url redirect_url
+  # redirect_url is deliberately left EMPTY for every environment.
+  #
+  # oauth2-proxy accepts exactly one --redirect-url. Pinning it to the admin
+  # host (what this did until 2026-09-05) meant a visitor to the TENANT panel
+  # was sent to the IdP with `redirect_uri=https://admin.<apex>/oauth2/callback`
+  # and came back on the admin host holding a cookie for a host they were never
+  # trying to reach — so `protectTenantViaProxy` could not work at all.
+  #
+  # Empty, oauth2-proxy derives the callback per request from X-Forwarded-Host
+  # (verified against v7.15.3 on a live cluster: the tenant host yields the
+  # tenant callback, the admin host the admin one). Both callbacks must be
+  # registered on the IdP client — see the dex overlays.
+  local issuer_url redirect_url=""
   if [[ "$PLATFORM_ENV" == "dev" ]]; then
     # HTTPS to match Dex's advertised issuer (development/dex/config.yaml:
     # issuer: https://dex.<domain>/dex) + the registered oauth2-proxy client
@@ -6779,16 +6791,13 @@ generate_platform_secrets() {
     # internal Dex Service (plaintext :5556) so this https issuer never needs
     # a publicly-trusted cert; --cookie-secure=true assumes https.
     issuer_url="https://dex.${PLATFORM_DOMAIN}/dex"
-    redirect_url="https://admin.${PLATFORM_DOMAIN}/oauth2/callback"
   elif [[ "$PLATFORM_ENV" == "staging" ]]; then
     issuer_url="https://dex.${PLATFORM_DOMAIN}/dex"
-    redirect_url="https://admin.${PLATFORM_DOMAIN}/oauth2/callback"
   else
     # Production: operator may configure an external OIDC issuer
     # (e.g. Auth0, Keycloak). Default to the in-cluster Dex if the
     # operator didn't pin one via OIDC_ISSUER_URL env.
     issuer_url="${OIDC_ISSUER_URL:-https://dex.${PLATFORM_DOMAIN}/dex}"
-    redirect_url="https://admin.${PLATFORM_DOMAIN}/oauth2/callback"
   fi
 
   kctl create secret generic oauth2-proxy-config \

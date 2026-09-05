@@ -17,7 +17,7 @@ export default function Login() {
   const { state: authState, retryNow } = useAuthStatus('tenant');
   const authStatus = authState.kind === 'ready' ? authState.status : null;
 
-  const { login, error, setTokenAndUser, token: existingToken, passkeyChallenge, clearPasskeyChallenge } = useAuth();
+  const { login, error, setTokenAndUser, passkeyChallenge, clearPasskeyChallenge } = useAuth();
   const passkey = usePasskey();
   const [passkeyError, setPasskeyError] = useState<string | null>(null);
   const navigate = useNavigate();
@@ -37,20 +37,17 @@ export default function Login() {
     }
   }, [searchParams, navigate, setTokenAndUser]);
 
-  // Auto-login: if OIDC-only (or proxy-protected) and single provider, redirect automatically
-  const shouldAutoLogin = !existingToken && authStatus !== null
-    && (!authStatus.localAuthEnabled || authStatus.proxyProtectionEnabled)
-    && authStatus.providers.length === 1;
-
-  useEffect(() => {
-    if (!shouldAutoLogin) return;
-    const provider = authStatus!.providers[0];
-    const callbackUrl = `${window.location.origin}/login`;
-    const timer = setTimeout(() => {
-      window.location.href = `${API_BASE}/api/v1/auth/oidc/authorize/${provider.id}?redirect_uri=${encodeURIComponent(callbackUrl)}`;
-    }, 500);
-    return () => clearTimeout(timer);
-  }, [shouldAutoLogin, authStatus]);
+  // NO auto-redirect to the IdP, even when there is exactly one provider and
+  // local auth is off. The visitor always clicks "Sign in with …" first.
+  //
+  // Auto-forwarding used to fire on a 500ms timer. It made the login page an
+  // unusable dead end in the cases that matter most: a visitor who has just
+  // signed OUT is bounced straight back into the IdP (which still holds its own
+  // session) and cannot reach the page to switch accounts; anyone hitting an
+  // IdP error lands back on /login and is immediately thrown at the same broken
+  // provider again; and ?error= messages from the callback were invisible
+  // because the redirect fired before they could be read. A single click costs
+  // nothing and keeps the page reachable.
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -126,16 +123,6 @@ export default function Login() {
         onRetry={retryNow}
         panelLabel="your account"
       />
-    );
-  }
-
-  // Show spinner while auto-redirecting to SSO
-  if (shouldAutoLogin) {
-    return (
-      <div className="flex flex-col items-center justify-center min-h-screen bg-linear-to-br from-brand-500 to-accent-500 dark:from-gray-900 dark:to-gray-800">
-        <Loader2 className="h-8 w-8 animate-spin text-white" />
-        <p className="mt-4 text-white/80 text-sm">Signing in via SSO...</p>
-      </div>
     );
   }
 

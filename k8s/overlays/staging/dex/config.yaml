@@ -65,7 +65,12 @@ staticClients:
     name: OAuth2 Proxy
     secret: $OAUTH2_PROXY_CLIENT_SECRET
     redirectURIs:
+      # BOTH panels. oauth2-proxy no longer pins a single --redirect-url; it
+      # derives the callback from the request host, so whichever panel the
+      # visitor actually asked for is the one Dex must accept. Listing only the
+      # admin host is what made `protectTenantViaProxy` unusable.
       - https://admin.${DOMAIN}/oauth2/callback
+      - https://tenant.${DOMAIN}/oauth2/callback
 
 connectors: []
 

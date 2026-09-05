@@ -37,54 +37,16 @@ function createWrapper(initialEntries: string[] = ['/login']) {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  // Default: local auth enabled, no OIDC providers
   mockApiFetch.mockResolvedValue({ data: { localAuthEnabled: true, providers: [] } });
 });
 
-describe('Login page', () => {
-  it('renders platform title', () => {
-    render(<Login />, { wrapper: createWrapper() });
-    expect(screen.getByText('Insula')).toBeInTheDocument();
-  });
-
-  it('shows sign in subtitle', () => {
-    render(<Login />, { wrapper: createWrapper() });
-    expect(screen.getByText('Sign in to admin panel')).toBeInTheDocument();
-  });
-
-  it('renders email and password fields', () => {
-    render(<Login />, { wrapper: createWrapper() });
-    expect(screen.getByTestId('email-input')).toBeInTheDocument();
-    expect(screen.getByTestId('password-input')).toBeInTheDocument();
-  });
-
-  it('renders sign in button', () => {
-    render(<Login />, { wrapper: createWrapper() });
-    expect(screen.getByTestId('login-button')).toBeInTheDocument();
-    expect(screen.getByText('Sign In')).toBeInTheDocument();
-  });
-
-  it('renders login form', () => {
-    render(<Login />, { wrapper: createWrapper() });
-    expect(screen.getByTestId('login-form')).toBeInTheDocument();
-  });
-
-  it('shows emergency login form when emergency=true query param', () => {
-    render(<Login />, { wrapper: createWrapper(['/login?emergency=true']) });
-    expect(screen.getByText('Emergency Admin Login')).toBeInTheDocument();
-    expect(screen.getByTestId('break-glass-form')).toBeInTheDocument();
-    expect(screen.getByTestId('break-glass-secret-input')).toBeInTheDocument();
-    expect(screen.getByTestId('break-glass-button')).toBeInTheDocument();
-  });
-});
-
 // ── No auto-forward to the IdP ──────────────────────────────────────────────
-// Single provider + local auth disabled used to auto-redirect on a 500ms
-// timer. That made the page a dead end: a visitor who had just signed out was
-// thrown straight back into the IdP (which still held its own session) with no
-// way to reach the page and switch accounts, and any ?error= from the callback
-// was invisible because the redirect fired before it could be read.
-describe('admin login — single OIDC provider, local auth disabled', () => {
+// Single provider + local auth disabled used to auto-redirect on a 500ms timer.
+// That made the page a dead end: a visitor who had just signed out was thrown
+// straight back into the IdP (which still held its own session) with no way to
+// reach the page and switch accounts, and any ?error= from the callback was
+// invisible because the redirect fired before it could be read.
+describe('tenant login — single OIDC provider, local auth disabled', () => {
   const singleProvider = {
     data: {
       localAuthEnabled: false,

@@ -110,6 +110,27 @@ spec:
             - --cookie-secure=true
             - --cookie-samesite=lax
             - --cookie-name=_platform_oauth2
+            # Shared across the panel subdomains. Without it the cookie is
+            # host-only, so a session established on one panel host is invisible
+            # to the other and the gate loops forever.
+            - --cookie-domain=.${DOMAIN}
+            # Post-auth redirect targets. oauth2-proxy refuses to bounce back to
+            # a host that is not listed here, so the tenant panel could not
+            # complete a sign-in even once its callback existed.
+            - --whitelist-domain=.${DOMAIN}
+            # DELIBERATELY LAST and deliberately empty by default.
+            #
+            # oauth2-proxy takes ONE --redirect-url. Pinning it to the admin
+            # host — which bootstrap.sh did for every environment — meant a
+            # visitor to the TENANT panel was sent to the IdP with
+            # `redirect_uri=https://admin.<apex>/oauth2/callback`, came back on
+            # the admin host, and had a cookie for a host they were not trying
+            # to reach. Tenant-panel protection could not work by construction.
+            #
+            # Left empty, oauth2-proxy derives the callback per request from
+            # X-Forwarded-Host (verified against v7.15.3 on 2026-09-05: the
+            # tenant host yields the tenant callback, the admin host the admin
+            # one), which is exactly what a two-panel platform needs.
             - --redirect-url=$(OAUTH2_PROXY_REDIRECT_URL)
             - --skip-provider-button=true
             - --reverse-proxy=true
