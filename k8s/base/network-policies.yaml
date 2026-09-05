@@ -94,7 +94,22 @@ spec:
     matchExpressions:
       - key: app
         operator: In
-        values: ["platform-api", "admin-panel", "tenant-panel", "oauth2-proxy", "dex"]
+        # platform-suspended / platform-bandwidth-exceeded are the placeholder
+        # pages Traefik serves for a suspended or over-quota tenant (and the
+        # tunnel anchor catch-all backend). They were omitted while
+        # default-deny-ingress selects EVERY pod in this namespace, so Traefik
+        # could not reach them at all: requests hung until Traefik timed out
+        # (504) or the client gave up (499). Nothing looked wrong because the
+        # readiness probe comes from the kubelet ON THE NODE, which this
+        # policy does not filter — only pod-to-pod traffic was denied.
+        values:
+          - "platform-api"
+          - "admin-panel"
+          - "tenant-panel"
+          - "oauth2-proxy"
+          - "dex"
+          - "platform-suspended"
+          - "platform-bandwidth-exceeded"
   policyTypes:
     - Ingress
   ingress:
@@ -129,7 +144,7 @@ spec:
               kubernetes.io/metadata.name: traefik
       ports:
         - protocol: TCP
-          port: 80    # admin-panel / tenant-panel
+          port: 80    # admin-panel / tenant-panel / suspended / bandwidth-exceeded
         - protocol: TCP
           port: 4180  # oauth2-proxy
         - protocol: TCP

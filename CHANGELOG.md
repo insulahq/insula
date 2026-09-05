@@ -12,6 +12,49 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **The suspended-tenant and bandwidth-exceeded pages were unreachable, and the
+  resulting 504s were tripping the availability SLO.** `default-deny-ingress`
+  selects every pod in the `platform` namespace, and
+  `allow-ingress-to-platform` omitted `platform-suspended` and
+  `platform-bandwidth-exceeded` — so Traefik could not reach either. Requests
+  hung until Traefik timed out (504) or the client gave up (499). Nothing
+  looked wrong because the readiness probe comes from the kubelet **on the
+  node**, which the policy does not filter; only pod-to-pod traffic was denied.
+  On production the tunnel anchor (whose catch-all backend is
+  `platform-suspended`) served 20 requests in 24h with a **0% success rate**,
+  and those failures were essentially the cluster's entire 5xx budget.
+  `scripts/ci-platform-netpol-reachability-check.py` now fails the build when
+  a routed Service is missing from the allow-list.
+
+### Security
+- **The tunnel anchor had no WAF.** `tunnels.<apex>` is publicly resolvable
+  with a Let's Encrypt certificate — so it is listed in Certificate
+  Transparency and trivially discoverable — yet its IngressRoute carried only
+  a rate limit: no ModSecurity, no CrowdSec, no body limit. A banned IP could
+  still reach it. It now carries the same `crowdsec` → `waf-body-limit` →
+  `modsecurity-crs` chain as `platform-ingress`.
+
+  This cannot regress the tunnel feature: per-worker tunnels live on
+  `<slug>.tunnels.<apex>`, a **different host** with its own IngressRoute, and
+  carry frps WebSocket streams that must never be body-inspected. The anchor is
+  the priority-1 catch-all serving the suspended page to unrouted requests, so
+  no tunnel traffic ever matches it.
+
+  The anchor is `kustomize.toolkit.fluxcd.io/reconcile: disabled` (R16
+  seed-then-disown), so a manifest change reaches **fresh installs only**.
+  Existing clusters converge through the platform-api boot reconcile, which now
+  additively prepends the WAF middlewares.
+
+### Changed
+- **The fast-burn availability SLO no longer pages on near-idle traffic.** It
+  is a pure ratio, so a quiet window turns one failure into a burn-rate
+  breach — production regularly sees 12-14 request 5-minute windows overnight,
+  where a single 504 reads as 7-8% against a 7.2% threshold. The rule now
+  requires at least 20 requests in the window. This deliberately does **not**
+  suppress the 2026-09-05 incident (8 failures of 27 requests); those were real
+  504s, and what silences them is repairing the route behind them.
+
 ## [2026.9.8] - 2026-09-05
 
 ### Added
