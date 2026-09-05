@@ -54,6 +54,52 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   requires at least 20 requests in the window. This deliberately does **not**
   suppress the 2026-09-05 incident (8 failures of 27 requests); those were real
   504s, and what silences them is repairing the route behind them.
+### Added
+- **HTTP reconnaissance detection — CrowdSec `http-probing` and
+  `http-crawl-non-statics`.** Scanning was invisible to every security surface:
+  ModSecurity only logs rule *matches*, and a request for `/wp-login.php` or
+  `/.env` is a syntactically perfect GET that trips no CRS rule. On production
+  that was ~4,700 requests/day — 26% of all traffic — leaving no trace
+  anywhere. CRS detects injection and traversal; reconnaissance is a **rate**
+  signal, which needs a different detector.
+
+  This was not a config toggle. CrowdSec shipped **LAPI-only**
+  (`DISABLE_AGENT=true`, community blocklist only), so there were no parsers,
+  no scenarios and no log acquisition to enable. Three pieces were missing:
+
+  - **Traefik access logging**, which was off entirely — also the reason no
+    per-request record existed for *any* request on the platform.
+  - **A log-processing agent.** Added as a DaemonSet, so one agent per node
+    reads one source. The original objection to acquisition ("sidecars on
+    every pod") does not apply: Traefik is itself a DaemonSet.
+  - **The scenario pack + crawler whitelists** (`crowdsecurity/traefik`,
+    `base-http-scenarios`, `whitelists`).
+
+  The access log is written to a **host file, not stdout**: the kubelet wraps
+  stdout in the CRI envelope (`<ts> stdout F <payload>`, verified on a live
+  node), which the `crowdsecurity/traefik` parser cannot read — the agent would
+  have run healthy and parsed nothing. `2026.9.9/0002` adds logrotate, because
+  an unrotated ingress log ends in a full disk.
+
+  **`http-crawl-non-statics` ships SIMULATED** — it raises alerts but issues no
+  ban. The bouncer sits on the shared entrypoint across 18 of 52 routes, so a
+  decision is cluster-wide: one false positive blocks that IP from *every*
+  tenant site, and on a multi-tenant host "many non-static requests from one
+  IP" also describes a legitimate crawler. `http-probing` enforces from the
+  start — requesting `/.env` and `/wp-login.php` in sequence has no benign
+  reading. Promote the other after reviewing a week of alerts.
+
+  Existing clusters converge via host-migration `2026.9.9/0001`; the
+  bootstrap.sh helm-values change reaches fresh installs only.
+
+  **Every sink this adds is bounded.** The access log rotates **hourly**, not
+  daily — `maxsize` is only evaluated when logrotate runs, so a daily cadence
+  makes "200M" mean "200M checked once a day", and the burst that blows past it
+  is exactly the scanning this detects. Worst case is ~400M (200M live + 7
+  compressed generations) against steady state of ~7MB/day. The CrowdSec LAPI
+  had **no retention at all** and sits on a fixed 1GiB PVC; a daily CronJob now
+  prunes alerts older than 30 days and expired decisions. Left unbounded, the
+  first thing to break would have been the IP-reputation gate itself.
 
 ## [2026.9.8] - 2026-09-05
 

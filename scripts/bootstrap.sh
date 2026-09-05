@@ -5164,6 +5164,62 @@ install_traefik() {
   # shellcheck disable=SC2064
   trap "rm -f '${traefik_values}'" RETURN
   cat > "${traefik_values}" <<'TRAEFIKVALUES'
+# JSON access log to stdout. Required by the CrowdSec agent DaemonSet
+# (k8s/base/crowdsec/agent-daemonset.yaml): the http-probing and
+# http-crawl-non-statics scenarios are RATE detectors over HTTP access logs,
+# so with logging off they can never fire — the agent would run, parse
+# nothing, and report healthy.
+#
+# It is also the only per-request record the platform keeps. Without it there
+# is no source IP, path or user-agent for any request anywhere: tracing who
+# was hitting a broken route on 2026-09-05 was impossible for exactly this
+# reason.
+#
+# `keepingRequestHeaders` is deliberately narrow — User-Agent is needed by the
+# crawler whitelists (verified-crawler rDNS check), Referer is useful for
+# triage. No cookies, no Authorization: this log is read by a DaemonSet and
+# lands in node-local files.
+accessLog:
+  # Written to a host FILE, not stdout, and deliberately so.
+  #
+  # The kubelet wraps every stdout line in the CRI envelope
+  # (`<rfc3339> stdout F <payload>`, verified on a live node 2026-09-05), and
+  # the crowdsecurity/traefik parser expects bare JSON. Tailing /var/log/pods
+  # would hand it prefixed lines, every parse would fail, and the agent would
+  # sit there Ready and detecting nothing — the exact failure this feature is
+  # meant to close.
+  #
+  # Rotation: Traefik reopens the file on SIGUSR1 and does not rotate itself.
+  # 2026.9.9/0002 installs a logrotate fragment for it, because an ingress
+  # access log that fills the node's disk is a worse outage than the scanning
+  # it detects.
+  filePath: /var/log/traefik/access.log
+  format: json
+  # NO statusCodes filter, deliberately. It is tempting to keep only 4xx/5xx
+  # since reconnaissance shows up as 404s — but http-crawl-non-statics counts
+  # NON-STATIC requests, which are overwhelmingly 200s. Filtering to errors
+  # would leave that scenario permanently unable to fire while everything
+  # looked correctly configured.
+  #
+  # Volume is not a concern at this scale: production serves ~18k requests/day,
+  # so a ~400-byte JSON line each is ~7MB/day, rotated by the kubelet.
+  fields:
+    headers:
+      defaultMode: drop
+      names:
+        User-Agent: keep
+        Referer: keep
+# Traefik needs a writable host path for the access log above, and the
+# CrowdSec agent DaemonSet mounts the same path read-only. Both are
+# DaemonSets, so they are always co-located on a node.
+#
+# Without this the accessLog.filePath simply fails to open and Traefik logs a
+# warning at start — the access log would be silently absent and every HTTP
+# scenario would sit idle. The chain is only as good as its weakest mount.
+volumes:
+  - name: traefik-access-log
+    mountPath: /var/log/traefik
+    type: hostPath
 deployment:
   initContainers:
     - name: wait-for-plugin-registry
@@ -5442,6 +5498,44 @@ ensure_traefik_cni_portmap() {
 # key. Operators rotating the key should delete both Secrets and
 # re-run; the CrowdSec Deployment will re-register the bouncer on
 # next pod start.
+# CrowdSec log-processing AGENT credentials.
+#
+# The agent DaemonSet (k8s/base/crowdsec/agent-daemonset.yaml) registers to the
+# LAPI with a machine username/password. Generated here rather than relying on
+# the container's auto-register so the credential is stable across pod restarts
+# and reproducible on re-run — an agent that re-registers under a new machine
+# name on every restart leaves orphaned machines in the LAPI.
+#
+# The DaemonSet references this Secret by name, so a missing Secret leaves the
+# pod Pending with FailedMount. That is intentional: the alternative is an
+# agent that starts, cannot authenticate, and reports healthy while shipping
+# no alerts.
+generate_crowdsec_agent_credentials() {
+  local secret_name="crowdsec-agent-credentials"
+  local user pass
+  if kctl get secret -n crowdsec "${secret_name}" >/dev/null 2>&1; then
+    log "CrowdSec agent credentials already exist, reusing."
+    return 0
+  fi
+  log "Generating CrowdSec agent credentials..."
+  # Machine name must be stable; the password is 32 bytes of urandom, same
+  # shape as the bouncer key above.
+  user="insula-agent-$(head -c 8 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+  pass=$(head -c 32 /dev/urandom | base64 | tr -d '/+=' | head -c 40)
+  kctl create namespace crowdsec >/dev/null 2>&1 || true
+  kctl create secret generic "${secret_name}" -n crowdsec \
+    --from-literal=username="${user}" \
+    --from-literal=password="${pass}" >/dev/null
+  # Register the machine on the LAPI so the agent can authenticate. The LAPI
+  # pod may not be up yet on a fresh install; the agent retries, and a later
+  # bootstrap re-run is idempotent because the Secret is reused above.
+  if kctl get deploy -n crowdsec crowdsec >/dev/null 2>&1; then
+    kctl exec -n crowdsec deploy/crowdsec -- \
+      cscli machines add "${user}" --password "${pass}" --force >/dev/null 2>&1 \
+      || log "CrowdSec LAPI not ready — agent machine will register on first agent start."
+  fi
+}
+
 generate_crowdsec_bouncer_key() {
   local secret_name="crowdsec-bouncer-key"
   local key_value
@@ -10104,6 +10198,7 @@ main() {
     # crowdsec-bouncer-key) finds the Secret on first start; otherwise
     # the pod stays Pending with FailedMount until the Secret lands.
     generate_crowdsec_bouncer_key
+    generate_crowdsec_agent_credentials
     install_traefik
     install_cert_manager
     install_sealed_secrets

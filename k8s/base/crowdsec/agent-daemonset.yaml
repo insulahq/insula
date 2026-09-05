@@ -1,0 +1,177 @@
+# CrowdSec log-processing AGENT (DaemonSet) — HTTP reconnaissance detection.
+#
+# WHY THIS EXISTS
+#
+# The LAPI Deployment next to this file runs with DISABLE_AGENT=true and relies
+# entirely on the community blocklist. That covers known-bad IPs but detects
+# nothing about YOUR traffic, and it leaves a specific blind spot:
+#
+#   ModSecurity only logs rule MATCHES. A scanner requesting /wp-login.php or
+#   /.env is a syntactically perfect GET with no attack payload — no CRS rule
+#   fires, so nothing reaches waf_logs, and Traefik simply answers 404. On
+#   production that was ~4,700 requests/day (26% of all traffic) leaving no
+#   trace in any security surface. CRS detects injection and traversal; it does
+#   not detect reconnaissance. Reconnaissance is a RATE signal, which is what
+#   these scenarios consume.
+#
+# The original objection to log acquisition ("would require Calico-style
+# sidecars on every pod") does not apply here: Traefik is itself a DaemonSet,
+# so one agent per node reads one log source. No per-pod sidecars.
+#
+# ARCHITECTURE
+#
+#   Traefik (DaemonSet, JSON access log → /var/log/traefik/access.log)
+#     → this agent tails that file directly (no CRI envelope to strip)
+#       → parses with crowdsecurity/traefik
+#         → scenarios fire → alerts POSTed to the LAPI Service
+#           → Traefik bouncer plugin already queries that LAPI per request
+#
+# The agent holds NO database and makes no decisions locally; the existing
+# single-writer LAPI stays the only writer, so this does not change the HA
+# story described in deployment.yaml.
+#
+# BLAST RADIUS — read before promoting a scenario out of simulation
+#
+# The bouncer sits on the shared `websecure` entrypoint and is attached to 18
+# of 52 routes, including tenant sites. A decision is therefore CLUSTER-WIDE:
+# one false positive blocks that IP from every protected tenant site, not just
+# from the host it probed. That is why http-crawl-non-statics ships SIMULATED
+# below — on a multi-tenant host, "many non-static requests from one IP" is
+# also an accurate description of a legitimate search-engine crawler.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: crowdsec-agent-acquis
+  namespace: crowdsec
+  labels:
+    app.kubernetes.io/name: crowdsec-agent
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: waf
+data:
+  # One source: Traefik's JSON access log, written to a host file by the
+  # Traefik DaemonSet on the same node. Not /var/log/pods — see the CRI note
+  # in the header.
+  acquis.yaml: |
+    ---
+    filenames:
+      - /var/log/traefik/access.log
+    labels:
+      type: traefik
+  # http-crawl-non-statics is SIMULATED: it still raises alerts (visible in
+  # `cscli alerts list` and the admin panel) but issues no ban. Promote it by
+  # removing the line here once you have reviewed a week of alerts and
+  # confirmed no legitimate crawler is caught.
+  #
+  # http-probing enforces from the start: requesting /.env, /wp-login.php and
+  # /phpmyadmin in sequence has no benign reading.
+  simulation.yaml: |
+    simulation: false
+    exclusions:
+      - crowdsecurity/http-crawl-non-statics
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: crowdsec-agent
+  namespace: crowdsec
+  labels:
+    app.kubernetes.io/name: crowdsec-agent
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: waf
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: crowdsec-agent
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: crowdsec-agent
+        app.kubernetes.io/part-of: hosting-platform
+        app.kubernetes.io/component: waf
+    spec:
+      # Runs wherever Traefik runs. Traefik is a DaemonSet on every node, so
+      # no node affinity is needed, but the agent must tolerate the same taints
+      # or a tainted node's ingress logs would go unparsed — silently, which is
+      # the failure mode this whole file exists to avoid.
+      tolerations:
+        - operator: Exists
+          effect: NoSchedule
+        - operator: Exists
+          effect: NoExecute
+      # Root is needed only to read the root-owned access log; every other
+      # privilege is dropped. The security-probe DaemonSet sets the precedent
+      # (read-only host mounts, ALL caps dropped) and this follows it.
+      securityContext:
+        runAsUser: 0
+      containers:
+        - name: crowdsec-agent
+          image: docker.io/crowdsecurity/crowdsec:v1.7.8
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            # NOT read-only: CrowdSec writes its hub index and parser state
+            # under /var/lib/crowdsec at start. The host mount above is
+            # read-only, which is the boundary that matters — this container
+            # can read the ingress access log and nothing else on the node.
+            readOnlyRootFilesystem: false
+          env:
+            # Agent only — the LAPI lives in the Deployment beside this file.
+            - name: DISABLE_LOCAL_API
+              value: "true"
+            - name: LOCAL_API_URL
+              value: "http://crowdsec.crowdsec.svc.cluster.local:8080"
+            # Registration credentials for this agent against the LAPI.
+            - name: AGENT_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: crowdsec-agent-credentials
+                  key: username
+            - name: AGENT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: crowdsec-agent-credentials
+                  key: password
+            # Parser for Traefik's JSON access log + the HTTP scenario pack
+            # that contains http-probing and http-crawl-non-statics.
+            #
+            # crowdsecurity/whitelists is NOT optional here: it whitelists
+            # verified search-engine crawlers by reverse DNS. Without it,
+            # http-crawl-non-statics bans Googlebot from every tenant site the
+            # moment it is promoted out of simulation.
+            - name: COLLECTIONS
+              value: "crowdsecurity/traefik crowdsecurity/base-http-scenarios crowdsecurity/whitelists"
+          volumeMounts:
+            - name: traefik-access-log
+              mountPath: /var/log/traefik
+              readOnly: true
+            - name: acquis
+              mountPath: /etc/crowdsec/acquis.yaml
+              subPath: acquis.yaml
+              readOnly: true
+            - name: acquis
+              mountPath: /etc/crowdsec/simulation.yaml
+              subPath: simulation.yaml
+              readOnly: true
+          resources:
+            requests:
+              cpu: "50m"
+              # The parse loop is the reason the LAPI pod sets
+              # DISABLE_AGENT=true to stay at ~30Mi. Budget for it here
+              # instead of regressing the LAPI.
+              memory: "192Mi"
+            limits:
+              memory: "512Mi"
+      volumes:
+        - name: traefik-access-log
+          hostPath:
+            # Traefik (also a DaemonSet) writes its JSON access log here, so
+            # the two are always co-located on a node. DirectoryOrCreate so a
+            # node whose Traefik has not yet rolled does not wedge this pod.
+            path: /var/log/traefik
+            type: DirectoryOrCreate
+        - name: acquis
+          configMap:
+            name: crowdsec-agent-acquis
