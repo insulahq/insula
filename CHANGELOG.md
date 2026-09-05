@@ -12,6 +12,22 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **An unauthenticated visitor to an OAuth2-Proxy-protected panel got a bare
+  401 instead of being sent to the identity provider** (ROADMAP R32, both
+  panels). oauth2-proxy's `/oauth2/auth` is an auth-*check* endpoint built for
+  nginx `auth_request`, where `error_page 401` supplies the redirect; Traefik
+  ForwardAuth has no equivalent and handed the 401 to the browser. A Traefik
+  `errors` middleware now precedes the ForwardAuth, fetches
+  `/oauth2/sign_in?rd={url}` and rewrites 401 → 302. The original URL survives
+  in the IdP `state`.
+- **Editing Dex's config had no effect until something unrelated restarted the
+  pod** (ROADMAP R33). `disableNameSuffixHash: true` on all three Dex overlays
+  switched off the content hash that makes a ConfigMap change roll the
+  Deployment — so a merged, applied config edit left the running process on its
+  old config indefinitely (measured: a nine-day-old pod serving a stale
+  `redirectURIs` list while `kubectl get cm` showed the new one).
+
 ### Added
 - `scripts/integration-oidc-tenant-login.sh` — drives a real OIDC login through
   Dex end to end and prints the account the identity resolved to. Three OIDC

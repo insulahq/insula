@@ -239,6 +239,14 @@ strictly authentication is enforced:
     opportunity to pick a different account, and any error the provider
     returned would be replaced by another redirect before you could read it.
 
+!!! info "What a protected panel looks like to a visitor"
+    An unauthenticated visitor is redirected straight to your identity provider
+    and returned to the page they originally asked for. They never see a login
+    form from the panel itself — OAuth2 Proxy protection replaces it.
+
+    (Before 2026-09-05 they got a bare `401` page with no way forward. If you
+    tried this and gave up, it works now.)
+
 !!! warning "Protecting the tenant panel with OAuth2 Proxy needs a second redirect URI"
     OAuth2 Proxy derives its callback from the host being visited, so the
     tenant panel uses `https://tenant.<your-domain>/oauth2/callback` while the

@@ -14,7 +14,20 @@ configMapGenerator:
       - config.yaml
 
 generatorOptions:
-  disableNameSuffixHash: true
+  # Name suffix hash DELIBERATELY ON (this said `true` until 2026-09-05).
+  #
+  # Dex parses config.yaml once, at startup. With a fixed ConfigMap name,
+  # editing it changed nothing in the cluster's pod spec, so nothing rolled and
+  # the running process kept its old config — indefinitely. Measured on DEV: a
+  # tenant `redirectURIs` fix was merged, applied and visible in
+  # `kubectl get cm` while sign-in still failed with `Unregistered
+  # redirect_uri`, because the pod was NINE DAYS old.
+  #
+  # With the hash, any content change mints a new ConfigMap name, Kustomize
+  # rewrites the Deployment's volume reference, and the rollout happens on its
+  # own. Nothing else refers to this ConfigMap by name (checked across scripts,
+  # backend and platform), so the rename is contained.
+  disableNameSuffixHash: false
 
 labels:
   - pairs:

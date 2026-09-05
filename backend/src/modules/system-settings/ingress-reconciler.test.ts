@@ -91,6 +91,37 @@ describe('buildDesiredRoutes', () => {
 });
 
 describe('buildIngressRouteBody', () => {
+  // ── R32: the sign-in redirect must precede the auth check ──────────────
+  // A Traefik `errors` middleware only sees responses produced by what comes
+  // AFTER it in the chain. Placed after the ForwardAuth it never sees the 401,
+  // and an unauthenticated visitor gets a bare 401 page with no way to sign in
+  // — which is exactly what both panels did until 2026-09-05.
+  it('puts the oauth2 sign-in redirect BEFORE the ForwardAuth', () => {
+    const body = buildIngressRouteBody(
+      [{ host: 'admin.example.com', serviceName: 'admin-panel', oauth2: true }],
+      { namespace: 'platform', name: 'platform-ingress', tlsSecretName: 'platform-tls' },
+    );
+    const routes = (body.spec as Record<string, unknown>).routes as Array<Record<string, unknown>>;
+    const panel = routes.find(r => String(r.match) === 'Host(`admin.example.com`)')!;
+    const names = (panel.middlewares as Array<{ name: string }>).map(m => m.name);
+
+    expect(names).toContain('platform-oauth2-proxy-signin');
+    expect(names).toContain('platform-oauth2-proxy-auth');
+    expect(names.indexOf('platform-oauth2-proxy-signin'))
+      .toBeLessThan(names.indexOf('platform-oauth2-proxy-auth'));
+  });
+
+  it('attaches neither oauth2 middleware when the panel is not protected', () => {
+    const body = buildIngressRouteBody(
+      [{ host: 'admin.example.com', serviceName: 'admin-panel', oauth2: false }],
+      { namespace: 'platform', name: 'platform-ingress', tlsSecretName: 'platform-tls' },
+    );
+    const routes = (body.spec as Record<string, unknown>).routes as Array<Record<string, unknown>>;
+    const panel = routes.find(r => String(r.match) === 'Host(`admin.example.com`)')!;
+    const names = (panel.middlewares as Array<{ name: string }>).map(m => m.name);
+    expect(names.some(n => n.startsWith('platform-oauth2-proxy'))).toBe(false);
+  });
+
   it('emits a Host-matching rule + crowdsec + ModSecurity WAF on the panel route', () => {
     const body = buildIngressRouteBody(
       [{ host: 'admin.example.com', serviceName: 'admin-panel', oauth2: false }],
@@ -196,8 +227,12 @@ describe('buildIngressRouteBody', () => {
     const routes = (body.spec as { routes: Array<Record<string, unknown>> }).routes;
     const upload = routes.find(r => String(r.match).includes('upload-raw'))!;
     const mw = upload.middlewares as Array<{ name: string; namespace: string }>;
+    // The sign-in redirect rides along with the ForwardAuth everywhere it is
+    // attached — an upload that 401s must still be able to send the caller to
+    // the IdP rather than dead-ending.
     expect(mw).toEqual([
       { name: 'crowdsec', namespace: 'traefik' },
+      { name: 'platform-oauth2-proxy-signin', namespace: 'platform' },
       { name: 'platform-oauth2-proxy-auth', namespace: 'platform' },
     ]);
   });
@@ -234,12 +269,16 @@ describe('buildIngressRouteBody', () => {
       name: 'oauth2-proxy',
       port: 4180,
     });
-    // Panel route — crowdsec → ForwardAuth → WAF (in that order).
+    // Panel route — crowdsec → signin-redirect → ForwardAuth → WAF, in that
+    // order. The redirect must precede the ForwardAuth: a Traefik `errors`
+    // middleware only sees responses from what follows it, so reversed it never
+    // catches the 401 and the visitor dead-ends (R32).
     const panelRoute = routes.find(r => String(r.match) === 'Host(`admin.example.com`)')!;
     expect(panelRoute).toBeDefined();
     const panelMiddlewares = panelRoute.middlewares as Array<{ name: string; namespace: string }>;
     expect(panelMiddlewares).toEqual([
       { name: 'crowdsec', namespace: 'traefik' },
+      { name: 'platform-oauth2-proxy-signin', namespace: 'platform' },
       { name: 'platform-oauth2-proxy-auth', namespace: 'platform' },
       { name: 'waf-body-limit', namespace: 'traefik' },
       { name: 'modsecurity-crs', namespace: 'traefik' },
