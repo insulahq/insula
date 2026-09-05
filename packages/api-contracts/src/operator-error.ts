@@ -69,6 +69,8 @@ export const OPERATOR_ERROR_CODES = {
   ADMISSION_WEBHOOK_DENIED: 'ADMISSION_WEBHOOK_DENIED',
   // Tenant create
   EMAIL_IN_USE: 'EMAIL_IN_USE',
+  // Bulk table actions (admin panel) — some rows updated, some did not
+  BULK_PARTIAL_FAILURE: 'BULK_PARTIAL_FAILURE',
   // Generic
   UNKNOWN: 'UNKNOWN',
 } as const;

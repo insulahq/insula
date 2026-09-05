@@ -196,3 +196,147 @@ describe('CategoriesTable', () => {
     expect(screen.getByText('No notification sources defined.')).toBeInTheDocument();
   });
 });
+
+describe('CategoriesTable — search / sort / bulk', () => {
+  // A third, non-mandatory row so select-all has more than one target and
+  // the sequencing assertion has something to sequence.
+  const THIRD = {
+    ...SEED_CATEGORIES[1],
+    id: 'alerts.disk',
+    displayName: 'Disk Pressure',
+    description: null,
+    audience: 'admin' as const,
+    defaultChannels: ['ntfy' as const],
+  };
+
+  beforeEach(() => {
+    listMock.mockReturnValue({
+      data: { data: [...SEED_CATEGORIES, THIRD] },
+      isLoading: false,
+      error: null,
+    });
+  });
+
+  const rowIds = () =>
+    Array.from(document.querySelectorAll('[data-testid^="category-row-"]')).map(
+      (el) => el.getAttribute('data-testid'),
+    );
+
+  it('search filters rows by display name', async () => {
+    const user = userEvent.setup();
+    render(<CategoriesTable />, { wrapper: createWrapper() });
+    await user.type(screen.getByTestId('category-search'), 'disk');
+    await waitFor(() => expect(rowIds()).toEqual(['category-row-alerts.disk']));
+  });
+
+  it('search matches fields other than the name (audience, channel)', async () => {
+    const user = userEvent.setup();
+    render(<CategoriesTable />, { wrapper: createWrapper() });
+    // "ntfy" appears only in alerts.disk's defaultChannels — never in its name.
+    await user.type(screen.getByTestId('category-search'), 'ntfy');
+    await waitFor(() => expect(rowIds()).toEqual(['category-row-alerts.disk']));
+  });
+
+  it('shows a search-specific empty state that names the query', async () => {
+    const user = userEvent.setup();
+    render(<CategoriesTable />, { wrapper: createWrapper() });
+    await user.type(screen.getByTestId('category-search'), 'zzzz');
+    await waitFor(() =>
+      expect(screen.getByText('No sources match "zzzz".')).toBeInTheDocument(),
+    );
+  });
+
+  it('clicking the ID header toggles sort direction', async () => {
+    const user = userEvent.setup();
+    render(<CategoriesTable />, { wrapper: createWrapper() });
+    // Default sort is id ascending.
+    expect(rowIds()).toEqual([
+      'category-row-alerts.disk',
+      'category-row-backup.failed',
+      'category-row-tenant.welcome',
+    ]);
+    await user.click(screen.getByTestId('sort-id'));
+    expect(rowIds()).toEqual([
+      'category-row-tenant.welcome',
+      'category-row-backup.failed',
+      'category-row-alerts.disk',
+    ]);
+  });
+
+  it('mandatory sources cannot be selected, and select-all skips them', async () => {
+    const user = userEvent.setup();
+    render(<CategoriesTable />, { wrapper: createWrapper() });
+    const mandatoryRow = screen.getByTestId('category-row-backup.failed');
+    const mandatoryBox = mandatoryRow.querySelector('[data-testid="select-checkbox"]');
+    expect(mandatoryBox).toHaveAttribute('aria-disabled', 'true');
+
+    await user.click(screen.getByLabelText('Select all editable sources'));
+    // 3 rows, 1 mandatory → 2 selected.
+    expect(screen.getByTestId('bulk-selected-count')).toHaveTextContent('2 selected');
+  });
+
+  it('bulk enable-channel issues one PATCH per selected row, SEQUENTIALLY', async () => {
+    const resolvers: Array<() => void> = [];
+    updateMutate.mockImplementation(
+      () => new Promise<void>((resolve) => resolvers.push(() => resolve())),
+    );
+    const user = userEvent.setup();
+    render(<CategoriesTable />, { wrapper: createWrapper() });
+    await user.click(screen.getByLabelText('Select all editable sources'));
+    await user.selectOptions(screen.getByTestId('bulk-enable-channel'), 'in_app');
+
+    // The whole point: the second request must NOT be in flight while the
+    // first is unresolved. A `Promise.all(rows.map(...))` fan-out fails here.
+    await waitFor(() => expect(updateMutate).toHaveBeenCalledTimes(1));
+    resolvers[0]();
+    await waitFor(() => expect(updateMutate).toHaveBeenCalledTimes(2));
+    resolvers[1]();
+
+    await waitFor(() => expect(screen.getByTestId('bulk-note')).toBeInTheDocument());
+    const ids = updateMutate.mock.calls.map((c) => (c[0] as { id: string }).id);
+    expect(ids.sort()).toEqual(['alerts.disk', 'tenant.welcome']);
+    for (const call of updateMutate.mock.calls) {
+      expect((call[0] as { input: { defaultChannels: string[] } }).input.defaultChannels)
+        .toContain('in_app');
+    }
+  });
+
+  it('bulk enable-channel skips rows that already have the channel', async () => {
+    const user = userEvent.setup();
+    render(<CategoriesTable />, { wrapper: createWrapper() });
+    await user.click(screen.getByLabelText('Select all editable sources'));
+    // tenant.welcome already has email; alerts.disk does not.
+    await user.selectOptions(screen.getByTestId('bulk-enable-channel'), 'email');
+    await waitFor(() => expect(screen.getByTestId('bulk-note')).toBeInTheDocument());
+    expect(updateMutate).toHaveBeenCalledTimes(1);
+    expect((updateMutate.mock.calls[0][0] as { id: string }).id).toBe('alerts.disk');
+    expect(screen.getByTestId('bulk-note')).toHaveTextContent('1 already set');
+  });
+
+  it('bulk deactivate sends isActive=false for active rows only', async () => {
+    const user = userEvent.setup();
+    render(<CategoriesTable />, { wrapper: createWrapper() });
+    await user.click(screen.getByLabelText('Select all editable sources'));
+    await user.click(screen.getByTestId('bulk-deactivate'));
+    await waitFor(() => expect(screen.getByTestId('bulk-note')).toBeInTheDocument());
+    expect(updateMutate).toHaveBeenCalledTimes(2);
+    for (const call of updateMutate.mock.calls) {
+      expect((call[0] as { input: { isActive: boolean } }).input.isActive).toBe(false);
+    }
+  });
+
+  it('a partial failure surfaces an ErrorPanel and KEEPS the selection', async () => {
+    updateMutate
+      .mockResolvedValueOnce({ data: {} })
+      .mockRejectedValueOnce(new Error('rate limited'));
+    const user = userEvent.setup();
+    render(<CategoriesTable />, { wrapper: createWrapper() });
+    await user.click(screen.getByLabelText('Select all editable sources'));
+    await user.click(screen.getByTestId('bulk-deactivate'));
+    await waitFor(() => expect(screen.getByTestId('bulk-error')).toBeInTheDocument());
+    expect(screen.getByTestId('bulk-error')).toHaveTextContent('1 of 2 source(s) failed');
+    // Selection survives so the operator can retry exactly those rows.
+    expect(screen.getByTestId('bulk-selected-count')).toHaveTextContent('2 selected');
+    expect(screen.queryByTestId('bulk-note')).not.toBeInTheDocument();
+  });
+});
