@@ -12,6 +12,68 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- `scripts/integration-oidc-tenant-login.sh` — drives a real OIDC login through
+  Dex end to end and prints the account the identity resolved to. Three OIDC
+  defects shipped in a row with unit tests behind them and no live sign-in;
+  they were all in the part no unit test reaches — which *account* an identity
+  resolves to.
+
+- **HTTP reconnaissance detection — CrowdSec `http-probing` and
+  `http-crawl-non-statics`.** Scanning was invisible to every security surface:
+  ModSecurity only logs rule *matches*, and a request for `/wp-login.php` or
+  `/.env` is a syntactically perfect GET that trips no CRS rule. On production
+  that was ~4,700 requests/day — 26% of all traffic — leaving no trace
+  anywhere. CRS detects injection and traversal; reconnaissance is a **rate**
+  signal, which needs a different detector.
+
+  This was not a config toggle. CrowdSec shipped **LAPI-only**
+  (`DISABLE_AGENT=true`, community blocklist only), so there were no parsers,
+  no scenarios and no log acquisition to enable. Three pieces were missing:
+
+  - **Traefik access logging**, which was off entirely — also the reason no
+    per-request record existed for *any* request on the platform.
+  - **A log-processing agent.** Added as a DaemonSet, so one agent per node
+    reads one source. The original objection to acquisition ("sidecars on
+    every pod") does not apply: Traefik is itself a DaemonSet.
+  - **The scenario pack + crawler whitelists** (`crowdsecurity/traefik`,
+    `base-http-scenarios`, `whitelists`).
+
+  The access log is written to a **host file, not stdout**: the kubelet wraps
+  stdout in the CRI envelope (`<ts> stdout F <payload>`, verified on a live
+  node), which the `crowdsecurity/traefik` parser cannot read — the agent would
+  have run healthy and parsed nothing. `2026.9.9/0002` adds logrotate, because
+  an unrotated ingress log ends in a full disk.
+
+  **`http-crawl-non-statics` ships SIMULATED** — it raises alerts but issues no
+  ban. The bouncer sits on the shared entrypoint across 18 of 52 routes, so a
+  decision is cluster-wide: one false positive blocks that IP from *every*
+  tenant site, and on a multi-tenant host "many non-static requests from one
+  IP" also describes a legitimate crawler. `http-probing` enforces from the
+  start — requesting `/.env` and `/wp-login.php` in sequence has no benign
+  reading. Promote the other after reviewing a week of alerts.
+
+  Existing clusters converge via host-migration `2026.9.9/0001`; the
+  bootstrap.sh helm-values change reaches fresh installs only.
+
+  **Every sink this adds is bounded.** The access log rotates **hourly**, not
+  daily — `maxsize` is only evaluated when logrotate runs, so a daily cadence
+  makes "200M" mean "200M checked once a day", and the burst that blows past it
+  is exactly the scanning this detects. Worst case is ~400M (200M live + 7
+  compressed generations) against steady state of ~7MB/day. The CrowdSec LAPI
+  had **no retention at all** and sits on a fixed 1GiB PVC; a daily CronJob now
+  prunes alerts older than 30 days and expired decisions. Left unbounded, the
+  first thing to break would have been the IP-reputation gate itself.
+
+### Changed
+- **The fast-burn availability SLO no longer pages on near-idle traffic.** It
+  is a pure ratio, so a quiet window turns one failure into a burn-rate
+  breach — production regularly sees 12-14 request 5-minute windows overnight,
+  where a single 504 reads as 7-8% against a 7.2% threshold. The rule now
+  requires at least 20 requests in the window. This deliberately does **not**
+  suppress the 2026-09-05 incident (8 failures of 27 requests); those were real
+  504s, and what silences them is repairing the route behind them.
+
 ### Fixed
 - **Editing the CrowdSec agent's acquisition/simulation config or an nginx
   error page did not restart the workload that reads it.** Both are parsed once
@@ -25,7 +87,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   halves. All four are now generated with a content-hash suffix, so any edit
   rolls the consumer.
 
-### Fixed
 - **OAuth2-Proxy sign-in ended in a 500 at `/oauth2/callback`.** The Dex
   staticClient took its secret from `secret: $OAUTH2_PROXY_CLIENT_SECRET`, but
   Dex performs **no** variable expansion in that field — it registered the
@@ -36,7 +97,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   variable the Deployment already injects from the same Secret oauth2-proxy
   reads. Guard: `ci-dex-client-secret-check.sh`.
 
-### Fixed
 - **An unauthenticated visitor to an OAuth2-Proxy-protected panel got a bare
   401 instead of being sent to the identity provider** (ROADMAP R32, both
   panels). oauth2-proxy's `/oauth2/auth` is an auth-*check* endpoint built for
@@ -45,6 +105,7 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   `errors` middleware now precedes the ForwardAuth, fetches
   `/oauth2/sign_in?rd={url}` and rewrites 401 → 302. The original URL survives
   in the IdP `state`.
+
 - **Editing Dex's config had no effect until something unrelated restarted the
   pod** (ROADMAP R33). `disableNameSuffixHash: true` on all three Dex overlays
   switched off the content hash that makes a ConfigMap change roll the
@@ -52,14 +113,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   old config indefinitely (measured: a nine-day-old pod serving a stale
   `redirectURIs` list while `kubectl get cm` showed the new one).
 
-### Added
-- `scripts/integration-oidc-tenant-login.sh` — drives a real OIDC login through
-  Dex end to end and prints the account the identity resolved to. Three OIDC
-  defects shipped in a row with unit tests behind them and no live sign-in;
-  they were all in the part no unit test reaches — which *account* an identity
-  resolves to.
-
-### Fixed
 - **The oauth2-proxy two-panel flags never reached any cluster.** A Kustomize
   strategic-merge patch replaces a list of scalars wholesale, and every
   environment overlay patches oauth2-proxy's `args` to point it at a
@@ -68,6 +121,7 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   and the running Deployment still did not have them. Both overlays now repeat
   the flags, and `ci-oauth2-proxy-args-check.sh` fails any oauth2-proxy `args`
   list that is missing one.
+
 - **Account emails were matched case-sensitively, so an identity provider that
   varied the casing did not find the existing account.** On the OIDC tenant path
   a miss does not fail the login — it falls through to auto-provisioning and
@@ -80,13 +134,13 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   alone, because merging two accounts is an operator's decision, not a
   migration's.
 
-### Fixed
 - **The login page auto-forwarded to the IdP when exactly one provider was
   configured and local auth was disabled.** A 500ms timer redirected before the
   page could be used, so a visitor who had just signed out was thrown straight
   back into an IdP that still held its own session — with no way to reach the
   page and switch accounts — and `?error=` messages from the callback were never
   readable. Both panels now always render the "Sign in with …" button.
+
 - **OIDC sign-in resolved to the wrong account across panels.** The
   subject+issuer lookup ran first and, unlike the email lookup after it, was not
   scoped to the panel being signed into; `users_oidc_unique` was global, so one
@@ -95,6 +149,7 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   admin account included — and the JWT was minted from it. The lookup is now
   panel-scoped and the unique index is `(oidc_issuer, oidc_subject, panel)`
   (migration 0102).
+
 - **Enabling oauth2-proxy for the tenant panel could not work.**
   `OAUTH2_PROXY_REDIRECT_URL` was hardcoded to the admin host in every
   environment, and oauth2-proxy takes exactly one `--redirect-url` — so a tenant
@@ -105,7 +160,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   `--cookie-domain` / `--whitelist-domain` cover the apex. Host-migration
   `2026.9.9/0005` clears the pinned value on existing clusters.
 
-### Fixed
 - **WAF events were written twice whenever a request landed in the scraper's
   re-read band.** The scraper reads a 35s log window every 30s, so ~5s of every
   cycle is deliberately re-read (a smaller window would drop events). Nothing
@@ -117,13 +171,13 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   a count of ROWS, so a source IP crossed the operator's configured threshold on
   roughly half the traffic they asked for. Rows now carry ModSecurity's own
   `<unique_id>:<ruleId>` as `event_key` under a unique index (migration 0101).
+
 - **WAF events whose `[error]` line and JSON audit record straddled a cycle
   boundary were stored with `hostname='localhost'` and `sourceIp='0.0.0.0'`.**
   The correlation maps are per-cycle, so a first write could land before the
   JSON line was ever seen. The conflicting write now repairs those placeholders
   instead of being dropped.
 
-### Fixed
 - **The CrowdSec log-processing agent could not start.** It was placed in the
   `crowdsec` namespace, which enforces Pod Security `baseline` — that forbids
   hostPath volumes outright, and the agent needs one to read Traefik's access
@@ -183,63 +237,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   *install* time — every existing cluster would otherwise ship the DaemonSet and
   sit at 0/1 with `FailedMount`.
 
-### Added
-- **HTTP reconnaissance detection — CrowdSec `http-probing` and
-  `http-crawl-non-statics`.** Scanning was invisible to every security surface:
-  ModSecurity only logs rule *matches*, and a request for `/wp-login.php` or
-  `/.env` is a syntactically perfect GET that trips no CRS rule. On production
-  that was ~4,700 requests/day — 26% of all traffic — leaving no trace
-  anywhere. CRS detects injection and traversal; reconnaissance is a **rate**
-  signal, which needs a different detector.
-
-  This was not a config toggle. CrowdSec shipped **LAPI-only**
-  (`DISABLE_AGENT=true`, community blocklist only), so there were no parsers,
-  no scenarios and no log acquisition to enable. Three pieces were missing:
-
-  - **Traefik access logging**, which was off entirely — also the reason no
-    per-request record existed for *any* request on the platform.
-  - **A log-processing agent.** Added as a DaemonSet, so one agent per node
-    reads one source. The original objection to acquisition ("sidecars on
-    every pod") does not apply: Traefik is itself a DaemonSet.
-  - **The scenario pack + crawler whitelists** (`crowdsecurity/traefik`,
-    `base-http-scenarios`, `whitelists`).
-
-  The access log is written to a **host file, not stdout**: the kubelet wraps
-  stdout in the CRI envelope (`<ts> stdout F <payload>`, verified on a live
-  node), which the `crowdsecurity/traefik` parser cannot read — the agent would
-  have run healthy and parsed nothing. `2026.9.9/0002` adds logrotate, because
-  an unrotated ingress log ends in a full disk.
-
-  **`http-crawl-non-statics` ships SIMULATED** — it raises alerts but issues no
-  ban. The bouncer sits on the shared entrypoint across 18 of 52 routes, so a
-  decision is cluster-wide: one false positive blocks that IP from *every*
-  tenant site, and on a multi-tenant host "many non-static requests from one
-  IP" also describes a legitimate crawler. `http-probing` enforces from the
-  start — requesting `/.env` and `/wp-login.php` in sequence has no benign
-  reading. Promote the other after reviewing a week of alerts.
-
-  Existing clusters converge via host-migration `2026.9.9/0001`; the
-  bootstrap.sh helm-values change reaches fresh installs only.
-
-  **Every sink this adds is bounded.** The access log rotates **hourly**, not
-  daily — `maxsize` is only evaluated when logrotate runs, so a daily cadence
-  makes "200M" mean "200M checked once a day", and the burst that blows past it
-  is exactly the scanning this detects. Worst case is ~400M (200M live + 7
-  compressed generations) against steady state of ~7MB/day. The CrowdSec LAPI
-  had **no retention at all** and sits on a fixed 1GiB PVC; a daily CronJob now
-  prunes alerts older than 30 days and expired decisions. Left unbounded, the
-  first thing to break would have been the IP-reputation gate itself.
-
-### Changed
-- **The fast-burn availability SLO no longer pages on near-idle traffic.** It
-  is a pure ratio, so a quiet window turns one failure into a burn-rate
-  breach — production regularly sees 12-14 request 5-minute windows overnight,
-  where a single 504 reads as 7-8% against a 7.2% threshold. The rule now
-  requires at least 20 requests in the window. This deliberately does **not**
-  suppress the 2026-09-05 incident (8 failures of 27 requests); those were real
-  504s, and what silences them is repairing the route behind them.
-
-### Fixed
 - **The suspended-tenant and bandwidth-exceeded pages were unreachable, and the
   resulting 504s were tripping the availability SLO.** `default-deny-ingress`
   selects every pod in the `platform` namespace, and
