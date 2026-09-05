@@ -75,6 +75,33 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   can never check against the backend, which is what made the bug above
   invisible. Migrating them all is a large refactor, so the guard grandfathers
   the current set and fails only when the count grows.
+- **Three endpoints accepted a request body nothing checked.**
+  `PATCH /admin/nodes/:name/storage/:diskKey` cast `request.body ?? {}`, so a
+  misspelled field was not a 400 but an empty JSON patch that returned **200
+  with nothing changed**; it now parses with a schema that also refuses a body
+  setting neither field. The four DNS server/provider-group handlers cast
+  `request.body as unknown as X` behind a truthiness check. `recycle-pod`
+  validated via a hand-written Fastify JSON schema restating the same four
+  fields a third time. All now parse with shared contract schemas.
+
+### Changed
+- **Every request body in both panels now comes from `@insula/api-contracts`.**
+  A hand-written request type in a hook is checked by `tsc` against its own
+  caller and nothing else, which is what let the OIDC provider form send
+  `tenant_id`/`tenant_secret` to an endpoint requiring `client_id`/`client_secret`
+  and still compile. The DNS provider-group shape existed in three places — the
+  contracts package, the panel, and neither used by the route.
+
+  The contracts package now exports request and parsed types separately —
+  `…Request` (`z.input`, what goes on the wire) and `…Input` (`z.infer`, what
+  the handler has after parsing). A field declared `.default(x)` is optional on
+  the wire and required after parsing; conflating them marks every defaulted
+  field mandatory, which briefly produced three "missing required field" errors
+  in forms that were correct.
+
+  Remaining gaps are tracked as **R29** in the roadmap: 49 routes that still
+  cast their body without parsing, and response contracts (510 exist, 4 of 707
+  handlers validate against them).
 
 ### Fixed
 - **WAF auto-ban never banned anything, on any cluster.** The scheduler tracked
