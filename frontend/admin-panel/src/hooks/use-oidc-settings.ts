@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import type { CreateOidcProviderInput } from '@insula/api-contracts';
 import { apiFetch } from '@/lib/api-client';
 
 // ─── Provider Types ──────────────────────────────────────────────────────────
@@ -48,18 +49,16 @@ export function useOidcProviders() {
   });
 }
 
-interface CreateProviderInput {
-  readonly display_name: string;
-  readonly issuer_url: string;
-  readonly tenant_id: string;
-  readonly tenant_secret: string;
-  readonly panel_scope: 'admin' | 'tenant';
-  readonly enabled?: boolean;
-  readonly backchannel_logout_enabled?: boolean;
-  readonly auto_provision?: boolean;
-  readonly default_role?: string;
-  readonly additional_claims?: string[];
-}
+/**
+ * The request shape comes from the shared contract — never re-declared here.
+ *
+ * This file used to carry its own `CreateProviderInput` with `tenant_id` /
+ * `tenant_secret` while the API required `client_id` / `client_secret`. The
+ * local type was internally consistent, so tsc was happy and the panel simply
+ * could not add an OIDC provider: create 400'd, and edit returned 200 while
+ * silently not writing the client id or secret.
+ */
+type CreateProviderInput = CreateOidcProviderInput;
 
 export function useCreateOidcProvider() {
   const queryClient = useQueryClient();

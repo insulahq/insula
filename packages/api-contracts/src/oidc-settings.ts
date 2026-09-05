@@ -47,3 +47,51 @@ export const breakGlassPathResponseSchema = z.object({
 export type SaveOidcGlobalSettingsInput = z.infer<typeof saveOidcGlobalSettingsSchema>;
 export type OidcGlobalSettingsResponse = z.infer<typeof oidcGlobalSettingsResponseSchema>;
 export type BreakGlassPathResponse = z.infer<typeof breakGlassPathResponseSchema>;
+
+// ─── OIDC provider create / update ───────────────────────────────────────────
+//
+// These live here, not in the backend service and not in a hand-written
+// frontend interface, because the API-contract rule exists for exactly this
+// failure: `frontend/admin-panel/src/hooks/use-oidc-settings.ts` declared its
+// own `CreateProviderInput` with `tenant_id` / `tenant_secret` while the
+// backend required `client_id` / `client_secret`. The local type was
+// self-consistent, so tsc was satisfied and the panel compiled, shipped, and
+// could not add a provider at all:
+//
+//   POST → 400 "display_name, issuer_url, client_id, client_secret, and
+//               panel_scope are required"
+//   PATCH → 200, with the client id and secret silently NOT written, because
+//               the update skips fields that are `undefined`.
+//
+// With one shared schema, that mismatch is a compile error.
+//
+// Field names are snake_case here, unlike the platform's camelCase response
+// convention — this endpoint shipped that way and renaming it would break any
+// existing caller.
+
+export const oidcProviderPanelScope = ['admin', 'tenant'] as const;
+export type OidcProviderPanelScope = typeof oidcProviderPanelScope[number];
+
+export const createOidcProviderSchema = z.object({
+  display_name: z.string().min(1, 'display_name is required'),
+  issuer_url: z.string().url('issuer_url must be a valid URL'),
+  client_id: z.string().min(1, 'client_id is required'),
+  client_secret: z.string().min(1, 'client_secret is required'),
+  panel_scope: z.enum(oidcProviderPanelScope),
+  enabled: z.boolean().optional(),
+  backchannel_logout_enabled: z.boolean().optional(),
+  display_order: z.number().int().optional(),
+  auto_provision: z.boolean().optional(),
+  default_role: z.string().optional(),
+  additional_claims: z.array(z.string()).optional(),
+}).strict();
+export type CreateOidcProviderInput = z.infer<typeof createOidcProviderSchema>;
+
+/**
+ * PATCH input. `.strict()` matters more here than on create: an unknown key on
+ * update is not a 400 you notice, it is a field that silently does not change
+ * — the shape of the original bug. `client_secret` stays non-empty when
+ * present so "leave unchanged" is expressed by omitting it, never by "".
+ */
+export const updateOidcProviderSchema = createOidcProviderSchema.partial().strict();
+export type UpdateOidcProviderInput = z.infer<typeof updateOidcProviderSchema>;

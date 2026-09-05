@@ -308,7 +308,7 @@ function CallbackUrlField({ scope }: { readonly scope: 'admin' | 'tenant' }) {
 function AddProviderForm({ onClose }: { readonly onClose: () => void }) {
   const create = useCreateOidcProvider();
   const [form, setForm] = useState({
-    display_name: '', issuer_url: '', tenant_id: '', tenant_secret: '',
+    display_name: '', issuer_url: '', client_id: '', client_secret: '',
     panel_scope: 'admin' as 'admin' | 'tenant',
     auto_provision: false, default_role: 'read_only', additional_claims: '',
   });
@@ -322,8 +322,8 @@ function AddProviderForm({ onClose }: { readonly onClose: () => void }) {
       await create.mutateAsync({
         display_name: form.display_name,
         issuer_url: form.issuer_url,
-        tenant_id: form.tenant_id,
-        tenant_secret: form.tenant_secret,
+        client_id: form.client_id,
+        client_secret: form.client_secret,
         panel_scope: form.panel_scope,
         enabled: true,
         auto_provision: form.auto_provision,
@@ -339,8 +339,8 @@ function AddProviderForm({ onClose }: { readonly onClose: () => void }) {
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Display Name</label><input type="text" className={INPUT_CLASS} placeholder="Corporate SSO" value={form.display_name} onChange={(e) => setForm({ ...form, display_name: e.target.value })} required data-testid="provider-name-input" /></div>
         <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Issuer URL</label><input type="url" className={INPUT_CLASS} placeholder="https://dex.example.com" value={form.issuer_url} onChange={(e) => setForm({ ...form, issuer_url: e.target.value })} required data-testid="provider-issuer-input" /></div>
-        <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Client ID</label><input type="text" className={INPUT_CLASS} value={form.tenant_id} onChange={(e) => setForm({ ...form, tenant_id: e.target.value })} required data-testid="provider-tenant-id-input" /></div>
-        <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Client Secret</label><input type="password" className={INPUT_CLASS} value={form.tenant_secret} onChange={(e) => setForm({ ...form, tenant_secret: e.target.value })} required data-testid="provider-secret-input" /></div>
+        <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Client ID</label><input type="text" className={INPUT_CLASS} value={form.client_id} onChange={(e) => setForm({ ...form, client_id: e.target.value })} required data-testid="provider-client-id-input" /></div>
+        <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Client Secret</label><input type="password" className={INPUT_CLASS} value={form.client_secret} onChange={(e) => setForm({ ...form, client_secret: e.target.value })} required data-testid="provider-secret-input" /></div>
         <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Panel Scope</label>
           <select className={INPUT_CLASS} value={form.panel_scope} onChange={(e) => setForm({ ...form, panel_scope: e.target.value as 'admin' | 'tenant' })} data-testid="provider-scope-select">
             <option value="admin">Admin Panel</option><option value="tenant">Tenant Panel</option>
@@ -401,8 +401,8 @@ function ProviderRow({ provider }: { readonly provider: OidcProvider }) {
   const [editForm, setEditForm] = useState({
     display_name: provider.displayName,
     issuer_url: provider.issuerUrl,
-    tenant_id: provider.tenantId,
-    tenant_secret: '',
+    client_id: provider.tenantId,
+    client_secret: '',
     panel_scope: provider.panelScope as 'admin' | 'tenant',
     auto_provision: provider.autoProvision ?? false,
     default_role: provider.defaultRole ?? 'read_only',
@@ -419,8 +419,8 @@ function ProviderRow({ provider }: { readonly provider: OidcProvider }) {
         id: provider.id,
         display_name: editForm.display_name,
         issuer_url: editForm.issuer_url,
-        tenant_id: editForm.tenant_id,
-        tenant_secret: editForm.tenant_secret || undefined,
+        client_id: editForm.client_id,
+        client_secret: editForm.client_secret || undefined,
         panel_scope: editForm.panel_scope,
         auto_provision: editForm.auto_provision,
         default_role: editForm.panel_scope === 'admin' ? editForm.default_role : undefined,
@@ -432,12 +432,12 @@ function ProviderRow({ provider }: { readonly provider: OidcProvider }) {
 
   if (editing) {
     return (
-      <form onSubmit={handleSaveEdit} className="bg-gray-50 dark:bg-gray-900 px-5 py-4 space-y-3" data-testid={`edit-provider-${provider.id}`}>
+      <form onSubmit={handleSaveEdit} className="bg-gray-50 dark:bg-gray-900 px-5 py-4 space-y-3" data-testid={`edit-provider-form-${provider.id}`}>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Display Name</label><input type="text" className={INPUT_CLASS} value={editForm.display_name} onChange={(e) => setEditForm({ ...editForm, display_name: e.target.value })} required /></div>
           <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Issuer URL</label><input type="url" className={INPUT_CLASS} value={editForm.issuer_url} onChange={(e) => setEditForm({ ...editForm, issuer_url: e.target.value })} required /></div>
-          <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Client ID</label><input type="text" className={INPUT_CLASS} value={editForm.tenant_id} onChange={(e) => setEditForm({ ...editForm, tenant_id: e.target.value })} required /></div>
-          <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Client Secret</label><input type="password" className={INPUT_CLASS} placeholder="(unchanged)" value={editForm.tenant_secret} onChange={(e) => setEditForm({ ...editForm, tenant_secret: e.target.value })} /></div>
+          <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Client ID</label><input type="text" className={INPUT_CLASS} value={editForm.client_id} onChange={(e) => setEditForm({ ...editForm, client_id: e.target.value })} required /></div>
+          <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Client Secret</label><input type="password" className={INPUT_CLASS} placeholder="(unchanged)" value={editForm.client_secret} onChange={(e) => setEditForm({ ...editForm, client_secret: e.target.value })} /></div>
           <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Panel Scope</label>
             <select className={INPUT_CLASS} value={editForm.panel_scope} onChange={(e) => setEditForm({ ...editForm, panel_scope: e.target.value as 'admin' | 'tenant' })}>
               <option value="admin">Admin Panel</option><option value="tenant">Tenant Panel</option>
@@ -481,7 +481,7 @@ function ProviderRow({ provider }: { readonly provider: OidcProvider }) {
         {update.error && <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400"><AlertCircle size={14} />{update.error instanceof Error ? update.error.message : 'Failed'}</div>}
         <div className="flex gap-2 justify-end">
           <button type="button" onClick={() => setEditing(false)} className="rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-1.5 text-sm text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50">Cancel</button>
-          <button type="submit" disabled={update.isPending} className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-3 py-1.5 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50">
+          <button type="submit" disabled={update.isPending} className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-3 py-1.5 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50" data-testid={`save-provider-${provider.id}`}>
             {update.isPending && <Loader2 size={12} className="animate-spin" />} Save
           </button>
         </div>

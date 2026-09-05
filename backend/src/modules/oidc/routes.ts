@@ -2,7 +2,8 @@ import type { FastifyInstance } from 'fastify';
 import { eq, lt } from 'drizzle-orm';
 import { authenticate, requireRole } from '../../middleware/auth.js';
 import * as service from './service.js';
-import type { SaveProviderInput, SaveGlobalSettingsInput } from './service.js';
+import type { SaveGlobalSettingsInput } from './service.js';
+import { createOidcProviderSchema, updateOidcProviderSchema } from '@insula/api-contracts';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import { syncProxyIngressAnnotations, syncOAuth2ProxySecret } from './ingress-proxy-manager.js';
@@ -241,11 +242,18 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
   app.post('/admin/oidc/providers', {
     onRequest: [authenticate, requireRole('super_admin', 'admin')],
   }, async (request, reply) => {
-    const input = request.body as unknown as SaveProviderInput;
-    if (!input.display_name || !input.issuer_url || !input.client_id || !input.client_secret || !input.panel_scope) {
-      throw new ApiError('MISSING_REQUIRED_FIELD', 'display_name, issuer_url, client_id, client_secret, and panel_scope are required', 400);
+    // Validate against the SHARED schema, not a hand-rolled truthiness check.
+    // The old check could only say "a required field is missing"; it could not
+    // say that the caller sent `tenant_id` instead of `client_id`, which is
+    // exactly what the admin panel was doing.
+    const parsed = createOidcProviderSchema.safeParse(request.body);
+    if (!parsed.success) {
+      const detail = parsed.error.issues
+        .map((i) => (i.path.length ? `${i.path.join('.')}: ${i.message}` : i.message))
+        .join('; ');
+      throw new ApiError('MISSING_REQUIRED_FIELD', detail, 400);
     }
-    const provider = await service.createProvider(app.db, input, encryptionKey);
+    const provider = await service.createProvider(app.db, parsed.data, encryptionKey);
     reply.status(201).send(success(provider));
   });
 
@@ -253,8 +261,18 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
     onRequest: [authenticate, requireRole('super_admin', 'admin')],
   }, async (request) => {
     const { id } = request.params as { id: string };
-    const input = request.body as unknown as Partial<SaveProviderInput>;
-    const updated = await service.updateProvider(app.db, id, input, encryptionKey);
+    // `.strict()` is load-bearing on PATCH: an unrecognised key here is not a
+    // validation nicety, it is a field the update silently skips, returning
+    // 200 with nothing written. That is how editing a provider's Client ID
+    // appeared to work while changing nothing.
+    const parsed = updateOidcProviderSchema.safeParse(request.body);
+    if (!parsed.success) {
+      const detail = parsed.error.issues
+        .map((i) => (i.path.length ? `${i.path.join('.')}: ${i.message}` : i.message))
+        .join('; ');
+      throw new ApiError('INVALID_FIELD', detail, 400);
+    }
+    const updated = await service.updateProvider(app.db, id, parsed.data, encryptionKey);
     return success(updated);
   });
 
