@@ -13,6 +13,19 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Fixed
+- **Editing the CrowdSec agent's acquisition/simulation config or an nginx
+  error page did not restart the workload that reads it.** Both are parsed once
+  at startup, and with a fixed ConfigMap name the edit reached the cluster and
+  never reached the process. This mattered most for
+  `crowdsec-agent-acquis`: its own comment invites an operator to promote
+  `http-crawl-non_statics` out of simulation by deleting a line, and that edit
+  would have applied to the cluster while the running agent kept banning as
+  before. The three error-page ConfigMaps are each mounted twice — HTML (re-read
+  per request) and nginx config (read at startup) — so changes applied by
+  halves. All four are now generated with a content-hash suffix, so any edit
+  rolls the consumer.
+
+### Fixed
 - **OAuth2-Proxy sign-in ended in a 500 at `/oauth2/callback`.** The Dex
   staticClient took its secret from `secret: $OAUTH2_PROXY_CLIENT_SECRET`, but
   Dex performs **no** variable expansion in that field — it registered the

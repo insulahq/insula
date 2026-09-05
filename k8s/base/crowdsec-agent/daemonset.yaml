@@ -77,47 +77,18 @@
 # from the host it probed. That is why http-crawl-non_statics ships SIMULATED
 # below — on a multi-tenant host, "many non-static requests from one IP" is
 # also an accurate description of a legitimate search-engine crawler.
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: crowdsec-agent-acquis
-  namespace: platform-system
-  labels:
-    app.kubernetes.io/name: crowdsec-agent
-    app.kubernetes.io/part-of: hosting-platform
-    app.kubernetes.io/component: waf
-data:
-  # One source: Traefik's JSON access log, written to a host file by the
-  # Traefik DaemonSet on the same node. Not /var/log/pods — see the CRI note
-  # in the header.
-  acquis.yaml: |
-    ---
-    filenames:
-      - /var/log/traefik/access.log
-    labels:
-      type: traefik
-  # http-crawl-non_statics is SIMULATED: it still raises alerts (visible in
-  # `cscli alerts list` and the admin panel) but issues no ban. Promote it by
-  # removing the line here once you have reviewed a week of alerts and
-  # confirmed no legitimate crawler is caught.
-  #
-  # http-probing enforces from the start: requesting /.env, /wp-login.php and
-  # /phpmyadmin in sequence has no benign reading.
-  #
-  # NOTE THE UNDERSCORE in `non_statics`. The hub scenario is
-  # crowdsecurity/http-crawl-non_statics while every piece of documentation —
-  # including CrowdSec's own — writes it with a hyphen. cscli does NOT validate
-  # these names: an exclusion naming a scenario that does not exist is accepted
-  # silently and `cscli simulation status` echoes it back, so the config LOOKS
-  # correct while the real scenario runs live and bans. Verified on DEV
-  # 2026-09-05, where exactly that had happened.
-  # scripts/integration-waf-deploy-surfaces.sh now asserts every excluded name
-  # against `cscli scenarios list`.
-  simulation.yaml: |
-    simulation: false
-    exclusions:
-      - crowdsecurity/http-crawl-non_statics
+# NOTE: the acquisition + simulation config is NOT inlined here. It is
+# generated from k8s/base/crowdsec-agent/config/*.yaml by a configMapGenerator
+# with the name-suffix hash ON, so editing either file mints a new ConfigMap
+# name and this DaemonSet rolls to pick it up.
+#
+# That matters specifically for simulation.yaml. Its own comment invites a
+# future operator to promote http-crawl-non_statics out of simulation by
+# deleting a line — and with a fixed ConfigMap name that edit would have
+# applied to the cluster and changed nothing in the running agent, because
+# CrowdSec parses both files once at startup. A security control quietly
+# disagreeing with its own config is the exact failure this feature has
+# already produced once (the hyphen/underscore bug, 2026-09-05).
 ---
 apiVersion: apps/v1
 kind: DaemonSet

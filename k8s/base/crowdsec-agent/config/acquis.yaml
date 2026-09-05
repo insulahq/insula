@@ -1,0 +1,8 @@
+---
+# One source: Traefik's JSON access log, written to a host file by the Traefik
+# DaemonSet on the same node. Not /var/log/pods — the kubelet wraps stdout in
+# the CRI envelope and the crowdsecurity/traefik parser needs bare JSON.
+filenames:
+  - /var/log/traefik/access.log
+labels:
+  type: traefik
