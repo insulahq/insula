@@ -139,6 +139,12 @@ export function subjectKey(
 
 // 99.5% availability SLO ⇒ error budget 0.5%. Burn-rate multipliers per
 // the standard multiwindow guidance (14.4x fast / 6x slow).
+//
+// Burn-rate rules are ratios, so they need an absolute-volume floor or a
+// near-idle window pages on noise: 1 failure out of 5 requests is 20%, which
+// clears every burn-rate threshold there is. The floor below is per 5-minute
+// window and deliberately low — high enough to skip a genuinely idle cluster,
+// low enough that a real outage during quiet hours still fires.
 export const SLO_RULES: ReadonlyArray<SloRule> = [
   // ── Node memory / kernel OOM (operator decision 2026-07-25) ─────────────
   // Sourced from cadvisor's container_oom_events_total (cgroup
@@ -173,7 +179,21 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
     description: 'A large share of HTTPS requests are failing with 5xx errors right now (last 5 min; SLO target is under 0.5%). Something is broken. Find the failing routes and tenant workloads in Monitoring → SLOs, then check those apps'
       + ' logs and pods.',
     severity: 'critical',
-    expr: '(sum(rate(traefik_entrypoint_requests_total{entrypoint="websecure",code=~"5.."}[5m])) / sum(rate(traefik_entrypoint_requests_total{entrypoint="websecure"}[5m]))) > $T',
+    // Minimum-volume floor. This is a pure RATIO, so on a near-idle cluster a
+    // single failure can clear any burn-rate threshold (1 of 5 = 20%).
+    //
+    // Sizing, honestly: the production incident on 2026-09-05 was 8 failures
+    // out of 27 requests, so this floor would NOT have suppressed it — nor
+    // should it, those were real 504s. What silenced that alert is repairing
+    // the route behind them (the tunnel anchor could not reach its backend at
+    // all). The floor exists for the windows below it: production regularly
+    // sees 12-14 request 5m windows overnight, where one failure reads as 7-8%
+    // and pages CRITICAL on nothing.
+    //
+    // `and` gates on absolute volume while the ratio stays the returned value,
+    // so the alert text still reports the real percentage.
+    expr: '((sum(rate(traefik_entrypoint_requests_total{entrypoint="websecure",code=~"5.."}[5m])) / sum(rate(traefik_entrypoint_requests_total{entrypoint="websecure"}[5m]))) > $T)'
+      + ' and (sum(increase(traefik_entrypoint_requests_total{entrypoint="websecure"}[5m])) >= 20)',
     subjectLabels: [],
     threshold: 14.4 * 0.005,
     forSeconds: 300,

@@ -88,7 +88,25 @@ spec:
       # Low priority so per-tenant `PathPrefix(/c/{slug}/)` routes
       # always win for tunneled traffic.
       priority: 1
+      # WAF + CrowdSec, matching platform-ingress. This host is publicly
+      # resolvable with a Let's Encrypt certificate (therefore listed in
+      # Certificate Transparency and discoverable by scanners), and until
+      # 2026-09-05 it carried a rate limit only — no ModSecurity, no CrowdSec.
+      # A banned IP could still reach it.
+      #
+      # Safe for the tunnel feature: real tunnel traffic never matches this
+      # route. Per-worker tunnels are `<slug>.tunnels.<apex>` — a DIFFERENT
+      # host with its own IngressRoute — and they carry frps WebSocket
+      # streams, which must NOT be body-inspected. This route is only the
+      # catch-all (priority 1) serving the suspended page to unrouted
+      # requests, so adding the WAF here cannot affect a tunnel.
       middlewares:
+        - name: crowdsec
+          namespace: traefik
+        - name: waf-body-limit
+          namespace: traefik
+        - name: modsecurity-crs
+          namespace: traefik
         - name: tunnel-anchor-ratelimit
           namespace: platform-system
         - name: compress
