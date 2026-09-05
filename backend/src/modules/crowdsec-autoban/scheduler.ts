@@ -6,7 +6,7 @@
  *   2. If disabled → skip (still update watermark so re-enabling
  *      doesn't process backlog).
  *   3. Read new waf_logs rows since last watermark (max 1000 per tick).
- *   4. Build the recently-banned LRU + past-bans-per-IP map.
+ *   4. Build the recently-banned set + past-bans-per-IP map (both from SQL).
  *   5. Call evaluator.
  *   6. For each banned decision: addBan via existing helper + insert
  *      crowdsec_autoban_runs row.
@@ -15,8 +15,21 @@
  *   8. Advance watermark.
  *
  * Watermark stored in platform_settings under
- * `security.crowdsec.autoban_watermark_id` — string holding the last
- * processed waf_logs.id. Survives platform-api restarts.
+ * `security.crowdsec.autoban_watermark_id` as `<iso-timestamp>|<id>` —
+ * a keyset cursor over (created_at, id). Survives platform-api restarts.
+ *
+ * It is NOT a bare `waf_logs.id`, and the batch query does NOT compare
+ * ids with `>`. That was the original design and it starved the
+ * scheduler completely: `waf_logs.id` is a random UUID v4, so ordering
+ * by it is ordering by noise. The first tick seeded the watermark with
+ * `ORDER BY id DESC LIMIT 1` — the largest random UUID present, which
+ * lands near the top of the UUID space — and from then on only an event
+ * whose random UUID happened to sort above it was ever processed. Found
+ * on production 2026-09-05 with a watermark of `ffd20474…` (~99.93rd
+ * percentile): 0 of 502 rows visible, 0 auto-ban runs ever recorded,
+ * while a scanner with 18 qualifying events against a threshold of 5
+ * went unbanned. Order by time; use the id only to break ties within an
+ * identical timestamp.
  *
  * If addBan() throws (LAPI down, cscli error), we record the failure
  * but advance the watermark — the next tick won't re-try the same
@@ -39,8 +52,11 @@ type Db = NodePgDatabase<any>;
 const TICK_INTERVAL_MS = 60_000;
 const INITIAL_DELAY_MS = 30_000;
 const MAX_BATCH = 1000;
-/** LRU: any IP we banned in the last 5 min. Skip to avoid double-banning. */
-const LRU_TTL_MS = 5 * 60_000;
+// The "recently banned" set is a 5-minute SQL window over
+// crowdsec_autoban_runs (recentlyBannedIpsFromDb), not an in-process LRU.
+// That matters with more than one platform-api replica: a per-process cache
+// would let each replica ban the same IP once. There is no LRU constant here
+// because there is no LRU.
 /** Pre-prefix for the scenario field — distinguishes auto-bans from operator-added bans. */
 export const AUTO_BAN_REASON_PREFIX = 'auto-ban:';
 
@@ -110,15 +126,44 @@ export async function loadConfig(db: Db): Promise<CrowdsecAutobanConfig> {
   };
 }
 
-async function loadWatermark(db: Db): Promise<string | null> {
-  const settings = await loadSettings(db);
-  return settings.get(SETTING_WATERMARK) ?? null;
+/** Keyset cursor over (created_at, id) — the position of the last processed row. */
+export interface WafCursor {
+  readonly createdAt: Date;
+  readonly id: string;
 }
 
-async function saveWatermark(db: Db, id: string): Promise<void> {
+/**
+ * Parse the stored watermark.
+ *
+ * Returns null for a value in the pre-fix format (a bare UUID). Such a
+ * value carries no usable position: it was chosen by random-UUID order,
+ * so resolving its `created_at` would restart the scan at an arbitrary
+ * point in the table. The caller treats null as "no cursor" and starts
+ * from a bounded recent window instead — see resolveStartCursor.
+ */
+export function parseWatermark(raw: string | null): WafCursor | null {
+  if (!raw) return null;
+  const sep = raw.lastIndexOf('|');
+  if (sep === -1) return null;
+  const ts = new Date(raw.slice(0, sep));
+  const id = raw.slice(sep + 1);
+  if (Number.isNaN(ts.getTime()) || id === '') return null;
+  return { createdAt: ts, id };
+}
+
+export function formatWatermark(cursor: WafCursor): string {
+  return `${cursor.createdAt.toISOString()}|${cursor.id}`;
+}
+
+async function loadWatermark(db: Db): Promise<WafCursor | null> {
+  const settings = await loadSettings(db);
+  return parseWatermark(settings.get(SETTING_WATERMARK) ?? null);
+}
+
+async function saveWatermark(db: Db, cursor: WafCursor): Promise<void> {
   await db.execute(sql`
     INSERT INTO platform_settings (setting_key, setting_value, updated_at)
-    VALUES (${SETTING_WATERMARK}, ${id}, NOW())
+    VALUES (${SETTING_WATERMARK}, ${formatWatermark(cursor)}, NOW())
     ON CONFLICT (setting_key) DO UPDATE SET setting_value = EXCLUDED.setting_value, updated_at = NOW()
   `);
 }
@@ -171,20 +216,38 @@ interface RawWafLogRow {
   tenant_id: string | null;
 }
 
-async function newWafEventsSince(db: Db, watermark: string | null): Promise<{ rows: WafLogRow[]; lastId: string | null }> {
-  const result = watermark
+/**
+ * Fetch rows after the cursor in (created_at, id) order.
+ *
+ * With no cursor — first run ever, or a pre-fix bare-UUID watermark —
+ * start `lookbackSeconds` back rather than at the newest row or at the
+ * beginning of the table. Starting at the newest row means a burst
+ * already in flight is missed; starting at the beginning means the
+ * first tick after an upgrade retro-bans every IP in the retention
+ * window, including ones that stopped days ago. A bounded lookback
+ * equal to the detection window is the only choice that does what the
+ * feature claims: act on what is happening now.
+ */
+async function newWafEventsSince(
+  db: Db,
+  cursor: WafCursor | null,
+  lookbackSeconds: number,
+): Promise<{ rows: WafLogRow[]; lastCursor: WafCursor | null }> {
+  const result = cursor
     ? await db.execute(sql`
         SELECT id, created_at, source_ip, hostname, rule_id, severity, tenant_id
-        FROM waf_logs WHERE id > ${watermark}
-        ORDER BY id ASC LIMIT ${MAX_BATCH}
+        FROM waf_logs
+        WHERE (created_at, id) > (${cursor.createdAt}::timestamp, ${cursor.id})
+        ORDER BY created_at ASC, id ASC LIMIT ${MAX_BATCH}
       `)
     : await db.execute(sql`
         SELECT id, created_at, source_ip, hostname, rule_id, severity, tenant_id
         FROM waf_logs
-        ORDER BY id DESC LIMIT 1
+        WHERE created_at > NOW() - (${lookbackSeconds} * INTERVAL '1 second')
+        ORDER BY created_at ASC, id ASC LIMIT ${MAX_BATCH}
       `);
   const rawRows = ((result as unknown as { rows?: RawWafLogRow[] }).rows) ?? [];
-  if (rawRows.length === 0) return { rows: [], lastId: null };
+  if (rawRows.length === 0) return { rows: [], lastCursor: null };
   const rows: WafLogRow[] = rawRows.map((r) => ({
     id: r.id,
     createdAt: r.created_at instanceof Date ? r.created_at : new Date(r.created_at),
@@ -194,8 +257,8 @@ async function newWafEventsSince(db: Db, watermark: string | null): Promise<{ ro
     severity: r.severity,
     tenantId: r.tenant_id,
   }));
-  const lastId = rawRows[rawRows.length - 1].id;
-  return { rows, lastId };
+  const last = rows[rows.length - 1];
+  return { rows, lastCursor: { createdAt: last.createdAt, id: last.id } };
 }
 
 async function insertRun(
@@ -236,14 +299,14 @@ interface SchedulerDeps {
 export async function runOnce(deps: SchedulerDeps): Promise<void> {
   const config = await loadConfig(deps.db);
   const watermark = await loadWatermark(deps.db);
-  const { rows: events, lastId } = await newWafEventsSince(deps.db, watermark);
+  const { rows: events, lastCursor } = await newWafEventsSince(deps.db, watermark, config.windowSeconds);
 
   if (events.length === 0) return;
 
   // Bump watermark immediately to avoid double-evaluating on the next tick
   // if our processing crashes mid-way. The cost of dropping a few events
   // on a crash is better than the cost of double-banning.
-  if (lastId) await saveWatermark(deps.db, lastId);
+  if (lastCursor) await saveWatermark(deps.db, lastCursor);
 
   if (!config.enabled) return;
 
@@ -298,11 +361,15 @@ export async function runOnce(deps: SchedulerDeps): Promise<void> {
     try {
       // addBan uses the operator path — actor='autoban-scheduler' so audit
       // logs distinguish auto-bans from operator bans. The scenario prefix
-      // (admin-panel:) is set by addBan; we want auto-ban: instead, but
-      // changing addBan's prefix breaks the existing UI manualByOperator
-      // detection. Instead: prepend AUTO_BAN_REASON_PREFIX to the reason
-      // string so the scenario becomes admin-panel:autoban-scheduler:auto-ban:<reason>.
-      // The UI's autoban detection key off the prefix in the reason segment.
+      // (admin-panel:) is set by addBan; AUTO_BAN_REASON_PREFIX is prepended
+      // to the reason so the scenario becomes
+      // admin-panel:autoban-scheduler:auto-ban:<reason>.
+      //
+      // The classifier keys off the ACTOR segment, not this reason prefix —
+      // see AUTO_BAN_SCENARIO_PREFIX in security-hardening/crowdsec.ts. An
+      // earlier version of this comment claimed the UI already detected
+      // auto-bans from the reason prefix; it did not, and every automatic ban
+      // rendered in the Banned IPs table as `manual`.
       const reason = `${AUTO_BAN_REASON_PREFIX}rules ${d.ruleIds.join(',')} count ${d.eventCount}`;
       await addBan(
         deps.kubeconfigPath,

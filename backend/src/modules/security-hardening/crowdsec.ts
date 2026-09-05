@@ -73,6 +73,20 @@ export const MANUAL_BAN_REASON_PREFIX = 'admin-panel:';
  */
 export const MANUAL_STATIC_BAN_REASON_PREFIX = 'admin-panel-static:';
 
+/**
+ * Bans written by the WAF auto-ban scheduler.
+ *
+ * The scheduler calls the same `addBan` helper an operator does, with
+ * actor='autoban-scheduler', so its scenario is
+ * `admin-panel:autoban-scheduler:auto-ban:<rules…>` — which starts with
+ * MANUAL_BAN_REASON_PREFIX. Until this constant existed, every automatic
+ * ban was therefore reported as `manualByOperator: true` and rendered in
+ * the Banned IPs table as though a human had clicked it. The actor
+ * segment is the reliable discriminator: it comes from the authenticated
+ * caller, so an operator cannot spoof it by typing a reason.
+ */
+export const AUTO_BAN_SCENARIO_PREFIX = 'admin-panel:autoban-scheduler:';
+
 // 100 years — effectively permanent. CrowdSec stores decisions with
 // an absolute `until` timestamp, so there is no "never expires" sentinel
 // flag; the longest practical duration is the safety story. Verified
@@ -321,8 +335,14 @@ function parseLapiDecision(d: LapiRawDecision): CrowdsecDecision | null {
     scenario,
     duration,
     expiresAt: parseDurationToAbsolute(duration),
-    manualByOperator: origin === 'cscli' && scenario.startsWith(MANUAL_BAN_REASON_PREFIX),
+    // manualByOperator excludes auto-bans: the scheduler's scenario also
+    // starts with MANUAL_BAN_REASON_PREFIX, so without the `&& !auto` an
+    // automatic ban claims a human did it.
+    manualByOperator: origin === 'cscli'
+      && scenario.startsWith(MANUAL_BAN_REASON_PREFIX)
+      && !scenario.startsWith(AUTO_BAN_SCENARIO_PREFIX),
     staticByOperator: origin === 'cscli' && scenario.startsWith(MANUAL_STATIC_BAN_REASON_PREFIX),
+    autoBanned: origin === 'cscli' && scenario.startsWith(AUTO_BAN_SCENARIO_PREFIX),
     simulated: Boolean(d.simulated),
   };
 }
@@ -382,6 +402,7 @@ export async function listDecisions(
   if (query.scope) filtered = filtered.filter((d) => d.scope === query.scope);
   if (query.manualOnly) filtered = filtered.filter((d) => d.manualByOperator);
   if (query.staticOnly) filtered = filtered.filter((d) => d.staticByOperator);
+  if (query.autoOnly) filtered = filtered.filter((d) => d.autoBanned);
   if (query.q) {
     const q = query.q.toLowerCase();
     filtered = filtered.filter((d) => d.value.toLowerCase().includes(q));
@@ -731,6 +752,7 @@ export const __test = {
   parseLapiDecision,
   parseDurationToAbsolute,
   MANUAL_BAN_REASON_PREFIX,
+  AUTO_BAN_SCENARIO_PREFIX,
   // Self-heal entrypoints exposed for unit tests. lapiGet is the hot
   // path; reregisterPlatformApiBouncer is the helper it calls on 403.
   lapiGet,

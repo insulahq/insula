@@ -103,6 +103,14 @@ export type LoginPasskeyRequiredResponse = z.infer<typeof loginPasskeyRequiredRe
 
 export type LoginInput = z.infer<typeof loginSchema>;
 export type ChangePasswordInput = z.infer<typeof changePasswordSchema>;
+
+// `…Request` is the WIRE type (z.input): a `.default(x)` field is optional
+// when sending and required in `z.infer`, which is the parsed result. See
+// the note in domains.ts for why conflating them produced false errors.
+export type ChangePasswordRequest = z.input<typeof changePasswordSchema>;
+
 export type UpdateProfileInput = z.infer<typeof updateProfileSchema>;
+export type UpdateProfileRequest = z.input<typeof updateProfileSchema>;
+
 export type User = z.infer<typeof userSchema>;
 export type LoginResponse = z.infer<typeof loginResponseSchema>;

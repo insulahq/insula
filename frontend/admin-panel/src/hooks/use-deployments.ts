@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import type { CreateDeploymentRequest } from '@insula/api-contracts';
 import { apiFetch } from '@/lib/api-client';
 import type { PaginatedResponse } from '@/types/api';
 
@@ -104,18 +105,12 @@ export function useDeployment(tenantId: string | undefined, deploymentId: string
   });
 }
 
-interface CreateDeploymentInput {
-  readonly name: string;
-  readonly catalog_entry_id: string;
-  readonly replica_count?: number;
-  readonly cpu_request?: string;
-  readonly memory_request?: string;
-}
+// CreateDeploymentRequest comes from @insula/api-contracts (createDeploymentSchema) — the shape the backend parses with.
 
 export function useCreateDeployment(tenantId: string | undefined) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (input: CreateDeploymentInput) =>
+    mutationFn: (input: CreateDeploymentRequest) =>
       apiFetch<{ data: Deployment }>(`/api/v1/tenants/${tenantId}/deployments`, {
         method: 'POST',
         body: JSON.stringify(input),

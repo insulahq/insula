@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import type { UpdateLoadBalancerRequest } from '@insula/api-contracts';
 import { apiFetch } from '@/lib/api-client';
 
 export type LoadBalancerProvider = 'null' | 'hetzner' | 'aws' | 'metallb';
@@ -19,16 +20,12 @@ export function useLoadBalancer() {
   });
 }
 
-export interface UpdateLoadBalancerInput {
-  readonly enabled?: boolean;
-  readonly provider?: LoadBalancerProvider;
-  readonly config?: Record<string, unknown>;
-}
+// UpdateLoadBalancerRequest comes from @insula/api-contracts (updateLoadBalancerSchema) — the shape the backend parses with.
 
 export function useUpdateLoadBalancer() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (input: UpdateLoadBalancerInput) =>
+    mutationFn: (input: UpdateLoadBalancerRequest) =>
       apiFetch<{ data: LoadBalancerStatus }>('/api/v1/admin/load-balancer', {
         method: 'PATCH',
         body: JSON.stringify(input),

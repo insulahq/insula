@@ -1,0 +1,13 @@
+frontend/admin-panel/src/hooks/use-backup-config.ts 1
+frontend/admin-panel/src/hooks/use-catalog.ts 1
+frontend/admin-panel/src/hooks/use-cluster-network.ts 1
+frontend/admin-panel/src/hooks/use-deployment-upgrades.ts 3
+frontend/admin-panel/src/hooks/use-deployments.ts 1
+frontend/admin-panel/src/hooks/use-dns-records.ts 1
+frontend/admin-panel/src/hooks/use-domains.ts 1
+frontend/admin-panel/src/hooks/use-notification-deliveries.ts 1
+frontend/admin-panel/src/hooks/use-oidc-settings.ts 1
+frontend/admin-panel/src/hooks/use-orphaned-volumes.ts 1
+frontend/tenant-panel/src/hooks/use-bulk-operation.ts 1
+frontend/tenant-panel/src/hooks/use-deployments.ts 2
+frontend/tenant-panel/src/hooks/use-email.ts 1

@@ -1,4 +1,5 @@
 import { eq, and, asc } from 'drizzle-orm';
+import type { CreateOidcProviderInput } from '@insula/api-contracts';
 import crypto from 'crypto';
 import bcrypt from 'bcrypt';
 import { oidcProviders, oidcGlobalSettings, users, tenants } from '../../db/schema.js';
@@ -208,19 +209,14 @@ export async function getProviderById(db: Database, id: string) {
   return provider;
 }
 
-export interface SaveProviderInput {
-  readonly display_name: string;
-  readonly issuer_url: string;
-  readonly client_id: string;
-  readonly client_secret: string;
-  readonly panel_scope: 'admin' | 'tenant';
-  readonly enabled?: boolean;
-  readonly backchannel_logout_enabled?: boolean;
-  readonly display_order?: number;
-  readonly auto_provision?: boolean;
-  readonly default_role?: string;
-  readonly additional_claims?: string[];
-}
+/**
+ * Re-export of the shared contract type. This was a locally-declared interface
+ * that happened to match nothing the admin panel sent: the panel had its own
+ * `CreateProviderInput` with `tenant_id` / `tenant_secret`, and because both
+ * sides were internally consistent, tsc never saw the mismatch. Two hand-written
+ * copies of one API shape is the defect, so there is now one shape.
+ */
+export type SaveProviderInput = CreateOidcProviderInput;
 
 export async function createProvider(db: Database, input: SaveProviderInput, encryptionKey: string) {
   const discovery = await fetchDiscovery(input.issuer_url);

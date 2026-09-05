@@ -12,6 +12,117 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **The OIDC provider form shows the redirect URI to register at the IdP**, and
+  switches it when you change Panel Scope. It was previously undiscoverable
+  from that screen: the admin origin is the one in front of you, the tenant
+  host never appears, and the docs were wrong — so there was no way to get it
+  right except by reading the backend. When the relevant panel URL is not
+  configured the field says so rather than offering a plausible wrong value.
+- **The admin panel could not add an OIDC provider, for either panel scope.**
+  `use-oidc-settings.ts` declared its own `CreateProviderInput` with
+  `tenant_id` / `tenant_secret` while the API requires `client_id` /
+  `client_secret`, so **POST** returned
+  `400 display_name, issuer_url, client_id, client_secret, and panel_scope are required`
+  and **PATCH** returned `200` while silently not writing the client id or
+  secret — the update skips fields that arrive as `undefined`. Editing a
+  provider's Client ID appeared to work and changed nothing.
+
+  Origin: `0000_tenant_rename.sql` bulk-renamed `oidc_providers.client_id` →
+  `tenant_id` by mistake; `0001_rename_oidc_client_id.sql` reverted the column
+  and the backend. The panel's hand-written copy of the request shape never
+  followed, and because it was internally consistent, nothing failed to
+  compile.
+
+  The provider request shape now lives in `@insula/api-contracts`
+  (`createOidcProviderSchema` / `updateOidcProviderSchema`, both `.strict()`),
+  the backend parses with it instead of a truthiness check — so a wrong field
+  name now says which field rather than "something is missing" — and both the
+  hook and the backend service alias the shared type. `.strict()` matters most
+  on PATCH: an unknown key there is not a 400 you notice, it is a field that
+  silently does not change.
+
+- `scripts/ci-frontend-api-types-check.sh` — ratchet on hand-written API
+  request types in frontend hooks. There are 45 of them; each is a shape `tsc`
+  can never check against the backend, which is what made the bug above
+  invisible. Migrating them all is a large refactor, so the guard grandfathers
+  the current set and fails only when the count grows.
+- **Three endpoints accepted a request body nothing checked.**
+  `PATCH /admin/nodes/:name/storage/:diskKey` cast `request.body ?? {}`, so a
+  misspelled field was not a 400 but an empty JSON patch that returned **200
+  with nothing changed**; it now parses with a schema that also refuses a body
+  setting neither field. The four DNS server/provider-group handlers cast
+  `request.body as unknown as X` behind a truthiness check. `recycle-pod`
+  validated via a hand-written Fastify JSON schema restating the same four
+  fields a third time. All now parse with shared contract schemas.
+
+### Changed
+- **Every request body in both panels now comes from `@insula/api-contracts`.**
+  A hand-written request type in a hook is checked by `tsc` against its own
+  caller and nothing else, which is what let the OIDC provider form send
+  `tenant_id`/`tenant_secret` to an endpoint requiring `client_id`/`client_secret`
+  and still compile. The DNS provider-group shape existed in three places — the
+  contracts package, the panel, and neither used by the route.
+
+  The contracts package now exports request and parsed types separately —
+  `…Request` (`z.input`, what goes on the wire) and `…Input` (`z.infer`, what
+  the handler has after parsing). A field declared `.default(x)` is optional on
+  the wire and required after parsing; conflating them marks every defaulted
+  field mandatory, which briefly produced three "missing required field" errors
+  in forms that were correct.
+
+  Remaining gaps are tracked as **R29** in the roadmap: 49 routes that still
+  cast their body without parsing, and response contracts (510 exist, 4 of 707
+  handlers validate against them).
+
+### Fixed
+- **Automatic WAF bans were labelled "manual" in the Banned IPs table.** The
+  auto-ban scheduler bans through the same `addBan` helper an operator does
+  (actor `autoban-scheduler`), so its CrowdSec scenario also starts with
+  `admin-panel:` — and `manualByOperator` was computed as exactly that prefix
+  check. Every automatic ban therefore rendered as though a human had clicked
+  it, and the "Manual bans only" filter included them. Decisions now carry
+  `autoBanned`, computed from the actor segment `admin-panel:autoban-scheduler:`
+  (which comes from the authenticated caller, so an operator cannot spoof it by
+  typing a reason). The table shows an **auto-ban** badge, `manualByOperator`
+  excludes auto-bans, and a new "Auto-bans only" filter joins the manual/static
+  ones. A code comment claiming the UI already detected auto-bans from the
+  reason prefix has been corrected — it never did.
+- **Tenant-panel SSO could never have worked on DEV or staging.** The
+  `hosting-platform-tenant` Dex client registered
+  `https://admin.${DOMAIN}/api/v1/auth/oidc/callback` in both the development
+  and staging overlays. Each panel calls the platform API **same-origin**
+  (`API_URL` is deliberately empty in `k8s/base/{admin,tenant}-deployment.yaml`)
+  and the backend derives the callback from the `Host` header of the
+  `/auth/oidc/authorize` request — so a tenant login's redirect URI is on the
+  *tenant* host. Registering the admin one yields `Unregistered redirect_uri`
+  at Dex with no useful error in the panel. Only the dind overlay had it right,
+  and `docs/operations/DEX_OIDC_STAGING.md` repeated the wrong value (along
+  with the wrong client id and secret). All three are corrected, and
+  `scripts/ci-dex-redirect-uri-check.sh` now asserts every client in every
+  overlay redirects to its own panel host.
+
+- **WAF auto-ban never banned anything, on any cluster.** The scheduler tracked
+  its position in `waf_logs` with a watermark holding a bare row id and fetched
+  each batch with `WHERE id > <watermark> ORDER BY id ASC`. `waf_logs.id` is a
+  random UUID v4, so that ordered by noise. The first tick seeded the watermark
+  with `ORDER BY id DESC LIMIT 1` — the largest random UUID in the table, which
+  lands near the top of the UUID space — and from then on only an event whose
+  random UUID happened to sort above it was ever processed. Production was
+  parked at `ffd20474…` (~99.93rd percentile): **0 of 502 rows visible, 0 rows
+  ever written to `crowdsec_autoban_runs`**, while a scanner with 18 qualifying
+  events against a threshold of 5 went unbanned. The watermark is now a keyset
+  cursor over `(created_at, id)` — ordered by time, with the id only breaking
+  ties inside one timestamp. A pre-fix bare-UUID watermark is treated as *no*
+  cursor and self-heals on the next tick; the scan then starts one detection
+  window back, so a burst already in flight is caught without retro-banning
+  every IP still inside the retention window. Index `waf_logs_created_id_idx`
+  (migration `0100`) backs the new scan.
+
+  The admin panel's auto-ban **calibration preview** was never affected — it
+  queries by `created_at` — so it kept showing IPs it "would" ban while the
+  live scheduler banned none of them.
+
 ## [2026.9.7] - 2026-09-05
 
 ### Added
@@ -53,7 +164,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   to nobody keeps a shortened id with the full value in the tooltip, because a
   deleted admin is exactly when that record matters; `anonymous` and `system`
   pass through unchanged.
-
 
 - **Stalwart 0.16.16 → 0.16.20.** Four patch releases, no migration — every one
   states that upgrading within 0.16.x is a binary/image replacement. The
