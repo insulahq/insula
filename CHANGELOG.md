@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.9.8] - 2026-09-05
+
 ### Added
 - **The OIDC provider form shows the redirect URI to register at the IdP**, and
   switches it when you change Panel Scope. It was previously undiscoverable
