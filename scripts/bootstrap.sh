@@ -5165,7 +5165,7 @@ install_traefik() {
   trap "rm -f '${traefik_values}'" RETURN
   cat > "${traefik_values}" <<'TRAEFIKVALUES'
 # JSON access log to stdout. Required by the CrowdSec agent DaemonSet
-# (k8s/base/crowdsec/agent-daemonset.yaml): the http-probing and
+# (k8s/base/crowdsec-agent/daemonset.yaml): the http-probing and
 # http-crawl-non_statics scenarios are RATE detectors over HTTP access logs,
 # so with logging off they can never fire — the agent would run, parse
 # nothing, and report healthy.
