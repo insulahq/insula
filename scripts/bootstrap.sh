@@ -5165,8 +5165,8 @@ install_traefik() {
   trap "rm -f '${traefik_values}'" RETURN
   cat > "${traefik_values}" <<'TRAEFIKVALUES'
 # JSON access log to stdout. Required by the CrowdSec agent DaemonSet
-# (k8s/base/crowdsec/agent-daemonset.yaml): the http-probing and
-# http-crawl-non-statics scenarios are RATE detectors over HTTP access logs,
+# (k8s/base/crowdsec-agent/daemonset.yaml): the http-probing and
+# http-crawl-non_statics scenarios are RATE detectors over HTTP access logs,
 # so with logging off they can never fire — the agent would run, parse
 # nothing, and report healthy.
 #
@@ -5196,7 +5196,7 @@ accessLog:
   filePath: /var/log/traefik/access.log
   format: json
   # NO statusCodes filter, deliberately. It is tempting to keep only 4xx/5xx
-  # since reconnaissance shows up as 404s — but http-crawl-non-statics counts
+  # since reconnaissance shows up as 404s — but http-crawl-non_statics counts
   # NON-STATIC requests, which are overwhelmingly 200s. Filtering to errors
   # would leave that scenario permanently unable to fire while everything
   # looked correctly configured.

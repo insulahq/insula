@@ -74,7 +74,7 @@
 # The bouncer sits on the shared `websecure` entrypoint and is attached to 18
 # of 52 routes, including tenant sites. A decision is therefore CLUSTER-WIDE:
 # one false positive blocks that IP from every protected tenant site, not just
-# from the host it probed. That is why http-crawl-non-statics ships SIMULATED
+# from the host it probed. That is why http-crawl-non_statics ships SIMULATED
 # below — on a multi-tenant host, "many non-static requests from one IP" is
 # also an accurate description of a legitimate search-engine crawler.
 ---
@@ -97,17 +97,27 @@ data:
       - /var/log/traefik/access.log
     labels:
       type: traefik
-  # http-crawl-non-statics is SIMULATED: it still raises alerts (visible in
+  # http-crawl-non_statics is SIMULATED: it still raises alerts (visible in
   # `cscli alerts list` and the admin panel) but issues no ban. Promote it by
   # removing the line here once you have reviewed a week of alerts and
   # confirmed no legitimate crawler is caught.
   #
   # http-probing enforces from the start: requesting /.env, /wp-login.php and
   # /phpmyadmin in sequence has no benign reading.
+  #
+  # NOTE THE UNDERSCORE in `non_statics`. The hub scenario is
+  # crowdsecurity/http-crawl-non_statics while every piece of documentation —
+  # including CrowdSec's own — writes it with a hyphen. cscli does NOT validate
+  # these names: an exclusion naming a scenario that does not exist is accepted
+  # silently and `cscli simulation status` echoes it back, so the config LOOKS
+  # correct while the real scenario runs live and bans. Verified on DEV
+  # 2026-09-05, where exactly that had happened.
+  # scripts/integration-waf-deploy-surfaces.sh now asserts every excluded name
+  # against `cscli scenarios list`.
   simulation.yaml: |
     simulation: false
     exclusions:
-      - crowdsecurity/http-crawl-non-statics
+      - crowdsecurity/http-crawl-non_statics
 ---
 apiVersion: apps/v1
 kind: DaemonSet
@@ -188,7 +198,7 @@ spec:
                   name: crowdsec-agent-credentials
                   key: password
             # Parser for Traefik's JSON access log + the HTTP scenario pack
-            # that contains http-probing and http-crawl-non-statics.
+            # that contains http-probing and http-crawl-non_statics.
             - name: COLLECTIONS
               value: "crowdsecurity/traefik crowdsecurity/base-http-scenarios"
             # The crawler whitelists are POSTOVERFLOWS, not a collection.
@@ -200,7 +210,7 @@ spec:
             # These are NOT optional: they whitelist verified search-engine
             # crawlers, and rdns is what verifies them (the s00-enrich stage
             # that resolves the source before the s01-whitelist stage tests it).
-            # Without them http-crawl-non-statics bans Googlebot from every
+            # Without them http-crawl-non_statics bans Googlebot from every
             # tenant site the moment it is promoted out of simulation.
             - name: POSTOVERFLOWS
               value: >-
