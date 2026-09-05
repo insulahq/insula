@@ -103,6 +103,19 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   verifies against `GET /jmap/session` and needs no restart.
 
 ### Fixed
+- **The notification template-coverage guard never ran on notification changes,
+  then failed the release promote.** `ci-infrastructure.yml`'s path filter did not
+  list `backend/src/modules/notifications/**`, so the guard that exists to protect
+  the (category × channel) template matrix sat out all four PRs that edited it and
+  only fired on the promote, where every path changes. The path is now listed in
+  both trigger blocks. The failure it caught was real: the seed file had started
+  importing a *runtime* value from `@insula/api-contracts`, and the guard executes
+  that file through node's type-stripping loader, which resolves no `node_modules`
+  — so the seed could not even load. The seed now rebuilds the channel list from a
+  total `Record<NotificationChannelId, true>`, which keeps the compile-time
+  guarantee (add a channel to the enum without listing it and tsc fails) with no
+  runtime import. Verified the guard passes in a bare checkout with no
+  `node_modules`, and that tsc still fails when a channel is added but not listed.
 - **Rotating the Stalwart admin password showed the OLD password in the admin
   panel.** The rotation patches the Kubernetes Secret, but platform-api served
   the reveal endpoint from its *volume mount* of that Secret — and kubelet

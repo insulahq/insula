@@ -27,20 +27,6 @@ export type NotificationAudience = typeof NOTIFICATION_AUDIENCE[number];
 export const NOTIFICATION_CHANNEL_ID = ['in_app', 'email', 'ntfy'] as const;
 export type NotificationChannelId = typeof NOTIFICATION_CHANNEL_ID[number];
 
-/**
- * Every channel, as the default for a notification source.
- *
- * Derived from NOTIFICATION_CHANNEL_ID rather than written out, so a channel
- * added to that list is enabled by default everywhere with no second edit.
- * That is not hypothetical: `ntfy` shipped complete — provider, templates,
- * worker — and was still off on every source, because the defaults were a
- * hand-written `['in_app', 'email']` that nobody thought to revisit. The
- * operator had to enable it by hand on all fifty sources.
- *
- * An operator can still turn any channel off per source in the admin panel;
- * this only decides where a source STARTS.
- */
-export const ALL_NOTIFICATION_CHANNELS: readonly NotificationChannelId[] = NOTIFICATION_CHANNEL_ID;
 
 /** Narrow an untrusted string (query param, DB column) to a known channel. */
 export function isNotificationChannelId(value: unknown): value is NotificationChannelId {
