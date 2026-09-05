@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import type { UpdateHostingSettingsRequest } from '@insula/api-contracts';
 import { apiFetch } from '@/lib/api-client';
 import type { HostingSettingsResponse } from '@/types/api';
 
@@ -14,13 +15,8 @@ export function useHostingSettings(tenantId: string | undefined, domainId: strin
   });
 }
 
-interface UpdateHostingSettingsInput {
-  readonly redirect_www?: boolean;
-  readonly redirect_https?: boolean;
-  readonly forward_external?: string | null;
-  readonly webroot_path?: string;
-  readonly hosting_enabled?: boolean;
-}
+/** Wire shape from @insula/api-contracts. */
+type UpdateHostingSettingsInput = UpdateHostingSettingsRequest;
 
 export function useUpdateHostingSettings(tenantId: string | undefined, domainId: string | undefined) {
   const queryClient = useQueryClient();

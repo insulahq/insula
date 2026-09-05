@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
-import type { WebmailSettingsResponse } from '@insula/api-contracts';
+import type { WebmailSettingsResponse, UpdateWebmailSettingsRequest} from '@insula/api-contracts';
 
 interface WebmailSettingsWrapped {
   readonly data: WebmailSettingsResponse;
@@ -23,25 +23,12 @@ export function useWebmailSettings() {
   });
 }
 
-interface UpdateWebmailSettingsInput {
-  readonly defaultWebmailUrl?: string;
-  readonly mailServerHostname?: string;
-  readonly mailEnforcementMode?: 'off' | 'notify' | 'auto';
-  readonly defaultWebmailEngine?: 'roundcube' | 'bulwark';
-  // 2026-05-18: feature-visibility toggles. All default to false
-  // (hidden) on a fresh install. Flipping any of these triggers a
-  // rolling restart of the webmail Deployments so the
-  // webmail-feature-css initContainer (Bulwark) / wrapper script
-  // (Roundcube) picks up the new ConfigMap content.
-  readonly webmailShowContacts?: boolean;
-  readonly webmailShowCalendar?: boolean;
-  readonly webmailShowFiles?: boolean;
-}
+// UpdateWebmailSettingsRequest comes from @insula/api-contracts (updateWebmailSettingsSchema) — the shape the backend parses with.
 
 export function useUpdateWebmailSettings() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (input: UpdateWebmailSettingsInput) =>
+    mutationFn: (input: UpdateWebmailSettingsRequest) =>
       apiFetch<UpdateWebmailSettingsWrapped>('/api/v1/admin/webmail-settings', {
         method: 'PATCH',
         body: JSON.stringify(input),

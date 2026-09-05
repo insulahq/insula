@@ -40,6 +40,10 @@ export const createLoginPasswordSchema = z.object({
 
 export type CreateLoginPasswordInput = z.infer<typeof createLoginPasswordSchema>;
 
+/** Wire shape (z.input): `.default(x)` fields are optional when sending. */
+export type CreateLoginPasswordRequest = z.input<typeof createLoginPasswordSchema>;
+
+
 /** Metadata for one login password — the secret is NEVER in this shape. */
 export const loginPasswordSchema = z.object({
   id: z.string(),

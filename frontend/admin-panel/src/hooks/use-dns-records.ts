@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import type { CreateDnsRecordRequest } from '@insula/api-contracts';
 import { apiFetch } from '@/lib/api-client';
 import type { DnsRecordResponse } from '@/types/api';
 
@@ -14,15 +15,8 @@ export function useDnsRecords(tenantId: string | undefined, domainId: string | u
   });
 }
 
-interface CreateDnsRecordInput {
-  readonly record_type: 'A' | 'AAAA' | 'CNAME' | 'MX' | 'TXT' | 'SRV' | 'NS';
-  readonly record_name?: string;
-  readonly record_value: string;
-  readonly ttl?: number;
-  readonly priority?: number;
-  readonly weight?: number;
-  readonly port?: number;
-}
+/** Wire shape from @insula/api-contracts. */
+type CreateDnsRecordInput = CreateDnsRecordRequest;
 
 export function useCreateDnsRecord(tenantId: string | undefined, domainId: string | undefined) {
   const queryClient = useQueryClient();

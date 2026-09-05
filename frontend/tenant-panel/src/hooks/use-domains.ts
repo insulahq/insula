@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
 import type { Domain, PaginatedResponse } from '@/types/api';
-import type { DomainDeletePreview } from '@insula/api-contracts';
+import type { DomainDeletePreview, CreateDomainRequest} from '@insula/api-contracts';
 
 // Re-export so existing imports from `use-domains.ts` keep working.
 export type { DomainDeletePreview };
@@ -47,11 +47,8 @@ export function useDomains(tenantId: string | undefined) {
   });
 }
 
-interface CreateDomainInput {
-  readonly domain_name: string;
-  readonly dns_mode: 'cname' | 'primary' | 'secondary';
-  readonly deployment_id?: string;
-}
+/** Wire shape from @insula/api-contracts. */
+type CreateDomainInput = CreateDomainRequest;
 
 export function useCreateDomain(tenantId: string | undefined) {
   const queryClient = useQueryClient();

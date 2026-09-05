@@ -1,72 +1,63 @@
-/**
- * Platform-level system settings exposed by GET /admin/system-settings
- * and PATCH'd via the same endpoint. The full row lives in
- * `system_settings` (Postgres, single row, id='system'). This module
- * declares the on-the-wire shape so backend and frontend stay in sync.
- *
- * Keep field names camelCase to match the backend's Drizzle convention
- * (the response renders the row as-is).
- */
-
 import { z } from 'zod';
+import { MIN_TRASH_RETENTION_DAYS, MAX_TRASH_RETENTION_DAYS } from './file-trash.js';
 
-// ISO 4217 currency code — three uppercase letters. The actual list of
-// real-world codes is finite (~180) but enumerating them here adds churn
-// every few years as ISO adds/retires codes; the format check + the
-// frontend's `Intl.NumberFormat` fallback is enough to reject typos.
-export const currencyCodeSchema = z
-  .string()
-  .regex(/^[A-Z]{3}$/, 'Currency must be a 3-letter ISO 4217 code (e.g. USD)');
-
-// ─── Update Schema ─────────────────────────────────────────────────────────
-//
-// Mirrors the Zod schema in backend/src/modules/system-settings/routes.ts.
-// All fields are optional so PATCH can ship a partial update; the server
-// preserves existing values for omitted keys.
-
+/**
+ * PATCH /admin/system-settings.
+ *
+ * Moved here from backend/src/modules/system-settings/routes.ts. While it lived
+ * in the backend, the admin panel typed the request body as
+ * `Partial<SystemSettings>` — the RESPONSE type — so `id`, `updatedAt` and a
+ * `currencySymbol` field the backend had already replaced with `currency` were
+ * all assignable. Nothing sent them in practice, but the type permitted it and
+ * the schema is not `.strict()`, so they would have been dropped in silence.
+ */
 export const updateSystemSettingsSchema = z.object({
   platformName: z.string().min(1).max(255).optional(),
-  adminPanelUrl: z.string().url().max(500).nullable().optional(),
-  tenantPanelUrl: z.string().url().max(500).nullable().optional(),
-  supportEmail: z.string().email().max(255).nullable().optional(),
-  supportUrl: z.string().url().max(500).nullable().optional(),
-  ingressBaseDomain: z.string().max(255).nullable().optional(),
-  // R16: platform APEX / brand domain (distinct from the ingress/CNAME-target
-  // role of ingressBaseDomain). Seeds equal; consumers repoint in PR-2.
-  platformDomain: z.string().max(255).nullable().optional(),
+  adminPanelUrl: z.string().url().max(500).optional().nullable(),
+  tenantPanelUrl: z.string().url().max(500).optional().nullable(),
+  supportEmail: z.string().email().max(255).optional().nullable(),
+  supportUrl: z.string().url().max(500).optional().nullable(),
+  ingressBaseDomain: z.string().max(255).optional().nullable(),
+  // R16: platform APEX / brand domain (distinct from ingressBaseDomain's
+  // CNAME-target role). PR-1 plumbing — apex consumers repoint in PR-2.
+  platformDomain: z.string().max(255).optional().nullable(),
   apiRateLimit: z.number().int().min(1).max(10000).optional(),
   // On-server tenant volume-snapshot retention (hours). 1h..720h (30d).
   snapshotExpiryHours: z.number().int().min(1).max(720).optional(),
   // Off-site backup-bundle retention (grace window) for a DELETED tenant, in
-  // days (migration 0071). On delete the bundles are retained (not purged) and
-  // reaped once this window passes. 1..3650 days (10y, for compliance holds).
+  // days (migration 0071). 1..3650 days (10y). Read by the
+  // tenant-bundles-cleanup lifecycle hook to floor each retained bundle's
+  // expires_at on delete.
   deletedTenantBundleRetentionDays: z.number().int().min(1).max(3650).optional(),
+  // File-manager recycle-bin retention. Bounded below at 1 day: a 0 would make
+  // every delete permanent while both panels still said "Move to Trash".
+  fileTrashRetentionDays: z.number().int().min(MIN_TRASH_RETENTION_DAYS).max(MAX_TRASH_RETENTION_DAYS).optional(),
+  // IANA timezone string. Used as the fallback on new tenants that don't
+  // specify their own timezone, and as the global default for UI date
+  // rendering when a user has no per-user override.
   timezone: z.string().min(1).max(50).optional(),
-  currency: currencyCodeSchema.optional(),
-  // Deprecated — moved to /admin/webmail-settings. Retained here so
-  // older callers don't break; the backend silently ignores it.
-  // (mailHostname removed — the canonical mail hostname is
-  // mailServerHostname under /admin/webmail-settings; the backing
-  // column is retired in code, physical drop deferred — see migration 0046.)
-  webmailUrl: z.string().url().max(500).nullable().optional(),
-  // Runtime-firewall toggles (migration 0062). When false, the catalog
-  // deploy path rejects workloads that declare host-network ports on
-  // the corresponding node role with `code: HOST_PORTS_DISABLED`.
-  // Default false on a fresh install — host-port exposure is an
-  // explicit operator decision.
+  // ISO 4217 currency code (USD, EUR, …). Drives Intl.NumberFormat for
+  // every monetary amount shown in both panels. Default 'USD'.
+  currency: z.string().regex(/^[A-Z]{3}$/, 'Currency must be a 3-letter ISO 4217 code (e.g. USD)').optional(),
+  // Deprecated here — webmailUrl moved to /admin/webmail-settings in the
+  // 2026-04-19 consolidation. Accept silently for backwards compat so
+  // existing tooling doesn't break; the service layer ignores it.
+  // (mailHostname removed — canonical value is mailServerHostname under
+  // /admin/webmail-settings; the column is retired in code, physical drop
+  // deferred — see migration 0046.)
+  webmailUrl: z.string().url().max(500).optional().nullable(),
+  // Host-port gating (migration 0062). When false, the catalog deploy
+  // path rejects workloads that request hostPort or carry the
+  // platform.io/firewall-{tcp,udp}-ports annotations on the
+  // corresponding node role.
   allowHostPortsServer: z.boolean().optional(),
   allowHostPortsWorker: z.boolean().optional(),
-  // Node-defaults (migration 0063). When TRUE (default), a freshly
-  // joined SERVER node that did not carry an explicit
-  // `insula.host/host-tenant-workloads` label gets
-  // labelled to host tenant workloads by the cluster-side
-  // reconciler. Operator-set labels (via bootstrap.sh
-  // `--host-tenant-workloads`) always win.
+  // Node-defaults (migration 0063). Default applied to freshly-joined
+  // SERVER nodes that arrive without an explicit
+  // `insula.host/host-tenant-workloads` label.
   newServerHostsTenantWorkloads: z.boolean().optional(),
-  // Kubelet image-GC thresholds (migration 0065). Applied on new nodes
-  // via bootstrap.sh --kubelet-arg flags. Existing nodes require a k3s
-  // restart to pick up changes (Phase 2 reconciler TODO).
-  // high must be > low; both in range 0–100.
+  // Kubelet image-GC thresholds (migration 0065). high > low, both 0–100,
+  // minTtl ≥ 0. Applied on new nodes via bootstrap.sh --kubelet-arg.
   imageGcHighThreshold: z.number().int().min(50).max(95).optional(),
   imageGcLowThreshold: z.number().int().min(40).max(94).optional(),
   imageGcMinTtlMinutes: z.number().int().min(0).max(1440).optional(),
@@ -79,39 +70,6 @@ export const updateSystemSettingsSchema = z.object({
   customDeploymentsWarnUnpinnedTags: z.boolean().optional(),
 });
 
-// ─── Response Schema ───────────────────────────────────────────────────────
-
-export const systemSettingsResponseSchema = z.object({
-  id: z.string(),
-  platformName: z.string(),
-  adminPanelUrl: z.string().nullable(),
-  tenantPanelUrl: z.string().nullable(),
-  supportEmail: z.string().nullable(),
-  supportUrl: z.string().nullable(),
-  ingressBaseDomain: z.string().nullable(),
-  webmailUrl: z.string().nullable(),
-  apiRateLimit: z.number(),
-  snapshotExpiryHours: z.number(),
-  deletedTenantBundleRetentionDays: z.number(),
-  currencySymbol: z.string(),
-  currency: z.string(),
-  timezone: z.string(),
-  allowHostPortsServer: z.boolean(),
-  allowHostPortsWorker: z.boolean(),
-  newServerHostsTenantWorkloads: z.boolean(),
-  imageGcHighThreshold: z.number(),
-  imageGcLowThreshold: z.number(),
-  imageGcMinTtlMinutes: z.number(),
-  customDeploymentsEnabled: z.boolean(),
-  customDeploymentsAllowCompose: z.boolean(),
-  customDeploymentsAllowPrivateRegistries: z.boolean(),
-  customDeploymentsImagePullAudit: z.boolean(),
-  customDeploymentsScanOnPull: z.boolean(),
-  customDeploymentsWarnUnpinnedTags: z.boolean(),
-  updatedAt: z.string(),
-});
-
-// ─── Types ─────────────────────────────────────────────────────────────────
-
 export type UpdateSystemSettingsInput = z.infer<typeof updateSystemSettingsSchema>;
-export type SystemSettingsResponse = z.infer<typeof systemSettingsResponseSchema>;
+/** Wire shape — what the panel sends. */
+export type UpdateSystemSettingsRequest = z.input<typeof updateSystemSettingsSchema>;

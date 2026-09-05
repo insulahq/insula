@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import type { CreateAuthUserRequest, CreateRouteProtectedDirRequest} from '@insula/api-contracts';
 import { apiFetch } from '@/lib/api-client';
 import type { ProtectedDirectoryResponse, ProtectedDirectoryUserResponse } from '@/types/api';
 
@@ -17,10 +18,8 @@ export function useProtectedDirectories(tenantId: string | undefined, domainId: 
   });
 }
 
-interface CreateDirectoryInput {
-  readonly path: string;
-  readonly realm?: string;
-}
+/** Wire shape from @insula/api-contracts. */
+type CreateDirectoryInput = CreateRouteProtectedDirRequest;
 
 export function useCreateProtectedDirectory(tenantId: string | undefined, domainId: string | undefined) {
   const queryClient = useQueryClient();
@@ -66,10 +65,8 @@ export function useDirectoryUsers(
   });
 }
 
-interface CreateDirectoryUserInput {
-  readonly username: string;
-  readonly password: string;
-}
+/** Wire shape from @insula/api-contracts. */
+type CreateDirectoryUserInput = CreateAuthUserRequest;
 
 export function useCreateDirectoryUser(
   tenantId: string | undefined,

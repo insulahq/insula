@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import { recyclePodSchema } from '@insula/api-contracts';
 import { authenticate, requireRole, requirePanel } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
@@ -110,19 +111,16 @@ export async function nodeHealthRoutes(app: FastifyInstance): Promise<void> {
       tags: ['NodeHealth'],
       summary: 'Delete a system pod on a node to free its writable layer',
       security: [{ bearerAuth: [] }],
-      body: {
-        type: 'object',
-        required: ['node', 'namespace', 'podName', 'reason'],
-        properties: {
-          node: { type: 'string', minLength: 1 },
-          namespace: { type: 'string', minLength: 1 },
-          podName: { type: 'string', minLength: 1 },
-          reason: { type: 'string', minLength: 3, maxLength: 500 },
-        },
-      },
     },
   }, async (request) => {
-    const body = request.body as { node: string; namespace: string; podName: string; reason: string };
+    // Validated against the shared contract rather than a third restatement
+    // of the same four fields in Fastify JSON-schema form.
+    const parsed = recyclePodSchema.safeParse(request.body);
+    if (!parsed.success) {
+      throw new ApiError('MISSING_REQUIRED_FIELD', parsed.error.issues
+        .map((i) => (i.path.length ? `${i.path.join('.')}: ${i.message}` : i.message)).join('; '), 400);
+    }
+    const body = parsed.data;
     const userId = request.user?.sub;
     if (!userId) throw new ApiError('AUTH_REQUIRED', 'No actor in request', 401);
     const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;

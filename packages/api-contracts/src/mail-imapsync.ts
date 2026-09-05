@@ -37,6 +37,12 @@ export const createImapSyncJobSchema = z
 
 export type CreateImapSyncJobInput = z.infer<typeof createImapSyncJobSchema>;
 
+// `…Request` is the WIRE type (z.input): a `.default(x)` field is optional
+// when sending and required in `z.infer`, which is the parsed result. See
+// the note in domains.ts for why conflating them produced false errors.
+export type CreateImapSyncJobRequest = z.input<typeof createImapSyncJobSchema>;
+
+
 /** PATCH — update source settings on a terminal (non-running) job. */
 export const updateImapSyncJobSchema = z
   .object({
@@ -50,6 +56,8 @@ export const updateImapSyncJobSchema = z
   .strict();
 
 export type UpdateImapSyncJobInput = z.infer<typeof updateImapSyncJobSchema>;
+export type UpdateImapSyncJobRequest = z.input<typeof updateImapSyncJobSchema>;
+
 
 /** Concurrency / capacity limits for IMAP sync jobs. */
 export const MAX_ACTIVE_IMAPSYNC_JOBS = 3;

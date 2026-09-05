@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import type { UpdateSystemSettingsRequest } from '@insula/api-contracts';
 import { apiFetch } from '@/lib/api-client';
 
 export interface SystemSettings {
@@ -55,7 +56,7 @@ export function useSystemSettings() {
 export function useUpdateSystemSettings() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (input: Partial<SystemSettings>) =>
+    mutationFn: (input: UpdateSystemSettingsRequest) =>
       apiFetch<{ data: SystemSettings }>('/api/v1/admin/system-settings', {
         method: 'PATCH',
         body: JSON.stringify(input),

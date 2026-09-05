@@ -254,9 +254,15 @@ export type UpdateSecuritySettingsInput = z.infer<typeof updateSecuritySettingsS
 export type UpdateAdvancedSettingsInput = z.infer<typeof updateAdvancedSettingsSchema>;
 export type RouteProtectedDirResponse = z.infer<typeof routeProtectedDirResponseSchema>;
 export type CreateRouteProtectedDirInput = z.infer<typeof createRouteProtectedDirSchema>;
+export type CreateRouteProtectedDirRequest = z.input<typeof createRouteProtectedDirSchema>;
+
 export type UpdateRouteProtectedDirInput = z.infer<typeof updateRouteProtectedDirSchema>;
 export type RouteAuthUserResponse = z.infer<typeof routeAuthUserResponseSchema>;
 export type CreateAuthUserInput = z.infer<typeof createAuthUserSchema>;
+
+/** Wire shape (z.input): `.default(x)` fields are optional when sending. */
+export type CreateAuthUserRequest = z.input<typeof createAuthUserSchema>;
+
 export type ToggleAuthUserInput = z.infer<typeof toggleAuthUserSchema>;
 export type ChangeAuthUserPasswordInput = z.infer<typeof changeAuthUserPasswordSchema>;
 export type WafLogResponse = z.infer<typeof wafLogResponseSchema>;

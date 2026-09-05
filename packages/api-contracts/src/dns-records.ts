@@ -143,6 +143,10 @@ export const dnsRecordListResponseSchema = paginatedResponseSchema(dnsRecordResp
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 export type CreateDnsRecordInput = z.infer<typeof createDnsRecordSchema>;
+
+/** Wire shape (z.input): `.default(x)` fields are optional when sending. */
+export type CreateDnsRecordRequest = z.input<typeof createDnsRecordSchema>;
+
 export type UpdateDnsRecordInput = z.infer<typeof updateDnsRecordSchema>;
 export type DnsRecordResponse = z.infer<typeof dnsRecordResponseSchema>;
 export type DnsRecordListResponse = z.infer<typeof dnsRecordListResponseSchema>;

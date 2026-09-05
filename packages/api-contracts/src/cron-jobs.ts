@@ -77,6 +77,24 @@ export type AdminCronJobListResponse = z.infer<typeof adminCronJobListResponseSc
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 export type CreateCronJobInput = z.infer<typeof createCronJobSchema>;
+
+// ─── Request (wire) types ────────────────────────────────────────────────────
+//
+// `z.infer` is the OUTPUT type: a field declared `.default(x)` is REQUIRED
+// there, because after parsing it always has a value. On the wire it is
+// optional — the client may omit it and the backend fills it in.
+//
+// Typing a request body with the output type therefore marks every defaulted
+// field as mandatory. Doing that surfaced three "missing required field"
+// compile errors in working forms (catalog-repo sync interval, cron http_method,
+// plan features) — all three fields have defaults, and all three forms were
+// correct. A migration that trusted those errors would have changed working
+// code to satisfy a type that was wrong.
+//
+// So: frontends type request bodies with `…Request` (= z.input), and the
+// backend keeps using the `…Input` (= z.infer) type for `parsed.data`.
+export type CreateCronJobRequest = z.input<typeof createCronJobSchema>;
+
 export type UpdateCronJobInput = z.infer<typeof updateCronJobSchema>;
 export type CronJobResponse = z.infer<typeof cronJobResponseSchema>;
 export type CronJobListResponse = z.infer<typeof cronJobListResponseSchema>;

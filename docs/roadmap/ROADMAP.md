@@ -1096,3 +1096,60 @@ redirect ceiling. Follow-ups:
   back-fills unprovisioned rows.
 - **Catch-all**: ✅ SHIPPED 2026-08-24 — pushed onto Stalwart's native
   `Domain.catchAllAddress` (an account-alias of `*` does NOT catch; probed).
+
+---
+
+## R29 — Schema-validate the rest of the API surface
+
+Follow-on from the 2026-09-05 contract audit (`scripts/audit-api-contract-drift.py`).
+Every locally-declared request **body** in both panels now comes from
+`@insula/api-contracts`; these two gaps remain.
+
+### R29a — Request validation on the routes that still cast
+
+**49 mutating routes take `request.body as unknown as X` with no parse.** On those,
+a wrong or misspelled field is not a 400 — it is a field the handler reads as
+`undefined` and silently skips. That is how `PATCH /admin/nodes/:name/storage/:diskKey`
+returned 200 while changing nothing, and how the OIDC provider PATCH appeared to
+rotate a client id it never wrote.
+
+- Enumerate with `grep -rn "request.body as" backend/src/modules/*/routes*.ts`.
+- Each needs a Zod schema in `@insula/api-contracts` and a `safeParse` in the route.
+- Prefer `.strict()` on PATCH: an unknown key there is not a 400 anyone notices, it
+  is a field that silently does not change.
+- Author the schema from **what the handler actually reads**, never from what the
+  panel currently sends — the panel is one of the two things being checked.
+
+### R29b — Response contracts, backend-first
+
+**510 response types already exist in the contracts package. Exactly 4 of 707
+handlers validate or declare their response shape**; 527 return
+`success(<whatever the service produced>)`. Those 510 types are documentation, not
+contracts — nothing checks the backend against them.
+
+The panels additionally declare **127 response shapes of their own** across 49 files.
+A wrong response shape renders `undefined`: a blank field, a `NaN`, an empty list,
+with no error on either side — strictly harder to notice than the request-side
+failures, which at least 400.
+
+**Do not start by pointing the frontend's 127 at the existing 510.** Authoring or
+adopting a response contract from what the frontend believes launders today's drift
+into the contracts package and then makes `tsc` enforce it, after which the audit
+reports itself clean. Sequence:
+
+1. Pick one surface (tenants or deployments). Have the backend assert its own
+   responses against a contract — dev/test **throw**, production **warn**. Note that
+   Fastify `response` schemas *strip* unknown keys, so a careless rollout can silently
+   delete a field the UI needs; validate rather than serialize, or roll out per-route.
+2. Measure what that turns up. Drift incidence is currently **unmeasured** — the
+   2026-09-05 sample could only compare two endpoints against live JSON (both clean),
+   because most DEV tables are empty and you cannot audit a shape against an empty
+   collection.
+3. Only once the backend is asserting its own output is it worth migrating the
+   frontend's 127 — at which point every misread field becomes a compile error
+   instead of a blank cell.
+
+**Known gap in the audit tool:** it detects validation by grepping for `safeParse`,
+so a route validating via a Fastify JSON schema reads as unvalidated (`recycle-pod`
+did). Its coverage line is printed with every run for the same reason — a clean
+section (2) means "nothing found in the covered slice", never "no drift".

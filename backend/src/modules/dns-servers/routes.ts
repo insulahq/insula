@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import { createDnsServerSchema, updateDnsServerSchema, createDnsProviderGroupSchema, updateDnsProviderGroupSchema } from '@insula/api-contracts';
 import { authenticate, requireRole } from '../../middleware/auth.js';
 import * as service from './service.js';
 import type { CreateDnsServerInput, CreateProviderGroupInput, UpdateProviderGroupInput } from './service.js';
@@ -26,10 +27,12 @@ export async function dnsServerRoutes(app: FastifyInstance): Promise<void> {
 
   // POST /api/v1/admin/dns-servers
   app.post('/admin/dns-servers', async (request, reply) => {
-    const input = request.body as unknown as CreateDnsServerInput;
-    if (!input.display_name || !input.provider_type || !input.connection_config) {
-      throw new ApiError('MISSING_REQUIRED_FIELD', 'display_name, provider_type, and connection_config are required', 400);
+    const parsed = createDnsServerSchema.safeParse(request.body);
+    if (!parsed.success) {
+      throw new ApiError('MISSING_REQUIRED_FIELD', parsed.error.issues
+        .map((i) => (i.path.length ? `${i.path.join('.')}: ${i.message}` : i.message)).join('; '), 400);
     }
+    const input = parsed.data;
     const server = await service.createDnsServer(app.db, input, encryptionKey());
     reply.status(201).send(success(server));
   });
@@ -37,7 +40,12 @@ export async function dnsServerRoutes(app: FastifyInstance): Promise<void> {
   // PATCH /api/v1/admin/dns-servers/:id
   app.patch('/admin/dns-servers/:id', async (request) => {
     const { id } = request.params as { id: string };
-    const input = request.body as unknown as Partial<CreateDnsServerInput>;
+    const parsed = updateDnsServerSchema.safeParse(request.body);
+    if (!parsed.success) {
+      throw new ApiError('INVALID_FIELD', parsed.error.issues
+        .map((i) => (i.path.length ? `${i.path.join('.')}: ${i.message}` : i.message)).join('; '), 400);
+    }
+    const input = parsed.data;
     const updated = await service.updateDnsServer(app.db, id, input, encryptionKey());
     return success(updated);
   });
@@ -74,10 +82,12 @@ export async function dnsServerRoutes(app: FastifyInstance): Promise<void> {
 
   // POST /api/v1/admin/dns-provider-groups
   app.post('/admin/dns-provider-groups', async (request, reply) => {
-    const input = request.body as unknown as CreateProviderGroupInput;
-    if (!input.name) {
-      throw new ApiError('MISSING_REQUIRED_FIELD', 'name is required', 400);
+    const parsed = createDnsProviderGroupSchema.safeParse(request.body);
+    if (!parsed.success) {
+      throw new ApiError('MISSING_REQUIRED_FIELD', parsed.error.issues
+        .map((i) => (i.path.length ? `${i.path.join('.')}: ${i.message}` : i.message)).join('; '), 400);
     }
+    const input = parsed.data;
     const group = await service.createProviderGroup(app.db, input);
     reply.status(201).send(success(group));
   });
@@ -85,7 +95,12 @@ export async function dnsServerRoutes(app: FastifyInstance): Promise<void> {
   // PATCH /api/v1/admin/dns-provider-groups/:id
   app.patch('/admin/dns-provider-groups/:id', async (request) => {
     const { id } = request.params as { id: string };
-    const input = request.body as unknown as UpdateProviderGroupInput;
+    const parsed = updateDnsProviderGroupSchema.safeParse(request.body);
+    if (!parsed.success) {
+      throw new ApiError('INVALID_FIELD', parsed.error.issues
+        .map((i) => (i.path.length ? `${i.path.join('.')}: ${i.message}` : i.message)).join('; '), 400);
+    }
+    const input = parsed.data;
     const updated = await service.updateProviderGroup(app.db, id, input);
     return success(updated);
   });

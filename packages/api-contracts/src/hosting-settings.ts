@@ -28,4 +28,8 @@ export const hostingSettingsResponseSchema = z.object({
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 export type UpdateHostingSettingsInput = z.infer<typeof updateHostingSettingsSchema>;
+
+/** Wire shape (z.input): `.default(x)` fields are optional when sending. */
+export type UpdateHostingSettingsRequest = z.input<typeof updateHostingSettingsSchema>;
+
 export type HostingSettingsResponse = z.infer<typeof hostingSettingsResponseSchema>;

@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import type { CreateDomainRequest } from '@insula/api-contracts';
 import { apiFetch } from '@/lib/api-client';
 import type { Domain, PaginatedResponse } from '@/types/api';
 
@@ -55,17 +56,13 @@ export function useDomains(tenantId: string | undefined, params: ListDomainsPara
   });
 }
 
-interface CreateDomainInput {
-  readonly domain_name: string;
-  readonly dns_mode: 'cname' | 'primary' | 'secondary';
-  readonly deployment_id?: string;
-}
+// CreateDomainRequest comes from @insula/api-contracts (createDomainSchema) — the shape the backend parses with.
 
 export function useCreateDomain(tenantId: string | undefined) {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (input: CreateDomainInput) =>
+    mutationFn: (input: CreateDomainRequest) =>
       apiFetch<{ data: Domain }>(`/api/v1/tenants/${tenantId}/domains`, {
         method: 'POST',
         body: JSON.stringify(input),

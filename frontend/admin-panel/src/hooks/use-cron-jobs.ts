@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import type { CreateCronJobRequest } from '@insula/api-contracts';
 import { apiFetch } from '@/lib/api-client';
 import type { CronJob, PaginatedResponse } from '@/types/api';
 
@@ -29,22 +30,13 @@ export function useCronJobs(params: UseCronJobsParams = {}) {
   });
 }
 
-interface CreateCronJobInput {
-  readonly name: string;
-  readonly type: 'webcron' | 'deployment';
-  readonly schedule: string;
-  readonly url?: string;
-  readonly http_method?: 'GET' | 'POST' | 'PUT';
-  readonly command?: string;
-  readonly deployment_id?: string;
-  readonly enabled?: boolean;
-}
+// CreateCronJobRequest comes from @insula/api-contracts (createCronJobSchema) — the shape the backend parses with.
 
 export function useCreateCronJob(tenantId: string | undefined) {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (input: CreateCronJobInput) =>
+    mutationFn: (input: CreateCronJobRequest) =>
       apiFetch<{ data: CronJob }>(`/api/v1/tenants/${tenantId}/cron-jobs`, {
         method: 'POST',
         body: JSON.stringify(input),

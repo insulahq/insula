@@ -4,6 +4,7 @@ import type {
   NodeHealthEntry,
   NodeHealthSeverity,
   NodeMemoryEvent,
+  RecyclePodRequest,
 } from '@insula/api-contracts';
 
 export type { NodeHealthEntry, NodeHealthSeverity, NodeMemoryEvent };
@@ -73,12 +74,8 @@ export function useReconcileNodeHealth() {
 // (RECOVERY_FORBIDDEN_NAMESPACE, RECOVERY_NODE_MISMATCH, etc.)
 // bubble up as ApiError with a code the UI can branch on.
 
-interface RecycleArgs {
-  readonly node: string;
-  readonly namespace: string;
-  readonly podName: string;
-  readonly reason: string;
-}
+/** Wire shape from @insula/api-contracts. */
+type RecycleArgs = RecyclePodRequest;
 
 export function useRecyclePod() {
   const qc = useQueryClient();
