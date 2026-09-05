@@ -32,7 +32,15 @@ spec:
         # deliver a single alert, with the pod still Running and Ready. That
         # is the identical shape as the platform-suspended outage — a pod that
         # looks healthy because nothing on the delivery path is checked.
-        - podSelector:
+        # The agent now runs in platform-system (hostPath vs this namespace's
+        # baseline PSA), so a bare podSelector — which only matches pods in the
+        # policy's OWN namespace — would silently match nothing. namespaceSelector
+        # AND podSelector in one `from` element keeps it scoped to just the agent
+        # rather than opening the whole namespace.
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: platform-system
+          podSelector:
             matchLabels:
               app.kubernetes.io/name: crowdsec-agent
         # The retention CronJob prunes via cscli against this same LAPI. Third
