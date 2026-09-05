@@ -1294,6 +1294,10 @@ export const wafLogs = pgTable('waf_logs', {
   index('waf_logs_route_idx').on(table.routeId),
   index('waf_logs_tenant_idx').on(table.tenantId),
   index('waf_logs_created_idx').on(table.createdAt),
+  // Keyset cursor for the auto-ban scheduler: (created_at, id) ordering with
+  // the id only as a tiebreaker. Never order this table by id alone — it is a
+  // random UUID v4, and doing so silently starved the scheduler (migration 0100).
+  index('waf_logs_created_id_idx').on(table.createdAt, table.id),
   index('waf_logs_hostname_created_idx').on(table.hostname, table.createdAt),
   index('waf_logs_rule_id_created_idx').on(table.ruleId, table.createdAt),
 ]);

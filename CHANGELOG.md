@@ -12,6 +12,28 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **WAF auto-ban never banned anything, on any cluster.** The scheduler tracked
+  its position in `waf_logs` with a watermark holding a bare row id and fetched
+  each batch with `WHERE id > <watermark> ORDER BY id ASC`. `waf_logs.id` is a
+  random UUID v4, so that ordered by noise. The first tick seeded the watermark
+  with `ORDER BY id DESC LIMIT 1` — the largest random UUID in the table, which
+  lands near the top of the UUID space — and from then on only an event whose
+  random UUID happened to sort above it was ever processed. Production was
+  parked at `ffd20474…` (~99.93rd percentile): **0 of 502 rows visible, 0 rows
+  ever written to `crowdsec_autoban_runs`**, while a scanner with 18 qualifying
+  events against a threshold of 5 went unbanned. The watermark is now a keyset
+  cursor over `(created_at, id)` — ordered by time, with the id only breaking
+  ties inside one timestamp. A pre-fix bare-UUID watermark is treated as *no*
+  cursor and self-heals on the next tick; the scan then starts one detection
+  window back, so a burst already in flight is caught without retro-banning
+  every IP still inside the retention window. Index `waf_logs_created_id_idx`
+  (migration `0100`) backs the new scan.
+
+  The admin panel's auto-ban **calibration preview** was never affected — it
+  queries by `created_at` — so it kept showing IPs it "would" ban while the
+  live scheduler banned none of them.
+
 ## [2026.9.7] - 2026-09-05
 
 ### Added

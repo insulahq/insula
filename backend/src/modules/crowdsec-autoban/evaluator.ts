@@ -5,7 +5,8 @@
  * Stateless and side-effect-free so it's trivially unit-testable. The
  * scheduler calls this on each tick with: the new event batch, the
  * current config, and the set of IPs we've banned in the last 5min
- * (in-process LRU dedupe). The evaluator returns one Decision per IP
+ * (a SQL window over crowdsec_autoban_runs, so it holds across
+ * platform-api replicas). The evaluator returns one Decision per IP
  * group describing whether to ban + with what duration + outcome
  * code for the audit table.
  */
@@ -99,7 +100,7 @@ export function computeBanDuration(
  *           the final filters (excludedRuleIds, includeTenantRoutes,
  *           recentlyBannedIps, threshold).
  *   config: live platform_settings values.
- *   recentlyBannedIps: IPs the LRU has seen within ~5min — skip to
+ *   recentlyBannedIps: IPs banned within the last ~5min — skip to
  *           avoid thundering-herd duplicate addBan() calls.
  *   pastBansPerIp: count of bans we issued against each IP in the
  *           prior 24h (sourced from crowdsec_autoban_runs).
@@ -165,7 +166,7 @@ export function evaluateWafBatch(
     }
 
     if (recentlyBannedIps.has(sourceIp)) {
-      decisions.push({ ...base, outcome: 'skipped_already_banned', outcomeDetail: 'in-process LRU shows recent ban' });
+      decisions.push({ ...base, outcome: 'skipped_already_banned', outcomeDetail: 'already banned within the last 5 minutes' });
       continue;
     }
     // Order: severity → excluded-rule → threshold. The first failed

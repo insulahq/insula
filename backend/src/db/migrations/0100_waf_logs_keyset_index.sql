@@ -1,0 +1,12 @@
+-- The auto-ban scheduler walks waf_logs as a keyset cursor over
+-- (created_at, id) — see backend/src/modules/crowdsec-autoban/scheduler.ts.
+-- It previously compared the random-UUID `id` with `>`, which starved it
+-- completely; the fix orders by time with the id only as a tiebreaker.
+--
+-- waf_logs_created_idx (created_at alone) already supports the range scan,
+-- but the composite lets Postgres satisfy the whole
+-- `(created_at, id) > (?, ?) ORDER BY created_at, id` predicate from the
+-- index instead of re-sorting rows that share a timestamp. Bursts from one
+-- scanner land many rows inside the same second, so ties are the common
+-- case here, not the rare one.
+CREATE INDEX IF NOT EXISTS waf_logs_created_id_idx ON waf_logs (created_at, id);
