@@ -1,10 +1,9 @@
 import { useMutation } from '@tanstack/react-query';
+import type { ChangePasswordRequest } from '@insula/api-contracts';
 import { apiFetch } from '@/lib/api-client';
 
-interface ChangePasswordInput {
-  readonly current_password: string;
-  readonly new_password: string;
-}
+/** Wire shape from @insula/api-contracts. */
+type ChangePasswordInput = ChangePasswordRequest;
 
 interface ChangePasswordResponse {
   readonly data: { readonly message: string };

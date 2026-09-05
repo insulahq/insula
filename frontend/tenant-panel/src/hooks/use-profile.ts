@@ -1,11 +1,9 @@
 import { useMutation } from '@tanstack/react-query';
+import type { UpdateProfileRequest } from '@insula/api-contracts';
 import { apiFetch } from '@/lib/api-client';
 
-interface UpdateProfileInput {
-  readonly full_name?: string;
-  readonly email?: string;
-  readonly timezone?: string | null;
-}
+/** Wire shape from @insula/api-contracts. */
+type UpdateProfileInput = UpdateProfileRequest;
 
 interface ProfileResponse {
   readonly data: {

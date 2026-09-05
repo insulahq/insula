@@ -12,33 +12,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-### Fixed
-- **Automatic WAF bans were labelled "manual" in the Banned IPs table.** The
-  auto-ban scheduler bans through the same `addBan` helper an operator does
-  (actor `autoban-scheduler`), so its CrowdSec scenario also starts with
-  `admin-panel:` — and `manualByOperator` was computed as exactly that prefix
-  check. Every automatic ban therefore rendered as though a human had clicked
-  it, and the "Manual bans only" filter included them. Decisions now carry
-  `autoBanned`, computed from the actor segment `admin-panel:autoban-scheduler:`
-  (which comes from the authenticated caller, so an operator cannot spoof it by
-  typing a reason). The table shows an **auto-ban** badge, `manualByOperator`
-  excludes auto-bans, and a new "Auto-bans only" filter joins the manual/static
-  ones. A code comment claiming the UI already detected auto-bans from the
-  reason prefix has been corrected — it never did.
-- **Tenant-panel SSO could never have worked on DEV or staging.** The
-  `hosting-platform-tenant` Dex client registered
-  `https://admin.${DOMAIN}/api/v1/auth/oidc/callback` in both the development
-  and staging overlays. Each panel calls the platform API **same-origin**
-  (`API_URL` is deliberately empty in `k8s/base/{admin,tenant}-deployment.yaml`)
-  and the backend derives the callback from the `Host` header of the
-  `/auth/oidc/authorize` request — so a tenant login's redirect URI is on the
-  *tenant* host. Registering the admin one yields `Unregistered redirect_uri`
-  at Dex with no useful error in the panel. Only the dind overlay had it right,
-  and `docs/operations/DEX_OIDC_STAGING.md` repeated the wrong value (along
-  with the wrong client id and secret). All three are corrected, and
-  `scripts/ci-dex-redirect-uri-check.sh` now asserts every client in every
-  overlay redirects to its own panel host.
-
 ### Added
 - **The OIDC provider form shows the redirect URI to register at the IdP**, and
   switches it when you change Panel Scope. It was previously undiscoverable
@@ -69,14 +42,66 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   on PATCH: an unknown key there is not a 400 you notice, it is a field that
   silently does not change.
 
-### Added
 - `scripts/ci-frontend-api-types-check.sh` — ratchet on hand-written API
   request types in frontend hooks. There are 45 of them; each is a shape `tsc`
   can never check against the backend, which is what made the bug above
   invisible. Migrating them all is a large refactor, so the guard grandfathers
   the current set and fails only when the count grows.
+- **Three endpoints accepted a request body nothing checked.**
+  `PATCH /admin/nodes/:name/storage/:diskKey` cast `request.body ?? {}`, so a
+  misspelled field was not a 400 but an empty JSON patch that returned **200
+  with nothing changed**; it now parses with a schema that also refuses a body
+  setting neither field. The four DNS server/provider-group handlers cast
+  `request.body as unknown as X` behind a truthiness check. `recycle-pod`
+  validated via a hand-written Fastify JSON schema restating the same four
+  fields a third time. All now parse with shared contract schemas.
+
+### Changed
+- **Every request body in both panels now comes from `@insula/api-contracts`.**
+  A hand-written request type in a hook is checked by `tsc` against its own
+  caller and nothing else, which is what let the OIDC provider form send
+  `tenant_id`/`tenant_secret` to an endpoint requiring `client_id`/`client_secret`
+  and still compile. The DNS provider-group shape existed in three places — the
+  contracts package, the panel, and neither used by the route.
+
+  The contracts package now exports request and parsed types separately —
+  `…Request` (`z.input`, what goes on the wire) and `…Input` (`z.infer`, what
+  the handler has after parsing). A field declared `.default(x)` is optional on
+  the wire and required after parsing; conflating them marks every defaulted
+  field mandatory, which briefly produced three "missing required field" errors
+  in forms that were correct.
+
+  Remaining gaps are tracked as **R29** in the roadmap: 49 routes that still
+  cast their body without parsing, and response contracts (510 exist, 4 of 707
+  handlers validate against them).
 
 ### Fixed
+- **Automatic WAF bans were labelled "manual" in the Banned IPs table.** The
+  auto-ban scheduler bans through the same `addBan` helper an operator does
+  (actor `autoban-scheduler`), so its CrowdSec scenario also starts with
+  `admin-panel:` — and `manualByOperator` was computed as exactly that prefix
+  check. Every automatic ban therefore rendered as though a human had clicked
+  it, and the "Manual bans only" filter included them. Decisions now carry
+  `autoBanned`, computed from the actor segment `admin-panel:autoban-scheduler:`
+  (which comes from the authenticated caller, so an operator cannot spoof it by
+  typing a reason). The table shows an **auto-ban** badge, `manualByOperator`
+  excludes auto-bans, and a new "Auto-bans only" filter joins the manual/static
+  ones. A code comment claiming the UI already detected auto-bans from the
+  reason prefix has been corrected — it never did.
+- **Tenant-panel SSO could never have worked on DEV or staging.** The
+  `hosting-platform-tenant` Dex client registered
+  `https://admin.${DOMAIN}/api/v1/auth/oidc/callback` in both the development
+  and staging overlays. Each panel calls the platform API **same-origin**
+  (`API_URL` is deliberately empty in `k8s/base/{admin,tenant}-deployment.yaml`)
+  and the backend derives the callback from the `Host` header of the
+  `/auth/oidc/authorize` request — so a tenant login's redirect URI is on the
+  *tenant* host. Registering the admin one yields `Unregistered redirect_uri`
+  at Dex with no useful error in the panel. Only the dind overlay had it right,
+  and `docs/operations/DEX_OIDC_STAGING.md` repeated the wrong value (along
+  with the wrong client id and secret). All three are corrected, and
+  `scripts/ci-dex-redirect-uri-check.sh` now asserts every client in every
+  overlay redirects to its own panel host.
+
 - **WAF auto-ban never banned anything, on any cluster.** The scheduler tracked
   its position in `waf_logs` with a watermark holding a bare row id and fetched
   each batch with `WHERE id > <watermark> ORDER BY id ASC`. `waf_logs.id` is a
