@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { readStalwartCredentials } from './credentials.js';
+import { readStalwartCredentials, readStalwartCredentialsAuthoritative } from './credentials.js';
 
 describe('readStalwartCredentials', () => {
   let tmp: string;
@@ -67,5 +67,63 @@ describe('readStalwartCredentials', () => {
 
   it('throws when password env var is whitespace only', () => {
     expect(() => readStalwartCredentials({ STALWART_ADMIN_PASSWORD: '   ' })).toThrow();
+  });
+});
+
+/**
+ * Guards the "rotate shows the OLD password" bug.
+ *
+ * Rotation patches the Secret, but platform-api mounts it and kubelet refreshes
+ * a mounted Secret up to ~60s late. The admin panel's credentials query is
+ * staleTime:0 / refetchOnMount:'always', so the refetch fired right after a
+ * rotation read the stale FILE and overwrote the correct password the mutation
+ * had just seeded. Reading the Secret itself removes the window.
+ */
+describe('readStalwartCredentialsAuthoritative', () => {
+  const b64 = (s: string) => Buffer.from(s, 'utf8').toString('base64');
+  const staleEnv = {
+    STALWART_ADMIN_PASSWORD: 'OLD-password-from-the-stale-mount',
+    STALWART_ADMIN_USER: 'admin',
+  };
+
+  it('prefers the Secret over the stale mounted value', async () => {
+    const read = vi.fn(async () => ({ ADMIN_SECRET_PLAIN: b64('NEW-password') }));
+    await expect(readStalwartCredentialsAuthoritative(staleEnv, read))
+      .resolves.toEqual({ username: 'admin', password: 'NEW-password' });
+  });
+
+  it('reads the platform mirror Secret by default', async () => {
+    const read = vi.fn(async () => ({ ADMIN_SECRET_PLAIN: b64('x') }));
+    await readStalwartCredentialsAuthoritative(staleEnv, read);
+    expect(read).toHaveBeenCalledWith('platform', 'platform-stalwart-creds');
+  });
+
+  it('honours namespace/name overrides', async () => {
+    const read = vi.fn(async () => ({ ADMIN_SECRET_PLAIN: b64('x') }));
+    await readStalwartCredentialsAuthoritative(
+      { ...staleEnv, STALWART_CREDS_SECRET_NAMESPACE: 'ns', STALWART_CREDS_SECRET_NAME: 'sec' },
+      read,
+    );
+    expect(read).toHaveBeenCalledWith('ns', 'sec');
+  });
+
+  // Degrade, never break: a missing RBAC grant or an API blip must fall back to
+  // the previous behaviour rather than failing the reveal outright.
+  it.each([
+    ['the API throws', async () => { throw new Error('forbidden'); }],
+    ['the Secret has no such key', async () => ({ OTHER: b64('x') })],
+    ['the value is empty', async () => ({ ADMIN_SECRET_PLAIN: b64('   ') })],
+    ['the Secret is missing', async () => undefined],
+  ])('falls back to the mounted/env value when %s', async (_label, read) => {
+    await expect(readStalwartCredentialsAuthoritative(staleEnv, read as never))
+      .resolves.toEqual({ username: 'admin', password: 'OLD-password-from-the-stale-mount' });
+  });
+
+  it('still takes the username from env, not the Secret', async () => {
+    const read = vi.fn(async () => ({ ADMIN_SECRET_PLAIN: b64('pw'), username: b64('ignored') }));
+    const r = await readStalwartCredentialsAuthoritative(
+      { ...staleEnv, STALWART_ADMIN_USER: 'recovery-admin' }, read,
+    );
+    expect(r.username).toBe('recovery-admin');
   });
 });

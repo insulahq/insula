@@ -27,6 +27,7 @@ export type NotificationAudience = typeof NOTIFICATION_AUDIENCE[number];
 export const NOTIFICATION_CHANNEL_ID = ['in_app', 'email', 'ntfy'] as const;
 export type NotificationChannelId = typeof NOTIFICATION_CHANNEL_ID[number];
 
+
 /** Narrow an untrusted string (query param, DB column) to a known channel. */
 export function isNotificationChannelId(value: unknown): value is NotificationChannelId {
   return typeof value === 'string'

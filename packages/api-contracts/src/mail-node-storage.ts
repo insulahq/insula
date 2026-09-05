@@ -17,8 +17,10 @@ export const mailNodeStorageSchema = z.object({
   isStandby: z.boolean(),
   /** Node allocatable ephemeral-storage capacity (total disk headroom kubelet reports). */
   totalBytes: z.number().int().nonnegative().nullable(),
-  /** Sum of PVC requests bound to PVs pinned on this node. */
-  scheduledBytes: z.number().int().nonnegative().nullable(),
+  /** Real free bytes on the node filesystem (kubelet Summary API). Null on failure.
+   *  Replaced `scheduledBytes` (sum of PVC requests), which reserved nothing on
+   *  local-path and fed a fictional headroom figure. */
+  freeBytes: z.number().int().nonnegative().nullable(),
   /** Mail data actually consumed on this node (du for active; standby report for standby). */
   mailUsedBytes: z.number().int().nonnegative().nullable(),
   /** ISO timestamp of the mailUsed measurement. Always an ISO datetime —

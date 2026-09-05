@@ -1,4 +1,5 @@
 import { useState, useMemo } from 'react';
+import UserLabel from '@/components/ui/UserLabel';
 import { ScrollText, Search, ChevronDown, ChevronRight, Loader2, X } from 'lucide-react';
 import { useAuditLogs, type AuditLogEntry, type ListAuditLogsParams } from '@/hooks/use-audit-logs';
 
@@ -371,8 +372,11 @@ function AuditLogRow({
         <td className="hidden max-w-xs truncate px-4 py-3 font-mono text-xs text-gray-500 dark:text-gray-400 lg:table-cell">
           {row.httpPath}
         </td>
-        <td className="hidden px-4 py-3 font-mono text-xs text-gray-500 dark:text-gray-400 xl:table-cell">
-          {row.actorId === 'anonymous' ? 'anonymous' : row.actorId.slice(0, 8)}
+        <td className="hidden px-4 py-3 text-xs text-gray-600 dark:text-gray-300 xl:table-cell">
+          {/* Was `actorId.slice(0, 8)` — eight characters of a UUID, which
+              identified nobody. The full id is still in the expanded row and
+              in this cell's tooltip. */}
+          <UserLabel userId={row.actorId} />
         </td>
         <td className="hidden px-4 py-3 font-mono text-xs text-gray-500 dark:text-gray-400 xl:table-cell">
           {row.ipAddress ?? '—'}
@@ -385,6 +389,12 @@ function AuditLogRow({
               <Field label="ID" value={row.id} mono />
               <Field label="Actor type" value={row.actorType} />
               <Field label="Actor ID" value={row.actorId} mono />
+              <div>
+                <dt className="text-gray-500 dark:text-gray-400">Actor</dt>
+                <dd className="mt-0.5 text-gray-900 dark:text-gray-100">
+                  <UserLabel userId={row.actorId} />
+                </dd>
+              </div>
               <Field label="Client ID" value={row.tenantId ?? '—'} mono />
               <Field label="Resource type" value={row.resourceType} />
               <Field label="Resource ID" value={row.resourceId ?? '—'} mono />

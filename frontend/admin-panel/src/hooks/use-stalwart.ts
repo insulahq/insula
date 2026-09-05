@@ -64,7 +64,8 @@ export function useRotateStalwartPassword() {
  * credential Roundcube's jwt_auth plugin uses for IMAP master-user
  * impersonation when an admin opens a tenant mailbox via SSO.
  *
- * Different from rotateStalwartPassword in two ways:
+ * Different from the admin-password rotation (`useRotateStalwartPassword`,
+ * backed by the JMAP `Principal/set` path) in two ways:
  *
  *   1. No CREDS_KEY cache update — those creds are the recovery-admin,
  *      not the master user. The new password is shown ONLY in the

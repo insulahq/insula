@@ -13,6 +13,11 @@ on:
       - 'backend/src/modules/file-manager/**'
       - 'backend/src/modules/ingress-routes/**'
       - 'backend/src/modules/system-settings/**'
+      # notification-template-coverage-guard reads the seed + template data.
+      # Without this path the guard never fires on the module it protects: the
+      # (category x channel) matrix was edited across four PRs and the guard
+      # sat out every one of them, then failed on the release promote.
+      - 'backend/src/modules/notifications/**'
       - 'images/file-manager/**'
       # A change to this workflow must be exercised BY this workflow.
       # Without it a broken (or, as here, a hanging) job could be edited and
@@ -27,6 +32,11 @@ on:
       - 'backend/src/modules/file-manager/**'
       - 'backend/src/modules/ingress-routes/**'
       - 'backend/src/modules/system-settings/**'
+      # notification-template-coverage-guard reads the seed + template data.
+      # Without this path the guard never fires on the module it protects: the
+      # (category x channel) matrix was edited across four PRs and the guard
+      # sat out every one of them, then failed on the release promote.
+      - 'backend/src/modules/notifications/**'
       - 'images/file-manager/**'
       - '.github/workflows/ci-infrastructure.yml'
 
@@ -171,6 +181,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Verify bootstrap.sh firewall rules
         run: ./scripts/ci-firewall-check.sh
+
+  mail-image-pin-check:
+    name: Mail image pins agree (Stalwart + stalwart-cli)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Verify Stalwart and stalwart-cli pins are consistent
+        run: ./scripts/ci-mail-image-pin-check.sh
 
   migration-coverage-guard:
     name: Migration coverage (install-time host shape → host-migration)
