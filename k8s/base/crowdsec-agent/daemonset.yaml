@@ -187,13 +187,25 @@ spec:
                   key: password
             # Parser for Traefik's JSON access log + the HTTP scenario pack
             # that contains http-probing and http-crawl-non-statics.
-            #
-            # crowdsecurity/whitelists is NOT optional here: it whitelists
-            # verified search-engine crawlers by reverse DNS. Without it,
-            # http-crawl-non-statics bans Googlebot from every tenant site the
-            # moment it is promoted out of simulation.
             - name: COLLECTIONS
-              value: "crowdsecurity/traefik crowdsecurity/base-http-scenarios crowdsecurity/whitelists"
+              value: "crowdsecurity/traefik crowdsecurity/base-http-scenarios"
+            # The crawler whitelists are POSTOVERFLOWS, not a collection.
+            # "crowdsecurity/whitelists" does not exist in the hub — asking for
+            # it as a collection fails with "can't find ... did you mean
+            # 'crowdsecurity/asterisk'?" and installs nothing (verified on DEV
+            # 2026-09-05). The agent still starts, so the loss is silent.
+            #
+            # These are NOT optional: they whitelist verified search-engine
+            # crawlers, and rdns is what verifies them (the s00-enrich stage
+            # that resolves the source before the s01-whitelist stage tests it).
+            # Without them http-crawl-non-statics bans Googlebot from every
+            # tenant site the moment it is promoted out of simulation.
+            - name: POSTOVERFLOWS
+              value: >-
+                crowdsecurity/rdns
+                crowdsecurity/seo-bots-whitelist
+                crowdsecurity/cdn-whitelist
+                crowdsecurity/google-special-crawlers-whitelist
           volumeMounts:
             - name: traefik-access-log
               mountPath: /var/log/traefik
@@ -206,6 +218,16 @@ spec:
               mountPath: /etc/crowdsec/simulation.yaml
               subPath: simulation.yaml
               readOnly: true
+            # MANDATORY: the crowdsec entrypoint refuses to start without it —
+            # "No volume mounted for /var/lib/crowdsec/data ... Exiting..." —
+            # and the pod then crash-loops forever. Verified on DEV 2026-09-05.
+            #
+            # emptyDir, not a PVC: this agent keeps no local database (the LAPI
+            # owns it, DISABLE_LOCAL_API=true). The directory holds hub
+            # datafiles, which are re-downloaded on start, so losing it with the
+            # pod costs nothing and a per-node PVC would be pure overhead.
+            - name: data
+              mountPath: /var/lib/crowdsec/data
           resources:
             requests:
               cpu: "50m"
@@ -226,3 +248,8 @@ spec:
         - name: acquis
           configMap:
             name: crowdsec-agent-acquis
+        - name: data
+          emptyDir:
+            # Hub datafiles only. Bounded so a runaway download cannot consume
+            # the node's disk — the same reasoning as the access-log rotation.
+            sizeLimit: 512Mi

@@ -39,6 +39,15 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   Host-migration `2026.9.9/0001` was also missing `--accesslog.filepath` and
   the volume entirely, so it had only ever configured stdout logging.
 
+  Two further defects kept the agent itself from ever running. Its entrypoint
+  refuses to start without a volume at `/var/lib/crowdsec/data` ("It is
+  mandatory to mount a volume to this directory ... Exiting") and crash-looped;
+  it now gets a 512Mi `emptyDir`, which is right because the agent keeps no
+  local database. And `crowdsecurity/whitelists` is not a hub collection, so the
+  crawler whitelists were never installed — they are postoverflows, and are now
+  requested as such alongside `crowdsecurity/rdns`, which is what verifies a
+  crawler's reverse DNS. Neither failure stopped the agent reporting healthy.
+
   Host-migration `2026.9.9/0003` creates the agent's credentials Secret on
   already-installed clusters. `bootstrap.sh` generates it, but bootstrap runs at
   *install* time — every existing cluster would otherwise ship the DaemonSet and
