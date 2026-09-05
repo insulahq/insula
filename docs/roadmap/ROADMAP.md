@@ -1222,51 +1222,32 @@ per-node visibility.
 
 ---
 
-## R32 — oauth2-proxy leaves an unauthenticated visitor at a bare 401
+## R32 — oauth2-proxy 401 dead-end — RESOLVED 2026-09-05
 
-Turning on *protect via OAuth2 Proxy* for **either** panel answers an
-unauthenticated browser with `401`, not a redirect to sign in. Measured on DEV
-2026-09-05: admin and tenant behave identically, so this is not specific to the
-tenant panel and was not introduced by the redirect-URI fix in #404/#406.
+A Traefik `errors` middleware (`platform-oauth2-proxy-signin`) now precedes the
+ForwardAuth on every protected panel route. It catches the 401, fetches
+`/oauth2/sign_in?rd={url}` from oauth2-proxy — which does redirect — and
+`statusRewrites: {"401": 302}` turns it into the 302 the browser needs. The
+original URL survives in the IdP `state`, so the visitor lands back where they
+were.
 
-**Why.** The Traefik ForwardAuth middleware points at oauth2-proxy's
-`/oauth2/auth`, which is the *auth-check* endpoint — it is designed to answer
-`202`/`401` for nginx's `auth_request`, where the redirect is supplied by
-`error_page 401 = @oauth2_signin`. Traefik ForwardAuth has no equivalent: it
-passes the 401 straight through to the browser. `ingress-reconciler.ts` already
-emits the `/oauth2` prefix route the sign-in needs, so the routing half is in
-place — nothing performs the hop to `/oauth2/start`.
-
-**Options**, cheapest first:
-1. A Traefik `errors` middleware on the panel routes mapping `401` to
-   `/oauth2/start?rd=…` on the same host.
-2. Point ForwardAuth at a path that already 302s, if oauth2-proxy exposes one
-   that preserves the original URL.
-3. Serve the sign-in hop from the panel's own nginx.
-
-Verify with an unauthenticated `curl -D-` against the panel root: the pass
-condition is a `302` to `/oauth2/start`, never a `401`. Note the API stays
-reachable throughout (`--skip-auth-route=^/api/`), so this is a browser-UX
-failure, not a lockout.
+Order is load-bearing: a Traefik `errors` middleware only sees responses from
+what follows it, so placed *after* the ForwardAuth it never sees the 401. Pinned
+by a unit test that fails when the two are swapped.
 
 ---
 
-## R33 — Dex does not restart when its ConfigMap changes
+## R33 — Dex ConfigMap changes never reached the process — RESOLVED 2026-09-05
 
-Dex reads `config.yaml` once at startup. Nothing rolls the Deployment when the
-ConfigMap changes, so a config edit lands in the cluster and has **no effect**
-until something unrelated restarts the pod.
+`generatorOptions.disableNameSuffixHash` was `true` on all three Dex overlays,
+which switched off the very mechanism that makes a config change roll the
+Deployment. Set to `false`: a content edit now mints `dex-config-<hash>`,
+Kustomize rewrites the volume reference, and the pod restarts on its own.
 
-Measured on DEV 2026-09-05: the tenant-panel `redirectURIs` fix had been merged
-and applied, `kubectl get cm` showed the new value, and sign-in still failed with
-`Unregistered redirect_uri` — the running pod was **9 days old**. Deleting it
-fixed it instantly.
+Nothing referenced the ConfigMap by its literal name (checked across `scripts/`,
+`backend/` and `platform/`), so the rename is contained.
 
-This is silent in the worst way: Flux reports the revision applied, the
-ConfigMap is visibly correct, and only the running process disagrees.
-
-**Fix:** stamp a hash of the rendered config onto the pod template
-(`checksum/config: <sha256>`), the standard Helm/Kustomize idiom, so any content
-change rolls the Deployment. Audit the other ConfigMap-driven Deployments for
-the same gap while there — Dex is unlikely to be the only one.
+**Still open:** other ConfigMap-driven Deployments have not been audited for the
+same gap. Dex was found by accident — a nine-day-old pod serving stale config
+while `kubectl get cm` showed the new value.
 
