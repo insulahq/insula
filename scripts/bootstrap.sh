@@ -5513,7 +5513,7 @@ ensure_traefik_cni_portmap() {
 generate_crowdsec_agent_credentials() {
   local secret_name="crowdsec-agent-credentials"
   local user pass
-  if kctl get secret -n crowdsec "${secret_name}" >/dev/null 2>&1; then
+  if kctl get secret -n platform-system "${secret_name}" >/dev/null 2>&1; then
     log "CrowdSec agent credentials already exist, reusing."
     return 0
   fi
@@ -5523,8 +5523,12 @@ generate_crowdsec_agent_credentials() {
   # Prefix only — the pod name is appended by the DaemonSet.
   user="insula-agent"
   pass=$(head -c 32 /dev/urandom | base64 | tr -d '/+=' | head -c 40)
-  kctl create namespace crowdsec >/dev/null 2>&1 || true
-  kctl create secret generic "${secret_name}" -n crowdsec \
+  # platform-system, not crowdsec: the agent lives there because the crowdsec
+  # namespace enforces Pod Security `baseline`, which forbids the hostPath it
+  # needs. A Secret in the wrong namespace produces a pod stuck on
+  # FailedMount — visible, but only after a deploy.
+  kctl create namespace platform-system >/dev/null 2>&1 || true
+  kctl create secret generic "${secret_name}" -n platform-system \
     --from-literal=username="${user}" \
     --from-literal=password="${pass}" >/dev/null
   # NOTE: the Secret holds a username PREFIX, not a final machine name. The

@@ -18,6 +18,22 @@
 # sidecars on every pod") does not apply here: Traefik is itself a DaemonSet,
 # so one agent per node reads one log source. No per-pod sidecars.
 #
+# WHY platform-system AND NOT crowdsec
+#
+# The crowdsec namespace enforces Pod Security `baseline`, which forbids
+# hostPath volumes outright — its own manifest says why: "baseline is enough …
+# (we don't run the log-acquisition modules)". This agent IS log acquisition,
+# so it invalidates that precondition. Weakening the namespace would relax the
+# LAPI's posture too, and the LAPI genuinely does not need hostPath.
+#
+# platform-system is where the platform's host-reading DaemonSets already live
+# (security-probe mounts 11 host paths, host-config-reconciler 2), so it is the
+# established home for this shape rather than a new exception.
+#
+# Found by deploying it: the DaemonSet sat at 0/1 with
+# `violates PodSecurity "baseline:latest": hostPath volumes`, and no pod object
+# was ever created — a failure invisible to every manifest-level check.
+#
 # ARCHITECTURE
 #
 #   Traefik (DaemonSet, JSON access log → /var/log/traefik/access.log)
@@ -66,7 +82,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: crowdsec-agent-acquis
-  namespace: crowdsec
+  namespace: platform-system
   labels:
     app.kubernetes.io/name: crowdsec-agent
     app.kubernetes.io/part-of: hosting-platform
@@ -97,7 +113,7 @@ apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   name: crowdsec-agent
-  namespace: crowdsec
+  namespace: platform-system
   labels:
     app.kubernetes.io/name: crowdsec-agent
     app.kubernetes.io/part-of: hosting-platform

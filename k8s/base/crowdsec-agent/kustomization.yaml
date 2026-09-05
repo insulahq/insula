@@ -1,0 +1,12 @@
+# CrowdSec log-processing agent — deliberately NOT under k8s/base/crowdsec.
+#
+# That kustomization pins `namespace: crowdsec`, whose Pod Security level is
+# `baseline` and therefore forbids the hostPath this agent needs to read
+# Traefik's access log. See the header of daemonset.yaml.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: platform-system
+
+resources:
+  - daemonset.yaml
