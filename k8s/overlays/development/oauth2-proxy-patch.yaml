@@ -80,6 +80,17 @@ spec:
             - --cookie-secure=true
             - --cookie-samesite=lax
             - --cookie-name=_platform_oauth2
+            # These two MUST be repeated here. A strategic-merge patch REPLACES a
+            # list of scalars wholesale, so anything added to the base args in
+            # k8s/base/oauth2-proxy/deployment.yaml never reaches an environment
+            # whose overlay patches `args` — which is every environment that does.
+            # Without them the tenant panel cannot complete an oauth2-proxy sign-in:
+            # the session cookie stays host-only to the admin panel and the
+            # post-auth bounce back to the tenant host is refused.
+            - --cookie-domain=.${DOMAIN}
+            - --whitelist-domain=.${DOMAIN}
+            # Empty by default so oauth2-proxy derives the callback per request
+            # from X-Forwarded-Host — see the base manifest.
             - --redirect-url=$(OAUTH2_PROXY_REDIRECT_URL)
             - --skip-provider-button=true
             - --reverse-proxy=true

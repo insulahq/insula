@@ -13,6 +13,16 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Fixed
+- **The oauth2-proxy two-panel flags never reached any cluster.** A Kustomize
+  strategic-merge patch replaces a list of scalars wholesale, and every
+  environment overlay patches oauth2-proxy's `args` to point it at a
+  cluster-internal Dex — so `--cookie-domain` / `--whitelist-domain`, added to
+  the base manifest, were silently dropped. Flux reported the revision applied
+  and the running Deployment still did not have them. Both overlays now repeat
+  the flags, and `ci-oauth2-proxy-args-check.sh` fails any oauth2-proxy `args`
+  list that is missing one.
+
+### Fixed
 - **The login page auto-forwarded to the IdP when exactly one provider was
   configured and local auth was disabled.** A 500ms timer redirected before the
   page could be used, so a visitor who had just signed out was thrown straight
