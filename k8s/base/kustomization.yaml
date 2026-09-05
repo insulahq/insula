@@ -201,3 +201,29 @@ patches:
       - op: add
         path: /spec/jobTemplate/spec/template/spec/priorityClassName
         value: platform-critical
+
+# ── Error-page content ───────────────────────────────────────────────────────
+# Generated, not inlined, so the name-suffix hash rolls the Deployment on any
+# edit. Each ConfigMap is mounted TWICE — the HTML at /usr/share/nginx/html
+# (re-read per request) and nginx.conf at /etc/nginx/conf.d (read once at
+# startup). With a fixed name a change applied by halves: the page updated and
+# its server config silently did not.
+#
+# `namespace:` is REQUIRED on each entry. This kustomization sets no global
+# namespace and both Deployments carry `namespace: platform` inline, so without
+# it the generated ConfigMap lands namespace-less AND Kustomize refuses to
+# rewrite the volume reference — the name-reference transformer only matches
+# within a namespace. The result would be a Deployment pointing at a ConfigMap
+# name that does not exist, i.e. pods stuck creating.
+configMapGenerator:
+  - name: platform-suspended-content
+    namespace: platform
+    files:
+      - error-pages/suspended/index.html
+      - error-pages/suspended/nginx.conf
+  - name: platform-bandwidth-exceeded-content
+    namespace: platform
+    files:
+      - error-pages/bandwidth-exceeded/index.html
+      - error-pages/bandwidth-exceeded/nginx.conf
+
