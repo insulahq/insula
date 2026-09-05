@@ -209,6 +209,32 @@ strictly authentication is enforced:
 - **Break-glass** — a recovery URL so you can still get in if SSO breaks;
   you can regenerate it (and the cookie secret) on demand.
 
+!!! info "The login page never redirects on its own"
+    Even with local auth disabled and exactly one provider configured, the
+    panel still shows a **Sign in with …** button and waits for the click. It
+    does not forward automatically.
+
+    This is deliberate. Auto-forwarding makes the page unreachable in the
+    situations you most need it: after signing out you would be sent straight
+    back into an identity provider that still holds its own session, with no
+    opportunity to pick a different account, and any error the provider
+    returned would be replaced by another redirect before you could read it.
+
+!!! warning "Protecting the tenant panel with OAuth2 Proxy needs a second redirect URI"
+    OAuth2 Proxy derives its callback from the host being visited, so the
+    tenant panel uses `https://tenant.<your-domain>/oauth2/callback` while the
+    admin panel uses `https://admin.<your-domain>/oauth2/callback`.
+
+    The bundled Dex already registers both. If you point the platform at an
+    **external** identity provider, add the tenant callback to that provider's
+    client yourself before switching *protect via OAuth2 Proxy* on for the
+    tenant panel — otherwise the sign-in fails at the provider with an
+    unregistered-redirect error.
+
+    Note this is a *different* URI from the per-provider OIDC redirect above:
+    OAuth2 Proxy uses `/oauth2/callback`, the panel's own OIDC login uses
+    `/api/v1/auth/oidc/callback`.
+
 !!! tip "Enable a provider before locking the door"
     The "disable local auth" toggles only unlock after a matching
     (admin- or tenant-scoped) provider is enabled — the panel won't let
