@@ -321,6 +321,16 @@ jobs:
       - name: Verify the api-contracts ratchet has not regressed
         run: ./scripts/ci-frontend-api-types-check.sh
 
+  platform-netpol-reachability-guard:
+    name: Every routed platform Service is reachable through the NetworkPolicy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install PyYAML
+        run: pip install --quiet pyyaml
+      - name: Verify no routed Service is blocked by default-deny-ingress
+        run: ./scripts/ci-platform-netpol-reachability-check.py
+
   notification-template-coverage-guard:
     name: Every notification channel ships templates for every category
     runs-on: ubuntu-latest

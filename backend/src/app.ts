@@ -828,13 +828,19 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         const cfg = app.config as Record<string, unknown>;
         const kubeconfigPath = cfg.KUBECONFIG_PATH as string | undefined;
         const k8s = createK8sClients(kubeconfigPath);
-        const [sw, ta] = await Promise.all([
+        const { reconcileTunnelAnchorMiddlewares } = await import(
+          './modules/private-workers/anchor-ingress-reconciler.js'
+        );
+        const [sw, ta, taMw] = await Promise.all([
           reconcileStalwartWebadminIngress(app.db, k8s.custom, app.log),
           reconcileTunnelAnchorIngress(app.db, k8s.custom, app.log),
+          // The anchor is `reconcile: disabled`, so a manifest change reaches
+          // fresh installs only — existing clusters gain the WAF chain here.
+          reconcileTunnelAnchorMiddlewares(k8s.custom, app.log),
         ]);
         if (
           sw.ingressRoute?.patched || sw.certificate?.patched ||
-          ta.ingressRoute?.patched || ta.certificate?.patched
+          ta.ingressRoute?.patched || ta.certificate?.patched || taMw.patched
         ) {
           app.log.info(
             { stalwartWebadmin: sw.host, tunnelAnchor: ta.host },

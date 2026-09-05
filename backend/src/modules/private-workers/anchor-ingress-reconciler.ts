@@ -56,6 +56,87 @@ export interface TunnelAnchorReconcileResult {
  * Reconcile the tunnel anchor IngressRoute Host + Certificate dnsNames to
  * `tunnels.<apex>`. Best-effort + idempotent; never throws fatally.
  */
+/**
+ * WAF middlewares the anchor catch-all must carry, in order, ahead of its own
+ * rate-limit. Mirrors `platform-ingress`.
+ *
+ * ONLY the anchor. Per-worker tunnels live on `<slug>.tunnels.<apex>` — a
+ * different host, its own IngressRoute — and carry frps WebSocket streams that
+ * must never be body-inspected. The anchor is the priority-1 catch-all serving
+ * the suspended page to unrouted requests, so it sees no tunnel traffic and
+ * the WAF cannot regress the feature.
+ */
+export const ANCHOR_WAF_MIDDLEWARES: ReadonlyArray<{ name: string; namespace: string }> = [
+  { name: 'crowdsec', namespace: 'traefik' },
+  { name: 'waf-body-limit', namespace: 'traefik' },
+  { name: 'modsecurity-crs', namespace: 'traefik' },
+];
+
+interface AnchorMiddlewareRef { name?: string; namespace?: string }
+interface AnchorRoute { middlewares?: AnchorMiddlewareRef[] }
+interface AnchorIngressRoute { spec?: { routes?: AnchorRoute[] } }
+
+/** True when every WAF middleware is already present on the route. */
+function hasAllWafMiddlewares(route: AnchorRoute): boolean {
+  const have = new Set((route.middlewares ?? []).map((m) => `${m.namespace ?? ''}/${m.name ?? ''}`));
+  return ANCHOR_WAF_MIDDLEWARES.every((m) => have.has(`${m.namespace}/${m.name}`));
+}
+
+/**
+ * Converge the anchor's middleware chain so existing clusters gain the WAF.
+ *
+ * The anchor IngressRoute carries `kustomize.toolkit.fluxcd.io/reconcile:
+ * disabled` (R16 seed-then-disown), so Flux seeds it once and never updates it
+ * again — editing the base manifest reaches FRESH INSTALLS ONLY. Every already
+ * -running cluster therefore needs this convergence, which runs on the same
+ * boot hook as the host reconcile.
+ *
+ * Idempotent and additive: existing middlewares are preserved and the WAF ones
+ * are prepended, so the rate-limit and compress still apply.
+ */
+export async function reconcileTunnelAnchorMiddlewares(
+  custom: k8s.CustomObjectsApi,
+  log: Pick<Logger, 'info' | 'warn'>,
+): Promise<{ patched: boolean }> {
+  let current: AnchorIngressRoute;
+  try {
+    current = (await custom.getNamespacedCustomObject({
+      group: 'traefik.io',
+      version: 'v1alpha1',
+      namespace: TUNNEL_ANCHOR_NAMESPACE,
+      plural: 'ingressroutes',
+      name: TUNNEL_ANCHOR_IR_NAME,
+    } as unknown as Parameters<typeof custom.getNamespacedCustomObject>[0])) as AnchorIngressRoute;
+  } catch (err) {
+    log.warn({ err }, 'tunnel-anchor: IngressRoute not found — skipping WAF middleware reconcile');
+    return { patched: false };
+  }
+
+  const routes = current.spec?.routes ?? [];
+  if (routes.length === 0 || routes.every(hasAllWafMiddlewares)) return { patched: false };
+
+  // MERGE_PATCH replaces the whole routes array, so rebuild every route in
+  // full and only prepend the missing middlewares.
+  const newRoutes = routes.map((r) => {
+    const existing = r.middlewares ?? [];
+    const have = new Set(existing.map((m) => `${m.namespace ?? ''}/${m.name ?? ''}`));
+    const missing = ANCHOR_WAF_MIDDLEWARES.filter((m) => !have.has(`${m.namespace}/${m.name}`));
+    return { ...r, middlewares: [...missing, ...existing] };
+  });
+
+  await custom.patchNamespacedCustomObject({
+    group: 'traefik.io',
+    version: 'v1alpha1',
+    namespace: TUNNEL_ANCHOR_NAMESPACE,
+    plural: 'ingressroutes',
+    name: TUNNEL_ANCHOR_IR_NAME,
+    body: { spec: { routes: newRoutes } },
+  } as unknown as Parameters<typeof custom.patchNamespacedCustomObject>[0]);
+  log.info({ middlewares: ANCHOR_WAF_MIDDLEWARES.map((m) => m.name) },
+    'tunnel-anchor: WAF middlewares converged onto the catch-all route');
+  return { patched: true };
+}
+
 export async function reconcileTunnelAnchorIngress(
   db: Database,
   custom: k8s.CustomObjectsApi,
