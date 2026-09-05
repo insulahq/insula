@@ -21,6 +21,17 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   and the running Deployment still did not have them. Both overlays now repeat
   the flags, and `ci-oauth2-proxy-args-check.sh` fails any oauth2-proxy `args`
   list that is missing one.
+- **Account emails were matched case-sensitively, so an identity provider that
+  varied the casing did not find the existing account.** On the OIDC tenant path
+  a miss does not fail the login — it falls through to auto-provisioning and
+  creates an **entirely new tenant** for someone who already had one. Identity
+  emails are now normalised to lowercase on write (`identityEmailSchema`) and
+  every lookup compares case-insensitively, preferring an exact match so a
+  cluster still holding two case variants resolves deterministically. Migration
+  `0103` lowercases existing values where that cannot collide and adds
+  `lower(email)` indexes; rows whose lowercase form is already taken are left
+  alone, because merging two accounts is an operator's decision, not a
+  migration's.
 
 ### Fixed
 - **The login page auto-forwarded to the IdP when exactly one provider was
