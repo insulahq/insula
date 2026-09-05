@@ -9,14 +9,14 @@ import type { MailNodeStorage } from '@insula/api-contracts';
  * tertiary placement slots + standby-labelled nodes), each showing:
  *
  *   - Total       — node ephemeral-storage capacity
- *   - Scheduled   — sum of PVC requests bound to PVs on this node
- *                   (informational; local-path doesn't enforce quotas
- *                   but the number tells the operator how much disk
- *                   they've already reserved)
+ *   - Free space  — what the node filesystem actually has left, from the
+ *                   kubelet Summary API. Replaced "Scheduled (PVC requests)",
+ *                   which reserved nothing on local-path and fed a fictional
+ *                   headroom figure derived from it.
  *   - Mail data   — bytes actually consumed by mail
  *                     active: live `du` in stalwart pod
  *                     standby: latest standby-replicate report
- *   - Headroom    — total − scheduled, color-coded
+ *                   Colour-coded by % of total disk.
  *
  * Backend: GET /admin/mail/storage/per-node
  * Endpoint: backend/src/modules/mail-admin/mail-node-storage.ts
@@ -70,10 +70,12 @@ export default function MailNodeStorageCards() {
 }
 
 function NodeStorageCard({ node }: { readonly node: MailNodeStorage }) {
-  const headroom =
-    node.totalBytes != null && node.scheduledBytes != null
-      ? Math.max(0, node.totalBytes - node.scheduledBytes)
-      : null;
+  // Headroom IS the node's real free space now. It used to be
+  // `total − scheduled`, where `scheduled` was the sum of PVC requests — a
+  // number that reserves nothing on local-path, so the headroom it produced
+  // was fiction (422 GiB "free" on a node with 453 GB actually free and 63 MB
+  // of mail on it). The backend now reports what `df` reports.
+  const headroom = node.freeBytes;
   const headroomPct =
     node.totalBytes != null && headroom != null && node.totalBytes > 0
       ? (headroom / node.totalBytes) * 100
@@ -143,10 +145,9 @@ function NodeStorageCard({ node }: { readonly node: MailNodeStorage }) {
       {/* Stats grid */}
       <div className="grid grid-cols-2 gap-3 text-xs">
         <Stat label="Total disk" value={formatBytes(node.totalBytes)} />
-        <Stat label="Scheduled (PVC requests)" value={formatBytes(node.scheduledBytes)} />
         <Stat label="Mail data used" value={formatBytes(node.mailUsedBytes)} />
         <Stat
-          label="Headroom"
+          label="Free space"
           value={
             headroom != null && headroomPct != null
               ? `${formatBytes(headroom)} (${headroomPct.toFixed(0)}%)`

@@ -70,6 +70,7 @@ function setupMockApi(domains: unknown[] = [], relays: unknown[] = []) {
     if (url.includes('/mail/pvc/storage'))     return Promise.resolve({ data: { pvcName: 'stalwart-rocksdb-data', storageClass: 'local-path', capacityBytes: 21474836480, requestedBytes: 21474836480, usedBytes: 0, freeBytes: 21474836480, expansionAllowed: false, lastResizedAt: null } });
     if (url.includes('/mail/ssl-status'))      return Promise.resolve({ data: { listeners: [] } });
     if (url.includes('/mail/metrics'))         return Promise.resolve({ data: { totalMailboxes: 0, dkimConfigured: 0 } });
+    if (url.includes('/mail/storage/per-node')) return Promise.resolve({ data: { nodes: [{ nodeName: 'node-a', roles: ['active'], isActive: true, isStandby: false, totalBytes: 1024 ** 4, freeBytes: 900 * 1024 ** 3, mailUsedBytes: 5 * 1024 ** 3, mailUsedReportedAt: '2026-09-04T00:00:00.000Z' }] } });
     if (url.includes('/admin/mail/'))          return Promise.resolve({ data: null });
     return Promise.resolve({ data: [] });
   });
@@ -94,8 +95,18 @@ describe('EmailManagement page', () => {
       expect(screen.getByText('Total Mailboxes')).toBeInTheDocument();
     });
     expect(screen.getByText('DKIM Configured')).toBeInTheDocument();
-    expect(screen.getByText('Mail Server')).toBeInTheDocument();
-    expect(screen.getByText('Stalwart')).toBeInTheDocument();
+    // The lead tile is Storage Usage now. "Mail Server: Stalwart" was a
+    // constant occupying the most prominent slot in the row — it never moved
+    // and told the operator nothing they could act on.
+    expect(screen.getByText('Storage Usage')).toBeInTheDocument();
+    expect(screen.queryByText('Mail Server')).not.toBeInTheDocument();
+    expect(screen.queryByText('Stalwart')).not.toBeInTheDocument();
+    // Its own query, so it resolves independently of the domains one above.
+    // Asserting the VALUE, not just the label — a tile stuck on '...' or '—'
+    // would pass a label-only check while showing the operator nothing.
+    await waitFor(() => {
+      expect(screen.getByText('5 GB')).toBeInTheDocument();
+    });
   });
 
   it('shows tab bar with domains and relays tabs', () => {
