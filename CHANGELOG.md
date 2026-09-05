@@ -13,6 +13,20 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Fixed
+- **Automatic WAF bans were labelled "manual" in the Banned IPs table.** The
+  auto-ban scheduler bans through the same `addBan` helper an operator does
+  (actor `autoban-scheduler`), so its CrowdSec scenario also starts with
+  `admin-panel:` — and `manualByOperator` was computed as exactly that prefix
+  check. Every automatic ban therefore rendered as though a human had clicked
+  it, and the "Manual bans only" filter included them. Decisions now carry
+  `autoBanned`, computed from the actor segment `admin-panel:autoban-scheduler:`
+  (which comes from the authenticated caller, so an operator cannot spoof it by
+  typing a reason). The table shows an **auto-ban** badge, `manualByOperator`
+  excludes auto-bans, and a new "Auto-bans only" filter joins the manual/static
+  ones. A code comment claiming the UI already detected auto-bans from the
+  reason prefix has been corrected — it never did.
+
+### Fixed
 - **WAF auto-ban never banned anything, on any cluster.** The scheduler tracked
   its position in `waf_logs` with a watermark holding a bare row id and fetched
   each batch with `WHERE id > <watermark> ORDER BY id ASC`. `waf_logs.id` is a

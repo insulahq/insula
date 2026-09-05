@@ -818,6 +818,7 @@ export function BannedIpsTab() {
   const [scope, setScope] = useState<'' | CrowdsecDecisionScope>('');
   const [manualOnly, setManualOnly] = useState(false);
   const [staticOnly, setStaticOnly] = useState(false);
+  const [autoOnly, setAutoOnly] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
   const [staticAddOpen, setStaticAddOpen] = useState(false);
 
@@ -829,8 +830,9 @@ export function BannedIpsTab() {
     if (scope) out.scope = scope;
     if (manualOnly) out.manualOnly = true;
     if (staticOnly) out.staticOnly = true;
+    if (autoOnly) out.autoOnly = true;
     return out;
-  }, [debouncedQ, scope, manualOnly, staticOnly]);
+  }, [debouncedQ, scope, manualOnly, staticOnly, autoOnly]);
 
   const { data, isLoading, isError, error, refetch, isFetching } = useCrowdsecDecisions(query);
   const del = useDeleteCrowdsecDecision();
@@ -840,7 +842,8 @@ export function BannedIpsTab() {
   return (
     <section className="space-y-4" data-testid="banned-ips-tab">
       <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 text-sm text-gray-700 dark:text-gray-200">
-        Active CrowdSec ban decisions (community blocklist + scenario triggers + operator-added manual bans).
+        Active CrowdSec ban decisions (community blocklist + scenario triggers + operator-added manual bans
+        + automatic bans from the WAF auto-ban scheduler, tagged <span className="text-[10px] uppercase text-sky-700 dark:text-sky-300">auto-ban</span>).
         Enforcement is cluster-wide — the <code className="text-xs">crowdsec</code> Traefik middleware queries the
         LAPI on every request, so a ban applies on every node simultaneously. Adding or removing a ban here
         propagates to all <code className="text-xs">traefik</code> DaemonSet pods within a few seconds.
@@ -896,6 +899,15 @@ export function BannedIpsTab() {
               data-testid="bans-filter-static"
             />
             Static (1y) bans only
+          </label>
+          <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-200">
+            <input
+              type="checkbox"
+              checked={autoOnly}
+              onChange={(e) => setAutoOnly(e.target.checked)}
+              data-testid="bans-filter-auto"
+            />
+            Auto-bans only
           </label>
         </div>
         <div className="flex items-center gap-2">
@@ -1132,7 +1144,19 @@ function DecisionRow({ d, onUnban, isUnbanning }: { d: CrowdsecDecision; onUnban
       <td className="px-4 py-2 text-xs text-gray-700 dark:text-gray-200">
         <span className="font-mono">{d.origin || '—'}</span>
         {d.staticByOperator && <span className="ml-1 text-[9px] uppercase text-purple-700 dark:text-purple-300">static</span>}
-        {d.manualByOperator && !d.staticByOperator && <span className="ml-1 text-[9px] uppercase text-amber-700 dark:text-amber-300">manual</span>}
+        {/* Auto-ban is checked before manual: the scheduler bans through the
+            same helper an operator does, so both flags used to light up and
+            the row claimed a human had acted. */}
+        {d.autoBanned && (
+          <span
+            className="ml-1 rounded bg-sky-100 px-1 py-0.5 text-[9px] font-medium uppercase text-sky-800 dark:bg-sky-900/40 dark:text-sky-300"
+            title="Added automatically by the WAF auto-ban scheduler"
+            data-testid="ban-badge-auto"
+          >
+            auto-ban
+          </span>
+        )}
+        {d.manualByOperator && !d.staticByOperator && !d.autoBanned && <span className="ml-1 text-[9px] uppercase text-amber-700 dark:text-amber-300" data-testid="ban-badge-manual">manual</span>}
       </td>
       <td className="px-4 py-2 text-xs text-gray-700 dark:text-gray-200 max-w-md truncate" title={d.scenario}>{d.scenario}</td>
       <td className="px-4 py-2 text-xs text-gray-700 dark:text-gray-200 whitespace-nowrap">{expiresIn}</td>
