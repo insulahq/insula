@@ -33,6 +33,25 @@ or *Read Only*; `super_admin` is the elevated system role.
   glance. **Add** a user (email, full name, password, role), or select and
   **delete** users (single or bulk). Click a user's row to load their
   sessions in the panel below.
+
+!!! info "Email addresses are case-insensitive identities"
+    Addresses are stored lowercased and compared without regard to case, so
+    `Alice@Example.test` and `alice@example.test` are the **same account** — you
+    cannot create both, and either spelling signs in.
+
+    This matters most for SSO: an identity provider is free to vary the casing
+    it asserts between logins, and a case-sensitive comparison would have failed
+    to find the existing account. On a tenant-scoped provider that is worse than
+    a rejected login — it looks like a brand-new person and provisions a second
+    tenant for someone who already had one.
+
+    A cluster upgraded from before this change may still hold two accounts whose
+    addresses differ only in case; those are left exactly as they are, because
+    deciding which one survives is your call, not an upgrade's. Find them with:
+
+    ```sql
+    SELECT lower(email), count(*) FROM users GROUP BY 1 HAVING count(*) > 1;
+    ```
 - **Active Sessions** — the selected user's refresh-token sessions, with
   per-row **revoke** and **bulk revoke**. This is your "stolen laptop"
   button: revoke a compromised user's sessions immediately.
