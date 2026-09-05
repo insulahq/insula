@@ -13,6 +13,31 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Fixed
+- **The login page auto-forwarded to the IdP when exactly one provider was
+  configured and local auth was disabled.** A 500ms timer redirected before the
+  page could be used, so a visitor who had just signed out was thrown straight
+  back into an IdP that still held its own session — with no way to reach the
+  page and switch accounts — and `?error=` messages from the callback were never
+  readable. Both panels now always render the "Sign in with …" button.
+- **OIDC sign-in resolved to the wrong account across panels.** The
+  subject+issuer lookup ran first and, unlike the email lookup after it, was not
+  scoped to the panel being signed into; `users_oidc_unique` was global, so one
+  IdP identity could be linked to only ONE user row platform-wide. A tenant-panel
+  sign-in therefore returned whichever account linked that identity first — an
+  admin account included — and the JWT was minted from it. The lookup is now
+  panel-scoped and the unique index is `(oidc_issuer, oidc_subject, panel)`
+  (migration 0102).
+- **Enabling oauth2-proxy for the tenant panel could not work.**
+  `OAUTH2_PROXY_REDIRECT_URL` was hardcoded to the admin host in every
+  environment, and oauth2-proxy takes exactly one `--redirect-url` — so a tenant
+  visitor was sent to the IdP with the admin callback, returned on the admin
+  host, and held a cookie for a host they never asked for. Dex also registered
+  only the admin callback. The URL is now left empty so oauth2-proxy derives it
+  per request from `X-Forwarded-Host`, both callbacks are registered, and
+  `--cookie-domain` / `--whitelist-domain` cover the apex. Host-migration
+  `2026.9.9/0005` clears the pinned value on existing clusters.
+
+### Fixed
 - **WAF events were written twice whenever a request landed in the scraper's
   re-read band.** The scraper reads a 35s log window every 30s, so ~5s of every
   cycle is deliberately re-read (a smaller window would drop events). Nothing

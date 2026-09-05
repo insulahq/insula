@@ -403,9 +403,23 @@ export async function findOrCreateOidcUser(
 ): Promise<typeof users.$inferSelect> {
   const panelScope = provider.panelScope as 'admin' | 'tenant';
 
-  // Match by OIDC subject + issuer
+  // Match by OIDC subject + issuer — SCOPED TO THE PANEL, exactly like the
+  // email match below.
+  //
+  // Without the panel predicate this lookup crossed panels. `users_oidc_unique`
+  // was global, so one IdP identity could only ever be linked to ONE user row
+  // on the whole platform — whichever account linked it first. Every later
+  // login for the OTHER panel then resolved to that first account: signing in
+  // to the tenant panel could hand back an admin-panel user (its roleName, its
+  // null tenantId), and the JWT minted from it in routes.ts carries
+  // `panel: user.panel`. So the tenant panel evaluated exactly one account —
+  // the first one linked — instead of the tenant's own.
   const [existingByOidc] = await db.select().from(users)
-    .where(and(eq(users.oidcIssuer, claims.iss), eq(users.oidcSubject, claims.sub)));
+    .where(and(
+      eq(users.oidcIssuer, claims.iss),
+      eq(users.oidcSubject, claims.sub),
+      eq(users.panel, panelScope),
+    ));
 
   if (existingByOidc) {
     const now = new Date();

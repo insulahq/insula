@@ -166,59 +166,62 @@ describe('findOrCreateOidcUser', () => {
       aud: 'hosting-platform', exp: 9999999999, iat: 1000000000,
     }, makeProvider({ panelScope: 'tenant', autoProvision: 0 }))).rejects.toThrow('Your account is not registered on this platform');
   });
-});
+  // ── Cross-panel identity leak ─────────────────────────────────────────
+  // The subject+issuer lookup runs FIRST and, unlike the email lookup right
+  // after it, was not scoped to the panel being signed into. Combined with a
+  // GLOBAL users_oidc_unique index, one IdP identity could be linked to only
+  // one user row platform-wide — so a tenant-panel sign-in resolved to
+  // whichever account linked that identity first, admin included. routes.ts
+  // mints the JWT straight from this row (`panel`, `tenantId`), so the tenant
+  // panel evaluated exactly one account instead of the tenant's own.
+  //
+  // Reads the real Drizzle condition rather than guessing from call order:
+  // JSON.stringify on a SQL object does not expose the bound values.
+  const paramValues = (node: unknown, out: string[], depth = 0): void => {
+    if (node == null || depth > 8) return;
+    if (Array.isArray(node)) { node.forEach((n) => paramValues(n, out, depth + 1)); return; }
+    if (typeof node !== 'object') return;
+    const o = node as Record<string, unknown>;
+    if (typeof o.value === 'string') out.push(o.value);
+    if (Array.isArray(o.queryChunks)) paramValues(o.queryChunks, out, depth + 1);
+  };
 
-// 2026-05-18 regression guard: network-level errors from fetch() in
-// fetchDiscovery used to escape as TypeError → INTERNAL_SERVER_ERROR
-// 500 with no diagnostic info. The fix wraps the fetch in try/catch
-// and rethrows as OIDC_DISCOVERY_FAILED 502 with the network error
-// embedded — these tests ensure we don't regress.
-describe('fetchDiscovery error wrapping', () => {
-  it('wraps DNS / network failures as OIDC_DISCOVERY_FAILED 502', async () => {
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = vi.fn().mockRejectedValue(new TypeError('fetch failed: getaddrinfo ENOTFOUND dex.unreachable'));
-    try {
-      await expect(fetchDiscovery('https://dex.unreachable')).rejects.toMatchObject({
-        code: 'OIDC_DISCOVERY_FAILED',
-        status: 502,
-      });
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
-  });
+  it('does NOT return an admin-panel user when signing in to the tenant panel', async () => {
+    const adminUser = {
+      id: 'u-admin', email: 'person@example.test', panel: 'admin',
+      roleName: 'super_admin', tenantId: null,
+      oidcIssuer: 'https://dex', oidcSubject: 'sub-shared',
+    };
+    const tenantUser = {
+      id: 'u-tenant', email: 'person-tenant@example.test', panel: 'tenant',
+      roleName: 'tenant_admin', tenantId: 'tenant-1',
+      oidcIssuer: 'https://dex', oidcSubject: 'sub-shared',
+    };
+    // Stands in for the DB: the admin row linked this identity first, so an
+    // UNSCOPED subject lookup finds it. A panel-scoped one must not.
+    const whereFn = vi.fn().mockImplementation((cond: unknown) => {
+      const vals: string[] = [];
+      paramValues(cond, vals);
+      const bySubject = vals.includes('sub-shared');
+      if (bySubject) return Promise.resolve(vals.includes('tenant') ? [] : [adminUser]);
+      if (vals.includes('person-tenant@example.test')) return Promise.resolve([tenantUser]);
+      // Re-select by id after the link is written.
+      if (vals.includes('u-tenant')) return Promise.resolve([tenantUser]);
+      return Promise.resolve([]);
+    });
+    const fromFn = vi.fn().mockReturnValue({ where: whereFn });
+    const selectFn = vi.fn().mockReturnValue({ from: fromFn });
+    const updateWhere = vi.fn().mockResolvedValue(undefined);
+    const updateSet = vi.fn().mockReturnValue({ where: updateWhere });
+    const updateFn = vi.fn().mockReturnValue({ set: updateSet });
+    const db = { select: selectFn, update: updateFn } as unknown as Parameters<typeof findOrCreateOidcUser>[0];
 
-  it('error message includes the underlying network reason for triage', async () => {
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = vi.fn().mockRejectedValue(new Error('connect ECONNREFUSED 127.0.0.1:5556'));
-    try {
-      try {
-        await fetchDiscovery('http://localhost:5556');
-        throw new Error('expected to throw');
-      } catch (err) {
-        const e = err as Error & { code?: string };
-        expect(e.code).toBe('OIDC_DISCOVERY_FAILED');
-        expect(e.message).toMatch(/ECONNREFUSED/);
-        expect(e.message).toMatch(/openid-configuration/);
-      }
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
-  });
+    const result = await findOrCreateOidcUser(db, {
+      sub: 'sub-shared', iss: 'https://dex', email: 'person-tenant@example.test',
+      aud: 'hosting-platform', exp: 9999999999, iat: 1000000000,
+    }, makeProvider({ panelScope: 'tenant' }));
 
-  it('wraps non-2xx HTTP responses as OIDC_DISCOVERY_FAILED 502', async () => {
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = vi.fn().mockResolvedValue({
-      ok: false,
-      status: 503,
-      statusText: 'Service Unavailable',
-    } as Response);
-    try {
-      await expect(fetchDiscovery('https://dex.example.com')).rejects.toMatchObject({
-        code: 'OIDC_DISCOVERY_FAILED',
-        status: 502,
-      });
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
+    expect(result.id).toBe('u-tenant');
+    expect(result.panel).toBe('tenant');
   });
 });

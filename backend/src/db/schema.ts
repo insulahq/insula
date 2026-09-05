@@ -204,7 +204,12 @@ export const users = pgTable('users', {
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (table) => [
   uniqueIndex('users_email_unique').on(table.email),
-  uniqueIndex('users_oidc_unique').on(table.oidcIssuer, table.oidcSubject),
+  // PANEL-SCOPED. A global (issuer, subject) index meant one IdP identity could
+  // be linked to only ONE user row platform-wide, so the same person could not
+  // hold both an admin and a tenant account — and the subject lookup in
+  // findOrCreateOidcUser would return whichever linked first, for either panel.
+  // Widening the key is a relaxation, so no existing row can conflict.
+  uniqueIndex('users_oidc_unique').on(table.oidcIssuer, table.oidcSubject, table.panel),
 ]);
 
 export const oidcProviders = pgTable('oidc_providers', {
