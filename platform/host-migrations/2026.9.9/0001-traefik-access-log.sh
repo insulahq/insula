@@ -72,44 +72,14 @@ echo "traefik-access-log: enabling JSON access log on ${NS}/${DS}"
 # never carry Cookie or Authorization.
 #
 # The log must go to a FILE on a hostPath, not stdout: the agent is a separate
-# DaemonSet and reads it through the node filesystem.
+# DaemonSet and reads it through the node filesystem. Enabling `--accesslog`
+# alone would send it to the container's stdout, where the kubelet wraps every
+# line in the CRI envelope and the crowdsecurity/traefik parser — which expects
+# bare JSON — could not read it.
 #
-# And the mount alone is not enough. The kubelet creates a hostPath directory
-# root:root 0755 while Traefik runs as uid 65532 with a read-only rootfs, so it
-# cannot create the file — and it only WARNS, then serves traffic and reports
-# Ready with no access log at all (verified on a live node 2026-09-05). The
-# init container below chowns the directory so that cannot happen.
-#
-# `initContainers` may be absent entirely on a cluster installed before the
-# plugin-registry wait existed, and a JSON-patch `add` to a path whose parent
-# is missing fails — so create the array or append to it, as appropriate.
-if "$KUBECTL" get daemonset "$DS" -n "$NS" \
-     -o jsonpath='{.spec.template.spec.initContainers}' 2>/dev/null | grep -q '\[' ; then
-  init_op='{"op":"add","path":"/spec/template/spec/initContainers/-","value":'
-else
-  init_op='{"op":"add","path":"/spec/template/spec/initContainers","value":['
-fi
-
-prepare_container='{
-  "name":"prepare-access-log",
-  "image":"alpine/k8s:1.33.13",
-  "imagePullPolicy":"IfNotPresent",
-  "command":["/bin/sh","-c","set -eu; mkdir -p /var/log/traefik; chown 65532:65532 /var/log/traefik"],
-  "securityContext":{
-    "runAsUser":0,"runAsNonRoot":false,"allowPrivilegeEscalation":false,
-    "readOnlyRootFilesystem":true,
-    "capabilities":{"drop":["ALL"],"add":["CHOWN","DAC_OVERRIDE"]}
-  },
-  "resources":{"requests":{"cpu":"10m","memory":"16Mi"},"limits":{"memory":"64Mi"}},
-  "volumeMounts":[{"name":"traefik-access-log","mountPath":"/var/log/traefik"}]
-}'
-
-if [ "$init_op" = '{"op":"add","path":"/spec/template/spec/initContainers","value":[' ]; then
-  init_patch="${init_op}${prepare_container}]}"
-else
-  init_patch="${init_op}${prepare_container}}"
-fi
-
+# Making the directory WRITABLE is 0004's job, and it is not optional: without
+# it Traefik only warns and serves on with no log at all. The two run in order
+# in the same converger pass.
 "$KUBECTL" patch daemonset "$DS" -n "$NS" --type=json -p '[
   {"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--accesslog=true"},
   {"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--accesslog.filepath=/var/log/traefik/access.log"},
@@ -118,8 +88,7 @@ fi
   {"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--accesslog.fields.headers.names.User-Agent=keep"},
   {"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--accesslog.fields.headers.names.Referer=keep"},
   {"op":"add","path":"/spec/template/spec/volumes/-","value":{"name":"traefik-access-log","hostPath":{"path":"/var/log/traefik","type":"DirectoryOrCreate"}}},
-  {"op":"add","path":"/spec/template/spec/containers/0/volumeMounts/-","value":{"name":"traefik-access-log","mountPath":"/var/log/traefik"}},
-  '"$init_patch"'
+  {"op":"add","path":"/spec/template/spec/containers/0/volumeMounts/-","value":{"name":"traefik-access-log","mountPath":"/var/log/traefik"}}
 ]' >/dev/null
 
 echo "traefik-access-log: enabled — Traefik pods will roll to pick it up"
