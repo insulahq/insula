@@ -300,6 +300,14 @@ jobs:
       - name: Verify no client-side per-path loop over a selection
         run: ./scripts/ci-file-manager-bulk-check.sh
 
+  dex-redirect-uri-guard:
+    name: Dex clients redirect to their own panel host
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Verify each Dex static client's redirect URI matches its panel
+        run: ./scripts/ci-dex-redirect-uri-check.sh
+
   notification-template-coverage-guard:
     name: Every notification channel ships templates for every category
     runs-on: ubuntu-latest

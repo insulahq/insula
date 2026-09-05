@@ -10,6 +10,8 @@ import {
   useRegenerateCookieSecret,
   type OidcProvider, type OidcGlobalSettings,
 } from '@/hooks/use-oidc-settings';
+import { useSystemInfo } from '@/hooks/use-system-info';
+import { oidcCallbackUrl } from '@/lib/oidc-callback-url';
 
 const INPUT_CLASS =
   'mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2.5 text-sm text-gray-900 dark:text-gray-100 bg-white dark:bg-gray-700 placeholder:text-gray-400 dark:placeholder:text-gray-500 dark:text-gray-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
@@ -242,6 +244,67 @@ function ProvidersSection({ providers }: { readonly providers: readonly OidcProv
   );
 }
 
+/**
+ * The redirect URI the operator must register at the IdP.
+ *
+ * It is NOT the origin they are looking at. Each panel calls the API
+ * same-origin, and the backend derives the callback from that request's Host
+ * header — so a tenant-scoped provider's callback lives on the tenant host.
+ * Registering the admin one yields `Unregistered redirect_uri` at the IdP with
+ * no useful error in the panel, and the operator has no way to discover the
+ * right value from this screen. Hence: show it, and switch it with the scope.
+ */
+function CallbackUrlField({ scope }: { readonly scope: 'admin' | 'tenant' }) {
+  const systemInfo = useSystemInfo();
+  const [copied, setCopied] = useState(false);
+  const url = oidcCallbackUrl(scope, systemInfo.data);
+
+  const copy = () => {
+    void navigator.clipboard?.writeText(url);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+
+  return (
+    <div className="rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50/50 dark:bg-blue-900/10 p-3" data-testid="oidc-callback-field">
+      <div className="flex items-center justify-between gap-2">
+        <label className="text-xs font-medium text-blue-900 dark:text-blue-200">
+          Redirect URI — register this at your IdP
+        </label>
+        {url && (
+          <button
+            type="button"
+            onClick={copy}
+            className="inline-flex items-center gap-1 rounded border border-blue-300 dark:border-blue-700 px-2 py-1 text-[11px] font-medium text-blue-800 dark:text-blue-200 hover:bg-blue-100 dark:hover:bg-blue-900/30"
+            data-testid="oidc-callback-copy"
+          >
+            <Copy size={11} /> {copied ? 'Copied' : 'Copy'}
+          </button>
+        )}
+      </div>
+      {url ? (
+        <code
+          className="mt-1.5 block break-all rounded border border-blue-200 dark:border-blue-800 bg-white dark:bg-gray-900 px-2 py-1.5 font-mono text-[11px] text-gray-900 dark:text-gray-100"
+          data-testid="oidc-callback-url"
+        >
+          {url}
+        </code>
+      ) : (
+        <p className="mt-1.5 text-[11px] text-amber-700 dark:text-amber-300" data-testid="oidc-callback-unset">
+          No {scope === 'admin' ? 'admin' : 'tenant'} panel URL is configured. Set it under
+          {' '}<strong>Platform&nbsp;Settings&nbsp;→&nbsp;Identity</strong> — without it this
+          provider&apos;s redirect URI cannot be determined.
+        </p>
+      )}
+      <p className="mt-1.5 text-[11px] text-blue-800/80 dark:text-blue-300/80">
+        This is the <em>{scope === 'admin' ? 'admin' : 'tenant'}</em> panel host because each panel
+        calls the API same-origin. Do not register the panel&apos;s <code>/login</code> URL — that is
+        an internal parameter, not the IdP redirect URI.
+      </p>
+    </div>
+  );
+}
+
 function AddProviderForm({ onClose }: { readonly onClose: () => void }) {
   const create = useCreateOidcProvider();
   const [form, setForm] = useState({
@@ -284,6 +347,8 @@ function AddProviderForm({ onClose }: { readonly onClose: () => void }) {
           </select>
         </div>
       </div>
+
+      <CallbackUrlField scope={form.panel_scope} />
 
       {/* ── Auto-Provision Settings ── */}
       <div className="space-y-3 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-3">

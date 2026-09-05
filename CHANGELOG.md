@@ -25,6 +25,27 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   excludes auto-bans, and a new "Auto-bans only" filter joins the manual/static
   ones. A code comment claiming the UI already detected auto-bans from the
   reason prefix has been corrected — it never did.
+- **Tenant-panel SSO could never have worked on DEV or staging.** The
+  `hosting-platform-tenant` Dex client registered
+  `https://admin.${DOMAIN}/api/v1/auth/oidc/callback` in both the development
+  and staging overlays. Each panel calls the platform API **same-origin**
+  (`API_URL` is deliberately empty in `k8s/base/{admin,tenant}-deployment.yaml`)
+  and the backend derives the callback from the `Host` header of the
+  `/auth/oidc/authorize` request — so a tenant login's redirect URI is on the
+  *tenant* host. Registering the admin one yields `Unregistered redirect_uri`
+  at Dex with no useful error in the panel. Only the dind overlay had it right,
+  and `docs/operations/DEX_OIDC_STAGING.md` repeated the wrong value (along
+  with the wrong client id and secret). All three are corrected, and
+  `scripts/ci-dex-redirect-uri-check.sh` now asserts every client in every
+  overlay redirects to its own panel host.
+
+### Added
+- **The OIDC provider form shows the redirect URI to register at the IdP**, and
+  switches it when you change Panel Scope. It was previously undiscoverable
+  from that screen: the admin origin is the one in front of you, the tenant
+  host never appears, and the docs were wrong — so there was no way to get it
+  right except by reading the backend. When the relevant panel URL is not
+  configured the field says so rather than offering a plausible wrong value.
 
 ### Fixed
 - **WAF auto-ban never banned anything, on any cluster.** The scheduler tracked
