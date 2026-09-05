@@ -102,6 +102,42 @@ four tabs:
 - **WAF Settings** — CrowdSec status and Console enrollment, auto-ban
   calibration, and the **L4 host-firewall enforcement** toggle.
 
+### Scanning does not appear in WAF Events — by design
+
+ModSecurity logs rule **matches**. A request for `/wp-login.php` or `/.env` is a
+perfectly formed GET with no attack payload, so no CRS rule fires and nothing
+reaches WAF Events; Traefik simply answers 404. On a public cluster that is
+routinely a quarter of all traffic, and it is invisible on this page.
+
+CRS detects injection and traversal. Reconnaissance is a **rate** signal, and it
+is caught by two CrowdSec scenarios that read Traefik's access log:
+
+| Scenario | Catches | Behaviour |
+|---|---|---|
+| `http-probing` | one source requesting many non-existent paths | **Bans**, like any other CrowdSec decision |
+| `http-crawl-non-statics` | one source making many non-static requests | **Alerts only** — see below |
+
+Their alerts appear under **Banned IPs** (as `auto-ban`-tagged decisions) and in
+`cscli alerts list` on the CrowdSec pod.
+
+!!! warning "http-crawl-non-statics starts in simulation, and that is deliberate"
+    A CrowdSec decision is enforced wherever the bouncer sits — the shared
+    entrypoint, across tenant sites as well as the panels. One false positive
+    therefore blocks that address from **every** protected site, not just the one
+    it crawled. And on a hosting platform, "many non-static requests from one
+    address" also describes a legitimate search-engine crawler.
+
+    So it raises alerts without banning. Review a week of them under Banned IPs
+    before promoting it; verified crawlers (Google, Bing) are already excluded by
+    reverse-DNS whitelists, but smaller legitimate bots are not.
+
+!!! note "Multi-node clusters detect less"
+    Scenario counting happens per node. Where DNS round-robin spreads one
+    client's requests across several nodes, each node sees only a fraction and a
+    burst may not reach the threshold anywhere. Single-node clusters are
+    unaffected. There is no error when this happens — the alerts are simply
+    fewer than the traffic warrants.
+
 ### Two ways to block an address
 
 They are not interchangeable, and the panel keeps them apart:
