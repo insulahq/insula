@@ -476,6 +476,11 @@ export function WafEventsTab() {
           // row's prefill values.
           key={`${banModalPrefill.value}|${banModalPrefill.reason}`}
           prefill={banModalPrefill}
+          // Banning from a WAF hit goes to the STATIC blocklist, not the
+          // expiring decision list. The operator is making a judgement about a
+          // source; a 4h decision would silently lapse while they believed the
+          // address stayed blocked.
+          target="static"
           onClose={() => setBanModalPrefill(null)}
         />
       )}
@@ -747,11 +752,11 @@ function WafEventRow({ ev, onBan, onAllowlist, onWhitelist, isAllowlistPending }
               onClick={() => onBan(ev.sourceIp as string)}
               className="inline-flex items-center justify-center rounded-md border border-red-300 bg-red-50 dark:bg-red-900/20 dark:border-red-700 p-1 text-red-700 dark:text-red-200 hover:bg-red-100 dark:hover:bg-red-900/40"
               data-testid={`waf-ban-${ev.id}`}
-              title={`Ban ${ev.sourceIp} via CrowdSec (kill all sessions from this IP)`}
-              aria-label={`Ban ${ev.sourceIp}`}
+              title={`Block ${ev.sourceIp} permanently — adds it to the static blocklist (does not expire)`}
+              aria-label={`Block ${ev.sourceIp} permanently`}
             >
               <Ban size={12} />
-              <span className="sr-only">Ban IP</span>
+              <span className="sr-only">Block IP permanently</span>
             </button>
             <button
               type="button"
@@ -1148,34 +1153,55 @@ function DecisionRow({ d, onUnban, isUnbanning }: { d: CrowdsecDecision; onUnban
 
 // ─── Shared Ban-IP modal (used by WAF Events row + Banned IPs tab) ──────
 
+/**
+ * `target` picks which list the ban lands in:
+ *
+ *   'temporary' — a CrowdSec decision that EXPIRES after `duration`. Right for
+ *                 the Banned IPs tab, where an operator is reacting to a burst.
+ *   'static'    — the operator-managed long-term blocklist, no expiry.
+ *
+ * The WAF Events row uses 'static'. Banning from a WAF hit is a deliberate
+ * judgement about a source, and putting that in a list that silently expires
+ * in four hours meant the block quietly disappeared while the operator
+ * believed the address was handled.
+ */
+type BanTarget = 'temporary' | 'static';
+
 function BanIpModal({
   prefill,
+  target = 'temporary',
   onClose,
 }: {
   prefill: { value: string; reason: string };
+  target?: BanTarget;
   onClose: () => void;
 }) {
   const [value, setValue] = useState(prefill.value);
   const [scope, setScope] = useState<CrowdsecDecisionScope>('Ip');
   const [duration, setDuration] = useState('4h');
   const [reason, setReason] = useState(prefill.reason);
-  const add = useAddCrowdsecBan();
+  const addTemporary = useAddCrowdsecBan();
+  const addStatic = useAddCrowdsecStaticBan();
+  const isStatic = target === 'static';
+  const add = isStatic ? addStatic : addTemporary;
 
   const valid = /^[a-fA-F0-9.:/]+$/.test(value) && value.length >= 1 && reason.trim().length >= 3;
 
   const onSubmit = () => {
     if (!valid) return;
-    add.mutate(
-      { value, scope, duration, reason: reason.trim() },
-      { onSuccess: () => onClose() },
-    );
+    const done = { onSuccess: () => onClose() };
+    // The static blocklist has no duration — it is permanent until removed.
+    if (isStatic) addStatic.mutate({ value, scope, reason: reason.trim() }, done);
+    else addTemporary.mutate({ value, scope, duration, reason: reason.trim() }, done);
   };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" role="dialog" aria-modal="true">
       <div className="w-full max-w-lg rounded-lg bg-white dark:bg-gray-900 shadow-xl" data-testid="ban-ip-modal">
         <div className="flex items-center justify-between border-b border-gray-200 dark:border-gray-700 px-5 py-3">
-          <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">Ban IP (CrowdSec)</h3>
+          <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">
+            {isStatic ? 'Block IP (static blocklist)' : 'Ban IP (CrowdSec)'}
+          </h3>
           <button type="button" onClick={onClose} className="text-gray-500 hover:text-gray-700">✕</button>
         </div>
         <div className="px-5 py-4 space-y-3 text-sm">
@@ -1203,19 +1229,31 @@ function BanIpModal({
                 <option value="Range">Range (CIDR)</option>
               </select>
             </div>
-            <div>
-              <label className="block text-xs uppercase text-gray-600 dark:text-gray-400 mb-1">Duration</label>
-              <select
-                value={duration}
-                onChange={(e) => setDuration(e.target.value)}
-                className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm"
-                data-testid="ban-modal-duration"
-              >
-                {DURATION_OPTIONS.map((o) => (
-                  <option key={o.value} value={o.value}>{o.label}</option>
-                ))}
-              </select>
-            </div>
+            {isStatic ? (
+              <div>
+                <span className="block text-xs uppercase text-gray-600 dark:text-gray-400 mb-1">Duration</span>
+                <div
+                  className="w-full rounded-md border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/60 px-3 py-2 text-sm text-gray-600 dark:text-gray-300"
+                  data-testid="ban-modal-duration-static"
+                >
+                  Permanent — until removed
+                </div>
+              </div>
+            ) : (
+              <div>
+                <label className="block text-xs uppercase text-gray-600 dark:text-gray-400 mb-1">Duration</label>
+                <select
+                  value={duration}
+                  onChange={(e) => setDuration(e.target.value)}
+                  className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm"
+                  data-testid="ban-modal-duration"
+                >
+                  {DURATION_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>{o.label}</option>
+                  ))}
+                </select>
+              </div>
+            )}
           </div>
           <div>
             <label className="block text-xs uppercase text-gray-600 dark:text-gray-400 mb-1">Reason</label>
@@ -1249,7 +1287,9 @@ function BanIpModal({
             className="rounded-md px-3 py-1.5 text-sm border border-red-300 bg-red-600 dark:bg-red-700 text-white hover:bg-red-700 dark:hover:bg-red-600 disabled:opacity-50"
             data-testid="ban-modal-submit"
           >
-            {add.isPending ? 'Banning…' : 'Ban'}
+            {add.isPending
+              ? (isStatic ? 'Blocking…' : 'Banning…')
+              : (isStatic ? 'Add to blocklist' : 'Ban')}
           </button>
         </div>
       </div>

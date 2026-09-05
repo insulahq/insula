@@ -1930,7 +1930,11 @@ export const notificationCategories = pgTable('notification_categories', {
   description: text('description'),
   audience: varchar('audience', { length: 16 }).notNull(),
   defaultSeverity: notificationSeverityEnum('default_severity').notNull().default('info'),
-  defaultChannels: text('default_channels').array().notNull().default(sql`ARRAY['in_app', 'email']::text[]`),
+  // Every channel, not a subset — see migration 0099. `ntfy` shipped fully
+  // built and stayed off everywhere because this default was hand-written and
+  // never revisited. A unit test asserts this list equals
+  // NOTIFICATION_CHANNEL_ID, so a new channel cannot be forgotten here.
+  defaultChannels: text('default_channels').array().notNull().default(sql`ARRAY['in_app', 'email', 'ntfy']::text[]`),
   isMandatory: boolean('is_mandatory').notNull().default(false),
   gdprBasis: notificationGdprBasisEnum('gdpr_basis').notNull().default('legitimate_interest'),
   rateLimitWindowS: integer('rate_limit_window_s'),

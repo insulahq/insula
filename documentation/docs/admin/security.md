@@ -89,11 +89,29 @@ one-click buttons. The deep operator context lives in the
 four tabs:
 
 - **WAF Events** — the cluster-wide ModSecurity / CRS event stream, with
-  source-IP and date-range filters.
+  source-IP and date-range filters. The block button on a row adds the source
+  to the **static blocklist** — a permanent entry, not a timed ban (see below).
 - **Banned IPs** — active CrowdSec ban decisions plus a static blocklist.
 - **WAF Exclusions** — per-route CRS rule exclusions and IP allowlists.
 - **WAF Settings** — CrowdSec status and Console enrollment, auto-ban
   calibration, and the **L4 host-firewall enforcement** toggle.
+
+### Two ways to block an address
+
+They are not interchangeable, and the panel keeps them apart:
+
+| | Where it lives | Expires? | Use it when |
+|---|---|---|---|
+| **Ban (CrowdSec decision)** | *Banned IPs* → Add ban | **Yes** — you choose a duration | Reacting to a burst you expect to pass |
+| **Static blocklist** | *Banned IPs* → Static Blocklist, and the block button on any **WAF Events** row | **No** — until you remove it | You have judged the source itself unwelcome |
+
+Blocking from a WAF event uses the **static** list on purpose. A block made
+from evidence of an attack is a decision about that source, and a timed ban
+would lapse quietly while you believed the address was still handled. The
+dialog says *Permanent — until removed* and offers no duration, so the two are
+hard to confuse.
+
+To undo either one, remove the entry from its table in **Banned IPs**.
 
 !!! note "Adding an exclusion always works, by design"
     A rule exclusion necessarily contains the pattern it excludes, so the
