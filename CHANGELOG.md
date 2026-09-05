@@ -39,6 +39,17 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   Host-migration `2026.9.9/0001` was also missing `--accesslog.filepath` and
   the volume entirely, so it had only ever configured stdout logging.
 
+  The simulation exclusion named `crowdsecurity/http-crawl-non-statics`; the hub
+  scenario is `crowdsecurity/http-crawl-non_statics`, with an **underscore**.
+  `cscli` does not validate exclusion names — it accepted the wrong one silently
+  and `cscli simulation status` echoed it back, so the config read as correct
+  while the scenario ran live and banning. Since a CrowdSec decision applies
+  cluster-wide across every bouncer-protected route, that was one false positive
+  away from blocking a legitimate crawler from every tenant site.
+  `integration-waf-crowdsec.sh` now asserts every excluded name against the
+  scenarios the agent actually loaded, and fails rather than passing quietly when
+  it cannot read either.
+
   Two further defects kept the agent itself from ever running. Its entrypoint
   refuses to start without a volume at `/var/lib/crowdsec/data` ("It is
   mandatory to mount a volume to this directory ... Exiting") and crash-looped;

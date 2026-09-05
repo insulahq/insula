@@ -1944,6 +1944,81 @@ else
   fail "WAF scraper reports modsecPodFound=False — label selector mismatch"
 fi
 
+phase "Phase 6 — log-processing agent (scenarios actually loaded + simulated)"
+
+# WHY THIS PHASE EXISTS
+#
+# On 2026-09-05 the simulation exclusion read `crowdsecurity/http-crawl-non-statics`
+# while the hub scenario is `crowdsecurity/http-crawl-non_statics` — an
+# UNDERSCORE. cscli does not validate exclusion names: it accepted the wrong one
+# silently and `cscli simulation status` echoed it straight back, so the config
+# looked correct in every inspection while the real scenario ran LIVE and
+# banning. Since a decision is cluster-wide across 18 routes, that is one false
+# positive away from blocking a crawler from every tenant site.
+#
+# So: never compare the config against itself. Compare it against the scenarios
+# the agent actually loaded.
+
+_agent_pod=$(kubectl_run "get pods -n platform-system -l app.kubernetes.io/name=crowdsec-agent -o jsonpath='{.items[0].metadata.name}'" 2>/dev/null || true)
+
+if [[ -z "$_agent_pod" ]]; then
+  skip "no crowdsec-agent pod on this cluster — log-processing agent not deployed"
+else
+  _loaded=$(kubectl_run "exec -n platform-system $_agent_pod -- cscli scenarios list -o json" 2>/dev/null || true)
+  # Read simulation.yaml, NOT `cscli simulation status`: that subcommand ignores
+  # `-o json` and always prints prose (checked on v1.7.8), so parsing it is
+  # brittle. The file is the config the agent actually loaded.
+  _simulated=$(kubectl_run "exec -n platform-system $_agent_pod -- cat /etc/crowdsec/simulation.yaml" 2>/dev/null || true)
+
+  # The two scenarios this feature exists for must be INSTALLED. An agent with
+  # neither parses happily and detects nothing.
+  for want in crowdsecurity/http-probing crowdsecurity/http-crawl-non_statics; do
+    if printf '%s' "$_loaded" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+names={s['name'] for s in d.get('scenarios',[])}
+sys.exit(0 if '$want' in names else 1)
+" 2>/dev/null; then
+      ok "scenario loaded: $want"
+    else
+      fail "scenario NOT loaded: $want — the agent detects nothing for it"
+    fi
+  done
+
+  # Every name the agent reports as simulated must EXIST among the loaded
+  # scenarios. A name that matches nothing is not a safety setting, it is a
+  # scenario running live under the belief that it is not.
+  # Exits 2 on an unreadable/unparseable input so a broken probe reports as a
+  # FAILURE, never as "nothing bogus found" — an empty result must mean checked
+  # and clean, not checked nothing.
+  _bogus=$(python3 - "$_loaded" "$_simulated" <<'PY'
+import json,re,sys
+try:
+    loaded={s['name'] for s in json.loads(sys.argv[1]).get('scenarios',[])}
+except Exception:
+    sys.exit(2)
+if not loaded:
+    sys.exit(2)
+sim=sys.argv[2]
+if 'exclusions' not in sim:
+    # No exclusions block at all: nothing is simulated. Valid, and not bogus.
+    print(''); sys.exit(0)
+names=re.findall(r'^\s*-\s*(\S+)\s*$', sim, re.M)
+if not names:
+    sys.exit(2)
+print(' '.join(n for n in names if n not in loaded))
+PY
+)
+  _rc=$?
+  if (( _rc != 0 )); then
+    fail "could not read the agent's scenario/simulation config (rc=$_rc) — check NOT performed"
+  elif [[ -z "$_bogus" ]]; then
+    ok "every simulated scenario name matches a loaded scenario"
+  else
+    fail "simulated name(s) match NO loaded scenario: $_bogus — these run LIVE while reading as simulated"
+  fi
+fi
+
 # ─── Summary ────────────────────────────────────────────────────────────
 
 phase "Summary"
