@@ -29,6 +29,7 @@ import {
   reconcileCertificateDnsName,
   type HostReconcileResult,
 } from '../../shared/traefik-host-reconcile.js';
+import { MERGE_PATCH } from '../../shared/k8s-patch.js';
 
 export const TUNNEL_ANCHOR_IR_NAME = 'tunnel-anchor';
 export const TUNNEL_ANCHOR_CERT_NAME = 'tunnels-platform-domain';
@@ -124,14 +125,22 @@ export async function reconcileTunnelAnchorMiddlewares(
     return { ...r, middlewares: [...missing, ...existing] };
   });
 
-  await custom.patchNamespacedCustomObject({
-    group: 'traefik.io',
-    version: 'v1alpha1',
-    namespace: TUNNEL_ANCHOR_NAMESPACE,
-    plural: 'ingressroutes',
-    name: TUNNEL_ANCHOR_IR_NAME,
-    body: { spec: { routes: newRoutes } },
-  } as unknown as Parameters<typeof custom.patchNamespacedCustomObject>[0]);
+  // MERGE_PATCH is required, not optional: @kubernetes/client-node defaults
+  // Content-Type to application/json-patch+json regardless of body shape, so a
+  // merge object like this one is rejected by the apiserver with "cannot
+  // unmarshal object into Go value of type []handlers.jsonPatchOp". Same shim
+  // the host reconciler uses.
+  await custom.patchNamespacedCustomObject(
+    {
+      group: 'traefik.io',
+      version: 'v1alpha1',
+      namespace: TUNNEL_ANCHOR_NAMESPACE,
+      plural: 'ingressroutes',
+      name: TUNNEL_ANCHOR_IR_NAME,
+      body: { spec: { routes: newRoutes } },
+    } as unknown as Parameters<typeof custom.patchNamespacedCustomObject>[0],
+    MERGE_PATCH,
+  );
   log.info({ middlewares: ANCHOR_WAF_MIDDLEWARES.map((m) => m.name) },
     'tunnel-anchor: WAF middlewares converged onto the catch-all route');
   return { patched: true };

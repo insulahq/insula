@@ -39,7 +39,7 @@ function fakeCustom(routes: unknown[]) {
     patches,
     api: {
       getNamespacedCustomObject: vi.fn(async () => ({ spec: { routes } })),
-      patchNamespacedCustomObject: vi.fn(async (arg: Record<string, unknown>) => {
+      patchNamespacedCustomObject: vi.fn(async (arg: Record<string, unknown>, _shim?: unknown) => {
         patches.push(arg);
       }),
     },
@@ -96,6 +96,20 @@ describe('tunnel anchor WAF middlewares', () => {
     const body = c.patches[0].body as { spec: { routes: Array<{ middlewares: Array<{ name: string }> }> } };
     const names = body.spec.routes[0].middlewares.map((m) => m.name);
     expect(names.filter((n) => n === 'crowdsec')).toHaveLength(1);
+  });
+
+  it('sends the patch as merge-patch, not json-patch', async () => {
+    // @kubernetes/client-node defaults Content-Type to
+    // application/json-patch+json whatever the body looks like, so a merge
+    // object is rejected by the apiserver with "cannot unmarshal object into
+    // Go value of type []handlers.jsonPatchOp". The convergence would have
+    // failed at runtime while every unit test here still passed — this test
+    // existed and did not catch it; CI's patch guard did.
+    const c = fakeCustom([{ ...legacyRoute }]);
+    await reconcileTunnelAnchorMiddlewares(c.api as never, log);
+    const call = c.api.patchNamespacedCustomObject.mock.calls[0];
+    expect(call.length, 'no Content-Type shim passed to patchNamespacedCustomObject').toBe(2);
+    expect(call[1]).toBeDefined();
   });
 
   it('never throws when the anchor is absent (best-effort boot hook)', async () => {
