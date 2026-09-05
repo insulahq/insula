@@ -24,6 +24,14 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   into the one number an operator would act on. Both are replaced by the node
   filesystem's actual free bytes, read from the kubelet Summary API. Null (not
   0) when that read fails, since "0 B free" reads as a full disk.
+- **"Added by" / "Actor" columns show the person, not a UUID.** WAF IP
+  allowlists, WAF rule exclusions, step-up events, secrets coverage and the
+  audit log all recorded who acted as a raw user id — the audit log showed
+  eight characters of one, which identified nobody. They now render
+  `Full Name (email)` from a single shared, cached lookup. An id that resolves
+  to nobody keeps a shortened id with the full value in the tooltip, because a
+  deleted admin is exactly when that record matters; `anonymous` and `system`
+  pass through unchanged.
 
 
 ### Added
