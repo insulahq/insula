@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.9.9] - 2026-09-05
+
 ### Added
 - `scripts/integration-oidc-tenant-login.sh` — drives a real OIDC login through
   Dex end to end and prints the account the identity resolved to. Three OIDC
