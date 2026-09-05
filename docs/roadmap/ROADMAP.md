@@ -1251,3 +1251,47 @@ Nothing referenced the ConfigMap by its literal name (checked across `scripts/`,
 same gap. Dex was found by accident — a nine-day-old pod serving stale config
 while `kubectl get cm` showed the new value.
 
+---
+
+## R34 — Decide the config-reload mechanism, deliberately
+
+The platform reloads workloads on config change **three different ways**, and
+which one applies depends on who writes the ConfigMap. That ambiguity is how the
+Dex gap survived nine days.
+
+| Mechanism | Used by | Notes |
+|---|---|---|
+| Kustomize content-hash name | dex, crowdsec-agent, 3 error pages, 3 roundcube | atomic; cannot fail silently |
+| Stakater Reloader annotations | stalwart-mail, bulwark, sftp-gateway | already deployed cluster-wide since 2026-08 |
+| Bespoke `insula.host/*-hash` | trusted-proxies, waf-exclusions, feature-css, rclone-shim | 4 backend reconcilers hand-roll sha256 + patch |
+
+Kustomize hashing **cannot** cover the third group: those ConfigMaps are written
+at runtime by the backend, not rendered from git. So "one mechanism" is only
+reachable by moving everything to Reloader.
+
+**Reloader is strictly better for two things.** It does not rename, so it can
+cover `platform-config` and `platform-mail-acme` — which hashing cannot, because
+`dr-restore.sh` and the network smoke test look `platform-config` up by literal
+name. And it would retire the four hand-rolled hash reconcilers.
+
+**Hashing is strictly better for one thing that matters.** The new ConfigMap and
+the new pod template arrive in the same apply, so there is no window where pods
+run old config, and no runtime component whose failure silently stops
+propagation — the exact class of failure this whole area kept producing. For
+`crowdsec-agent-acquis`, which decides whether a scenario bans real users, that
+guarantee is worth keeping.
+
+**Proposed rule — two mechanisms, chosen deliberately rather than three by
+accident:**
+
+1. **Kustomize hash** for git-authored config where atomicity matters (security
+   controls, ingress/WAF config).
+2. **Reloader** for runtime-written ConfigMaps and anything referenced by
+   literal name elsewhere.
+
+Deliverables: an ADR recording the rule; convert the four bespoke reconcilers to
+Reloader annotations; adopt Reloader for `platform-config` /
+`platform-mail-acme`; a CI guard asserting every ConfigMap-consuming workload
+matches one of the two. Note Reloader itself is a silent-failure surface — if it
+is to carry this much, it needs an alert on its own liveness.
+
