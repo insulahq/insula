@@ -1289,8 +1289,18 @@ export const wafLogs = pgTable('waf_logs', {
   requestMethod: varchar('request_method', { length: 10 }),
   sourceIp: varchar('source_ip', { length: 45 }),
   matchedData: text('matched_data'),
+  // ModSecurity's own `<unique_id>:<ruleId>`, the identity of ONE rule match on
+  // ONE transaction. The scraper reads a 35s log window every 30s, so a 5s band
+  // is deliberately re-read to avoid gaps — without a stable key those re-reads
+  // were inserted a second time. NULL when ModSecurity emitted no unique_id:
+  // the scraper's fallback is derived from Date.now() and differs on every
+  // re-read, so it is not an identity, and Postgres lets NULLs coexist under a
+  // unique index (those rare rows simply keep the old duplicate-prone
+  // behaviour rather than colliding with each other).
+  eventKey: varchar('event_key', { length: 128 }),
   createdAt: timestamp('created_at').notNull().defaultNow(),
 }, (table) => [
+  uniqueIndex('waf_logs_event_key_uniq').on(table.eventKey),
   index('waf_logs_route_idx').on(table.routeId),
   index('waf_logs_tenant_idx').on(table.tenantId),
   index('waf_logs_created_idx').on(table.createdAt),

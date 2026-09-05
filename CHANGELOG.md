@@ -13,6 +13,24 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Fixed
+- **WAF events were written twice whenever a request landed in the scraper's
+  re-read band.** The scraper reads a 35s log window every 30s, so ~5s of every
+  cycle is deliberately re-read (a smaller window would drop events). Nothing
+  made that idempotent: each insert generated a fresh random UUID and relied on
+  catching SQLSTATE 23505, but `waf_logs` had **no unique constraint at all**,
+  so that catch could never fire. Measured on DEV: 12 requests spread across one
+  cycle produced 76 rows for 60 distinct (uri, rule) pairs. This was not
+  cosmetic — `crowdsec-autoban` triggers on `qualifyingCount < eventThreshold`,
+  a count of ROWS, so a source IP crossed the operator's configured threshold on
+  roughly half the traffic they asked for. Rows now carry ModSecurity's own
+  `<unique_id>:<ruleId>` as `event_key` under a unique index (migration 0101).
+- **WAF events whose `[error]` line and JSON audit record straddled a cycle
+  boundary were stored with `hostname='localhost'` and `sourceIp='0.0.0.0'`.**
+  The correlation maps are per-cycle, so a first write could land before the
+  JSON line was ever seen. The conflicting write now repairs those placeholders
+  instead of being dropped.
+
+### Fixed
 - **The CrowdSec log-processing agent could not start.** It was placed in the
   `crowdsec` namespace, which enforces Pod Security `baseline` — that forbids
   hostPath volumes outright, and the agent needs one to read Traefik's access
