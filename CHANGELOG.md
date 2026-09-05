@@ -29,6 +29,11 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   namespaceSelector + podSelector pair, because a bare podSelector only matches
   pods in the policy's own namespace and would have silently matched nothing.
 
+  Host-migration `2026.9.9/0003` creates the agent's credentials Secret on
+  already-installed clusters. `bootstrap.sh` generates it, but bootstrap runs at
+  *install* time — every existing cluster would otherwise ship the DaemonSet and
+  sit at 0/1 with `FailedMount`.
+
 ### Added
 - **HTTP reconnaissance detection — CrowdSec `http-probing` and
   `http-crawl-non-statics`.** Scanning was invisible to every security surface:
