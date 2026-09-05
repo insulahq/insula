@@ -1,0 +1,238 @@
+# CrowdSec log-processing AGENT (DaemonSet) — HTTP reconnaissance detection.
+#
+# WHY THIS EXISTS
+#
+# The LAPI Deployment next to this file runs with DISABLE_AGENT=true and relies
+# entirely on the community blocklist. That covers known-bad IPs but detects
+# nothing about YOUR traffic, and it leaves a specific blind spot:
+#
+#   ModSecurity only logs rule MATCHES. A scanner requesting /wp-login.php or
+#   /.env is a syntactically perfect GET with no attack payload — no CRS rule
+#   fires, so nothing reaches waf_logs, and Traefik simply answers 404. On
+#   production that was ~4,700 requests/day (26% of all traffic) leaving no
+#   trace in any security surface. CRS detects injection and traversal; it does
+#   not detect reconnaissance. Reconnaissance is a RATE signal, which is what
+#   these scenarios consume.
+#
+# The original objection to log acquisition ("would require Calico-style
+# sidecars on every pod") does not apply here: Traefik is itself a DaemonSet,
+# so one agent per node reads one log source. No per-pod sidecars.
+#
+# WHY platform-system AND NOT crowdsec
+#
+# The crowdsec namespace enforces Pod Security `baseline`, which forbids
+# hostPath volumes outright — its own manifest says why: "baseline is enough …
+# (we don't run the log-acquisition modules)". This agent IS log acquisition,
+# so it invalidates that precondition. Weakening the namespace would relax the
+# LAPI's posture too, and the LAPI genuinely does not need hostPath.
+#
+# platform-system is where the platform's host-reading DaemonSets already live
+# (security-probe mounts 11 host paths, host-config-reconciler 2), so it is the
+# established home for this shape rather than a new exception.
+#
+# Found by deploying it: the DaemonSet sat at 0/1 with
+# `violates PodSecurity "baseline:latest": hostPath volumes`, and no pod object
+# was ever created — a failure invisible to every manifest-level check.
+#
+# ARCHITECTURE
+#
+#   Traefik (DaemonSet, JSON access log → /var/log/traefik/access.log)
+#     → this agent tails that file directly (no CRI envelope to strip)
+#       → parses with crowdsecurity/traefik
+#         → scenarios fire → alerts POSTed to the LAPI Service
+#           → Traefik bouncer plugin already queries that LAPI per request
+#
+# The agent holds NO database and makes no decisions locally; the existing
+# single-writer LAPI stays the only writer, so this does not change the HA
+# story described in deployment.yaml.
+#
+# MULTI-NODE: DETECTION DILUTES WITH NODE COUNT — READ BEFORE SCALING OUT
+#
+# Scenario buckets are evaluated IN THE AGENT, per node. Only finished alerts
+# ship to the LAPI, never raw events. So on a cluster whose ingress is fronted
+# by round-robin DNS (staging today: 3 A records), one scanner's requests are
+# spread across nodes and each agent sees roughly 1/N of them. A burst that
+# would trip a threshold on one node can fail to trip it on any of three.
+#
+# This does not fail loudly. Every agent is Running, parsing, and reporting
+# healthy; there are simply fewer alerts than the traffic warrants — the
+# detection degrades quietly as the cluster grows, which is the worst shape a
+# regression can take.
+#
+# Current state: production and DEV are single-node, so they are unaffected
+# today. Staging is 3-node and IS affected.
+#
+# There is no distributed-bucket mode in CrowdSec; the options are to scale the
+# scenario thresholds down by node count (via a scenario override), to pin a
+# client to a node (not possible with round-robin DNS), or to accept reduced
+# sensitivity. Tracked as R30 rather than guessed at here, because the right
+# answer depends on the threshold values in the hub scenarios and should be
+# measured against real traffic, not assumed.
+#
+# BLAST RADIUS — read before promoting a scenario out of simulation
+#
+# The bouncer sits on the shared `websecure` entrypoint and is attached to 18
+# of 52 routes, including tenant sites. A decision is therefore CLUSTER-WIDE:
+# one false positive blocks that IP from every protected tenant site, not just
+# from the host it probed. That is why http-crawl-non_statics ships SIMULATED
+# below — on a multi-tenant host, "many non-static requests from one IP" is
+# also an accurate description of a legitimate search-engine crawler.
+# NOTE: the acquisition + simulation config is NOT inlined here. It is
+# generated from k8s/base/crowdsec-agent/config/*.yaml by a configMapGenerator
+# with the name-suffix hash ON, so editing either file mints a new ConfigMap
+# name and this DaemonSet rolls to pick it up.
+#
+# That matters specifically for simulation.yaml. Its own comment invites a
+# future operator to promote http-crawl-non_statics out of simulation by
+# deleting a line — and with a fixed ConfigMap name that edit would have
+# applied to the cluster and changed nothing in the running agent, because
+# CrowdSec parses both files once at startup. A security control quietly
+# disagreeing with its own config is the exact failure this feature has
+# already produced once (the hyphen/underscore bug, 2026-09-05).
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: crowdsec-agent
+  namespace: platform-system
+  labels:
+    app.kubernetes.io/name: crowdsec-agent
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: waf
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: crowdsec-agent
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: crowdsec-agent
+        app.kubernetes.io/part-of: hosting-platform
+        app.kubernetes.io/component: waf
+    spec:
+      # Runs wherever Traefik runs. Traefik is a DaemonSet on every node, so
+      # no node affinity is needed, but the agent must tolerate the same taints
+      # or a tainted node's ingress logs would go unparsed — silently, which is
+      # the failure mode this whole file exists to avoid.
+      tolerations:
+        - operator: Exists
+          effect: NoSchedule
+        - operator: Exists
+          effect: NoExecute
+      # Root is needed only to read the root-owned access log; every other
+      # privilege is dropped. The security-probe DaemonSet sets the precedent
+      # (read-only host mounts, ALL caps dropped) and this follows it.
+      securityContext:
+        runAsUser: 0
+      containers:
+        - name: crowdsec-agent
+          image: docker.io/crowdsecurity/crowdsec:v1.7.8
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            # NOT read-only: CrowdSec writes its hub index and parser state
+            # under /var/lib/crowdsec at start. The host mount above is
+            # read-only, which is the boundary that matters — this container
+            # can read the ingress access log and nothing else on the node.
+            readOnlyRootFilesystem: false
+          env:
+            # Agent only — the LAPI lives in the Deployment beside this file.
+            - name: DISABLE_LOCAL_API
+              value: "true"
+            - name: LOCAL_API_URL
+              value: "http://crowdsec.crowdsec.svc.cluster.local:8080"
+            # The WHOLE machine name, taken verbatim from the Secret — never a
+            # prefix with the pod name appended.
+            #
+            # The LAPI registers exactly one machine: its entrypoint runs
+            # `cscli machines add "$AGENT_USERNAME"` from the identical Secret
+            # in the crowdsec namespace. The name presented here must match
+            # that EXACTLY, or the agent authenticates as a machine that was
+            # never created — and it stays up and reports healthy while its
+            # alerts go nowhere.
+            #
+            # The whole fleet therefore shares one identity, so `cscli machines
+            # list` cannot tell you which node stopped parsing. That is a real
+            # cost, and it is forced by the mechanism: a per-node name has
+            # nothing to register it. Lifting it needs LAPI auto-registration,
+            # which this image exposes no env var for — ROADMAP R31.
+            - name: AGENT_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: crowdsec-agent-credentials
+                  key: username
+            - name: AGENT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: crowdsec-agent-credentials
+                  key: password
+            # Parser for Traefik's JSON access log + the HTTP scenario pack
+            # that contains http-probing and http-crawl-non_statics.
+            - name: COLLECTIONS
+              value: "crowdsecurity/traefik crowdsecurity/base-http-scenarios"
+            # The crawler whitelists are POSTOVERFLOWS, not a collection.
+            # "crowdsecurity/whitelists" does not exist in the hub — asking for
+            # it as a collection fails with "can't find ... did you mean
+            # 'crowdsecurity/asterisk'?" and installs nothing (verified on DEV
+            # 2026-09-05). The agent still starts, so the loss is silent.
+            #
+            # These are NOT optional: they whitelist verified search-engine
+            # crawlers, and rdns is what verifies them (the s00-enrich stage
+            # that resolves the source before the s01-whitelist stage tests it).
+            # Without them http-crawl-non_statics bans Googlebot from every
+            # tenant site the moment it is promoted out of simulation.
+            - name: POSTOVERFLOWS
+              value: >-
+                crowdsecurity/rdns
+                crowdsecurity/seo-bots-whitelist
+                crowdsecurity/cdn-whitelist
+                crowdsecurity/google-special-crawlers-whitelist
+          volumeMounts:
+            - name: traefik-access-log
+              mountPath: /var/log/traefik
+              readOnly: true
+            - name: acquis
+              mountPath: /etc/crowdsec/acquis.yaml
+              subPath: acquis.yaml
+              readOnly: true
+            - name: acquis
+              mountPath: /etc/crowdsec/simulation.yaml
+              subPath: simulation.yaml
+              readOnly: true
+            # MANDATORY: the crowdsec entrypoint refuses to start without it —
+            # "No volume mounted for /var/lib/crowdsec/data ... Exiting..." —
+            # and the pod then crash-loops forever. Verified on DEV 2026-09-05.
+            #
+            # emptyDir, not a PVC: this agent keeps no local database (the LAPI
+            # owns it, DISABLE_LOCAL_API=true). The directory holds hub
+            # datafiles, which are re-downloaded on start, so losing it with the
+            # pod costs nothing and a per-node PVC would be pure overhead.
+            - name: data
+              mountPath: /var/lib/crowdsec/data
+          resources:
+            requests:
+              cpu: "50m"
+              # The parse loop is the reason the LAPI pod sets
+              # DISABLE_AGENT=true to stay at ~30Mi. Budget for it here
+              # instead of regressing the LAPI.
+              memory: "192Mi"
+            limits:
+              memory: "512Mi"
+      volumes:
+        - name: traefik-access-log
+          hostPath:
+            # Traefik (also a DaemonSet) writes its JSON access log here, so
+            # the two are always co-located on a node. DirectoryOrCreate so a
+            # node whose Traefik has not yet rolled does not wedge this pod.
+            path: /var/log/traefik
+            type: DirectoryOrCreate
+        - name: acquis
+          configMap:
+            name: crowdsec-agent-acquis
+        - name: data
+          emptyDir:
+            # Hub datafiles only. Bounded so a runaway download cannot consume
+            # the node's disk — the same reasoning as the access-log rotation.
+            sizeLimit: 512Mi

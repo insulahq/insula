@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { tenantStatusEnum, storageLifecycleStateEnum, uuidField, paginatedResponseSchema } from './shared.js';
+import { tenantStatusEnum, storageLifecycleStateEnum, uuidField, paginatedResponseSchema, identityEmailSchema } from './shared.js';
 import { provisioningStatusEnum } from './provisioning.js';
 
 // ─── E.164 phone number ─────────────────────────────────────────────────────
@@ -48,7 +48,7 @@ export const createTenantSchema = z.object({
   // service-to-service callers (integration tests, scripted creates)
   // can omit and backfill later.
   contact_name: z.string().min(1).max(255).optional(),
-  primary_email: z.string().email(),
+  primary_email: identityEmailSchema,
   secondary_email: z.string().email().optional(),
   // Phone + billing address: same optional-at-API treatment as
   // contact_name. DB columns are nullable; UI enforces required.
@@ -79,7 +79,7 @@ export const createTenantSchema = z.object({
 export const updateTenantSchema = z.object({
   name: z.string().min(1).max(255).optional(),
   contact_name: z.string().min(1).max(255).optional(),
-  primary_email: z.string().email().optional(),
+  primary_email: identityEmailSchema.optional(),
   secondary_email: z.string().email().nullable().optional(),
   phone_e164: phoneE164Schema.optional(),
   billing_address: billingAddressInputSchema.optional(),

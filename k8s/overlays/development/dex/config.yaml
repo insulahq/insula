@@ -63,15 +63,53 @@ staticClients:
       - https://tenant.${DOMAIN}/api/v1/auth/oidc/callback
   - id: hosting-platform-oauth2-proxy
     name: OAuth2 Proxy
-    secret: $OAUTH2_PROXY_CLIENT_SECRET
+    # secretEnv, NOT `secret: $VAR`. Dex expands NOTHING in `secret:` — it
+    # took the literal string "$OAUTH2_PROXY_CLIENT_SECRET" as the client
+    # secret, so every token exchange came back
+    # `invalid_client "Invalid client credentials."` and oauth2-proxy answered
+    # the callback with a 500. Measured on DEV 2026-09-05: Dex held a 27-char
+    # literal while oauth2-proxy sent the real 32-char value.
+    #
+    # `secretEnv` names an environment variable, which is the supported way to
+    # keep a client secret out of a ConfigMap (dex storage.Client.SecretEnv).
+    # The Deployment already injects OAUTH2_PROXY_CLIENT_SECRET from the
+    # oauth2-proxy-config Secret, so both sides now read the same value.
+    secretEnv: OAUTH2_PROXY_CLIENT_SECRET
     redirectURIs:
+      # BOTH panels. oauth2-proxy no longer pins a single --redirect-url; it
+      # derives the callback from the request host, so whichever panel the
+      # visitor actually asked for is the one Dex must accept. Listing only the
+      # admin host is what made `protectTenantViaProxy` unusable.
       - https://admin.${DOMAIN}/oauth2/callback
+      - https://tenant.${DOMAIN}/oauth2/callback
 
 connectors: []
 
 enablePasswordDB: true
 
 staticPasswords:
+  # ── Tenant-panel SSO fixtures ────────────────────────────────────────────
+  # Two identities belonging to the SAME tenant, so a DEV run can prove that a
+  # tenant-scoped provider resolves each sub-user to their OWN account rather
+  # than to whichever one linked the IdP first.
+  #
+  # Both are asserted in LOWERCASE on purpose. Accounts created before the
+  # normalisation fix are stored mixed-case, so these also exercise the
+  # case-insensitive match: an exact comparison finds nothing and, on the tenant
+  # path, that silently provisions a second tenant instead of failing.
+  #
+  # DEV only. The domain is a reserved test TLD and the passwords are in the
+  # comment beside each hash, exactly like the two fixtures below.
+  - email: owner@oidc-e2e.test
+    # password: "e2e-owner-pw"
+    hash: "$2b$12$U417Xdb6BwEhSoMSdEvyoOU7UBsBlna5wSF5HkCtaLIFxQLNYwadW"
+    username: e2e-owner
+    userID: "00000000-0000-0000-0000-0000000000e1"
+  - email: staff@oidc-e2e.test
+    # password: "e2e-staff-pw"
+    hash: "$2b$12$nhxBU2ReylGIZmPurmbPnOtcuyu8V6Y8HmHPTtg9EzvAG2tQtuFWe"
+    username: e2e-staff
+    userID: "00000000-0000-0000-0000-0000000000e2"
   - email: admin@k8s-platform.test
     # password: "admin"
     hash: "$2a$12$CKIgnUHcoyiGpppJxt.03.O9rcptDVj3sD5K.vbx8VR5D/EcYgdua"

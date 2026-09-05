@@ -1,4 +1,4 @@
-import { eq, and, asc } from 'drizzle-orm';
+import { eq, and, asc, sql } from 'drizzle-orm';
 import type { CreateOidcProviderInput } from '@insula/api-contracts';
 import crypto from 'crypto';
 import bcrypt from 'bcrypt';
@@ -6,6 +6,7 @@ import { oidcProviders, oidcGlobalSettings, users, tenants } from '../../db/sche
 import { ApiError } from '../../shared/errors.js';
 import { encrypt, decrypt } from './crypto.js';
 import type { Database } from '../../db/index.js';
+import { normalizeEmail } from '../../lib/email-normalize.js';
 
 // ─── OIDC Discovery ──────────────────────────────────────────────────────────
 
@@ -403,9 +404,23 @@ export async function findOrCreateOidcUser(
 ): Promise<typeof users.$inferSelect> {
   const panelScope = provider.panelScope as 'admin' | 'tenant';
 
-  // Match by OIDC subject + issuer
+  // Match by OIDC subject + issuer — SCOPED TO THE PANEL, exactly like the
+  // email match below.
+  //
+  // Without the panel predicate this lookup crossed panels. `users_oidc_unique`
+  // was global, so one IdP identity could only ever be linked to ONE user row
+  // on the whole platform — whichever account linked it first. Every later
+  // login for the OTHER panel then resolved to that first account: signing in
+  // to the tenant panel could hand back an admin-panel user (its roleName, its
+  // null tenantId), and the JWT minted from it in routes.ts carries
+  // `panel: user.panel`. So the tenant panel evaluated exactly one account —
+  // the first one linked — instead of the tenant's own.
   const [existingByOidc] = await db.select().from(users)
-    .where(and(eq(users.oidcIssuer, claims.iss), eq(users.oidcSubject, claims.sub)));
+    .where(and(
+      eq(users.oidcIssuer, claims.iss),
+      eq(users.oidcSubject, claims.sub),
+      eq(users.panel, panelScope),
+    ));
 
   if (existingByOidc) {
     const now = new Date();
@@ -416,11 +431,24 @@ export async function findOrCreateOidcUser(
     return existingByOidc;
   }
 
-  // Match by email (scoped to the same panel)
-  const email = claims.email;
+  // Match by email (scoped to the same panel), CASE-INSENSITIVELY.
+  //
+  // An IdP is free to vary the casing it asserts, and an exact `=` match on a
+  // differently-cased address found nothing — which on this path does not mean
+  // "login failed", it means the tenant branch below falls through to
+  // auto-provisioning and mints a WHOLE NEW TENANT for someone who already has
+  // an account.
+  //
+  // Exact matches are preferred over case-insensitive ones by the ORDER BY, so
+  // if a cluster still holds two rows differing only in case (possible: the
+  // unique index was case-sensitive until migration 0103) the one the IdP
+  // actually named still wins, deterministically.
+  const email = normalizeEmail(claims.email);
   if (email) {
     const [existingByEmail] = await db.select().from(users)
-      .where(and(eq(users.email, email), eq(users.panel, panelScope)));
+      .where(and(sql`lower(${users.email}) = ${email}`, eq(users.panel, panelScope)))
+      .orderBy(sql`(${users.email} = ${email}) DESC`)
+      .limit(1);
     if (existingByEmail) {
       const now = new Date();
       await db.update(users).set({
@@ -440,8 +468,13 @@ export async function findOrCreateOidcUser(
 
   // For tenant-scoped providers: match email to tenant account first
   if (panelScope === 'tenant' && email) {
+    // Case-insensitive for the same reason as the user lookup above: an IdP
+    // that varies the casing must not cause a second tenant to be created for
+    // an apex that already exists.
     const [matchingTenant] = await db.select().from(tenants)
-      .where(eq(tenants.primaryEmail, email));
+      .where(sql`lower(${tenants.primaryEmail}) = ${email}`)
+      .orderBy(sql`(${tenants.primaryEmail} = ${email}) DESC`)
+      .limit(1);
 
     if (matchingTenant) {
       const id = crypto.randomUUID();

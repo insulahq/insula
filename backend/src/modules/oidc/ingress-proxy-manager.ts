@@ -48,6 +48,9 @@ const ADMIN_PANEL_SERVICE = 'admin-panel';
 const ADMIN_PANEL_PORT = 80;
 
 const OAUTH2_PROXY_HOST = 'oauth2-proxy.platform.svc.cluster.local';
+// The `errors` middleware takes a Kubernetes Service reference, not a URL, so
+// it needs the bare name rather than the cluster FQDN above.
+const OAUTH2_PROXY_SERVICE_NAME = 'oauth2-proxy';
 const OAUTH2_PROXY_PORT = 4180;
 
 /**
@@ -56,6 +59,24 @@ const OAUTH2_PROXY_PORT = 4180;
  * Kept here so both modules share one literal.
  */
 export const OAUTH2_PROXY_MIDDLEWARE_NAME = 'platform-oauth2-proxy-auth';
+
+/**
+ * Turns the ForwardAuth 401 into a redirect to the IdP.
+ *
+ * oauth2-proxy's `/oauth2/auth` is an auth-CHECK endpoint: it answers 202 or
+ * 401 and never redirects, because it is designed for nginx `auth_request`,
+ * where `error_page 401 = @oauth2_signin` supplies the hop. Traefik ForwardAuth
+ * has no equivalent — it hands the 401 straight to the browser, so an
+ * unauthenticated visitor to a protected panel got a bare 401 page and no way
+ * to sign in (measured on DEV 2026-09-05, both panels, ROADMAP R32).
+ *
+ * A Traefik `errors` middleware placed BEFORE the ForwardAuth catches that 401,
+ * fetches `/oauth2/sign_in?rd=<original url>` from oauth2-proxy — which does
+ * redirect — and `statusRewrites` turns the 401 into the 302 the browser needs.
+ * Verified end to end on DEV: the Location carries the per-host callback and the
+ * original URL survives in `state`, so the visitor lands back where they were.
+ */
+export const OAUTH2_PROXY_SIGNIN_MIDDLEWARE_NAME = 'platform-oauth2-proxy-signin';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -119,11 +140,31 @@ export async function syncProxyIngressAnnotations(
       },
     });
     await applyMiddleware(k8s.custom, middleware);
+
+    // Companion redirect middleware — see OAUTH2_PROXY_SIGNIN_MIDDLEWARE_NAME.
+    // `{url}` is Traefik's placeholder for the request the visitor was denied,
+    // so oauth2-proxy sends them back to it after the IdP round-trip.
+    await applyMiddleware(k8s.custom, buildMiddleware({
+      name: OAUTH2_PROXY_SIGNIN_MIDDLEWARE_NAME,
+      namespace: PLATFORM_NAMESPACE,
+      spec: {
+        errors: {
+          status: ['401'],
+          service: { name: OAUTH2_PROXY_SERVICE_NAME, port: OAUTH2_PROXY_PORT },
+          query: '/oauth2/sign_in?rd={url}',
+          statusRewrites: { '401': 302 },
+        },
+      },
+      labels: {
+        'app.kubernetes.io/component': 'oauth2-proxy-auth',
+      },
+    }));
   } else {
     // No panel is protected — clean up the Middleware CR. Reference
     // removal is the platform-ingress reconciler's job; we just stop
     // shipping the resource.
     await deleteMiddleware(k8s.custom, PLATFORM_NAMESPACE, OAUTH2_PROXY_MIDDLEWARE_NAME);
+    await deleteMiddleware(k8s.custom, PLATFORM_NAMESPACE, OAUTH2_PROXY_SIGNIN_MIDDLEWARE_NAME);
   }
 
   await syncBreakGlassIngressRoute(k8s, settings);

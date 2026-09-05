@@ -12,6 +12,264 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- `scripts/integration-oidc-tenant-login.sh` — drives a real OIDC login through
+  Dex end to end and prints the account the identity resolved to. Three OIDC
+  defects shipped in a row with unit tests behind them and no live sign-in;
+  they were all in the part no unit test reaches — which *account* an identity
+  resolves to.
+
+- **HTTP reconnaissance detection — CrowdSec `http-probing` and
+  `http-crawl-non-statics`.** Scanning was invisible to every security surface:
+  ModSecurity only logs rule *matches*, and a request for `/wp-login.php` or
+  `/.env` is a syntactically perfect GET that trips no CRS rule. On production
+  that was ~4,700 requests/day — 26% of all traffic — leaving no trace
+  anywhere. CRS detects injection and traversal; reconnaissance is a **rate**
+  signal, which needs a different detector.
+
+  This was not a config toggle. CrowdSec shipped **LAPI-only**
+  (`DISABLE_AGENT=true`, community blocklist only), so there were no parsers,
+  no scenarios and no log acquisition to enable. Three pieces were missing:
+
+  - **Traefik access logging**, which was off entirely — also the reason no
+    per-request record existed for *any* request on the platform.
+  - **A log-processing agent.** Added as a DaemonSet, so one agent per node
+    reads one source. The original objection to acquisition ("sidecars on
+    every pod") does not apply: Traefik is itself a DaemonSet.
+  - **The scenario pack + crawler whitelists** (`crowdsecurity/traefik`,
+    `base-http-scenarios`, `whitelists`).
+
+  The access log is written to a **host file, not stdout**: the kubelet wraps
+  stdout in the CRI envelope (`<ts> stdout F <payload>`, verified on a live
+  node), which the `crowdsecurity/traefik` parser cannot read — the agent would
+  have run healthy and parsed nothing. `2026.9.9/0002` adds logrotate, because
+  an unrotated ingress log ends in a full disk.
+
+  **`http-crawl-non-statics` ships SIMULATED** — it raises alerts but issues no
+  ban. The bouncer sits on the shared entrypoint across 18 of 52 routes, so a
+  decision is cluster-wide: one false positive blocks that IP from *every*
+  tenant site, and on a multi-tenant host "many non-static requests from one
+  IP" also describes a legitimate crawler. `http-probing` enforces from the
+  start — requesting `/.env` and `/wp-login.php` in sequence has no benign
+  reading. Promote the other after reviewing a week of alerts.
+
+  Existing clusters converge via host-migration `2026.9.9/0001`; the
+  bootstrap.sh helm-values change reaches fresh installs only.
+
+  **Every sink this adds is bounded.** The access log rotates **hourly**, not
+  daily — `maxsize` is only evaluated when logrotate runs, so a daily cadence
+  makes "200M" mean "200M checked once a day", and the burst that blows past it
+  is exactly the scanning this detects. Worst case is ~400M (200M live + 7
+  compressed generations) against steady state of ~7MB/day. The CrowdSec LAPI
+  had **no retention at all** and sits on a fixed 1GiB PVC; a daily CronJob now
+  prunes alerts older than 30 days and expired decisions. Left unbounded, the
+  first thing to break would have been the IP-reputation gate itself.
+
+### Changed
+- **The fast-burn availability SLO no longer pages on near-idle traffic.** It
+  is a pure ratio, so a quiet window turns one failure into a burn-rate
+  breach — production regularly sees 12-14 request 5-minute windows overnight,
+  where a single 504 reads as 7-8% against a 7.2% threshold. The rule now
+  requires at least 20 requests in the window. This deliberately does **not**
+  suppress the 2026-09-05 incident (8 failures of 27 requests); those were real
+  504s, and what silences them is repairing the route behind them.
+
+### Fixed
+- **Editing the CrowdSec agent's acquisition/simulation config or an nginx
+  error page did not restart the workload that reads it.** Both are parsed once
+  at startup, and with a fixed ConfigMap name the edit reached the cluster and
+  never reached the process. This mattered most for
+  `crowdsec-agent-acquis`: its own comment invites an operator to promote
+  `http-crawl-non_statics` out of simulation by deleting a line, and that edit
+  would have applied to the cluster while the running agent kept banning as
+  before. The three error-page ConfigMaps are each mounted twice — HTML (re-read
+  per request) and nginx config (read at startup) — so changes applied by
+  halves. All four are now generated with a content-hash suffix, so any edit
+  rolls the consumer.
+
+- **OAuth2-Proxy sign-in ended in a 500 at `/oauth2/callback`.** The Dex
+  staticClient took its secret from `secret: $OAUTH2_PROXY_CLIENT_SECRET`, but
+  Dex performs **no** variable expansion in that field — it registered the
+  client with the literal 27-character string, so every token exchange returned
+  `invalid_client "Invalid client credentials."`. Nothing complained: Dex logged
+  the client as loaded and the pod was Ready; the failure only appeared at the
+  end of a full browser sign-in. Now `secretEnv:`, which names an environment
+  variable the Deployment already injects from the same Secret oauth2-proxy
+  reads. Guard: `ci-dex-client-secret-check.sh`.
+
+- **An unauthenticated visitor to an OAuth2-Proxy-protected panel got a bare
+  401 instead of being sent to the identity provider** (ROADMAP R32, both
+  panels). oauth2-proxy's `/oauth2/auth` is an auth-*check* endpoint built for
+  nginx `auth_request`, where `error_page 401` supplies the redirect; Traefik
+  ForwardAuth has no equivalent and handed the 401 to the browser. A Traefik
+  `errors` middleware now precedes the ForwardAuth, fetches
+  `/oauth2/sign_in?rd={url}` and rewrites 401 → 302. The original URL survives
+  in the IdP `state`.
+
+- **Editing Dex's config had no effect until something unrelated restarted the
+  pod** (ROADMAP R33). `disableNameSuffixHash: true` on all three Dex overlays
+  switched off the content hash that makes a ConfigMap change roll the
+  Deployment — so a merged, applied config edit left the running process on its
+  old config indefinitely (measured: a nine-day-old pod serving a stale
+  `redirectURIs` list while `kubectl get cm` showed the new one).
+
+- **The oauth2-proxy two-panel flags never reached any cluster.** A Kustomize
+  strategic-merge patch replaces a list of scalars wholesale, and every
+  environment overlay patches oauth2-proxy's `args` to point it at a
+  cluster-internal Dex — so `--cookie-domain` / `--whitelist-domain`, added to
+  the base manifest, were silently dropped. Flux reported the revision applied
+  and the running Deployment still did not have them. Both overlays now repeat
+  the flags, and `ci-oauth2-proxy-args-check.sh` fails any oauth2-proxy `args`
+  list that is missing one.
+
+- **Account emails were matched case-sensitively, so an identity provider that
+  varied the casing did not find the existing account.** On the OIDC tenant path
+  a miss does not fail the login — it falls through to auto-provisioning and
+  creates an **entirely new tenant** for someone who already had one. Identity
+  emails are now normalised to lowercase on write (`identityEmailSchema`) and
+  every lookup compares case-insensitively, preferring an exact match so a
+  cluster still holding two case variants resolves deterministically. Migration
+  `0103` lowercases existing values where that cannot collide and adds
+  `lower(email)` indexes; rows whose lowercase form is already taken are left
+  alone, because merging two accounts is an operator's decision, not a
+  migration's.
+
+- **The login page auto-forwarded to the IdP when exactly one provider was
+  configured and local auth was disabled.** A 500ms timer redirected before the
+  page could be used, so a visitor who had just signed out was thrown straight
+  back into an IdP that still held its own session — with no way to reach the
+  page and switch accounts — and `?error=` messages from the callback were never
+  readable. Both panels now always render the "Sign in with …" button.
+
+- **OIDC sign-in resolved to the wrong account across panels.** The
+  subject+issuer lookup ran first and, unlike the email lookup after it, was not
+  scoped to the panel being signed into; `users_oidc_unique` was global, so one
+  IdP identity could be linked to only ONE user row platform-wide. A tenant-panel
+  sign-in therefore returned whichever account linked that identity first — an
+  admin account included — and the JWT was minted from it. The lookup is now
+  panel-scoped and the unique index is `(oidc_issuer, oidc_subject, panel)`
+  (migration 0102).
+
+- **Enabling oauth2-proxy for the tenant panel could not work.**
+  `OAUTH2_PROXY_REDIRECT_URL` was hardcoded to the admin host in every
+  environment, and oauth2-proxy takes exactly one `--redirect-url` — so a tenant
+  visitor was sent to the IdP with the admin callback, returned on the admin
+  host, and held a cookie for a host they never asked for. Dex also registered
+  only the admin callback. The URL is now left empty so oauth2-proxy derives it
+  per request from `X-Forwarded-Host`, both callbacks are registered, and
+  `--cookie-domain` / `--whitelist-domain` cover the apex. Host-migration
+  `2026.9.9/0005` clears the pinned value on existing clusters.
+
+- **WAF events were written twice whenever a request landed in the scraper's
+  re-read band.** The scraper reads a 35s log window every 30s, so ~5s of every
+  cycle is deliberately re-read (a smaller window would drop events). Nothing
+  made that idempotent: each insert generated a fresh random UUID and relied on
+  catching SQLSTATE 23505, but `waf_logs` had **no unique constraint at all**,
+  so that catch could never fire. Measured on DEV: 12 requests spread across one
+  cycle produced 76 rows for 60 distinct (uri, rule) pairs. This was not
+  cosmetic — `crowdsec-autoban` triggers on `qualifyingCount < eventThreshold`,
+  a count of ROWS, so a source IP crossed the operator's configured threshold on
+  roughly half the traffic they asked for. Rows now carry ModSecurity's own
+  `<unique_id>:<ruleId>` as `event_key` under a unique index (migration 0101).
+
+- **WAF events whose `[error]` line and JSON audit record straddled a cycle
+  boundary were stored with `hostname='localhost'` and `sourceIp='0.0.0.0'`.**
+  The correlation maps are per-cycle, so a first write could land before the
+  JSON line was ever seen. The conflicting write now repairs those placeholders
+  instead of being dropped.
+
+- **The CrowdSec log-processing agent could not start.** It was placed in the
+  `crowdsec` namespace, which enforces Pod Security `baseline` — that forbids
+  hostPath volumes outright, and the agent needs one to read Traefik's access
+  log. The DaemonSet sat at 0/1 with `violates PodSecurity "baseline:latest"`
+  and **no pod object was ever created**, so there was nothing to inspect
+  logs on. Found by deploying it to DEV; no manifest-level check catches this.
+
+  The namespace's own comment had stated the precondition — *"baseline is
+  enough … (we don't run the log-acquisition modules)"* — and the agent
+  invalidated exactly that. Rather than relax the namespace and take the LAPI's
+  posture down with it, the agent moves to `platform-system`, where the
+  platform's other host-reading DaemonSets already live (`security-probe`
+  mounts 11 host paths there). The LAPI NetworkPolicy gains a
+  namespaceSelector + podSelector pair, because a bare podSelector only matches
+  pods in the policy's own namespace and would have silently matched nothing.
+
+  Traefik could not actually write the access log. The kubelet creates a
+  hostPath directory as `root:root 0755`, Traefik runs as uid 65532 with a
+  read-only rootfs, and it treats the resulting `permission denied` as a
+  WARNING — starting normally, serving traffic and reporting Ready with no
+  access log at all. The agent would then have tailed a file that never
+  appeared and detected nothing, on fresh installs and upgrades alike. A
+  `prepare-access-log` init container now chowns the directory on every node.
+  Host-migration `2026.9.9/0001` was also missing `--accesslog.filepath` and
+  the volume entirely, so it had only ever configured stdout logging.
+
+  The simulation exclusion named `crowdsecurity/http-crawl-non-statics`; the hub
+  scenario is `crowdsecurity/http-crawl-non_statics`, with an **underscore**.
+  `cscli` does not validate exclusion names — it accepted the wrong one silently
+  and `cscli simulation status` echoed it back, so the config read as correct
+  while the scenario ran live and banning. Since a CrowdSec decision applies
+  cluster-wide across every bouncer-protected route, that was one false positive
+  away from blocking a legitimate crawler from every tenant site.
+  `integration-waf-crowdsec.sh` now asserts every excluded name against the
+  scenarios the agent actually loaded, and fails rather than passing quietly when
+  it cannot read either.
+
+  Two further defects kept the agent itself from ever running. Its entrypoint
+  refuses to start without a volume at `/var/lib/crowdsec/data` ("It is
+  mandatory to mount a volume to this directory ... Exiting") and crash-looped;
+  it now gets a 512Mi `emptyDir`, which is right because the agent keeps no
+  local database. And `crowdsecurity/whitelists` is not a hub collection, so the
+  crawler whitelists were never installed — they are postoverflows, and are now
+  requested as such alongside `crowdsecurity/rdns`, which is what verifies a
+  crawler's reverse DNS. Neither failure stopped the agent reporting healthy.
+
+  And the LAPI would have rejected the agent regardless: it knew only
+  `localhost`, because nothing ever registered the agent's machine. The image's
+  entrypoint registers `$AGENT_USERNAME` **LAPI-side**, so the LAPI now carries
+  the same credentials, and the agent presents the machine name verbatim instead
+  of appending its pod name — the two must match exactly. One consequence is
+  that the fleet shares a single machine identity; `cscli machines list` cannot
+  single out a node that stopped parsing (ROADMAP R31).
+
+  Host-migration `2026.9.9/0003` creates the agent's credentials Secret on
+  already-installed clusters. `bootstrap.sh` generates it, but bootstrap runs at
+  *install* time — every existing cluster would otherwise ship the DaemonSet and
+  sit at 0/1 with `FailedMount`.
+
+- **The suspended-tenant and bandwidth-exceeded pages were unreachable, and the
+  resulting 504s were tripping the availability SLO.** `default-deny-ingress`
+  selects every pod in the `platform` namespace, and
+  `allow-ingress-to-platform` omitted `platform-suspended` and
+  `platform-bandwidth-exceeded` — so Traefik could not reach either. Requests
+  hung until Traefik timed out (504) or the client gave up (499). Nothing
+  looked wrong because the readiness probe comes from the kubelet **on the
+  node**, which the policy does not filter; only pod-to-pod traffic was denied.
+  On production the tunnel anchor (whose catch-all backend is
+  `platform-suspended`) served 20 requests in 24h with a **0% success rate**,
+  and those failures were essentially the cluster's entire 5xx budget.
+  `scripts/ci-platform-netpol-reachability-check.py` now fails the build when
+  a routed Service is missing from the allow-list.
+
+### Security
+- **The tunnel anchor had no WAF.** `tunnels.<apex>` is publicly resolvable
+  with a Let's Encrypt certificate — so it is listed in Certificate
+  Transparency and trivially discoverable — yet its IngressRoute carried only
+  a rate limit: no ModSecurity, no CrowdSec, no body limit. A banned IP could
+  still reach it. It now carries the same `crowdsec` → `waf-body-limit` →
+  `modsecurity-crs` chain as `platform-ingress`.
+
+  This cannot regress the tunnel feature: per-worker tunnels live on
+  `<slug>.tunnels.<apex>`, a **different host** with its own IngressRoute, and
+  carry frps WebSocket streams that must never be body-inspected. The anchor is
+  the priority-1 catch-all serving the suspended page to unrouted requests, so
+  no tunnel traffic ever matches it.
+
+  The anchor is `kustomize.toolkit.fluxcd.io/reconcile: disabled` (R16
+  seed-then-disown), so a manifest change reaches **fresh installs only**.
+  Existing clusters converge through the platform-api boot reconcile, which now
+  additively prepends the WAF middlewares.
+
 ## [2026.9.8] - 2026-09-05
 
 ### Added

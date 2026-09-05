@@ -1,9 +1,10 @@
 import { z } from 'zod';
+import { identityEmailSchema } from './shared.js';
 
 // ─── Input Schemas ───────────────────────────────────────────────────────────
 
 export const loginSchema = z.object({
-  email: z.string().email('Invalid email address'),
+  email: identityEmailSchema,
   password: z.string().min(1, 'Password is required'),
 });
 

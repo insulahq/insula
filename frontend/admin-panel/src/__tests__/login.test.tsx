@@ -77,3 +77,49 @@ describe('Login page', () => {
     expect(screen.getByTestId('break-glass-button')).toBeInTheDocument();
   });
 });
+
+// ── No auto-forward to the IdP ──────────────────────────────────────────────
+// Single provider + local auth disabled used to auto-redirect on a 500ms
+// timer. That made the page a dead end: a visitor who had just signed out was
+// thrown straight back into the IdP (which still held its own session) with no
+// way to reach the page and switch accounts, and any ?error= from the callback
+// was invisible because the redirect fired before it could be read.
+describe('admin login — single OIDC provider, local auth disabled', () => {
+  const singleProvider = {
+    data: {
+      localAuthEnabled: false,
+      providers: [{ id: 'p1', displayName: 'Corporate SSO' }],
+    },
+  };
+
+  it('renders the provider button instead of redirecting', async () => {
+    mockApiFetch.mockResolvedValue(singleProvider);
+    const Wrapper = createWrapper();
+    render(<Login />, { wrapper: Wrapper });
+
+    // The button must be present and clickable — not a "Signing in via SSO"
+    // spinner standing in for a redirect already in flight.
+    expect(await screen.findByText(/Corporate SSO/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Signing in via SSO/i)).not.toBeInTheDocument();
+  });
+
+  it('does not navigate to the IdP on its own', async () => {
+    mockApiFetch.mockResolvedValue(singleProvider);
+    // jsdom does not perform navigation on `window.location.href = ...`, so
+    // asserting the URL is unchanged proves nothing. Replace location with a
+    // plain object and read back what the component assigned to it.
+    const original = window.location;
+    const fake = { ...original, href: 'http://localhost/login' } as unknown as Location;
+    Object.defineProperty(window, 'location', { value: fake, writable: true, configurable: true });
+    try {
+      const Wrapper = createWrapper();
+      render(<Login />, { wrapper: Wrapper });
+      await screen.findByText(/Corporate SSO/i);
+      // Well past the old 500ms timer.
+      await new Promise((r) => setTimeout(r, 900));
+      expect(window.location.href).toBe('http://localhost/login');
+    } finally {
+      Object.defineProperty(window, 'location', { value: original, writable: true, configurable: true });
+    }
+  });
+});

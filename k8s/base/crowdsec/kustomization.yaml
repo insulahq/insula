@@ -19,4 +19,9 @@ namespace: crowdsec
 resources:
   - namespace.yaml
   - deployment.yaml
+  # NOTE: the log-processing agent is NOT here. It needs a hostPath, which
+  # this namespace's `baseline` Pod Security level forbids, so it lives in
+  # k8s/base/crowdsec-agent (namespace platform-system).
+  # Bounds the LAPI alert/decision tables — the agent makes them grow.
+  - retention-cronjob.yaml
   - networkpolicy.yaml

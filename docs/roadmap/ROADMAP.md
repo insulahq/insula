@@ -1153,3 +1153,145 @@ reports itself clean. Sequence:
 so a route validating via a Fastify JSON schema reads as unvalidated (`recycle-pod`
 did). Its coverage line is printed with every run for the same reason — a clean
 section (2) means "nothing found in the covered slice", never "no drift".
+
+---
+
+## R30 — CrowdSec scenario buckets dilute across nodes
+
+Scenario evaluation happens **in the agent**, per node: only finished alerts ship to
+the LAPI, never raw events. Where ingress is fronted by round-robin DNS (staging today
+publishes 3 A records), one client's requests spread across nodes and each agent sees
+roughly 1/N of them. A burst that would trip `http-probing` on a single node can fail
+to trip it on any of three.
+
+**It degrades silently.** Every agent stays Running, parsing and healthy; there are
+simply fewer alerts than the traffic warrants. Detection sensitivity drops as the
+cluster grows, with no error anywhere — the worst shape a regression can take.
+
+Unaffected today: production and DEV are single-node. **Staging is 3-node and is
+affected.**
+
+CrowdSec has no distributed-bucket mode, so the options are:
+
+1. **Scale thresholds by node count** via a scenario override (`.../scenarios/*.yaml`
+   with a lower `capacity`). Simple, but it trades false negatives for false positives
+   and needs re-tuning whenever a node is added or removed.
+2. **Pin a client to a node** so its whole burst lands in one bucket. Not possible with
+   round-robin DNS; would need a real L4 load balancer with source-IP affinity
+   (relevant to R24, PROXY-protocol support).
+3. **Accept reduced sensitivity** on multi-node and rely on the community blocklist
+   plus ModSecurity for those clusters.
+
+Pick against **measured** traffic, not assumption: instrument the alert rate on staging
+first and compare it with the same traffic replayed single-node. The hub scenarios'
+`capacity`/`leakspeed` values decide how much dilution actually matters, and guessing
+at them is how you end up with either a silent detector or a page every hour.
+
+Related: **R31**, below — the fleet currently shares ONE machine identity, so
+`cscli machines list` cannot show you which node stopped parsing.
+
+---
+
+## R31 — Per-node identity for the CrowdSec agents
+
+Every agent pod authenticates as the same machine (`insula-agent`).
+
+This is forced by the mechanism, not chosen. The LAPI registers exactly one machine —
+`cscli machines add "$AGENT_USERNAME"` in the crowdsec image's own entrypoint, run
+whenever `AGENT_USERNAME`/`AGENT_PASSWORD` are set — and the agent must present exactly
+that name. A per-pod or per-node name has nothing to register it.
+
+**Cost:** on a multi-node cluster all agents share one row in `cscli machines list` and
+their heartbeats merge, so a single agent that has stopped parsing looks alive. Detection
+still works — the surviving agents keep filling their buckets — but the *silent detector*
+failure mode this platform keeps hitting is exactly the one that becomes invisible here.
+
+**The fix** is LAPI auto-registration: `api.server.auto_registration` with a shared token
+and `allowed_ranges` scoped to the cluster pod CIDR. Agents then self-register under any
+name, and `<prefix>-<node>` becomes possible.
+
+`AutoRegister` exists in the 1.7.8 config struct (`cscli config show --key
+Config.API.Server` reports `AutoRegister: nil`), but the docker entrypoint exposes **no
+env var** for it — the only lever is writing `/etc/crowdsec/config.yaml.local`. That
+directory is an `emptyDir` the entrypoint populates at start, so a mount there risks a
+LAPI that will not boot: strictly worse than merged heartbeats. Verify on DEV before
+adopting, and treat "the LAPI still starts" as the first assertion.
+
+Prerequisite for R30 — you cannot reason about per-node bucket dilution without
+per-node visibility.
+
+---
+
+## R32 — oauth2-proxy 401 dead-end — RESOLVED 2026-09-05
+
+A Traefik `errors` middleware (`platform-oauth2-proxy-signin`) now precedes the
+ForwardAuth on every protected panel route. It catches the 401, fetches
+`/oauth2/sign_in?rd={url}` from oauth2-proxy — which does redirect — and
+`statusRewrites: {"401": 302}` turns it into the 302 the browser needs. The
+original URL survives in the IdP `state`, so the visitor lands back where they
+were.
+
+Order is load-bearing: a Traefik `errors` middleware only sees responses from
+what follows it, so placed *after* the ForwardAuth it never sees the 401. Pinned
+by a unit test that fails when the two are swapped.
+
+---
+
+## R33 — Dex ConfigMap changes never reached the process — RESOLVED 2026-09-05
+
+`generatorOptions.disableNameSuffixHash` was `true` on all three Dex overlays,
+which switched off the very mechanism that makes a config change roll the
+Deployment. Set to `false`: a content edit now mints `dex-config-<hash>`,
+Kustomize rewrites the volume reference, and the pod restarts on its own.
+
+Nothing referenced the ConfigMap by its literal name (checked across `scripts/`,
+`backend/` and `platform/`), so the rename is contained.
+
+**Still open:** other ConfigMap-driven Deployments have not been audited for the
+same gap. Dex was found by accident — a nine-day-old pod serving stale config
+while `kubectl get cm` showed the new value.
+
+---
+
+## R34 — Decide the config-reload mechanism, deliberately
+
+The platform reloads workloads on config change **three different ways**, and
+which one applies depends on who writes the ConfigMap. That ambiguity is how the
+Dex gap survived nine days.
+
+| Mechanism | Used by | Notes |
+|---|---|---|
+| Kustomize content-hash name | dex, crowdsec-agent, 3 error pages, 3 roundcube | atomic; cannot fail silently |
+| Stakater Reloader annotations | stalwart-mail, bulwark, sftp-gateway | already deployed cluster-wide since 2026-08 |
+| Bespoke `insula.host/*-hash` | trusted-proxies, waf-exclusions, feature-css, rclone-shim | 4 backend reconcilers hand-roll sha256 + patch |
+
+Kustomize hashing **cannot** cover the third group: those ConfigMaps are written
+at runtime by the backend, not rendered from git. So "one mechanism" is only
+reachable by moving everything to Reloader.
+
+**Reloader is strictly better for two things.** It does not rename, so it can
+cover `platform-config` and `platform-mail-acme` — which hashing cannot, because
+`dr-restore.sh` and the network smoke test look `platform-config` up by literal
+name. And it would retire the four hand-rolled hash reconcilers.
+
+**Hashing is strictly better for one thing that matters.** The new ConfigMap and
+the new pod template arrive in the same apply, so there is no window where pods
+run old config, and no runtime component whose failure silently stops
+propagation — the exact class of failure this whole area kept producing. For
+`crowdsec-agent-acquis`, which decides whether a scenario bans real users, that
+guarantee is worth keeping.
+
+**Proposed rule — two mechanisms, chosen deliberately rather than three by
+accident:**
+
+1. **Kustomize hash** for git-authored config where atomicity matters (security
+   controls, ingress/WAF config).
+2. **Reloader** for runtime-written ConfigMaps and anything referenced by
+   literal name elsewhere.
+
+Deliverables: an ADR recording the rule; convert the four bespoke reconcilers to
+Reloader annotations; adopt Reloader for `platform-config` /
+`platform-mail-acme`; a CI guard asserting every ConfigMap-consuming workload
+matches one of the two. Note Reloader itself is a silent-failure surface — if it
+is to carry this much, it needs an alert on its own liveness.
+

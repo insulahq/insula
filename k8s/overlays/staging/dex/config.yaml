@@ -63,9 +63,25 @@ staticClients:
       - https://tenant.${DOMAIN}/api/v1/auth/oidc/callback
   - id: hosting-platform-oauth2-proxy
     name: OAuth2 Proxy
-    secret: $OAUTH2_PROXY_CLIENT_SECRET
+    # secretEnv, NOT `secret: $VAR`. Dex expands NOTHING in `secret:` — it
+    # took the literal string "$OAUTH2_PROXY_CLIENT_SECRET" as the client
+    # secret, so every token exchange came back
+    # `invalid_client "Invalid client credentials."` and oauth2-proxy answered
+    # the callback with a 500. Measured on DEV 2026-09-05: Dex held a 27-char
+    # literal while oauth2-proxy sent the real 32-char value.
+    #
+    # `secretEnv` names an environment variable, which is the supported way to
+    # keep a client secret out of a ConfigMap (dex storage.Client.SecretEnv).
+    # The Deployment already injects OAUTH2_PROXY_CLIENT_SECRET from the
+    # oauth2-proxy-config Secret, so both sides now read the same value.
+    secretEnv: OAUTH2_PROXY_CLIENT_SECRET
     redirectURIs:
+      # BOTH panels. oauth2-proxy no longer pins a single --redirect-url; it
+      # derives the callback from the request host, so whichever panel the
+      # visitor actually asked for is the one Dex must accept. Listing only the
+      # admin host is what made `protectTenantViaProxy` unusable.
       - https://admin.${DOMAIN}/oauth2/callback
+      - https://tenant.${DOMAIN}/oauth2/callback
 
 connectors: []
 
