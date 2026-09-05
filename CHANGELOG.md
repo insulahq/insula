@@ -12,33 +12,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-### Fixed
-- **Automatic WAF bans were labelled "manual" in the Banned IPs table.** The
-  auto-ban scheduler bans through the same `addBan` helper an operator does
-  (actor `autoban-scheduler`), so its CrowdSec scenario also starts with
-  `admin-panel:` — and `manualByOperator` was computed as exactly that prefix
-  check. Every automatic ban therefore rendered as though a human had clicked
-  it, and the "Manual bans only" filter included them. Decisions now carry
-  `autoBanned`, computed from the actor segment `admin-panel:autoban-scheduler:`
-  (which comes from the authenticated caller, so an operator cannot spoof it by
-  typing a reason). The table shows an **auto-ban** badge, `manualByOperator`
-  excludes auto-bans, and a new "Auto-bans only" filter joins the manual/static
-  ones. A code comment claiming the UI already detected auto-bans from the
-  reason prefix has been corrected — it never did.
-- **Tenant-panel SSO could never have worked on DEV or staging.** The
-  `hosting-platform-tenant` Dex client registered
-  `https://admin.${DOMAIN}/api/v1/auth/oidc/callback` in both the development
-  and staging overlays. Each panel calls the platform API **same-origin**
-  (`API_URL` is deliberately empty in `k8s/base/{admin,tenant}-deployment.yaml`)
-  and the backend derives the callback from the `Host` header of the
-  `/auth/oidc/authorize` request — so a tenant login's redirect URI is on the
-  *tenant* host. Registering the admin one yields `Unregistered redirect_uri`
-  at Dex with no useful error in the panel. Only the dind overlay had it right,
-  and `docs/operations/DEX_OIDC_STAGING.md` repeated the wrong value (along
-  with the wrong client id and secret). All three are corrected, and
-  `scripts/ci-dex-redirect-uri-check.sh` now asserts every client in every
-  overlay redirects to its own panel host.
-
 ### Added
 - **The OIDC provider form shows the redirect URI to register at the IdP**, and
   switches it when you change Panel Scope. It was previously undiscoverable
@@ -69,7 +42,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   on PATCH: an unknown key there is not a 400 you notice, it is a field that
   silently does not change.
 
-### Added
 - `scripts/ci-frontend-api-types-check.sh` — ratchet on hand-written API
   request types in frontend hooks. There are 45 of them; each is a shape `tsc`
   can never check against the backend, which is what made the bug above
@@ -104,6 +76,32 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   handlers validate against them).
 
 ### Fixed
+- **Automatic WAF bans were labelled "manual" in the Banned IPs table.** The
+  auto-ban scheduler bans through the same `addBan` helper an operator does
+  (actor `autoban-scheduler`), so its CrowdSec scenario also starts with
+  `admin-panel:` — and `manualByOperator` was computed as exactly that prefix
+  check. Every automatic ban therefore rendered as though a human had clicked
+  it, and the "Manual bans only" filter included them. Decisions now carry
+  `autoBanned`, computed from the actor segment `admin-panel:autoban-scheduler:`
+  (which comes from the authenticated caller, so an operator cannot spoof it by
+  typing a reason). The table shows an **auto-ban** badge, `manualByOperator`
+  excludes auto-bans, and a new "Auto-bans only" filter joins the manual/static
+  ones. A code comment claiming the UI already detected auto-bans from the
+  reason prefix has been corrected — it never did.
+- **Tenant-panel SSO could never have worked on DEV or staging.** The
+  `hosting-platform-tenant` Dex client registered
+  `https://admin.${DOMAIN}/api/v1/auth/oidc/callback` in both the development
+  and staging overlays. Each panel calls the platform API **same-origin**
+  (`API_URL` is deliberately empty in `k8s/base/{admin,tenant}-deployment.yaml`)
+  and the backend derives the callback from the `Host` header of the
+  `/auth/oidc/authorize` request — so a tenant login's redirect URI is on the
+  *tenant* host. Registering the admin one yields `Unregistered redirect_uri`
+  at Dex with no useful error in the panel. Only the dind overlay had it right,
+  and `docs/operations/DEX_OIDC_STAGING.md` repeated the wrong value (along
+  with the wrong client id and secret). All three are corrected, and
+  `scripts/ci-dex-redirect-uri-check.sh` now asserts every client in every
+  overlay redirects to its own panel host.
+
 - **WAF auto-ban never banned anything, on any cluster.** The scheduler tracked
   its position in `waf_logs` with a watermark holding a bare row id and fetched
   each batch with `WHERE id > <watermark> ORDER BY id ASC`. `waf_logs.id` is a
