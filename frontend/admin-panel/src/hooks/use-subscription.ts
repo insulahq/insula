@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import type { UpdateSubscriptionRequest } from '@insula/api-contracts';
 import { apiFetch } from '@/lib/api-client';
 import type { SubscriptionResponse } from '@/types/api';
 
@@ -10,17 +11,12 @@ export function useSubscription(tenantId: string | undefined) {
   });
 }
 
-interface UpdateSubscriptionInput {
-  readonly plan_id?: string;
-  readonly subscription_expires_at?: string;
-  readonly status?: string;
-  readonly notes?: string;
-}
+// UpdateSubscriptionRequest comes from @insula/api-contracts (updateSubscriptionSchema) — the shape the backend parses with.
 
 export function useUpdateSubscription(tenantId: string | undefined) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (input: UpdateSubscriptionInput) =>
+    mutationFn: (input: UpdateSubscriptionRequest) =>
       apiFetch<{ data: SubscriptionResponse }>(`/api/v1/tenants/${tenantId}/subscription`, {
         method: 'PATCH',
         body: JSON.stringify(input),

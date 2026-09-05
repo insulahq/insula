@@ -441,6 +441,24 @@ export const storageFolderListResponseSchema = z.object({
 
 export type CatalogRepoResponse = z.infer<typeof catalogRepoResponseSchema>;
 export type CreateCatalogRepoInput = z.infer<typeof createCatalogRepoSchema>;
+
+// ─── Request (wire) types ────────────────────────────────────────────────────
+//
+// `z.infer` is the OUTPUT type: a field declared `.default(x)` is REQUIRED
+// there, because after parsing it always has a value. On the wire it is
+// optional — the client may omit it and the backend fills it in.
+//
+// Typing a request body with the output type therefore marks every defaulted
+// field as mandatory. Doing that surfaced three "missing required field"
+// compile errors in working forms (catalog-repo sync interval, cron http_method,
+// plan features) — all three fields have defaults, and all three forms were
+// correct. A migration that trusted those errors would have changed working
+// code to satisfy a type that was wrong.
+//
+// So: frontends type request bodies with `…Request` (= z.input), and the
+// backend keeps using the `…Input` (= z.infer) type for `parsed.data`.
+export type CreateCatalogRepoRequest = z.input<typeof createCatalogRepoSchema>;
+
 export type UpdateCatalogRepoInput = z.infer<typeof updateCatalogRepoSchema>;
 export type CatalogEntryResponse = z.infer<typeof catalogEntryResponseSchema>;
 export type CatalogEntryListResponse = z.infer<typeof catalogEntryListResponseSchema>;
@@ -448,6 +466,8 @@ export type CatalogEntryVersionResponse = z.infer<typeof catalogEntryVersionResp
 export type DeploymentResponse = z.infer<typeof deploymentResponseSchema>;
 export type DeploymentListResponse = z.infer<typeof deploymentListResponseSchema>;
 export type CreateDeploymentInput = z.infer<typeof createDeploymentSchema>;
+export type CreateDeploymentRequest = z.input<typeof createDeploymentSchema>;
+
 export type UpdateDeploymentInput = z.infer<typeof updateDeploymentSchema>;
 export type UpdateDeploymentResourcesInput = z.infer<typeof updateDeploymentResourcesSchema>;
 export type DeploymentUpgradeResponse = z.infer<typeof deploymentUpgradeResponseSchema>;
