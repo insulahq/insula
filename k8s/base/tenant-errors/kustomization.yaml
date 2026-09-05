@@ -8,3 +8,22 @@ namespace: platform-system
 
 resources:
   - deployment.yaml
+
+# Generated so the name-suffix hash rolls the Deployment on any edit. The
+# ConfigMap is mounted twice — 500.html at /usr/share/nginx/html (re-read per
+# request) and default.conf at /etc/nginx/conf.d (read once at startup), so a
+# fixed name applied changes by halves.
+configMapGenerator:
+  - name: tenant-errors-content
+    files:
+      - content/500.html
+      - content/default.conf
+    options:
+      # The inline ConfigMap carried these; a generator does not inherit them.
+      # Nothing selects on them today, but every other object here is labelled
+      # and a silently unlabelled resource is the kind of drift that later
+      # breaks a label-scoped backup or audit query.
+      labels:
+        app.kubernetes.io/part-of: hosting-platform
+        app.kubernetes.io/component: error-pages
+

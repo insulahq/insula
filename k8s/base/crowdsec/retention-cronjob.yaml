@@ -1,0 +1,87 @@
+# CrowdSec LAPI retention — bound the alert/decision tables.
+#
+# CrowdSec ships with NO retention by default and its DB sits on a fixed 1GiB
+# PVC. That was harmless while the LAPI produced no local alerts (community
+# blocklist only, DISABLE_AGENT=true). The agent DaemonSet changes it:
+# http-probing over ~4,700 scanner requests/day generates alerts continuously,
+# and an unbounded table on a fixed PVC is a scheduled outage — one that takes
+# the whole IP-reputation gate down with it, since the bouncer fails closed
+# against an unreachable LAPI.
+#
+# WHY A CRONJOB AND NOT config.yaml.local
+#
+# CrowdSec supports a `db_config.flush` block via a partial config override,
+# which is the tidier mechanism. It is not used here: `/etc/crowdsec` in the
+# LAPI Deployment is an emptyDir the container's own entrypoint populates at
+# start, so mounting a read-only file inside it risks the entrypoint failing to
+# write — trading an unbounded table for a LAPI that will not boot. `cscli` is
+# a documented, observable interface that cannot break startup, and a failed
+# CronJob run is visible in `kubectl get jobs` rather than silent.
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: crowdsec-retention
+  namespace: crowdsec
+  labels:
+    app.kubernetes.io/name: crowdsec
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: waf
+spec:
+  # Daily. The tables are bounded by age, so the cadence only decides how far
+  # past the limit they drift between runs — not the bound itself.
+  schedule: "27 4 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  startingDeadlineSeconds: 3600
+  jobTemplate:
+    spec:
+      # Do not retry forever against a LAPI that is down; the next day's run
+      # catches up, because the predicate is absolute age, not "since last run".
+      backoffLimit: 2
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: crowdsec-retention
+        spec:
+          restartPolicy: OnFailure
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+          containers:
+            - name: prune
+              image: docker.io/crowdsecurity/crowdsec:v1.7.8
+              imagePullPolicy: IfNotPresent
+              env:
+                - name: LAPI_URL
+                  value: "http://crowdsec.crowdsec.svc.cluster.local:8080"
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -eu
+                  # Alerts older than 30 days. Triage beyond a month is served
+                  # by the platform's own waf_logs + notifications, not by the
+                  # LAPI, so this loses nothing operators actually read.
+                  cscli alerts delete --older-than 720h --url "$LAPI_URL" || {
+                    echo "retention: alert prune failed (LAPI unreachable?) — next run retries" >&2
+                    exit 1
+                  }
+                  # Expired decisions are dead rows: the bouncer only consults
+                  # live ones. CrowdSec expires them logically but does not
+                  # reclaim the storage on its own.
+                  cscli decisions delete --expired --url "$LAPI_URL" 2>/dev/null || true
+                  echo "retention: pruned alerts >30d and expired decisions"
+              resources:
+                requests:
+                  cpu: "20m"
+                  memory: "64Mi"
+                limits:
+                  memory: "192Mi"
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: false
+                capabilities:
+                  drop: ["ALL"]

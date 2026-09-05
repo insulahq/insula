@@ -104,6 +104,10 @@ const OAUTH2_PROXY_PORT = 4180;
  * reference it as `platform-oauth2-proxy-auth@platform` when protect* is on.
  */
 const OAUTH2_PROXY_MIDDLEWARE_NAME = 'platform-oauth2-proxy-auth';
+// Catches the ForwardAuth 401 and redirects to sign-in. Must sit BEFORE the
+// ForwardAuth in the chain: a Traefik `errors` middleware only sees responses
+// produced by what comes AFTER it. Owned by oidc/ingress-proxy-manager.ts.
+const OAUTH2_PROXY_SIGNIN_MIDDLEWARE_NAME = 'platform-oauth2-proxy-signin';
 
 /**
  * WAF Middleware attached to platform-ingress panel routes. Currently
@@ -301,6 +305,10 @@ export function buildIngressRouteBody(
       { name: PLATFORM_CROWDSEC_MIDDLEWARE_NAME, namespace: 'traefik' },
     ];
     if (r.oauth2) {
+      // Order matters and is not cosmetic. The `errors` middleware wraps
+      // everything after it, so it must precede the ForwardAuth to see its 401.
+      // Reversed, the visitor gets a bare 401 page and cannot sign in (R32).
+      panelMiddlewares.push({ name: OAUTH2_PROXY_SIGNIN_MIDDLEWARE_NAME, namespace: 'platform' });
       panelMiddlewares.push({ name: OAUTH2_PROXY_MIDDLEWARE_NAME, namespace: 'platform' });
     }
     // Body cap immediately before the WAF — the plugin has no limit of its own.

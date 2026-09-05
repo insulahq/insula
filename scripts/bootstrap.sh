@@ -5164,8 +5164,111 @@ install_traefik() {
   # shellcheck disable=SC2064
   trap "rm -f '${traefik_values}'" RETURN
   cat > "${traefik_values}" <<'TRAEFIKVALUES'
+# JSON access log to stdout. Required by the CrowdSec agent DaemonSet
+# (k8s/base/crowdsec-agent/daemonset.yaml): the http-probing and
+# http-crawl-non_statics scenarios are RATE detectors over HTTP access logs,
+# so with logging off they can never fire — the agent would run, parse
+# nothing, and report healthy.
+#
+# It is also the only per-request record the platform keeps. Without it there
+# is no source IP, path or user-agent for any request anywhere: tracing who
+# was hitting a broken route on 2026-09-05 was impossible for exactly this
+# reason.
+#
+# `keepingRequestHeaders` is deliberately narrow — User-Agent is needed by the
+# crawler whitelists (verified-crawler rDNS check), Referer is useful for
+# triage. No cookies, no Authorization: this log is read by a DaemonSet and
+# lands in node-local files.
+accessLog:
+  # Written to a host FILE, not stdout, and deliberately so.
+  #
+  # The kubelet wraps every stdout line in the CRI envelope
+  # (`<rfc3339> stdout F <payload>`, verified on a live node 2026-09-05), and
+  # the crowdsecurity/traefik parser expects bare JSON. Tailing /var/log/pods
+  # would hand it prefixed lines, every parse would fail, and the agent would
+  # sit there Ready and detecting nothing — the exact failure this feature is
+  # meant to close.
+  #
+  # Rotation: Traefik reopens the file on SIGUSR1 and does not rotate itself.
+  # 2026.9.9/0002 installs a logrotate fragment for it, because an ingress
+  # access log that fills the node's disk is a worse outage than the scanning
+  # it detects.
+  filePath: /var/log/traefik/access.log
+  format: json
+  # NO statusCodes filter, deliberately. It is tempting to keep only 4xx/5xx
+  # since reconnaissance shows up as 404s — but http-crawl-non_statics counts
+  # NON-STATIC requests, which are overwhelmingly 200s. Filtering to errors
+  # would leave that scenario permanently unable to fire while everything
+  # looked correctly configured.
+  #
+  # Volume is not a concern at this scale: production serves ~18k requests/day,
+  # so a ~400-byte JSON line each is ~7MB/day, rotated by the kubelet.
+  fields:
+    headers:
+      defaultMode: drop
+      names:
+        User-Agent: keep
+        Referer: keep
+# Traefik needs a writable host path for the access log above, and the
+# CrowdSec agent DaemonSet mounts the same path read-only. Both are
+# DaemonSets, so they are always co-located on a node.
+#
+# Without this the accessLog.filePath simply fails to open and Traefik logs a
+# warning at start — the access log would be silently absent and every HTTP
+# scenario would sit idle. The chain is only as good as its weakest mount.
+volumes:
+  - name: traefik-access-log
+    mountPath: /var/log/traefik
+    type: hostPath
 deployment:
   initContainers:
+    # The mount alone is NOT enough, verified on a live node 2026-09-05.
+    #
+    # The kubelet creates a hostPath directory as root:root 0755, and Traefik
+    # runs as uid 65532 with a read-only rootfs. It therefore cannot create
+    # access.log inside it, and — critically — it does not treat that as fatal:
+    #
+    #   WRN Unable to create access logger
+    #       error="...open /var/log/traefik/access.log: permission denied"
+    #
+    # Traefik then starts, serves traffic and reports Ready with no access log
+    # at all, so the CrowdSec agent tails a file that never appears and detects
+    # nothing while looking perfectly healthy. An init container fixes the
+    # ownership per pod, which means every node gets it — including nodes added
+    # to the cluster later, which a host-side mkdir in this script would miss.
+    - name: prepare-access-log
+      image: alpine/k8s:1.33.13
+      imagePullPolicy: IfNotPresent
+      securityContext:
+        # Root is required to chown a root-owned directory, and nothing less
+        # will do. It is scoped as tightly as the job allows: two capabilities,
+        # a read-only rootfs, no privilege escalation, and a single chown.
+        runAsUser: 0
+        runAsNonRoot: false
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+          add: ["CHOWN", "DAC_OVERRIDE"]
+      resources:
+        requests:
+          cpu: 10m
+          memory: 16Mi
+        limits:
+          memory: 64Mi
+      volumeMounts:
+        - name: traefik-access-log
+          mountPath: /var/log/traefik
+      command:
+        - /bin/sh
+        - -c
+        # chown only, never `install -d` or chmod: changing the MODE of a
+        # directory owned by someone else additionally needs CAP_FOWNER, and
+        # the kubelet already creates it 0755, which is what we want.
+        - |
+          set -eu
+          mkdir -p /var/log/traefik
+          chown 65532:65532 /var/log/traefik
     - name: wait-for-plugin-registry
       image: alpine/k8s:1.33.13
       imagePullPolicy: IfNotPresent
@@ -5442,6 +5545,59 @@ ensure_traefik_cni_portmap() {
 # key. Operators rotating the key should delete both Secrets and
 # re-run; the CrowdSec Deployment will re-register the bouncer on
 # next pod start.
+# CrowdSec log-processing AGENT credentials.
+#
+# The agent DaemonSet (k8s/base/crowdsec/agent-daemonset.yaml) registers to the
+# LAPI with a machine username/password. Generated here rather than relying on
+# the container's auto-register so the credential is stable across pod restarts
+# and reproducible on re-run — an agent that re-registers under a new machine
+# name on every restart leaves orphaned machines in the LAPI.
+#
+# The DaemonSet references this Secret by name, so a missing Secret leaves the
+# pod Pending with FailedMount. That is intentional: the alternative is an
+# agent that starts, cannot authenticate, and reports healthy while shipping
+# no alerts.
+generate_crowdsec_agent_credentials() {
+  local secret_name="crowdsec-agent-credentials"
+  local user pass
+  if kctl get secret -n platform-system "${secret_name}" >/dev/null 2>&1; then
+    log "CrowdSec agent credentials already exist, reusing."
+    return 0
+  fi
+  log "Generating CrowdSec agent credentials..."
+  # The password is 32 bytes of urandom, same shape as the bouncer key above.
+  user="insula-agent"
+  pass=$(head -c 32 /dev/urandom | base64 | tr -d '/+=' | head -c 40)
+  # Written to BOTH namespaces, with the same values in each.
+  #
+  #  - platform-system: the agent DaemonSet lives there, because the crowdsec
+  #    namespace enforces Pod Security `baseline`, which forbids the hostPath
+  #    it needs to read Traefik's access log.
+  #  - crowdsec: the LAPI reads the same credentials to CREATE the machine.
+  #    Its entrypoint runs `cscli machines add "$AGENT_USERNAME"` whenever
+  #    AGENT_USERNAME and AGENT_PASSWORD are both set.
+  #
+  # Both are required. Without the LAPI copy the machine is never registered
+  # and the agent authenticates as something that does not exist — while
+  # staying up and reporting healthy. Secrets are namespace-scoped, so there is
+  # no way to share one object across the two.
+  #
+  # The name is a WHOLE machine name, not a prefix: the LAPI registers exactly
+  # one machine and the agent must present exactly that name, so every node's
+  # agent shares this identity. The cost is that `cscli machines list` shows
+  # one row for the whole fleet and heartbeats merge, so a single dead agent on
+  # a multi-node cluster does not stand out. Per-node identity needs LAPI
+  # auto-registration, which the image does not expose — tracked as ROADMAP R31.
+  kctl create namespace platform-system >/dev/null 2>&1 || true
+  kctl create namespace crowdsec >/dev/null 2>&1 || true
+  local ns
+  for ns in platform-system crowdsec; do
+    kctl create secret generic "${secret_name}" -n "${ns}" \
+      --from-literal=username="${user}" \
+      --from-literal=password="${pass}" >/dev/null
+  done
+}
+
 generate_crowdsec_bouncer_key() {
   local secret_name="crowdsec-bouncer-key"
   local key_value
@@ -6613,7 +6769,19 @@ generate_platform_secrets() {
 
   # Hostnames are bare-apex across all environments (no env prefix).
   # See apply_platform_manifests for the matching design choice.
-  local issuer_url redirect_url
+  # redirect_url is deliberately left EMPTY for every environment.
+  #
+  # oauth2-proxy accepts exactly one --redirect-url. Pinning it to the admin
+  # host (what this did until 2026-09-05) meant a visitor to the TENANT panel
+  # was sent to the IdP with `redirect_uri=https://admin.<apex>/oauth2/callback`
+  # and came back on the admin host holding a cookie for a host they were never
+  # trying to reach — so `protectTenantViaProxy` could not work at all.
+  #
+  # Empty, oauth2-proxy derives the callback per request from X-Forwarded-Host
+  # (verified against v7.15.3 on a live cluster: the tenant host yields the
+  # tenant callback, the admin host the admin one). Both callbacks must be
+  # registered on the IdP client — see the dex overlays.
+  local issuer_url redirect_url=""
   if [[ "$PLATFORM_ENV" == "dev" ]]; then
     # HTTPS to match Dex's advertised issuer (development/dex/config.yaml:
     # issuer: https://dex.<domain>/dex) + the registered oauth2-proxy client
@@ -6623,16 +6791,13 @@ generate_platform_secrets() {
     # internal Dex Service (plaintext :5556) so this https issuer never needs
     # a publicly-trusted cert; --cookie-secure=true assumes https.
     issuer_url="https://dex.${PLATFORM_DOMAIN}/dex"
-    redirect_url="https://admin.${PLATFORM_DOMAIN}/oauth2/callback"
   elif [[ "$PLATFORM_ENV" == "staging" ]]; then
     issuer_url="https://dex.${PLATFORM_DOMAIN}/dex"
-    redirect_url="https://admin.${PLATFORM_DOMAIN}/oauth2/callback"
   else
     # Production: operator may configure an external OIDC issuer
     # (e.g. Auth0, Keycloak). Default to the in-cluster Dex if the
     # operator didn't pin one via OIDC_ISSUER_URL env.
     issuer_url="${OIDC_ISSUER_URL:-https://dex.${PLATFORM_DOMAIN}/dex}"
-    redirect_url="https://admin.${PLATFORM_DOMAIN}/oauth2/callback"
   fi
 
   kctl create secret generic oauth2-proxy-config \
@@ -10104,6 +10269,7 @@ main() {
     # crowdsec-bouncer-key) finds the Secret on first start; otherwise
     # the pod stays Pending with FailedMount until the Secret lands.
     generate_crowdsec_bouncer_key
+    generate_crowdsec_agent_credentials
     install_traefik
     install_cert_manager
     install_sealed_secrets

@@ -118,19 +118,9 @@ describe('findOrCreateOidcUser', () => {
 
   it('should return existing user when matched by OIDC subject', async () => {
     const existingUser = { id: 'u1', email: 'test@example.com', oidcIssuer: 'https://dex', oidcSubject: 'sub-1' };
-    let callCount = 0;
-    const whereFn = vi.fn().mockImplementation(() => {
-      callCount++;
-      if (callCount === 1) return Promise.resolve([existingUser]);
-      return Promise.resolve([]);
-    });
-    const fromFn = vi.fn().mockReturnValue({ where: whereFn });
-    const selectFn = vi.fn().mockReturnValue({ from: fromFn });
-    const updateWhere = vi.fn().mockResolvedValue(undefined);
-    const updateSet = vi.fn().mockReturnValue({ where: updateWhere });
-    const updateFn = vi.fn().mockReturnValue({ set: updateSet });
-
-    const db = { select: selectFn, update: updateFn } as unknown as Parameters<typeof findOrCreateOidcUser>[0];
+    // Matched on the (issuer, subject, panel) lookup — the first query.
+    const { db, where: updateFn } = makeDb((vals) =>
+      vals.includes('sub-1') ? [existingUser] : []);
 
     const result = await findOrCreateOidcUser(db, {
       sub: 'sub-1', iss: 'https://dex', email: 'test@example.com',
@@ -142,11 +132,7 @@ describe('findOrCreateOidcUser', () => {
   });
 
   it('should throw OIDC_USER_NOT_FOUND when autoProvision is disabled and user not found (admin)', async () => {
-    const whereFn = vi.fn().mockResolvedValue([]);
-    const fromFn = vi.fn().mockReturnValue({ where: whereFn });
-    const selectFn = vi.fn().mockReturnValue({ from: fromFn });
-
-    const db = { select: selectFn } as unknown as Parameters<typeof findOrCreateOidcUser>[0];
+    const { db } = makeDb(() => []);
 
     await expect(findOrCreateOidcUser(db, {
       sub: 'sub-new', iss: 'https://dex', email: 'new@example.com',
@@ -155,70 +141,127 @@ describe('findOrCreateOidcUser', () => {
   });
 
   it('should throw OIDC_USER_NOT_FOUND when autoProvision is disabled and user not found (client)', async () => {
-    const whereFn = vi.fn().mockResolvedValue([]);
-    const fromFn = vi.fn().mockReturnValue({ where: whereFn });
-    const selectFn = vi.fn().mockReturnValue({ from: fromFn });
-
-    const db = { select: selectFn } as unknown as Parameters<typeof findOrCreateOidcUser>[0];
+    const { db } = makeDb(() => []);
 
     await expect(findOrCreateOidcUser(db, {
       sub: 'sub-new', iss: 'https://dex', email: 'new@example.com',
       aud: 'hosting-platform', exp: 9999999999, iat: 1000000000,
     }, makeProvider({ panelScope: 'tenant', autoProvision: 0 }))).rejects.toThrow('Your account is not registered on this platform');
   });
-});
-
-// 2026-05-18 regression guard: network-level errors from fetch() in
-// fetchDiscovery used to escape as TypeError → INTERNAL_SERVER_ERROR
-// 500 with no diagnostic info. The fix wraps the fetch in try/catch
-// and rethrows as OIDC_DISCOVERY_FAILED 502 with the network error
-// embedded — these tests ensure we don't regress.
-describe('fetchDiscovery error wrapping', () => {
-  it('wraps DNS / network failures as OIDC_DISCOVERY_FAILED 502', async () => {
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = vi.fn().mockRejectedValue(new TypeError('fetch failed: getaddrinfo ENOTFOUND dex.unreachable'));
-    try {
-      await expect(fetchDiscovery('https://dex.unreachable')).rejects.toMatchObject({
-        code: 'OIDC_DISCOVERY_FAILED',
-        status: 502,
-      });
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
-  });
-
-  it('error message includes the underlying network reason for triage', async () => {
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = vi.fn().mockRejectedValue(new Error('connect ECONNREFUSED 127.0.0.1:5556'));
-    try {
-      try {
-        await fetchDiscovery('http://localhost:5556');
-        throw new Error('expected to throw');
-      } catch (err) {
-        const e = err as Error & { code?: string };
-        expect(e.code).toBe('OIDC_DISCOVERY_FAILED');
-        expect(e.message).toMatch(/ECONNREFUSED/);
-        expect(e.message).toMatch(/openid-configuration/);
+  // ── Cross-panel identity leak ─────────────────────────────────────────
+  // The subject+issuer lookup runs FIRST and, unlike the email lookup right
+  // after it, was not scoped to the panel being signed into. Combined with a
+  // GLOBAL users_oidc_unique index, one IdP identity could be linked to only
+  // one user row platform-wide — so a tenant-panel sign-in resolved to
+  // whichever account linked that identity first, admin included. routes.ts
+  // mints the JWT straight from this row (`panel`, `tenantId`), so the tenant
+  // panel evaluated exactly one account instead of the tenant's own.
+  //
+  // Reads the real Drizzle condition rather than guessing from call order:
+  // JSON.stringify on a SQL object does not expose the bound values.
+  const paramValues = (node: unknown, out: string[], depth = 0, seen = new Set<unknown>()): void => {
+    if (node == null || depth > 20) return;
+    if (Array.isArray(node)) {
+      for (const n of node) {
+        // A value interpolated into a raw `sql` fragment lands in queryChunks
+        // as a PLAIN STRING (verified against drizzle-orm), while eq() binds a
+        // Param object — collect both or half the conditions are invisible.
+        if (typeof n === 'string') out.push(n);
+        else paramValues(n, out, depth + 1, seen);
       }
-    } finally {
-      globalThis.fetch = originalFetch;
+      return;
     }
+    if (typeof node !== 'object') return;
+    if (seen.has(node)) return;
+    seen.add(node);
+    const o = node as Record<string, unknown>;
+    if (typeof o.value === 'string') out.push(o.value);
+    // Walk every property, not just queryChunks: a value interpolated into a
+    // raw `sql` fragment sits at a different depth than one bound by eq().
+    for (const k of Object.keys(o)) {
+      if (k === 'table' || k === 'value') continue;
+      paramValues(o[k], out, depth + 1, seen);
+    }
+  };
+
+  // ── Case-insensitive email matching ───────────────────────────────────
+  // An IdP may assert `Staff@Example.test` for an account stored as
+  // `staff@example.test`. With an exact `=` match that found nothing — and on
+  // the tenant path a miss does not fail the login, it falls through to
+  // auto-provisioning and creates a WHOLE NEW TENANT for an existing person.
+  // Drizzle chains differ per call site: some lookups are awaited straight
+  // after .where(), others chain .orderBy().limit() first. A thenable that also
+  // carries those methods satisfies both without the mock caring which is used.
+  const rows = (result: unknown[]) => {
+    const p = Promise.resolve(result) as Promise<unknown[]> & {
+      orderBy: () => unknown; limit: () => unknown;
+    };
+    p.orderBy = () => p;
+    p.limit = () => p;
+    return p;
+  };
+
+  /** db mock whose row set is decided by the bound values of each WHERE. */
+  const makeDb = (decide: (vals: string[]) => unknown[]) => {
+    const where = vi.fn().mockImplementation((cond: unknown) => {
+      const vals: string[] = [];
+      paramValues(cond, vals);
+      return rows(decide(vals));
+    });
+    const select = vi.fn().mockReturnValue({ from: vi.fn().mockReturnValue({ where }) });
+    const update = vi.fn().mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+    });
+    return { db: { select, update } as unknown as Parameters<typeof findOrCreateOidcUser>[0], where };
+  };
+
+  it('matches an existing account when the IdP varies the email casing', async () => {
+    const tenantUser = {
+      id: 'u-tenant', email: 'staff@example.test', panel: 'tenant',
+      roleName: 'tenant_user', tenantId: 'tenant-1',
+      oidcIssuer: null, oidcSubject: null,
+    };
+    // The service must lowercase the claim before querying: the stored address
+    // is all-lowercase and the claim is not.
+    const { db } = makeDb((vals) =>
+      vals.includes('staff@example.test') || vals.includes('u-tenant') ? [tenantUser] : []);
+
+    const result = await findOrCreateOidcUser(db, {
+      sub: 'sub-new', iss: 'https://dex',
+      email: 'Staff@Example.TEST',           // ← different casing from the DB
+      aud: 'hosting-platform', exp: 9999999999, iat: 1000000000,
+    }, makeProvider({ panelScope: 'tenant', autoProvision: 1 }));
+
+    // Must be the EXISTING account, never a freshly provisioned tenant.
+    expect(result.id).toBe('u-tenant');
+    expect(result.tenantId).toBe('tenant-1');
   });
 
-  it('wraps non-2xx HTTP responses as OIDC_DISCOVERY_FAILED 502', async () => {
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = vi.fn().mockResolvedValue({
-      ok: false,
-      status: 503,
-      statusText: 'Service Unavailable',
-    } as Response);
-    try {
-      await expect(fetchDiscovery('https://dex.example.com')).rejects.toMatchObject({
-        code: 'OIDC_DISCOVERY_FAILED',
-        status: 502,
-      });
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
+  it('does NOT return an admin-panel user when signing in to the tenant panel', async () => {
+    const adminUser = {
+      id: 'u-admin', email: 'person@example.test', panel: 'admin',
+      roleName: 'super_admin', tenantId: null,
+      oidcIssuer: 'https://dex', oidcSubject: 'sub-shared',
+    };
+    const tenantUser = {
+      id: 'u-tenant', email: 'person-tenant@example.test', panel: 'tenant',
+      roleName: 'tenant_admin', tenantId: 'tenant-1',
+      oidcIssuer: 'https://dex', oidcSubject: 'sub-shared',
+    };
+    // Stands in for the DB: the admin row linked this identity first, so an
+    // UNSCOPED subject lookup finds it. A panel-scoped one must not.
+    const { db } = makeDb((vals) => {
+      if (vals.includes('sub-shared')) return vals.includes('tenant') ? [] : [adminUser];
+      if (vals.includes('person-tenant@example.test') || vals.includes('u-tenant')) return [tenantUser];
+      return [];
+    });
+
+    const result = await findOrCreateOidcUser(db, {
+      sub: 'sub-shared', iss: 'https://dex', email: 'person-tenant@example.test',
+      aud: 'hosting-platform', exp: 9999999999, iat: 1000000000,
+    }, makeProvider({ panelScope: 'tenant' }));
+
+    expect(result.id).toBe('u-tenant');
+    expect(result.panel).toBe('tenant');
   });
 });

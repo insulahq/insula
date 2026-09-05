@@ -1,0 +1,30 @@
+# CrowdSec log-processing agent — deliberately NOT under k8s/base/crowdsec.
+#
+# That kustomization pins `namespace: crowdsec`, whose Pod Security level is
+# `baseline` and therefore forbids the hostPath this agent needs to read
+# Traefik's access log. See the header of daemonset.yaml.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: platform-system
+
+resources:
+  - daemonset.yaml
+
+configMapGenerator:
+  - name: crowdsec-agent-acquis
+    files:
+      - config/acquis.yaml
+      - config/simulation.yaml
+    options:
+      labels:
+        app.kubernetes.io/name: crowdsec-agent
+        app.kubernetes.io/part-of: hosting-platform
+        app.kubernetes.io/component: waf
+
+# Name-suffix hash left ON (the default) — deliberately, and the opposite of
+# what the Dex overlays did until 2026-09-05. CrowdSec parses acquis.yaml and
+# simulation.yaml once at startup, so with a fixed name an edit would reach the
+# cluster and never reach the process. Nothing references this ConfigMap by
+# literal name (checked across scripts/, backend/ and platform/), so the
+# generated suffix is contained to this kustomization.

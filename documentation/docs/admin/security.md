@@ -33,6 +33,25 @@ or *Read Only*; `super_admin` is the elevated system role.
   glance. **Add** a user (email, full name, password, role), or select and
   **delete** users (single or bulk). Click a user's row to load their
   sessions in the panel below.
+
+!!! info "Email addresses are case-insensitive identities"
+    Addresses are stored lowercased and compared without regard to case, so
+    `Alice@Example.test` and `alice@example.test` are the **same account** — you
+    cannot create both, and either spelling signs in.
+
+    This matters most for SSO: an identity provider is free to vary the casing
+    it asserts between logins, and a case-sensitive comparison would have failed
+    to find the existing account. On a tenant-scoped provider that is worse than
+    a rejected login — it looks like a brand-new person and provisions a second
+    tenant for someone who already had one.
+
+    A cluster upgraded from before this change may still hold two accounts whose
+    addresses differ only in case; those are left exactly as they are, because
+    deciding which one survives is your call, not an upgrade's. Find them with:
+
+    ```sql
+    SELECT lower(email), count(*) FROM users GROUP BY 1 HAVING count(*) > 1;
+    ```
 - **Active Sessions** — the selected user's refresh-token sessions, with
   per-row **revoke** and **bulk revoke**. This is your "stolen laptop"
   button: revoke a compromised user's sessions immediately.
@@ -101,6 +120,42 @@ four tabs:
 - **WAF Exclusions** — per-route CRS rule exclusions and IP allowlists.
 - **WAF Settings** — CrowdSec status and Console enrollment, auto-ban
   calibration, and the **L4 host-firewall enforcement** toggle.
+
+### Scanning does not appear in WAF Events — by design
+
+ModSecurity logs rule **matches**. A request for `/wp-login.php` or `/.env` is a
+perfectly formed GET with no attack payload, so no CRS rule fires and nothing
+reaches WAF Events; Traefik simply answers 404. On a public cluster that is
+routinely a quarter of all traffic, and it is invisible on this page.
+
+CRS detects injection and traversal. Reconnaissance is a **rate** signal, and it
+is caught by two CrowdSec scenarios that read Traefik's access log:
+
+| Scenario | Catches | Behaviour |
+|---|---|---|
+| `http-probing` | one source requesting many non-existent paths | **Bans**, like any other CrowdSec decision |
+| `http-crawl-non-statics` | one source making many non-static requests | **Alerts only** — see below |
+
+Their alerts appear under **Banned IPs** (as `auto-ban`-tagged decisions) and in
+`cscli alerts list` on the CrowdSec pod.
+
+!!! warning "http-crawl-non-statics starts in simulation, and that is deliberate"
+    A CrowdSec decision is enforced wherever the bouncer sits — the shared
+    entrypoint, across tenant sites as well as the panels. One false positive
+    therefore blocks that address from **every** protected site, not just the one
+    it crawled. And on a hosting platform, "many non-static requests from one
+    address" also describes a legitimate search-engine crawler.
+
+    So it raises alerts without banning. Review a week of them under Banned IPs
+    before promoting it; verified crawlers (Google, Bing) are already excluded by
+    reverse-DNS whitelists, but smaller legitimate bots are not.
+
+!!! note "Multi-node clusters detect less"
+    Scenario counting happens per node. Where DNS round-robin spreads one
+    client's requests across several nodes, each node sees only a fraction and a
+    burst may not reach the threshold anywhere. Single-node clusters are
+    unaffected. There is no error when this happens — the alerts are simply
+    fewer than the traffic warrants.
 
 ### Two ways to block an address
 
@@ -172,6 +227,40 @@ strictly authentication is enforced:
   *protect via OAuth2 Proxy* (block unauthenticated access entirely).
 - **Break-glass** — a recovery URL so you can still get in if SSO breaks;
   you can regenerate it (and the cookie secret) on demand.
+
+!!! info "The login page never redirects on its own"
+    Even with local auth disabled and exactly one provider configured, the
+    panel still shows a **Sign in with …** button and waits for the click. It
+    does not forward automatically.
+
+    This is deliberate. Auto-forwarding makes the page unreachable in the
+    situations you most need it: after signing out you would be sent straight
+    back into an identity provider that still holds its own session, with no
+    opportunity to pick a different account, and any error the provider
+    returned would be replaced by another redirect before you could read it.
+
+!!! info "What a protected panel looks like to a visitor"
+    An unauthenticated visitor is redirected straight to your identity provider
+    and returned to the page they originally asked for. They never see a login
+    form from the panel itself — OAuth2 Proxy protection replaces it.
+
+    (Before 2026-09-05 they got a bare `401` page with no way forward. If you
+    tried this and gave up, it works now.)
+
+!!! warning "Protecting the tenant panel with OAuth2 Proxy needs a second redirect URI"
+    OAuth2 Proxy derives its callback from the host being visited, so the
+    tenant panel uses `https://tenant.<your-domain>/oauth2/callback` while the
+    admin panel uses `https://admin.<your-domain>/oauth2/callback`.
+
+    The bundled Dex already registers both. If you point the platform at an
+    **external** identity provider, add the tenant callback to that provider's
+    client yourself before switching *protect via OAuth2 Proxy* on for the
+    tenant panel — otherwise the sign-in fails at the provider with an
+    unregistered-redirect error.
+
+    Note this is a *different* URI from the per-provider OIDC redirect above:
+    OAuth2 Proxy uses `/oauth2/callback`, the panel's own OIDC login uses
+    `/api/v1/auth/oidc/callback`.
 
 !!! tip "Enable a provider before locking the door"
     The "disable local auth" toggles only unlock after a matching
