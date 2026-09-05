@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.9.7] - 2026-09-05
+
 ### Added
 - `ci-mail-image-pin-check.sh` — asserts every `stalwartlabs/stalwart` reference
   in `k8s/` and `backend/src` names the same tag, and that the stalwart-cli
