@@ -13,6 +13,17 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Fixed
+- **OAuth2-Proxy sign-in ended in a 500 at `/oauth2/callback`.** The Dex
+  staticClient took its secret from `secret: $OAUTH2_PROXY_CLIENT_SECRET`, but
+  Dex performs **no** variable expansion in that field — it registered the
+  client with the literal 27-character string, so every token exchange returned
+  `invalid_client "Invalid client credentials."`. Nothing complained: Dex logged
+  the client as loaded and the pod was Ready; the failure only appeared at the
+  end of a full browser sign-in. Now `secretEnv:`, which names an environment
+  variable the Deployment already injects from the same Secret oauth2-proxy
+  reads. Guard: `ci-dex-client-secret-check.sh`.
+
+### Fixed
 - **An unauthenticated visitor to an OAuth2-Proxy-protected panel got a bare
   401 instead of being sent to the identity provider** (ROADMAP R32, both
   panels). oauth2-proxy's `/oauth2/auth` is an auth-*check* endpoint built for
