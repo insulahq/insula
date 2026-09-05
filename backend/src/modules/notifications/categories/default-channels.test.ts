@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { NOTIFICATION_CHANNEL_ID, ALL_NOTIFICATION_CHANNELS } from '@insula/api-contracts';
+import { NOTIFICATION_CHANNEL_ID } from '@insula/api-contracts';
 import { ALL_CATEGORIES } from './seed.js';
 
 /**
@@ -15,8 +15,16 @@ import { ALL_CATEGORIES } from './seed.js';
  * by default the moment it is added — or the suite fails and says where.
  */
 describe('every notification source defaults to every channel', () => {
-  it('ALL_NOTIFICATION_CHANNELS is the full enum, not a subset', () => {
-    expect([...ALL_NOTIFICATION_CHANNELS].sort()).toEqual([...NOTIFICATION_CHANNEL_ID].sort());
+  // seed.ts rebuilds the channel list from a total Record instead of importing
+  // it as a value, because the coverage guard executes that file with node's
+  // type-stripping loader and cannot resolve a runtime package import. That
+  // makes the list a duplicate of the enum, so assert the duplicate agrees.
+  it('the seed file lists every channel in its EVERY_CHANNEL record', () => {
+    const src = readFileSync(new URL('./seed.ts', import.meta.url), 'utf8');
+    const m = /const EVERY_CHANNEL: Record<NotificationChannelId, true> = \{([^}]*)\}/.exec(src);
+    expect(m, 'EVERY_CHANNEL record not found in seed.ts').toBeTruthy();
+    const listed = [...m![1].matchAll(/^\s*([a-z_]+):/gm)].map((x) => x[1]).sort();
+    expect(listed).toEqual([...NOTIFICATION_CHANNEL_ID].sort());
   });
 
   it('no seeded category ships a narrower channel set', () => {

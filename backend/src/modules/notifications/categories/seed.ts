@@ -28,7 +28,21 @@ import type {
 // mailed on every routine renewal. Operator decision 2026-09-04 was that every
 // source starts with every channel; turn it back off for that source in the
 // admin panel if the renewal mail proves noisy.
-import { ALL_NOTIFICATION_CHANNELS } from '@insula/api-contracts';
+//
+// The list is rebuilt here from a total `Record<NotificationChannelId, true>`
+// rather than imported as a value from `@insula/api-contracts`. This file is
+// executed by `ci-notification-template-coverage.sh` through node's
+// type-stripping loader, which resolves no `node_modules` and builds no
+// packages — a runtime (non-`type`) import from the contracts package makes
+// that guard fail to even load the seed. The Record keeps the compile-time
+// guarantee that mattered: add a channel to the enum without adding it here
+// and tsc fails, so the list can never silently fall behind.
+const EVERY_CHANNEL: Record<NotificationChannelId, true> = {
+  in_app: true,
+  email: true,
+  ntfy: true,
+};
+const ALL_NOTIFICATION_CHANNELS = Object.keys(EVERY_CHANNEL) as readonly NotificationChannelId[];
 
 export interface CategoryDefinition {
   readonly id: string;
