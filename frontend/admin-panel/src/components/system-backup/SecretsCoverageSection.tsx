@@ -15,6 +15,7 @@
  */
 
 import { useMemo, useState } from 'react';
+import UserLabel from '@/components/ui/UserLabel';
 import { Info, RefreshCw, Shield, Plus, Trash2 } from 'lucide-react';
 import type { AuditedSecret, SecretCoverageCategory } from '@insula/api-contracts';
 import {
@@ -165,7 +166,7 @@ export default function SecretsCoverageSection() {
                       <tr key={`${e.namespace}/${e.name}`}>
                         <td className="px-3 py-2 font-mono text-xs text-gray-900 dark:text-gray-100">{e.namespace}/{e.name}</td>
                         <td className="px-3 py-2 text-xs text-gray-700 dark:text-gray-200">{e.reason}</td>
-                        <td className="px-3 py-2 font-mono text-xs text-gray-700 dark:text-gray-200">{e.addedBy}</td>
+                        <td className="px-3 py-2 font-mono text-xs text-gray-700 dark:text-gray-200"><UserLabel userId={e.addedBy} /></td>
                         <td className="px-3 py-2 text-xs text-gray-700 dark:text-gray-200">{new Date(e.addedAt).toISOString().slice(0, 19).replace('T', ' ')}</td>
                         <td className="px-3 py-2 text-right">
                           <button

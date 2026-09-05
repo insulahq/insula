@@ -22,6 +22,7 @@
  */
 
 import { useEffect, useMemo, useState } from 'react';
+import UserLabel from '@/components/ui/UserLabel';
 import {
   RefreshCw,
   Network,
@@ -1404,7 +1405,7 @@ function AllowlistCard() {
                   <td className="px-2 py-1 font-mono">{e.value}</td>
                   <td className="px-2 py-1">{e.scope}</td>
                   <td className="px-2 py-1">{e.comment || <span className="text-gray-400">—</span>}</td>
-                  <td className="px-2 py-1 font-mono text-[10px]">{e.addedBy || <span className="text-gray-400">—</span>}</td>
+                  <td className="px-2 py-1 text-[11px]"><UserLabel userId={e.addedBy} /></td>
                   <td className="px-2 py-1 text-right">
                     <button
                       type="button"
@@ -1800,7 +1801,7 @@ export function WafExclusionsTab() {
                   </td>
                   <td className="px-4 py-2 text-xs text-gray-700 dark:text-gray-200 max-w-[280px]">{x.reason}</td>
                   <td className="px-4 py-2 text-[11px] text-gray-500 dark:text-gray-400 whitespace-nowrap">
-                    {x.createdBy}<br />
+                    <UserLabel userId={x.createdBy} /><br />
                     {new Date(x.createdAt).toISOString().replace('T', ' ').slice(0, 16)}
                   </td>
                   <td className="px-4 py-2 text-xs">
