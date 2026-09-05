@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseContributingRules } from './waf-log-scraper.js';
+import { parseContributingRules, parseModSecurityLine } from './waf-log-scraper.js';
 
 /**
  * Shape copied from a real modsec-crs audit record, with every identifier
@@ -84,5 +84,49 @@ describe('parseContributingRules', () => {
     expect(rules[0].ruleId).toBe('942100');
     expect(rules[0].message).toBeTruthy();
     expect(rules[0].severity).toBe('info');
+  });
+});
+
+/**
+ * A real [error] line, redacted. The `[unique_id "..."]` field is what makes a
+ * rule-match identifiable across scrape cycles.
+ */
+const errorLine =
+  '2026/09/05 17:16:11 [error] 42#42: *7 [client 10.0.0.1] ModSecurity: Access denied with code 403 ' +
+  '[id "949110"] [msg "Inbound Anomaly Score Exceeded (Total Score: 15)"] [severity "0"] ' +
+  '[hostname "modsec-crs.traefik.svc.cluster.local"] [unique_id "178862839854.792299"], ' +
+  'client: 10.0.0.1, server: localhost, request: "GET /?q=x HTTP/1.1"';
+
+describe('parseModSecurityLine — dedup identity', () => {
+  // The scraper re-reads ~5s of every cycle on purpose (35s window, 30s
+  // interval). event_key is what makes that re-read idempotent, and it is only
+  // safe to set when the id came from ModSecurity itself.
+  it('marks a line carrying [unique_id ...] as stable and keys it on that id', () => {
+    const event = parseModSecurityLine(errorLine);
+    expect(event).not.toBeNull();
+    expect(event!.hasStableUid).toBe(true);
+    // Same rule match must produce the same key on every re-read.
+    expect(event!.uniqueId).toBe('178862839854.792299:949110');
+    expect(parseModSecurityLine(errorLine)!.uniqueId).toBe(event!.uniqueId);
+  });
+
+  it('marks a line WITHOUT [unique_id ...] as unstable so it never gets a key', () => {
+    const withoutUid = errorLine.replace(' [unique_id "178862839854.792299"],', ',');
+    const event = parseModSecurityLine(withoutUid);
+    expect(event).not.toBeNull();
+    expect(event!.hasStableUid).toBe(false);
+  });
+
+  // This is the trap the flag exists to avoid. The fallback id is built from
+  // Date.now(), so two reads of the SAME line produce different values. Writing
+  // that to event_key would not dedupe anything — it would quietly guarantee a
+  // duplicate row per re-read while looking like a working unique index.
+  it('the fallback id is NOT stable across reads — hence it must not be a key', async () => {
+    const withoutUid = errorLine.replace(' [unique_id "178862839854.792299"],', ',');
+    const first = parseModSecurityLine(withoutUid)!;
+    await new Promise((r) => setTimeout(r, 2));
+    const second = parseModSecurityLine(withoutUid)!;
+    expect(second.uniqueId).not.toBe(first.uniqueId);
+    expect(first.hasStableUid).toBe(false);
   });
 });

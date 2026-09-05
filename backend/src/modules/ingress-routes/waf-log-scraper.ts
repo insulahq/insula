@@ -127,6 +127,14 @@ export function getScraperStatus(): WafScraperStatus {
 
 interface ParsedWafEvent {
   readonly uniqueId: string;
+  /**
+   * True when `uniqueId` came from ModSecurity's own `[unique_id "…"]` and is
+   * therefore STABLE across scrape cycles — which is what makes it usable as a
+   * dedup key. False when it was synthesised from `Date.now()`, which differs
+   * on every re-read of the same log line and must never reach the database as
+   * an identity (it would defeat the unique index instead of enforcing it).
+   */
+  readonly hasStableUid: boolean;
   readonly ruleId: string;
   readonly severity: string;
   readonly message: string;
@@ -192,8 +200,11 @@ export function parseContributingRules(line: string): Array<{ ruleId: string; me
 /**
  * Parse a single ModSecurity log line into a structured event.
  * Returns null if the line isn't a ModSecurity rule match.
+ *
+ * Exported for tests: `hasStableUid` decides whether the row gets a dedup key
+ * at all, so it needs coverage independent of a live cluster.
  */
-function parseModSecurityLine(line: string): ParsedWafEvent | null {
+export function parseModSecurityLine(line: string): ParsedWafEvent | null {
   // Skip non-ModSecurity lines
   if (!line.includes('ModSecurity')) return null;
 
@@ -225,6 +236,7 @@ function parseModSecurityLine(line: string): ParsedWafEvent | null {
 
   return {
     uniqueId: uidMatch ? `${uidMatch[1]}:${ruleId}` : `${Date.now()}:${ruleId}`,
+    hasStableUid: Boolean(uidMatch),
     ruleId,
     severity,
     message,
@@ -359,6 +371,9 @@ export async function scrapeWafLogs(
         for (const r of parseContributingRules(line)) {
           allParsed.push({
             uniqueId: `${jsonUid}:${r.ruleId}`,
+            // jsonUid is ModSecurity's own transaction id, read straight out of
+            // the audit record — stable across re-reads by construction.
+            hasStableUid: true,
             ruleId: r.ruleId,
             severity: r.severity,
             message: r.message,
@@ -441,11 +456,27 @@ export async function scrapeWafLogs(
   const tenantMap = new Map<string, string>();
   for (const d of domainRows) tenantMap.set(d.id, d.tenantId);
 
-  // 4. Insert events (skip duplicates via unique_id hash). Events whose
-  // hostname doesn't match an ingress_routes row get inserted with
-  // route_id=NULL + tenant_id=NULL — admin/api/client/platform hosts that
+  // 4. Insert events. Events whose hostname doesn't match an ingress_routes row
+  // get route_id=NULL + tenant_id=NULL — admin/api/client/platform hosts that
   // are not per-tenant routes. They're visible in the cluster-wide WAF
   // events viewer (/admin/security/waf-events, super_admin only).
+  //
+  // ON CONFLICT (event_key) is what makes the re-read band harmless. The
+  // scraper reads a 35s window every 30s, so ~5s of every cycle is read TWICE
+  // by design (a gap would lose events outright). Until 2026-09-05 the second
+  // read inserted a second row: measured 76 rows for 60 distinct (uri, rule)
+  // pairs — every rule of the requests that happened to land in the band was
+  // duplicated. That is not cosmetic: crowdsec-autoban's trigger is
+  // `qualifyingCount < eventThreshold`, a COUNT OF ROWS, so an IP crossed the
+  // operator's threshold on roughly half the traffic they configured for.
+  //
+  // The DO UPDATE is not a no-op. An event's [error] line and its JSON audit
+  // record can fall on OPPOSITE SIDES of a cycle boundary, and the correlation
+  // maps are per-cycle — so the first write can land before the JSON line was
+  // ever seen, with hostname='localhost' (nginx's server_name) and
+  // sourceIp='0.0.0.0'. When the JSON line arrives on the next cycle the
+  // conflicting write now REPAIRS those placeholders instead of being dropped.
+  // Guarded so a later, worse read can never overwrite good data.
   let adminHostsTouched = false;
   for (const event of events) {
     const route = routeMap.get(event.hostname);
@@ -453,7 +484,7 @@ export async function scrapeWafLogs(
     if (!route) adminHostsTouched = true;
 
     try {
-      await db.insert(wafLogs).values({
+      const values = {
         id: crypto.randomUUID(),
         routeId: route?.id ?? null,
         tenantId,
@@ -464,10 +495,35 @@ export async function scrapeWafLogs(
         requestUri: truncate(event.requestUri, MAX_REQUEST_URI_LEN),
         requestMethod: event.requestMethod,
         sourceIp: event.sourceIp,
-      });
-      inserted++;
+        // NULL for the rare event with no ModSecurity unique_id — see the
+        // column comment. Postgres treats NULLs as distinct under a unique
+        // index, so those rows neither dedupe nor collide.
+        eventKey: event.hasStableUid ? truncate(event.uniqueId, 128) : null,
+      };
+      const written = await db
+        .insert(wafLogs)
+        .values(values)
+        .onConflictDoUpdate({
+          target: wafLogs.eventKey,
+          set: {
+            hostname: sql`CASE WHEN ${wafLogs.hostname} IN ('', 'localhost') AND excluded.hostname NOT IN ('', 'localhost')
+                          THEN excluded.hostname ELSE ${wafLogs.hostname} END`,
+            sourceIp: sql`CASE WHEN coalesce(${wafLogs.sourceIp}, '0.0.0.0') = '0.0.0.0' AND excluded.source_ip <> '0.0.0.0'
+                          THEN excluded.source_ip ELSE ${wafLogs.sourceIp} END`,
+            requestUri: sql`CASE WHEN coalesce(${wafLogs.requestUri}, '/') = '/' AND excluded.request_uri <> '/'
+                            THEN excluded.request_uri ELSE ${wafLogs.requestUri} END`,
+            routeId: sql`coalesce(${wafLogs.routeId}, excluded.route_id)`,
+            tenantId: sql`coalesce(${wafLogs.tenantId}, excluded.tenant_id)`,
+          },
+        })
+        .returning({ id: wafLogs.id });
+      // Count only genuinely NEW rows. An upsert returns the surviving row, so
+      // a re-read of the overlap band comes back with the row's ORIGINAL id,
+      // not the one just generated. Without this the operator-visible
+      // `lastCycleInserted` would count every re-read as fresh activity —
+      // trading a duplicate-row bug for a duplicate-metric one.
+      if (written[0]?.id === values.id) inserted++;
     } catch (err: unknown) {
-      // Duplicate or constraint error — skip
       const pgErr = err as { code?: string };
       if (pgErr.code !== '23505') {
         errors.push(`Insert failed for rule ${event.ruleId}: ${err instanceof Error ? err.message : String(err)}`);
