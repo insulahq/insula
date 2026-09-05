@@ -12,6 +12,13 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- `scripts/integration-oidc-tenant-login.sh` — drives a real OIDC login through
+  Dex end to end and prints the account the identity resolved to. Three OIDC
+  defects shipped in a row with unit tests behind them and no live sign-in;
+  they were all in the part no unit test reaches — which *account* an identity
+  resolves to.
+
 ### Fixed
 - **The oauth2-proxy two-panel flags never reached any cluster.** A Kustomize
   strategic-merge patch replaces a list of scalars wholesale, and every
