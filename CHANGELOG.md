@@ -12,6 +12,31 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **A CrowdSec middleware change no longer takes effect only "eventually".**
+  Traefik instantiates a Yaegi plugin once, at process start, and keeps running
+  with the config it had then — editing the Middleware CR changes the API object
+  and nothing in the running process. Measured on DEV: `updateMaxFailure: -1`
+  was applied at 00:52:06, the LAPI was stopped at 00:54, and an 8h-old Traefik
+  pod still counted to its old threshold and 403'd every site
+  (`updateFailure:4 isCrowdsecStreamHealthy:false`). After a recycle the same
+  outage produced `updateFailure:7 isCrowdsecStreamHealthy:true`, 0/48 probes
+  blocked. `traefik-plugin-guard` now also recycles any Traefik pod that started
+  before the newest plugin-middleware change, one pod per run so a multi-node
+  cluster never loses all ingress at once.
+- **The CrowdSec LAPI no longer crashes on every single start.** `/etc/crowdsec`
+  is an emptyDir, so the image's entrypoint rsyncs its staging copy in on every
+  start — and as uid 1000 it cannot read the root-owned 0600 files
+  (`local_api_credentials.yaml`, `online_api_credentials.yaml`, `hub/.index.json`
+  and every hub collection/parser), exits 23, and takes the container with it.
+  The pod then restarted, found a partial config, and came up: every LAPI pod
+  carried `RESTARTS >= 1` as its normal state, recovery took an extra
+  crash-and-restart, and the hub index never arrived. A root `seed-config` init
+  container now copies and chowns the config before the LAPI starts; verified on
+  DEV as `RESTARTS 0`, Ready in 11s, with all three previously-missing files
+  present.
+
+
 ### Changed
 - **SLO alerts now name WHICH object is affected.** The evaluator has always
   sent a `subject` (e.g. `certificate=wildcard-tls namespace=tenant-acme`), and
