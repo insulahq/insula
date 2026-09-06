@@ -13,6 +13,16 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Changed
+- **Changing the community-blocklist setting now actually rolls the LAPI.** The
+  image reads `DISABLE_ONLINE_API` only at startup. Stakater Reloader is
+  annotated on the Deployment and handles updates, but it does not fire on
+  ConfigMap *creation* — verified on DEV: the ConfigMap was created, the pod
+  stayed 21 minutes old, the variable was empty inside the container and
+  `cscli capi status` still reported the community blocklist as enabled. The
+  platform now rolls the pod itself on create and on toggle, by deleting it so
+  the ReplicaSet recreates it (a restart annotation would be reverted by Flux).
+  Safe because the bouncer runs with `updateMaxFailure: -1` and keeps enforcing
+  its cache while the LAPI restarts.
 - **The community-blocklist default is created by the platform, not Flux.**
   `kustomize.toolkit.fluxcd.io/reconcile: disabled` — the annotation that stops
   Flux reverting an operator's toggle — makes Flux skip the object during apply
