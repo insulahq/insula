@@ -532,6 +532,44 @@ export async function getCommunityBlocklistEnabled(
  * Idempotent, and never overwrites an existing value — an operator who opted in
  * stays opted in across restarts.
  */
+/**
+ * Roll the LAPI so it re-reads the CAPI switch.
+ *
+ * /docker_start.sh reads DISABLE_ONLINE_API ONCE, at startup, so changing the
+ * ConfigMap changes nothing in the running process. Stakater Reloader is
+ * annotated on the Deployment and handles UPDATES, but it did not fire on
+ * CREATION — verified on DEV 2026-09-06: the ConfigMap was created, the pod
+ * stayed 21 minutes old, `DISABLE_ONLINE_API` was empty inside the container
+ * and `cscli capi status` still reported "Pulling community blocklist is
+ * enabled". A security setting must not depend on a third-party controller
+ * noticing, so the platform rolls it itself and Reloader is belt-and-braces.
+ *
+ * DELETES THE POD rather than patching a restart annotation: the Deployment is
+ * Flux-managed, and Flux treats a restart annotation as drift and scales the
+ * new ReplicaSet back to 0. The ReplicaSet recreates the pod from the current
+ * template, which is the sanctioned path on this platform.
+ *
+ * Safe to do: the Traefik bouncer runs with `updateMaxFailure: -1`, so it keeps
+ * enforcing its cached decisions while the LAPI is briefly away instead of
+ * failing closed.
+ *
+ * Best effort — never fail a toggle because the roll did not happen.
+ */
+async function rollCrowdsecLapi(kc: k8s.KubeConfig): Promise<number> {
+  const core = kc.makeApiClient(k8s.CoreV1Api);
+  const pods = await core.listNamespacedPod({
+    namespace: CROWDSEC_NAMESPACE,
+    labelSelector: 'app.kubernetes.io/name=crowdsec',
+  });
+  const names = ((pods as { items?: Array<{ metadata?: { name?: string } }> }).items ?? [])
+    .map((p) => p.metadata?.name)
+    .filter((n): n is string => Boolean(n));
+  for (const name of names) {
+    await core.deleteNamespacedPod({ name, namespace: CROWDSEC_NAMESPACE });
+  }
+  return names.length;
+}
+
 export async function ensureCommunityBlocklistDefault(
   kubeconfigPath: string | undefined,
 ): Promise<'created' | 'present'> {
@@ -558,6 +596,12 @@ export async function ensureCommunityBlocklistDefault(
       data: { [CAPI_DISABLE_KEY]: 'true' },
     },
   });
+  // The pod predates the ConfigMap, so it holds no value for the switch.
+  try {
+    await rollCrowdsecLapi(kc);
+  } catch {
+    // Non-fatal: the setting is stored, and the next restart picks it up.
+  }
   return 'created';
 }
 
@@ -598,6 +642,13 @@ export async function setCommunityBlocklistEnabled(
         data,
       },
     });
+  }
+
+  // Roll explicitly rather than trusting Reloader to notice.
+  try {
+    await rollCrowdsecLapi(kc);
+  } catch {
+    // Non-fatal — the ConfigMap is written either way.
   }
 
   let purged = 0;
