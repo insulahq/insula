@@ -95,3 +95,59 @@ describe('renderTemplateAsync — MJML path', () => {
     expect(() => renderTemplate(t, {})).toThrow(ApiError);
   });
 });
+
+describe('renderTemplate — optional variables under strict mode', () => {
+  // CHARACTERISATION, not regression: these pass before and after the SLO
+  // template change and exist to PIN the behaviour those templates rely on.
+  //
+  // Strict mode throws on a bare `{{x}}` whose key is absent, which is why it
+  // is worth stating explicitly that a block-helper param is exempt — the
+  // admin.slo_alert_* templates guard every optional variable with `{{#if}}`,
+  // and the queue worker re-renders old event_variables rows that predate
+  // those variables and legitimately lack the keys. If a future change to the
+  // compile options (strict / knownHelpersOnly) breaks this exemption, those
+  // retries would start throwing; that regression should surface here rather
+  // than as a dead-lettered alert.
+  const optionalTpl = (body: string) => tpl({
+    id: `opt-${body.length}`,
+    subjectTemplate: 'S',
+    bodyTemplate: body,
+    variablesSchema: [
+      { name: 'userName', type: 'string', required: true },
+      { name: 'affected', type: 'string', required: false },
+    ],
+  });
+
+  it('renders {{#if optional}} when the key is absent from the variables', () => {
+    const r = renderTemplate(optionalTpl('Hi{{#if affected}} — {{affected}}{{/if}}'), { userName: 'A' });
+    expect(r.body).toBe('Hi');
+  });
+
+  it('renders the block when the optional variable IS supplied', () => {
+    const r = renderTemplate(
+      optionalTpl('Hi{{#if affected}} — {{affected}}{{/if}}'),
+      { userName: 'A', affected: 'host=example.test' },
+    );
+    expect(r.body).toBe('Hi — host=example.test');
+  });
+
+  it('treats an explicit null the same as absent', () => {
+    const r = renderTemplate(
+      optionalTpl('Hi{{#if affected}} — {{affected}}{{/if}}'),
+      { userName: 'A', affected: null },
+    );
+    expect(r.body).toBe('Hi');
+  });
+
+  it('still throws for a REQUIRED variable that is absent', () => {
+    expect(() => renderTemplate(optionalTpl('Hi {{userName}}'), {}))
+      .toThrow(/Missing required template variable/);
+  });
+
+  it('applies the same backfill on the async (email) path', async () => {
+    const r = await renderTemplateAsync(
+      optionalTpl('Hi{{#if affected}} — {{affected}}{{/if}}'), { userName: 'A' },
+    );
+    expect(r.body).toBe('Hi');
+  });
+});

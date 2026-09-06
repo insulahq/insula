@@ -25,6 +25,7 @@ import CategoriesTable from '@/features/notifications/CategoriesTable';
 import TemplatesTable from '@/features/notifications/TemplatesTable';
 import DeliveryLogTable from '@/features/notifications/DeliveryLogTable';
 import ProvidersTable from '@/features/notifications/ProvidersTable';
+import ProviderCoverageBanner from '@/features/notifications/ProviderCoverageBanner';
 
 type TabId = 'categories' | 'providers' | 'templates' | 'deliveries';
 
@@ -65,6 +66,8 @@ export default function NotificationsPage() {
           outcomes for audit and triage.
         </p>
       </header>
+
+      <ProviderCoverageBanner />
 
       <div className="flex gap-1 border-b border-gray-200 dark:border-gray-700" role="tablist">
         {TABS.map(({ id, label, hint }) => {
