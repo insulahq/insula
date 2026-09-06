@@ -21,6 +21,9 @@ import * as k8s from '@kubernetes/client-node';
 import { Buffer } from 'node:buffer';
 import { createKubeConfig } from '../container-console/service.js';
 import { cscliExec, findCrowdsecPodName, parseCscliJson } from './cscli-exec.js';
+import { isNotFound } from '../../shared/k8s-errors.js';
+import { MERGE_PATCH } from '../../shared/k8s-patch.js';
+import { CROWDSEC_DECISIONS_MAX_LIMIT } from '@insula/api-contracts';
 import type {
   CrowdsecAddBanRequest,
   CrowdsecBouncer,
@@ -398,7 +401,45 @@ export async function listDecisions(
   // Pass kc so lapiGet can self-heal on 403 (re-register bouncer + retry).
   const raw = await lapiGet<LapiRawDecision[] | null>('/v1/decisions', key, kc);
   const all = (raw ?? []).map(parseLapiDecision).filter((d): d is CrowdsecDecision => d !== null);
-  let filtered = all;
+  return applyDecisionFilters(all, query);
+}
+
+/**
+ * Origins this platform is responsible for.
+ *
+ *   cscli    — written by us: operator manual bans, static bans, the auto-ban
+ *              scheduler (all go through cscliExec).
+ *   crowdsec — decided by OUR OWN log-processing agent. The crowdsec-agent
+ *              DaemonSet tails Traefik's access log, runs the http-probing /
+ *              http-crawl scenarios and posts the alerts to this LAPI; the
+ *              resulting decisions carry origin "crowdsec", not "cscli".
+ *
+ * Treating only `cscli` as platform would file every scenario detection the
+ * agent makes under "community" — hiding them from the Banned IPs table and
+ * showing them in the community viewer under "not this platform's decisions",
+ * which is false. Anything else (CAPI, console blocklists, third-party lists)
+ * is genuinely external.
+ */
+export function isPlatformOrigin(origin: string): boolean {
+  return origin === 'cscli' || origin === 'crowdsec';
+}
+
+/**
+ * Filter + page a decision set. Pure, and separated from the LAPI fetch so the
+ * behaviour that actually bit operators — source scoping and paging — can be
+ * tested without a cluster.
+ */
+export function applyDecisionFilters(
+  all: readonly CrowdsecDecision[],
+  query: CrowdsecListDecisionsQuery,
+): CrowdsecListDecisionsResponse {
+  let filtered = [...all];
+  // Source FIRST, and defaulting to 'platform'. The Banned-IPs table is about
+  // what this platform decided; on production it was returning 16,220 community
+  // decisions alongside 2 platform ones, which buried every operator action.
+  const source = query.source ?? 'platform';
+  if (source === 'platform') filtered = filtered.filter((d) => isPlatformOrigin(d.origin));
+  else if (source === 'community') filtered = filtered.filter((d) => !isPlatformOrigin(d.origin));
   if (query.scope) filtered = filtered.filter((d) => d.scope === query.scope);
   if (query.manualOnly) filtered = filtered.filter((d) => d.manualByOperator);
   if (query.staticOnly) filtered = filtered.filter((d) => d.staticByOperator);
@@ -407,10 +448,122 @@ export async function listDecisions(
     const q = query.q.toLowerCase();
     filtered = filtered.filter((d) => d.value.toLowerCase().includes(q));
   }
+  // totalMatching is captured BEFORE paging: an empty page and an empty result
+  // set look identical otherwise, which is how the static-ban list read as
+  // "nothing was added" while the ban was sitting in the LAPI.
+  const totalMatching = filtered.length;
+  const offset = query.offset ?? 0;
+  // An unspecified limit is only safe for the platform view, which is small by
+  // construction. The community feed held 16,220 rows on production, so default
+  // it to the page cap rather than trusting every present and future caller to
+  // remember to page.
+  const limit = query.limit
+    ?? (source === 'platform' ? totalMatching : CROWDSEC_DECISIONS_MAX_LIMIT);
   return {
-    decisions: filtered,
+    decisions: filtered.slice(offset, offset + limit),
     totalActive: all.length,
+    totalMatching,
+    limit,
+    offset,
   };
+}
+
+// ─── Community blocklist (CAPI) opt-in ──────────────────────────────────
+
+/**
+ * ConfigMap carrying the CAPI switch. Flux creates it once and then leaves it
+ * alone (kustomize.toolkit.fluxcd.io/reconcile: disabled), so an operator
+ * toggle is not reverted on the next reconcile — the same pattern the webmail
+ * feature-flag ConfigMap uses.
+ */
+export const CAPI_CONFIGMAP_NAME = 'crowdsec-capi-config';
+export const CAPI_DISABLE_KEY = 'DISABLE_ONLINE_API';
+
+/**
+ * The image's /docker_start.sh honours DISABLE_ONLINE_API by running
+ * `conf_set 'del(.api.server.online_client)'` — verified in the running image
+ * on 2026-09-06. That removes registration, signal sharing AND the community
+ * blocklist pull in one switch, which is exactly the scope of this setting.
+ */
+export async function getCommunityBlocklistEnabled(
+  kubeconfigPath: string | undefined,
+): Promise<boolean> {
+  const kc = createKubeConfig(kubeconfigPath);
+  const core = kc.makeApiClient(k8s.CoreV1Api);
+  try {
+    const cm = await core.readNamespacedConfigMap({ name: CAPI_CONFIGMAP_NAME, namespace: CROWDSEC_NAMESPACE });
+    const raw = (cm as { data?: Record<string, string> }).data?.[CAPI_DISABLE_KEY];
+    // Enabled == NOT disabled. A missing ConfigMap means the cluster predates
+    // this setting, where CAPI was unconditionally on — report the truth
+    // rather than the new default, or the panel would claim it is off while
+    // 16k community bans are being enforced.
+    return !(raw === 'true');
+  } catch (err) {
+    if (isNotFound(err)) return true;
+    throw err;
+  }
+}
+
+/**
+ * Flip the switch and roll the LAPI onto it.
+ *
+ * Disabling also PURGES the community decisions already held. Without that the
+ * operator turns it off, sees tens of thousands of bans still enforced for
+ * their remaining TTL, and reasonably concludes the toggle does nothing.
+ */
+export async function setCommunityBlocklistEnabled(
+  kubeconfigPath: string | undefined,
+  enabled: boolean,
+): Promise<{ purged: number }> {
+  const kc = createKubeConfig(kubeconfigPath);
+  const core = kc.makeApiClient(k8s.CoreV1Api);
+  const data = { [CAPI_DISABLE_KEY]: enabled ? 'false' : 'true' };
+  try {
+    // MERGE PATCH, never replace. A full PUT would carry only the fields in
+    // the body and therefore DELETE `kustomize.toolkit.fluxcd.io/reconcile:
+    // disabled` — the one annotation that stops Flux reverting this very
+    // setting. The toggle would then un-apply itself on the next reconcile and
+    // roll the fail-closed LAPI pod a second time for nothing.
+    await core.patchNamespacedConfigMap(
+      { name: CAPI_CONFIGMAP_NAME, namespace: CROWDSEC_NAMESPACE, body: { data } } as unknown as
+        Parameters<typeof core.patchNamespacedConfigMap>[0],
+      MERGE_PATCH,
+    );
+  } catch (err) {
+    if (!isNotFound(err)) throw err;
+    // Absent on clusters that predate this setting: create it complete,
+    // annotation included, so it is immediately operator-owned.
+    await core.createNamespacedConfigMap({
+      namespace: CROWDSEC_NAMESPACE,
+      body: {
+        metadata: {
+          name: CAPI_CONFIGMAP_NAME,
+          namespace: CROWDSEC_NAMESPACE,
+          labels: {
+            'app.kubernetes.io/part-of': 'hosting-platform',
+            'app.kubernetes.io/component': 'waf',
+          },
+          annotations: { 'kustomize.toolkit.fluxcd.io/reconcile': 'disabled' },
+        },
+        data,
+      },
+    });
+  }
+
+  let purged = 0;
+  if (!enabled) {
+    try {
+      const podName = await findCrowdsecPodName(kc);
+      const { stdout, stderr } = await cscliExec(kc, podName, ['decisions', 'delete', '--origin', 'CAPI']);
+      const m = /(\d+)\s+decision\(s\)\s+deleted/.exec(stdout + stderr);
+      purged = m ? Number(m[1]) : 0;
+    } catch {
+      // Best effort: the pod is about to be rolled by Reloader anyway, and the
+      // decisions stop being refreshed either way. Never fail the toggle on it.
+      purged = 0;
+    }
+  }
+  return { purged };
 }
 
 export async function addBan(
@@ -751,6 +904,8 @@ export async function getStatus(kubeconfigPath: string | undefined): Promise<Cro
 export const __test = {
   parseLapiDecision,
   parseDurationToAbsolute,
+  applyDecisionFilters,
+  isPlatformOrigin,
   MANUAL_BAN_REASON_PREFIX,
   AUTO_BAN_SCENARIO_PREFIX,
   // Self-heal entrypoints exposed for unit tests. lapiGet is the hot

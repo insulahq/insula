@@ -167,3 +167,75 @@ describe('parseLapiDecision — auto-ban classification', () => {
     expect(AUTO_BAN_SCENARIO_PREFIX.startsWith(MANUAL_BAN_REASON_PREFIX)).toBe(true);
   });
 });
+
+describe('applyDecisionFilters — source scoping and paging', () => {
+  const { applyDecisionFilters } = __test;
+
+  const dec = (over: Partial<Record<string, unknown>> = {}) => ({
+    id: 1, origin: 'CAPI', type: 'ban', scope: 'Ip', value: '1.2.3.4',
+    scenario: 'crowdsecurity/http-scan', duration: '4h', expiresAt: null,
+    manualByOperator: false, staticByOperator: false, autoBanned: false, simulated: false,
+    ...over,
+  } as never);
+
+  // Production 2026-09-06: 16,220 CAPI decisions against 2 platform ones. A
+  // combined table buried every operator action and made the static-ban list
+  // read as empty when the ban was present in the LAPI.
+  const community = Array.from({ length: 50 }, (_, i) => dec({ id: 100 + i, value: `10.0.0.${i}` }));
+  const platform = [
+    dec({ id: 1, origin: 'cscli', value: '203.0.113.7', scenario: 'admin-panel:alice:manual ban', manualByOperator: true }),
+    dec({ id: 2, origin: 'cscli', value: '203.0.113.8', scenario: 'admin-panel-static:alice:WAF rule 930130', staticByOperator: true }),
+  ];
+  const all = [...community, ...platform];
+
+  it('defaults to PLATFORM decisions only', () => {
+    const r = applyDecisionFilters(all, {});
+    expect(r.decisions).toHaveLength(2);
+    expect(r.decisions.every((d) => d.origin === 'cscli')).toBe(true);
+    // totalActive still reports everything the LAPI holds.
+    expect(r.totalActive).toBe(52);
+    expect(r.totalMatching).toBe(2);
+  });
+
+  it('returns ONLY community decisions when asked', () => {
+    const r = applyDecisionFilters(all, { source: 'community' });
+    expect(r.decisions).toHaveLength(50);
+    expect(r.decisions.every((d) => d.origin !== 'cscli')).toBe(true);
+  });
+
+  it('can still return both', () => {
+    expect(applyDecisionFilters(all, { source: 'all' }).decisions).toHaveLength(52);
+  });
+
+  it('finds a static ban that used to be buried under the community feed', () => {
+    const r = applyDecisionFilters(all, { staticOnly: true });
+    expect(r.decisions).toHaveLength(1);
+    expect(r.decisions[0].value).toBe('203.0.113.8');
+  });
+
+  it('pages the community list and reports the pre-paging total', () => {
+    const p0 = applyDecisionFilters(all, { source: 'community', limit: 20, offset: 0 });
+    expect(p0.decisions).toHaveLength(20);
+    expect(p0.totalMatching).toBe(50);
+    expect(p0.limit).toBe(20);
+    expect(p0.offset).toBe(0);
+
+    const p2 = applyDecisionFilters(all, { source: 'community', limit: 20, offset: 40 });
+    expect(p2.decisions).toHaveLength(10);
+    // Without totalMatching the UI could not tell this short page from "no
+    // matches" — the exact ambiguity that made the static list look broken.
+    expect(p2.totalMatching).toBe(50);
+  });
+
+  it('applies the search within the selected source', () => {
+    const r = applyDecisionFilters(all, { source: 'platform', q: '203.0.113.8' });
+    expect(r.decisions).toHaveLength(1);
+    expect(r.decisions[0].staticByOperator).toBe(true);
+  });
+
+  it('does not leak community rows into a platform search', () => {
+    const r = applyDecisionFilters(all, { source: 'platform', q: '10.0.0.' });
+    expect(r.decisions).toHaveLength(0);
+    expect(r.totalMatching).toBe(0);
+  });
+});

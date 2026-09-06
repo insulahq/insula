@@ -35,6 +35,7 @@ const ROWS = [
   {
     id: 'ffd20474-3244-4654-b048-59ceb80ae147',
     created_at: new Date('2026-09-02T18:28:01Z'),
+    created_at_text: '2026-09-02 18:28:01.000000',
     source_ip: '198.51.100.9',
     hostname: 'admin.example.test',
     rule_id: '930120',
@@ -45,6 +46,7 @@ const ROWS = [
   {
     id: '00000000-0000-4000-8000-000000000001',
     created_at: new Date('2026-09-05T05:51:59Z'),
+    created_at_text: '2026-09-05 05:51:59.123456',
     source_ip: '44.220.172.166',
     hostname: 'admin.example.test',
     rule_id: '934100',
@@ -101,8 +103,25 @@ function makeDeps(rows: typeof ROWS) {
 
 describe('watermark serialisation', () => {
   it('round-trips a (createdAt, id) cursor', () => {
-    const c = { createdAt: new Date('2026-09-05T05:51:59.000Z'), id: 'abc-123' };
+    const c = { createdAt: '2026-09-05 05:51:59.000000', id: 'abc-123' };
     expect(parseWatermark(formatWatermark(c))).toEqual(c);
+  });
+
+  it('PRESERVES MICROSECONDS through the round trip', () => {
+    // The production bug: the cursor went through a JS Date, which has only
+    // millisecond resolution, so `.188583` was stored as `.188`. The row's own
+    // timestamp then compared GREATER than its own watermark and the boundary
+    // row was re-read on every tick, forever — the watermark never advanced.
+    const c = { createdAt: '2026-09-06 19:18:07.188583', id: '16e16d2f-19c2-45d0-8179-332fc4664df5' };
+    const round = parseWatermark(formatWatermark(c));
+    expect(round?.createdAt).toBe('2026-09-06 19:18:07.188583');
+    expect(round?.createdAt).not.toBe('2026-09-06 19:18:07.188');
+  });
+
+  it('still reads a legacy ISO watermark written by the previous version', () => {
+    const round = parseWatermark('2026-09-06T19:18:07.188Z|16e16d2f');
+    expect(round?.id).toBe('16e16d2f');
+    expect(round?.createdAt).toBe('2026-09-06T19:18:07.188Z');
   });
 
   it('treats a legacy bare-UUID watermark as NO cursor', () => {
@@ -151,8 +170,11 @@ describe('batch query', () => {
     expect(cursor).toBeTruthy();
     // Rows arrive ordered by created_at, so the last is the 2026-09-05
     // event — even though its UUID sorts below the other row's.
+    // The cursor carries the EXACT Postgres text form, microseconds intact —
+    // not a JS Date, whose millisecond resolution truncated `.188583` to
+    // `.188` and made the boundary row re-select itself forever.
     expect(parseWatermark(cursor)).toEqual({
-      createdAt: new Date('2026-09-05T05:51:59Z'),
+      createdAt: '2026-09-05 05:51:59.123456',
       id: '00000000-0000-4000-8000-000000000001',
     });
   });

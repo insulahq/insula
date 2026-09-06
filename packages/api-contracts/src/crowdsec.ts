@@ -56,6 +56,23 @@ export const crowdsecDecisionSchema = z.object({
 });
 export type CrowdsecDecision = z.infer<typeof crowdsecDecisionSchema>;
 
+/**
+ * WHERE a decision came from, as an operator thinks about it.
+ *
+ *   platform  — this platform decided it: an operator ban, a static ban, or
+ *               the auto-ban scheduler. origin=cscli.
+ *   community — CrowdSec's shared threat feed (CAPI). origin=CAPI.
+ *
+ * These are listed on separate surfaces on purpose. Production carried 16,220
+ * community decisions against 2 platform ones, so a single combined table
+ * buried every operator action and made the static-ban list look empty.
+ */
+export const crowdsecDecisionSourceSchema = z.enum(['platform', 'community', 'all']);
+export type CrowdsecDecisionSource = z.infer<typeof crowdsecDecisionSourceSchema>;
+
+/** Page size cap for the community list — it can hold >100k entries. */
+export const CROWDSEC_DECISIONS_MAX_LIMIT = 200;
+
 export const crowdsecListDecisionsQuerySchema = z.object({
   /** Substring match on `value` (IP/CIDR/country) for filtering. */
   q: z.string().max(64).regex(/^[a-zA-Z0-9.:\-_/]*$/, 'invalid characters in filter').optional(),
@@ -67,6 +84,12 @@ export const crowdsecListDecisionsQuerySchema = z.object({
   staticOnly: z.coerce.boolean().optional(),
   /** Filter to only bans added by the auto-ban scheduler. */
   autoOnly: z.coerce.boolean().optional(),
+  /** Platform decisions, community (CAPI) decisions, or both. Defaults to platform. */
+  source: crowdsecDecisionSourceSchema.optional(),
+  /** Page size. Required for the community list, which is unbounded in practice. */
+  limit: z.coerce.number().int().min(1).max(CROWDSEC_DECISIONS_MAX_LIMIT).optional(),
+  /** Rows to skip, for paging through the community list. */
+  offset: z.coerce.number().int().min(0).optional(),
 });
 export type CrowdsecListDecisionsQuery = z.infer<typeof crowdsecListDecisionsQuerySchema>;
 
@@ -74,8 +97,49 @@ export const crowdsecListDecisionsResponseSchema = z.object({
   decisions: z.array(crowdsecDecisionSchema),
   /** Total before any filter — useful for the "X of Y" UI label. */
   totalActive: z.number().int().min(0),
+  /**
+   * Rows matching the filters BEFORE paging. Without this the UI cannot tell
+   * "no matches" from "you are past the last page" — and an empty page is
+   * exactly how the static-ban list appeared to be broken.
+   */
+  totalMatching: z.number().int().min(0),
+  /** Echoes the applied paging so the UI never guesses what it is showing. */
+  limit: z.number().int().min(0),
+  offset: z.number().int().min(0),
 });
 export type CrowdsecListDecisionsResponse = z.infer<typeof crowdsecListDecisionsResponseSchema>;
+
+// ─── Community blocklist (CAPI) opt-in ──────────────────────────────────
+
+export const crowdsecCommunityBlocklistSettingSchema = z.object({
+  /**
+   * Whether CrowdSec pulls the community blocklist (CAPI).
+   *
+   * OFF by default and opt-in. It bans tens of thousands of IPs decided
+   * elsewhere, on evidence the operator cannot inspect, and it caught at least
+   * one legitimate scanner (MXToolbox) on production. Enabling it is a
+   * deliberate choice to trade that risk for the coverage.
+   */
+  enabled: z.boolean(),
+});
+export type CrowdsecCommunityBlocklistSetting = z.infer<typeof crowdsecCommunityBlocklistSettingSchema>;
+
+export const crowdsecCommunityBlocklistStatusSchema = z.object({
+  enabled: z.boolean(),
+  /** Community decisions currently held by the LAPI. */
+  decisionCount: z.number().int().min(0),
+  /** True while the setting is applied but the pod has not rolled onto it yet. */
+  pendingRestart: z.boolean(),
+});
+export type CrowdsecCommunityBlocklistStatus = z.infer<typeof crowdsecCommunityBlocklistStatusSchema>;
+
+export const crowdsecSetCommunityBlocklistResponseSchema = z.object({
+  enabled: z.boolean(),
+  /** Community decisions removed as part of disabling. 0 when enabling. */
+  purged: z.number().int().min(0),
+});
+export type CrowdsecSetCommunityBlocklistResponse =
+  z.infer<typeof crowdsecSetCommunityBlocklistResponseSchema>;
 
 // ─── Add manual ban ─────────────────────────────────────────────────────
 
