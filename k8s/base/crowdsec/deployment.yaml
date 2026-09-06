@@ -34,6 +34,18 @@ kind: Deployment
 metadata:
   name: crowdsec
   namespace: crowdsec
+  annotations:
+    # Roll when the agent credentials appear or change. The Secret is created
+    # out-of-band by host-migration 2026.9.9/0003, so it can land minutes or
+    # hours after this Deployment; the env refs above are `optional: true` so
+    # the LAPI starts without it, and this rolls the pod once it exists so the
+    # agent actually gets registered. Without this the LAPI would start, serve
+    # decisions, and never register the agent — healthy-looking and silently
+    # not doing the job.
+    #
+    # Reloader is deployed cluster-wide (kube-system) on dev, staging and
+    # production; verified on production 2026-09-05.
+    secret.reloader.stakater.com/reload: crowdsec-agent-credentials
   labels:
     app.kubernetes.io/name: crowdsec
     app.kubernetes.io/part-of: hosting-platform
@@ -82,16 +94,39 @@ spec:
             # agent stays up and reports healthy; its alerts simply never
             # arrive. Same Secret, same values as the agent — the names must
             # match EXACTLY.
+            #
+            # BOTH ARE `optional: true`, AND THAT IS LOAD-BEARING.
+            #
+            # This Secret is created by host-migration 2026.9.9/0003, which runs
+            # on the platform-ops converger's own timer — NOT in step with the
+            # Flux apply that ships this Deployment. Without `optional` the
+            # kubelet refuses to create the container
+            # (`CreateContainerConfigError: secret ... not found`), the LAPI
+            # never starts, and the Traefik CrowdSec bouncer FAILS CLOSED —
+            # every request to every hosted site returns 403.
+            #
+            # That is exactly what happened on production upgrading to 2026.9.9
+            # (2026-09-05): total ingress outage caused by a missing credential
+            # for a feature that only pre-registers an agent. Nothing on the
+            # request path needs these values.
+            #
+            # Unset, the image's entrypoint simply skips `cscli machines add`
+            # (it is guarded by `[ "$AGENT_USERNAME" != "" ]`). The LAPI serves
+            # decisions exactly as before; only agent registration waits. The
+            # reloader annotation on this Deployment rolls it once the Secret
+            # appears, so the wait is self-healing.
             - name: AGENT_USERNAME
               valueFrom:
                 secretKeyRef:
                   name: crowdsec-agent-credentials
                   key: username
+                  optional: true
             - name: AGENT_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: crowdsec-agent-credentials
                   key: password
+                  optional: true
             - name: BOUNCER_KEY_traefik
               # The bouncer key is mounted from a Secret + referenced
               # by env so CrowdSec auto-registers the bouncer on

@@ -95,6 +95,17 @@ kind: DaemonSet
 metadata:
   name: crowdsec-agent
   namespace: platform-system
+  annotations:
+    # Roll when the credentials appear or change. Unlike the LAPI, the refs
+    # below are deliberately NOT `optional`: this agent cannot do anything
+    # without credentials, and it sits on no request path — so failing visibly
+    # at CreateContainerConfigError is honest, where the same failure on the
+    # LAPI takes all ingress down with a fail-closed bouncer.
+    #
+    # The Secret is created out-of-band by host-migration 2026.9.9/0003, so it
+    # can land after this DaemonSet; this annotation is what makes the wait
+    # self-healing instead of permanent.
+    secret.reloader.stakater.com/reload: crowdsec-agent-credentials
   labels:
     app.kubernetes.io/name: crowdsec-agent
     app.kubernetes.io/part-of: hosting-platform
