@@ -250,14 +250,27 @@ describe('ensureCommunityBlocklistDefault', () => {
   // Flux SKIP the object entirely. Verified on DEV 2026-09-06 — the inventory
   // listed the ConfigMap while `kubectl get cm` returned NotFound, so the
   // "off by default" default never landed. The backend therefore creates it.
+  const podList = { items: [{ metadata: { name: 'crowdsec-abc' } }] };
+
   it('creates the ConfigMap with the community blocklist OFF when absent', async () => {
     const notFound = Object.assign(new Error('not found'), { code: 404 });
     const create = vi.fn().mockResolvedValue({});
-    const core = { readNamespacedConfigMap: vi.fn().mockRejectedValue(notFound), createNamespacedConfigMap: create };
+    const core = {
+      readNamespacedConfigMap: vi.fn().mockRejectedValue(notFound),
+      createNamespacedConfigMap: create,
+      listNamespacedPod: vi.fn().mockResolvedValue(podList),
+      deleteNamespacedPod: vi.fn().mockResolvedValue({}),
+    };
     vi.spyOn(k8sModule, 'createKubeConfig').mockReturnValue({ makeApiClient: () => core } as never);
 
     const result = await ensureCommunityBlocklistDefault(undefined);
     expect(result).toBe('created');
+    // The LAPI reads DISABLE_ONLINE_API only at startup, and the pod predates
+    // the ConfigMap — without a roll the setting is stored and NOT running.
+    // Reloader did not fire on creation when this was verified on DEV.
+    expect(core.deleteNamespacedPod).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'crowdsec-abc' }),
+    );
     const body = create.mock.calls[0][0].body;
     expect(body.data.DISABLE_ONLINE_API).toBe('true');
     // The annotation must be on the CREATED object too, or Flux would start
@@ -270,10 +283,14 @@ describe('ensureCommunityBlocklistDefault', () => {
     const core = {
       readNamespacedConfigMap: vi.fn().mockResolvedValue({ data: { DISABLE_ONLINE_API: 'false' } }),
       createNamespacedConfigMap: create,
+      listNamespacedPod: vi.fn().mockResolvedValue(podList),
+      deleteNamespacedPod: vi.fn().mockResolvedValue({}),
     };
     vi.spyOn(k8sModule, 'createKubeConfig').mockReturnValue({ makeApiClient: () => core } as never);
 
     expect(await ensureCommunityBlocklistDefault(undefined)).toBe('present');
     expect(create).not.toHaveBeenCalled();
+    // No change, so no roll: booting must not bounce the LAPI every time.
+    expect(core.deleteNamespacedPod).not.toHaveBeenCalled();
   });
 });
