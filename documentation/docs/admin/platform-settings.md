@@ -188,6 +188,24 @@ itself is described in [Tenants](tenants.md).
   part of the template.
 - **Delivery Log** — per-channel delivery outcomes for audit and triage.
 
+!!! warning "\"One channel cannot deliver\""
+    A banner at the top of the page names any channel that Sources route to
+    but which has **no enabled default provider**. Those notifications are not
+    dropped at the door — they are queued, retried six times, and then
+    dead-lettered with `no_default_notification_provider`, which you would
+    otherwise only find by reading the **Delivery Log**. A channel that cannot
+    deliver also cannot deliver the news that it cannot deliver, so the banner
+    is the only place this surfaces.
+
+    A provider that merely *exists* is not enough: it must be platform-scoped,
+    **enabled**, and marked **default** for its channel. A provider that is
+    disabled, tenant-scoped, or not the default still leaves the channel
+    uncovered, and the banner reports it as such even though the **Providers**
+    tab looks populated.
+
+    Fix it either way round — add a default provider for the channel, or turn
+    that channel off on the Sources that use it. Both clear the banner.
+
 ## Export / Import (super_admin)
 
 **Platform → Export / Import** exports the platform configuration to a JSON

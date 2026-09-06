@@ -55,8 +55,22 @@ export interface SloRule {
    * How to render the metric's raw value in the alert. Without this the admin
    * saw a raw float like `0.03865979381443299`. 'ratio' → percent, 'seconds' →
    * a duration, 'count' → an integer. Defaults to 'count'.
+   *
+   * 'presence' means the value carries NO information and the alert omits it.
+   * An `absent(x)` probe is 1 whenever it fires, and so is a per-subject
+   * `count by (host) (up == 0)` — one series per host, each with the value 1.
+   * Printing "Current value: 1" for those says nothing and reads like data.
    */
-  readonly unit?: 'ratio' | 'seconds' | 'count';
+  readonly unit?: 'ratio' | 'seconds' | 'count' | 'presence';
+}
+
+/**
+ * Whether the rule's raw value is worth showing the operator at all.
+ * Kept separate from formatSloValue so the decision is made once, by the
+ * evaluator, rather than by every surface that renders an alert.
+ */
+export function sloValueIsInformative(unit: SloRule['unit']): boolean {
+  return unit !== 'presence';
 }
 
 /** Render a raw metric value for humans, per the rule's unit. */
@@ -68,7 +82,10 @@ export function formatSloValue(value: number, unit: SloRule['unit'] = 'count'): 
     case 'seconds':
       return formatSeconds(value);
     case 'count':
+    case 'presence':
     default:
+      // 'presence' formats as an integer for any surface that asks, but the
+      // evaluator gates on sloValueIsInformative and never asks.
       return Number.isInteger(value) ? String(value) : value.toFixed(2);
   }
 }
@@ -172,6 +189,34 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
     subjectLabels: ['namespace', 'pod', 'container'],
     threshold: 0,
     forSeconds: 0,
+  },
+  // ── CrowdSec LAPI liveness ──────────────────────────────────────────────
+  // Ships together with `updateMaxFailure: -1` on the bouncer middleware and is
+  // NOT optional alongside it. With -1 the bouncer keeps serving its cached
+  // decisions when the LAPI is unreachable, which is what stops a CrowdSec
+  // failure taking every hosted site to 403 — but it also makes that failure
+  // completely silent. Frozen IP reputation looks exactly like working IP
+  // reputation from the outside. This rule is the thing that makes it visible.
+  //
+  // Signal: cadvisor, because kube-state-metrics is not deployed. Verified
+  // against live data on 2026-09-05 — `absent()` returns empty while the
+  // container is running and 1 when it is not, so the rule is falsifiable in
+  // both directions rather than merely plausible.
+  //
+  // forSeconds 300 rides out an ordinary restart: the Deployment is
+  // Recreate/replicas=1, so every rollout has a short zero-container gap that
+  // is not worth paging for.
+  {
+    id: 'crowdsec-lapi-down',
+    name: 'CrowdSec LAPI is not running',
+    description: 'No CrowdSec LAPI container has been running for several minutes. The Traefik bouncer is configured never to block on an unreachable LAPI, so hosted sites keep serving — but IP reputation is FROZEN at its last known state: existing bans still apply, no new bans or community-blocklist updates arrive. Check `kubectl get pods -n crowdsec`; a CreateContainerConfigError means a referenced Secret or ConfigMap is missing.',
+    severity: 'critical',
+    expr: 'absent(container_memory_working_set_bytes{namespace="crowdsec",container="crowdsec"}) > $T',
+    subjectLabels: [],
+    threshold: 0,
+    forSeconds: 300,
+    // absent() is 1 whenever this fires and never anything else.
+    unit: 'presence',
   },
   {
     id: 'api-availability-fast-burn',
@@ -362,6 +407,9 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
     expr: 'count by (host) (platform_ingress_router_up == 0) > $T',
     subjectLabels: ['host'],
     threshold: 0,
+    // `count by (host)` yields one series per affected host, each valued 1 —
+    // the host is the information, the number never is.
+    unit: 'presence',
     // Two minutes: long enough that a single Traefik roll (or the plugin-guard
     // recycling a pod) does not page, short enough that a real outage is not
     // sitting unreported.

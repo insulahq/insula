@@ -196,6 +196,14 @@ jobs:
       - name: "Verify no Dex staticClient uses an unexpanded secret placeholder"
         run: ./scripts/ci-dex-client-secret-check.sh
 
+  crowdsec-lapi-startup-check:
+    name: CrowdSec LAPI can start without out-of-band Secrets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: "Verify no secretKeyRef can block the LAPI from starting"
+        run: ./scripts/ci-crowdsec-lapi-startup-check.sh
+
   firewall-check:
     name: Firewall-rule guardrail
     runs-on: ubuntu-latest
