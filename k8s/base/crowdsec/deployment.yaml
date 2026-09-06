@@ -46,6 +46,11 @@ metadata:
     # Reloader is deployed cluster-wide (kube-system) on dev, staging and
     # production; verified on production 2026-09-05.
     secret.reloader.stakater.com/reload: crowdsec-agent-credentials
+    # Rolls the pod when an operator toggles the community blocklist. The
+    # switch is read by /docker_start.sh at STARTUP only, so without this the
+    # ConfigMap would change and the running process would keep the old
+    # setting — applied, not running.
+    configmap.reloader.stakater.com/reload: crowdsec-capi-config
   labels:
     app.kubernetes.io/name: crowdsec
     app.kubernetes.io/part-of: hosting-platform
@@ -149,11 +154,24 @@ spec:
           # CVE patches + LAPI metrics-endpoint improvements since v1.7.0.
           image: docker.io/crowdsecurity/crowdsec:v1.7.8
           imagePullPolicy: IfNotPresent
+          # DISABLE_ONLINE_API comes from the crowdsec-capi-config ConfigMap
+          # (community blocklist opt-in). `optional: true` is deliberate and
+          # load-bearing: on a cluster upgrading from a release without that
+          # ConfigMap the LAPI must still start. A hard reference here is
+          # precisely what took every hosted site to 403 on 2026-09-05.
+          envFrom:
+            - configMapRef:
+                name: crowdsec-capi-config
+                optional: true
           env:
             - name: DISABLE_AGENT
-              # No log acquisition needed — we rely on the community
-              # blocklist. Setting this skips the parsing loop so the
-              # container uses ~30MB instead of ~150MB.
+              # No log acquisition in THIS pod — the crowdsec-agent
+              # DaemonSet does the parsing. Skipping the loop here keeps the
+              # container at ~30MB instead of ~150MB.
+              #
+              # (This comment used to say "we rely on the community blocklist".
+              # That is no longer true by default: CAPI is opt-in, see
+              # capi-config.yaml.)
               value: "true"
             - name: LOCAL_API_URL
               value: "http://127.0.0.1:8080"

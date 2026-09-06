@@ -110,16 +110,45 @@ four tabs:
 - **WAF Events** — the cluster-wide ModSecurity / CRS event stream, with
   source-IP and date-range filters. The block button on a row adds the source
   to the **static blocklist** — a permanent entry, not a timed ban (see below).
-- **Banned IPs** — active CrowdSec ban decisions plus a static blocklist. Each
-  row is tagged with where it came from: **auto-ban** (added by the auto-ban
-  scheduler), **manual** (an operator clicked Add ban), **static** (the
-  permanent list); untagged rows come from the community blocklist or a
-  CrowdSec scenario. Filters narrow the table to any one of the three. The tag
-  matters when you are deciding whether to lift a ban — an auto-ban will be
-  re-applied if the source keeps tripping the same rules, a manual one will not.
+- **Banned IPs** — **this platform's own** ban decisions: operator bans, the
+  static blocklist, the auto-ban scheduler, and detections made by the
+  log-processing agent. Each row is tagged with where it came from:
+  **auto-ban**, **manual** (an operator clicked Add ban) or **static** (the
+  permanent list), and filters narrow the table to any one of them. The tag
+  matters when deciding whether to lift a ban — an auto-ban will be re-applied
+  if the source keeps tripping the same rules, a manual one will not.
+
+    The **community blocklist is deliberately not listed here.** It routinely
+    holds tens of thousands of entries and would bury every decision you made
+    yourself. When it is switched on, a banner at the top of this tab says so
+    and reports how many IPs it is blocking, with a button to open the list.
 - **WAF Exclusions** — per-route CRS rule exclusions and IP allowlists.
 - **WAF Settings** — CrowdSec status and Console enrollment, auto-ban
   calibration, and the **L4 host-firewall enforcement** toggle.
+
+### Community blocklist (opt-in)
+
+CrowdSec can pull a **community blocklist** — a shared feed of IPs reported by
+other CrowdSec installations. It is **off by default** and you turn it on from
+the **LAPI** tile under **WAF Settings**.
+
+!!! warning "Why it is opt-in"
+    The feed bans tens of thousands of addresses on evidence you cannot inspect
+    or appeal, and it does so on every site you host. On 2026-09-06 it blocked
+    **MXToolbox**, which reported HTTP 403 on every site while ordinary
+    visitors and Google PageSpeed were unaffected. That is a reasonable trade
+    to make deliberately and a bad one to inherit silently.
+
+**View banned IPs** on the same tile opens a searchable, paginated view of the
+feed. Every row has an **Exclude** button that adds the address to the
+allowlist — the allowlist overrides *any* ban regardless of where it came from,
+so excluding one wrongly-listed scanner is a much smaller change than switching
+the whole feed off.
+
+Turning the feed off purges the entries it had already loaded, so the change
+takes effect immediately rather than as each entry expires, and restarts the
+CrowdSec pod (it reads the setting only at startup). Your own bans, the
+allowlist and the static blocklist are untouched either way.
 
 ### Scanning does not appear in WAF Events — by design
 
