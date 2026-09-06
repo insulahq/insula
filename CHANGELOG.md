@@ -13,6 +13,15 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Fixed
+- **A shipped notification-template change now reaches existing clusters.** The
+  seed loader was insert-only — deliberately, to protect operator edits — which
+  also meant an updated stock template reached FRESH INSTALLS ONLY. Caught on
+  DEV: the backend was running the build that added `{{subject}}` to the SLO
+  templates, and the database still held `[SLO CRITICAL] {{ruleName}}`. The code
+  shipped, the behaviour did not change, and nothing reported a problem. The
+  loader now refreshes rows that are still pristine stock (`is_seed` and never
+  edited) and still never touches a row an operator has saved; the count of each
+  is logged at boot.
 - **A CrowdSec middleware change no longer takes effect only "eventually".**
   Traefik instantiates a Yaegi plugin once, at process start, and keeps running
   with the config it had then — editing the Middleware CR changes the API object
