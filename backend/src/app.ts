@@ -102,6 +102,7 @@ import { notificationAdminRoutes } from './modules/notifications/routes-admin.js
 import { notificationUserRoutes } from './modules/notifications/routes-tenant.js';
 import { seedCategoriesIfMissing } from './modules/notifications/categories/service.js';
 import { seedTemplatesIfMissing } from './modules/notifications/templates/seed-loader.js';
+import { ensureCommunityBlocklistDefault } from './modules/security-hardening/crowdsec.js';
 import { purgeOldDeliveriesSafe } from './modules/notifications/retention/purge.js';
 import { purgeStaleBuckets } from './modules/notifications/rate-limit/service.js';
 import { startEmailWorker } from './modules/notifications/queue/worker.js';
@@ -226,6 +227,21 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   } catch (err) {
     // eslint-disable-next-line no-console
     console.warn('[notifications] seed failed at boot:', err instanceof Error ? err.message : err);
+  }
+
+  // WAF community blocklist (CAPI): make the "off by default, opt-in" default
+  // real. Flux inventories the ConfigMap but never applies it — the
+  // `reconcile: disabled` annotation that protects an operator's toggle makes
+  // Flux skip the object outright — so the backend owns creating it.
+  // Non-fatal: a cluster without CrowdSec, or without RBAC for that namespace,
+  // must still boot.
+  try {
+    const capi = await ensureCommunityBlocklistDefault(process.env.KUBECONFIG);
+    if (capi === 'created') {
+      console.info('[waf] crowdsec-capi-config created — community blocklist defaults to OFF (opt in under Security → WAF)');
+    }
+  } catch (err) {
+    console.warn('[waf] could not ensure the community-blocklist default:', err instanceof Error ? err.message : err);
   }
 
   const app = Fastify({
