@@ -511,6 +511,56 @@ export async function getCommunityBlocklistEnabled(
  * operator turns it off, sees tens of thousands of bans still enforced for
  * their remaining TTL, and reasonably concludes the toggle does nothing.
  */
+/**
+ * Create the CAPI switch with its default (community blocklist OFF) if absent.
+ *
+ * WHY THE BACKEND OWNS CREATION
+ *
+ * capi-config.yaml carries `kustomize.toolkit.fluxcd.io/reconcile: disabled` so
+ * Flux cannot revert an operator's toggle. That annotation makes Flux skip the
+ * object during apply ENTIRELY — not merely skip reverting it — so Flux
+ * inventories the ConfigMap and never creates it. Verified on DEV 2026-09-06:
+ * `status.inventory` listed `crowdsec_crowdsec-capi-config__ConfigMap` while
+ * `kubectl get cm` returned NotFound.
+ *
+ * Without this the default never lands: the ConfigMap stays absent, the LAPI
+ * keeps its pre-existing behaviour, and "off by default, opt-in" would be true
+ * only of a cluster where somebody had already used the toggle. Same division
+ * of labour as the webmail feature-flag ConfigMap: the manifest declares it,
+ * the backend creates and owns it.
+ *
+ * Idempotent, and never overwrites an existing value — an operator who opted in
+ * stays opted in across restarts.
+ */
+export async function ensureCommunityBlocklistDefault(
+  kubeconfigPath: string | undefined,
+): Promise<'created' | 'present'> {
+  const kc = createKubeConfig(kubeconfigPath);
+  const core = kc.makeApiClient(k8s.CoreV1Api);
+  try {
+    await core.readNamespacedConfigMap({ name: CAPI_CONFIGMAP_NAME, namespace: CROWDSEC_NAMESPACE });
+    return 'present';
+  } catch (err) {
+    if (!isNotFound(err)) throw err;
+  }
+  await core.createNamespacedConfigMap({
+    namespace: CROWDSEC_NAMESPACE,
+    body: {
+      metadata: {
+        name: CAPI_CONFIGMAP_NAME,
+        namespace: CROWDSEC_NAMESPACE,
+        labels: {
+          'app.kubernetes.io/part-of': 'hosting-platform',
+          'app.kubernetes.io/component': 'waf',
+        },
+        annotations: { 'kustomize.toolkit.fluxcd.io/reconcile': 'disabled' },
+      },
+      data: { [CAPI_DISABLE_KEY]: 'true' },
+    },
+  });
+  return 'created';
+}
+
 export async function setCommunityBlocklistEnabled(
   kubeconfigPath: string | undefined,
   enabled: boolean,

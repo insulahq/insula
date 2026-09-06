@@ -1,4 +1,8 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import * as k8sModule from '../container-console/service.js';
+import { ensureCommunityBlocklistDefault } from './crowdsec.js';
+
+afterEach(() => { vi.restoreAllMocks(); });
 import { __test } from './crowdsec.js';
 
 const { parseLapiDecision, parseDurationToAbsolute, MANUAL_BAN_REASON_PREFIX, AUTO_BAN_SCENARIO_PREFIX } = __test;
@@ -237,5 +241,39 @@ describe('applyDecisionFilters — source scoping and paging', () => {
     const r = applyDecisionFilters(all, { source: 'platform', q: '10.0.0.' });
     expect(r.decisions).toHaveLength(0);
     expect(r.totalMatching).toBe(0);
+  });
+});
+
+describe('ensureCommunityBlocklistDefault', () => {
+  // Flux inventories capi-config.yaml but never applies it: the
+  // `reconcile: disabled` annotation that protects an operator's toggle makes
+  // Flux SKIP the object entirely. Verified on DEV 2026-09-06 — the inventory
+  // listed the ConfigMap while `kubectl get cm` returned NotFound, so the
+  // "off by default" default never landed. The backend therefore creates it.
+  it('creates the ConfigMap with the community blocklist OFF when absent', async () => {
+    const notFound = Object.assign(new Error('not found'), { code: 404 });
+    const create = vi.fn().mockResolvedValue({});
+    const core = { readNamespacedConfigMap: vi.fn().mockRejectedValue(notFound), createNamespacedConfigMap: create };
+    vi.spyOn(k8sModule, 'createKubeConfig').mockReturnValue({ makeApiClient: () => core } as never);
+
+    const result = await ensureCommunityBlocklistDefault(undefined);
+    expect(result).toBe('created');
+    const body = create.mock.calls[0][0].body;
+    expect(body.data.DISABLE_ONLINE_API).toBe('true');
+    // The annotation must be on the CREATED object too, or Flux would start
+    // fighting the operator's very first toggle.
+    expect(body.metadata.annotations['kustomize.toolkit.fluxcd.io/reconcile']).toBe('disabled');
+  });
+
+  it('never overwrites an operator who already opted IN', async () => {
+    const create = vi.fn();
+    const core = {
+      readNamespacedConfigMap: vi.fn().mockResolvedValue({ data: { DISABLE_ONLINE_API: 'false' } }),
+      createNamespacedConfigMap: create,
+    };
+    vi.spyOn(k8sModule, 'createKubeConfig').mockReturnValue({ makeApiClient: () => core } as never);
+
+    expect(await ensureCommunityBlocklistDefault(undefined)).toBe('present');
+    expect(create).not.toHaveBeenCalled();
   });
 });

@@ -13,6 +13,12 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Changed
+- **The community-blocklist default is created by the platform, not Flux.**
+  `kustomize.toolkit.fluxcd.io/reconcile: disabled` — the annotation that stops
+  Flux reverting an operator's toggle — makes Flux skip the object during apply
+  entirely, so it was inventoried and never created and the "off by default"
+  default never landed. platform-api now creates it at boot and never
+  overwrites an existing value.
 - **The Banned IPs tab lists only PLATFORM decisions.** Production held 16,220
   community-feed (CAPI) decisions against 2 the platform had made, so a single
   combined table buried every operator action — and made the Static Blocklist
