@@ -556,18 +556,50 @@ export async function getCommunityBlocklistEnabled(
  * Best effort — never fail a toggle because the roll did not happen.
  */
 async function rollCrowdsecLapi(kc: k8s.KubeConfig): Promise<number> {
+  // Same cast shape as findCrowdsecPodName in cscli-exec.ts: the generated
+  // client's typings and its runtime argument shape do not agree across SDK
+  // versions, and this form is the one already proven against this cluster.
   const core = kc.makeApiClient(k8s.CoreV1Api);
-  const pods = await core.listNamespacedPod({
+  const pods = await (core as unknown as {
+    listNamespacedPod: (args: { namespace: string; labelSelector: string }) => Promise<{
+      items: { metadata?: { name?: string } }[];
+    }>;
+  }).listNamespacedPod({
     namespace: CROWDSEC_NAMESPACE,
     labelSelector: 'app.kubernetes.io/name=crowdsec',
   });
-  const names = ((pods as { items?: Array<{ metadata?: { name?: string } }> }).items ?? [])
-    .map((p) => p.metadata?.name)
-    .filter((n): n is string => Boolean(n));
+  const names = (pods.items ?? []).map((p) => p.metadata?.name).filter((n): n is string => Boolean(n));
+  const del = core as unknown as {
+    deleteNamespacedPod: (args: { name: string; namespace: string }) => Promise<unknown>;
+  };
   for (const name of names) {
-    await core.deleteNamespacedPod({ name, namespace: CROWDSEC_NAMESPACE });
+    await del.deleteNamespacedPod({ name, namespace: CROWDSEC_NAMESPACE });
   }
   return names.length;
+}
+
+/**
+ * Roll, and SAY SO EITHER WAY.
+ *
+ * The first version swallowed every failure with a bare `catch {}`. On DEV the
+ * ConfigMap was created and the LAPI was not rolled, and because nothing was
+ * logged there was no way to tell whether the roll had failed or never run —
+ * the setting was stored, not running, and silently so. A best-effort action
+ * still has to report what it did.
+ */
+async function rollCrowdsecLapiSafely(kc: k8s.KubeConfig, reason: string): Promise<void> {
+  try {
+    const n = await rollCrowdsecLapi(kc);
+    // eslint-disable-next-line no-console
+    console.info(`[waf] ${reason}: rolled ${n} CrowdSec LAPI pod(s) so the new setting takes effect`);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[waf] ${reason}: could NOT roll the CrowdSec LAPI — the setting is stored but the running `
+      + `process still has the old value until the pod restarts: `
+      + (err instanceof Error ? err.message : String(err)),
+    );
+  }
 }
 
 export async function ensureCommunityBlocklistDefault(
@@ -597,11 +629,7 @@ export async function ensureCommunityBlocklistDefault(
     },
   });
   // The pod predates the ConfigMap, so it holds no value for the switch.
-  try {
-    await rollCrowdsecLapi(kc);
-  } catch {
-    // Non-fatal: the setting is stored, and the next restart picks it up.
-  }
+  await rollCrowdsecLapiSafely(kc, 'capi-config created');
   return 'created';
 }
 
@@ -645,11 +673,7 @@ export async function setCommunityBlocklistEnabled(
   }
 
   // Roll explicitly rather than trusting Reloader to notice.
-  try {
-    await rollCrowdsecLapi(kc);
-  } catch {
-    // Non-fatal — the ConfigMap is written either way.
-  }
+  await rollCrowdsecLapiSafely(kc, 'community blocklist toggled');
 
   let purged = 0;
   if (!enabled) {
