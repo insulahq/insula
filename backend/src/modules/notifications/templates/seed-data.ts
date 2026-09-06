@@ -40,6 +40,25 @@ const COMMON_VARS: readonly NotificationTemplateVariable[] = [
 ];
 
 /**
+ * Shared by every admin.slo_alert_* template (firing + resolved, all channels)
+ * so the firing and resolved legs of one alert cannot drift apart — they are
+ * dispatched from the SAME AdminSloAlertPayload.
+ *
+ * `subject` names WHICH object is affected. The evaluator has always sent it
+ * and no template rendered it, so 19 of 28 rules alerted on a symptom with no
+ * object: "Certificate not Ready" with no way to tell which certificate, in
+ * which namespace, for which tenant.
+ */
+const SLO_ALERT_VARS: readonly NotificationTemplateVariable[] = [
+  ...COMMON_VARS,
+  { name: 'ruleName', type: 'string', required: true },
+  { name: 'ruleId', type: 'string', required: true },
+  { name: 'description', type: 'string', required: false },
+  { name: 'value', type: 'string', required: false },
+  { name: 'subject', type: 'string', required: false },
+];
+
+/**
  * Compact MJML wrapper. Keeps tests readable and operator-edit-friendly.
  * Most production styling is upstream of this in the Stalwart/Roundcube
  * branding layer; the seed templates are intentionally plain.
@@ -834,96 +853,68 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     categoryId: 'admin.slo_alert_critical',
     channel: 'email',
     locale: 'en',
-    subjectTemplate: '[SLO CRITICAL] {{ruleName}}',
+    subjectTemplate: '[SLO CRITICAL] {{ruleName}}{{#if subject}} — {{subject}}{{/if}}',
     bodyTemplate: emailMjml(
       'SLO alert firing: {{ruleName}}',
-      '{{description}} Current value: {{value}}. See Monitoring → SLOs in the admin panel.',
+      '{{#if subject}}Affected: {{subject}}. {{/if}}{{description}}'
+      + '{{#if value}} Current value: {{value}}.{{/if}}',
     ),
     bodyFormat: 'mjml',
-    variablesSchema: [
-      ...COMMON_VARS,
-      { name: 'ruleName', type: 'string', required: true },
-      { name: 'ruleId', type: 'string', required: true },
-      { name: 'description', type: 'string', required: false },
-      { name: 'value', type: 'string', required: false },
-    ],
+    variablesSchema: SLO_ALERT_VARS,
   },
   {
     categoryId: 'admin.slo_alert_critical',
     channel: 'in_app',
     locale: 'en',
-    subjectTemplate: '[SLO CRITICAL] {{ruleName}}',
-    bodyTemplate: '{{description}} Current value: {{value}}. See Monitoring → SLOs.',
+    subjectTemplate: '[SLO CRITICAL] {{ruleName}}{{#if subject}} — {{subject}}{{/if}}',
+    bodyTemplate: '{{#if subject}}Affected: {{subject}}. {{/if}}{{description}}'
+      + '{{#if value}} Current value: {{value}}.{{/if}}',
     bodyFormat: 'plaintext',
-    variablesSchema: [
-      ...COMMON_VARS,
-      { name: 'ruleName', type: 'string', required: true },
-      { name: 'ruleId', type: 'string', required: true },
-      { name: 'description', type: 'string', required: false },
-      { name: 'value', type: 'string', required: false },
-    ],
+    variablesSchema: SLO_ALERT_VARS,
   },
   {
     categoryId: 'admin.slo_alert_resolved',
     channel: 'email',
     locale: 'en',
-    subjectTemplate: '[SLO RESOLVED] {{ruleName}}',
+    subjectTemplate: '[SLO RESOLVED] {{ruleName}}{{#if subject}} — {{subject}}{{/if}}',
     bodyTemplate: emailMjml(
       'SLO alert resolved: {{ruleName}}',
-      '{{ruleName}} recovered. No further action required.',
+      '{{ruleName}} recovered{{#if subject}} for {{subject}}{{/if}}. No further action required.',
     ),
     bodyFormat: 'mjml',
-    variablesSchema: [
-      ...COMMON_VARS,
-      { name: 'ruleName', type: 'string', required: true },
-      { name: 'ruleId', type: 'string', required: true },
-    ],
+    variablesSchema: SLO_ALERT_VARS,
   },
   {
     categoryId: 'admin.slo_alert_resolved',
     channel: 'in_app',
     locale: 'en',
-    subjectTemplate: '[SLO RESOLVED] {{ruleName}}',
-    bodyTemplate: '{{ruleName}} recovered.',
+    subjectTemplate: '[SLO RESOLVED] {{ruleName}}{{#if subject}} — {{subject}}{{/if}}',
+    bodyTemplate: '{{ruleName}} recovered{{#if subject}} for {{subject}}{{/if}}.',
     bodyFormat: 'plaintext',
-    variablesSchema: [
-      ...COMMON_VARS,
-      { name: 'ruleName', type: 'string', required: true },
-      { name: 'ruleId', type: 'string', required: true },
-    ],
+    variablesSchema: SLO_ALERT_VARS,
   },
   {
     categoryId: 'admin.slo_alert_warning',
     channel: 'email',
     locale: 'en',
-    subjectTemplate: '[SLO WARNING] {{ruleName}}',
+    subjectTemplate: '[SLO WARNING] {{ruleName}}{{#if subject}} — {{subject}}{{/if}}',
     bodyTemplate: emailMjml(
       'SLO alert firing: {{ruleName}}',
-      '{{description}} Current value: {{value}}. See Monitoring → SLOs in the admin panel.',
+      '{{#if subject}}Affected: {{subject}}. {{/if}}{{description}}'
+      + '{{#if value}} Current value: {{value}}.{{/if}}',
     ),
     bodyFormat: 'mjml',
-    variablesSchema: [
-      ...COMMON_VARS,
-      { name: 'ruleName', type: 'string', required: true },
-      { name: 'ruleId', type: 'string', required: true },
-      { name: 'description', type: 'string', required: false },
-      { name: 'value', type: 'string', required: false },
-    ],
+    variablesSchema: SLO_ALERT_VARS,
   },
   {
     categoryId: 'admin.slo_alert_warning',
     channel: 'in_app',
     locale: 'en',
-    subjectTemplate: '[SLO WARNING] {{ruleName}}',
-    bodyTemplate: '{{description}} Current value: {{value}}. See Monitoring → SLOs.',
+    subjectTemplate: '[SLO WARNING] {{ruleName}}{{#if subject}} — {{subject}}{{/if}}',
+    bodyTemplate: '{{#if subject}}Affected: {{subject}}. {{/if}}{{description}}'
+      + '{{#if value}} Current value: {{value}}.{{/if}}',
     bodyFormat: 'plaintext',
-    variablesSchema: [
-      ...COMMON_VARS,
-      { name: 'ruleName', type: 'string', required: true },
-      { name: 'ruleId', type: 'string', required: true },
-      { name: 'description', type: 'string', required: false },
-      { name: 'value', type: 'string', required: false },
-    ],
+    variablesSchema: SLO_ALERT_VARS,
   },
   {
     categoryId: 'admin.wal_archive_failing',

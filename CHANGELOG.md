@@ -13,6 +13,31 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Changed
+- **SLO alerts now name WHICH object is affected.** The evaluator has always
+  sent a `subject` (e.g. `certificate=wildcard-tls namespace=tenant-acme`), and
+  three separate comments described it as the fix for alerts that "named a
+  symptom and nothing else" — but no template ever rendered it, so 19 of 28
+  rules alerted without an object on every channel. The `admin.slo_alert_*`
+  templates (firing, warning and resolved; email, in-app and ntfy) now carry it
+  in both the title and the body.
+- **Presence-style alerts stop printing "Current value: 1".** A new
+  `unit: 'presence'` marks rules whose metric is 1 whenever they fire at all —
+  an `absent()` probe, or a per-subject `count by (host) (up == 0)`. The value
+  is omitted rather than rendered as data. Applied to `crowdsec-lapi-down` and
+  `ingress-router-down`.
+- **SLO alerts no longer append "See Monitoring → SLOs".** It was appended to
+  every alert regardless of relevance, and pointed at a page that could not
+  show an entrypoint-level failure.
+
+### Added
+- **The Notifications page warns when a channel cannot deliver.** A channel with
+  no enabled default platform provider fails silently: the delivery is queued,
+  retried six times and dead-lettered with `no_default_notification_provider`,
+  and nothing on the page said so — a channel that cannot deliver also cannot
+  deliver the news that it cannot deliver. The banner mirrors the dispatcher's
+  own lookup (platform scope + `is_default` + `enabled`), so a provider that is
+  present but disabled or non-default is correctly reported as no coverage.
+
 - **A CrowdSec LAPI outage no longer takes every hosted site to HTTP 403.** The
   bouncer's `updateMaxFailure` was `3`, which the manifest described as a
   log-noise cap — it is not. The plugin documents it as "the maximum number of
