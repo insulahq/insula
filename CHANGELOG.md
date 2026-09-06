@@ -12,6 +12,33 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **The tenant file manager was OOM-killed during large rsync transfers, resetting
+  the connection.** Measured on production during a real 12.5 GB / 131k-file
+  rsync: the container's true working set is **26 Mi** (anon 24.7 Mi), but its
+  cgroup sat at **127 Mi of a 128 Mi limit** because a cgroup limit also charges
+  page cache (100 Mi here) and slab, which rsync generates heavily. The limit had
+  been sized against the Node heap — *"the streaming handlers don't buffer file
+  content"*, which is true and beside the point. Because the container runs with
+  `memory.oom.group=1`, the kill took node and sshd down with rsync, so the tenant
+  saw a connection reset rather than a failed file (12 OOM kills in 24h on one
+  tenant). Memory limit 128Mi → **256Mi** (~10x the measured working set, all of
+  it headroom for reclaimable cache) and request 128Mi → **64Mi** (still 2.5x the
+  working set), so this *frees* 64 Mi per tenant file manager rather than costing
+  anything — a limit is a ceiling, only the request is reserved.
+
+    This was invisible in metrics: the kubelet's working set excludes inactive
+    page cache, so `kubectl top` reported a healthy 26 Mi while the OOM killer —
+    which uses `memory.current` — fired at 127 Mi.
+- **An operator can now raise a file manager's memory limit in an emergency.** The
+  drift check compared the limit for exact equality with the hardcoded value, so
+  a deliberate increase was treated as drift: on production a hand-raise to 1Gi
+  (to get a stuck rsync through) was reverted by the next SFTP session — every
+  file-manager route calls the reconciler — which deleted and recreated the
+  Deployment at 128Mi, killing the transfer it was meant to rescue. The check now
+  compares numerically and only a limit *below* the expected value counts as
+  drift; a missing or unparseable limit still does.
+
 ## [2026.9.11] - 2026-09-07
 
 ### Fixed
