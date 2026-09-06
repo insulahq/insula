@@ -55,8 +55,22 @@ export interface SloRule {
    * How to render the metric's raw value in the alert. Without this the admin
    * saw a raw float like `0.03865979381443299`. 'ratio' → percent, 'seconds' →
    * a duration, 'count' → an integer. Defaults to 'count'.
+   *
+   * 'presence' means the value carries NO information and the alert omits it.
+   * An `absent(x)` probe is 1 whenever it fires, and so is a per-subject
+   * `count by (host) (up == 0)` — one series per host, each with the value 1.
+   * Printing "Current value: 1" for those says nothing and reads like data.
    */
-  readonly unit?: 'ratio' | 'seconds' | 'count';
+  readonly unit?: 'ratio' | 'seconds' | 'count' | 'presence';
+}
+
+/**
+ * Whether the rule's raw value is worth showing the operator at all.
+ * Kept separate from formatSloValue so the decision is made once, by the
+ * evaluator, rather than by every surface that renders an alert.
+ */
+export function sloValueIsInformative(unit: SloRule['unit']): boolean {
+  return unit !== 'presence';
 }
 
 /** Render a raw metric value for humans, per the rule's unit. */
@@ -68,7 +82,10 @@ export function formatSloValue(value: number, unit: SloRule['unit'] = 'count'): 
     case 'seconds':
       return formatSeconds(value);
     case 'count':
+    case 'presence':
     default:
+      // 'presence' formats as an integer for any surface that asks, but the
+      // evaluator gates on sloValueIsInformative and never asks.
       return Number.isInteger(value) ? String(value) : value.toFixed(2);
   }
 }
@@ -198,7 +215,8 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
     subjectLabels: [],
     threshold: 0,
     forSeconds: 300,
-    unit: 'count',
+    // absent() is 1 whenever this fires and never anything else.
+    unit: 'presence',
   },
   {
     id: 'api-availability-fast-burn',
@@ -389,6 +407,9 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
     expr: 'count by (host) (platform_ingress_router_up == 0) > $T',
     subjectLabels: ['host'],
     threshold: 0,
+    // `count by (host)` yields one series per affected host, each valued 1 —
+    // the host is the information, the number never is.
+    unit: 'presence',
     // Two minutes: long enough that a single Traefik roll (or the plugin-guard
     // recycling a pod) does not page, short enough that a real outage is not
     // sitting unreported.
