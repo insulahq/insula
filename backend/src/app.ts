@@ -214,7 +214,15 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   // not block the rest of buildApp — log and continue.
   try {
     await seedCategoriesIfMissing(deps.db);
-    await seedTemplatesIfMissing(deps.db);
+    const seeded = await seedTemplatesIfMissing(deps.db);
+    if (seeded.inserted > 0 || seeded.refreshed > 0) {
+      // Logged because a silent refresh is how the previous bug hid: the
+      // shipped templates and the stored ones disagreed and nothing said so.
+      console.info(
+        `[notifications] templates seeded: ${seeded.inserted} inserted, `
+        + `${seeded.refreshed} refreshed, ${seeded.operatorOwned} operator-owned (left alone)`,
+      );
+    }
   } catch (err) {
     // eslint-disable-next-line no-console
     console.warn('[notifications] seed failed at boot:', err instanceof Error ? err.message : err);

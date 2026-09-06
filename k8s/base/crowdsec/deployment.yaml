@@ -34,6 +34,18 @@ kind: Deployment
 metadata:
   name: crowdsec
   namespace: crowdsec
+  annotations:
+    # Roll when the agent credentials appear or change. The Secret is created
+    # out-of-band by host-migration 2026.9.9/0003, so it can land minutes or
+    # hours after this Deployment; the env refs above are `optional: true` so
+    # the LAPI starts without it, and this rolls the pod once it exists so the
+    # agent actually gets registered. Without this the LAPI would start, serve
+    # decisions, and never register the agent — healthy-looking and silently
+    # not doing the job.
+    #
+    # Reloader is deployed cluster-wide (kube-system) on dev, staging and
+    # production; verified on production 2026-09-05.
+    secret.reloader.stakater.com/reload: crowdsec-agent-credentials
   labels:
     app.kubernetes.io/name: crowdsec
     app.kubernetes.io/part-of: hosting-platform
@@ -57,6 +69,80 @@ spec:
         runAsNonRoot: true
         runAsUser: 1000
         fsGroup: 1000
+      initContainers:
+        # WHY: without this the LAPI CRASHES ON EVERY START, every time.
+        #
+        # /etc/crowdsec is an emptyDir, so it is empty on every pod start and
+        # the image's entrypoint rsyncs /staging/etc/crowdsec into it. Several
+        # of those files are root-owned and mode 0600 inside the image
+        # (local_api_credentials.yaml, online_api_credentials.yaml,
+        # hub/.index.json, and every hub collection/parser/scenario), and we
+        # run as uid 1000. rsync cannot read them, exits 23, and the entrypoint
+        # exits with it:
+        #
+        #   rsync: [sender] send_files failed to open
+        #     "/staging/etc/crowdsec/hub/.index.json": Permission denied (13)
+        #   rsync error: some files/attrs were not transferred (code 23)
+        #
+        # The container then restarts, finds /etc/crowdsec non-empty (emptyDir
+        # survives a container restart within the pod), skips the copy, and
+        # comes up. So it "works" — via a crash loop of exactly one iteration,
+        # on a PARTIAL config. Observed on every pod on DEV: RESTARTS is always
+        # >= 1, which also means a genuine crash is indistinguishable from the
+        # normal state.
+        #
+        # Two real costs beyond the noise: every LAPI recovery is one extra
+        # crash-and-restart slower, and the hub index never arrives — which is
+        # what the `cscli hub update` postStart hook below is compensating for.
+        #
+        # Running as root here is the point: it is the only way to read
+        # root-owned 0600 files out of the image. It is scoped to a single
+        # copy + chown into an emptyDir, drops all capabilities except the two
+        # the copy needs, and the LAPI itself keeps running as uid 1000.
+        - name: seed-config
+          image: docker.io/crowdsecurity/crowdsec:v1.7.8
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            runAsUser: 0
+            runAsNonRoot: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+              add: ["CHOWN", "DAC_OVERRIDE", "FOWNER"]
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              # No shell variables or $(...) anywhere in this script, on
+              # purpose: it is rendered through Flux postBuild.substituteFrom,
+              # and the escaping rules for $ differ between the two forms.
+              # Nothing here needs one.
+              #
+              # Idempotent via a marker file rather than an emptiness test:
+              # config.yaml is the LAPI's own config and is always present in
+              # a complete seed, so a partial copy left by an interrupted run
+              # is correctly treated as "not seeded" and redone.
+              if [ -f /etc/crowdsec/config.yaml ]; then
+                echo "seed-config: /etc/crowdsec already seeded"
+              else
+                cp -a /staging/etc/crowdsec/. /etc/crowdsec/
+                echo "seed-config: seeded /etc/crowdsec from the image"
+              fi
+              # Unconditional: a partial copy left by an older image would
+              # otherwise stay unreadable to uid 1000 forever.
+              chown -R 1000:1000 /etc/crowdsec
+              echo "seed-config: ownership set to 1000:1000"
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/crowdsec
       containers:
         - name: crowdsec
           # v1.7.8 (2026-05-11) — latest stable on the v1.7.x line. Includes
@@ -82,16 +168,39 @@ spec:
             # agent stays up and reports healthy; its alerts simply never
             # arrive. Same Secret, same values as the agent — the names must
             # match EXACTLY.
+            #
+            # BOTH ARE `optional: true`, AND THAT IS LOAD-BEARING.
+            #
+            # This Secret is created by host-migration 2026.9.9/0003, which runs
+            # on the platform-ops converger's own timer — NOT in step with the
+            # Flux apply that ships this Deployment. Without `optional` the
+            # kubelet refuses to create the container
+            # (`CreateContainerConfigError: secret ... not found`), the LAPI
+            # never starts, and the Traefik CrowdSec bouncer FAILS CLOSED —
+            # every request to every hosted site returns 403.
+            #
+            # That is exactly what happened on production upgrading to 2026.9.9
+            # (2026-09-05): total ingress outage caused by a missing credential
+            # for a feature that only pre-registers an agent. Nothing on the
+            # request path needs these values.
+            #
+            # Unset, the image's entrypoint simply skips `cscli machines add`
+            # (it is guarded by `[ "$AGENT_USERNAME" != "" ]`). The LAPI serves
+            # decisions exactly as before; only agent registration waits. The
+            # reloader annotation on this Deployment rolls it once the Secret
+            # appears, so the wait is self-healing.
             - name: AGENT_USERNAME
               valueFrom:
                 secretKeyRef:
                   name: crowdsec-agent-credentials
                   key: username
+                  optional: true
             - name: AGENT_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: crowdsec-agent-credentials
                   key: password
+                  optional: true
             - name: BOUNCER_KEY_traefik
               # The bouncer key is mounted from a Secret + referenced
               # by env so CrowdSec auto-registers the bouncer on

@@ -30,6 +30,40 @@
 # ("dial tcp: lookup plugins.traefik.io: network is unreachable"). The download
 # is not cache-gated, so only vendoring (--experimental.localPlugins) removes
 # the startup network dependency. Until then, this guard bounds the outage.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# SECOND CONCERN: a plugin's CONFIG is also read only at process start.
+#
+# Traefik instantiates a Yaegi plugin once, with the Middleware's settings as
+# they were at that moment, and keeps its goroutines running with those values.
+# Editing the Middleware CR updates the API object and changes NOTHING in the
+# running process. There is no watch, no reload, and no log line saying so.
+#
+# Measured on DEV 2026-09-06. `updateMaxFailure: -1` (never block when the
+# CrowdSec LAPI is unreachable) was applied by Flux at 00:52:06. The LAPI was
+# stopped at 00:54. The plugin — an 8h-old pod — still counted to its OLD
+# threshold and blocked:
+#
+#   00:57:09 updateFailure:3 isCrowdsecStreamHealthy:true   <- old value, 3
+#   00:58:09 updateFailure:4 isCrowdsecStreamHealthy:false  <- every site 403s
+#
+# After recycling the pod, the identical outage produced:
+#
+#   updateFailure:7 isCrowdsecStreamHealthy:true            <- 0/48 probes 403
+#
+# So a fix shipped as a Middleware edit is INERT until something happens to
+# restart Traefik, which on a stable cluster may be weeks. That is the worst
+# shape a safety fix can have: released, documented, believed, and not running.
+#
+# This guard therefore also recycles any Traefik pod that started BEFORE the
+# newest plugin-middleware change. `managedFields[].time` is the right signal
+# and not merely the latest reconcile: verified on DEV that Flux's 1-minute
+# no-op applies do NOT bump it (steady at 00:52:06 while now was 01:03:59), so
+# an unchanged config can never cause a recycle.
+#
+# One pod per run, deliberately: on a multi-node cluster deleting every Traefik
+# pod at once is a total ingress outage, which is precisely the thing this file
+# exists to prevent.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -60,6 +94,12 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["delete"]
+  # Read-only, and only in this namespace: the guard needs each plugin
+  # middleware's last-change time to tell a stale Traefik process from a
+  # current one. It never writes them.
+  - apiGroups: ["traefik.io"]
+    resources: ["middlewares"]
+    verbs: ["get", "list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -190,6 +230,30 @@ spec:
                   # alone. An age heuristic would need `date -d` on an RFC3339
                   # stamp, which BusyBox does not parse reliably — and it would
                   # still be a guess where an exact signal exists.
+                  # Newest change to any plugin-backed Middleware in this
+                  # namespace. Empty is a legitimate answer (no plugin
+                  # middlewares yet) and disables only the staleness check.
+                  #
+                  # Compared LEXICOGRAPHICALLY, never with `date -d`: both
+                  # strings come from the API server as RFC3339 UTC
+                  # (2026-09-06T00:52:06Z), which sorts correctly as text, and
+                  # BusyBox cannot parse that format reliably anyway.
+                  # No exit-code check here, unlike the pod query above, and
+                  # for a reason: this pipeline ends in `head`, so $? would be
+                  # head's status and would report success even when kubectl
+                  # failed. Emptiness is the honest signal, and an empty result
+                  # fails SAFE — it skips the staleness check and recycles
+                  # nothing, rather than recycling on a bad read.
+                  cfg_changed=$$(kubectl -n "$${NS}" get middlewares.traefik.io \
+                      -o jsonpath='{range .items[?(@.spec.plugin)]}{range .metadata.managedFields[*]}{.time}{"\n"}{end}{end}' 2>/dev/null \
+                      | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}T' | sort -r | head -1 || true)
+                  if [ -z "$${cfg_changed}" ]; then
+                    echo "traefik-plugin-guard: no plugin-middleware change time available — staleness check skipped"
+                  else
+                    echo "traefik-plugin-guard: newest plugin-middleware change $${cfg_changed}"
+                  fi
+
+                  recycled=0
                   for name in $${pods}; do
                     # --since as well as --tail: the plugin verdict is logged ONCE at
                     # startup, so if access logging is ever enabled a busy node could
@@ -201,13 +265,43 @@ spec:
                       echo "traefik-plugin-guard: $${name} has NO PLUGINS — both panels would 404. Recycling."
                       if kubectl -n "$${NS}" delete pod "$${name}" --wait=false >/dev/null 2>&1; then
                         echo "traefik-plugin-guard: recycled $${name}"
+                        recycled=1
                       else
                         echo "traefik-plugin-guard: FAILED to delete $${name}" >&2
                       fi
-                    elif printf '%s' "$${logs}" | grep -qF "$${OK_MARKER}"; then
+                      continue
+                    fi
+
+                    if printf '%s' "$${logs}" | grep -qF "$${OK_MARKER}"; then
                       echo "traefik-plugin-guard: $${name} plugins OK"
                     else
                       echo "traefik-plugin-guard: $${name} has not logged a plugin verdict yet — skipping"
+                      continue
+                    fi
+
+                    # Stale plugin CONFIG. Only one recycle per run: taking
+                    # every Traefik pod down together is the outage this file
+                    # exists to prevent, and the next run continues the roll.
+                    [ -n "$${cfg_changed}" ] || continue
+                    [ "$${recycled}" -eq 0 ] || continue
+
+                    started=$$(kubectl -n "$${NS}" get pod "$${name}" \
+                                 -o jsonpath='{.status.startTime}' 2>/dev/null || true)
+                    if [ -z "$${started}" ]; then
+                      echo "traefik-plugin-guard: $${name} has no startTime yet — skipping staleness check"
+                      continue
+                    fi
+
+                    if [ "$${started}" \< "$${cfg_changed}" ]; then
+                      echo "traefik-plugin-guard: $${name} started $${started}, BEFORE the plugin config changed at $${cfg_changed} — it is running the old settings. Recycling."
+                      if kubectl -n "$${NS}" delete pod "$${name}" --wait=false >/dev/null 2>&1; then
+                        echo "traefik-plugin-guard: recycled $${name} (stale plugin config)"
+                        recycled=1
+                      else
+                        echo "traefik-plugin-guard: FAILED to delete $${name}" >&2
+                      fi
+                    else
+                      echo "traefik-plugin-guard: $${name} started $${started} — plugin config current"
                     fi
                   done
 

@@ -26,6 +26,7 @@ import { notifyAdminSloAlertFiring, notifyAdminSloAlertResolved } from '../notif
 import { queryInstant, type VmClientOptions } from './vm-client.js';
 import {
   SLO_RULES, MONITORING_UNREACHABLE_RULE_ID, renderExpr, describeSubject, subjectKey, formatSloValue,
+  sloValueIsInformative,
   type SloRule,
 } from './rules.js';
 
@@ -145,7 +146,12 @@ async function applyRuleState(
         description: rule.description,
         // Human-readable per the rule's unit — a raw `0.03865979381443299` is
         // useless in an alert; this renders it as `3.87%` / `620ms` / a count.
-        value: value != null ? formatSloValue(value, rule.unit) : undefined,
+        // Omitted entirely for 'presence' rules, whose value is 1 whenever they
+        // fire: "Current value: 1" is not information, and the template skips
+        // the clause when the variable is absent.
+        value: value != null && sloValueIsInformative(rule.unit)
+          ? formatSloValue(value, rule.unit)
+          : undefined,
         // Without this the admin gets "Certificate not Ready" and no way to
         // tell which certificate, in which namespace, for which tenant.
         subject: subject.label ?? undefined,
