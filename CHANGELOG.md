@@ -13,26 +13,37 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Fixed
-- **A shipped notification-template change now reaches existing clusters.** The
-  seed loader was insert-only — deliberately, to protect operator edits — which
-  also meant an updated stock template reached FRESH INSTALLS ONLY. Caught on
-  DEV: the backend was running the build that added `{{subject}}` to the SLO
-  templates, and the database still held `[SLO CRITICAL] {{ruleName}}`. The code
-  shipped, the behaviour did not change, and nothing reported a problem. The
-  loader now refreshes rows that are still pristine stock (`is_seed` and never
-  edited) and still never touches a row an operator has saved; the count of each
-  is logged at boot.
-- **A CrowdSec middleware change no longer takes effect only "eventually".**
-  Traefik instantiates a Yaegi plugin once, at process start, and keeps running
-  with the config it had then — editing the Middleware CR changes the API object
-  and nothing in the running process. Measured on DEV: `updateMaxFailure: -1`
-  was applied at 00:52:06, the LAPI was stopped at 00:54, and an 8h-old Traefik
-  pod still counted to its old threshold and 403'd every site
-  (`updateFailure:4 isCrowdsecStreamHealthy:false`). After a recycle the same
-  outage produced `updateFailure:7 isCrowdsecStreamHealthy:true`, 0/48 probes
-  blocked. `traefik-plugin-guard` now also recycles any Traefik pod that started
-  before the newest plugin-middleware change, one pod per run so a multi-node
-  cluster never loses all ingress at once.
+- **Upgrading to 2026.9.9 took every hosted website to HTTP 403.** The CrowdSec
+  LAPI Deployment gained `AGENT_USERNAME` / `AGENT_PASSWORD` as *hard*
+  `secretKeyRef`s on `crowdsec-agent-credentials` — a Secret created by
+  host-migration `2026.9.9/0003`, which runs on the platform-ops converger's own
+  timer, not in step with the Flux apply. The kubelet refused to create the
+  container (`CreateContainerConfigError`), the LAPI never started, and the
+  Traefik CrowdSec bouncer **fails closed**, so all ingress returned 403. Both
+  refs are now `optional: true` — they only pre-register the log-processing
+  agent and nothing on the request path needs them — and both the LAPI and the
+  agent carry a Reloader annotation so they roll when the Secret appears.
+  Guard: `ci-crowdsec-lapi-startup-check.sh`.
+- **A CrowdSec LAPI outage no longer takes every hosted site to HTTP 403.** The
+  bouncer's `updateMaxFailure` was `3`, which the manifest described as a
+  log-noise cap — it is not. The plugin documents it as "the maximum number of
+  time we can not reach Crowdsec before blocking traffic (set -1 to never
+  block)", so a LAPI unreachable for three minutes blocked everything, while the
+  comment beside it described the design as fail-open. Set to `-1`: the
+  documented posture is now the implemented one. In `stream` mode the bouncer
+  keeps enforcing the bans it already knows and stops learning new ones, so an
+  outage degrades from a total outage to frozen IP reputation.
+- **That fix reached running clusters only after a Traefik restart.** Traefik
+  instantiates a Yaegi plugin once, at process start, and keeps running with the
+  config it had then — editing the Middleware CR changes the API object and
+  nothing in the running process. Measured on DEV: `-1` was applied at 00:52:06,
+  the LAPI stopped at 00:54, and an 8h-old Traefik pod still counted to its old
+  threshold and 403'd every site (`updateFailure:4
+  isCrowdsecStreamHealthy:false`). After a recycle the identical outage produced
+  `updateFailure:7 isCrowdsecStreamHealthy:true`, 0 of 48 probes blocked.
+  `traefik-plugin-guard` now also recycles any Traefik pod that started before
+  the newest plugin-middleware change — one pod per run, so a multi-node cluster
+  never loses all ingress at once.
 - **The CrowdSec LAPI no longer crashes on every single start.** `/etc/crowdsec`
   is an emptyDir, so the image's entrypoint rsyncs its staging copy in on every
   start — and as uid 1000 it cannot read the root-owned 0600 files
@@ -44,7 +55,30 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   container now copies and chowns the config before the LAPI starts; verified on
   DEV as `RESTARTS 0`, Ready in 11s, with all three previously-missing files
   present.
+- **A shipped notification-template change now reaches existing clusters.** The
+  seed loader was insert-only — deliberately, to protect operator edits — which
+  also meant an updated stock template reached FRESH INSTALLS ONLY. Caught on
+  DEV: the backend was running the build that added `{{subject}}` to the SLO
+  templates, and the database still held `[SLO CRITICAL] {{ruleName}}`. The code
+  shipped, the behaviour did not change, and nothing reported a problem. The
+  loader now refreshes rows that are still pristine stock (`is_seed` and never
+  edited) and still never touches a row an operator has saved; the count of each
+  is logged at boot. On the DEV upgrade this refreshed **17** templates, 8 of
+  them from earlier releases that had never reached the database.
 
+### Added
+- **`crowdsec-lapi-down` SLO rule.** Ships with the `updateMaxFailure: -1`
+  change and is not optional alongside it: `-1` makes a LAPI failure silent, and
+  frozen IP reputation is indistinguishable from working IP reputation from the
+  outside. Uses cadvisor (kube-state-metrics is not deployed) and was verified to
+  fire only when the container is genuinely absent.
+- **The Notifications page warns when a channel cannot deliver.** A channel with
+  no enabled default platform provider fails silently: the delivery is queued,
+  retried six times and dead-lettered with `no_default_notification_provider`,
+  and nothing on the page said so — a channel that cannot deliver also cannot
+  deliver the news that it cannot deliver. The banner mirrors the dispatcher's
+  own lookup (platform scope + `is_default` + `enabled`), so a provider that is
+  present but disabled or non-default is correctly reported as no coverage.
 
 ### Changed
 - **SLO alerts now name WHICH object is affected.** The evaluator has always
@@ -62,45 +96,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 - **SLO alerts no longer append "See Monitoring → SLOs".** It was appended to
   every alert regardless of relevance, and pointed at a page that could not
   show an entrypoint-level failure.
-
-### Added
-- **The Notifications page warns when a channel cannot deliver.** A channel with
-  no enabled default platform provider fails silently: the delivery is queued,
-  retried six times and dead-lettered with `no_default_notification_provider`,
-  and nothing on the page said so — a channel that cannot deliver also cannot
-  deliver the news that it cannot deliver. The banner mirrors the dispatcher's
-  own lookup (platform scope + `is_default` + `enabled`), so a provider that is
-  present but disabled or non-default is correctly reported as no coverage.
-
-- **A CrowdSec LAPI outage no longer takes every hosted site to HTTP 403.** The
-  bouncer's `updateMaxFailure` was `3`, which the manifest described as a
-  log-noise cap — it is not. The plugin documents it as "the maximum number of
-  time we can not reach Crowdsec before blocking traffic (set -1 to never
-  block)", so a LAPI unreachable for three minutes blocked everything, while the
-  comment beside it described the design as fail-open. Set to `-1`: the
-  documented posture is now the implemented one. In `stream` mode the bouncer
-  keeps enforcing the bans it already knows and stops learning new ones, so an
-  outage degrades from a total outage to frozen IP reputation.
-
-### Added
-- **`crowdsec-lapi-down` SLO rule.** Ships with the change above and is not
-  optional alongside it: `-1` makes a LAPI failure silent, and frozen IP
-  reputation is indistinguishable from working IP reputation from the outside.
-  Uses cadvisor (kube-state-metrics is not deployed) and was verified to fire
-  only when the container is genuinely absent.
-
-### Fixed
-- **Upgrading to 2026.9.9 took every hosted website to HTTP 403.** The CrowdSec
-  LAPI Deployment gained `AGENT_USERNAME` / `AGENT_PASSWORD` as *hard*
-  `secretKeyRef`s on `crowdsec-agent-credentials` — a Secret created by
-  host-migration `2026.9.9/0003`, which runs on the platform-ops converger's own
-  timer, not in step with the Flux apply. The kubelet refused to create the
-  container (`CreateContainerConfigError`), the LAPI never started, and the
-  Traefik CrowdSec bouncer **fails closed**, so all ingress returned 403. Both
-  refs are now `optional: true` — they only pre-register the log-processing
-  agent and nothing on the request path needs them — and both the LAPI and the
-  agent carry a Reloader annotation so they roll when the Secret appears.
-  Guard: `ci-crowdsec-lapi-startup-check.sh`.
 
 ## [2026.9.9] - 2026-09-05
 
