@@ -83,20 +83,44 @@ spec:
       # Refresh decision cache every 60s. Lower = faster reaction to
       # new bans, higher = less LAPI traffic. 60s is the plugin default.
       updateIntervalSeconds: 60
-      # After 3 consecutive pull failures, the plugin stops logging the
-      # same error on every tick (caps log noise during a prolonged
-      # LAPI outage). The bouncer still attempts to reconnect; this
-      # only suppresses repeat error lines. v1.6.0 default is 0 (infinite).
-      updateMaxFailure: 3
+      # -1 = NEVER block traffic because the LAPI is unreachable.
+      #
+      # THIS COMMENT USED TO SAY THE OPPOSITE AND IT WAS WRONG. It claimed the
+      # value only "suppresses repeat error lines" and capped log noise. The
+      # plugin's own v1.6.0 documentation says otherwise:
+      #
+      #   UpdateMaxFailure — "the maximum number of time we can not reach
+      #   Crowdsec before blocking traffic (set -1 to never block)"
+      #
+      # So at 3, with updateIntervalSeconds 60, a LAPI unreachable for three
+      # minutes blocked EVERYTHING with HTTP 403. On 2026-09-05 the LAPI failed
+      # to start after an upgrade and every hosted website went down — while the
+      # block below described the design as fail-open. The stated posture was
+      # never the implemented one.
+      #
+      # -1 does not change the accepted trade-off; it finally implements it.
+      #
+      # What it costs, precisely — `stream` mode holds a LOCAL decision cache:
+      #   kept : every ban already known stays enforced. Not unprotected.
+      #   lost : no NEW bans or community-blocklist updates until the LAPI is
+      #          back.
+      # A LAPI outage degrades from "every customer site 403s" to "IP reputation
+      # is frozen at its last known state".
+      #
+      # This makes LAPI failure SILENT, which is why it ships with the
+      # `crowdsec-lapi-down` SLO rule. Do not keep this and drop that rule.
+      updateMaxFailure: -1
       # ACCEPTED TRADE-OFF — Fail-open semantics + single-replica LAPI:
       # If the CrowdSec LAPI is unreachable (pod drain, PVC fault,
       # api.crowdsec.net blocked at egress), the plugin allows traffic
       # rather than 503'ing every request. The compounded-failure
       # window matters because:
-      #   * CrowdSec runs as a single replica with Recreate strategy +
-      #     SQLite (single-writer constraint). A node drain or pod
-      #     restart leaves a brief unprotected window until the new
-      #     pod is Ready AND the plugin's local cache refreshes.
+      #   * CrowdSec runs as a single replica with Recreate strategy, so a
+      #     node drain or pod restart leaves a brief window in which no NEW
+      #     decisions are learned. (The old reason given here — "SQLite
+      #     single-writer" — is stale: the LAPI is configured with
+      #     storage_type=postgres. The remaining constraint is the RWO
+      #     `crowdsec-data` PVC. See ROADMAP R35.)
       #   * DISABLE_AGENT=true means we DON'T run the log-acquisition
       #     parser — only the community blocklist is consumed. A LAPI
       #     outage means known-bad IPs from the community blocklist
