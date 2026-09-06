@@ -39,9 +39,7 @@
 # The admin panel writes this ConfigMap when an operator flips the toggle.
 # Without the annotation Flux would revert it on the next reconcile (~1 min)
 # and the setting would silently un-apply — the same failure that made a
-# hand-raised file-manager memory limit impossible to keep. Flux creates this
-# once and then leaves it alone; the same pattern as the webmail feature-flag
-# ConfigMap.
+# hand-raised file-manager memory limit impossible to keep.
 apiVersion: v1
 kind: ConfigMap
 metadata:
