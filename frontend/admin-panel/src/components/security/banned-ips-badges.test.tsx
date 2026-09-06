@@ -38,6 +38,10 @@ vi.mock('@/hooks/use-crowdsec', () => {
   const mut = () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false, error: null });
   return {
     useCrowdsecDecisions: () => decisions(),
+    // Community blocklist OFF here, so the banner stays hidden and these
+    // assertions stay about the badge rendering.
+    useCrowdsecCommunityBlocklist: () => ({ data: { data: { enabled: false, decisionCount: 0, pendingRestart: false } }, isError: false }),
+    useSetCrowdsecCommunityBlocklist: mut,
     useDeleteCrowdsecDecision: mut,
     useAddCrowdsecAllowlistEntry: mut,
     useAddCrowdsecBan: mut,

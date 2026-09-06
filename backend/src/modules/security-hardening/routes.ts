@@ -33,6 +33,8 @@ import {
   addBan,
   addStaticBan,
   deleteDecisionById,
+  getCommunityBlocklistEnabled,
+  setCommunityBlocklistEnabled,
   getStatus as getCrowdsecStatus,
   listDecisions,
   pruneStaleBouncers,
@@ -47,6 +49,7 @@ import {
   crowdsecAddAllowlistRequestSchema,
   crowdsecAddBanRequestSchema,
   crowdsecAddStaticBanRequestSchema,
+  crowdsecCommunityBlocklistSettingSchema,
   crowdsecAutobanPatchConfigRequestSchema,
   crowdsecListDecisionsQuerySchema,
   createWafRuleExclusionRequestSchema,
@@ -351,6 +354,57 @@ export function buildSecurityHardeningRoutes(deps: SecurityHardeningDeps) {
             502,
             undefined,
             'Check the CrowdSec pod is Running and the platform-api bouncer is registered (cscli bouncers list).',
+          );
+        }
+      },
+    );
+
+    // ── Community blocklist (CAPI) opt-in ────────────────────────────
+    //
+    // Read and write are separate from the ban endpoints on purpose: this
+    // decides whether tens of thousands of externally-decided bans are
+    // enforced at all, which is a different kind of action from banning one IP.
+    app.get(
+      '/admin/security/crowdsec/community-blocklist',
+      { preHandler: requireRole('super_admin') },
+      async () => {
+        const enabled = await getCommunityBlocklistEnabled(kubeconfigPath);
+        const counts = await listDecisions(kubeconfigPath, { source: 'community', limit: 1 });
+        return success({
+          enabled,
+          decisionCount: counts.totalMatching,
+          // Decisions still present while the switch says off means the pod
+          // has not rolled onto the new setting yet (Reloader does that), or
+          // the purge could not run. Either way the operator should see it
+          // rather than believe the feature is already inert.
+          pendingRestart: !enabled && counts.totalMatching > 0,
+        });
+      },
+    );
+
+    app.put(
+      '/admin/security/crowdsec/community-blocklist',
+      { preHandler: requireRole('super_admin') },
+      async (req: AuthedRequest & FastifyRequest, reply: FastifyReply) => {
+        const parsed = crowdsecCommunityBlocklistSettingSchema.safeParse(req.body ?? {});
+        if (!parsed.success) {
+          return reply.status(400).send({
+            error: 'INVALID_BODY',
+            message: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; '),
+          });
+        }
+        const actor = userOf(req as AuthedRequest);
+        app.log.warn({ actor, enabled: parsed.data.enabled }, 'crowdsec: community blocklist toggled');
+        try {
+          const { purged } = await setCommunityBlocklistEnabled(kubeconfigPath, parsed.data.enabled);
+          return success({ enabled: parsed.data.enabled, purged });
+        } catch (err) {
+          throw new ApiError(
+            'CROWDSEC_UNREACHABLE',
+            err instanceof Error ? err.message : String(err),
+            502,
+            undefined,
+            'Check the CrowdSec pod is Running and that platform-api can patch ConfigMaps in the crowdsec namespace.',
           );
         }
       },

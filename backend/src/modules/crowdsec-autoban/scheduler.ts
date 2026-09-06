@@ -49,7 +49,11 @@ import type { CrowdsecAutobanConfig, CrowdsecAutobanOutcome } from '@insula/api-
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Db = NodePgDatabase<any>;
 
-const TICK_INTERVAL_MS = 60_000;
+// 30s (was 60s). The scheduler bans at the first tick that HAS the data, so
+// this interval — not eventThreshold — is what decides how many requests an
+// automated scanner lands before it is stopped. On production 2026-09-06 a
+// scanner emitted 285 events inside one 60s tick before the ban was issued.
+const TICK_INTERVAL_MS = 30_000;
 const INITIAL_DELAY_MS = 30_000;
 const MAX_BATCH = 1000;
 // The "recently banned" set is a 5-minute SQL window over
@@ -126,9 +130,22 @@ export async function loadConfig(db: Db): Promise<CrowdsecAutobanConfig> {
   };
 }
 
-/** Keyset cursor over (created_at, id) — the position of the last processed row. */
+/**
+ * Keyset cursor over (created_at, id) — the position of the last processed row.
+ *
+ * `createdAt` is the timestamp's EXACT Postgres text form
+ * (`2026-09-06 19:18:07.188583`), never a JS Date.
+ *
+ * Postgres timestamps carry MICROSECONDS; a JS Date carries milliseconds. Round
+ * -tripping the cursor through a Date truncated `.188583` to `.188`, so
+ * `(created_at, id) > (watermark)` matched the watermark's OWN row on every
+ * tick: the boundary row was re-read forever and the watermark could never
+ * advance. Observed on production 2026-09-06 — one row re-evaluated every 60s
+ * since 19:18, 1,206 junk `skipped_below_threshold` runs, and a stalled cursor
+ * that would have hidden any genuinely new event behind it.
+ */
 export interface WafCursor {
-  readonly createdAt: Date;
+  readonly createdAt: string;
   readonly id: string;
 }
 
@@ -145,14 +162,19 @@ export function parseWatermark(raw: string | null): WafCursor | null {
   if (!raw) return null;
   const sep = raw.lastIndexOf('|');
   if (sep === -1) return null;
-  const ts = new Date(raw.slice(0, sep));
+  const ts = raw.slice(0, sep).trim();
   const id = raw.slice(sep + 1);
-  if (Number.isNaN(ts.getTime()) || id === '') return null;
+  if (ts === '' || id === '') return null;
+  // Validated, not converted: a Date here is what truncated the microseconds.
+  // Postgres parses both the legacy ISO-with-Z form and the exact text form,
+  // so a watermark written by the previous version still resolves — at worst
+  // one row is evaluated twice, once, before the cursor advances past it.
+  if (Number.isNaN(new Date(ts).getTime())) return null;
   return { createdAt: ts, id };
 }
 
 export function formatWatermark(cursor: WafCursor): string {
-  return `${cursor.createdAt.toISOString()}|${cursor.id}`;
+  return `${cursor.createdAt}|${cursor.id}`;
 }
 
 async function loadWatermark(db: Db): Promise<WafCursor | null> {
@@ -209,6 +231,8 @@ async function pastBansPerIpFromDb(db: Db, candidateIps: string[]): Promise<Map<
 interface RawWafLogRow {
   id: string;
   created_at: string | Date;
+  /** Exact Postgres text form, microseconds intact — the cursor uses this. */
+  created_at_text?: string;
   source_ip: string | null;
   hostname: string;
   rule_id: string;
@@ -235,13 +259,15 @@ async function newWafEventsSince(
 ): Promise<{ rows: WafLogRow[]; lastCursor: WafCursor | null }> {
   const result = cursor
     ? await db.execute(sql`
-        SELECT id, created_at, source_ip, hostname, rule_id, severity, tenant_id
+        SELECT id, created_at, created_at::text AS created_at_text,
+               source_ip, hostname, rule_id, severity, tenant_id
         FROM waf_logs
         WHERE (created_at, id) > (${cursor.createdAt}::timestamp, ${cursor.id})
         ORDER BY created_at ASC, id ASC LIMIT ${MAX_BATCH}
       `)
     : await db.execute(sql`
-        SELECT id, created_at, source_ip, hostname, rule_id, severity, tenant_id
+        SELECT id, created_at, created_at::text AS created_at_text,
+               source_ip, hostname, rule_id, severity, tenant_id
         FROM waf_logs
         WHERE created_at > NOW() - (${lookbackSeconds} * INTERVAL '1 second')
         ORDER BY created_at ASC, id ASC LIMIT ${MAX_BATCH}
@@ -257,8 +283,12 @@ async function newWafEventsSince(
     severity: r.severity,
     tenantId: r.tenant_id,
   }));
-  const last = rows[rows.length - 1];
-  return { rows, lastCursor: { createdAt: last.createdAt, id: last.id } };
+  // Cursor from the RAW text column, not from the mapped Date — the mapped
+  // value has already lost the microseconds.
+  const lastRaw = rawRows[rawRows.length - 1];
+  const lastText = lastRaw.created_at_text
+    ?? (lastRaw.created_at instanceof Date ? lastRaw.created_at.toISOString() : String(lastRaw.created_at));
+  return { rows, lastCursor: { createdAt: lastText, id: lastRaw.id } };
 }
 
 async function insertRun(

@@ -20,8 +20,13 @@
 # request path needs them. `optional: true` costs nothing and removes the whole
 # failure class.
 #
-# The rule this enforces: on the LAPI, a secretKeyRef may be non-optional ONLY
-# if bootstrap creates that Secret before the workload is ever applied.
+# The rule this enforces: on the LAPI, a secretKeyRef or configMapKeyRef may be
+# non-optional ONLY if bootstrap creates it before the workload is ever applied.
+#
+# ConfigMap refs are covered too. 2026.9.11 added `envFrom: configMapRef:
+# crowdsec-capi-config` for the community-blocklist switch; a ConfigMap that a
+# cluster does not have yet fails container creation exactly like a missing
+# Secret, so the guard must see both or it only catches half its own subject.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -67,7 +72,26 @@ for dep in deps:
             print("  Add `optional: true`, or add the Secret to ALLOW_REQUIRED only if "
                   "bootstrap creates it before this workload is ever applied.", file=sys.stderr)
             fail = True
+        for e in c.get("env") or []:
+            ref = (e.get("valueFrom") or {}).get("configMapKeyRef")
+            if not ref:
+                continue
+            checked += 1
+            if ref.get("optional") is True:
+                continue
+            print(f"::error file={path}::env {e['name']} hard-requires ConfigMap "
+                  f"'{ref['name']}' — same failure mode as a required Secret: the kubelet "
+                  f"refuses to create the container, the LAPI never starts, and the Traefik "
+                  f"bouncer fails closed so every hosted site returns 403.", file=sys.stderr)
+            fail = True
         for ef in c.get("envFrom") or []:
+            cref = ef.get("configMapRef")
+            if cref:
+                checked += 1
+                if cref.get("optional") is not True:
+                    print(f"::error file={path}::envFrom hard-requires ConfigMap "
+                          f"'{cref['name']}' — add `optional: true`.", file=sys.stderr)
+                    fail = True
             ref = ef.get("secretRef")
             if not ref:
                 continue
