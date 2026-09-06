@@ -23,6 +23,17 @@
 # Deleting online_client removes registration, signal sharing AND the community
 # blocklist pull together — verified in the running image 2026-09-06.
 #
+# WHO CREATES IT
+#
+# NOT Flux. `reconcile: disabled` makes the kustomize-controller skip this
+# object during apply ENTIRELY — not merely skip reverting it — so Flux
+# inventories the ConfigMap and never creates it (verified on DEV 2026-09-06:
+# status.inventory listed it while `kubectl get cm` returned NotFound). The
+# platform-api creates it at boot with the default below, via
+# ensureCommunityBlocklistDefault(). This file is the declaration of intent and
+# the documentation; the backend owns the object, exactly as it does for the
+# webmail feature-flag ConfigMap.
+#
 # WHY reconcile: disabled
 #
 # The admin panel writes this ConfigMap when an operator flips the toggle.
