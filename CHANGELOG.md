@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.9.10] - 2026-09-06
+
 ### Fixed
 - **Upgrading to 2026.9.9 took every hosted website to HTTP 403.** The CrowdSec
   LAPI Deployment gained `AGENT_USERNAME` / `AGENT_PASSWORD` as *hard*
