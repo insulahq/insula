@@ -173,6 +173,33 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
     threshold: 0,
     forSeconds: 0,
   },
+  // ── CrowdSec LAPI liveness ──────────────────────────────────────────────
+  // Ships together with `updateMaxFailure: -1` on the bouncer middleware and is
+  // NOT optional alongside it. With -1 the bouncer keeps serving its cached
+  // decisions when the LAPI is unreachable, which is what stops a CrowdSec
+  // failure taking every hosted site to 403 — but it also makes that failure
+  // completely silent. Frozen IP reputation looks exactly like working IP
+  // reputation from the outside. This rule is the thing that makes it visible.
+  //
+  // Signal: cadvisor, because kube-state-metrics is not deployed. Verified
+  // against live data on 2026-09-05 — `absent()` returns empty while the
+  // container is running and 1 when it is not, so the rule is falsifiable in
+  // both directions rather than merely plausible.
+  //
+  // forSeconds 300 rides out an ordinary restart: the Deployment is
+  // Recreate/replicas=1, so every rollout has a short zero-container gap that
+  // is not worth paging for.
+  {
+    id: 'crowdsec-lapi-down',
+    name: 'CrowdSec LAPI is not running',
+    description: 'No CrowdSec LAPI container has been running for several minutes. The Traefik bouncer is configured never to block on an unreachable LAPI, so hosted sites keep serving — but IP reputation is FROZEN at its last known state: existing bans still apply, no new bans or community-blocklist updates arrive. Check `kubectl get pods -n crowdsec`; a CreateContainerConfigError means a referenced Secret or ConfigMap is missing.',
+    severity: 'critical',
+    expr: 'absent(container_memory_working_set_bytes{namespace="crowdsec",container="crowdsec"}) > $T',
+    subjectLabels: [],
+    threshold: 0,
+    forSeconds: 300,
+    unit: 'count',
+  },
   {
     id: 'api-availability-fast-burn',
     name: 'API availability — high error rate',
