@@ -1295,3 +1295,35 @@ Reloader annotations; adopt Reloader for `platform-config` /
 matches one of the two. Note Reloader itself is a silent-failure surface — if it
 is to carry this much, it needs an alert on its own liveness.
 
+---
+
+## R35 — The CrowdSec LAPI is a single point of failure that no longer needs to be
+
+`replicas: 1` + `strategy: Recreate`, so **every** rollout has a window with no
+LAPI. Until 2026-09-05 that window blocked all traffic after three minutes; with
+`updateMaxFailure: -1` it now only freezes IP reputation, which is why this is a
+follow-up rather than an incident.
+
+**The stated blocker is stale.** The middleware comment justified single-replica
+with "SQLite (single-writer constraint)", but the LAPI runs with
+`storage_type=postgres` — confirmed in its own startup log. Postgres storage
+does not constrain replica count.
+
+**The real blocker is the `crowdsec-data` PVC**, which is `ReadWriteOnce` on
+Longhorn, so a second replica cannot mount it and `RollingUpdate` would deadlock
+against the first. That is why `Recreate` is correct *today*.
+
+**Why it looks liftable.** The PVC holds 592K: `GeoLite2-ASN.mmdb`,
+`GeoLite2-City.mmdb`, `cloudflare_ip6s.txt`, `cloudflare_ips.txt` and
+`crowdsec.db`. The first four are hub datafiles — re-downloaded on start, which
+is exactly why the agent DaemonSet uses an `emptyDir` for the same path. If
+`crowdsec.db` is vestigial (likely, given postgres storage) the PVC can become
+an `emptyDir` per replica and the Deployment can go `replicas: 2` +
+`RollingUpdate`, removing the gap entirely.
+
+**Verify before changing anything.** `crowdsec.db` must be proven unused — this
+is the component that holds ban decisions, and removing durable storage on a
+guess would silently drop them on every restart. Check whether the LAPI opens it
+at runtime (`lsof`, or stop the file being present and confirm decisions
+survive a restart) before touching the volume.
+
