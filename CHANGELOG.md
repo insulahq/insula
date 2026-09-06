@@ -12,6 +12,19 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **Upgrading to 2026.9.9 took every hosted website to HTTP 403.** The CrowdSec
+  LAPI Deployment gained `AGENT_USERNAME` / `AGENT_PASSWORD` as *hard*
+  `secretKeyRef`s on `crowdsec-agent-credentials` — a Secret created by
+  host-migration `2026.9.9/0003`, which runs on the platform-ops converger's own
+  timer, not in step with the Flux apply. The kubelet refused to create the
+  container (`CreateContainerConfigError`), the LAPI never started, and the
+  Traefik CrowdSec bouncer **fails closed**, so all ingress returned 403. Both
+  refs are now `optional: true` — they only pre-register the log-processing
+  agent and nothing on the request path needs them — and both the LAPI and the
+  agent carry a Reloader annotation so they roll when the Secret appears.
+  Guard: `ci-crowdsec-lapi-startup-check.sh`.
+
 ## [2026.9.9] - 2026-09-05
 
 ### Added
