@@ -251,8 +251,23 @@ export async function clearWedgedChallenges(
   const all = await listChallenges(k8s, namespace);
   const scoped = opts.dnsNames?.length
     ? all.filter((c) => {
-        const n = (c.spec?.dnsName ?? '').toLowerCase();
-        return opts.dnsNames!.some((d) => d.toLowerCase().replace(/^\*\./, '') === n);
+        const n = (c.spec?.dnsName ?? '').toLowerCase().replace(/\.$/, '');
+        return opts.dnsNames!.some((raw) => {
+          // Callers pass the DOMAIN, but a certificate for a domain also covers
+          // its hostnames, and cert-manager names each challenge after the host
+          // being validated. Scoping on exact equality alone missed every
+          // route: a wedge on blog.example.com is invisible to an operator
+          // pressing the button on example.com, which is the whole point of the
+          // button. Caught on DEV, where a probe challenge for
+          // `probe.<apex>` sat under the domain row `<apex>` and the exact
+          // match never fired.
+          //
+          // A wildcard SAN is normalised because cert-manager strips the "*."
+          // itself: both challenges of a wildcard order carry the BASE name and
+          // are told apart by spec.wildcard (verified on production).
+          const d = raw.toLowerCase().replace(/^\*\./, '').replace(/\.$/, '');
+          return n === d || n.endsWith(`.${d}`);
+        });
       })
     : all;
 
