@@ -18,6 +18,9 @@ namespace: crowdsec
 
 resources:
   - namespace.yaml
+  # Community-blocklist (CAPI) opt-in switch. Flux creates it once and then
+  # leaves it alone so an operator toggle in the admin panel sticks.
+  - capi-config.yaml
   - deployment.yaml
   # NOTE: the log-processing agent is NOT here. It needs a hostPath, which
   # this namespace's `baseline` Pod Security level forbids, so it lives in
