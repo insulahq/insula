@@ -293,6 +293,8 @@ describe('scoping covers the hostnames a domain certificate actually validates',
     ]);
     const res = await clearWedgedChallenges(k8s as never, 'ns', { now: NOW, dnsNames: ['example.com'] });
     expect(res.deleted).toEqual(['fqdn']);
+  });
+});
 
 describe('a failed lookup is never reported as "nothing stuck"', () => {
   it('surfaces the API error instead of returning an empty list', async () => {
