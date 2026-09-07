@@ -515,17 +515,33 @@ function buildEnvVars(
   }
 
   // Pass 2: values from configuration.
-  // - If configurableEnvKeys is set, only those keys + any already-fixed key
-  //   flow through. Arbitrary meta params (e.g. `wordpress.siteTitle`) stay
-  //   in `deployment.configuration` for platform use but aren't container env.
-  // - If unset, pre-filter legacy behavior: every stringish key passes through.
+  // - If configurableEnvKeys is set, only those keys flow through. Arbitrary
+  //   meta params (e.g. `wordpress.siteTitle`) stay in
+  //   `deployment.configuration` for platform use but aren't container env.
+  // - If unset, legacy behaviour: every stringish key passes through, and a
+  //   key already pinned in `fixed` stays pinned.
+  //
+  // A key declared BOTH fixed and configurable is the tenant's to set, and
+  // `fixed` is then its default. The previous rule was an unconditional
+  // "fixed wins", which made the manifest contradict itself: the Official
+  // apache-php entry lists APACHE_DOCUMENT_ROOT in `fixed` AND in
+  // `configurable`, so the panel offered it as editable (it reads the same
+  // `configurable` list), the tenant changed it, the value was stored — and
+  // this loop dropped it every time. The pod redeployed with the manifest
+  // default and the setting looked broken rather than ignored. Same for
+  // PHP_OPCACHE_ENABLE in that entry.
+  //
+  // Scoped to keys the manifest EXPLICITLY declares configurable, so an entry
+  // that pins a value without offering it stays pinned, and entries with no
+  // `configurable` list keep their existing behaviour exactly.
   if (configuration) {
     const allowed = opts.configurableEnvKeys
       ? new Set(opts.configurableEnvKeys)
       : null;
     for (const [key, value] of Object.entries(configuration)) {
-      if (envMap.has(key)) continue; // fixed wins
-      if (allowed && !allowed.has(key)) continue;
+      const declaredConfigurable = allowed?.has(key) ?? false;
+      if (allowed && !declaredConfigurable) continue;
+      if (envMap.has(key) && !declaredConfigurable) continue; // pinned by the manifest
       if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
         envMap.set(key, String(value));
       }

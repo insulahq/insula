@@ -29,6 +29,16 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   row, never applied — and is now covered by the same gate.
 - Configuration is compared with key order normalised, so re-saving without
   changing anything no longer rolls the pod.
+- **A configuration key the catalog declares as both `fixed` and `configurable`
+  was silently discarded.** `buildEnvVars` applied an unconditional "fixed
+  wins", but the Official `apache-php` entry lists `APACHE_DOCUMENT_ROOT` (and
+  `PHP_OPCACHE_ENABLE`) in *both* blocks — so the panel offered the value as
+  editable, because it reads the same `configurable` list, and the deployer then
+  dropped it on every redeploy. The pod came back on the manifest default, which
+  looks like a broken setting rather than an ignored one. A key the manifest
+  explicitly declares configurable now takes the tenant's value, with `fixed`
+  acting as its default; a key pinned without being offered stays pinned, and
+  entries with no `configurable` list are unaffected.
 
 ### Fixed
 - **DNS verification passed for domains that were never delegated to the

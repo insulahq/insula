@@ -223,6 +223,28 @@ describe('deployCatalogEntry: env var filtering + templating', () => {
     expect(env).not.toHaveProperty('wordpress.siteTitle');
   });
 
+  it('a key declared BOTH fixed and configurable takes the tenant value', async () => {
+    // The Official apache-php entry ships exactly this shape:
+    //   fixed:        { APACHE_DOCUMENT_ROOT: "/var/www/html", PHP_OPCACHE_ENABLE: "1" }
+    //   configurable: [ "APACHE_DOCUMENT_ROOT", "PHP_OPCACHE_ENABLE", ... ]
+    // The panel reads the same `configurable` list, so it offered the document
+    // root as editable. The old unconditional "fixed wins" then dropped the
+    // saved value on every redeploy — the pod came back on the manifest default
+    // and the setting looked broken rather than ignored.
+    const { k8s, calls } = makeK8sMock();
+    await deployCatalogEntry(k8s, baseInput({
+      components: [makeComponent('deployment', { name: 'web', image: 'php:1', ports: [{ port: 80, protocol: 'TCP' }] })],
+      envVars: { fixed: { APACHE_DOCUMENT_ROOT: '/var/www/html', SSL_MODE: 'off' } },
+      configuration: { APACHE_DOCUMENT_ROOT: '/var/www/html/public', SSL_MODE: 'on' },
+      configurableEnvKeys: ['APACHE_DOCUMENT_ROOT'],
+    }));
+    const env = envOf(calls.createDeployment.mock.calls[0][0].body);
+    expect(env.APACHE_DOCUMENT_ROOT).toBe('/var/www/html/public');
+    // SSL_MODE is fixed and NOT configurable — it stays pinned. A manifest that
+    // pins a value without offering it must keep winning.
+    expect(env.SSL_MODE).toBe('off');
+  });
+
   it('legacy input (no configurableEnvKeys provided) still accepts configuration keys (backward compat)', async () => {
     const { k8s, calls } = makeK8sMock();
     await deployCatalogEntry(k8s, baseInput({
