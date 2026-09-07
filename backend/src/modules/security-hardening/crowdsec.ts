@@ -555,6 +555,40 @@ export async function getCommunityBlocklistEnabled(
  *
  * Best effort — never fail a toggle because the roll did not happen.
  */
+/**
+ * Delete the community decisions the LAPI already holds.
+ *
+ * Disabling the feed only stops it being REFRESHED. Everything already pulled
+ * stays enforced until it expires, and CAPI TTLs run long — decisions with
+ * 144h remaining were observed on production. Without this, switching the feed
+ * off leaves tens of thousands of bans in force for days and the operator
+ * reasonably concludes the switch did nothing. On DEV, turning it off left
+ * 18,770 decisions enforced.
+ *
+ * `--origin CAPI` is exact and scoped: it cannot touch cscli (operator, static,
+ * auto-ban) or crowdsec (this platform's own agent detections) decisions.
+ *
+ * Best effort, and it says what happened — the feed stops refreshing either way.
+ */
+async function purgeCommunityDecisions(kc: k8s.KubeConfig): Promise<number> {
+  try {
+    const podName = await findCrowdsecPodName(kc);
+    const { stdout, stderr } = await cscliExec(kc, podName, ['decisions', 'delete', '--origin', 'CAPI']);
+    const m = /(\d+)\s+decision\(s\)\s+deleted/.exec(stdout + stderr);
+    const n = m ? Number(m[1]) : 0;
+    // eslint-disable-next-line no-console
+    console.info(`[waf] purged ${n} community (CAPI) decision(s)`);
+    return n;
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      '[waf] could NOT purge community decisions — they stay enforced until they expire: '
+      + (err instanceof Error ? err.message : String(err)),
+    );
+    return 0;
+  }
+}
+
 async function rollCrowdsecLapi(kc: k8s.KubeConfig): Promise<number> {
   // Same cast shape as findCrowdsecPodName in cscli-exec.ts: the generated
   // client's typings and its runtime argument shape do not agree across SDK
@@ -630,6 +664,11 @@ export async function ensureCommunityBlocklistDefault(
   });
   // The pod predates the ConfigMap, so it holds no value for the switch.
   await rollCrowdsecLapiSafely(kc, 'capi-config created');
+  // ...and drop what the feed already loaded. Turning it off only stops the
+  // REFRESH; on DEV that left 18,770 decisions enforced, some with 144h to run,
+  // so an upgrading cluster would keep blocking for days and the new default
+  // would look inert.
+  await purgeCommunityDecisions(kc);
   return 'created';
 }
 
@@ -675,19 +714,7 @@ export async function setCommunityBlocklistEnabled(
   // Roll explicitly rather than trusting Reloader to notice.
   await rollCrowdsecLapiSafely(kc, 'community blocklist toggled');
 
-  let purged = 0;
-  if (!enabled) {
-    try {
-      const podName = await findCrowdsecPodName(kc);
-      const { stdout, stderr } = await cscliExec(kc, podName, ['decisions', 'delete', '--origin', 'CAPI']);
-      const m = /(\d+)\s+decision\(s\)\s+deleted/.exec(stdout + stderr);
-      purged = m ? Number(m[1]) : 0;
-    } catch {
-      // Best effort: the pod is about to be rolled by Reloader anyway, and the
-      // decisions stop being refreshed either way. Never fail the toggle on it.
-      purged = 0;
-    }
-  }
+  const purged = enabled ? 0 : await purgeCommunityDecisions(kc);
   return { purged };
 }
 
