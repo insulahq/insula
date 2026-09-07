@@ -9,6 +9,17 @@ export interface VerificationCheck {
   readonly type: string;
   readonly status: 'pass' | 'fail';
   readonly detail: string;
+  /**
+   * What the platform required, and what DNS actually returned.
+   *
+   * These exist so the UI can show the comparison instead of a prose sentence.
+   * The NS check used to render its PASS message from the values it FOUND
+   * ("NS records correctly delegated to: <whatever was there>"), which reads as
+   * confirmation while asserting nothing — that phrasing is what made a
+   * vacuously-passing check look convincing on production for months.
+   */
+  readonly expected?: readonly string[];
+  readonly actual?: readonly string[];
 }
 
 export interface VerificationResult {
@@ -140,25 +151,49 @@ export async function verifyNsDelegation(
   expectedNs: readonly string[],
   resolver: DnsLike = dns,
 ): Promise<VerificationCheck> {
+  const normalizedExpected = expectedNs.map((ns) => ns.toLowerCase().replace(/\.$/, ''));
+
+  // FAIL CLOSED on an empty expectation. `[].every(...)` is `true`, so with no
+  // configured nameservers this check reported PASS for every domain whose NS
+  // lookup merely succeeded — it asserted "the domain exists in DNS" while
+  // claiming "delegated correctly". On production that marked 11 domains
+  // verified, including one delegated to an unrelated third party, and
+  // verification gates ACME issuance.
+  if (normalizedExpected.length === 0) {
+    return {
+      type: 'ns_delegation',
+      status: 'fail',
+      detail: 'No platform nameservers are configured, so delegation cannot be verified. '
+        + "Set the NS hostnames on this domain's DNS provider group.",
+      expected: [],
+      actual: [],
+    };
+  }
+
   try {
     const actualNs = await resolver.resolveNs(domain);
     const normalizedActual = actualNs.map((ns) => ns.toLowerCase().replace(/\.$/, ''));
-    const normalizedExpected = expectedNs.map((ns) => ns.toLowerCase().replace(/\.$/, ''));
 
     const allMatch = normalizedExpected.every((ns) => normalizedActual.includes(ns));
 
     return {
       type: 'ns_delegation',
       status: allMatch ? 'pass' : 'fail',
+      // Both branches state the EXPECTATION, so a pass is readable as a claim
+      // about what was required rather than an echo of what was found.
       detail: allMatch
-        ? `NS records correctly delegated to: ${normalizedActual.join(', ')}`
-        : `Expected NS: ${normalizedExpected.join(', ')} — found: ${normalizedActual.join(', ')}`,
+        ? `Delegated to the expected nameservers: ${normalizedExpected.join(', ')}`
+        : `Expected NS: ${normalizedExpected.join(', ')} — found: ${normalizedActual.join(', ') || '(none)'}`,
+      expected: normalizedExpected,
+      actual: normalizedActual,
     };
   } catch (err) {
     return {
       type: 'ns_delegation',
       status: 'fail',
       detail: `NS lookup failed: ${err instanceof Error ? err.message : 'Unknown error'}`,
+      expected: normalizedExpected,
+      actual: [],
     };
   }
 }
@@ -259,7 +294,7 @@ export async function verifyResolvesToPlatform(
     const detail = platformIps.source === 'none'
       ? `Platform ingress has no resolvable A/AAAA records — operator misconfiguration (ingress_base_domain not set or DNS not resolving)`
       : `Platform ingress base domain has no resolvable A/AAAA records — operator misconfiguration`;
-    return { type: 'cname_to_ingress', status: 'fail', detail };
+    return { type: 'cname_to_ingress', status: 'fail', detail, expected: [], actual: [] };
   }
 
   // Resolve customer hostname IPs (follows CNAME chain transparently)
@@ -272,7 +307,11 @@ export async function verifyResolvesToPlatform(
     if (customerErrors.length > 0) {
       detail += ` (${customerErrors.join('; ')})`;
     }
-    return { type: 'cname_to_ingress', status: 'fail', detail };
+    return {
+      type: 'cname_to_ingress', status: 'fail', detail,
+      expected: [...platformIps.v4, ...platformIps.v6],
+      actual: [],
+    };
   }
 
   // IP-set intersection check — v4 and v6 independently
@@ -302,6 +341,8 @@ export async function verifyResolvesToPlatform(
     type: 'cname_to_ingress',
     status: passes ? 'pass' : 'fail',
     detail,
+    expected: [...platformIps.v4, ...platformIps.v6],
+    actual: allCustomerIps,
   };
 }
 
@@ -383,22 +424,42 @@ export async function verifyAxfrSync(
         const provider = getProviderForServer(server, encryptionKey);
         if (provider.getZoneAxfrStatus) {
           const axfrStatus = await provider.getZoneAxfrStatus(domainName);
+          const serial = axfrStatus.lastSoaSerial;
+          const primarySerial = axfrStatus.primarySoaSerial;
+          // "Has an SOA record" is not "is synchronised". A slave zone that was
+          // created but never transferred, or one that is badly stale, still
+          // carries an SOA — so the serial has to be compared against the
+          // primary before this can claim sync.
+          const inSync = axfrStatus.synced
+            && (primarySerial === undefined || serial === primarySerial);
           return {
             type: 'axfr_sync',
-            status: axfrStatus.synced ? 'pass' : 'fail',
-            detail: axfrStatus.synced
-              ? `AXFR synced — SOA serial: ${axfrStatus.lastSoaSerial ?? 'unknown'}`
-              : 'AXFR not yet synced — SOA record not found',
+            status: inSync ? 'pass' : 'fail',
+            detail: !axfrStatus.synced
+              ? 'AXFR not yet synced — SOA record not found on the slave'
+              : inSync
+                ? `AXFR synced — SOA serial ${serial ?? 'unknown'}`
+                : `Slave zone is STALE — slave SOA serial ${serial ?? 'unknown'}, primary ${primarySerial}`,
+            expected: primarySerial !== undefined ? [`SOA serial ${primarySerial}`] : ['a zone transferred from the primary'],
+            actual: serial !== undefined ? [`SOA serial ${serial}`] : ['no SOA on the slave'],
           };
         }
-        // Fallback: check if zone exists with SOA via getZone
+        // No AXFR-status support on this provider. Only powerdns and mock
+        // implement getZoneAxfrStatus; rndc/cloudflare/route53/hetzner/cloudns
+        // land here. The old fallback asked getZone and passed on the zone
+        // merely EXISTING, reported as "Slave zone exists" — presence, not
+        // synchronisation, under a check named axfr_sync. Refuse to make a
+        // claim the provider cannot support.
         const zone = await provider.getZone(domainName);
         return {
           type: 'axfr_sync',
-          status: zone ? 'pass' : 'fail',
+          status: 'fail',
           detail: zone
-            ? `Slave zone exists — serial: ${zone.serial}`
+            ? `Cannot verify AXFR sync: the ${server.providerType} provider does not report transfer status. `
+              + `A slave zone exists (serial ${zone.serial}), but its freshness is unknown.`
             : 'Slave zone not found on DNS server',
+          expected: ['a provider that reports AXFR transfer status'],
+          actual: [`${server.providerType} (no AXFR status support)`],
         };
       } catch {
         // Try next server
@@ -420,6 +481,45 @@ export async function verifyAxfrSync(
 
 // ─── Main Verification Dispatcher ───────────────────────────────────────────
 
+/**
+ * NS hostnames this domain is expected to be delegated to.
+ *
+ * Reads the domain's DNS provider group, which is the platform's modelled
+ * source of truth for nameservers (ADR-022 provider groups). Falls back to the
+ * supplied list only when the group has none, and returns an empty array when
+ * neither is configured — the caller must fail closed on that, never treat it
+ * as "nothing to check".
+ *
+ * Drizzle is imported dynamically to match the rest of this module: it is not
+ * resolvable in the unit-test environment, and a static import here would break
+ * every test in the file.
+ */
+async function getExpectedNameservers(
+  db: Database,
+  domainName: string,
+  fallback: readonly string[],
+): Promise<readonly string[]> {
+  try {
+    const { domains } = await import('../../db/schema.js');
+    const { eq } = await import('drizzle-orm');
+    const rows = await db
+      .select({ dnsGroupId: domains.dnsGroupId })
+      .from(domains)
+      .where(eq(domains.domainName, domainName))
+      .limit(1);
+    const groupId = rows[0]?.dnsGroupId;
+    if (groupId) {
+      const { getProviderGroupById } = await import('../dns-servers/service.js');
+      const group = await getProviderGroupById(db, groupId);
+      const ns = group?.nsHostnames ?? [];
+      if (ns.length > 0) return ns;
+    }
+  } catch {
+    // DB unavailable or schema unresolvable (unit tests) — use the fallback.
+  }
+  return fallback;
+}
+
 export async function verifyDomain(
   domain: string,
   dnsMode: 'primary' | 'cname' | 'secondary',
@@ -437,7 +537,16 @@ export async function verifyDomain(
 
   switch (dnsMode) {
     case 'primary': {
-      const nsCheck = await verifyNsDelegation(domain, platformConfig.nameservers, resolver);
+      // Group first, env second. The provider group is where this platform
+      // MODELS nameservers (dns_provider_groups.ns_hostnames, populated on
+      // every real cluster); PLATFORM_NAMESERVERS is a global env var that is
+      // read in exactly one place and set in none — no overlay, no bootstrap
+      // script, no ConfigMap — so on every cluster it resolved to [] and made
+      // the check below vacuous. Reading the per-domain group also gets the
+      // answer right when domains sit in different groups, which a single
+      // global list cannot express.
+      const expectedNs = await getExpectedNameservers(db, domain, platformConfig.nameservers);
+      const nsCheck = await verifyNsDelegation(domain, expectedNs, resolver);
       checks.push(nsCheck);
       break;
     }

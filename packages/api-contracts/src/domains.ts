@@ -122,6 +122,13 @@ export const verificationCheckSchema = z.object({
   type: z.string(),
   status: z.enum(['pass', 'fail']),
   detail: z.string(),
+  /**
+   * The comparison behind the verdict, so the UI can show it as a table rather
+   * than a sentence. Optional because a cached result stored before these
+   * existed has neither.
+   */
+  expected: z.array(z.string()).optional(),
+  actual: z.array(z.string()).optional(),
 });
 
 export const verificationResultSchema = z.object({

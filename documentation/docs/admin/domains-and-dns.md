@@ -1,5 +1,5 @@
 ---
-verified: 2026.6.7
+verified: 2026.9.12
 ---
 
 # Domains & DNS
@@ -57,6 +57,27 @@ fail; on failure it gives mode-specific guidance — for a CNAME domain it
 tells you the ingress hostname the tenant must point at; for Primary /
 Secondary it explains the nameserver delegation — then lets you re-check.
 The routing tab shows the last-verified and cache timestamps.
+
+The modal also shows an **Expected vs Actual** table for every check, whether
+it passed or failed, so a pass can be audited rather than taken on trust:
+
+| Check | Expected | Actual |
+|-------|----------|--------|
+| Nameserver delegation | the NS hostnames on the domain's DNS provider group | the NS records the domain actually resolves to |
+| Resolves to platform | the platform's ingress IPs | the addresses the hostname resolves to |
+| AXFR zone transfer | the primary's SOA serial | the slave's SOA serial |
+
+!!! warning "\"Expected: not configured\" means the check cannot pass"
+    Nameserver delegation compares against the **NS hostnames set on the
+    domain's DNS provider group** (*Settings → DNS Servers*). If that group has
+    no NS hostnames, the expected column reads *not configured* and the check
+    **fails** — it will not report success on a comparison it cannot make. Fill
+    in the group's NS hostnames, then re-verify.
+
+!!! note "Secondary mode and providers that cannot report transfer status"
+    Only PowerDNS reports AXFR transfer status. On other providers the check
+    fails with an explanation rather than claiming a sync it cannot observe —
+    the slave zone may exist, but its freshness is unknown.
 
 !!! warning "Verification results are cached for 24 hours"
     A verification result — **including a failure** — is cached against the

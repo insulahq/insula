@@ -1,3 +1,4 @@
+import { Resolver } from 'node:dns/promises';
 import type { DnsProviderAdapter, DnsZone, DnsRecord, DnsRecordInput, PowerDnsConfig } from './types.js';
 import { describeFetchFailure, summarizeUpstreamBody } from '../../../shared/fetch-error.js';
 import { fqdn, qualifyName, formatContent } from '../wire-format.js';
@@ -420,7 +421,9 @@ export class PowerDnsProvider implements DnsProviderAdapter {
     });
   }
 
-  async getZoneAxfrStatus(name: string): Promise<{ synced: boolean; lastSoaSerial?: number }> {
+  async getZoneAxfrStatus(
+    name: string,
+  ): Promise<{ synced: boolean; lastSoaSerial?: number; primarySoaSerial?: number }> {
     const normalized = fqdn(name);
     try {
       const zoneData = await this.request<PdnsZoneDetail>(`/zones/${normalized}`);
@@ -428,13 +431,35 @@ export class PowerDnsProvider implements DnsProviderAdapter {
       if (!soaRrset || soaRrset.records.length === 0) {
         return { synced: false };
       }
-      // Parse serial from SOA content (format: "primary rname serial refresh retry expire minimum")
-      const soaContent = soaRrset.records[0].content;
-      const parts = soaContent.split(/\s+/);
-      const serial = parts.length >= 3 ? parseInt(parts[2], 10) : undefined;
-      return { synced: true, lastSoaSerial: serial };
+      const serial = parseSoaSerial(soaRrset.records[0].content);
+      // Finding an SOA proves a zone object exists here, NOT that it carries
+      // the primary's current data — a slave that was created and never
+      // transferred, or one whose transfers have been failing for weeks, has an
+      // SOA all the same. Ask the primary for its serial so the caller can
+      // compare. Undefined on failure, which degrades the claim rather than
+      // fabricating a match.
+      const primarySoaSerial = await this.fetchPrimarySerial(normalized, zoneData.masters);
+      return { synced: true, lastSoaSerial: serial, primarySoaSerial };
     } catch {
       return { synced: false };
+    }
+  }
+
+  /** SOA serial straight from the zone's configured primary, over DNS. */
+  private async fetchPrimarySerial(
+    zone: string,
+    masters: readonly string[] | undefined,
+  ): Promise<number | undefined> {
+    const master = masters?.[0];
+    if (!master) return undefined;
+    try {
+      const resolver = new Resolver({ timeout: 5_000, tries: 1 });
+      resolver.setServers([master]);
+      const soa = await resolver.resolveSoa(zone.replace(/\.$/, ''));
+      return typeof soa.serial === 'number' ? soa.serial : undefined;
+    } catch {
+      // Primary unreachable / not answering SOA. Not evidence of staleness.
+      return undefined;
     }
   }
 }
@@ -448,8 +473,22 @@ interface PdnsZone {
   readonly rrsets?: PdnsRRSet[];
 }
 
+/**
+ * Serial out of SOA content: "primary rname serial refresh retry expire minimum".
+ * Returns undefined rather than NaN when the field is missing or unparseable —
+ * NaN compares false against everything, which would read as "stale" forever.
+ */
+function parseSoaSerial(content: string): number | undefined {
+  const parts = content.trim().split(/\s+/);
+  if (parts.length < 3) return undefined;
+  const n = Number.parseInt(parts[2], 10);
+  return Number.isFinite(n) ? n : undefined;
+}
+
 interface PdnsZoneDetail extends PdnsZone {
   readonly rrsets: PdnsRRSet[];
+  /** Present on Slave zones — the primaries this zone transfers from. */
+  readonly masters?: readonly string[];
 }
 
 interface PdnsRRSet {

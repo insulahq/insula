@@ -61,7 +61,15 @@ export interface DnsProviderAdapter {
 
   // Optional — secondary/slave DNS support
   createSlaveZone?(name: string, masterIp: string): Promise<DnsZone>;
-  getZoneAxfrStatus?(name: string): Promise<{ synced: boolean; lastSoaSerial?: number }>;
+  /**
+   * Transfer status of a SLAVE zone.
+   *
+   * `synced` alone only says an SOA exists. `primarySoaSerial` is what makes
+   * the answer meaningful — a stale slave has an SOA too. Providers that cannot
+   * reach the primary may omit it, and the caller then degrades to the weaker
+   * claim rather than inventing a match.
+   */
+  getZoneAxfrStatus?(name: string): Promise<{ synced: boolean; lastSoaSerial?: number; primarySoaSerial?: number }>;
 
   // Optional — replace all NS records at zone root with specific nameservers
   replaceNsRecords?(zone: string, nameservers: string[]): Promise<void>;

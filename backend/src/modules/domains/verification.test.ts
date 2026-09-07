@@ -446,3 +446,51 @@ describe('verifyDomain', () => {
     expect(result.checks[0].type).toBe('axfr_sync');
   });
 });
+
+// ─── Fail-closed: the class of bug that made this whole check inert ──────────
+
+describe('verification never passes on an empty expectation', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it('NS delegation FAILS when no platform nameservers are configured', async () => {
+    // THE REGRESSION. `[].every(...)` is `true`, so with PLATFORM_NAMESERVERS
+    // unset — which it was on every cluster, since the repo reads that variable
+    // in one place and sets it in none — this returned PASS for any domain
+    // whose NS lookup merely succeeded. On production it marked 11 domains
+    // "verified", one of them delegated to an unrelated third party, and
+    // verification gates ACME issuance.
+    mockResolveNs.mockResolvedValue(['ns1.someone-else.net', 'ns2.someone-else.net']);
+
+    const result = await verifyNsDelegation('example.com', []);
+
+    expect(result.status).toBe('fail');
+    expect(result.expected).toEqual([]);
+  });
+
+  it('does not let a successful NS lookup stand in for correct delegation', async () => {
+    // The check must compare, not merely resolve.
+    mockResolveNs.mockResolvedValue(['ns1.someone-else.net']);
+    const result = await verifyNsDelegation('example.com', ['ns1.platform.test', 'ns2.platform.test']);
+    expect(result.status).toBe('fail');
+    expect(result.actual).toEqual(['ns1.someone-else.net']);
+    expect(result.expected).toEqual(['ns1.platform.test', 'ns2.platform.test']);
+  });
+
+  it('reports the EXPECTATION on a pass, not an echo of what it found', async () => {
+    // The old pass message was "NS records correctly delegated to: <found>",
+    // which reads as confirmation while restating the input. A vacuous pass
+    // was therefore indistinguishable from a real one in the UI.
+    mockResolveNs.mockResolvedValue(['ns1.platform.test', 'ns2.platform.test', 'ns3.extra.test']);
+    const result = await verifyNsDelegation('example.com', ['ns1.platform.test', 'ns2.platform.test']);
+    expect(result.status).toBe('pass');
+    expect(result.detail).toContain('ns1.platform.test');
+    expect(result.detail).not.toContain('ns3.extra.test');
+    expect(result.expected).toEqual(['ns1.platform.test', 'ns2.platform.test']);
+  });
+
+  it('still passes a correctly delegated domain (no over-correction)', async () => {
+    mockResolveNs.mockResolvedValue(['NS1.Platform.Test.', 'ns2.platform.test']);
+    const result = await verifyNsDelegation('example.com', ['ns1.platform.test', 'ns2.platform.test']);
+    expect(result.status).toBe('pass');
+  });
+});
