@@ -155,6 +155,46 @@ spec:
 # operations time out) and the panels' nginx reverse-proxies can't
 # reach platform-api:3000 (all /api/v1/* requests 499).
 # Narrowly scoped: named sources → named target ports.
+# CrowdSec LAPI -> platform Postgres (R35).
+#
+# Needed only once the LAPI's db_config points at Postgres; harmless before
+# then. BOTH sides must allow it and that is easy to get half-right: the
+# crowdsec namespace's own egress rule was added first and the connection still
+# hung, because `default-deny-ingress` in THIS namespace drops it. Verified on
+# DEV 2026-09-07 — DNS resolved, TCP to :5432 timed out with egress alone.
+#
+# Scoped to the crowdsec namespace and the postgres pods only, mirroring
+# allow-mail-to-postgres.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-crowdsec-to-postgres
+  namespace: platform
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  podSelector:
+    matchLabels:
+      app: postgres
+  policyTypes:
+    - Ingress
+  ingress:
+    # namespaceSelector AND podSelector in ONE `from` element — the pair is
+    # ANDed, so this admits the LAPI pod and nothing else. Namespace-only
+    # scoping would also admit the retention CronJob and any future or
+    # compromised pod placed in the crowdsec namespace, which is the namespace
+    # closest to attacker-influenced input in the platform.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: crowdsec
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: crowdsec
+      ports:
+        - protocol: TCP
+          port: 5432
+---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

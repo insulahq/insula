@@ -20,9 +20,14 @@
 #   * SQLite DB at /var/lib/crowdsec/data/crowdsec.db backed by a 1GiB
 #     PVC. Survives pod restarts so the bouncer key + cached
 #     decisions don't have to be re-issued.
-#   * NB: production-scale operators can swap to Postgres by setting
-#     DB_TYPE=postgres + DB_HOST=... env vars and using a
-#     CNPG Cluster — out of scope for this baseline.
+#   * Postgres is supported (R35) and is what the platform provisions: the
+#     crowdsec-db reconciler creates the role + database in the CNPG cluster
+#     and writes `crowdsec-db-credentials`, which the seed-config init
+#     container renders into db_config below. Without that Secret this stays
+#     on SQLite.
+#     NB: there is NO DB_TYPE/DB_HOST env route — the image honours no DB_*
+#     variables (verified against v1.7.8). Editing config.yaml is the only
+#     mechanism; see ROADMAP R35.
 #
 # Single replica is correct here — CrowdSec LAPI is a single-writer
 # system (the bouncer key registration + decision cache update both
@@ -137,6 +142,51 @@ spec:
               fi
               # Unconditional: a partial copy left by an older image would
               # otherwise stay unreadable to uid 1000 forever.
+              # R35: point the LAPI at Postgres when, and only when, a
+              # COMPLETE set of credentials is mounted. Anything less leaves
+              # the image's SQLite default in place — a cluster that has not
+              # been provisioned is unaffected rather than broken.
+              #
+              # ALL SIX KEYS ARE CHECKED, not just one. Gating on `password`
+              # alone and then reading the rest unconditionally would write a
+              # config with an empty dbname, delete db_path, report success and
+              # leave no SQLite fallback: healthy-looking, non-functional, and
+              # the LAPI is what the Traefik bouncer depends on. That is the
+              # 2026-09-05 shape, documented above in this same file.
+              #
+              # Values are read with yq's load_str, NOT shell interpolation.
+              # $(cat /db/host) would splice file content into the yq
+              # expression, where a value containing a quote escapes the string
+              # literal and can append arbitrary yq stages — running as uid 0
+              # in this container. load_str keeps the content inside yq, never
+              # passing it through a quoting layer. Verified against a hostile
+              # value on DEV: `p"wd$(id)` round-trips literally.
+              CS_DB_OK=1
+              for f in host port username password dbname sslmode; do
+                [ -s "/db/$f" ] || CS_DB_OK=0
+              done
+              if [ "$CS_DB_OK" = "1" ]; then
+                # TMPDIR is load-bearing: `yq -i` writes a temp file and
+                # renames it, and this container has readOnlyRootFilesystem,
+                # so the default /tmp fails with "read-only file system" and
+                # kills the init container — taking the LAPI with it.
+                # Observed on DEV 2026-09-07.
+                TMPDIR=/etc/crowdsec yq -i '
+                  .db_config.type     = "postgresql" |
+                  .db_config.host     = load_str("/db/host") |
+                  .db_config.port     = (load_str("/db/port") | tonumber) |
+                  .db_config.user     = load_str("/db/username") |
+                  .db_config.password = load_str("/db/password") |
+                  .db_config.db_name  = load_str("/db/dbname") |
+                  .db_config.sslmode  = load_str("/db/sslmode") |
+                  del(.db_config.db_path)
+                ' /etc/crowdsec/config.yaml
+                # The file now holds a database password. Never echoed.
+                chmod 600 /etc/crowdsec/config.yaml
+                echo "seed-config: db_config -> postgresql"
+              else
+                echo "seed-config: db credentials absent or incomplete — staying on sqlite"
+              fi
               chown -R 1000:1000 /etc/crowdsec
               echo "seed-config: ownership set to 1000:1000"
           resources:
@@ -148,6 +198,10 @@ spec:
           volumeMounts:
             - name: config
               mountPath: /etc/crowdsec
+            # optional: true — a cluster without the Secret keeps SQLite.
+            - name: db-credentials
+              mountPath: /db
+              readOnly: true
       containers:
         - name: crowdsec
           # v1.7.8 (2026-05-11) — latest stable on the v1.7.x line. Includes
@@ -315,6 +369,15 @@ spec:
             claimName: crowdsec-data
         - name: config
           emptyDir: {}
+        # R35 Postgres credentials, written by the crowdsec-db reconciler.
+        # optional: true is load-bearing: the LAPI must still start on a
+        # cluster that has never been provisioned, and the bouncer fails
+        # closed on a LAPI that will not start.
+        - name: db-credentials
+          secret:
+            secretName: crowdsec-db-credentials
+            optional: true
+            defaultMode: 0400
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim

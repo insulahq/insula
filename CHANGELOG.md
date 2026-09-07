@@ -12,6 +12,18 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **The CrowdSec LAPI can now run on the platform's CNPG Postgres (R35).** SQLite
+  is single-writer, which pins the LAPI to one replica and gives every rollout a
+  window with no decision-learning; Postgres is the prerequisite for lifting
+  that. A reconciler provisions the `crowdsec` role and database with idempotent
+  SQL against the CNPG primary, and the LAPI's init container renders
+  `db_config` from the resulting Secret — but only when a complete set of
+  credentials is present, so a cluster without it stays on SQLite and nothing
+  changes. Requires two NetworkPolicies (crowdsec egress, platform ingress);
+  either one missing gives a LAPI that starts and reaches nothing.
+
+
 ### Fixed
 - **The tenant file manager was OOM-killed during large rsync transfers, resetting
   the connection.** Measured on production during a real 12.5 GB / 131k-file

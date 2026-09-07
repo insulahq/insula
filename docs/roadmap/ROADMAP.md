@@ -1407,3 +1407,45 @@ guess would silently drop them on every restart. Check whether the LAPI opens it
 at runtime (`lsof`, or stop the file being present and confirm decisions
 survive a restart) before touching the volume.
 
+## R36 — Every per-service Postgres role can connect to the `platform` database
+
+Postgres grants `CONNECT` on every database to `PUBLIC` unless it is explicitly
+revoked, and nothing in this repo revokes it — `grep -rn "REVOKE CONNECT"`
+returns nothing. So every per-service login role the platform creates
+(`roundcube`, `stalwart_reader`, and as of R35 `crowdsec`) can authenticate
+into the **`platform`** database with its own credentials, not just its own.
+
+**What this is not.** It is not a data breach today: table privileges are not
+granted to `PUBLIC` on PostgreSQL 15+, and there is no `GRANT … TO PUBLIC`
+anywhere in the migrations, so a connected role cannot read tenant, user or
+billing tables. It is a *connection-layer* gap, not an authorisation one.
+
+**Why it still matters.** The isolation the architecture implies — "a separate
+database per service" — does not hold at the connection layer, and each new
+service role widens that surface by one. R35 added the role that sits closest to
+attacker-influenced input in the whole platform: the WAF's LAPI, reachable from
+the `crowdsec` namespace. A leak of those credentials should get an attacker a
+CrowdSec database and nothing else; today it also gets them an authenticated
+session against the platform database to probe from.
+
+**The fix, cluster-level rather than per-service:**
+
+```sql
+REVOKE CONNECT ON DATABASE platform FROM PUBLIC;
+GRANT  CONNECT ON DATABASE platform TO platform;   -- and any operator roles
+```
+
+Repeat per database (`crowdsec`, `roundcube`, …) so the property is symmetric
+rather than special-casing `platform`.
+
+**Verify before and after**, since this is exactly the kind of change that looks
+applied and is not: from a pod with network reach, `psql -U crowdsec -d platform`
+should succeed today and be refused afterwards, while `psql -U crowdsec -d
+crowdsec` keeps working. Do it against a real role, not `postgres` — a superuser
+is exempt and would make a broken change look successful.
+
+**Sequencing.** Deliberately not folded into R35: it changes the access
+properties of roles that already exist and predate that work, so it deserves its
+own change with its own verification rather than riding along with a migration.
+Found by the security review of R35 (2026-09-07).
+
