@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
+  createWedgeMemory,
   classifyChallenges,
   wedgedChallenges,
   summarizeChallenges,
@@ -177,18 +178,83 @@ describe('break-glass is deliberately narrow', () => {
     expect(res.deleted).toEqual(['mine']);
   });
 
-  it('matches a wildcard SAN to its base dnsName', async () => {
-    // Challenges carry the base name; the certificate lists "*.business.na".
+  it('matches the wildcard challenge, which carries the BASE name', async () => {
+    // The real shapes, verified against production: the Certificate lists
+    // ["business.na", "*.business.na"], but cert-manager strips the prefix and
+    // creates BOTH challenges with spec.dnsName="business.na", distinguishing
+    // them with spec.wildcard. Callers scope with domain.domainName — the plain
+    // name — so this is the pairing that actually occurs.
+    //
+    // An earlier version of this test inverted it (wildcard-prefixed caller,
+    // plain challenge) and so proved nothing about the production call.
     const del = vi.fn().mockResolvedValue({});
     const k8s = {
       custom: {
         listNamespacedCustomObject: vi.fn().mockResolvedValue({
-          items: [ch({ name: 'wild', created: ago(3 * 60 * 60 * 1000), status: { processing: true } })],
+          items: [
+            ch({ name: 'wild', created: ago(3 * 60 * 60 * 1000), spec: { dnsName: 'business.na', type: 'DNS-01', wildcard: true }, status: { processing: true } }),
+            ch({ name: 'base', created: ago(3 * 60 * 60 * 1000), spec: { dnsName: 'business.na', type: 'DNS-01', wildcard: false }, status: { processing: true } }),
+          ],
         }),
         deleteNamespacedCustomObject: del,
       },
     };
-    const res = await clearWedgedChallenges(k8s as never, 'ns', { now: NOW, dnsNames: ['*.business.na'] });
-    expect(res.deleted).toEqual(['wild']);
+    const res = await clearWedgedChallenges(k8s as never, 'ns', { now: NOW, dnsNames: ['business.na'] });
+    expect(res.deleted).toEqual(['wild', 'base']);
+  });
+});
+
+describe('hysteresis protects against a reconciler that was not watching', () => {
+  function k8sWith(items: AcmeChallenge[]) {
+    const del = vi.fn().mockResolvedValue({});
+    return {
+      k8s: { custom: { listNamespacedCustomObject: vi.fn().mockResolvedValue({ items }), deleteNamespacedCustomObject: del } },
+      del,
+    };
+  }
+  const wedgedItem = () => ch({ name: 'w', created: ago(3 * 60 * 60 * 1000), status: { processing: true } });
+
+  it('does NOT delete on the FIRST sighting', async () => {
+    // THE REGRESSION THIS GUARDS. `wedged` is derived from wall-clock age, so a
+    // reconciler that could not run for a while (crash loop, OOM, DB outage,
+    // node drain) returns to a cluster full of challenges that aged past the
+    // threshold unobserved. Acting on that first pass would delete in-flight
+    // challenges across EVERY tenant namespace at once.
+    const { k8s, del } = k8sWith([wedgedItem()]);
+    const memory = createWedgeMemory();
+    const res = await clearWedgedChallenges(k8s as never, 'ns', { now: NOW, memory });
+    expect(res.deleted).toEqual([]);
+    expect(del).not.toHaveBeenCalled();
+  });
+
+  it('deletes on the SECOND consecutive sighting', async () => {
+    const { k8s, del } = k8sWith([wedgedItem()]);
+    const memory = createWedgeMemory();
+    await clearWedgedChallenges(k8s as never, 'ns', { now: NOW, memory });
+    const res = await clearWedgedChallenges(k8s as never, 'ns', { now: NOW, memory });
+    expect(res.deleted).toEqual(['w']);
+    expect(del).toHaveBeenCalledTimes(1);
+  });
+
+  it('forgets a challenge that recovered, so an old strike cannot fire later', async () => {
+    const memory = createWedgeMemory();
+    const first = k8sWith([wedgedItem()]);
+    await clearWedgedChallenges(first.k8s as never, 'ns', { now: NOW, memory });
+    // Recovered: nothing wedged this sweep.
+    const healthy = k8sWith([ch({ name: 'w', created: ago(30_000), status: { processing: true } })]);
+    await clearWedgedChallenges(healthy.k8s as never, 'ns', { now: NOW, memory });
+    // Wedges again later — must take two fresh sightings, not one.
+    const again = k8sWith([wedgedItem()]);
+    const res = await clearWedgedChallenges(again.k8s as never, 'ns', { now: NOW, memory });
+    expect(res.deleted).toEqual([]);
+  });
+
+  it('the operator break-glass path acts IMMEDIATELY (no memory passed)', async () => {
+    // A human who has looked at a stuck certificate should not wait a tick for
+    // the machine to agree.
+    const { k8s, del } = k8sWith([wedgedItem()]);
+    const res = await clearWedgedChallenges(k8s as never, 'ns', { now: NOW });
+    expect(res.deleted).toEqual(['w']);
+    expect(del).toHaveBeenCalledTimes(1);
   });
 });

@@ -38,6 +38,7 @@ import {
   notifyTenantCertificateFallback,
 } from '../notifications/events.js';
 import type { Database } from '../../db/index.js';
+import { createWedgeMemory } from './acme-challenges.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
 interface DomainRow {
@@ -187,6 +188,15 @@ export interface CertReconcileResult {
  * cert-manager never times the challenge out on its own. Without this the
  * blockage is permanent and no amount of re-requesting clears it.
  */
+/**
+ * Survives ticks, not restarts — see WedgeMemory. A fresh process deliberately
+ * starts with no strikes so the first sweep after any gap only observes.
+ */
+const wedgeMemory = createWedgeMemory();
+
+/** Repeat clears per namespace, so a churn loop reads differently from a one-off. */
+const healCounts = new Map<string, number>();
+
 async function selfHealNamespace(
   k8s: K8sClients,
   namespace: string,
@@ -194,12 +204,22 @@ async function selfHealNamespace(
 ): Promise<number> {
   try {
     const { clearWedgedChallenges } = await import('./acme-challenges.js');
-    const res = await clearWedgedChallenges(k8s, namespace);
+    const res = await clearWedgedChallenges(k8s, namespace, { memory: wedgeMemory });
     for (const e of res.errors) errors.push(`challenge cleanup ${namespace}: ${e}`);
     if (res.deleted.length > 0) {
+      // Count repeats per namespace. A wedge with a permanent cause — a still
+      // mispointed NS record — will be cleared, recreated, re-wedge and be
+      // cleared again indefinitely. That is still better than silent permanent
+      // failure, but it must not look like a one-off recovery in the log, or
+      // nobody ever investigates the cause.
+      const seen = (healCounts.get(namespace) ?? 0) + res.deleted.length;
+      healCounts.set(namespace, seen);
       // eslint-disable-next-line no-console
       console.warn(
-        `[cert-reconciler] cleared ${res.deleted.length} wedged ACME challenge(s) in ${namespace}: ${res.deleted.join(', ')}`,
+        `[cert-reconciler] cleared ${res.deleted.length} wedged ACME challenge(s) in ${namespace}: ${res.deleted.join(', ')}`
+        + (seen > res.deleted.length
+          ? ` — ${seen} cleared here since restart; a repeating wedge means the underlying cause is still present`
+          : ''),
       );
     }
     return res.deleted.length;
@@ -243,11 +263,16 @@ export async function reconcileCertificateStatuses(
     // issuing, skip", so a permanently failed order was silent forever.
     try {
       if (!certsByNamespace.has(d.namespace)) {
-        certsByNamespace.set(d.namespace, await listCertificateHealth(k8s, d.namespace));
-        // First time we touch this namespace on this tick: clear any wedged
-        // challenge before reading state, so the status we record reflects a
-        // namespace that has been given the chance to recover.
-        healedChallenges += await selfHealNamespace(k8s, d.namespace, errors);
+        const nsHealth = await listCertificateHealth(k8s, d.namespace);
+        certsByNamespace.set(d.namespace, nsHealth);
+        // Only LIST Challenges for a namespace that actually has an unfinished
+        // certificate. At 50-100 tenants an unconditional sweep is 50-100 extra
+        // API-server LISTs per minute, forever, to look at nothing: a namespace
+        // whose certificates are all issued cannot be holding a wedged
+        // challenge worth clearing.
+        if (nsHealth.some((c) => c.state !== 'issued')) {
+          healedChallenges += await selfHealNamespace(k8s, d.namespace, errors);
+        }
       }
       const health = pickDomainCertificate(
         certsByNamespace.get(d.namespace) ?? [],

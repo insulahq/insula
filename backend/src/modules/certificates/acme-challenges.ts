@@ -58,14 +58,16 @@ export interface AcmeChallenge {
  * How long a challenge may hold its (dnsName, type) slot before we treat it as
  * wedged rather than slow.
  *
- * Calibrated against measured runs on the staging issuer: a single-name order
- * completed in ~75s and a wildcard order (two challenges, run sequentially)
- * in ~165s. Fifteen minutes is an order of magnitude above the slow case, so a
- * DNS provider having a genuinely bad few minutes is never mistaken for a
- * wedge, while a permanently stuck slot clears within one reconciler tick of
- * crossing the line.
+ * Measured on the staging issuer: a single-name order completed in ~75s and a
+ * wildcard order (two challenges, run sequentially) in ~165s. Thirty minutes is
+ * an order of magnitude above that, which matters because tenants can point a
+ * domain at any DNS provider: secondary zones with AXFR lag, high TTLs and
+ * rate-limited provider APIs can all make a HEALTHY validation slow without it
+ * being wedged in the "holds the slot forever" sense this detects. A genuine
+ * wedge never resolves, so waiting longer costs nothing, while guessing too
+ * eagerly kills validation that was about to succeed.
  */
-export const CHALLENGE_WEDGE_AFTER_MS = 15 * 60 * 1000;
+export const CHALLENGE_WEDGE_AFTER_MS = 30 * 60 * 1000;
 
 /**
  * A challenge with no status at all is not necessarily wedged — it may simply
@@ -146,6 +148,31 @@ export function classifyChallenges(
   });
 }
 
+/**
+ * Remembers which challenges were ALREADY seen wedged on a previous sweep.
+ *
+ * Deliberately in-memory and per-process. `wedged` is derived purely from wall
+ * clock age, so a reconciler that could not run for a while — a CrashLoopBackOff,
+ * an OOM kill, a database outage blocking the tick, a node drain — comes back to
+ * a cluster full of challenges that aged past the threshold with nobody
+ * watching. Acting on that first observation would delete every in-flight
+ * challenge across EVERY tenant namespace in a single pass, including ones
+ * seconds from completing.
+ *
+ * Requiring two consecutive sightings makes the automatic sweep cost one extra
+ * tick and removes that entire class of incident: after any restart or gap the
+ * memory is empty, so the first sweep only observes. It is exactly the
+ * hysteresis an age-threshold needs and its volatility is the feature, not a
+ * limitation.
+ */
+export interface WedgeMemory {
+  seen: Set<string>;
+}
+
+export function createWedgeMemory(): WedgeMemory {
+  return { seen: new Set<string>() };
+}
+
 /** The wedged challenges, i.e. the ones worth deleting. */
 export function wedgedChallenges(
   insights: readonly ChallengeInsight[],
@@ -206,7 +233,17 @@ export interface ClearResult {
 export async function clearWedgedChallenges(
   k8s: K8sClients,
   namespace: string,
-  opts: { now?: Date; dnsNames?: readonly string[] } = {},
+  opts: {
+    now?: Date;
+    dnsNames?: readonly string[];
+    /**
+     * Supply on the AUTOMATIC path so a challenge must be seen wedged twice.
+     * Omit on the operator-initiated break-glass path: a human who has looked
+     * at a stuck certificate and pressed the button should not be made to wait
+     * another tick for the machine to agree with them.
+     */
+    memory?: WedgeMemory;
+  } = {},
 ): Promise<ClearResult> {
   const api = (k8s as unknown as { custom?: ChallengeApi }).custom;
   if (!api) return { deleted: [], errors: [] };
@@ -221,7 +258,27 @@ export async function clearWedgedChallenges(
 
   const deleted: string[] = [];
   const errors: string[] = [];
-  for (const w of wedgedChallenges(classifyChallenges(scoped, opts.now ?? new Date()))) {
+  const wedged = wedgedChallenges(classifyChallenges(scoped, opts.now ?? new Date()));
+
+  if (opts.memory) {
+    // Forget anything that recovered, so a challenge that was briefly slow does
+    // not carry a strike forward into an unrelated future sweep.
+    const stillWedged = new Set(wedged.map((w) => `${namespace}/${w.name}`));
+    for (const key of [...opts.memory.seen]) {
+      if (key.startsWith(`${namespace}/`) && !stillWedged.has(key)) opts.memory.seen.delete(key);
+    }
+  }
+
+  for (const w of wedged) {
+    if (opts.memory) {
+      const key = `${namespace}/${w.name}`;
+      if (!opts.memory.seen.has(key)) {
+        // First sighting: record and leave it alone.
+        opts.memory.seen.add(key);
+        continue;
+      }
+      opts.memory.seen.delete(key);
+    }
     try {
       await api.deleteNamespacedCustomObject({
         group: ACME_GROUP,
