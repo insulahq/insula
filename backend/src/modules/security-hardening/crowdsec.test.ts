@@ -1,5 +1,6 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import * as k8sModule from '../container-console/service.js';
+import * as cscli from './cscli-exec.js';
 import { ensureCommunityBlocklistDefault } from './crowdsec.js';
 
 afterEach(() => { vi.restoreAllMocks(); });
@@ -252,6 +253,11 @@ describe('ensureCommunityBlocklistDefault', () => {
   // "off by default" default never landed. The backend therefore creates it.
   const podList = { items: [{ metadata: { name: 'crowdsec-abc' } }] };
 
+  beforeEach(() => {
+    vi.spyOn(cscli, 'findCrowdsecPodName').mockResolvedValue('crowdsec-abc');
+    vi.spyOn(cscli, 'cscliExec').mockResolvedValue({ stdout: '3 decision(s) deleted', stderr: '' } as never);
+  });
+
   it('creates the ConfigMap with the community blocklist OFF when absent', async () => {
     const notFound = Object.assign(new Error('not found'), { code: 404 });
     const create = vi.fn().mockResolvedValue({});
@@ -265,6 +271,14 @@ describe('ensureCommunityBlocklistDefault', () => {
 
     const result = await ensureCommunityBlocklistDefault(undefined);
     expect(result).toBe('created');
+    // Disabling only stops the REFRESH; what the feed already pulled stays
+    // enforced until it expires (144h TTLs seen on production, 18,770
+    // decisions still enforced on DEV). The default must purge, or an
+    // upgrading cluster keeps blocking for days and the switch looks inert.
+    expect(cscli.cscliExec).toHaveBeenCalledWith(
+      expect.anything(), expect.anything(),
+      ['decisions', 'delete', '--origin', 'CAPI'],
+    );
     // The LAPI reads DISABLE_ONLINE_API only at startup, and the pod predates
     // the ConfigMap — without a roll the setting is stored and NOT running.
     // Reloader did not fire on creation when this was verified on DEV.
