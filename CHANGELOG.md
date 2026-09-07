@@ -13,6 +13,24 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Fixed
+- **A stuck ACME challenge blocked all future certificate issuance for that
+  hostname, permanently and invisibly.** cert-manager runs at most one in-flight
+  challenge per `(dnsName, type)`; a challenge that reaches `processing: true`
+  and never completes holds that slot forever, and every later challenge for the
+  same name is created with an empty status and never runs. Nothing timed it
+  out, nothing reported it, and **Request Certificate could not clear it** — it
+  produced a fresh order whose challenges inherited the same blocked slot, so
+  the button reported success and changed nothing. Proven against the Let's
+  Encrypt staging issuer: a certificate for a different name in the same zone
+  issued in ~75s through the same webhook and nameservers, while three separate
+  orders for the wedged name never started. The certificate reconciler now
+  detects a challenge that has held its slot past 15 minutes and deletes it so
+  cert-manager can start a clean one, and a reissue sweeps the domain's
+  challenges before recreating. A mispointed NS record is the usual way in, but
+  any challenge that dies mid-flight — an expired authorization, a provider
+  outage during renewal — leaves the same blockage, and renewals hit it as hard
+  as first issuance.
+
 - **The tenant panel crashed to "Something went wrong" and only a hard reload
   brought it back** (`Cannot read properties of null (reading 'toFixed')`). The
   header's CPU/memory/storage tiles format fields typed `number` by a
@@ -30,7 +48,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   with it. Reported against the applications page; the tiles render on every
   page, so that was simply where the operator was.
 
-### Fixed
 - **The deployment terminal could not paste.** Ctrl+V and middle-click now
   paste through the browser's native `paste` event, and right-click pastes by
   reading the clipboard directly. Ctrl+Shift+C copies a selection; plain Ctrl+C
@@ -55,16 +72,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   Volumes table and in Status Details. The backend also stopped giving every
   volume of a deployment the same bare base path.
 
-### Changed
-- Versions in **Supported Versions** are now selectable — any listed version,
-  including older ones, with a confirmation that warns when the switch is a
-  downgrade. The single-step **Rollback** banner is gone: it could only ever
-  return to `previous_version`, and selecting a version covers it.
-- Deployment detail modal: **Assigned Resources** now follows **Supported
-  Versions**, and the Volumes column is labelled **Local Path** rather than
-  K8s Path — it has always been the tenant-visible path.
-
-### Fixed
 - **Editing a deployment's configuration variables saved the values but never
   applied them.** The redeploy that re-renders the pod template ran only when
   `extra_mounts` changed, so a `configuration` edit was written to the database
@@ -92,7 +99,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   acting as its default; a key pinned without being offered stays pinned, and
   entries with no `configurable` list are unaffected.
 
-### Fixed
 - **DNS verification passed for domains that were never delegated to the
   platform.** `verifyNsDelegation` compared the domain's real NS records against
   `PLATFORM_NAMESERVERS` — a variable the repo READ in exactly one place and SET
@@ -116,11 +122,37 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   claiming a sync they cannot observe.
 
 ### Added
+- **A break-glass control: "Clear stuck validation".** Deliberately *not* behind
+  the one-hour reissue cooldown — that cooldown exists because a reissue orders
+  a new certificate and authorities cap duplicates per week, whereas this orders
+  nothing and simply removes the stalled attempt so the request already in
+  flight can continue. Gating it would leave an operator staring at a disabled
+  button for an hour with no way to unstick a certificate, which is when they
+  most need one. It only ever deletes challenges classified as wedged, so
+  pressing it during a healthy order does nothing.
+- The certificate card now says **why** issuance is stuck. The platform read
+  Certificate CRs and nothing below them, so the whole ACME layer was invisible:
+  a wedged challenge looked exactly like a slow one, and the operator's only
+  signal was a certificate that never appeared. `validationBlocked` and
+  `validationMessage` carry the challenge state, including which challenge is
+  holding a blocked one's slot, and the card renders it. Deliberately distinct
+  from `state: 'failed'`, which means an attempt was *rejected* — a blocked
+  validation never ran at all.
+
 - The DNS verification modal now shows an **Expected vs Actual table** for every
   check, including the ones that passed. A pass previously rendered as the words
   "DNS verification passed" and nothing else, which is precisely how a check
   that asserted nothing went unnoticed; an empty expectation is now visible as
   "not configured".
+
+### Changed
+- Versions in **Supported Versions** are now selectable — any listed version,
+  including older ones, with a confirmation that warns when the switch is a
+  downgrade. The single-step **Rollback** banner is gone: it could only ever
+  return to `previous_version`, and selecting a version covers it.
+- Deployment detail modal: **Assigned Resources** now follows **Supported
+  Versions**, and the Volumes column is labelled **Local Path** rather than
+  K8s Path — it has always been the tenant-visible path.
 
 ## [2026.9.12] - 2026-09-07
 

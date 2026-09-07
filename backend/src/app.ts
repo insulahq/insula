@@ -2214,6 +2214,14 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           const { reconcileCertificateStatuses } = await import('./modules/certificates/cert-reconciler.js');
           const k8s = createK8sClients(kubePath);
           const result = await reconcileCertificateStatuses(app.db, k8s);
+          if (result.healedChallenges > 0) {
+            // Deliberately WARN, not info: a wedged challenge means issuance
+            // was stalled and an operator was waiting on a certificate that
+            // could never arrive.
+            app.log.warn(
+              `Certificate reconciler: cleared ${result.healedChallenges} wedged ACME challenge(s)`,
+            );
+          }
           if (result.synced > 0) {
             app.log.info(`Certificate reconciler: synced ${result.synced}/${result.checked}`);
           }
