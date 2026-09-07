@@ -107,9 +107,28 @@ export default function WebTerminal({ deploymentId, defaultComponent }: WebTermi
       return true;
     });
 
-    // Right-click pastes, as most terminal emulators do. The browser's own
-    // context menu is suppressed so it does not cover the terminal.
     const host = terminalRef.current;
+
+    // Ctrl+V and middle-click: handled through the browser's native `paste`
+    // event, and ONLY there.
+    //
+    // Measured on DEV against the deployed build, because each attempt looked
+    // right in isolation:
+    //   • key handler + this listener together -> pasted TWICE. The key
+    //     handler reads the clipboard asynchronously, so it lands outside any
+    //     short de-duplication window and cannot be collapsed against this one.
+    //   • neither of them -> pasted ZERO times. xterm does not paste on its
+    //     own here, so something must forward it.
+    // Exactly one synchronous path is therefore the only correct shape.
+    const onPasteEvent = (e: ClipboardEvent): void => {
+      const text = e.clipboardData?.getData('text');
+      if (text) { e.preventDefault(); sendRef.current(text); }
+    };
+    host.addEventListener('paste', onPasteEvent);
+
+    // Right-click pastes, as most terminal emulators do — no native paste
+    // event fires for it, so this reads the clipboard itself. The browser's
+    // own context menu is suppressed so it does not cover the terminal.
     const onContextMenu = (e: MouseEvent): void => { e.preventDefault(); paste(); };
     host.addEventListener('contextmenu', onContextMenu);
 
@@ -142,6 +161,7 @@ export default function WebTerminal({ deploymentId, defaultComponent }: WebTermi
       cancelAnimationFrame(raf);
       observer.disconnect();
       host.removeEventListener('contextmenu', onContextMenu);
+      host.removeEventListener('paste', onPasteEvent);
       term.dispose();
       disconnect();
     };
