@@ -10,15 +10,34 @@ interface ResourceMetricsModalProps {
   readonly onClose: () => void;
 }
 
+/**
+ * Placeholder for a value the API did not give us a number for.
+ *
+ * These formatters render fields typed `number` by a HAND-WRITTEN interface in
+ * use-resource-metrics.ts — the resource-metrics response is not built from a
+ * shared Zod contract, so TypeScript cannot catch the server sending null.
+ * When it does, `null.toFixed()` throws during render, and the app-level
+ * ErrorBoundary replaces the WHOLE panel with "Something went wrong" until a
+ * hard reload. A missing number must degrade to a dash, not take the SPA down.
+ */
+const NO_VALUE = '—';
+
+/** True for null, undefined and NaN — none of which can be formatted. */
+function isUnusable(value: number | null | undefined): value is null | undefined {
+  return value == null || Number.isNaN(value);
+}
+
 /** Format CPU values: e.g. 0.02 cores, 1.0 cores */
-function formatCpu(value: number): string {
+function formatCpu(value: number | null | undefined): string {
+  if (isUnusable(value)) return NO_VALUE;
   if (value >= 10) return `${value.toFixed(0)} cores`;
   if (value >= 1) return `${value.toFixed(1)} cores`;
   return `${value.toFixed(2)} cores`;
 }
 
 /** Smart format for memory/storage: < 1 Gi show as Mi, else Gi */
-function formatBytes(valueGi: number): string {
+function formatBytes(valueGi: number | null | undefined): string {
+  if (isUnusable(valueGi)) return NO_VALUE;
   if (valueGi <= 0) return '0 Mi';
   if (valueGi < 0.001) {
     const mb = valueGi * 1024;
@@ -35,13 +54,15 @@ function formatBytes(valueGi: number): string {
 }
 
 /** Compact format for header tags */
-function formatCpuCompact(value: number): string {
+function formatCpuCompact(value: number | null | undefined): string {
+  if (isUnusable(value)) return NO_VALUE;
   if (value >= 10) return value.toFixed(0);
   if (value >= 1) return value.toFixed(1);
   return value.toFixed(2);
 }
 
-function formatBytesCompact(valueGi: number): string {
+function formatBytesCompact(valueGi: number | null | undefined): string {
+  if (isUnusable(valueGi)) return NO_VALUE;
   if (valueGi <= 0) return '0Mi';
   if (valueGi < 1) {
     const mi = valueGi * 1024;

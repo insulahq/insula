@@ -13,6 +13,24 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Fixed
+- **The tenant panel crashed to "Something went wrong" and only a hard reload
+  brought it back** (`Cannot read properties of null (reading 'toFixed')`). The
+  header's CPU/memory/storage tiles format fields typed `number` by a
+  hand-written interface — the resource-metrics response is not built from a
+  shared Zod contract, so nothing stops the server sending `null`, and
+  TypeScript cannot see it. `null.toFixed()` then threw during render. The
+  formatters now render an em dash for a missing value, treating `0` as a real
+  number rather than a missing one.
+- **One broken widget could blank the entire panel.** The only error boundary
+  wrapped the whole app, so any render throw replaced everything with the
+  full-screen crash page whose sole recovery is `window.location.reload()` —
+  which is why the crash looked page-wide and why reloading "fixed" it. The
+  boundary now accepts a scoped fallback, and the header tiles use it: a usage
+  readout that cannot format a number disappears instead of taking the panel
+  with it. Reported against the applications page; the tiles render on every
+  page, so that was simply where the operator was.
+
+### Fixed
 - **The deployment terminal could not paste.** Ctrl+V and middle-click now
   paste through the browser's native `paste` event, and right-click pastes by
   reading the clipboard directly. Ctrl+Shift+C copies a selection; plain Ctrl+C
