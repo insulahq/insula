@@ -84,9 +84,28 @@ export default function WebTerminal({ deploymentId, defaultComponent }: WebTermi
     // convention, but this terminal lives in a browser modal where Ctrl+V is
     // what everyone reaches for. Ctrl+V is not meaningful to a shell (^V is
     // literal-next, rarely used interactively), so binding it costs nothing.
+    // ONE entry point, deduplicated.
+    //
+    // Ctrl+V reaches us twice: the key handler below fires, AND the browser
+    // still emits a native `paste` event on the focused element which the
+    // listener further down also handles. Both send to the shell, so the first
+    // browser run of this pasted every clipboard twice —
+    // `echo MARKERecho MARKER` on screen. Neither path can simply be dropped:
+    // the key handler is what makes Ctrl+Shift+V work (browsers emit no paste
+    // event for it), and the native listener is what catches middle-click.
+    // Collapsing identical text arriving within one tick keeps every route
+    // working while delivering exactly once.
+    let lastPaste = { text: '', at: 0 };
+    const pasteText = (text: string): void => {
+      if (!text) return;
+      const now = Date.now();
+      if (text === lastPaste.text && now - lastPaste.at < 150) return;
+      lastPaste = { text, at: now };
+      sendRef.current(text);
+    };
     const paste = (): void => {
       navigator.clipboard?.readText()
-        .then((text) => { if (text) sendRef.current(text); })
+        .then(pasteText)
         .catch(() => undefined); // denied / insecure context / unfocused
     };
     term.attachCustomKeyEventHandler((e) => {
@@ -113,7 +132,7 @@ export default function WebTerminal({ deploymentId, defaultComponent }: WebTermi
     // Middle-click / OS-level paste events that bypass the key handler.
     const onPasteEvent = (e: ClipboardEvent): void => {
       const text = e.clipboardData?.getData('text');
-      if (text) { e.preventDefault(); sendRef.current(text); }
+      if (text) { e.preventDefault(); pasteText(text); }
     };
     host.addEventListener('paste', onPasteEvent);
 
