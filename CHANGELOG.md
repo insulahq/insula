@@ -13,6 +13,24 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Fixed
+- **Editing a deployment's configuration variables saved the values but never
+  applied them.** The redeploy that re-renders the pod template ran only when
+  `extra_mounts` changed, so a `configuration` edit was written to the database
+  and nothing ever re-read it — no drift reconciler covers environment
+  variables, so the running pod kept its original values indefinitely. The
+  tenant panel made it look stranger still: after saving it POSTed `/restart`,
+  which deletes the pods, and the ReplicaSet recreated them from the template
+  that was never updated — so the pod visibly bounced and came back
+  byte-identical. Reported against an Apache/PHP deployment where
+  `PHP_DISPLAY_ERRORS` and `APACHE_DOCUMENT_ROOT` had no effect. A configuration
+  change now redeploys, and the panel no longer fires the redundant restart that
+  would double-bounce the pod.
+- `replica_count` had the same defect on the same code path — persisted to the
+  row, never applied — and is now covered by the same gate.
+- Configuration is compared with key order normalised, so re-saving without
+  changing anything no longer rolls the pod.
+
+### Fixed
 - **DNS verification passed for domains that were never delegated to the
   platform.** `verifyNsDelegation` compared the domain's real NS records against
   `PLATFORM_NAMESERVERS` — a variable the repo READ in exactly one place and SET

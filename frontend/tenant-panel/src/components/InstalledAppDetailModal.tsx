@@ -235,7 +235,15 @@ export default function InstalledAppDetailModal({
         onSuccess: () => {
           setEditingConfig(false);
           queryClient.invalidateQueries({ queryKey: ['deployments'] });
-          onRestart?.(deployment.id);
+          // No onRestart here. The backend now re-renders the pod template from
+          // the saved configuration and rolls the pods itself, so an extra
+          // POST /restart would delete the pod that redeploy just created —
+          // a second, pointless bounce.
+          //
+          // This restart used to be the only thing that happened at all: the
+          // config was persisted, the template was never updated, and deleting
+          // the pod brought it back byte-identical. That is why the setting
+          // appeared not to work.
           onClose();
         },
       },
@@ -243,9 +251,8 @@ export default function InstalledAppDetailModal({
   };
 
   const saveMounts = () => {
-    // Same shape as saveConfigEdit: apply, invalidate, hand the restart to the
-    // parent, close. A mount change restarts the pod, so the UX must match the
-    // config-edit path rather than silently leaving a stale modal open.
+    // Same shape as saveConfigEdit: apply, invalidate, close. The redeploy
+    // that applies a mount change happens server-side.
     const filled = mountRows.filter(m => m.folder.trim() !== '' && m.mount_path.trim() !== '');
     updateDeployment.mutate(
       { deploymentId: deployment.id, extra_mounts: filled },
@@ -253,7 +260,8 @@ export default function InstalledAppDetailModal({
         onSuccess: () => {
           setEditingMounts(false);
           queryClient.invalidateQueries({ queryKey: ['deployments'] });
-          onRestart?.(deployment.id);
+          // Server-side redeploy already rolls the pod (it always did for
+          // mounts) — see saveConfigEdit.
           onClose();
         },
       },
