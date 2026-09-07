@@ -19,6 +19,28 @@ export function useDomainTlsStatus(tenantId: string | undefined, domainId: strin
   });
 }
 
+/**
+ * Break-glass: clear a wedged ACME challenge.
+ *
+ * Separate from reissue and NOT cooldown-gated — it orders no certificate, so
+ * it spends none of Let's Encrypt's duplicate budget. It exists because the
+ * reissue button is disabled for an hour after use, which is precisely when an
+ * operator with a stuck certificate most needs a way to unstick it.
+ */
+export function useClearStuckValidation(tenantId: string | undefined, domainId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      apiFetch<{ data: { cleared: string[]; message: string } }>(
+        `/api/v1/tenants/${tenantId}/domains/${domainId}/tls/clear-stuck-validation`,
+        { method: 'POST' },
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['tls-status', tenantId, domainId] });
+    },
+  });
+}
+
 export function useReissueCertificate(tenantId: string | undefined, domainId: string | undefined) {
   const queryClient = useQueryClient();
   return useMutation({

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { AlertTriangle, CheckCircle2, Loader2, RefreshCw, ShieldCheck, ShieldOff } from 'lucide-react';
-import { useDomainTlsStatus, useReissueCertificate } from '@/hooks/use-tls-status';
+import { useDomainTlsStatus, useReissueCertificate, useClearStuckValidation } from '@/hooks/use-tls-status';
 import ErrorPanel from '@/components/ErrorPanel';
 import TlsReissueTaskModal from '@/components/TlsReissueTaskModal';
 import type { CertificateDetail, OperatorError } from '@insula/api-contracts';
@@ -52,6 +52,7 @@ function stateBadge(state: CertificateDetail['state']) {
 export default function ManagedCertificateCard({ tenantId, domainId, canManage }: Props) {
   const { data, isLoading, isError } = useDomainTlsStatus(tenantId, domainId);
   const reissue = useReissueCertificate(tenantId, domainId);
+  const clearStuck = useClearStuckValidation(tenantId, domainId);
   const [taskId, setTaskId] = useState<string | null>(null);
 
   const status = data?.data;
@@ -121,10 +122,30 @@ export default function ManagedCertificateCard({ tenantId, domainId, canManage }
               data-testid="validation-blocked"
             >
               <AlertTriangle size={16} className="mt-0.5 shrink-0" />
-              <span>
-                {status.validationMessage
-                  ?? 'Certificate validation is stuck and cannot complete on its own.'}
-              </span>
+              <div className="flex-1 space-y-2">
+                <span className="block">
+                  {status.validationMessage
+                    ?? 'Certificate validation is stuck and cannot complete on its own.'}
+                </span>
+                {canManage && (
+                  <button
+                    type="button"
+                    onClick={() => clearStuck.mutate()}
+                    disabled={clearStuck.isPending}
+                    title="Deletes the stuck validation attempt so cert-manager can retry. Does not order a new certificate, so it is not affected by the reissue cooldown."
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-red-400 dark:border-red-600 bg-white dark:bg-red-900/40 px-2.5 py-1 text-xs font-medium text-red-700 dark:text-red-200 hover:bg-red-50 dark:hover:bg-red-800/60 disabled:opacity-50"
+                    data-testid="clear-stuck-validation"
+                  >
+                    {clearStuck.isPending ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+                    Clear stuck validation
+                  </button>
+                )}
+                {clearStuck.isSuccess && (
+                  <p className="text-xs text-red-700 dark:text-red-300" data-testid="clear-stuck-result">
+                    {clearStuck.data?.data?.message}
+                  </p>
+                )}
+              </div>
             </div>
           )}
 

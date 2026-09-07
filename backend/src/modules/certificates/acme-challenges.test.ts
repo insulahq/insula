@@ -141,3 +141,54 @@ describe('clearWedgedChallenges', () => {
     expect(res).toEqual({ deleted: [], errors: [] });
   });
 });
+
+describe('break-glass is deliberately narrow', () => {
+  it('clears nothing when the order is healthy, so it cannot restart a working validation', async () => {
+    // The button is visible whenever validation looks blocked; pressing it on a
+    // healthy order must be a no-op rather than a restart.
+    const del = vi.fn().mockResolvedValue({});
+    const k8s = {
+      custom: {
+        listNamespacedCustomObject: vi.fn().mockResolvedValue({
+          items: [ch({ name: 'healthy', created: ago(45_000), status: { processing: true } })],
+        }),
+        deleteNamespacedCustomObject: del,
+      },
+    };
+    const res = await clearWedgedChallenges(k8s as never, 'ns', { now: NOW });
+    expect(res.deleted).toEqual([]);
+    expect(del).not.toHaveBeenCalled();
+  });
+
+  it('scopes to the requested domain and leaves other tenants alone', async () => {
+    const del = vi.fn().mockResolvedValue({});
+    const k8s = {
+      custom: {
+        listNamespacedCustomObject: vi.fn().mockResolvedValue({
+          items: [
+            ch({ name: 'mine', created: ago(3 * 60 * 60 * 1000), status: { processing: true } }),
+            ch({ name: 'theirs', created: ago(3 * 60 * 60 * 1000), spec: { dnsName: 'other.test', type: 'DNS-01' }, status: { processing: true } }),
+          ],
+        }),
+        deleteNamespacedCustomObject: del,
+      },
+    };
+    const res = await clearWedgedChallenges(k8s as never, 'ns', { now: NOW, dnsNames: ['business.na'] });
+    expect(res.deleted).toEqual(['mine']);
+  });
+
+  it('matches a wildcard SAN to its base dnsName', async () => {
+    // Challenges carry the base name; the certificate lists "*.business.na".
+    const del = vi.fn().mockResolvedValue({});
+    const k8s = {
+      custom: {
+        listNamespacedCustomObject: vi.fn().mockResolvedValue({
+          items: [ch({ name: 'wild', created: ago(3 * 60 * 60 * 1000), status: { processing: true } })],
+        }),
+        deleteNamespacedCustomObject: del,
+      },
+    };
+    const res = await clearWedgedChallenges(k8s as never, 'ns', { now: NOW, dnsNames: ['*.business.na'] });
+    expect(res.deleted).toEqual(['wild']);
+  });
+});

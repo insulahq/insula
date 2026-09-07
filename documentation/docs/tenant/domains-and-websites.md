@@ -242,6 +242,26 @@ cause of a failure rather than waiting for the automatic retry. It is limited to
 once an hour per domain, because certificate authorities cap how many identical
 certificates they will issue per week.
 
+### When validation gets stuck
+
+Occasionally a certificate stops making progress without failing: the card shows
+a red **validation is stuck** notice naming the hostname and how long it has been
+waiting. This happens when a validation attempt is left holding the domain's
+slot — most often because DNS was pointed elsewhere when the certificate was
+first requested, and it can also happen to a renewal if an attempt dies partway.
+
+The platform clears these automatically within about fifteen minutes and lets
+issuance restart, so in most cases you only need to wait. **Clear stuck
+validation** on that notice does the same thing straight away.
+
+!!! note "Why that button is not rate-limited"
+    **Clear stuck validation** does not ask for a certificate — it removes the
+    stalled attempt so the request already in flight can continue. It therefore
+    spends none of the certificate authority's weekly allowance and stays
+    available even while **Request Certificate** is in its one-hour cooldown,
+    which is exactly when a stuck certificate needs unsticking. Pressing it when
+    nothing is stuck does nothing.
+
 If a wildcard certificate cannot be obtained, the platform issues an individual
 certificate per hostname instead, so your sites keep working over HTTPS, and
 keeps retrying the wildcard in the background. You are notified when that

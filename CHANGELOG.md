@@ -32,6 +32,14 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   as first issuance.
 
 ### Added
+- **A break-glass control: "Clear stuck validation".** Deliberately *not* behind
+  the one-hour reissue cooldown — that cooldown exists because a reissue orders
+  a new certificate and authorities cap duplicates per week, whereas this orders
+  nothing and simply removes the stalled attempt so the request already in
+  flight can continue. Gating it would leave an operator staring at a disabled
+  button for an hour with no way to unstick a certificate, which is when they
+  most need one. It only ever deletes challenges classified as wedged, so
+  pressing it during a healthy order does nothing.
 - The certificate card now says **why** issuance is stuck. The platform read
   Certificate CRs and nothing below them, so the whole ACME layer was invisible:
   a wedged challenge looked exactly like a slow one, and the operator's only

@@ -403,3 +403,59 @@ async function runReissue(
     },
   });
 }
+
+export interface ClearStuckResult {
+  readonly cleared: readonly string[];
+  readonly message: string;
+}
+
+/**
+ * Break-glass: delete the wedged challenges blocking this domain.
+ *
+ * No cooldown, on purpose. `requestCertificateReissue` is throttled because it
+ * ORDERS a certificate and Let's Encrypt caps duplicates at five per week.
+ * This orders nothing — it removes a local Challenge whose (dnsName, type)
+ * slot is stalling cert-manager's scheduler, letting the order already in
+ * flight proceed. Throttling it would mean an operator with a stuck
+ * certificate has to wait an hour to do the one thing that helps.
+ *
+ * Also deliberately narrow: it only ever deletes challenges classified
+ * `wedged`, so pressing it during a healthy order does nothing rather than
+ * restarting validation that was about to succeed.
+ */
+export async function clearStuckValidation(
+  db: Database,
+  k8s: K8sClients | null,
+  request: { readonly tenantId: string; readonly domainId: string },
+): Promise<ClearStuckResult> {
+  const [domain] = await db.select().from(domains).where(eq(domains.id, request.domainId));
+  if (!domain || domain.tenantId !== request.tenantId) {
+    throw new ApiError('DOMAIN_NOT_FOUND', `Domain '${request.domainId}' not found`, 404);
+  }
+  if (!k8s) {
+    throw new ApiError('K8S_UNAVAILABLE', 'Kubernetes cluster is not reachable', 503);
+  }
+  const [tenant] = await db.select().from(tenants).where(eq(tenants.id, request.tenantId));
+  const namespace = tenant?.kubernetesNamespace;
+  if (!namespace) {
+    throw new ApiError('TENANT_NOT_PROVISIONED', 'Tenant has no Kubernetes namespace', 409);
+  }
+
+  const { clearWedgedChallenges } = await import('./acme-challenges.js');
+  const res = await clearWedgedChallenges(k8s, namespace, { dnsNames: [domain.domainName] });
+
+  if (res.errors.length > 0 && res.deleted.length === 0) {
+    throw new ApiError(
+      'CHALLENGE_CLEANUP_FAILED',
+      `Could not clear the stuck validation: ${res.errors.join('; ')}`,
+      502,
+    );
+  }
+  return {
+    cleared: res.deleted,
+    message:
+      res.deleted.length > 0
+        ? `Cleared ${res.deleted.length} stuck validation attempt(s). cert-manager will retry within a minute.`
+        : 'No stuck validation found — issuance is progressing normally.',
+  };
+}
