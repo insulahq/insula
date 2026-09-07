@@ -279,6 +279,13 @@ describe('ensureCommunityBlocklistDefault', () => {
       expect.anything(), expect.anything(),
       ['decisions', 'delete', '--origin', 'CAPI'],
     );
+    // ORDER MATTERS: the purge execs INTO the LAPI pod, so it must run before
+    // the roll deletes it. Observed on DEV 2026-09-07 with the reverse order —
+    // "cannot exec in a stopped container", and 18,770 decisions survived.
+    const purgeOrder = (cscli.cscliExec as unknown as { mock: { invocationCallOrder: number[] } })
+      .mock.invocationCallOrder[0];
+    const deleteOrder = core.deleteNamespacedPod.mock.invocationCallOrder[0];
+    expect(purgeOrder).toBeLessThan(deleteOrder);
     // The LAPI reads DISABLE_ONLINE_API only at startup, and the pod predates
     // the ConfigMap — without a roll the setting is stored and NOT running.
     // Reloader did not fire on creation when this was verified on DEV.
