@@ -2,6 +2,16 @@ import { Component, type ReactNode, type ErrorInfo } from 'react';
 
 interface Props {
   readonly children: ReactNode;
+  /**
+   * Render this instead of the full-screen crash page.
+   *
+   * Lets a self-contained widget fail on its own without replacing the entire
+   * panel. The app-level boundary keeps the full-screen fallback; a header tile
+   * that cannot format a number should simply disappear.
+   */
+  readonly fallback?: ReactNode;
+  /** Identifies the failing area in the console when a `fallback` is used. */
+  readonly label?: string;
 }
 
 interface State {
@@ -20,11 +30,21 @@ export default class ErrorBoundary extends Component<Props, State> {
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
-    console.error('[ErrorBoundary] Uncaught error:', error, info.componentStack);
+    console.error(
+      `[ErrorBoundary${this.props.label ? `:${this.props.label}` : ''}] Uncaught error:`,
+      error,
+      info.componentStack,
+    );
   }
 
   render() {
     if (this.state.hasError) {
+      // A scoped boundary swallows its own area and leaves the rest of the app
+      // usable. Without this, ANY render throw anywhere — including a header
+      // tile formatting a null — blanked the whole panel, recoverable only by
+      // reloading, which is exactly how this was reported.
+      if (this.props.fallback !== undefined) return this.props.fallback;
+
       return (
         <div className="flex min-h-screen items-center justify-center bg-gray-50 dark:bg-gray-900 p-6">
           <div className="max-w-lg w-full rounded-xl border border-red-200 dark:border-red-800 bg-white dark:bg-gray-800 p-6 shadow-lg">
