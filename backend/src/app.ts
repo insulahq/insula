@@ -1703,6 +1703,31 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           );
         }
 
+        // R35: CrowdSec LAPI Postgres provisioner. Ensures the crowdsec
+        // role + database exist in CNPG and that the credentials Secret the
+        // LAPI's init container reads is present. Non-blocking — a cluster
+        // without CNPG, or with the LAPI still on SQLite, is unaffected.
+        try {
+          const { startCrowdsecDbReconciler } = await import(
+            './modules/crowdsec-db/reconciler.js'
+          );
+          const k8sNodeCs = await import('@kubernetes/client-node');
+          const kcCs = new k8sNodeCs.KubeConfig();
+          if (kubePath) kcCs.loadFromFile(kubePath);
+          else kcCs.loadFromCluster();
+          const csDbHandle = startCrowdsecDbReconciler(
+            k8sForImapsync.core,
+            kcCs,
+            app.log as unknown as Pick<Console, 'info' | 'warn' | 'error'>,
+          );
+          app.addHook('onClose', () => csDbHandle.stop());
+        } catch (err) {
+          app.log.warn(
+            { err },
+            'crowdsec-db reconciler: failed to start (non-blocking)',
+          );
+        }
+
         // R-X8: mail-restic via shim reconciler. Owns the mail-restic
         // Secret when the 3-class `mail` shim binding is set; defers
         // to legacy mail-target-sync when only `system_mail` is bound.
