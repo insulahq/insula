@@ -69,3 +69,49 @@ describe('terminal clipboard handling', () => {
     expect(handler(key({ key: 'v' }))).toBe(true);
   });
 });
+
+describe('paste is delivered exactly once', () => {
+  /** Mirrors the component's deduped entry point. */
+  function makePaster(onSend: (s: string) => void, now: () => number) {
+    let last = { text: '', at: 0 };
+    return (text: string): void => {
+      if (!text) return;
+      const t = now();
+      if (text === last.text && t - last.at < 150) return;
+      last = { text, at: t };
+      onSend(text);
+    };
+  }
+
+  it('collapses the key handler and the native paste event into one send', () => {
+    // Ctrl+V triggers BOTH: attachCustomKeyEventHandler fires, and the browser
+    // still emits a native `paste` on the focused element. The first browser
+    // run of this feature pasted everything twice —
+    // "echo MARKERecho MARKER" appeared on screen.
+    const sent: string[] = [];
+    let clock = 1000;
+    const paste = makePaster((s) => sent.push(s), () => clock);
+    paste('echo hello');   // key handler
+    clock += 5;
+    paste('echo hello');   // native paste event, same tick
+    expect(sent).toEqual(['echo hello']);
+  });
+
+  it('still allows the SAME text to be pasted again deliberately', () => {
+    const sent: string[] = [];
+    let clock = 1000;
+    const paste = makePaster((s) => sent.push(s), () => clock);
+    paste('ls');
+    clock += 400; // user presses Ctrl+V again a moment later
+    paste('ls');
+    expect(sent).toEqual(['ls', 'ls']);
+  });
+
+  it('does not swallow different text arriving back to back', () => {
+    const sent: string[] = [];
+    let clock = 1000;
+    const paste = makePaster((s) => sent.push(s), () => clock);
+    paste('one'); clock += 5; paste('two');
+    expect(sent).toEqual(['one', 'two']);
+  });
+});
