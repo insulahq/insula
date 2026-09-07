@@ -241,6 +241,14 @@ export async function ensureDbSecret(
 
   try {
     if (existing === null) {
+      // Platform infrastructure, not tenant data: WAF database credentials for
+      // a cluster-scoped component. Losing it costs nothing — this reconciler
+      // generates a fresh password and ALTERs the Postgres role to match on
+      // the next tick, so restoring a stale copy would be worse than restoring
+      // none. The decisions it protects are themselves ephemeral (community
+      // entries re-pull, agent detections re-detect).
+      //
+      // backup-coverage: excluded:cluster-infrastructure
       await core.createNamespacedSecret({ namespace: CROWDSEC_NAMESPACE, body } as unknown as
         Parameters<typeof core.createNamespacedSecret>[0]);
       log.info('crowdsec-db: created crowdsec-db-credentials');
@@ -249,6 +257,8 @@ export async function ensureDbSecret(
     // Secret exists but has no password key — repair it in place rather than
     // leaving the LAPI with an unusable half-Secret. resourceVersion is
     // mandatory on a replace; without it the API server rejects the call.
+    //
+    // backup-coverage: excluded:cluster-infrastructure
     await core.replaceNamespacedSecret({
       name: CROWDSEC_DB_SECRET,
       namespace: CROWDSEC_NAMESPACE,
