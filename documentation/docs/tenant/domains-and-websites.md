@@ -1,5 +1,5 @@
 ---
-verified: 2026.6.7
+verified: 2026.9.12
 ---
 
 # Domains & websites
@@ -39,7 +39,10 @@ correctly.
 After you add a domain you must point it at the platform, then verify it.
 
 1. Open the domain's detail page and click **Verify Now** (top right).
-2. A check runs and tells you whether your DNS is set up correctly.
+2. A check runs and tells you whether your DNS is set up correctly. The result
+   includes an **Expected vs Actual** table so you can see exactly what the
+   platform required and what your DNS returned — it is shown when the check
+   passes too, not only when it fails.
 3. If it fails, the panel explains exactly what to fix for your DNS mode:
 
     - **CNAME mode:** update your A/AAAA or CNAME record at your DNS provider so
