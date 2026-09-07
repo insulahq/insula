@@ -164,6 +164,24 @@ spec:
                 name: crowdsec-capi-config
                 optional: true
           env:
+            # SQLite WAL. The image honours USE_WAL:
+            #   if istrue "$USE_WAL"; then conf_set '.db_config.use_wal = true'
+            # and without it the config ships `use_wal: false`, which CrowdSec
+            # itself warns about while inserting the community blocklist:
+            #
+            #   "sqlite is not using WAL mode, LAPI might become unresponsive
+            #    when inserting the community blocklist"
+            #
+            # A community pull inserts 15,000 rows in one transaction (measured
+            # on DEV 2026-09-07). In rollback-journal mode readers block for the
+            # duration — and every Traefik bouncer on every node is a reader of
+            # this LAPI, so a stall here is a stall in the ingress decision path.
+            # WAL lets readers proceed while the write commits.
+            #
+            # Storage is SQLite by design (see the header); this makes that
+            # choice behave properly rather than replacing it.
+            - name: USE_WAL
+              value: "true"
             - name: DISABLE_AGENT
               # No log acquisition in THIS pod — the crowdsec-agent
               # DaemonSet does the parsing. Skipping the loop here keeps the
