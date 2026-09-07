@@ -76,65 +76,42 @@ export default function WebTerminal({ deploymentId, defaultComponent }: WebTermi
 
     term.onData((data) => send(data));
 
-    // Paste. xterm.js forwards keystrokes to the shell and does NOT implement
-    // clipboard shortcuts itself, so without this Ctrl+V simply sent ^V to the
-    // process and nothing appeared.
+    // Paste.
     //
-    // Ctrl+V is bound as well as Ctrl+Shift+V: Ctrl+Shift+V is the terminal
-    // convention, but this terminal lives in a browser modal where Ctrl+V is
-    // what everyone reaches for. Ctrl+V is not meaningful to a shell (^V is
-    // literal-next, rarely used interactively), so binding it costs nothing.
-    // ONE entry point, deduplicated.
+    // xterm.js DOES handle the browser's native paste on its own hidden
+    // `xterm-helper-textarea`, so Ctrl+V (and Ctrl+Shift+V, and middle-click)
+    // already reach the shell without any help. Binding them here as well sent
+    // the clipboard TWICE — proven in a real browser on DEV:
     //
-    // Ctrl+V reaches us twice: the key handler below fires, AND the browser
-    // still emits a native `paste` event on the focused element which the
-    // listener further down also handles. Both send to the shell, so the first
-    // browser run of this pasted every clipboard twice —
-    // `echo MARKERecho MARKER` on screen. Neither path can simply be dropped:
-    // the key handler is what makes Ctrl+Shift+V work (browsers emit no paste
-    // event for it), and the native listener is what catches middle-click.
-    // Collapsing identical text arriving within one tick keeps every route
-    // working while delivering exactly once.
-    let lastPaste = { text: '', at: 0 };
-    const pasteText = (text: string): void => {
-      if (!text) return;
-      const now = Date.now();
-      if (text === lastPaste.text && now - lastPaste.at < 150) return;
-      lastPaste = { text, at: now };
-      sendRef.current(text);
-    };
+    //   $ echo UNIQ_MARKER_Aecho UNIQ_MARKER_A
+    //
+    // and no amount of de-duplicating inside this component could fix it,
+    // because xterm's own insertion never passes through our code. So the
+    // key handler deliberately does NOT touch V.
+    //
+    // What the terminal genuinely lacked was right-click paste, and a copy
+    // shortcut. Those are the only two bound here.
     const paste = (): void => {
       navigator.clipboard?.readText()
-        .then(pasteText)
+        .then((text) => { if (text) sendRef.current(text); })
         .catch(() => undefined); // denied / insecure context / unfocused
     };
     term.attachCustomKeyEventHandler((e) => {
       if (e.type !== 'keydown') return true;
-      const v = e.key === 'v' || e.key === 'V';
-      const c = e.key === 'c' || e.key === 'C';
-      if (e.ctrlKey && v) { paste(); return false; }
-      if (e.ctrlKey && e.shiftKey && c) {
+      if (e.ctrlKey && e.shiftKey && (e.key === 'c' || e.key === 'C')) {
         const sel = term.getSelection();
         // Only swallow when there IS a selection — otherwise Ctrl+C must keep
-        // reaching the shell, or the user cannot interrupt a running command.
+        // reaching the shell, or a running command cannot be interrupted.
         if (sel) { navigator.clipboard?.writeText(sel).catch(() => undefined); return false; }
-        return true;
       }
       return true;
     });
 
-    // Right-click pastes, matching most terminal emulators. The browser's own
+    // Right-click pastes, as most terminal emulators do. The browser's own
     // context menu is suppressed so it does not cover the terminal.
     const host = terminalRef.current;
     const onContextMenu = (e: MouseEvent): void => { e.preventDefault(); paste(); };
     host.addEventListener('contextmenu', onContextMenu);
-
-    // Middle-click / OS-level paste events that bypass the key handler.
-    const onPasteEvent = (e: ClipboardEvent): void => {
-      const text = e.clipboardData?.getData('text');
-      if (text) { e.preventDefault(); pasteText(text); }
-    };
-    host.addEventListener('paste', onPasteEvent);
 
     term.writeln('\x1b[90mPress Connect to start a terminal session.\x1b[0m');
 
@@ -165,7 +142,6 @@ export default function WebTerminal({ deploymentId, defaultComponent }: WebTermi
       cancelAnimationFrame(raf);
       observer.disconnect();
       host.removeEventListener('contextmenu', onContextMenu);
-      host.removeEventListener('paste', onPasteEvent);
       term.dispose();
       disconnect();
     };
