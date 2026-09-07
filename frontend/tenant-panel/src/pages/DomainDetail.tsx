@@ -10,6 +10,7 @@ import {
   CheckCircle, Network, Pencil, Check, RefreshCw, Lock,
   ArrowLeftRight, ArrowDownToLine, ArrowUpFromLine, CheckCircle2, Upload, ShieldCheck,
 } from 'lucide-react';
+import { VerificationChecksTable } from '@/components/VerificationChecksTable';
 import clsx from 'clsx';
 import { useTenantContext } from '@/hooks/use-tenant-context';
 import { useDomains, useVerifyDomain, useDeleteDomain, useDnsProviderGroups, useMigrateDomainDns, useDomainDeletePreview, useIngressBaseDomain, useRefreshRouteDns } from '@/hooks/use-domains';
@@ -215,9 +216,12 @@ export default function DomainDetail() {
 
             {verifyDomain.isSuccess && verifyDomain.data?.data && (
               verifyDomain.data.data.verified ? (
-                <div className="mt-4 flex items-center gap-2 text-sm text-green-700 dark:text-green-300" data-testid="verify-modal-success">
-                  <CheckCircle2 size={18} className="shrink-0 text-green-500 dark:text-green-400" />
-                  <span>DNS verification passed</span>
+                <div className="mt-4 space-y-3" data-testid="verify-modal-success">
+                  <div className="flex items-center gap-2 text-sm text-green-700 dark:text-green-300">
+                    <CheckCircle2 size={18} className="shrink-0 text-green-500 dark:text-green-400" />
+                    <span>DNS verification passed</span>
+                  </div>
+                  <VerificationChecksTable checks={verifyDomain.data.data.checks} />
                 </div>
               ) : (
                 <div className="mt-4 space-y-3" data-testid="verify-modal-failure">
@@ -237,6 +241,7 @@ export default function DomainDetail() {
                         ))}
                     </ul>
                   )}
+                  <VerificationChecksTable checks={verifyDomain.data.data.checks} />
                   <div className="rounded-lg bg-gray-50 dark:bg-gray-700/50 p-3 text-xs text-gray-600 dark:text-gray-400">
                     {domain.dnsMode === 'cname' && (
                       <>
