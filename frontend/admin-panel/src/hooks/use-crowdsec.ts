@@ -34,19 +34,38 @@ import type {
   CrowdsecListDecisionsResponse,
   CrowdsecRemoveAllowlistResponse,
   CrowdsecStatus,
+  CrowdsecCommunityBlocklistStatus,
+  CrowdsecCommunityBlocklistSetting,
 } from '@insula/api-contracts';
 
 interface Envelope<T> { readonly data: T; }
 
 const DECISIONS_KEY = ['crowdsec', 'decisions'] as const;
 const STATUS_KEY = ['crowdsec', 'status'] as const;
+const COMMUNITY_KEY = ['crowdsec', 'community-blocklist'] as const;
+
+/**
+ * Build the query string from EVERY field of the query object.
+ *
+ * This used to forward only q / scope / manualOnly. `staticOnly` and
+ * `autoOnly` were set by the filter checkboxes, dropped here, and therefore
+ * never reached the backend — which supports both. The filters silently did
+ * nothing, so an operator's static ban stayed buried among 16,220 community
+ * decisions and the Static Blocklist read as empty when the ban was in fact
+ * present in the LAPI. Derive the params from the object instead of listing
+ * them by hand, so a new filter cannot be forgotten the same way.
+ */
+function decisionsQueryString(query: CrowdsecListDecisionsQuery): string {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) {
+    if (value === undefined || value === null || value === '' || value === false) continue;
+    params.set(key, String(value));
+  }
+  return params.toString();
+}
 
 export function useCrowdsecDecisions(query: CrowdsecListDecisionsQuery) {
-  const params = new URLSearchParams();
-  if (query.q) params.set('q', query.q);
-  if (query.scope) params.set('scope', query.scope);
-  if (query.manualOnly) params.set('manualOnly', 'true');
-  const qs = params.toString();
+  const qs = decisionsQueryString(query);
   const url = qs
     ? `/api/v1/admin/security/crowdsec/decisions?${qs}`
     : '/api/v1/admin/security/crowdsec/decisions';
@@ -128,6 +147,32 @@ export function useRemoveCrowdsecAllowlistEntry() {
       }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ALLOWLIST_KEY });
+    },
+  });
+}
+
+/** Community-blocklist (CAPI) opt-in state. */
+export function useCrowdsecCommunityBlocklist() {
+  return useQuery<Envelope<CrowdsecCommunityBlocklistStatus>>({
+    queryKey: COMMUNITY_KEY,
+    queryFn: () => apiFetch('/api/v1/admin/security/crowdsec/community-blocklist'),
+    staleTime: 10_000,
+  });
+}
+
+export function useSetCrowdsecCommunityBlocklist() {
+  const qc = useQueryClient();
+  return useMutation<Envelope<unknown>, Error, CrowdsecCommunityBlocklistSetting>({
+    mutationFn: (body) =>
+      apiFetch('/api/v1/admin/security/crowdsec/community-blocklist', {
+        method: 'PUT',
+        body: JSON.stringify(body),
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: COMMUNITY_KEY });
+      // The decision list changes too: disabling purges the community bans.
+      void qc.invalidateQueries({ queryKey: DECISIONS_KEY });
+      void qc.invalidateQueries({ queryKey: STATUS_KEY });
     },
   });
 }

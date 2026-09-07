@@ -1,4 +1,9 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
+import * as k8sModule from '../container-console/service.js';
+import * as cscli from './cscli-exec.js';
+import { ensureCommunityBlocklistDefault } from './crowdsec.js';
+
+afterEach(() => { vi.restoreAllMocks(); });
 import { __test } from './crowdsec.js';
 
 const { parseLapiDecision, parseDurationToAbsolute, MANUAL_BAN_REASON_PREFIX, AUTO_BAN_SCENARIO_PREFIX } = __test;
@@ -165,5 +170,148 @@ describe('parseLapiDecision — auto-ban classification', () => {
 
   it('AUTO_BAN_SCENARIO_PREFIX extends the manual prefix (why the exclusion is needed)', () => {
     expect(AUTO_BAN_SCENARIO_PREFIX.startsWith(MANUAL_BAN_REASON_PREFIX)).toBe(true);
+  });
+});
+
+describe('applyDecisionFilters — source scoping and paging', () => {
+  const { applyDecisionFilters } = __test;
+
+  const dec = (over: Partial<Record<string, unknown>> = {}) => ({
+    id: 1, origin: 'CAPI', type: 'ban', scope: 'Ip', value: '1.2.3.4',
+    scenario: 'crowdsecurity/http-scan', duration: '4h', expiresAt: null,
+    manualByOperator: false, staticByOperator: false, autoBanned: false, simulated: false,
+    ...over,
+  } as never);
+
+  // Production 2026-09-06: 16,220 CAPI decisions against 2 platform ones. A
+  // combined table buried every operator action and made the static-ban list
+  // read as empty when the ban was present in the LAPI.
+  const community = Array.from({ length: 50 }, (_, i) => dec({ id: 100 + i, value: `10.0.0.${i}` }));
+  const platform = [
+    dec({ id: 1, origin: 'cscli', value: '203.0.113.7', scenario: 'admin-panel:alice:manual ban', manualByOperator: true }),
+    dec({ id: 2, origin: 'cscli', value: '203.0.113.8', scenario: 'admin-panel-static:alice:WAF rule 930130', staticByOperator: true }),
+  ];
+  const all = [...community, ...platform];
+
+  it('defaults to PLATFORM decisions only', () => {
+    const r = applyDecisionFilters(all, {});
+    expect(r.decisions).toHaveLength(2);
+    expect(r.decisions.every((d) => d.origin === 'cscli')).toBe(true);
+    // totalActive still reports everything the LAPI holds.
+    expect(r.totalActive).toBe(52);
+    expect(r.totalMatching).toBe(2);
+  });
+
+  it('returns ONLY community decisions when asked', () => {
+    const r = applyDecisionFilters(all, { source: 'community' });
+    expect(r.decisions).toHaveLength(50);
+    expect(r.decisions.every((d) => d.origin !== 'cscli')).toBe(true);
+  });
+
+  it('can still return both', () => {
+    expect(applyDecisionFilters(all, { source: 'all' }).decisions).toHaveLength(52);
+  });
+
+  it('finds a static ban that used to be buried under the community feed', () => {
+    const r = applyDecisionFilters(all, { staticOnly: true });
+    expect(r.decisions).toHaveLength(1);
+    expect(r.decisions[0].value).toBe('203.0.113.8');
+  });
+
+  it('pages the community list and reports the pre-paging total', () => {
+    const p0 = applyDecisionFilters(all, { source: 'community', limit: 20, offset: 0 });
+    expect(p0.decisions).toHaveLength(20);
+    expect(p0.totalMatching).toBe(50);
+    expect(p0.limit).toBe(20);
+    expect(p0.offset).toBe(0);
+
+    const p2 = applyDecisionFilters(all, { source: 'community', limit: 20, offset: 40 });
+    expect(p2.decisions).toHaveLength(10);
+    // Without totalMatching the UI could not tell this short page from "no
+    // matches" — the exact ambiguity that made the static list look broken.
+    expect(p2.totalMatching).toBe(50);
+  });
+
+  it('applies the search within the selected source', () => {
+    const r = applyDecisionFilters(all, { source: 'platform', q: '203.0.113.8' });
+    expect(r.decisions).toHaveLength(1);
+    expect(r.decisions[0].staticByOperator).toBe(true);
+  });
+
+  it('does not leak community rows into a platform search', () => {
+    const r = applyDecisionFilters(all, { source: 'platform', q: '10.0.0.' });
+    expect(r.decisions).toHaveLength(0);
+    expect(r.totalMatching).toBe(0);
+  });
+});
+
+describe('ensureCommunityBlocklistDefault', () => {
+  // Flux inventories capi-config.yaml but never applies it: the
+  // `reconcile: disabled` annotation that protects an operator's toggle makes
+  // Flux SKIP the object entirely. Verified on DEV 2026-09-06 — the inventory
+  // listed the ConfigMap while `kubectl get cm` returned NotFound, so the
+  // "off by default" default never landed. The backend therefore creates it.
+  const podList = { items: [{ metadata: { name: 'crowdsec-abc' } }] };
+
+  beforeEach(() => {
+    vi.spyOn(cscli, 'findCrowdsecPodName').mockResolvedValue('crowdsec-abc');
+    vi.spyOn(cscli, 'cscliExec').mockResolvedValue({ stdout: '3 decision(s) deleted', stderr: '' } as never);
+  });
+
+  it('creates the ConfigMap with the community blocklist OFF when absent', async () => {
+    const notFound = Object.assign(new Error('not found'), { code: 404 });
+    const create = vi.fn().mockResolvedValue({});
+    const core = {
+      readNamespacedConfigMap: vi.fn().mockRejectedValue(notFound),
+      createNamespacedConfigMap: create,
+      listNamespacedPod: vi.fn().mockResolvedValue(podList),
+      deleteNamespacedPod: vi.fn().mockResolvedValue({}),
+    };
+    vi.spyOn(k8sModule, 'createKubeConfig').mockReturnValue({ makeApiClient: () => core } as never);
+
+    const result = await ensureCommunityBlocklistDefault(undefined);
+    expect(result).toBe('created');
+    // Disabling only stops the REFRESH; what the feed already pulled stays
+    // enforced until it expires (144h TTLs seen on production, 18,770
+    // decisions still enforced on DEV). The default must purge, or an
+    // upgrading cluster keeps blocking for days and the switch looks inert.
+    expect(cscli.cscliExec).toHaveBeenCalledWith(
+      expect.anything(), expect.anything(),
+      ['decisions', 'delete', '--origin', 'CAPI'],
+    );
+    // ORDER MATTERS: the purge execs INTO the LAPI pod, so it must run before
+    // the roll deletes it. Observed on DEV 2026-09-07 with the reverse order —
+    // "cannot exec in a stopped container", and 18,770 decisions survived.
+    const purgeOrder = (cscli.cscliExec as unknown as { mock: { invocationCallOrder: number[] } })
+      .mock.invocationCallOrder[0];
+    const deleteOrder = core.deleteNamespacedPod.mock.invocationCallOrder[0];
+    expect(purgeOrder).toBeLessThan(deleteOrder);
+    // The LAPI reads DISABLE_ONLINE_API only at startup, and the pod predates
+    // the ConfigMap — without a roll the setting is stored and NOT running.
+    // Reloader did not fire on creation when this was verified on DEV.
+    expect(core.deleteNamespacedPod).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'crowdsec-abc' }),
+    );
+    const body = create.mock.calls[0][0].body;
+    expect(body.data.DISABLE_ONLINE_API).toBe('true');
+    // The annotation must be on the CREATED object too, or Flux would start
+    // fighting the operator's very first toggle.
+    expect(body.metadata.annotations['kustomize.toolkit.fluxcd.io/reconcile']).toBe('disabled');
+  });
+
+  it('never overwrites an operator who already opted IN', async () => {
+    const create = vi.fn();
+    const core = {
+      readNamespacedConfigMap: vi.fn().mockResolvedValue({ data: { DISABLE_ONLINE_API: 'false' } }),
+      createNamespacedConfigMap: create,
+      listNamespacedPod: vi.fn().mockResolvedValue(podList),
+      deleteNamespacedPod: vi.fn().mockResolvedValue({}),
+    };
+    vi.spyOn(k8sModule, 'createKubeConfig').mockReturnValue({ makeApiClient: () => core } as never);
+
+    expect(await ensureCommunityBlocklistDefault(undefined)).toBe('present');
+    expect(create).not.toHaveBeenCalled();
+    // No change, so no roll: booting must not bounce the LAPI every time.
+    expect(core.deleteNamespacedPod).not.toHaveBeenCalled();
   });
 });
