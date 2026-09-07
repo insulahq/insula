@@ -35,6 +35,30 @@ export function useCreateDeployment(tenantId: string | undefined) {
   });
 }
 
+/**
+ * Switch a catalog deployment to a specific version.
+ *
+ * Any version in Supported Versions, not only newer ones — the platform's own
+ * lock-mode guard decides what is permitted and returns an actionable error
+ * when it is not. Replaces the single-step rollback button, which could only
+ * ever return to `previous_version`.
+ */
+export function useSwitchDeploymentVersion(tenantId: string | undefined, deploymentId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (targetVersion: string) =>
+      apiFetch<{ data: unknown }>(
+        `/api/v1/tenants/${tenantId}/deployments/${deploymentId}/version`,
+        { method: 'PATCH', body: JSON.stringify({ target_version: targetVersion }) },
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['deployments', tenantId] });
+      queryClient.invalidateQueries({ queryKey: ['available-upgrades', tenantId, deploymentId] });
+      queryClient.invalidateQueries({ queryKey: ['deployment', deploymentId] });
+    },
+  });
+}
+
 export function useUpdateDeployment(tenantId: string | undefined) {
   const queryClient = useQueryClient();
   return useMutation({
