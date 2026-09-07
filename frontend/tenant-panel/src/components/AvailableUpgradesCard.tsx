@@ -4,7 +4,7 @@
 // the rollback button after a successful upgrade.
 
 import { useState } from 'react';
-import { Loader2, ArrowUpCircle, AlertTriangle, RotateCcw, Lock, CheckCircle2 } from 'lucide-react';
+import { Loader2, ArrowUpCircle, AlertTriangle, Lock, CheckCircle2 } from 'lucide-react';
 import clsx from 'clsx';
 import { apiFetch } from '@/lib/api-client';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -15,7 +15,6 @@ interface Props {
   readonly deploymentId: string;
   readonly deploymentName: string;
   readonly installedVersion: string | null;
-  readonly previousVersion: string | null;
 }
 
 // ─── Hooks ──────────────────────────────────────────────────────────────────
@@ -50,22 +49,6 @@ function useUpgradeVersion(tenantId: string, deploymentId: string) {
   });
 }
 
-function useRollbackVersion(tenantId: string, deploymentId: string) {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: () =>
-      apiFetch<{ data: DeploymentResponse }>(
-        `/api/v1/tenants/${tenantId}/deployments/${deploymentId}/rollback-version`,
-        { method: 'POST' },
-      ).then((r) => r.data),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['available-upgrades', tenantId, deploymentId] });
-      qc.invalidateQueries({ queryKey: ['deployments', tenantId] });
-      qc.invalidateQueries({ queryKey: ['deployment', deploymentId] });
-    },
-  });
-}
-
 // ─── Component ──────────────────────────────────────────────────────────────
 
 export default function AvailableUpgradesCard({
@@ -73,13 +56,10 @@ export default function AvailableUpgradesCard({
   deploymentId,
   deploymentName,
   installedVersion,
-  previousVersion,
 }: Props) {
   const { data, isLoading, isError } = useAvailableUpgrades(tenantId, deploymentId);
   const upgrade = useUpgradeVersion(tenantId, deploymentId);
-  const rollback = useRollbackVersion(tenantId, deploymentId);
   const [confirmTarget, setConfirmTarget] = useState<string | null>(null);
-  const [rollbackConfirmOpen, setRollbackConfirmOpen] = useState(false);
 
   // Hide the card entirely while loading + when no upgrades are available
   // AND no rollback is available. The customer doesn't need to see "nothing
@@ -90,10 +70,18 @@ export default function AvailableUpgradesCard({
 
   const direct = data.direct;
   const chain = data.recommendedChain;
-  const canRollback = !!previousVersion;
   const hasUpdates = direct.length > 0;
 
-  if (!hasUpdates && !canRollback) return null;
+  // Updates only. This card used to also render when a rollback was possible,
+  // so an app sitting on the NEWEST version still showed an amber
+  // "upgrade"-styled banner for as long as previousVersion was set — which is
+  // forever, since nothing clears it. Upgrading to the latest release did not
+  // make the banner go away, which reads as "an update is still available".
+  //
+  // Rollback itself is gone: every version, older ones included, is now
+  // selectable from Supported Versions in the deployment detail modal, so a
+  // dedicated one-step-back button added no capability.
+  if (!hasUpdates) return null;
 
   return (
     <div className="mb-6 rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 p-4" data-testid="available-upgrades-card">
@@ -102,7 +90,7 @@ export default function AvailableUpgradesCard({
         <div className="flex-1 space-y-3">
           <div>
             <h3 className="font-semibold text-gray-900 dark:text-gray-100">
-              {hasUpdates ? `${direct.length} update${direct.length !== 1 ? 's' : ''} available` : 'Rollback available'}
+              {`${direct.length} update${direct.length !== 1 ? 's' : ''} available`}
             </h3>
             <p className="text-xs text-gray-600 dark:text-gray-400">
               Currently running <span className="font-mono">{installedVersion ? `v${installedVersion}` : 'unversioned'}</span>
@@ -161,22 +149,6 @@ export default function AvailableUpgradesCard({
             </div>
           )}
 
-          {/* Rollback */}
-          {canRollback && (
-            <div className="flex items-center gap-2 pt-1 border-t border-amber-200/50 dark:border-amber-800/50">
-              <span className="text-xs text-gray-600 dark:text-gray-400">
-                Recently upgraded from v{previousVersion}?
-              </span>
-              <button
-                type="button"
-                onClick={() => setRollbackConfirmOpen(true)}
-                className="inline-flex items-center gap-1 rounded-md border border-orange-300 dark:border-orange-700 bg-white dark:bg-orange-900/30 px-2 py-1 text-xs font-medium text-orange-700 dark:text-orange-300 hover:bg-orange-50 dark:hover:bg-orange-800/50"
-                data-testid="rollback-btn"
-              >
-                <RotateCcw size={11} /> Roll back to v{previousVersion}
-              </button>
-            </div>
-          )}
         </div>
       </div>
 
@@ -199,17 +171,6 @@ export default function AvailableUpgradesCard({
         />
       )}
 
-      {rollbackConfirmOpen && previousVersion && (
-        <RollbackConfirmModal
-          deploymentName={deploymentName}
-          fromVersion={installedVersion}
-          toVersion={previousVersion}
-          isPending={rollback.isPending}
-          error={rollback.error}
-          onClose={() => setRollbackConfirmOpen(false)}
-          onConfirm={() => rollback.mutate(undefined, { onSuccess: () => setRollbackConfirmOpen(false) })}
-        />
-      )}
 
       {upgrade.isSuccess && !confirmTarget && (
         <div className="mt-2 flex items-center gap-1 text-xs text-green-700 dark:text-green-400">
@@ -291,68 +252,3 @@ function UpgradeConfirmModal({
   );
 }
 
-function RollbackConfirmModal({
-  deploymentName,
-  fromVersion,
-  toVersion,
-  isPending,
-  error,
-  onClose,
-  onConfirm,
-}: {
-  readonly deploymentName: string;
-  readonly fromVersion: string | null;
-  readonly toVersion: string;
-  readonly isPending: boolean;
-  readonly error: Error | null;
-  readonly onClose: () => void;
-  readonly onConfirm: () => void;
-}) {
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={onClose}>
-      <div
-        className="w-full max-w-md space-y-3 rounded-lg bg-white dark:bg-gray-800 p-5 shadow-xl"
-        onClick={(e) => e.stopPropagation()}
-        role="dialog"
-        aria-modal="true"
-        data-testid="rollback-confirm-modal"
-      >
-        <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">Roll back {deploymentName}</h3>
-        <p className="text-sm text-gray-600 dark:text-gray-300">
-          Revert from <span className="font-mono">v{fromVersion}</span> back to{' '}
-          <span className="font-mono">v{toVersion}</span>?
-        </p>
-        <div className="rounded-md border border-amber-200 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
-          <AlertTriangle size={12} className="inline mr-1 -mt-0.5" />
-          <strong>Heads up:</strong> Schema migrations applied during the upgrade are NOT reversed.
-          If your app changed its database schema, rolling back may leave data in an inconsistent state.
-          Restore from a snapshot if you're unsure.
-        </div>
-        {error && (
-          <div className="rounded-md border border-red-200 bg-red-50 dark:bg-red-900/20 px-3 py-2 text-xs text-red-700 dark:text-red-400">
-            {error.message}
-          </div>
-        )}
-        <div className="flex justify-end gap-2">
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-1.5 text-sm text-gray-700 dark:text-gray-300"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={onConfirm}
-            disabled={isPending}
-            className="inline-flex items-center gap-1 rounded-md bg-orange-500 px-3 py-1.5 text-sm font-medium text-white hover:bg-orange-600 disabled:opacity-50"
-            data-testid="confirm-rollback"
-          >
-            {isPending && <Loader2 size={12} className="animate-spin" />}
-            Roll back
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}

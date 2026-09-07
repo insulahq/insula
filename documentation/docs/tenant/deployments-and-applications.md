@@ -1,5 +1,5 @@
 ---
-verified: 2026.6.7
+verified: 2026.9.12
 ---
 
 # Deployments & applications
@@ -132,15 +132,34 @@ Click **Details** on a card to see and change:
         passwords inside the app itself rather than here.
 
 - **Assigned resources** — the CPU and memory reserved for the app (editable
-  within your plan limits).
+  within your plan limits). Shown directly under **Supported versions**.
+- **Volumes** — the **Local path** of each of the app's data folders in your
+  file area (for example `/runtime/apache-php/my-site`), alongside the path it
+  is mounted at inside the container. Paths are absolute, so they can be pasted
+  straight into the file manager or an SFTP client.
+- **Terminal** — a shell inside the running app. Paste with ++ctrl+v++,
+  ++ctrl+shift+v++ or right-click; ++ctrl+shift+c++ copies the selection.
+  ++ctrl+c++ still interrupts a running command, as in any terminal.
 - **Logs** — click **Logs** to see recent output. It shows a snapshot by
   default; toggle **Stream Live** to watch new lines as they arrive. This is
   the first place to look when an app misbehaves.
 
-### Updating an app
+### Updating an app, or changing version
 
 When a newer version is available, the card shows an **Update available** badge.
-Open **Details** to review and apply the upgrade.
+Open **Details** to review and apply the upgrade. The badge disappears once you
+are on the newest version.
+
+**Supported versions** in the details panel lists every version the catalog
+offers, with the installed one marked. Click any of them to switch — including
+an **older** version, which replaces the previous one-step "Roll back" button.
+You are asked to confirm first.
+
+!!! warning "Going back a version does not undo data changes"
+    Switching to an older version redeploys the app on that release. Database
+    schema changes made by the newer version are **not** reversed, so take a
+    backup first if the app stores data. Some apps also restrict which versions
+    can be reached directly — if so, the panel says which.
 
 ### Restoring a deleted app
 

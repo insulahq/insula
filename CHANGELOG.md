@@ -13,6 +13,39 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Fixed
+- **The deployment terminal could not paste.** xterm.js forwards keystrokes to
+  the shell and implements no clipboard shortcuts of its own, so Ctrl+V sent a
+  literal `^V` to the process. Ctrl+V, Ctrl+Shift+V and right-click now paste;
+  Ctrl+Shift+C copies a selection. Plain Ctrl+C is deliberately left alone so a
+  running command can still be interrupted.
+- **The terminal's last output was permanently hidden.** The terminal pane is a
+  flex child, and a flex item defaults to `min-height: auto` — so it refused to
+  shrink, grew taller than its wrapper, and the wrapper's `overflow-hidden`
+  clipped the newest rows. Scrolling could not reveal them because xterm was
+  already at the bottom of a viewport taller than the visible box. It also
+  re-fits after layout settles, instead of measuring a container that has not
+  finished sizing.
+- **"Updates available" stayed on a deployment already running the newest
+  version.** The card also rendered whenever a rollback was possible, and
+  `previous_version` is never cleared — so upgrading to the latest release left
+  an amber upgrade-styled banner in place forever.
+- Volumes showed `.` as the path. That is the catalog manifest's `local_path`
+  marker meaning "the storage root", rendered literally; and `storage_path` is
+  stored without a leading slash, so what little did render looked relative.
+  Paths are now resolved and absolute (`/runtime/apache-php/site`), in the
+  Volumes table and in Status Details. The backend also stopped giving every
+  volume of a deployment the same bare base path.
+
+### Changed
+- Versions in **Supported Versions** are now selectable — any listed version,
+  including older ones, with a confirmation that warns when the switch is a
+  downgrade. The single-step **Rollback** banner is gone: it could only ever
+  return to `previous_version`, and selecting a version covers it.
+- Deployment detail modal: **Assigned Resources** now follows **Supported
+  Versions**, and the Volumes column is labelled **Local Path** rather than
+  K8s Path — it has always been the tenant-visible path.
+
+### Fixed
 - **Editing a deployment's configuration variables saved the values but never
   applied them.** The redeploy that re-renders the pod template ran only when
   `extra_mounts` changed, so a `configuration` edit was written to the database

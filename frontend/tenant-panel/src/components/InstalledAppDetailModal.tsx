@@ -3,13 +3,44 @@ import { useQueryClient } from '@tanstack/react-query';
 import { API_BASE } from '@/lib/api-client';
 import { X, Play, Square, Cpu, HardDrive, Server, Clock, Shield, Eye, EyeOff, AppWindow, Loader2, Database, AlertTriangle, Tag as TagIcon, Save, AlertCircle, Terminal, RefreshCw, Pencil } from 'lucide-react';
 import { getStatusColor } from '@/lib/status-colors';
-import { useUpdateDeploymentResources, useUpdateDeployment, useResourceAvailability, useDeploymentLiveMetrics } from '@/hooks/use-deployments';
+import { useUpdateDeploymentResources, useUpdateDeployment, useResourceAvailability, useDeploymentLiveMetrics, useSwitchDeploymentVersion } from '@/hooks/use-deployments';
 import ExtraMountsEditor, { extraMountErrors, type ExtraMountRow } from './ExtraMountsEditor';
 import NetworkAccessSection from '@/components/NetworkAccessSection';
 import AvailableUpgradesCard from '@/components/AvailableUpgradesCard';
 import { ResourceBreakdown } from '@/components/ResourceBreakdown';
 import { useCatalogEntryVersions } from '@/hooks/use-catalog';
 import clsx from 'clsx';
+
+/**
+ * Tenant paths are stored WITHOUT a leading slash (`runtime/apache-php/site`),
+ * which renders as something that looks relative and cannot be pasted into the
+ * file manager or an SFTP client. Display them absolute.
+ */
+function absPath(p: string | null | undefined): string {
+  const v = (p ?? '').trim();
+  if (!v || v === '.') return '/';
+  return v.startsWith('/') ? v : `/${v}`;
+}
+
+/** Resolve a catalog volume's `local_path` (often ".") against the storage root. */
+function joinTenantPath(base: string | null | undefined, localPath?: string | null): string {
+  const rel = (localPath ?? '').trim();
+  const segs = [base ?? '', rel === '.' || rel === './' ? '' : rel]
+    .flatMap((seg) => seg.split('/'))
+    .filter((seg) => seg !== '' && seg !== '.');
+  return `/${segs.join('/')}`;
+}
+
+/** Numeric-segment compare, enough to tell an upgrade from a downgrade. */
+function compareSemver(a: string, b: string): number {
+  const pa = a.split('.').map((n) => Number.parseInt(n, 10) || 0);
+  const pb = b.split('.').map((n) => Number.parseInt(n, 10) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i += 1) {
+    const d = (pa[i] ?? 0) - (pb[i] ?? 0);
+    if (d !== 0) return d < 0 ? -1 : 1;
+  }
+  return 0;
+}
 import DatabaseManagementModal from './DatabaseManagementModal';
 import LogViewer from './LogViewer';
 import WebTerminal from './WebTerminal';
@@ -138,6 +169,14 @@ export default function InstalledAppDetailModal({
   const liveMetrics = useDeploymentLiveMetrics(tenantId, deployment?.status === 'running' ? deployment?.id : undefined);
 
   // ─── Configuration editing ────────────────────────────────────────────────
+  // Version switching replaces the old one-step Rollback button: any listed
+  // version is selectable, including older ones. The platform's lock-mode
+  // guard is the authority on what is permitted, so its error is surfaced
+  // verbatim rather than second-guessed here.
+  const [versionTarget, setVersionTarget] = useState<string | null>(null);
+  // Hooks run before the null guard below, so these are optional-chained.
+  const switchVersion = useSwitchDeploymentVersion(deployment?.tenantId, deployment?.id ?? '');
+
   const [editingConfig, setEditingConfig] = useState(false);
   const [editValues, setEditValues] = useState<Record<string, string>>({});
   const updateDeployment = useUpdateDeployment(tenantId);
@@ -342,7 +381,6 @@ export default function InstalledAppDetailModal({
             deploymentId={deployment.id}
             deploymentName={deployment.name}
             installedVersion={deployment.installedVersion}
-            previousVersion={deployment.previousVersion ?? null}
           />
         )}
 
@@ -368,7 +406,7 @@ export default function InstalledAppDetailModal({
             {deployment.storagePath && (
               <div>
                 <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Storage Path</span>
-                <p className="font-mono text-gray-900 dark:text-gray-100">{deployment.storagePath}</p>
+                <p className="font-mono text-gray-900 dark:text-gray-100">{absPath(deployment.storagePath)}</p>
               </div>
             )}
             {deployment.lastUpgradedAt && (
@@ -394,21 +432,29 @@ export default function InstalledAppDetailModal({
               Supported Versions
             </h3>
             <div className="flex flex-wrap items-center gap-2">
-              {(versionsData?.data ?? []).map(v => (
-                <span
-                  key={v.id}
-                  className={clsx(
-                    'inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm',
-                    deployment.installedVersion === v.version
-                      ? 'border-blue-300 dark:border-blue-700 bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 font-medium'
-                      : 'border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400',
-                  )}
-                >
-                  {v.version}
-                  {v.isDefault ? <span className="text-[10px] font-medium text-blue-500 dark:text-blue-400">default</span> : null}
-                  {deployment.installedVersion === v.version ? <span className="text-[10px] font-medium text-green-600 dark:text-green-400">installed</span> : null}
-                </span>
-              ))}
+              {(versionsData?.data ?? []).map(v => {
+                const isInstalled = deployment.installedVersion === v.version;
+                return (
+                  <button
+                    key={v.id}
+                    type="button"
+                    disabled={isInstalled || switchVersion.isPending}
+                    onClick={() => setVersionTarget(v.version)}
+                    title={isInstalled ? 'Currently installed' : `Switch to ${v.version}`}
+                    data-testid={`version-${v.version}`}
+                    className={clsx(
+                      'inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm transition-colors',
+                      isInstalled
+                        ? 'border-blue-300 dark:border-blue-700 bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 font-medium cursor-default'
+                        : 'border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:border-blue-300 dark:hover:border-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 hover:text-blue-700 dark:hover:text-blue-300 disabled:opacity-50',
+                    )}
+                  >
+                    {v.version}
+                    {v.isDefault ? <span className="text-[10px] font-medium text-blue-500 dark:text-blue-400">default</span> : null}
+                    {isInstalled ? <span className="text-[10px] font-medium text-green-600 dark:text-green-400">installed</span> : null}
+                  </button>
+                );
+              })}
               {deployment.status === 'running' && onRestart && (
                 <button
                   type="button"
@@ -423,6 +469,173 @@ export default function InstalledAppDetailModal({
             </div>
           </div>
         )}
+
+        <div className="mb-6">
+          <div className="flex items-center gap-2 mb-3">
+            <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-900 dark:text-gray-100">
+              <Cpu size={16} className="text-blue-600 dark:text-blue-400" />
+              Assigned Resources
+            </h3>
+            {!editingResources && (
+              <button
+                type="button"
+                onClick={() => {
+                  setEditCpu(deployment.cpuRequest);
+                  // Parse "256Mi" or "1Gi" into value + unit
+                  const mem = deployment.memoryRequest;
+                  if (mem.endsWith('Gi')) { setEditMemoryValue(mem.slice(0, -2)); setEditMemoryUnit('Gi'); }
+                  else if (mem.endsWith('Mi')) { setEditMemoryValue(mem.slice(0, -2)); setEditMemoryUnit('Mi'); }
+                  else { setEditMemoryValue(mem); setEditMemoryUnit('Mi'); }
+                  setEditingResources(true);
+                }}
+                className="rounded-md border border-blue-300 dark:border-blue-600 px-2 py-0.5 text-xs font-medium text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20"
+                data-testid="edit-resources-button"
+              >
+                Edit
+              </button>
+            )}
+          </div>
+          {editingResources ? (
+            <div className="space-y-3">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label
+                    className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1"
+                    title="Your CPU baseline — guaranteed minimum. When neighbour customers are idle, your pods can burst above this value (shared CPU model)."
+                  >
+                    CPU baseline (burstable)
+                  </label>
+                  <input
+                    type="text"
+                    value={editCpu}
+                    onChange={(e) => setEditCpu(e.target.value)}
+                    className="w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    data-testid="edit-cpu-input"
+                  />
+                  {avail && (
+                    <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">
+                      Min: {avail.cpu.min} &middot; Max: {avail.cpu.max} cores
+                    </p>
+                  )}
+                </div>
+                <div>
+                  <label
+                    className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1"
+                    title="Memory is guaranteed — your pods always have access to this amount but cannot exceed it without restart."
+                  >
+                    Memory (guaranteed)
+                  </label>
+                  <div className="flex gap-1">
+                    <input
+                      type="number"
+                      min="1"
+                      value={editMemoryValue}
+                      onChange={(e) => setEditMemoryValue(e.target.value)}
+                      className="flex-1 rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      data-testid="edit-memory-input"
+                    />
+                    <select
+                      value={editMemoryUnit}
+                      onChange={(e) => setEditMemoryUnit(e.target.value as 'Mi' | 'Gi')}
+                      className="rounded-lg border border-gray-300 dark:border-gray-600 px-2 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 focus:border-blue-500 focus:outline-none"
+                      data-testid="edit-memory-unit"
+                    >
+                      <option value="Mi">MB</option>
+                      <option value="Gi">GB</option>
+                    </select>
+                  </div>
+                  {avail && (
+                    <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">
+                      Min: {avail.memory.min} &middot; Max: {avail.memory.max}
+                    </p>
+                  )}
+                </div>
+              </div>
+              <div className="flex items-center gap-1.5 text-xs text-amber-600 dark:text-amber-400">
+                <AlertCircle size={12} className="shrink-0" />
+                <span>Applying changes will restart the deployment</span>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    updateResources.mutate(
+                      { deploymentId: deployment.id, cpu_request: editCpu, memory_request: editMemory },
+                      {
+                        onSuccess: () => {
+                          setEditingResources(false);
+                          queryClient.invalidateQueries({ queryKey: ['deployments'] });
+                          onClose();
+                        },
+                      },
+                    );
+                  }}
+                  disabled={updateResources.isPending || (editCpu === deployment.cpuRequest && editMemory === deployment.memoryRequest)}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                  data-testid="apply-resources-button"
+                >
+                  {updateResources.isPending ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
+                  Apply Changes
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setEditingResources(false)}
+                  className="rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
+                >
+                  Cancel
+                </button>
+              </div>
+              {updateResources.isError && (
+                <p className="text-xs text-red-600 dark:text-red-400">
+                  {updateResources.error instanceof Error ? updateResources.error.message : 'Failed to update resources'}
+                </p>
+              )}
+              {/* Per-component breakdown — surfaced while editing so the user
+                  sees what their CPU/memory split looks like across the app. */}
+              <ResourceBreakdown tenantId={deployment.tenantId} deploymentId={deployment.id} />
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 gap-4">
+              <DetailMetricCard
+                icon={<Cpu size={16} className="mx-auto mb-1 text-gray-400" />}
+                label="CPU"
+                request={deployment.cpuRequest}
+                used={liveMetrics.data?.data?.cpuUsed}
+                type="cpu"
+              />
+              <DetailMetricCard
+                icon={<HardDrive size={16} className="mx-auto mb-1 text-gray-400" />}
+                label="Memory"
+                request={deployment.memoryRequest}
+                used={liveMetrics.data?.data?.memoryUsedMi}
+                type="memory"
+              />
+              {(() => {
+                const storageBytes = liveMetrics.data?.data?.storageUsedBytes ?? 0;
+                const usedGb = storageBytes / (1024 * 1024 * 1024);
+                const pct = Math.min((usedGb / 10) * 100, 100);
+                const barColor = pct >= 80 ? 'bg-red-500' : pct >= 50 ? 'bg-amber-500' : 'bg-green-500';
+                return (
+                  <div className="col-span-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-700/50 p-3 text-center">
+                    <HardDrive size={16} className="mx-auto mb-1 text-gray-400" />
+                    <p className="text-xs text-gray-500 dark:text-gray-400">Disk Usage</p>
+                    <p className="text-lg font-semibold text-gray-900 dark:text-gray-100">{liveMetrics.data?.data?.storageUsedFormatted ?? '0 B'}</p>
+                    <div className="mt-1.5 h-1.5 w-full rounded-full bg-gray-200 dark:bg-gray-600 overflow-hidden">
+                      <div className={clsx('h-full rounded-full transition-all', barColor)} style={{ width: `${pct}%` }} />
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+          )}
+          {/* Per-component breakdown (read-only view). Hidden for
+              single-component apps where the breakdown adds no info. */}
+          {!editingResources && (
+            <div className="mt-3">
+              <ResourceBreakdown tenantId={deployment.tenantId} deploymentId={deployment.id} />
+            </div>
+          )}
+        </div>
 
         {/* Components Section */}
         {components.length > 0 && (
@@ -458,7 +671,7 @@ export default function InstalledAppDetailModal({
           </div>
         )}
 
-        {/* Volumes Section (Issue 9: real K8s path) */}
+        {/* Volumes Section — tenant-visible local paths, not K8s ones */}
         {volumes.length > 0 && (
           <div className="mb-6" data-testid="volumes-section">
             <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-900 dark:text-gray-100 mb-3">
@@ -469,33 +682,35 @@ export default function InstalledAppDetailModal({
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                    <th className="px-3 py-2">K8s Path</th>
+                    <th className="px-3 py-2">Local Path</th>
                     <th className="px-3 py-2">Container Path</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
                   {(() => {
-                    // Use volumePaths from the deployment response if available (computed by backend)
+                    // Backend-computed paths are authoritative — they resolve the
+                    // manifest's local_path against the deployment's storage root.
                     const deploymentVolumePaths = deployment.volumePaths;
                     if (deploymentVolumePaths && deploymentVolumePaths.length > 0) {
                       return deploymentVolumePaths.map((vp) => (
                         <tr key={vp.containerPath ?? vp.k8sPath}>
-                          <td className="px-3 py-2 font-mono text-xs text-gray-900 dark:text-gray-100">{vp.k8sPath}</td>
+                          <td className="px-3 py-2 font-mono text-xs text-gray-900 dark:text-gray-100">{absPath(vp.k8sPath)}</td>
                           <td className="px-3 py-2 font-mono text-xs text-gray-500 dark:text-gray-400">{vp.containerPath ?? '-'}</td>
                         </tr>
                       ));
                     }
-                    // Fallback: compute K8s path from catalog volumes + deployment name
-                    return volumes.map((vol) => {
-                      const parentDir = vol.local_path?.split('/').slice(0, -1).join('/') ?? '';
-                      const k8sPath = parentDir ? `${parentDir}/${deployment.name}` : (vol.local_path ?? deployment.name);
-                      return (
-                        <tr key={vol.container_path ?? vol.local_path}>
-                          <td className="px-3 py-2 font-mono text-xs text-gray-900 dark:text-gray-100">{k8sPath}</td>
-                          <td className="px-3 py-2 font-mono text-xs text-gray-500 dark:text-gray-400">{vol.container_path ?? '-'}</td>
-                        </tr>
-                      );
-                    });
+                    // Fallback for responses without volumePaths. The catalog's
+                    // `local_path` is relative to the deployment's storage root and
+                    // is literally "." for most entries — rendering it raw is what
+                    // put a bare "." in this column.
+                    return volumes.map((vol) => (
+                      <tr key={vol.container_path ?? vol.local_path}>
+                        <td className="px-3 py-2 font-mono text-xs text-gray-900 dark:text-gray-100">
+                          {joinTenantPath(deployment.storagePath, vol.local_path)}
+                        </td>
+                        <td className="px-3 py-2 font-mono text-xs text-gray-500 dark:text-gray-400">{vol.container_path ?? '-'}</td>
+                      </tr>
+                    ));
                   })()}
                 </tbody>
               </table>
@@ -680,172 +895,6 @@ export default function InstalledAppDetailModal({
         </section>
 
         {/* Resources Section (Issue 7: editable) */}
-        <div className="mb-6">
-          <div className="flex items-center gap-2 mb-3">
-            <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-900 dark:text-gray-100">
-              <Cpu size={16} className="text-blue-600 dark:text-blue-400" />
-              Assigned Resources
-            </h3>
-            {!editingResources && (
-              <button
-                type="button"
-                onClick={() => {
-                  setEditCpu(deployment.cpuRequest);
-                  // Parse "256Mi" or "1Gi" into value + unit
-                  const mem = deployment.memoryRequest;
-                  if (mem.endsWith('Gi')) { setEditMemoryValue(mem.slice(0, -2)); setEditMemoryUnit('Gi'); }
-                  else if (mem.endsWith('Mi')) { setEditMemoryValue(mem.slice(0, -2)); setEditMemoryUnit('Mi'); }
-                  else { setEditMemoryValue(mem); setEditMemoryUnit('Mi'); }
-                  setEditingResources(true);
-                }}
-                className="rounded-md border border-blue-300 dark:border-blue-600 px-2 py-0.5 text-xs font-medium text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20"
-                data-testid="edit-resources-button"
-              >
-                Edit
-              </button>
-            )}
-          </div>
-          {editingResources ? (
-            <div className="space-y-3">
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label
-                    className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1"
-                    title="Your CPU baseline — guaranteed minimum. When neighbour customers are idle, your pods can burst above this value (shared CPU model)."
-                  >
-                    CPU baseline (burstable)
-                  </label>
-                  <input
-                    type="text"
-                    value={editCpu}
-                    onChange={(e) => setEditCpu(e.target.value)}
-                    className="w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                    data-testid="edit-cpu-input"
-                  />
-                  {avail && (
-                    <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">
-                      Min: {avail.cpu.min} &middot; Max: {avail.cpu.max} cores
-                    </p>
-                  )}
-                </div>
-                <div>
-                  <label
-                    className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1"
-                    title="Memory is guaranteed — your pods always have access to this amount but cannot exceed it without restart."
-                  >
-                    Memory (guaranteed)
-                  </label>
-                  <div className="flex gap-1">
-                    <input
-                      type="number"
-                      min="1"
-                      value={editMemoryValue}
-                      onChange={(e) => setEditMemoryValue(e.target.value)}
-                      className="flex-1 rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                      data-testid="edit-memory-input"
-                    />
-                    <select
-                      value={editMemoryUnit}
-                      onChange={(e) => setEditMemoryUnit(e.target.value as 'Mi' | 'Gi')}
-                      className="rounded-lg border border-gray-300 dark:border-gray-600 px-2 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 focus:border-blue-500 focus:outline-none"
-                      data-testid="edit-memory-unit"
-                    >
-                      <option value="Mi">MB</option>
-                      <option value="Gi">GB</option>
-                    </select>
-                  </div>
-                  {avail && (
-                    <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">
-                      Min: {avail.memory.min} &middot; Max: {avail.memory.max}
-                    </p>
-                  )}
-                </div>
-              </div>
-              <div className="flex items-center gap-1.5 text-xs text-amber-600 dark:text-amber-400">
-                <AlertCircle size={12} className="shrink-0" />
-                <span>Applying changes will restart the deployment</span>
-              </div>
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    updateResources.mutate(
-                      { deploymentId: deployment.id, cpu_request: editCpu, memory_request: editMemory },
-                      {
-                        onSuccess: () => {
-                          setEditingResources(false);
-                          queryClient.invalidateQueries({ queryKey: ['deployments'] });
-                          onClose();
-                        },
-                      },
-                    );
-                  }}
-                  disabled={updateResources.isPending || (editCpu === deployment.cpuRequest && editMemory === deployment.memoryRequest)}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                  data-testid="apply-resources-button"
-                >
-                  {updateResources.isPending ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
-                  Apply Changes
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setEditingResources(false)}
-                  className="rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
-                >
-                  Cancel
-                </button>
-              </div>
-              {updateResources.isError && (
-                <p className="text-xs text-red-600 dark:text-red-400">
-                  {updateResources.error instanceof Error ? updateResources.error.message : 'Failed to update resources'}
-                </p>
-              )}
-              {/* Per-component breakdown — surfaced while editing so the user
-                  sees what their CPU/memory split looks like across the app. */}
-              <ResourceBreakdown tenantId={deployment.tenantId} deploymentId={deployment.id} />
-            </div>
-          ) : (
-            <div className="grid grid-cols-2 gap-4">
-              <DetailMetricCard
-                icon={<Cpu size={16} className="mx-auto mb-1 text-gray-400" />}
-                label="CPU"
-                request={deployment.cpuRequest}
-                used={liveMetrics.data?.data?.cpuUsed}
-                type="cpu"
-              />
-              <DetailMetricCard
-                icon={<HardDrive size={16} className="mx-auto mb-1 text-gray-400" />}
-                label="Memory"
-                request={deployment.memoryRequest}
-                used={liveMetrics.data?.data?.memoryUsedMi}
-                type="memory"
-              />
-              {(() => {
-                const storageBytes = liveMetrics.data?.data?.storageUsedBytes ?? 0;
-                const usedGb = storageBytes / (1024 * 1024 * 1024);
-                const pct = Math.min((usedGb / 10) * 100, 100);
-                const barColor = pct >= 80 ? 'bg-red-500' : pct >= 50 ? 'bg-amber-500' : 'bg-green-500';
-                return (
-                  <div className="col-span-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-700/50 p-3 text-center">
-                    <HardDrive size={16} className="mx-auto mb-1 text-gray-400" />
-                    <p className="text-xs text-gray-500 dark:text-gray-400">Disk Usage</p>
-                    <p className="text-lg font-semibold text-gray-900 dark:text-gray-100">{liveMetrics.data?.data?.storageUsedFormatted ?? '0 B'}</p>
-                    <div className="mt-1.5 h-1.5 w-full rounded-full bg-gray-200 dark:bg-gray-600 overflow-hidden">
-                      <div className={clsx('h-full rounded-full transition-all', barColor)} style={{ width: `${pct}%` }} />
-                    </div>
-                  </div>
-                );
-              })()}
-            </div>
-          )}
-          {/* Per-component breakdown (read-only view). Hidden for
-              single-component apps where the breakdown adds no info. */}
-          {!editingResources && (
-            <div className="mt-3">
-              <ResourceBreakdown tenantId={deployment.tenantId} deploymentId={deployment.id} />
-            </div>
-          )}
-        </div>
 
         {/* Network Access (deployment-level: public/tunneler/zrok) */}
         {tenantId && (
@@ -898,6 +947,59 @@ export default function InstalledAppDetailModal({
             </div>
             <div className="rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden h-80">
               <WebTerminal deploymentId={deployment.id} />
+            </div>
+          </div>
+        )}
+
+        {/* Version switch confirmation */}
+        {versionTarget && (
+          <div className="fixed inset-0 z-[60] flex items-center justify-center" data-testid="version-switch-modal">
+            <div className="fixed inset-0 bg-black/50" onClick={() => { setVersionTarget(null); switchVersion.reset(); }} />
+            <div className="relative w-full max-w-md rounded-2xl bg-white dark:bg-gray-800 p-6 shadow-xl">
+              <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">
+                Switch to version {versionTarget}?
+              </h3>
+              <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">
+                <span className="font-medium">{deployment.name}</span> will redeploy from{' '}
+                <span className="font-mono">{deployment.installedVersion ?? 'unversioned'}</span> to{' '}
+                <span className="font-mono">{versionTarget}</span>.
+              </p>
+              {deployment.installedVersion
+                && compareSemver(versionTarget, deployment.installedVersion) < 0 && (
+                <div className="mt-3 flex gap-2 rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 p-3 text-xs text-amber-800 dark:text-amber-300">
+                  <AlertTriangle size={14} className="mt-0.5 flex-shrink-0" />
+                  <span>
+                    This is a downgrade. Database schema changes made by the newer version are
+                    <span className="font-semibold"> not reversed</span> — take a backup first if the app stores data.
+                  </span>
+                </div>
+              )}
+              {switchVersion.isError && (
+                <div className="mt-3 rounded-lg border border-red-300 dark:border-red-700 bg-red-50 dark:bg-red-900/20 p-3 text-xs text-red-700 dark:text-red-300" data-testid="version-switch-error">
+                  {switchVersion.error instanceof Error ? switchVersion.error.message : 'Version switch failed'}
+                </div>
+              )}
+              <div className="mt-4 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => { setVersionTarget(null); switchVersion.reset(); }}
+                  className="rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-1.5 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={switchVersion.isPending}
+                  onClick={() => switchVersion.mutate(versionTarget, {
+                    onSuccess: () => { setVersionTarget(null); queryClient.invalidateQueries({ queryKey: ['deployments'] }); },
+                  })}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                  data-testid="version-switch-confirm"
+                >
+                  {switchVersion.isPending && <Loader2 size={14} className="animate-spin" />}
+                  Switch version
+                </button>
+              </div>
             </div>
           </div>
         )}

@@ -1384,20 +1384,46 @@ export async function updateDeploymentResources(
 
 export interface VolumePath {
   readonly containerPath: string;
+  /**
+   * Absolute path inside the tenant's own file area — what the operator sees
+   * in the file manager and over SFTP. Named `k8sPath` for wire compatibility;
+   * it has always been the tenant path, never a Kubernetes one.
+   */
   readonly k8sPath: string;
 }
 
+/**
+ * Resolve each catalog volume to the absolute tenant-visible path.
+ *
+ * Two things were wrong before. `storagePath` is stored WITHOUT a leading
+ * slash (`runtime/apache-php/contentbase`), so the UI rendered a path that
+ * looked relative and could not be pasted anywhere. And every volume got the
+ * bare base path because `local_path` was ignored — the Official apache-php
+ * entry declares `local_path: "."` meaning "the storage root", and the panel's
+ * fallback rendered that marker literally, so the column showed `.`.
+ *
+ * `.` (and an empty value) mean the root; anything else is relative to it.
+ */
 export function computeVolumePaths(
   deployment: { storagePath: string | null },
   entry: { volumes: unknown },
 ): VolumePath[] {
-  const volumes = parseJsonField<Array<{ container_path: string }>>(entry.volumes) ?? [];
+  const volumes = parseJsonField<Array<{ container_path: string; local_path?: string }>>(entry.volumes) ?? [];
   const basePath = deployment.storagePath ?? '';
 
   return volumes.map(v => ({
     containerPath: v.container_path,
-    k8sPath: basePath,
+    k8sPath: resolveTenantVolumePath(basePath, v.local_path),
   }));
+}
+
+/** `('runtime/app/site', '.')` → `/runtime/app/site`; `(…, 'public')` → `/runtime/app/site/public`. */
+export function resolveTenantVolumePath(basePath: string, localPath?: string | null): string {
+  const rel = (localPath ?? '').trim();
+  const parts = [basePath, rel === '.' || rel === './' ? '' : rel]
+    .flatMap((seg) => seg.split('/'))
+    .filter((seg) => seg !== '' && seg !== '.');
+  return `/${parts.join('/')}`;
 }
 
 export async function getDeploymentWithVolumePaths(
