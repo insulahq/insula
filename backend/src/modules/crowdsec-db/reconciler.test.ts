@@ -6,6 +6,7 @@ import {
   psqlSetVar,
   CROWDSEC_DB_SECRET,
   CROWDSEC_NAMESPACE,
+  LAPI_POD_MACHINE_RE,
 } from './reconciler.js';
 
 type Core = Parameters<typeof ensureDbSecret>[0];
@@ -188,5 +189,171 @@ describe('reconcileCrowdsecDb — rolling the LAPI', () => {
     expect(res.applied).toBe(true);
     expect(res.createdSecret).toBe(false);
     expect(roll).not.toHaveBeenCalled();
+  });
+});
+
+describe('replica count follows the storage backend', () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  async function runWithMachines(machineCount: string, currentReplicas = 1) {
+    vi.resetModules();
+    vi.doMock('../security-hardening/crowdsec.js', () => ({ rollCrowdsecLapiSafely: vi.fn() }));
+    const actual = await vi.importActual<typeof import('@kubernetes/client-node')>('@kubernetes/client-node');
+    const patch = vi.fn().mockResolvedValue({});
+    vi.doMock('@kubernetes/client-node', () => ({
+      ...actual,
+      Exec: class {
+        exec(...a: unknown[]) {
+          // Second exec is the machines count probe; write it to stdout.
+          const stdout = a[4] as { emit: (e: string, c: Buffer) => void };
+          const stdin = a[6] as { on?: unknown };
+          void stdin;
+          try { stdout.emit('data', Buffer.from(machineCount)); } catch { /* first call has no listener yet */ }
+          (a[8] as (s: { status: string }) => void)({ status: 'Success' });
+          return Promise.resolve({});
+        }
+      },
+      AppsV1Api: class {
+        readNamespacedDeployment() { return Promise.resolve({ spec: { replicas: currentReplicas } }); }
+        patchNamespacedDeployment(...a: unknown[]) { return patch(...a); }
+      },
+    }));
+    const mod = await import('./reconciler.js');
+    const core = {
+      readNamespacedSecret: vi.fn().mockResolvedValue({ data: { password: b64('pw') }, metadata: { resourceVersion: '1' } }),
+      createNamespacedSecret: vi.fn(),
+      replaceNamespacedSecret: vi.fn(),
+      listNamespacedPod: vi.fn().mockResolvedValue({ items: [{ metadata: { name: 'system-db-1' } }] }),
+    } as never;
+    const kc = { makeApiClient: (c: unknown) => new (c as new () => unknown)() } as never;
+    const res = await mod.reconcileCrowdsecDb(core, kc, log);
+    return { res, patch };
+  }
+
+  it('scales to 2 only when a live LAPI is registered in Postgres', async () => {
+    const { res, patch } = await runWithMachines('2');
+    expect(res.storage).toBe('postgres');
+    expect(patch.mock.calls[0][0].body.spec.replicas).toBe(2);
+  });
+
+  it('stays at 1 when the machines table is empty — SQLite is single-writer', async () => {
+    // Two pods on one SQLite file is the corruption condition R35 exists to
+    // escape. The signal must come from the database, not from the Secret
+    // merely existing: on DEV the Secret existed for 20 minutes while the LAPI
+    // was still on SQLite.
+    const { res, patch } = await runWithMachines('0');
+    expect(res.storage).toBe('sqlite');
+    // Already at 1, so the correct action is NO action — a reconciler that
+    // rewrites an unchanged value churns the Deployment on every tick.
+    expect(patch).not.toHaveBeenCalled();
+  });
+
+  it('scales 2 DOWN to 1 when the backend is no longer Postgres', async () => {
+    // The safety direction, and the one the earlier tests never reached because
+    // they pinned current replicas at 1 — so the scale-DOWN patch was entirely
+    // unexercised while being the path most likely to fire.
+    const { patch } = await runWithMachines('0', 2);
+    expect(patch.mock.calls[0][0].body.spec.replicas).toBe(1);
+  });
+
+  it('changes NOTHING when the storage probe cannot answer', async () => {
+    // A failed probe is not a SQLite verdict. exec has a 15s timeout and the
+    // CNPG primary can be mid-failover; treating that as "not on Postgres"
+    // would let one unlucky tick scale a healthy 2-replica LAPI back to 1 and
+    // reintroduce the very rollout gap this change removes.
+    const { res, patch } = await runWithMachines('not-a-number', 2);
+    expect(res.storage).toBe('unknown');
+    expect(patch).not.toHaveBeenCalled();
+  });
+});
+
+describe('pruning stale LAPI machine rows', () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  async function runPrune(pods: string[] | 'throws') {
+    vi.resetModules();
+    vi.doMock('../security-hardening/crowdsec.js', () => ({ rollCrowdsecLapiSafely: vi.fn() }));
+    const actual = await vi.importActual<typeof import('@kubernetes/client-node')>('@kubernetes/client-node');
+    const stmts: string[] = [];
+    vi.doMock('@kubernetes/client-node', () => ({
+      ...actual,
+      Exec: class {
+        exec(...a: unknown[]) {
+          const stdin = a[6] as { on?: (e: string, cb: (c: Buffer) => void) => void } | undefined;
+          // execStdin pushes the SQL into the stdin stream; record it.
+          const chunks: string[] = [];
+          if (stdin && typeof stdin.on === 'function') {
+            stdin.on('data', (c: Buffer) => chunks.push(c.toString()));
+          }
+          const stdout = a[4] as { emit: (e: string, c: Buffer) => void };
+          setTimeout(() => {
+            stmts.push(chunks.join(''));
+            try { stdout.emit('data', Buffer.from('1')); } catch { /* no listener */ }
+            (a[8] as (s: { status: string }) => void)({ status: 'Success' });
+          }, 0);
+          return Promise.resolve({});
+        }
+      },
+      AppsV1Api: class {
+        readNamespacedDeployment() { return Promise.resolve({ spec: { replicas: 2 } }); }
+        patchNamespacedDeployment() { return Promise.resolve({}); }
+      },
+    }));
+    const mod = await import('./reconciler.js');
+    const core = {
+      readNamespacedSecret: vi.fn().mockResolvedValue({ data: { password: b64('pw') }, metadata: { resourceVersion: '1' } }),
+      createNamespacedSecret: vi.fn(),
+      replaceNamespacedSecret: vi.fn(),
+      listNamespacedPod: vi.fn().mockImplementation((args: { namespace: string }) => {
+        if (args.namespace === CROWDSEC_NAMESPACE) {
+          if (pods === 'throws') return Promise.reject(new Error('api down'));
+          return Promise.resolve({ items: pods.map((n) => ({ metadata: { name: n } })) });
+        }
+        return Promise.resolve({ items: [{ metadata: { name: 'system-db-1' } }] });
+      }),
+    } as never;
+    const kc = { makeApiClient: (c: unknown) => new (c as new () => unknown)() } as never;
+    await mod.reconcileCrowdsecDb(core, kc, log);
+    return stmts.filter((x) => x.includes('DELETE FROM machines'));
+  }
+
+  it('deletes only rows with no live pod behind them', async () => {
+    const [del] = await runPrune(['crowdsec-6fbb9578bd-8bcqw', 'crowdsec-6fbb9578bd-xs95f']);
+    expect(del).toBeTruthy();
+    // Both live pods must be in the keep-list, or the prune deletes the
+    // credentials of a running replica.
+    expect(del).toContain("'crowdsec-6fbb9578bd-8bcqw'");
+    expect(del).toContain("'crowdsec-6fbb9578bd-xs95f'");
+    expect(del).toContain('NOT IN');
+  });
+
+  it('does NOT issue a DELETE when the pod list is empty', async () => {
+    // An empty List result is indistinguishable from a failed one. Acting on it
+    // would delete every live replica's identity and leave the LAPI unable to
+    // answer cscli at all — a self-inflicted WAF outage on a 5-minute timer.
+    expect(await runPrune([])).toHaveLength(0);
+  });
+
+  it('does NOT issue a DELETE when listing pods fails', async () => {
+    expect(await runPrune('throws')).toHaveLength(0);
+  });
+});
+
+describe('LAPI machine-name pattern', () => {
+  // Guards the DELETE's blast radius. The prune deletes rows NOT backed by a
+  // live pod, so anything matching this that is not a pod-registered identity
+  // would be destroyed on the next tick.
+  //
+  // Imports the SHIPPED regex. An earlier version declared a local copy of the
+  // literal, which proved a property of the test file and would not have caught
+  // a regression in the production pattern at all.
+  it('matches ReplicaSet pod names', () => {
+    expect(LAPI_POD_MACHINE_RE.test('crowdsec-6fbb9578bd-8bcqw')).toBe(true);
+  });
+
+  it('never matches the agent, a bouncer, or a hand-registered machine', () => {
+    for (const n of ['insula-agent', 'localhost', 'traefik-bouncer', 'crowdsec', 'crowdsec-agent']) {
+      expect(LAPI_POD_MACHINE_RE.test(n), n).toBe(false);
+    }
   });
 });

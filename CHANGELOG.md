@@ -13,6 +13,25 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Added
+- **The CrowdSec LAPI now runs two replicas once it is on Postgres.** This is the
+  payoff for R35: with a shared database the reconciler scales the Deployment to
+  2 and the `data` volume becomes an `emptyDir`, so a rollout no longer has a
+  window with no LAPI serving. The replica count is decided by asking the
+  database whether a live LAPI has registered there — not by the credentials
+  Secret merely existing, which on DEV was true for twenty minutes while the pod
+  was still on SQLite. If Postgres is not in use it scales back to 1, because two
+  pods on one SQLite file is a corruption risk rather than a degraded-but-fine
+  state. Verified on DEV: readiness never dropped below 2 across a full rollout
+  and bans written on either replica were visible from both.
+- Each LAPI pod now registers its own cscli identity (`CUSTOM_HOSTNAME` from the
+  downward API). The image defaults that name to `localhost` and re-registers it
+  with a fresh random password whenever the on-disk credentials do not match, so
+  on a shared database two replicas raced over one row: the pod that registered
+  second won and the other's cscli was left permanently answering "incorrect
+  Username or Password". The backend reaches CrowdSec by exec'ing cscli in
+  whichever pod the selector returns first, so roughly half of all WAF reads and
+  ban writes would have failed. The reconciler prunes the rows of pods that no
+  longer exist.
 - **The CrowdSec LAPI can now run on the platform's CNPG Postgres (R35).** SQLite
   is single-writer, which pins the LAPI to one replica and gives every rollout a
   window with no decision-learning; Postgres is the prerequisite for lifting
