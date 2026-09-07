@@ -114,10 +114,14 @@ export async function getDomainTlsStatus(
     try {
       const { listChallenges, classifyChallenges, summarizeChallenges } =
         await import('./acme-challenges.js');
+      // Same scoping rule as clearWedgedChallenges: the domain itself and any
+      // hostname under it. A wedge on a route (blog.example.com) belongs to
+      // example.com's certificate status, or the card stays silent about the
+      // very thing blocking it.
+      const base = domain.domainName.toLowerCase().replace(/\.$/, '');
       const relevant = (await listChallenges(k8s, namespace)).filter((c) => {
-        const n = (c.spec?.dnsName ?? '').toLowerCase();
-        return n === domain.domainName.toLowerCase()
-          || certCoversHostname(domain.domainName, [n]);
+        const n = (c.spec?.dnsName ?? '').toLowerCase().replace(/\.$/, '');
+        return n === base || n.endsWith(`.${base}`);
       });
       acme = summarizeChallenges(classifyChallenges(relevant));
     } catch {
