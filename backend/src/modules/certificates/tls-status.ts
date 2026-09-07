@@ -105,10 +105,32 @@ export async function getDomainTlsStatus(
     ? new Date(certRow.lastReissueAt.getTime() + REISSUE_COOLDOWN_MS)
     : null;
 
+  // Why issuance is stuck, not just that it is. Reading Certificate CRs alone
+  // cannot answer this: a wedged ACME challenge looks identical to a slow one
+  // from above, which is how a tenant waited a full day on a certificate that
+  // could never arrive.
+  let acme: { blocked: boolean; summary?: string } = { blocked: false };
+  if (k8s && namespace) {
+    try {
+      const { listChallenges, classifyChallenges, summarizeChallenges } =
+        await import('./acme-challenges.js');
+      const relevant = (await listChallenges(k8s, namespace)).filter((c) => {
+        const n = (c.spec?.dnsName ?? '').toLowerCase();
+        return n === domain.domainName.toLowerCase()
+          || certCoversHostname(domain.domainName, [n]);
+      });
+      acme = summarizeChallenges(classifyChallenges(relevant));
+    } catch {
+      // Challenge information is additive; never fail the status read for it.
+    }
+  }
+
   return {
     domainId,
     domainName: domain.domainName,
     state: aggregateState(certificates),
+    validationBlocked: acme.blocked,
+    validationMessage: acme.summary ?? null,
     wildcardCapable: wildcardBlockedReason(domain.dnsMode, servers) === null,
     wildcardBlockedReason: wildcardBlockedReason(domain.dnsMode, servers),
     fallbackActive: (certRow?.fallbackActive ?? 0) === 1,
