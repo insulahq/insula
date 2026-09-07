@@ -258,9 +258,9 @@ export async function clearWedgedChallenges(
           // being validated. Scoping on exact equality alone missed every
           // route: a wedge on blog.example.com is invisible to an operator
           // pressing the button on example.com, which is the whole point of the
-          // button. Caught on DEV — the probe challenge was
-          // wedgeprobe.testing.phoenix-host.net under domain
-          // testing.phoenix-host.net.
+          // button. Caught on DEV, where a probe challenge for
+          // `probe.<apex>` sat under the domain row `<apex>` and the exact
+          // match never fired.
           //
           // A wildcard SAN is normalised because cert-manager strips the "*."
           // itself: both challenges of a wildcard order carry the BASE name and
