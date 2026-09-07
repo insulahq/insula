@@ -63,10 +63,22 @@ metadata:
     app.kubernetes.io/part-of: hosting-platform
     app.kubernetes.io/component: waf
 spec:
-  replicas: 1
+  # replicas removed — owned by the crowdsec-db reconciler, which scales to 2
+  # ONLY once the LAPI is confirmed to be on Postgres. Flux SSA would otherwise
+  # revert an imperative scale within ~30s (same reason as backend-deployment).
+  #
+  # It must not be a static 2: on SQLite a second replica would open the same
+  # database file, which is the single-writer condition this whole change
+  # exists to escape. The scale is a CONSEQUENCE of the storage backend, never
+  # an assumption about it.
   strategy:
-    # Recreate so the SQLite file isn't opened by two pods simultaneously.
-    type: Recreate
+    # RollingUpdate is safe now that the durable store is Postgres and the
+    # local volume is scratch. maxUnavailable 0 keeps at least one LAPI
+    # answering the bouncers throughout a rollout, which is the point of R35.
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: crowdsec
@@ -187,7 +199,7 @@ spec:
                 chmod 600 /etc/crowdsec/config.yaml
                 echo "seed-config: db_config -> postgresql"
               else
-                echo "seed-config: db credentials absent or incomplete — staying on sqlite"
+                echo "seed-config: WARNING db credentials absent or incomplete — falling back to SQLite on an emptyDir; decisions will NOT survive a restart until the crowdsec-db reconciler provisions Postgres"
               fi
               chown -R 1000:1000 /etc/crowdsec
               echo "seed-config: ownership set to 1000:1000"
@@ -204,6 +216,17 @@ spec:
             - name: db-credentials
               mountPath: /db
               readOnly: true
+      # Spread replicas across nodes. whenUnsatisfiable: ScheduleAnyway is
+      # deliberate — on a single-node cluster (production today) a DoNotSchedule
+      # constraint would leave the second replica Pending forever, turning an
+      # availability improvement into a permanently degraded Deployment.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: crowdsec
       containers:
         - name: crowdsec
           # v1.7.8 (2026-05-11) — latest stable on the v1.7.x line. Includes
@@ -249,6 +272,39 @@ spec:
               value: "true"
             - name: LOCAL_API_URL
               value: "http://127.0.0.1:8080"
+            # The name this pod registers its OWN cscli credentials under.
+            # MUST be unique per pod once there is more than one replica.
+            #
+            # The image defaults it to `localhost` (/docker_start.sh:40) and
+            # then, whenever the on-disk credentials do not already match a
+            # machine of that name, does:
+            #
+            #   cscli machines delete "$CUSTOM_HOSTNAME"
+            #   cscli machines add    "$CUSTOM_HOSTNAME" --auto --force
+            #
+            # (/docker_start.sh:362-369). `--auto` mints a RANDOM password and
+            # writes it to that pod's own local_api_credentials.yaml.
+            #
+            # With SQLite each pod had a private database, so a shared name was
+            # harmless. Sharing one Postgres database makes those two lines a
+            # last-writer-wins race over a single `localhost` row: whichever
+            # replica registers second overwrites the password, and the first
+            # replica's cscli is left holding a stale one. Observed on DEV at
+            # two replicas — one pod answered `cscli lapi status` normally while
+            # the other returned "incorrect Username or Password" for every
+            # command, permanently.
+            #
+            # That is not cosmetic. The backend reaches CrowdSec by exec'ing
+            # cscli in whichever pod the selector returns first, so roughly half
+            # of every WAF read and every ban write would have failed.
+            #
+            # Keying on the pod name gives each replica its own row and removes
+            # the shared mutable name entirely. Rows left behind by replaced
+            # pods are pruned by the crowdsec-db reconciler.
+            - name: CUSTOM_HOSTNAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
             # Registers the log-processing agent's machine. The LAPI entrypoint
             # runs `cscli machines add "$AGENT_USERNAME" --password ... --force`
             # whenever both are set, guarded only by DISABLE_LOCAL_API — so it
@@ -366,9 +422,25 @@ spec:
             - name: config
               mountPath: /etc/crowdsec
       volumes:
+        # SCRATCH, not durable state — and that is only true because the LAPI's
+        # database is Postgres (R35).
+        #
+        # Holds the hub datafiles (GeoLite2-*.mmdb, cloudflare_ip*), which are
+        # re-downloaded on start — exactly why the crowdsec-agent DaemonSet
+        # already uses an emptyDir for this same path — plus, on the SQLite
+        # fallback path, crowdsec.db.
+        #
+        # The RWO PVC was the second blocker to multiple replicas: two pods
+        # cannot mount it, so a RollingUpdate would deadlock against the
+        # running one. An emptyDir is per-pod, so replicas are free.
+        #
+        # CONSEQUENCE, stated plainly: if the credentials Secret is absent the
+        # LAPI falls back to SQLite in this emptyDir and decisions do NOT
+        # survive a restart. The init container warns loudly, the reconciler
+        # provisions Postgres within one 5-minute tick, and the Deployment
+        # stays at ONE replica until it has.
         - name: data
-          persistentVolumeClaim:
-            claimName: crowdsec-data
+          emptyDir: {}
         - name: config
           emptyDir: {}
         # R35 Postgres credentials, written by the crowdsec-db reconciler.
@@ -381,6 +453,18 @@ spec:
             optional: true
             defaultMode: 0400
 ---
+# RETAINED DELIBERATELY, and no longer mounted (R35).
+#
+# The Deployment now uses an emptyDir for /var/lib/crowdsec/data, so this claim
+# is unused. It is kept rather than deleted because it still holds the SQLite
+# `crowdsec.db` from before the migration, and deleting the declaration would
+# make Flux prune the volume — destroying any operator or static bans an
+# operator had not exported. A migration should not delete the store it
+# migrated away from in the same change.
+#
+# Safe to remove in a later cleanup, once operators have confirmed their bans
+# are in Postgres. `cscli decisions list -o json` against the old file is the
+# recovery path until then.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -395,10 +479,15 @@ spec:
     requests:
       storage: 1Gi
 ---
-# PodDisruptionBudget — explicit minAvailable=0 (Recreate strategy +
-# SQLite single-writer means the pod will go down during node drains
-# regardless). Documents intent: operators upgrading to multi-replica
-# (Postgres backend) can flip this to minAvailable: 1.
+# PodDisruptionBudget — minAvailable 1, now that the LAPI is on Postgres and
+# can run more than one replica (R35). It was 0 because Recreate + SQLite
+# single-writer meant the pod HAD to go down during a drain; neither holds any
+# more, so a drain should move a replica rather than remove the WAF's decision
+# source.
+#
+# Correct even at one replica: it blocks VOLUNTARY eviction of the only LAPI,
+# which is the right answer for the component gating all ingress. Involuntary
+# failure still proceeds, and the bouncer fails open either way.
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
@@ -408,7 +497,7 @@ metadata:
     app.kubernetes.io/part-of: hosting-platform
     app.kubernetes.io/component: waf
 spec:
-  minAvailable: 0
+  minAvailable: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: crowdsec

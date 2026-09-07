@@ -606,10 +606,17 @@ async function rollCrowdsecLapi(kc: k8s.KubeConfig): Promise<number> {
   const del = core as unknown as {
     deleteNamespacedPod: (args: { name: string; namespace: string }) => Promise<unknown>;
   };
-  for (const name of names) {
-    await del.deleteNamespacedPod({ name, namespace: CROWDSEC_NAMESPACE });
-  }
-  return names.length;
+  // ONE pod per call, once the LAPI can run more than one replica (R35).
+  //
+  // Deleting every matching pod was correct only while replicas was pinned to
+  // 1. At two replicas it would take the whole LAPI down at once — the exact
+  // outage the multi-replica work exists to remove, caused by the helper meant
+  // to apply a config change. The Deployment's RollingUpdate brings the
+  // replacement up, and the next tick rolls the next pod.
+  const [first] = names;
+  if (!first) return 0;
+  await del.deleteNamespacedPod({ name: first, namespace: CROWDSEC_NAMESPACE });
+  return 1;
 }
 
 /**
