@@ -258,3 +258,40 @@ describe('hysteresis protects against a reconciler that was not watching', () =>
     expect(del).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('scoping covers the hostnames a domain certificate actually validates', () => {
+  function k8sWith(items: AcmeChallenge[]) {
+    const del = vi.fn().mockResolvedValue({});
+    return { k8s: { custom: { listNamespacedCustomObject: vi.fn().mockResolvedValue({ items }), deleteNamespacedCustomObject: del } }, del };
+  }
+
+  it('clears a wedge on a SUBDOMAIN when scoped by the domain', async () => {
+    // Found on DEV: cert-manager names a challenge after the host being
+    // validated, so a route's challenge is blog.example.com while the caller
+    // passes example.com. Exact matching made the button a no-op for every
+    // hostname that was not the apex.
+    const { k8s } = k8sWith([
+      ch({ name: 'sub', created: ago(3 * 60 * 60 * 1000), spec: { dnsName: 'blog.example.com', type: 'DNS-01' }, status: { processing: true } }),
+    ]);
+    const res = await clearWedgedChallenges(k8s as never, 'ns', { now: NOW, dnsNames: ['example.com'] });
+    expect(res.deleted).toEqual(['sub']);
+  });
+
+  it('does NOT match a different domain that merely ends with the same letters', async () => {
+    // notexample.com must not be caught by a scope of example.com.
+    const { k8s, del } = k8sWith([
+      ch({ name: 'other', created: ago(3 * 60 * 60 * 1000), spec: { dnsName: 'notexample.com', type: 'DNS-01' }, status: { processing: true } }),
+    ]);
+    const res = await clearWedgedChallenges(k8s as never, 'ns', { now: NOW, dnsNames: ['example.com'] });
+    expect(res.deleted).toEqual([]);
+    expect(del).not.toHaveBeenCalled();
+  });
+
+  it('tolerates a trailing dot on either side', async () => {
+    const { k8s } = k8sWith([
+      ch({ name: 'fqdn', created: ago(3 * 60 * 60 * 1000), spec: { dnsName: 'example.com.', type: 'DNS-01' }, status: { processing: true } }),
+    ]);
+    const res = await clearWedgedChallenges(k8s as never, 'ns', { now: NOW, dnsNames: ['example.com'] });
+    expect(res.deleted).toEqual(['fqdn']);
+  });
+});
