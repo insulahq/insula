@@ -299,6 +299,39 @@ describe('ensureCommunityBlocklistDefault', () => {
     expect(body.metadata.annotations['kustomize.toolkit.fluxcd.io/reconcile']).toBe('disabled');
   });
 
+  it('does NOT purge or roll when another replica won the create race', async () => {
+    // HA runs platform-api at 2-3 replicas, which boot together after any
+    // rollout. Every replica runs this. Without the conflict guard each loser
+    // would purge the decisions and DELETE THE LAPI POD — up to three restarts
+    // in seconds of the one component that gates all ingress.
+    const notFound = Object.assign(new Error('not found'), { code: 404 });
+    const conflict = Object.assign(new Error('already exists'), { code: 409 });
+    const core = {
+      readNamespacedConfigMap: vi.fn().mockRejectedValue(notFound),
+      createNamespacedConfigMap: vi.fn().mockRejectedValue(conflict),
+      listNamespacedPod: vi.fn().mockResolvedValue(podList),
+      deleteNamespacedPod: vi.fn().mockResolvedValue({}),
+    };
+    vi.spyOn(k8sModule, 'createKubeConfig').mockReturnValue({ makeApiClient: () => core } as never);
+
+    expect(await ensureCommunityBlocklistDefault(undefined)).toBe('present');
+    expect(core.deleteNamespacedPod).not.toHaveBeenCalled();
+    expect(cscli.cscliExec).not.toHaveBeenCalled();
+  });
+
+  it('still surfaces a non-conflict create failure', async () => {
+    const notFound = Object.assign(new Error('not found'), { code: 404 });
+    const forbidden = Object.assign(new Error('forbidden'), { code: 403 });
+    const core = {
+      readNamespacedConfigMap: vi.fn().mockRejectedValue(notFound),
+      createNamespacedConfigMap: vi.fn().mockRejectedValue(forbidden),
+      listNamespacedPod: vi.fn().mockResolvedValue(podList),
+      deleteNamespacedPod: vi.fn().mockResolvedValue({}),
+    };
+    vi.spyOn(k8sModule, 'createKubeConfig').mockReturnValue({ makeApiClient: () => core } as never);
+    await expect(ensureCommunityBlocklistDefault(undefined)).rejects.toThrow();
+  });
+
   it('never overwrites an operator who already opted IN', async () => {
     const create = vi.fn();
     const core = {

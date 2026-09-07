@@ -117,14 +117,17 @@ spec:
       # window matters because:
       #   * CrowdSec runs as a single replica with Recreate strategy, so a
       #     node drain or pod restart leaves a brief window in which no NEW
-      #     decisions are learned. (The old reason given here — "SQLite
-      #     single-writer" — is stale: the LAPI is configured with
-      #     storage_type=postgres. The remaining constraint is the RWO
-      #     `crowdsec-data` PVC. See ROADMAP R35.)
-      #   * DISABLE_AGENT=true means we DON'T run the log-acquisition
-      #     parser — only the community blocklist is consumed. A LAPI
-      #     outage means known-bad IPs from the community blocklist
-      #     get a free pass during the window.
+      #     decisions are learned. The reason is SQLite single-writer, and
+      #     that is accurate — a 2026-09-06 revision of this comment claimed
+      #     the LAPI runs storage_type=postgres and was WRONG. Read off the
+      #     running pod: db_config.type=sqlite, DB_TYPE unset, crowdsec.db a
+      #     live 8MB file. The RWO `crowdsec-data` PVC is a second, weaker
+      #     constraint. See ROADMAP R35 for what lifting it would take.
+      #   * DISABLE_AGENT=true means THIS pod runs no log-acquisition parser;
+      #     the crowdsec-agent DaemonSet does that and posts its alerts here.
+      #     A LAPI outage therefore means neither those detections nor the
+      #     community blocklist (opt-in since 2026.9.11) gate traffic during
+      #     the window.
       # Why we accept this: the CrowdSec layer is defence-in-depth.
       # Other Middlewares (oauth2-proxy ForwardAuth, basic-auth,
       # ModSec when enabled, rate-limit, ipAllowList) still apply
