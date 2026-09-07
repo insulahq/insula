@@ -65,6 +65,26 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
+    # Postgres, when the LAPI is configured for it (R35).
+    #
+    # WITHOUT THIS RULE THE MIGRATION SILENTLY FAILS. Verified on DEV
+    # 2026-09-07: DNS for system-db-rw.platform.svc resolves fine (10.43.65.96)
+    # and the TCP connect to :5432 HANGS until timeout. A LAPI pointed at
+    # Postgres would therefore start, fail to reach its database, and the
+    # symptom would be a CrowdSec that looks configured and does nothing —
+    # the same shape as every other defect in this series.
+    #
+    # Harmless while storage is SQLite: an egress allowance nothing dials.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: platform
+          podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - protocol: TCP
+          port: 5432
     # Outbound HTTPS to api.crowdsec.net for the community blocklist.
     # Operators in air-gapped environments must remove this rule + use
     # a mirrored blocklist source (DISABLE_ONLINE_API + custom blocklist

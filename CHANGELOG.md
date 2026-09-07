@@ -12,6 +12,64 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **The CrowdSec LAPI now runs two replicas once it is on Postgres.** This is the
+  payoff for R35: with a shared database the reconciler scales the Deployment to
+  2 and the `data` volume becomes an `emptyDir`, so a rollout no longer has a
+  window with no LAPI serving. The replica count is decided by asking the
+  database whether a live LAPI has registered there — not by the credentials
+  Secret merely existing, which on DEV was true for twenty minutes while the pod
+  was still on SQLite. If Postgres is not in use it scales back to 1, because two
+  pods on one SQLite file is a corruption risk rather than a degraded-but-fine
+  state. Verified on DEV: readiness never dropped below 2 across a full rollout
+  and bans written on either replica were visible from both.
+- Each LAPI pod now registers its own cscli identity (`CUSTOM_HOSTNAME` from the
+  downward API). The image defaults that name to `localhost` and re-registers it
+  with a fresh random password whenever the on-disk credentials do not match, so
+  on a shared database two replicas raced over one row: the pod that registered
+  second won and the other's cscli was left permanently answering "incorrect
+  Username or Password". The backend reaches CrowdSec by exec'ing cscli in
+  whichever pod the selector returns first, so roughly half of all WAF reads and
+  ban writes would have failed. The reconciler prunes the rows of pods that no
+  longer exist.
+- **The CrowdSec LAPI can now run on the platform's CNPG Postgres (R35).** SQLite
+  is single-writer, which pins the LAPI to one replica and gives every rollout a
+  window with no decision-learning; Postgres is the prerequisite for lifting
+  that. A reconciler provisions the `crowdsec` role and database with idempotent
+  SQL against the CNPG primary, and the LAPI's init container renders
+  `db_config` from the resulting Secret — but only when a complete set of
+  credentials is present, so a cluster without it stays on SQLite and nothing
+  changes. Requires two NetworkPolicies (crowdsec egress, platform ingress);
+  either one missing gives a LAPI that starts and reaches nothing.
+
+
+### Fixed
+- **The tenant file manager was OOM-killed during large rsync transfers, resetting
+  the connection.** Measured on production during a real 12.5 GB / 131k-file
+  rsync: the container's true working set is **26 Mi** (anon 24.7 Mi), but its
+  cgroup sat at **127 Mi of a 128 Mi limit** because a cgroup limit also charges
+  page cache (100 Mi here) and slab, which rsync generates heavily. The limit had
+  been sized against the Node heap — *"the streaming handlers don't buffer file
+  content"*, which is true and beside the point. Because the container runs with
+  `memory.oom.group=1`, the kill took node and sshd down with rsync, so the tenant
+  saw a connection reset rather than a failed file (12 OOM kills in 24h on one
+  tenant). Memory limit 128Mi → **256Mi** (~10x the measured working set, all of
+  it headroom for reclaimable cache) and request 128Mi → **64Mi** (still 2.5x the
+  working set), so this *frees* 64 Mi per tenant file manager rather than costing
+  anything — a limit is a ceiling, only the request is reserved.
+
+    This was invisible in metrics: the kubelet's working set excludes inactive
+    page cache, so `kubectl top` reported a healthy 26 Mi while the OOM killer —
+    which uses `memory.current` — fired at 127 Mi.
+- **An operator can now raise a file manager's memory limit in an emergency.** The
+  drift check compared the limit for exact equality with the hardcoded value, so
+  a deliberate increase was treated as drift: on production a hand-raise to 1Gi
+  (to get a stuck rsync through) was reverted by the next SFTP session — every
+  file-manager route calls the reconciler — which deleted and recreated the
+  Deployment at 128Mi, killing the transfer it was meant to rescue. The check now
+  compares numerically and only a limit *below* the expected value counts as
+  drift; a missing or unparseable limit still does.
+
 ## [2026.9.11] - 2026-09-07
 
 ### Fixed

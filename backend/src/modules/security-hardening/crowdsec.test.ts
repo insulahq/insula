@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import * as k8sModule from '../container-console/service.js';
 import * as cscli from './cscli-exec.js';
-import { ensureCommunityBlocklistDefault } from './crowdsec.js';
+import { ensureCommunityBlocklistDefault, rollCrowdsecLapiSafely } from './crowdsec.js';
 
 afterEach(() => { vi.restoreAllMocks(); });
 import { __test } from './crowdsec.js';
@@ -299,6 +299,39 @@ describe('ensureCommunityBlocklistDefault', () => {
     expect(body.metadata.annotations['kustomize.toolkit.fluxcd.io/reconcile']).toBe('disabled');
   });
 
+  it('does NOT purge or roll when another replica won the create race', async () => {
+    // HA runs platform-api at 2-3 replicas, which boot together after any
+    // rollout. Every replica runs this. Without the conflict guard each loser
+    // would purge the decisions and DELETE THE LAPI POD — up to three restarts
+    // in seconds of the one component that gates all ingress.
+    const notFound = Object.assign(new Error('not found'), { code: 404 });
+    const conflict = Object.assign(new Error('already exists'), { code: 409 });
+    const core = {
+      readNamespacedConfigMap: vi.fn().mockRejectedValue(notFound),
+      createNamespacedConfigMap: vi.fn().mockRejectedValue(conflict),
+      listNamespacedPod: vi.fn().mockResolvedValue(podList),
+      deleteNamespacedPod: vi.fn().mockResolvedValue({}),
+    };
+    vi.spyOn(k8sModule, 'createKubeConfig').mockReturnValue({ makeApiClient: () => core } as never);
+
+    expect(await ensureCommunityBlocklistDefault(undefined)).toBe('present');
+    expect(core.deleteNamespacedPod).not.toHaveBeenCalled();
+    expect(cscli.cscliExec).not.toHaveBeenCalled();
+  });
+
+  it('still surfaces a non-conflict create failure', async () => {
+    const notFound = Object.assign(new Error('not found'), { code: 404 });
+    const forbidden = Object.assign(new Error('forbidden'), { code: 403 });
+    const core = {
+      readNamespacedConfigMap: vi.fn().mockRejectedValue(notFound),
+      createNamespacedConfigMap: vi.fn().mockRejectedValue(forbidden),
+      listNamespacedPod: vi.fn().mockResolvedValue(podList),
+      deleteNamespacedPod: vi.fn().mockResolvedValue({}),
+    };
+    vi.spyOn(k8sModule, 'createKubeConfig').mockReturnValue({ makeApiClient: () => core } as never);
+    await expect(ensureCommunityBlocklistDefault(undefined)).rejects.toThrow();
+  });
+
   it('never overwrites an operator who already opted IN', async () => {
     const create = vi.fn();
     const core = {
@@ -313,5 +346,62 @@ describe('ensureCommunityBlocklistDefault', () => {
     expect(create).not.toHaveBeenCalled();
     // No change, so no roll: booting must not bounce the LAPI every time.
     expect(core.deleteNamespacedPod).not.toHaveBeenCalled();
+  });
+});
+
+describe('rollCrowdsecLapiSafely — sequential roll at multiple replicas', () => {
+  afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
+
+  function kcWith(podNames: string[], ready: () => number) {
+    const deleted: string[] = [];
+    const readyAtDelete: number[] = [];
+    const api = {
+      readNamespacedDeployment: () => Promise.resolve({ status: { readyReplicas: ready() } }),
+      listNamespacedPod: () =>
+        Promise.resolve({ items: podNames.map((n) => ({ metadata: { name: n } })) }),
+      deleteNamespacedPod: ({ name }: { name: string }) => {
+        readyAtDelete.push(ready());
+        deleted.push(name);
+        return Promise.resolve({});
+      },
+    };
+    const kc = { makeApiClient: () => api } as never;
+    return { kc, deleted, readyAtDelete };
+  }
+
+  it('rolls EVERY pod, not just the first', async () => {
+    // Two of the three callers patch `crowdsec-capi-config`, which the pod
+    // reads through envFrom — i.e. once, at container start. A pod that is
+    // never rolled keeps the old community-blocklist setting forever, and the
+    // Service load-balances across both, so the toggle half-applies with no
+    // error anywhere. Rolling only the first pod looked safe and was silent.
+    const { kc, deleted } = kcWith(['crowdsec-a', 'crowdsec-b'], () => 2);
+    await rollCrowdsecLapiSafely(kc, 'test');
+    expect(deleted).toEqual(['crowdsec-a', 'crowdsec-b']);
+  });
+
+  it('waits for readiness between deletions instead of dropping both at once', async () => {
+    // Deleting every pod simultaneously was correct only at one replica. At two
+    // it takes the whole LAPI down in one step — the outage this feature exists
+    // to remove, caused by the helper meant to apply a config change.
+    let readyReplicas = 2;
+    const { kc, deleted } = kcWith(['crowdsec-a', 'crowdsec-b'], () => readyReplicas);
+    // Not ready yet after the first delete; recovers shortly after.
+    const notReady = setTimeout(() => { readyReplicas = 2; }, 0);
+    readyReplicas = 1;
+    const p = rollCrowdsecLapiSafely(kc, 'test');
+    await new Promise((r) => setTimeout(r, 30));
+    // The second pod must NOT have been deleted while only one was ready.
+    expect(deleted).toEqual(['crowdsec-a']);
+    readyReplicas = 2;
+    await p;
+    clearTimeout(notReady);
+    expect(deleted).toEqual(['crowdsec-a', 'crowdsec-b']);
+  });
+
+  it('is a no-op when there are no pods', async () => {
+    const { kc, deleted } = kcWith([], () => 0);
+    await rollCrowdsecLapiSafely(kc, 'test');
+    expect(deleted).toEqual([]);
   });
 });

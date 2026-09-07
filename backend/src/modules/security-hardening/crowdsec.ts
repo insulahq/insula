@@ -21,7 +21,7 @@ import * as k8s from '@kubernetes/client-node';
 import { Buffer } from 'node:buffer';
 import { createKubeConfig } from '../container-console/service.js';
 import { cscliExec, findCrowdsecPodName, parseCscliJson } from './cscli-exec.js';
-import { isNotFound } from '../../shared/k8s-errors.js';
+import { isNotFound, isConflict } from '../../shared/k8s-errors.js';
 import { MERGE_PATCH } from '../../shared/k8s-patch.js';
 import { CROWDSEC_DECISIONS_MAX_LIMIT } from '@insula/api-contracts';
 import type {
@@ -36,6 +36,10 @@ import type {
 } from '@insula/api-contracts';
 
 const CROWDSEC_NAMESPACE = 'crowdsec';
+
+/** Between two pod deletions during a sequential LAPI roll. */
+const LAPI_ROLL_POLL_MS = 2_000;
+const LAPI_ROLL_READY_TIMEOUT_MS = 120_000;
 // Platform-api uses its own pre-registered bouncer key so it shows up
 // as a single named bouncer "platform-api" in `cscli bouncers list`
 // instead of one per (pod IP, pod restart) tuple under the shared
@@ -606,10 +610,61 @@ async function rollCrowdsecLapi(kc: k8s.KubeConfig): Promise<number> {
   const del = core as unknown as {
     deleteNamespacedPod: (args: { name: string; namespace: string }) => Promise<unknown>;
   };
+  // EVERY pod, but ONE AT A TIME, waiting for readiness in between (R35).
+  //
+  // Both halves matter, and each rules out a simpler version:
+  //
+  // Deleting them all at once was correct only while replicas was pinned to 1.
+  // At two replicas it takes the whole LAPI down simultaneously — the exact
+  // outage the multi-replica work exists to remove, caused by the helper meant
+  // to apply a config change.
+  //
+  // Rolling only the first pod and leaving the rest to a later tick is worse in
+  // a quieter way. Two of the three callers here — setCommunityBlocklistEnabled
+  // and ensureCommunityBlocklistDefault — patch `crowdsec-capi-config`, which
+  // the pod consumes through `envFrom`. Environment is read once at container
+  // start, so a pod that is not rolled keeps the old setting indefinitely;
+  // nothing rolls it later, and those callers exist precisely because Reloader
+  // cannot be trusted to do it. The Service load-balances across both pods, so
+  // an admin toggling the community blocklist off would get one pod still
+  // pulling CAPI decisions and no error anywhere. Half-applied and invisible.
+  //
+  // Sequential-with-wait gives both: every pod ends up on the new config, and
+  // at no point are all of them gone.
+  let rolled = 0;
   for (const name of names) {
     await del.deleteNamespacedPod({ name, namespace: CROWDSEC_NAMESPACE });
+    rolled += 1;
+    // Not needed after the last one — nothing follows it into the gap.
+    if (rolled < names.length) await waitForLapiReady(kc, names.length);
   }
-  return names.length;
+  return rolled;
+}
+
+/**
+ * Block until the LAPI Deployment is fully ready again, or give up.
+ *
+ * Bounded deliberately: this sits between two pod deletions, so hanging here
+ * forever would leave a config change half-applied with no way out. On timeout
+ * the caller proceeds to the next pod — a slow roll is recoverable, a stuck
+ * one is not.
+ */
+async function waitForLapiReady(kc: k8s.KubeConfig, want: number): Promise<void> {
+  const apps = kc.makeApiClient(k8s.AppsV1Api) as unknown as {
+    readNamespacedDeployment: (a: { name: string; namespace: string }) => Promise<{
+      status?: { readyReplicas?: number };
+    }>;
+  };
+  const deadline = Date.now() + LAPI_ROLL_READY_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, LAPI_ROLL_POLL_MS));
+    try {
+      const dep = await apps.readNamespacedDeployment({ name: 'crowdsec', namespace: CROWDSEC_NAMESPACE });
+      if ((dep.status?.readyReplicas ?? 0) >= want) return;
+    } catch {
+      // Transient read failure: keep waiting rather than charging ahead.
+    }
+  }
 }
 
 /**
@@ -621,7 +676,7 @@ async function rollCrowdsecLapi(kc: k8s.KubeConfig): Promise<number> {
  * the setting was stored, not running, and silently so. A best-effort action
  * still has to report what it did.
  */
-async function rollCrowdsecLapiSafely(kc: k8s.KubeConfig, reason: string): Promise<void> {
+export async function rollCrowdsecLapiSafely(kc: k8s.KubeConfig, reason: string): Promise<void> {
   try {
     const n = await rollCrowdsecLapi(kc);
     // eslint-disable-next-line no-console
@@ -647,21 +702,36 @@ export async function ensureCommunityBlocklistDefault(
   } catch (err) {
     if (!isNotFound(err)) throw err;
   }
-  await core.createNamespacedConfigMap({
-    namespace: CROWDSEC_NAMESPACE,
-    body: {
-      metadata: {
-        name: CAPI_CONFIGMAP_NAME,
-        namespace: CROWDSEC_NAMESPACE,
-        labels: {
-          'app.kubernetes.io/part-of': 'hosting-platform',
-          'app.kubernetes.io/component': 'waf',
+  try {
+    await core.createNamespacedConfigMap({
+      namespace: CROWDSEC_NAMESPACE,
+      body: {
+        metadata: {
+          name: CAPI_CONFIGMAP_NAME,
+          namespace: CROWDSEC_NAMESPACE,
+          labels: {
+            'app.kubernetes.io/part-of': 'hosting-platform',
+            'app.kubernetes.io/component': 'waf',
+          },
+          annotations: { 'kustomize.toolkit.fluxcd.io/reconcile': 'disabled' },
         },
-        annotations: { 'kustomize.toolkit.fluxcd.io/reconcile': 'disabled' },
+        data: { [CAPI_DISABLE_KEY]: 'true' },
       },
-      data: { [CAPI_DISABLE_KEY]: 'true' },
-    },
-  });
+    });
+  } catch (err) {
+    // 409 AlreadyExists = another platform-api replica created it first.
+    //
+    // THE CREATE IS THE ARBITER, and it has to be, because this runs at boot on
+    // EVERY replica. HA runs platform-api at 2-3 replicas
+    // (docs/architecture/HA_MODE.md), which start together after any rollout.
+    // Without this the losers would each go on to purge the decisions and
+    // DELETE THE LAPI POD — up to three restarts, in seconds, of the single
+    // component that gates all ingress. Kubernetes' create is atomic, so
+    // exactly one replica can win it; the rest must return here having changed
+    // nothing.
+    if (!isConflict(err)) throw err;
+    return 'present';
+  }
   // PURGE FIRST, THEN ROLL — the order is load-bearing.
   //
   // The purge runs `cscli` via `kubectl exec` INTO the LAPI pod. Rolling first
