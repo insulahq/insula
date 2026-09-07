@@ -13,7 +13,10 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Changed
-- **Turning the community blocklist off now drops what it already loaded.**
+- **Turning the community blocklist off now drops what it already loaded.** The
+  purge runs `cscli` via `kubectl exec` into the LAPI pod, so it now runs BEFORE
+  the pod is rolled — doing it after left the exec hitting a stopping container
+  (`cannot exec in a stopped container`) and 18,770 decisions still enforced.
   Disabling only stops the feed being refreshed; everything already pulled stays
   enforced until it expires, and CAPI TTLs run to 144h. On DEV the switch read
   "off" while 18,770 community decisions were still in force, so an upgrading
