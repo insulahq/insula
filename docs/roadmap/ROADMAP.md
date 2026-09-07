@@ -1304,22 +1304,51 @@ LAPI. Until 2026-09-05 that window blocked all traffic after three minutes; with
 `updateMaxFailure: -1` it now only freezes IP reputation, which is why this is a
 follow-up rather than an incident.
 
-**The stated blocker is stale.** The middleware comment justified single-replica
-with "SQLite (single-writer constraint)", but the LAPI runs with
-`storage_type=postgres` — confirmed in its own startup log. Postgres storage
-does not constrain replica count.
+**CORRECTION (2026-09-07): the stated blocker was never stale — I was wrong.**
+An earlier revision of this entry claimed the LAPI runs `storage_type=postgres`
+"confirmed in its own startup log", and used that to dismiss the original
+"SQLite (single-writer constraint)" justification. That is false. Read off the
+running production pod:
 
-**The real blocker is the `crowdsec-data` PVC**, which is `ReadWriteOnce` on
-Longhorn, so a second replica cannot mount it and `RollingUpdate` would deadlock
-against the first. That is why `Recreate` is correct *today*.
+```
+db_config:
+  type: sqlite
+  db_path: /var/lib/crowdsec/data/crowdsec.db
+  use_wal: false
+```
 
-**Why it looks liftable.** The PVC holds 592K: `GeoLite2-ASN.mmdb`,
-`GeoLite2-City.mmdb`, `cloudflare_ip6s.txt`, `cloudflare_ips.txt` and
-`crowdsec.db`. The first four are hub datafiles — re-downloaded on start, which
-is exactly why the agent DaemonSet uses an `emptyDir` for the same path. If
-`crowdsec.db` is vestigial (likely, given postgres storage) the PVC can become
-an `emptyDir` per replica and the Deployment can go `replicas: 2` +
-`RollingUpdate`, removing the gap entirely.
+`DB_TYPE` and `DB_HOST` are both unset, and `crowdsec.db` is a live 8 MB file
+written continuously. `k8s/base/crowdsec/deployment.yaml` says so plainly:
+SQLite is the baseline and Postgres is an out-of-scope operator swap.
+
+**So both constraints are real, and the SQLite one is the binding one.** The
+`crowdsec-data` PVC is `ReadWriteOnce` on Longhorn, so a second replica cannot
+mount it — but even with that solved, two LAPI replicas sharing one SQLite file
+is not a supported configuration. Single-writer is the reason `Recreate` is
+correct today.
+
+**What lifting it would actually require**, in order:
+
+1. Move the LAPI to Postgres (`DB_TYPE=postgres` + `DB_HOST=…` against a CNPG
+   Cluster). The platform already runs CNPG, so this is plumbing rather than
+   new infrastructure.
+2. Then the PVC only holds hub datafiles (`GeoLite2-*.mmdb`, `cloudflare_ip*`),
+   which are re-downloaded on start — which is exactly why the agent DaemonSet
+   already uses an `emptyDir` for the same path — and can become an `emptyDir`
+   per replica.
+3. Then `replicas: 2` + `RollingUpdate` removes the rollout gap.
+
+**Do NOT convert the PVC to an `emptyDir` while storage is SQLite.** An earlier
+revision of this entry called `crowdsec.db` "probably vestigial". It is the
+decisions database. Deleting it on every pod start would drop every ban the
+platform has issued, silently, on a component whose failures are already hard
+to see.
+
+**Smaller, unrelated win found alongside:** `use_wal: false`. CrowdSec itself
+warns on a community-blocklist insert — *"sqlite is not using WAL mode, LAPI
+might become unresponsive when inserting the community blocklist"* — and a pull
+inserts 15,000 rows at once. Less pressing now that the community blocklist is
+opt-in and off by default, but worth enabling if it is switched on.
 
 **Verify before changing anything.** `crowdsec.db` must be proven unused — this
 is the component that holds ban decisions, and removing durable storage on a
