@@ -124,8 +124,15 @@ export async function getDomainTlsStatus(
         return n === base || n.endsWith(`.${base}`);
       });
       acme = summarizeChallenges(classifyChallenges(relevant));
-    } catch {
-      // Challenge information is additive; never fail the status read for it.
+    } catch (err) {
+      // The status read still succeeds — a card without challenge detail beats
+      // no card. But say so rather than rendering a confident "not blocked":
+      // the first version returned [] on a 403 and the card cheerfully showed
+      // nothing wrong next to a permanently stuck certificate.
+      acme = {
+        blocked: false,
+        summary: `Could not read ACME challenge state: ${err instanceof Error ? err.message : String(err)}`,
+      };
     }
   }
 

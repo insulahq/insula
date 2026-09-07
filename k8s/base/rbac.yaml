@@ -195,6 +195,20 @@ rules:
   - apiGroups: ["cert-manager.io"]
     resources: ["issuers"]
     verbs: ["get", "list", "watch"]
+  # ACME Orders and Challenges — READ + DELETE, no create/update.
+  #
+  # cert-manager owns their lifecycle; the backend only needs to see why an
+  # order is stuck and to delete a Challenge that has wedged. A wedged
+  # challenge holds cert-manager's one-per-(dnsName,type) slot indefinitely and
+  # blocks every later challenge for that name, so deleting it is the only
+  # recovery — cert-manager recreates it from the Order.
+  #
+  # Without this grant the API returns 403 and the whole self-heal path reads
+  # as "no challenges exist", which is indistinguishable from a healthy
+  # cluster. That is exactly how it shipped inert the first time.
+  - apiGroups: ["acme.cert-manager.io"]
+    resources: ["challenges", "orders"]
+    verbs: ["get", "list", "watch", "delete"]
   # ClusterIssuers: read + CREATE, deliberately without update/patch/delete.
   #
   # ADR-058's wildcard DNS-01 ClusterIssuers cannot ship through Flux — they

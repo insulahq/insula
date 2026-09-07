@@ -189,7 +189,20 @@ const ACME_GROUP = 'acme.cert-manager.io';
 const ACME_VERSION = 'v1';
 const ACME_PLURAL = 'challenges';
 
-/** Every Challenge in a namespace. */
+/**
+ * Every Challenge in a namespace.
+ *
+ * THROWS on an API failure rather than returning an empty list. Swallowing it
+ * is what made the first version of this feature completely inert in
+ * production: the ServiceAccount had no RBAC on `acme.cert-manager.io`, every
+ * call 403'd, and a `catch` turned that into "no challenges" — which reads
+ * exactly like a healthy cluster. Self-heal never fired, the break-glass button
+ * reported "no stuck validation found" next to a challenge wedged for 42
+ * minutes, and every unit test still passed because they mock the API.
+ *
+ * Callers decide what a failure means for them; none of them may treat it as
+ * "nothing to do".
+ */
 export async function listChallenges(
   k8s: K8sClients,
   namespace: string,
@@ -205,12 +218,17 @@ export async function listChallenges(
       version: ACME_VERSION,
       namespace,
       plural: ACME_PLURAL,
-    })) as { items?: AcmeChallenge[] };
-    return res?.items ?? [];
-  } catch {
-    // A cluster with no cert-manager CRDs is not an error worth failing a
-    // status read over — the caller degrades to "no challenge information".
-    return [];
+    })) as { items?: AcmeChallenge[]; body?: { items?: AcmeChallenge[] } };
+    return res?.items ?? res?.body?.items ?? [];
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    // A cluster genuinely without the cert-manager CRDs is the ONE benign
+    // case; anything else — 403, connection refused — is a real failure and
+    // must not be reported as an empty namespace.
+    if (/could not find|not found|404/i.test(msg) && /customresourcedefinition|the server could not find/i.test(msg)) {
+      return [];
+    }
+    throw new Error(`listing ACME challenges in ${namespace} failed: ${msg}`);
   }
 }
 
@@ -248,7 +266,14 @@ export async function clearWedgedChallenges(
   const api = (k8s as unknown as { custom?: ChallengeApi }).custom;
   if (!api) return { deleted: [], errors: [] };
 
-  const all = await listChallenges(k8s, namespace);
+  let all: readonly AcmeChallenge[];
+  try {
+    all = await listChallenges(k8s, namespace);
+  } catch (err) {
+    // Surfaced, never silent: "could not look" and "nothing to do" are
+    // different answers and only one of them is safe to act on.
+    return { deleted: [], errors: [err instanceof Error ? err.message : String(err)] };
+  }
   const scoped = opts.dnsNames?.length
     ? all.filter((c) => {
         const n = (c.spec?.dnsName ?? '').toLowerCase().replace(/\.$/, '');
