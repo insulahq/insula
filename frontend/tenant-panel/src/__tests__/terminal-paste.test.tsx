@@ -1,26 +1,25 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 
 /**
- * xterm.js forwards keystrokes to the shell and implements no clipboard
- * shortcuts of its own, so before this handler existed Ctrl+V sent a literal
- * ^V to the process and nothing was pasted.
+ * What the terminal's key handler must and must NOT do.
  *
- * The handler is exercised directly: mounting xterm in jsdom gives a terminal
- * with no renderer, and a test that drove the DOM would pass whether or not
- * the handler was attached.
+ * xterm.js handles the browser's native paste on its own hidden
+ * `xterm-helper-textarea`, so Ctrl+V / Ctrl+Shift+V / middle-click already
+ * reach the shell. An earlier version of this component bound them anyway and
+ * every paste arrived TWICE — verified in a real browser on DEV:
+ *
+ *     $ echo UNIQ_MARKER_Aecho UNIQ_MARKER_A
+ *
+ * De-duplicating inside the component could not fix it, because xterm's own
+ * insertion never passes through our code. So the handler must leave V alone.
  */
 type KeyHandler = (e: KeyboardEvent) => boolean;
 
-function makeHandler(opts: { selection: string; onSend: (s: string) => void; readText: () => Promise<string> }): KeyHandler {
-  const paste = (): void => { void opts.readText().then((t) => { if (t) opts.onSend(t); }).catch(() => undefined); };
+function makeHandler(selection: string, onCopy: (s: string) => void): KeyHandler {
   return (e: KeyboardEvent) => {
     if (e.type !== 'keydown') return true;
-    const v = e.key === 'v' || e.key === 'V';
-    const c = e.key === 'c' || e.key === 'C';
-    if (e.ctrlKey && v) { paste(); return false; }
-    if (e.ctrlKey && e.shiftKey && c) {
-      if (opts.selection) return false;
-      return true;
+    if (e.ctrlKey && e.shiftKey && (e.key === 'c' || e.key === 'C')) {
+      if (selection) { onCopy(selection); return false; }
     }
     return true;
   };
@@ -29,89 +28,37 @@ function makeHandler(opts: { selection: string; onSend: (s: string) => void; rea
 const key = (init: Partial<KeyboardEventInit> & { key: string }) =>
   new KeyboardEvent('keydown', { ctrlKey: false, shiftKey: false, ...init });
 
-describe('terminal clipboard handling', () => {
-  let sent: string[];
-  let handler: KeyHandler;
-  beforeEach(() => {
-    sent = [];
-    handler = makeHandler({ selection: '', onSend: (s) => sent.push(s), readText: () => Promise.resolve('pasted-text') });
+describe('terminal key handling', () => {
+  it('does NOT intercept Ctrl+V — xterm already pastes, and binding it duplicated every paste', () => {
+    const h = makeHandler('', () => {});
+    expect(h(key({ key: 'v', ctrlKey: true }))).toBe(true);
   });
 
-  it('Ctrl+V pastes and does NOT forward ^V to the shell', async () => {
-    expect(handler(key({ key: 'v', ctrlKey: true }))).toBe(false);
-    await Promise.resolve(); await Promise.resolve();
-    expect(sent).toEqual(['pasted-text']);
-  });
-
-  it('Ctrl+Shift+V also pastes', async () => {
-    expect(handler(key({ key: 'V', ctrlKey: true, shiftKey: true }))).toBe(false);
-    await Promise.resolve(); await Promise.resolve();
-    expect(sent).toEqual(['pasted-text']);
+  it('does NOT intercept Ctrl+Shift+V either — same duplication', () => {
+    const h = makeHandler('', () => {});
+    expect(h(key({ key: 'V', ctrlKey: true, shiftKey: true }))).toBe(true);
   });
 
   it('plain Ctrl+C still reaches the shell so a running command can be interrupted', () => {
-    // Swallowing this would make the terminal unable to send SIGINT.
-    expect(handler(key({ key: 'c', ctrlKey: true }))).toBe(true);
-    expect(sent).toEqual([]);
+    const h = makeHandler('some text', () => {});
+    expect(h(key({ key: 'c', ctrlKey: true }))).toBe(true);
   });
 
-  it('Ctrl+Shift+C without a selection falls through rather than being eaten', () => {
-    expect(handler(key({ key: 'C', ctrlKey: true, shiftKey: true }))).toBe(true);
-  });
-
-  it('Ctrl+Shift+C WITH a selection copies and is swallowed', () => {
-    const h = makeHandler({ selection: 'some text', onSend: () => {}, readText: () => Promise.resolve('') });
+  it('Ctrl+Shift+C copies a selection and is swallowed', () => {
+    const copied: string[] = [];
+    const h = makeHandler('selected', (s) => copied.push(s));
     expect(h(key({ key: 'C', ctrlKey: true, shiftKey: true }))).toBe(false);
+    expect(copied).toEqual(['selected']);
+  });
+
+  it('Ctrl+Shift+C with NO selection falls through rather than being eaten', () => {
+    const h = makeHandler('', () => {});
+    expect(h(key({ key: 'C', ctrlKey: true, shiftKey: true }))).toBe(true);
   });
 
   it('ordinary typing is untouched', () => {
-    expect(handler(key({ key: 'a' }))).toBe(true);
-    expect(handler(key({ key: 'v' }))).toBe(true);
-  });
-});
-
-describe('paste is delivered exactly once', () => {
-  /** Mirrors the component's deduped entry point. */
-  function makePaster(onSend: (s: string) => void, now: () => number) {
-    let last = { text: '', at: 0 };
-    return (text: string): void => {
-      if (!text) return;
-      const t = now();
-      if (text === last.text && t - last.at < 150) return;
-      last = { text, at: t };
-      onSend(text);
-    };
-  }
-
-  it('collapses the key handler and the native paste event into one send', () => {
-    // Ctrl+V triggers BOTH: attachCustomKeyEventHandler fires, and the browser
-    // still emits a native `paste` on the focused element. The first browser
-    // run of this feature pasted everything twice —
-    // "echo MARKERecho MARKER" appeared on screen.
-    const sent: string[] = [];
-    let clock = 1000;
-    const paste = makePaster((s) => sent.push(s), () => clock);
-    paste('echo hello');   // key handler
-    clock += 5;
-    paste('echo hello');   // native paste event, same tick
-    expect(sent).toEqual(['echo hello']);
-  });
-
-  it('still allows the SAME text to be pasted again deliberately', () => {
-    const sent: string[] = [];
-    let clock = 1000;
-    const paste = makePaster((s) => sent.push(s), () => clock);
-    paste('ls');
-    clock += 400; // user presses Ctrl+V again a moment later
-    paste('ls');
-    expect(sent).toEqual(['ls', 'ls']);
-  });
-
-  it('does not swallow different text arriving back to back', () => {
-    const sent: string[] = [];
-    let clock = 1000;
-    const paste = makePaster((s) => sent.push(s), () => clock);
-    paste('one'); clock += 5; paste('two');
-    expect(sent).toEqual(['one', 'two']);
+    const h = makeHandler('', () => {});
+    expect(h(key({ key: 'a' }))).toBe(true);
+    expect(h(key({ key: 'v' }))).toBe(true);
   });
 });
