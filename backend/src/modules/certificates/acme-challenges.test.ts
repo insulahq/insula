@@ -295,3 +295,35 @@ describe('scoping covers the hostnames a domain certificate actually validates',
     expect(res.deleted).toEqual(['fqdn']);
   });
 });
+
+describe('a failed lookup is never reported as "nothing stuck"', () => {
+  it('surfaces the API error instead of returning an empty list', async () => {
+    // THE REGRESSION. platform-api had no RBAC on acme.cert-manager.io, every
+    // list 403'd, and the original `catch { return [] }` made that identical to
+    // a healthy namespace: self-heal never ran and the break-glass button said
+    // "No stuck validation found" beside a challenge wedged for 42 minutes.
+    const k8s = {
+      custom: {
+        listNamespacedCustomObject: vi.fn().mockRejectedValue(new Error('HTTP-Code: 403 challenges.acme.cert-manager.io is forbidden')),
+        deleteNamespacedCustomObject: vi.fn(),
+      },
+    };
+    const res = await clearWedgedChallenges(k8s as never, 'ns', { now: NOW });
+    expect(res.deleted).toEqual([]);
+    expect(res.errors).toHaveLength(1);
+    expect(res.errors[0]).toContain('403');
+  });
+
+  it('still treats a cluster with no cert-manager CRDs as benign', async () => {
+    const k8s = {
+      custom: {
+        listNamespacedCustomObject: vi.fn().mockRejectedValue(
+          new Error('the server could not find the requested resource (get customresourcedefinition)'),
+        ),
+        deleteNamespacedCustomObject: vi.fn(),
+      },
+    };
+    const res = await clearWedgedChallenges(k8s as never, 'ns', { now: NOW });
+    expect(res).toEqual({ deleted: [], errors: [] });
+  });
+});

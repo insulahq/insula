@@ -444,6 +444,9 @@ export async function clearStuckValidation(
   const { clearWedgedChallenges } = await import('./acme-challenges.js');
   const res = await clearWedgedChallenges(k8s, namespace, { dnsNames: [domain.domainName] });
 
+  // An error with nothing deleted means we could not LOOK, which must never be
+  // reported to the operator as "nothing is stuck" — that is the message that
+  // sent someone away from a genuinely wedged certificate.
   if (res.errors.length > 0 && res.deleted.length === 0) {
     throw new ApiError(
       'CHALLENGE_CLEANUP_FAILED',
