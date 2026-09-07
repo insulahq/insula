@@ -16,6 +16,40 @@ import { isNotFound } from '../../shared/k8s-errors.js';
 
 const FM_NAME = 'file-manager';
 const FM_PORT = 8111;
+/**
+ * Memory shape for the FM pod. See the long rationale at the `resources:`
+ * block below — both values are measured, not guessed.
+ */
+export const FM_MEMORY_REQUEST = '64Mi';
+export const FM_MEMORY_LIMIT = '256Mi';
+
+/**
+ * Parse a Kubernetes memory quantity to bytes.
+ *
+ * The drift check below must compare limits NUMERICALLY. A string compare
+ * (`existingMemLim !== '128Mi'`) treats an operator's deliberate increase as
+ * drift and reverts it — which is exactly what happened on production
+ * 2026-09-06: the FM was hand-raised to 1Gi to let a stuck rsync through, and
+ * the next SFTP session (every FM route calls the reconciler) deleted and
+ * recreated the Deployment back at 128Mi, mid-transfer. An emergency override
+ * has to be possible without the platform fighting the operator.
+ *
+ * Returns null for anything unparseable, which the caller treats as drift —
+ * an unreadable limit is not evidence of a correct one.
+ */
+export function parseMemoryToBytes(value: string | undefined | null): number | null {
+  if (!value) return null;
+  const m = /^(\d+(?:\.\d+)?)\s*(Ki|Mi|Gi|Ti|k|K|M|G|T)?$/.exec(value.trim());
+  if (!m) return null;
+  const n = Number(m[1]);
+  if (!Number.isFinite(n)) return null;
+  const unit = m[2];
+  const mult: Record<string, number> = {
+    Ki: 1024, Mi: 1024 ** 2, Gi: 1024 ** 3, Ti: 1024 ** 4,
+    k: 1e3, K: 1e3, M: 1e6, G: 1e9, T: 1e12,
+  };
+  return unit ? n * mult[unit] : n;
+}
 const FM_LABELS = { app: FM_NAME, 'platform.io/component': FM_NAME, 'platform.io/system': 'true' };
 
 function isK8s404(err: unknown): boolean {
@@ -236,16 +270,44 @@ export async function ensureFileManagerRunning(
                   },
                 },
                 resources: {
-                  // Asymmetric QoS (ADR-037): CPU request only, memory
-                  // request==limit. Requests stay tight (FM is mostly idle);
-                  // CPU bursts freely when needed for file streaming + zip/
-                  // tar/git operations. Memory stays at 128Mi — the streaming
-                  // handlers (write-raw, download via createReadStream,
-                  // fetch-url piped to disk) don't buffer file content.
-                  // FM runs under platform-tenant-overhead PriorityClass
-                  // and is exempted from tenant quota by scopeSelector.
-                  requests: { cpu: '25m', memory: '128Mi' },
-                  limits: { memory: '128Mi' },
+                  // Asymmetric QoS (ADR-037): CPU request only, so CPU bursts
+                  // freely for file streaming + zip/tar/git work.
+                  //
+                  // Memory request 64Mi / limit 256Mi, MEASURED on production
+                  // 2026-09-06 during a real 12.5 GB rsync of 131k files:
+                  //
+                  //   anon (node + 2 rsync)      24.7 Mi   <- the real need
+                  //   slab_unreclaimable          0.2 Mi
+                  //   working set (kubelet)        26 Mi
+                  //   ---------------------------------
+                  //   page cache (inactive_file)  100 Mi   <- reclaimable
+                  //   memory.current              127 Mi   of a 128Mi limit
+                  //
+                  // The previous 128Mi was sized against the Node heap: "the
+                  // streaming handlers don't buffer file content". That is
+                  // TRUE — anon is only ~25Mi — but a cgroup limit also charges
+                  // page cache and slab, and rsync generates both heavily. The
+                  // cgroup therefore ran at 99% during every transfer and was
+                  // OOM-killed; because the container has memory.oom.group=1,
+                  // node and sshd died with rsync, so the tenant saw the
+                  // transfer reset (12 OOM kills in 24h on one tenant).
+                  //
+                  // This is invisible in metrics: the kubelet's working set
+                  // EXCLUDES inactive page cache, so `kubectl top` reported a
+                  // healthy 26Mi while the cgroup sat at 127Mi and the OOM
+                  // killer — which uses memory.current — fired.
+                  //
+                  // 256Mi is ~10x the measured working set, all of it headroom
+                  // for reclaimable cache so reclaim can satisfy the GFP_NOFS
+                  // order-3 allocations that were failing. The request DROPS to
+                  // 64Mi (still 2.5x the 26Mi working set): a limit is a
+                  // ceiling, only the request is reserved, so this frees 64Mi
+                  // per tenant FM rather than costing anything.
+                  //
+                  // FM runs under platform-tenant-overhead PriorityClass and is
+                  // exempted from tenant quota by scopeSelector.
+                  requests: { cpu: '25m', memory: FM_MEMORY_REQUEST },
+                  limits: { memory: FM_MEMORY_LIMIT },
                 },
                 volumeMounts: [
                   // The ONLY mount the SFTP path needs. sftp-serve chroots into
@@ -293,7 +355,7 @@ export async function ensureFileManagerRunning(
     // unquiesce (or the cancel/clear-failed valves) clears the annotation.
     const existingAnnotations = (existingDeploy as { metadata?: { annotations?: Record<string, string> } }).metadata?.annotations;
     if (existingAnnotations?.[STORAGE_QUIESCED_ANNOTATION] === 'true') return;
-    const existingSpec = (existingDeploy as { spec?: { replicas?: number; template?: { spec?: { volumes?: Array<{ persistentVolumeClaim?: { claimName?: string } }>; containers?: Array<{ securityContext?: { capabilities?: { add?: string[] } }; image?: string; imagePullPolicy?: string; resources?: { limits?: { cpu?: string; memory?: string } } }> } } } }).spec;
+    const existingSpec = (existingDeploy as { spec?: { replicas?: number; template?: { spec?: { volumes?: Array<{ persistentVolumeClaim?: { claimName?: string } }>; containers?: Array<{ securityContext?: { capabilities?: { add?: string[] } }; image?: string; imagePullPolicy?: string; resources?: { limits?: { cpu?: string; memory?: string }; requests?: { cpu?: string; memory?: string } } }> } } } }).spec;
     const templateSpec = existingSpec?.template?.spec;
     const existingReplicas = existingSpec?.replicas ?? 0;
     const existingPvcClaim = (templateSpec?.volumes ?? []).find((v: Record<string, unknown>) => v.persistentVolumeClaim)?.persistentVolumeClaim?.claimName;
@@ -302,6 +364,7 @@ export async function ensureFileManagerRunning(
     const existingPullPolicy = templateSpec?.containers?.[0]?.imagePullPolicy ?? '';
     const existingCpuLim = templateSpec?.containers?.[0]?.resources?.limits?.cpu ?? '';
     const existingMemLim = templateSpec?.containers?.[0]?.resources?.limits?.memory ?? '';
+    const existingMemReq = templateSpec?.containers?.[0]?.resources?.requests?.memory ?? '';
     // gap G2: the operator can re-provision onto a DIFFERENT node. `nodeSelector`
     // isn't in the inline templateSpec type, so read it via a widening cast. Only
     // an EXPLICIT targetNode drives a mismatch — when absent we never strip an
@@ -341,11 +404,21 @@ export async function ensureFileManagerRunning(
     // (server.mjs) to propagate to existing tenants without manual pod
     // deletion or reprovision.
     const pullPolicyMismatch = existingPullPolicy !== 'Always';
-    // ADR-037 (commit b17bf547): asymmetric QoS — deployBody has
-    // memory request==limit (128Mi) and NO cpu limit (cpu request
-    // only). The mismatch check must therefore detect:
-    //   - memory limit drift from 128Mi (mismatch)
+    // ADR-037 (commit b17bf547): asymmetric QoS — CPU request only, no CPU
+    // limit. The mismatch check must therefore detect:
+    //   - a memory limit BELOW the expected one (mismatch — under-provisioned)
+    //   - a memory request that differs (mismatch — migrates old 128Mi FMs)
     //   - presence of ANY cpu limit (mismatch — we want none)
+    //
+    // The limit is compared as ">= expected", NOT "== expected", so an
+    // operator can raise it in an emergency and have it stick. Under the old
+    // exact-equality rule that was impossible: on production 2026-09-06 the FM
+    // was hand-raised to 1Gi to get a stuck rsync through, and the next SFTP
+    // session — every FM route calls this reconciler — saw 1Gi as drift and
+    // deleted + recreated the Deployment back at 128Mi, killing the transfer
+    // it was meant to rescue. A raise is an override; only a shortfall is drift.
+    //
+    // An unparseable limit counts as drift: it is not evidence of a good value.
     //
     // History note: an earlier version expected cpu limit '500m' to
     // detect/migrate old 100m deployments. After ADR-037 removed the
@@ -355,7 +428,11 @@ export async function ensureFileManagerRunning(
     // replicas=initialReplicas (0) → scale-to-1 branch never fires
     // → /files/start permanently no-op (caught by lifecycle-e2e
     // 2026-05-14: "FM did not become ready").
-    const resourcesMismatch = existingMemLim !== '128Mi' || existingCpuLim !== '';
+    const existingMemLimBytes = parseMemoryToBytes(existingMemLim);
+    const wantedMemLimBytes = parseMemoryToBytes(FM_MEMORY_LIMIT) ?? 0;
+    const memLimitTooSmall = existingMemLimBytes === null || existingMemLimBytes < wantedMemLimBytes;
+    const memRequestMismatch = existingMemReq !== FM_MEMORY_REQUEST;
+    const resourcesMismatch = memLimitTooSmall || memRequestMismatch || existingCpuLim !== '';
     // Recreate when an explicit targetNode differs from the FM's current pin so a
     // retry onto a different node moves the pod (else the RWO PVC can't mount).
     const nodeSelectorMismatch = Boolean(targetNode) && existingNodeHost !== targetNode;
