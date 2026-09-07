@@ -1344,11 +1344,62 @@ decisions database. Deleting it on every pod start would drop every ban the
 platform has issued, silently, on a component whose failures are already hard
 to see.
 
-**Smaller, unrelated win found alongside:** `use_wal: false`. CrowdSec itself
-warns on a community-blocklist insert — *"sqlite is not using WAL mode, LAPI
-might become unresponsive when inserting the community blocklist"* — and a pull
-inserts 15,000 rows at once. Less pressing now that the community blocklist is
-opt-in and off by default, but worth enabling if it is switched on.
+**HOW to change the DB — investigated 2026-09-07, two dead ends first.**
+
+Both obvious routes do not work with `crowdsecurity/crowdsec:v1.7.8`:
+
+| candidate | verdict |
+|---|---|
+| `DB_TYPE` / `DB_HOST` env vars | **Do not exist.** Every env var the entrypoint reads was dumped — ~70, `AGENT_USERNAME` through `USE_WAL` — and there is no `DB_*` among them. The claim in `deployment.yaml` that an operator "can swap to Postgres by setting `DB_TYPE=postgres` + `DB_HOST=…`" is wrong for this image. |
+| `config.yaml.local` overlay | **Not merged.** Writing `db_config.log_level: debug` into it left the resolved `LogLevel` at 4. `.local` covers hub items, not the main config. |
+
+**What works, proven end-to-end:** edit `config.yaml` with `yq`. Rendering a
+Postgres `db_config` onto a copy and asking CrowdSec to resolve it gives:
+
+```
+Type: "postgresql"   Host: "system-db-rw.platform.svc"   Port: 5432
+User: "crowdsec"     DbName: "crowdsec"                  SSLMode: "require"
+```
+
+The binary has full Postgres support — `DatabaseCfg` carries `Host`, `Port`,
+`User`, `Password`, `DbName`, `SSLMode`, `SSLCACert`, `SSLClientCert`,
+`SSLClientKey`, so CNPG's TLS is covered.
+
+Three properties make this land cleanly:
+
+1. The entrypoint **already** edits `config.yaml` this way — `conf_set` is a
+   `yq` wrapper, and it is how `USE_WAL` and `DISABLE_ONLINE_API` are applied.
+2. `yq` v4.50.1 ships in the image, so no new tooling.
+3. `/etc/crowdsec` is an `emptyDir` already seeded by the `seed-config` init
+   container, which is the right place to render `db_config` from a Secret.
+
+Point 3 is load-bearing: the config must stay **writable**, because the
+entrypoint mutates it on every start. Mounting a ConfigMap over `config.yaml` —
+the other obvious idea — would break `USE_WAL` and the CAPI switch.
+
+**Shared cluster, not a dedicated one (operator decision 2026-09-07).** CrowdSec
+gets a `crowdsec` database and role inside the existing `system-db` CNPG cluster
+rather than its own instance. Measured first: the platform DB is 28 MB with
+33/100 connections and a 512Mi CNPG limit, and `crowdsec.db` is 9 MB — capacity
+is not the question. The trade accepted is **coupling**: a platform-database
+incident will now take the LAPI down too, where today they fail independently.
+That is acceptable *only because* `updateMaxFailure: -1` means a LAPI outage
+freezes IP reputation instead of blocking traffic. A dedicated cluster would
+keep the failure domains apart at the cost of another ~256–512Mi, which is not
+available on a single-node production node already at 65%.
+
+**Performance:** no change on the request path. The bouncer runs in
+`crowdsecMode: stream` and answers every request from its in-memory cache, so
+the database is not on the per-request path at all. Postgres is *better* for the
+one measured pain point — a community pull inserts 15,000 rows in one
+transaction, which SQLite serialises against readers and Postgres does not.
+
+**Cutover is not a data migration.** Everything durable in `crowdsec.db`
+re-creates itself on first start: the agent machine (entrypoint runs
+`cscli machines add --force` from its Secret), the Traefik bouncer
+(`BOUNCER_KEY_traefik` auto-registers), and the platform-api bouncer
+(`reregisterPlatformApiBouncer()` self-heals on 403). Only operator manual and
+static bans are lost, and those export with `cscli decisions list -o json`.
 
 **Verify before changing anything.** `crowdsec.db` must be proven unused — this
 is the component that holds ban decisions, and removing durable storage on a
