@@ -725,6 +725,24 @@ export async function listDeployments(
   };
 }
 
+/**
+ * Stable JSON for comparing two configuration objects.
+ *
+ * Plain `JSON.stringify` is key-order sensitive, so `{a:1,b:2}` and `{b:2,a:1}`
+ * compare as different. The panel rebuilds the object with a spread on every
+ * save, so relying on stringify would report a change on saves that changed
+ * nothing — and every one of those would roll the tenant's pod. Sorting the
+ * keys makes "unchanged" mean unchanged.
+ */
+export function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  const entries = Object.entries(value as Record<string, unknown>)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`);
+  return `{${entries.join(',')}}`;
+}
+
 export async function updateDeployment(
   db: Database,
   tenantId: string,
@@ -771,6 +789,31 @@ export async function updateDeployment(
   // "edit mounts + start" call still ends up running the new template.
   const mountsChanged = input.extra_mounts !== undefined
     && JSON.stringify(input.extra_mounts) !== JSON.stringify(deployment.extraMounts ?? []);
+
+  // A configuration edit is a pod-template change too, and until this existed
+  // it was the one that silently did nothing.
+  //
+  // The env vars live in the Deployment's pod template. Persisting
+  // `configuration` to the row without re-rendering that template leaves the
+  // running pod on its old values FOREVER — nothing else reconciles env drift.
+  // The tenant panel makes this worse rather than better: after saving it calls
+  // POST /restart, which DELETES the pods, and the ReplicaSet recreates them
+  // from the template that was never updated. So the pod visibly bounces and
+  // comes back byte-identical, which reads as "the setting does not work"
+  // rather than "the setting was never applied".
+  //
+  // Reported against an Apache/PHP deployment: PHP_DISPLAY_ERRORS and
+  // APACHE_DOCUMENT_ROOT saved, pod restarted, neither took effect.
+  const configurationChanged = input.configuration !== undefined
+    && canonicalJson(input.configuration)
+      !== canonicalJson(parseJsonField<Record<string, unknown>>(deployment.configuration) ?? {});
+
+  // Replica count is rendered from the row by redeployWithCurrentConfig as
+  // well, and had the identical problem — persisted, never applied.
+  const replicaCountChanged = input.replica_count !== undefined
+    && input.replica_count !== (deployment.replicaCount ?? 1);
+
+  const podTemplateChanged = mountsChanged || configurationChanged || replicaCountChanged;
 
   // Apply K8s changes for status transitions
   if (k8s && input.status) {
@@ -819,7 +862,7 @@ export async function updateDeployment(
   // Validation runs first so a bad edit is refused before anything is applied
   // — the row has already been written, but a failed redeploy leaves the
   // running pod untouched and the tenant sees the OperatorError.
-  if (k8s && mountsChanged) {
+  if (k8s && podTemplateChanged) {
     const fresh = await getDeploymentById(db, tenantId, deploymentId);
     if (fresh.status !== 'stopped' && fresh.status !== 'deleted') {
       await redeployWithCurrentConfig(db, fresh as typeof deployments.$inferSelect, k8s);
