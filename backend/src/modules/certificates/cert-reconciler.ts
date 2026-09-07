@@ -174,7 +174,39 @@ function isK8s404(err: unknown): boolean {
 export interface CertReconcileResult {
   readonly checked: number;
   readonly synced: number;
+  /** Wedged ACME challenges deleted so issuance could restart. */
+  readonly healedChallenges: number;
   readonly errors: readonly string[];
+}
+
+/**
+ * Clear wedged ACME challenges for one namespace.
+ *
+ * Runs on the same tick as the status sync because a wedge is invisible in the
+ * Certificate CR — it looks like an order that is simply taking a while, and
+ * cert-manager never times the challenge out on its own. Without this the
+ * blockage is permanent and no amount of re-requesting clears it.
+ */
+async function selfHealNamespace(
+  k8s: K8sClients,
+  namespace: string,
+  errors: string[],
+): Promise<number> {
+  try {
+    const { clearWedgedChallenges } = await import('./acme-challenges.js');
+    const res = await clearWedgedChallenges(k8s, namespace);
+    for (const e of res.errors) errors.push(`challenge cleanup ${namespace}: ${e}`);
+    if (res.deleted.length > 0) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[cert-reconciler] cleared ${res.deleted.length} wedged ACME challenge(s) in ${namespace}: ${res.deleted.join(', ')}`,
+      );
+    }
+    return res.deleted.length;
+  } catch (err) {
+    errors.push(`challenge cleanup ${namespace}: ${err instanceof Error ? err.message : String(err)}`);
+    return 0;
+  }
 }
 
 export async function reconcileCertificateStatuses(
@@ -195,6 +227,7 @@ export async function reconcileCertificateStatuses(
 
   let checked = 0;
   let synced = 0;
+  let healedChallenges = 0;
   const errors: string[] = [];
   // One Certificate list per namespace, not per domain — a tenant with
   // twenty domains would otherwise issue twenty identical LISTs.
@@ -211,6 +244,10 @@ export async function reconcileCertificateStatuses(
     try {
       if (!certsByNamespace.has(d.namespace)) {
         certsByNamespace.set(d.namespace, await listCertificateHealth(k8s, d.namespace));
+        // First time we touch this namespace on this tick: clear any wedged
+        // challenge before reading state, so the status we record reflects a
+        // namespace that has been given the chance to recover.
+        healedChallenges += await selfHealNamespace(k8s, d.namespace, errors);
       }
       const health = pickDomainCertificate(
         certsByNamespace.get(d.namespace) ?? [],
@@ -349,5 +386,5 @@ export async function reconcileCertificateStatuses(
     }
   }
 
-  return { checked, synced, errors };
+  return { checked, synced, healedChallenges, errors };
 }

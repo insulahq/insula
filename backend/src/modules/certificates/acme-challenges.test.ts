@@ -1,0 +1,143 @@
+import { describe, it, expect, vi } from 'vitest';
+import {
+  classifyChallenges,
+  wedgedChallenges,
+  summarizeChallenges,
+  clearWedgedChallenges,
+  CHALLENGE_WEDGE_AFTER_MS,
+  type AcmeChallenge,
+} from './acme-challenges.js';
+
+const NOW = new Date('2026-09-07T20:00:00Z');
+const ago = (ms: number) => new Date(NOW.getTime() - ms).toISOString();
+
+function ch(over: Partial<AcmeChallenge> & { name: string; created: string }): AcmeChallenge {
+  return {
+    metadata: { name: over.name, creationTimestamp: over.created },
+    spec: { dnsName: 'business.na', type: 'DNS-01', ...(over.spec ?? {}) },
+    status: over.status,
+  };
+}
+
+describe('wedge detection', () => {
+  it('flags a challenge that has held its slot past the threshold', () => {
+    // The production shape: processing forever, never completing.
+    const [i] = classifyChallenges(
+      [ch({ name: 'a', created: ago(CHALLENGE_WEDGE_AFTER_MS + 1000), status: { processing: true, state: 'pending' } })],
+      NOW,
+    );
+    expect(i.disposition).toBe('wedged');
+  });
+
+  it('does NOT flag an order that is merely slow', () => {
+    // Measured on the staging issuer: a single name took ~75s and a wildcard
+    // ~165s. Treating those as wedged would delete healthy orders in flight.
+    for (const age of [75_000, 165_000, CHALLENGE_WEDGE_AFTER_MS - 1000]) {
+      const [i] = classifyChallenges(
+        [ch({ name: 'a', created: ago(age), status: { processing: true, state: 'pending' } })],
+        NOW,
+      );
+      expect(i.disposition, `age ${age}`).toBe('progressing');
+    }
+  });
+
+  it('reports a status-less challenge as BLOCKED, naming what holds the slot', () => {
+    // This is the relationship nothing surfaced. The blocked challenge has
+    // literally empty status, so on its own it looks like nothing is wrong.
+    const insights = classifyChallenges(
+      [
+        ch({ name: 'holder', created: ago(3 * 60 * 60 * 1000), status: { processing: true, state: 'pending' } }),
+        ch({ name: 'waiter', created: ago(3 * 60 * 60 * 1000), status: {} }),
+      ],
+      NOW,
+    );
+    const waiter = insights.find((i) => i.name === 'waiter')!;
+    expect(waiter.disposition).toBe('blocked');
+    expect(waiter.blockedBy).toBe('holder');
+  });
+
+  it('does not call a challenge blocked by a DIFFERENT dnsName', () => {
+    // The scheduler serialises per (dnsName, type). Two different names run
+    // concurrently and neither blocks the other.
+    const insights = classifyChallenges(
+      [
+        ch({ name: 'other', created: ago(60_000), spec: { dnsName: 'elsewhere.test', type: 'DNS-01' }, status: { processing: true } }),
+        ch({ name: 'mine', created: ago(60_000), status: {} }),
+      ],
+      NOW,
+    );
+    expect(insights.find((i) => i.name === 'mine')!.disposition).toBe('progressing');
+  });
+
+  it('never flags a valid challenge', () => {
+    const [i] = classifyChallenges(
+      [ch({ name: 'a', created: ago(5 * 60 * 60 * 1000), status: { state: 'valid' } })],
+      NOW,
+    );
+    expect(i.disposition).toBe('valid');
+    expect(wedgedChallenges([i])).toEqual([]);
+  });
+});
+
+describe('operator summary', () => {
+  it('explains a wedge and says it is being cleared', () => {
+    const { blocked, summary } = summarizeChallenges(
+      classifyChallenges(
+        [ch({ name: 'a', created: ago(3 * 60 * 60 * 1000), status: { processing: true, reason: 'not yet propagated' } })],
+        NOW,
+      ),
+    );
+    expect(blocked).toBe(true);
+    expect(summary).toContain('business.na');
+    expect(summary).toContain('180 minutes');
+    expect(summary).toContain('not yet propagated');
+  });
+
+  it('is silent when everything is progressing normally', () => {
+    const { blocked, summary } = summarizeChallenges(
+      classifyChallenges([ch({ name: 'a', created: ago(30_000), status: { processing: true } })], NOW),
+    );
+    expect(blocked).toBe(false);
+    expect(summary).toBeUndefined();
+  });
+});
+
+describe('clearWedgedChallenges', () => {
+  function k8sWith(items: AcmeChallenge[]) {
+    const del = vi.fn().mockResolvedValue({});
+    return {
+      k8s: { custom: { listNamespacedCustomObject: vi.fn().mockResolvedValue({ items }), deleteNamespacedCustomObject: del } },
+      del,
+    };
+  }
+
+  it('deletes ONLY the wedged challenge', async () => {
+    const { k8s, del } = k8sWith([
+      ch({ name: 'wedged', created: ago(3 * 60 * 60 * 1000), status: { processing: true } }),
+      ch({ name: 'fresh', created: ago(30_000), spec: { dnsName: 'other.test', type: 'DNS-01' }, status: { processing: true } }),
+    ]);
+    const res = await clearWedgedChallenges(k8s as never, 'ns', { now: NOW });
+    expect(res.deleted).toEqual(['wedged']);
+    expect(del).toHaveBeenCalledTimes(1);
+  });
+
+  it('deletes nothing when the order is simply in progress', async () => {
+    const { k8s, del } = k8sWith([ch({ name: 'a', created: ago(60_000), status: { processing: true } })]);
+    const res = await clearWedgedChallenges(k8s as never, 'ns', { now: NOW });
+    expect(res.deleted).toEqual([]);
+    expect(del).not.toHaveBeenCalled();
+  });
+
+  it('reports a delete failure instead of swallowing it', async () => {
+    const { k8s } = k8sWith([ch({ name: 'wedged', created: ago(3 * 60 * 60 * 1000), status: { processing: true } })]);
+    k8s.custom.deleteNamespacedCustomObject = vi.fn().mockRejectedValue(new Error('forbidden'));
+    const res = await clearWedgedChallenges(k8s as never, 'ns', { now: NOW });
+    expect(res.deleted).toEqual([]);
+    expect(res.errors[0]).toContain('forbidden');
+  });
+
+  it('degrades quietly when the cluster has no cert-manager CRDs', async () => {
+    const res = await clearWedgedChallenges({} as never, 'ns', { now: NOW });
+    expect(res).toEqual({ deleted: [], errors: [] });
+  });
+});

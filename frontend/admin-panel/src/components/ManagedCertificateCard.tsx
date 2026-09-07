@@ -115,6 +115,19 @@ export default function ManagedCertificateCard({ tenantId, domainId, canManage }
             <ErrorPanel error={operatorError} testId="reissue-error" onRetry={handleReissue} retryPending={reissue.isPending} />
           )}
 
+          {status.validationBlocked && (
+            <div
+              className="flex items-start gap-2 rounded-lg border border-red-300 dark:border-red-700 bg-red-50 dark:bg-red-900/30 px-3 py-2 text-sm text-red-800 dark:text-red-200"
+              data-testid="validation-blocked"
+            >
+              <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+              <span>
+                {status.validationMessage
+                  ?? 'Certificate validation is stuck and cannot complete on its own.'}
+              </span>
+            </div>
+          )}
+
           {status.fallbackActive && (
             <div
               className="flex items-start gap-2 rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/30 px-3 py-2 text-sm text-amber-800 dark:text-amber-200"

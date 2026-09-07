@@ -271,6 +271,26 @@ async function runReissue(
   // Only reachable after the fresh verification above passed.
   await setStep(1, 'running');
   await deleteDomainCertificate(db, k8s, request.domainId);
+  // Deleting the Certificate cascades to its Order and Challenges via owner
+  // references, but only for challenges still owned by THIS certificate. A
+  // challenge orphaned by an earlier failed order keeps holding the
+  // (dnsName, type) slot that cert-manager's scheduler allows only one of, and
+  // the fresh order's challenges are then created with an empty status and
+  // never run — which is exactly how this button came to report success while
+  // changing nothing. Sweep the namespace before recreating.
+  try {
+    const { clearWedgedChallenges } = await import('./acme-challenges.js');
+    const swept = await clearWedgedChallenges(k8s, namespace, {
+      dnsNames: [domain.domainName],
+    });
+    if (swept.deleted.length > 0) {
+      // eslint-disable-next-line no-console
+      console.warn(`[reissue] cleared wedged challenge(s): ${swept.deleted.join(', ')}`);
+    }
+  } catch {
+    // Best-effort: a sweep failure must not abort a reissue that would
+    // otherwise proceed.
+  }
   await setStep(1, 'done');
 
   // 2 — recreate. force is kept only to bypass any stale DB status — the

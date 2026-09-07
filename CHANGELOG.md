@@ -13,6 +13,35 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Fixed
+- **A stuck ACME challenge blocked all future certificate issuance for that
+  hostname, permanently and invisibly.** cert-manager runs at most one in-flight
+  challenge per `(dnsName, type)`; a challenge that reaches `processing: true`
+  and never completes holds that slot forever, and every later challenge for the
+  same name is created with an empty status and never runs. Nothing timed it
+  out, nothing reported it, and **Request Certificate could not clear it** — it
+  produced a fresh order whose challenges inherited the same blocked slot, so
+  the button reported success and changed nothing. Proven against the Let's
+  Encrypt staging issuer: a certificate for a different name in the same zone
+  issued in ~75s through the same webhook and nameservers, while three separate
+  orders for the wedged name never started. The certificate reconciler now
+  detects a challenge that has held its slot past 15 minutes and deletes it so
+  cert-manager can start a clean one, and a reissue sweeps the domain's
+  challenges before recreating. A mispointed NS record is the usual way in, but
+  any challenge that dies mid-flight — an expired authorization, a provider
+  outage during renewal — leaves the same blockage, and renewals hit it as hard
+  as first issuance.
+
+### Added
+- The certificate card now says **why** issuance is stuck. The platform read
+  Certificate CRs and nothing below them, so the whole ACME layer was invisible:
+  a wedged challenge looked exactly like a slow one, and the operator's only
+  signal was a certificate that never appeared. `validationBlocked` and
+  `validationMessage` carry the challenge state, including which challenge is
+  holding a blocked one's slot, and the card renders it. Deliberately distinct
+  from `state: 'failed'`, which means an attempt was *rejected* — a blocked
+  validation never ran at all.
+
+### Fixed
 - **The tenant panel crashed to "Something went wrong" and only a hard reload
   brought it back** (`Cannot read properties of null (reading 'toFixed')`). The
   header's CPU/memory/storage tiles format fields typed `number` by a
