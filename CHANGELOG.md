@@ -12,62 +12,13 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-### Changed
-- **Turning the community blocklist off now drops what it already loaded.** The
-  purge runs `cscli` via `kubectl exec` into the LAPI pod, so it now runs BEFORE
-  the pod is rolled — doing it after left the exec hitting a stopping container
-  (`cannot exec in a stopped container`) and 18,770 decisions still enforced.
-  Disabling only stops the feed being refreshed; everything already pulled stays
-  enforced until it expires, and CAPI TTLs run to 144h. On DEV the switch read
-  "off" while 18,770 community decisions were still in force, so an upgrading
-  cluster would keep blocking for days and the setting would look inert. Both
-  the toggle and the boot default now purge, and log how many were removed.
-- **Changing the community-blocklist setting now actually rolls the LAPI.** The
-  image reads `DISABLE_ONLINE_API` only at startup. Stakater Reloader is
-  annotated on the Deployment and handles updates, but it does not fire on
-  ConfigMap *creation* — verified on DEV: the ConfigMap was created, the pod
-  stayed 21 minutes old, the variable was empty inside the container and
-  `cscli capi status` still reported the community blocklist as enabled. The
-  platform now rolls the pod itself on create and on toggle, by deleting it so
-  the ReplicaSet recreates it (a restart annotation would be reverted by Flux).
-  Safe because the bouncer runs with `updateMaxFailure: -1` and keeps enforcing
-  its cache while the LAPI restarts.
-- **The community-blocklist default is created by the platform, not Flux.**
-  `kustomize.toolkit.fluxcd.io/reconcile: disabled` — the annotation that stops
-  Flux reverting an operator's toggle — makes Flux skip the object during apply
-  entirely, so it was inventoried and never created and the "off by default"
-  default never landed. platform-api now creates it at boot and never
-  overwrites an existing value.
-- **The Banned IPs tab lists only PLATFORM decisions.** Production held 16,220
-  community-feed (CAPI) decisions against 2 the platform had made, so a single
-  combined table buried every operator action — and made the Static Blocklist
-  read as empty when the ban was sitting in the LAPI. Platform now means
-  operator bans, static bans, the auto-ban scheduler **and** the log-processing
-  agent's own scenario detections (`origin: crowdsec`). The community feed has
-  its own paginated, searchable viewer on the LAPI tile, reachable from a banner
-  on the Banned IPs tab that states how many IPs it is blocking.
-- **The community blocklist is now opt-in and OFF by default.** It bans tens of
-  thousands of IPs decided elsewhere, on evidence the operator cannot inspect,
-  and it blocked a legitimate scanner (MXToolbox reported HTTP 403 on every site
-  on 2026-09-06 while ordinary visitors and PageSpeed were unaffected). The
-  switch writes `DISABLE_ONLINE_API` into a `reconcile: disabled` ConfigMap that
-  Flux will not revert, rolls the LAPI through Reloader, and purges the
-  already-loaded community decisions so the change takes effect immediately.
-  Each row in the viewer has an **Exclude** button that adds the IP to the
-  allowlist, which beats every ban regardless of origin — a far smaller hammer
-  than turning the whole feed off.
-- **The auto-ban scheduler ticks every 30s** (was 60s). The scheduler bans at
-  the first tick that *has* the data, so the interval — not `eventThreshold` —
-  decides how many requests a scanner lands first. Measured on production: 285
-  events inside one 60s tick before the ban was issued.
-
 ### Fixed
 - **The auto-ban watermark could never advance past a row.** Postgres stores
   timestamps with MICROSECOND precision; the cursor round-tripped through a JS
   `Date`, which has millisecond resolution, so `19:18:07.188583` was stored as
   `19:18:07.188` and `(created_at, id) > (watermark)` matched the watermark's
   own row on every tick. That row was re-read forever — 1,206 junk
-  `skipped_below_threshold` runs on production, and any genuinely new event
+  `skipped_below_threshold` runs on production — and any genuinely new event
   would have been stuck behind it. The cursor now carries the exact Postgres
   text form and never passes through a `Date`; watermarks written by the
   previous version still resolve.
@@ -75,11 +26,41 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   nothing.** The frontend hook built its query string from a hand-written list
   of three fields and silently dropped both, though the backend supports them.
   The query string is now derived from the query object so a new filter cannot
-  be forgotten the same way.
+  be forgotten the same way. This is why an operator's static ban appeared to
+  be missing: it was in the LAPI, behind 16,220 unfiltered community rows.
 - `ci-crowdsec-lapi-startup-check.sh` now covers `configMapRef` /
   `configMapKeyRef` as well as Secret refs — a missing ConfigMap fails container
   creation exactly like a missing Secret, which is how every hosted site went to
   403 in 2026.9.9.
+
+### Changed
+- **The Banned IPs tab lists only PLATFORM decisions.** Production held 16,220
+  community-feed (CAPI) decisions against 2 the platform had made, so a single
+  combined table buried every operator action. Platform means operator bans,
+  static bans, the auto-ban scheduler **and** the log-processing agent's own
+  scenario detections (`origin: crowdsec`). The community feed has its own
+  paginated, searchable viewer, reachable from the LAPI tile and from a banner
+  on the Banned IPs tab that states how many IPs it is blocking. Each row in the
+  viewer has an **Exclude** button that adds the IP to the allowlist, which
+  overrides every ban regardless of origin — a far smaller hammer than turning
+  the whole feed off.
+- **The community blocklist is now opt-in and OFF by default.** It bans tens of
+  thousands of IPs decided elsewhere, on evidence the operator cannot inspect,
+  and it blocked a legitimate scanner (MXToolbox reported HTTP 403 on every site
+  on 2026-09-06 while ordinary visitors and PageSpeed were unaffected).
+
+    Switching it off does three things together, because any one alone leaves it
+    half-applied: it writes `DISABLE_ONLINE_API` to a ConfigMap Flux will not
+    revert, **purges the decisions already loaded** (disabling only stops the
+    refresh, and CAPI TTLs run to 144h), and **rolls the LAPI** so the running
+    process picks the setting up — the image reads it only at startup. The
+    platform creates the ConfigMap itself, since the annotation that protects it
+    from Flux also stops Flux ever creating it. Operator bans, the allowlist and
+    the static blocklist are untouched either way.
+- **The auto-ban scheduler ticks every 30s** (was 60s). The scheduler bans at
+  the first tick that *has* the data, so the interval — not `eventThreshold` —
+  decides how many requests a scanner lands first. Measured on production: 285
+  events inside one 60s tick before the ban was issued.
 
 ## [2026.9.10] - 2026-09-06
 
