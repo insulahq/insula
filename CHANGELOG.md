@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.9.11] - 2026-09-07
+
 ### Fixed
 - **The auto-ban watermark could never advance past a row.** Postgres stores
   timestamps with MICROSECOND precision; the cursor round-tripped through a JS
