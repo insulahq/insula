@@ -21,7 +21,7 @@ import * as k8s from '@kubernetes/client-node';
 import { Buffer } from 'node:buffer';
 import { createKubeConfig } from '../container-console/service.js';
 import { cscliExec, findCrowdsecPodName, parseCscliJson } from './cscli-exec.js';
-import { isNotFound } from '../../shared/k8s-errors.js';
+import { isNotFound, isConflict } from '../../shared/k8s-errors.js';
 import { MERGE_PATCH } from '../../shared/k8s-patch.js';
 import { CROWDSEC_DECISIONS_MAX_LIMIT } from '@insula/api-contracts';
 import type {
@@ -647,21 +647,36 @@ export async function ensureCommunityBlocklistDefault(
   } catch (err) {
     if (!isNotFound(err)) throw err;
   }
-  await core.createNamespacedConfigMap({
-    namespace: CROWDSEC_NAMESPACE,
-    body: {
-      metadata: {
-        name: CAPI_CONFIGMAP_NAME,
-        namespace: CROWDSEC_NAMESPACE,
-        labels: {
-          'app.kubernetes.io/part-of': 'hosting-platform',
-          'app.kubernetes.io/component': 'waf',
+  try {
+    await core.createNamespacedConfigMap({
+      namespace: CROWDSEC_NAMESPACE,
+      body: {
+        metadata: {
+          name: CAPI_CONFIGMAP_NAME,
+          namespace: CROWDSEC_NAMESPACE,
+          labels: {
+            'app.kubernetes.io/part-of': 'hosting-platform',
+            'app.kubernetes.io/component': 'waf',
+          },
+          annotations: { 'kustomize.toolkit.fluxcd.io/reconcile': 'disabled' },
         },
-        annotations: { 'kustomize.toolkit.fluxcd.io/reconcile': 'disabled' },
+        data: { [CAPI_DISABLE_KEY]: 'true' },
       },
-      data: { [CAPI_DISABLE_KEY]: 'true' },
-    },
-  });
+    });
+  } catch (err) {
+    // 409 AlreadyExists = another platform-api replica created it first.
+    //
+    // THE CREATE IS THE ARBITER, and it has to be, because this runs at boot on
+    // EVERY replica. HA runs platform-api at 2-3 replicas
+    // (docs/architecture/HA_MODE.md), which start together after any rollout.
+    // Without this the losers would each go on to purge the decisions and
+    // DELETE THE LAPI POD — up to three restarts, in seconds, of the single
+    // component that gates all ingress. Kubernetes' create is atomic, so
+    // exactly one replica can win it; the rest must return here having changed
+    // nothing.
+    if (!isConflict(err)) throw err;
+    return 'present';
+  }
   // PURGE FIRST, THEN ROLL — the order is load-bearing.
   //
   // The purge runs `cscli` via `kubectl exec` INTO the LAPI pod. Rolling first

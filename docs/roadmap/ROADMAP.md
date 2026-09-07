@@ -1304,22 +1304,102 @@ LAPI. Until 2026-09-05 that window blocked all traffic after three minutes; with
 `updateMaxFailure: -1` it now only freezes IP reputation, which is why this is a
 follow-up rather than an incident.
 
-**The stated blocker is stale.** The middleware comment justified single-replica
-with "SQLite (single-writer constraint)", but the LAPI runs with
-`storage_type=postgres` — confirmed in its own startup log. Postgres storage
-does not constrain replica count.
+**CORRECTION (2026-09-07): the stated blocker was never stale — I was wrong.**
+An earlier revision of this entry claimed the LAPI runs `storage_type=postgres`
+"confirmed in its own startup log", and used that to dismiss the original
+"SQLite (single-writer constraint)" justification. That is false. Read off the
+running production pod:
 
-**The real blocker is the `crowdsec-data` PVC**, which is `ReadWriteOnce` on
-Longhorn, so a second replica cannot mount it and `RollingUpdate` would deadlock
-against the first. That is why `Recreate` is correct *today*.
+```
+db_config:
+  type: sqlite
+  db_path: /var/lib/crowdsec/data/crowdsec.db
+  use_wal: false
+```
 
-**Why it looks liftable.** The PVC holds 592K: `GeoLite2-ASN.mmdb`,
-`GeoLite2-City.mmdb`, `cloudflare_ip6s.txt`, `cloudflare_ips.txt` and
-`crowdsec.db`. The first four are hub datafiles — re-downloaded on start, which
-is exactly why the agent DaemonSet uses an `emptyDir` for the same path. If
-`crowdsec.db` is vestigial (likely, given postgres storage) the PVC can become
-an `emptyDir` per replica and the Deployment can go `replicas: 2` +
-`RollingUpdate`, removing the gap entirely.
+`DB_TYPE` and `DB_HOST` are both unset, and `crowdsec.db` is a live 8 MB file
+written continuously. `k8s/base/crowdsec/deployment.yaml` says so plainly:
+SQLite is the baseline and Postgres is an out-of-scope operator swap.
+
+**So both constraints are real, and the SQLite one is the binding one.** The
+`crowdsec-data` PVC is `ReadWriteOnce` on Longhorn, so a second replica cannot
+mount it — but even with that solved, two LAPI replicas sharing one SQLite file
+is not a supported configuration. Single-writer is the reason `Recreate` is
+correct today.
+
+**What lifting it would actually require**, in order:
+
+1. Move the LAPI to Postgres (`DB_TYPE=postgres` + `DB_HOST=…` against a CNPG
+   Cluster). The platform already runs CNPG, so this is plumbing rather than
+   new infrastructure.
+2. Then the PVC only holds hub datafiles (`GeoLite2-*.mmdb`, `cloudflare_ip*`),
+   which are re-downloaded on start — which is exactly why the agent DaemonSet
+   already uses an `emptyDir` for the same path — and can become an `emptyDir`
+   per replica.
+3. Then `replicas: 2` + `RollingUpdate` removes the rollout gap.
+
+**Do NOT convert the PVC to an `emptyDir` while storage is SQLite.** An earlier
+revision of this entry called `crowdsec.db` "probably vestigial". It is the
+decisions database. Deleting it on every pod start would drop every ban the
+platform has issued, silently, on a component whose failures are already hard
+to see.
+
+**HOW to change the DB — investigated 2026-09-07, two dead ends first.**
+
+Both obvious routes do not work with `crowdsecurity/crowdsec:v1.7.8`:
+
+| candidate | verdict |
+|---|---|
+| `DB_TYPE` / `DB_HOST` env vars | **Do not exist.** Every env var the entrypoint reads was dumped — ~70, `AGENT_USERNAME` through `USE_WAL` — and there is no `DB_*` among them. The claim in `deployment.yaml` that an operator "can swap to Postgres by setting `DB_TYPE=postgres` + `DB_HOST=…`" is wrong for this image. |
+| `config.yaml.local` overlay | **Not merged.** Writing `db_config.log_level: debug` into it left the resolved `LogLevel` at 4. `.local` covers hub items, not the main config. |
+
+**What works, proven end-to-end:** edit `config.yaml` with `yq`. Rendering a
+Postgres `db_config` onto a copy and asking CrowdSec to resolve it gives:
+
+```
+Type: "postgresql"   Host: "system-db-rw.platform.svc"   Port: 5432
+User: "crowdsec"     DbName: "crowdsec"                  SSLMode: "require"
+```
+
+The binary has full Postgres support — `DatabaseCfg` carries `Host`, `Port`,
+`User`, `Password`, `DbName`, `SSLMode`, `SSLCACert`, `SSLClientCert`,
+`SSLClientKey`, so CNPG's TLS is covered.
+
+Three properties make this land cleanly:
+
+1. The entrypoint **already** edits `config.yaml` this way — `conf_set` is a
+   `yq` wrapper, and it is how `USE_WAL` and `DISABLE_ONLINE_API` are applied.
+2. `yq` v4.50.1 ships in the image, so no new tooling.
+3. `/etc/crowdsec` is an `emptyDir` already seeded by the `seed-config` init
+   container, which is the right place to render `db_config` from a Secret.
+
+Point 3 is load-bearing: the config must stay **writable**, because the
+entrypoint mutates it on every start. Mounting a ConfigMap over `config.yaml` —
+the other obvious idea — would break `USE_WAL` and the CAPI switch.
+
+**Shared cluster, not a dedicated one (operator decision 2026-09-07).** CrowdSec
+gets a `crowdsec` database and role inside the existing `system-db` CNPG cluster
+rather than its own instance. Measured first: the platform DB is 28 MB with
+33/100 connections and a 512Mi CNPG limit, and `crowdsec.db` is 9 MB — capacity
+is not the question. The trade accepted is **coupling**: a platform-database
+incident will now take the LAPI down too, where today they fail independently.
+That is acceptable *only because* `updateMaxFailure: -1` means a LAPI outage
+freezes IP reputation instead of blocking traffic. A dedicated cluster would
+keep the failure domains apart at the cost of another ~256–512Mi, which is not
+available on a single-node production node already at 65%.
+
+**Performance:** no change on the request path. The bouncer runs in
+`crowdsecMode: stream` and answers every request from its in-memory cache, so
+the database is not on the per-request path at all. Postgres is *better* for the
+one measured pain point — a community pull inserts 15,000 rows in one
+transaction, which SQLite serialises against readers and Postgres does not.
+
+**Cutover is not a data migration.** Everything durable in `crowdsec.db`
+re-creates itself on first start: the agent machine (entrypoint runs
+`cscli machines add --force` from its Secret), the Traefik bouncer
+(`BOUNCER_KEY_traefik` auto-registers), and the platform-api bouncer
+(`reregisterPlatformApiBouncer()` self-heals on 403). Only operator manual and
+static bans are lost, and those export with `cscli decisions list -o json`.
 
 **Verify before changing anything.** `crowdsec.db` must be proven unused — this
 is the component that holds ban decisions, and removing durable storage on a
