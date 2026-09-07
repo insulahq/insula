@@ -13,6 +13,11 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Fixed
+- Pasting delivered the clipboard **twice** (`echo MARKERecho MARKER`): Ctrl+V
+  fires the key handler *and* the browser's native `paste` event. Both routes
+  are needed — the key handler is what makes Ctrl+Shift+V work, the native one
+  catches middle-click — so identical text arriving within one tick is now
+  collapsed to a single send. Caught by driving a real browser.
 - **The deployment terminal could not paste.** xterm.js forwards keystrokes to
   the shell and implements no clipboard shortcuts of its own, so Ctrl+V sent a
   literal `^V` to the process. Ctrl+V, Ctrl+Shift+V and right-click now paste;
