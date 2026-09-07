@@ -6,6 +6,7 @@ import {
   psqlSetVar,
   CROWDSEC_DB_SECRET,
   CROWDSEC_NAMESPACE,
+  LAPI_POD_MACHINE_RE,
 } from './reconciler.js';
 
 type Core = Parameters<typeof ensureDbSecret>[0];
@@ -194,7 +195,7 @@ describe('reconcileCrowdsecDb — rolling the LAPI', () => {
 describe('replica count follows the storage backend', () => {
   afterEach(() => { vi.restoreAllMocks(); });
 
-  async function runWithMachines(machineCount: string) {
+  async function runWithMachines(machineCount: string, currentReplicas = 1) {
     vi.resetModules();
     vi.doMock('../security-hardening/crowdsec.js', () => ({ rollCrowdsecLapiSafely: vi.fn() }));
     const actual = await vi.importActual<typeof import('@kubernetes/client-node')>('@kubernetes/client-node');
@@ -213,7 +214,7 @@ describe('replica count follows the storage backend', () => {
         }
       },
       AppsV1Api: class {
-        readNamespacedDeployment() { return Promise.resolve({ spec: { replicas: 1 } }); }
+        readNamespacedDeployment() { return Promise.resolve({ spec: { replicas: currentReplicas } }); }
         patchNamespacedDeployment(...a: unknown[]) { return patch(...a); }
       },
     }));
@@ -231,7 +232,7 @@ describe('replica count follows the storage backend', () => {
 
   it('scales to 2 only when a live LAPI is registered in Postgres', async () => {
     const { res, patch } = await runWithMachines('2');
-    expect(res.onPostgres).toBe(true);
+    expect(res.storage).toBe('postgres');
     expect(patch.mock.calls[0][0].body.spec.replicas).toBe(2);
   });
 
@@ -241,9 +242,27 @@ describe('replica count follows the storage backend', () => {
     // merely existing: on DEV the Secret existed for 20 minutes while the LAPI
     // was still on SQLite.
     const { res, patch } = await runWithMachines('0');
-    expect(res.onPostgres).toBe(false);
+    expect(res.storage).toBe('sqlite');
     // Already at 1, so the correct action is NO action — a reconciler that
     // rewrites an unchanged value churns the Deployment on every tick.
+    expect(patch).not.toHaveBeenCalled();
+  });
+
+  it('scales 2 DOWN to 1 when the backend is no longer Postgres', async () => {
+    // The safety direction, and the one the earlier tests never reached because
+    // they pinned current replicas at 1 — so the scale-DOWN patch was entirely
+    // unexercised while being the path most likely to fire.
+    const { patch } = await runWithMachines('0', 2);
+    expect(patch.mock.calls[0][0].body.spec.replicas).toBe(1);
+  });
+
+  it('changes NOTHING when the storage probe cannot answer', async () => {
+    // A failed probe is not a SQLite verdict. exec has a 15s timeout and the
+    // CNPG primary can be mid-failover; treating that as "not on Postgres"
+    // would let one unlucky tick scale a healthy 2-replica LAPI back to 1 and
+    // reintroduce the very rollout gap this change removes.
+    const { res, patch } = await runWithMachines('not-a-number', 2);
+    expect(res.storage).toBe('unknown');
     expect(patch).not.toHaveBeenCalled();
   });
 });
@@ -324,15 +343,17 @@ describe('LAPI machine-name pattern', () => {
   // Guards the DELETE's blast radius. The prune deletes rows NOT backed by a
   // live pod, so anything matching this that is not a pod-registered identity
   // would be destroyed on the next tick.
-  const RE = /^crowdsec-[a-z0-9]+-[a-z0-9]{5}$/;
-
+  //
+  // Imports the SHIPPED regex. An earlier version declared a local copy of the
+  // literal, which proved a property of the test file and would not have caught
+  // a regression in the production pattern at all.
   it('matches ReplicaSet pod names', () => {
-    expect(RE.test('crowdsec-6fbb9578bd-8bcqw')).toBe(true);
+    expect(LAPI_POD_MACHINE_RE.test('crowdsec-6fbb9578bd-8bcqw')).toBe(true);
   });
 
   it('never matches the agent, a bouncer, or a hand-registered machine', () => {
     for (const n of ['insula-agent', 'localhost', 'traefik-bouncer', 'crowdsec', 'crowdsec-agent']) {
-      expect(RE.test(n), n).toBe(false);
+      expect(LAPI_POD_MACHINE_RE.test(n), n).toBe(false);
     }
   });
 });

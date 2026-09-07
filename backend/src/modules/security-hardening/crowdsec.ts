@@ -36,6 +36,10 @@ import type {
 } from '@insula/api-contracts';
 
 const CROWDSEC_NAMESPACE = 'crowdsec';
+
+/** Between two pod deletions during a sequential LAPI roll. */
+const LAPI_ROLL_POLL_MS = 2_000;
+const LAPI_ROLL_READY_TIMEOUT_MS = 120_000;
 // Platform-api uses its own pre-registered bouncer key so it shows up
 // as a single named bouncer "platform-api" in `cscli bouncers list`
 // instead of one per (pod IP, pod restart) tuple under the shared
@@ -606,17 +610,61 @@ async function rollCrowdsecLapi(kc: k8s.KubeConfig): Promise<number> {
   const del = core as unknown as {
     deleteNamespacedPod: (args: { name: string; namespace: string }) => Promise<unknown>;
   };
-  // ONE pod per call, once the LAPI can run more than one replica (R35).
+  // EVERY pod, but ONE AT A TIME, waiting for readiness in between (R35).
   //
-  // Deleting every matching pod was correct only while replicas was pinned to
-  // 1. At two replicas it would take the whole LAPI down at once — the exact
+  // Both halves matter, and each rules out a simpler version:
+  //
+  // Deleting them all at once was correct only while replicas was pinned to 1.
+  // At two replicas it takes the whole LAPI down simultaneously — the exact
   // outage the multi-replica work exists to remove, caused by the helper meant
-  // to apply a config change. The Deployment's RollingUpdate brings the
-  // replacement up, and the next tick rolls the next pod.
-  const [first] = names;
-  if (!first) return 0;
-  await del.deleteNamespacedPod({ name: first, namespace: CROWDSEC_NAMESPACE });
-  return 1;
+  // to apply a config change.
+  //
+  // Rolling only the first pod and leaving the rest to a later tick is worse in
+  // a quieter way. Two of the three callers here — setCommunityBlocklistEnabled
+  // and ensureCommunityBlocklistDefault — patch `crowdsec-capi-config`, which
+  // the pod consumes through `envFrom`. Environment is read once at container
+  // start, so a pod that is not rolled keeps the old setting indefinitely;
+  // nothing rolls it later, and those callers exist precisely because Reloader
+  // cannot be trusted to do it. The Service load-balances across both pods, so
+  // an admin toggling the community blocklist off would get one pod still
+  // pulling CAPI decisions and no error anywhere. Half-applied and invisible.
+  //
+  // Sequential-with-wait gives both: every pod ends up on the new config, and
+  // at no point are all of them gone.
+  let rolled = 0;
+  for (const name of names) {
+    await del.deleteNamespacedPod({ name, namespace: CROWDSEC_NAMESPACE });
+    rolled += 1;
+    // Not needed after the last one — nothing follows it into the gap.
+    if (rolled < names.length) await waitForLapiReady(kc, names.length);
+  }
+  return rolled;
+}
+
+/**
+ * Block until the LAPI Deployment is fully ready again, or give up.
+ *
+ * Bounded deliberately: this sits between two pod deletions, so hanging here
+ * forever would leave a config change half-applied with no way out. On timeout
+ * the caller proceeds to the next pod — a slow roll is recoverable, a stuck
+ * one is not.
+ */
+async function waitForLapiReady(kc: k8s.KubeConfig, want: number): Promise<void> {
+  const apps = kc.makeApiClient(k8s.AppsV1Api) as unknown as {
+    readNamespacedDeployment: (a: { name: string; namespace: string }) => Promise<{
+      status?: { readyReplicas?: number };
+    }>;
+  };
+  const deadline = Date.now() + LAPI_ROLL_READY_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, LAPI_ROLL_POLL_MS));
+    try {
+      const dep = await apps.readNamespacedDeployment({ name: 'crowdsec', namespace: CROWDSEC_NAMESPACE });
+      if ((dep.status?.readyReplicas ?? 0) >= want) return;
+    } catch {
+      // Transient read failure: keep waiting rather than charging ahead.
+    }
+  }
 }
 
 /**

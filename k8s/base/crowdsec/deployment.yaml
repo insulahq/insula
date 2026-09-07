@@ -17,9 +17,12 @@
 #     itself (no operator action required).
 #
 # Persistence:
-#   * SQLite DB at /var/lib/crowdsec/data/crowdsec.db backed by a 1GiB
-#     PVC. Survives pod restarts so the bouncer key + cached
-#     decisions don't have to be re-issued.
+#   * Postgres, once provisioned. /var/lib/crowdsec/data is scratch (emptyDir):
+#     the durable state lives in the CNPG cluster, so any pod can be replaced
+#     without losing decisions.
+#   * Before provisioning converges the LAPI falls back to SQLite in that
+#     emptyDir, and decisions then do NOT survive a restart. The retained PVC
+#     below holds the pre-R35 SQLite database and is no longer mounted.
 #   * Postgres is supported (R35) and is what the platform provisions: the
 #     crowdsec-db reconciler creates the role + database in the CNPG cluster
 #     and writes `crowdsec-db-credentials`, which the seed-config init
@@ -29,11 +32,12 @@
 #     variables (verified against v1.7.8). Editing config.yaml is the only
 #     mechanism; see ROADMAP R35.
 #
-# Single replica is correct here — CrowdSec LAPI is a single-writer
-# system (the bouncer key registration + decision cache update both
-# need consistent state). Operators needing HA can run the
-# crowdsec-engine in a separate Deployment and point LAPI at a shared
-# Postgres.
+# Replica count is NOT set here — the crowdsec-db reconciler owns it, holding
+# the LAPI at 2 once it has confirmed (by querying the database) that Postgres
+# is the backend, and at 1 while it is SQLite. SQLite is single-writer, so the
+# scale is a consequence of the storage backend and never an assumption about
+# it. Each pod registers its own cscli identity via CUSTOM_HOSTNAME (see below);
+# a shared name would race on the shared database.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -440,9 +444,19 @@ spec:
         # provisions Postgres within one 5-minute tick, and the Deployment
         # stays at ONE replica until it has.
         - name: data
-          emptyDir: {}
+          # sizeLimit, like every other emptyDir in this repo (the crowdsec-agent
+          # DaemonSet uses the same 512Mi for the same hub datafiles). emptyDir
+          # draws on the NODE's shared ephemeral storage, so an unbounded one
+          # here — hub datafiles plus, on the SQLite fallback path, crowdsec.db
+          # growing through 15k-row CAPI inserts — turns a WAF problem into
+          # node-wide DiskPressure and evictions for every other workload.
+          emptyDir:
+            sizeLimit: 512Mi
         - name: config
-          emptyDir: {}
+          # /etc/crowdsec measures 1.1Mi on DEV (836Ki of it the hub), so this
+          # is ~60x headroom for hub growth while still bounding the volume.
+          emptyDir:
+            sizeLimit: 64Mi
         # R35 Postgres credentials, written by the crowdsec-db reconciler.
         # optional: true is load-bearing: the LAPI must still start on a
         # cluster that has never been provisioned, and the bouncer fails
@@ -479,15 +493,21 @@ spec:
     requests:
       storage: 1Gi
 ---
-# PodDisruptionBudget — minAvailable 1, now that the LAPI is on Postgres and
-# can run more than one replica (R35). It was 0 because Recreate + SQLite
-# single-writer meant the pod HAD to go down during a drain; neither holds any
-# more, so a drain should move a replica rather than remove the WAF's decision
-# source.
+# PodDisruptionBudget — maxUnavailable 1, now that the LAPI is on Postgres and
+# can run more than one replica (R35). It was minAvailable 0 because Recreate +
+# SQLite single-writer meant the pod HAD to go down during a drain.
 #
-# Correct even at one replica: it blocks VOLUNTARY eviction of the only LAPI,
-# which is the right answer for the component gating all ingress. Involuntary
-# failure still proceeds, and the bouncer fails open either way.
+# maxUnavailable, NOT minAvailable, and the difference is not stylistic. The
+# replica count here is dynamic — the crowdsec-db reconciler holds it at 2 on
+# Postgres and 1 on SQLite — while a PDB is static. `minAvailable: 1` against a
+# single replica permits zero voluntary disruptions, so `kubectl drain` (and
+# every node-upgrade tool that honours the Eviction API) hangs on this pod until
+# someone forces it. That would land on every cluster still on SQLite,
+# including any that never converges because a NetworkPolicy is missing —
+# a drain regression shipped by a Postgres change.
+#
+# maxUnavailable: 1 expresses the actual intent at both counts: at two replicas
+# one may go at a time, at one replica the node can still be drained.
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
@@ -497,7 +517,7 @@ metadata:
     app.kubernetes.io/part-of: hosting-platform
     app.kubernetes.io/component: waf
 spec:
-  minAvailable: 1
+  maxUnavailable: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: crowdsec

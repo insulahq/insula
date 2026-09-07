@@ -52,6 +52,10 @@ export const CROWDSEC_DB_NAME = 'crowdsec';
 export const CROWDSEC_DB_USER = 'crowdsec';
 
 const TICK_INTERVAL_MS = 5 * 60 * 1000;
+
+/** What the database says about the LAPI's storage — or that it could not say. */
+export type StorageProbe = 'postgres' | 'sqlite' | 'unknown';
+
 /** Two replicas once the durable store is Postgres — removes the rollout gap. */
 export const LAPI_REPLICAS_POSTGRES = 2;
 /** One while SQLite is the backend: it is single-writer. */
@@ -63,8 +67,11 @@ export interface CrowdsecDbReconcileResult {
   readonly skipReason?: string;
   readonly applied: boolean;
   readonly createdSecret?: boolean;
-  /** True when a live LAPI is registered in the Postgres database. */
-  readonly onPostgres?: boolean;
+  /**
+   * What the database reported about the LAPI's storage. `unknown` means the
+   * probe could not answer and no replica decision was made this tick.
+   */
+  readonly storage?: StorageProbe;
 }
 
 type Logger = Pick<Console, 'info' | 'warn' | 'error'> & { debug?: (...a: unknown[]) => void };
@@ -304,18 +311,28 @@ export async function ensureDbSecret(
  * This gates the replica count, so getting it wrong in the optimistic
  * direction would put two pods on one SQLite file — the single-writer
  * condition R35 exists to escape.
+ *
+ * Three outcomes, not two. A failed probe is NOT a SQLite verdict: exec has a
+ * 15s timeout and the CNPG primary can be mid-failover, so collapsing failure
+ * into `false` would let one unlucky tick scale a healthy two-replica LAPI back
+ * to one and reintroduce the rollout gap this whole change removes. `unknown`
+ * means the caller changes nothing.
  */
-async function lapiIsOnPostgres(exec: k8s.Exec, podName: string): Promise<boolean> {
+async function lapiIsOnPostgres(exec: k8s.Exec, podName: string): Promise<StorageProbe> {
   try {
     const r = await execStdin(
       exec, CNPG_NAMESPACE, podName, 'postgres',
       ['psql', '-X', '-q', '-t', '-A', '-U', 'postgres', '-d', CROWDSEC_DB_NAME],
       'SELECT count(*) FROM machines;',
     );
-    if (!r.success) return false;
-    return Number.parseInt(r.stdout.trim(), 10) > 0;
+    if (!r.success) return 'unknown';
+    const n = Number.parseInt(r.stdout.trim(), 10);
+    if (!Number.isFinite(n)) return 'unknown';
+    return n > 0 ? 'postgres' : 'sqlite';
   } catch {
-    return false;
+    // Exec timeout, API-server blip, CNPG failover mid-call. NOT evidence
+    // about the storage backend.
+    return 'unknown';
   }
 }
 
@@ -326,7 +343,15 @@ async function lapiIsOnPostgres(exec: k8s.Exec, podName: string): Promise<boolea
  * permitted to delete, so it must not match the agent (`insula-agent`), a
  * bouncer, or anything an operator registered by hand.
  */
-const LAPI_POD_MACHINE_RE = /^crowdsec-[a-z0-9]+-[a-z0-9]{5}$/;
+export const LAPI_POD_MACHINE_PATTERN = '^crowdsec-[a-z0-9]+-[a-z0-9]{5}$';
+/**
+ * ONE source for both layers of the prune's guard: the JS filter that builds
+ * the keep-list and the SQL predicate that scopes the DELETE. Keeping two
+ * hand-written copies in step is exactly the kind of thing that silently stops
+ * being true, and here divergence widens the blast radius of an unattended
+ * DELETE against the WAF's identity table.
+ */
+export const LAPI_POD_MACHINE_RE = new RegExp(LAPI_POD_MACHINE_PATTERN);
 
 /**
  * Delete the LAPI self-registration rows of pods that no longer exist.
@@ -375,14 +400,18 @@ async function pruneOrphanedLapiMachines(
   const r = await execStdin(
     exec, CNPG_NAMESPACE, cnpgPod, 'postgres',
     ['psql', '-X', '-q', '-t', '-A', '-U', 'postgres', '-d', CROWDSEC_DB_NAME],
-    `DELETE FROM machines WHERE machine_id ~ '^crowdsec-[a-z0-9]+-[a-z0-9]{5}$' `
-      + `AND machine_id NOT IN (${keep});`,
+    `WITH pruned AS (DELETE FROM machines WHERE machine_id ~ '${LAPI_POD_MACHINE_PATTERN}' `
+      + `AND machine_id NOT IN (${keep}) RETURNING 1) SELECT count(*) FROM pruned;`,
   );
   if (!r.success) {
     log.warn({ stderr: r.stderr.slice(0, 400) }, 'crowdsec-db: machine prune failed');
     return 0;
   }
-  const deleted = Number.parseInt((r.stdout.match(/DELETE (\d+)/) ?? [])[1] ?? '0', 10);
+  // psql is invoked with -q, which suppresses the "DELETE n" completion tag
+  // outright — parsing for it reported 0 on every run no matter how many rows
+  // went, leaving this DELETE with no audit trail at all. The CTE returns a
+  // real count through the normal result path.
+  const deleted = Number.parseInt(r.stdout.trim(), 10) || 0;
   if (deleted > 0) log.info({ deleted, live: live.length }, 'crowdsec-db: pruned stale LAPI machines');
   return deleted;
 }
@@ -490,13 +519,21 @@ export async function reconcileCrowdsecDb(
 
   // Replica count follows the storage backend, verified against the database
   // rather than assumed from the Secret's existence.
-  const onPostgres = await lapiIsOnPostgres(exec, podName);
-  await ensureLapiReplicas(kc, onPostgres ? LAPI_REPLICAS_POSTGRES : LAPI_REPLICAS_SQLITE, log);
+  const storage = await lapiIsOnPostgres(exec, podName);
+  if (storage === 'unknown') {
+    log.warn('crowdsec-db: storage probe inconclusive; leaving replica count untouched');
+  } else {
+    await ensureLapiReplicas(
+      kc,
+      storage === 'postgres' ? LAPI_REPLICAS_POSTGRES : LAPI_REPLICAS_SQLITE,
+      log,
+    );
+  }
   // Only meaningful once the pods share a database; on SQLite each pod's
   // machines table is private and there is nothing global to prune.
-  if (onPostgres) await pruneOrphanedLapiMachines(core, exec, podName, log);
+  if (storage === 'postgres') await pruneOrphanedLapiMachines(core, exec, podName, log);
 
-  return { skipped: false, applied: true, createdSecret: secret.created, onPostgres };
+  return { skipped: false, applied: true, createdSecret: secret.created, storage };
 }
 
 /** Boot + 5-minute convergence, mirroring the roundcube reconciler. */
