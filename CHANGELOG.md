@@ -13,11 +13,12 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Fixed
-- **The deployment terminal now supports right-click paste**, and Ctrl+Shift+C
-  copies a selection. Plain Ctrl+C is deliberately left alone so a running
-  command can still be interrupted. Ctrl+V and Ctrl+Shift+V are handled by
-  xterm itself and are explicitly *not* bound — doing so sends the clipboard
-  twice, since xterm's own insertion cannot be de-duplicated from outside.
+- **The deployment terminal could not paste.** Ctrl+V and middle-click now
+  paste through the browser's native `paste` event, and right-click pastes by
+  reading the clipboard directly. Ctrl+Shift+C copies a selection; plain Ctrl+C
+  is deliberately left alone so a running command can still be interrupted.
+  Exactly one path forwards each paste — binding the key handler as well made
+  every Ctrl+V arrive twice, and binding neither made it arrive not at all.
 - **The terminal's last output was permanently hidden.** The terminal pane is a
   flex child, and a flex item defaults to `min-height: auto` — so it refused to
   shrink, grew taller than its wrapper, and the wrapper's `overflow-hidden`
