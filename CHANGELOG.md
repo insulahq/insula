@@ -12,6 +12,36 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **DNS verification passed for domains that were never delegated to the
+  platform.** `verifyNsDelegation` compared the domain's real NS records against
+  `PLATFORM_NAMESERVERS` — a variable the repo READ in exactly one place and SET
+  in none: no overlay, no bootstrap script, no ConfigMap. The expected list was
+  therefore always empty, and `[].every(...)` is `true`, so any domain whose NS
+  lookup merely succeeded was marked verified. The check asserted "this domain
+  exists in DNS" while reporting "delegated correctly", and since verification
+  gates ACME issuance, a misdelegated domain sat waiting for a certificate that
+  could never be issued with no indication why. Expected nameservers now come
+  from the domain's DNS provider group — the value the platform already models
+  per-domain — and an empty expectation FAILS instead of passing vacuously.
+- The NS check's pass message quoted the nameservers it FOUND ("correctly
+  delegated to: …"), which reads as confirmation while restating its own input.
+  Both branches now state what was required.
+- **`axfr_sync` reported "synced" for a slave zone that had never transferred.**
+  Only 2 of 7 providers implement `getZoneAxfrStatus`; the rest fell through to
+  a fallback that passed on the zone object merely existing. Even the PowerDNS
+  path treated "has an SOA record" as synchronised, though a stale slave has one
+  too. PowerDNS now reads the zone's configured primary and compares SOA
+  serials, and providers that cannot report transfer status say so instead of
+  claiming a sync they cannot observe.
+
+### Added
+- The DNS verification modal now shows an **Expected vs Actual table** for every
+  check, including the ones that passed. A pass previously rendered as the words
+  "DNS verification passed" and nothing else, which is precisely how a check
+  that asserted nothing went unnoticed; an empty expectation is now visible as
+  "not configured".
+
 ## [2026.9.12] - 2026-09-07
 
 ### Added
