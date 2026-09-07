@@ -13,6 +13,12 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Changed
+- **Turning the community blocklist off now drops what it already loaded.**
+  Disabling only stops the feed being refreshed; everything already pulled stays
+  enforced until it expires, and CAPI TTLs run to 144h. On DEV the switch read
+  "off" while 18,770 community decisions were still in force, so an upgrading
+  cluster would keep blocking for days and the setting would look inert. Both
+  the toggle and the boot default now purge, and log how many were removed.
 - **Changing the community-blocklist setting now actually rolls the LAPI.** The
   image reads `DISABLE_ONLINE_API` only at startup. Stakater Reloader is
   annotated on the Deployment and handles updates, but it does not fire on
