@@ -13,16 +13,11 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Fixed
-- Pasting delivered the clipboard **twice** (`echo MARKERecho MARKER`): Ctrl+V
-  fires the key handler *and* the browser's native `paste` event. Both routes
-  are needed — the key handler is what makes Ctrl+Shift+V work, the native one
-  catches middle-click — so identical text arriving within one tick is now
-  collapsed to a single send. Caught by driving a real browser.
-- **The deployment terminal could not paste.** xterm.js forwards keystrokes to
-  the shell and implements no clipboard shortcuts of its own, so Ctrl+V sent a
-  literal `^V` to the process. Ctrl+V, Ctrl+Shift+V and right-click now paste;
-  Ctrl+Shift+C copies a selection. Plain Ctrl+C is deliberately left alone so a
-  running command can still be interrupted.
+- **The deployment terminal now supports right-click paste**, and Ctrl+Shift+C
+  copies a selection. Plain Ctrl+C is deliberately left alone so a running
+  command can still be interrupted. Ctrl+V and Ctrl+Shift+V are handled by
+  xterm itself and are explicitly *not* bound — doing so sends the clipboard
+  twice, since xterm's own insertion cannot be de-duplicated from outside.
 - **The terminal's last output was permanently hidden.** The terminal pane is a
   flex child, and a flex item defaults to `min-height: auto` — so it refused to
   shrink, grew taller than its wrapper, and the wrapper's `overflow-hidden`
