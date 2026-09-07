@@ -662,13 +662,20 @@ export async function ensureCommunityBlocklistDefault(
       data: { [CAPI_DISABLE_KEY]: 'true' },
     },
   });
+  // PURGE FIRST, THEN ROLL — the order is load-bearing.
+  //
+  // The purge runs `cscli` via `kubectl exec` INTO the LAPI pod. Rolling first
+  // deletes that pod, so the exec lands in a container that is shutting down:
+  //   "OCI runtime exec failed: cannot exec in a stopped container"
+  // Observed on DEV 2026-09-07 — the roll succeeded, the purge failed, and
+  // 18,770 community decisions stayed enforced.
+  //
+  // Dropping what the feed already loaded matters because disabling only stops
+  // the REFRESH: CAPI TTLs run to 144h, so an upgrading cluster would keep
+  // blocking for days and the new default would look inert.
+  await purgeCommunityDecisions(kc);
   // The pod predates the ConfigMap, so it holds no value for the switch.
   await rollCrowdsecLapiSafely(kc, 'capi-config created');
-  // ...and drop what the feed already loaded. Turning it off only stops the
-  // REFRESH; on DEV that left 18,770 decisions enforced, some with 144h to run,
-  // so an upgrading cluster would keep blocking for days and the new default
-  // would look inert.
-  await purgeCommunityDecisions(kc);
   return 'created';
 }
 
@@ -711,10 +718,11 @@ export async function setCommunityBlocklistEnabled(
     });
   }
 
+  // Purge BEFORE the roll: the purge execs into the LAPI pod, and rolling
+  // first leaves it exec-ing into a stopped container (see the create path).
+  const purged = enabled ? 0 : await purgeCommunityDecisions(kc);
   // Roll explicitly rather than trusting Reloader to notice.
   await rollCrowdsecLapiSafely(kc, 'community blocklist toggled');
-
-  const purged = enabled ? 0 : await purgeCommunityDecisions(kc);
   return { purged };
 }
 
