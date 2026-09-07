@@ -38,6 +38,7 @@ import * as k8s from '@kubernetes/client-node';
 import { Buffer } from 'node:buffer';
 import { randomBytes } from 'node:crypto';
 import { PassThrough, Writable } from 'node:stream';
+import { rollCrowdsecLapiSafely } from '../security-hardening/crowdsec.js';
 
 export const CROWDSEC_NAMESPACE = 'crowdsec';
 export const CROWDSEC_DB_SECRET = 'crowdsec-db-credentials';
@@ -331,6 +332,24 @@ export async function reconcileCrowdsecDb(
     // never log it verbatim.
     log.warn('crowdsec-db: psql reported failure while ensuring the role/database');
     return { skipped: false, applied: false, skipReason: 'psql_error', createdSecret: secret.created };
+  }
+
+  // Roll the LAPI the FIRST time we provision, and only then.
+  //
+  // The init container reads the credentials at pod start. On an upgrading
+  // cluster the pod is already running when this reconciler creates the
+  // Secret, so without a roll it keeps the SQLite config until something else
+  // restarts it — observed on DEV 2026-09-07: database and Secret provisioned,
+  // pod 3 minutes older than the Secret, `seed-config: db credentials absent
+  // — staying on sqlite`. Stored, not running.
+  //
+  // Reloader cannot cover this: it acts on UPDATES to resources it already
+  // tracks and does not fire on creation (established the same day with the
+  // CAPI ConfigMap). The annotation is still added for later rotations.
+  //
+  // Gated on `created` so a steady-state tick never bounces the LAPI.
+  if (secret.created) {
+    await rollCrowdsecLapiSafely(kc, 'crowdsec-db credentials provisioned');
   }
   return { skipped: false, applied: true, createdSecret: secret.created };
 }

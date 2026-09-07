@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { Buffer } from 'node:buffer';
 import {
   buildCrowdsecDbSql,
@@ -140,5 +140,53 @@ describe('psqlSetVar', () => {
     for (const bad of ["pw'; DROP", 'pw\\x', 'pw with space', 'pw\nnewline', '']) {
       expect(() => psqlSetVar('cspw', bad), JSON.stringify(bad)).toThrow();
     }
+  });
+});
+
+describe('reconcileCrowdsecDb — rolling the LAPI', () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  async function run(secretExists: boolean) {
+    vi.resetModules();
+    const roll = vi.fn().mockResolvedValue(undefined);
+    vi.doMock('../security-hardening/crowdsec.js', () => ({ rollCrowdsecLapiSafely: roll }));
+    const actual = await vi.importActual<typeof import('@kubernetes/client-node')>('@kubernetes/client-node');
+    vi.doMock('@kubernetes/client-node', () => ({
+      ...actual,
+      // psql "runs" and succeeds; the callback shape matches the real Exec.
+      Exec: class { exec(...a: unknown[]) { (a[8] as (s: { status: string }) => void)({ status: 'Success' }); return Promise.resolve({}); } },
+    }));
+    const mod = await import('./reconciler.js');
+    const core = {
+      readNamespacedSecret: secretExists
+        ? vi.fn().mockResolvedValue({ data: { password: b64('pw') }, metadata: { resourceVersion: '1' } })
+        : vi.fn().mockRejectedValue(new Error('not found')),
+      createNamespacedSecret: vi.fn().mockResolvedValue({}),
+      replaceNamespacedSecret: vi.fn(),
+      listNamespacedPod: vi.fn().mockResolvedValue({ items: [{ metadata: { name: 'system-db-1' } }] }),
+    } as never;
+    const kc = { makeApiClient: () => ({}) } as never;
+    const res = await mod.reconcileCrowdsecDb(core, kc, log);
+    return { res, roll };
+  }
+
+  it('rolls the LAPI when it provisions the credentials for the first time', async () => {
+    // Without this the pod keeps the SQLite config until something else
+    // restarts it: on DEV the database and Secret were provisioned while the
+    // pod stayed 3 minutes older than the Secret, logging "db credentials
+    // absent — staying on sqlite". Reloader does not fire on creation.
+    const { res, roll } = await run(false);
+    expect(res.applied).toBe(true);
+    expect(res.createdSecret).toBe(true);
+    expect(roll).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT roll on a steady-state tick', async () => {
+    // This runs every 5 minutes forever; bouncing the LAPI each time would
+    // make the reconciler the outage.
+    const { res, roll } = await run(true);
+    expect(res.applied).toBe(true);
+    expect(res.createdSecret).toBe(false);
+    expect(roll).not.toHaveBeenCalled();
   });
 });

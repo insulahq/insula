@@ -621,7 +621,7 @@ async function rollCrowdsecLapi(kc: k8s.KubeConfig): Promise<number> {
  * the setting was stored, not running, and silently so. A best-effort action
  * still has to report what it did.
  */
-async function rollCrowdsecLapiSafely(kc: k8s.KubeConfig, reason: string): Promise<void> {
+export async function rollCrowdsecLapiSafely(kc: k8s.KubeConfig, reason: string): Promise<void> {
   try {
     const n = await rollCrowdsecLapi(kc);
     // eslint-disable-next-line no-console
