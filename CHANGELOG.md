@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.9.12] - 2026-09-07
+
 ### Added
 - **The CrowdSec LAPI now runs two replicas once it is on Postgres.** This is the
   payoff for R35: with a shared database the reconciler scales the Deployment to
@@ -41,7 +43,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   credentials is present, so a cluster without it stays on SQLite and nothing
   changes. Requires two NetworkPolicies (crowdsec egress, platform ingress);
   either one missing gives a LAPI that starts and reaches nothing.
-
 
 ### Fixed
 - **The tenant file manager was OOM-killed during large rsync transfers, resetting
