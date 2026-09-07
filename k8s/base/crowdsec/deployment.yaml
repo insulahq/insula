@@ -50,7 +50,9 @@ metadata:
     #
     # Reloader is deployed cluster-wide (kube-system) on dev, staging and
     # production; verified on production 2026-09-05.
-    secret.reloader.stakater.com/reload: crowdsec-agent-credentials
+    # crowdsec-db-credentials covers ROTATION only — Reloader does not fire on
+    # creation, so first provisioning is rolled by the crowdsec-db reconciler.
+    secret.reloader.stakater.com/reload: crowdsec-agent-credentials,crowdsec-db-credentials
     # Rolls the pod when an operator toggles the community blocklist. The
     # switch is read by /docker_start.sh at STARTUP only, so without this the
     # ConfigMap would change and the running process would keep the old
