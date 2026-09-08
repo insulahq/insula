@@ -12,6 +12,13 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **Multi-host serving can be switched on while deploying**, not only
+  afterwards. The instance then starts with everything it needs, so there is no
+  restart — turning it on later has to change how storage is attached, which
+  restarts the application. The option appears in the deploy dialog only for
+  applications that support it.
+
 ### Fixed
 - **Route changes and deployment deletes took up to a minute and could return a
   gateway error for a change that had actually applied.** Saving a site folder
