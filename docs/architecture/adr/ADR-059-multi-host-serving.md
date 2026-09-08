@@ -132,9 +132,20 @@ listed, rather than silently dropping those sites to the catch-all.
 ## Consequences
 
 **What multi-host does not change.** Certificates, redirects, WAF, rate limits,
-HSTS, mTLS and access control are properties of the *route*, so ten sites on one
-instance keep ten independent policies. Verified on the cluster: HSTS enabled on
-one site does not appear on its neighbour in the same pod.
+HSTS, mTLS and access control are Traefik middleware attached per *route*, so ten
+sites on one instance keep ten independent policies. Verified on the cluster:
+enabling HSTS on one route of a three-site pod produced that route's header
+(`max-age=31536000`) on that hostname only.
+
+One caveat found while verifying it, worth knowing because it looks like a
+leak and is not one: the **apache-php and nginx-php images set their own HSTS
+header** (`conf-available/security.conf`,
+`max-age=31536000; includeSubDomains`) on every response. A site therefore
+carries HSTS whatever its route says, and turning the route setting off does not
+remove it. That is pre-existing behaviour — it applies identically to a
+single-site deployment — but multi-host makes it visible, because a pod now
+serves several hostnames and only one of them may have the platform's header.
+static-nginx ships no such header, so the two differ.
 
 **What it genuinely shares.** One PHP version, one `php.ini`, one FPM pool, one
 opcache and one restart. Sites needing different PHP versions still need
@@ -193,4 +204,5 @@ wake-up the platform does not have — and it stays compatible with this design.
 - Platform: PRs #457, #458, #459, #460
 - ADR-037 (asymmetric QoS: memory request == limit), ADR-036 (custom
   deployments), ADR-053 (GitOps branches)
-- `docs/tenant/deployments-and-applications.md`, `docs/tenant/domains-and-websites.md`
+- `documentation/docs/tenant/deployments-and-applications.md`,
+  `documentation/docs/tenant/domains-and-websites.md`

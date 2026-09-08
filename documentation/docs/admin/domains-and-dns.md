@@ -97,6 +97,18 @@ deployment later from the per-route dropdown. The table also shows the
 CNAME target and TLS state per route. A route with no deployment is
 skipped by the ingress reconciler until you bind one.
 
+**Site folder (multi-host apps).** When a route points at a deployment with
+multi-host serving turned on, a folder button appears under the deployment
+dropdown showing the folder that hostname serves — or *document root* when it
+has none. Click it to browse the tenant's storage and pick a folder; **clear**
+puts the hostname back on the app's own document root.
+
+The picker lists folders that already exist and does not create them. A hostname
+pointed at an empty folder answers 404, so the tenant should upload the site
+first (Files & SFTP in their panel). If a tenant asks why a new hostname shows
+the wrong site, this is usually the reason: the route is bound but has no folder,
+so it falls through to the application's document root.
+
 ### DNS Records tab
 
 For Primary / Secondary domains, manage the zone's records directly. Click

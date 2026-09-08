@@ -2660,7 +2660,9 @@ reloads the previous generation and reports success, and the map is REPLACED
 because a merge patch would leave a deleted route's vhost serving. Enabling is
 the only restart and it mounts the tenant PVC root — the same trust boundary as
 SFTP and extra_mounts, but a widening, hence an explicit opt-in. Per-route
-settings (certs, redirects, WAF, rate limits, HSTS) stay per-site; PHP version,
+settings (certs, redirects, WAF, rate limits, HSTS) stay per-site — verified by
+enabling HSTS on one route of a three-site pod, though note the apache-php and
+nginx-php IMAGES set their own HSTS unconditionally, pre-existing and unrelated; PHP version,
 worker pool and opcache are genuinely shared. Renderers are a
 `Record<Flavour, …>` so tsc refuses an unimplemented flavour, and probes must use
 binaries the image has — static-nginx is distroless, where an early `cat`-based
