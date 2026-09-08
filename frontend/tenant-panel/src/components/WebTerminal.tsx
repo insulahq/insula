@@ -19,13 +19,17 @@ export default function WebTerminal({ deploymentId, defaultComponent }: WebTermi
   const terminalRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
-
   const activeComponent = selectedComponent || components[0]?.name || '';
 
   const { connect, send, resize, disconnect, connected, error } = useTerminal(
     deploymentId,
     { component: activeComponent, shell, enabled: false },
   );
+
+  // Kept in refs because the terminal effect runs exactly once; reading the
+  // render-time values inside it would pin them to their first-render state.
+  const connectedRef = useRef(false);
+  const sendRef = useRef(send);
 
   const handleConnect = useCallback(() => {
     if (xtermRef.current) {
@@ -42,6 +46,9 @@ export default function WebTerminal({ deploymentId, defaultComponent }: WebTermi
     disconnect();
     xtermRef.current?.writeln('\r\n\x1b[31mDisconnected.\x1b[0m');
   }, [disconnect]);
+
+  useEffect(() => { connectedRef.current = connected; }, [connected]);
+  useEffect(() => { sendRef.current = send; }, [send]);
 
   useEffect(() => {
     if (!terminalRef.current) return;
@@ -69,6 +76,62 @@ export default function WebTerminal({ deploymentId, defaultComponent }: WebTermi
 
     term.onData((data) => send(data));
 
+    // Paste.
+    //
+    // xterm.js DOES handle the browser's native paste on its own hidden
+    // `xterm-helper-textarea`, so Ctrl+V (and Ctrl+Shift+V, and middle-click)
+    // already reach the shell without any help. Binding them here as well sent
+    // the clipboard TWICE — proven in a real browser on DEV:
+    //
+    //   $ echo UNIQ_MARKER_Aecho UNIQ_MARKER_A
+    //
+    // and no amount of de-duplicating inside this component could fix it,
+    // because xterm's own insertion never passes through our code. So the
+    // key handler deliberately does NOT touch V.
+    //
+    // What the terminal genuinely lacked was right-click paste, and a copy
+    // shortcut. Those are the only two bound here.
+    const paste = (): void => {
+      navigator.clipboard?.readText()
+        .then((text) => { if (text) sendRef.current(text); })
+        .catch(() => undefined); // denied / insecure context / unfocused
+    };
+    term.attachCustomKeyEventHandler((e) => {
+      if (e.type !== 'keydown') return true;
+      if (e.ctrlKey && e.shiftKey && (e.key === 'c' || e.key === 'C')) {
+        const sel = term.getSelection();
+        // Only swallow when there IS a selection — otherwise Ctrl+C must keep
+        // reaching the shell, or a running command cannot be interrupted.
+        if (sel) { navigator.clipboard?.writeText(sel).catch(() => undefined); return false; }
+      }
+      return true;
+    });
+
+    const host = terminalRef.current;
+
+    // Ctrl+V and middle-click: handled through the browser's native `paste`
+    // event, and ONLY there.
+    //
+    // Measured on DEV against the deployed build, because each attempt looked
+    // right in isolation:
+    //   • key handler + this listener together -> pasted TWICE. The key
+    //     handler reads the clipboard asynchronously, so it lands outside any
+    //     short de-duplication window and cannot be collapsed against this one.
+    //   • neither of them -> pasted ZERO times. xterm does not paste on its
+    //     own here, so something must forward it.
+    // Exactly one synchronous path is therefore the only correct shape.
+    const onPasteEvent = (e: ClipboardEvent): void => {
+      const text = e.clipboardData?.getData('text');
+      if (text) { e.preventDefault(); sendRef.current(text); }
+    };
+    host.addEventListener('paste', onPasteEvent);
+
+    // Right-click pastes, as most terminal emulators do — no native paste
+    // event fires for it, so this reads the clipboard itself. The browser's
+    // own context menu is suppressed so it does not cover the terminal.
+    const onContextMenu = (e: MouseEvent): void => { e.preventDefault(); paste(); };
+    host.addEventListener('contextmenu', onContextMenu);
+
     term.writeln('\x1b[90mPress Connect to start a terminal session.\x1b[0m');
 
     xtermRef.current = term;
@@ -76,19 +139,36 @@ export default function WebTerminal({ deploymentId, defaultComponent }: WebTermi
 
     const observer = new ResizeObserver(() => {
       fitAddon.fit();
-      if (connected) resize(term.cols, term.rows);
+      // connectedRef, not `connected`: this effect runs once, so the captured
+      // value would be `false` forever and the remote PTY would never learn
+      // the new size — the shell would keep wrapping at the original width.
+      if (connectedRef.current) resize(term.cols, term.rows);
     });
     observer.observe(terminalRef.current);
 
+    // The first fit() above runs before the modal has finished laying out, so
+    // it measures a container that is not yet its final height and picks too
+    // many rows. The extra rows render below the visible area — the bottom of
+    // the output, including the prompt, sits outside the box and cannot be
+    // scrolled to, because xterm believes it is already at the bottom.
+    // Re-fit once layout has settled.
+    const raf = requestAnimationFrame(() => {
+      fitAddon.fit();
+      if (connectedRef.current) resize(term.cols, term.rows);
+    });
+
     return () => {
+      cancelAnimationFrame(raf);
       observer.disconnect();
+      host.removeEventListener('contextmenu', onContextMenu);
+      host.removeEventListener('paste', onPasteEvent);
       term.dispose();
       disconnect();
     };
   }, []);
 
   return (
-    <div className="flex flex-col h-full" data-testid="web-terminal">
+    <div className="flex flex-col h-full min-h-0" data-testid="web-terminal">
       {/* Toolbar */}
       <div className="flex items-center gap-2 px-3 py-2 border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800">
         <select
@@ -153,9 +233,19 @@ export default function WebTerminal({ deploymentId, defaultComponent }: WebTermi
       )}
 
       {/* Terminal */}
+      {/*
+        min-h-0 is load-bearing. A flex item defaults to min-height:auto, so
+        this div refuses to shrink below its content: xterm's rows make it
+        TALLER than the h-80 wrapper, whose overflow-hidden then clips the
+        bottom. The clipped rows are the newest output — the prompt and the
+        last command — and no amount of scrolling reveals them, because xterm
+        is already scrolled to the bottom of a viewport that is simply taller
+        than the box drawn around it. overflow-hidden here keeps a transient
+        mid-resize overflow from pushing the layout.
+      */}
       <div
         ref={terminalRef}
-        className="flex-1 bg-[#1a1b26]"
+        className="flex-1 min-h-0 overflow-hidden bg-[#1a1b26]"
         data-testid="terminal-container"
       />
     </div>

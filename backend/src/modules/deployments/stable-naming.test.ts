@@ -4,14 +4,17 @@ import { computeVolumePaths } from './service.js';
 
 // ─── computeVolumePaths ─────────────────────────────────────────────────────
 
+// Paths are now returned ABSOLUTE and resolve the manifest's `local_path`.
+// storage_path is stored without a leading slash, so these used to render as
+// something that looked relative and could not be pasted into the file manager.
 describe('computeVolumePaths', () => {
-  it('returns storagePath as k8sPath for each volume', () => {
+  it('returns the storage path ABSOLUTE for each volume', () => {
     const result = computeVolumePaths(
       { storagePath: 'database/mariadb/my-db' },
       { volumes: JSON.stringify([{ container_path: '/var/lib/mysql' }]) },
     );
     expect(result).toEqual([
-      { containerPath: '/var/lib/mysql', k8sPath: 'database/mariadb/my-db' },
+      { containerPath: '/var/lib/mysql', k8sPath: '/database/mariadb/my-db' },
     ]);
   });
 
@@ -21,7 +24,9 @@ describe('computeVolumePaths', () => {
       { volumes: JSON.stringify([{ container_path: '/var/lib/mysql' }]) },
     );
     expect(result).toEqual([
-      { containerPath: '/var/lib/mysql', k8sPath: '' },
+      // Nothing to resolve against — "/" beats an empty string, which the UI
+      // would render as a blank cell.
+      { containerPath: '/var/lib/mysql', k8sPath: '/' },
     ]);
   });
 
@@ -36,8 +41,9 @@ describe('computeVolumePaths', () => {
       },
     );
     expect(result).toHaveLength(2);
-    expect(result[0].k8sPath).toBe('runtime/wordpress/my-wp');
-    expect(result[1].k8sPath).toBe('runtime/wordpress/my-wp');
+    // No local_path on either volume, so both resolve to the storage root.
+    expect(result[0].k8sPath).toBe('/runtime/wordpress/my-wp');
+    expect(result[1].k8sPath).toBe('/runtime/wordpress/my-wp');
   });
 
   it('handles empty volumes array', () => {
@@ -62,7 +68,7 @@ describe('computeVolumePaths', () => {
       { volumes: [{ container_path: '/var/www/html' }] },
     );
     expect(result).toEqual([
-      { containerPath: '/var/www/html', k8sPath: 'runtime/php84/my-site' },
+      { containerPath: '/var/www/html', k8sPath: '/runtime/php84/my-site' },
     ]);
   });
 

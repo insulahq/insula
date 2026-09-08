@@ -38,6 +38,7 @@ import {
 import { isRoutable, isRedirectOnly } from '../ingress-routes/route-targets.js';
 import type { RouteTargetFields } from '../ingress-routes/route-targets.js';
 import { buildAllRouteSpecs } from '../ingress-routes/annotation-sync.js';
+import { reconcileTenantSites } from '../multihost/reconciler.js';
 import {
   buildIngressRoute,
   buildTLSOption,
@@ -773,6 +774,21 @@ export async function reconcileIngress(
   // (current route ids) — anything else (cluster-shared admin-auth
   // Middlewares, oauth2-proxy break-glass middleware, …) stays put.
   await gcOrphanMiddlewares(k8s, namespace, expectedMiddlewareNames);
+
+  // Multi-host site config. Hooked HERE rather than at each call site because
+  // this function is the one place every route mutation already funnels
+  // through — create, patch, delete, the settings PATCHes, the bandwidth cap
+  // and the mTLS paths all reach it. A new caller therefore cannot forget to
+  // update site config and leave a hostname served from the wrong folder.
+  //
+  // Non-blocking: an unreachable pod must not fail the ingress reconcile that
+  // just applied the tenant's routers. The reconciler is idempotent and runs
+  // again on the next route change, so a miss here is recovered, not lost.
+  try {
+    await reconcileTenantSites(db, { core: k8s.core }, tenantId, namespace, process.env.KUBECONFIG_PATH);
+  } catch (err) {
+    console.warn('[ingress-reconcile] multihost site reconcile failed (non-blocking)', err);
+  }
 }
 
 // ─── Force-HTTPS HTTP-entrypoint routes ────────────────────────────────────

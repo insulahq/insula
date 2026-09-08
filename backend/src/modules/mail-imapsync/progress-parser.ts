@@ -36,6 +36,34 @@ const COPY_FOLDER_BRACE_REGEX = /\+\s*Copying\s+msg\s*\d+\s*\/\s*\d+.*?\{([^}]+)
 const COPY_FOLDER_BRACKET_REGEX = /\+\s*Copying\s+msg\s*\d+\s*\/\s*\d+\s*\[([^\]]+)\](?!\s*\[)/g;
 const FROM_FOLDER_REGEX = /^From\s+Folder\s+\[([^\]]+)\]/gm;
 
+// ─── The format the shipped imapsync actually emits ──────────────────────
+//
+// Measured against a real 120-message run on the DEV cluster (2026-09-08):
+// the image emits NO `+ Copying msg N/M` line whatsoever. Every pattern
+// above matched nothing, messages_total stayed NULL for the entire run,
+// and the tenant-panel progress bar — which renders only when total is a
+// positive number — could never appear. A dry run hid this further by
+// emitting no per-message lines at all.
+//
+// What it does emit, per message and on a standalone ETA line at each
+// folder boundary:
+//
+//   msg INBOX/12 {606}  copied to INBOX/12  58.19 msgs/s ... ETA: <date>  2 s  108/120 msgs left
+//   ETA: <date>  0 s  120/120 msgs left
+//   Folder     3/5 [INBOX]                             -> [INBOX]
+//
+// The counter is REMAINING/TOTAL and counts DOWN, so transferred is the
+// difference. Deliberately narrow: it must not collide with the folder
+// counter (`Folder 3/5`) or the folder inventory line (`Host1 folder 3/5
+// [INBOX] ... Messages: 120`), neither of which is message progress.
+const MSGS_LEFT_REGEX = /(\d+)\s*\/\s*(\d+)\s+msgs\s+left/g;
+
+/** `Folder     3/5 [INBOX] -> [INBOX]` — anchored, so `Host1 folder` never matches. */
+const FOLDER_HEADER_REGEX = /^Folder\s+\d+\s*\/\s*\d+\s+\[([^\]]+)\]/gm;
+
+/** `msg INBOX/12 {606} copied to ...` — the folder actively being copied. */
+const COPIED_MSG_FOLDER_REGEX = /^msg\s+(.+?)\/\d+\s+\{/gm;
+
 function lastMatch(re: RegExp, input: string): RegExpExecArray | null {
   // RegExps must have the global flag for matchAll to work.
   let last: RegExpExecArray | null = null;
@@ -77,11 +105,36 @@ export function parseImapsyncProgress(log: string): ImapsyncProgress {
 
   // Latest "+ Copying msg N/M" line
   const lastCopy = lastMatch(new RegExp(COPY_LINE_REGEX.source, 'g'), log);
-  const messagesTransferred = lastCopy ? parseInt(lastCopy[1], 10) : null;
-  const messagesTotal = lastCopy ? parseInt(lastCopy[2], 10) : null;
+  let messagesTransferred = lastCopy ? parseInt(lastCopy[1], 10) : null;
+  let messagesTotal = lastCopy ? parseInt(lastCopy[2], 10) : null;
+
+  // Fallback to the "N/M msgs left" counter the shipped imapsync emits.
+  // It counts DOWN, so transferred is total minus remaining. Clamped
+  // because a malformed line must never produce a negative count.
+  if (messagesTotal === null) {
+    const lastLeft = lastMatch(new RegExp(MSGS_LEFT_REGEX.source, 'g'), log);
+    if (lastLeft) {
+      const left = parseInt(lastLeft[1], 10);
+      const total = parseInt(lastLeft[2], 10);
+      messagesTotal = total;
+      messagesTransferred = Math.max(0, total - left);
+    }
+  }
 
   // Folder: try to extract from the latest copy line first
   let currentFolder: string | null = parseFolderFromCopyLine(log);
+
+  // Then the shipped format: whichever of the per-message line or the
+  // folder header appears LAST is the folder imapsync is on right now.
+  if (!currentFolder) {
+    const lastMsg = lastMatch(new RegExp(COPIED_MSG_FOLDER_REGEX.source, 'gm'), log);
+    const lastHeader = lastMatch(new RegExp(FOLDER_HEADER_REGEX.source, 'gm'), log);
+    const latest = [lastMsg, lastHeader]
+      .filter((m): m is RegExpExecArray => m !== null)
+      .sort((a, b) => a.index - b.index)
+      .pop();
+    if (latest) currentFolder = latest[1].trim();
+  }
 
   // Fallback to the most recent "From Folder [name]" header line
   if (!currentFolder) {

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { uuidField } from './shared.js';
+import { folderProblem } from './extra-mounts.js';
 
 // ─── CIDR validation helper ────────────────────────────────────────────────
 
@@ -54,6 +55,13 @@ export const ingressRouteResponseSchema = z.object({
   additionalHeaders: z.record(z.string(), z.string()).nullable(),
   // Custom-deployment routing — null for catalog deployments
   servicePort: z.number().nullable(),
+  /**
+   * Multi-host serving — which folder on the tenant's storage answers this
+   * hostname, relative to the storage ROOT. Null means the route is served by
+   * the deployment's stock document root, which is also the catch-all for
+   * hostnames matching no configured site.
+   */
+  siteFolder: z.string().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
@@ -65,6 +73,26 @@ export const ingressRouteResponseSchema = z.object({
 // update. A null on either field clears it. target_type is implied by which
 // id is non-null (the backend persists it; the client doesn't need to send
 // it explicitly).
+/**
+ * Folder that answers a hostname on a multi-host deployment, relative to the
+ * tenant storage ROOT — the same convention as `extraMountSchema.folder`, and
+ * validated by the same function, which is why any folder the tenant can see
+ * in the file manager is addressable rather than only children of the
+ * deployment's own storage path.
+ *
+ * Nullable so a route can be handed back to the stock document root.
+ */
+const siteFolderField = z
+  .string()
+  .min(1)
+  .max(255)
+  .superRefine((v, ctx) => {
+    const problem = folderProblem(v);
+    if (problem) ctx.addIssue({ code: z.ZodIssueCode.custom, message: problem });
+  })
+  .nullable()
+  .optional();
+
 export const createIngressRouteSchema = z
   .object({
     hostname: z.string().min(1).max(255),
@@ -72,6 +100,7 @@ export const createIngressRouteSchema = z
     deployment_id: uuidField.nullable().optional(),
     private_worker_id: uuidField.nullable().optional(),
     service_port: z.number().int().min(1).max(65535).nullable().optional(),
+    site_folder: siteFolderField,
   })
   .refine(
     (v) => !(v.deployment_id && v.private_worker_id),
@@ -85,6 +114,7 @@ export const updateIngressRouteSchema = z
     tls_mode: z.enum(['auto', 'custom', 'none']).optional(),
     node_hostname: z.string().max(255).nullable().optional(),
     service_port: z.number().int().min(1).max(65535).nullable().optional(),
+    site_folder: siteFolderField,
   })
   .refine(
     (v) => !(v.deployment_id && v.private_worker_id),

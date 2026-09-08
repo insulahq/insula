@@ -12,6 +12,216 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+
+- **One web runtime can now serve several websites, each from its own folder.**
+  A runtime instance previously served exactly one route from one document root,
+  so a tenant with a dozen small sites reserved a dozen pods — and a runtime pod
+  reserves its memory whether it is busy or not. What grows with real traffic is
+  the number of requests being handled at once, not the number of sites:
+  measured on the apache-php image, twelve sites in one container held 39 MiB
+  under load against twelve times 128Mi hard-reserved as separate deployments,
+  and a four-site instance on the cluster measured 34Mi against 512Mi reserved.
+
+  Turn on **Multi-host serving** on a deployment (Applications → the app), then
+  give each hostname a folder under Domains → Routing. The folder is yours to
+  name — it does not have to match the hostname, so renaming a domain never
+  means moving files, two hostnames can share one folder, and a wildcard route
+  serves a single folder for every hostname it matches while each visitor's real
+  address still reaches the application. Hostnames with no folder keep serving
+  the app's own document root, so nothing breaks while you set things up.
+  Available on **Apache + PHP, NGINX + PHP, Static (Apache) and Static (NGINX)**.
+
+  Per-site settings stay per-site: certificates, redirects, WAF, rate limits and
+  access control are properties of the route, so ten sites on one instance keep
+  ten independent policies. What they share is the instance itself — one PHP
+  version, one set of PHP limits, one worker pool, and one restart. Turning the
+  setting on or off restarts the app once and gives it access to your whole
+  storage area so any folder can be served; adding, changing and removing sites
+  afterwards is a graceful reload that does not interrupt the sites already
+  running.
+
+- **A break-glass control: "Clear stuck validation".** Deliberately *not* behind
+  the one-hour reissue cooldown — that cooldown exists because a reissue orders
+  a new certificate and authorities cap duplicates per week, whereas this orders
+  nothing and simply removes the stalled attempt so the request already in
+  flight can continue. Gating it would leave an operator staring at a disabled
+  button for an hour with no way to unstick a certificate, which is when they
+  most need one. It only ever deletes challenges classified as wedged, so
+  pressing it during a healthy order does nothing.
+- The certificate card now says **why** issuance is stuck. The platform read
+  Certificate CRs and nothing below them, so the whole ACME layer was invisible:
+  a wedged challenge looked exactly like a slow one, and the operator's only
+  signal was a certificate that never appeared. `validationBlocked` and
+  `validationMessage` carry the challenge state, including which challenge is
+  holding a blocked one's slot, and the card renders it. Deliberately distinct
+  from `state: 'failed'`, which means an attempt was *rejected* — a blocked
+  validation never ran at all.
+
+- The DNS verification modal now shows an **Expected vs Actual table** for every
+  check, including the ones that passed. A pass previously rendered as the words
+  "DNS verification passed" and nothing else, which is precisely how a check
+  that asserted nothing went unnoticed; an empty expectation is now visible as
+  "not configured".
+
+- **Ingress routes are sortable and searchable.** The domain detail table
+  rendered in creation order with no way to find a row. Columns now sort,
+  default alphabetical by hostname, with a search over hostname, path prefix and
+  deployment; the search appears only once there is more than one route. Each
+  route is decorated with its deployment NAME before sorting — the route object
+  carries only `deploymentId`, and ordering a column of names by opaque uuid is
+  indistinguishable from not sorting at all. Both deployment pickers are
+  alphabetical too.
+
+- **The Applications list view shows live CPU and memory** in place of `Type`, a
+  static label the operator already reads from the Application column. Whether
+  an app is near its limit was the one thing the list could not show and the
+  grid always could. Cells fetch only for RUNNING deployments — a stopped app
+  has no metrics, and polling it is one request per row per interval that can
+  only return zero. Thresholds match the grid, so an app cannot read healthy in
+  one view and hot in the other.
+
+### Changed
+
+- Versions in **Supported Versions** are now selectable — any listed version,
+  including older ones, with a confirmation that warns when the switch is a
+  downgrade. The single-step **Rollback** banner is gone: it could only ever
+  return to `previous_version`, and selecting a version covers it.
+- Deployment detail modal: **Assigned Resources** now follows **Supported
+  Versions**, and the Volumes column is labelled **Local Path** rather than
+  K8s Path — it has always been the tenant-visible path.
+
+- **Stalwart may now burst to 1800Mi** (was 1536Mi), after a production OOM
+  kill. Only the LIMIT moves — the request stays at 256Mi, so this changes what
+  the container may use, not what it reserves, and scheduling is unaffected. The
+  kill was `anon-rss` rather than `file-rss`: genuine heap growth, not
+  reclaimable page cache, which is the distinction that makes a higher ceiling
+  the right fix rather than a bookkeeping artifact. No overlay patches this
+  container and the `mail` namespace has no ResourceQuota and no LimitRange
+  `max`, so nothing rejects the larger ceiling at admission. **Production node
+  headroom was not re-verified** — worth a glance at that node's free memory
+  before this reaches production, since a higher ceiling turns a container-level
+  OOM into node-level pressure if the node cannot back the burst.
+
+### Fixed
+
+- **A stuck ACME challenge blocked all future certificate issuance for that
+  hostname, permanently and invisibly.** cert-manager runs at most one in-flight
+  challenge per `(dnsName, type)`; a challenge that reaches `processing: true`
+  and never completes holds that slot forever, and every later challenge for the
+  same name is created with an empty status and never runs. Nothing timed it
+  out, nothing reported it, and **Request Certificate could not clear it** — it
+  produced a fresh order whose challenges inherited the same blocked slot, so
+  the button reported success and changed nothing. Proven against the Let's
+  Encrypt staging issuer: a certificate for a different name in the same zone
+  issued in ~75s through the same webhook and nameservers, while three separate
+  orders for the wedged name never started. The certificate reconciler now
+  detects a challenge that has held its slot past 15 minutes and deletes it so
+  cert-manager can start a clean one, and a reissue sweeps the domain's
+  challenges before recreating. A mispointed NS record is the usual way in, but
+  any challenge that dies mid-flight — an expired authorization, a provider
+  outage during renewal — leaves the same blockage, and renewals hit it as hard
+  as first issuance.
+
+- **The tenant panel crashed to "Something went wrong" and only a hard reload
+  brought it back** (`Cannot read properties of null (reading 'toFixed')`). The
+  header's CPU/memory/storage tiles format fields typed `number` by a
+  hand-written interface — the resource-metrics response is not built from a
+  shared Zod contract, so nothing stops the server sending `null`, and
+  TypeScript cannot see it. `null.toFixed()` then threw during render. The
+  formatters now render an em dash for a missing value, treating `0` as a real
+  number rather than a missing one.
+- **One broken widget could blank the entire panel.** The only error boundary
+  wrapped the whole app, so any render throw replaced everything with the
+  full-screen crash page whose sole recovery is `window.location.reload()` —
+  which is why the crash looked page-wide and why reloading "fixed" it. The
+  boundary now accepts a scoped fallback, and the header tiles use it: a usage
+  readout that cannot format a number disappears instead of taking the panel
+  with it. Reported against the applications page; the tiles render on every
+  page, so that was simply where the operator was.
+
+- **The deployment terminal could not paste.** Ctrl+V and middle-click now
+  paste through the browser's native `paste` event, and right-click pastes by
+  reading the clipboard directly. Ctrl+Shift+C copies a selection; plain Ctrl+C
+  is deliberately left alone so a running command can still be interrupted.
+  Exactly one path forwards each paste — binding the key handler as well made
+  every Ctrl+V arrive twice, and binding neither made it arrive not at all.
+- **The terminal's last output was permanently hidden.** The terminal pane is a
+  flex child, and a flex item defaults to `min-height: auto` — so it refused to
+  shrink, grew taller than its wrapper, and the wrapper's `overflow-hidden`
+  clipped the newest rows. Scrolling could not reveal them because xterm was
+  already at the bottom of a viewport taller than the visible box. It also
+  re-fits after layout settles, instead of measuring a container that has not
+  finished sizing.
+- **"Updates available" stayed on a deployment already running the newest
+  version.** The card also rendered whenever a rollback was possible, and
+  `previous_version` is never cleared — so upgrading to the latest release left
+  an amber upgrade-styled banner in place forever.
+- Volumes showed `.` as the path. That is the catalog manifest's `local_path`
+  marker meaning "the storage root", rendered literally; and `storage_path` is
+  stored without a leading slash, so what little did render looked relative.
+  Paths are now resolved and absolute (`/runtime/apache-php/site`), in the
+  Volumes table and in Status Details. The backend also stopped giving every
+  volume of a deployment the same bare base path.
+
+- **Editing a deployment's configuration variables saved the values but never
+  applied them.** The redeploy that re-renders the pod template ran only when
+  `extra_mounts` changed, so a `configuration` edit was written to the database
+  and nothing ever re-read it — no drift reconciler covers environment
+  variables, so the running pod kept its original values indefinitely. The
+  tenant panel made it look stranger still: after saving it POSTed `/restart`,
+  which deletes the pods, and the ReplicaSet recreated them from the template
+  that was never updated — so the pod visibly bounced and came back
+  byte-identical. Reported against an Apache/PHP deployment where
+  `PHP_DISPLAY_ERRORS` and `APACHE_DOCUMENT_ROOT` had no effect. A configuration
+  change now redeploys, and the panel no longer fires the redundant restart that
+  would double-bounce the pod.
+- `replica_count` had the same defect on the same code path — persisted to the
+  row, never applied — and is now covered by the same gate.
+- Configuration is compared with key order normalised, so re-saving without
+  changing anything no longer rolls the pod.
+- **A configuration key the catalog declares as both `fixed` and `configurable`
+  was silently discarded.** `buildEnvVars` applied an unconditional "fixed
+  wins", but the Official `apache-php` entry lists `APACHE_DOCUMENT_ROOT` (and
+  `PHP_OPCACHE_ENABLE`) in *both* blocks — so the panel offered the value as
+  editable, because it reads the same `configurable` list, and the deployer then
+  dropped it on every redeploy. The pod came back on the manifest default, which
+  looks like a broken setting rather than an ignored one. A key the manifest
+  explicitly declares configurable now takes the tenant's value, with `fixed`
+  acting as its default; a key pinned without being offered stays pinned, and
+  entries with no `configurable` list are unaffected.
+
+- **DNS verification passed for domains that were never delegated to the
+  platform.** `verifyNsDelegation` compared the domain's real NS records against
+  `PLATFORM_NAMESERVERS` — a variable the repo READ in exactly one place and SET
+  in none: no overlay, no bootstrap script, no ConfigMap. The expected list was
+  therefore always empty, and `[].every(...)` is `true`, so any domain whose NS
+  lookup merely succeeded was marked verified. The check asserted "this domain
+  exists in DNS" while reporting "delegated correctly", and since verification
+  gates ACME issuance, a misdelegated domain sat waiting for a certificate that
+  could never be issued with no indication why. Expected nameservers now come
+  from the domain's DNS provider group — the value the platform already models
+  per-domain — and an empty expectation FAILS instead of passing vacuously.
+- The NS check's pass message quoted the nameservers it FOUND ("correctly
+  delegated to: …"), which reads as confirmation while restating its own input.
+  Both branches now state what was required.
+- **`axfr_sync` reported "synced" for a slave zone that had never transferred.**
+  Only 2 of 7 providers implement `getZoneAxfrStatus`; the rest fell through to
+  a fallback that passed on the zone object merely existing. Even the PowerDNS
+  path treated "has an SOA record" as synchronised, though a stale slave has one
+  too. PowerDNS now reads the zone's configured primary and compares SOA
+  serials, and providers that cannot report transfer status say so instead of
+  claiming a sync they cannot observe.
+
+- **Mailbox migrations showed an indeterminate spinner for the whole transfer**
+  and a number only once it was already over. Not a missing progress bar — the
+  bar exists and was unreachable. The parser read exactly one marker,
+  `+ Copying msg N/M`, which a real 120-message, 5-folder transfer on DEV emits
+  **zero** times, so `messages_total` stayed NULL and the panel renders the bar
+  only for a positive number. It now reads the format the shipped imapsync
+  actually emits.
+
+
 ## [2026.9.12] - 2026-09-07
 
 ### Added
@@ -43,7 +253,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   credentials is present, so a cluster without it stays on SQLite and nothing
   changes. Requires two NetworkPolicies (crowdsec egress, platform ingress);
   either one missing gives a LAPI that starts and reaches nothing.
-
 
 ### Fixed
 - **The tenant file manager was OOM-killed during large rsync transfers, resetting

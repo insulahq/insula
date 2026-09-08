@@ -38,6 +38,7 @@ import {
   notifyTenantCertificateFallback,
 } from '../notifications/events.js';
 import type { Database } from '../../db/index.js';
+import { createWedgeMemory } from './acme-challenges.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
 interface DomainRow {
@@ -174,7 +175,67 @@ function isK8s404(err: unknown): boolean {
 export interface CertReconcileResult {
   readonly checked: number;
   readonly synced: number;
+  /** Wedged ACME challenges deleted so issuance could restart. */
+  readonly healedChallenges: number;
   readonly errors: readonly string[];
+}
+
+/**
+ * Clear wedged ACME challenges for one namespace.
+ *
+ * Runs on the same tick as the status sync because a wedge is invisible in the
+ * Certificate CR — it looks like an order that is simply taking a while, and
+ * cert-manager never times the challenge out on its own. Without this the
+ * blockage is permanent and no amount of re-requesting clears it.
+ */
+/**
+ * Survives ticks, not restarts — see WedgeMemory. A fresh process deliberately
+ * starts with no strikes so the first sweep after any gap only observes.
+ */
+const wedgeMemory = createWedgeMemory();
+
+/** Repeat clears per namespace, so a churn loop reads differently from a one-off. */
+const healCounts = new Map<string, number>();
+
+/**
+ * Challenge sweeps run far less often than the 60s status tick. A wedge is
+ * already 30 minutes old before it qualifies, so checking every 5 minutes
+ * loses nothing and keeps the extra API-server LISTs proportionate at
+ * 50-100 tenants.
+ */
+const NAMESPACE_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
+const lastSweepAt = new Map<string, number>();
+
+async function selfHealNamespace(
+  k8s: K8sClients,
+  namespace: string,
+  errors: string[],
+): Promise<number> {
+  try {
+    const { clearWedgedChallenges } = await import('./acme-challenges.js');
+    const res = await clearWedgedChallenges(k8s, namespace, { memory: wedgeMemory });
+    for (const e of res.errors) errors.push(`challenge cleanup ${namespace}: ${e}`);
+    if (res.deleted.length > 0) {
+      // Count repeats per namespace. A wedge with a permanent cause — a still
+      // mispointed NS record — will be cleared, recreated, re-wedge and be
+      // cleared again indefinitely. That is still better than silent permanent
+      // failure, but it must not look like a one-off recovery in the log, or
+      // nobody ever investigates the cause.
+      const seen = (healCounts.get(namespace) ?? 0) + res.deleted.length;
+      healCounts.set(namespace, seen);
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[cert-reconciler] cleared ${res.deleted.length} wedged ACME challenge(s) in ${namespace}: ${res.deleted.join(', ')}`
+        + (seen > res.deleted.length
+          ? ` — ${seen} cleared here since restart; a repeating wedge means the underlying cause is still present`
+          : ''),
+      );
+    }
+    return res.deleted.length;
+  } catch (err) {
+    errors.push(`challenge cleanup ${namespace}: ${err instanceof Error ? err.message : String(err)}`);
+    return 0;
+  }
 }
 
 export async function reconcileCertificateStatuses(
@@ -195,6 +256,7 @@ export async function reconcileCertificateStatuses(
 
   let checked = 0;
   let synced = 0;
+  let healedChallenges = 0;
   const errors: string[] = [];
   // One Certificate list per namespace, not per domain — a tenant with
   // twenty domains would otherwise issue twenty identical LISTs.
@@ -211,6 +273,25 @@ export async function reconcileCertificateStatuses(
     try {
       if (!certsByNamespace.has(d.namespace)) {
         certsByNamespace.set(d.namespace, await listCertificateHealth(k8s, d.namespace));
+        // Sweep on a slower cadence than the 60s tick, rather than gating on
+        // certificate health.
+        //
+        // The first version skipped a namespace whose certificates all looked
+        // issued. That is wrong twice over: listCertificateHealth filters on
+        // `app.kubernetes.io/managed-by=insula`, so anything else is invisible
+        // to it, and a challenge ORPHANED by a deleted Certificate — the very
+        // case this module exists to clear — leaves no unfinished certificate
+        // behind to trigger the sweep. The gate made the self-heal unreachable
+        // for the orphan it was written for.
+        //
+        // Time-based instead: correctness does not depend on what the gate can
+        // see, and the API-server cost is still cut by the same order of
+        // magnitude the gate was added for.
+        const lastSwept = lastSweepAt.get(d.namespace) ?? 0;
+        if (Date.now() - lastSwept >= NAMESPACE_SWEEP_INTERVAL_MS) {
+          lastSweepAt.set(d.namespace, Date.now());
+          healedChallenges += await selfHealNamespace(k8s, d.namespace, errors);
+        }
       }
       const health = pickDomainCertificate(
         certsByNamespace.get(d.namespace) ?? [],
@@ -349,5 +430,5 @@ export async function reconcileCertificateStatuses(
     }
   }
 
-  return { checked, synced, errors };
+  return { checked, synced, healedChallenges, errors };
 }

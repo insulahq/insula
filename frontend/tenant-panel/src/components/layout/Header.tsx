@@ -5,6 +5,7 @@ import { useAuth } from '@/hooks/use-auth';
 import { useResourceMetrics } from '@/hooks/use-resource-metrics';
 import NotificationDropdown from '@/components/NotificationDropdown';
 import DarkModeToggle from '@/components/DarkModeToggle';
+import ErrorBoundary from '@/components/ErrorBoundary';
 import TaskCenterChip from '@/components/TaskCenterChip';
 import ResourceMetricsModal, { formatCpuCompact, formatBytesCompact } from '@/components/ResourceMetricsModal';
 
@@ -183,7 +184,23 @@ function PulseDot() {
   return <span className="inline-block h-1.5 w-1.5 rounded-full bg-gray-400 animate-pulse" />;
 }
 
+/**
+ * Header resource tiles, isolated behind their own boundary.
+ *
+ * These render on EVERY page, so a throw in here took the entire panel down —
+ * reported as "the SPA sometimes crashes on the applications page", which was
+ * only where the operator happened to be. Failing to nothing is the right
+ * outcome for a decorative usage readout.
+ */
 function ResourceUsageTags() {
+  return (
+    <ErrorBoundary fallback={null} label="header-resource-tags">
+      <ResourceUsageTagsInner />
+    </ErrorBoundary>
+  );
+}
+
+function ResourceUsageTagsInner() {
   const { data, isLoading } = useResourceMetrics();
   const [modalOpen, setModalOpen] = useState(false);
 
