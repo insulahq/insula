@@ -135,7 +135,42 @@ export function capabilityOf(entry: { multihost?: unknown } | null | undefined):
     typeof raw.listen === 'number' &&
     Array.isArray(raw.validate) && raw.validate.length > 0 &&
     Array.isArray(raw.reload) && raw.reload.length > 0;
-  return ok ? (raw as MultihostCapability) : null;
+  if (!ok) return null;
+  if (!phpSandboxIsSane(raw.php, raw.sites_root as string)) return null;
+  return raw as MultihostCapability;
+}
+
+/**
+ * Validate the optional `php` block instead of trusting it.
+ *
+ * Admins can add third-party catalog repositories, and this block decides how
+ * far a site's PHP may reach. A repo supplying `open_basedir_extra: ["/"]` — or
+ * any ancestor of `sites_root` — would leave the directive syntactically
+ * present and semantically empty: every site could read every other site's
+ * files again, while the panel still showed a sandbox. That is worse than no
+ * sandbox, because it looks like one.
+ *
+ * An unusable block fails the whole capability rather than being dropped: an
+ * entry that cannot be sandboxed must not silently fall back to serving
+ * multi-host unsandboxed.
+ */
+export function phpSandboxIsSane(php: unknown, sitesRoot: string): boolean {
+  if (php === undefined || php === null) return true;
+  if (typeof php !== 'object') return false;
+  const extra = (php as { open_basedir_extra?: unknown }).open_basedir_extra;
+  if (extra === undefined) return true;
+  if (!Array.isArray(extra)) return false;
+  return extra.every((v) => {
+    if (typeof v !== 'string' || v.length === 0) return false;
+    // `:` separates entries and a newline would end the directive — either
+    // would smuggle in paths the platform never approved.
+    if (/[:\n\r]/.test(v)) return false;
+    if (!v.startsWith('/')) return false;
+    // `/` itself, and any ancestor of the sites root, dissolve the sandbox.
+    if (v === '/') return false;
+    const norm = v.replace(/\/+$/, '');
+    return !(sitesRoot === norm || sitesRoot.startsWith(`${norm}/`));
+  });
 }
 
 /** The container to exec into: the component that owns the ingress port. */
@@ -443,6 +478,7 @@ export async function reconcileTenantSites(
         path: ingressRoutes.path,
         wwwRedirect: ingressRoutes.wwwRedirect,
         siteFolder: ingressRoutes.siteFolder,
+        appRoot: ingressRoutes.appRoot,
       })
       .from(ingressRoutes)
       .innerJoin(domains, eq(ingressRoutes.domainId, domains.id))
@@ -457,6 +493,7 @@ export async function reconcileTenantSites(
       path: r.path,
       wwwRedirect: r.wwwRedirect as SiteRoute['wwwRedirect'],
       siteFolder: r.siteFolder as string,
+      appRoot: (r.appRoot as string | null) ?? null,
     }));
 
     try {

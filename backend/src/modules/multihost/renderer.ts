@@ -43,6 +43,18 @@ export interface MultihostCapability {
   readonly listen: number;
   readonly validate: readonly string[];
   readonly reload: readonly string[];
+  /**
+   * Present only on PHP runtimes. Its presence is what makes the renderer
+   * sandbox a site at all — declared by the catalog manifest, never inferred
+   * from the flavour, because `nginx` covers both static-nginx (no PHP, no
+   * FastCGI, nothing to sandbox) and nginx-php.
+   *
+   * `open_basedir_extra` lists absolute paths the image needs on top of the
+   * app root. `/tmp` is always among them in practice: these images leave
+   * session.save_path and upload_tmp_dir empty, so PHP falls back to the
+   * system temp dir and sessions break the moment it is excluded.
+   */
+  readonly php?: { readonly open_basedir_extra?: readonly string[] };
 }
 
 /** The subset of an `ingress_routes` row that decides what a site looks like. */
@@ -52,6 +64,8 @@ export interface SiteRoute {
   readonly path: string;
   readonly wwwRedirect: 'none' | 'add-www' | 'remove-www';
   readonly siteFolder: string;
+  /** Sandbox root. Defaults to `siteFolder` when a route predates app roots. */
+  readonly appRoot?: string | null;
 }
 
 export interface RenderedSite {
@@ -63,6 +77,10 @@ export interface RenderedSite {
   readonly serverName: string;
   readonly serverAlias: string | null;
   readonly documentRoot: string;
+  /** Absolute app root — surfaced to the operator for app config files. */
+  readonly appRootPath: string;
+  /** Exact open_basedir written into the vhost, or null on a static runtime. */
+  readonly openBasedir: string | null;
 }
 
 export interface SkippedSite {
@@ -116,6 +134,21 @@ interface VhostInput {
   readonly documentRoot: string;
   readonly hostname: string;
   readonly routeId: string;
+  /** Absolute app root, or null on a runtime with no PHP to sandbox. */
+  readonly appRootPath: string | null;
+  readonly cap: MultihostCapability;
+}
+
+/**
+ * The value of PHP's `open_basedir` for one site: its app root plus whatever
+ * absolute paths the image declared it needs.
+ *
+ * Returns null when the runtime declares no `php` block, so a static image
+ * gets a plain vhost with no FastCGI directives it could not honour anyway.
+ */
+export function openBasedirFor(cap: MultihostCapability, appRootPath: string | null): string | null {
+  if (!cap.php || !appRootPath) return null;
+  return [appRootPath, ...(cap.php.open_basedir_extra ?? [])].join(':');
 }
 
 const BANNER = (routeId: string, hostname: string): string[] => [
@@ -126,12 +159,24 @@ const BANNER = (routeId: string, hostname: string): string[] => [
 
 function renderApacheVhost(cap: MultihostCapability, site: VhostInput): string {
   const alias = site.serverAlias ? [`    ServerAlias ${site.serverAlias}`] : [];
+  const basedir = openBasedirFor(cap, site.appRootPath);
+  // mod_proxy_fcgi forwards subprocess_env to the pool, and PHP-FPM applies
+  // PHP_ADMIN_VALUE — so a per-vhost SetEnv sandboxes this site's PHP without
+  // a second FPM pool. Verified against the shipped image, not assumed.
+  //
+  // ONE setting only: Apache config has no way to embed the newline that
+  // PHP-FPM uses to separate several. `disable_functions` therefore rides on
+  // the FPM pool instead (pool-scoped, so CLI keeps exec for cron/composer) —
+  // and it MUST, because open_basedir does not restrain a child process:
+  // shell_exec walks straight past it.
+  const sandbox = basedir ? [`    SetEnv PHP_ADMIN_VALUE "open_basedir=${basedir}"`] : [];
   return [
     ...BANNER(site.routeId, site.hostname),
     `<VirtualHost *:${cap.listen}>`,
     `    ServerName ${site.serverName}`,
     ...alias,
     `    DocumentRoot "${site.documentRoot}"`,
+    ...sandbox,
     `    Include ${cap.common_include}`,
     '</VirtualHost>',
     '',
@@ -154,11 +199,23 @@ function renderApacheVhost(cap: MultihostCapability, site: VhostInput): string {
  *    `common_include` carries the listen lines.
  */
 function renderNginxServer(cap: MultihostCapability, site: VhostInput): string {
+  const basedir = openBasedirFor(cap, site.appRootPath);
+  // Set as a VARIABLE, not a fastcgi_param, and deliberately so: nginx only
+  // inherits fastcgi_param from an outer level when the inner level declares
+  // none, and the shared include's PHP location declares several — a
+  // server-level fastcgi_param here would be silently ignored. The include
+  // reads `$insula_php_admin`, so one shared file still serves every site.
+  //
+  // Always emitted when the runtime has PHP: an unset variable is a startup
+  // error in nginx, which would take down every site in the pod, not just
+  // this one.
+  const sandbox = basedir ? [`    set $insula_php_admin "open_basedir=${basedir}";`] : [];
   return [
     ...BANNER(site.routeId, site.hostname),
     'server {',
     `    server_name ${site.serverName};`,
     `    root "${site.documentRoot}";`,
+    ...sandbox,
     `    include ${cap.common_include};`,
     '}',
     '',
@@ -255,6 +312,11 @@ export function renderSites(
     const serverName = usesAlias ? syntheticServerName(route.id) : canonical;
     const serverAlias = usesAlias ? canonical : null;
     const documentRoot = `${cap.sites_root}/${route.siteFolder}`;
+    // A route created before app roots existed, or one whose app root was
+    // never set, sandboxes to the folder it serves. That is the tighter of the
+    // two readings and it cannot break a site: the document root is always
+    // inside its own sandbox.
+    const appRootPath = `${cap.sites_root}/${route.appRoot ?? route.siteFolder}`;
 
     const filename = siteFilename(route.id);
     files[filename] = renderVhost(cap, {
@@ -263,8 +325,19 @@ export function renderSites(
       documentRoot,
       hostname: route.hostname,
       routeId: route.id,
+      appRootPath,
+      cap,
     });
-    sites.push({ routeId: route.id, filename, content: files[filename], serverName, serverAlias, documentRoot });
+    sites.push({
+      routeId: route.id,
+      filename,
+      content: files[filename],
+      serverName,
+      serverAlias,
+      documentRoot,
+      appRootPath,
+      openBasedir: openBasedirFor(cap, appRootPath),
+    });
   }
 
   return { files, sites, skipped };
