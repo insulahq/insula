@@ -730,28 +730,44 @@ export async function updateRoute(
       400,
     );
   }
-  // Two sites on ONE deployment must not have nested application roots. The
-  // sandbox is a path prefix, so app roots `shop` and `shop/admin` mean the
-  // outer site's PHP is granted the inner site's entire folder — the isolation
-  // silently absent for exactly that pair, with both rows individually valid.
+  // No two sites ANYWHERE ON THIS TENANT may have nested application roots.
+  //
+  // The sandbox is a path prefix, so app roots `shop` and `shop/admin` grant
+  // the outer site the inner site's entire folder — and the per-site session
+  // directories nest the same way, so the outer site can also read the inner
+  // site's session files, whose names ARE session ids. Both rows look valid on
+  // their own; the pair is the defect.
+  //
+  // Scoped to the TENANT, not the deployment. Restricting the check to one
+  // deployment left the same hole open across two: they share the tenant
+  // volume, so a pod serving `shop` mounts everything under it including
+  // another pod's `shop/admin`, and neither pod's own rows look wrong.
   if (nextAppRoot) {
     const siblings = await db
-      .select({ id: ingressRoutes.id, appRoot: ingressRoutes.appRoot })
+      .select({ id: ingressRoutes.id, appRoot: ingressRoutes.appRoot, deploymentId: ingressRoutes.deploymentId })
       .from(ingressRoutes)
+      .innerJoin(domains, eq(ingressRoutes.domainId, domains.id))
       .where(and(
-        eq(ingressRoutes.deploymentId, (updateValues.deploymentId ?? route.deploymentId) as string),
+        eq(domains.tenantId, tenantId as string),
         isNotNull(ingressRoutes.appRoot),
       ));
-    const clash = siblings.find((sib: { id: string; appRoot: string | null }) => {
+    const targetDeployment = (updateValues.deploymentId ?? route.deploymentId) as string | null;
+    const clash = siblings.find((sib: { id: string; appRoot: string | null; deploymentId: string | null }) => {
       if (sib.id === routeId || !sib.appRoot) return false;
-      return sib.appRoot === nextAppRoot
-        ? false                                    // sharing one app root is fine
-        : nextAppRoot.startsWith(`${sib.appRoot}/`) || sib.appRoot.startsWith(`${nextAppRoot}/`);
+      if (sib.appRoot === nextAppRoot) {
+        // The SAME app root is the www/non-www case — one application, one set
+        // of files, one session directory, which is what those sites want. On
+        // two DIFFERENT deployments it means two pods serving one folder and
+        // sharing its sessions, which nobody asked for and nothing guarantees
+        // are the same application.
+        return sib.deploymentId !== targetDeployment;
+      }
+      return nextAppRoot.startsWith(`${sib.appRoot}/`) || sib.appRoot.startsWith(`${nextAppRoot}/`);
     });
     if (clash) {
       throw new ApiError(
         'VALIDATION_ERROR',
-        `Another site on this application already uses '${clash.appRoot}', and application roots cannot be nested inside one another — the outer site would be able to read the inner one.`,
+        `Another site already uses '${clash.appRoot}'. Application roots cannot be nested inside one another, or shared between different applications — the outer site would be able to read the inner site's files and its visitors' sessions.`,
         400,
         { conflicting_app_root: clash.appRoot },
       );
