@@ -2636,3 +2636,36 @@ platform database; staging can finally exercise the path. Also adds
 `deleteRecordValue` to the provider interface — a wildcard+apex order puts two TXT
 values on one name and PowerDNS's RRset-scoped delete would strip the second
 mid-validation.
+
+
+## ADR-059: Multi-host serving — one web runtime, many sites
+
+See [ADR-059-multi-host-serving.md](ADR-059-multi-host-serving.md).
+
+Accepted (2026-09-08): a runtime deployment served one route from one document
+root, so ten small sites reserved ten pods — and a runtime pod reserves its
+memory whether it is busy or not (request == limit, ADR-037). The cost is paid
+per site but is a property of the runtime: what grows with traffic is the FPM
+worker count, not the site count. Measured 12 sites in one container at 39 MiB
+against 12×128Mi reserved, and a four-site instance on the cluster at 34Mi
+against 512Mi. Decision: a catalog manifest DECLARES a `multihost` capability
+(never inferred from `web_server` — an image without an include directory would
+advertise a mode it cannot honour), the operator enables it per deployment, and
+each route names a folder relative to the tenant PVC root. The vhost is named
+after the wwwRedirect CANONICAL hostname, because the alternate-form router
+redirects and never reaches a backend. Delivery is ConfigMap → wait for the
+projection → validate → graceful reload: the ConfigMap is the only source so a
+restarted pod is correct unaided, the wait is real because reloading early
+reloads the previous generation and reports success, and the map is REPLACED
+because a merge patch would leave a deleted route's vhost serving. Enabling is
+the only restart and it mounts the tenant PVC root — the same trust boundary as
+SFTP and extra_mounts, but a widening, hence an explicit opt-in. Per-route
+settings (certs, redirects, WAF, rate limits, HSTS) stay per-site — verified by
+enabling HSTS on one route of a three-site pod, though note the apache-php and
+nginx-php IMAGES set their own HSTS unconditionally, pre-existing and unrelated; PHP version,
+worker pool and opcache are genuinely shared. Renderers are a
+`Record<Flavour, …>` so tsc refuses an unimplemented flavour, and probes must use
+binaries the image has — static-nginx is distroless, where an early `cat`-based
+projection probe failed silently and disabled the feature while every other
+signal looked correct. TLS for a multi-host site is not yet exercised: issuance
+is gated on domain verification and the DEV apex is deliberately unverified.
