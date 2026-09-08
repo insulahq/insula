@@ -29,6 +29,8 @@ import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
 import { useSslCert, useUploadSslCert, useDeleteSslCert } from '@/hooks/use-ssl-certs';
 import CertDownloadSection from '@/components/CertDownloadSection';
+import ErrorPanel from '@/components/ErrorPanel';
+import { extractOperatorError } from '@/lib/extract-operator-error';
 import FolderPickerDialog from '@/components/FolderPickerDialog';
 
 /**
@@ -769,6 +771,7 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
   const [deleteRouteConfirmId, setDeleteRouteConfirmId] = useState<string | null>(null);
   const [assigningRouteId, setAssigningRouteId] = useState<string | null>(null);
   const [folderPickerRouteId, setFolderPickerRouteId] = useState<string | null>(null);
+  const [folderError, setFolderError] = useState<unknown>(null);
 
   const rawRoutes = routesData?.data ?? [];
   const [routeQuery, setRouteQuery] = useState('');
@@ -879,12 +882,19 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
    */
   const handleAssignFolder = async (routeId: string, absolutePath: string | null) => {
     setAssigningRouteId(routeId);
+    setFolderError(null);
     try {
       const folder = absolutePath ? absolutePath.replace(/^\/+/, '') : null;
       await updateRoute.mutateAsync({ routeId, site_folder: folder || null });
+      setFolderPickerRouteId(null);
+    } catch (err) {
+      // A rejected assignment used to be swallowed here: the dialog closed and
+      // the row was unchanged, so a 400 was indistinguishable from success.
+      // Keep the picker open so another folder can be chosen without
+      // re-navigating, and say what the server refused.
+      setFolderError(err);
     } finally {
       setAssigningRouteId(null);
-      setFolderPickerRouteId(null);
     }
   };
 
@@ -940,8 +950,17 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
           confirmLabel="Use this folder"
           allowCreate={false}
           isPending={assigningRouteId === folderPickerRouteId}
-          onClose={() => setFolderPickerRouteId(null)}
+          onClose={() => { setFolderPickerRouteId(null); setFolderError(null); }}
           onConfirm={(path) => handleAssignFolder(folderPickerRouteId, path)}
+        />
+      )}
+
+      {folderError !== null && (
+        <ErrorPanel
+          error={extractOperatorError(folderError)}
+          severity="error"
+          compact
+          testId="site-folder-error"
         />
       )}
 

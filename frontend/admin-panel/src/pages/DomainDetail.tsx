@@ -308,7 +308,13 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
     const folder = absolutePath ? absolutePath.replace(/^\/+/, '') : null;
     updateRoute.mutate(
       { routeId, site_folder: folder || null },
-      { onSettled: () => setFolderPickerRouteId(null) },
+      {
+        // onSuccess, not onSettled: closing the picker on failure too made a
+        // rejected assignment look exactly like an accepted one — the dialog
+        // shut and the row was unchanged. On failure the picker stays open and
+        // `updateRoute.error` is rendered below the table.
+        onSuccess: () => setFolderPickerRouteId(null),
+      },
     );
   };
 
@@ -525,6 +531,15 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
           isPending={updateRoute.isPending}
           onClose={() => setFolderPickerRouteId(null)}
           onConfirm={(path) => handleAssignFolder(folderPickerRouteId, path)}
+        />
+      )}
+
+      {updateRoute.error && (
+        <ErrorPanel
+          error={extractOperatorError(updateRoute.error)}
+          severity="error"
+          compact
+          testId="route-update-error"
         />
       )}
     </div>
