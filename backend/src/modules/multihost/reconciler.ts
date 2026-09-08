@@ -70,6 +70,16 @@ export interface DeploymentReconcileResult {
    * status the platform shows says the change applied cleanly.
    */
   readonly missingFolders: ReadonlyArray<{ routeId: string; documentRoot: string }>;
+  /**
+   * Whether the folder-existence check could run at all.
+   *
+   * `unavailable` is NOT the same as an empty `missingFolders`, and conflating
+   * them is how a check that never ran reports a clean result. It happens for
+   * real: a distroless image (static-nginx) has no shell, so the probe's exec
+   * fails outright — and reporting "no folders missing" there would be a
+   * confident answer to a question nobody asked.
+   */
+  readonly folderCheck: 'ok' | 'unavailable';
 }
 
 function hashFiles(files: Record<string, string>): string {
@@ -227,7 +237,7 @@ export async function reconcileDeploymentSites(
     app: deploymentName,
   });
 
-  const base: Omit<DeploymentReconcileResult, 'reloaded' | 'failures' | 'missingFolders'> = {
+  const base: Omit<DeploymentReconcileResult, 'reloaded' | 'failures' | 'missingFolders' | 'folderCheck'> = {
     deploymentId: input.deploymentId,
     deploymentName,
     siteCount: rendered.sites.length,
@@ -235,13 +245,13 @@ export async function reconcileDeploymentSites(
     changed,
   };
 
-  if (!changed) return { ...base, reloaded: 0, failures: [], missingFolders: [] };
+  if (!changed) return { ...base, reloaded: 0, failures: [], missingFolders: [], folderCheck: 'ok' };
 
   const pods = await runningPods(clients.core, namespace, deploymentName, input.containerName);
   if (pods.length === 0) {
     // Scaled to zero or still starting. The ConfigMap is written, so whenever a
     // pod does come up it mounts the right config — nothing to reload.
-    return { ...base, reloaded: 0, failures: [], missingFolders: [] };
+    return { ...base, reloaded: 0, failures: [], missingFolders: [], folderCheck: 'ok' };
   }
 
   const checksumPath = `${cap.config_dir}/${CHECKSUM_KEY}`;
@@ -277,11 +287,11 @@ export async function reconcileDeploymentSites(
     reloaded += 1;
   }
 
-  const missingFolders = pods.length > 0
+  const folders = pods.length > 0
     ? await findMissingFolders(input.kubeconfigPath, namespace, pods[0], rendered.sites)
-    : [];
+    : { missing: [], check: 'ok' as const };
 
-  return { ...base, reloaded, failures, missingFolders };
+  return { ...base, reloaded, failures, missingFolders: folders.missing, folderCheck: folders.check };
 }
 
 /**
@@ -297,21 +307,26 @@ async function findMissingFolders(
   namespace: string,
   pod: PodRef,
   sites: readonly { routeId: string; documentRoot: string }[],
-): Promise<Array<{ routeId: string; documentRoot: string }>> {
-  if (sites.length === 0) return [];
+): Promise<{ missing: Array<{ routeId: string; documentRoot: string }>; check: 'ok' | 'unavailable' }> {
+  if (sites.length === 0) return { missing: [], check: 'ok' };
   // The folder passed `folderProblem` and sites_root comes from the manifest,
   // so neither can hold a quote — but this string becomes a shell command, and
   // "cannot happen" is not a reason to interpolate unchecked.
   const safe = sites.filter((s) => !/['"\\\n$`]/.test(s.documentRoot) && /^[A-Za-z0-9-]+$/.test(s.routeId));
-  if (safe.length === 0) return [];
+  if (safe.length === 0) return { missing: [], check: 'ok' };
   const script = safe
     .map((s) => `test -d '${s.documentRoot}' || echo '${s.routeId}'`)
     .join('; ');
   const r = await execInPod(kubeconfigPath, namespace, pod.name, pod.container, ['sh', '-c', script])
     .catch(() => null);
-  if (!r || r.exitCode !== 0) return [];
+  // A distroless image has no `sh`, so the exec fails rather than answering.
+  // Say so instead of returning an empty list that reads as "all present".
+  if (!r || r.exitCode !== 0) return { missing: [], check: 'unavailable' };
   const missing = new Set(r.stdout.split('\n').map((l) => l.trim()).filter(Boolean));
-  return safe.filter((s) => missing.has(s.routeId)).map((s) => ({ routeId: s.routeId, documentRoot: s.documentRoot }));
+  return {
+    missing: safe.filter((s) => missing.has(s.routeId)).map((s) => ({ routeId: s.routeId, documentRoot: s.documentRoot })),
+    check: 'ok',
+  };
 }
 
 /**
@@ -389,6 +404,7 @@ export async function reconcileTenantSites(
           skipped: result.skipped,
           failures: result.failures,
           missingFolders: result.missingFolders,
+          folderCheck: result.folderCheck,
         }, 'multihost: some sites were not applied cleanly');
       }
     } catch (err) {
