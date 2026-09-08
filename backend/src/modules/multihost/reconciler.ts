@@ -248,6 +248,22 @@ export interface ReconcileDeploymentInput {
   /** Injected so tests do not spend real time in the projection poll. */
   readonly sleep?: (ms: number) => Promise<void>;
   readonly projectionTimeoutMs?: number;
+  /**
+   * Return as soon as the ConfigMap is written, leaving the projection wait and
+   * the reload to run detached.
+   *
+   * The request path sets this. Waiting for kubelet to project a ConfigMap and
+   * then reloading takes tens of seconds, and a route PATCH that did it inline
+   * ran ~52s and came back as a Traefik 502 — while the change had actually
+   * applied. A tenant saw an error for a save that worked, which is worse than
+   * slow.
+   *
+   * Deferring is safe precisely because the ConfigMap is the durable source: it
+   * is written before the response, so a pod restarting at any point afterwards
+   * comes up serving the new sites regardless of whether the reload landed.
+   * The reload only shortens the wait for a pod that is already running.
+   */
+  readonly deferActivation?: boolean;
 }
 
 const defaultSleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -277,11 +293,36 @@ export async function reconcileDeploymentSites(
 
   if (!changed) return { ...base, reloaded: 0, failures: [], missingFolders: [], folderCheck: 'ok' };
 
+  if (input.deferActivation) {
+    // Detached on purpose: the caller is an HTTP handler. Failures are logged
+    // here and re-attempted by the next reconcile, which is idempotent.
+    void activateSites(clients, input, rendered, hash).catch((err) => {
+      input.logger?.warn({ err, deployment: deploymentName }, 'multihost: background activation failed');
+    });
+    return { ...base, reloaded: 0, failures: [], missingFolders: [], folderCheck: 'ok' };
+  }
+
+  const activation = await activateSites(clients, input, rendered, hash);
+  return { ...base, ...activation };
+}
+
+/**
+ * Wait for the projection, validate, reload, and report which folders are
+ * missing. Separated from the ConfigMap write so the write can be awaited by a
+ * request while this runs detached.
+ */
+async function activateSites(
+  clients: MultihostClients,
+  input: ReconcileDeploymentInput,
+  rendered: RenderResult,
+  hash: string,
+): Promise<Pick<DeploymentReconcileResult, 'reloaded' | 'failures' | 'missingFolders' | 'folderCheck'>> {
+  const { capability: cap, namespace, deploymentName } = input;
   const pods = await runningPods(clients.core, namespace, deploymentName, input.containerName);
   if (pods.length === 0) {
     // Scaled to zero or still starting. The ConfigMap is written, so whenever a
     // pod does come up it mounts the right config — nothing to reload.
-    return { ...base, reloaded: 0, failures: [], missingFolders: [], folderCheck: 'ok' };
+    return { reloaded: 0, failures: [], missingFolders: [], folderCheck: 'ok' };
   }
 
   const probe = isMultihostFlavour(cap.server)
@@ -323,7 +364,7 @@ export async function reconcileDeploymentSites(
     ? await findMissingFolders(input.kubeconfigPath, namespace, pods[0], rendered.sites)
     : { missing: [], check: 'ok' as const };
 
-  return { ...base, reloaded, failures, missingFolders: folders.missing, folderCheck: folders.check };
+  return { reloaded, failures, missingFolders: folders.missing, folderCheck: folders.check };
 }
 
 /**
@@ -422,6 +463,10 @@ export async function reconcileTenantSites(
       const result = await reconcileDeploymentSites(clients, {
         kubeconfigPath,
         namespace,
+        // Called from reconcileIngress, which every route mutation awaits.
+        // Writing the ConfigMap is fast; waiting for kubelet and reloading is
+        // not, and doing it here made a route PATCH time out at the gateway.
+        deferActivation: true,
         deploymentId: deployment.id,
         deploymentName: deployment.name,
         capability: cap,

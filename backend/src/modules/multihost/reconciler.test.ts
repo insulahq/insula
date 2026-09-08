@@ -225,6 +225,24 @@ describe('reconcileDeploymentSites', () => {
     expect(CHECKSUM_KEY.endsWith('.conf')).toBe(true);
   });
 
+  it('with deferActivation, writes the ConfigMap but does NOT wait or reload', async () => {
+    // The request path sets this. Doing the wait + reload inline made a route
+    // PATCH run ~52s and return a gateway 502 for a change that had actually
+    // applied — an error for a save that worked.
+    const f = fakeCore();
+    wireExec(f.state);
+    const r = await reconcileDeploymentSites({ core: f.core },
+      { ...baseInput([site('a', 'one.test', 'fa')]), deferActivation: true });
+
+    // The durable source IS written before returning — that is what makes
+    // deferring safe: a pod restarting later comes up correct regardless.
+    expect(r.changed).toBe(true);
+    expect(f.state.data?.[siteFilename('a')]).toContain('ServerName one.test');
+    // ...but nothing was awaited on the pod.
+    expect(r.reloaded).toBe(0);
+    expect(r.failures).toEqual([]);
+  });
+
   it('names the ConfigMap after the deployment', () => {
     expect(vhostConfigMapName('sites')).toBe('sites-vhosts');
   });
