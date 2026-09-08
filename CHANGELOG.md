@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.9.13] - 2026-09-08
+
 ### Added
 
 - **One web runtime can now serve several websites, each from its own folder.**
@@ -220,7 +222,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   **zero** times, so `messages_total` stayed NULL and the panel renders the bar
   only for a positive number. It now reads the format the shipped imapsync
   actually emits.
-
 
 ## [2026.9.12] - 2026-09-07
 
