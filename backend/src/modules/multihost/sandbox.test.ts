@@ -237,3 +237,29 @@ describe('sites_root from a catalog manifest is validated too', () => {
     expect(absolutePathIsSane(42)).toBe(false);
   });
 });
+
+describe('symlink confinement is scoped to multi-host sites only', () => {
+  it('apache confines each generated vhost to its own document root', () => {
+    const { files } = renderSites(APACHE, [route({ siteFolder: 'shop/public', appRoot: 'shop' })]);
+    const vhost = Object.values(files)[0];
+    expect(vhost).toContain('<Directory "/var/www/sites/shop/public">');
+    expect(vhost).toContain('Options -Indexes -FollowSymLinks');
+  });
+
+  /**
+   * It must live in the GENERATED vhost, not the shared include: that include
+   * also governs the stock single-site vhost, which mounts only its own folder
+   * — banning symlinks there breaks Laravel's public/storage for no gain.
+   */
+  it('the confinement names the site docroot, so it cannot leak to the stock vhost', () => {
+    const { files } = renderSites(APACHE, [route({ siteFolder: 'only-me' })]);
+    const vhost = Object.values(files)[0];
+    expect(vhost).toContain('<Directory "/var/www/sites/only-me">');
+    expect(vhost).not.toContain('<Directory "/var/www">');
+  });
+
+  it('a static apache runtime gets it too', () => {
+    const STATIC_AP: typeof APACHE = { ...APACHE, php: undefined };
+    expect(Object.values(renderSites(STATIC_AP, [route()]).files)[0]).toContain('-FollowSymLinks');
+  });
+});
