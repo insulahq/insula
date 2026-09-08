@@ -13,6 +13,17 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Fixed
+- **Route changes and deployment deletes took up to a minute and could return a
+  gateway error for a change that had actually applied.** Saving a site folder
+  waited for Kubernetes to deliver the new configuration to the running pod and
+  for the web server to reload it — up to a minute — before answering the
+  request, so the panel showed a 502 while the change had already been saved.
+  Measured on production at 59s for a route change and 50s for a deployment
+  delete; every ingress-related call on a tenant with multi-host serving paid
+  it. The save now returns as soon as the configuration is stored, and the pod
+  picks it up in the background. Nothing is lost if that background step is
+  interrupted: the stored configuration is what a pod reads when it starts, so
+  the site is correct either way.
 - **Setting the folder a hostname serves did nothing, with no error shown.**
   Two faults met: the folder-name rule allowed only lowercase letters, digits,
   hyphens and underscores, so `business.na` — a folder named after the site it
