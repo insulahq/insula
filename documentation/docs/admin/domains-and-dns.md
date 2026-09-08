@@ -109,6 +109,12 @@ first (Files & SFTP in their panel). If a tenant asks why a new hostname shows
 the wrong site, this is usually the reason: the route is bound but has no folder,
 so it falls through to the application's document root.
 
+Folder names may use letters, digits, dots, hyphens and underscores and must
+start with a letter or digit, so the common convention of naming a folder after
+its site (`example.com`) is fine. Names starting with a dot, or containing
+spaces, are refused — the panel shows which rule was broken rather than failing
+silently.
+
 ### DNS Records tab
 
 For Primary / Secondary domains, manage the zone's records directly. Click
