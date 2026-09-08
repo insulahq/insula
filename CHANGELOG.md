@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.9.13] - 2026-09-08
+
 ### Added
 
 - **One web runtime can now serve several websites, each from its own folder.**
