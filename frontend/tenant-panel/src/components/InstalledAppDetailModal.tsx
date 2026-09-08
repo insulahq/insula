@@ -5,6 +5,7 @@ import { X, Play, Square, Cpu, HardDrive, Server, Clock, Shield, Eye, EyeOff, Ap
 import { getStatusColor } from '@/lib/status-colors';
 import { useUpdateDeploymentResources, useUpdateDeployment, useResourceAvailability, useDeploymentLiveMetrics, useSwitchDeploymentVersion } from '@/hooks/use-deployments';
 import ExtraMountsEditor, { extraMountErrors, type ExtraMountRow } from './ExtraMountsEditor';
+import { useSetMultihost } from '@/hooks/use-deployments';
 import NetworkAccessSection from '@/components/NetworkAccessSection';
 import AvailableUpgradesCard from '@/components/AvailableUpgradesCard';
 import { ResourceBreakdown } from '@/components/ResourceBreakdown';
@@ -152,6 +153,15 @@ export default function InstalledAppDetailModal({
   const [revealedSecrets, setRevealedSecrets] = useState<Set<string>>(new Set());
   const [dbModalOpen, setDbModalOpen] = useState(false);
   const { data: versionsData } = useCatalogEntryVersions(catalogEntry?.id);
+
+  // Multi-host serving. The capability is DECLARED by the catalog entry — the
+  // control is not offered at all for an application that cannot do it, rather
+  // than offered and then refused by the API.
+  const setMultihost = useSetMultihost(tenantId);
+  const multihostCapable = Boolean((catalogEntry as { multihost?: unknown } | null)?.multihost);
+  // `deployment` is null while the modal is mounted but closed — these hooks
+  // run before the component's own null guard further down.
+  const multihostOn = Boolean((deployment as { multihostEnabled?: boolean } | null)?.multihostEnabled);
 
   // ─── Resource editing (Issue 7) ─────────────────────────────────────────────
   const [editingResources, setEditingResources] = useState(false);
@@ -832,6 +842,43 @@ export default function InstalledAppDetailModal({
             </p>
           )}
         </div>
+
+        {/* Multi-host serving — only for catalog entries that declare it. */}
+        {multihostCapable && (
+          <section className="mb-5" data-testid="multihost-section">
+            <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-900 dark:text-gray-100 mb-2">
+              Multi-host serving
+            </h3>
+            <p className="text-sm text-gray-600 dark:text-gray-400">
+              {multihostOn
+                ? 'On — each hostname routed here can serve its own folder. Assign folders under Domains → Routing.'
+                : 'Off — every hostname routed here serves this deployment\u2019s document root.'}
+            </p>
+            <div className="mt-2 flex items-start gap-2 rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+              <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+              <span>
+                {multihostOn
+                  ? 'Turning this off restarts the application once. Clear every hostname\u2019s folder first, or the request is refused.'
+                  : 'Turning this on restarts the application once, and gives it access to your whole storage so any folder can be served. Adding or changing sites afterwards does not restart anything.'}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setMultihost.mutate({ deploymentId: deployment.id, enabled: !multihostOn })}
+              disabled={setMultihost.isPending}
+              className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50 disabled:opacity-50"
+              data-testid="multihost-toggle"
+            >
+              {setMultihost.isPending && <Loader2 size={12} className="animate-spin" />}
+              {multihostOn ? 'Turn off multi-host serving' : 'Turn on multi-host serving'}
+            </button>
+            {setMultihost.isError && (
+              <p className="mt-2 text-xs text-red-600 dark:text-red-400" data-testid="multihost-error">
+                {setMultihost.error instanceof Error ? setMultihost.error.message : 'Failed to change multi-host serving'}
+              </p>
+            )}
+          </section>
+        )}
 
         {/* Extra Mounts Section */}
         <section className="mb-5">

@@ -8,7 +8,7 @@ import { useParams, Link, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft, Loader2, AlertCircle, Plus, Trash2, Globe, X,
   CheckCircle, Network, Pencil, Check, RefreshCw, Lock,
-  ArrowLeftRight, ArrowDownToLine, ArrowUpFromLine, CheckCircle2, Upload, ShieldCheck,
+  ArrowLeftRight, ArrowDownToLine, ArrowUpFromLine, CheckCircle2, Upload, ShieldCheck, FolderOpen,
 } from 'lucide-react';
 import { VerificationChecksTable } from '@/components/VerificationChecksTable';
 import clsx from 'clsx';
@@ -28,6 +28,7 @@ import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
 import { useSslCert, useUploadSslCert, useDeleteSslCert } from '@/hooks/use-ssl-certs';
 import CertDownloadSection from '@/components/CertDownloadSection';
+import FolderPickerDialog from '@/components/FolderPickerDialog';
 
 const INPUT_CLASS =
   'w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500';
@@ -753,6 +754,7 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
   // "Confirm" state and a second click performs the delete.
   const [deleteRouteConfirmId, setDeleteRouteConfirmId] = useState<string | null>(null);
   const [assigningRouteId, setAssigningRouteId] = useState<string | null>(null);
+  const [folderPickerRouteId, setFolderPickerRouteId] = useState<string | null>(null);
 
   const routes = routesData?.data ?? [];
   const allDeployments = deploymentsData?.data ?? [];
@@ -829,6 +831,24 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
     });
   };
 
+  /**
+   * Assign the folder a hostname serves.
+   *
+   * The picker browses the tenant's whole storage, and the file manager chroots
+   * into the PVC — so its `/` IS the storage root and the leading slash is
+   * stripped to get the root-relative form the API stores.
+   */
+  const handleAssignFolder = async (routeId: string, absolutePath: string | null) => {
+    setAssigningRouteId(routeId);
+    try {
+      const folder = absolutePath ? absolutePath.replace(/^\/+/, '') : null;
+      await updateRoute.mutateAsync({ routeId, site_folder: folder || null });
+    } finally {
+      setAssigningRouteId(null);
+      setFolderPickerRouteId(null);
+    }
+  };
+
   const handleAssignDeployment = async (routeId: string, value: string | null) => {
     setAssigningRouteId(routeId);
     try {
@@ -868,6 +888,22 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
           not by editing rows here. Provisioning status badge mirrors
           email_domains.webmail_status. */}
       <ManagedWebmailRow tenantId={tenantId} domainId={domainId} />
+
+      {/* Browses the tenant's whole storage: any folder may serve a hostname,
+          not only children of the deployment's own storage path. Creating
+          folders is intentionally not offered here — a site folder should be
+          one that already holds the site. */}
+      {folderPickerRouteId && (
+        <FolderPickerDialog
+          title="Choose the folder this hostname serves"
+          description="Pick any folder on your storage. The hostname will serve it as its document root."
+          initialPath="/"
+          confirmLabel="Use this folder"
+          isPending={assigningRouteId === folderPickerRouteId}
+          onClose={() => setFolderPickerRouteId(null)}
+          onConfirm={(path) => handleAssignFolder(folderPickerRouteId, path)}
+        />
+      )}
 
       {isLoading ? (
         <div className="flex items-center gap-2 py-4">
@@ -974,6 +1010,43 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
                           </select>
                           {assigningRouteId === route.id && <Loader2 size={14} className="animate-spin text-blue-500" />}
                         </div>
+                        {/* Site folder — only for a deployment serving several
+                            hostnames. When the deployment is not multi-host the
+                            concept does not exist, so nothing is shown rather
+                            than a disabled control nobody can explain. */}
+                        {(() => {
+                          const target = deployments.find((d) => d.id === route.deploymentId) as
+                            { multihostEnabled?: boolean } | undefined;
+                          if (!target?.multihostEnabled) return null;
+                          const folder = (route as { siteFolder?: string | null }).siteFolder ?? null;
+                          return (
+                            <div className="mt-1 flex items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={() => setFolderPickerRouteId(route.id)}
+                                disabled={assigningRouteId === route.id}
+                                className="inline-flex items-center gap-1 rounded border border-gray-200 dark:border-gray-600 px-1.5 py-0.5 font-mono text-[11px] text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50 disabled:opacity-50"
+                                data-testid={`site-folder-button-${route.id}`}
+                                title="Folder this hostname serves"
+                              >
+                                <FolderOpen size={11} />
+                                {folder ?? 'document root'}
+                              </button>
+                              {folder && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleAssignFolder(route.id, null)}
+                                  disabled={assigningRouteId === route.id}
+                                  className="text-[11px] text-gray-400 hover:text-red-500 disabled:opacity-50"
+                                  data-testid={`site-folder-clear-${route.id}`}
+                                  title="Serve the deployment's document root instead"
+                                >
+                                  clear
+                                </button>
+                              )}
+                            </div>
+                          );
+                        })()}
                       </td>
                       <td className="px-4 py-3">
                         <span
