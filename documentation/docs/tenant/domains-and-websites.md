@@ -133,6 +133,13 @@ site first, under [Files & SFTP](files-and-sftp.md). Pointing a hostname at an
 empty folder gives visitors a 404, which looks like a broken site rather than
 an empty one.
 
+Folder names may use letters, digits, dots, hyphens and underscores, and must
+start with a letter or digit — so naming a folder after the site it holds
+(`example.com`, `shop.example.com`) works, which is the usual convention. A
+folder whose name starts with a dot, or contains spaces or other punctuation,
+cannot be used as a website root; rename it first. If the panel refuses a
+folder it tells you which rule it broke.
+
 If you have a **www Redirect** set on the route, the folder is served for the
 address visitors end up on. With *Add www*, that is the `www.` form; with
 *Remove www*, the bare one. You do not need to do anything differently — but it
