@@ -30,7 +30,7 @@ import type { Logger } from 'pino';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { catalogEntries, deployments, domains, ingressRoutes } from '../../db/schema.js';
 import { execInPod } from '../../shared/k8s-exec.js';
-import { minimalSiteFolders } from '../deployments/k8s-deployer.js';
+import { minimalSiteFolders, MULTIHOST_SESSION_ROOT } from '../deployments/k8s-deployer.js';
 import { renderSites, isMultihostFlavour, type MultihostCapability, type MultihostFlavour, type RenderResult, type SiteRoute } from './renderer.js';
 import type { MultihostMounts } from '../deployments/k8s-deployer.js';
 
@@ -472,7 +472,12 @@ async function ensureSiteMounts(
     return Boolean(sub) && mp === `${sitesRoot}/${sub}`;
   };
   const currentFolders = minimalSiteFolders(
-    current.filter(isSiteMount).map((m) => String(m.subPath ?? '')).filter(Boolean),
+    current.filter(isSiteMount)
+      .map((m) => String(m.subPath ?? ''))
+      // Compare SITE folders only: a session subPath is derived from one, so
+      // counting both would never match `desired` and every reconcile would
+      // rewrite the pod template and restart the pod.
+      .filter((sp) => sp && !sp.startsWith(`${MULTIHOST_SESSION_ROOT}/`)),
   );
   // A legacy pod mounting the volume ROOT has one site mount with no subPath.
   // It must be replaced even when the folder list matches, because that mount
@@ -485,12 +490,23 @@ async function ensureSiteMounts(
   if (same) return false;
 
   const kept = current.filter((m) => !isSiteMount(m));
+  // Session mounts are rebuilt here too. `isSiteMount` matches them — their
+  // mountPath is `<sites_root>/<subPath>` like any other — so rebuilding only
+  // the site folders DROPPED them on every route change, leaving each vhost
+  // pointing session.save_path at a directory no longer in the container.
+  // The two lists must be emitted together, exactly as buildMultihostMounts
+  // does, or the deployer and the reconciler disagree about the pod.
   const next = [
     ...kept,
     ...desired.map((folder) => ({
       name: 'tenant-storage',
       mountPath: `${sitesRoot}/${folder}`,
       subPath: folder,
+    })),
+    ...desired.map((folder) => ({
+      name: 'tenant-storage',
+      mountPath: `${sitesRoot}/${MULTIHOST_SESSION_ROOT}/${folder}`,
+      subPath: `${MULTIHOST_SESSION_ROOT}/${folder}`,
     })),
   ];
 
@@ -521,14 +537,7 @@ async function ensureSiteMounts(
       const fi = freshContainers.findIndex((c) => (c as { name?: string }).name === containerName);
       if (fi < 0) return false;
       const fc = freshContainers[fi] as { volumeMounts?: Array<Record<string, unknown>> };
-      fc.volumeMounts = [
-        ...(fc.volumeMounts ?? []).filter((m) => !isSiteMount(m)),
-        ...desired.map((folder) => ({
-          name: 'tenant-storage',
-          mountPath: `${sitesRoot}/${folder}`,
-          subPath: folder,
-        })),
-      ];
+      fc.volumeMounts = [...(fc.volumeMounts ?? []).filter((m) => !isSiteMount(m)), ...next.filter(isSiteMount)];
       dep = fresh;
     }
   }
