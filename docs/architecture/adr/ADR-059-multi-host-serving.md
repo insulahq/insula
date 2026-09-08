@@ -102,9 +102,22 @@ read-only) over the image's include directory.
   no longer rendered, so deleting a route would leave its vhost behind and the
   site would keep answering.
 
-Cost: kubelet's projection delay before a new site answers — measured at ~5s on
-the cluster, bounded by the sync period. That is inside the noise of DNS and
-certificate issuance for a new hostname, and it buys a single source of truth.
+Cost: kubelet's projection delay before a new site answers. Measured on
+production at **~60 seconds** — kubelet's sync period, which is the honest
+figure. An earlier "~5s" here came from a single lucky sample on DEV taken just
+after a sync; one fast observation does not establish a fast path.
+
+That delay is inside the noise of DNS and certificate issuance for a NEW
+hostname, so it is acceptable for the site to go live — but it must not be spent
+inside an HTTP request. Doing the wait and reload inline made a route PATCH run
+~52s on DEV and 59s on production, long enough to come back as a Traefik 502 for
+a change that had actually applied: a tenant saw an error for a save that
+worked, and a deployment DELETE inherited the same cost. So the request path
+writes the ConfigMap — the durable source — and returns, leaving the wait and
+reload to run detached. Deferring is safe precisely because of the ConfigMap
+property above: a pod restarting at any point comes up serving the new sites
+whether or not the reload landed. The reload only shortens the wait for a pod
+that is already running.
 
 ### Enabling is the only restart
 
