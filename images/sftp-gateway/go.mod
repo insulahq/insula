@@ -4,7 +4,7 @@ go 1.26.5
 
 require (
 	github.com/gliderlabs/ssh v0.3.8
-	golang.org/x/crypto v0.55.0
+	golang.org/x/crypto v0.56.0
 	k8s.io/api v0.37.0
 	k8s.io/apimachinery v0.37.0
 	k8s.io/client-go v0.37.0
