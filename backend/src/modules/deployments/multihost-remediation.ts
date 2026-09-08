@@ -25,6 +25,7 @@ import { deployments, catalogEntries } from '../../db/schema.js';
 import { capabilityOf } from '../multihost/reconciler.js';
 import { MULTIHOST_DISABLED_PHP_FUNCTIONS } from './k8s-deployer.js';
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Db = NodePgDatabase<any>;
 
 export interface RemediationReport {
