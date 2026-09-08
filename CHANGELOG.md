@@ -12,6 +12,13 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **Multi-host serving can be switched on while deploying**, not only
+  afterwards. The instance then starts with everything it needs, so there is no
+  restart — turning it on later has to change how storage is attached, which
+  restarts the application. The option appears in the deploy dialog only for
+  applications that support it.
+
 ### Fixed
 - **Setting the folder a hostname serves did nothing, with no error shown.**
   Two faults met: the folder-name rule allowed only lowercase letters, digits,
