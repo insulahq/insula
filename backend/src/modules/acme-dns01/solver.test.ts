@@ -234,6 +234,36 @@ describe('cleanupChallenge', () => {
     expect(provider.deleteRecord).toHaveBeenCalledTimes(1);
   });
 
+  it('never throws when the ZONE cannot be resolved — a finalizer depends on it', async () => {
+    // THE REGRESSION, and the real cause of a permanently wedged challenge.
+    //
+    // cert-manager does not release `acme.cert-manager.io/finalizer` until
+    // CleanUp succeeds. resolveChallengeTarget ran OUTSIDE the guard and threw
+    // for a zone the platform does not own — exactly the mispointed-NS case —
+    // so the Challenge could never be deleted. It stayed in Terminating
+    // forever, still holding the single (dnsName, type) slot the scheduler
+    // allows, and every later challenge for that name was created with an
+    // empty status and never ran.
+    //
+    // Observed on DEV: deletionTimestamp set at 09:11:57Z, object still
+    // present, reason "Error cleaning up challenge: Platform is not
+    // authoritative".
+    //
+    // The pre-existing "never throws" test below covers a PROVIDER failure,
+    // which was already inside the guard — which is why this path survived.
+    const emptyDb = {
+      select: vi.fn().mockReturnValue({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }),
+      }),
+    } as never;
+    const logger = makeLogger();
+
+    await expect(
+      solver.cleanupChallenge({ db: emptyDb, encryptionKey: 'k', logger }, request({ action: 'CleanUp' })),
+    ).resolves.toBeUndefined();
+    expect(logger.warn).toHaveBeenCalled();
+  });
+
   it('never throws — a failed cleanup must not fail the order', async () => {
     const provider = makeProvider({
       deleteRecordValue: vi.fn().mockRejectedValue(new Error('provider down')),
