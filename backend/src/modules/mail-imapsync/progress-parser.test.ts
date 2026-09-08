@@ -212,3 +212,69 @@ describe('parseImapsyncSummary', () => {
     expect(line).not.toContain('1 folders');
   });
 });
+
+// ─── Real imapsync output (the format the shipped image actually emits) ──
+//
+// Captured from a REAL 120-message transfer on the DEV cluster
+// (2026-09-08, job status succeeded, 5 folders). The image emits NO
+// `+ Copying msg N/M` line at all — every pattern above was written
+// against a format this build never produces, so messages_total stayed
+// NULL for the whole run and the tenant-panel progress bar, which
+// requires it, could never render.
+//
+// The real markers are a decreasing "N/M msgs left" counter (present on
+// both the per-message line and the standalone ETA line) and a
+// `Folder N/M [name] -> [name]` header.
+describe('parseImapsyncProgress — real imapsync "msgs left" output', () => {
+  const REAL_LOG = `++++ Looping on each one of 5 folders to sync
+ETA: Tuesday 08 September 2026 14:44:22 +0000 UTC  0 s  120/120 msgs left
+Folder     1/5 [Deleted Items]                     -> [Deleted Items]
+Folder     3/5 [INBOX]                             -> [INBOX]
+msg INBOX/1 {606}             copied to INBOX/1          9.53 msgs/s  5.638 KiB/s 0.592 KiB copied ETA: Tuesday 08 September 2026 14:44:35 +0000 UTC  13 s  119/120 msgs left
+msg INBOX/2 {606}             copied to INBOX/2          17.31 msgs/s  10.241 KiB/s 1.184 KiB copied ETA: Tuesday 08 September 2026 14:44:29 +0000 UTC  7 s  118/120 msgs left
+msg INBOX/12 {606}            copied to INBOX/12         58.19 msgs/s  34.434 KiB/s 7.102 KiB copied ETA: Tuesday 08 September 2026 14:44:24 +0000 UTC  2 s  108/120 msgs left
+`;
+
+  it('derives transferred and total from the "msgs left" counter', () => {
+    const result = parseImapsyncProgress(REAL_LOG);
+    // 108 of 120 still to go => 12 done.
+    expect(result.messagesTotal).toBe(120);
+    expect(result.messagesTransferred).toBe(12);
+  });
+
+  it('reports the folder currently being copied', () => {
+    expect(parseImapsyncProgress(REAL_LOG).currentFolder).toBe('INBOX');
+  });
+
+  it('reports 0 transferred before the first message moves', () => {
+    const log = `++++ Looping on each one of 5 folders to sync
+ETA: Tuesday 08 September 2026 14:44:22 +0000 UTC  0 s  120/120 msgs left
+Folder     1/5 [Deleted Items]                     -> [Deleted Items]
+`;
+    const result = parseImapsyncProgress(log);
+    expect(result.messagesTotal).toBe(120);
+    expect(result.messagesTransferred).toBe(0);
+    expect(result.currentFolder).toBe('Deleted Items');
+  });
+
+  it('does not mistake the folder counter for the message counter', () => {
+    // `Folder 3/5` and `Host1 folder 3/5 [...] Messages: 120` must not be
+    // read as progress — only the "msgs left" counter is progress.
+    const log = `Host1 folder     3/5 [INBOX]                             Size:       72720 Messages:    120 Biggest:       606
+Folder     3/5 [INBOX]                             -> [INBOX]
+`;
+    const result = parseImapsyncProgress(log);
+    expect(result.messagesTotal).toBeNull();
+    expect(result.messagesTransferred).toBeNull();
+    expect(result.currentFolder).toBe('INBOX');
+  });
+
+  it('still prefers the "Copying msg" format when a log has both', () => {
+    const log = `+ Copying msg 50/200 {INBOX}
+ETA: Tuesday 08 September 2026 14:44:22 +0000 UTC  0 s  120/120 msgs left
+`;
+    const result = parseImapsyncProgress(log);
+    expect(result.messagesTransferred).toBe(50);
+    expect(result.messagesTotal).toBe(200);
+  });
+});

@@ -9,6 +9,7 @@ import {
   ArrowLeft, Loader2, AlertCircle, Plus, Trash2, Globe, X,
   CheckCircle, Network, Pencil, Check, RefreshCw, Lock,
   ArrowLeftRight, ArrowDownToLine, ArrowUpFromLine, CheckCircle2, Upload, ShieldCheck, FolderOpen,
+  Search,
 } from 'lucide-react';
 import { VerificationChecksTable } from '@/components/VerificationChecksTable';
 import clsx from 'clsx';
@@ -29,6 +30,19 @@ import SortableHeader from '@/components/ui/SortableHeader';
 import { useSslCert, useUploadSslCert, useDeleteSslCert } from '@/hooks/use-ssl-certs';
 import CertDownloadSection from '@/components/CertDownloadSection';
 import FolderPickerDialog from '@/components/FolderPickerDialog';
+
+/**
+ * Alphabetical by name, case-insensitive.
+ *
+ * The deployment pickers rendered in whatever order the API returned, which is
+ * creation order — so a tenant with a dozen apps had to hunt for the one they
+ * wanted. localeCompare with base sensitivity keeps 'Api' and 'api' adjacent
+ * rather than splitting on case.
+ */
+function sortByName<T extends { readonly name: string }>(items: readonly T[]): T[] {
+  return [...items].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+}
+
 
 const INPUT_CLASS =
   'w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500';
@@ -756,7 +770,8 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
   const [assigningRouteId, setAssigningRouteId] = useState<string | null>(null);
   const [folderPickerRouteId, setFolderPickerRouteId] = useState<string | null>(null);
 
-  const routes = routesData?.data ?? [];
+  const rawRoutes = routesData?.data ?? [];
+  const [routeQuery, setRouteQuery] = useState('');
   const allDeployments = deploymentsData?.data ?? [];
   const customDeployments = customDeploymentsData?.data ?? [];
   const catalogEntries = catalogData?.data ?? [];
@@ -766,7 +781,7 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
   // the entry type is 'runtime'/'static'/'application' — database/service
   // types never serve HTTP traffic).
   const catalogMap = new Map(catalogEntries.map((e) => [e.id, e]));
-  const deployments = allDeployments.filter((d) => {
+  const deployments = sortByName(allDeployments.filter((d) => {
     if (d.source === 'custom') return false; // handled separately via customDeployments
     const entry = d.catalogEntryId ? catalogMap.get(d.catalogEntryId) : undefined;
     if (!entry) return true; // If catalog not loaded yet, show all to avoid hiding valid options
@@ -777,13 +792,37 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
     if (hasIngressPort) return true;
     // Fall back to type-based check: runtimes, statics, and applications serve HTTP
     return entry.type === 'runtime' || entry.type === 'static' || entry.type === 'application';
-  });
+  }));
 
   // Custom deployments that have at least one ingressEligible port.
-  const ingressableCustom = customDeployments.filter((cd) => {
+  const ingressableCustom = sortByName(customDeployments.filter((cd) => {
     const services = Object.values(cd.customSpec?.services ?? {});
     return services.some(svc => (svc.ports ?? []).some(p => p.ingressEligible && p.exposeAsService));
-  });
+  }));
+
+  // Decorate each route with the deployment NAME so both search and sort work
+  // on what the operator actually sees. The route itself only carries an id,
+  // and sorting a column of names by hidden uuid is indistinguishable from not
+  // sorting at all.
+  const deploymentNameById = new Map<string, string>([
+    ...deployments.map((d) => [d.id, d.name] as const),
+    ...ingressableCustom.map((cd) => [cd.id, cd.name] as const),
+  ]);
+  const decoratedRoutes = rawRoutes.map((r) => ({
+    ...r,
+    deploymentName: r.deploymentId ? deploymentNameById.get(r.deploymentId) ?? '' : '',
+  }));
+
+  const query = routeQuery.trim().toLowerCase();
+  const filteredRoutes = query
+    ? decoratedRoutes.filter((r) =>
+        [r.hostname, (r as Record<string, unknown>).path as string | undefined, r.deploymentName]
+          .some((v) => (v ?? '').toLowerCase().includes(query)))
+    : decoratedRoutes;
+
+  // Alphabetical by hostname by default — the order an operator scans in.
+  const { sortedData: visibleRoutes, sortKey, sortDirection, onSort } = useSortable(filteredRoutes, 'hostname');
+  const routes = decoratedRoutes;
 
   /**
    * Validate the subdomain part, which may be a wildcard.
@@ -935,20 +974,43 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
         });
         return (
           <>
+            {routes.length > 1 && (
+              <div className="mb-3 relative">
+                <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 dark:text-gray-500" />
+                <input
+                  type="search"
+                  value={routeQuery}
+                  onChange={(e) => setRouteQuery(e.target.value)}
+                  placeholder="Search hostname, path or deployment…"
+                  aria-label="Search ingress routes"
+                  className="w-full rounded-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-700 pl-9 pr-3 py-2 text-sm text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-400 focus:border-blue-500 focus:outline-none"
+                  data-testid="routes-search"
+                />
+              </div>
+            )}
             <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700">
               <table className="w-full text-sm" data-testid="routes-table">
                 <thead>
                   <tr className="border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                    <th className="px-4 py-3">Hostname</th>
-                    {showPathColumn && <th className="px-4 py-3">Path Prefix</th>}
+                    <SortableHeader label="Hostname" sortKey="hostname" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="px-4 py-3" />
+                    {showPathColumn && (
+                      <SortableHeader label="Path Prefix" sortKey="path" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="px-4 py-3" />
+                    )}
                     {dnsMode !== 'primary' && <th className="px-4 py-3">CNAME Target</th>}
-                    <th className="px-4 py-3">Deployment</th>
+                    <SortableHeader label="Deployment" sortKey="deploymentName" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="px-4 py-3" />
                     <th className="px-4 py-3">TLS</th>
                     <th className="px-4 py-3"></th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-                  {routes.map((route) => (
+                  {visibleRoutes.length === 0 && (
+                    <tr>
+                      <td colSpan={6} className="px-4 py-6 text-center text-sm text-gray-500 dark:text-gray-400" data-testid="routes-no-match">
+                        No routes match “{routeQuery}”.
+                      </td>
+                    </tr>
+                  )}
+                  {visibleRoutes.map((route) => (
                     <tr
                       key={route.id}
                       className="hover:bg-gray-50 dark:hover:bg-gray-800/50 cursor-pointer"

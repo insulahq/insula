@@ -955,6 +955,71 @@ function formatTimeAgo(dateStr: string): string {
  * metric bars per row is what makes a list view slower than the grid it was
  * meant to speed up.
  */
+/**
+ * Compact live CPU / memory readout for a table row.
+ *
+ * The list view showed a Type badge — a static label the operator already knows
+ * from the Application column — while the one thing they cannot see anywhere in
+ * the list was whether an app is near its limit. The grid view has had usage
+ * bars all along; this brings the same information to the list.
+ *
+ * Fetches only for RUNNING deployments: a stopped app has no metrics to report
+ * and polling for them is a request per row per interval that can only ever
+ * return zero.
+ */
+function UsageIndicator({
+  deploymentId,
+  request,
+  type,
+  enabled,
+}: {
+  readonly deploymentId: string;
+  readonly request: string;
+  readonly type: 'cpu' | 'memory';
+  readonly enabled: boolean;
+}) {
+  const { tenantId } = useTenantContext();
+  const { data } = useDeploymentLiveMetrics(tenantId ?? undefined, enabled ? deploymentId : undefined);
+  const metrics = data?.data;
+
+  if (!enabled) return <span className="text-xs text-gray-400 dark:text-gray-500">—</span>;
+  if (!metrics) return <span className="text-xs text-gray-400 dark:text-gray-500">…</span>;
+
+  let used = 0;
+  let limit = 0;
+  let label = '';
+  if (type === 'cpu') {
+    used = metrics.cpuUsed ?? 0;
+    limit = request.endsWith('m') ? parseFloat(request) / 1000 : parseFloat(request) || 0;
+    label = `${Math.round(used * 1000)}m`;
+  } else {
+    used = metrics.memoryUsedMi ?? 0;
+    if (request.endsWith('Gi')) limit = parseFloat(request) * 1024;
+    else if (request.endsWith('Mi')) limit = parseFloat(request);
+    else limit = parseFloat(request) || 0;
+    label = `${Math.round(used)}Mi`;
+  }
+
+  const pct = limit > 0 ? Math.min((used / limit) * 100, 100) : 0;
+  // Same thresholds as the grid view, so one app does not read as healthy in
+  // one view and hot in the other.
+  const barColor = pct >= 80 ? 'bg-red-500' : pct >= 50 ? 'bg-amber-500' : 'bg-green-500';
+
+  return (
+    <div className="min-w-[70px]" data-testid={`usage-${type}-${deploymentId}`}>
+      <div className="text-xs text-gray-700 dark:text-gray-300">
+        {label}
+        {limit > 0 && <span className="text-gray-400 dark:text-gray-500"> / {request}</span>}
+      </div>
+      {limit > 0 && (
+        <div className="mt-1 h-1 w-full rounded-full bg-gray-200 dark:bg-gray-600 overflow-hidden">
+          <div className={clsx('h-full rounded-full transition-all', barColor)} style={{ width: `${pct}%` }} />
+        </div>
+      )}
+    </div>
+  );
+}
+
 function DeploymentListView({
   deployments, getCatalogEntryName, catalogMap, isPending,
   onSelect, onToggle, onForceStop, onPreview, onDelete,
@@ -988,7 +1053,12 @@ function DeploymentListView({
           <tr>
             <SortableHeader label="Name" sortKey="name" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
             <SortableHeader label="Application" sortKey="appName" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
-            <SortableHeader label="Type" sortKey="typeLabel" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+            {/* CPU and Memory replace Type. Not sortable: the figure is live
+                per-row telemetry fetched by each cell, so there is nothing on
+                the row object to order by — a sortable header that silently did
+                nothing would be worse than none. */}
+            <th className="px-5 py-3">CPU</th>
+            <th className="px-5 py-3">Memory</th>
             <SortableHeader label="Status" sortKey="status" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
             <th className="px-5 py-3 text-right">Actions</th>
           </tr>
@@ -1014,9 +1084,20 @@ function DeploymentListView({
                 </td>
                 <td className="px-5 py-3 text-gray-600 dark:text-gray-400">{deployment.appName}</td>
                 <td className="px-5 py-3">
-                  <span className="inline-flex rounded-full bg-purple-50 dark:bg-purple-900/20 px-2 py-0.5 text-[10px] font-medium text-purple-700 dark:text-purple-300">
-                    {deployment.typeLabel}
-                  </span>
+                  <UsageIndicator
+                    deploymentId={deployment.id}
+                    request={deployment.cpuRequest ?? ''}
+                    type="cpu"
+                    enabled={deployment.status === 'running'}
+                  />
+                </td>
+                <td className="px-5 py-3">
+                  <UsageIndicator
+                    deploymentId={deployment.id}
+                    request={deployment.memoryRequest ?? ''}
+                    type="memory"
+                    enabled={deployment.status === 'running'}
+                  />
                 </td>
                 <td className="px-5 py-3">
                   <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium ${getStatusColor(deployment.status)}`}>

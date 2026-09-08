@@ -93,6 +93,14 @@ do this.
    to route all traffic.
 4. Click **Create Route**.
 
+**Finding a route**
+
+The list is sorted alphabetically by hostname. Click **Hostname**, **Path** or
+**Deployment** to sort by that column instead, and click again to reverse it.
+Once a domain has more than one route a search box appears above the table; it
+matches the hostname, the path prefix and the name of the app the route points
+at.
+
 ### Point the route at an app
 
 In the routes table, each route has a dropdown. Pick the application you want
