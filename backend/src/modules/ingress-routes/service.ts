@@ -744,30 +744,27 @@ export async function updateRoute(
   // another pod's `shop/admin`, and neither pod's own rows look wrong.
   if (nextAppRoot) {
     const siblings = await db
-      .select({ id: ingressRoutes.id, appRoot: ingressRoutes.appRoot, deploymentId: ingressRoutes.deploymentId })
+      .select({ id: ingressRoutes.id, appRoot: ingressRoutes.appRoot })
       .from(ingressRoutes)
       .innerJoin(domains, eq(ingressRoutes.domainId, domains.id))
       .where(and(
         eq(domains.tenantId, tenantId as string),
         isNotNull(ingressRoutes.appRoot),
       ));
-    const targetDeployment = (updateValues.deploymentId ?? route.deploymentId) as string | null;
-    const clash = siblings.find((sib: { id: string; appRoot: string | null; deploymentId: string | null }) => {
+    const clash = siblings.find((sib: { id: string; appRoot: string | null }) => {
       if (sib.id === routeId || !sib.appRoot) return false;
-      if (sib.appRoot === nextAppRoot) {
-        // The SAME app root is the www/non-www case — one application, one set
-        // of files, one session directory, which is what those sites want. On
-        // two DIFFERENT deployments it means two pods serving one folder and
-        // sharing its sessions, which nobody asked for and nothing guarantees
-        // are the same application.
-        return sib.deploymentId !== targetDeployment;
-      }
+      // The SAME app root is never a clash. Within one deployment it is the
+      // www/non-www case. Across two it means two pods serving one folder —
+      // the tenant's own files, and since session storage moved to a pod-local
+      // emptyDir the two no longer share session state either. Refusing it
+      // bought nothing once sessions stopped living on the shared volume.
+      if (sib.appRoot === nextAppRoot) return false;
       return nextAppRoot.startsWith(`${sib.appRoot}/`) || sib.appRoot.startsWith(`${nextAppRoot}/`);
     });
     if (clash) {
       throw new ApiError(
         'VALIDATION_ERROR',
-        `Another site already uses '${clash.appRoot}'. Application roots cannot be nested inside one another, or shared between different applications — the outer site would be able to read the inner site's files and its visitors' sessions.`,
+        `Another site already uses '${clash.appRoot}'. Application roots cannot be nested inside one another — the outer site would be able to read everything belonging to the inner one.`,
         400,
         { conflicting_app_root: clash.appRoot },
       );
