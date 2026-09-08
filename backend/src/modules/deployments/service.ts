@@ -526,6 +526,19 @@ export async function createDeployment(
     );
   }
 
+  // Multi-host at create: the pod then comes up with the mounts already in
+  // place. Enabling it afterwards rewrites the pod template and restarts the
+  // application, which is pointless for an instance that has not started
+  // serving anything yet.
+  const wantsMultihost = input.multihost_enabled === true;
+  if (wantsMultihost && !capabilityOf(entry)) {
+    throw new ApiError(
+      'MULTIHOST_NOT_SUPPORTED',
+      `'${entry.name}' cannot serve several sites from one instance.`,
+      400,
+    );
+  }
+
   try {
     await db.insert(deployments).values({
       id,

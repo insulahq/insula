@@ -284,6 +284,16 @@ export const createDeploymentSchema = z.object({
   storage_path: z.string().max(500).optional(),
   /** Tenant-defined mounts on top of the catalog manifest's own volumes. */
   extra_mounts: extraMountsSchema.optional(),
+  /**
+   * Serve several hostnames from this one instance, each from its own folder.
+   *
+   * Settable at CREATE so the pod comes up with the multi-host mounts already
+   * in place. Turning it on afterwards has to rewrite the pod template, which
+   * restarts the application — pointless for an instance that has not started
+   * serving anything yet. Rejected when the catalog entry declares no
+   * `multihost` capability.
+   */
+  multihost_enabled: z.boolean().optional(),
 });
 
 export const updateDeploymentSchema = z.object({

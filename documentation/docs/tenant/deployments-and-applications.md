@@ -111,8 +111,11 @@ instance is the application, and each site is a folder it serves.
 
 ### Turn it on
 
-Open the app under **Applications → Installed**, then use **Multi-host
-serving**.
+**When deploying:** tick **Multi-host serving** in the deploy dialog. The
+instance then starts with everything it needs, and there is no restart at all.
+
+**On an app you already have:** open it under **Applications → Installed** and
+use **Multi-host serving**.
 
 Turning it on (or off) restarts the application once, because it changes how
 storage is attached. It also gives that instance access to your whole storage
