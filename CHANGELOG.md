@@ -12,7 +12,50 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Security
+- **An instance now has access only to the folders it actually serves**, rather
+  than to the whole of a customer's storage. Each website's folder is attached
+  individually, so a website cannot reach a neighbouring site's files or another
+  application's data even in principle. Adding or removing a website on a shared
+  instance now restarts it briefly, where before it was applied without a
+  restart — the isolation is worth the interruption.
+- **Websites sharing an instance can no longer read each other through a
+  symlink.** A shortcut placed in one site's folder pointing at a neighbour's
+  was followed by the web server and served as a plain file, which bypassed the
+  restrictions above entirely because the website software never ran. Note the
+  trade-off: applications that ship a shortcut inside the folder they publish —
+  Laravel's `public/storage` is the usual one — need a real folder instead.
+- **Each website now keeps its own login sessions.** They were previously
+  written to a shared temporary area, where a session's filename is its
+  identifier — so one website could read a visitor's session from a
+  neighbouring site and act as that visitor. Sessions now live inside each
+  site's own folder. (File uploads still use the shared temporary area while
+  being received; that is a much shorter window and a much less predictable
+  name, and it is the remaining piece.)
+- **Instances deployed before this release are repaired automatically.** They
+  keep the old, wider access until something changes them, so the platform now
+  checks every shared instance on startup and redeploys the ones still on the
+  old layout. Those instances restart once.
+- **Each website on a multi-host instance is now confined to its own
+  application folder.** Previously every site sharing an instance could read
+  and write the whole of that customer's storage — a neighbouring site's
+  configuration file, including its database password, and other applications'
+  data. A compromise of any one site was a compromise of everything that
+  customer owned. Sites are now sandboxed to their own application folder, and
+  the functions that let PHP escape a sandbox by running shell commands are
+  switched off for web requests on these instances. Command-line tooling over
+  SSH and cron is unaffected, as are single-site instances, which never had
+  access to anything but their own folder. Customers running an application
+  that needs to run shell commands during a web request should give it its own
+  instance.
+
 ### Added
+- **Websites can now separate their application folder from the folder served
+  on the web.** Applications such as Nextcloud, Laravel and Symfony keep their
+  data beside the public folder rather than inside it; the application folder
+  is what the site is allowed to read, and the served folder is picked from
+  within it. The exact paths the web server uses are shown in the panel, since
+  an application's own configuration file usually needs them.
 - **Multi-host serving can be switched on while deploying**, not only
   afterwards. The instance then starts with everything it needs, so there is no
   restart — turning it on later has to change how storage is attached, which

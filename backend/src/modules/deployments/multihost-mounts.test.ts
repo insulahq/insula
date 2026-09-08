@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { deployCatalogEntry, buildMultihostMounts } from './k8s-deployer.js';
+import { deployCatalogEntry, buildMultihostMounts, minimalSiteFolders } from './k8s-deployer.js';
 import type { K8sClients } from '../../shared/k8s-client.js';
 
 /**
@@ -78,7 +78,7 @@ describe('multi-host mounts', () => {
     expect(JSON.stringify(spec)).not.toContain('/var/www/sites');
   });
 
-  it('adds exactly the include dir and the storage ROOT when it is', async () => {
+  it('mounts ONLY the folders it serves — never the volume root', async () => {
     const { k8s, createDeployment } = fakeK8s();
     await deployCatalogEntry(k8s, {
       ...RUNTIME_INPUT,
@@ -86,6 +86,7 @@ describe('multi-host mounts', () => {
         configDir: '/etc/apache2/insula/sites.d',
         sitesRoot: '/var/www/sites',
         configMapName: 'site-vhosts',
+        siteFolders: ['shop', 'blog'],
       },
     });
 
@@ -93,13 +94,28 @@ describe('multi-host mounts', () => {
     expect(spec.containers[0].volumeMounts).toEqual([
       { name: 'tenant-storage', mountPath: '/var/www/html', subPath: 'runtime/apache-php/site' },
       { name: 'multihost-sites', mountPath: '/etc/apache2/insula/sites.d', readOnly: true },
-      // No subPath: this is the tenant PVC ROOT, which is what lets a route
-      // serve any folder rather than only children of storagePath.
-      { name: 'tenant-storage', mountPath: '/var/www/sites' },
+      { name: 'tenant-storage', mountPath: '/var/www/sites/blog', subPath: 'blog' },
+      { name: 'tenant-storage', mountPath: '/var/www/sites/shop', subPath: 'shop' },
+      // Session directories, beside the site folders rather than inside them:
+      // inside, they would sit under the document root whenever docroot ==
+      // app root and be fetchable over HTTP.
+      { name: 'tenant-storage', mountPath: '/var/www/sites/.insula-sessions/blog', subPath: '.insula-sessions/blog' },
+      { name: 'tenant-storage', mountPath: '/var/www/sites/.insula-sessions/shop', subPath: '.insula-sessions/shop' },
     ]);
 
-    // One `tenant-storage` volume even though it is mounted twice — two pod
-    // volumes sharing a name is an admission error, so the union is taken.
+    // THE regression this file exists for. A mount of `/var/www/sites` with no
+    // subPath is the tenant PVC root, and it is what let any one site read and
+    // write every other site's files and every other deployment's data.
+    const siteMounts = spec.containers[0].volumeMounts.filter(
+      (m: { mountPath: string }) => m.mountPath.startsWith('/var/www/sites'),
+    );
+    // No session directory may live under a served folder.
+    for (const m of siteMounts.filter((x: { subPath?: string }) => x.subPath?.startsWith('.insula-sessions'))) {
+      expect(m.mountPath).toContain('/.insula-sessions/');
+    }
+    expect(siteMounts.every((m: { subPath?: string }) => Boolean(m.subPath))).toBe(true);
+    expect(siteMounts.some((m: { mountPath: string }) => m.mountPath === '/var/www/sites')).toBe(false);
+
     expect(spec.volumes).toHaveLength(2);
     expect(spec.volumes.map((v: { name: string }) => v.name).sort()).toEqual(['multihost-sites', 'tenant-storage']);
     const cm = spec.volumes.find((v: { name: string }) => v.name === 'multihost-sites');
@@ -108,11 +124,44 @@ describe('multi-host mounts', () => {
     // ContainerCreating instead of serving the stock document root.
     expect(cm.configMap).toEqual({ name: 'site-vhosts', optional: true });
   });
+
+  it('mounts nothing from the volume when it serves no sites yet', async () => {
+    const { k8s, createDeployment } = fakeK8s();
+    await deployCatalogEntry(k8s, {
+      ...RUNTIME_INPUT,
+      multihost: {
+        configDir: '/etc/apache2/insula/sites.d',
+        sitesRoot: '/var/www/sites',
+        configMapName: 'site-vhosts',
+        siteFolders: [],
+      },
+    });
+    const spec = podSpecOf(createDeployment);
+    // A freshly created multi-host deployment can serve nothing, and that is
+    // the correct failure direction: an empty list must not mean "everything".
+    expect(
+      spec.containers[0].volumeMounts.filter((m: { mountPath: string }) => m.mountPath.startsWith('/var/www/sites')),
+    ).toEqual([]);
+  });
 });
 
 describe('buildMultihostMounts', () => {
   it('is empty for null/undefined so a caller cannot accidentally opt in', () => {
     expect(buildMultihostMounts(null, 'ns')).toEqual({ mounts: [], volumes: [] });
     expect(buildMultihostMounts(undefined, 'ns')).toEqual({ mounts: [], volumes: [] });
+  });
+
+  it('drops a nested app root — its files arrive through the parent mount', () => {
+    // Mounting both would nest a volumeMount inside a volumeMount: legal, but
+    // order-dependent, and a needless way to make a pod fail to start.
+    expect(minimalSiteFolders(['shop', 'shop/public', 'blog'])).toEqual(['blog', 'shop']);
+  });
+
+  it('keeps siblings that merely share a name prefix', () => {
+    expect(minimalSiteFolders(['app', 'app-secrets'])).toEqual(['app', 'app-secrets']);
+  });
+
+  it('de-duplicates repeated roots', () => {
+    expect(minimalSiteFolders(['a', 'a', 'a'])).toEqual(['a']);
   });
 });

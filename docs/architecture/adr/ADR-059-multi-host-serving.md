@@ -211,10 +211,128 @@ copy and the live copy become two sources of truth.
 a runtime, and keeps full isolation. Not chosen now — it needs request-path
 wake-up the platform does not have — and it stays compatible with this design.
 
+## Amendment (2026-09-08) — per-site isolation
+
+The first cut shipped with a defect this ADR did not name: the pod mounts the
+tenant PVC **root** at `sites_root`, so **every vhost could read and write the
+whole tenant volume** — a sibling site's `config.php` (its database
+credentials), and other deployments' data directories, whose mount targets are
+`0777`. One compromised site was one compromised tenant.
+
+The original text argued this sat on "the same trust boundary as SFTP and the
+file manager". That argument is wrong and is withdrawn. SFTP is authenticated,
+deliberate access by the tenant; a vhost is an internet-facing process running
+whatever PHP the tenant uploaded. Sharing a volume between those two is not the
+same act.
+
+**Two columns, one boundary.** `ingress_routes.app_root` is the sandbox;
+`site_folder` remains the document root and must equal it or sit inside it (a
+CHECK enforces the pair). The generated vhost sets PHP's `open_basedir` to the
+app root, so a site cannot read outside its own application:
+
+- Apache — `SetEnv PHP_ADMIN_VALUE "open_basedir=…"`, which `mod_proxy_fcgi`
+  forwards to the pool. Measured against the shipped image.
+- nginx — `set $insula_php_admin …` per server block, read by a single
+  `fastcgi_param` in the shared include. A *variable*, because nginx inherits
+  `fastcgi_param` from an outer level only when the inner level declares none,
+  and that location declares several — a server-level param is silently
+  dropped. Every generated block must set it: an unset nginx variable is a
+  startup error that would take down the whole pod.
+
+**`open_basedir` alone is theatre.** It does not restrain a child process:
+with exec available, `shell_exec("cat …/neighbour/config.php")` reads straight
+through it — measured, not assumed. So the platform also sets
+`PHP_DISABLE_FUNCTIONS` on multi-host deployments, applied by the image in the
+**FPM pool**. Pool scope is deliberate: the CLI SAPI keeps exec, so composer,
+wp-cli, artisan and `occ` still work from cron and SSH. Single-site deployments
+are untouched — they mount only their own subPath and have no neighbour to
+reach, so breaking exec there would cost function for no security.
+
+**Why the app root is separate from the document root.** Apps with a `public/`
+entry point (Nextcloud, Laravel, Symfony) keep data beside the web root, not
+under it. Sandboxing to the document root would cut the app off from its own
+`data/`. The operator picks the app root; the document-root picker is confined
+to it, so the broken pair cannot be built by hand. Both absolute paths are
+surfaced in the UI, because an app's own config file wants them literally.
+
+**Not trusted from the catalog.** The `php` block is validated, not cast:
+`/`, any ancestor of `sites_root`, and `:`/newline injection are refused, and
+an unusable block fails the whole capability rather than silently serving
+multi-host unsandboxed.
+
+**The pod no longer mounts the volume root at all.** The sandbox above confines
+the interpreter; this removes the thing it was confining access to. Each served
+application root is its own mount with its own `subPath`, so what the pod cannot
+see, no missing directive, misconfiguration or future runtime can reach — and
+the same now holds for the static runtimes, which have no interpreter to
+sandbox and were therefore relying entirely on web-server configuration.
+
+The cost is real and accepted: the set of folders is part of the pod template,
+so adding or removing a site restarts the pod, where the volume-root mount could
+add one with a graceful reload. `ensureSiteMounts` reconciles the live mount
+list on every route change, and deliberately uses read-modify-write rather than
+a strategic-merge patch — merge patches key list entries by `mountPath` and can
+therefore only ADD, which would leave a folder mounted after it stopped being
+served.
+
+**Sessions are per-site, and persist.** Each application root gets its own
+directory under `<sites_root>/.insula-sessions/<app root>` — a SIBLING of the
+site folders, never a child. Inside the app root it would sit under the
+document root whenever the two are the same (the common case) and the web
+server would serve `/.insula-sessions/sess_<id>` on request; out here nothing
+is under a document root, so no deny rule has to be correct for it to be safe.
+A site folder cannot collide with the name, since folder names must start
+alphanumeric.
+
+Because the directory is on the tenant volume, sessions now SURVIVE a pod
+restart, where `/tmp` lost them. That matters more than it used to: adding or
+removing a site restarts the pod, so ephemeral sessions would log every user of
+every site out whenever a neighbour added a website. PHP's own GC is enabled in
+these images (`gc_probability=1`, `gc_divisor=1000`, `gc_maxlifetime=1440`) and
+there is no distro cron overriding it, so files are collected rather than
+accumulating — measured, not assumed. A site that stops receiving traffic keeps
+its last few session files until it next serves a request; bounded and small.
+
+The directory is created by the init container and pointed at with
+`session.save_path` — on Apache through a second FastCGI variable (`PHP_VALUE`,
+since `PHP_ADMIN_VALUE` carries `open_basedir` and Apache cannot embed the
+newline that separates several), on nginx through the existing multi-line
+variable. Sites sharing an application root share the directory, so a login
+survives a www redirect.
+
+**Symlinks are not followed**, on all four runtimes. A symlink in one site's
+folder pointing at a neighbour's was served by Apache/nginx directly, with PHP
+never invoked — so `open_basedir` and `disable_functions`, both interpreter
+controls, were bypassed completely. Reproduced against the published images.
+The cost is that an application shipping a symlink under its document root
+(Laravel's `public/storage`) stops resolving it; neither server can express
+"symlinks that stay inside the app root", and the alternative is no isolation
+between neighbours.
+
+**Known residue.** PHP's UPLOAD temp files still land in `/tmp`, which is
+shared by every site in the pod and must stay inside `open_basedir` or sessions
+break. `upload_tmp_dir` is `PHP_INI_SYSTEM`, so it can only be set through
+`PHP_ADMIN_VALUE` — which on Apache already carries `open_basedir` and cannot
+hold two settings. The window is short and the filenames are unpredictable, so
+this is far weaker than the session exposure it replaces, but it is not closed. Closing it needs a
+per-site session path created inside each app root, which the reconciler can do
+during the exec it already performs — not done here.
+
+**The alternative considered and rejected: per-site FPM pools.** They would
+allow per-site `disable_functions` and per-site memory limits, and are the only
+road to kernel-enforced isolation. But the images run the FPM master as
+`www-data`, and FPM can only `setuid` per pool when the master is root — so
+pools deliver no uid separation as things stand, i.e. exactly what
+`open_basedir` already gives, while multiplying baseline memory (eroding the
+saving multi-host exists for) and forcing an FPM reload that drops opcache for
+every site whenever one is added. Revisit only alongside a root FPM master and
+per-site uids, which additionally require uid allocation, a `chown` migration
+of existing tenant data, and tightening those `0777` directories.
+
 ## References
 
 - Catalog: `insulahq/application-catalog` PRs #15, #16
-- Platform: PRs #457, #458, #459, #460
+- Platform: PRs #457, #458, #459, #460; isolation amendment #472
 - ADR-037 (asymmetric QoS: memory request == limit), ADR-036 (custom
   deployments), ADR-053 (GitOps branches)
 - `documentation/docs/tenant/deployments-and-applications.md`,

@@ -597,6 +597,8 @@ export async function deployCatalogEntry(
     configurableEnvKeys,
   });
 
+  applyMultihostPhpHardening(env, input.multihost);
+
   // Inject tenant timezone as TZ env var (respected by most Linux base images)
   if (timezone && !env.some((e) => e.name === 'TZ')) {
     env.push({ name: 'TZ', value: timezone });
@@ -819,9 +821,32 @@ function mergePodVolumes(
 export interface MultihostMounts {
   /** Include directory the generated vhost ConfigMap is projected into. */
   readonly configDir: string;
-  /** Path the tenant PVC ROOT appears at, so a route may serve ANY folder. */
+  /** Base path the mounted site folders appear under. */
   readonly sitesRoot: string;
   readonly configMapName: string;
+  /**
+   * The application roots this pod serves, relative to the tenant PVC root.
+   * ONE MOUNT EACH — the pod never sees the rest of the volume.
+   */
+  readonly siteFolders: readonly string[];
+}
+
+/**
+ * Reduce a set of application roots to the ones that actually need mounting.
+ *
+ * A root nested inside another arrives at the same files through its parent's
+ * mount, and mounting both would nest a volumeMount inside a volumeMount —
+ * legal but order-dependent, and a needless way to make a pod fail to start.
+ * Sorting shortest-first means a parent is always seen before its children.
+ */
+export function minimalSiteFolders(folders: readonly string[]): string[] {
+  const clean = [...new Set(folders.filter((f) => typeof f === 'string' && f.length > 0))]
+    .sort((a, b) => a.length - b.length || a.localeCompare(b));
+  const kept: string[] = [];
+  for (const f of clean) {
+    if (!kept.some((k) => f === k || f.startsWith(`${k}/`))) kept.push(f);
+  }
+  return kept;
 }
 
 /**
@@ -847,15 +872,118 @@ export interface MultihostMounts {
  *    widening, which is why it is tied to the operator explicitly enabling
  *    multi-host rather than applied to every runtime pod.
  */
+/**
+ * Functions PHP must not have on a pod that mounts the whole tenant volume.
+ *
+ * `open_basedir` sandboxes the interpreter, but not a CHILD PROCESS: with exec
+ * available, `shell_exec("cat /var/www/sites/<neighbour>/config.php")` reads a
+ * sibling site's database credentials straight through the sandbox. Measured
+ * on the shipped image, not assumed — so the sandbox is only worth anything
+ * with this alongside it.
+ *
+ * Applied in the FPM POOL by the image, which is web-request scope: the CLI
+ * SAPI keeps these, so composer, wp-cli, artisan and occ still work from cron
+ * and SSH — where they are normally run.
+ */
+/**
+ * Root for per-site session directories, a SIBLING of the site folders rather
+ * than a child of one.
+ *
+ * Inside an application root it would sit under the document root whenever the
+ * two are the same — the common case — and the web server would serve
+ * `/.insula-sessions/sess_<id>` to anyone who asked for it. Out here nothing is
+ * under any document root, so no deny rule has to be correct for it to be safe.
+ *
+ * A site folder can never collide with this name: folder names must start with
+ * an alphanumeric character.
+ */
+export const MULTIHOST_SESSION_ROOT = '.insula-sessions';
+
+export const MULTIHOST_DISABLED_PHP_FUNCTIONS =
+  'exec,shell_exec,system,passthru,popen,proc_open,pcntl_exec';
+
+/**
+ * Harden PHP on multi-host pods only.
+ *
+ * A single-site deployment mounts just its own storage subPath and has no
+ * neighbour to reach, so it keeps exec — breaking those would be a regression
+ * for no security gain. Multi-host mounts the tenant PVC ROOT, which is what
+ * makes exec a cross-site read.
+ *
+ * An explicit operator value always wins: someone who has read the warning and
+ * needs `proc_open` for one deployment can set it, rather than being forced to
+ * abandon multi-host. Mutates `env` in place because that is what the caller
+ * hands us — see buildEnvVars.
+ */
+export function applyMultihostPhpHardening(
+  env: Array<{ name: string; value: string }>,
+  multihost: MultihostMounts | null | undefined,
+): void {
+  if (!multihost) return;
+  const existing = env.find((e) => e.name === 'PHP_DISABLE_FUNCTIONS');
+  // An EMPTY value is not an override — it is the absence of one.
+  //
+  // The catalog manifest carried `default: ""` for this key, and the deploy
+  // dialog materialises every parameter whose default is not `undefined`. So
+  // every deployment created through the panel arrived here already carrying
+  // PHP_DISABLE_FUNCTIONS="", a presence check treated that as "the operator
+  // chose this", and the hardening silently did nothing — on exactly the path
+  // that creates every multi-host deployment. Deciding from the KEY rather
+  // than from its VALUE is what made a security control opt-out by accident.
+  //
+  // Blank therefore falls back to the platform list, and only a non-empty
+  // value is an operator decision. There is deliberately no way to disable the
+  // hardening by blanking the field: the failure mode has to be a site that
+  // stops working, never a pod that quietly stops being isolated.
+  //
+  // The platform's list is a FLOOR, not a default: whatever is configured is
+  // UNIONED with it, never substituted for it. `PHP_DISABLE_FUNCTIONS` is a
+  // tenant-editable variable, so "a non-empty value is an operator decision"
+  // meant a tenant could set it to `exec,system` — or to `1` — on their own
+  // shared instance and hand themselves back `shell_exec`, `proc_open` and the
+  // rest. Adding to the baseline is useful; subtracting from it is not a
+  // decision anyone should be able to make from a settings field.
+  const baseline = MULTIHOST_DISABLED_PHP_FUNCTIONS.split(',');
+  const configured = (existing?.value ?? '').split(',').map((f) => f.trim()).filter(Boolean);
+  const merged = [...new Set([...baseline, ...configured])].join(',');
+  if (existing) existing.value = merged;
+  else env.push({ name: 'PHP_DISABLE_FUNCTIONS', value: merged });
+}
+
 export function buildMultihostMounts(
   multihost: MultihostMounts | null | undefined,
   namespace: string,
 ): { mounts: Array<Record<string, unknown>>; volumes: Array<Record<string, unknown>> } {
   if (!multihost) return { mounts: [], volumes: [] };
+  const folders = minimalSiteFolders(multihost.siteFolders);
   return {
     mounts: [
       { name: 'multihost-sites', mountPath: multihost.configDir, readOnly: true },
-      { name: 'tenant-storage', mountPath: multihost.sitesRoot },
+      // ONE MOUNT PER SERVED APPLICATION ROOT, each with its own subPath.
+      //
+      // This used to be a single mount of the tenant PVC ROOT, which is what
+      // let any one site read and write every other site's files and every
+      // other deployment's data. open_basedir now confines the interpreter,
+      // but a sandbox is a rule and this is a fact: what the pod cannot see,
+      // no misconfiguration, missing directive or future runtime can reach.
+      //
+      // The cost is that the set of folders is part of the pod template, so
+      // adding or removing a site changes it and restarts the pod — where the
+      // volume-root mount could add a site with a graceful reload. That is the
+      // trade the isolation is worth.
+      ...folders.map((folder) => ({
+        name: 'tenant-storage',
+        mountPath: `${multihost.sitesRoot}/${folder}`,
+        subPath: folder,
+      })),
+      // Per-site session directory, mounted beside the site folders rather
+      // than inside one — see MULTIHOST_SESSION_ROOT. Each site sees only its
+      // own, so a pod-wide /tmp is no longer where session files live.
+      ...folders.map((folder) => ({
+        name: 'tenant-storage',
+        mountPath: `${multihost.sitesRoot}/${MULTIHOST_SESSION_ROOT}/${folder}`,
+        subPath: `${MULTIHOST_SESSION_ROOT}/${folder}`,
+      })),
     ],
     volumes: [
       { name: 'multihost-sites', configMap: { name: multihost.configMapName, optional: true } },
@@ -913,7 +1041,36 @@ async function deployK8sDeployment(
     // Inject env vars so the reset script can read $MARIADB_ROOT_PASSWORD etc.
     initContainersList.push({ ...passwordResetContainer, ...(envVars?.length ? { env: envVars } : {}) });
   }
-  if (spec) initContainersList.push(spec.initDirsContainer);
+  // Per-site session directories.
+  //
+  // PHP writes sessions to the system temp dir, which is ONE /tmp shared by
+  // every site in the pod — and a session FILENAME is the session ID, so any
+  // site could list /tmp, read a neighbour's session file and present that ID
+  // as its own cookie. Account takeover of a sibling site, needing no exec and
+  // no sandbox bypass, because /tmp must stay inside open_basedir for sessions
+  // to work at all.
+  //
+  // Giving each application root its own directory moves session files inside
+  // the sandbox that already confines that site. The directory has to exist
+  // before PHP writes to it — PHP will not create it — so it is created here,
+  // where the folder list is already known.
+  const sessionDirs = (multihost ? minimalSiteFolders(multihost.siteFolders) : [])
+    .map((f) => `mkdir -p /data/${MULTIHOST_SESSION_ROOT}/${f} && chmod 777 /data/${MULTIHOST_SESSION_ROOT}/${f}`);
+  if (spec) {
+    if (sessionDirs.length > 0) {
+      const cmd = (spec.initDirsContainer as { command?: string[] }).command;
+      if (cmd && cmd.length === 3) cmd[2] = `${cmd[2]} && ${sessionDirs.join(' && ')}`;
+    }
+    initContainersList.push(spec.initDirsContainer);
+  } else if (sessionDirs.length > 0) {
+    initContainersList.push({
+      name: 'init-dirs',
+      image: 'busybox:1.36',
+      command: ['sh', '-c', sessionDirs.join(' && ')],
+      volumeMounts: [{ name: 'tenant-storage', mountPath: '/data' }],
+      resources: { requests: { cpu: '10m', memory: '32Mi' }, limits: { memory: '32Mi' } },
+    });
+  }
   const initContainers = initContainersList.length > 0 ? initContainersList : undefined;
 
   const podSpec: Record<string, unknown> = {

@@ -15,7 +15,7 @@ export function joinPath(base: string, name: string): string {
  */
 export default function FolderPickerDialog({
   title, description, initialPath, confirmLabel, isPending, onClose, onConfirm,
-  allowCreate = true,
+  allowCreate = true, confineTo,
 }: {
   readonly title: string;
   readonly description: string;
@@ -32,8 +32,19 @@ export default function FolderPickerDialog({
    * nothing, which reads as a broken site rather than an empty one.
    */
   readonly allowCreate?: boolean;
+  /**
+   * Restrict browsing to this subtree. Used by the document-root picker, which
+   * must land inside the application root: the app root is the site's PHP
+   * sandbox, so a document root outside it would be a folder the site is
+   * forbidden to read — a 500 on every request, for a reason far from the
+   * symptom. Confining the picker means that pair cannot be built by hand.
+   */
+  readonly confineTo?: string;
 }) {
-  const [browsePath, setBrowsePath] = useState(initialPath || '/');
+  const root = confineTo && confineTo !== '/' ? `/${confineTo.replace(/^\/+|\/+$/g, '')}` : '/';
+  const [browsePath, setBrowsePath] = useState(initialPath || root);
+  /** Never navigate above the confinement root. */
+  const within = (p: string) => (p === root || p.startsWith(`${root}/`) || root === '/' ? p : root);
   const [newFolder, setNewFolder] = useState('');
   const listing = useDirectoryListing(browsePath, true);
   const createDir = useCreateDirectory();
@@ -65,7 +76,7 @@ export default function FolderPickerDialog({
           {browsePath.split('/').filter(Boolean).map((part, i, arr) => (
             <span key={i} className="flex items-center gap-1">
               <ChevronRight size={12} className="text-gray-400" />
-              <button onClick={() => setBrowsePath('/' + arr.slice(0, i + 1).join('/'))} className="text-brand-600 hover:underline dark:text-brand-400">{part}</button>
+              <button onClick={() => setBrowsePath(within('/' + arr.slice(0, i + 1).join('/')))} className="text-brand-600 hover:underline dark:text-brand-400">{part}</button>
             </span>
           ))}
         </div>
@@ -77,8 +88,8 @@ export default function FolderPickerDialog({
 
         {/* Folder list */}
         <div className="max-h-48 overflow-y-auto rounded-lg border border-gray-200 dark:border-gray-700 mb-2">
-          {browsePath !== '/' && (
-            <button onClick={() => { const parts = browsePath.split('/').filter(Boolean); parts.pop(); setBrowsePath('/' + parts.join('/')); }}
+          {browsePath !== root && (
+            <button onClick={() => { const parts = browsePath.split('/').filter(Boolean); parts.pop(); setBrowsePath(within('/' + parts.join('/'))); }}
               className="flex items-center gap-2 w-full px-3 py-2 text-sm text-left hover:bg-gray-50 dark:hover:bg-gray-700/50 border-b border-gray-100 dark:border-gray-700">
               <ArrowLeft size={14} className="text-gray-400" /> ..
             </button>

@@ -109,6 +109,19 @@ Not every application supports it. The option only appears for those that do:
 A PHP runtime and a static runtime cannot be mixed on one instance — the
 instance is the application, and each site is a folder it serves.
 
+**Sites on one instance cannot read each other.** Each is confined to its own
+application folder, so a problem with one site does not expose the others' files
+or their database passwords. Two consequences worth knowing before you turn it
+on:
+
+- Functions that run shell commands are switched off for **web requests** on a
+  multi-host instance — that is what stops a site stepping outside its folder.
+  Command-line tools over SSH and scheduled tasks keep working normally, so
+  `composer`, `wp-cli` and similar are unaffected.
+- An app that must run a shell command *while serving a page* needs its own
+  instance. Nextcloud's video previews and external SMB storage are the usual
+  examples.
+
 ### Turn it on
 
 **When deploying:** tick **Multi-host serving** in the deploy dialog. The

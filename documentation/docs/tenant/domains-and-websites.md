@@ -121,12 +121,43 @@ Click any route to open its detail page, which has these tabs:
 
 When a route points at an app with
 [multi-host serving](deployments-and-applications.md#several-websites-on-one-app-instance)
-turned on, a folder button appears next to the app dropdown. It shows the
-folder that hostname currently serves, or *document root* when it has none.
+turned on, two folder buttons appear next to the app dropdown: the
+**application root** and, beside it, the **document root**.
 
-Click it to browse your storage and pick any folder — it does not have to be
-named after the hostname. **clear** puts the hostname back on the app's own
-document root.
+**The application root** is the site's top folder — everything that site is
+allowed to read. Click it to browse your storage and pick any folder; it does
+not have to be named after the hostname. **clear** puts the hostname back on
+the app's own document root.
+
+**The document root** is the folder actually published on the web. By default
+it is the application root itself, which is what a plain PHP site or WordPress
+wants. Change it when your app serves from a subfolder — Nextcloud, Laravel and
+Symfony all publish a `public/` directory and keep their data beside it rather
+than inside it:
+
+| | Folder |
+|---|---|
+| Application root | `mysite` |
+| Document root | `mysite/public` |
+
+Then `mysite/data` stays readable by the app and unreachable from the web.
+
+The document-root picker only browses inside the application root, because a
+site is not permitted to read outside it — a document root elsewhere would be a
+folder the app itself could not open.
+
+**Each site can only reach its own application root.** A site sharing an
+instance with others cannot read their files, and cannot reach anything else on
+your storage. If your app needs to run shell commands while serving a page —
+Nextcloud's video previews and external SMB storage are the common cases — give
+it its own instance instead; those commands are switched off on shared
+instances, because they would let one site step outside its folder. Command-line
+tools over SSH and scheduled tasks are unaffected.
+
+**Paths for your app's config file.** Hover either button to see the exact
+absolute paths the web server uses — application root, document root, and the
+sandbox setting. Applications that record their own location (Nextcloud's
+`datadirectory`, for instance) want these values literally.
 
 The picker offers folders that already exist; create the folder and upload the
 site first, under [Files & SFTP](files-and-sftp.md). Pointing a hostname at an
