@@ -96,8 +96,15 @@ describe('renderSites', () => {
 
   it('throws for a flavour it cannot render rather than emitting nothing', () => {
     // An empty ConfigMap is indistinguishable from "this deployment has no
-    // sites", so a missing renderer must be loud.
-    expect(() => renderSites({ ...CAP, server: 'nginx' }, [route({ id: 'a' })]))
-      .toThrow(/no renderer for server flavour 'nginx'/);
+    // sites", so a missing renderer must be loud. (nginx used to sit here; it
+    // is implemented now, so the case needs a flavour that genuinely has no
+    // renderer — the assertion is about the dispatch, not about nginx.)
+    expect(() => renderSites({ ...CAP, server: 'caddy' }, [route({ id: 'a' })]))
+      .toThrow(/no renderer for server flavour 'caddy'/);
+  });
+
+  it('renders the nginx flavour rather than rejecting it', () => {
+    const r = renderSites({ ...CAP, server: 'nginx' }, [route({ id: 'a', hostname: 'n.test', siteFolder: 'nf' })]);
+    expect(r.files[siteFilename('a')]).toContain('server_name n.test;');
   });
 });
