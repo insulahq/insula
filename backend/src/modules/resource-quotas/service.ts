@@ -51,6 +51,10 @@ const DEFAULT_CPU_LIMIT = 2;     // cores
 const DEFAULT_MEMORY_LIMIT = 4;  // Gi
 const DEFAULT_STORAGE_LIMIT = 50; // Gi
 
+/** Smallest units Kubernetes accepts — integer arithmetic here is lossless. */
+const MILLI_PER_CORE = 1000;
+const MIB_PER_GI = 1024;
+
 interface ResourceAvailability {
   readonly cpuLimit: number;
   readonly memoryLimitGi: number;
@@ -103,27 +107,41 @@ export async function getTenantResourceAvailability(
       ),
     );
 
-  // 5. Parse and sum resource values
-  let cpuUsed = 0;
-  let memoryUsedGi = 0;
+  // 5. Sum usage in INTEGER base units, never in cores/Gi floats.
+  //
+  // "100m" parses to 0.1, which has no exact binary representation, so
+  // accumulating it drifts: 19 x 0.1 === 1.9000000000000006. Subtracting
+  // that from the limit put `cpuAvailable` a few ulps below the true
+  // remainder, and the tenant panel — which gates the deploy button on
+  // `available >= required` while printing both via toFixed(2) — showed
+  // "0.10 cores available (0.10 cores required) — Insufficient" and
+  // refused to deploy. Milli-cores and MiB are the smallest units
+  // Kubernetes accepts, so integers here are lossless.
+  let cpuUsedMilli = 0;
+  let memoryUsedMiB = 0;
 
   for (const dep of activeDeployments) {
-    cpuUsed += parseResourceValue(dep.cpuRequest, 'cpu');
-    memoryUsedGi += parseResourceValue(dep.memoryRequest, 'memory');
+    cpuUsedMilli += Math.round(parseResourceValue(dep.cpuRequest, 'cpu') * MILLI_PER_CORE);
+    memoryUsedMiB += Math.round(parseResourceValue(dep.memoryRequest, 'memory') * MIB_PER_GI);
   }
+
+  const cpuLimitMilli = Math.round(cpuLimit * MILLI_PER_CORE);
+  const memoryLimitMiB = Math.round(memoryLimitGi * MIB_PER_GI);
 
   // Storage: estimate 1 Gi per active deployment (MVP approximation)
   const storageUsedGi = activeDeployments.length * 1;
 
+  // One division at the end yields the correctly-rounded double for the
+  // decimal value, so an exact fit compares equal on the client.
   return {
     cpuLimit,
     memoryLimitGi,
     storageLimitGi,
-    cpuUsed,
-    memoryUsedGi,
+    cpuUsed: cpuUsedMilli / MILLI_PER_CORE,
+    memoryUsedGi: memoryUsedMiB / MIB_PER_GI,
     storageUsedGi,
-    cpuAvailable: Math.max(0, cpuLimit - cpuUsed),
-    memoryAvailableGi: Math.max(0, memoryLimitGi - memoryUsedGi),
+    cpuAvailable: Math.max(0, cpuLimitMilli - cpuUsedMilli) / MILLI_PER_CORE,
+    memoryAvailableGi: Math.max(0, memoryLimitMiB - memoryUsedMiB) / MIB_PER_GI,
     storageAvailableGi: Math.max(0, storageLimitGi - storageUsedGi),
   };
 }
