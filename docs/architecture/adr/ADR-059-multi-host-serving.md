@@ -255,6 +255,19 @@ under it. Sandboxing to the document root would cut the app off from its own
 to it, so the broken pair cannot be built by hand. Both absolute paths are
 surfaced in the UI, because an app's own config file wants them literally.
 
+**Application roots may not nest, tenant-wide.** The sandbox is a path prefix,
+so app roots `shop` and `shop/admin` grant the outer site the inner one's whole
+folder — and the per-site session directories nest identically, so the outer
+site can read the inner site's session files, whose names are session ids. Each
+row is individually valid; the pair is the defect.
+
+The check is scoped to the TENANT rather than the deployment. Restricting it to
+one deployment left the identical hole open across two: they share the tenant
+volume, a pod serving `shop` mounts everything beneath it including another
+pod's `shop/admin`, and neither pod's own rows look wrong. Sharing an app root
+exactly is allowed only WITHIN one deployment, which is the www/non-www case —
+one application, one set of files, one session directory.
+
 **Not trusted from the catalog.** The `php` block is validated, not cast:
 `/`, any ancestor of `sites_root`, and `:`/newline injection are refused, and
 an unusable block fails the whole capability rather than silently serving
@@ -275,11 +288,34 @@ a strategic-merge patch — merge patches key list entries by `mountPath` and ca
 therefore only ADD, which would leave a folder mounted after it stopped being
 served.
 
-**Sessions are per-site, and persist.** Each application root gets its own
-directory under `<sites_root>/.insula-sessions/<app root>` — a SIBLING of the
+**Sessions are per-site and ephemeral.** Each application root gets its own
+directory under `/var/lib/php-sessions/<app root>`, backed by an **emptyDir** —
+pod-local storage, not the tenant volume.
+
+They briefly lived on the PVC, which isolated them correctly but put login state
+on the customer's storage: counted against their quota, swept into their
+backups, visible in their file manager. Operator decision (2026-09-08): keep
+session storage ephemeral, as it was when it was `/tmp`, and keep the per-site
+separation `/tmp` never had.
+
+The cost is accepted rather than hidden: an emptyDir dies with the pod, and
+adding a site rewrites the pod template — so **adding a website logs out the
+users of every other site on that instance**. A single shared `/tmp` avoided
+that at the price of letting any site read a neighbour's session file, whose
+name IS the session id.
+
+The directory is created by the init container and never by kubelet: kubelet
+creates a missing `subPath` as `root:root 0755` and these images run non-root,
+so a mount without the matching `mkdir` hands the site a directory it cannot
+write and every session write fails silently. The deployer and the reconciler
+emit the same clauses for that reason.
+
+<!-- superseded -->
+**Previously (PVC-backed, superseded):** Each application root gets its own
+directory under `<sites_root>/.php-sessions/<app root>` — a SIBLING of the
 site folders, never a child. Inside the app root it would sit under the
 document root whenever the two are the same (the common case) and the web
-server would serve `/.insula-sessions/sess_<id>` on request; out here nothing
+server would serve `/.php-sessions/sess_<id>` on request; out here nothing
 is under a document root, so no deny rule has to be correct for it to be safe.
 A site folder cannot collide with the name, since folder names must start
 alphanumeric.

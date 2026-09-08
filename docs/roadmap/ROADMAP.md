@@ -1449,3 +1449,56 @@ properties of roles that already exist and predate that work, so it deserves its
 own change with its own verification rather than riding along with a migration.
 Found by the security review of R35 (2026-09-07).
 
+
+---
+
+## R37 — Tenant pods can fill a node's disk, and nothing charges them for it
+
+**The gap.** A tenant deployment pod carries no `ephemeral-storage` request or
+limit, and the tenant `ResourceQuota` bounds only CPU and memory:
+
+```
+resources: {limits: {memory: 320Mi}, requests: {cpu: 200m, memory: 320Mi}}
+quota:     {limits.memory, requests.cpu, requests.memory}
+```
+
+Everything a container writes outside its mounted volumes — PHP upload temp
+files, application scratch space, logs written to the container filesystem —
+lands on the node's disk through the container's writable overlay layer. That
+space is **uncapped, unmeasured, and not charged against the tenant's storage
+quota**. The only backstop is kubelet's node-level disk eviction, which selects
+victims by usage across the whole node — so one tenant filling a disk can get
+**another tenant's pods evicted**.
+
+Measured on DEV while investigating multi-host session storage (2026-09-08):
+
+- `/tmp` is the container overlay on node disk, not tmpfs — so large uploads
+  cost disk, not memory, and a low memory limit does not bound them. PHP's
+  `upload_max_filesize` is 100M by default and `max_file_uploads` is 20.
+- Nothing reaps orphaned temp files inside these images: no `systemd-tmpfiles`,
+  and only `apt-compat`/`dpkg` under `/etc/cron*`. A request killed mid-upload
+  leaves its temp file behind.
+- A container restart does NOT immediately free it. The dead container's upper
+  layer survives on the node — verified by finding the orphaned file at
+  `…/snapshotter/snapshots/<id>/fs/tmp/…` after the restart — and is reclaimed
+  only when kubelet's container GC collects that container, one restart later.
+
+**Why it is not part of the multi-host work.** It predates multi-host and
+applies to every tenant deployment, single-site included. And the fix is a
+policy decision rather than a code change: an `ephemeral-storage` limit
+*evicts* the pod that exceeds it, so the value has to come from the hosting
+plan, with a migration path for deployments already running above whatever
+number is chosen. Setting one silently would start evicting live sites.
+
+**Shape of the work.**
+- Derive `ephemeral-storage` requests/limits from the hosting plan, as CPU and
+  memory already are.
+- Add `requests.ephemeral-storage` / `limits.ephemeral-storage` to the tenant
+  `ResourceQuota` so the tenant sees the bound.
+- Decide whether upload temp space should instead be an explicit, bounded
+  volume per deployment rather than the shared container overlay.
+- Surface usage in the panel; an eviction with no visible cause is the worst
+  version of this.
+
+Found while answering "how are large temp uploads managed if memory limits are
+low?" during the multi-host isolation work (ADR-059).

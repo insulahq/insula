@@ -96,11 +96,11 @@ describe('multi-host mounts', () => {
       { name: 'multihost-sites', mountPath: '/etc/apache2/insula/sites.d', readOnly: true },
       { name: 'tenant-storage', mountPath: '/var/www/sites/blog', subPath: 'blog' },
       { name: 'tenant-storage', mountPath: '/var/www/sites/shop', subPath: 'shop' },
-      // Session directories, beside the site folders rather than inside them:
-      // inside, they would sit under the document root whenever docroot ==
-      // app root and be fetchable over HTTP.
-      { name: 'tenant-storage', mountPath: '/var/www/sites/.insula-sessions/blog', subPath: '.insula-sessions/blog' },
-      { name: 'tenant-storage', mountPath: '/var/www/sites/.insula-sessions/shop', subPath: '.insula-sessions/shop' },
+      // Session directories on POD-LOCAL storage: off the tenant volume, so
+      // login state costs no quota and never enters their backups — and not a
+      // shared /tmp, where a filename IS a session id.
+      { name: 'multihost-sessions', mountPath: '/var/lib/php-sessions/blog', subPath: 'blog' },
+      { name: 'multihost-sessions', mountPath: '/var/lib/php-sessions/shop', subPath: 'shop' },
     ]);
 
     // THE regression this file exists for. A mount of `/var/www/sites` with no
@@ -109,15 +109,14 @@ describe('multi-host mounts', () => {
     const siteMounts = spec.containers[0].volumeMounts.filter(
       (m: { mountPath: string }) => m.mountPath.startsWith('/var/www/sites'),
     );
-    // No session directory may live under a served folder.
-    for (const m of siteMounts.filter((x: { subPath?: string }) => x.subPath?.startsWith('.insula-sessions'))) {
-      expect(m.mountPath).toContain('/.insula-sessions/');
-    }
+    // Nothing under sites_root may be a session directory any more.
+    expect(siteMounts.every((m: { name: string }) => m.name === 'tenant-storage')).toBe(true);
     expect(siteMounts.every((m: { subPath?: string }) => Boolean(m.subPath))).toBe(true);
     expect(siteMounts.some((m: { mountPath: string }) => m.mountPath === '/var/www/sites')).toBe(false);
 
-    expect(spec.volumes).toHaveLength(2);
-    expect(spec.volumes.map((v: { name: string }) => v.name).sort()).toEqual(['multihost-sites', 'tenant-storage']);
+    expect(spec.volumes).toHaveLength(3);
+    expect(spec.volumes.map((v: { name: string }) => v.name).sort())
+      .toEqual(['multihost-sessions', 'multihost-sites', 'tenant-storage']);
     const cm = spec.volumes.find((v: { name: string }) => v.name === 'multihost-sites');
     // Optional: the reconciler may not have written the ConfigMap yet on a
     // first deploy, and a required volume would hang the pod in
