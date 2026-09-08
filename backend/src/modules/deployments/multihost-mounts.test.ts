@@ -99,8 +99,8 @@ describe('multi-host mounts', () => {
       // Session directories, beside the site folders rather than inside them:
       // inside, they would sit under the document root whenever docroot ==
       // app root and be fetchable over HTTP.
-      { name: 'tenant-storage', mountPath: '/var/www/sites/.insula-sessions/blog', subPath: '.insula-sessions/blog' },
-      { name: 'tenant-storage', mountPath: '/var/www/sites/.insula-sessions/shop', subPath: '.insula-sessions/shop' },
+      { name: 'tenant-storage', mountPath: '/var/www/sites/.php-sessions/blog', subPath: '.php-sessions/blog' },
+      { name: 'tenant-storage', mountPath: '/var/www/sites/.php-sessions/shop', subPath: '.php-sessions/shop' },
     ]);
 
     // THE regression this file exists for. A mount of `/var/www/sites` with no
@@ -110,8 +110,8 @@ describe('multi-host mounts', () => {
       (m: { mountPath: string }) => m.mountPath.startsWith('/var/www/sites'),
     );
     // No session directory may live under a served folder.
-    for (const m of siteMounts.filter((x: { subPath?: string }) => x.subPath?.startsWith('.insula-sessions'))) {
-      expect(m.mountPath).toContain('/.insula-sessions/');
+    for (const m of siteMounts.filter((x: { subPath?: string }) => x.subPath?.startsWith('.php-sessions'))) {
+      expect(m.mountPath).toContain('/.php-sessions/');
     }
     expect(siteMounts.every((m: { subPath?: string }) => Boolean(m.subPath))).toBe(true);
     expect(siteMounts.some((m: { mountPath: string }) => m.mountPath === '/var/www/sites')).toBe(false);
