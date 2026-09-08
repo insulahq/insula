@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
-import type { IngressRouteResponse } from '@insula/api-contracts';
+import type { IngressRouteResponse, UpdateIngressRouteInput } from '@insula/api-contracts';
 
 interface RouteListResponse {
   readonly data: readonly IngressRouteResponse[];
@@ -41,7 +41,10 @@ export function useUpdateIngressRoute(tenantId: string | undefined, domainId: st
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: ({ routeId, ...input }: { routeId: string; deployment_id?: string | null; service_port?: number | null }) =>
+    // Input typed from the SHARED contract, not restated here. A hand-written
+    // copy is self-consistent, so a field the API added (or renamed) is invisible
+    // to the compiler and the PATCH silently drops it.
+    mutationFn: ({ routeId, ...input }: { routeId: string } & UpdateIngressRouteInput) =>
       apiFetch<{ data: IngressRouteResponse }>(
         `/api/v1/tenants/${tenantId}/domains/${domainId}/routes/${routeId}`,
         { method: 'PATCH', body: JSON.stringify(input) },
