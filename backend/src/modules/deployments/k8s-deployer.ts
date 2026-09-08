@@ -597,6 +597,8 @@ export async function deployCatalogEntry(
     configurableEnvKeys,
   });
 
+  applyMultihostPhpHardening(env, input.multihost);
+
   // Inject tenant timezone as TZ env var (respected by most Linux base images)
   if (timezone && !env.some((e) => e.name === 'TZ')) {
     env.push({ name: 'TZ', value: timezone });
@@ -847,6 +849,44 @@ export interface MultihostMounts {
  *    widening, which is why it is tied to the operator explicitly enabling
  *    multi-host rather than applied to every runtime pod.
  */
+/**
+ * Functions PHP must not have on a pod that mounts the whole tenant volume.
+ *
+ * `open_basedir` sandboxes the interpreter, but not a CHILD PROCESS: with exec
+ * available, `shell_exec("cat /var/www/sites/<neighbour>/config.php")` reads a
+ * sibling site's database credentials straight through the sandbox. Measured
+ * on the shipped image, not assumed — so the sandbox is only worth anything
+ * with this alongside it.
+ *
+ * Applied in the FPM POOL by the image, which is web-request scope: the CLI
+ * SAPI keeps these, so composer, wp-cli, artisan and occ still work from cron
+ * and SSH — where they are normally run.
+ */
+export const MULTIHOST_DISABLED_PHP_FUNCTIONS =
+  'exec,shell_exec,system,passthru,popen,proc_open,pcntl_exec';
+
+/**
+ * Harden PHP on multi-host pods only.
+ *
+ * A single-site deployment mounts just its own storage subPath and has no
+ * neighbour to reach, so it keeps exec — breaking those would be a regression
+ * for no security gain. Multi-host mounts the tenant PVC ROOT, which is what
+ * makes exec a cross-site read.
+ *
+ * An explicit operator value always wins: someone who has read the warning and
+ * needs `proc_open` for one deployment can set it, rather than being forced to
+ * abandon multi-host. Mutates `env` in place because that is what the caller
+ * hands us — see buildEnvVars.
+ */
+export function applyMultihostPhpHardening(
+  env: Array<{ name: string; value: string }>,
+  multihost: MultihostMounts | null | undefined,
+): void {
+  if (!multihost) return;
+  if (env.some((e) => e.name === 'PHP_DISABLE_FUNCTIONS')) return;
+  env.push({ name: 'PHP_DISABLE_FUNCTIONS', value: MULTIHOST_DISABLED_PHP_FUNCTIONS });
+}
+
 export function buildMultihostMounts(
   multihost: MultihostMounts | null | undefined,
   namespace: string,

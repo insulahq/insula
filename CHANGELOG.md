@@ -12,7 +12,27 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Security
+- **Each website on a multi-host instance is now confined to its own
+  application folder.** Previously every site sharing an instance could read
+  and write the whole of that customer's storage — a neighbouring site's
+  configuration file, including its database password, and other applications'
+  data. A compromise of any one site was a compromise of everything that
+  customer owned. Sites are now sandboxed to their own application folder, and
+  the functions that let PHP escape a sandbox by running shell commands are
+  switched off for web requests on these instances. Command-line tooling over
+  SSH and cron is unaffected, as are single-site instances, which never had
+  access to anything but their own folder. Customers running an application
+  that needs to run shell commands during a web request should give it its own
+  instance.
+
 ### Added
+- **Websites can now separate their application folder from the folder served
+  on the web.** Applications such as Nextcloud, Laravel and Symfony keep their
+  data beside the public folder rather than inside it; the application folder
+  is what the site is allowed to read, and the served folder is picked from
+  within it. The exact paths the web server uses are shown in the panel, since
+  an application's own configuration file usually needs them.
 - **Multi-host serving can be switched on while deploying**, not only
   afterwards. The instance then starts with everything it needs, so there is no
   restart — turning it on later has to change how storage is attached, which

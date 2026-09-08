@@ -13,14 +13,17 @@ import { DETACHED_ROUTE_TARGET, clearOrphanedSiteFolder } from './detach.js';
  * DEV as a 400 plus a zombie deployment.
  */
 describe('detaching a route clears its site folder', () => {
-  it('the delete-path constant clears both columns', () => {
-    expect(DETACHED_ROUTE_TARGET).toEqual({ deploymentId: null, siteFolder: null });
+  it('the delete-path constant clears every folder column', () => {
+    // appRoot joined the pair in migration 0105 and is bound by the same
+    // CHECK — a detach that clears only two of the three still violates it.
+    expect(DETACHED_ROUTE_TARGET).toEqual({ deploymentId: null, siteFolder: null, appRoot: null });
   });
 
   it('clears the folder when a patch detaches the route', () => {
     expect(clearOrphanedSiteFolder({ deploymentId: null })).toEqual({
       deploymentId: null,
       siteFolder: null,
+      appRoot: null,
     });
   });
 
@@ -29,6 +32,7 @@ describe('detaching a route clears its site folder', () => {
       privateWorkerId: 'pw-1',
       deploymentId: null,
       siteFolder: null,
+      appRoot: null,
     });
   });
 

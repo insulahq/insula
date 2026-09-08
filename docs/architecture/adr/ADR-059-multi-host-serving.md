@@ -211,10 +211,76 @@ copy and the live copy become two sources of truth.
 a runtime, and keeps full isolation. Not chosen now — it needs request-path
 wake-up the platform does not have — and it stays compatible with this design.
 
+## Amendment (2026-09-08) — per-site isolation
+
+The first cut shipped with a defect this ADR did not name: the pod mounts the
+tenant PVC **root** at `sites_root`, so **every vhost could read and write the
+whole tenant volume** — a sibling site's `config.php` (its database
+credentials), and other deployments' data directories, whose mount targets are
+`0777`. One compromised site was one compromised tenant.
+
+The original text argued this sat on "the same trust boundary as SFTP and the
+file manager". That argument is wrong and is withdrawn. SFTP is authenticated,
+deliberate access by the tenant; a vhost is an internet-facing process running
+whatever PHP the tenant uploaded. Sharing a volume between those two is not the
+same act.
+
+**Two columns, one boundary.** `ingress_routes.app_root` is the sandbox;
+`site_folder` remains the document root and must equal it or sit inside it (a
+CHECK enforces the pair). The generated vhost sets PHP's `open_basedir` to the
+app root, so a site cannot read outside its own application:
+
+- Apache — `SetEnv PHP_ADMIN_VALUE "open_basedir=…"`, which `mod_proxy_fcgi`
+  forwards to the pool. Measured against the shipped image.
+- nginx — `set $insula_php_admin …` per server block, read by a single
+  `fastcgi_param` in the shared include. A *variable*, because nginx inherits
+  `fastcgi_param` from an outer level only when the inner level declares none,
+  and that location declares several — a server-level param is silently
+  dropped. Every generated block must set it: an unset nginx variable is a
+  startup error that would take down the whole pod.
+
+**`open_basedir` alone is theatre.** It does not restrain a child process:
+with exec available, `shell_exec("cat …/neighbour/config.php")` reads straight
+through it — measured, not assumed. So the platform also sets
+`PHP_DISABLE_FUNCTIONS` on multi-host deployments, applied by the image in the
+**FPM pool**. Pool scope is deliberate: the CLI SAPI keeps exec, so composer,
+wp-cli, artisan and `occ` still work from cron and SSH. Single-site deployments
+are untouched — they mount only their own subPath and have no neighbour to
+reach, so breaking exec there would cost function for no security.
+
+**Why the app root is separate from the document root.** Apps with a `public/`
+entry point (Nextcloud, Laravel, Symfony) keep data beside the web root, not
+under it. Sandboxing to the document root would cut the app off from its own
+`data/`. The operator picks the app root; the document-root picker is confined
+to it, so the broken pair cannot be built by hand. Both absolute paths are
+surfaced in the UI, because an app's own config file wants them literally.
+
+**Not trusted from the catalog.** The `php` block is validated, not cast:
+`/`, any ancestor of `sites_root`, and `:`/newline injection are refused, and
+an unusable block fails the whole capability rather than silently serving
+multi-host unsandboxed.
+
+**Known residue.** PHP's session and upload temp files land in `/tmp`, which is
+shared by every site in the pod and must stay inside `open_basedir` or sessions
+break. Files are isolated; **session files are not**. Closing it needs a
+per-site session path created inside each app root, which the reconciler can do
+during the exec it already performs — not done here.
+
+**The alternative considered and rejected: per-site FPM pools.** They would
+allow per-site `disable_functions` and per-site memory limits, and are the only
+road to kernel-enforced isolation. But the images run the FPM master as
+`www-data`, and FPM can only `setuid` per pool when the master is root — so
+pools deliver no uid separation as things stand, i.e. exactly what
+`open_basedir` already gives, while multiplying baseline memory (eroding the
+saving multi-host exists for) and forcing an FPM reload that drops opcache for
+every site whenever one is added. Revisit only alongside a root FPM master and
+per-site uids, which additionally require uid allocation, a `chown` migration
+of existing tenant data, and tightening those `0777` directories.
+
 ## References
 
 - Catalog: `insulahq/application-catalog` PRs #15, #16
-- Platform: PRs #457, #458, #459, #460
+- Platform: PRs #457, #458, #459, #460; isolation amendment #472
 - ADR-037 (asymmetric QoS: memory request == limit), ADR-036 (custom
   deployments), ADR-053 (GitOps branches)
 - `documentation/docs/tenant/deployments-and-applications.md`,

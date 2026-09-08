@@ -11,6 +11,7 @@ import {
   normalizeHostname,
   relativeRecordName,
   validateRouteHostname,
+  siteFolderWithinAppRoot,
 } from '@insula/api-contracts';
 import { ingressRoutes, domains, platformSettings, dnsRecords, deployments, catalogEntries, privateWorkers } from '../../db/schema.js';
 import { clearOrphanedSiteFolder } from './detach.js';
@@ -283,6 +284,7 @@ export async function createRoute(
   privateWorkerId?: string | null,
   servicePort?: number | null,
   siteFolder?: string | null,
+  appRoot?: string | null,
 ) {
   // Polymorphic target validation (migration 0076 + 0085).
   //
@@ -393,6 +395,20 @@ export async function createRoute(
     assertSiteFolderAllowed(siteFolder ?? null, dep, entry ?? null, routePath);
   }
 
+  // The sandbox defaults to the folder being served, which is the tighter of
+  // the two readings and can never exclude the document root from its own
+  // open_basedir. An explicit app root widens it to a parent — what a
+  // `public/`-style app needs so it can still reach its sibling data folder.
+  const resolvedAppRoot = siteFolder ? (appRoot ?? siteFolder) : null;
+  if (!siteFolderWithinAppRoot(siteFolder ?? null, resolvedAppRoot)) {
+    throw new ApiError(
+      'VALIDATION_ERROR',
+      'The document root must be the application root or a folder inside it.',
+      400,
+      { site_folder: siteFolder, app_root: resolvedAppRoot },
+    );
+  }
+
   // A folder with no deployment has nothing to serve it. The DB CHECK
   // constraint says the same thing, but an API error naming the problem beats
   // a constraint violation surfacing as a 500.
@@ -466,6 +482,7 @@ export async function createRoute(
     status: 'active',
     servicePort: servicePort ?? null,
     siteFolder: siteFolder ?? null,
+    appRoot: resolvedAppRoot,
   });
 
   // Auto-create DNS records for PRIMARY domains
@@ -551,6 +568,7 @@ export async function updateRoute(
     nodeHostname?: string | null;
     servicePort?: number | null;
     siteFolder?: string | null;
+    appRoot?: string | null;
   },
   // Required when privateWorkerId is being set — we re-verify the worker
   // belongs to this tenant to defend against route-id enumeration that
@@ -647,6 +665,54 @@ export async function updateRoute(
       assertSiteFolderAllowed(input.siteFolder, dep, entry ?? null, route.path);
     }
     updateValues.siteFolder = input.siteFolder;
+    // Clearing the document root clears the sandbox with it: an app root with
+    // nothing served out of it is exactly the orphan state the DB CHECK
+    // refuses. An app root supplied in the SAME patch still wins, below.
+    if (input.siteFolder === null) updateValues.appRoot = null;
+    // Narrowing the document root without naming an app root re-defaults the
+    // sandbox to the new folder, rather than silently leaving it pointing at
+    // wherever the previous folder was.
+    else if (input.appRoot === undefined) updateValues.appRoot = input.siteFolder;
+  }
+
+  if (input.appRoot !== undefined) {
+    if (input.appRoot !== null) {
+      const targetDeploymentId = input.deploymentId !== undefined ? input.deploymentId : route.deploymentId;
+      if (!targetDeploymentId) {
+        throw new ApiError(
+          'VALIDATION_ERROR',
+          'An application root can only be set on a route that points at a deployment.',
+          400,
+        );
+      }
+    }
+    updateValues.appRoot = input.appRoot;
+  }
+
+  // Validate the PAIR as it will be AFTER this patch — either field can move
+  // in a single call, so checking the incoming value against the stored one
+  // would pass a patch that breaks the row.
+  const nextSiteFolder = (updateValues.siteFolder !== undefined
+    ? updateValues.siteFolder
+    : route.siteFolder) as string | null;
+  const nextAppRoot = (updateValues.appRoot !== undefined
+    ? updateValues.appRoot
+    : route.appRoot) as string | null;
+  if (nextSiteFolder && !nextAppRoot) {
+    // Only reachable by clearing an app root out from under a served folder.
+    throw new ApiError(
+      'VALIDATION_ERROR',
+      'A served folder needs an application root; clear the folder instead.',
+      400,
+    );
+  }
+  if (!siteFolderWithinAppRoot(nextSiteFolder, nextAppRoot)) {
+    throw new ApiError(
+      'VALIDATION_ERROR',
+      'The document root must be the application root or a folder inside it.',
+      400,
+      { site_folder: nextSiteFolder, app_root: nextAppRoot },
+    );
   }
 
   // Retargeting away from the deployment drops the folder with it — see
