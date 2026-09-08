@@ -300,7 +300,23 @@ newline that separates several), on nginx through the existing multi-line
 variable. Sites sharing an application root share the directory, so a login
 survives a www redirect.
 
-**Symlinks are not followed**, on all four runtimes. A symlink in one site's
+**Symlinks are not followed on the NGINX runtimes.** On Apache they still are,
+and not by choice: Apache refuses `RewriteRule` when `FollowSymLinks` and
+`SymLinksIfOwnerMatch` are both off (AH00670), the shared include rewrites, and
+so does every WordPress `.htaccess` — disabling it returned 403 on every
+request to every multi-host site. `SymLinksIfOwnerMatch` restores rewrite
+without restoring the protection, since every file on the volume has the same
+runtime uid.
+
+So on Apache the escape survives, narrower than it first appears: PHP's own
+`symlink()` is refused by `open_basedir` when the target is outside the sandbox
+(measured), so a site compromised *through PHP* cannot create one. What remains
+is a symlink authored by the TENANT over SFTP between two of their own sites,
+which is not a privilege escalation — they already have access to both. It is
+still a gap between what Apache and nginx enforce, and it is recorded here
+rather than implied.
+
+**Symlinks are not followed** on the nginx runtimes. A symlink in one site's
 folder pointing at a neighbour's was served by Apache/nginx directly, with PHP
 never invoked — so `open_basedir` and `disable_functions`, both interpreter
 controls, were bypassed completely. Reproduced against the published images.

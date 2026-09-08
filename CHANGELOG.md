@@ -19,12 +19,15 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   application's data even in principle. Adding or removing a website on a shared
   instance now restarts it briefly, where before it was applied without a
   restart — the isolation is worth the interruption.
-- **Websites sharing an instance can no longer read each other through a
-  symlink.** A shortcut placed in one site's folder pointing at a neighbour's
-  was followed by the web server and served as a plain file, which bypassed the
-  restrictions above entirely because the website software never ran. Note the
-  trade-off: applications that ship a shortcut inside the folder they publish —
-  Laravel's `public/storage` is the usual one — need a real folder instead.
+- **On NGINX instances, websites sharing an instance can no longer read each
+  other through a shortcut.** A shortcut placed in one site's folder pointing at
+  a neighbour's was followed by the web server and served as a plain file, which
+  bypassed the restrictions above entirely because the website software never
+  ran. Applications that ship a shortcut inside the folder they publish —
+  Laravel's `public/storage` is the usual one — need a real folder instead on
+  these instances. **Apache instances are unchanged**: Apache refuses URL
+  rewriting when shortcut-following is off, which would break every site using
+  an `.htaccess` rewrite, so the restriction cannot be applied there.
 - **Each website now keeps its own login sessions.** They were previously
   written to a shared temporary area, where a session's filename is its
   identifier — so one website could read a visitor's session from a
