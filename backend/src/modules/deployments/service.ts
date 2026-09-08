@@ -11,6 +11,7 @@ import { normalizeMountPath } from '@insula/api-contracts';
 import { InsufficientResourceBudgetError } from './resource-allocator.js';
 import { findAdminPasswordEnvVar } from './password-reset.js';
 import { capabilityOf, deleteDeploymentSites, multihostMountsFor } from '../multihost/reconciler.js';
+import { DETACHED_ROUTE_TARGET } from '../ingress-routes/detach.js';
 import {
   isCustomDeployment,
   customSpecImages,
@@ -931,14 +932,23 @@ export async function deleteDeployment(
     }
   }
 
-  await db.update(deployments)
-    .set({ status: 'deleted', deletedAt: new Date() })
-    .where(eq(deployments.id, deploymentId));
+  // Both writes in one transaction: the unlink below can only fail on a
+  // constraint, and a half-applied delete leaves the row flagged `deleted`
+  // with its routes still pointing at it — the tenant then sees an error for
+  // a deployment whose workload is already gone.
+  await db.transaction(async (tx) => {
+    await tx.update(deployments)
+      .set({ status: 'deleted', deletedAt: new Date() })
+      .where(eq(deployments.id, deploymentId));
 
-  // Unlink ingress routes (set deployment_id to NULL)
-  await db.update(ingressRoutes)
-    .set({ deploymentId: null })
-    .where(eq(ingressRoutes.deploymentId, deploymentId));
+    // Unlink ingress routes. `siteFolder` MUST be cleared in the same
+    // statement: it is meaningless without a deployment to resolve it
+    // against, and `ingress_routes_site_folder_needs_deployment` rejects the
+    // row outright — which used to abort the whole delete.
+    await tx.update(ingressRoutes)
+      .set(DETACHED_ROUTE_TARGET)
+      .where(eq(ingressRoutes.deploymentId, deploymentId));
+  });
 
   // Reconcile the Ingress: with no routes pointing at this deployment,
   // reconcileIngress will rebuild rules from the remaining routes (or
