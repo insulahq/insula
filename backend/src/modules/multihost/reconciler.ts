@@ -32,7 +32,8 @@ import { catalogEntries, deployments, domains, ingressRoutes } from '../../db/sc
 import { execInPod } from '../../shared/k8s-exec.js';
 import {
   minimalSiteFolders,
-  MULTIHOST_SESSION_ROOT,
+  MULTIHOST_SESSION_BASE,
+  MULTIHOST_SESSION_VOLUME,
   sessionDirInitCommands,
   isSessionDirCommand,
 } from '../deployments/k8s-deployer.js';
@@ -472,6 +473,9 @@ async function ensureSiteMounts(
   // tenant may point an extra_mount at a path under sites_root — nothing
   // forbids it — and treating "anything below sites_root" as ours would
   // silently unmount their data on the next route change.
+  const isSessionMount = (m: Record<string, unknown>) =>
+    m.name === MULTIHOST_SESSION_VOLUME
+    && String(m.mountPath ?? '').startsWith(`${MULTIHOST_SESSION_BASE}/`);
   const isSiteMount = (m: Record<string, unknown>) => {
     if (m.name !== 'tenant-storage') return false;
     const mp = String(m.mountPath ?? '');
@@ -480,12 +484,13 @@ async function ensureSiteMounts(
     return Boolean(sub) && mp === `${sitesRoot}/${sub}`;
   };
   const currentFolders = minimalSiteFolders(
-    current.filter(isSiteMount)
-      .map((m) => String(m.subPath ?? ''))
-      // Compare SITE folders only: a session subPath is derived from one, so
-      // counting both would never match `desired` and every reconcile would
-      // rewrite the pod template and restart the pod.
-      .filter((sp) => sp && !sp.startsWith(`${MULTIHOST_SESSION_ROOT}/`)),
+    current.filter(isSiteMount).map((m) => String(m.subPath ?? '')).filter(Boolean),
+  );
+  // Session mounts live on a different volume, so they are compared separately
+  // — a pod can have the right site folders and still be missing its session
+  // directories, which is precisely the state a route change used to leave.
+  const currentSessions = minimalSiteFolders(
+    current.filter(isSessionMount).map((m) => String(m.subPath ?? '')).filter(Boolean),
   );
   // A legacy pod mounting the volume ROOT has one site mount with no subPath.
   // It must be replaced even when the folder list matches, because that mount
@@ -494,10 +499,12 @@ async function ensureSiteMounts(
 
   const same = !hasVolumeRootMount
     && currentFolders.length === desired.length
-    && currentFolders.every((f: string, i: number) => f === desired[i]);
+    && currentFolders.every((f: string, i: number) => f === desired[i])
+    && currentSessions.length === desired.length
+    && currentSessions.every((f: string, i: number) => f === desired[i]);
   if (same) return false;
 
-  const kept = current.filter((m) => !isSiteMount(m));
+  const kept = current.filter((m) => !isSiteMount(m) && !isSessionMount(m));
   // Session mounts are rebuilt here too. `isSiteMount` matches them — their
   // mountPath is `<sites_root>/<subPath>` like any other — so rebuilding only
   // the site folders DROPPED them on every route change, leaving each vhost
@@ -512,11 +519,26 @@ async function ensureSiteMounts(
       subPath: folder,
     })),
     ...desired.map((folder) => ({
-      name: 'tenant-storage',
-      mountPath: `${sitesRoot}/${MULTIHOST_SESSION_ROOT}/${folder}`,
-      subPath: `${MULTIHOST_SESSION_ROOT}/${folder}`,
+      name: MULTIHOST_SESSION_VOLUME,
+      mountPath: `${MULTIHOST_SESSION_BASE}/${folder}`,
+      subPath: folder,
     })),
   ];
+
+  // The session VOLUME has to exist before anything mounts it.
+  //
+  // A pod template written before session storage moved to an emptyDir has no
+  // such volume. Adding volumeMounts that name a volume the spec does not
+  // declare produces an INVALID Deployment — the pods stop scheduling
+  // entirely, which would take every site on that instance down rather than
+  // leave one setting missing.
+  const podSpec = dep.spec?.template?.spec as { volumes?: Array<Record<string, unknown>> } | undefined;
+  if (podSpec) {
+    podSpec.volumes = podSpec.volumes ?? [];
+    if (!podSpec.volumes.some((v) => v.name === MULTIHOST_SESSION_VOLUME)) {
+      podSpec.volumes.push({ name: MULTIHOST_SESSION_VOLUME, emptyDir: {} });
+    }
+  }
 
   // The init container has to keep step with the mounts.
   //
@@ -527,7 +549,7 @@ async function ensureSiteMounts(
   // exactly that on DEV.
   const initContainers = (dep.spec?.template?.spec?.initContainers ?? []) as Array<Record<string, unknown>>;
   const initDirs = initContainers.find((c) => (c as { name?: string }).name === 'init-dirs') as
-    { command?: string[] } | undefined;
+    { command?: string[]; volumeMounts?: Array<Record<string, unknown>> } | undefined;
   if (initDirs?.command && initDirs.command.length === 3) {
     const existing = initDirs.command[2]
       .split(' && ')
@@ -536,6 +558,12 @@ async function ensureSiteMounts(
       .filter((part) => !isSessionDirCommand(part));
     const rebuilt = [...existing, ...sessionDirInitCommands(desired)].filter((p) => p && p !== 'true');
     initDirs.command[2] = rebuilt.length > 0 ? rebuilt.join(' && ') : 'true';
+    // …and it must have the volume mounted to write into it.
+    const im = (initDirs as { volumeMounts?: Array<Record<string, unknown>> });
+    im.volumeMounts = im.volumeMounts ?? [];
+    if (!im.volumeMounts.some((m) => m.name === MULTIHOST_SESSION_VOLUME)) {
+      im.volumeMounts.push({ name: MULTIHOST_SESSION_VOLUME, mountPath: MULTIHOST_SESSION_BASE });
+    }
   }
 
   // Read-modify-WRITE rather than a patch, deliberately. A strategic merge
@@ -565,7 +593,10 @@ async function ensureSiteMounts(
       const fi = freshContainers.findIndex((c) => (c as { name?: string }).name === containerName);
       if (fi < 0) return false;
       const fc = freshContainers[fi] as { volumeMounts?: Array<Record<string, unknown>> };
-      fc.volumeMounts = [...(fc.volumeMounts ?? []).filter((m) => !isSiteMount(m)), ...next.filter(isSiteMount)];
+      fc.volumeMounts = [
+        ...(fc.volumeMounts ?? []).filter((m) => !isSiteMount(m) && !isSessionMount(m)),
+        ...next.filter((m) => isSiteMount(m) || isSessionMount(m)),
+      ];
       dep = fresh;
     }
   }
