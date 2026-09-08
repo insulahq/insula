@@ -96,6 +96,11 @@ describe('multi-host mounts', () => {
       { name: 'multihost-sites', mountPath: '/etc/apache2/insula/sites.d', readOnly: true },
       { name: 'tenant-storage', mountPath: '/var/www/sites/blog', subPath: 'blog' },
       { name: 'tenant-storage', mountPath: '/var/www/sites/shop', subPath: 'shop' },
+      // Session directories, beside the site folders rather than inside them:
+      // inside, they would sit under the document root whenever docroot ==
+      // app root and be fetchable over HTTP.
+      { name: 'tenant-storage', mountPath: '/var/www/sites/.insula-sessions/blog', subPath: '.insula-sessions/blog' },
+      { name: 'tenant-storage', mountPath: '/var/www/sites/.insula-sessions/shop', subPath: '.insula-sessions/shop' },
     ]);
 
     // THE regression this file exists for. A mount of `/var/www/sites` with no
@@ -104,6 +109,10 @@ describe('multi-host mounts', () => {
     const siteMounts = spec.containers[0].volumeMounts.filter(
       (m: { mountPath: string }) => m.mountPath.startsWith('/var/www/sites'),
     );
+    // No session directory may live under a served folder.
+    for (const m of siteMounts.filter((x: { subPath?: string }) => x.subPath?.startsWith('.insula-sessions'))) {
+      expect(m.mountPath).toContain('/.insula-sessions/');
+    }
     expect(siteMounts.every((m: { subPath?: string }) => Boolean(m.subPath))).toBe(true);
     expect(siteMounts.some((m: { mountPath: string }) => m.mountPath === '/var/www/sites')).toBe(false);
 

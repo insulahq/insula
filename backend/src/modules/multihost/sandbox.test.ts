@@ -27,17 +27,18 @@ const route = (over: Partial<SiteRoute> = {}): SiteRoute => ({
 
 describe('open_basedir value', () => {
   it('is the app root plus the paths the image declared it needs', () => {
-    expect(openBasedirFor(APACHE, '/var/www/sites/app')).toBe('/var/www/sites/app:/tmp');
+    expect(openBasedirFor(APACHE, '/var/www/sites/app', '/var/www/sites/.insula-sessions/app'))
+      .toBe('/var/www/sites/app:/var/www/sites/.insula-sessions/app:/tmp');
   });
 
   it('is null on a runtime that declares no PHP', () => {
-    expect(openBasedirFor(STATIC, '/var/www/sites/app')).toBeNull();
+    expect(openBasedirFor(STATIC, '/var/www/sites/app', null)).toBeNull();
   });
 
   it('includes /tmp — PHP falls back there for sessions and uploads', () => {
     // Measured on the shipped image: session.save_path and upload_tmp_dir are
     // both empty, so excluding /tmp breaks every session-using site.
-    expect(openBasedirFor(NGINX, '/var/www/sites/app')).toContain(':/tmp');
+    expect(openBasedirFor(NGINX, '/var/www/sites/app', null)).toContain(':/tmp');
   });
 });
 
@@ -46,12 +47,12 @@ describe('apache sandboxes each vhost', () => {
     const { files } = renderSites(APACHE, [route({ siteFolder: 'shop/public', appRoot: 'shop' })]);
     const vhost = Object.values(files)[0];
     expect(vhost).toContain('DocumentRoot "/var/www/sites/shop/public"');
-    expect(vhost).toContain('SetEnv PHP_ADMIN_VALUE "open_basedir=/var/www/sites/shop:/tmp"');
+    expect(vhost).toContain('open_basedir=/var/www/sites/shop:/var/www/sites/.insula-sessions/shop:/tmp');
   });
 
   it('falls back to the served folder when no app root is recorded', () => {
     const { files } = renderSites(APACHE, [route({ siteFolder: 'plain', appRoot: null })]);
-    expect(Object.values(files)[0]).toContain('open_basedir=/var/www/sites/plain:/tmp');
+    expect(Object.values(files)[0]).toContain('open_basedir=/var/www/sites/plain:/var/www/sites/.insula-sessions/plain:/tmp');
   });
 
   it('never sandboxes a runtime with no PHP', () => {
@@ -65,8 +66,8 @@ describe('nginx sandboxes each server block', () => {
     const { files } = renderSites(NGINX, [route({ siteFolder: 'shop/public', appRoot: 'shop' })]);
     const conf = Object.values(files)[0];
     expect(conf).toContain('root "/var/www/sites/shop/public"');
-    expect(conf).toContain('set $insula_php_admin "open_basedir=/var/www/sites/shop:/tmp');
-    expect(conf).toContain('session.save_path=/var/www/sites/shop/.insula-sessions";');
+    expect(conf).toContain('set $insula_php_admin "open_basedir=/var/www/sites/shop:/var/www/sites/.insula-sessions/shop:/tmp');
+    expect(conf).toContain('session.save_path=/var/www/sites/.insula-sessions/shop";');
   });
 
   /**
@@ -99,7 +100,8 @@ describe('rendered sites report their absolute paths', () => {
     const { sites } = renderSites(APACHE, [route({ siteFolder: 'shop/public', appRoot: 'shop' })]);
     expect(sites[0].documentRoot).toBe('/var/www/sites/shop/public');
     expect(sites[0].appRootPath).toBe('/var/www/sites/shop');
-    expect(sites[0].openBasedir).toBe('/var/www/sites/shop:/tmp');
+    expect(sites[0].openBasedir).toBe('/var/www/sites/shop:/var/www/sites/.insula-sessions/shop:/tmp');
+    expect(sites[0].sessionPath).toBe('/var/www/sites/.insula-sessions/shop');
   });
 });
 
@@ -158,7 +160,7 @@ describe('the renderer re-validates the app root, not just the folder', () => {
   it('still renders a legitimate parent app root', () => {
     const { files, skipped } = renderSites(APACHE, [route({ siteFolder: 'shop/public', appRoot: 'shop' })]);
     expect(skipped).toHaveLength(0);
-    expect(Object.values(files)[0]).toContain('open_basedir=/var/www/sites/shop:/tmp');
+    expect(Object.values(files)[0]).toContain('open_basedir=/var/www/sites/shop:');
   });
 });
 
@@ -176,15 +178,21 @@ describe('session files are per-site, not shared through /tmp', () => {
   it('apache points PHP at the app root, via the second variable', () => {
     const { files } = renderSites(APACHE, [route({ siteFolder: 'shop/public', appRoot: 'shop' })]);
     const vhost = Object.values(files)[0];
-    expect(vhost).toContain('SetEnv PHP_VALUE "session.save_path=/var/www/sites/shop/.insula-sessions"');
+    expect(vhost).toContain('SetEnv PHP_VALUE "session.save_path=/var/www/sites/.insula-sessions/shop"');
     // open_basedir must stay in PHP_ADMIN_VALUE, where a script cannot widen it.
     expect(vhost).toContain('SetEnv PHP_ADMIN_VALUE "open_basedir=');
   });
 
-  it('the session dir sits INSIDE the sandbox, or every write would fail', () => {
+  it('the session dir is NOT under the app root, so it can never be served', () => {
     const { sites } = renderSites(APACHE, [route({ siteFolder: 'shop', appRoot: 'shop' })]);
-    const basedir = sites[0].openBasedir ?? '';
-    expect(`${sites[0].appRootPath}/.insula-sessions`.startsWith(`${basedir.split(':')[0]}/`)).toBe(true);
+    // Under the document root it would be fetchable as /.insula-sessions/sess_<id>
+    // whenever docroot == app root, which is the common case.
+    expect(sites[0].sessionPath?.startsWith(`${sites[0].appRootPath}/`)).toBe(false);
+  });
+
+  it('but IS named in open_basedir, or every session write would be denied', () => {
+    const { sites } = renderSites(APACHE, [route({ siteFolder: 'shop', appRoot: 'shop' })]);
+    expect(sites[0].openBasedir?.split(':')).toContain(sites[0].sessionPath);
   });
 
   it('two sites get two different session directories', () => {
@@ -193,8 +201,8 @@ describe('session files are per-site, not shared through /tmp', () => {
       route({ id: 'b', hostname: 'b.example.test', siteFolder: 'b' }),
     ]);
     const all = Object.values(files).join('\n');
-    expect(all).toContain('/var/www/sites/a/.insula-sessions');
-    expect(all).toContain('/var/www/sites/b/.insula-sessions');
+    expect(all).toContain('/var/www/sites/.insula-sessions/a');
+    expect(all).toContain('/var/www/sites/.insula-sessions/b');
   });
 
   it('two hostnames sharing one app root share one session dir, so logins survive www redirects', () => {
@@ -203,7 +211,7 @@ describe('session files are per-site, not shared through /tmp', () => {
       route({ id: 'b', hostname: 'www.ex.example.test', siteFolder: 'shop/public', appRoot: 'shop' }),
     ]);
     for (const conf of Object.values(files)) {
-      expect(conf).toContain('session.save_path=/var/www/sites/shop/.insula-sessions');
+      expect(conf).toContain('session.save_path=/var/www/sites/.insula-sessions/shop');
     }
   });
 

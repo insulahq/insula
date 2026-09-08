@@ -275,8 +275,25 @@ a strategic-merge patch — merge patches key list entries by `mountPath` and ca
 therefore only ADD, which would leave a folder mounted after it stopped being
 served.
 
-**Sessions are per-site.** Each application root gets its own
-`.insula-sessions` directory, created by the init container and pointed at with
+**Sessions are per-site, and persist.** Each application root gets its own
+directory under `<sites_root>/.insula-sessions/<app root>` — a SIBLING of the
+site folders, never a child. Inside the app root it would sit under the
+document root whenever the two are the same (the common case) and the web
+server would serve `/.insula-sessions/sess_<id>` on request; out here nothing
+is under a document root, so no deny rule has to be correct for it to be safe.
+A site folder cannot collide with the name, since folder names must start
+alphanumeric.
+
+Because the directory is on the tenant volume, sessions now SURVIVE a pod
+restart, where `/tmp` lost them. That matters more than it used to: adding or
+removing a site restarts the pod, so ephemeral sessions would log every user of
+every site out whenever a neighbour added a website. PHP's own GC is enabled in
+these images (`gc_probability=1`, `gc_divisor=1000`, `gc_maxlifetime=1440`) and
+there is no distro cron overriding it, so files are collected rather than
+accumulating — measured, not assumed. A site that stops receiving traffic keeps
+its last few session files until it next serves a request; bounded and small.
+
+The directory is created by the init container and pointed at with
 `session.save_path` — on Apache through a second FastCGI variable (`PHP_VALUE`,
 since `PHP_ADMIN_VALUE` carries `open_basedir` and Apache cannot embed the
 newline that separates several), on nginx through the existing multi-line

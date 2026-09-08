@@ -79,6 +79,8 @@ export interface RenderedSite {
   readonly documentRoot: string;
   /** Absolute app root — surfaced to the operator for app config files. */
   readonly appRootPath: string;
+  /** Absolute per-site session directory, or null on a static runtime. */
+  readonly sessionPath: string | null;
   /** Exact open_basedir written into the vhost, or null on a static runtime. */
   readonly openBasedir: string | null;
 }
@@ -136,6 +138,8 @@ interface VhostInput {
   readonly routeId: string;
   /** Absolute app root, or null on a runtime with no PHP to sandbox. */
   readonly appRootPath: string | null;
+  /** Absolute per-site session directory, outside every document root. */
+  readonly sessionPath: string | null;
   readonly cap: MultihostCapability;
 }
 
@@ -146,17 +150,44 @@ interface VhostInput {
  * Returns null when the runtime declares no `php` block, so a static image
  * gets a plain vhost with no FastCGI directives it could not honour anyway.
  */
-export function openBasedirFor(cap: MultihostCapability, appRootPath: string | null): string | null {
+export function openBasedirFor(
+  cap: MultihostCapability,
+  appRootPath: string | null,
+  sessionPath?: string | null,
+): string | null {
   if (!cap.php || !appRootPath) return null;
-  return [appRootPath, ...(cap.php.open_basedir_extra ?? [])].join(':');
+  return [
+    appRootPath,
+    // The session directory lives outside the app root, so the sandbox has to
+    // name it explicitly — otherwise every session write is denied by the very
+    // sandbox that is supposed to protect it.
+    ...(sessionPath ? [sessionPath] : []),
+    ...(cap.php.open_basedir_extra ?? []),
+  ].join(':');
 }
 
 /**
- * Per-site session directory, relative to the application root. MUST match
- * `MULTIHOST_SESSION_DIR` in the deployer, which creates it — a vhost pointing
- * PHP at a directory nobody created means every session write fails.
+ * Per-site session directory: a sibling of the site folders, NOT a child of
+ * one. MUST match `MULTIHOST_SESSION_ROOT` in the deployer, which creates and
+ * mounts it — a vhost pointing PHP at a directory nobody created means every
+ * session write fails.
+ *
+ * Outside the application root on purpose. Inside it, the directory sits under
+ * the document root whenever the two are the same — which is the common case —
+ * and the web server would happily serve `/.insula-sessions/sess_<id>` to
+ * anyone who asked. A deny rule could patch that, but "not reachable" is worth
+ * more than "denied": nothing here is under any document root, so no rule has
+ * to be correct for it to be safe.
+ *
+ * A site folder can never collide with this name, because folder names must
+ * begin with an alphanumeric character.
  */
-const SESSION_DIR = '.insula-sessions';
+const SESSION_ROOT = '.insula-sessions';
+
+/** Absolute session directory for one application root. */
+export function sessionPathFor(cap: MultihostCapability, appRoot: string): string {
+  return `${cap.sites_root}/${SESSION_ROOT}/${appRoot}`;
+}
 
 const BANNER = (routeId: string, hostname: string): string[] => [
   `# Route ${routeId} — ${hostname}`,
@@ -166,7 +197,7 @@ const BANNER = (routeId: string, hostname: string): string[] => [
 
 function renderApacheVhost(cap: MultihostCapability, site: VhostInput): string {
   const alias = site.serverAlias ? [`    ServerAlias ${site.serverAlias}`] : [];
-  const basedir = openBasedirFor(cap, site.appRootPath);
+  const basedir = openBasedirFor(cap, site.appRootPath, site.sessionPath);
   // mod_proxy_fcgi forwards subprocess_env to the pool, and PHP-FPM applies
   // PHP_ADMIN_VALUE — so a per-vhost SetEnv sandboxes this site's PHP without
   // a second FPM pool. Verified against the shipped image, not assumed.
@@ -184,7 +215,7 @@ function renderApacheVhost(cap: MultihostCapability, site: VhostInput): string {
         // PHP_INI_ALL, so PHP_VALUE carries it; open_basedir must stay in
         // PHP_ADMIN_VALUE, where a script cannot widen it. Verified against
         // the shipped image: the session file lands here, not in /tmp.
-        `    SetEnv PHP_VALUE "session.save_path=${site.appRootPath}/${SESSION_DIR}"`,
+        `    SetEnv PHP_VALUE "session.save_path=${site.sessionPath}"`,
       ]
     : [];
   // Symlink confinement, scoped to THIS site's document root.
@@ -238,7 +269,7 @@ function renderApacheVhost(cap: MultihostCapability, site: VhostInput): string {
  *    `common_include` carries the listen lines.
  */
 function renderNginxServer(cap: MultihostCapability, site: VhostInput): string {
-  const basedir = openBasedirFor(cap, site.appRootPath);
+  const basedir = openBasedirFor(cap, site.appRootPath, site.sessionPath);
   // Set as a VARIABLE, not a fastcgi_param, and deliberately so: nginx only
   // inherits fastcgi_param from an outer level when the inner level declares
   // none, and the shared include's PHP location declares several — a
@@ -251,7 +282,7 @@ function renderNginxServer(cap: MultihostCapability, site: VhostInput): string {
   const sandbox = basedir
     ? [
         `    set $insula_php_admin "open_basedir=${basedir}`,
-        `session.save_path=${site.appRootPath}/${SESSION_DIR}";`,
+        `session.save_path=${site.sessionPath}";`,
       ]
     : [];
   return [
@@ -380,7 +411,10 @@ export function renderSites(
     // never set, sandboxes to the folder it serves. That is the tighter of the
     // two readings and it cannot break a site: the document root is always
     // inside its own sandbox.
-    const appRootPath = `${cap.sites_root}/${route.appRoot ?? route.siteFolder}`;
+    const appRootRel = route.appRoot ?? route.siteFolder;
+    const appRootPath = `${cap.sites_root}/${appRootRel}`;
+    // Only PHP runtimes get a session directory; a static site has none.
+    const sessionPath = cap.php ? sessionPathFor(cap, appRootRel) : null;
 
     const filename = siteFilename(route.id);
     files[filename] = renderVhost(cap, {
@@ -390,6 +424,7 @@ export function renderSites(
       hostname: route.hostname,
       routeId: route.id,
       appRootPath,
+      sessionPath,
       cap,
     });
     sites.push({
@@ -400,7 +435,8 @@ export function renderSites(
       serverAlias,
       documentRoot,
       appRootPath,
-      openBasedir: openBasedirFor(cap, appRootPath),
+      sessionPath,
+      openBasedir: openBasedirFor(cap, appRootPath, sessionPath),
     });
   }
 
