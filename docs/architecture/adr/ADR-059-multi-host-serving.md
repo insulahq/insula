@@ -260,9 +260,27 @@ surfaced in the UI, because an app's own config file wants them literally.
 an unusable block fails the whole capability rather than silently serving
 multi-host unsandboxed.
 
+**The pod no longer mounts the volume root at all.** The sandbox above confines
+the interpreter; this removes the thing it was confining access to. Each served
+application root is its own mount with its own `subPath`, so what the pod cannot
+see, no missing directive, misconfiguration or future runtime can reach — and
+the same now holds for the static runtimes, which have no interpreter to
+sandbox and were therefore relying entirely on web-server configuration.
+
+The cost is real and accepted: the set of folders is part of the pod template,
+so adding or removing a site restarts the pod, where the volume-root mount could
+add one with a graceful reload. `ensureSiteMounts` reconciles the live mount
+list on every route change, and deliberately uses read-modify-write rather than
+a strategic-merge patch — merge patches key list entries by `mountPath` and can
+therefore only ADD, which would leave a folder mounted after it stopped being
+served.
+
 **Known residue.** PHP's session and upload temp files land in `/tmp`, which is
 shared by every site in the pod and must stay inside `open_basedir` or sessions
-break. Files are isolated; **session files are not**. Closing it needs a
+break. Files are isolated; **session files are not** — and the exposure is worse
+than "some shared temp files": session filenames ARE session IDs, so a site can
+list `/tmp`, read a neighbour's session, and present that ID as its own cookie.
+Account takeover across sites in the pod, with no exec and no sandbox bypass. Closing it needs a
 per-site session path created inside each app root, which the reconciler can do
 during the exec it already performs — not done here.
 

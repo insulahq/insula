@@ -136,3 +136,27 @@ describe('a catalog repository cannot dissolve the sandbox', () => {
     expect(phpSandboxIsSane('php', SITES)).toBe(false);
   });
 });
+
+describe('the renderer re-validates the app root, not just the folder', () => {
+  const hostile = (appRoot: string) => renderSites(APACHE, [route({ siteFolder: 'ok', appRoot })]);
+
+  it('refuses a colon, which would append a path to open_basedir', () => {
+    const { files, skipped } = hostile('ok:/var/www/sites');
+    expect(Object.keys(files)).toHaveLength(0);
+    expect(skipped[0].reason).toMatch(/application root/);
+  });
+
+  it('refuses a newline, which would end the directive', () => {
+    expect(Object.keys(hostile('ok\nSetEnv X Y').files)).toHaveLength(0);
+  });
+
+  it('refuses traversal', () => {
+    expect(Object.keys(hostile('../../etc').files)).toHaveLength(0);
+  });
+
+  it('still renders a legitimate parent app root', () => {
+    const { files, skipped } = renderSites(APACHE, [route({ siteFolder: 'shop/public', appRoot: 'shop' })]);
+    expect(skipped).toHaveLength(0);
+    expect(Object.values(files)[0]).toContain('open_basedir=/var/www/sites/shop:/tmp');
+  });
+});

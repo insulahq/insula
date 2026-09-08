@@ -13,6 +13,12 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Security
+- **An instance now has access only to the folders it actually serves**, rather
+  than to the whole of a customer's storage. Each website's folder is attached
+  individually, so a website cannot reach a neighbouring site's files or another
+  application's data even in principle. Adding or removing a website on a shared
+  instance now restarts it briefly, where before it was applied without a
+  restart — the isolation is worth the interruption.
 - **Each website on a multi-host instance is now confined to its own
   application folder.** Previously every site sharing an instance could read
   and write the whole of that customer's storage — a neighbouring site's

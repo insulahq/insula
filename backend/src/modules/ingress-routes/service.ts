@@ -669,10 +669,22 @@ export async function updateRoute(
     // nothing served out of it is exactly the orphan state the DB CHECK
     // refuses. An app root supplied in the SAME patch still wins, below.
     if (input.siteFolder === null) updateValues.appRoot = null;
-    // Narrowing the document root without naming an app root re-defaults the
-    // sandbox to the new folder, rather than silently leaving it pointing at
-    // wherever the previous folder was.
-    else if (input.appRoot === undefined) updateValues.appRoot = input.siteFolder;
+    // Narrowing the document root INSIDE the existing app root must keep that
+    // app root. Re-defaulting it to the new folder collapsed the pair on every
+    // second click and made the feature's whole purpose unreachable from the
+    // UI: pick app root `shop`, then pick document root `shop/public`, and the
+    // sandbox silently shrank to `shop/public` — cutting the app off from
+    // `shop/data`, which is the exact layout this column exists for. The
+    // collapse only ever TIGHTENED the sandbox, so nothing failed loudly.
+    //
+    // Only when the new folder falls outside the current app root does the
+    // sandbox re-default to it, which keeps the pair valid by construction.
+    else if (input.appRoot === undefined) {
+      const currentAppRoot = (route.appRoot ?? null) as string | null;
+      updateValues.appRoot = currentAppRoot && siteFolderWithinAppRoot(input.siteFolder, currentAppRoot)
+        ? currentAppRoot
+        : input.siteFolder;
+    }
   }
 
   if (input.appRoot !== undefined) {
@@ -703,6 +715,18 @@ export async function updateRoute(
     throw new ApiError(
       'VALIDATION_ERROR',
       'A served folder needs an application root; clear the folder instead.',
+      400,
+    );
+  }
+  if (nextAppRoot && !nextSiteFolder) {
+    // The mirror case. `siteFolderWithinAppRoot` is vacuously true when either
+    // side is absent, so reusing it as the pair check left this direction
+    // unguarded: `PATCH {app_root}` on a route with no folder reached the DB
+    // and came back as a constraint violation naming an internal constraint,
+    // instead of an error saying what to do.
+    throw new ApiError(
+      'VALIDATION_ERROR',
+      'An application root needs a folder to serve; set the document root in the same request.',
       400,
     );
   }

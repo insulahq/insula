@@ -294,6 +294,26 @@ export function renderSites(
       continue;
     }
 
+    // The app root is re-validated here for the same reason the folder is:
+    // this is the last gate before a value becomes a directive, and this one
+    // becomes the sandbox itself. It reaches the config through
+    // `SetEnv PHP_ADMIN_VALUE "open_basedir=…"` and through the pod's mount
+    // list, so a colon or a newline in it would not be a bad value — it would
+    // be an extra directive, or an extra path inside open_basedir.
+    //
+    // Today every write path runs the identical check at the API boundary, and
+    // there is no DB constraint on the column's FORMAT (0105 constrains only
+    // the pairing). "Validated upstream" is a property of today's callers, not
+    // of the column — and this file's whole contract is that nothing reaches
+    // the config unchecked.
+    if (route.appRoot != null) {
+      const appRootIssue = folderProblem(route.appRoot);
+      if (appRootIssue) {
+        skipped.push({ routeId: route.id, reason: `application root: ${appRootIssue}` });
+        continue;
+      }
+    }
+
     const previous = claimed.get(canonical);
     if (previous) {
       skipped.push({
