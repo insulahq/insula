@@ -897,7 +897,22 @@ export function minimalSiteFolders(folders: readonly string[]): string[] {
  * A site folder can never collide with this name: folder names must start with
  * an alphanumeric character.
  */
-export const MULTIHOST_SESSION_ROOT = '.php-sessions';
+/**
+ * Container path holding the per-site session directories.
+ *
+ * Backed by an emptyDir — POD-LOCAL EPHEMERAL STORAGE, not the tenant volume.
+ * Sessions were briefly written to the PVC, which isolated them correctly but
+ * put login state on the tenant's storage: counted against their quota, swept
+ * into their backups, and visible in the file manager. Operator decision
+ * (2026-09-08): keep session storage ephemeral, as it was when it lived in
+ * /tmp, and keep the per-site separation that /tmp did not provide.
+ *
+ * The trade is real and accepted: an emptyDir dies with the pod, and adding a
+ * site rewrites the pod template — so adding a website logs out the users of
+ * every site sharing that instance.
+ */
+export const MULTIHOST_SESSION_BASE = '/var/lib/php-sessions';
+export const MULTIHOST_SESSION_VOLUME = 'multihost-sessions';
 
 /**
  * Shell clauses that create the per-site session directories, writable by the
@@ -914,13 +929,13 @@ export const MULTIHOST_SESSION_ROOT = '.php-sessions';
  */
 export function sessionDirInitCommands(siteFolders: readonly string[]): string[] {
   return minimalSiteFolders(siteFolders).map(
-    (f) => `mkdir -p /data/${MULTIHOST_SESSION_ROOT}/${f} && chmod 777 /data/${MULTIHOST_SESSION_ROOT}/${f}`,
+    (f) => `mkdir -p ${MULTIHOST_SESSION_BASE}/${f} && chmod 777 ${MULTIHOST_SESSION_BASE}/${f}`,
   );
 }
 
 /** Recognises a clause emitted by `sessionDirInitCommands`, for rewrites. */
 export function isSessionDirCommand(part: string): boolean {
-  return part.includes(`/data/${MULTIHOST_SESSION_ROOT}/`);
+  return part.includes(`${MULTIHOST_SESSION_BASE}/`);
 }
 
 export const MULTIHOST_DISABLED_PHP_FUNCTIONS =
@@ -1000,17 +1015,22 @@ export function buildMultihostMounts(
         mountPath: `${multihost.sitesRoot}/${folder}`,
         subPath: folder,
       })),
-      // Per-site session directory, mounted beside the site folders rather
-      // than inside one — see MULTIHOST_SESSION_ROOT. Each site sees only its
-      // own, so a pod-wide /tmp is no longer where session files live.
+      // Per-site session directory on POD-LOCAL storage, one subPath each.
+      // Not the tenant volume: session state should not consume a customer's
+      // quota or land in their backups. Not a shared /tmp either: a session
+      // filename IS the session ID, so one directory for the whole pod let any
+      // site replay a neighbour's login.
       ...folders.map((folder) => ({
-        name: 'tenant-storage',
-        mountPath: `${multihost.sitesRoot}/${MULTIHOST_SESSION_ROOT}/${folder}`,
-        subPath: `${MULTIHOST_SESSION_ROOT}/${folder}`,
+        name: MULTIHOST_SESSION_VOLUME,
+        mountPath: `${MULTIHOST_SESSION_BASE}/${folder}`,
+        subPath: folder,
       })),
     ],
     volumes: [
       { name: 'multihost-sites', configMap: { name: multihost.configMapName, optional: true } },
+      // emptyDir: dies with the pod, costs the tenant nothing, and is invisible
+      // to their file manager and backups.
+      { name: MULTIHOST_SESSION_VOLUME, emptyDir: {} },
       // Only needed when the component mounts no catalog volumes at all;
       // otherwise buildVolumeMountSpec already declared `tenant-storage`.
       { name: 'tenant-storage', persistentVolumeClaim: { claimName: `${namespace}-storage` } },
@@ -1079,10 +1099,19 @@ async function deployK8sDeployment(
   // before PHP writes to it — PHP will not create it — so it is created here,
   // where the folder list is already known.
   const sessionDirs = sessionDirInitCommands(multihost ? multihost.siteFolders : []);
+  // The init container creates the session directories. kubelet creates a
+  // missing subPath as root:root 0755 and these images run non-root, so a
+  // mount without the matching mkdir gives the site a directory it cannot
+  // write — PHP is pointed at it and every session write is denied silently.
+  const sessionVolumeMount = { name: MULTIHOST_SESSION_VOLUME, mountPath: MULTIHOST_SESSION_BASE };
   if (spec) {
     if (sessionDirs.length > 0) {
-      const cmd = (spec.initDirsContainer as { command?: string[] }).command;
-      if (cmd && cmd.length === 3) cmd[2] = `${cmd[2]} && ${sessionDirs.join(' && ')}`;
+      const init = spec.initDirsContainer as { command?: string[]; volumeMounts?: Array<Record<string, unknown>> };
+      if (init.command && init.command.length === 3) {
+        init.command[2] = `${init.command[2]} && ${sessionDirs.join(' && ')}`;
+      }
+      // It writes into the session volume, so it has to mount it.
+      init.volumeMounts = [...(init.volumeMounts ?? []), sessionVolumeMount];
     }
     initContainersList.push(spec.initDirsContainer);
   } else if (sessionDirs.length > 0) {
@@ -1090,7 +1119,7 @@ async function deployK8sDeployment(
       name: 'init-dirs',
       image: 'busybox:1.36',
       command: ['sh', '-c', sessionDirs.join(' && ')],
-      volumeMounts: [{ name: 'tenant-storage', mountPath: '/data' }],
+      volumeMounts: [sessionVolumeMount],
       resources: { requests: { cpu: '10m', memory: '32Mi' }, limits: { memory: '32Mi' } },
     });
   }

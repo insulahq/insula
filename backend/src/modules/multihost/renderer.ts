@@ -167,26 +167,22 @@ export function openBasedirFor(
 }
 
 /**
- * Per-site session directory: a sibling of the site folders, NOT a child of
- * one. MUST match `MULTIHOST_SESSION_ROOT` in the deployer, which creates and
- * mounts it — a vhost pointing PHP at a directory nobody created means every
- * session write fails.
- *
- * Outside the application root on purpose. Inside it, the directory sits under
- * the document root whenever the two are the same — which is the common case —
- * and the web server would happily serve `/.php-sessions/sess_<id>` to
- * anyone who asked. A deny rule could patch that, but "not reachable" is worth
- * more than "denied": nothing here is under any document root, so no rule has
- * to be correct for it to be safe.
- *
- * A site folder can never collide with this name, because folder names must
- * begin with an alphanumeric character.
+ * Base path for per-site session directories. Outside every document root by
+ * construction — it is not under `sites_root` at all — so no deny rule has to
+ * be correct for session files to be unreachable over HTTP.
  */
-const SESSION_ROOT = '.php-sessions';
+const SESSION_BASE = '/var/lib/php-sessions';
 
-/** Absolute session directory for one application root. */
-export function sessionPathFor(cap: MultihostCapability, appRoot: string): string {
-  return `${cap.sites_root}/${SESSION_ROOT}/${appRoot}`;
+/**
+ * Absolute session directory for one application root.
+ *
+ * Pod-local ephemeral storage, deliberately: off the tenant's volume so login
+ * state costs them no quota and never enters their backups, and per-site so a
+ * neighbour cannot read a session file whose NAME is the session id. Must match
+ * `MULTIHOST_SESSION_BASE` in the deployer, which creates and mounts it.
+ */
+export function sessionPathFor(_cap: MultihostCapability, appRoot: string): string {
+  return `${SESSION_BASE}/${appRoot}`;
 }
 
 const BANNER = (routeId: string, hostname: string): string[] => [
