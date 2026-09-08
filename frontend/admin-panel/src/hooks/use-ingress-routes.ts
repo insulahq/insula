@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
 import type { IngressRouteResponse } from '@insula/api-contracts';
+import type { UpdateIngressRouteInput } from '@insula/api-contracts';
 
 interface RouteListResponse {
   readonly data: readonly IngressRouteResponse[];
@@ -41,7 +42,11 @@ export function useUpdateIngressRoute(tenantId: string | undefined, domainId: st
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: ({ routeId, ...input }: { routeId: string; deployment_id?: string | null; tls_mode?: string }) =>
+    // Input typed from the SHARED contract, not restated here. A hand-written
+    // copy is self-consistent, so a field the API gained is invisible to the
+    // compiler and the PATCH silently drops it — which is exactly what happened
+    // when site_folder was added.
+    mutationFn: ({ routeId, ...input }: { routeId: string } & UpdateIngressRouteInput) =>
       apiFetch<{ data: IngressRouteResponse }>(
         `/api/v1/tenants/${tenantId}/domains/${domainId}/routes/${routeId}`,
         { method: 'PATCH', body: JSON.stringify(input) },
