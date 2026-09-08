@@ -891,13 +891,37 @@ export function minimalSiteFolders(folders: readonly string[]): string[] {
  *
  * Inside an application root it would sit under the document root whenever the
  * two are the same — the common case — and the web server would serve
- * `/.insula-sessions/sess_<id>` to anyone who asked for it. Out here nothing is
+ * `/.php-sessions/sess_<id>` to anyone who asked for it. Out here nothing is
  * under any document root, so no deny rule has to be correct for it to be safe.
  *
  * A site folder can never collide with this name: folder names must start with
  * an alphanumeric character.
  */
-export const MULTIHOST_SESSION_ROOT = '.insula-sessions';
+export const MULTIHOST_SESSION_ROOT = '.php-sessions';
+
+/**
+ * Shell clauses that create the per-site session directories, writable by the
+ * runtime user.
+ *
+ * They cannot be left to Kubernetes. kubelet creates a missing `subPath`
+ * directory as `root:root 0755`, and every one of these images runs as a
+ * non-root user — so the mount appears, PHP is pointed at it, and every session
+ * write is denied. Observed exactly that way on DEV.
+ *
+ * Exported because the reconciler must emit the SAME clauses when it rewrites a
+ * live pod: it patches volumeMounts, and a pod that gains a session mount
+ * without gaining the matching mkdir is the broken state described above.
+ */
+export function sessionDirInitCommands(siteFolders: readonly string[]): string[] {
+  return minimalSiteFolders(siteFolders).map(
+    (f) => `mkdir -p /data/${MULTIHOST_SESSION_ROOT}/${f} && chmod 777 /data/${MULTIHOST_SESSION_ROOT}/${f}`,
+  );
+}
+
+/** Recognises a clause emitted by `sessionDirInitCommands`, for rewrites. */
+export function isSessionDirCommand(part: string): boolean {
+  return part.includes(`/data/${MULTIHOST_SESSION_ROOT}/`);
+}
 
 export const MULTIHOST_DISABLED_PHP_FUNCTIONS =
   'exec,shell_exec,system,passthru,popen,proc_open,pcntl_exec';
@@ -1054,8 +1078,7 @@ async function deployK8sDeployment(
   // the sandbox that already confines that site. The directory has to exist
   // before PHP writes to it — PHP will not create it — so it is created here,
   // where the folder list is already known.
-  const sessionDirs = (multihost ? minimalSiteFolders(multihost.siteFolders) : [])
-    .map((f) => `mkdir -p /data/${MULTIHOST_SESSION_ROOT}/${f} && chmod 777 /data/${MULTIHOST_SESSION_ROOT}/${f}`);
+  const sessionDirs = sessionDirInitCommands(multihost ? multihost.siteFolders : []);
   if (spec) {
     if (sessionDirs.length > 0) {
       const cmd = (spec.initDirsContainer as { command?: string[] }).command;

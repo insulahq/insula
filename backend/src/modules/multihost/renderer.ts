@@ -174,7 +174,7 @@ export function openBasedirFor(
  *
  * Outside the application root on purpose. Inside it, the directory sits under
  * the document root whenever the two are the same — which is the common case —
- * and the web server would happily serve `/.insula-sessions/sess_<id>` to
+ * and the web server would happily serve `/.php-sessions/sess_<id>` to
  * anyone who asked. A deny rule could patch that, but "not reachable" is worth
  * more than "denied": nothing here is under any document root, so no rule has
  * to be correct for it to be safe.
@@ -182,7 +182,7 @@ export function openBasedirFor(
  * A site folder can never collide with this name, because folder names must
  * begin with an alphanumeric character.
  */
-const SESSION_ROOT = '.insula-sessions';
+const SESSION_ROOT = '.php-sessions';
 
 /** Absolute session directory for one application root. */
 export function sessionPathFor(cap: MultihostCapability, appRoot: string): string {

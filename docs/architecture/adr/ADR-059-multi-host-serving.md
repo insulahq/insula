@@ -276,10 +276,10 @@ therefore only ADD, which would leave a folder mounted after it stopped being
 served.
 
 **Sessions are per-site, and persist.** Each application root gets its own
-directory under `<sites_root>/.insula-sessions/<app root>` — a SIBLING of the
+directory under `<sites_root>/.php-sessions/<app root>` — a SIBLING of the
 site folders, never a child. Inside the app root it would sit under the
 document root whenever the two are the same (the common case) and the web
-server would serve `/.insula-sessions/sess_<id>` on request; out here nothing
+server would serve `/.php-sessions/sess_<id>` on request; out here nothing
 is under a document root, so no deny rule has to be correct for it to be safe.
 A site folder cannot collide with the name, since folder names must start
 alphanumeric.

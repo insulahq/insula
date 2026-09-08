@@ -30,7 +30,12 @@ import type { Logger } from 'pino';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { catalogEntries, deployments, domains, ingressRoutes } from '../../db/schema.js';
 import { execInPod } from '../../shared/k8s-exec.js';
-import { minimalSiteFolders, MULTIHOST_SESSION_ROOT } from '../deployments/k8s-deployer.js';
+import {
+  minimalSiteFolders,
+  MULTIHOST_SESSION_ROOT,
+  sessionDirInitCommands,
+  isSessionDirCommand,
+} from '../deployments/k8s-deployer.js';
 import { renderSites, isMultihostFlavour, type MultihostCapability, type MultihostFlavour, type RenderResult, type SiteRoute } from './renderer.js';
 import type { MultihostMounts } from '../deployments/k8s-deployer.js';
 
@@ -442,7 +447,10 @@ async function ensureSiteMounts(
 
   let dep: {
     metadata?: Record<string, unknown>;
-    spec?: { template?: { spec?: { containers?: Array<Record<string, unknown>> } } };
+    spec?: { template?: { spec?: {
+      containers?: Array<Record<string, unknown>>;
+      initContainers?: Array<Record<string, unknown>>;
+    } } };
   };
   try {
     const res = await clients.apps.readNamespacedDeployment({ name: deploymentName, namespace } as never);
@@ -509,6 +517,26 @@ async function ensureSiteMounts(
       subPath: `${MULTIHOST_SESSION_ROOT}/${folder}`,
     })),
   ];
+
+  // The init container has to keep step with the mounts.
+  //
+  // kubelet creates a missing subPath directory as root:root 0755 and these
+  // images run non-root, so a session mount added WITHOUT the matching mkdir
+  // gives the site a directory it cannot write — PHP is pointed at it and every
+  // session write is denied, silently. Patching volumeMounts alone produced
+  // exactly that on DEV.
+  const initContainers = (dep.spec?.template?.spec?.initContainers ?? []) as Array<Record<string, unknown>>;
+  const initDirs = initContainers.find((c) => (c as { name?: string }).name === 'init-dirs') as
+    { command?: string[] } | undefined;
+  if (initDirs?.command && initDirs.command.length === 3) {
+    const existing = initDirs.command[2]
+      .split(' && ')
+      // Drop stale session clauses so a re-run cannot accumulate them, then
+      // re-add exactly the ones this folder set needs.
+      .filter((part) => !isSessionDirCommand(part));
+    const rebuilt = [...existing, ...sessionDirInitCommands(desired)].filter((p) => p && p !== 'true');
+    initDirs.command[2] = rebuilt.length > 0 ? rebuilt.join(' && ') : 'true';
+  }
 
   // Read-modify-WRITE rather than a patch, deliberately. A strategic merge
   // patch merges list entries by key (`mountPath` here), so it can only ever
