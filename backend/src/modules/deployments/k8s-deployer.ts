@@ -886,14 +886,18 @@ export function minimalSiteFolders(folders: readonly string[]): string[] {
  * and SSH — where they are normally run.
  */
 /**
- * Per-site session directory, relative to an application root. Inside the
- * app root on purpose: open_basedir already confines the site to it, so the
- * sandbox that protects the site's files protects its sessions too.
+ * Root for per-site session directories, a SIBLING of the site folders rather
+ * than a child of one.
  *
- * 0700 rather than 0777: only the runtime user writes here, and every site in
- * the pod shares that uid — the mode is not the boundary, the path is.
+ * Inside an application root it would sit under the document root whenever the
+ * two are the same — the common case — and the web server would serve
+ * `/.insula-sessions/sess_<id>` to anyone who asked for it. Out here nothing is
+ * under any document root, so no deny rule has to be correct for it to be safe.
+ *
+ * A site folder can never collide with this name: folder names must start with
+ * an alphanumeric character.
  */
-export const MULTIHOST_SESSION_DIR = '.insula-sessions';
+export const MULTIHOST_SESSION_ROOT = '.insula-sessions';
 
 export const MULTIHOST_DISABLED_PHP_FUNCTIONS =
   'exec,shell_exec,system,passthru,popen,proc_open,pcntl_exec';
@@ -972,6 +976,14 @@ export function buildMultihostMounts(
         mountPath: `${multihost.sitesRoot}/${folder}`,
         subPath: folder,
       })),
+      // Per-site session directory, mounted beside the site folders rather
+      // than inside one — see MULTIHOST_SESSION_ROOT. Each site sees only its
+      // own, so a pod-wide /tmp is no longer where session files live.
+      ...folders.map((folder) => ({
+        name: 'tenant-storage',
+        mountPath: `${multihost.sitesRoot}/${MULTIHOST_SESSION_ROOT}/${folder}`,
+        subPath: `${MULTIHOST_SESSION_ROOT}/${folder}`,
+      })),
     ],
     volumes: [
       { name: 'multihost-sites', configMap: { name: multihost.configMapName, optional: true } },
@@ -1043,7 +1055,7 @@ async function deployK8sDeployment(
   // before PHP writes to it — PHP will not create it — so it is created here,
   // where the folder list is already known.
   const sessionDirs = (multihost ? minimalSiteFolders(multihost.siteFolders) : [])
-    .map((f) => `mkdir -p /data/${f}/${MULTIHOST_SESSION_DIR} && chmod 700 /data/${f}/${MULTIHOST_SESSION_DIR}`);
+    .map((f) => `mkdir -p /data/${MULTIHOST_SESSION_ROOT}/${f} && chmod 777 /data/${MULTIHOST_SESSION_ROOT}/${f}`);
   if (spec) {
     if (sessionDirs.length > 0) {
       const cmd = (spec.initDirsContainer as { command?: string[] }).command;
