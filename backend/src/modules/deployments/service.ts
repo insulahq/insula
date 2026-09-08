@@ -10,7 +10,7 @@ import { ApiError } from '../../shared/errors.js';
 import { normalizeMountPath } from '@insula/api-contracts';
 import { InsufficientResourceBudgetError } from './resource-allocator.js';
 import { findAdminPasswordEnvVar } from './password-reset.js';
-import { capabilityOf, multihostMountsFor } from '../multihost/reconciler.js';
+import { capabilityOf, deleteDeploymentSites, multihostMountsFor } from '../multihost/reconciler.js';
 import {
   isCustomDeployment,
   customSpecImages,
@@ -1991,6 +1991,13 @@ export async function setMultihostEnabled(
   // exact shape of "saved but never applied".
   if (k8s) {
     await redeployWithCurrentConfig(db, updated, k8s);
+    if (!enabled) {
+      // The pod loses the mount in that same redeploy, so an orphaned
+      // ConfigMap would be harmless — and would leave one per deployment that
+      // ever tried the feature, each reading like live configuration.
+      const namespace = await getTenantNamespace(db, tenantId);
+      await deleteDeploymentSites({ core: k8s.core }, namespace, updated.name);
+    }
   }
 
   return updated;

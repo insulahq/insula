@@ -422,3 +422,30 @@ export function multihostMountsFor(
     configMapName: vhostConfigMapName(deployment.name),
   };
 }
+
+/**
+ * Remove a deployment's generated site config.
+ *
+ * Called when multi-host is turned off. The pod loses the mount in the same
+ * redeploy, so leaving the ConfigMap behind would be harmless — and would
+ * accumulate one orphan per deployment that ever tried the feature, each one
+ * looking like live configuration to anyone reading the namespace.
+ */
+export async function deleteDeploymentSites(
+  clients: MultihostClients,
+  namespace: string,
+  deploymentName: string,
+  logger?: Logger,
+): Promise<void> {
+  const name = vhostConfigMapName(deploymentName);
+  try {
+    await clients.core.deleteNamespacedConfigMap({ name, namespace });
+  } catch (err) {
+    // Already gone is the desired state, not a failure.
+    const status = (err as { statusCode?: number; code?: number })?.statusCode
+      ?? (err as { statusCode?: number; code?: number })?.code;
+    if (status !== 404) {
+      logger?.warn({ err, name, namespace }, 'multihost: could not delete site ConfigMap');
+    }
+  }
+}
