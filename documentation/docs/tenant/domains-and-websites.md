@@ -120,6 +120,11 @@ Click it to browse your storage and pick any folder — it does not have to be
 named after the hostname. **clear** puts the hostname back on the app's own
 document root.
 
+The picker offers folders that already exist; create the folder and upload the
+site first, under [Files & SFTP](files-and-sftp.md). Pointing a hostname at an
+empty folder gives visitors a 404, which looks like a broken site rather than
+an empty one.
+
 If you have a **www Redirect** set on the route, the folder is served for the
 address visitors end up on. With *Add www*, that is the `www.` form; with
 *Remove www*, the bare one. You do not need to do anything differently — but it
