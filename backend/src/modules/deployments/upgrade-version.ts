@@ -19,7 +19,7 @@ import type { Database } from '../../db/index.js';
 import { catalogEntries, catalogEntryVersions, tenants, deployments } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
-import { multihostMountsFor } from '../multihost/reconciler.js';
+import { multihostMountsFor, loadSiteFoldersFor } from '../multihost/reconciler.js';
 import { deployCatalogEntry } from './k8s-deployer.js';
 import {
   getTenantNamespace,
@@ -422,7 +422,7 @@ export async function upgradeDeploymentVersion(
       // upgraded pod comes up with no include directory and no storage root,
       // and every site on it silently falls back to the stock document root —
       // a "successful" upgrade that takes the tenant's other sites offline.
-      multihost: multihostMountsFor(deployment, entry),
+      multihost: multihostMountsFor(deployment, entry, await loadSiteFoldersFor(db, deployment.id)),
       hostPorts: readEntryHostPorts(entry),
     });
     // Flip installedVersion + lastUpgradedAt only AFTER the K8s deploy
@@ -772,7 +772,7 @@ export async function rollbackDeploymentVersion(
       // upgraded pod comes up with no include directory and no storage root,
       // and every site on it silently falls back to the stock document root —
       // a "successful" upgrade that takes the tenant's other sites offline.
-      multihost: multihostMountsFor(deployment, entry),
+      multihost: multihostMountsFor(deployment, entry, await loadSiteFoldersFor(db, deployment.id)),
       hostPorts: readEntryHostPorts(entry),
     });
     // Flip installedVersion + consume the previousVersion slot only after

@@ -1271,6 +1271,9 @@ export const ingressRoutes = pgTable('ingress_routes', {
    * the catch-all for hostnames matching no generated site.
    */
   siteFolder: varchar('site_folder', { length: 500 }),
+  // Migration 0105 — the PHP sandbox root (open_basedir). Equals
+  // siteFolder unless the app serves from a public/ subfolder.
+  appRoot: varchar('app_root', { length: 500 }),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (table) => [

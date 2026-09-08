@@ -62,6 +62,14 @@ export const ingressRouteResponseSchema = z.object({
    * hostnames matching no configured site.
    */
   siteFolder: z.string().nullable(),
+  /**
+   * Multi-host serving — the APPLICATION root, relative to the storage
+   * ROOT. This is the sandbox boundary: the generated vhost restricts the
+   * site's PHP to this subtree, so it cannot read a neighbouring site's
+   * config or another deployment's data. Equal to `siteFolder` unless the
+   * app serves from a subfolder such as `public/`.
+   */
+  appRoot: z.string().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
@@ -93,6 +101,36 @@ const siteFolderField = z
   .nullable()
   .optional();
 
+/**
+ * Application root for a multi-host site — same path convention and validator
+ * as `siteFolderField`. The document root must equal it or sit inside it; the
+ * service enforces that, and a DB CHECK backs it up.
+ */
+const appRootField = z
+  .string()
+  .min(1)
+  .max(255)
+  .superRefine((v, ctx) => {
+    const problem = folderProblem(v);
+    if (problem) ctx.addIssue({ code: z.ZodIssueCode.custom, message: problem });
+  })
+  .nullable()
+  .optional();
+
+/**
+ * The document root must be the app root or a folder inside it. Checked here
+ * so a malformed pair is refused at the boundary rather than producing a vhost
+ * whose open_basedir excludes its own DocumentRoot — which 500s every request
+ * for a reason three layers from the symptom.
+ */
+export function siteFolderWithinAppRoot(
+  siteFolder: string | null | undefined,
+  appRoot: string | null | undefined,
+): boolean {
+  if (!siteFolder || !appRoot) return true;
+  return siteFolder === appRoot || siteFolder.startsWith(`${appRoot}/`);
+}
+
 export const createIngressRouteSchema = z
   .object({
     hostname: z.string().min(1).max(255),
@@ -101,10 +139,15 @@ export const createIngressRouteSchema = z
     private_worker_id: uuidField.nullable().optional(),
     service_port: z.number().int().min(1).max(65535).nullable().optional(),
     site_folder: siteFolderField,
+    app_root: appRootField,
   })
   .refine(
     (v) => !(v.deployment_id && v.private_worker_id),
     { message: 'A route can target a deployment or a private_worker, not both' },
+  )
+  .refine(
+    (v) => siteFolderWithinAppRoot(v.site_folder, v.app_root),
+    { message: 'The document root must be the application root or a folder inside it', path: ['site_folder'] },
   );
 
 export const updateIngressRouteSchema = z
@@ -115,10 +158,15 @@ export const updateIngressRouteSchema = z
     node_hostname: z.string().max(255).nullable().optional(),
     service_port: z.number().int().min(1).max(65535).nullable().optional(),
     site_folder: siteFolderField,
+    app_root: appRootField,
   })
   .refine(
     (v) => !(v.deployment_id && v.private_worker_id),
     { message: 'A route can target a deployment or a private_worker, not both' },
+  )
+  .refine(
+    (v) => siteFolderWithinAppRoot(v.site_folder, v.app_root),
+    { message: 'The document root must be the application root or a folder inside it', path: ['site_folder'] },
   );
 
 // ─── Route Settings Inputs ──────────────────────────────────────────────────

@@ -1581,6 +1581,42 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         app.addHook('onClose', () => { principalsSyncHandle.stop(); });
       }
 
+      // Multi-host isolation remediation (ADR-059 amendment).
+      //
+      // Instances deployed before per-folder mounts keep the whole tenant
+      // volume mounted, and instances created while the catalog shipped a
+      // blank PHP_DISABLE_FUNCTIONS default keep exec available on a pod that
+      // can see their neighbours. Neither is repaired by anything else:
+      // `ensureSiteMounts` runs only on a route change, and there is no
+      // periodic multi-host reconcile — so an untouched instance would stay
+      // exposed while the release notes said otherwise.
+      //
+      // Detached and best-effort: it must never delay or fail startup. Each
+      // remediation is a redeploy, so it restarts the affected pods once.
+      void (async () => {
+        try {
+          const { remediateMultihostDeployments } = await import('./modules/deployments/multihost-remediation.js');
+          const { redeployWithCurrentConfig } = await import('./modules/deployments/service.js');
+          const { createK8sClients } = await import('./modules/k8s-provisioner/k8s-client.js');
+          let k8sForRemediation;
+          try {
+            k8sForRemediation = createK8sClients(process.env.KUBECONFIG_PATH);
+          } catch {
+            return; // no cluster access (local dev) — nothing to remediate
+          }
+          const report = await remediateMultihostDeployments(
+            app.db, k8sForRemediation, redeployWithCurrentConfig as never, app.log as never,
+          );
+          if (report.remediated.length > 0 || report.failed.length > 0) {
+            app.log.warn({ ...report }, 'multihost: isolation remediation sweep finished');
+          } else {
+            app.log.info({ scanned: report.scanned }, 'multihost: all instances already isolated');
+          }
+        } catch (err) {
+          app.log.error({ err }, 'multihost: isolation remediation sweep failed to run');
+        }
+      })();
+
       // Phase 3 T2.1: IMAPSync reconciler. Polls active K8s Jobs
       // and writes terminal status + log tail back to the DB.
       // Round-4 Phase 2: also start the webmail cert reconciler so
