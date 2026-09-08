@@ -246,12 +246,25 @@ describe('sites_root from a catalog manifest is validated too', () => {
   });
 });
 
-describe('symlink confinement is scoped to multi-host sites only', () => {
-  it('apache confines each generated vhost to its own document root', () => {
+describe('per-site Options are scoped to multi-host sites only', () => {
+  it('apache scopes Options to this site document root', () => {
     const { files } = renderSites(APACHE, [route({ siteFolder: 'shop/public', appRoot: 'shop' })]);
     const vhost = Object.values(files)[0];
     expect(vhost).toContain('<Directory "/var/www/sites/shop/public">');
-    expect(vhost).toContain('Options -Indexes -FollowSymLinks');
+    expect(vhost).toContain('Options -Indexes');
+  });
+
+  /**
+   * `-FollowSymLinks` is what would close the symlink escape, and it CANNOT be
+   * used: Apache refuses RewriteRule when FollowSymLinks and
+   * SymLinksIfOwnerMatch are both off (AH00670). The shared include rewrites,
+   * and so does every WordPress .htaccess — turning it off returned 403 on
+   * every request to every multi-host site. Found by E2E against a real pod;
+   * no unit test on the rendered text could have found it.
+   */
+  it('does NOT disable symlink following, which would 403 every site', () => {
+    const { files } = renderSites(APACHE, [route({ siteFolder: 'shop' })]);
+    expect(Object.values(files)[0]).not.toContain('-FollowSymLinks');
   });
 
   /**
@@ -266,8 +279,43 @@ describe('symlink confinement is scoped to multi-host sites only', () => {
     expect(vhost).not.toContain('<Directory "/var/www">');
   });
 
-  it('a static apache runtime gets it too', () => {
+  it('a static apache runtime is scoped the same way', () => {
     const STATIC_AP: typeof APACHE = { ...APACHE, php: undefined };
-    expect(Object.values(renderSites(STATIC_AP, [route()]).files)[0]).toContain('-FollowSymLinks');
+    expect(Object.values(renderSites(STATIC_AP, [route()]).files)[0]).toContain('Options -Indexes');
+  });
+});
+
+import { buildMultihostMounts } from '../deployments/k8s-deployer.js';
+
+/**
+ * The deployer and the reconciler both decide what a multi-host pod mounts —
+ * one when the template is built, the other on every route change. If they
+ * disagree, the pod silently loses whichever mounts the second one forgets.
+ * Observed on DEV: session mounts present after a deploy, gone after the next
+ * route change, leaving session.save_path pointing at nothing.
+ */
+describe('the deployer and the reconciler agree on the mount set', () => {
+  it('both emit a site mount AND a session mount per folder', () => {
+    const { mounts } = buildMultihostMounts(
+      { configDir: '/c', sitesRoot: '/var/www/sites', configMapName: 'cm', siteFolders: ['shop'] },
+      'tenant-x',
+    );
+    const paths = mounts.map((m) => `${m.mountPath}|${m.subPath ?? ''}`);
+    expect(paths).toContain('/var/www/sites/shop|shop');
+    expect(paths).toContain('/var/www/sites/.insula-sessions/shop|.insula-sessions/shop');
+  });
+
+  it('a session mount is never nested inside a served folder', () => {
+    const { mounts } = buildMultihostMounts(
+      { configDir: '/c', sitesRoot: '/var/www/sites', configMapName: 'cm', siteFolders: ['shop', 'blog'] },
+      'tenant-x',
+    );
+    const sessions = mounts.filter((m) => String(m.subPath ?? '').startsWith('.insula-sessions'));
+    expect(sessions).toHaveLength(2);
+    for (const s of sessions) {
+      for (const folder of ['shop', 'blog']) {
+        expect(String(s.mountPath).startsWith(`/var/www/sites/${folder}/`)).toBe(false);
+      }
+    }
   });
 });

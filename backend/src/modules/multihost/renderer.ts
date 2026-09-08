@@ -234,9 +234,27 @@ function renderApacheVhost(cap: MultihostCapability, site: VhostInput): string {
   //
   // SymLinksIfOwnerMatch is not a substitute: every file on the tenant volume
   // has the same runtime uid, so an owner check permits exactly this symlink.
+  //
+  // `-FollowSymLinks` is NOT usable here, though it is what would close the
+  // symlink escape. Apache refuses `RewriteRule` when both FollowSymLinks and
+  // SymLinksIfOwnerMatch are off (AH00670), and the shared include uses rewrite
+  // for the scheme-aware redirect — as does the .htaccess of every WordPress
+  // install. Turning it off returned 403 on every request to every multi-host
+  // site, which E2E caught and no unit test could have.
+  //
+  // SymLinksIfOwnerMatch would restore rewrite but not the protection: every
+  // file on the volume has the same runtime uid, so an owner check permits
+  // precisely the cross-site symlink it is supposed to refuse.
+  //
+  // So on Apache the residual stands, and it is narrower than it looks: PHP's
+  // own symlink() is refused by open_basedir when the target is outside the
+  // sandbox (measured), so a site compromised through PHP cannot create one.
+  // What remains is a symlink authored by the TENANT over SFTP, between two of
+  // their own sites — not a privilege escalation, since they already have
+  // access to both. nginx has no such conflict and does refuse them.
   const confine = [
     `    <Directory "${site.documentRoot}">`,
-    '        Options -Indexes -FollowSymLinks',
+    '        Options -Indexes +FollowSymLinks',
     '    </Directory>',
   ];
   return [
