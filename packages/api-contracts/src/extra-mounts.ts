@@ -18,8 +18,23 @@ import { z } from 'zod';
  *  the init container, so the cap keeps pod specs and startup bounded. */
 export const MAX_EXTRA_MOUNTS = 10;
 
-/** One path segment on the tenant PVC: lowercase, digit-or-letter bounded. */
-const SEGMENT = /^[a-z0-9][a-z0-9_-]{0,62}$/;
+/**
+ * One path segment on the tenant PVC.
+ *
+ * Dots and uppercase are ALLOWED, and that is the whole point: a web host's
+ * folders are named after the sites they hold — `business.na`,
+ * `www.example.com`, `Website`. Restricting this to lowercase alphanumerics
+ * rejected the single most natural naming scheme a tenant uses, and the folder
+ * picker offered exactly those folders because they exist on disk, so the
+ * pick failed with a validation error the user never saw.
+ *
+ * The first character must still be alphanumeric, which is what keeps this
+ * safe: it makes `.`, `..` and every dotfile unrepresentable, so no segment can
+ * traverse upward or address a hidden directory. Path separators are handled by
+ * the caller splitting on `/`, and nothing here admits whitespace, quotes or
+ * shell metacharacters.
+ */
+const SEGMENT = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
 
 /** Deepest folder a tenant may address, e.g. `media/library/2026`. */
 export const MAX_FOLDER_SEGMENTS = 4;
@@ -79,7 +94,7 @@ export function folderProblem(folder: string): string | null {
     return `Folder may be at most ${MAX_FOLDER_SEGMENTS} levels deep.`;
   }
   if (segs.some((s) => !SEGMENT.test(s))) {
-    return 'Folder segments may use lowercase letters, digits, hyphens and underscores only, and must start with a letter or digit.';
+    return 'Folder segments may use letters, digits, dots, hyphens and underscores, and must start with a letter or digit.';
   }
   return null;
 }
