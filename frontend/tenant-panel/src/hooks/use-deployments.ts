@@ -213,6 +213,27 @@ export function useRestartDeployment(tenantId: string | undefined) {
   });
 }
 
+/**
+ * Turn multi-host serving on or off for a deployment.
+ *
+ * This one RESTARTS the app: the flag changes the pod's mounts. Every later
+ * site change is a graceful reload, so the warning belongs on this control and
+ * nowhere else.
+ */
+export function useSetMultihost(tenantId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ deploymentId, enabled }: { deploymentId: string; enabled: boolean }) =>
+      apiFetch<{ data: Deployment }>(
+        `/api/v1/tenants/${tenantId}/deployments/${deploymentId}/multihost`,
+        { method: 'PATCH', body: JSON.stringify({ enabled }) },
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['deployments', tenantId] });
+    },
+  });
+}
+
 export function useRegenerateCredentials(tenantId: string | undefined) {
   const queryClient = useQueryClient();
   return useMutation({
