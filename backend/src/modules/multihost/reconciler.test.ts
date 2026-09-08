@@ -68,8 +68,8 @@ const baseInput = (routes: SiteRoute[]) => ({
 /** exec double: `cat checksum` returns whatever the ConfigMap currently holds. */
 function wireExec(state: { data?: Record<string, string> }, over: { validateExit?: number; reloadExit?: number; staleChecksum?: boolean } = {}) {
   execMock.mockImplementation(async (_kc: unknown, _ns: unknown, _pod: unknown, _c: unknown, cmd: string[]) => {
-    if (cmd[0] === 'cat') {
-      if (over.staleChecksum) return { stdout: 'stale', stderr: '', exitCode: 0 };
+    if (cmd[0] === 'cat' || cmd[1] === '-T') {
+      if (over.staleChecksum) return { stdout: '# insula-checksum stale', stderr: '', exitCode: 0 };
       return { stdout: state.data?.[CHECKSUM_KEY] ?? '', stderr: '', exitCode: 0 };
     }
     if (cmd[1] === 'configtest') return { stdout: '', stderr: 'Syntax error on line 1', exitCode: over.validateExit ?? 0 };
@@ -186,6 +186,43 @@ describe('reconcileDeploymentSites', () => {
       expect(r.folderCheck).toBe('ok');
       expect(r.missingFolders).toEqual([]);
     });
+  });
+
+  it('probes projection with the nginx binary, not `cat`, on the nginx flavour', async () => {
+    // A distroless image (static-nginx) has no `cat`. The previous probe failed
+    // outright there, so the reload never fired and every site silently stayed
+    // on the catch-all while the ConfigMap looked perfectly applied.
+    const f = fakeCore();
+    wireExec(f.state);
+    const NGINX_CAP = {
+      ...CAP, server: 'nginx',
+      config_dir: '/etc/nginx/insula/sites.d',
+      common_include: '/etc/nginx/insula/site-common.conf',
+      validate: ['/usr/sbin/nginx', '-t'], reload: ['/usr/sbin/nginx', '-s', 'reload'],
+    };
+    const r = await reconcileDeploymentSites({ core: f.core },
+      // containerName must match the fake pod's container, or runningPods
+      // filters it out and the test would pass for the wrong reason.
+      { ...baseInput([site('a', 'one.test', 'fa')]), capability: NGINX_CAP });
+    expect(r.reloaded).toBe(1);
+    const cmds = execMock.mock.calls.map((c) => (c[4] as string[]).join(' '));
+    expect(cmds).toContain('/usr/sbin/nginx -T');
+    expect(cmds.some((c) => c.startsWith('cat '))).toBe(false);
+    expect(cmds).toContain('/usr/sbin/nginx -s reload');
+  });
+
+  it('keeps reading the file on the apache flavour, where cat exists', async () => {
+    const f = fakeCore();
+    wireExec(f.state);
+    await reconcileDeploymentSites({ core: f.core }, baseInput([site('a', 'one.test', 'fa')]));
+    const cmds = execMock.mock.calls.map((c) => (c[4] as string[]).join(' '));
+    expect(cmds).toContain(`cat /etc/apache2/insula/sites.d/${CHECKSUM_KEY}`);
+  });
+
+  it('puts the checksum in an INCLUDED .conf so nginx -T can see it', () => {
+    // If it were `checksum.txt` the include glob would skip it and `nginx -T`
+    // could never show it — which is exactly why the distroless probe failed.
+    expect(CHECKSUM_KEY.endsWith('.conf')).toBe(true);
   });
 
   it('names the ConfigMap after the deployment', () => {
