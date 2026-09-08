@@ -109,6 +109,26 @@ Click any route to open its detail page, which has these tabs:
 - **Advanced** — custom error pages, extra response headers, and
   [HSTS](#hsts-https-only-enforcement).
 
+### Serve a specific folder (multi-host apps)
+
+When a route points at an app with
+[multi-host serving](deployments-and-applications.md#several-websites-on-one-app-instance)
+turned on, a folder button appears next to the app dropdown. It shows the
+folder that hostname currently serves, or *document root* when it has none.
+
+Click it to browse your storage and pick any folder — it does not have to be
+named after the hostname. **clear** puts the hostname back on the app's own
+document root.
+
+If you have a **www Redirect** set on the route, the folder is served for the
+address visitors end up on. With *Add www*, that is the `www.` form; with
+*Remove www*, the bare one. You do not need to do anything differently — but it
+is why the panel shows the folder against the route as a whole, not against one
+spelling of the name.
+
+A wildcard route (`*.example.com`) serves its folder for every hostname it
+matches, and each visitor's real address is still passed to the application.
+
 ## Hosting settings: www and HTTPS redirects
 
 Open a route → **Redirects** tab. Changes apply within a few seconds.
