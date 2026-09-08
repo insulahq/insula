@@ -552,6 +552,7 @@ export async function createDeployment(
       configuration: finalConfiguration,
       storagePath,
       extraMounts: input.extra_mounts ?? null,
+      multihostEnabled: wantsMultihost,
       installedVersion,
       targetVersion: installedVersion,
       status: 'pending',
@@ -593,7 +594,9 @@ export async function createDeployment(
         envVars: finalEnvVars,
         configurableEnvKeys,
         extraMounts: input.extra_mounts ?? undefined,
-        multihost: null,
+        // Resolved from the flag the caller asked for, so a multi-host instance
+        // is born with its mounts instead of being redeployed into them.
+        multihost: multihostMountsFor({ name: input.name, multihostEnabled: wantsMultihost }, entry),
         // Arm the password-reset init container for every DB deployment, not
         // just `storage_mode: custom`. The default storagePath is deterministic
         // (`type/code/name`), and deleting a deployment WITHOUT deleteData
