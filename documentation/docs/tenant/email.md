@@ -190,8 +190,10 @@ yours.
    re-sync, cancel, or purge a job from its row.
 
 While a migration runs the row shows a progress bar with the number of
-messages copied and the folder currently being worked on. When it finishes it
-is replaced by a one-line result, for example:
+messages copied and the folder currently being worked on. A **dry run** is the
+exception: it copies nothing, so there is no count to show and the row stays on
+an indeterminate bar until the result appears. When it finishes the bar is
+replaced by a one-line result, for example:
 
 > Transferred 1,204 messages across 12 folders (84.2 MiB) in 3m 41s
 

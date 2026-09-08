@@ -165,9 +165,11 @@ toolbar.
   find what you would expect, not just an exact name. The counter next to the
   box shows how many of your deployments match.
 - **Grid** (the default) shows each deployment as a card with live CPU, memory
-  and storage. **List** shows a compact sortable table — name, application,
-  type, status — with the same actions; click any column heading to sort by it.
-  Whichever you pick is remembered the next time you open the tab.
+  and storage. **List** shows a compact table — name, application, status, and
+  live CPU and memory — with the same actions; click the name, application or
+  status heading to sort by it. CPU and memory are measured live per row, so
+  they are shown for running apps only and are not sortable. Whichever view you
+  pick is remembered the next time you open the tab.
 
 ## Manage an installed app
 
