@@ -30,15 +30,43 @@ import type { Logger } from 'pino';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { catalogEntries, deployments, domains, ingressRoutes } from '../../db/schema.js';
 import { execInPod } from '../../shared/k8s-exec.js';
-import { renderSites, type MultihostCapability, type RenderResult, type SiteRoute } from './renderer.js';
+import { renderSites, isMultihostFlavour, type MultihostCapability, type MultihostFlavour, type RenderResult, type SiteRoute } from './renderer.js';
 import type { MultihostMounts } from '../deployments/k8s-deployer.js';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Db = NodePgDatabase<any>;
 
 export const MULTIHOST_FIELD_MANAGER = 'platform-api-multihost';
-/** Key holding the render hash. Not `.conf`, so the include glob skips it. */
-export const CHECKSUM_KEY = 'checksum.txt';
+/**
+ * Key holding the render hash.
+ *
+ * Deliberately a `.conf` holding nothing but a comment, so it IS picked up by
+ * the image's include glob. That is what lets the nginx flavour prove the
+ * projection landed with `nginx -T` (which dumps the effective config from
+ * disk) instead of reading the file — a distroless image has no `cat`, and the
+ * previous `checksum.txt` was unreadable there, so the reload never fired and
+ * the sites silently stayed on the catch-all. A comment is inert in both
+ * flavours.
+ */
+export const CHECKSUM_KEY = 'zzz-insula-checksum.conf';
+const checksumFile = (hash: string): string => `# insula-checksum ${hash}\n`;
+
+/**
+ * How each flavour proves the new generation has reached the pod's mount.
+ *
+ * A Record so tsc refuses a flavour with no probe — silently skipping the check
+ * would mean reloading before the files land, which reloads the PREVIOUS
+ * generation and reports success.
+ *
+ *  - apache runs on full distributions, so it reads the file directly.
+ *  - nginx uses its own binary: `-T` re-reads the config from disk and prints
+ *    it, so the checksum comment shows up without needing any userland at all.
+ *    This is what makes the distroless image work.
+ */
+const PROJECTION_PROBES: Record<MultihostFlavour, (cap: MultihostCapability) => string[]> = {
+  apache: (cap) => ['cat', `${cap.config_dir}/${CHECKSUM_KEY}`],
+  nginx: (cap) => [cap.validate[0], '-T'],
+};
 
 /** ConfigMap holding one vhost file per site for a deployment. */
 export function vhostConfigMapName(deploymentName: string): string {
@@ -191,16 +219,18 @@ async function waitForProjection(
   kubeconfigPath: string | undefined,
   namespace: string,
   pod: PodRef,
-  checksumPath: string,
+  probe: readonly string[],
   expected: string,
   timeoutMs: number,
   sleep: (ms: number) => Promise<void>,
 ): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    const r = await execInPod(kubeconfigPath, namespace, pod.name, pod.container, ['cat', checksumPath])
+    const r = await execInPod(kubeconfigPath, namespace, pod.name, pod.container, [...probe])
       .catch(() => ({ stdout: '', stderr: '', exitCode: 1 }));
-    if (r.exitCode === 0 && r.stdout.trim() === expected) return true;
+    // CONTAINS, not equals: `cat` returns just the comment line while `nginx -T`
+    // returns the whole effective config with the comment somewhere inside it.
+    if (r.exitCode === 0 && r.stdout.includes(expected)) return true;
     if (Date.now() >= deadline) return false;
     await sleep(3000);
   }
@@ -229,7 +259,7 @@ export async function reconcileDeploymentSites(
   const { capability: cap, namespace, deploymentName } = input;
   const rendered = renderSites(cap, input.routes);
   const hash = hashFiles(rendered.files);
-  const data = { ...rendered.files, [CHECKSUM_KEY]: hash };
+  const data = { ...rendered.files, [CHECKSUM_KEY]: checksumFile(hash) };
 
   const cmName = vhostConfigMapName(deploymentName);
   const { changed } = await applyVhostConfigMap(clients.core, namespace, cmName, data, {
@@ -254,7 +284,9 @@ export async function reconcileDeploymentSites(
     return { ...base, reloaded: 0, failures: [], missingFolders: [], folderCheck: 'ok' };
   }
 
-  const checksumPath = `${cap.config_dir}/${CHECKSUM_KEY}`;
+  const probe = isMultihostFlavour(cap.server)
+    ? PROJECTION_PROBES[cap.server](cap)
+    : ['cat', `${cap.config_dir}/${CHECKSUM_KEY}`];
   const sleep = input.sleep ?? defaultSleep;
   const timeout = input.projectionTimeoutMs ?? 120_000;
   const failures: Array<{ pod: string; reason: string }> = [];
@@ -262,7 +294,7 @@ export async function reconcileDeploymentSites(
 
   for (const pod of pods) {
     const projected = await waitForProjection(
-      input.kubeconfigPath, namespace, pod, checksumPath, hash, timeout, sleep,
+      input.kubeconfigPath, namespace, pod, probe, hash, timeout, sleep,
     );
     if (!projected) {
       failures.push({ pod: pod.name, reason: `Site configuration did not reach the pod within ${Math.round(timeout / 1000)}s.` });
