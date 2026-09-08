@@ -187,6 +187,27 @@ function renderApacheVhost(cap: MultihostCapability, site: VhostInput): string {
         `    SetEnv PHP_VALUE "session.save_path=${site.appRootPath}/${SESSION_DIR}"`,
       ]
     : [];
+  // Symlink confinement, scoped to THIS site's document root.
+  //
+  // A symlink inside one site's folder pointing at a neighbour's is served by
+  // Apache directly — open_basedir and disable_functions are interpreter
+  // controls and never see the request, and <FilesMatch "\.php$"> matches the
+  // REQUESTED name, not the target, so any other extension skips FPM entirely.
+  //
+  // Emitted per generated vhost rather than in the shared include, because
+  // that include also governs the STOCK single-site vhost — and a single-site
+  // deployment mounts only its own folder, so banning symlinks there would
+  // break Laravel's public/storage and similar for no security gain at all.
+  // A <Directory> for the exact docroot outranks the include's <Directory
+  // "/var/www">, which is what makes the narrow scope work.
+  //
+  // SymLinksIfOwnerMatch is not a substitute: every file on the tenant volume
+  // has the same runtime uid, so an owner check permits exactly this symlink.
+  const confine = [
+    `    <Directory "${site.documentRoot}">`,
+    '        Options -Indexes -FollowSymLinks',
+    '    </Directory>',
+  ];
   return [
     ...BANNER(site.routeId, site.hostname),
     `<VirtualHost *:${cap.listen}>`,
@@ -194,6 +215,7 @@ function renderApacheVhost(cap: MultihostCapability, site: VhostInput): string {
     ...alias,
     `    DocumentRoot "${site.documentRoot}"`,
     ...sandbox,
+    ...confine,
     `    Include ${cap.common_include}`,
     '</VirtualHost>',
     '',
