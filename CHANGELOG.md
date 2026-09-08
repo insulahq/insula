@@ -13,6 +13,7 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Added
+
 - **One web runtime can now serve several websites, each from its own folder.**
   A runtime instance previously served exactly one route from one document root,
   so a tenant with a dozen small sites reserved a dozen pods — and a runtime pod
@@ -40,7 +41,70 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   afterwards is a graceful reload that does not interrupt the sites already
   running.
 
+- **A break-glass control: "Clear stuck validation".** Deliberately *not* behind
+  the one-hour reissue cooldown — that cooldown exists because a reissue orders
+  a new certificate and authorities cap duplicates per week, whereas this orders
+  nothing and simply removes the stalled attempt so the request already in
+  flight can continue. Gating it would leave an operator staring at a disabled
+  button for an hour with no way to unstick a certificate, which is when they
+  most need one. It only ever deletes challenges classified as wedged, so
+  pressing it during a healthy order does nothing.
+- The certificate card now says **why** issuance is stuck. The platform read
+  Certificate CRs and nothing below them, so the whole ACME layer was invisible:
+  a wedged challenge looked exactly like a slow one, and the operator's only
+  signal was a certificate that never appeared. `validationBlocked` and
+  `validationMessage` carry the challenge state, including which challenge is
+  holding a blocked one's slot, and the card renders it. Deliberately distinct
+  from `state: 'failed'`, which means an attempt was *rejected* — a blocked
+  validation never ran at all.
+
+- The DNS verification modal now shows an **Expected vs Actual table** for every
+  check, including the ones that passed. A pass previously rendered as the words
+  "DNS verification passed" and nothing else, which is precisely how a check
+  that asserted nothing went unnoticed; an empty expectation is now visible as
+  "not configured".
+
+- **Ingress routes are sortable and searchable.** The domain detail table
+  rendered in creation order with no way to find a row. Columns now sort,
+  default alphabetical by hostname, with a search over hostname, path prefix and
+  deployment; the search appears only once there is more than one route. Each
+  route is decorated with its deployment NAME before sorting — the route object
+  carries only `deploymentId`, and ordering a column of names by opaque uuid is
+  indistinguishable from not sorting at all. Both deployment pickers are
+  alphabetical too.
+
+- **The Applications list view shows live CPU and memory** in place of `Type`, a
+  static label the operator already reads from the Application column. Whether
+  an app is near its limit was the one thing the list could not show and the
+  grid always could. Cells fetch only for RUNNING deployments — a stopped app
+  has no metrics, and polling it is one request per row per interval that can
+  only return zero. Thresholds match the grid, so an app cannot read healthy in
+  one view and hot in the other.
+
+### Changed
+
+- Versions in **Supported Versions** are now selectable — any listed version,
+  including older ones, with a confirmation that warns when the switch is a
+  downgrade. The single-step **Rollback** banner is gone: it could only ever
+  return to `previous_version`, and selecting a version covers it.
+- Deployment detail modal: **Assigned Resources** now follows **Supported
+  Versions**, and the Volumes column is labelled **Local Path** rather than
+  K8s Path — it has always been the tenant-visible path.
+
+- **Stalwart may now burst to 1800Mi** (was 1536Mi), after a production OOM
+  kill. Only the LIMIT moves — the request stays at 256Mi, so this changes what
+  the container may use, not what it reserves, and scheduling is unaffected. The
+  kill was `anon-rss` rather than `file-rss`: genuine heap growth, not
+  reclaimable page cache, which is the distinction that makes a higher ceiling
+  the right fix rather than a bookkeeping artifact. No overlay patches this
+  container and the `mail` namespace has no ResourceQuota and no LimitRange
+  `max`, so nothing rejects the larger ceiling at admission. **Production node
+  headroom was not re-verified** — worth a glance at that node's free memory
+  before this reaches production, since a higher ceiling turns a container-level
+  OOM into node-level pressure if the node cannot back the burst.
+
 ### Fixed
+
 - **A stuck ACME challenge blocked all future certificate issuance for that
   hostname, permanently and invisibly.** cert-manager runs at most one in-flight
   challenge per `(dnsName, type)`; a challenge that reaches `processing: true`
@@ -149,38 +213,14 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   serials, and providers that cannot report transfer status say so instead of
   claiming a sync they cannot observe.
 
-### Added
-- **A break-glass control: "Clear stuck validation".** Deliberately *not* behind
-  the one-hour reissue cooldown — that cooldown exists because a reissue orders
-  a new certificate and authorities cap duplicates per week, whereas this orders
-  nothing and simply removes the stalled attempt so the request already in
-  flight can continue. Gating it would leave an operator staring at a disabled
-  button for an hour with no way to unstick a certificate, which is when they
-  most need one. It only ever deletes challenges classified as wedged, so
-  pressing it during a healthy order does nothing.
-- The certificate card now says **why** issuance is stuck. The platform read
-  Certificate CRs and nothing below them, so the whole ACME layer was invisible:
-  a wedged challenge looked exactly like a slow one, and the operator's only
-  signal was a certificate that never appeared. `validationBlocked` and
-  `validationMessage` carry the challenge state, including which challenge is
-  holding a blocked one's slot, and the card renders it. Deliberately distinct
-  from `state: 'failed'`, which means an attempt was *rejected* — a blocked
-  validation never ran at all.
+- **Mailbox migrations showed an indeterminate spinner for the whole transfer**
+  and a number only once it was already over. Not a missing progress bar — the
+  bar exists and was unreachable. The parser read exactly one marker,
+  `+ Copying msg N/M`, which a real 120-message, 5-folder transfer on DEV emits
+  **zero** times, so `messages_total` stayed NULL and the panel renders the bar
+  only for a positive number. It now reads the format the shipped imapsync
+  actually emits.
 
-- The DNS verification modal now shows an **Expected vs Actual table** for every
-  check, including the ones that passed. A pass previously rendered as the words
-  "DNS verification passed" and nothing else, which is precisely how a check
-  that asserted nothing went unnoticed; an empty expectation is now visible as
-  "not configured".
-
-### Changed
-- Versions in **Supported Versions** are now selectable — any listed version,
-  including older ones, with a confirmation that warns when the switch is a
-  downgrade. The single-step **Rollback** banner is gone: it could only ever
-  return to `previous_version`, and selecting a version covers it.
-- Deployment detail modal: **Assigned Resources** now follows **Supported
-  Versions**, and the Volumes column is labelled **Local Path** rather than
-  K8s Path — it has always been the tenant-visible path.
 
 ## [2026.9.12] - 2026-09-07
 
