@@ -821,9 +821,32 @@ function mergePodVolumes(
 export interface MultihostMounts {
   /** Include directory the generated vhost ConfigMap is projected into. */
   readonly configDir: string;
-  /** Path the tenant PVC ROOT appears at, so a route may serve ANY folder. */
+  /** Base path the mounted site folders appear under. */
   readonly sitesRoot: string;
   readonly configMapName: string;
+  /**
+   * The application roots this pod serves, relative to the tenant PVC root.
+   * ONE MOUNT EACH — the pod never sees the rest of the volume.
+   */
+  readonly siteFolders: readonly string[];
+}
+
+/**
+ * Reduce a set of application roots to the ones that actually need mounting.
+ *
+ * A root nested inside another arrives at the same files through its parent's
+ * mount, and mounting both would nest a volumeMount inside a volumeMount —
+ * legal but order-dependent, and a needless way to make a pod fail to start.
+ * Sorting shortest-first means a parent is always seen before its children.
+ */
+export function minimalSiteFolders(folders: readonly string[]): string[] {
+  const clean = [...new Set(folders.filter((f) => typeof f === 'string' && f.length > 0))]
+    .sort((a, b) => a.length - b.length || a.localeCompare(b));
+  const kept: string[] = [];
+  for (const f of clean) {
+    if (!kept.some((k) => f === k || f.startsWith(`${k}/`))) kept.push(f);
+  }
+  return kept;
 }
 
 /**
@@ -883,7 +906,26 @@ export function applyMultihostPhpHardening(
   multihost: MultihostMounts | null | undefined,
 ): void {
   if (!multihost) return;
-  if (env.some((e) => e.name === 'PHP_DISABLE_FUNCTIONS')) return;
+  const existing = env.find((e) => e.name === 'PHP_DISABLE_FUNCTIONS');
+  // An EMPTY value is not an override — it is the absence of one.
+  //
+  // The catalog manifest carried `default: ""` for this key, and the deploy
+  // dialog materialises every parameter whose default is not `undefined`. So
+  // every deployment created through the panel arrived here already carrying
+  // PHP_DISABLE_FUNCTIONS="", a presence check treated that as "the operator
+  // chose this", and the hardening silently did nothing — on exactly the path
+  // that creates every multi-host deployment. Deciding from the KEY rather
+  // than from its VALUE is what made a security control opt-out by accident.
+  //
+  // Blank therefore falls back to the platform list, and only a non-empty
+  // value is an operator decision. There is deliberately no way to disable the
+  // hardening by blanking the field: the failure mode has to be a site that
+  // stops working, never a pod that quietly stops being isolated.
+  if (existing) {
+    if (existing.value.trim() !== '') return;
+    existing.value = MULTIHOST_DISABLED_PHP_FUNCTIONS;
+    return;
+  }
   env.push({ name: 'PHP_DISABLE_FUNCTIONS', value: MULTIHOST_DISABLED_PHP_FUNCTIONS });
 }
 
@@ -892,10 +934,27 @@ export function buildMultihostMounts(
   namespace: string,
 ): { mounts: Array<Record<string, unknown>>; volumes: Array<Record<string, unknown>> } {
   if (!multihost) return { mounts: [], volumes: [] };
+  const folders = minimalSiteFolders(multihost.siteFolders);
   return {
     mounts: [
       { name: 'multihost-sites', mountPath: multihost.configDir, readOnly: true },
-      { name: 'tenant-storage', mountPath: multihost.sitesRoot },
+      // ONE MOUNT PER SERVED APPLICATION ROOT, each with its own subPath.
+      //
+      // This used to be a single mount of the tenant PVC ROOT, which is what
+      // let any one site read and write every other site's files and every
+      // other deployment's data. open_basedir now confines the interpreter,
+      // but a sandbox is a rule and this is a fact: what the pod cannot see,
+      // no misconfiguration, missing directive or future runtime can reach.
+      //
+      // The cost is that the set of folders is part of the pod template, so
+      // adding or removing a site changes it and restarts the pod — where the
+      // volume-root mount could add a site with a graceful reload. That is the
+      // trade the isolation is worth.
+      ...folders.map((folder) => ({
+        name: 'tenant-storage',
+        mountPath: `${multihost.sitesRoot}/${folder}`,
+        subPath: folder,
+      })),
     ],
     volumes: [
       { name: 'multihost-sites', configMap: { name: multihost.configMapName, optional: true } },
