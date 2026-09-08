@@ -197,6 +197,15 @@ const wedgeMemory = createWedgeMemory();
 /** Repeat clears per namespace, so a churn loop reads differently from a one-off. */
 const healCounts = new Map<string, number>();
 
+/**
+ * Challenge sweeps run far less often than the 60s status tick. A wedge is
+ * already 30 minutes old before it qualifies, so checking every 5 minutes
+ * loses nothing and keeps the extra API-server LISTs proportionate at
+ * 50-100 tenants.
+ */
+const NAMESPACE_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
+const lastSweepAt = new Map<string, number>();
+
 async function selfHealNamespace(
   k8s: K8sClients,
   namespace: string,
@@ -263,14 +272,24 @@ export async function reconcileCertificateStatuses(
     // issuing, skip", so a permanently failed order was silent forever.
     try {
       if (!certsByNamespace.has(d.namespace)) {
-        const nsHealth = await listCertificateHealth(k8s, d.namespace);
-        certsByNamespace.set(d.namespace, nsHealth);
-        // Only LIST Challenges for a namespace that actually has an unfinished
-        // certificate. At 50-100 tenants an unconditional sweep is 50-100 extra
-        // API-server LISTs per minute, forever, to look at nothing: a namespace
-        // whose certificates are all issued cannot be holding a wedged
-        // challenge worth clearing.
-        if (nsHealth.some((c) => c.state !== 'issued')) {
+        certsByNamespace.set(d.namespace, await listCertificateHealth(k8s, d.namespace));
+        // Sweep on a slower cadence than the 60s tick, rather than gating on
+        // certificate health.
+        //
+        // The first version skipped a namespace whose certificates all looked
+        // issued. That is wrong twice over: listCertificateHealth filters on
+        // `app.kubernetes.io/managed-by=insula`, so anything else is invisible
+        // to it, and a challenge ORPHANED by a deleted Certificate — the very
+        // case this module exists to clear — leaves no unfinished certificate
+        // behind to trigger the sweep. The gate made the self-heal unreachable
+        // for the orphan it was written for.
+        //
+        // Time-based instead: correctness does not depend on what the gate can
+        // see, and the API-server cost is still cut by the same order of
+        // magnitude the gate was added for.
+        const lastSwept = lastSweepAt.get(d.namespace) ?? 0;
+        if (Date.now() - lastSwept >= NAMESPACE_SWEEP_INTERVAL_MS) {
+          lastSweepAt.set(d.namespace, Date.now());
           healedChallenges += await selfHealNamespace(k8s, d.namespace, errors);
         }
       }
