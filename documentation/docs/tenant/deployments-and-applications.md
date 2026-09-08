@@ -97,8 +97,17 @@ instances reserve ten times the memory. One instance serving ten sites pays the
 runtime's fixed cost once; what grows with real traffic is the number of
 requests being handled at the same time, not the number of sites.
 
-Not every application supports it. The option only appears for those that do —
-today the **Apache + PHP** runtime.
+Not every application supports it. The option only appears for those that do:
+
+| Application | Sites can run |
+|---|---|
+| **Apache + PHP** | PHP, with `.htaccess` |
+| **NGINX + PHP** | PHP |
+| **Static (Apache)** | static files, with `.htaccess` |
+| **Static (NGINX)** | static files |
+
+A PHP runtime and a static runtime cannot be mixed on one instance — the
+instance is the application, and each site is a folder it serves.
 
 ### Turn it on
 

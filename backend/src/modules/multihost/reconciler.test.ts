@@ -161,6 +161,33 @@ describe('reconcileDeploymentSites', () => {
     expect(f.state.data?.[siteFilename('a')]).toBeDefined();
   });
 
+  it('reports folderCheck=unavailable when the probe cannot run, not an empty list', () => {
+    // A distroless image (static-nginx) has no `sh`, so the exec fails. An
+    // empty missingFolders would read as "every folder is present" — a
+    // confident answer from a check that never ran.
+    const f = fakeCore();
+    execMock.mockImplementation(async (..._a: unknown[]) => {
+      const cmd = _a[4] as string[];
+      if (cmd[0] === 'cat') return { stdout: f.state.data?.[CHECKSUM_KEY] ?? '', stderr: '', exitCode: 0 };
+      if (cmd[0] === 'sh') throw new Error('exec: "sh": executable file not found in $PATH');
+      return { stdout: '', stderr: '', exitCode: 0 };
+    });
+    return reconcileDeploymentSites({ core: f.core }, baseInput([site('a', 'one.test', 'fa')])).then((r) => {
+      expect(r.reloaded).toBe(1);
+      expect(r.missingFolders).toEqual([]);
+      expect(r.folderCheck).toBe('unavailable');
+    });
+  });
+
+  it('reports folderCheck=ok when the probe ran and found everything present', () => {
+    const f = fakeCore();
+    wireExec(f.state);
+    return reconcileDeploymentSites({ core: f.core }, baseInput([site('a', 'one.test', 'fa')])).then((r) => {
+      expect(r.folderCheck).toBe('ok');
+      expect(r.missingFolders).toEqual([]);
+    });
+  });
+
   it('names the ConfigMap after the deployment', () => {
     expect(vhostConfigMapName('sites')).toBe('sites-vhosts');
   });
