@@ -19,6 +19,23 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   application's data even in principle. Adding or removing a website on a shared
   instance now restarts it briefly, where before it was applied without a
   restart — the isolation is worth the interruption.
+- **Websites sharing an instance can no longer read each other through a
+  symlink.** A shortcut placed in one site's folder pointing at a neighbour's
+  was followed by the web server and served as a plain file, which bypassed the
+  restrictions above entirely because the website software never ran. Note the
+  trade-off: applications that ship a shortcut inside the folder they publish —
+  Laravel's `public/storage` is the usual one — need a real folder instead.
+- **Each website now keeps its own login sessions.** They were previously
+  written to a shared temporary area, where a session's filename is its
+  identifier — so one website could read a visitor's session from a
+  neighbouring site and act as that visitor. Sessions now live inside each
+  site's own folder. (File uploads still use the shared temporary area while
+  being received; that is a much shorter window and a much less predictable
+  name, and it is the remaining piece.)
+- **Instances deployed before this release are repaired automatically.** They
+  keep the old, wider access until something changes them, so the platform now
+  checks every shared instance on startup and redeploys the ones still on the
+  old layout. Those instances restart once.
 - **Each website on a multi-host instance is now confined to its own
   application folder.** Previously every site sharing an instance could read
   and write the whole of that customer's storage — a neighbouring site's

@@ -30,10 +30,37 @@ describe('multi-host PHP hardening', () => {
     expect(env[0].value).toBe(MULTIHOST_DISABLED_PHP_FUNCTIONS);
   });
 
-  it('honours a real operator override', () => {
+  /**
+   * The second regression. This key is tenant-editable, so treating any
+   * non-empty value as "the operator decided" let a tenant set it to
+   * `exec,system` — or to `1` — on their own shared instance and hand
+   * themselves back shell_exec, proc_open and the rest.
+   */
+  it('treats a configured value as an ADDITION, never a replacement', () => {
     const env = [{ name: 'PHP_DISABLE_FUNCTIONS', value: 'exec,system' }];
     applyMultihostPhpHardening(env, MH);
-    expect(env[0].value).toBe('exec,system');
+    for (const fn of MULTIHOST_DISABLED_PHP_FUNCTIONS.split(',')) {
+      expect(env[0].value.split(','), `${fn} was removed from the baseline`).toContain(fn);
+    }
+  });
+
+  it('lets an operator disable MORE, and keeps it', () => {
+    const env = [{ name: 'PHP_DISABLE_FUNCTIONS', value: 'curl_exec' }];
+    applyMultihostPhpHardening(env, MH);
+    expect(env[0].value.split(',')).toContain('curl_exec');
+    expect(env[0].value.split(',')).toContain('shell_exec');
+  });
+
+  it('cannot be weakened to a single harmless-looking value', () => {
+    const env = [{ name: 'PHP_DISABLE_FUNCTIONS', value: '1' }];
+    applyMultihostPhpHardening(env, MH);
+    expect(env[0].value.split(',')).toContain('proc_open');
+  });
+
+  it('does not duplicate a function already in the baseline', () => {
+    const env = [{ name: 'PHP_DISABLE_FUNCTIONS', value: 'exec' }];
+    applyMultihostPhpHardening(env, MH);
+    expect(env[0].value.split(',').filter((f) => f === 'exec')).toHaveLength(1);
   });
 
   it('leaves single-site deployments alone', () => {
