@@ -86,6 +86,23 @@ export interface DeployCatalogEntryInput {
    * meant, and two containers writing the same subPath is a corruption risk.
    */
   readonly extraMounts?: ReadonlyArray<{ folder: string; mount_path: string; read_only?: boolean }>;
+  /**
+   * Multi-host serving (migration 0104). Set only when the deployment has the
+   * flag on AND its catalog entry declares the capability — the caller resolves
+   * both, so this module never has to decide whether an entry is eligible.
+   *
+   * Rides on the PRIMARY component only: the ingress-owning container is the
+   * one that serves sites, and mounting the tenant's whole storage into a
+   * sidecar that never serves HTTP would widen access for nothing.
+   */
+  /**
+   * REQUIRED, not optional. An optional field here would let a new deploy call
+   * site compile without it and silently rewrite the pod template with no
+   * include directory and no storage root — every site on that pod would fall
+   * back to the stock document root and look like a routing bug. `null` is the
+   * explicit "not multi-host" answer.
+   */
+  readonly multihost: MultihostMounts | null;
   readonly replicaCount: number;
   readonly cpuRequest: string;
   readonly memoryRequest: string;
@@ -515,17 +532,33 @@ function buildEnvVars(
   }
 
   // Pass 2: values from configuration.
-  // - If configurableEnvKeys is set, only those keys + any already-fixed key
-  //   flow through. Arbitrary meta params (e.g. `wordpress.siteTitle`) stay
-  //   in `deployment.configuration` for platform use but aren't container env.
-  // - If unset, pre-filter legacy behavior: every stringish key passes through.
+  // - If configurableEnvKeys is set, only those keys flow through. Arbitrary
+  //   meta params (e.g. `wordpress.siteTitle`) stay in
+  //   `deployment.configuration` for platform use but aren't container env.
+  // - If unset, legacy behaviour: every stringish key passes through, and a
+  //   key already pinned in `fixed` stays pinned.
+  //
+  // A key declared BOTH fixed and configurable is the tenant's to set, and
+  // `fixed` is then its default. The previous rule was an unconditional
+  // "fixed wins", which made the manifest contradict itself: the Official
+  // apache-php entry lists APACHE_DOCUMENT_ROOT in `fixed` AND in
+  // `configurable`, so the panel offered it as editable (it reads the same
+  // `configurable` list), the tenant changed it, the value was stored — and
+  // this loop dropped it every time. The pod redeployed with the manifest
+  // default and the setting looked broken rather than ignored. Same for
+  // PHP_OPCACHE_ENABLE in that entry.
+  //
+  // Scoped to keys the manifest EXPLICITLY declares configurable, so an entry
+  // that pins a value without offering it stays pinned, and entries with no
+  // `configurable` list keep their existing behaviour exactly.
   if (configuration) {
     const allowed = opts.configurableEnvKeys
       ? new Set(opts.configurableEnvKeys)
       : null;
     for (const [key, value] of Object.entries(configuration)) {
-      if (envMap.has(key)) continue; // fixed wins
-      if (allowed && !allowed.has(key)) continue;
+      const declaredConfigurable = allowed?.has(key) ?? false;
+      if (allowed && !declaredConfigurable) continue;
+      if (envMap.has(key) && !declaredConfigurable) continue; // pinned by the manifest
       if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
         envMap.set(key, String(value));
       }
@@ -662,7 +695,7 @@ export async function deployCatalogEntry(
 
     switch (component.type) {
       case 'deployment':
-        await deployK8sDeployment(k8s, namespace, name, labels, container, replicaCount, input.storagePath, mountsForComponent, passwordResetContainer, env, input.nodeName, input.storageTier, firewallAnnotations);
+        await deployK8sDeployment(k8s, namespace, name, labels, container, replicaCount, input.storagePath, mountsForComponent, passwordResetContainer, env, input.nodeName, input.storageTier, firewallAnnotations, component === primaryComponent ? input.multihost : null);
         break;
 
       case 'statefulset':
@@ -764,6 +797,75 @@ async function deployFirewallNetworkPolicy(
   }
 }
 
+
+/**
+ * Where a multi-host deployment's extra mounts go. Both come from the catalog
+ * entry's `multihost` block so the image and the platform cannot disagree
+ * about a path.
+ */
+/** Union of pod-level volumes by `name`; the first declaration of a name wins. */
+function mergePodVolumes(
+  a: Array<Record<string, unknown>> | undefined,
+  b: Array<Record<string, unknown>>,
+): { volumes?: Array<Record<string, unknown>> } {
+  const byName = new Map<string, Record<string, unknown>>();
+  for (const v of [...(a ?? []), ...b]) {
+    const name = v.name as string;
+    if (!byName.has(name)) byName.set(name, v);
+  }
+  return byName.size > 0 ? { volumes: [...byName.values()] } : {};
+}
+
+export interface MultihostMounts {
+  /** Include directory the generated vhost ConfigMap is projected into. */
+  readonly configDir: string;
+  /** Path the tenant PVC ROOT appears at, so a route may serve ANY folder. */
+  readonly sitesRoot: string;
+  readonly configMapName: string;
+}
+
+/**
+ * Volume + mounts for multi-host serving.
+ *
+ * Two mounts, one extra volume:
+ *
+ *  - the vhost ConfigMap at `configDir`, read-only and **optional**. Optional
+ *    matters: the ConfigMap is written by the site reconciler, which may not
+ *    have run yet on a first deploy. A required volume would leave the pod
+ *    stuck in ContainerCreating; an optional one starts with an empty include
+ *    directory and serves the stock document root until the sites land.
+ *
+ *  - the tenant PVC at `sitesRoot` with NO subPath. This is the same
+ *    `tenant-storage` volume the deployment already mounts at its document
+ *    root — Kubernetes allows one volume at two mount points — and mounting
+ *    the ROOT is what lets a route serve any folder the tenant can see in the
+ *    file manager rather than only children of this deployment's storagePath.
+ *
+ *    It widens what this pod can read to the whole of the tenant's own
+ *    storage. That is the same trust boundary SFTP, the file manager and
+ *    `extra_mounts` already sit on (one tenant, one PVC), but it IS a
+ *    widening, which is why it is tied to the operator explicitly enabling
+ *    multi-host rather than applied to every runtime pod.
+ */
+export function buildMultihostMounts(
+  multihost: MultihostMounts | null | undefined,
+  namespace: string,
+): { mounts: Array<Record<string, unknown>>; volumes: Array<Record<string, unknown>> } {
+  if (!multihost) return { mounts: [], volumes: [] };
+  return {
+    mounts: [
+      { name: 'multihost-sites', mountPath: multihost.configDir, readOnly: true },
+      { name: 'tenant-storage', mountPath: multihost.sitesRoot },
+    ],
+    volumes: [
+      { name: 'multihost-sites', configMap: { name: multihost.configMapName, optional: true } },
+      // Only needed when the component mounts no catalog volumes at all;
+      // otherwise buildVolumeMountSpec already declared `tenant-storage`.
+      { name: 'tenant-storage', persistentVolumeClaim: { claimName: `${namespace}-storage` } },
+    ],
+  };
+}
+
 async function deployK8sDeployment(
   k8s: K8sClients,
   namespace: string,
@@ -791,12 +893,19 @@ async function deployK8sDeployment(
   // already enforced the per-role allow_host_ports toggle by the time
   // we land here.
   podAnnotations?: Record<string, string>,
+  // Multi-host serving (migration 0104). Present only when the deployment has
+  // it enabled AND its catalog entry declares the capability.
+  multihost?: MultihostMounts | null,
 ): Promise<void> {
   const selectorLabels = { app: labels.app, component: labels.component };
   const spec = buildVolumeMountSpec(volumes, storagePath, namespace);
 
-  const containerWithMounts = spec
-    ? { ...container, volumeMounts: spec.mounts }
+  const mh = buildMultihostMounts(multihost, namespace);
+  const baseMounts = spec ? spec.mounts : [];
+  const allMounts = [...baseMounts, ...mh.mounts];
+
+  const containerWithMounts = allMounts.length > 0
+    ? { ...container, volumeMounts: allMounts }
     : container;
 
   const initContainersList: Record<string, unknown>[] = [];
@@ -813,7 +922,11 @@ async function deployK8sDeployment(
     // M9: tenant workloads never call the Kubernetes API — don't mount a
     // ServiceAccount token they could exfiltrate + replay.
     automountServiceAccountToken: false,
-    ...(spec ? { volumes: spec.podVolumes } : {}),
+    // Merge by name: buildVolumeMountSpec already declares `tenant-storage`
+    // when the component mounts catalog volumes, and the multi-host block
+    // declares it too for the case where it does not. Two pod volumes sharing
+    // a name is an admission error, so take the union rather than concatenate.
+    ...(mergePodVolumes(spec?.podVolumes, mh.volumes)),
   };
   if (nodeName) {
     if (storageTier === 'ha') {

@@ -143,6 +143,7 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
       body.path ?? '/',
       body.private_worker_id,
       body.service_port,
+      body.site_folder,
     );
     await triggerReconcile(tenantId);
 
@@ -189,6 +190,7 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
       tlsMode: parsed.data.tls_mode,
       nodeHostname: parsed.data.node_hostname,
       servicePort: parsed.data.service_port,
+      siteFolder: parsed.data.site_folder,
     }, tenantId);
     await triggerReconcile(tenantId);
     return success(mapRouteToResponse(updated));

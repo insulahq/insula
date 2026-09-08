@@ -105,10 +105,43 @@ export async function getDomainTlsStatus(
     ? new Date(certRow.lastReissueAt.getTime() + REISSUE_COOLDOWN_MS)
     : null;
 
+  // Why issuance is stuck, not just that it is. Reading Certificate CRs alone
+  // cannot answer this: a wedged ACME challenge looks identical to a slow one
+  // from above, which is how a tenant waited a full day on a certificate that
+  // could never arrive.
+  let acme: { blocked: boolean; summary?: string } = { blocked: false };
+  if (k8s && namespace) {
+    try {
+      const { listChallenges, classifyChallenges, summarizeChallenges } =
+        await import('./acme-challenges.js');
+      // Same scoping rule as clearWedgedChallenges: the domain itself and any
+      // hostname under it. A wedge on a route (blog.example.com) belongs to
+      // example.com's certificate status, or the card stays silent about the
+      // very thing blocking it.
+      const base = domain.domainName.toLowerCase().replace(/\.$/, '');
+      const relevant = (await listChallenges(k8s, namespace)).filter((c) => {
+        const n = (c.spec?.dnsName ?? '').toLowerCase().replace(/\.$/, '');
+        return n === base || n.endsWith(`.${base}`);
+      });
+      acme = summarizeChallenges(classifyChallenges(relevant));
+    } catch (err) {
+      // The status read still succeeds — a card without challenge detail beats
+      // no card. But say so rather than rendering a confident "not blocked":
+      // the first version returned [] on a 403 and the card cheerfully showed
+      // nothing wrong next to a permanently stuck certificate.
+      acme = {
+        blocked: false,
+        summary: `Could not read ACME challenge state: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+  }
+
   return {
     domainId,
     domainName: domain.domainName,
     state: aggregateState(certificates),
+    validationBlocked: acme.blocked,
+    validationMessage: acme.summary ?? null,
     wildcardCapable: wildcardBlockedReason(domain.dnsMode, servers) === null,
     wildcardBlockedReason: wildcardBlockedReason(domain.dnsMode, servers),
     fallbackActive: (certRow?.fallbackActive ?? 0) === 1,

@@ -4,12 +4,13 @@
  * Manages the unified deployments table that replaces both workloads and application_instances.
  */
 
-import { eq, and, ne, desc, asc, lt, gt, sql } from 'drizzle-orm';
+import { eq, and, ne, desc, asc, lt, gt, sql, isNotNull } from 'drizzle-orm';
 import { deployments, catalogEntries, catalogEntryVersions, tenants, clusterNodes, hostingPlans, ingressRoutes, domains } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { normalizeMountPath } from '@insula/api-contracts';
 import { InsufficientResourceBudgetError } from './resource-allocator.js';
 import { findAdminPasswordEnvVar } from './password-reset.js';
+import { capabilityOf, deleteDeploymentSites, multihostMountsFor } from '../multihost/reconciler.js';
 import {
   isCustomDeployment,
   customSpecImages,
@@ -579,6 +580,7 @@ export async function createDeployment(
         envVars: finalEnvVars,
         configurableEnvKeys,
         extraMounts: input.extra_mounts ?? undefined,
+        multihost: null,
         // Arm the password-reset init container for every DB deployment, not
         // just `storage_mode: custom`. The default storagePath is deterministic
         // (`type/code/name`), and deleting a deployment WITHOUT deleteData
@@ -725,6 +727,24 @@ export async function listDeployments(
   };
 }
 
+/**
+ * Stable JSON for comparing two configuration objects.
+ *
+ * Plain `JSON.stringify` is key-order sensitive, so `{a:1,b:2}` and `{b:2,a:1}`
+ * compare as different. The panel rebuilds the object with a spread on every
+ * save, so relying on stringify would report a change on saves that changed
+ * nothing — and every one of those would roll the tenant's pod. Sorting the
+ * keys makes "unchanged" mean unchanged.
+ */
+export function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  const entries = Object.entries(value as Record<string, unknown>)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`);
+  return `{${entries.join(',')}}`;
+}
+
 export async function updateDeployment(
   db: Database,
   tenantId: string,
@@ -771,6 +791,31 @@ export async function updateDeployment(
   // "edit mounts + start" call still ends up running the new template.
   const mountsChanged = input.extra_mounts !== undefined
     && JSON.stringify(input.extra_mounts) !== JSON.stringify(deployment.extraMounts ?? []);
+
+  // A configuration edit is a pod-template change too, and until this existed
+  // it was the one that silently did nothing.
+  //
+  // The env vars live in the Deployment's pod template. Persisting
+  // `configuration` to the row without re-rendering that template leaves the
+  // running pod on its old values FOREVER — nothing else reconciles env drift.
+  // The tenant panel makes this worse rather than better: after saving it calls
+  // POST /restart, which DELETES the pods, and the ReplicaSet recreates them
+  // from the template that was never updated. So the pod visibly bounces and
+  // comes back byte-identical, which reads as "the setting does not work"
+  // rather than "the setting was never applied".
+  //
+  // Reported against an Apache/PHP deployment: PHP_DISPLAY_ERRORS and
+  // APACHE_DOCUMENT_ROOT saved, pod restarted, neither took effect.
+  const configurationChanged = input.configuration !== undefined
+    && canonicalJson(input.configuration)
+      !== canonicalJson(parseJsonField<Record<string, unknown>>(deployment.configuration) ?? {});
+
+  // Replica count is rendered from the row by redeployWithCurrentConfig as
+  // well, and had the identical problem — persisted, never applied.
+  const replicaCountChanged = input.replica_count !== undefined
+    && input.replica_count !== (deployment.replicaCount ?? 1);
+
+  const podTemplateChanged = mountsChanged || configurationChanged || replicaCountChanged;
 
   // Apply K8s changes for status transitions
   if (k8s && input.status) {
@@ -819,7 +864,7 @@ export async function updateDeployment(
   // Validation runs first so a bad edit is refused before anything is applied
   // — the row has already been written, but a failed redeploy leaves the
   // running pod untouched and the tenant sees the OperatorError.
-  if (k8s && mountsChanged) {
+  if (k8s && podTemplateChanged) {
     const fresh = await getDeploymentById(db, tenantId, deploymentId);
     if (fresh.status !== 'stopped' && fresh.status !== 'deleted') {
       await redeployWithCurrentConfig(db, fresh as typeof deployments.$inferSelect, k8s);
@@ -1305,6 +1350,11 @@ export async function updateDeploymentResources(
         envVars: { fixed: resolved.fixedEnvVars },
         configurableEnvKeys: resolved.configurableEnvKeys,
         extraMounts: deployment.extraMounts ?? undefined,
+        // Multi-host mounts, resolved from the flag + the entry's capability.
+        // Threaded at EVERY deploy call site: a redeploy that omitted them
+        // would rewrite the pod template without the include directory, and
+        // every site on this pod would silently fall back to the stock docroot.
+        multihost: multihostMountsFor(deployment, entry),
         firewall: reFirewall ?? undefined,
         hostPorts: readEntryHostPorts(entry),
       });
@@ -1341,20 +1391,46 @@ export async function updateDeploymentResources(
 
 export interface VolumePath {
   readonly containerPath: string;
+  /**
+   * Absolute path inside the tenant's own file area — what the operator sees
+   * in the file manager and over SFTP. Named `k8sPath` for wire compatibility;
+   * it has always been the tenant path, never a Kubernetes one.
+   */
   readonly k8sPath: string;
 }
 
+/**
+ * Resolve each catalog volume to the absolute tenant-visible path.
+ *
+ * Two things were wrong before. `storagePath` is stored WITHOUT a leading
+ * slash (`runtime/apache-php/contentbase`), so the UI rendered a path that
+ * looked relative and could not be pasted anywhere. And every volume got the
+ * bare base path because `local_path` was ignored — the Official apache-php
+ * entry declares `local_path: "."` meaning "the storage root", and the panel's
+ * fallback rendered that marker literally, so the column showed `.`.
+ *
+ * `.` (and an empty value) mean the root; anything else is relative to it.
+ */
 export function computeVolumePaths(
   deployment: { storagePath: string | null },
   entry: { volumes: unknown },
 ): VolumePath[] {
-  const volumes = parseJsonField<Array<{ container_path: string }>>(entry.volumes) ?? [];
+  const volumes = parseJsonField<Array<{ container_path: string; local_path?: string }>>(entry.volumes) ?? [];
   const basePath = deployment.storagePath ?? '';
 
   return volumes.map(v => ({
     containerPath: v.container_path,
-    k8sPath: basePath,
+    k8sPath: resolveTenantVolumePath(basePath, v.local_path),
   }));
+}
+
+/** `('runtime/app/site', '.')` → `/runtime/app/site`; `(…, 'public')` → `/runtime/app/site/public`. */
+export function resolveTenantVolumePath(basePath: string, localPath?: string | null): string {
+  const rel = (localPath ?? '').trim();
+  const parts = [basePath, rel === '.' || rel === './' ? '' : rel]
+    .flatMap((seg) => seg.split('/'))
+    .filter((seg) => seg !== '' && seg !== '.');
+  return `/${parts.join('/')}`;
 }
 
 export async function getDeploymentWithVolumePaths(
@@ -1565,6 +1641,10 @@ export async function redeployWithCurrentConfig(
     // Carried through every redeploy — dropping them here would silently
     // unmount a tenant's folders on the next credential rotation.
     extraMounts: deployment.extraMounts ?? undefined,
+    // Multi-host mounts — same reason as extraMounts directly above. Dropping
+    // them on a rotation would unmount the storage root and the include
+    // directory, and every site would fall back to the stock docroot.
+    multihost: multihostMountsFor(deployment, entry),
     // Re-stamp the config root password onto the reused datadir on the DR
     // reconcile path (no-op for non-DB deployments + fresh datadirs).
     reuseExistingData: opts.armPasswordReset === true,
@@ -1840,4 +1920,85 @@ export async function listStorageFolders(
   }
 
   return { basePath, folders };
+}
+
+/**
+ * Turn multi-host serving on or off for one deployment.
+ *
+ * The flag changes the pod's MOUNTS — the include directory the generated
+ * vhosts land in, and the tenant storage root a site folder is resolved
+ * against — so this is the one transition in the whole feature that restarts
+ * the app. Adding, changing and removing sites afterwards is a graceful
+ * reload. Callers are expected to say so before asking.
+ */
+export async function setMultihostEnabled(
+  db: Database,
+  tenantId: string,
+  deploymentId: string,
+  enabled: boolean,
+  k8s?: K8sClients,
+): Promise<typeof deployments.$inferSelect> {
+  const [deployment] = await db
+    .select()
+    .from(deployments)
+    .where(and(eq(deployments.id, deploymentId), eq(deployments.tenantId, tenantId)));
+  if (!deployment) throw new ApiError('DEPLOYMENT_NOT_FOUND', `Deployment '${deploymentId}' not found`, 404);
+
+  const [entry] = await db
+    .select()
+    .from(catalogEntries)
+    .where(eq(catalogEntries.id, deployment.catalogEntryId ?? ''));
+
+  if (enabled && !capabilityOf(entry ?? null)) {
+    throw new ApiError(
+      'MULTIHOST_NOT_SUPPORTED',
+      `'${deployment.name}' runs an application that cannot serve several sites from one instance.`,
+      400,
+    );
+  }
+
+  if (!enabled) {
+    // Turning it off while routes still name folders would take those sites
+    // down: the vhosts disappear, every hostname falls through to the stock
+    // document root, and nothing in the UI would say why. Name the hostnames
+    // rather than making the operator find them.
+    const bound = await db
+      .select({ hostname: ingressRoutes.hostname })
+      .from(ingressRoutes)
+      .where(and(eq(ingressRoutes.deploymentId, deploymentId), isNotNull(ingressRoutes.siteFolder)));
+    if (bound.length > 0) {
+      const names = bound.map((r) => r.hostname).slice(0, 5).join(', ');
+      const more = bound.length > 5 ? ` (+${bound.length - 5} more)` : '';
+      throw new ApiError(
+        'MULTIHOST_SITES_BOUND',
+        `${bound.length} hostname(s) still serve a folder on this deployment: ${names}${more}. Clear their site folders first.`,
+        409,
+        { hostnames: bound.map((r) => r.hostname) },
+      );
+    }
+  }
+
+  if (deployment.multihostEnabled === enabled) return deployment;
+
+  const [updated] = await db
+    .update(deployments)
+    .set({ multihostEnabled: enabled })
+    .where(eq(deployments.id, deploymentId))
+    .returning();
+
+  // Redeploy so the mounts actually change. Without this the flag is a row in
+  // the database and the pod template still says what it said before — the
+  // exact shape of "saved but never applied".
+  if (k8s) {
+    await redeployWithCurrentConfig(db, updated, k8s);
+    if (!enabled) {
+      // The pod loses the mount in that same redeploy, so an orphaned
+      // ConfigMap would be harmless — and would leave one per deployment that
+      // ever tried the feature, each reading like live configuration.
+      const namespace = await getTenantNamespace(db, tenantId);
+      await deleteDeploymentSites({ core: k8s.core }, namespace, updated.name);
+    }
+  }
+
+  return updated;
 }

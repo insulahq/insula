@@ -3,13 +3,45 @@ import { useQueryClient } from '@tanstack/react-query';
 import { API_BASE } from '@/lib/api-client';
 import { X, Play, Square, Cpu, HardDrive, Server, Clock, Shield, Eye, EyeOff, AppWindow, Loader2, Database, AlertTriangle, Tag as TagIcon, Save, AlertCircle, Terminal, RefreshCw, Pencil } from 'lucide-react';
 import { getStatusColor } from '@/lib/status-colors';
-import { useUpdateDeploymentResources, useUpdateDeployment, useResourceAvailability, useDeploymentLiveMetrics } from '@/hooks/use-deployments';
+import { useUpdateDeploymentResources, useUpdateDeployment, useResourceAvailability, useDeploymentLiveMetrics, useSwitchDeploymentVersion } from '@/hooks/use-deployments';
 import ExtraMountsEditor, { extraMountErrors, type ExtraMountRow } from './ExtraMountsEditor';
+import { useSetMultihost } from '@/hooks/use-deployments';
 import NetworkAccessSection from '@/components/NetworkAccessSection';
 import AvailableUpgradesCard from '@/components/AvailableUpgradesCard';
 import { ResourceBreakdown } from '@/components/ResourceBreakdown';
 import { useCatalogEntryVersions } from '@/hooks/use-catalog';
 import clsx from 'clsx';
+
+/**
+ * Tenant paths are stored WITHOUT a leading slash (`runtime/apache-php/site`),
+ * which renders as something that looks relative and cannot be pasted into the
+ * file manager or an SFTP client. Display them absolute.
+ */
+function absPath(p: string | null | undefined): string {
+  const v = (p ?? '').trim();
+  if (!v || v === '.') return '/';
+  return v.startsWith('/') ? v : `/${v}`;
+}
+
+/** Resolve a catalog volume's `local_path` (often ".") against the storage root. */
+function joinTenantPath(base: string | null | undefined, localPath?: string | null): string {
+  const rel = (localPath ?? '').trim();
+  const segs = [base ?? '', rel === '.' || rel === './' ? '' : rel]
+    .flatMap((seg) => seg.split('/'))
+    .filter((seg) => seg !== '' && seg !== '.');
+  return `/${segs.join('/')}`;
+}
+
+/** Numeric-segment compare, enough to tell an upgrade from a downgrade. */
+function compareSemver(a: string, b: string): number {
+  const pa = a.split('.').map((n) => Number.parseInt(n, 10) || 0);
+  const pb = b.split('.').map((n) => Number.parseInt(n, 10) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i += 1) {
+    const d = (pa[i] ?? 0) - (pb[i] ?? 0);
+    if (d !== 0) return d < 0 ? -1 : 1;
+  }
+  return 0;
+}
 import DatabaseManagementModal from './DatabaseManagementModal';
 import LogViewer from './LogViewer';
 import WebTerminal from './WebTerminal';
@@ -122,6 +154,15 @@ export default function InstalledAppDetailModal({
   const [dbModalOpen, setDbModalOpen] = useState(false);
   const { data: versionsData } = useCatalogEntryVersions(catalogEntry?.id);
 
+  // Multi-host serving. The capability is DECLARED by the catalog entry — the
+  // control is not offered at all for an application that cannot do it, rather
+  // than offered and then refused by the API.
+  const setMultihost = useSetMultihost(tenantId);
+  const multihostCapable = Boolean((catalogEntry as { multihost?: unknown } | null)?.multihost);
+  // `deployment` is null while the modal is mounted but closed — these hooks
+  // run before the component's own null guard further down.
+  const multihostOn = Boolean((deployment as { multihostEnabled?: boolean } | null)?.multihostEnabled);
+
   // ─── Resource editing (Issue 7) ─────────────────────────────────────────────
   const [editingResources, setEditingResources] = useState(false);
   const [editCpu, setEditCpu] = useState('');
@@ -138,6 +179,14 @@ export default function InstalledAppDetailModal({
   const liveMetrics = useDeploymentLiveMetrics(tenantId, deployment?.status === 'running' ? deployment?.id : undefined);
 
   // ─── Configuration editing ────────────────────────────────────────────────
+  // Version switching replaces the old one-step Rollback button: any listed
+  // version is selectable, including older ones. The platform's lock-mode
+  // guard is the authority on what is permitted, so its error is surfaced
+  // verbatim rather than second-guessed here.
+  const [versionTarget, setVersionTarget] = useState<string | null>(null);
+  // Hooks run before the null guard below, so these are optional-chained.
+  const switchVersion = useSwitchDeploymentVersion(deployment?.tenantId, deployment?.id ?? '');
+
   const [editingConfig, setEditingConfig] = useState(false);
   const [editValues, setEditValues] = useState<Record<string, string>>({});
   const updateDeployment = useUpdateDeployment(tenantId);
@@ -235,7 +284,15 @@ export default function InstalledAppDetailModal({
         onSuccess: () => {
           setEditingConfig(false);
           queryClient.invalidateQueries({ queryKey: ['deployments'] });
-          onRestart?.(deployment.id);
+          // No onRestart here. The backend now re-renders the pod template from
+          // the saved configuration and rolls the pods itself, so an extra
+          // POST /restart would delete the pod that redeploy just created —
+          // a second, pointless bounce.
+          //
+          // This restart used to be the only thing that happened at all: the
+          // config was persisted, the template was never updated, and deleting
+          // the pod brought it back byte-identical. That is why the setting
+          // appeared not to work.
           onClose();
         },
       },
@@ -243,9 +300,8 @@ export default function InstalledAppDetailModal({
   };
 
   const saveMounts = () => {
-    // Same shape as saveConfigEdit: apply, invalidate, hand the restart to the
-    // parent, close. A mount change restarts the pod, so the UX must match the
-    // config-edit path rather than silently leaving a stale modal open.
+    // Same shape as saveConfigEdit: apply, invalidate, close. The redeploy
+    // that applies a mount change happens server-side.
     const filled = mountRows.filter(m => m.folder.trim() !== '' && m.mount_path.trim() !== '');
     updateDeployment.mutate(
       { deploymentId: deployment.id, extra_mounts: filled },
@@ -253,7 +309,8 @@ export default function InstalledAppDetailModal({
         onSuccess: () => {
           setEditingMounts(false);
           queryClient.invalidateQueries({ queryKey: ['deployments'] });
-          onRestart?.(deployment.id);
+          // Server-side redeploy already rolls the pod (it always did for
+          // mounts) — see saveConfigEdit.
           onClose();
         },
       },
@@ -334,7 +391,6 @@ export default function InstalledAppDetailModal({
             deploymentId={deployment.id}
             deploymentName={deployment.name}
             installedVersion={deployment.installedVersion}
-            previousVersion={deployment.previousVersion ?? null}
           />
         )}
 
@@ -360,7 +416,7 @@ export default function InstalledAppDetailModal({
             {deployment.storagePath && (
               <div>
                 <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Storage Path</span>
-                <p className="font-mono text-gray-900 dark:text-gray-100">{deployment.storagePath}</p>
+                <p className="font-mono text-gray-900 dark:text-gray-100">{absPath(deployment.storagePath)}</p>
               </div>
             )}
             {deployment.lastUpgradedAt && (
@@ -386,21 +442,29 @@ export default function InstalledAppDetailModal({
               Supported Versions
             </h3>
             <div className="flex flex-wrap items-center gap-2">
-              {(versionsData?.data ?? []).map(v => (
-                <span
-                  key={v.id}
-                  className={clsx(
-                    'inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm',
-                    deployment.installedVersion === v.version
-                      ? 'border-blue-300 dark:border-blue-700 bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 font-medium'
-                      : 'border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400',
-                  )}
-                >
-                  {v.version}
-                  {v.isDefault ? <span className="text-[10px] font-medium text-blue-500 dark:text-blue-400">default</span> : null}
-                  {deployment.installedVersion === v.version ? <span className="text-[10px] font-medium text-green-600 dark:text-green-400">installed</span> : null}
-                </span>
-              ))}
+              {(versionsData?.data ?? []).map(v => {
+                const isInstalled = deployment.installedVersion === v.version;
+                return (
+                  <button
+                    key={v.id}
+                    type="button"
+                    disabled={isInstalled || switchVersion.isPending}
+                    onClick={() => setVersionTarget(v.version)}
+                    title={isInstalled ? 'Currently installed' : `Switch to ${v.version}`}
+                    data-testid={`version-${v.version}`}
+                    className={clsx(
+                      'inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm transition-colors',
+                      isInstalled
+                        ? 'border-blue-300 dark:border-blue-700 bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 font-medium cursor-default'
+                        : 'border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:border-blue-300 dark:hover:border-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 hover:text-blue-700 dark:hover:text-blue-300 disabled:opacity-50',
+                    )}
+                  >
+                    {v.version}
+                    {v.isDefault ? <span className="text-[10px] font-medium text-blue-500 dark:text-blue-400">default</span> : null}
+                    {isInstalled ? <span className="text-[10px] font-medium text-green-600 dark:text-green-400">installed</span> : null}
+                  </button>
+                );
+              })}
               {deployment.status === 'running' && onRestart && (
                 <button
                   type="button"
@@ -416,262 +480,6 @@ export default function InstalledAppDetailModal({
           </div>
         )}
 
-        {/* Components Section */}
-        {components.length > 0 && (
-          <div className="mb-6">
-            <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-900 dark:text-gray-100 mb-3">
-              <Server size={16} className="text-blue-600 dark:text-blue-400" />
-              Components
-            </h3>
-            <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                    <th className="px-3 py-2">Name</th>
-                    <th className="px-3 py-2">Type</th>
-                    <th className="px-3 py-2">Image</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-                  {components.map((comp) => (
-                    <tr key={comp.name ?? comp.image}>
-                      <td className="px-3 py-2 font-medium text-gray-900 dark:text-gray-100">{comp.name ?? '-'}</td>
-                      <td className="px-3 py-2">
-                        <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${typeBadgeColors[comp.type ?? ''] ?? typeBadgeColors.job}`}>
-                          {comp.type ?? 'unknown'}
-                        </span>
-                      </td>
-                      <td className="px-3 py-2 font-mono text-xs text-gray-500 dark:text-gray-400">{comp.image ?? '-'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
-
-        {/* Volumes Section (Issue 9: real K8s path) */}
-        {volumes.length > 0 && (
-          <div className="mb-6" data-testid="volumes-section">
-            <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-900 dark:text-gray-100 mb-3">
-              <HardDrive size={16} className="text-blue-600 dark:text-blue-400" />
-              Volumes
-            </h3>
-            <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                    <th className="px-3 py-2">K8s Path</th>
-                    <th className="px-3 py-2">Container Path</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-                  {(() => {
-                    // Use volumePaths from the deployment response if available (computed by backend)
-                    const deploymentVolumePaths = deployment.volumePaths;
-                    if (deploymentVolumePaths && deploymentVolumePaths.length > 0) {
-                      return deploymentVolumePaths.map((vp) => (
-                        <tr key={vp.containerPath ?? vp.k8sPath}>
-                          <td className="px-3 py-2 font-mono text-xs text-gray-900 dark:text-gray-100">{vp.k8sPath}</td>
-                          <td className="px-3 py-2 font-mono text-xs text-gray-500 dark:text-gray-400">{vp.containerPath ?? '-'}</td>
-                        </tr>
-                      ));
-                    }
-                    // Fallback: compute K8s path from catalog volumes + deployment name
-                    return volumes.map((vol) => {
-                      const parentDir = vol.local_path?.split('/').slice(0, -1).join('/') ?? '';
-                      const k8sPath = parentDir ? `${parentDir}/${deployment.name}` : (vol.local_path ?? deployment.name);
-                      return (
-                        <tr key={vol.container_path ?? vol.local_path}>
-                          <td className="px-3 py-2 font-mono text-xs text-gray-900 dark:text-gray-100">{k8sPath}</td>
-                          <td className="px-3 py-2 font-mono text-xs text-gray-500 dark:text-gray-400">{vol.container_path ?? '-'}</td>
-                        </tr>
-                      );
-                    });
-                  })()}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
-
-        {/* Configuration Section */}
-        <div className="mb-6">
-          <div className="flex items-center gap-2 mb-3">
-            <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-900 dark:text-gray-100">
-              <Shield size={16} className="text-blue-600 dark:text-blue-400" />
-              Configuration
-            </h3>
-            {!editingConfig && configurableKeys.size > 0 && (
-              <button
-                type="button"
-                onClick={enterConfigEdit}
-                className="inline-flex items-center gap-1 rounded-md border border-blue-300 dark:border-blue-600 px-2 py-0.5 text-xs font-medium text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20"
-                data-testid="edit-config-button"
-              >
-                <Pencil size={12} />
-                Edit
-              </button>
-            )}
-          </div>
-          {displayKeys.length > 0 ? (
-            <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                    <th className="px-3 py-2">Key</th>
-                    <th className="px-3 py-2">Value</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-                  {displayKeys.map((key) => {
-                    const isSecret = secretKeys.has(key);
-                    const isRevealed = revealedSecrets.has(key);
-                    const isConfigurable = configurableKeys.has(key);
-                    const value = String(configuration[key] ?? '');
-                    return (
-                      <tr key={key}>
-                        <td className="px-3 py-2 font-medium text-gray-900 dark:text-gray-100">{key}</td>
-                        <td className="px-3 py-2 text-gray-600 dark:text-gray-400">
-                          {editingConfig && isConfigurable && !isSecret ? (
-                            <input
-                              type="text"
-                              value={editValues[key] ?? ''}
-                              onChange={(e) => setEditValues({ ...editValues, [key]: e.target.value })}
-                              className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-2 py-1 font-mono text-xs text-gray-900 dark:text-gray-100 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                              data-testid={`edit-config-${key}`}
-                            />
-                          ) : (
-                            <div className="flex items-center gap-2">
-                              <span className={`font-mono text-xs ${value === '' ? 'italic text-gray-400 dark:text-gray-500' : ''}`}>
-                                {isSecret && !isRevealed
-                                  ? '\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022'
-                                  : (value === '' ? 'not set' : value)}
-                              </span>
-                              {isSecret && (
-                                <button
-                                  type="button"
-                                  onClick={() => toggleSecret(key)}
-                                  className="rounded p-0.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
-                                  data-testid={`toggle-secret-${key}`}
-                                >
-                                  {isRevealed ? <EyeOff size={14} /> : <Eye size={14} />}
-                                </button>
-                              )}
-                            </div>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <p className="text-sm text-gray-500 dark:text-gray-400">No custom configuration</p>
-          )}
-          {editingConfig && (
-            <div className="mt-3 space-y-3">
-              <div className="flex items-start gap-2 rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
-                <AlertTriangle size={14} className="mt-0.5 shrink-0" />
-                <span>Saving will restart the deployment to apply changes. The application will be briefly unavailable.</span>
-              </div>
-              <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={saveConfigEdit}
-                disabled={updateDeployment.isPending}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
-                data-testid="save-config-button"
-              >
-                {updateDeployment.isPending ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
-                Apply Changes
-              </button>
-              <button
-                type="button"
-                onClick={() => { setEditingConfig(false); updateDeployment.reset(); }}
-                className="rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
-                data-testid="cancel-config-button"
-              >
-                Cancel
-              </button>
-              </div>
-            </div>
-          )}
-          {updateDeployment.isError && editingConfig && (
-            <p className="mt-2 text-xs text-red-600 dark:text-red-400">
-              {updateDeployment.error instanceof Error ? updateDeployment.error.message : 'Failed to update configuration'}
-            </p>
-          )}
-          {secretKeys.size > 0 && (
-            <p className="mt-3 text-xs text-gray-500 dark:text-gray-400" data-testid="credentials-readonly-note">
-              Set at deployment time. Change passwords inside the application if needed.
-            </p>
-          )}
-        </div>
-
-        {/* Extra Mounts Section */}
-        <section className="mb-5">
-          <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-900 dark:text-gray-100 mb-2">
-            Extra Mounts
-          </h3>
-          {!editingMounts ? (
-            <>
-              {(deployment.extraMounts ?? []).length > 0 ? (
-                <ul className="space-y-1" data-testid="extra-mounts-list">
-                  {(deployment.extraMounts ?? []).map((m, i) => (
-                    <li key={i} className="text-sm text-gray-700 dark:text-gray-300 font-mono">
-                      {m.folder} → {m.mount_path}
-                      {m.read_only && (
-                        <span className="ml-2 font-sans text-xs text-gray-500 dark:text-gray-400">(read-only)</span>
-                      )}
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <p className="text-sm text-gray-500 dark:text-gray-400">No extra mounts</p>
-              )}
-              <button
-                type="button"
-                onClick={() => { setMountRows([...(deployment.extraMounts ?? [])]); setEditingMounts(true); }}
-                className="mt-2 rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
-                data-testid="edit-mounts-button"
-              >
-                Edit mounts
-              </button>
-            </>
-          ) : (
-            <div className="space-y-3">
-              <ExtraMountsEditor rows={mountRows} onChange={setMountRows} disabled={updateDeployment.isPending} />
-              <div className="flex items-start gap-2 rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
-                <AlertTriangle size={14} className="mt-0.5 shrink-0" />
-                <span>Saving will restart the deployment to apply changes. The application will be briefly unavailable.</span>
-              </div>
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={saveMounts}
-                  disabled={updateDeployment.isPending || mountsInvalid}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
-                  data-testid="save-mounts-button"
-                >
-                  {updateDeployment.isPending ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
-                  Apply Changes
-                </button>
-                <button
-                  type="button"
-                  onClick={() => { setEditingMounts(false); updateDeployment.reset(); }}
-                  className="rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
-                  data-testid="cancel-mounts-button"
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
-          )}
-        </section>
-
-        {/* Resources Section (Issue 7: editable) */}
         <div className="mb-6">
           <div className="flex items-center gap-2 mb-3">
             <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-900 dark:text-gray-100">
@@ -839,6 +647,302 @@ export default function InstalledAppDetailModal({
           )}
         </div>
 
+        {/* Components Section */}
+        {components.length > 0 && (
+          <div className="mb-6">
+            <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-900 dark:text-gray-100 mb-3">
+              <Server size={16} className="text-blue-600 dark:text-blue-400" />
+              Components
+            </h3>
+            <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                    <th className="px-3 py-2">Name</th>
+                    <th className="px-3 py-2">Type</th>
+                    <th className="px-3 py-2">Image</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
+                  {components.map((comp) => (
+                    <tr key={comp.name ?? comp.image}>
+                      <td className="px-3 py-2 font-medium text-gray-900 dark:text-gray-100">{comp.name ?? '-'}</td>
+                      <td className="px-3 py-2">
+                        <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${typeBadgeColors[comp.type ?? ''] ?? typeBadgeColors.job}`}>
+                          {comp.type ?? 'unknown'}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2 font-mono text-xs text-gray-500 dark:text-gray-400">{comp.image ?? '-'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* Volumes Section — tenant-visible local paths, not K8s ones */}
+        {volumes.length > 0 && (
+          <div className="mb-6" data-testid="volumes-section">
+            <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-900 dark:text-gray-100 mb-3">
+              <HardDrive size={16} className="text-blue-600 dark:text-blue-400" />
+              Volumes
+            </h3>
+            <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                    <th className="px-3 py-2">Local Path</th>
+                    <th className="px-3 py-2">Container Path</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
+                  {(() => {
+                    // Backend-computed paths are authoritative — they resolve the
+                    // manifest's local_path against the deployment's storage root.
+                    const deploymentVolumePaths = deployment.volumePaths;
+                    if (deploymentVolumePaths && deploymentVolumePaths.length > 0) {
+                      return deploymentVolumePaths.map((vp) => (
+                        <tr key={vp.containerPath ?? vp.k8sPath}>
+                          <td className="px-3 py-2 font-mono text-xs text-gray-900 dark:text-gray-100">{absPath(vp.k8sPath)}</td>
+                          <td className="px-3 py-2 font-mono text-xs text-gray-500 dark:text-gray-400">{vp.containerPath ?? '-'}</td>
+                        </tr>
+                      ));
+                    }
+                    // Fallback for responses without volumePaths. The catalog's
+                    // `local_path` is relative to the deployment's storage root and
+                    // is literally "." for most entries — rendering it raw is what
+                    // put a bare "." in this column.
+                    return volumes.map((vol) => (
+                      <tr key={vol.container_path ?? vol.local_path}>
+                        <td className="px-3 py-2 font-mono text-xs text-gray-900 dark:text-gray-100">
+                          {joinTenantPath(deployment.storagePath, vol.local_path)}
+                        </td>
+                        <td className="px-3 py-2 font-mono text-xs text-gray-500 dark:text-gray-400">{vol.container_path ?? '-'}</td>
+                      </tr>
+                    ));
+                  })()}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* Configuration Section */}
+        <div className="mb-6">
+          <div className="flex items-center gap-2 mb-3">
+            <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-900 dark:text-gray-100">
+              <Shield size={16} className="text-blue-600 dark:text-blue-400" />
+              Configuration
+            </h3>
+            {!editingConfig && configurableKeys.size > 0 && (
+              <button
+                type="button"
+                onClick={enterConfigEdit}
+                className="inline-flex items-center gap-1 rounded-md border border-blue-300 dark:border-blue-600 px-2 py-0.5 text-xs font-medium text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20"
+                data-testid="edit-config-button"
+              >
+                <Pencil size={12} />
+                Edit
+              </button>
+            )}
+          </div>
+          {displayKeys.length > 0 ? (
+            <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                    <th className="px-3 py-2">Key</th>
+                    <th className="px-3 py-2">Value</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
+                  {displayKeys.map((key) => {
+                    const isSecret = secretKeys.has(key);
+                    const isRevealed = revealedSecrets.has(key);
+                    const isConfigurable = configurableKeys.has(key);
+                    const value = String(configuration[key] ?? '');
+                    return (
+                      <tr key={key}>
+                        <td className="px-3 py-2 font-medium text-gray-900 dark:text-gray-100">{key}</td>
+                        <td className="px-3 py-2 text-gray-600 dark:text-gray-400">
+                          {editingConfig && isConfigurable && !isSecret ? (
+                            <input
+                              type="text"
+                              value={editValues[key] ?? ''}
+                              onChange={(e) => setEditValues({ ...editValues, [key]: e.target.value })}
+                              className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-2 py-1 font-mono text-xs text-gray-900 dark:text-gray-100 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                              data-testid={`edit-config-${key}`}
+                            />
+                          ) : (
+                            <div className="flex items-center gap-2">
+                              <span className={`font-mono text-xs ${value === '' ? 'italic text-gray-400 dark:text-gray-500' : ''}`}>
+                                {isSecret && !isRevealed
+                                  ? '\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022'
+                                  : (value === '' ? 'not set' : value)}
+                              </span>
+                              {isSecret && (
+                                <button
+                                  type="button"
+                                  onClick={() => toggleSecret(key)}
+                                  className="rounded p-0.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                                  data-testid={`toggle-secret-${key}`}
+                                >
+                                  {isRevealed ? <EyeOff size={14} /> : <Eye size={14} />}
+                                </button>
+                              )}
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <p className="text-sm text-gray-500 dark:text-gray-400">No custom configuration</p>
+          )}
+          {editingConfig && (
+            <div className="mt-3 space-y-3">
+              <div className="flex items-start gap-2 rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+                <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                <span>Saving will restart the deployment to apply changes. The application will be briefly unavailable.</span>
+              </div>
+              <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={saveConfigEdit}
+                disabled={updateDeployment.isPending}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                data-testid="save-config-button"
+              >
+                {updateDeployment.isPending ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
+                Apply Changes
+              </button>
+              <button
+                type="button"
+                onClick={() => { setEditingConfig(false); updateDeployment.reset(); }}
+                className="rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
+                data-testid="cancel-config-button"
+              >
+                Cancel
+              </button>
+              </div>
+            </div>
+          )}
+          {updateDeployment.isError && editingConfig && (
+            <p className="mt-2 text-xs text-red-600 dark:text-red-400">
+              {updateDeployment.error instanceof Error ? updateDeployment.error.message : 'Failed to update configuration'}
+            </p>
+          )}
+          {secretKeys.size > 0 && (
+            <p className="mt-3 text-xs text-gray-500 dark:text-gray-400" data-testid="credentials-readonly-note">
+              Set at deployment time. Change passwords inside the application if needed.
+            </p>
+          )}
+        </div>
+
+        {/* Multi-host serving — only for catalog entries that declare it. */}
+        {multihostCapable && (
+          <section className="mb-5" data-testid="multihost-section">
+            <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-900 dark:text-gray-100 mb-2">
+              Multi-host serving
+            </h3>
+            <p className="text-sm text-gray-600 dark:text-gray-400">
+              {multihostOn
+                ? 'On — each hostname routed here can serve its own folder. Assign folders under Domains → Routing.'
+                : 'Off — every hostname routed here serves this deployment\u2019s document root.'}
+            </p>
+            <div className="mt-2 flex items-start gap-2 rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+              <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+              <span>
+                {multihostOn
+                  ? 'Turning this off restarts the application once. Clear every hostname\u2019s folder first, or the request is refused.'
+                  : 'Turning this on restarts the application once, and gives it access to your whole storage so any folder can be served. Adding or changing sites afterwards does not restart anything.'}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setMultihost.mutate({ deploymentId: deployment.id, enabled: !multihostOn })}
+              disabled={setMultihost.isPending}
+              className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50 disabled:opacity-50"
+              data-testid="multihost-toggle"
+            >
+              {setMultihost.isPending && <Loader2 size={12} className="animate-spin" />}
+              {multihostOn ? 'Turn off multi-host serving' : 'Turn on multi-host serving'}
+            </button>
+            {setMultihost.isError && (
+              <p className="mt-2 text-xs text-red-600 dark:text-red-400" data-testid="multihost-error">
+                {setMultihost.error instanceof Error ? setMultihost.error.message : 'Failed to change multi-host serving'}
+              </p>
+            )}
+          </section>
+        )}
+
+        {/* Extra Mounts Section */}
+        <section className="mb-5">
+          <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-900 dark:text-gray-100 mb-2">
+            Extra Mounts
+          </h3>
+          {!editingMounts ? (
+            <>
+              {(deployment.extraMounts ?? []).length > 0 ? (
+                <ul className="space-y-1" data-testid="extra-mounts-list">
+                  {(deployment.extraMounts ?? []).map((m, i) => (
+                    <li key={i} className="text-sm text-gray-700 dark:text-gray-300 font-mono">
+                      {m.folder} → {m.mount_path}
+                      {m.read_only && (
+                        <span className="ml-2 font-sans text-xs text-gray-500 dark:text-gray-400">(read-only)</span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-sm text-gray-500 dark:text-gray-400">No extra mounts</p>
+              )}
+              <button
+                type="button"
+                onClick={() => { setMountRows([...(deployment.extraMounts ?? [])]); setEditingMounts(true); }}
+                className="mt-2 rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
+                data-testid="edit-mounts-button"
+              >
+                Edit mounts
+              </button>
+            </>
+          ) : (
+            <div className="space-y-3">
+              <ExtraMountsEditor rows={mountRows} onChange={setMountRows} disabled={updateDeployment.isPending} />
+              <div className="flex items-start gap-2 rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+                <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                <span>Saving will restart the deployment to apply changes. The application will be briefly unavailable.</span>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={saveMounts}
+                  disabled={updateDeployment.isPending || mountsInvalid}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                  data-testid="save-mounts-button"
+                >
+                  {updateDeployment.isPending ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
+                  Apply Changes
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setEditingMounts(false); updateDeployment.reset(); }}
+                  className="rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
+                  data-testid="cancel-mounts-button"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+        </section>
+
+        {/* Resources Section (Issue 7: editable) */}
+
         {/* Network Access (deployment-level: public/tunneler/zrok) */}
         {tenantId && (
           <div className="mb-6">
@@ -890,6 +994,59 @@ export default function InstalledAppDetailModal({
             </div>
             <div className="rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden h-80">
               <WebTerminal deploymentId={deployment.id} />
+            </div>
+          </div>
+        )}
+
+        {/* Version switch confirmation */}
+        {versionTarget && (
+          <div className="fixed inset-0 z-[60] flex items-center justify-center" data-testid="version-switch-modal">
+            <div className="fixed inset-0 bg-black/50" onClick={() => { setVersionTarget(null); switchVersion.reset(); }} />
+            <div className="relative w-full max-w-md rounded-2xl bg-white dark:bg-gray-800 p-6 shadow-xl">
+              <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">
+                Switch to version {versionTarget}?
+              </h3>
+              <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">
+                <span className="font-medium">{deployment.name}</span> will redeploy from{' '}
+                <span className="font-mono">{deployment.installedVersion ?? 'unversioned'}</span> to{' '}
+                <span className="font-mono">{versionTarget}</span>.
+              </p>
+              {deployment.installedVersion
+                && compareSemver(versionTarget, deployment.installedVersion) < 0 && (
+                <div className="mt-3 flex gap-2 rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 p-3 text-xs text-amber-800 dark:text-amber-300">
+                  <AlertTriangle size={14} className="mt-0.5 flex-shrink-0" />
+                  <span>
+                    This is a downgrade. Database schema changes made by the newer version are
+                    <span className="font-semibold"> not reversed</span> — take a backup first if the app stores data.
+                  </span>
+                </div>
+              )}
+              {switchVersion.isError && (
+                <div className="mt-3 rounded-lg border border-red-300 dark:border-red-700 bg-red-50 dark:bg-red-900/20 p-3 text-xs text-red-700 dark:text-red-300" data-testid="version-switch-error">
+                  {switchVersion.error instanceof Error ? switchVersion.error.message : 'Version switch failed'}
+                </div>
+              )}
+              <div className="mt-4 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => { setVersionTarget(null); switchVersion.reset(); }}
+                  className="rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-1.5 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={switchVersion.isPending}
+                  onClick={() => switchVersion.mutate(versionTarget, {
+                    onSuccess: () => { setVersionTarget(null); queryClient.invalidateQueries({ queryKey: ['deployments'] }); },
+                  })}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                  data-testid="version-switch-confirm"
+                >
+                  {switchVersion.isPending && <Loader2 size={14} className="animate-spin" />}
+                  Switch version
+                </button>
+              </div>
             </div>
           </div>
         )}

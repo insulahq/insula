@@ -1,5 +1,5 @@
 ---
-verified: 2026.6.7
+verified: 2026.9.12
 ---
 
 # Domains & websites
@@ -39,7 +39,10 @@ correctly.
 After you add a domain you must point it at the platform, then verify it.
 
 1. Open the domain's detail page and click **Verify Now** (top right).
-2. A check runs and tells you whether your DNS is set up correctly.
+2. A check runs and tells you whether your DNS is set up correctly. The result
+   includes an **Expected vs Actual** table so you can see exactly what the
+   platform required and what your DNS returned — it is shown when the check
+   passes too, not only when it fails.
 3. If it fails, the panel explains exactly what to fix for your DNS mode:
 
     - **CNAME mode:** update your A/AAAA or CNAME record at your DNS provider so
@@ -90,6 +93,14 @@ do this.
    to route all traffic.
 4. Click **Create Route**.
 
+**Finding a route**
+
+The list is sorted alphabetically by hostname. Click **Hostname**, **Path** or
+**Deployment** to sort by that column instead, and click again to reverse it.
+Once a domain has more than one route a search box appears above the table; it
+matches the hostname, the path prefix and the name of the app the route points
+at.
+
 ### Point the route at an app
 
 In the routes table, each route has a dropdown. Pick the application you want
@@ -105,6 +116,31 @@ Click any route to open its detail page, which has these tabs:
   [password-protected folders](protected-directories.md).
 - **Advanced** — custom error pages, extra response headers, and
   [HSTS](#hsts-https-only-enforcement).
+
+### Serve a specific folder (multi-host apps)
+
+When a route points at an app with
+[multi-host serving](deployments-and-applications.md#several-websites-on-one-app-instance)
+turned on, a folder button appears next to the app dropdown. It shows the
+folder that hostname currently serves, or *document root* when it has none.
+
+Click it to browse your storage and pick any folder — it does not have to be
+named after the hostname. **clear** puts the hostname back on the app's own
+document root.
+
+The picker offers folders that already exist; create the folder and upload the
+site first, under [Files & SFTP](files-and-sftp.md). Pointing a hostname at an
+empty folder gives visitors a 404, which looks like a broken site rather than
+an empty one.
+
+If you have a **www Redirect** set on the route, the folder is served for the
+address visitors end up on. With *Add www*, that is the `www.` form; with
+*Remove www*, the bare one. You do not need to do anything differently — but it
+is why the panel shows the folder against the route as a whole, not against one
+spelling of the name.
+
+A wildcard route (`*.example.com`) serves its folder for every hostname it
+matches, and each visitor's real address is still passed to the application.
 
 ## Hosting settings: www and HTTPS redirects
 
@@ -238,6 +274,26 @@ domain that is not in Primary mode when a wildcard was requested.
 cause of a failure rather than waiting for the automatic retry. It is limited to
 once an hour per domain, because certificate authorities cap how many identical
 certificates they will issue per week.
+
+### When validation gets stuck
+
+Occasionally a certificate stops making progress without failing: the card shows
+a red **validation is stuck** notice naming the hostname and how long it has been
+waiting. This happens when a validation attempt is left holding the domain's
+slot — most often because DNS was pointed elsewhere when the certificate was
+first requested, and it can also happen to a renewal if an attempt dies partway.
+
+The platform clears these automatically within about fifteen minutes and lets
+issuance restart, so in most cases you only need to wait. **Clear stuck
+validation** on that notice does the same thing straight away.
+
+!!! note "Why that button is not rate-limited"
+    **Clear stuck validation** does not ask for a certificate — it removes the
+    stalled attempt so the request already in flight can continue. It therefore
+    spends none of the certificate authority's weekly allowance and stays
+    available even while **Request Certificate** is in its one-hour cooldown,
+    which is exactly when a stuck certificate needs unsticking. Pressing it when
+    nothing is stuck does nothing.
 
 If a wildcard certificate cannot be obtained, the platform issues an individual
 certificate per hostname instead, so your sites keep working over HTTPS, and

@@ -8,8 +8,10 @@ import { useParams, Link, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft, Loader2, AlertCircle, Plus, Trash2, Globe, X,
   CheckCircle, Network, Pencil, Check, RefreshCw, Lock,
-  ArrowLeftRight, ArrowDownToLine, ArrowUpFromLine, CheckCircle2, Upload, ShieldCheck,
+  ArrowLeftRight, ArrowDownToLine, ArrowUpFromLine, CheckCircle2, Upload, ShieldCheck, FolderOpen,
+  Search,
 } from 'lucide-react';
+import { VerificationChecksTable } from '@/components/VerificationChecksTable';
 import clsx from 'clsx';
 import { useTenantContext } from '@/hooks/use-tenant-context';
 import { useDomains, useVerifyDomain, useDeleteDomain, useDnsProviderGroups, useMigrateDomainDns, useDomainDeletePreview, useIngressBaseDomain, useRefreshRouteDns } from '@/hooks/use-domains';
@@ -27,6 +29,20 @@ import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
 import { useSslCert, useUploadSslCert, useDeleteSslCert } from '@/hooks/use-ssl-certs';
 import CertDownloadSection from '@/components/CertDownloadSection';
+import FolderPickerDialog from '@/components/FolderPickerDialog';
+
+/**
+ * Alphabetical by name, case-insensitive.
+ *
+ * The deployment pickers rendered in whatever order the API returned, which is
+ * creation order — so a tenant with a dozen apps had to hunt for the one they
+ * wanted. localeCompare with base sensitivity keeps 'Api' and 'api' adjacent
+ * rather than splitting on case.
+ */
+function sortByName<T extends { readonly name: string }>(items: readonly T[]): T[] {
+  return [...items].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+}
+
 
 const INPUT_CLASS =
   'w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500';
@@ -215,9 +231,12 @@ export default function DomainDetail() {
 
             {verifyDomain.isSuccess && verifyDomain.data?.data && (
               verifyDomain.data.data.verified ? (
-                <div className="mt-4 flex items-center gap-2 text-sm text-green-700 dark:text-green-300" data-testid="verify-modal-success">
-                  <CheckCircle2 size={18} className="shrink-0 text-green-500 dark:text-green-400" />
-                  <span>DNS verification passed</span>
+                <div className="mt-4 space-y-3" data-testid="verify-modal-success">
+                  <div className="flex items-center gap-2 text-sm text-green-700 dark:text-green-300">
+                    <CheckCircle2 size={18} className="shrink-0 text-green-500 dark:text-green-400" />
+                    <span>DNS verification passed</span>
+                  </div>
+                  <VerificationChecksTable checks={verifyDomain.data.data.checks} />
                 </div>
               ) : (
                 <div className="mt-4 space-y-3" data-testid="verify-modal-failure">
@@ -237,6 +256,7 @@ export default function DomainDetail() {
                         ))}
                     </ul>
                   )}
+                  <VerificationChecksTable checks={verifyDomain.data.data.checks} />
                   <div className="rounded-lg bg-gray-50 dark:bg-gray-700/50 p-3 text-xs text-gray-600 dark:text-gray-400">
                     {domain.dnsMode === 'cname' && (
                       <>
@@ -748,8 +768,10 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
   // "Confirm" state and a second click performs the delete.
   const [deleteRouteConfirmId, setDeleteRouteConfirmId] = useState<string | null>(null);
   const [assigningRouteId, setAssigningRouteId] = useState<string | null>(null);
+  const [folderPickerRouteId, setFolderPickerRouteId] = useState<string | null>(null);
 
-  const routes = routesData?.data ?? [];
+  const rawRoutes = routesData?.data ?? [];
+  const [routeQuery, setRouteQuery] = useState('');
   const allDeployments = deploymentsData?.data ?? [];
   const customDeployments = customDeploymentsData?.data ?? [];
   const catalogEntries = catalogData?.data ?? [];
@@ -759,7 +781,7 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
   // the entry type is 'runtime'/'static'/'application' — database/service
   // types never serve HTTP traffic).
   const catalogMap = new Map(catalogEntries.map((e) => [e.id, e]));
-  const deployments = allDeployments.filter((d) => {
+  const deployments = sortByName(allDeployments.filter((d) => {
     if (d.source === 'custom') return false; // handled separately via customDeployments
     const entry = d.catalogEntryId ? catalogMap.get(d.catalogEntryId) : undefined;
     if (!entry) return true; // If catalog not loaded yet, show all to avoid hiding valid options
@@ -770,13 +792,37 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
     if (hasIngressPort) return true;
     // Fall back to type-based check: runtimes, statics, and applications serve HTTP
     return entry.type === 'runtime' || entry.type === 'static' || entry.type === 'application';
-  });
+  }));
 
   // Custom deployments that have at least one ingressEligible port.
-  const ingressableCustom = customDeployments.filter((cd) => {
+  const ingressableCustom = sortByName(customDeployments.filter((cd) => {
     const services = Object.values(cd.customSpec?.services ?? {});
     return services.some(svc => (svc.ports ?? []).some(p => p.ingressEligible && p.exposeAsService));
-  });
+  }));
+
+  // Decorate each route with the deployment NAME so both search and sort work
+  // on what the operator actually sees. The route itself only carries an id,
+  // and sorting a column of names by hidden uuid is indistinguishable from not
+  // sorting at all.
+  const deploymentNameById = new Map<string, string>([
+    ...deployments.map((d) => [d.id, d.name] as const),
+    ...ingressableCustom.map((cd) => [cd.id, cd.name] as const),
+  ]);
+  const decoratedRoutes = rawRoutes.map((r) => ({
+    ...r,
+    deploymentName: r.deploymentId ? deploymentNameById.get(r.deploymentId) ?? '' : '',
+  }));
+
+  const query = routeQuery.trim().toLowerCase();
+  const filteredRoutes = query
+    ? decoratedRoutes.filter((r) =>
+        [r.hostname, (r as Record<string, unknown>).path as string | undefined, r.deploymentName]
+          .some((v) => (v ?? '').toLowerCase().includes(query)))
+    : decoratedRoutes;
+
+  // Alphabetical by hostname by default — the order an operator scans in.
+  const { sortedData: visibleRoutes, sortKey, sortDirection, onSort } = useSortable(filteredRoutes, 'hostname');
+  const routes = decoratedRoutes;
 
   /**
    * Validate the subdomain part, which may be a wildcard.
@@ -824,6 +870,24 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
     });
   };
 
+  /**
+   * Assign the folder a hostname serves.
+   *
+   * The picker browses the tenant's whole storage, and the file manager chroots
+   * into the PVC — so its `/` IS the storage root and the leading slash is
+   * stripped to get the root-relative form the API stores.
+   */
+  const handleAssignFolder = async (routeId: string, absolutePath: string | null) => {
+    setAssigningRouteId(routeId);
+    try {
+      const folder = absolutePath ? absolutePath.replace(/^\/+/, '') : null;
+      await updateRoute.mutateAsync({ routeId, site_folder: folder || null });
+    } finally {
+      setAssigningRouteId(null);
+      setFolderPickerRouteId(null);
+    }
+  };
+
   const handleAssignDeployment = async (routeId: string, value: string | null) => {
     setAssigningRouteId(routeId);
     try {
@@ -864,6 +928,23 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
           email_domains.webmail_status. */}
       <ManagedWebmailRow tenantId={tenantId} domainId={domainId} />
 
+      {/* Browses the tenant's whole storage: any folder may serve a hostname,
+          not only children of the deployment's own storage path. Creating
+          folders is intentionally not offered here — a site folder should be
+          one that already holds the site. */}
+      {folderPickerRouteId && (
+        <FolderPickerDialog
+          title="Choose the folder this hostname serves"
+          description="Pick any folder on your storage. The hostname will serve it as its document root."
+          initialPath="/"
+          confirmLabel="Use this folder"
+          allowCreate={false}
+          isPending={assigningRouteId === folderPickerRouteId}
+          onClose={() => setFolderPickerRouteId(null)}
+          onConfirm={(path) => handleAssignFolder(folderPickerRouteId, path)}
+        />
+      )}
+
       {isLoading ? (
         <div className="flex items-center gap-2 py-4">
           <Loader2 size={16} className="animate-spin text-blue-600" />
@@ -893,20 +974,43 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
         });
         return (
           <>
+            {routes.length > 1 && (
+              <div className="mb-3 relative">
+                <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 dark:text-gray-500" />
+                <input
+                  type="search"
+                  value={routeQuery}
+                  onChange={(e) => setRouteQuery(e.target.value)}
+                  placeholder="Search hostname, path or deployment…"
+                  aria-label="Search ingress routes"
+                  className="w-full rounded-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-700 pl-9 pr-3 py-2 text-sm text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-400 focus:border-blue-500 focus:outline-none"
+                  data-testid="routes-search"
+                />
+              </div>
+            )}
             <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700">
               <table className="w-full text-sm" data-testid="routes-table">
                 <thead>
                   <tr className="border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                    <th className="px-4 py-3">Hostname</th>
-                    {showPathColumn && <th className="px-4 py-3">Path Prefix</th>}
+                    <SortableHeader label="Hostname" sortKey="hostname" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="px-4 py-3" />
+                    {showPathColumn && (
+                      <SortableHeader label="Path Prefix" sortKey="path" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="px-4 py-3" />
+                    )}
                     {dnsMode !== 'primary' && <th className="px-4 py-3">CNAME Target</th>}
-                    <th className="px-4 py-3">Deployment</th>
+                    <SortableHeader label="Deployment" sortKey="deploymentName" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="px-4 py-3" />
                     <th className="px-4 py-3">TLS</th>
                     <th className="px-4 py-3"></th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-                  {routes.map((route) => (
+                  {visibleRoutes.length === 0 && (
+                    <tr>
+                      <td colSpan={6} className="px-4 py-6 text-center text-sm text-gray-500 dark:text-gray-400" data-testid="routes-no-match">
+                        No routes match “{routeQuery}”.
+                      </td>
+                    </tr>
+                  )}
+                  {visibleRoutes.map((route) => (
                     <tr
                       key={route.id}
                       className="hover:bg-gray-50 dark:hover:bg-gray-800/50 cursor-pointer"
@@ -969,6 +1073,43 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
                           </select>
                           {assigningRouteId === route.id && <Loader2 size={14} className="animate-spin text-blue-500" />}
                         </div>
+                        {/* Site folder — only for a deployment serving several
+                            hostnames. When the deployment is not multi-host the
+                            concept does not exist, so nothing is shown rather
+                            than a disabled control nobody can explain. */}
+                        {(() => {
+                          const target = deployments.find((d) => d.id === route.deploymentId) as
+                            { multihostEnabled?: boolean } | undefined;
+                          if (!target?.multihostEnabled) return null;
+                          const folder = (route as { siteFolder?: string | null }).siteFolder ?? null;
+                          return (
+                            <div className="mt-1 flex items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={() => setFolderPickerRouteId(route.id)}
+                                disabled={assigningRouteId === route.id}
+                                className="inline-flex items-center gap-1 rounded border border-gray-200 dark:border-gray-600 px-1.5 py-0.5 font-mono text-[11px] text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50 disabled:opacity-50"
+                                data-testid={`site-folder-button-${route.id}`}
+                                title="Folder this hostname serves"
+                              >
+                                <FolderOpen size={11} />
+                                {folder ?? 'document root'}
+                              </button>
+                              {folder && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleAssignFolder(route.id, null)}
+                                  disabled={assigningRouteId === route.id}
+                                  className="text-[11px] text-gray-400 hover:text-red-500 disabled:opacity-50"
+                                  data-testid={`site-folder-clear-${route.id}`}
+                                  title="Serve the deployment's document root instead"
+                                >
+                                  clear
+                                </button>
+                              )}
+                            </div>
+                          );
+                        })()}
                       </td>
                       <td className="px-4 py-3">
                         <span
