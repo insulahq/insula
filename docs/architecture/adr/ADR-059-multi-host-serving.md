@@ -264,9 +264,14 @@ row is individually valid; the pair is the defect.
 The check is scoped to the TENANT rather than the deployment. Restricting it to
 one deployment left the identical hole open across two: they share the tenant
 volume, a pod serving `shop` mounts everything beneath it including another
-pod's `shop/admin`, and neither pod's own rows look wrong. Sharing an app root
-exactly is allowed only WITHIN one deployment, which is the www/non-www case —
-one application, one set of files, one session directory.
+pod's `shop/admin`, and neither pod's own rows look wrong.
+
+Sharing an app root EXACTLY is allowed, within one deployment or across two.
+Within one it is the www/non-www case. Across two it means two pods serving the
+same folder — the tenant's own files, which they were always entitled to — and
+since session storage moved to a pod-local emptyDir the two no longer share
+session state either. That restriction was justified by shared session files
+and outlived its reason; only NESTING is refused.
 
 **Not trusted from the catalog.** The `php` block is validated, not cast:
 `/`, any ancestor of `sites_root`, and `:`/newline injection are refused, and
