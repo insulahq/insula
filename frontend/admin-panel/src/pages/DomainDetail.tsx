@@ -15,6 +15,7 @@ import { useIngressSettings } from '@/hooks/use-ingress-settings';
 import { useDnsRecords, useCreateDnsRecord, useDeleteDnsRecord } from '@/hooks/use-dns-records';
 import { useIngressRoutes, useCreateIngressRoute, useUpdateIngressRoute, useDeleteIngressRoute } from '@/hooks/use-ingress-routes';
 import { useDeployments } from '@/hooks/use-deployments';
+import TenantFolderPicker from '@/components/TenantFolderPicker';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
 import { useSslCert, useUploadSslCert, useDeleteSslCert } from '@/hooks/use-ssl-certs';
@@ -294,6 +295,23 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
     updateRoute.mutate({ routeId, deployment_id: deploymentId });
   };
 
+  const [folderPickerRouteId, setFolderPickerRouteId] = useState<string | null>(null);
+
+  /**
+   * Assign the folder a hostname serves on a multi-host deployment.
+   *
+   * The file manager chroots into the tenant PVC, so the picker's `/` IS the
+   * storage root and the leading slash is stripped to get the root-relative
+   * form the API stores.
+   */
+  const handleAssignFolder = (routeId: string, absolutePath: string | null) => {
+    const folder = absolutePath ? absolutePath.replace(/^\/+/, '') : null;
+    updateRoute.mutate(
+      { routeId, site_folder: folder || null },
+      { onSettled: () => setFolderPickerRouteId(null) },
+    );
+  };
+
   const isCname = dnsMode === 'cname';
   const isSecondary = dnsMode === 'secondary';
 
@@ -367,6 +385,41 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
                         <option key={d.id} value={d.id}>{d.name} ({d.status})</option>
                       ))}
                     </select>
+                    {/* Site folder — only for a deployment serving several
+                        hostnames. Without this an admin could bind a route to a
+                        multi-host app and have no way to say which folder it
+                        serves: the site would quietly show the app's document
+                        root with nothing explaining why. */}
+                    {(() => {
+                      const target = deployments.find((d) => d.id === route.deploymentId) as
+                        { multihostEnabled?: boolean } | undefined;
+                      if (!target?.multihostEnabled) return null;
+                      const folder = (route as { siteFolder?: string | null }).siteFolder ?? null;
+                      return (
+                        <div className="mt-1 flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => setFolderPickerRouteId(route.id)}
+                            className="inline-flex items-center gap-1 rounded border border-gray-200 dark:border-gray-600 px-1.5 py-0.5 font-mono text-[11px] text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
+                            data-testid={`site-folder-button-${route.id}`}
+                            title="Folder this hostname serves"
+                          >
+                            {folder ?? 'document root'}
+                          </button>
+                          {folder && (
+                            <button
+                              type="button"
+                              onClick={() => handleAssignFolder(route.id, null)}
+                              className="text-[11px] text-gray-400 hover:text-red-500"
+                              data-testid={`site-folder-clear-${route.id}`}
+                              title="Serve the deployment's document root instead"
+                            >
+                              clear
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })()}
                   </td>
                   <td className="px-4 py-3">
                     <span className={clsx(
@@ -458,6 +511,20 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
           severity="error"
           compact
           testId="add-route-error"
+        />
+      )}
+
+      {/* Browses the TENANT's storage: any folder may serve a hostname, not
+          only children of the deployment's own storage path. Read-only — an
+          admin picks an existing folder rather than creating one on the
+          tenant's behalf. */}
+      {folderPickerRouteId && (
+        <TenantFolderPicker
+          tenantId={tenantId}
+          initialPath="/"
+          isPending={updateRoute.isPending}
+          onClose={() => setFolderPickerRouteId(null)}
+          onConfirm={(path) => handleAssignFolder(folderPickerRouteId, path)}
         />
       )}
     </div>
