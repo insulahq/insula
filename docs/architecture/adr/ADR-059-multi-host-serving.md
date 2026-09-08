@@ -255,6 +255,19 @@ under it. Sandboxing to the document root would cut the app off from its own
 to it, so the broken pair cannot be built by hand. Both absolute paths are
 surfaced in the UI, because an app's own config file wants them literally.
 
+**Application roots may not nest, tenant-wide.** The sandbox is a path prefix,
+so app roots `shop` and `shop/admin` grant the outer site the inner one's whole
+folder — and the per-site session directories nest identically, so the outer
+site can read the inner site's session files, whose names are session ids. Each
+row is individually valid; the pair is the defect.
+
+The check is scoped to the TENANT rather than the deployment. Restricting it to
+one deployment left the identical hole open across two: they share the tenant
+volume, a pod serving `shop` mounts everything beneath it including another
+pod's `shop/admin`, and neither pod's own rows look wrong. Sharing an app root
+exactly is allowed only WITHIN one deployment, which is the www/non-www case —
+one application, one set of files, one session directory.
+
 **Not trusted from the catalog.** The `php` block is validated, not cast:
 `/`, any ancestor of `sites_root`, and `:`/newline injection are refused, and
 an unusable block fails the whole capability rather than silently serving
