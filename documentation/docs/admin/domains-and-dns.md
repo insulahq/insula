@@ -97,11 +97,26 @@ deployment later from the per-route dropdown. The table also shows the
 CNAME target and TLS state per route. A route with no deployment is
 skipped by the ingress reconciler until you bind one.
 
-**Site folder (multi-host apps).** When a route points at a deployment with
-multi-host serving turned on, a folder button appears under the deployment
-dropdown showing the folder that hostname serves — or *document root* when it
-has none. Click it to browse the tenant's storage and pick a folder; **clear**
-puts the hostname back on the app's own document root.
+**Application root and document root (multi-host apps).** When a route points
+at a deployment with multi-host serving turned on, two folder buttons appear
+under the deployment dropdown.
+
+The **application root** is the site's sandbox — everything that site may read.
+The **document root** is what is published on the web, and defaults to the
+application root. They differ for apps with a `public/` entry point (Nextcloud,
+Laravel, Symfony): application root `mysite`, document root `mysite/public`, so
+`mysite/data` stays reachable by the app and unreachable from the web. The
+document-root picker only browses inside the application root. **clear** puts
+the hostname back on the app's own document root.
+
+Hovering either button shows the absolute paths written into the generated
+vhost, which tenants need when an app records its own location in config.
+
+Sites on a multi-host instance are confined to their application root and
+cannot read each other. Functions that would let PHP escape that (shell
+execution) are disabled for **web requests** on these instances; CLI and cron
+keep them. A tenant whose app must shell out while serving a page — Nextcloud
+previews, external SMB storage — needs a dedicated single-site instance.
 
 The picker lists folders that already exist and does not create them. A hostname
 pointed at an empty folder answers 404, so the tenant should upload the site
