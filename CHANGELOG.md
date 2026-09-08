@@ -12,6 +12,34 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **One web runtime can now serve several websites, each from its own folder.**
+  A runtime instance previously served exactly one route from one document root,
+  so a tenant with a dozen small sites reserved a dozen pods — and a runtime pod
+  reserves its memory whether it is busy or not. What grows with real traffic is
+  the number of requests being handled at once, not the number of sites:
+  measured on the apache-php image, twelve sites in one container held 39 MiB
+  under load against twelve times 128Mi hard-reserved as separate deployments,
+  and a four-site instance on the cluster measured 34Mi against 512Mi reserved.
+
+  Turn on **Multi-host serving** on a deployment (Applications → the app), then
+  give each hostname a folder under Domains → Routing. The folder is yours to
+  name — it does not have to match the hostname, so renaming a domain never
+  means moving files, two hostnames can share one folder, and a wildcard route
+  serves a single folder for every hostname it matches while each visitor's real
+  address still reaches the application. Hostnames with no folder keep serving
+  the app's own document root, so nothing breaks while you set things up.
+  Available on **Apache + PHP, NGINX + PHP, Static (Apache) and Static (NGINX)**.
+
+  Per-site settings stay per-site: certificates, redirects, WAF, rate limits and
+  access control are properties of the route, so ten sites on one instance keep
+  ten independent policies. What they share is the instance itself — one PHP
+  version, one set of PHP limits, one worker pool, and one restart. Turning the
+  setting on or off restarts the app once and gives it access to your whole
+  storage area so any folder can be served; adding, changing and removing sites
+  afterwards is a graceful reload that does not interrupt the sites already
+  running.
+
 ### Fixed
 - **A stuck ACME challenge blocked all future certificate issuance for that
   hostname, permanently and invisibly.** cert-manager runs at most one in-flight
