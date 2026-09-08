@@ -215,7 +215,37 @@ export async function cleanupChallenge(
   deps: SolverDeps,
   request: ChallengeRequest,
 ): Promise<void> {
-  const target = await resolveChallengeTarget(deps, request);
+  // Resolution is INSIDE the guard, not before it.
+  //
+  // This function's contract is that cleanup never throws, but
+  // resolveChallengeTarget used to run outside the try below and threw
+  // straight through it — for the one input that matters most: a zone the
+  // platform is not authoritative for.
+  //
+  // cert-manager will not release `acme.cert-manager.io/finalizer` until
+  // CleanUp succeeds, so a throw here means the Challenge can NEVER be
+  // deleted. It sits in Terminating forever, still holding the single
+  // (dnsName, type) slot cert-manager's scheduler allows, and every future
+  // challenge for that name is created with an empty status and never runs.
+  //
+  // That is the real "wedged forever" mechanism behind a mispointed NS record:
+  // the platform cannot present the challenge AND cannot clean it up, so the
+  // failure becomes permanent instead of transient. Observed on DEV — a
+  // challenge deleted at 09:11:57Z was still present, deletionTimestamp set,
+  // reason "Error cleaning up challenge: Platform is not authoritative".
+  //
+  // If we cannot resolve the zone we never published anything to it, so there
+  // is nothing to remove and cleanup is trivially complete.
+  let target: ResolvedTarget;
+  try {
+    target = await resolveChallengeTarget(deps, request);
+  } catch (err) {
+    deps.logger.warn(
+      { dnsName: request.dnsName, err: err instanceof Error ? err.message : String(err) },
+      'acme-dns01: cleanup skipped — zone not resolvable, so nothing was published to it',
+    );
+    return;
+  }
   const record = challengeRecord(target, request.key);
 
   for (const provider of target.providers) {
