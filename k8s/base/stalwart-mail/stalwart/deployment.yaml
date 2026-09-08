@@ -688,7 +688,12 @@ spec:
               # 512Mi OOM-killed Stalwart during the 2026-06-05 20GB ingest
               # stress test (loaded RSS runs 600-850MB at 15GiB of mail).
               # Headroom per the stress report; see ADR-046 watch-items.
-              memory: 1536Mi
+              #
+              # Raised 1536Mi -> 1800Mi (2026-09-08) after a production OOM
+              # kill. The kill was anon-rss, i.e. genuine heap growth rather
+              # than reclaimable page cache, so the ceiling was the binding
+              # constraint and not a bookkeeping artifact.
+              memory: 1800Mi
           startupProbe:
             # exec probe: Stalwart 0.16 management API restricts remote
             # connections by default. httpGet from the kubelet comes from
