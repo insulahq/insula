@@ -136,6 +136,24 @@ export const catalogEntryResponseSchema = z.object({
   tags: z.array(z.string()).nullable(),
   runtime: z.string().nullable(),
   webServer: z.string().nullable(),
+  /**
+   * Multi-host capability, verbatim from the catalog manifest. Null means the
+   * entry cannot serve several ingress routes from one pod, and the panel must
+   * not offer the toggle. Declared by the catalog — never inferred from
+   * `webServer`, because an image without the include directory would then
+   * advertise a mode it cannot honour.
+   */
+  multihost: z
+    .object({
+      server: z.string(),
+      web_root: z.string(),
+      sites_root: z.string(),
+      config_dir: z.string(),
+      validate: z.array(z.string()),
+      reload: z.array(z.string()),
+    })
+    .nullable()
+    .optional(),
   image: z.string().nullable(),
   hasDockerfile: z.number(),
   deploymentStrategy: z.string().nullable(),
@@ -222,6 +240,14 @@ export const deploymentResponseSchema = z.object({
   previousVersion: z.string().nullable(),
   /** Per-deployment auto-upgrade opt-in. Honoured only for non-strict apps. */
   autoUpgrade: z.boolean().default(false),
+  /**
+   * Serve several ingress routes from this one pod, each from its own folder
+   * (see `ingressRoute.siteFolder`). Settable only when the catalog entry
+   * declares a `multihost` capability. Toggling it changes the pod's mounts
+   * and therefore restarts the app ONCE; adding or removing sites afterwards
+   * is a graceful reload with no restart.
+   */
+  multihostEnabled: z.boolean().default(false),
   lastUpgradedAt: z.string().nullable(),
   lastError: z.string().nullable(),
   statusMessage: z.string().nullable(),

@@ -17,6 +17,7 @@ import { ApiError } from '../../shared/errors.js';
 import { syncRecordToProviders, describeSyncFailure, provisionManagedRecord, deleteManagedRecords, type DnsSyncOutcome } from '../dns-records/service.js';
 import { reservedHostnamesCoveredBy } from '../system-tenant/reserved-subdomains.js';
 import { resolveIngressBackend, NotIngressableError } from '../domains/k8s-ingress.js';
+import { capabilityOf } from '../multihost/reconciler.js';
 import type { Database } from '../../db/index.js';
 
 // ─── Platform Ingress Settings ──────────────────────────────────────────────
@@ -227,6 +228,48 @@ export async function provisionIngressAddressRecords(
   return outcomes;
 }
 
+
+/**
+ * Whether a route may name a site folder, and why not when it may not.
+ *
+ * Three refusals, each protecting against a failure that would otherwise be
+ * silent — the route would save, the reconciler would skip it, and the
+ * hostname would quietly fall through to the deployment's stock document root,
+ * which looks exactly like a working catch-all.
+ */
+export function assertSiteFolderAllowed(
+  siteFolder: string | null,
+  deployment: { name: string; multihostEnabled?: boolean | null },
+  entry: { multihost?: unknown } | null,
+  routePath: string,
+): void {
+  if (!siteFolder) return;
+
+  if (!capabilityOf(entry)) {
+    throw new ApiError(
+      'MULTIHOST_NOT_SUPPORTED',
+      `'${deployment.name}' runs an application that cannot serve several sites from one instance.`,
+      400,
+    );
+  }
+  if (!deployment.multihostEnabled) {
+    throw new ApiError(
+      'MULTIHOST_NOT_ENABLED',
+      `Turn on multi-host serving for '${deployment.name}' before assigning a folder to a hostname.`,
+      400,
+    );
+  }
+  if (routePath !== '/') {
+    // A vhost matches on hostname alone. Accepting a folder here would serve
+    // it for the WHOLE hostname, not just this path.
+    throw new ApiError(
+      'VALIDATION_ERROR',
+      `A site folder applies to a whole hostname, so it cannot be set on a route with path '${routePath}'.`,
+      400,
+    );
+  }
+}
+
 // ─── Route CRUD ─────────────────────────────────────────────────────────────
 
 export async function createRoute(
@@ -238,6 +281,7 @@ export async function createRoute(
   path?: string,
   privateWorkerId?: string | null,
   servicePort?: number | null,
+  siteFolder?: string | null,
 ) {
   // Polymorphic target validation (migration 0076 + 0085).
   //
@@ -345,6 +389,18 @@ export async function createRoute(
         throw err;
       }
     }
+    assertSiteFolderAllowed(siteFolder ?? null, dep, entry ?? null, routePath);
+  }
+
+  // A folder with no deployment has nothing to serve it. The DB CHECK
+  // constraint says the same thing, but an API error naming the problem beats
+  // a constraint violation surfacing as a 500.
+  if (siteFolder && !deploymentId) {
+    throw new ApiError(
+      'VALIDATION_ERROR',
+      'A site folder can only be set on a route that points at a deployment.',
+      400,
+    );
   }
 
   // Validate private_worker target (must exist + belong to this tenant + active).
@@ -408,6 +464,7 @@ export async function createRoute(
     tlsMode: 'auto',
     status: 'active',
     servicePort: servicePort ?? null,
+    siteFolder: siteFolder ?? null,
   });
 
   // Auto-create DNS records for PRIMARY domains
@@ -492,6 +549,7 @@ export async function updateRoute(
     tlsMode?: string;
     nodeHostname?: string | null;
     servicePort?: number | null;
+    siteFolder?: string | null;
   },
   // Required when privateWorkerId is being set — we re-verify the worker
   // belongs to this tenant to defend against route-id enumeration that
@@ -564,6 +622,31 @@ export async function updateRoute(
   if (input.tlsMode !== undefined) updateValues.tlsMode = input.tlsMode;
   if (input.nodeHostname !== undefined) updateValues.nodeHostname = input.nodeHostname;
   if (input.servicePort !== undefined) updateValues.servicePort = input.servicePort;
+
+  if (input.siteFolder !== undefined) {
+    // Clearing is always allowed — it hands the hostname back to the stock
+    // document root. Setting one has to be re-checked against the deployment
+    // the route will point at AFTER this patch, not the one it points at now:
+    // a single PATCH can move the route to another deployment and name a
+    // folder in the same call.
+    if (input.siteFolder !== null) {
+      const targetDeploymentId = input.deploymentId !== undefined ? input.deploymentId : route.deploymentId;
+      if (!targetDeploymentId) {
+        throw new ApiError(
+          'VALIDATION_ERROR',
+          'A site folder can only be set on a route that points at a deployment.',
+          400,
+        );
+      }
+      const [dep] = await db.select().from(deployments).where(eq(deployments.id, targetDeploymentId));
+      if (!dep) {
+        throw new ApiError('DEPLOYMENT_NOT_FOUND', `Deployment '${targetDeploymentId}' not found`, 404);
+      }
+      const [entry] = await db.select().from(catalogEntries).where(eq(catalogEntries.id, dep.catalogEntryId ?? ''));
+      assertSiteFolderAllowed(input.siteFolder, dep, entry ?? null, route.path);
+    }
+    updateValues.siteFolder = input.siteFolder;
+  }
 
   if (Object.keys(updateValues).length > 0) {
     await db.update(ingressRoutes).set(updateValues).where(eq(ingressRoutes.id, routeId));
