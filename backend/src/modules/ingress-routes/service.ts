@@ -13,6 +13,7 @@ import {
   validateRouteHostname,
 } from '@insula/api-contracts';
 import { ingressRoutes, domains, platformSettings, dnsRecords, deployments, catalogEntries, privateWorkers } from '../../db/schema.js';
+import { clearOrphanedSiteFolder } from './detach.js';
 import { ApiError } from '../../shared/errors.js';
 import { syncRecordToProviders, describeSyncFailure, provisionManagedRecord, deleteManagedRecords, type DnsSyncOutcome } from '../dns-records/service.js';
 import { reservedHostnamesCoveredBy } from '../system-tenant/reserved-subdomains.js';
@@ -648,8 +649,12 @@ export async function updateRoute(
     updateValues.siteFolder = input.siteFolder;
   }
 
-  if (Object.keys(updateValues).length > 0) {
-    await db.update(ingressRoutes).set(updateValues).where(eq(ingressRoutes.id, routeId));
+  // Retargeting away from the deployment drops the folder with it — see
+  // detach.ts for why this cannot be skipped on any detach path.
+  const finalValues = clearOrphanedSiteFolder(updateValues);
+
+  if (Object.keys(finalValues).length > 0) {
+    await db.update(ingressRoutes).set(finalValues).where(eq(ingressRoutes.id, routeId));
   }
 
   const [updated] = await db.select().from(ingressRoutes).where(eq(ingressRoutes.id, routeId));
