@@ -15,6 +15,7 @@ export function joinPath(base: string, name: string): string {
  */
 export default function FolderPickerDialog({
   title, description, initialPath, confirmLabel, isPending, onClose, onConfirm,
+  allowCreate = true,
 }: {
   readonly title: string;
   readonly description: string;
@@ -23,6 +24,14 @@ export default function FolderPickerDialog({
   readonly isPending: boolean;
   readonly onClose: () => void;
   readonly onConfirm: (path: string) => void;
+  /**
+   * Offer "new folder" while browsing. Defaults on for the pickers that place
+   * something new (extra mounts, storage paths). Callers that must land on a
+   * folder which already holds content — a website's document root — pass
+   * false: creating an empty folder there produces a route that resolves to
+   * nothing, which reads as a broken site rather than an empty one.
+   */
+  readonly allowCreate?: boolean;
 }) {
   const [browsePath, setBrowsePath] = useState(initialPath || '/');
   const [newFolder, setNewFolder] = useState('');
@@ -88,6 +97,7 @@ export default function FolderPickerDialog({
         </div>
 
         {/* New folder */}
+        {allowCreate && (
         <div className="flex items-center gap-2 mb-3">
           <input
             type="text"
@@ -102,7 +112,8 @@ export default function FolderPickerDialog({
             {createDir.isPending ? <Loader2 size={14} className="animate-spin" /> : <FolderPlus size={14} />} Create
           </button>
         </div>
-        {createDir.error && !/exist/i.test((createDir.error as Error).message) && (
+        )}
+        {allowCreate && createDir.error && !/exist/i.test((createDir.error as Error).message) && (
           <p className="text-xs text-red-600 dark:text-red-400 mb-2">{(createDir.error as Error).message}</p>
         )}
 
