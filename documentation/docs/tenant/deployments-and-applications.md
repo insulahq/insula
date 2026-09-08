@@ -85,6 +85,67 @@ the dialog suggests a path underneath it instead.
 You can change the mounts of a running app later. Saving restarts it, because
 the container has to come back with the new folders attached.
 
+## Several websites on one app instance
+
+A PHP runtime normally serves one website: every hostname routed to it shows
+the same files. **Multi-host serving** lets one instance answer several
+hostnames, each from its own folder — the way traditional shared hosting works.
+
+It is worth turning on when you run a number of small sites. A runtime instance
+reserves its memory whether it is busy or not, so ten small sites as ten
+instances reserve ten times the memory. One instance serving ten sites pays the
+runtime's fixed cost once; what grows with real traffic is the number of
+requests being handled at the same time, not the number of sites.
+
+Not every application supports it. The option only appears for those that do —
+today the **Apache + PHP** runtime.
+
+### Turn it on
+
+Open the app under **Applications → Installed**, then use **Multi-host
+serving**.
+
+Turning it on (or off) restarts the application once, because it changes how
+storage is attached. It also gives that instance access to your whole storage
+area, so any folder you can see in the file manager can be used as a website.
+After that, adding, changing and removing websites happens without a restart —
+the running sites are not interrupted.
+
+### Give each hostname its own folder
+
+Go to **Domains → your domain → Routing**. Every route pointed at a multi-host
+app gains a folder button next to the app dropdown:
+
+1. Click it to browse your storage.
+2. Pick the folder holding that site's files.
+3. The hostname serves that folder from then on.
+
+Use **clear** to hand a hostname back to the app's own document root.
+
+A few things worth knowing:
+
+- **The folder is yours to name.** It does not have to match the hostname, and
+  renaming a domain never means moving files.
+- **Two hostnames can share one folder** — pick the same folder for both.
+- **A wildcard route serves one folder** for every hostname it matches, so
+  `*.customers.example.com` can front a single application while each visitor's
+  address is passed through untouched.
+- **Your application still sees the real address.** `HTTP_HOST` and
+  `SERVER_NAME` are the hostname the visitor typed, not the folder name, so
+  WordPress, Laravel and friends build the right links.
+- **Hostnames you have not given a folder** keep serving the app's own document
+  root, so nothing breaks while you set things up.
+- **Per-site settings stay per-site.** Certificates, redirects, WAF, rate
+  limits and access control are properties of the route, so each website keeps
+  its own.
+
+### What it does not do
+
+One instance means one PHP version and one set of PHP limits for every site on
+it. Sites needing different PHP versions still need separate instances. The
+sites also share the instance's memory and worker pool, so a busy site can slow
+its neighbours, and restarting the app affects all of them at once.
+
 ## Find an installed app
 
 The **Installed Apps** tab has a search box and a grid/list switch in its

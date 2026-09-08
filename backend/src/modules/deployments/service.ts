@@ -4,12 +4,13 @@
  * Manages the unified deployments table that replaces both workloads and application_instances.
  */
 
-import { eq, and, ne, desc, asc, lt, gt, sql } from 'drizzle-orm';
+import { eq, and, ne, desc, asc, lt, gt, sql, isNotNull } from 'drizzle-orm';
 import { deployments, catalogEntries, catalogEntryVersions, tenants, clusterNodes, hostingPlans, ingressRoutes, domains } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { normalizeMountPath } from '@insula/api-contracts';
 import { InsufficientResourceBudgetError } from './resource-allocator.js';
 import { findAdminPasswordEnvVar } from './password-reset.js';
+import { capabilityOf, deleteDeploymentSites, multihostMountsFor } from '../multihost/reconciler.js';
 import {
   isCustomDeployment,
   customSpecImages,
@@ -579,6 +580,7 @@ export async function createDeployment(
         envVars: finalEnvVars,
         configurableEnvKeys,
         extraMounts: input.extra_mounts ?? undefined,
+        multihost: null,
         // Arm the password-reset init container for every DB deployment, not
         // just `storage_mode: custom`. The default storagePath is deterministic
         // (`type/code/name`), and deleting a deployment WITHOUT deleteData
@@ -1348,6 +1350,11 @@ export async function updateDeploymentResources(
         envVars: { fixed: resolved.fixedEnvVars },
         configurableEnvKeys: resolved.configurableEnvKeys,
         extraMounts: deployment.extraMounts ?? undefined,
+        // Multi-host mounts, resolved from the flag + the entry's capability.
+        // Threaded at EVERY deploy call site: a redeploy that omitted them
+        // would rewrite the pod template without the include directory, and
+        // every site on this pod would silently fall back to the stock docroot.
+        multihost: multihostMountsFor(deployment, entry),
         firewall: reFirewall ?? undefined,
         hostPorts: readEntryHostPorts(entry),
       });
@@ -1634,6 +1641,10 @@ export async function redeployWithCurrentConfig(
     // Carried through every redeploy — dropping them here would silently
     // unmount a tenant's folders on the next credential rotation.
     extraMounts: deployment.extraMounts ?? undefined,
+    // Multi-host mounts — same reason as extraMounts directly above. Dropping
+    // them on a rotation would unmount the storage root and the include
+    // directory, and every site would fall back to the stock docroot.
+    multihost: multihostMountsFor(deployment, entry),
     // Re-stamp the config root password onto the reused datadir on the DR
     // reconcile path (no-op for non-DB deployments + fresh datadirs).
     reuseExistingData: opts.armPasswordReset === true,
@@ -1909,4 +1920,85 @@ export async function listStorageFolders(
   }
 
   return { basePath, folders };
+}
+
+/**
+ * Turn multi-host serving on or off for one deployment.
+ *
+ * The flag changes the pod's MOUNTS — the include directory the generated
+ * vhosts land in, and the tenant storage root a site folder is resolved
+ * against — so this is the one transition in the whole feature that restarts
+ * the app. Adding, changing and removing sites afterwards is a graceful
+ * reload. Callers are expected to say so before asking.
+ */
+export async function setMultihostEnabled(
+  db: Database,
+  tenantId: string,
+  deploymentId: string,
+  enabled: boolean,
+  k8s?: K8sClients,
+): Promise<typeof deployments.$inferSelect> {
+  const [deployment] = await db
+    .select()
+    .from(deployments)
+    .where(and(eq(deployments.id, deploymentId), eq(deployments.tenantId, tenantId)));
+  if (!deployment) throw new ApiError('DEPLOYMENT_NOT_FOUND', `Deployment '${deploymentId}' not found`, 404);
+
+  const [entry] = await db
+    .select()
+    .from(catalogEntries)
+    .where(eq(catalogEntries.id, deployment.catalogEntryId ?? ''));
+
+  if (enabled && !capabilityOf(entry ?? null)) {
+    throw new ApiError(
+      'MULTIHOST_NOT_SUPPORTED',
+      `'${deployment.name}' runs an application that cannot serve several sites from one instance.`,
+      400,
+    );
+  }
+
+  if (!enabled) {
+    // Turning it off while routes still name folders would take those sites
+    // down: the vhosts disappear, every hostname falls through to the stock
+    // document root, and nothing in the UI would say why. Name the hostnames
+    // rather than making the operator find them.
+    const bound = await db
+      .select({ hostname: ingressRoutes.hostname })
+      .from(ingressRoutes)
+      .where(and(eq(ingressRoutes.deploymentId, deploymentId), isNotNull(ingressRoutes.siteFolder)));
+    if (bound.length > 0) {
+      const names = bound.map((r) => r.hostname).slice(0, 5).join(', ');
+      const more = bound.length > 5 ? ` (+${bound.length - 5} more)` : '';
+      throw new ApiError(
+        'MULTIHOST_SITES_BOUND',
+        `${bound.length} hostname(s) still serve a folder on this deployment: ${names}${more}. Clear their site folders first.`,
+        409,
+        { hostnames: bound.map((r) => r.hostname) },
+      );
+    }
+  }
+
+  if (deployment.multihostEnabled === enabled) return deployment;
+
+  const [updated] = await db
+    .update(deployments)
+    .set({ multihostEnabled: enabled })
+    .where(eq(deployments.id, deploymentId))
+    .returning();
+
+  // Redeploy so the mounts actually change. Without this the flag is a row in
+  // the database and the pod template still says what it said before — the
+  // exact shape of "saved but never applied".
+  if (k8s) {
+    await redeployWithCurrentConfig(db, updated, k8s);
+    if (!enabled) {
+      // The pod loses the mount in that same redeploy, so an orphaned
+      // ConfigMap would be harmless — and would leave one per deployment that
+      // ever tried the feature, each reading like live configuration.
+      const namespace = await getTenantNamespace(db, tenantId);
+      await deleteDeploymentSites({ core: k8s.core }, namespace, updated.name);
+    }
+  }
+
+  return updated;
 }

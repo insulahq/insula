@@ -232,6 +232,22 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     return success(updated);
   });
 
+  // PATCH /api/v1/tenants/:tenantId/deployments/:id/multihost
+  //
+  // Turning this on or off changes the pod's mounts and therefore restarts the
+  // app once. Every later site change is a graceful reload — the UI says so
+  // before the operator clicks.
+  app.patch('/tenants/:tenantId/deployments/:id/multihost', async (request) => {
+    const { tenantId, id } = request.params as { tenantId: string; id: string };
+    const body = request.body as { enabled?: unknown };
+    if (typeof body?.enabled !== 'boolean') {
+      throw new ApiError('INVALID_FIELD_VALUE', 'enabled must be a boolean', 400, { field: 'enabled' });
+    }
+    const k8s = getK8s();
+    const updated = await service.setMultihostEnabled(app.db, tenantId, id, body.enabled, k8s);
+    return success(updated);
+  });
+
   // GET /api/v1/tenants/:tenantId/deployments/:id/credentials
   app.get('/tenants/:tenantId/deployments/:id/credentials', async (request) => {
     const { tenantId, id } = request.params as { tenantId: string; id: string };

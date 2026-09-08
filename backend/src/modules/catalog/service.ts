@@ -76,6 +76,21 @@ interface EntryManifest {
   readonly documentation?: string;
   readonly runtime?: string;
   readonly web_server?: string;
+  /**
+   * Multi-host capability block. Its PRESENCE is what makes an entry eligible
+   * for multi-host serving — never inferred from `web_server`, because an
+   * image without the include directory would then advertise a mode it cannot
+   * honour. Stored verbatim; the platform reads `server` to pick a renderer
+   * and the rest to know where to mount and how to validate/reload.
+   */
+  readonly multihost?: {
+    server: string;
+    web_root: string;
+    sites_root: string;
+    config_dir: string;
+    validate: string[];
+    reload: string[];
+  };
   readonly image?: string;
   readonly has_dockerfile?: boolean;
   readonly deployment_strategy?: string;
@@ -759,6 +774,7 @@ export async function syncCatalogRepo(db: Database, repoId: string): Promise<Syn
         tags: (manifest.tags as unknown as string[] | null) ?? null,
         runtime: manifest.runtime ?? null,
         webServer: manifest.web_server ?? null,
+        multihost: (manifest.multihost ?? null) as typeof catalogEntries.$inferInsert['multihost'],
         image: manifest.image ?? null,
         hasDockerfile: manifest.has_dockerfile ? 1 : 0,
         deploymentStrategy: manifest.deployment_strategy ?? null,

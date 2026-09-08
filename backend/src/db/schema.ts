@@ -571,6 +571,23 @@ export const catalogEntries = pgTable('catalog_entries', {
   // Runtime/database/service-specific fields
   runtime: varchar('runtime', { length: 50 }),
   webServer: varchar('web_server', { length: 50 }),
+  /**
+   * Migration 0104 — multi-host capability, copied verbatim from the catalog
+   * manifest's `multihost` block. NULL = the entry cannot serve several
+   * ingress routes from one pod. Capability is DECLARED by the catalog, never
+   * inferred from `web_server`: an nginx-based entry whose image ships no
+   * include directory must not silently advertise multi-host. The platform
+   * renders the vhost text itself; this block only says which flavour, where
+   * the roots and include directory are, and how to validate/reload.
+   */
+  multihost: jsonb('multihost').$type<{
+    server: string;
+    web_root: string;
+    sites_root: string;
+    config_dir: string;
+    validate: string[];
+    reload: string[];
+  } | null>(),
   image: varchar('image', { length: 500 }),
   hasDockerfile: integer('has_dockerfile').notNull().default(0),
   deploymentStrategy: varchar('deployment_strategy', { length: 20 }),
@@ -666,6 +683,19 @@ export const deployments = pgTable('deployments', {
    * always require a manual click.
    */
   autoUpgrade: boolean('auto_upgrade').notNull().default(false),
+  /**
+   * Migration 0104 — serve several ingress routes from this one pod, each
+   * from its own folder. Only settable when the catalog entry declares a
+   * `multihost` block.
+   *
+   * A column rather than an entry in `configuration` on purpose: config keys
+   * flow through the pod template, so every change would restart the app.
+   * This flag drives generated ConfigMap content delivered by a graceful
+   * reload, so adding or removing a site never restarts anything. Flipping
+   * the flag itself does add/remove the pod's mounts — that one transition
+   * costs a restart, and the UI says so.
+   */
+  multihostEnabled: boolean('multihost_enabled').notNull().default(false),
   lastUpgradedAt: timestamp('last_upgraded_at'),
   lastError: text('last_error'),
   statusMessage: text('status_message'),
@@ -1230,6 +1260,17 @@ export const ingressRoutes = pgTable('ingress_routes', {
   additionalHeaders: jsonb('additional_headers').$type<Record<string, string>>(),
   // ── Custom-deployment routing ──
   servicePort: integer('service_port'),
+  /**
+   * Migration 0104 — which folder this hostname serves, relative to the
+   * tenant PVC ROOT (the same convention as `deployments.extra_mounts.folder`,
+   * and the reason a route can serve ANY folder the tenant sees in the file
+   * manager rather than only a child of the deployment's own storage_path).
+   *
+   * NULL keeps today's behaviour: the hostname is answered by the stock
+   * single-site vhost from the deployment's document root, which also stays
+   * the catch-all for hostnames matching no generated site.
+   */
+  siteFolder: varchar('site_folder', { length: 500 }),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (table) => [
