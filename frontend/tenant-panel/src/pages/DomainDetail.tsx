@@ -899,6 +899,7 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
           description="Pick any folder on your storage. The hostname will serve it as its document root."
           initialPath="/"
           confirmLabel="Use this folder"
+          allowCreate={false}
           isPending={assigningRouteId === folderPickerRouteId}
           onClose={() => setFolderPickerRouteId(null)}
           onConfirm={(path) => handleAssignFolder(folderPickerRouteId, path)}
