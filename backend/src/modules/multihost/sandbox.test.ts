@@ -65,7 +65,8 @@ describe('nginx sandboxes each server block', () => {
     const { files } = renderSites(NGINX, [route({ siteFolder: 'shop/public', appRoot: 'shop' })]);
     const conf = Object.values(files)[0];
     expect(conf).toContain('root "/var/www/sites/shop/public"');
-    expect(conf).toContain('set $insula_php_admin "open_basedir=/var/www/sites/shop:/tmp";');
+    expect(conf).toContain('set $insula_php_admin "open_basedir=/var/www/sites/shop:/tmp');
+    expect(conf).toContain('session.save_path=/var/www/sites/shop/.insula-sessions";');
   });
 
   /**
@@ -158,5 +159,81 @@ describe('the renderer re-validates the app root, not just the folder', () => {
     const { files, skipped } = renderSites(APACHE, [route({ siteFolder: 'shop/public', appRoot: 'shop' })]);
     expect(skipped).toHaveLength(0);
     expect(Object.values(files)[0]).toContain('open_basedir=/var/www/sites/shop:/tmp');
+  });
+});
+
+/**
+ * Sessions must not live in /tmp.
+ *
+ * /tmp is shared by every site in the pod and MUST stay inside open_basedir
+ * for sessions to work at all — and a session filename IS the session ID. So
+ * a site could list /tmp, read a neighbour's session file and replay that ID
+ * as its own cookie: takeover of a sibling site with no exec and no sandbox
+ * bypass. Each app root gets its own directory instead, inside the sandbox
+ * that already confines it.
+ */
+describe('session files are per-site, not shared through /tmp', () => {
+  it('apache points PHP at the app root, via the second variable', () => {
+    const { files } = renderSites(APACHE, [route({ siteFolder: 'shop/public', appRoot: 'shop' })]);
+    const vhost = Object.values(files)[0];
+    expect(vhost).toContain('SetEnv PHP_VALUE "session.save_path=/var/www/sites/shop/.insula-sessions"');
+    // open_basedir must stay in PHP_ADMIN_VALUE, where a script cannot widen it.
+    expect(vhost).toContain('SetEnv PHP_ADMIN_VALUE "open_basedir=');
+  });
+
+  it('the session dir sits INSIDE the sandbox, or every write would fail', () => {
+    const { sites } = renderSites(APACHE, [route({ siteFolder: 'shop', appRoot: 'shop' })]);
+    const basedir = sites[0].openBasedir ?? '';
+    expect(`${sites[0].appRootPath}/.insula-sessions`.startsWith(`${basedir.split(':')[0]}/`)).toBe(true);
+  });
+
+  it('two sites get two different session directories', () => {
+    const { files } = renderSites(APACHE, [
+      route({ id: 'a', hostname: 'a.example.test', siteFolder: 'a' }),
+      route({ id: 'b', hostname: 'b.example.test', siteFolder: 'b' }),
+    ]);
+    const all = Object.values(files).join('\n');
+    expect(all).toContain('/var/www/sites/a/.insula-sessions');
+    expect(all).toContain('/var/www/sites/b/.insula-sessions');
+  });
+
+  it('two hostnames sharing one app root share one session dir, so logins survive www redirects', () => {
+    const { files } = renderSites(APACHE, [
+      route({ id: 'a', hostname: 'ex.example.test', siteFolder: 'shop/public', appRoot: 'shop' }),
+      route({ id: 'b', hostname: 'www.ex.example.test', siteFolder: 'shop/public', appRoot: 'shop' }),
+    ]);
+    for (const conf of Object.values(files)) {
+      expect(conf).toContain('session.save_path=/var/www/sites/shop/.insula-sessions');
+    }
+  });
+
+  it('a static runtime gets no session directive — it has no PHP', () => {
+    const { files } = renderSites(STATIC, [route()]);
+    expect(Object.values(files)[0]).not.toContain('session.save_path');
+  });
+});
+
+import { absolutePathIsSane } from './reconciler.js';
+
+describe('sites_root from a catalog manifest is validated too', () => {
+  it('accepts an ordinary site tree', () => {
+    expect(absolutePathIsSane('/var/www/sites')).toBe(true);
+  });
+
+  it('refuses system directories a site must never be handed', () => {
+    for (const p of ['/etc', '/etc/ssl', '/proc', '/root', '/usr/bin', '/']) {
+      expect(absolutePathIsSane(p), p).toBe(false);
+    }
+  });
+
+  it('refuses traversal and injection', () => {
+    for (const p of ['/var/www/../etc', '/var/www/./x', '/var/www:/etc', '/var/www\nX', '/var/www"x']) {
+      expect(absolutePathIsSane(p), p).toBe(false);
+    }
+  });
+
+  it('refuses a relative path or a non-string', () => {
+    expect(absolutePathIsSane('var/www')).toBe(false);
+    expect(absolutePathIsSane(42)).toBe(false);
   });
 });

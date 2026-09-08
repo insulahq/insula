@@ -275,12 +275,29 @@ a strategic-merge patch — merge patches key list entries by `mountPath` and ca
 therefore only ADD, which would leave a folder mounted after it stopped being
 served.
 
-**Known residue.** PHP's session and upload temp files land in `/tmp`, which is
+**Sessions are per-site.** Each application root gets its own
+`.insula-sessions` directory, created by the init container and pointed at with
+`session.save_path` — on Apache through a second FastCGI variable (`PHP_VALUE`,
+since `PHP_ADMIN_VALUE` carries `open_basedir` and Apache cannot embed the
+newline that separates several), on nginx through the existing multi-line
+variable. Sites sharing an application root share the directory, so a login
+survives a www redirect.
+
+**Symlinks are not followed**, on all four runtimes. A symlink in one site's
+folder pointing at a neighbour's was served by Apache/nginx directly, with PHP
+never invoked — so `open_basedir` and `disable_functions`, both interpreter
+controls, were bypassed completely. Reproduced against the published images.
+The cost is that an application shipping a symlink under its document root
+(Laravel's `public/storage`) stops resolving it; neither server can express
+"symlinks that stay inside the app root", and the alternative is no isolation
+between neighbours.
+
+**Known residue.** PHP's UPLOAD temp files still land in `/tmp`, which is
 shared by every site in the pod and must stay inside `open_basedir` or sessions
-break. Files are isolated; **session files are not** — and the exposure is worse
-than "some shared temp files": session filenames ARE session IDs, so a site can
-list `/tmp`, read a neighbour's session, and present that ID as its own cookie.
-Account takeover across sites in the pod, with no exec and no sandbox bypass. Closing it needs a
+break. `upload_tmp_dir` is `PHP_INI_SYSTEM`, so it can only be set through
+`PHP_ADMIN_VALUE` — which on Apache already carries `open_basedir` and cannot
+hold two settings. The window is short and the filenames are unpredictable, so
+this is far weaker than the session exposure it replaces, but it is not closed. Closing it needs a
 per-site session path created inside each app root, which the reconciler can do
 during the exec it already performs — not done here.
 

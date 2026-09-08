@@ -885,6 +885,16 @@ export function minimalSiteFolders(folders: readonly string[]): string[] {
  * SAPI keeps these, so composer, wp-cli, artisan and occ still work from cron
  * and SSH — where they are normally run.
  */
+/**
+ * Per-site session directory, relative to an application root. Inside the
+ * app root on purpose: open_basedir already confines the site to it, so the
+ * sandbox that protects the site's files protects its sessions too.
+ *
+ * 0700 rather than 0777: only the runtime user writes here, and every site in
+ * the pod shares that uid — the mode is not the boundary, the path is.
+ */
+export const MULTIHOST_SESSION_DIR = '.insula-sessions';
+
 export const MULTIHOST_DISABLED_PHP_FUNCTIONS =
   'exec,shell_exec,system,passthru,popen,proc_open,pcntl_exec';
 
@@ -921,12 +931,19 @@ export function applyMultihostPhpHardening(
   // value is an operator decision. There is deliberately no way to disable the
   // hardening by blanking the field: the failure mode has to be a site that
   // stops working, never a pod that quietly stops being isolated.
-  if (existing) {
-    if (existing.value.trim() !== '') return;
-    existing.value = MULTIHOST_DISABLED_PHP_FUNCTIONS;
-    return;
-  }
-  env.push({ name: 'PHP_DISABLE_FUNCTIONS', value: MULTIHOST_DISABLED_PHP_FUNCTIONS });
+  //
+  // The platform's list is a FLOOR, not a default: whatever is configured is
+  // UNIONED with it, never substituted for it. `PHP_DISABLE_FUNCTIONS` is a
+  // tenant-editable variable, so "a non-empty value is an operator decision"
+  // meant a tenant could set it to `exec,system` — or to `1` — on their own
+  // shared instance and hand themselves back `shell_exec`, `proc_open` and the
+  // rest. Adding to the baseline is useful; subtracting from it is not a
+  // decision anyone should be able to make from a settings field.
+  const baseline = MULTIHOST_DISABLED_PHP_FUNCTIONS.split(',');
+  const configured = (existing?.value ?? '').split(',').map((f) => f.trim()).filter(Boolean);
+  const merged = [...new Set([...baseline, ...configured])].join(',');
+  if (existing) existing.value = merged;
+  else env.push({ name: 'PHP_DISABLE_FUNCTIONS', value: merged });
 }
 
 export function buildMultihostMounts(
@@ -1012,7 +1029,36 @@ async function deployK8sDeployment(
     // Inject env vars so the reset script can read $MARIADB_ROOT_PASSWORD etc.
     initContainersList.push({ ...passwordResetContainer, ...(envVars?.length ? { env: envVars } : {}) });
   }
-  if (spec) initContainersList.push(spec.initDirsContainer);
+  // Per-site session directories.
+  //
+  // PHP writes sessions to the system temp dir, which is ONE /tmp shared by
+  // every site in the pod — and a session FILENAME is the session ID, so any
+  // site could list /tmp, read a neighbour's session file and present that ID
+  // as its own cookie. Account takeover of a sibling site, needing no exec and
+  // no sandbox bypass, because /tmp must stay inside open_basedir for sessions
+  // to work at all.
+  //
+  // Giving each application root its own directory moves session files inside
+  // the sandbox that already confines that site. The directory has to exist
+  // before PHP writes to it — PHP will not create it — so it is created here,
+  // where the folder list is already known.
+  const sessionDirs = (multihost ? minimalSiteFolders(multihost.siteFolders) : [])
+    .map((f) => `mkdir -p /data/${f}/${MULTIHOST_SESSION_DIR} && chmod 700 /data/${f}/${MULTIHOST_SESSION_DIR}`);
+  if (spec) {
+    if (sessionDirs.length > 0) {
+      const cmd = (spec.initDirsContainer as { command?: string[] }).command;
+      if (cmd && cmd.length === 3) cmd[2] = `${cmd[2]} && ${sessionDirs.join(' && ')}`;
+    }
+    initContainersList.push(spec.initDirsContainer);
+  } else if (sessionDirs.length > 0) {
+    initContainersList.push({
+      name: 'init-dirs',
+      image: 'busybox:1.36',
+      command: ['sh', '-c', sessionDirs.join(' && ')],
+      volumeMounts: [{ name: 'tenant-storage', mountPath: '/data' }],
+      resources: { requests: { cpu: '10m', memory: '32Mi' }, limits: { memory: '32Mi' } },
+    });
+  }
   const initContainers = initContainersList.length > 0 ? initContainersList : undefined;
 
   const podSpec: Record<string, unknown> = {

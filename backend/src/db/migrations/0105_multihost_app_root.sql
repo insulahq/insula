@@ -49,6 +49,13 @@ ALTER TABLE ingress_routes
     (site_folder IS NULL AND app_root IS NULL)
     OR (
       site_folder IS NOT NULL AND app_root IS NOT NULL
-      AND (site_folder = app_root OR site_folder LIKE app_root || '/%')
+      -- LIKE would treat `_` as a single-character wildcard, and folder names
+      -- may contain underscores — so `app_root = 'my_app'` would also accept
+      -- `site_folder = 'myXapp/x'`. left(...) is an exact comparison and needs
+      -- no escaping.
+      AND (
+        site_folder = app_root
+        OR left(site_folder, length(app_root) + 1) = app_root || '/'
+      )
     )
   );

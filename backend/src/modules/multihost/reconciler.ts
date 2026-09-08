@@ -144,6 +144,11 @@ export function capabilityOf(entry: { multihost?: unknown } | null | undefined):
     Array.isArray(raw.validate) && raw.validate.length > 0 &&
     Array.isArray(raw.reload) && raw.reload.length > 0;
   if (!ok) return null;
+  // `sites_root` is a manifest value that becomes a mountPath, a DocumentRoot
+  // and the open_basedir prefix. It was only checked for being a string, while
+  // the adjacent `php` block was validated carefully — an inconsistency a
+  // third-party catalog repo could walk through with `sites_root: "/etc"`.
+  if (!absolutePathIsSane(raw.sites_root as string)) return null;
   if (!phpSandboxIsSane(raw.php, raw.sites_root as string)) return null;
   return raw as MultihostCapability;
 }
@@ -162,6 +167,24 @@ export function capabilityOf(entry: { multihost?: unknown } | null | undefined):
  * entry that cannot be sandboxed must not silently fall back to serving
  * multi-host unsandboxed.
  */
+/**
+ * An absolute container path the platform is willing to build config and
+ * mounts from: no traversal, no injection characters, and not a system
+ * directory whose contents a site must never be handed.
+ */
+export function absolutePathIsSane(p: unknown): boolean {
+  if (typeof p !== 'string' || !p.startsWith('/') || p === '/') return false;
+  if (/[:\n\r\0"'`\\]/.test(p)) return false;
+  const segs = p.replace(/\/+$/, '').split('/').slice(1);
+  if (segs.some((s) => s === '' || s === '.' || s === '..')) return false;
+  // A handful of roots that are never a tenant site tree. Not exhaustive by
+  // design — the checks above do the real work; this refuses the obviously
+  // wrong answers loudly rather than mounting over /etc.
+  const FORBIDDEN = ['/etc', '/proc', '/sys', '/dev', '/root', '/boot', '/usr/bin', '/usr/sbin', '/bin', '/sbin'];
+  const norm = p.replace(/\/+$/, '');
+  return !FORBIDDEN.some((f) => norm === f || norm.startsWith(`${f}/`));
+}
+
 export function phpSandboxIsSane(php: unknown, sitesRoot: string): boolean {
   if (php === undefined || php === null) return true;
   if (typeof php !== 'object') return false;
@@ -368,7 +391,12 @@ export async function reconcileDeploymentSites(
       { deployment: deploymentName, sites: rendered.sites.length },
       'multihost: site mounts changed, pod is being replaced',
     );
-    return { ...base, changed: true, reloaded: 0, failures: [], missingFolders: [], folderCheck: 'ok' };
+    // folderCheck is 'unavailable', NOT 'ok'. The pod is being replaced, so the
+    // folder probe has not run and cannot run against a terminating container.
+    // Reporting 'ok' here would be the exact conflation this type exists to
+    // prevent — a check that never ran reading as a clean result — and it would
+    // hide a replacement pod that never comes up (quota, image pull, crash).
+    return { ...base, changed: true, reloaded: 0, failures: [], missingFolders: [], folderCheck: 'unavailable' };
   }
 
   if (!changed) return { ...base, reloaded: 0, failures: [], missingFolders: [], folderCheck: 'ok' };
@@ -431,9 +459,17 @@ async function ensureSiteMounts(
   const container = containers[idx] as { volumeMounts?: Array<Record<string, unknown>> };
   const current = container.volumeMounts ?? [];
 
+  // A mount is OURS only when it looks exactly like one we emit: the tenant
+  // volume, mounted at `<sites_root>/<subPath>` with that same subPath. A
+  // tenant may point an extra_mount at a path under sites_root — nothing
+  // forbids it — and treating "anything below sites_root" as ours would
+  // silently unmount their data on the next route change.
   const isSiteMount = (m: Record<string, unknown>) => {
+    if (m.name !== 'tenant-storage') return false;
     const mp = String(m.mountPath ?? '');
-    return mp.startsWith(`${sitesRoot}/`) || mp === sitesRoot;
+    const sub = m.subPath ? String(m.subPath) : '';
+    if (mp === sitesRoot && !sub) return true;              // the legacy volume-root mount
+    return Boolean(sub) && mp === `${sitesRoot}/${sub}`;
   };
   const currentFolders = minimalSiteFolders(
     current.filter(isSiteMount).map((m) => String(m.subPath ?? '')).filter(Boolean),
@@ -465,11 +501,37 @@ async function ensureSiteMounts(
   // object carries `resourceVersion`, so a concurrent write loses the race
   // loudly instead of silently clobbering.
   container.volumeMounts = next;
-  await clients.apps.replaceNamespacedDeployment({
-    name: deploymentName,
-    namespace,
-    body: dep,
-  } as never);
+  // Retry the read-modify-write on a lost race. There is no periodic multi-host
+  // reconcile — this runs only in response to a route change — so an exception
+  // swallowed by the caller's per-deployment catch would leave the mounts wrong
+  // until some unrelated future route change happened to touch this deployment.
+  // For a removed site that means its folder stays mounted indefinitely, which
+  // is precisely the exposure this design removes.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      await clients.apps.replaceNamespacedDeployment({ name: deploymentName, namespace, body: dep } as never);
+      return true;
+    } catch (err) {
+      const status = (err as { statusCode?: number; code?: number }).statusCode
+        ?? (err as { code?: number }).code;
+      if (status !== 409 || attempt === 2) throw err;
+      // Someone else wrote first. Re-read and re-apply onto their version.
+      const fresh = await clients.apps.readNamespacedDeployment({ name: deploymentName, namespace } as never) as typeof dep;
+      const freshContainers = fresh.spec?.template?.spec?.containers ?? [];
+      const fi = freshContainers.findIndex((c) => (c as { name?: string }).name === containerName);
+      if (fi < 0) return false;
+      const fc = freshContainers[fi] as { volumeMounts?: Array<Record<string, unknown>> };
+      fc.volumeMounts = [
+        ...(fc.volumeMounts ?? []).filter((m) => !isSiteMount(m)),
+        ...desired.map((folder) => ({
+          name: 'tenant-storage',
+          mountPath: `${sitesRoot}/${folder}`,
+          subPath: folder,
+        })),
+      ];
+      dep = fresh;
+    }
+  }
   return true;
 }
 

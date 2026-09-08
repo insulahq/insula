@@ -5,7 +5,7 @@
  * Each route generates: hostname → {slug}.ingress.platform.net → node → IP
  */
 
-import { eq, and } from 'drizzle-orm';
+import { eq, and, isNotNull } from 'drizzle-orm';
 import {
   isWildcardHostname,
   normalizeHostname,
@@ -730,6 +730,34 @@ export async function updateRoute(
       400,
     );
   }
+  // Two sites on ONE deployment must not have nested application roots. The
+  // sandbox is a path prefix, so app roots `shop` and `shop/admin` mean the
+  // outer site's PHP is granted the inner site's entire folder — the isolation
+  // silently absent for exactly that pair, with both rows individually valid.
+  if (nextAppRoot) {
+    const siblings = await db
+      .select({ id: ingressRoutes.id, appRoot: ingressRoutes.appRoot })
+      .from(ingressRoutes)
+      .where(and(
+        eq(ingressRoutes.deploymentId, (updateValues.deploymentId ?? route.deploymentId) as string),
+        isNotNull(ingressRoutes.appRoot),
+      ));
+    const clash = siblings.find((sib: { id: string; appRoot: string | null }) => {
+      if (sib.id === routeId || !sib.appRoot) return false;
+      return sib.appRoot === nextAppRoot
+        ? false                                    // sharing one app root is fine
+        : nextAppRoot.startsWith(`${sib.appRoot}/`) || sib.appRoot.startsWith(`${nextAppRoot}/`);
+    });
+    if (clash) {
+      throw new ApiError(
+        'VALIDATION_ERROR',
+        `Another site on this application already uses '${clash.appRoot}', and application roots cannot be nested inside one another — the outer site would be able to read the inner one.`,
+        400,
+        { conflicting_app_root: clash.appRoot },
+      );
+    }
+  }
+
   if (!siteFolderWithinAppRoot(nextSiteFolder, nextAppRoot)) {
     throw new ApiError(
       'VALIDATION_ERROR',
