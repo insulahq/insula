@@ -217,6 +217,63 @@ coverage + opted-out), `POST …/apply` and `POST …/remove`
 (`{ apply, excludeNamespaces }`). RBAC: the `platform-admin` ClusterRole already
 grants `networkpolicies` cluster-wide.
 
+## Mail server software disclosure (why the banners still say "Stalwart")
+
+**Decision (2026-09-09): we do NOT suppress the mail server's product name. This is
+deliberate — read this before opening a ticket for it.**
+
+The mail stack identifies itself as Stalwart in protocol conversations. An operator
+looking to reduce fingerprinting will naturally reach for "turn the banner off". That
+was investigated against the running server and Stalwart's source; the finding is that
+**exactly one of eight disclosure points is configurable**, so a partial job would be
+misleading rather than hardening.
+
+| Surface | What a client sees | Configurable? |
+|---|---|---|
+| SMTP `220` banner | `Stalwart ESMTP at your service` | **Yes** — `MtaStageConnect` greeting (an `IfBlock`) |
+| **`Received:` header** | `by mail.example.test **(Stalwart SMTP)** with ESMTPS …` | No — hardcoded in `crates/smtp/src/inbound/data.rs:write_received` |
+| **IMAP `ID`** | `("name" "Stalwart" "version" "…" "vendor" "Stalwart Labs LLC")` | No — hardcoded |
+| IMAP greeting / `BYE` | `Stalwart IMAP4rev2 at your service.` | No — `static SERVER_GREETING` in `crates/imap/src/lib.rs` |
+| POP3 greeting / farewell | `+OK Stalwart POP3 at your service.` | No — `static SERVER_GREETING` in `crates/pop3/src/lib.rs` |
+| ManageSieve capability | `"IMPLEMENTATION" "Stalwart ManageSieve"` | No — and RFC 5804 *requires* an IMPLEMENTATION capability |
+| SMTP EHLO line | `… you had me at EHLO` (a Stalwart-unique phrasing) | No |
+| HTTP `Server` header | *nothing* — no product/version header is exposed publicly | already clean ✓ |
+
+**Why "just change the SMTP banner" is rejected.** It is the only knob config gives us,
+and using it alone produces a system that *looks* anonymised while `IMAP ID` still
+answers `Stalwart` with its version on request, and — the part that matters most —
+**every message the platform sends carries `(Stalwart SMTP)` in a `Received:` header
+that recipients keep indefinitely.** That is false assurance, which is worse than a
+known-and-accepted disclosure.
+
+**Why we accept the disclosure.** Banner suppression is security-through-obscurity. It
+does cut noise from automated version-specific scanners, which is a modest real benefit
+— but it stops nobody who actually looks, because the capability sets, the distinctive
+EHLO phrasing, error strings, and response timing all fingerprint the implementation
+regardless. The platform's mail security posture rests on things that hold up when the
+software IS known: scoped firewall rules, TLS everywhere, fail2ban/autoban, SPF/DKIM/
+DMARC, and staying current on releases.
+
+**Options that WOULD work, and their cost** — reopen only with a concrete driver:
+
+- *Patched build.* Fork Stalwart, patch the ~8 string sites plus the `ID` response,
+  publish our own image. This is the only route that genuinely achieves suppression. It
+  means owning a fork of the mail server and rebasing it on every upstream release —
+  ADR-030 records four breaking releases in twelve months. Note that an unusual
+  `Received:` product token is itself a fingerprint, so this trades one signal for another.
+- *Upstream a config option.* Propose a branding/greeting setting to Stalwart covering
+  the statics, the `ID` response, and the `Received:` token. Fits our OSS posture and is
+  sustainable, but depends on upstream and will not land quickly.
+
+**A proxy-side rewrite is not available.** HAProxy fronts the mail ports in
+`allServerNodes` mode, but 465/993/995 are implicit TLS terminated at Stalwart, so the
+proxy never sees the plaintext greeting. Making it visible would mean moving TLS
+termination — a mail cert-strategy change, which is off-limits without an explicit
+operator decision.
+
+If a compliance requirement ever forces the issue, the patched build is the only option
+that survives a re-test; partial suppression will not.
+
 ## CI guards
 
 - `scripts/ci-firewall-check.sh` — validates bootstrap.sh has the right SSH rendering paths AND dual-stack symmetry on saddr scopes.
@@ -225,6 +282,9 @@ grants `networkpolicies` cluster-wide.
 Both should pass on every PR; both will be wired into CI under `Infrastructure CI`.
 
 ## Operator FAQ
+
+**Q: Can we hide that we run Stalwart? The SMTP/IMAP/POP3 banners announce it.**
+A: Not meaningfully, and we deliberately don't try. Only the SMTP `220` banner is configurable; the IMAP/POP3/ManageSieve greetings are compile-time constants, `IMAP ID` reports name + version + vendor, and every outbound message carries `(Stalwart SMTP)` in its `Received:` header. Changing just the one configurable surface would look anonymised while the rest still discloses everything. See *Mail server software disclosure* above for the full table and the two options that would actually work.
 
 **Q: Can I undo `--ssh-via-mesh` without locking myself out?**
 A: Yes — re-run `bootstrap.sh --rejoin` (no `--ssh-via-mesh` flag). The conditional rendering in bootstrap.sh restores `tcp dport 22 accept`.
