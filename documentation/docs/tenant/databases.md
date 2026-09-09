@@ -118,10 +118,19 @@ you the path; download it from the [File Manager](files-and-sftp.md).
 
 Use the **Import** menu to load a dump:
 
-- **Direct upload** accepts a plain `.sql` file.
+- **Direct upload** accepts a plain `.sql` file of any size. The file is
+  transferred to your storage and imported from there, then removed — so large
+  dumps work the same way small ones do.
 - For compressed archives (`.gz`, `.tar`, `.zip`), first upload the file in the
   [File Manager](files-and-sftp.md), then choose **Import from File** and pick
   it.
+
+!!! note "Changed in 2026.9"
+    Direct upload previously sent the SQL in the request itself, which the
+    platform's web firewall blocked — a dump's ordinary contents (`DROP
+    TABLE`, `INSERT … SELECT`) look exactly like an injection attempt. Uploads
+    now take the same route as **Import from File**, so direct upload works
+    regardless of what the dump contains, and the old 50 MB limit is gone.
 
 !!! warning "Imports overwrite"
     Importing a dump writes its contents into the selected database, replacing
