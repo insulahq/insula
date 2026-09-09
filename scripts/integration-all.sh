@@ -387,6 +387,11 @@ PARALLEL=(
   # compose docs, cron/entrypoint commands) reach platform-api while still
   # blocking traversal/SQLi. Unauthenticated edge probes; nothing created.
   "waf-deploy-surfaces:integration-waf-deploy-surfaces.sh"
+  # ADR-060 scope guard. Asserts the WAF stops inspecting platform-API BODIES
+  # while every URL/method/header rule still blocks — including on a tenant
+  # host, which must keep full coverage. Unauthenticated edge probes only
+  # (the WAF answers before auth), so nothing is created or mutated.
+  "waf-api-scope:integration-waf-api-scope.sh"
 )
 SERIAL_POST=(
   # waf-crowdsec BANS the shared harness outbound IP (Phase 4, ~3 min) to verify
