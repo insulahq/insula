@@ -85,9 +85,18 @@ For `/api/v1/**` on the admin/tenant/api panel hosts only:
 ```
 SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\." \
     "id:9000114,phase:1,pass,nolog,chain,\
-     ctl:requestBodyAccess=Off,ctl:responseBodyAccess=Off"
+     ctl:requestBodyAccess=Off,ctl:ruleRemoveByTag=attack-disclosure"
     SecRule REQUEST_URI "@rx ^/api/v1/" "t:none"
 ```
+
+**`ctl:responseBodyAccess` does not exist in ModSecurity v3.** The obvious
+symmetric form is unparseable and stops `modsec-crs` starting at all
+("Expecting an action, got: ctl:responseBodyAccess=Off"). The response
+direction is handled by dropping the `attack-disclosure` tag, which covers the
+whole RESPONSE-95x data-leakage family — 953120 (PHP source leakage) and its
+siblings. 959100, the outbound anomaly evaluator, then never accumulates a
+score because its contributors are gone. Established by running the real image
+with its real entrypoint; see *Verification*.
 
 Everything else stays: URL, method, header and **query-string** rules all still
 apply, on the API and everywhere else.
@@ -169,7 +178,23 @@ the path (`scripts/integration-waf-api-scope.sh`):
 | `/api/v1/…` on a TENANT host | **still fully inspected** |
 | non-API path on a panel host | **still fully inspected** |
 
-The rule file is parse-tested against the exact production image before it
-ships. A chained `SecRule` with no action list at end-of-file bled into the
-next-loaded file once before and returned 502 for every WAF request; whichever
-rule is last must carry an action list.
+**How to parse-test a rule change — and how NOT to.**
+
+`nginx -t` in an ad-hoc pod is worthless here. Overriding the container
+`command` (e.g. `sleep`) skips `/docker-entrypoint.sh`, so the nginx config that
+loads the rules is never generated and `nginx -t` returns "syntax is ok" without
+having read them. That harness returns rc=0 on a file that provably crashes the
+real container — it has no power to fail, and it passed both the missing-action
+bug and the `ctl:responseBodyAccess` bug straight through to a merge.
+
+The check that works: run the **real image with its real command**, mounting the
+candidate rules over
+`/etc/modsecurity.d/owasp-crs/rules/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf`,
+and assert the container reaches Ready. Always control-test it by feeding the
+known-broken file and confirming it FAILS; a parse check that has never failed
+has not been shown to work.
+
+Two failure modes it catches, both hit while writing this ADR:
+- a chained `SecRule` with no action list at end-of-file bleeds into the next
+  rule file — nginx refuses to start, 502 for every WAF request;
+- an unsupported `ctl:` action makes the whole file unparseable.
