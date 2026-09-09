@@ -77,6 +77,21 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   picks it up in the background. Nothing is lost if that background step is
   interrupted: the stored configuration is what a pod reads when it starts, so
   the site is correct either way.
+- **Deleting an app that served several websites failed, and left it
+  half-deleted.** If any of its hostnames had a folder assigned, the delete
+  reported an error — while the app had already been marked deleted and its
+  workload shut down. The websites stayed pointed at something that no longer
+  existed, so they went offline, and the error made it look as though nothing
+  had happened. Deleting now succeeds and detaches those hostnames cleanly, and
+  the two steps share a transaction so a failure can no longer leave the app in
+  between.
+- **A customer with exactly enough quota left was told they had none.** The
+  deploy dialog compared CPU and memory as decimals, and summing values like
+  `100m` in that form drifts by a fraction too small to display — so the panel
+  showed, for instance, 0.10 cores available and 0.10 cores required and still
+  refused to deploy, with no way round it but raising a limit the customer had
+  not actually reached. Usage is now summed in whole milli-cores and mebibytes,
+  so an exact fit compares equal.
 - **Setting the folder a hostname serves did nothing, with no error shown.**
   Two faults met: the folder-name rule allowed only lowercase letters, digits,
   hyphens and underscores, so `business.na` — a folder named after the site it
