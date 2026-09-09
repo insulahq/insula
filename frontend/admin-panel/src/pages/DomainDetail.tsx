@@ -432,11 +432,17 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
                       // own config file wants these literally.
                       const sitesRoot = multihostSitesRoot(target.catalogEntryId);
                       const abs = (rel: string | null) => (rel && sitesRoot ? `${sitesRoot}/${rel}` : null);
+                      // The two ABSOLUTE paths an app's own config file needs.
+                      // The sandbox is described in words rather than printed
+                      // as a value: composing it here duplicated the renderer's
+                      // knowledge and went stale as soon as session storage
+                      // added a third entry.
                       const pathHint = appRoot && sitesRoot
                         ? [
                             `Application root:  ${abs(appRoot)}`,
                             `Document root:     ${abs(folder)}`,
-                            `open_basedir:      ${abs(appRoot)}:/tmp`,
+                            '',
+                            'This site can only read inside its application root.',
                           ].join('\n')
                         : 'Folder this hostname serves';
                       return (
