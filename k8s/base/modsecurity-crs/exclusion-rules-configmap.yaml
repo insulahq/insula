@@ -630,3 +630,46 @@ data:
         # are mid-file — the parser recovers on the next comment line. Never
         # copy that shape to the end of this file.
         SecRule REQUEST_URI "@rx ^/api/v1/" "t:none"
+
+    # ── File content: the RESPONSE is the file ────────────────────────
+    #
+    # The file-manager's read/write/download endpoints return a tenant's own
+    # file bytes in the RESPONSE body. CRS scans responses too, so saving or
+    # opening a PHP file trips 953120 "PHP source code leakage" and pushes
+    # 959100 (outbound anomaly) to 4 of a threshold of 5 — one rule short of
+    # the File Manager being unable to handle PHP at all, for every tenant.
+    # Observed on production 2026-09-09.
+    #
+    # 9000104 above already exempts the REQUEST direction for /files/write
+    # (ctl:ruleRemoveTargetByTag=…;ARGS:json.content). It cannot help here:
+    # 953120 targets RESPONSE_BODY, which no ARGS-scoped exclusion reaches.
+    #
+    # Excluding 953120 + 959100 by id would not settle it either. The bytes are
+    # arbitrary by definition — a .env trips 930xxx, a shell script 932xxx, a
+    # SQL dump 942xxx — so no finite rule list covers "the contents of a file
+    # the tenant is entitled to store". Turning response-body inspection off
+    # for these three URIs is the only form that holds for every file type.
+    #
+    # Deliberately NARROW. This disables RESPONSE body scanning only:
+    #   - REQUEST body scanning is untouched.
+    #   - Every URL/method/header rule still applies — 930130
+    #     (REQUEST_FILENAME), 911100 (REQUEST_METHOD), 920440
+    #     (REQUEST_BASENAME), 920420 (Content-Type). Those are the rules that
+    #     catch every real attack in 30 days of logs; none of them reads a body.
+    #   - Query-string ARGS stay inspected, so ?path=../../etc/passwd is still
+    #     caught by the traversal family.
+    # Chained on X-Forwarded-Host so a TENANT app serving its own
+    # /api/v1/tenants/x/files/read keeps full coverage — same reasoning as
+    # 9000103.
+    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\." \
+        "id:9000113,\
+         phase:1,\
+         pass,\
+         nolog,\
+         chain,\
+         ctl:responseBodyAccess=Off"
+        # LAST rule in the file — the action list is REQUIRED. See 9000112
+        # above: a chained SecRule with no actions makes the parser continue
+        # into the next-loaded file, nginx refuses to start, and every request
+        # through the WAF returns 502.
+        SecRule REQUEST_URI "@rx ^/api/v1/tenants/[^/]+/files/(read|write|download)$" "t:none"
