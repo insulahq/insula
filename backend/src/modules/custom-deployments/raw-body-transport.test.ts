@@ -1,38 +1,20 @@
 import { describe, it, expect } from 'vitest';
 import Fastify from 'fastify';
+import { registerRawBodyParser } from './raw-body-transport.js';
 
 /**
  * ADR-060 raw transport: the custom-deployments routes accept the SAME JSON
  * body under `application/octet-stream`, so the WAF never parses a compose
  * document or a `.env` into ARGS and matches it as an attack.
  *
- * These tests exercise the content-type parser in isolation rather than the
- * whole route module, which needs Kubernetes clients. The parser is the part
- * that can silently break: if it stops accepting octet-stream, every submit
- * from the panel 415s; if it stops accepting JSON, the editor breaks for the
- * length of a rollout, since panels and API are separate Deployments.
+ * These tests drive the PRODUCTION `registerRawBodyParser` — not a copy of it.
+ * An earlier version of this file re-declared the parser inline and would have
+ * kept passing if the real one broke.
  */
-
-/** Mirrors the parser registered in routes.ts. */
-function registerParser(app: ReturnType<typeof Fastify>): void {
-  app.addContentTypeParser(
-    'application/octet-stream',
-    { parseAs: 'string' },
-    (_req, body, done) => {
-      const raw = typeof body === 'string' ? body : String(body);
-      if (raw.trim() === '') { done(null, {}); return; }
-      try {
-        done(null, JSON.parse(raw) as unknown);
-      } catch {
-        done(Object.assign(new Error('Body is not valid JSON'), { statusCode: 400 }), undefined);
-      }
-    },
-  );
-}
 
 async function build() {
   const app = Fastify();
-  registerParser(app);
+  registerRawBodyParser(app);
   app.post('/echo', async (req) => ({ got: req.body }));
   await app.ready();
   return app;
@@ -83,6 +65,9 @@ describe('custom-deployments raw body transport (ADR-060)', () => {
       payload: '{"mode":"compose"',
     });
     expect(res.statusCode).toBe(400);
+    // The production parser raises ApiError, so the envelope carries a code —
+    // a plain Error would 500 and lose it.
+    expect(res.json().error?.code ?? res.json().code).toBe('INVALID_FIELD_VALUE');
     await app.close();
   });
 
@@ -95,6 +80,22 @@ describe('custom-deployments raw body transport (ADR-060)', () => {
     });
     expect(res.statusCode).toBe(200);
     expect(res.json().got).toEqual({});
+    await app.close();
+  });
+
+  it('does NOT register the parser on an app that never called it', async () => {
+    // Guards the encapsulation property the security review turned on: the
+    // parser must not leak to Fastify instances that did not opt in. Verified
+    // in-cluster too — /domains returns 415 for octet-stream.
+    const app = Fastify();
+    app.post('/echo', async (req) => ({ got: req.body }));
+    await app.ready();
+    const res = await app.inject({
+      method: 'POST', url: '/echo',
+      headers: { 'content-type': 'application/octet-stream' },
+      payload: JSON.stringify(COMPOSE),
+    });
+    expect(res.statusCode).toBe(415);
     await app.close();
   });
 });

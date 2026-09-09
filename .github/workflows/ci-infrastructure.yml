@@ -400,6 +400,19 @@ jobs:
       - name: Verify no contract scope is unreachable from the UI
         run: ./scripts/ci-waf-scope-coverage-check.sh
 
+  modsec-rules-parse-guard:
+    name: modsec exclusion rules actually parse
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # Loads the rendered rule files into the real CRS image and asserts nginx
+      # stays up. On 2026-09-09 two unparseable rule files reached development
+      # within an hour; each one CrashLoopBackOffs every modsec-crs pod, so
+      # every WAF'd request 502s. `nginx -t` in an ad-hoc container cannot
+      # catch this — see the script header.
+      - name: Load the rules into the real CRS image
+        run: ./scripts/ci-modsec-rules-parse-check.sh
+
   waf-admin-carveout-guard:
     name: The WAF-management API is not behind the WAF
     runs-on: ubuntu-latest
