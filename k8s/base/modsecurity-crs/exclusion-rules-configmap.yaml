@@ -677,8 +677,7 @@ data:
          pass,\
          nolog,\
          chain,\
-         ctl:requestBodyAccess=Off,\
-         ctl:responseBodyAccess=Off"
+         ctl:requestBodyAccess=Off,ctl:responseBodyAccess=Off"
         # LAST rule in the file — the action list is REQUIRED. See 9000112:
         # a chained SecRule with no actions makes the parser continue into the
         # next-loaded file, nginx refuses to start, and every request through
