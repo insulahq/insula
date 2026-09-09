@@ -1609,8 +1609,16 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           );
           if (report.remediated.length > 0 || report.failed.length > 0) {
             app.log.warn({ ...report }, 'multihost: isolation remediation sweep finished');
+          } else if (report.scanned > 0 && report.notFound.length === report.scanned) {
+            // Every row had no workload to look at. That is not a clean sweep,
+            // it is a sweep that examined nothing — which is exactly how a
+            // wrongly-composed namespace looked for its entire existence.
+            app.log.warn({ ...report }, 'multihost: remediation sweep INSPECTED NOTHING — every workload was absent');
           } else {
-            app.log.info({ scanned: report.scanned }, 'multihost: all instances already isolated');
+            app.log.info(
+              { scanned: report.scanned, notFound: report.notFound.length },
+              'multihost: all instances already isolated',
+            );
           }
         } catch (err) {
           app.log.error({ err }, 'multihost: isolation remediation sweep failed to run');
