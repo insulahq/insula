@@ -1,6 +1,8 @@
 # ADR-060: WAF body inspection does not apply to the platform API
 
-**Status:** Accepted (2026-09-09)
+**Status:** Amended (2026-09-09) — the analysis stands; the WAF-configuration
+implementation was tried, measured, and **rejected**. The accepted remedy is a
+transport pattern, not a rule change. See *Decision* and *What was tried*.
 
 The OWASP CRS ruleset inspects request and response bodies on the admin and
 tenant panel hosts. This ADR stops it doing that for `/api/v1/**` on those
@@ -80,26 +82,54 @@ caught on the URL, exactly as today's is.
 
 ## Decision
 
-For `/api/v1/**` on the admin/tenant/api panel hosts only:
+**Do not attempt this with WAF configuration.** There is no mechanism in
+ModSecurity v3 that exempts request bodies for a path prefix without either
+disabling most of the ruleset or enumerating individual fields forever.
 
-```
-SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\." \
-    "id:9000114,phase:1,pass,nolog,chain,\
-     ctl:requestBodyAccess=Off,ctl:ruleRemoveByTag=attack-disclosure"
-    SecRule REQUEST_URI "@rx ^/api/v1/" "t:none"
-```
+Instead, **content-bearing endpoints carry their payload as
+`application/octet-stream`**, which ModSecurity never parses into `ARGS`. The
+payload is then structurally invisible to the body rules while every other rule
+keeps working, with no per-field maintenance.
 
-**`ctl:responseBodyAccess` does not exist in ModSecurity v3.** The obvious
-symmetric form is unparseable and stops `modsec-crs` starting at all
-("Expecting an action, got: ctl:responseBodyAccess=Off"). The response
-direction is handled by dropping the `attack-disclosure` tag, which covers the
-whole RESPONSE-95x data-leakage family — 953120 (PHP source leakage) and its
-siblings. 959100, the outbound anomaly evaluator, then never accumulates a
-score because its contributors are gone. Established by running the real image
-with its real entrypoint; see *Verification*.
+This is already the platform's pattern and it is proven in production:
 
-Everything else stays: URL, method, header and **query-string** rules all still
-apply, on the API and everywhere else.
+- `/files/upload-raw` (rule `9000105`) — the body IS the file.
+- SQL Manager import — moved to `upload-raw` + `import-from-file`; verified
+  end to end on DEV with the WAF in the request path, rows confirmed in MariaDB.
+
+The cost per endpoint is one `ctl:ruleRemoveById=920420` (CRS rejects
+`application/octet-stream` by default), which is a single fixed rule rather than
+an open-ended list that grows with every new field.
+
+## What was tried, and measured
+
+All four were run against the real `modsec-crs` image with its real entrypoint,
+sending live requests through it. `200` = passed, `403` = blocked.
+
+| Mechanism | SQL in JSON body | `930130` URL rule | query-string SQLi | Verdict |
+|---|---|---|---|---|
+| `ctl:requestBodyAccess=Off` | passes | **404 — broken** | **401 — broken** | **rejected** |
+| `ctl:responseBodyAccess=Off` | — | — | — | **does not exist in v3** |
+| `ruleRemoveTargetByTag=…;REQUEST_BODY,ARGS_POST` | **403 — no effect** | 403 ✓ | 403 ✓ | insufficient |
+| + `ctl:requestBodyProcessor=URLENCODED` | **403 — no effect** | 403 ✓ | 403 ✓ | insufficient |
+
+**Why `requestBodyAccess=Off` is disqualified.** It does not disable body
+parsing — it skips **the whole of phase 2**, where roughly 80% of CRS rules
+live. The CRS project documents this as a complete-bypass footgun
+("Disabling Request Body Access in ModSecurity 3 Leads to Complete Bypass",
+2021-03-02). Measured here: `/api/v1/.env` stopped being blocked, and so did
+SQL injection in a **query string**. It was shipped to DEV and reverted the same
+hour.
+
+**Why target-stripping is insufficient.** `REQUEST_BODY` and `ARGS_POST` do not
+cover a JSON body: ModSecurity's JSON processor expands it into `ARGS:json.<field>`.
+That is why the existing `9000104` names `ARGS:json.content` explicitly — a
+per-field exclusion, which is exactly the open-ended list this ADR set out to
+eliminate. Forcing `requestBodyProcessor=URLENCODED` does not change the result.
+
+Everything else in this ADR — the rule-target split, the threat model, the
+traffic analysis — is unaffected and remains the reasoning behind preferring
+opaque transport over inspection exemptions.
 
 ### What is explicitly NOT exempted
 
@@ -148,9 +178,9 @@ rules, plus CrowdSec and the body cap, before the application sees anything.
 
 ## Consequences
 
-- The carve-out list stops growing. `9000104`, `9000105` and `9000113` become
-  redundant and are left in place only until this ships and is verified, then
-  removed in a follow-up so the file does not accumulate dead rules.
+- The carve-out list still grows, but only when a NEW transport endpoint is
+  added — one `920420` exclusion each — rather than once per content type or
+  per JSON field. `9000104` and `9000105` stay; they are that pattern.
 - New content-bearing endpoints under `/api/v1/` need no WAF work. That is the
   point: the failure mode being removed is "feature ships, operator hits a 403
   in production, someone writes an exclusion".
@@ -159,9 +189,9 @@ rules, plus CrowdSec and the body cap, before the application sees anything.
 - One shared modsec config serves all WAF'd traffic, so a scoping error reaches
   tenant sites. Mitigated by the host chain and by the test matrix below, which
   asserts a tenant host keeps coverage.
-- If a future audit requires body inspection on the API, the fix is to put the
-  payload somewhere CRS does not parse (`application/octet-stream`), not to
-  re-enable the rules — see the SQL import, which took that route and works.
+- Endpoints that still embed content in a JSON field keep tripping the WAF
+  until they move to opaque transport. That is now a known, bounded backlog
+  rather than an open-ended rule-tuning exercise.
 
 ## Verification
 
