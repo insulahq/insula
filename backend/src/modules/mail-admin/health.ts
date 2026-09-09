@@ -63,19 +63,21 @@ const PROBE_TIMEOUT_MS = 5_000;
 const STALWART_SERVICE_HOST = 'stalwart-mail.mail.svc.cluster.local';
 
 // Mail ports we expect Stalwart to expose. Cert probe only hits the
-// implicit-TLS ports (465/993); STARTTLS ports are TCP-only here.
+// implicit-TLS ports (465/993/995); STARTTLS ports are TCP-only here.
 const TCP_PORTS: ReadonlyArray<{ port: number; label: MailHealthTcpPort['port'] }> = [
   { port: 25, label: 25 },
   { port: 465, label: 465 },
   { port: 587, label: 587 },
   { port: 143, label: 143 },
   { port: 993, label: 993 },
+  { port: 995, label: 995 },
   { port: 4190, label: 4190 },
 ];
 
 const TLS_PORTS: ReadonlyArray<{ port: number; protocol: MailHealthCertPort['protocol'] }> = [
   { port: 465, protocol: 'smtps' },
   { port: 993, protocol: 'imaps' },
+  { port: 995, protocol: 'pop3s' },
 ];
 
 let cache: { response: MailHealthResponse; expiresAt: number } | null = null;

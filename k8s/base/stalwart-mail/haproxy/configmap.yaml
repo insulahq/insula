@@ -1,6 +1,6 @@
 # haproxy config for Stalwart PROXY-Protocol v2 forwarding.
 # Deployed on every server-role node when mail port exposure mode is 'allServerNodes'.
-# haproxy runs hostNetwork and binds the PUBLIC mail ports (25/465/587/143/993/4190)
+# haproxy runs hostNetwork and binds the PUBLIC mail ports (25/465/587/143/993/995/4190)
 # on each non-active node directly (the frontends below), so external mail reaches
 # haproxy without any Service externalIP.
 #
@@ -84,6 +84,13 @@ data:
 
     backend stalwart_imaps
       server stalwart stalwart-mail.mail.svc.cluster.local:12993 send-proxy-v2 check inter 10s
+
+    frontend pop3s_in
+      bind :::995 v4v6
+      default_backend stalwart_pop3s
+
+    backend stalwart_pop3s
+      server stalwart stalwart-mail.mail.svc.cluster.local:12995 send-proxy-v2 check inter 10s
 
     frontend sieve_in
       bind :::4190 v4v6

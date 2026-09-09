@@ -5,7 +5,7 @@
  * Why this exists:
  *   The haproxy DaemonSet fronts the public mail ports on every non-active
  *   node and forwards each connection to Stalwart's DEDICATED PROXY-protocol
- *   listeners (`*-proxy`, internal ports 12025/12465/12587/12143/12993/14190)
+ *   listeners (`*-proxy`, internal ports 12025/12465/12587/12143/12993/12995/14190)
  *   with a `send-proxy-v2` header carrying the real client IP. Stalwart only
  *   parses that header from a TRUSTED source — so the `-proxy` listeners must
  *   carry `overrideProxyTrustedNetworks` = the cluster POD CIDR.
@@ -172,7 +172,7 @@ export async function runProxyNetworksReconcilerTick(
   // multi-node staging 2026-06-29.
   //
   // WHY ONLY the `-proxy` listeners (and never the standard ones): trusting
-  // the pod CIDR on the standard mail listeners (25/465/587/143/993/4190)
+  // the pod CIDR on the standard mail listeners (25/465/587/143/993/995/4190)
   // would force Stalwart to REQUIRE a PROXY-v2 frame on every cluster-
   // internal direct connection — Roundcube, Bulwark, the mail-admin health
   // prober, and the integration probes all reach Stalwart via the Service
@@ -231,7 +231,7 @@ export async function runProxyNetworksReconcilerTick(
   // ── Step 2: per-listener overrideProxyTrustedNetworks ────────────────
   // ONLY the dedicated PROXY-protocol listeners (name ends with `-proxy`)
   // get trust = the pod CIDR; every other listener (standard mail
-  // 25/465/587/143/993/4190, http, mgmt) gets an EMPTY override so it
+  // 25/465/587/143/993/995/4190, http, mgmt) gets an EMPTY override so it
   // inherits the empty global and is never PROXY-v2-sniffed. See the
   // proxyListenerTrust block above for the full rationale.
   //
