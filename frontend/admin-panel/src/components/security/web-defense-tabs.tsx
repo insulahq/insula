@@ -23,6 +23,8 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import UserLabel from '@/components/ui/UserLabel';
+import SortableHeader from '@/components/ui/SortableHeader';
+import { useSortable } from '@/hooks/use-sortable';
 import {
   RefreshCw,
   Network,
@@ -1727,10 +1729,27 @@ function WhitelistRuleModal({ prefill, onClose }: { prefill: WhitelistPrefill; o
 export function WafExclusionsTab() {
   const [includeDisabled, setIncludeDisabled] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
+  const [q, setQ] = useState('');
   const { data, isLoading, isError, error, refetch, isFetching } = useWafRuleExclusions({ includeDisabled });
   const exclusions: WafRuleExclusionAdminListResponse['exclusions'] = data?.data?.exclusions ?? [];
   const update = useUpdateWafRuleExclusion();
   const del = useDeleteWafRuleExclusion();
+
+  // Search across every column an operator can actually read, so typing a rule
+  // id, a hostname fragment, a tenant or a word from the reason all narrow the
+  // list. `createdBy` is deliberately NOT searched: it holds a uuid, and
+  // matching on it would let a query "find" rows whose visible By/When text has
+  // nothing to do with what was typed.
+  const filtered = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    if (!needle) return exclusions;
+    return exclusions.filter((x) => [
+      x.ruleId, x.hostnameRegex, x.scope, x.reason,
+      x.tenantName ?? (x.tenantId ? '' : 'admin'),
+    ].some((f) => (f ?? '').toString().toLowerCase().includes(needle)));
+  }, [exclusions, q]);
+
+  const { sortedData, sortKey, sortDirection, onSort } = useSortable(filtered, 'createdAt');
 
   return (
     <section className="space-y-4" data-testid="waf-exclusions-tab">
@@ -1787,6 +1806,24 @@ export function WafExclusionsTab() {
         </button>
       </div>
 
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative flex-1 min-w-[220px]">
+          <Search size={13} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
+          <input
+            type="search"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Search rule, host, scope, owner or reason…"
+            aria-label="Search rule exclusions"
+            className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 py-1.5 pl-8 pr-2 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400"
+            data-testid="exclusions-search"
+          />
+        </div>
+        <span className="text-xs text-gray-500 dark:text-gray-400" data-testid="exclusions-count">
+          {q.trim() ? `${filtered.length} of ${exclusions.length}` : `${exclusions.length}`} exclusion{exclusions.length === 1 ? '' : 's'}
+        </span>
+      </div>
+
       {isLoading && <SkeletonLoader />}
       {isError && (
         <div className="rounded-lg border border-red-300 bg-red-50 dark:bg-red-900/20 dark:border-red-700 p-4 text-sm text-red-700 dark:text-red-300">
@@ -1799,18 +1836,22 @@ export function WafExclusionsTab() {
           <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700 text-sm">
             <thead className="bg-gray-50 dark:bg-gray-900 text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">
               <tr>
-                <th className="px-4 py-2 text-left">Rule</th>
-                <th className="px-4 py-2 text-left">Host regex (X-Forwarded-Host)</th>
-                <th className="px-4 py-2 text-left">Scope</th>
-                <th className="px-4 py-2 text-left">Owner</th>
-                <th className="px-4 py-2 text-left">Reason</th>
-                <th className="px-4 py-2 text-left">By / when</th>
-                <th className="px-4 py-2 text-left">Status</th>
+                <SortableHeader label="Rule" sortKey="ruleId" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+                <SortableHeader label="Host regex (X-Forwarded-Host)" sortKey="hostnameRegex" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+                <SortableHeader label="Scope" sortKey="scope" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+                <SortableHeader label="Owner" sortKey="tenantName" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+                <SortableHeader label="Reason" sortKey="reason" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+                {/* Sorts by createdAt, not by the resolved name: the name is
+                    looked up per-row in UserLabel and is not on the row object,
+                    so a "By" sort would silently order by nothing. "When" is
+                    the half of this column that is genuinely sortable. */}
+                <SortableHeader label="By / when" sortKey="createdAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+                <SortableHeader label="Status" sortKey="disabled" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
                 <th className="px-4 py-2 text-left">Action</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
-              {exclusions.map((x) => (
+              {sortedData.map((x) => (
                 <tr key={x.id} data-testid={`exclusion-row-${x.id}`}>
                   <td className="px-4 py-2 font-mono text-xs text-gray-900 dark:text-gray-100">{x.ruleId}</td>
                   <td className="px-4 py-2 font-mono text-[11px] text-gray-700 dark:text-gray-200 break-all">{x.hostnameRegex}</td>
