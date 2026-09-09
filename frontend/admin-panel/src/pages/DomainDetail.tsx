@@ -16,6 +16,7 @@ import { useDnsRecords, useCreateDnsRecord, useDeleteDnsRecord } from '@/hooks/u
 import { useIngressRoutes, useCreateIngressRoute, useUpdateIngressRoute, useDeleteIngressRoute } from '@/hooks/use-ingress-routes';
 import { useDeployments } from '@/hooks/use-deployments';
 import TenantFolderPicker from '@/components/TenantFolderPicker';
+import { useCatalog } from '@/hooks/use-catalog';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
 import { useSslCert, useUploadSslCert, useDeleteSslCert } from '@/hooks/use-ssl-certs';
@@ -296,6 +297,21 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
   };
 
   const [folderPickerRouteId, setFolderPickerRouteId] = useState<string | null>(null);
+  const [folderPickerField, setFolderPickerField] = useState<'app_root' | 'site_folder'>('app_root');
+  const { data: catalogData } = useCatalog();
+  /**
+   * Where the pod mounts the tenant volume, straight from the catalog manifest
+   * — the same value the renderer uses to build DocumentRoot and open_basedir,
+   * so the paths shown here are the paths in the generated config.
+   */
+  const multihostSitesRoot = (catalogEntryId?: string): string | null => {
+    if (!catalogEntryId) return null;
+    const entries = (Array.isArray(catalogData) ? catalogData : catalogData?.data) ?? [];
+    const entry = entries.find(
+      (e: { id?: string }) => e.id === catalogEntryId,
+    ) as { multihost?: { sites_root?: string } | null } | undefined;
+    return entry?.multihost?.sites_root ?? null;
+  };
 
   /**
    * Assign the folder a hostname serves on a multi-host deployment.
@@ -304,11 +320,27 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
    * storage root and the leading slash is stripped to get the root-relative
    * form the API stores.
    */
-  const handleAssignFolder = (routeId: string, absolutePath: string | null) => {
+  const handleAssignFolder = (
+    routeId: string,
+    absolutePath: string | null,
+    field: 'app_root' | 'site_folder' = 'site_folder',
+  ) => {
     const folder = absolutePath ? absolutePath.replace(/^\/+/, '') : null;
+    // Choosing an application root moves the document root with it — the
+    // document root must live inside the sandbox, and the server validates the
+    // pair as it will be AFTER the write, so both go in ONE patch.
+    const patch = field === 'app_root'
+      ? { routeId, app_root: folder || null, site_folder: folder || null }
+      : { routeId, site_folder: folder || null };
     updateRoute.mutate(
-      { routeId, site_folder: folder || null },
-      { onSettled: () => setFolderPickerRouteId(null) },
+      patch,
+      {
+        // onSuccess, not onSettled: closing the picker on failure too made a
+        // rejected assignment look exactly like an accepted one — the dialog
+        // shut and the row was unchanged. On failure the picker stays open and
+        // `updateRoute.error` is rendered below the table.
+        onSuccess: () => setFolderPickerRouteId(null),
+      },
     );
   };
 
@@ -392,20 +424,49 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
                         root with nothing explaining why. */}
                     {(() => {
                       const target = deployments.find((d) => d.id === route.deploymentId) as
-                        { multihostEnabled?: boolean } | undefined;
+                        { multihostEnabled?: boolean; catalogEntryId?: string } | undefined;
                       if (!target?.multihostEnabled) return null;
                       const folder = (route as { siteFolder?: string | null }).siteFolder ?? null;
+                      const appRoot = (route as { appRoot?: string | null }).appRoot ?? folder;
+                      // The absolute paths the generated vhost uses — an app's
+                      // own config file wants these literally.
+                      const sitesRoot = multihostSitesRoot(target.catalogEntryId);
+                      const abs = (rel: string | null) => (rel && sitesRoot ? `${sitesRoot}/${rel}` : null);
+                      // The two ABSOLUTE paths an app's own config file needs.
+                      // The sandbox is described in words rather than printed
+                      // as a value: composing it here duplicated the renderer's
+                      // knowledge and went stale as soon as session storage
+                      // added a third entry.
+                      const pathHint = appRoot && sitesRoot
+                        ? [
+                            `Application root:  ${abs(appRoot)}`,
+                            `Document root:     ${abs(folder)}`,
+                            '',
+                            'This site can only read inside its application root.',
+                          ].join('\n')
+                        : 'Folder this hostname serves';
                       return (
                         <div className="mt-1 flex items-center gap-1">
                           <button
                             type="button"
-                            onClick={() => setFolderPickerRouteId(route.id)}
+                            onClick={() => { setFolderPickerField('app_root'); setFolderPickerRouteId(route.id); }}
                             className="inline-flex items-center gap-1 rounded border border-gray-200 dark:border-gray-600 px-1.5 py-0.5 font-mono text-[11px] text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
-                            data-testid={`site-folder-button-${route.id}`}
-                            title="Folder this hostname serves"
+                            data-testid={`app-root-button-${route.id}`}
+                            title={pathHint}
                           >
-                            {folder ?? 'document root'}
+                            {appRoot ?? 'document root'}
                           </button>
+                          {appRoot && (
+                            <button
+                              type="button"
+                              onClick={() => { setFolderPickerField('site_folder'); setFolderPickerRouteId(route.id); }}
+                              className="inline-flex items-center gap-1 rounded border border-dashed border-gray-200 dark:border-gray-600 px-1.5 py-0.5 font-mono text-[11px] text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50"
+                              data-testid={`site-folder-button-${route.id}`}
+                              title={pathHint}
+                            >
+                              docroot: {folder === appRoot ? '(app root)' : folder?.slice(appRoot.length + 1)}
+                            </button>
+                          )}
                           {folder && (
                             <button
                               type="button"
@@ -518,13 +579,33 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
           only children of the deployment's own storage path. Read-only — an
           admin picks an existing folder rather than creating one on the
           tenant's behalf. */}
-      {folderPickerRouteId && (
-        <TenantFolderPicker
-          tenantId={tenantId}
-          initialPath="/"
-          isPending={updateRoute.isPending}
-          onClose={() => setFolderPickerRouteId(null)}
-          onConfirm={(path) => handleAssignFolder(folderPickerRouteId, path)}
+      {folderPickerRouteId && (() => {
+          const r = routes.find((x) => x.id === folderPickerRouteId) as
+            { siteFolder?: string | null; appRoot?: string | null } | undefined;
+          const currentAppRoot = r?.appRoot ?? r?.siteFolder ?? null;
+          const choosingAppRoot = folderPickerField === 'app_root';
+          return (
+            <TenantFolderPicker
+              tenantId={tenantId}
+              title={choosingAppRoot ? 'Choose the application root' : 'Choose the document root'}
+              description={choosingAppRoot
+                ? "The application's top folder. The site's PHP is sandboxed to it, so a data folder outside the web root must still live inside it."
+                : 'The folder served on the web. Restricted to the application root.'}
+              initialPath={choosingAppRoot ? '/' : `/${(r?.siteFolder ?? currentAppRoot ?? '').replace(/^\/+/, '')}`}
+              confineTo={choosingAppRoot ? undefined : (currentAppRoot ?? undefined)}
+              isPending={updateRoute.isPending}
+              onClose={() => setFolderPickerRouteId(null)}
+              onConfirm={(path) => handleAssignFolder(folderPickerRouteId, path, folderPickerField)}
+            />
+          );
+      })()}
+
+      {updateRoute.error && (
+        <ErrorPanel
+          error={extractOperatorError(updateRoute.error)}
+          severity="error"
+          compact
+          testId="route-update-error"
         />
       )}
     </div>

@@ -35,8 +35,32 @@ interface ResourceRow {
   readonly fits: boolean;
 }
 
+/**
+ * Compare in whole milli-cores / MiB rather than in cores / Gi.
+ *
+ * `available` arrives as a JSON float. Anything that accumulates
+ * per-deployment values can land a few ulps below the true remainder
+ * (19 x 0.1 === 1.9000000000000006), which made an exact fit read as a
+ * shortfall and disabled the Deploy button. Kubernetes has no unit finer
+ * than 1m, so rounding to it cannot mask a real difference.
+ */
+const SCALE: Record<string, number> = { cores: 1000, Gi: 1024 };
+
+function fitsWithin(available: number, required: number, unit: string): boolean {
+  const scale = SCALE[unit] ?? 1000;
+  return Math.round(available * scale) >= Math.round(required * scale);
+}
+
+/**
+ * Show enough precision that two printed numbers are never equal while the
+ * row says "Insufficient" — a 0.095 vs 0.100 shortfall both printed as
+ * "0.10" and read as a contradiction.
+ */
 function formatValue(value: number, unit: string): string {
-  if (unit === 'cores') return `${value.toFixed(2)} ${unit}`;
+  if (unit === 'cores') {
+    const precise = value.toFixed(3);
+    return `${precise.endsWith('0') ? precise.slice(0, -1) : precise} ${unit}`;
+  }
   return `${value.toFixed(2)} Gi`;
 }
 
@@ -58,17 +82,17 @@ export default function ResourceRequirementCheck({
     if (minimumCpu) {
       const required = parseCpu(minimumCpu);
       const available = availability.cpuAvailable;
-      result.push({ label: 'CPU', available, required, unit: 'cores', fits: available >= required });
+      result.push({ label: 'CPU', available, required, unit: 'cores', fits: fitsWithin(available, required, 'cores') });
     }
     if (minimumMemory) {
       const required = parseMemoryGi(minimumMemory);
       const available = availability.memoryAvailableGi;
-      result.push({ label: 'Memory', available, required, unit: 'Gi', fits: available >= required });
+      result.push({ label: 'Memory', available, required, unit: 'Gi', fits: fitsWithin(available, required, 'Gi') });
     }
     if (minimumStorage) {
       const required = parseStorageGi(minimumStorage);
       const available = availability.storageAvailableGi;
-      result.push({ label: 'Storage', available, required, unit: 'Gi', fits: available >= required });
+      result.push({ label: 'Storage', available, required, unit: 'Gi', fits: fitsWithin(available, required, 'Gi') });
     }
     return result;
   })();

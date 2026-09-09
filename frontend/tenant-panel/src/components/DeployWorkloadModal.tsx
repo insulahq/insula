@@ -62,6 +62,13 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId,
 
   const selectedImage = useMemo(() => images.find(i => i.id === selectedImageId), [images, selectedImageId]);
 
+  // Multi-host is offered at CREATE so the instance comes up with its mounts
+  // already in place — turning it on later rewrites the pod template and
+  // restarts an app that has not started serving anything yet. Only shown for a
+  // catalog entry that declares the capability.
+  const [multihostEnabled, setMultihostEnabled] = useState(false);
+  const multihostCapable = Boolean((selectedImage as { multihost?: unknown } | undefined)?.multihost);
+
   const { data: storageFoldersData, isLoading: storageFoldersLoading } = useStorageFolders(
     tenantId ?? undefined,
     selectedImage?.type,
@@ -240,6 +247,7 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId,
           ? (selectedExistingFolder ?? `${selectedImage?.type}/${selectedImage?.code}/${customFolderName}`)
           : undefined,
         extra_mounts: filledExtraMounts.length > 0 ? filledExtraMounts : undefined,
+        multihost_enabled: multihostCapable && multihostEnabled ? true : undefined,
       });
       setDeployState('success');
     } catch {
@@ -711,6 +719,35 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId,
                 onChange={setExtraMounts}
                 disabled={createDeployment.isPending}
               />
+            </div>
+          )}
+
+          {/* Optional: multi-host serving. Offered here rather than only after
+              the fact, so a multi-host instance is born with its mounts and
+              never pays the toggle's restart. */}
+          {selectedImageId && multihostCapable && (
+            <div>
+              <label className="block text-sm font-semibold text-gray-900 dark:text-gray-100 mb-2">
+                Multi-host serving <span className="font-normal text-gray-500 dark:text-gray-400">(optional)</span>
+              </label>
+              <label className="flex items-start gap-2 text-sm text-gray-700 dark:text-gray-300">
+                <input
+                  type="checkbox"
+                  checked={multihostEnabled}
+                  onChange={(e) => setMultihostEnabled(e.target.checked)}
+                  disabled={createDeployment.isPending}
+                  className="mt-0.5 rounded border-gray-300 dark:border-gray-600 dark:bg-gray-700"
+                  data-testid="deploy-multihost-checkbox"
+                />
+                <span>
+                  Serve several websites from this one instance, each from its own folder.
+                  You assign a folder to each hostname under Domains → Routing.
+                  <span className="block text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                    Turning this on here avoids the restart that enabling it later would cause.
+                    It gives the app access to your whole storage area so any folder can be served.
+                  </span>
+                </span>
+              </label>
             </div>
           )}
 

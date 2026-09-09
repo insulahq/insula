@@ -12,6 +12,11 @@ import { createIngressRouteSchema, updateIngressRouteSchema } from './ingress-ro
 const HOSTILE = [
   '../../etc',
   '..',
+  '.',
+  '.env',
+  '.git',
+  'a/../b',
+  'sites/../../etc',
   '/etc/passwd',
   'a b',
   'a"b',
@@ -20,7 +25,6 @@ const HOSTILE = [
   'a;\n}\nserver { root /etc;',
   'a`id`',
   'a$(id)',
-  'UPPER',
   '-leading',
   'a/b/c/d/e',
   'x'.repeat(64),
@@ -38,11 +42,30 @@ describe('site_folder at the request boundary', () => {
     expect(updateIngressRouteSchema.safeParse({ site_folder }).success).toBe(false);
   });
 
-  it('accepts the shapes a tenant will actually use', () => {
-    for (const site_folder of ['mysite', 'site-1', 'my_site', 'media/library/2026', '0start']) {
-      const r = createIngressRouteSchema.safeParse({ ...base, site_folder });
-      expect(r.success, `expected ${site_folder} to be accepted`).toBe(true);
-    }
+  /**
+   * Names taken from a REAL production tenant, not invented.
+   *
+   * The original list here was `mysite`, `site-1`, `media/library/2026` — all
+   * made up, none with a dot or a capital. A web host's folders are named after
+   * the sites they hold, so the first tenant to try this picked `business.na`
+   * and got a 400: the picker offered the folder (it exists on disk) and the
+   * API refused it. Testing that hostile input is rejected proves nothing about
+   * whether ordinary input is accepted.
+   */
+  it.each([
+    ['business.na',        'domain-named folder — the standard shared-hosting convention'],
+    ['www.example.com',    'domain with subdomain'],
+    ['my.site.co.uk',      'multi-label domain'],
+    ['Website',            'capitalised'],
+    ['Sites/business.na',  'capitalised parent with a domain child'],
+    ['custom-deployment',  'hyphenated'],
+    ['my_site',            'underscored'],
+    ['0start',             'leading digit'],
+    ['mysite',             'plain'],
+    ['media/library/2026', 'nested'],
+  ])('accepts %j — %s', (site_folder) => {
+    const r = createIngressRouteSchema.safeParse({ ...base, site_folder });
+    expect(r.success, `expected ${site_folder} to be accepted`).toBe(true);
   });
 
   it('accepts null to hand the hostname back to the document root', () => {

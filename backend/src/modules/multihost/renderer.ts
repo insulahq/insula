@@ -43,6 +43,18 @@ export interface MultihostCapability {
   readonly listen: number;
   readonly validate: readonly string[];
   readonly reload: readonly string[];
+  /**
+   * Present only on PHP runtimes. Its presence is what makes the renderer
+   * sandbox a site at all — declared by the catalog manifest, never inferred
+   * from the flavour, because `nginx` covers both static-nginx (no PHP, no
+   * FastCGI, nothing to sandbox) and nginx-php.
+   *
+   * `open_basedir_extra` lists absolute paths the image needs on top of the
+   * app root. `/tmp` is always among them in practice: these images leave
+   * session.save_path and upload_tmp_dir empty, so PHP falls back to the
+   * system temp dir and sessions break the moment it is excluded.
+   */
+  readonly php?: { readonly open_basedir_extra?: readonly string[] };
 }
 
 /** The subset of an `ingress_routes` row that decides what a site looks like. */
@@ -52,6 +64,8 @@ export interface SiteRoute {
   readonly path: string;
   readonly wwwRedirect: 'none' | 'add-www' | 'remove-www';
   readonly siteFolder: string;
+  /** Sandbox root. Defaults to `siteFolder` when a route predates app roots. */
+  readonly appRoot?: string | null;
 }
 
 export interface RenderedSite {
@@ -63,6 +77,12 @@ export interface RenderedSite {
   readonly serverName: string;
   readonly serverAlias: string | null;
   readonly documentRoot: string;
+  /** Absolute app root — surfaced to the operator for app config files. */
+  readonly appRootPath: string;
+  /** Absolute per-site session directory, or null on a static runtime. */
+  readonly sessionPath: string | null;
+  /** Exact open_basedir written into the vhost, or null on a static runtime. */
+  readonly openBasedir: string | null;
 }
 
 export interface SkippedSite {
@@ -116,6 +136,53 @@ interface VhostInput {
   readonly documentRoot: string;
   readonly hostname: string;
   readonly routeId: string;
+  /** Absolute app root, or null on a runtime with no PHP to sandbox. */
+  readonly appRootPath: string | null;
+  /** Absolute per-site session directory, outside every document root. */
+  readonly sessionPath: string | null;
+  readonly cap: MultihostCapability;
+}
+
+/**
+ * The value of PHP's `open_basedir` for one site: its app root plus whatever
+ * absolute paths the image declared it needs.
+ *
+ * Returns null when the runtime declares no `php` block, so a static image
+ * gets a plain vhost with no FastCGI directives it could not honour anyway.
+ */
+export function openBasedirFor(
+  cap: MultihostCapability,
+  appRootPath: string | null,
+  sessionPath?: string | null,
+): string | null {
+  if (!cap.php || !appRootPath) return null;
+  return [
+    appRootPath,
+    // The session directory lives outside the app root, so the sandbox has to
+    // name it explicitly — otherwise every session write is denied by the very
+    // sandbox that is supposed to protect it.
+    ...(sessionPath ? [sessionPath] : []),
+    ...(cap.php.open_basedir_extra ?? []),
+  ].join(':');
+}
+
+/**
+ * Base path for per-site session directories. Outside every document root by
+ * construction — it is not under `sites_root` at all — so no deny rule has to
+ * be correct for session files to be unreachable over HTTP.
+ */
+const SESSION_BASE = '/var/lib/php-sessions';
+
+/**
+ * Absolute session directory for one application root.
+ *
+ * Pod-local ephemeral storage, deliberately: off the tenant's volume so login
+ * state costs them no quota and never enters their backups, and per-site so a
+ * neighbour cannot read a session file whose NAME is the session id. Must match
+ * `MULTIHOST_SESSION_BASE` in the deployer, which creates and mounts it.
+ */
+export function sessionPathFor(_cap: MultihostCapability, appRoot: string): string {
+  return `${SESSION_BASE}/${appRoot}`;
 }
 
 const BANNER = (routeId: string, hostname: string): string[] => [
@@ -126,12 +193,74 @@ const BANNER = (routeId: string, hostname: string): string[] => [
 
 function renderApacheVhost(cap: MultihostCapability, site: VhostInput): string {
   const alias = site.serverAlias ? [`    ServerAlias ${site.serverAlias}`] : [];
+  const basedir = openBasedirFor(cap, site.appRootPath, site.sessionPath);
+  // mod_proxy_fcgi forwards subprocess_env to the pool, and PHP-FPM applies
+  // PHP_ADMIN_VALUE — so a per-vhost SetEnv sandboxes this site's PHP without
+  // a second FPM pool. Verified against the shipped image, not assumed.
+  //
+  // ONE setting only: Apache config has no way to embed the newline that
+  // PHP-FPM uses to separate several. `disable_functions` therefore rides on
+  // the FPM pool instead (pool-scoped, so CLI keeps exec for cron/composer) —
+  // and it MUST, because open_basedir does not restrain a child process:
+  // shell_exec walks straight past it.
+  const sandbox = basedir
+    ? [
+        `    SetEnv PHP_ADMIN_VALUE "open_basedir=${basedir}"`,
+        // A SECOND variable, because Apache cannot embed the newline PHP-FPM
+        // uses to separate several settings in one. session.save_path is
+        // PHP_INI_ALL, so PHP_VALUE carries it; open_basedir must stay in
+        // PHP_ADMIN_VALUE, where a script cannot widen it. Verified against
+        // the shipped image: the session file lands here, not in /tmp.
+        `    SetEnv PHP_VALUE "session.save_path=${site.sessionPath}"`,
+      ]
+    : [];
+  // Symlink confinement, scoped to THIS site's document root.
+  //
+  // A symlink inside one site's folder pointing at a neighbour's is served by
+  // Apache directly — open_basedir and disable_functions are interpreter
+  // controls and never see the request, and <FilesMatch "\.php$"> matches the
+  // REQUESTED name, not the target, so any other extension skips FPM entirely.
+  //
+  // Emitted per generated vhost rather than in the shared include, because
+  // that include also governs the STOCK single-site vhost — and a single-site
+  // deployment mounts only its own folder, so banning symlinks there would
+  // break Laravel's public/storage and similar for no security gain at all.
+  // A <Directory> for the exact docroot outranks the include's <Directory
+  // "/var/www">, which is what makes the narrow scope work.
+  //
+  // SymLinksIfOwnerMatch is not a substitute: every file on the tenant volume
+  // has the same runtime uid, so an owner check permits exactly this symlink.
+  //
+  // `-FollowSymLinks` is NOT usable here, though it is what would close the
+  // symlink escape. Apache refuses `RewriteRule` when both FollowSymLinks and
+  // SymLinksIfOwnerMatch are off (AH00670), and the shared include uses rewrite
+  // for the scheme-aware redirect — as does the .htaccess of every WordPress
+  // install. Turning it off returned 403 on every request to every multi-host
+  // site, which E2E caught and no unit test could have.
+  //
+  // SymLinksIfOwnerMatch would restore rewrite but not the protection: every
+  // file on the volume has the same runtime uid, so an owner check permits
+  // precisely the cross-site symlink it is supposed to refuse.
+  //
+  // So on Apache the residual stands, and it is narrower than it looks: PHP's
+  // own symlink() is refused by open_basedir when the target is outside the
+  // sandbox (measured), so a site compromised through PHP cannot create one.
+  // What remains is a symlink authored by the TENANT over SFTP, between two of
+  // their own sites — not a privilege escalation, since they already have
+  // access to both. nginx has no such conflict and does refuse them.
+  const confine = [
+    `    <Directory "${site.documentRoot}">`,
+    '        Options -Indexes +FollowSymLinks',
+    '    </Directory>',
+  ];
   return [
     ...BANNER(site.routeId, site.hostname),
     `<VirtualHost *:${cap.listen}>`,
     `    ServerName ${site.serverName}`,
     ...alias,
     `    DocumentRoot "${site.documentRoot}"`,
+    ...sandbox,
+    ...confine,
     `    Include ${cap.common_include}`,
     '</VirtualHost>',
     '',
@@ -154,11 +283,28 @@ function renderApacheVhost(cap: MultihostCapability, site: VhostInput): string {
  *    `common_include` carries the listen lines.
  */
 function renderNginxServer(cap: MultihostCapability, site: VhostInput): string {
+  const basedir = openBasedirFor(cap, site.appRootPath, site.sessionPath);
+  // Set as a VARIABLE, not a fastcgi_param, and deliberately so: nginx only
+  // inherits fastcgi_param from an outer level when the inner level declares
+  // none, and the shared include's PHP location declares several — a
+  // server-level fastcgi_param here would be silently ignored. The include
+  // reads `$insula_php_admin`, so one shared file still serves every site.
+  //
+  // Always emitted when the runtime has PHP: an unset variable is a startup
+  // error in nginx, which would take down every site in the pod, not just
+  // this one.
+  const sandbox = basedir
+    ? [
+        `    set $insula_php_admin "open_basedir=${basedir}`,
+        `session.save_path=${site.sessionPath}";`,
+      ]
+    : [];
   return [
     ...BANNER(site.routeId, site.hostname),
     'server {',
     `    server_name ${site.serverName};`,
     `    root "${site.documentRoot}";`,
+    ...sandbox,
     `    include ${cap.common_include};`,
     '}',
     '',
@@ -237,6 +383,26 @@ export function renderSites(
       continue;
     }
 
+    // The app root is re-validated here for the same reason the folder is:
+    // this is the last gate before a value becomes a directive, and this one
+    // becomes the sandbox itself. It reaches the config through
+    // `SetEnv PHP_ADMIN_VALUE "open_basedir=…"` and through the pod's mount
+    // list, so a colon or a newline in it would not be a bad value — it would
+    // be an extra directive, or an extra path inside open_basedir.
+    //
+    // Today every write path runs the identical check at the API boundary, and
+    // there is no DB constraint on the column's FORMAT (0105 constrains only
+    // the pairing). "Validated upstream" is a property of today's callers, not
+    // of the column — and this file's whole contract is that nothing reaches
+    // the config unchecked.
+    if (route.appRoot != null) {
+      const appRootIssue = folderProblem(route.appRoot);
+      if (appRootIssue) {
+        skipped.push({ routeId: route.id, reason: `application root: ${appRootIssue}` });
+        continue;
+      }
+    }
+
     const previous = claimed.get(canonical);
     if (previous) {
       skipped.push({
@@ -255,6 +421,14 @@ export function renderSites(
     const serverName = usesAlias ? syntheticServerName(route.id) : canonical;
     const serverAlias = usesAlias ? canonical : null;
     const documentRoot = `${cap.sites_root}/${route.siteFolder}`;
+    // A route created before app roots existed, or one whose app root was
+    // never set, sandboxes to the folder it serves. That is the tighter of the
+    // two readings and it cannot break a site: the document root is always
+    // inside its own sandbox.
+    const appRootRel = route.appRoot ?? route.siteFolder;
+    const appRootPath = `${cap.sites_root}/${appRootRel}`;
+    // Only PHP runtimes get a session directory; a static site has none.
+    const sessionPath = cap.php ? sessionPathFor(cap, appRootRel) : null;
 
     const filename = siteFilename(route.id);
     files[filename] = renderVhost(cap, {
@@ -263,8 +437,21 @@ export function renderSites(
       documentRoot,
       hostname: route.hostname,
       routeId: route.id,
+      appRootPath,
+      sessionPath,
+      cap,
     });
-    sites.push({ routeId: route.id, filename, content: files[filename], serverName, serverAlias, documentRoot });
+    sites.push({
+      routeId: route.id,
+      filename,
+      content: files[filename],
+      serverName,
+      serverAlias,
+      documentRoot,
+      appRootPath,
+      sessionPath,
+      openBasedir: openBasedirFor(cap, appRootPath, sessionPath),
+    });
   }
 
   return { files, sites, skipped };

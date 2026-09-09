@@ -12,6 +12,98 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Security
+- **An instance now has access only to the folders it actually serves**, rather
+  than to the whole of a customer's storage. Each website's folder is attached
+  individually, so a website cannot reach a neighbouring site's files or another
+  application's data even in principle. Adding or removing a website on a shared
+  instance now restarts it briefly, where before it was applied without a
+  restart — the isolation is worth the interruption.
+- **On NGINX instances, websites sharing an instance can no longer read each
+  other through a shortcut.** A shortcut placed in one site's folder pointing at
+  a neighbour's was followed by the web server and served as a plain file, which
+  bypassed the restrictions above entirely because the website software never
+  ran. Applications that ship a shortcut inside the folder they publish —
+  Laravel's `public/storage` is the usual one — need a real folder instead on
+  these instances. **Apache instances are unchanged**: Apache refuses URL
+  rewriting when shortcut-following is off, which would break every site using
+  an `.htaccess` rewrite, so the restriction cannot be applied there.
+- **Each website now keeps its own login sessions.** They were previously
+  written to a shared temporary area, where a session's filename is its
+  identifier — so one website could read a visitor's session from a
+  neighbouring site and act as that visitor. Sessions now live inside each
+  site's own folder. (File uploads still use the shared temporary area while
+  being received; that is a much shorter window and a much less predictable
+  name, and it is the remaining piece.)
+- **Instances deployed before this release are repaired automatically.** They
+  keep the old, wider access until something changes them, so the platform now
+  checks every shared instance on startup and redeploys the ones still on the
+  old layout. Those instances restart once.
+- **Each website on a multi-host instance is now confined to its own
+  application folder.** Previously every site sharing an instance could read
+  and write the whole of that customer's storage — a neighbouring site's
+  configuration file, including its database password, and other applications'
+  data. A compromise of any one site was a compromise of everything that
+  customer owned. Sites are now sandboxed to their own application folder, and
+  the functions that let PHP escape a sandbox by running shell commands are
+  switched off for web requests on these instances. Command-line tooling over
+  SSH and cron is unaffected, as are single-site instances, which never had
+  access to anything but their own folder. Customers running an application
+  that needs to run shell commands during a web request should give it its own
+  instance.
+
+### Added
+- **Websites can now separate their application folder from the folder served
+  on the web.** Applications such as Nextcloud, Laravel and Symfony keep their
+  data beside the public folder rather than inside it; the application folder
+  is what the site is allowed to read, and the served folder is picked from
+  within it. The exact paths the web server uses are shown in the panel, since
+  an application's own configuration file usually needs them.
+- **Multi-host serving can be switched on while deploying**, not only
+  afterwards. The instance then starts with everything it needs, so there is no
+  restart — turning it on later has to change how storage is attached, which
+  restarts the application. The option appears in the deploy dialog only for
+  applications that support it.
+
+### Fixed
+- **Route changes and deployment deletes took up to a minute and could return a
+  gateway error for a change that had actually applied.** Saving a site folder
+  waited for Kubernetes to deliver the new configuration to the running pod and
+  for the web server to reload it — up to a minute — before answering the
+  request, so the panel showed a 502 while the change had already been saved.
+  Measured on production at 59s for a route change and 50s for a deployment
+  delete; every ingress-related call on a tenant with multi-host serving paid
+  it. The save now returns as soon as the configuration is stored, and the pod
+  picks it up in the background. Nothing is lost if that background step is
+  interrupted: the stored configuration is what a pod reads when it starts, so
+  the site is correct either way.
+- **Deleting an app that served several websites failed, and left it
+  half-deleted.** If any of its hostnames had a folder assigned, the delete
+  reported an error — while the app had already been marked deleted and its
+  workload shut down. The websites stayed pointed at something that no longer
+  existed, so they went offline, and the error made it look as though nothing
+  had happened. Deleting now succeeds and detaches those hostnames cleanly, and
+  the two steps share a transaction so a failure can no longer leave the app in
+  between.
+- **A customer with exactly enough quota left was told they had none.** The
+  deploy dialog compared CPU and memory as decimals, and summing values like
+  `100m` in that form drifts by a fraction too small to display — so the panel
+  showed, for instance, 0.10 cores available and 0.10 cores required and still
+  refused to deploy, with no way round it but raising a limit the customer had
+  not actually reached. Usage is now summed in whole milli-cores and mebibytes,
+  so an exact fit compares equal.
+- **Setting the folder a hostname serves did nothing, with no error shown.**
+  Two faults met: the folder-name rule allowed only lowercase letters, digits,
+  hyphens and underscores, so `business.na` — a folder named after the site it
+  holds, which is the usual convention on a web host — was refused with a 400;
+  and both panels swallowed that refusal, closing the picker as though it had
+  worked. The name rule now allows dots and uppercase (the first character must
+  still be a letter or digit, which is what keeps `.`, `..` and dotfiles
+  unrepresentable, so no folder can point outside your storage), and a refused
+  assignment now says which rule it broke and leaves the picker open. The folder
+  picker had been offering exactly the folders the API then rejected, because it
+  lists what is on disk.
+
 ## [2026.9.13] - 2026-09-08
 
 ### Added
@@ -222,7 +314,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   **zero** times, so `messages_total` stayed NULL and the panel renders the bar
   only for a positive number. It now reads the format the shipped imapsync
   actually emits.
-
 
 ## [2026.9.12] - 2026-09-07
 

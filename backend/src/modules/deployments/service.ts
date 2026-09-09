@@ -10,7 +10,8 @@ import { ApiError } from '../../shared/errors.js';
 import { normalizeMountPath } from '@insula/api-contracts';
 import { InsufficientResourceBudgetError } from './resource-allocator.js';
 import { findAdminPasswordEnvVar } from './password-reset.js';
-import { capabilityOf, deleteDeploymentSites, multihostMountsFor } from '../multihost/reconciler.js';
+import { capabilityOf, deleteDeploymentSites, multihostMountsFor, loadSiteFoldersFor } from '../multihost/reconciler.js';
+import { DETACHED_ROUTE_TARGET } from '../ingress-routes/detach.js';
 import {
   isCustomDeployment,
   customSpecImages,
@@ -526,6 +527,19 @@ export async function createDeployment(
     );
   }
 
+  // Multi-host at create: the pod then comes up with the mounts already in
+  // place. Enabling it afterwards rewrites the pod template and restarts the
+  // application, which is pointless for an instance that has not started
+  // serving anything yet.
+  const wantsMultihost = input.multihost_enabled === true;
+  if (wantsMultihost && !capabilityOf(entry)) {
+    throw new ApiError(
+      'MULTIHOST_NOT_SUPPORTED',
+      `'${entry.name}' cannot serve several sites from one instance.`,
+      400,
+    );
+  }
+
   try {
     await db.insert(deployments).values({
       id,
@@ -539,6 +553,7 @@ export async function createDeployment(
       configuration: finalConfiguration,
       storagePath,
       extraMounts: input.extra_mounts ?? null,
+      multihostEnabled: wantsMultihost,
       installedVersion,
       targetVersion: installedVersion,
       status: 'pending',
@@ -580,7 +595,12 @@ export async function createDeployment(
         envVars: finalEnvVars,
         configurableEnvKeys,
         extraMounts: input.extra_mounts ?? undefined,
-        multihost: null,
+        // Resolved from the flag the caller asked for, so a multi-host instance
+        // is born with its mounts instead of being redeployed into them.
+        // A deployment being created has no routes yet, so it mounts nothing
+        // from the tenant volume. The first route to name a folder adds that
+        // folder's mount — see reconcileTenantSites.
+        multihost: multihostMountsFor({ name: input.name, multihostEnabled: wantsMultihost }, entry, []),
         // Arm the password-reset init container for every DB deployment, not
         // just `storage_mode: custom`. The default storagePath is deterministic
         // (`type/code/name`), and deleting a deployment WITHOUT deleteData
@@ -915,14 +935,23 @@ export async function deleteDeployment(
     }
   }
 
-  await db.update(deployments)
-    .set({ status: 'deleted', deletedAt: new Date() })
-    .where(eq(deployments.id, deploymentId));
+  // Both writes in one transaction: the unlink below can only fail on a
+  // constraint, and a half-applied delete leaves the row flagged `deleted`
+  // with its routes still pointing at it — the tenant then sees an error for
+  // a deployment whose workload is already gone.
+  await db.transaction(async (tx) => {
+    await tx.update(deployments)
+      .set({ status: 'deleted', deletedAt: new Date() })
+      .where(eq(deployments.id, deploymentId));
 
-  // Unlink ingress routes (set deployment_id to NULL)
-  await db.update(ingressRoutes)
-    .set({ deploymentId: null })
-    .where(eq(ingressRoutes.deploymentId, deploymentId));
+    // Unlink ingress routes. `siteFolder` MUST be cleared in the same
+    // statement: it is meaningless without a deployment to resolve it
+    // against, and `ingress_routes_site_folder_needs_deployment` rejects the
+    // row outright — which used to abort the whole delete.
+    await tx.update(ingressRoutes)
+      .set(DETACHED_ROUTE_TARGET)
+      .where(eq(ingressRoutes.deploymentId, deploymentId));
+  });
 
   // Reconcile the Ingress: with no routes pointing at this deployment,
   // reconcileIngress will rebuild rules from the remaining routes (or
@@ -1354,7 +1383,7 @@ export async function updateDeploymentResources(
         // Threaded at EVERY deploy call site: a redeploy that omitted them
         // would rewrite the pod template without the include directory, and
         // every site on this pod would silently fall back to the stock docroot.
-        multihost: multihostMountsFor(deployment, entry),
+        multihost: multihostMountsFor(deployment, entry, await loadSiteFoldersFor(db, deployment.id)),
         firewall: reFirewall ?? undefined,
         hostPorts: readEntryHostPorts(entry),
       });
@@ -1644,7 +1673,7 @@ export async function redeployWithCurrentConfig(
     // Multi-host mounts — same reason as extraMounts directly above. Dropping
     // them on a rotation would unmount the storage root and the include
     // directory, and every site would fall back to the stock docroot.
-    multihost: multihostMountsFor(deployment, entry),
+    multihost: multihostMountsFor(deployment, entry, await loadSiteFoldersFor(db, deployment.id)),
     // Re-stamp the config root password onto the reused datadir on the DR
     // reconcile path (no-op for non-DB deployments + fresh datadirs).
     reuseExistingData: opts.armPasswordReset === true,

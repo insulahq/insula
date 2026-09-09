@@ -785,7 +785,7 @@ export async function reconcileIngress(
   // just applied the tenant's routers. The reconciler is idempotent and runs
   // again on the next route change, so a miss here is recovered, not lost.
   try {
-    await reconcileTenantSites(db, { core: k8s.core }, tenantId, namespace, process.env.KUBECONFIG_PATH);
+    await reconcileTenantSites(db, { core: k8s.core, apps: k8s.apps }, tenantId, namespace, process.env.KUBECONFIG_PATH);
   } catch (err) {
     console.warn('[ingress-reconcile] multihost site reconcile failed (non-blocking)', err);
   }

@@ -16,15 +16,26 @@ function joinPath(base: string, name: string): string {
  * makes the same choice.
  */
 export default function TenantFolderPicker({
-  tenantId, initialPath, isPending, onClose, onConfirm,
+  tenantId, initialPath, isPending, onClose, onConfirm, title, description, confineTo,
 }: {
   readonly tenantId: string;
   readonly initialPath: string;
   readonly isPending: boolean;
   readonly onClose: () => void;
   readonly onConfirm: (path: string) => void;
+  readonly title?: string;
+  readonly description?: string;
+  /**
+   * Restrict browsing to this subtree. The document-root picker passes the
+   * application root: outside it the site's PHP is sandboxed away from its own
+   * document root, which 500s every request for a reason far from the symptom.
+   */
+  readonly confineTo?: string;
 }) {
-  const [browsePath, setBrowsePath] = useState(initialPath || '/');
+  const root = confineTo && confineTo !== '/' ? `/${confineTo.replace(/^\/+|\/+$/g, '')}` : '/';
+  const [browsePath, setBrowsePath] = useState(initialPath || root);
+  /** Never navigate above the confinement root. */
+  const within = (pth: string) => (root === '/' || pth === root || pth.startsWith(`${root}/`) ? pth : root);
   const listing = useTenantDirectoryListing(tenantId, browsePath, true);
   // Gate the empty state on the absence of an ERROR, not just on an empty
   // array: `data?.entries ?? []` turns a failed request into "no folders here",
@@ -39,17 +50,17 @@ export default function TenantFolderPicker({
     >
       <div className="w-full max-w-md rounded-xl bg-white p-5 shadow-xl dark:bg-gray-800">
         <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-1">
-          Choose the folder this hostname serves
+          {title ?? 'Choose the folder this hostname serves'}
         </h3>
         <p className="text-sm text-gray-500 dark:text-gray-400 mb-3">
-          Any folder on the tenant's storage. The hostname serves it as its document root.
+          {description ?? "Any folder on the tenant's storage. The hostname serves it as its document root."}
         </p>
 
         <div className="mb-2 flex items-center gap-2 text-xs font-mono text-gray-600 dark:text-gray-300">
-          {browsePath !== '/' && (
+          {browsePath !== root && (
             <button
               type="button"
-              onClick={() => setBrowsePath(browsePath.replace(/\/[^/]+$/, '') || '/')}
+              onClick={() => setBrowsePath(within(browsePath.replace(/\/[^/]+$/, '') || '/'))}
               className="inline-flex items-center gap-1 rounded border border-gray-200 dark:border-gray-600 px-1.5 py-0.5 hover:bg-gray-50 dark:hover:bg-gray-700"
               data-testid="folder-picker-up"
             >

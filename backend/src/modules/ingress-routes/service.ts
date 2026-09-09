@@ -5,14 +5,16 @@
  * Each route generates: hostname → {slug}.ingress.platform.net → node → IP
  */
 
-import { eq, and } from 'drizzle-orm';
+import { eq, and, isNotNull } from 'drizzle-orm';
 import {
   isWildcardHostname,
   normalizeHostname,
   relativeRecordName,
   validateRouteHostname,
+  siteFolderWithinAppRoot,
 } from '@insula/api-contracts';
 import { ingressRoutes, domains, platformSettings, dnsRecords, deployments, catalogEntries, privateWorkers } from '../../db/schema.js';
+import { clearOrphanedSiteFolder } from './detach.js';
 import { ApiError } from '../../shared/errors.js';
 import { syncRecordToProviders, describeSyncFailure, provisionManagedRecord, deleteManagedRecords, type DnsSyncOutcome } from '../dns-records/service.js';
 import { reservedHostnamesCoveredBy } from '../system-tenant/reserved-subdomains.js';
@@ -282,6 +284,7 @@ export async function createRoute(
   privateWorkerId?: string | null,
   servicePort?: number | null,
   siteFolder?: string | null,
+  appRoot?: string | null,
 ) {
   // Polymorphic target validation (migration 0076 + 0085).
   //
@@ -392,6 +395,20 @@ export async function createRoute(
     assertSiteFolderAllowed(siteFolder ?? null, dep, entry ?? null, routePath);
   }
 
+  // The sandbox defaults to the folder being served, which is the tighter of
+  // the two readings and can never exclude the document root from its own
+  // open_basedir. An explicit app root widens it to a parent — what a
+  // `public/`-style app needs so it can still reach its sibling data folder.
+  const resolvedAppRoot = siteFolder ? (appRoot ?? siteFolder) : null;
+  if (!siteFolderWithinAppRoot(siteFolder ?? null, resolvedAppRoot)) {
+    throw new ApiError(
+      'VALIDATION_ERROR',
+      'The document root must be the application root or a folder inside it.',
+      400,
+      { site_folder: siteFolder, app_root: resolvedAppRoot },
+    );
+  }
+
   // A folder with no deployment has nothing to serve it. The DB CHECK
   // constraint says the same thing, but an API error naming the problem beats
   // a constraint violation surfacing as a 500.
@@ -465,6 +482,7 @@ export async function createRoute(
     status: 'active',
     servicePort: servicePort ?? null,
     siteFolder: siteFolder ?? null,
+    appRoot: resolvedAppRoot,
   });
 
   // Auto-create DNS records for PRIMARY domains
@@ -550,6 +568,7 @@ export async function updateRoute(
     nodeHostname?: string | null;
     servicePort?: number | null;
     siteFolder?: string | null;
+    appRoot?: string | null;
   },
   // Required when privateWorkerId is being set — we re-verify the worker
   // belongs to this tenant to defend against route-id enumeration that
@@ -646,10 +665,127 @@ export async function updateRoute(
       assertSiteFolderAllowed(input.siteFolder, dep, entry ?? null, route.path);
     }
     updateValues.siteFolder = input.siteFolder;
+    // Clearing the document root clears the sandbox with it: an app root with
+    // nothing served out of it is exactly the orphan state the DB CHECK
+    // refuses. An app root supplied in the SAME patch still wins, below.
+    if (input.siteFolder === null) updateValues.appRoot = null;
+    // Narrowing the document root INSIDE the existing app root must keep that
+    // app root. Re-defaulting it to the new folder collapsed the pair on every
+    // second click and made the feature's whole purpose unreachable from the
+    // UI: pick app root `shop`, then pick document root `shop/public`, and the
+    // sandbox silently shrank to `shop/public` — cutting the app off from
+    // `shop/data`, which is the exact layout this column exists for. The
+    // collapse only ever TIGHTENED the sandbox, so nothing failed loudly.
+    //
+    // Only when the new folder falls outside the current app root does the
+    // sandbox re-default to it, which keeps the pair valid by construction.
+    else if (input.appRoot === undefined) {
+      const currentAppRoot = (route.appRoot ?? null) as string | null;
+      updateValues.appRoot = currentAppRoot && siteFolderWithinAppRoot(input.siteFolder, currentAppRoot)
+        ? currentAppRoot
+        : input.siteFolder;
+    }
   }
 
-  if (Object.keys(updateValues).length > 0) {
-    await db.update(ingressRoutes).set(updateValues).where(eq(ingressRoutes.id, routeId));
+  if (input.appRoot !== undefined) {
+    if (input.appRoot !== null) {
+      const targetDeploymentId = input.deploymentId !== undefined ? input.deploymentId : route.deploymentId;
+      if (!targetDeploymentId) {
+        throw new ApiError(
+          'VALIDATION_ERROR',
+          'An application root can only be set on a route that points at a deployment.',
+          400,
+        );
+      }
+    }
+    updateValues.appRoot = input.appRoot;
+  }
+
+  // Validate the PAIR as it will be AFTER this patch — either field can move
+  // in a single call, so checking the incoming value against the stored one
+  // would pass a patch that breaks the row.
+  const nextSiteFolder = (updateValues.siteFolder !== undefined
+    ? updateValues.siteFolder
+    : route.siteFolder) as string | null;
+  const nextAppRoot = (updateValues.appRoot !== undefined
+    ? updateValues.appRoot
+    : route.appRoot) as string | null;
+  if (nextSiteFolder && !nextAppRoot) {
+    // Only reachable by clearing an app root out from under a served folder.
+    throw new ApiError(
+      'VALIDATION_ERROR',
+      'A served folder needs an application root; clear the folder instead.',
+      400,
+    );
+  }
+  if (nextAppRoot && !nextSiteFolder) {
+    // The mirror case. `siteFolderWithinAppRoot` is vacuously true when either
+    // side is absent, so reusing it as the pair check left this direction
+    // unguarded: `PATCH {app_root}` on a route with no folder reached the DB
+    // and came back as a constraint violation naming an internal constraint,
+    // instead of an error saying what to do.
+    throw new ApiError(
+      'VALIDATION_ERROR',
+      'An application root needs a folder to serve; set the document root in the same request.',
+      400,
+    );
+  }
+  // No two sites ANYWHERE ON THIS TENANT may have nested application roots.
+  //
+  // The sandbox is a path prefix, so app roots `shop` and `shop/admin` grant
+  // the outer site the inner site's entire folder — and the per-site session
+  // directories nest the same way, so the outer site can also read the inner
+  // site's session files, whose names ARE session ids. Both rows look valid on
+  // their own; the pair is the defect.
+  //
+  // Scoped to the TENANT, not the deployment. Restricting the check to one
+  // deployment left the same hole open across two: they share the tenant
+  // volume, so a pod serving `shop` mounts everything under it including
+  // another pod's `shop/admin`, and neither pod's own rows look wrong.
+  if (nextAppRoot) {
+    const siblings = await db
+      .select({ id: ingressRoutes.id, appRoot: ingressRoutes.appRoot })
+      .from(ingressRoutes)
+      .innerJoin(domains, eq(ingressRoutes.domainId, domains.id))
+      .where(and(
+        eq(domains.tenantId, tenantId as string),
+        isNotNull(ingressRoutes.appRoot),
+      ));
+    const clash = siblings.find((sib: { id: string; appRoot: string | null }) => {
+      if (sib.id === routeId || !sib.appRoot) return false;
+      // The SAME app root is never a clash. Within one deployment it is the
+      // www/non-www case. Across two it means two pods serving one folder —
+      // the tenant's own files, and since session storage moved to a pod-local
+      // emptyDir the two no longer share session state either. Refusing it
+      // bought nothing once sessions stopped living on the shared volume.
+      if (sib.appRoot === nextAppRoot) return false;
+      return nextAppRoot.startsWith(`${sib.appRoot}/`) || sib.appRoot.startsWith(`${nextAppRoot}/`);
+    });
+    if (clash) {
+      throw new ApiError(
+        'VALIDATION_ERROR',
+        `Another site already uses '${clash.appRoot}'. Application roots cannot be nested inside one another — the outer site would be able to read everything belonging to the inner one.`,
+        400,
+        { conflicting_app_root: clash.appRoot },
+      );
+    }
+  }
+
+  if (!siteFolderWithinAppRoot(nextSiteFolder, nextAppRoot)) {
+    throw new ApiError(
+      'VALIDATION_ERROR',
+      'The document root must be the application root or a folder inside it.',
+      400,
+      { site_folder: nextSiteFolder, app_root: nextAppRoot },
+    );
+  }
+
+  // Retargeting away from the deployment drops the folder with it — see
+  // detach.ts for why this cannot be skipped on any detach path.
+  const finalValues = clearOrphanedSiteFolder(updateValues);
+
+  if (Object.keys(finalValues).length > 0) {
+    await db.update(ingressRoutes).set(finalValues).where(eq(ingressRoutes.id, routeId));
   }
 
   const [updated] = await db.select().from(ingressRoutes).where(eq(ingressRoutes.id, routeId));

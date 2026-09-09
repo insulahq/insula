@@ -30,6 +30,13 @@ import type { Logger } from 'pino';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { catalogEntries, deployments, domains, ingressRoutes } from '../../db/schema.js';
 import { execInPod } from '../../shared/k8s-exec.js';
+import {
+  minimalSiteFolders,
+  MULTIHOST_SESSION_BASE,
+  MULTIHOST_SESSION_VOLUME,
+  sessionDirInitCommands,
+  isSessionDirCommand,
+} from '../deployments/k8s-deployer.js';
 import { renderSites, isMultihostFlavour, type MultihostCapability, type MultihostFlavour, type RenderResult, type SiteRoute } from './renderer.js';
 import type { MultihostMounts } from '../deployments/k8s-deployer.js';
 
@@ -75,6 +82,13 @@ export function vhostConfigMapName(deploymentName: string): string {
 
 export interface MultihostClients {
   readonly core: k8s.CoreV1Api;
+  /**
+   * Required, not optional. Site folders are mounts, so keeping them in step
+   * with the routes is part of reconciling — a caller without `apps` would
+   * write a correct ConfigMap onto a pod that cannot see the folders it names,
+   * and every status would still read green.
+   */
+  readonly apps: k8s.AppsV1Api;
 }
 
 export interface DeploymentReconcileResult {
@@ -135,7 +149,80 @@ export function capabilityOf(entry: { multihost?: unknown } | null | undefined):
     typeof raw.listen === 'number' &&
     Array.isArray(raw.validate) && raw.validate.length > 0 &&
     Array.isArray(raw.reload) && raw.reload.length > 0;
-  return ok ? (raw as MultihostCapability) : null;
+  if (!ok) return null;
+  // `sites_root` is a manifest value that becomes a mountPath, a DocumentRoot
+  // and the open_basedir prefix. It was only checked for being a string, while
+  // the adjacent `php` block was validated carefully — an inconsistency a
+  // third-party catalog repo could walk through with `sites_root: "/etc"`.
+  if (!absolutePathIsSane(raw.sites_root as string)) return null;
+  if (!phpSandboxIsSane(raw.php, raw.sites_root as string)) return null;
+  return raw as MultihostCapability;
+}
+
+/**
+ * Validate the optional `php` block instead of trusting it.
+ *
+ * Admins can add third-party catalog repositories, and this block decides how
+ * far a site's PHP may reach. A repo supplying `open_basedir_extra: ["/"]` — or
+ * any ancestor of `sites_root` — would leave the directive syntactically
+ * present and semantically empty: every site could read every other site's
+ * files again, while the panel still showed a sandbox. That is worse than no
+ * sandbox, because it looks like one.
+ *
+ * An unusable block fails the whole capability rather than being dropped: an
+ * entry that cannot be sandboxed must not silently fall back to serving
+ * multi-host unsandboxed.
+ */
+/**
+ * An absolute container path the platform is willing to build config and
+ * mounts from: no traversal, no injection characters, and not a system
+ * directory whose contents a site must never be handed.
+ */
+export function absolutePathIsSane(p: unknown): boolean {
+  if (typeof p !== 'string' || !p.startsWith('/') || p === '/') return false;
+  if (/[:\n\r\0"'`\\]/.test(p)) return false;
+  const segs = p.replace(/\/+$/, '').split('/').slice(1);
+  if (segs.some((s) => s === '' || s === '.' || s === '..')) return false;
+  // A handful of roots that are never a tenant site tree. Not exhaustive by
+  // design — the checks above do the real work; this refuses the obviously
+  // wrong answers loudly rather than mounting over /etc.
+  const FORBIDDEN = ['/etc', '/proc', '/sys', '/dev', '/root', '/boot', '/usr/bin', '/usr/sbin', '/bin', '/sbin'];
+  const norm = p.replace(/\/+$/, '');
+  return !FORBIDDEN.some((f) => norm === f || norm.startsWith(`${f}/`));
+}
+
+export function phpSandboxIsSane(php: unknown, sitesRoot: string): boolean {
+  if (php === undefined || php === null) return true;
+  if (typeof php !== 'object') return false;
+  const extra = (php as { open_basedir_extra?: unknown }).open_basedir_extra;
+  if (extra === undefined) return true;
+  if (!Array.isArray(extra)) return false;
+  return extra.every((v) => {
+    if (typeof v !== 'string' || v.length === 0) return false;
+    // `:` separates entries and a newline would end the directive — either
+    // would smuggle in paths the platform never approved.
+    if (/[:\n\r]/.test(v)) return false;
+    if (!v.startsWith('/')) return false;
+    if (v === '/') return false;
+    const norm = v.replace(/\/+$/, '');
+    // Compare CANONICAL paths, never raw strings. `/var/www/sites/x/../..`
+    // is textually neither equal to nor a prefix of the sites root, so a
+    // prefix test waves it through — while the filesystem resolves it to an
+    // ancestor, which is precisely the "every site readable again" case this
+    // function exists to refuse. Reject traversal outright rather than trying
+    // to normalise it: a path that needs `..` to describe itself has no
+    // business in a sandbox declaration.
+    const segments = norm.split('/').slice(1);
+    if (segments.some((seg) => seg === '' || seg === '.' || seg === '..')) return false;
+    // An ANCESTOR of the sites root dissolves the sandbox outright.
+    if (sitesRoot === norm || sitesRoot.startsWith(`${norm}/`)) return false;
+    // A DESCENDANT of it is narrower but still wrong: it is tenant storage,
+    // granted identically to every site on the image, so one manifest line
+    // would hand every site a shared window into a folder of that name. Only
+    // paths outside the tenant tree — /tmp and friends — are legitimate here.
+    if (norm === sitesRoot || norm.startsWith(`${sitesRoot}/`)) return false;
+    return true;
+  });
 }
 
 /** The container to exec into: the component that owns the ingress port. */
@@ -248,6 +335,22 @@ export interface ReconcileDeploymentInput {
   /** Injected so tests do not spend real time in the projection poll. */
   readonly sleep?: (ms: number) => Promise<void>;
   readonly projectionTimeoutMs?: number;
+  /**
+   * Return as soon as the ConfigMap is written, leaving the projection wait and
+   * the reload to run detached.
+   *
+   * The request path sets this. Waiting for kubelet to project a ConfigMap and
+   * then reloading takes tens of seconds, and a route PATCH that did it inline
+   * ran ~52s and came back as a Traefik 502 — while the change had actually
+   * applied. A tenant saw an error for a save that worked, which is worse than
+   * slow.
+   *
+   * Deferring is safe precisely because the ConfigMap is the durable source: it
+   * is written before the response, so a pod restarting at any point afterwards
+   * comes up serving the new sites regardless of whether the reload landed.
+   * The reload only shortens the wait for a pod that is already running.
+   */
+  readonly deferActivation?: boolean;
 }
 
 const defaultSleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -275,13 +378,248 @@ export async function reconcileDeploymentSites(
     changed,
   };
 
+  // Bring the pod's MOUNTS in line before anything is asked to serve from
+  // them. Each application root is its own mount, so a route that starts (or
+  // stops) serving a folder changes the pod template — and a vhost whose
+  // document root is not mounted answers 404 while every status the platform
+  // shows says the change applied.
+  //
+  // Runs even when the ConfigMap is unchanged: a pod can come back from a
+  // restore, a manual edit or an older template with the wrong mounts, and the
+  // rendered config alone would look correct.
+  const mountsChanged = await ensureSiteMounts(clients, input, rendered);
+  if (mountsChanged) {
+    // The pod template changed, so Kubernetes is replacing the pod. The
+    // replacement reads the ConfigMap at startup, which is both the projection
+    // wait and the reload — doing either against a terminating pod would fail
+    // for a change that has, in fact, applied.
+    input.logger?.info(
+      { deployment: deploymentName, sites: rendered.sites.length },
+      'multihost: site mounts changed, pod is being replaced',
+    );
+    // folderCheck is 'unavailable', NOT 'ok'. The pod is being replaced, so the
+    // folder probe has not run and cannot run against a terminating container.
+    // Reporting 'ok' here would be the exact conflation this type exists to
+    // prevent — a check that never ran reading as a clean result — and it would
+    // hide a replacement pod that never comes up (quota, image pull, crash).
+    return { ...base, changed: true, reloaded: 0, failures: [], missingFolders: [], folderCheck: 'unavailable' };
+  }
+
   if (!changed) return { ...base, reloaded: 0, failures: [], missingFolders: [], folderCheck: 'ok' };
 
+  if (input.deferActivation) {
+    // Detached on purpose: the caller is an HTTP handler. Failures are logged
+    // here and re-attempted by the next reconcile, which is idempotent.
+    void activateSites(clients, input, rendered, hash).catch((err) => {
+      input.logger?.warn({ err, deployment: deploymentName }, 'multihost: background activation failed');
+    });
+    return { ...base, reloaded: 0, failures: [], missingFolders: [], folderCheck: 'ok' };
+  }
+
+  const activation = await activateSites(clients, input, rendered, hash);
+  return { ...base, ...activation };
+}
+
+/**
+ * Make the pod's site mounts match the folders it is supposed to serve.
+ *
+ * Returns true when the pod template was changed (and therefore the pod is
+ * being replaced), false when it already matched.
+ *
+ * Only mounts UNDER `sites_root` are touched. Everything else on the
+ * container — the deployment's own document root, tenant extra_mounts, the
+ * vhost ConfigMap — is left exactly as found: this function knows about site
+ * folders, and rewriting a mount list it does not fully understand is how a
+ * reconciler silently unmounts somebody's data.
+ */
+async function ensureSiteMounts(
+  clients: MultihostClients,
+  input: ReconcileDeploymentInput,
+  rendered: RenderResult,
+): Promise<boolean> {
+  const { capability: cap, namespace, deploymentName, containerName } = input;
+  const sitesRoot = cap.sites_root;
+
+  // Desired: one mount per application root actually being served. Derived
+  // from the RENDERED sites, so a route skipped as invalid never mounts.
+  const desired = minimalSiteFolders(
+    rendered.sites.map((site) => site.appRootPath.slice(sitesRoot.length + 1)).filter(Boolean),
+  );
+
+  let dep: {
+    metadata?: Record<string, unknown>;
+    spec?: { template?: { spec?: {
+      containers?: Array<Record<string, unknown>>;
+      initContainers?: Array<Record<string, unknown>>;
+    } } };
+  };
+  try {
+    const res = await clients.apps.readNamespacedDeployment({ name: deploymentName, namespace } as never);
+    dep = res as typeof dep;
+  } catch (err) {
+    // No Deployment yet (first create) — the deployer builds the mounts.
+    input.logger?.debug({ err, deployment: deploymentName }, 'multihost: no deployment to patch');
+    return false;
+  }
+
+  const containers = dep.spec?.template?.spec?.containers ?? [];
+  const idx = containers.findIndex((c) => (c as { name?: string }).name === containerName);
+  if (idx < 0) return false;
+  const container = containers[idx] as { volumeMounts?: Array<Record<string, unknown>> };
+  const current = container.volumeMounts ?? [];
+
+  // A mount is OURS only when it looks exactly like one we emit: the tenant
+  // volume, mounted at `<sites_root>/<subPath>` with that same subPath. A
+  // tenant may point an extra_mount at a path under sites_root — nothing
+  // forbids it — and treating "anything below sites_root" as ours would
+  // silently unmount their data on the next route change.
+  const isSessionMount = (m: Record<string, unknown>) =>
+    m.name === MULTIHOST_SESSION_VOLUME
+    && String(m.mountPath ?? '').startsWith(`${MULTIHOST_SESSION_BASE}/`);
+  const isSiteMount = (m: Record<string, unknown>) => {
+    if (m.name !== 'tenant-storage') return false;
+    const mp = String(m.mountPath ?? '');
+    const sub = m.subPath ? String(m.subPath) : '';
+    if (mp === sitesRoot && !sub) return true;              // the legacy volume-root mount
+    return Boolean(sub) && mp === `${sitesRoot}/${sub}`;
+  };
+  const currentFolders = minimalSiteFolders(
+    current.filter(isSiteMount).map((m) => String(m.subPath ?? '')).filter(Boolean),
+  );
+  // Session mounts live on a different volume, so they are compared separately
+  // — a pod can have the right site folders and still be missing its session
+  // directories, which is precisely the state a route change used to leave.
+  const currentSessions = minimalSiteFolders(
+    current.filter(isSessionMount).map((m) => String(m.subPath ?? '')).filter(Boolean),
+  );
+  // A legacy pod mounting the volume ROOT has one site mount with no subPath.
+  // It must be replaced even when the folder list matches, because that mount
+  // is the whole exposure this design removes.
+  const hasVolumeRootMount = current.some((m) => isSiteMount(m) && !m.subPath);
+
+  const same = !hasVolumeRootMount
+    && currentFolders.length === desired.length
+    && currentFolders.every((f: string, i: number) => f === desired[i])
+    && currentSessions.length === desired.length
+    && currentSessions.every((f: string, i: number) => f === desired[i]);
+  if (same) return false;
+
+  const kept = current.filter((m) => !isSiteMount(m) && !isSessionMount(m));
+  // Session mounts are rebuilt here too. `isSiteMount` matches them — their
+  // mountPath is `<sites_root>/<subPath>` like any other — so rebuilding only
+  // the site folders DROPPED them on every route change, leaving each vhost
+  // pointing session.save_path at a directory no longer in the container.
+  // The two lists must be emitted together, exactly as buildMultihostMounts
+  // does, or the deployer and the reconciler disagree about the pod.
+  const next = [
+    ...kept,
+    ...desired.map((folder) => ({
+      name: 'tenant-storage',
+      mountPath: `${sitesRoot}/${folder}`,
+      subPath: folder,
+    })),
+    ...desired.map((folder) => ({
+      name: MULTIHOST_SESSION_VOLUME,
+      mountPath: `${MULTIHOST_SESSION_BASE}/${folder}`,
+      subPath: folder,
+    })),
+  ];
+
+  // The session VOLUME has to exist before anything mounts it.
+  //
+  // A pod template written before session storage moved to an emptyDir has no
+  // such volume. Adding volumeMounts that name a volume the spec does not
+  // declare produces an INVALID Deployment — the pods stop scheduling
+  // entirely, which would take every site on that instance down rather than
+  // leave one setting missing.
+  const podSpec = dep.spec?.template?.spec as { volumes?: Array<Record<string, unknown>> } | undefined;
+  if (podSpec) {
+    podSpec.volumes = podSpec.volumes ?? [];
+    if (!podSpec.volumes.some((v) => v.name === MULTIHOST_SESSION_VOLUME)) {
+      podSpec.volumes.push({ name: MULTIHOST_SESSION_VOLUME, emptyDir: {} });
+    }
+  }
+
+  // The init container has to keep step with the mounts.
+  //
+  // kubelet creates a missing subPath directory as root:root 0755 and these
+  // images run non-root, so a session mount added WITHOUT the matching mkdir
+  // gives the site a directory it cannot write — PHP is pointed at it and every
+  // session write is denied, silently. Patching volumeMounts alone produced
+  // exactly that on DEV.
+  const initContainers = (dep.spec?.template?.spec?.initContainers ?? []) as Array<Record<string, unknown>>;
+  const initDirs = initContainers.find((c) => (c as { name?: string }).name === 'init-dirs') as
+    { command?: string[]; volumeMounts?: Array<Record<string, unknown>> } | undefined;
+  if (initDirs?.command && initDirs.command.length === 3) {
+    const existing = initDirs.command[2]
+      .split(' && ')
+      // Drop stale session clauses so a re-run cannot accumulate them, then
+      // re-add exactly the ones this folder set needs.
+      .filter((part) => !isSessionDirCommand(part));
+    const rebuilt = [...existing, ...sessionDirInitCommands(desired)].filter((p) => p && p !== 'true');
+    initDirs.command[2] = rebuilt.length > 0 ? rebuilt.join(' && ') : 'true';
+    // …and it must have the volume mounted to write into it.
+    const im = (initDirs as { volumeMounts?: Array<Record<string, unknown>> });
+    im.volumeMounts = im.volumeMounts ?? [];
+    if (!im.volumeMounts.some((m) => m.name === MULTIHOST_SESSION_VOLUME)) {
+      im.volumeMounts.push({ name: MULTIHOST_SESSION_VOLUME, mountPath: MULTIHOST_SESSION_BASE });
+    }
+  }
+
+  // Read-modify-WRITE rather than a patch, deliberately. A strategic merge
+  // patch merges list entries by key (`mountPath` here), so it can only ever
+  // ADD mounts — a folder that stopped being served would stay mounted
+  // forever, which is the exact exposure this design removes. Replacing the
+  // object carries `resourceVersion`, so a concurrent write loses the race
+  // loudly instead of silently clobbering.
+  container.volumeMounts = next;
+  // Retry the read-modify-write on a lost race. There is no periodic multi-host
+  // reconcile — this runs only in response to a route change — so an exception
+  // swallowed by the caller's per-deployment catch would leave the mounts wrong
+  // until some unrelated future route change happened to touch this deployment.
+  // For a removed site that means its folder stays mounted indefinitely, which
+  // is precisely the exposure this design removes.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      await clients.apps.replaceNamespacedDeployment({ name: deploymentName, namespace, body: dep } as never);
+      return true;
+    } catch (err) {
+      const status = (err as { statusCode?: number; code?: number }).statusCode
+        ?? (err as { code?: number }).code;
+      if (status !== 409 || attempt === 2) throw err;
+      // Someone else wrote first. Re-read and re-apply onto their version.
+      const fresh = await clients.apps.readNamespacedDeployment({ name: deploymentName, namespace } as never) as typeof dep;
+      const freshContainers = fresh.spec?.template?.spec?.containers ?? [];
+      const fi = freshContainers.findIndex((c) => (c as { name?: string }).name === containerName);
+      if (fi < 0) return false;
+      const fc = freshContainers[fi] as { volumeMounts?: Array<Record<string, unknown>> };
+      fc.volumeMounts = [
+        ...(fc.volumeMounts ?? []).filter((m) => !isSiteMount(m) && !isSessionMount(m)),
+        ...next.filter((m) => isSiteMount(m) || isSessionMount(m)),
+      ];
+      dep = fresh;
+    }
+  }
+  return true;
+}
+
+/**
+ * Wait for the projection, validate, reload, and report which folders are
+ * missing. Separated from the ConfigMap write so the write can be awaited by a
+ * request while this runs detached.
+ */
+async function activateSites(
+  clients: MultihostClients,
+  input: ReconcileDeploymentInput,
+  rendered: RenderResult,
+  hash: string,
+): Promise<Pick<DeploymentReconcileResult, 'reloaded' | 'failures' | 'missingFolders' | 'folderCheck'>> {
+  const { capability: cap, namespace, deploymentName } = input;
   const pods = await runningPods(clients.core, namespace, deploymentName, input.containerName);
   if (pods.length === 0) {
     // Scaled to zero or still starting. The ConfigMap is written, so whenever a
     // pod does come up it mounts the right config — nothing to reload.
-    return { ...base, reloaded: 0, failures: [], missingFolders: [], folderCheck: 'ok' };
+    return { reloaded: 0, failures: [], missingFolders: [], folderCheck: 'ok' };
   }
 
   const probe = isMultihostFlavour(cap.server)
@@ -323,7 +661,7 @@ export async function reconcileDeploymentSites(
     ? await findMissingFolders(input.kubeconfigPath, namespace, pods[0], rendered.sites)
     : { missing: [], check: 'ok' as const };
 
-  return { ...base, reloaded, failures, missingFolders: folders.missing, folderCheck: folders.check };
+  return { reloaded, failures, missingFolders: folders.missing, folderCheck: folders.check };
 }
 
 /**
@@ -402,6 +740,7 @@ export async function reconcileTenantSites(
         path: ingressRoutes.path,
         wwwRedirect: ingressRoutes.wwwRedirect,
         siteFolder: ingressRoutes.siteFolder,
+        appRoot: ingressRoutes.appRoot,
       })
       .from(ingressRoutes)
       .innerJoin(domains, eq(ingressRoutes.domainId, domains.id))
@@ -416,12 +755,17 @@ export async function reconcileTenantSites(
       path: r.path,
       wwwRedirect: r.wwwRedirect as SiteRoute['wwwRedirect'],
       siteFolder: r.siteFolder as string,
+      appRoot: (r.appRoot as string | null) ?? null,
     }));
 
     try {
       const result = await reconcileDeploymentSites(clients, {
         kubeconfigPath,
         namespace,
+        // Called from reconcileIngress, which every route mutation awaits.
+        // Writing the ConfigMap is fast; waiting for kubelet and reloading is
+        // not, and doing it here made a route PATCH time out at the gateway.
+        deferActivation: true,
         deploymentId: deployment.id,
         deploymentName: deployment.name,
         capability: cap,
@@ -460,6 +804,13 @@ export async function reconcileTenantSites(
 export function multihostMountsFor(
   deployment: { readonly name: string; readonly multihostEnabled?: boolean | null },
   entry: { readonly multihost?: unknown } | null | undefined,
+  /**
+   * Application roots this pod serves. REQUIRED, and required to be accurate:
+   * each one becomes its own mount, and the pod sees nothing else on the
+   * volume — so a caller that passes an empty list produces a pod that can
+   * serve no sites at all, not a pod that can serve everything.
+   */
+  siteFolders: readonly string[],
 ): MultihostMounts | null {
   if (!deployment.multihostEnabled) return null;
   const cap = capabilityOf(entry);
@@ -468,7 +819,29 @@ export function multihostMountsFor(
     configDir: cap.config_dir,
     sitesRoot: cap.sites_root,
     configMapName: vhostConfigMapName(deployment.name),
+    siteFolders,
   };
+}
+
+/**
+ * The application roots a deployment currently serves.
+ *
+ * Read from `ingress_routes` rather than tracked on the deployment, because
+ * the routes ARE the source of truth for what a pod serves — anything else is
+ * a copy that can drift, and here a drifted copy means either a site that
+ * 404s or a folder mounted for no reason.
+ */
+export async function loadSiteFoldersFor(db: Db, deploymentId: string): Promise<string[]> {
+  const rows = await db
+    .select({ appRoot: ingressRoutes.appRoot, siteFolder: ingressRoutes.siteFolder })
+    .from(ingressRoutes)
+    .where(and(eq(ingressRoutes.deploymentId, deploymentId), isNotNull(ingressRoutes.siteFolder)));
+  // `appRoot` is backfilled for every row that has a folder, but fall back to
+  // the folder itself so a row written before migration 0105 still mounts.
+  return rows
+    .map((r: { appRoot: string | null; siteFolder: string | null }) =>
+      r.appRoot ?? r.siteFolder)
+    .filter((f: string | null): f is string => typeof f === 'string' && f.length > 0);
 }
 
 /**
@@ -480,7 +853,9 @@ export function multihostMountsFor(
  * looking like live configuration to anyone reading the namespace.
  */
 export async function deleteDeploymentSites(
-  clients: MultihostClients,
+  // Only the ConfigMap is removed here, so this deliberately asks for less
+  // than a full reconcile does.
+  clients: Pick<MultihostClients, 'core'>,
   namespace: string,
   deploymentName: string,
   logger?: Logger,
