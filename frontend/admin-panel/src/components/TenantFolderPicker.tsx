@@ -50,10 +50,10 @@ export default function TenantFolderPicker({
     >
       <div className="w-full max-w-md rounded-xl bg-white p-5 shadow-xl dark:bg-gray-800">
         <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-1">
-          Choose the folder this hostname serves
+          {title ?? 'Choose the folder this hostname serves'}
         </h3>
         <p className="text-sm text-gray-500 dark:text-gray-400 mb-3">
-          Any folder on the tenant's storage. The hostname serves it as its document root.
+          {description ?? "Any folder on the tenant's storage. The hostname serves it as its document root."}
         </p>
 
         <div className="mb-2 flex items-center gap-2 text-xs font-mono text-gray-600 dark:text-gray-300">
