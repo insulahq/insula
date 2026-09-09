@@ -24,6 +24,16 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   Existing mailboxes need no change — POP3 access was already part of every
   mailbox's permissions, and send-only mailboxes stay blocked as before.
 
+### Fixed
+- **Saving a Compose file or a `.env` no longer fails with a "forbidden"
+  error.** The web firewall inspects request contents for attack patterns, and
+  a normal Compose file trips it — a `mysql -e "..."` command reads as SQL
+  injection, and `KEY=value` lines in a `.env` read as PHP configuration
+  tampering. Those are correct matches on content you are entitled to send.
+  The editor now submits these files as opaque data, so the firewall no longer
+  parses them as form fields. Every other protection is unchanged, including
+  the URL, method and query-string rules that block real scanning.
+
 ### Security
 - **Each website now keeps its own login sessions.** They were previously
   written to a shared temporary area, where a session's filename is its

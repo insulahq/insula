@@ -56,11 +56,27 @@ export function useCustomDeployment(tenantId: string | undefined, id: string | u
 
 // ─── Create / Validate ──────────────────────────────────────────────────────
 
+/**
+ * Compose documents and env files travel as `application/octet-stream`, not
+ * `application/json`.
+ *
+ * The bytes are shell commands and `KEY=value` config by definition, so the
+ * WAF's CRS families match them as attacks when they arrive as parsed JSON
+ * args — a realistic compose file plus a `.env` is refused at the edge with a
+ * 403 the API never sees (933120 on the `.env`, 942190 on a `mysql -e` command,
+ * 949110 to block). `application/octet-stream` is never parsed into ARGS, so
+ * the payload is invisible to those rules while every URL/method/header rule
+ * still applies. The body is byte-identical JSON; only the label changes, and
+ * the API parses either. See ADR-060 and WAF rule 9000115.
+ */
+const RAW_JSON_HEADERS = { 'Content-Type': 'application/octet-stream' } as const;
+
 export function useValidateCustomDeployment(tenantId: string | undefined) {
   return useMutation({
     mutationFn: (input: CreateCustomDeploymentInput) =>
       apiFetch<{ data: ValidateCustomDeploymentResult }>(`${BASE(tenantId!)}/validate`, {
         method: 'POST',
+        headers: RAW_JSON_HEADERS,
         body: JSON.stringify(input),
       }),
   });
@@ -72,6 +88,7 @@ export function useCreateCustomDeployment(tenantId: string | undefined) {
     mutationFn: (input: CreateCustomDeploymentSimpleInput | CreateCustomDeploymentComposeInput) =>
       apiFetch<{ data: CustomDeploymentRow }>(BASE(tenantId!), {
         method: 'POST',
+        headers: RAW_JSON_HEADERS,
         body: JSON.stringify(input),
       }),
     onSuccess: () => {
@@ -88,6 +105,7 @@ export function useUpdateCustomDeployment(tenantId: string | undefined) {
     mutationFn: ({ id, ...patch }: UpdateCustomDeploymentInput & { id: string }) =>
       apiFetch<{ data: CustomDeploymentRow }>(`${BASE(tenantId!)}/${id}`, {
         method: 'PATCH',
+        headers: RAW_JSON_HEADERS,
         body: JSON.stringify(patch),
       }),
     onSuccess: (_data, vars) => {

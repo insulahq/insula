@@ -630,3 +630,42 @@ data:
         # are mid-file — the parser recovers on the next comment line. Never
         # copy that shape to the end of this file.
         SecRule REQUEST_URI "@rx ^/api/v1/" "t:none"
+
+    # ── ADR-060: raw transport for custom-container specs ─────────────
+    #
+    # A compose document and its env files are shell commands and KEY=value
+    # configuration by definition. Sent as application/json the WAF parses
+    # them into ARGS and CRS matches content the tenant is entitled to submit.
+    # Measured on DEV 2026-09-09 — a realistic compose file plus a .env is
+    # refused at the edge with a bare 403 the API never sees:
+    #
+    #   933120  PHP Injection: Configuration Directive   <- .env KEY=value
+    #   942190  MSSQL code execution                     <- mysql -e "..." command
+    #   933100/130/150/160, 941390                       <- an env file holding PHP
+    #   949110  Inbound Anomaly Score Exceeded           <- the block
+    #
+    # 9000108 above already removed 932xxx/934xxx for this same path after an
+    # earlier round of exactly this. Excluding 933/941/942 next would move the
+    # treadmill along again: the content is arbitrary, so no finite rule list
+    # ever finishes. The panel therefore sends the SAME JSON body labelled
+    # application/octet-stream, which ModSecurity never parses into ARGS.
+    #
+    # This rule makes that possible and does two things only:
+    #   920420 — CRS rejects application/octet-stream outright by default, so
+    #            without this every raw-transport request 403s immediately.
+    #   REQUEST_BODY / ARGS_POST targets — an octet-stream body still lands in
+    #            REQUEST_BODY, which a few rules read directly.
+    # Everything else still applies here: URL, method, header and QUERY-STRING
+    # rules are untouched, so ?path=../../etc/passwd is still caught.
+    #
+    # Non-chained and matched on a platform-API-specific URI, for the reason
+    # given at 9000102/9000104: a dangling `chain` bleeds into the next-loaded
+    # (dynamic) file. LAST rule in the file, so the action list is REQUIRED.
+    SecRule REQUEST_URI "@rx ^/api/v1/tenants/[^/]+/custom-deployments" \
+        "id:9000115,\
+         phase:1,\
+         pass,\
+         nolog,\
+         ctl:ruleRemoveById=920420,\
+         ctl:ruleRemoveTargetByTag=OWASP_CRS;REQUEST_BODY,\
+         ctl:ruleRemoveTargetByTag=OWASP_CRS;ARGS_POST"
