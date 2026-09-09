@@ -143,7 +143,7 @@ const STALWART_EXTERNAL_IPS_PATCH = applyPatch(
 );
 
 // Mail ports that Stalwart binds via hostPort in 'thisNodeOnly' mode.
-const MAIL_HOST_PORTS = [25, 465, 587, 143, 993, 4190] as const;
+const MAIL_HOST_PORTS = [25, 465, 587, 143, 993, 995, 4190] as const;
 
 export interface PortExposureOptions {
   readonly kubeconfigPath: string | undefined;
@@ -516,7 +516,7 @@ async function applyModeToClusterUnlocked(
   }
 
   // Post-hairpin-fix invariant (2026-05-28): Stalwart Deployment ALWAYS
-  // has hostPort=25/465/587/143/993/4190 — the active node serves via
+  // has hostPort=25/465/587/143/993/995/4190 — the active node serves via
   // CNI portmap directly. In haproxy modes the OTHER data-plane nodes
   // bind hostPort=25 via the haproxy DS (no conflict because Stalwart's
   // pod lives only on the active node, and the active node is excluded
@@ -735,6 +735,7 @@ async function addHostPortsToDeployment(
     { name: 'submission', containerPort: 587 },
     { name: 'imap', containerPort: 143 },
     { name: 'imaps', containerPort: 993 },
+    { name: 'pop3s', containerPort: 995 },
     { name: 'sieve', containerPort: 4190 },
   ];
 
@@ -845,7 +846,7 @@ async function ensureHaproxyDaemonSetExists(
  * Uses propagationPolicy=Foreground so the apiserver blocks the
  * delete-call until child pods are gone. Without this, the default
  * Background GC returns immediately and haproxy pods can keep binding
- * hostPorts 25/465/587/143/993/4190 for their grace period (~10s
+ * hostPorts 25/465/587/143/993/995/4190 for their grace period (~10s
  * normally; can be longer). If the symmetric flip to thisNodeOnly
  * then patches the Stalwart Deployment to RE-ADD hostPorts, the new
  * Stalwart pod lands on a node where haproxy is still alive and
@@ -933,7 +934,7 @@ const MAIL_PVC_NAME = 'mail-stack-data';
  * Stalwart pod is Running). With activeNode=null the haproxy-placement
  * resolver can't exclude the node Stalwart needs, so haproxy gets
  * labelled onto EVERY server node — including the one Stalwart must
- * schedule on — and the two fight for hostPort 25/465/587/143/993/4190.
+ * schedule on — and the two fight for hostPort 25/465/587/143/993/995/4190.
  * Stalwart then stays Pending (observed on the 2026-05-31 staging cold
  * multi-node re-bootstrap: stalwart-mail Pending ~2h).
  *

@@ -42,6 +42,7 @@ export type ListenerKind =
   | 'submission'     // port 587 — STARTTLS
   | 'imap'           // port 143 — STARTTLS
   | 'imaps'          // port 993 — implicit TLS
+  | 'pop3s'          // port 995 — implicit TLS
   | 'managesieve'    // port 4190 — STARTTLS
   | 'webmail-https'; // port 443 — implicit TLS, NOT Stalwart — Roundcube via nginx-ingress
 
@@ -82,6 +83,7 @@ const ALL_PORTS: readonly PortSpec[] = [
   { listener: 'submission',   port: 587,  tlsMode: 'starttls', starttlsCommand: 'smtp' },
   { listener: 'imap',         port: 143,  tlsMode: 'starttls', starttlsCommand: 'imap' },
   { listener: 'imaps',        port: 993,  tlsMode: 'implicit' },
+  { listener: 'pop3s',        port: 995,  tlsMode: 'implicit' },
   { listener: 'managesieve',  port: 4190, tlsMode: 'starttls', starttlsCommand: 'managesieve' },
 ];
 
