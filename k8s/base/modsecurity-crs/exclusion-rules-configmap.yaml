@@ -666,6 +666,15 @@ data:
     #   - waf-body-limit, which is a DoS control and stays attached.
     #   - CrowdSec, which runs on every route.
     #
+    # `ctl:responseBodyAccess` DOES NOT EXIST in ModSecurity v3. Using it makes
+    # the rule file unparseable and modsec-crs refuses to start ("Expecting an
+    # action, got: ctl:responseBodyAccess=Off") — verified by running the real
+    # image with the real entrypoint. The response direction is therefore
+    # handled by dropping the `attack-disclosure` tag instead, which is the
+    # whole RESPONSE-95x data-leakage family (953120 PHP source leakage and
+    # friends). 959100, the outbound anomaly evaluator, then never accumulates
+    # a score because its contributors are gone.
+    #
     # Threat model in the ADR. In short: mutations are Bearer-only, the API
     # builds no SQL by string concatenation (Drizzle parameterises every
     # interpolation), inputs are Zod-validated at the boundary, and an
@@ -677,7 +686,7 @@ data:
          pass,\
          nolog,\
          chain,\
-         ctl:requestBodyAccess=Off,ctl:responseBodyAccess=Off"
+         ctl:requestBodyAccess=Off,ctl:ruleRemoveByTag=attack-disclosure"
         # LAST rule in the file — the action list is REQUIRED. See 9000112:
         # a chained SecRule with no actions makes the parser continue into the
         # next-loaded file, nginx refuses to start, and every request through
