@@ -1234,6 +1234,10 @@ export const ingressRoutes = pgTable('ingress_routes', {
   forceHttps: integer('force_https').notNull().default(1),
   wwwRedirect: wwwRedirectEnum('www_redirect').notNull().default('none'),
   redirectUrl: varchar('redirect_url', { length: 2048 }),
+  // 301 (permanent) or 302 (temporary). New routes default to 302; rows that
+  // already had a redirect when 0106 ran were pinned to the 301 they were
+  // serving, so shipping the picker changed no live redirect.
+  redirectStatusCode: integer('redirect_status_code').notNull().default(302),
   // ── Security settings ──
   ipAllowlist: text('ip_allowlist'),
   rateLimitRps: integer('rate_limit_rps'),

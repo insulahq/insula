@@ -154,10 +154,24 @@ it its own instance instead; those commands are switched off on shared
 instances, because they would let one site step outside its folder. Command-line
 tools over SSH and scheduled tasks are unaffected.
 
-**Paths for your app's config file.** Hover either button to see the exact
-absolute paths the web server uses — the application root and the document
-root. Applications that record their own location (Nextcloud's
-`datadirectory`, for instance) want these values literally.
+**Paths for your app's config file.** Click the **?** beside the two folder
+buttons. It explains the difference between the roots and lists, for each of
+them, two paths:
+
+- **In File Manager** — where the folder lives on your storage. Use this when
+  uploading files or browsing in [Files & SFTP](files-and-sftp.md).
+- **Inside the container** — the absolute path the web server actually uses.
+  Applications that record their own location (Nextcloud's `datadirectory`,
+  for instance) want this value literally.
+
+The two differ, and pasting the wrong one into an application's configuration
+is the usual cause of a site that installs but cannot find its own files.
+
+**Clearing the document root.** The **✕** beside the folder buttons resets the
+document root so the route serves the application root instead. It asks for
+confirmation first — press <kbd>Enter</kbd> to confirm. **No files are
+deleted**; only which folder is published changes, and you can pick a document
+root again at any time.
 
 The picker offers folders that already exist; create the folder and upload the
 site first, under [Files & SFTP](files-and-sftp.md). Pointing a hostname at an
@@ -196,7 +210,18 @@ served purely to issue the redirect, and the certificate covers both names, so
 ### Redirect a hostname somewhere else
 
 The same tab has a **Redirect URL**. Set it and every request to this route —
-any path — is answered with a permanent redirect (HTTP 301) to that address.
+any path — is answered with a redirect to that address.
+
+Once a target is set, a **Redirect Type** appears:
+
+| Type | When to use it |
+|---|---|
+| **302 — Temporary** *(default)* | Anything you might change or undo. Browsers re-check the original address every time, so removing or repointing the redirect takes effect immediately. |
+| **301 — Permanent** | Only once the move is final. Browsers and search engines cache a 301 hard and may keep redirecting long after you clear it here. |
+
+Start on 302 and switch to 301 when you are sure. Going the other way — 301
+first, then changing your mind — is the case that causes support tickets,
+because visitors who already received the 301 keep following it.
 
 This works **with or without an application**. A route that has no deployment
 and only a redirect is a valid setup: use it for a domain you own but do not
@@ -211,9 +236,15 @@ a page elsewhere. Leave the deployment unset, fill in the redirect, save.
 
 !!! info "Permanent means browsers remember it"
     A 301 is cached by browsers, sometimes for a long time. While you are still
-    deciding where a hostname should point, test with a spare hostname first —
-    clearing a cached 301 from every visitor's browser is not something the
-    platform can do for you.
+    deciding where a hostname should point, leave the type on **302** — that is
+    why it is the default. Clearing a cached 301 from every visitor's browser
+    is not something the platform can do for you.
+
+!!! note "Changed in 2026.9"
+    Redirects used to always be 301. Routes that already had a redirect
+    configured **keep issuing 301** and are unchanged; only newly configured
+    redirects default to 302. Change an existing one on its Redirects tab if
+    you want it temporary.
 
 !!! info "Where is the webroot / PHP version setting?"
     There is no separate webroot or PHP-version switch here. Which web server

@@ -176,6 +176,10 @@ function RedirectsTab({ tenantId, routeId, route, dnsMode }: {
   const [forceHttps, setForceHttps] = useState(route.forceHttps);
   const [wwwRedirect, setWwwRedirect] = useState(route.wwwRedirect);
   const [customRedirectUrl, setCustomRedirectUrl] = useState(route.redirectUrl ?? '');
+  // ?? 302 mirrors the column default, so a route read before migration 0106
+  // (or through a narrowed projection) renders the same code it will be saved
+  // with rather than showing a blank select.
+  const [redirectStatusCode, setRedirectStatusCode] = useState<301 | 302>(route.redirectStatusCode ?? 302);
   const [dirty, setDirty] = useState(false);
 
   const markDirty = () => setDirty(true);
@@ -187,6 +191,7 @@ function RedirectsTab({ tenantId, routeId, route, dnsMode }: {
         force_https: forceHttps,
         www_redirect: wwwRedirect,
         redirect_url: customRedirectUrl || null,
+        redirect_status_code: redirectStatusCode,
       });
       setDirty(false);
     } catch { /* error via updateRedirects.error */ }
@@ -291,9 +296,35 @@ function RedirectsTab({ tenantId, routeId, route, dnsMode }: {
           data-testid="custom-redirect-url-input"
         />
         <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-          Permanently redirects (301) all traffic for this route to the specified URL. Useful for domain migrations or parking pages. Leave empty to disable.
+          Redirects all traffic for this route to the specified URL. Useful for domain migrations or parking pages. Leave empty to disable.
         </p>
       </div>
+
+      {/* Status code — only meaningful once a target URL is set. */}
+      {customRedirectUrl.trim() !== '' && (
+        <div data-testid="redirect-status-code-row">
+          <label htmlFor="redirect-status-code" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+            Redirect Type
+          </label>
+          <select
+            id="redirect-status-code"
+            className={INPUT_CLASS + ' mt-1'}
+            value={redirectStatusCode}
+            onChange={(e) => { setRedirectStatusCode(Number(e.target.value) as 301 | 302); markDirty(); }}
+            data-testid="redirect-status-code-select"
+          >
+            <option value={302}>302 — Temporary</option>
+            <option value={301}>301 — Permanent</option>
+          </select>
+          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+            <strong>302</strong> is the safe default: browsers re-check the original address every
+            time, so you can change or remove the redirect later.{' '}
+            <strong>301</strong> tells browsers and search engines the move is permanent — they cache
+            it aggressively and may keep redirecting long after you remove it here. Use 301 only once
+            the move is final.
+          </p>
+        </div>
+      )}
 
       {updateRedirects.error && (
         <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400" data-testid="redirects-save-error">

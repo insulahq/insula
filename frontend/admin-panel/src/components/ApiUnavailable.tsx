@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Loader2, RefreshCw, ServerCrash } from 'lucide-react';
+import { useSystemInfo } from '@/hooks/use-system-info';
 
 interface ApiUnavailableProps {
   /** Failed probes so far — shown so the wait does not look frozen. */
@@ -21,6 +22,14 @@ const SLOW_HINT_AFTER_MS = 60_000;
  * operator gets a form that looks fine and fails only on submit.
  */
 export default function ApiUnavailable({ attempts, since, onRetry, panelLabel }: ApiUnavailableProps) {
+  // This screen renders precisely when /system-info is unreachable, so the
+  // name usually comes from TanStack's cache of an earlier successful load.
+  // When there is no cache (API down on first paint) the neutral fallback is
+  // still better than a hardcoded product name, which would be simply wrong
+  // on any platform the operator has renamed.
+  const { data: systemInfo } = useSystemInfo();
+  const platformName = systemInfo?.platformName ?? 'Hosting Platform';
+
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
@@ -38,8 +47,8 @@ export default function ApiUnavailable({ attempts, since, onRetry, panelLabel }:
     <div className="flex min-h-screen items-center justify-center bg-linear-to-br from-brand-500 to-accent-500 p-4">
       <div className="w-full max-w-sm rounded-2xl bg-white dark:bg-gray-800 p-8 shadow-xl" data-testid="api-unavailable">
         <div className="mb-6 flex flex-col items-center">
-          <img src="/insula-mark.svg" alt="Insula" className="h-14 w-14" />
-          <h1 className="mt-4 text-xl font-bold text-gray-900 dark:text-gray-100">Insula</h1>
+          <img src="/insula-mark.svg" alt="" aria-hidden="true" className="h-14 w-14" />
+          <h1 className="mt-4 text-xl font-bold text-gray-900 dark:text-gray-100">{platformName}</h1>
           <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">Sign in to {panelLabel}</p>
         </div>
 

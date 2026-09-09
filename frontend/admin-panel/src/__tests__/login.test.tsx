@@ -42,9 +42,24 @@ beforeEach(() => {
 });
 
 describe('Login page', () => {
-  it('renders platform title', () => {
+  it('renders the operator-configured platform name, not a build-time literal', async () => {
+    // URL-aware so /system-info returns branding while the OIDC probe keeps
+    // its own shape. A blanket mockResolvedValue would hand the branding hook
+    // the OIDC payload, platformName would be undefined, and the test would
+    // pass on the fallback while proving nothing about the wiring.
+    mockApiFetch.mockImplementation((url: string) =>
+      url.startsWith('/api/v1/system-info')
+        ? Promise.resolve({ data: { platformName: 'Acme Hosting' } })
+        : Promise.resolve({ data: { localAuthEnabled: true, providers: [] } }),
+    );
     render(<Login />, { wrapper: createWrapper() });
-    expect(screen.getByText('Insula')).toBeInTheDocument();
+    expect(await screen.findByText('Acme Hosting')).toBeInTheDocument();
+  });
+
+  it('falls back to a neutral name when branding has not loaded', () => {
+    // Never a product literal: on a renamed platform that would just be wrong.
+    render(<Login />, { wrapper: createWrapper() });
+    expect(screen.getByText('Hosting Platform')).toBeInTheDocument();
   });
 
   it('shows sign in subtitle', () => {

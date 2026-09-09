@@ -1,5 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import type { z } from 'zod';
 import type { IngressRouteResponse, WafRuleExclusionScope } from '@insula/api-contracts';
+import { updateRedirectSettingsSchema } from '@insula/api-contracts';
 import { apiFetch } from '@/lib/api-client';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -64,11 +66,12 @@ export function useUpdateRouteRedirects(tenantId: string | undefined, routeId: s
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (input: {
-      readonly force_https?: boolean;
-      readonly www_redirect?: 'none' | 'add-www' | 'remove-www';
-      readonly redirect_url?: string | null;
-    }) =>
+    // Derived from the shared contract rather than re-declared here. The
+    // hand-written copy this replaces had already drifted: it omitted
+    // redirect_status_code, so the panel could not have sent it even though
+    // the endpoint accepts it. `.strict()` on the server means a field the
+    // type forgets is a field that silently never gets saved.
+    mutationFn: (input: z.infer<typeof updateRedirectSettingsSchema>) =>
       apiFetch<{ data: RouteDetailResponse }>(
         `${routeBasePath(tenantId!, routeId!)}/redirects`,
         { method: 'PATCH', body: JSON.stringify(input) },

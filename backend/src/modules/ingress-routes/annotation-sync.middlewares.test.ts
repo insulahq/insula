@@ -276,7 +276,7 @@ describe('buildMiddlewaresForRoute — additionalHeaders', () => {
 describe('buildMiddlewaresForRoute — customRedirectUrl', () => {
   it('emits a redirectRegex Middleware with regex=".*" so every path is redirected', () => {
     const { middlewares, referenceList } = buildMiddlewaresForRoute(
-      { ...baseRoute, redirectUrl: 'https://newsite.example.com' },
+      { ...baseRoute, redirectUrl: 'https://newsite.example.com', redirectStatusCode: 302 },
       ROUTE_ID,
       NS,
     );
@@ -285,10 +285,37 @@ describe('buildMiddlewaresForRoute — customRedirectUrl', () => {
       redirectRegex: {
         regex: '.*',
         replacement: 'https://newsite.example.com',
-        permanent: true,
+        permanent: false,
       },
     });
     expect(referenceList.find((r) => r.name.endsWith('-redirect'))).toBeDefined();
+  });
+
+  it('301 maps to permanent:true, 302 to permanent:false', () => {
+    const build = (code: number) => findMw(
+      buildMiddlewaresForRoute(
+        { ...baseRoute, redirectUrl: 'https://newsite.example.com', redirectStatusCode: code },
+        ROUTE_ID,
+        NS,
+      ).middlewares,
+      'redirect',
+    );
+    expect(build(301)?.spec).toMatchObject({ redirectRegex: { permanent: true } });
+    expect(build(302)?.spec).toMatchObject({ redirectRegex: { permanent: false } });
+  });
+
+  it('an absent status code falls back to 302, matching the column default', () => {
+    // A row read before migration 0106 has no redirectStatusCode. It must
+    // land on the same 302 the DB would have given it — not the pre-0106
+    // hardcoded 301 — so the two defaults cannot drift apart.
+    const { middlewares } = buildMiddlewaresForRoute(
+      { ...baseRoute, redirectUrl: 'https://newsite.example.com' },
+      ROUTE_ID,
+      NS,
+    );
+    expect(findMw(middlewares, 'redirect')?.spec).toMatchObject({
+      redirectRegex: { permanent: false },
+    });
   });
 
   it('emits NO redirect Middleware when redirectUrl is null', () => {
