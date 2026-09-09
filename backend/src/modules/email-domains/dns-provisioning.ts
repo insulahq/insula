@@ -304,6 +304,17 @@ function buildBaseRecords(
       priority: 10,
       purpose: 'srv',
     },
+    // POP3S only — Stalwart binds no plaintext POP3 (110) listener, so we
+    // never advertise one. Priority 20 keeps IMAP (0/10) ahead of POP3 for
+    // clients that read the whole SRV set and pick the lowest.
+    {
+      recordType: 'SRV',
+      recordName: `_pop3s._tcp.${domainName}`,
+      recordValue: `20 1 995 ${mailServerHostname}`,
+      ttl: 3600,
+      priority: 20,
+      purpose: 'srv',
+    },
     {
       recordType: 'SRV',
       recordName: `_submissions._tcp.${domainName}`,

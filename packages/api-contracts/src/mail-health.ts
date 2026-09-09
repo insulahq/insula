@@ -83,7 +83,7 @@ export const mailHealthRocksdbComponentSchema = componentStatusSchema.extend({
 
 export const mailHealthCertPortSchema = z.object({
   port: z.number().int(),
-  protocol: z.enum(['smtps', 'submission', 'imaps', 'imap', 'managesieve', 'smtp']),
+  protocol: z.enum(['smtps', 'submission', 'imaps', 'imap', 'pop3s', 'managesieve', 'smtp']),
   daysUntilExpiry: z.number().int().nullable(),
   issuer: z.string().nullable(),
   error: z.string().nullable(),

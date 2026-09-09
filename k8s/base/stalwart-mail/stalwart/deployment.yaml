@@ -63,7 +63,7 @@ metadata:
     # of Kustomization.spec.force", which IS the opposite of its name.
 spec:
   # Rolling-update strategy: kill the old pod BEFORE scheduling the new
-  # one. Stalwart binds 6 hostPorts (25/465/587/143/993/4190); k8s default
+  # one. Stalwart binds 7 hostPorts (25/465/587/143/993/995/4190); k8s default
   # `RollingUpdate{maxSurge:1,maxUnavailable:0}` would schedule the new
   # pod first — on a single-node cluster it stays Pending forever because
   # the old pod still owns the hostPorts, classic deadlock. On multi-node
@@ -101,7 +101,7 @@ spec:
         # ports unconditionally (lines 877-884) so this annotation is
         # belt-and-suspenders, but it keeps the runtime-firewall view of
         # the cluster consistent.
-        insula.host/firewall-tcp-ports: "25,465,587,143,993,4190"
+        insula.host/firewall-tcp-ports: "25,465,587,143,993,995,4190"
     spec:
       terminationGracePeriodSeconds: 300
       # Spread Stalwart pods one-per-node so any node IP that lands
@@ -641,6 +641,9 @@ spec:
               protocol: TCP
             - name: imaps
               containerPort: 993
+              protocol: TCP
+            - name: pop3s
+              containerPort: 995
               protocol: TCP
             - name: sieve
               containerPort: 4190

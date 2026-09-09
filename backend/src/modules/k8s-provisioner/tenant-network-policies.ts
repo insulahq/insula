@@ -78,12 +78,13 @@ const CLUSTER_CIDRS_CM_NAMESPACE = 'platform';
 // ONLY — deliberately not Traefik's dashboard/API/metrics entrypoint (a separate
 // internal port), so tenants get the ingress but not its control surface.
 const TRAEFIK_ENTRYPOINT_PORTS = [8000, 8443] as const;
-// The mail server's client ports — the SAME six everywhere else in the codebase
-// (Service, HAProxy frontends, port-exposure MAIL_HOST_PORTS, the firewall
-// annotation). Stalwart publishes hostPort == containerPort, so these match
-// directly after DNAT. POP3 (110/995) is intentionally absent: nothing in the
-// mail stack serves it — add it here only if/when POP3 is actually wired up.
-const MAIL_CLIENT_PORTS = [25, 143, 465, 587, 993, 4190] as const;
+// The mail server's client ports — the SAME seven everywhere else in the
+// codebase (Service, HAProxy frontends, port-exposure MAIL_HOST_PORTS, the
+// firewall annotation). Stalwart publishes hostPort == containerPort, so these
+// match directly after DNAT. POP3S (995) joined the set when POP3 was wired up;
+// plaintext POP3 (110) stays absent — Stalwart binds no listener on it and we
+// only offer the implicit-TLS port.
+const MAIL_CLIENT_PORTS = [25, 143, 465, 587, 993, 995, 4190] as const;
 const SFTP_GATEWAY_PORT = 23022;
 
 const tcp = (port: number) => ({ protocol: 'TCP', port });

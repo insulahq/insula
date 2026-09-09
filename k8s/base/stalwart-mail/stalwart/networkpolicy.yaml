@@ -1,7 +1,7 @@
 # NetworkPolicy for Stalwart 0.16.
 #
 # Ingress:
-#   - Public mail ports (25/465/587/143/993/4190) — from anywhere
+#   - Public mail ports (25/465/587/143/993/995/4190) — from anywhere
 #   - Management HTTP (8080) — from same namespace + platform namespace
 #     (platform-api JMAP proxying + ingress controller)
 #
@@ -45,8 +45,10 @@ spec:
         - protocol: TCP
           port: 993
         - protocol: TCP
+          port: 995
+        - protocol: TCP
           port: 4190
-    # Internal PROXY-protocol ports (12025/12465/12587/12143/12993/14190).
+    # Internal PROXY-protocol ports (12025/12465/12587/12143/12993/12995/14190).
     # These are how the haproxy DaemonSet (hostNetwork) reaches Stalwart's
     # dedicated `-proxy` listeners; the cross-node forward is masqueraded to
     # a pod-CIDR tunnel IP (10.42.0.0/16), so the source appears in the pod
@@ -66,6 +68,8 @@ spec:
           port: 12143
         - protocol: TCP
           port: 12993
+        - protocol: TCP
+          port: 12995
         - protocol: TCP
           port: 14190
     # ACME HTTP-01 challenge (port 80) — from the Traefik ingress

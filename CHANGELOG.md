@@ -12,6 +12,18 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **POP3 is now available to mailbox users (port 995, TLS).** The mail server
+  had always spoken POP3 internally, and the automatic setup files handed to
+  Thunderbird and Outlook already listed port 995 — but nothing carried that
+  port from the outside world to the mail server, so any client that chose
+  POP3 got "connection refused". The port is now served on every mail node,
+  covered by the mail health and certificate checks, reachable from tenant
+  websites, and published as a `_pop3s._tcp` SRV record in new mail domains'
+  DNS. Plain, unencrypted POP3 (port 110) is deliberately NOT offered.
+  Existing mailboxes need no change — POP3 access was already part of every
+  mailbox's permissions, and send-only mailboxes stay blocked as before.
+
 ### Security
 - **Each website now keeps its own login sessions.** They were previously
   written to a shared temporary area, where a session's filename is its

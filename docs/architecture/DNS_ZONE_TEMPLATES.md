@@ -215,15 +215,17 @@ records:
     content: "{{platform.smtp_hostname}}."
     comment: "SMTP Submission with STARTTLS (port 587) — used by most email clients"
 
-  # POP3 over TLS (RFC 6186) — disabled by default, enable if POP3 is supported
-  # - name: "_pop3s._tcp.{{domain.name}}."
-  #   type: SRV
-  #   ttl: 3600
-  #   priority: 10
-  #   weight: 10
-  #   port: 995
-  #   content: "{{platform.imap_hostname}}."
-  #   comment: "POP3 over TLS — uncomment if POP3 is offered"
+  # POP3 over TLS (RFC 6186). Priority 20 keeps IMAP (0/10) ahead of POP3 for
+  # clients that read the whole SRV set. Plaintext POP3 (110) is NOT offered —
+  # Stalwart binds no listener on it, so no `_pop3._tcp` record exists.
+  - name: "_pop3s._tcp.{{domain.name}}."
+    type: SRV
+    ttl: 3600
+    priority: 20
+    weight: 10
+    port: 995
+    content: "{{platform.imap_hostname}}."
+    comment: "POP3 over TLS (port 995) — RFC 8314 implicit TLS"
 
   # ─────────────────────────────────────────────
   # EMAIL AUTODISCOVERY — Autodiscover / Autoconfig

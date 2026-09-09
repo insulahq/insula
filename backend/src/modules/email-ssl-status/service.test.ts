@@ -61,10 +61,10 @@ describe('email-ssl-status: cache', () => {
     expect(r2).toHaveLength(r1.length);
   });
 
-  it('returns one row per declared port (6 listeners: 25, 465, 587, 143, 993, 4190)', async () => {
+  it('returns one row per declared port (7 listeners: 25, 465, 587, 143, 993, 995, 4190)', async () => {
     const r = await probeAllListeners('mail.test.example.com', { serviceHost: '127.0.0.1' });
     const ports = r.map((s) => s.port).sort((a, b) => a - b);
-    expect(ports).toEqual([25, 143, 465, 587, 993, 4190]);
+    expect(ports).toEqual([25, 143, 465, 587, 993, 995, 4190]);
   });
 
   it('reports `connected: false` + `error` when host is unreachable', async () => {

@@ -19,7 +19,7 @@
  * static and Flux is the natural source-of-truth for static config.
  *
  * The DS spec mirrors the previous YAML 1:1 (image, hostNetwork,
- * priorityClass, all six mail ports, runAsUser:0 + drop-all +
+ * priorityClass, all seven mail ports, runAsUser:0 + drop-all +
  * NET_BIND_SERVICE, livenessProbe, resources, configMap mount, /tmp
  * tmpfs). The verbatim port of the security commentary is in the
  * BUILDER_RATIONALE constant below to keep the same operational
@@ -38,7 +38,7 @@ const NAME = 'stalwart-haproxy';
 const MAIL_HAPROXY_LABEL_VALUE = 'true';
 
 /**
- * The six mail ports haproxy forwards. Same set as the Stalwart
+ * The seven mail ports haproxy forwards. Same set as the Stalwart
  * Deployment binds in `thisNodeOnly` mode. Keeping the structure
  * inline so a code reader sees exactly what gets exposed.
  */
@@ -48,6 +48,7 @@ const MAIL_PORTS = [
   { name: 'submission', containerPort: 587 },
   { name: 'imap', containerPort: 143 },
   { name: 'imaps', containerPort: 993 },
+  { name: 'pop3s', containerPort: 995 },
   { name: 'sieve', containerPort: 4190 },
 ] as const;
 

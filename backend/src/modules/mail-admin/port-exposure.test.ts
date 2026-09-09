@@ -147,8 +147,8 @@ describe('mail-admin/port-exposure.updateMailPortExposure', () => {
       ports: Array<{ containerPort: number; hostPort?: number; name: string; protocol: string }>;
     }>;
     expect(containers[0].name).toBe('stalwart');
-    const mailPorts = containers[0].ports.filter((p) => [25, 465, 587, 143, 993, 4190].includes(p.containerPort));
-    expect(mailPorts.length).toBe(6);
+    const mailPorts = containers[0].ports.filter((p) => [25, 465, 587, 143, 993, 995, 4190].includes(p.containerPort));
+    expect(mailPorts.length).toBe(7);
     for (const p of mailPorts) {
       expect(p.hostPort).toBe(p.containerPort);
     }
@@ -198,8 +198,8 @@ describe('mail-admin/port-exposure.updateMailPortExposure', () => {
       }> } } } };
     };
     const mailPorts = patchArg.body.spec.template.spec.containers[0].ports
-      .filter((p) => [25, 465, 587, 143, 993, 4190].includes(p.containerPort));
-    expect(mailPorts.length).toBe(6);
+      .filter((p) => [25, 465, 587, 143, 993, 995, 4190].includes(p.containerPort));
+    expect(mailPorts.length).toBe(7);
     for (const p of mailPorts) {
       expect(p.hostPort).toBe(p.containerPort);
     }
