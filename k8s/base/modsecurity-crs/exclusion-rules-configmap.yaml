@@ -630,3 +630,57 @@ data:
         # are mid-file — the parser recovers on the next comment line. Never
         # copy that shape to the end of this file.
         SecRule REQUEST_URI "@rx ^/api/v1/" "t:none"
+
+    # ── ADR-060: the platform API is not untrusted input ──────────────
+    #
+    # /api/v1/** on the panel hosts transports content that is
+    # indistinguishable from an attack BY DESIGN: database dumps (942xxx),
+    # file bytes (930xxx/933xxx/953120 outbound), compose YAML and cron lines
+    # (932xxx), .env contents, and — in the WAF-exclusion editor — an attack
+    # pattern literally typed by the operator. Those are correct matches on
+    # content the caller is entitled to send, so the false-positive rate is a
+    # property of the design and no ruleset tuning closes it. Three narrower
+    # carve-outs were each added after a production incident; the list had no
+    # natural end. See docs/architecture/adr/ADR-060-*.md.
+    #
+    # ONLY body inspection is disabled. Verified against the live CRS 4.28
+    # rule files, the split is clean:
+    #   catches real attacks -> reads URL/method/headers
+    #     930130 REQUEST_FILENAME  (the .env sweeps, 232 hits/30d)
+    #     920440 REQUEST_BASENAME
+    #     911100 REQUEST_METHOD
+    #     920420 REQUEST_HEADERS:Content-Type
+    #   causes our false positives -> reads a body
+    #     942190/942350/933120 ARGS|REQUEST_COOKIES|XML
+    #     953120               RESPONSE_BODY
+    # Nothing in the first group is affected. A scanner probing /api/v1/.env is
+    # still blocked on REQUEST_FILENAME, which is how it was caught before.
+    #
+    # NOT exempted, deliberately:
+    #   - Tenant websites. The X-Forwarded-Host chain scopes this to panel
+    #     hosts; a tenant app serving its own /api/v1/ keeps full coverage
+    #     (same reasoning as 9000103).
+    #   - Query-string ARGS. `ARGS` is query + body; turning off body access
+    #     removes only the body half, so ?id=1' OR 1=1-- is still matched.
+    #   - Non-API paths on the panel hosts.
+    #   - waf-body-limit, which is a DoS control and stays attached.
+    #   - CrowdSec, which runs on every route.
+    #
+    # Threat model in the ADR. In short: mutations are Bearer-only, the API
+    # builds no SQL by string concatenation (Drizzle parameterises every
+    # interpolation), inputs are Zod-validated at the boundary, and an
+    # authenticated admin can already run arbitrary SQL, write arbitrary files
+    # and execute shell commands through the product's own features.
+    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\." \
+        "id:9000114,\
+         phase:1,\
+         pass,\
+         nolog,\
+         chain,\
+         ctl:requestBodyAccess=Off,\
+         ctl:responseBodyAccess=Off"
+        # LAST rule in the file — the action list is REQUIRED. See 9000112:
+        # a chained SecRule with no actions makes the parser continue into the
+        # next-loaded file, nginx refuses to start, and every request through
+        # the WAF returns 502.
+        SecRule REQUEST_URI "@rx ^/api/v1/" "t:none"
