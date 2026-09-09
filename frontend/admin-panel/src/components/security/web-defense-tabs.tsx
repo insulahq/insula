@@ -971,7 +971,17 @@ export function BannedIpsTab() {
                   <th className="px-4 py-2 text-left">Type</th>
                   <th className="px-4 py-2 text-left">Origin</th>
                   <th className="px-4 py-2 text-left">Reason</th>
-                  <th className="px-4 py-2 text-left">Time left</th>
+                  {/* "Time left" is REMAINING time, counting down — not the
+                      duration the ban was issued for. A ban issued for 48h a
+                      day ago reads "~24h" here, which was misread as the
+                      configured duration having been ignored. The title makes
+                      the distinction explicit on hover. */}
+                  <th
+                    className="px-4 py-2 text-left"
+                    title="Remaining time until the ban expires. This counts down — it is not the duration the ban was issued for. See the auto-ban run history for the duration each ban was issued with."
+                  >
+                    Time left
+                  </th>
                   <th className="px-4 py-2 text-left">Action</th>
                 </tr>
               </thead>

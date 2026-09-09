@@ -60,9 +60,20 @@ function parseDurationMs(d: string): number {
   return total;
 }
 
+/**
+ * Serialise a ban duration for cscli.
+ *
+ * Deliberately does NOT collapse whole days into `Nd`. cscli accepts both
+ * (`2d` and `48h` both landed a 48h decision when tested against v1.7.8),
+ * but the operator types `48h` in the settings form and the run history
+ * echoes whatever we emit here. Rendering that back as `2d` made a correctly
+ * applied 48h setting look like it had been rewritten to something else —
+ * reported as "auto-ban durations aren't respected" when enforcement was in
+ * fact correct. Hours keep the round-trip legible, and `STATIC_BAN_DURATION`
+ * ('876000h' — 100 years) is existing precedent that large hour counts parse.
+ */
 function msToCrowdsecDuration(ms: number): string {
   if (ms <= 0) return '1m';
-  if (ms % 86_400_000 === 0) return `${ms / 86_400_000}d`;
   if (ms % 3_600_000 === 0) return `${ms / 3_600_000}h`;
   if (ms % 60_000 === 0) return `${ms / 60_000}m`;
   return `${Math.max(1, Math.round(ms / 1000))}s`;
