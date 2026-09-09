@@ -631,45 +631,56 @@ data:
         # copy that shape to the end of this file.
         SecRule REQUEST_URI "@rx ^/api/v1/" "t:none"
 
-    # ── File content: the RESPONSE is the file ────────────────────────
+    # ── ADR-060: the platform API is not untrusted input ──────────────
     #
-    # The file-manager's read/write/download endpoints return a tenant's own
-    # file bytes in the RESPONSE body. CRS scans responses too, so saving or
-    # opening a PHP file trips 953120 "PHP source code leakage" and pushes
-    # 959100 (outbound anomaly) to 4 of a threshold of 5 — one rule short of
-    # the File Manager being unable to handle PHP at all, for every tenant.
-    # Observed on production 2026-09-09.
+    # /api/v1/** on the panel hosts transports content that is
+    # indistinguishable from an attack BY DESIGN: database dumps (942xxx),
+    # file bytes (930xxx/933xxx/953120 outbound), compose YAML and cron lines
+    # (932xxx), .env contents, and — in the WAF-exclusion editor — an attack
+    # pattern literally typed by the operator. Those are correct matches on
+    # content the caller is entitled to send, so the false-positive rate is a
+    # property of the design and no ruleset tuning closes it. Three narrower
+    # carve-outs were each added after a production incident; the list had no
+    # natural end. See docs/architecture/adr/ADR-060-*.md.
     #
-    # 9000104 above already exempts the REQUEST direction for /files/write
-    # (ctl:ruleRemoveTargetByTag=…;ARGS:json.content). It cannot help here:
-    # 953120 targets RESPONSE_BODY, which no ARGS-scoped exclusion reaches.
+    # ONLY body inspection is disabled. Verified against the live CRS 4.28
+    # rule files, the split is clean:
+    #   catches real attacks -> reads URL/method/headers
+    #     930130 REQUEST_FILENAME  (the .env sweeps, 232 hits/30d)
+    #     920440 REQUEST_BASENAME
+    #     911100 REQUEST_METHOD
+    #     920420 REQUEST_HEADERS:Content-Type
+    #   causes our false positives -> reads a body
+    #     942190/942350/933120 ARGS|REQUEST_COOKIES|XML
+    #     953120               RESPONSE_BODY
+    # Nothing in the first group is affected. A scanner probing /api/v1/.env is
+    # still blocked on REQUEST_FILENAME, which is how it was caught before.
     #
-    # Excluding 953120 + 959100 by id would not settle it either. The bytes are
-    # arbitrary by definition — a .env trips 930xxx, a shell script 932xxx, a
-    # SQL dump 942xxx — so no finite rule list covers "the contents of a file
-    # the tenant is entitled to store". Turning response-body inspection off
-    # for these three URIs is the only form that holds for every file type.
+    # NOT exempted, deliberately:
+    #   - Tenant websites. The X-Forwarded-Host chain scopes this to panel
+    #     hosts; a tenant app serving its own /api/v1/ keeps full coverage
+    #     (same reasoning as 9000103).
+    #   - Query-string ARGS. `ARGS` is query + body; turning off body access
+    #     removes only the body half, so ?id=1' OR 1=1-- is still matched.
+    #   - Non-API paths on the panel hosts.
+    #   - waf-body-limit, which is a DoS control and stays attached.
+    #   - CrowdSec, which runs on every route.
     #
-    # Deliberately NARROW. This disables RESPONSE body scanning only:
-    #   - REQUEST body scanning is untouched.
-    #   - Every URL/method/header rule still applies — 930130
-    #     (REQUEST_FILENAME), 911100 (REQUEST_METHOD), 920440
-    #     (REQUEST_BASENAME), 920420 (Content-Type). Those are the rules that
-    #     catch every real attack in 30 days of logs; none of them reads a body.
-    #   - Query-string ARGS stay inspected, so ?path=../../etc/passwd is still
-    #     caught by the traversal family.
-    # Chained on X-Forwarded-Host so a TENANT app serving its own
-    # /api/v1/tenants/x/files/read keeps full coverage — same reasoning as
-    # 9000103.
+    # Threat model in the ADR. In short: mutations are Bearer-only, the API
+    # builds no SQL by string concatenation (Drizzle parameterises every
+    # interpolation), inputs are Zod-validated at the boundary, and an
+    # authenticated admin can already run arbitrary SQL, write arbitrary files
+    # and execute shell commands through the product's own features.
     SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\." \
-        "id:9000113,\
+        "id:9000114,\
          phase:1,\
          pass,\
          nolog,\
          chain,\
+         ctl:requestBodyAccess=Off,\
          ctl:responseBodyAccess=Off"
-        # LAST rule in the file — the action list is REQUIRED. See 9000112
-        # above: a chained SecRule with no actions makes the parser continue
-        # into the next-loaded file, nginx refuses to start, and every request
-        # through the WAF returns 502.
-        SecRule REQUEST_URI "@rx ^/api/v1/tenants/[^/]+/files/(read|write|download)$" "t:none"
+        # LAST rule in the file — the action list is REQUIRED. See 9000112:
+        # a chained SecRule with no actions makes the parser continue into the
+        # next-loaded file, nginx refuses to start, and every request through
+        # the WAF returns 502.
+        SecRule REQUEST_URI "@rx ^/api/v1/" "t:none"
