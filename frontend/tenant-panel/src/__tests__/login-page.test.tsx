@@ -49,7 +49,7 @@ function renderWithProviders(ui: React.ReactElement) {
 describe('Login Page', () => {
   it('renders the Tenant Portal heading', () => {
     renderWithProviders(<Login />);
-    expect(screen.getByText('Tenant Portal')).toBeInTheDocument();
+    expect(screen.getByText('Hosting Platform')).toBeInTheDocument();
   });
 
   it('renders sign-in description', () => {

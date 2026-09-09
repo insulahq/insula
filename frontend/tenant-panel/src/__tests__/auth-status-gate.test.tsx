@@ -74,18 +74,31 @@ describe('tenant-panel Login gate', () => {
     expect(screen.queryByTestId('api-unavailable')).not.toBeInTheDocument();
   });
 
-  it('probes exactly once on the healthy path', async () => {
+  it('the GATE still probes exactly once — it adds no request of its own', async () => {
     mockApiFetch.mockResolvedValue({ data: { localAuthEnabled: true, providers: [] } });
     render(<Login />, { wrapper: createWrapper() });
 
     await waitFor(() => {
       expect(screen.getByTestId('password-input')).toBeInTheDocument();
     });
-    expect(mockApiFetch).toHaveBeenCalledTimes(1);
+
+    const gateCalls = mockApiFetch.mock.calls.filter(
+      ([url]) => typeof url === 'string' && url.startsWith('/api/v1/auth/oidc/status'),
+    );
+    expect(gateCalls).toHaveLength(1);
     expect(mockApiFetch).toHaveBeenCalledWith(
       '/api/v1/auth/oidc/status?panel=tenant',
       expect.objectContaining({ signal: expect.anything() }),
     );
+
+    // Plus ONE public branding GET: the login screen renders the operator's
+    // platform name and sits outside <Layout>. Asserted by URL rather than as
+    // a bare total, so an accidental third request still fails here.
+    const brandingCalls = mockApiFetch.mock.calls.filter(
+      ([url]) => typeof url === 'string' && url.startsWith('/api/v1/system-info'),
+    );
+    expect(brandingCalls).toHaveLength(1);
+    expect(mockApiFetch).toHaveBeenCalledTimes(2);
   });
 
   it('treats an aborted probe as unreachable', () => {

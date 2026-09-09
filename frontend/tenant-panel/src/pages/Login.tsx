@@ -6,8 +6,17 @@ import { usePasskey } from '@/hooks/use-passkey';
 import { useAuthStatus } from '@/hooks/use-auth-status';
 import ApiUnavailable from '@/components/ApiUnavailable';
 import { API_BASE, ApiError } from '@/lib/api-client';
+import { useSystemInfo, useDocumentTitle } from '@/hooks/use-system-info';
 
 export default function Login() {
+  // The login screen sits OUTSIDE <Layout>, so the useDocumentTitle call
+  // in Layout never runs here — the tab said the build-time default while
+  // the page itself showed the operator's platform name. Setting it here
+  // makes the two agree from the first paint the visitor sees.
+  const { data: systemInfo } = useSystemInfo();
+  const platformName = systemInfo?.platformName ?? 'Hosting Platform';
+  useDocumentTitle();
+
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -130,8 +139,8 @@ export default function Login() {
     <div className="flex min-h-screen items-center justify-center bg-linear-to-br from-brand-500 to-accent-500 dark:from-gray-900 dark:to-gray-800 p-4">
       <div className="w-full max-w-sm rounded-2xl bg-white dark:bg-gray-800 p-8 shadow-xl">
         <div className="mb-6 flex flex-col items-center">
-          <img src="/insula-mark.svg" alt="Insula" className="h-14 w-14" />
-          <h1 className="mt-4 text-xl font-bold text-gray-900 dark:text-gray-100">Tenant Portal</h1>
+          <img src="/insula-mark.svg" alt="" aria-hidden="true" className="h-14 w-14" />
+          <h1 className="mt-4 text-xl font-bold text-gray-900 dark:text-gray-100">{platformName}</h1>
           <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">Sign in to manage your hosting</p>
         </div>
 
