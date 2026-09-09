@@ -155,18 +155,34 @@ describe('Login API-readiness gate', () => {
     });
   });
 
-  it('probes exactly once on the healthy path — the gate adds no extra load', async () => {
+  it('the GATE still probes exactly once — it adds no request of its own', async () => {
     mockApiFetch.mockResolvedValue({ data: { localAuthEnabled: true, providers: [] } });
     render(<Login />, { wrapper: createWrapper() });
 
     await waitFor(() => {
       expect(screen.getByTestId('login-form')).toBeInTheDocument();
     });
-    expect(mockApiFetch).toHaveBeenCalledTimes(1);
+
+    // The gate's own probe: still exactly one, which is what this guard is for.
+    const gateCalls = mockApiFetch.mock.calls.filter(
+      ([url]) => typeof url === 'string' && url.startsWith('/api/v1/auth/oidc/status'),
+    );
+    expect(gateCalls).toHaveLength(1);
     expect(mockApiFetch).toHaveBeenCalledWith(
       '/api/v1/auth/oidc/status?panel=admin',
       expect.objectContaining({ signal: expect.anything() }),
     );
+
+    // The login screen also fetches public branding, because it renders the
+    // operator's platform name and sits outside <Layout> where every other
+    // page gets it. That is ONE extra cached public GET, asserted explicitly
+    // rather than folded into a bare count — so a future accidental third
+    // request still fails this test instead of silently passing.
+    const brandingCalls = mockApiFetch.mock.calls.filter(
+      ([url]) => typeof url === 'string' && url.startsWith('/api/v1/system-info'),
+    );
+    expect(brandingCalls).toHaveLength(1);
+    expect(mockApiFetch).toHaveBeenCalledTimes(2);
   });
 
   it('bounds a hung probe so it cannot sit in loading showing a dead form', async () => {

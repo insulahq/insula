@@ -76,9 +76,11 @@ describe('Layout', () => {
     expect(screen.getByText('Platform Settings')).toBeInTheDocument();
   });
 
-  it('shows brand name', () => {
+  it('shows brand name from identity settings', () => {
     renderWithProviders(<Layout />);
-    expect(screen.getByText('Insula')).toBeInTheDocument();
+    // Sidebar reads the same platform name as the tab title; the neutral
+    // fallback stands in until /system-info resolves.
+    expect(screen.getByText('Hosting Platform')).toBeInTheDocument();
   });
 });
 

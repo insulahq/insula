@@ -51,7 +51,10 @@ migrations**, and gates **Apply** on pre-flight passing. After applying, a
 
 **Platform → Identity** sets the platform's public identity:
 
-- **Platform name** — shown across the panels.
+- **Platform name** — shown across both panels: the sidebar heading, the
+  browser tab title, and the heading on the admin and tenant **sign-in
+  pages**. Setting it is all that is needed to rebrand what users see; there
+  is no separate per-page label. Changes appear on the next page load.
 - **Admin Panel URL** and **Tenant Panel URL** — the canonical URLs. The
   Tenant Panel URL is what **Login as Tenant** uses; if it's blank,
   impersonation can't open the tenant panel.

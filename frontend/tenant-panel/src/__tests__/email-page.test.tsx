@@ -513,7 +513,7 @@ describe('Email connection guide', () => {
     // Server hostname comes from the API, never a literal in the component.
     expect(screen.getByTestId('mail-server-hostname')).toHaveTextContent('mail.platform.example');
     // Username must be spelled out as the FULL address for the selected domain.
-    expect(screen.getByTestId('mail-username-format')).toHaveTextContent('you@example.com');
+    expect(screen.getByTestId('mail-username-format')).toHaveTextContent('example@example.com');
 
     const table = screen.getByTestId('mail-ports-table');
     for (const port of ['993', '143', '995', '465', '587']) {
@@ -551,7 +551,7 @@ describe('Email connection guide', () => {
     // Route 1: via the panel. Route 2: the direct URL from the API.
     expect(webmail).toHaveTextContent(/Webmail/);
     expect(screen.getByTestId('webmail-url')).toHaveTextContent('https://webmail.platform.example');
-    expect(screen.getByTestId('webmail-username-format')).toHaveTextContent('you@example.com');
+    expect(screen.getByTestId('webmail-username-format')).toHaveTextContent('example@example.com');
     // The clients tab is unmounted while webmail is showing.
     expect(screen.queryByTestId('guide-tab-clients-content')).not.toBeInTheDocument();
   });

@@ -7,6 +7,7 @@ import { useAuthStatus } from '@/hooks/use-auth-status';
 import ApiUnavailable from '@/components/ApiUnavailable';
 import { apiFetch, API_BASE, ApiError } from '@/lib/api-client';
 import { sanitizeRedirect } from '@/lib/sanitize-redirect';
+import { useSystemInfo, useDocumentTitle } from '@/hooks/use-system-info';
 
 // Apex is the admin panel's hostname with its first label stripped.
 // admin.staging.example.test  → staging.example.test
@@ -45,6 +46,14 @@ function goToTarget(target: string, navigate: (to: string, opts?: { replace?: bo
 }
 
 export default function Login() {
+  // The login screen sits OUTSIDE <Layout>, so the useDocumentTitle call
+  // in Layout never runs here — the tab said the build-time default while
+  // the page itself showed the operator's platform name. Setting it here
+  // makes the two agree from the first paint the visitor sees.
+  const { data: systemInfo } = useSystemInfo();
+  const platformName = systemInfo?.platformName ?? 'Hosting Platform';
+  useDocumentTitle();
+
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [breakGlassSecret, setBreakGlassSecret] = useState('');
@@ -206,8 +215,8 @@ export default function Login() {
     <div className="flex min-h-screen items-center justify-center bg-linear-to-br from-brand-500 to-accent-500 p-4">
       <div className="w-full max-w-sm rounded-2xl bg-white dark:bg-gray-800 p-8 shadow-xl">
         <div className="mb-6 flex flex-col items-center">
-          <img src="/insula-mark.svg" alt="Insula" className="h-14 w-14" />
-          <h1 className="mt-4 text-xl font-bold text-gray-900 dark:text-gray-100">Insula</h1>
+          <img src="/insula-mark.svg" alt="" aria-hidden="true" className="h-14 w-14" />
+          <h1 className="mt-4 text-xl font-bold text-gray-900 dark:text-gray-100">{platformName}</h1>
           <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">{isEmergency ? 'Emergency Admin Login' : 'Sign in to admin panel'}</p>
         </div>
 

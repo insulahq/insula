@@ -9,8 +9,9 @@ import {
   ArrowLeft, Loader2, AlertCircle, Plus, Trash2, Globe, X,
   CheckCircle, Network, Pencil, Check, RefreshCw, Lock,
   ArrowLeftRight, ArrowDownToLine, ArrowUpFromLine, CheckCircle2, Upload, ShieldCheck, FolderOpen,
-  Search,
+  Search, HelpCircle,
 } from 'lucide-react';
+import { MultihostRootsHelpModal, ClearDocumentRootConfirm } from '@/components/MultihostRootsHelp';
 import { VerificationChecksTable } from '@/components/VerificationChecksTable';
 import clsx from 'clsx';
 import { useTenantContext } from '@/hooks/use-tenant-context';
@@ -788,6 +789,15 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
     return entry?.multihost?.sites_root ?? null;
   };
   const [folderError, setFolderError] = useState<unknown>(null);
+  /** Route whose docroot/approot explainer is open. */
+  const [rootsHelpRoute, setRootsHelpRoute] = useState<{
+    hostname: string;
+    appRoot: string | null;
+    siteFolder: string | null;
+    sitesRoot: string | null;
+  } | null>(null);
+  /** Route awaiting confirmation to have its document root cleared. */
+  const [clearDocRootRoute, setClearDocRootRoute] = useState<{ id: string; hostname: string } | null>(null);
 
   const rawRoutes = routesData?.data ?? [];
   const [routeQuery, setRouteQuery] = useState('');
@@ -990,6 +1000,31 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
           />
         );
       })()}
+
+      {rootsHelpRoute && (
+        <MultihostRootsHelpModal
+          hostname={rootsHelpRoute.hostname}
+          appRoot={rootsHelpRoute.appRoot}
+          siteFolder={rootsHelpRoute.siteFolder}
+          sitesRoot={rootsHelpRoute.sitesRoot}
+          onClose={() => setRootsHelpRoute(null)}
+        />
+      )}
+
+      {clearDocRootRoute && (
+        <ClearDocumentRootConfirm
+          hostname={clearDocRootRoute.hostname}
+          isPending={assigningRouteId === clearDocRootRoute.id}
+          onCancel={() => setClearDocRootRoute(null)}
+          onConfirm={() => {
+            // Close first: handleAssignFolder surfaces failures through the
+            // shared ErrorPanel below, which the open dialog would cover.
+            const id = clearDocRootRoute.id;
+            setClearDocRootRoute(null);
+            void handleAssignFolder(id, null);
+          }}
+        />
+      )}
 
       {folderError !== null && (
         <ErrorPanel
@@ -1194,15 +1229,33 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
                               {folder && (
                                 <button
                                   type="button"
-                                  onClick={() => handleAssignFolder(route.id, null)}
+                                  onClick={() => setClearDocRootRoute({ id: route.id, hostname: route.hostname })}
                                   disabled={assigningRouteId === route.id}
-                                  className="text-[11px] text-gray-400 hover:text-red-500 disabled:opacity-50"
+                                  className="inline-flex items-center rounded p-0.5 text-gray-400 hover:bg-red-50 hover:text-red-500 disabled:opacity-50 dark:hover:bg-red-900/30"
                                   data-testid={`site-folder-clear-${route.id}`}
-                                  title="Serve the deployment's document root instead"
+                                  aria-label={`Clear the document root for ${route.hostname}`}
+                                  title="Clear the document root — serve the application root instead"
                                 >
-                                  clear
+                                  <X size={12} />
                                 </button>
                               )}
+                              {/* Help sits last so it never separates a path
+                                  button from the control that clears it. */}
+                              <button
+                                type="button"
+                                onClick={() => setRootsHelpRoute({
+                                  hostname: route.hostname,
+                                  appRoot,
+                                  siteFolder: folder,
+                                  sitesRoot,
+                                })}
+                                className="inline-flex items-center rounded p-0.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700 dark:hover:text-gray-200"
+                                data-testid={`roots-help-${route.id}`}
+                                aria-label={`How document root and application root work for ${route.hostname}`}
+                                title="How these paths work"
+                              >
+                                <HelpCircle size={12} />
+                              </button>
                             </div>
                           );
                         })()}

@@ -1020,6 +1020,36 @@ function UsageIndicator({
   );
 }
 
+/**
+ * Compact disk figure for the list view.
+ *
+ * Deliberately NOT `DeploymentStorageDisplay` — that renders a labelled,
+ * boxed card with a progress bar, which is right for the grid tile and wrong
+ * inside a table cell. Both read the same `storageUsedFormatted` from the same
+ * live-metrics hook, so the two views cannot disagree about the number.
+ *
+ * `enabled` mirrors the grid's condition (anything not deleted/deleting) rather
+ * than the CPU/Memory columns' `status === 'running'`: a stopped app still
+ * occupies its volume, so blanking the figure would misreport it as using none.
+ */
+function StorageCell({ deploymentId, enabled }: { readonly deploymentId: string; readonly enabled: boolean }) {
+  const { tenantId } = useTenantContext();
+  const { data } = useDeploymentLiveMetrics(tenantId ?? undefined, enabled ? deploymentId : undefined);
+  const metrics = data?.data;
+
+  if (!enabled) return <span className="text-xs text-gray-400 dark:text-gray-500">—</span>;
+  if (!metrics) return <span className="text-xs text-gray-400 dark:text-gray-500">…</span>;
+  // 0 bytes is a real answer (an app with no volume), distinct from "not yet
+  // measured" — show a dash rather than a misleading "0 B".
+  if (!metrics.storageUsedBytes) return <span className="text-xs text-gray-400 dark:text-gray-500">—</span>;
+
+  return (
+    <span className="text-xs text-gray-700 dark:text-gray-300" data-testid={`list-disk-${deploymentId}`}>
+      {metrics.storageUsedFormatted}
+    </span>
+  );
+}
+
 function DeploymentListView({
   deployments, getCatalogEntryName, catalogMap, isPending,
   onSelect, onToggle, onForceStop, onPreview, onDelete,
@@ -1059,6 +1089,7 @@ function DeploymentListView({
                 nothing would be worse than none. */}
             <th className="px-5 py-3">CPU</th>
             <th className="px-5 py-3">Memory</th>
+            <th className="px-5 py-3">Disk</th>
             <SortableHeader label="Status" sortKey="status" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
             <th className="px-5 py-3 text-right">Actions</th>
           </tr>
@@ -1097,6 +1128,12 @@ function DeploymentListView({
                     request={deployment.memoryRequest ?? ''}
                     type="memory"
                     enabled={deployment.status === 'running'}
+                  />
+                </td>
+                <td className="px-5 py-3">
+                  <StorageCell
+                    deploymentId={deployment.id}
+                    enabled={!['deleted', 'deleting'].includes(deployment.status)}
                   />
                 </td>
                 <td className="px-5 py-3">
