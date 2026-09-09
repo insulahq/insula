@@ -661,7 +661,18 @@ data:
     # Non-chained and matched on a platform-API-specific URI, for the reason
     # given at 9000102/9000104: a dangling `chain` bleeds into the next-loaded
     # (dynamic) file. LAST rule in the file, so the action list is REQUIRED.
-    SecRule REQUEST_URI "@rx ^/api/v1/tenants/[^/]+/custom-deployments" \
+    #
+    # SCOPE — `(/[^/]+)?(\?|$)` is load-bearing, do not relax it to a bare
+    # prefix. Only three routes send raw transport: POST <base>, POST /validate
+    # and PATCH /<id>. A bare prefix also matched the sibling mutations that
+    # still send JSON — /<id>/pull-credentials, /upgrade-tag, /auto-update,
+    # /stop, /start, /update-now — and, because the octet-stream body parser is
+    # registered for the whole plugin, let a caller post an opaque uninspected
+    # body to any of them. One trailing segment at most keeps those out (they
+    # carry a second segment) and also stops `custom-deploymentsXXX` matching.
+    # Verified 2026-09-09 on DEV: PUT /<id>/pull-credentials as octet-stream
+    # returned 401 (past the WAF) before this narrowing, 403 after.
+    SecRule REQUEST_URI "@rx ^/api/v1/tenants/[^/]+/custom-deployments(/[^/]+)?(\?|$)" \
         "id:9000115,\
          phase:1,\
          pass,\
