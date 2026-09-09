@@ -153,6 +153,25 @@ The simplest way to add your mailbox to a phone or desktop app:
     outgoing servers. (The portal itself doesn't print a fixed
     host/port table — the autoconfig records carry those values for you.)
 
+??? info "Reading mail with POP3 instead of IMAP"
+    IMAP is the better choice for almost everyone: it keeps your mail on the
+    server, so every device sees the same inbox and folders. POP3 is available
+    if you need it — typically for an old client that speaks nothing else, or
+    to pull mail down onto a single machine for archiving.
+
+    Use **port 995 with SSL/TLS**, your full email address as the username, and
+    your mailbox password. Only the encrypted port is offered; there is no
+    plain, unencrypted POP3 (port 110).
+
+    If your client offers to **delete messages from the server after
+    downloading**, be aware that this is exactly what it says — mail removed
+    that way is gone from the server and will not appear on your other devices
+    or in webmail. Leave "keep messages on server" switched on unless you
+    genuinely want a one-way download.
+
+    Mailboxes set to **send-only** cannot use POP3, the same as they cannot
+    use IMAP.
+
 ## Send mail from your website
 
 Many web apps (WordPress, scripts that call PHP's `mail()`) send email through
