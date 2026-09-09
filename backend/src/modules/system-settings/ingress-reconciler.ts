@@ -195,34 +195,6 @@ const UPLOAD_PATH_REGEXP = '^/api/v1/tenants/[^/]+/files/upload-raw$';
 const WAF_ADMIN_PATH_REGEXP = '^/api/v1/admin/security/waf-rule-exclusions';
 
 /**
- * File-CONTENT transport, same carve-out as the streaming upload above.
- *
- * `/files/write` carries the literal bytes of a tenant's file, and the response
- * echoes them back. That is indistinguishable from an attack to CRS, in both
- * directions: saving a PHP file trips 953120 ("PHP source code leakage") on the
- * RESPONSE and pushes 959100 (outbound anomaly) to 4 of a threshold of 5. One
- * more outbound rule and the File Manager stops being able to save PHP at all,
- * for every tenant. Observed on production 2026-09-09.
- *
- * Excluding the two rule ids would not settle it — the next file type brings a
- * different family (a `.env` trips 930xxx, a shell script 932xxx, a SQL dump
- * 942xxx). The content is arbitrary by definition, so no finite rule list
- * covers it. This is the same reasoning already written out for
- * WAF_ADMIN_PATH_REGEXP: only removing inspection from the endpoint works for
- * every rule.
- *
- * Safe for the same reason as the upload route: these paths are authenticated
- * (Bearer-only for mutations), the bytes are written to the tenant's own volume
- * inside their own namespace, and the identical bytes can already be written
- * over SFTP with no WAF in front at all. The WAF is not the access control
- * here — it is only scanning content the tenant is entitled to store.
- *
- * The body cap is KEPT (unlike upload-raw): a write is a bounded document, so
- * there is no reason to let it be unbounded.
- */
-const FILE_CONTENT_PATH_REGEXP = '^/api/v1/tenants/[^/]+/files/(write|read)$';
-
-/**
  * Priority for the upload carve-out. Must beat the `/oauth2` route (100) and the
  * bare `Host()` panel route (which falls back to rule-length, far below 100), so
  * the more specific upload rule wins regardless of Traefik's length heuristic.
@@ -364,16 +336,6 @@ export function buildIngressRouteBody(
     const wafAdminMiddlewares = panelMiddlewares.filter(m => m.name !== PLATFORM_WAF_MIDDLEWARE_NAME);
     traefikRoutes.push({
       match: `Host(\`${r.host}\`) && PathRegexp(\`${WAF_ADMIN_PATH_REGEXP}\`)`,
-      kind: 'Rule',
-      priority: UPLOAD_ROUTE_PRIORITY,
-      middlewares: wafAdminMiddlewares,
-      services: [{ name: r.serviceName, port: 80 }],
-    });
-
-    // File-content read/write — see FILE_CONTENT_PATH_REGEXP. Drops the WAF,
-    // keeps the body cap (a write is bounded; an upload is not).
-    traefikRoutes.push({
-      match: `Host(\`${r.host}\`) && PathRegexp(\`${FILE_CONTENT_PATH_REGEXP}\`)`,
       kind: 'Rule',
       priority: UPLOAD_ROUTE_PRIORITY,
       middlewares: wafAdminMiddlewares,
