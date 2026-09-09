@@ -26,7 +26,10 @@ describe('Login page', () => {
 
   it('shows platform name', () => {
     renderWithProviders(<Login />);
-    expect(screen.getByText('Insula')).toBeInTheDocument();
+    // The name is operator-configurable; with no branding response loaded this
+    // is the neutral fallback. Asserting a product literal here would fail on
+    // any renamed platform for no reason.
+    expect(screen.getByText('Hosting Platform')).toBeInTheDocument();
     expect(screen.getByText('Sign in to admin panel')).toBeInTheDocument();
   });
 

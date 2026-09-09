@@ -19,6 +19,7 @@ import {
   X,
 } from 'lucide-react';
 import clsx from 'clsx';
+import { useSystemInfo } from '@/hooks/use-system-info';
 import { useRuntimeInfo } from '@/hooks/use-runtime-info';
 
 /** Compact identity block under the sidebar title — version, branch,
@@ -64,6 +65,13 @@ interface SidebarProps {
 }
 
 export default function Sidebar({ open, onClose }: SidebarProps) {
+  // Brand name comes from identity settings, never a literal — an
+  // operator who renames the platform must see it here too. Falls back
+  // to the same 'Hosting Platform' useDocumentTitle uses, so the tab and
+  // the sidebar never disagree while /system-info is still in flight.
+  const { data: systemInfo } = useSystemInfo();
+  const platformName = systemInfo?.platformName ?? 'Hosting Platform';
+
   return (
     <>
       {open && (
@@ -82,7 +90,7 @@ export default function Sidebar({ open, onClose }: SidebarProps) {
         data-testid="sidebar"
       >
         <div className="flex h-16 items-center justify-between px-5">
-          <span className="flex items-center gap-2"><img src="/insula-mark-white.svg" alt="" aria-hidden="true" className="h-7 w-7" /><span className="text-lg font-bold text-white">Insula</span></span>
+          <span className="flex items-center gap-2"><img src="/insula-mark.svg" alt="" aria-hidden="true" className="h-7 w-7" /><span className="text-lg font-bold text-white">{platformName}</span></span>
           <button
             onClick={onClose}
             className="rounded-md p-1 text-white/80 hover:text-white lg:hidden"
