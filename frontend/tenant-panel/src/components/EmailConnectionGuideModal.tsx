@@ -68,14 +68,21 @@ function CopyButton({ value, label }: { readonly value: string; readonly label: 
   );
 }
 
-/** A labelled value the user is meant to type into a form, with a copy button. */
+/**
+ * A labelled value the user is meant to type into a form, with a copy button.
+ *
+ * `copyable={false}` drops the button for rows whose value is an ILLUSTRATION
+ * rather than a literal — copying `example@…` would paste an address that
+ * isn't the user's, so offering the button there invites a mistake.
+ */
 function SettingRow({
-  label, value, hint, testId,
+  label, value, hint, testId, copyable = true,
 }: {
   readonly label: string;
   readonly value: string;
   readonly hint?: string;
   readonly testId: string;
+  readonly copyable?: boolean;
 }) {
   return (
     <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/40 px-3 py-2">
@@ -86,7 +93,7 @@ function SettingRow({
         </div>
         {hint && <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">{hint}</div>}
       </div>
-      <CopyButton value={value} label={testId} />
+      {copyable && <CopyButton value={value} label={testId} />}
     </div>
   );
 }
@@ -143,8 +150,10 @@ function ServerTable({ info }: { readonly info: EmailConnectionInfo }) {
             </td>
           </tr>
           {renderRows(incoming)}
+          {/* pt-4 separates the outgoing group from the incoming rows above —
+              without it the two sections read as one undifferentiated list. */}
           <tr className="bg-gray-50/60 dark:bg-gray-900/20">
-            <td colSpan={3} className="px-3 py-1.5 text-xs font-semibold text-gray-600 dark:text-gray-300">
+            <td colSpan={3} className="px-3 pb-1.5 pt-4 text-xs font-semibold text-gray-600 dark:text-gray-300">
               Outgoing mail (sending)
             </td>
           </tr>
@@ -156,7 +165,7 @@ function ServerTable({ info }: { readonly info: EmailConnectionInfo }) {
 }
 
 function ClientsTab({ info }: { readonly info: EmailConnectionInfo }) {
-  const exampleAddress = `you@${info.domainName}`;
+  const exampleAddress = `example@${info.domainName}`;
   const hasImap = info.ports.some((p) => p.protocol === 'imap');
   const hasPop3 = info.ports.some((p) => p.protocol === 'pop3');
 
@@ -199,6 +208,7 @@ function ClientsTab({ info }: { readonly info: EmailConnectionInfo }) {
           value={exampleAddress}
           hint="Always the full email address — not just the part before the @."
           testId="mail-username-format"
+          copyable={false}
         />
       </section>
 
@@ -252,7 +262,7 @@ function ClientsTab({ info }: { readonly info: EmailConnectionInfo }) {
 }
 
 function WebmailTab({ info }: { readonly info: EmailConnectionInfo }) {
-  const exampleAddress = `you@${info.domainName}`;
+  const exampleAddress = `example@${info.domainName}`;
   const directUrls = [
     info.webmailUrl ? { url: info.webmailUrl, testId: 'webmail-url' } : null,
     info.webmailHostname ? { url: `https://${info.webmailHostname}`, testId: 'webmail-domain-url' } : null,
@@ -305,6 +315,7 @@ function WebmailTab({ info }: { readonly info: EmailConnectionInfo }) {
                 value={exampleAddress}
                 hint="The full email address."
                 testId="webmail-username-format"
+                copyable={false}
               />
               <p className="flex gap-2 text-xs text-gray-600 dark:text-gray-400">
                 <Key size={14} className="mt-0.5 shrink-0 text-amber-500" />

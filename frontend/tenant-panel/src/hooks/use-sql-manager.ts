@@ -168,43 +168,90 @@ export function useImportSql(tenantId: string | null | undefined) {
     }) => {
       if (!tenantId) throw new Error('No tenant selected');
 
-      // Read the .sql file as text, then send as raw text body — avoids JSON encoding overhead
-      // that doubles memory for large files with escape characters
-      let sql: string;
-      try {
-        sql = await file.text();
-      } catch {
-        throw new Error(`Failed to read file "${file.name}" — it may be too large for the browser to process.`);
-      }
-
-      if (!sql.trim()) {
+      if (file.size === 0) {
         throw new Error('The SQL file is empty.');
       }
 
+      // ── Why this uploads to the PVC instead of POSTing the SQL ──────────
+      // The obvious implementation — read the file and POST {database, sql}
+      // as JSON to .../import — is blocked by the WAF in front of the panel,
+      // and always was. A dump's ordinary contents (DROP TABLE, INSERT …
+      // SELECT, UNION) score as SQL injection under OWASP CRS: rules 942190
+      // + 942350 fire, 949110 trips the anomaly threshold, and Traefik
+      // answers 403 before the request ever reaches the API. Confirmed
+      // against production — a body of two short DDL statements is enough,
+      // so this was never a size problem. A >128KB JSON body additionally
+      // trips 200002 (SecRequestBodyNoFilesLimit).
+      //
+      // Rather than carve SQLi rules out of the platform WAF — unverifiable
+      // outside production, since no other cluster runs Coraza — this reuses
+      // the path that already works: stream the file to the PVC as
+      // application/octet-stream (never parsed into ARGS, so the SQLi rules
+      // have nothing to match; content-type 920420 is already excluded for
+      // this endpoint), then run the existing server-side import-from-file.
+      // That is exactly what "Import from PVC" does, which is why it works.
+      // It also removes the old 50MB ceiling — /upload-raw streams.
       const token = localStorage.getItem('auth_token');
-      // API_BASE imported from @/lib/api-client
-      const res = await fetch(
-        `${API_BASE}/api/v1/tenants/${tenantId}/deployments/${deploymentId}/import?database=${encodeURIComponent(database)}`,
+      const authHeader: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
+
+      // Staged at the PVC ROOT, not in a subdirectory: the file-manager
+      // sidecar is an external image and its /write-raw is not in this repo,
+      // so whether it creates missing parent directories is unverified here.
+      // Depending on that would turn a wrong guess into "upload silently
+      // fails" — the exact class of bug this change is fixing. A dot-prefixed
+      // name keeps it out of normal listings and names itself if cleanup is
+      // ever missed.
+      const safeName = file.name.replace(/[^A-Za-z0-9._-]/g, '_');
+      const stagedPath = `.sql-import-${Date.now()}-${safeName}`;
+
+      const uploadRes = await fetch(
+        `${API_BASE}/api/v1/tenants/${tenantId}/files/upload-raw?path=${encodeURIComponent(stagedPath)}`,
         {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(token ? { Authorization: `Bearer ${token}` } : {}),
-          },
-          body: JSON.stringify({ database, sql }),
+          headers: { 'Content-Type': 'application/octet-stream', ...authHeader },
+          body: file,
         },
       );
-
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({ error: { message: 'Import failed' } }));
-        const message = body.error?.message ?? `Import failed (HTTP ${res.status})`;
-        if (res.status === 413) {
-          throw new Error('File is too large. Maximum upload size is 50MB. For larger files, upload via File Manager and use "Import from File".');
-        }
-        throw new Error(message);
+      if (!uploadRes.ok) {
+        const b = await uploadRes.json().catch(() => null);
+        throw new Error(
+          b?.error?.message ?? `Could not stage "${file.name}" for import (HTTP ${uploadRes.status})`,
+        );
       }
 
-      const result = await res.json();
+      // Always attempt cleanup, even when the import throws — otherwise a
+      // failed import silently consumes the tenant's PVC quota.
+      const removeStaged = async () => {
+        try {
+          await fetch(`${API_BASE}/api/v1/tenants/${tenantId}/files/delete`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...authHeader },
+            body: JSON.stringify({ path: stagedPath, permanent: true }),
+          });
+        } catch {
+          // Best-effort: a leftover temp file must never mask the import result.
+        }
+      };
+
+      let result: { data?: { success?: boolean; error?: string; message?: string } };
+      try {
+        const res = await fetch(
+          `${API_BASE}/api/v1/tenants/${tenantId}/deployments/${deploymentId}/import-from-file`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...authHeader },
+            body: JSON.stringify({ database, file_path: stagedPath }),
+          },
+        );
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({ error: { message: 'Import failed' } }));
+          throw new Error(body.error?.message ?? `Import failed (HTTP ${res.status})`);
+        }
+        result = await res.json();
+      } finally {
+        await removeStaged();
+      }
+
       // Backend returns 200 with { success: false } for import errors (OOM, syntax, etc.)
       if (result.data && result.data.success === false && result.data.error) {
         throw new Error(result.data.error);
