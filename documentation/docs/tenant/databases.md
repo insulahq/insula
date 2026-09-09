@@ -126,11 +126,14 @@ Use the **Import** menu to load a dump:
   it.
 
 !!! note "Changed in 2026.9"
-    Direct upload previously sent the SQL in the request itself, which the
-    platform's web firewall blocked — a dump's ordinary contents (`DROP
-    TABLE`, `INSERT … SELECT`) look exactly like an injection attempt. Uploads
-    now take the same route as **Import from File**, so direct upload works
-    regardless of what the dump contains, and the old 50 MB limit is gone.
+    Direct upload previously sent the SQL inside the request body, where the
+    platform's web firewall inspects it. Two limits applied there: bodies over
+    **128 KB** are refused outright, which is smaller than most real dumps, and
+    a dump's ordinary contents (`DROP TABLE`, `INSERT … SELECT`) score against
+    the SQL-injection rules. Uploads now take the same route as **Import from
+    File** — the file is transferred as an opaque upload the firewall does not
+    parse as SQL — so direct upload works regardless of size or contents, and
+    the old 50 MB limit is gone.
 
 !!! warning "Imports overwrite"
     Importing a dump writes its contents into the selected database, replacing
