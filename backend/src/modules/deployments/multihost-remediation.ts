@@ -21,7 +21,7 @@ import { eq, and, ne } from 'drizzle-orm';
 import type { Logger } from 'pino';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
-import { deployments, catalogEntries } from '../../db/schema.js';
+import { deployments, catalogEntries, tenants } from '../../db/schema.js';
 import { capabilityOf } from '../multihost/reconciler.js';
 import { MULTIHOST_DISABLED_PHP_FUNCTIONS } from './k8s-deployer.js';
 
@@ -34,6 +34,9 @@ export interface RemediationReport {
   readonly failed: Array<{ deployment: string; error: string }>;
   /** Deployments we could not inspect — NOT the same as "nothing to do". */
   readonly unreadable: string[];
+  /** Rows whose workload was absent. A sweep where this equals `scanned`
+   *  examined nothing, however clean the rest of the report looks. */
+  readonly notFound: string[];
 }
 
 /**
@@ -71,20 +74,32 @@ export async function remediateMultihostDeployments(
   redeploy: (db: Db, deployment: typeof deployments.$inferSelect, k8s: K8sClients) => Promise<unknown>,
   logger?: Logger,
 ): Promise<RemediationReport> {
+  // The namespace comes from the TENANT ROW, never from the tenant id.
+  // Composing `tenant-${tenantId}` produced a namespace that does not exist,
+  // every lookup 404'd, and 404 is treated as "no workload, nothing to do" —
+  // so this swept nothing and reported every instance already isolated. A
+  // safety net that cannot fail is a safety net that never ran.
   const rows = await db
-    .select({ dep: deployments, entry: catalogEntries })
+    .select({ dep: deployments, entry: catalogEntries, namespace: tenants.kubernetesNamespace })
     .from(deployments)
     .leftJoin(catalogEntries, eq(deployments.catalogEntryId, catalogEntries.id))
+    .leftJoin(tenants, eq(deployments.tenantId, tenants.id))
     .where(and(eq(deployments.multihostEnabled, true), ne(deployments.status, 'deleted')));
 
   const remediated: string[] = [];
   const failed: Array<{ deployment: string; error: string }> = [];
   const unreadable: string[] = [];
+  const notFound: string[] = [];
 
-  for (const row of rows as Array<{ dep: typeof deployments.$inferSelect; entry: typeof catalogEntries.$inferSelect | null }>) {
+  for (const row of rows as Array<{
+    dep: typeof deployments.$inferSelect;
+    entry: typeof catalogEntries.$inferSelect | null;
+    namespace: string | null;
+  }>) {
     const cap = capabilityOf(row.entry ?? undefined);
     if (!cap) continue;
-    const namespace = `tenant-${row.dep.tenantId}`;
+    const namespace = row.namespace;
+    if (!namespace) { unreadable.push(row.dep.name); continue; }
     try {
       const live = await k8s.apps.readNamespacedDeployment({ name: row.dep.name, namespace } as never) as {
         spec?: { template?: { spec?: { containers?: Array<Record<string, unknown>> } } };
@@ -98,9 +113,11 @@ export async function remediateMultihostDeployments(
       remediated.push(row.dep.name);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      // A 404 is a deployment row with no workload — nothing to remediate.
+      // A 404 is a deployment row with no workload. Counted, not silent: when
+      // the namespace was being composed wrongly, EVERY lookup 404'd and the
+      // sweep reported a clean result having examined nothing.
       const status = (err as { statusCode?: number; code?: number }).statusCode ?? (err as { code?: number }).code;
-      if (status === 404) continue;
+      if (status === 404) { notFound.push(row.dep.name); continue; }
       // Report what we could not inspect. Counting it as "fine" is how a sweep
       // that failed on every instance reports a clean run.
       unreadable.push(row.dep.name);
@@ -108,5 +125,5 @@ export async function remediateMultihostDeployments(
       logger?.error({ err, deployment: row.dep.name }, 'multihost: remediation failed');
     }
   }
-  return { scanned: rows.length, remediated, failed, unreadable };
+  return { scanned: rows.length, remediated, failed, unreadable, notFound };
 }

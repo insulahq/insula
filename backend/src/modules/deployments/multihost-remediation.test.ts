@@ -46,12 +46,13 @@ describe('the sweep', () => {
     listen: 8080, validate: ['a'], reload: ['b'],
   };
   const fakeDb = (rows: unknown[]) => ({
-    select: () => ({ from: () => ({ leftJoin: () => ({ where: () => Promise.resolve(rows) }) }) }),
+    select: () => ({ from: () => ({ leftJoin: () => ({ leftJoin: () => ({ where: () => Promise.resolve(rows) }) }) }) }),
   }) as never;
 
-  const row = (name: string) => ({
+  const row = (name: string, namespace: string | null = 'tenant-acme') => ({
     dep: { id: name, name, tenantId: 't1', multihostEnabled: true, status: 'running' },
     entry: { multihost: CAP },
+    namespace,
   });
 
   it('redeploys only the instances that are actually exposed', async () => {
@@ -83,5 +84,55 @@ describe('the sweep', () => {
     const r = await remediateMultihostDeployments(fakeDb([row('gone')]), k8s, vi.fn());
     expect(r.failed).toEqual([]);
     expect(r.unreadable).toEqual([]);
+  });
+});
+
+/**
+ * The namespace must come from the TENANT ROW. It was composed as
+ * `tenant-${tenantId}`, which named a namespace that does not exist — so every
+ * lookup 404'd, 404 was treated as "no workload, nothing to do", and the sweep
+ * reported every instance already isolated having examined none of them.
+ * Verified on DEV by regressing a real deployment to the pre-fix shape and
+ * watching the sweep declare it clean.
+ */
+describe('the sweep looks in the right namespace', () => {
+  const CAP = {
+    server: 'apache', web_root: '/var/www/html', sites_root: SITES,
+    config_dir: '/etc/apache2/insula/sites.d', common_include: '/etc/apache2/insula/site-common.conf',
+    listen: 8080, validate: ['a'], reload: ['b'],
+  };
+  const fakeDb = (rows: unknown[]) => ({
+    select: () => ({ from: () => ({ leftJoin: () => ({ leftJoin: () => ({ where: () => Promise.resolve(rows) }) }) }) }),
+  }) as never;
+  const row = (name: string, namespace: string | null = 'tenant-acme') => ({
+    dep: { id: name, name, tenantId: 't1', multihostEnabled: true, status: 'running' },
+    entry: { multihost: CAP },
+    namespace,
+  });
+
+  it('reads the namespace recorded on the tenant', async () => {
+    const seen: string[] = [];
+    const k8s = { apps: { readNamespacedDeployment: vi.fn(async (a: { namespace: string }) => {
+      seen.push(a.namespace);
+      return { spec: { template: { spec: { containers: [{ volumeMounts: [siteMount], env: [hardened] }] } } } };
+    }) } } as never;
+    await remediateMultihostDeployments(fakeDb([row('a', 'tenant-acme')]), k8s, vi.fn());
+    expect(seen).toEqual(['tenant-acme']);
+    expect(seen[0]).not.toMatch(/^tenant-t1$/);
+  });
+
+  it('reports a sweep that examined nothing instead of calling it clean', async () => {
+    const nf = Object.assign(new Error('nf'), { statusCode: 404 });
+    const k8s = { apps: { readNamespacedDeployment: vi.fn().mockRejectedValue(nf) } } as never;
+    const r = await remediateMultihostDeployments(fakeDb([row('a'), row('b')]), k8s, vi.fn());
+    expect(r.notFound).toEqual(['a', 'b']);
+    expect(r.notFound.length).toBe(r.scanned);
+  });
+
+  it('skips a row with no namespace rather than guessing one', async () => {
+    const k8s = { apps: { readNamespacedDeployment: vi.fn() } } as never;
+    const r = await remediateMultihostDeployments(fakeDb([row('a', null)]), k8s, vi.fn());
+    expect(r.unreadable).toEqual(['a']);
+    expect(k8s.apps.readNamespacedDeployment).not.toHaveBeenCalled();
   });
 });
