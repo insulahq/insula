@@ -13,6 +13,17 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Security
+- **Each website now keeps its own login sessions.** They were previously
+  written to a shared temporary area, where a session's filename is its
+  identifier — so one website could read a visitor's session from a
+  neighbouring site and act as that visitor. Sessions now live inside each
+  site's own folder. (File uploads still use the shared temporary area while
+  being received; that is a much shorter window and a much less predictable
+  name, and it is the remaining piece.)
+
+## [2026.9.14] - 2026-09-09
+
+### Security
 - **An instance now has access only to the folders it actually serves**, rather
   than to the whole of a customer's storage. Each website's folder is attached
   individually, so a website cannot reach a neighbouring site's files or another
@@ -31,10 +42,13 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 - **Each website now keeps its own login sessions.** They were previously
   written to a shared temporary area, where a session's filename is its
   identifier — so one website could read a visitor's session from a
-  neighbouring site and act as that visitor. Sessions now live inside each
-  site's own folder. (File uploads still use the shared temporary area while
-  being received; that is a much shorter window and a much less predictable
-  name, and it is the remaining piece.)
+  neighbouring site and act as that visitor. Each website now has its own
+  session area, kept on the instance itself rather than on your storage — so it
+  uses none of your space and never appears in your backups. It is cleared when
+  the instance restarts, which means adding a website to a shared instance signs
+  visitors out of the others on it. (File uploads still pass through the shared
+  temporary area while being received; that is a much shorter window with a much
+  less predictable name, and it is the remaining piece.)
 - **Instances deployed before this release are repaired automatically.** They
   keep the old, wider access until something changes them, so the platform now
   checks every shared instance on startup and redeploys the ones still on the
