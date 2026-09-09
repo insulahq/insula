@@ -203,13 +203,15 @@ function buildJmapMock(behavior: JmapMockBehavior) {
 const logger = { warn: () => {}, info: () => {} };
 
 // All NetworkListeners the reconciler requires present: 3 base
-// (http-acme/submission/imap) + 6 dedicated PROXY-protocol listeners added
-// 2026-06-29. A "fully configured" fixture must list all of them, otherwise
-// ensureRequiredListeners creates the missing `-proxy` ones and flips noOp.
+// (http-acme/submission/imap) + 7 dedicated PROXY-protocol listeners (6 added
+// 2026-06-29, pop3s-proxy added when POP3S was wired up). A "fully configured"
+// fixture must list all of them, otherwise ensureRequiredListeners creates the
+// missing `-proxy` ones and flips noOp.
 const ALL_REQUIRED_LISTENERS = [
   { name: 'http-acme' }, { name: 'submission' }, { name: 'imap' },
   { name: 'smtp-proxy' }, { name: 'submissions-proxy' }, { name: 'submission-proxy' },
-  { name: 'imap-proxy' }, { name: 'imaps-proxy' }, { name: 'sieve-proxy' },
+  { name: 'imap-proxy' }, { name: 'imaps-proxy' }, { name: 'pop3s-proxy' },
+  { name: 'sieve-proxy' },
 ];
 
 beforeEach(() => {
@@ -353,10 +355,11 @@ describe('mail-admin stalwart-domain-reconciler', () => {
     expect(result.defaultHostnameUpdated).toBe(true);
     expect(result.acmeProviderCreated).toBe(true);
     expect(result.certManagementUpdated).toBe(true);
-    // 3 base listeners + 6 dedicated PROXY-protocol listeners.
+    // 3 base listeners + 7 dedicated PROXY-protocol listeners.
     expect(result.listenersCreated.slice().sort()).toEqual([
-      'http-acme', 'imap', 'imap-proxy', 'imaps-proxy', 'sieve-proxy',
-      'smtp-proxy', 'submission', 'submission-proxy', 'submissions-proxy',
+      'http-acme', 'imap', 'imap-proxy', 'imaps-proxy', 'pop3s-proxy',
+      'sieve-proxy', 'smtp-proxy', 'submission', 'submission-proxy',
+      'submissions-proxy',
     ]);
     expect(result.acmeRenewalFired).toBe(true);
     expect(result.noOp).toBe(false);
@@ -369,6 +372,11 @@ describe('mail-admin stalwart-domain-reconciler', () => {
     expect(nlCreate['smtp-proxy'].overrideProxyTrustedNetworks).toEqual({ '10.42.0.0/16': true });
     expect(nlCreate['imaps-proxy'].overrideProxyTrustedNetworks).toEqual({ '10.42.0.0/16': true });
     expect(nlCreate['sieve-proxy'].protocol).toBe('manageSieve');
+    // POP3S is implicit-TLS and uses Stalwart's own `pop3` protocol name —
+    // both verified against a live 0.16 server's default `pop3s` listener.
+    expect(nlCreate['pop3s-proxy'].protocol).toBe('pop3');
+    expect(nlCreate['pop3s-proxy'].tlsImplicit).toBe(true);
+    expect(nlCreate['pop3s-proxy'].overrideProxyTrustedNetworks).toEqual({ '10.42.0.0/16': true });
     expect(nlCreate['submission'].overrideProxyTrustedNetworks).toBeUndefined();
 
     // SystemSettings/set must include BOTH fields.
@@ -505,10 +513,10 @@ describe('mail-admin stalwart-domain-reconciler', () => {
     });
     const setCall = calls.find((c) => c.method === 'x:NetworkListener/set')!;
     const create = setCall.args.create as Record<string, unknown>;
-    // http-acme already exists; everything else (incl. the 6 PROXY listeners)
+    // http-acme already exists; everything else (incl. the 7 PROXY listeners)
     // is created.
     expect(Object.keys(create).sort()).toEqual([
-      'imap', 'imap-proxy', 'imaps-proxy', 'sieve-proxy',
+      'imap', 'imap-proxy', 'imaps-proxy', 'pop3s-proxy', 'sieve-proxy',
       'smtp-proxy', 'submission', 'submission-proxy', 'submissions-proxy',
     ]);
   });

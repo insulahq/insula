@@ -23,11 +23,11 @@ describe('mail-admin/haproxy-builder.buildHaproxyDaemonSet', () => {
     expect(sel).toEqual({ 'insula.host/mail-haproxy': 'true' });
   });
 
-  it('binds all six mail ports with hostPort=containerPort', () => {
+  it('binds all seven mail ports with hostPort=containerPort', () => {
     const ds = buildHaproxyDaemonSet() as Record<string, any>;
     const ports = ds.spec.template.spec.containers[0].ports as Array<{ containerPort: number; hostPort: number }>;
     const containerPorts = ports.map((p) => p.containerPort).sort((a, b) => a - b);
-    expect(containerPorts).toEqual([25, 143, 465, 587, 993, 4190]);
+    expect(containerPorts).toEqual([25, 143, 465, 587, 993, 995, 4190]);
     // hostPort must equal containerPort — that's the whole point of this DS.
     for (const p of ports) {
       expect(p.hostPort).toBe(p.containerPort);

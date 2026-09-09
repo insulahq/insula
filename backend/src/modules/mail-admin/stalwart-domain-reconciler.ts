@@ -261,11 +261,14 @@ const MTA_AUTH_REQUIRE_EXPR = `local_port != 25 && local_port != ${SMTP_PROXY_MX
  * Stalwart 0.16 defaults (smtp/25, submissions/465, imaps/993,
  * pop3s/995, sieve/4190, https/443, http/8080).
  *
- * Each entry mirrors the bootstrap.sh:5776-5793 jq snippets exactly,
- * so a fresh install vs a self-heal pass produce the same shape.
+ * This list is the SOLE creator of these listeners — a fresh install and
+ * a self-heal pass both go through `ensureRequiredListeners`, so they
+ * produce the same shape by construction. (Until 2026-08 bootstrap.sh
+ * carried duplicate jq snippets that had to be kept in sync by hand;
+ * they are gone, so do not re-add a second definition here or there.)
  *
- * The six `*-proxy` entries are DEDICATED PROXY-protocol listeners on
- * internal ports (12025/12465/12587/12143/12993/14190). The haproxy
+ * The seven `*-proxy` entries are DEDICATED PROXY-protocol listeners on
+ * internal ports (12025/12465/12587/12143/12993/12995/14190). The haproxy
  * DaemonSet forwards external mail to them with `send-proxy-v2`; they
  * trust the pod CIDR so Stalwart parses the PROXY header and sees the
  * REAL client IP. The standard mail listeners stay PROXY-free for the
@@ -275,7 +278,7 @@ const MTA_AUTH_REQUIRE_EXPR = `local_port != 25 && local_port != ${SMTP_PROXY_MX
 interface RequiredListener {
   readonly name: string;
   readonly bindAddress: string;
-  readonly protocol: 'smtp' | 'imap' | 'http' | 'manageSieve';
+  readonly protocol: 'smtp' | 'imap' | 'pop3' | 'http' | 'manageSieve';
   readonly tlsImplicit: boolean;
   /** http-acme is plain HTTP for ACME HTTP-01; everything else STARTTLS. */
   readonly useTls: boolean;
@@ -299,6 +302,9 @@ const REQUIRED_LISTENERS: ReadonlyArray<RequiredListener> = [
   { name: 'submission-proxy', bindAddress: '[::]:12587', protocol: 'smtp', tlsImplicit: false, useTls: true, overrideProxyTrustedNetworks: { [POD_CIDR_V4]: true } },
   { name: 'imap-proxy', bindAddress: '[::]:12143', protocol: 'imap', tlsImplicit: false, useTls: true, overrideProxyTrustedNetworks: { [POD_CIDR_V4]: true } },
   { name: 'imaps-proxy', bindAddress: '[::]:12993', protocol: 'imap', tlsImplicit: true, useTls: true, overrideProxyTrustedNetworks: { [POD_CIDR_V4]: true } },
+  // `protocol: 'pop3'` is the value Stalwart itself uses for its default
+  // `pop3s` listener — read off a running 0.16 server, not guessed.
+  { name: 'pop3s-proxy', bindAddress: '[::]:12995', protocol: 'pop3', tlsImplicit: true, useTls: true, overrideProxyTrustedNetworks: { [POD_CIDR_V4]: true } },
   { name: 'sieve-proxy', bindAddress: '[::]:14190', protocol: 'manageSieve', tlsImplicit: false, useTls: true, overrideProxyTrustedNetworks: { [POD_CIDR_V4]: true } },
 ];
 

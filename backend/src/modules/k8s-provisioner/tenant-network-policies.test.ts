@@ -46,7 +46,7 @@ describe('buildTenantNetworkPolicies', () => {
       namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'mail' } },
       podSelector: { matchLabels: { app: 'stalwart-mail' } },
     });
-    expect(mail.ports.map((p) => p.port).sort((a, b) => a - b)).toEqual([25, 143, 465, 587, 993, 4190]);
+    expect(mail.ports.map((p) => p.port).sort((a, b) => a - b)).toEqual([25, 143, 465, 587, 993, 995, 4190]);
 
     // SFTP gateway → the platform-system sftp-gateway pod only, :23022.
     const sftp = egress.find((r) => r.ports.some((p) => p.port === 23022))!;
