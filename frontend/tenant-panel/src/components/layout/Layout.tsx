@@ -25,7 +25,19 @@ export default function Layout() {
         <Header onMenuClick={openSidebar} />
         <LifecycleBanner />
 
-        <main className="flex-1 overflow-y-auto p-4 lg:p-6">
+        {/* `relative` is load-bearing, not cosmetic.
+            Rows render `sr-only` spans, which Tailwind implements as
+            `position: absolute`. With an all-`static` ancestor chain their
+            containing block is the INITIAL containing block — and
+            `overflow: hidden` never clips an absolutely-positioned
+            descendant whose containing block lies outside it. On a long
+            page (200 WAF events) the deepest span sat ~12600px down in
+            DOCUMENT coordinates, so the document grew a scroll area of its
+            own and the operator saw TWO scrollbars.
+            Making the scroll container a positioning context confines them
+            here, so only this element scrolls. Fixed on the container
+            rather than per-table: any long page had the same bug. */}
+        <main className="relative flex-1 overflow-y-auto p-4 lg:p-6">
           <Outlet />
         </main>
         <Footer />
