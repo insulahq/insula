@@ -155,8 +155,8 @@ instances, because they would let one site step outside its folder. Command-line
 tools over SSH and scheduled tasks are unaffected.
 
 **Paths for your app's config file.** Hover either button to see the exact
-absolute paths the web server uses — application root, document root, and the
-sandbox setting. Applications that record their own location (Nextcloud's
+absolute paths the web server uses — the application root and the document
+root. Applications that record their own location (Nextcloud's
 `datadirectory`, for instance) want these values literally.
 
 The picker offers folders that already exist; create the folder and upload the

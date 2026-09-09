@@ -1145,11 +1145,20 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
                           const sitesRoot = multihostSitesRoot(target.catalogEntryId);
                           const abs = (rel: string | null) =>
                             rel && sitesRoot ? `${sitesRoot}/${rel}` : null;
+                          // The two ABSOLUTE paths an app's own config file needs.
+                          //
+                          // The sandbox is described in words, not printed as a
+                          // value: composing `${appRoot}:/tmp` here duplicated
+                          // knowledge that lives in the renderer, and it silently
+                          // went stale the moment session storage moved and
+                          // added a third entry. A tooltip that states a wrong
+                          // open_basedir is worse than one that does not state it.
                           const pathHint = appRoot && sitesRoot
                             ? [
                                 `Application root:  ${abs(appRoot)}`,
                                 `Document root:     ${abs(folder)}`,
-                                `open_basedir:      ${abs(appRoot)}:/tmp`,
+                                '',
+                                'This site can only read inside its application root.',
                               ].join('\n')
                             : 'Folder this hostname serves';
                           return (
