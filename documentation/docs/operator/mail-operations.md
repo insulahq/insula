@@ -24,9 +24,9 @@ automatic failover.
 
 ## Port exposure modes
 
-Mail uses fixed ports — **25, 465, 587, 143, 993, 4190** — that must be reachable
-from the internet on the right node(s). You pick *how* those ports are exposed on
-**Email → Operations**:
+Mail uses fixed ports — **25, 465, 587, 143, 993, 995, 4190** — that must be
+reachable from the internet on the right node(s). You pick *how* those ports are
+exposed on **Email → Operations**:
 
 | Mode | What binds the ports | When to use |
 |---|---|---|
