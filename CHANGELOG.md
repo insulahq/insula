@@ -64,6 +64,20 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   tenants now use the contact name (falling back to the organisation name when
   no contact was given). Existing logins are unchanged — rename them under
   the tenant's Users tab if you want the corrected name.
+- **Old notifications are now cleared out.** The in-app notification list —
+  admin and tenant alike — kept every entry it had ever shown, with no way to
+  clear it except deleting entries one at a time. Notifications are now removed
+  90 days after they arrive, read or not. Anything that matters beyond that
+  window was also sent by email or push and is recorded in the audit log, which
+  keeps 180 days.
+- **The notification cleanup pass no longer depends on how often the platform
+  restarts.** It was scheduled to run 24 hours after start-up and never sooner,
+  so on a cluster that updates more than once a day it never ran at all and
+  delivery records accumulated past their 30-day window. It now runs at
+  start-up and every six hours after.
+- **Deleting a tenant user now deletes their notifications too.** Their entries
+  were left behind, attached to a login that no longer exists. Removing an
+  administrator already did this correctly; tenant users did not.
 
 ## [2026.9.15] - 2026-09-10
 
