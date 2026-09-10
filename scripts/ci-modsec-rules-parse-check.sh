@@ -36,8 +36,15 @@ IMAGE="${MODSEC_IMAGE:-docker.io/owasp/modsecurity-crs:4.28.0-nginx-alpine-20260
 RULES_MOUNT=/etc/modsecurity.d/owasp-crs/rules/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf
 BASE_DIR="k8s/base/modsecurity-crs"
 WORK=$(mktemp -d)
-trap 'rm -rf "$WORK"; docker rm -f "$CID" >/dev/null 2>&1 || true' EXIT
-CID=""
+# `loads()` runs inside $( ), i.e. a SUBSHELL, so a CID assigned in it can never
+# reach this scope — a trap reading a shell variable would always see "" and
+# clean up nothing. Record the id in a FILE instead, which the subshell and the
+# trap both share, so an interrupted run (cancelled job, runner timeout) still
+# tears the container down.
+CIDFILE="$WORK/cid"
+trap 'if [ -s "$CIDFILE" ]; then docker rm -f "$(cat "$CIDFILE")" >/dev/null 2>&1 || true; fi
+      if [ -s "$WORK/tag" ]; then docker rmi -f "$(cat "$WORK/tag")" >/dev/null 2>&1 || true; fi
+      rm -rf "$WORK"' EXIT
 
 if ! command -v docker >/dev/null 2>&1; then
   echo "ci-modsec-rules-parse-check: docker unavailable — SKIPPING (this check is not optional in CI; investigate if you see this there)" >&2
@@ -52,20 +59,36 @@ else
   exit 1
 fi
 
-python3 - "$WORK" <<'PY'
-import sys, yaml, pathlib
+# The rules contain Flux postBuild placeholders (`${DOMAIN}` in the host
+# guards). `kubectl kustomize` does NOT expand those — Flux does, at apply time
+# — so testing the raw render would feed modsec a regex containing `${DOMAIN}`,
+# where `$` anchors and `{DOMAIN}` is not a valid quantifier. Substitute a
+# representative apex first, so what we parse is what the cluster runs.
+SUBST_DOMAIN="${SUBST_DOMAIN:-example.test}"
+python3 - "$WORK" "$SUBST_DOMAIN" <<'PY'
+import sys, yaml, pathlib, re
 work = pathlib.Path(sys.argv[1])
+domain = sys.argv[2]
 n = 0
+placeholders = set()
 for doc in yaml.safe_load_all((work / 'rendered.yaml').read_text()):
     if not doc or doc.get('kind') != 'ConfigMap':
         continue
     for key, val in (doc.get('data') or {}).items():
         if key.startswith('REQUEST-9') and key.endswith('.conf'):
+            placeholders |= set(re.findall(r'\$\{([A-Z_][A-Z0-9_]*)\}', val))
+            val = val.replace('${DOMAIN}', domain)
             (work / key).write_text(val)
             n += 1
             print(f"  rendered {key} ({len(val)} bytes)")
 if n == 0:
     sys.exit("ci-modsec-rules-parse-check: rendered NO rule files — the extractor matched nothing, which would make this check vacuous")
+# Any placeholder we do not substitute would reach modsec verbatim and could
+# silently change a regex's meaning. Fail loudly rather than test a fiction.
+unknown = placeholders - {'DOMAIN'}
+if unknown:
+    sys.exit(f"ci-modsec-rules-parse-check: unsubstituted placeholder(s) {sorted(unknown)} in the rules — "
+             "add them here (with a representative value) so the parse test matches what Flux deploys")
 PY
 
 # Load one candidate file into the real image; echo "ok" if it stays up.
@@ -85,14 +108,16 @@ loads() {
 FROM $IMAGE
 COPY rules.conf $RULES_MOUNT
 DOCKERFILE
+  printf '%s' "$tag" > "$WORK/tag"
   if ! docker build -q -t "$tag" "$ctx" >/dev/null 2>&1; then
     rm -rf "$ctx"; echo "no"; return
   fi
   rm -rf "$ctx"
   # No --rm: it deletes the container before `docker logs` can explain WHY.
   CID=$(docker run -d -e BACKEND=http://127.0.0.1:8080 "$tag" 2>/dev/null) || {
-    docker rmi -f "$tag" >/dev/null 2>&1; echo "no"; return
+    docker rmi -f "$tag" >/dev/null 2>&1; : > "$WORK/tag"; echo "no"; return
   }
+  printf '%s' "$CID" > "$CIDFILE"
   local verdict=ok
   # nginx dies within a second or two on a rules error; give it room.
   for _ in $(seq 1 15); do
@@ -105,7 +130,7 @@ DOCKERFILE
   done
   docker rm -f "$CID" >/dev/null 2>&1 || true
   docker rmi -f "$tag" >/dev/null 2>&1 || true
-  CID=""
+  : > "$CIDFILE"; : > "$WORK/tag"
   echo "$verdict"
 }
 

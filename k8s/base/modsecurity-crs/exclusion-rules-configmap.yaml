@@ -52,7 +52,7 @@ data:
     # debugging staging POST /system-backup/dr-drill/runs that
     # silently kept getting 403 even after the exclusion was
     # mounted + modsec rolled.
-    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\." \
+    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\.${DOMAIN}(:[0-9]+)?$" \
         "id:9000100,\
          phase:1,\
          pass,\
@@ -74,7 +74,7 @@ data:
     # debugging staging POST /system-backup/dr-drill/runs that
     # silently kept getting 403 even after the exclusion was
     # mounted + modsec rolled.
-    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\." \
+    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\.${DOMAIN}(:[0-9]+)?$" \
         "id:9000101,\
          phase:1,\
          pass,\
@@ -113,7 +113,7 @@ data:
     # swallows the first rule of the next-loaded (901 dynamic) file.
     # (Reported 2026-08-03: POST /api/v1/admin/dns-servers with
     # connection_config.api_url = http://<mesh-ip>:8081 → 403.)
-    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\." \
+    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\.${DOMAIN}(:[0-9]+)?$" \
         "id:9000103,\
          phase:1,\
          pass,\
@@ -276,7 +276,7 @@ data:
     #
     # Chained host+URI like 9000103: a tenant workload serving its own
     # /api/v1/tenants/…/deployments on a tenant domain keeps coverage.
-    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\." \
+    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\.${DOMAIN}(:[0-9]+)?$" \
         "id:9000108,\
          phase:1,\
          pass,\
@@ -391,7 +391,7 @@ data:
     # next-loaded (dynamic) file. 920440 still guards `.bak`/`.key`/etc.
     # everywhere else. (ADR-054; confirmed 2026-07-01 via the modsec audit
     # log — ruleId 920440, TX:EXTENSION=`.pem`.)
-    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\." \
+    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\.${DOMAIN}(:[0-9]+)?$" \
         "id:9000102,\
          phase:1,\
          pass,\
@@ -436,7 +436,7 @@ data:
     # own domain keeps full coverage. The `t:none` action list on the second
     # rule is what prevents a dangling `chain` bleeding into the next-loaded
     # (dynamic) exclusion file.
-    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\." \
+    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\.${DOMAIN}(:[0-9]+)?$" \
         "id:9000104,\
          phase:1,\
          pass,\
@@ -463,7 +463,7 @@ data:
     # it as a request payload is a category error — and SFTP writes the same
     # bytes to the same place with no WAF at all. The `path` query argument is
     # untouched and keeps full coverage.
-    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\." \
+    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\.${DOMAIN}(:[0-9]+)?$" \
         "id:9000105,\
          phase:1,\
          pass,\
@@ -483,7 +483,7 @@ data:
     #
     # FILES_NAMES (the form field name) keeps coverage — that is our own field
     # name, not tenant data, so a match there is a real anomaly.
-    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\." \
+    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\.${DOMAIN}(:[0-9]+)?$" \
         "id:9000106,\
          phase:1,\
          pass,\
@@ -507,7 +507,7 @@ data:
     #
     # Scoped to the file read/download endpoints only. Every other response on
     # the platform keeps outbound inspection.
-    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\." \
+    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\.${DOMAIN}(:[0-9]+)?$" \
         "id:9000107,\
          phase:1,\
          pass,\
@@ -553,7 +553,7 @@ data:
     # tenant.<apex>" — but the guard used throughout this file is
     # `^(admin|tenant|api)\.`, which matches BOTH, so that was never a reason
     # to leave it open to every other WAF'd host.
-    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\." \
+    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\.${DOMAIN}(:[0-9]+)?$" \
         "id:9000111,\
          phase:1,\
          pass,\
@@ -628,7 +628,7 @@ data:
     # ConfigMap deployed, `grep 9000112` found it inside the running container,
     # and every probe case was still blocked. 9000108/9000109/9000110 all put
     # the ctl in the starter; copy that shape, not this comment.
-    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\." \
+    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\.${DOMAIN}(:[0-9]+)?$" \
         "id:9000112,\
          phase:1,\
          pass,\
@@ -692,7 +692,7 @@ data:
     # carry a second segment) and also stops `custom-deploymentsXXX` matching.
     # Verified 2026-09-09 on DEV: PUT /<id>/pull-credentials as octet-stream
     # returned 401 (past the WAF) before this narrowing, 403 after.
-    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\." \
+    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\.${DOMAIN}(:[0-9]+)?$" \
         "id:9000115,\
          phase:1,\
          pass,\
