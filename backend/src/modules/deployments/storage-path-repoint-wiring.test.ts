@@ -79,3 +79,20 @@ describe('listStorageFolders browses the whole PVC', () => {
     expect(source).toContain('usedByDeployment: pathToDeployment.get(fullPath) ?? null');
   });
 });
+
+describe('the folder-listing path guard', () => {
+  const routesPath = join(dirname(fileURLToPath(import.meta.url)), 'routes.ts');
+  const routes = readFileSync(routesPath, 'utf-8');
+
+  it('validates the path with the shared folder rule', () => {
+    expect(routes).toContain('const problem = folderProblem(path)');
+  });
+
+  it('does not strip a LEADING slash before validating', () => {
+    // `/etc` must be REFUSED, not silently rewritten to `etc` and listed —
+    // observed on DEV returning 200 with basePath "etc". Only the trailing
+    // slash is normalised.
+    expect(routes).toContain("path = rawPath.replace(/\\/+$/g, '')");
+    expect(routes).not.toContain("rawPath.replace(/^\\/+|\\/+$/g, '')");
+  });
+});
