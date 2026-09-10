@@ -133,9 +133,32 @@ opaque transport over inspection exemptions.
 
 ### What is explicitly NOT exempted
 
-- **Tenant websites.** The `X-Forwarded-Host` chain scopes this to panel hosts.
-  A tenant app serving its own `/api/v1/` on its own domain keeps full
-  coverage — the same reasoning already applied by `9000103`.
+- **Tenant websites.** Every exclusion in the file is chained behind
+  `REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\."`, so a tenant
+  app serving its own `/api/v1/` on its own domain keeps full coverage.
+
+  **This was not true when the ADR was first written, and the original wording
+  here asserted it anyway.** Seven of the twelve rules — `9000102`, `9000104`
+  through `9000107`, `9000111` and `9000115` — matched on `REQUEST_URI` alone
+  and therefore applied on *every* WAF'd host. Two rationales were given, and
+  neither survived review:
+
+  - *"no tenant workload serves this URI"* — an assumption about tenant content,
+    not something the platform enforces;
+  - *"avoiding the chain keeps a dangling `chain` from bleeding into the
+    next-loaded file"* — real, but the fix is an action list (`"t:none"`) on the
+    chain's final rule, which `9000112` already demonstrated in the same file.
+
+  `9000111` additionally justified being unscoped with "the file-manager API is
+  reached from both `admin.<apex>` and `tenant.<apex>`" — but the guard is
+  `^(admin|tenant|api)\.`, which matches both. That rule never needed to be open
+  to every other host.
+
+  Measured before the fix (DEV, `tunnels.<apex>` — a WAF'd host that is *not* a
+  panel host): the excluded path returned 405, i.e. it reached the upstream,
+  while a non-excluded path on the same host returned 403. All twelve rules were
+  converted 2026-09-09; every chain now carries an action list on its final
+  rule, so none can bleed into the next-loaded file regardless of ordering.
 - **Query-string arguments.** `ARGS` covers query *and* body args; turning off
   body access removes only the body half. `?id=1' OR 1=1--` against any API
   endpoint is still matched by the 942xxx family.
