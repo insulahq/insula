@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { eraseUserNotifications } from './gdpr-erasure.js';
+import { eraseUserNotifications, eraseUserNotificationsInTx } from './gdpr-erasure.js';
 
 type Db = Parameters<typeof eraseUserNotifications>[0];
 
@@ -22,5 +22,29 @@ describe('eraseUserNotifications', () => {
     expect(r.deliveriesDeleted).toBe(2);
     expect(r.notificationsDeleted).toBe(1);
     expect(transaction).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('eraseUserNotificationsInTx', () => {
+  /**
+   * The sub-user delete path calls this from inside its own transaction.
+   * Opening another one there would nest — a savepoint at best, and at
+   * worst a second connection that commits independently of the delete it
+   * is supposed to be atomic with.
+   */
+  it('joins the caller transaction instead of opening its own', async () => {
+    let call = 0;
+    const returning = vi.fn().mockImplementation(() => Promise.resolve(
+      call++ === 0 ? [{ id: 'd1' }] : [{ id: 'n1' }, { id: 'n2' }],
+    ));
+    const where = vi.fn().mockReturnValue({ returning });
+    const del = vi.fn().mockReturnValue({ where });
+    const transaction = vi.fn();
+    const tx = { delete: del, transaction } as unknown as Db;
+
+    const r = await eraseUserNotificationsInTx(tx, 'u1');
+
+    expect(r).toEqual({ deliveriesDeleted: 1, notificationsDeleted: 2 });
+    expect(transaction).not.toHaveBeenCalled();
   });
 });

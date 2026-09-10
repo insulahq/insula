@@ -34,7 +34,7 @@ interface SubUserRow {
  * In-memory db stub that matches the narrow SubUsersDb interface.
  * We keep this tiny — just enough to test the service behaviors.
  */
-function makeStub(initialRows: SubUserRow[]): SubUsersDb {
+function makeStub(initialRows: SubUserRow[], erased: string[] = []): SubUsersDb {
   let rows = [...initialRows];
   const stub: SubUsersDb = {
     listByTenantId: async (tenantId) =>
@@ -126,6 +126,7 @@ function makeStub(initialRows: SubUserRow[]): SubUsersDb {
         (r) => !(r.id === userId && r.tenantId === tenantId),
       );
     },
+    eraseNotifications: async (userId) => { erased.push(userId); },
     // Single-threaded test stub — no actual locking needed.
     runInTransaction: async (fn) => fn(stub),
   };
@@ -189,6 +190,7 @@ function makeStubWithPasswordReadback(initialRows: SubUserRow[]): {
       state.rows[idx] = { ...state.rows[idx], passwordHash };
     },
     deleteById: async () => { throw new Error('not implemented in readback stub'); },
+    eraseNotifications: async () => { throw new Error('not implemented in readback stub'); },
     runInTransaction: async (fn) => fn(stub),
   };
   return {
@@ -468,6 +470,36 @@ describe('sub-users-service', () => {
       const list = await listSubUsers(db, 'c1');
       expect(list.map((u) => u.id)).toContain('u-admin-1b');
       expect(list.map((u) => u.id)).not.toContain('u-admin-1');
+    });
+
+    /**
+     * GDPR Art. 17. `notifications.user_id` has no FK, so nothing cascades
+     * at the database layer — if the service doesn't erase, the rows are
+     * orphaned against a user id that no longer resolves.
+     */
+    it('erases the deleted user notifications', async () => {
+      const erased: string[] = [];
+      const db = makeStub(SEED, erased);
+      await deleteSubUser(db, 'c1', 'u-user-1');
+      expect(erased).toEqual(['u-user-1']);
+    });
+
+    it('does not erase notifications when the delete is refused', async () => {
+      const erased: string[] = [];
+      const db = makeStub(SEED, erased);
+      await expect(
+        deleteSubUser(db, 'c1', 'u-admin-1'),
+      ).rejects.toMatchObject({ code: 'LAST_ADMIN' });
+      expect(erased).toEqual([]);
+    });
+
+    it('does not erase notifications for a user in another tenant', async () => {
+      const erased: string[] = [];
+      const db = makeStub(SEED, erased);
+      await expect(
+        deleteSubUser(db, 'c1', 'u-admin-2'),
+      ).rejects.toMatchObject({ code: 'USER_NOT_FOUND' });
+      expect(erased).toEqual([]);
     });
   });
 

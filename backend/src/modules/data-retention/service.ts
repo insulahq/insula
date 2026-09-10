@@ -4,9 +4,14 @@
 // Audit (2026-06-01): every node/infra log vector is already capped
 // (kubelet container-log rotation 10Mi×5, journald ~4G, etcd snapshot
 // retention, kubelet image GC, Longhorn recurring-job retention, CNPG
-// 30d barman retention). Most DB tables are pruned too (tasks,
-// notifications, waf_logs, refresh_tokens, …). These four were the
-// remaining loose ends with no retention at all:
+// 30d barman retention). Most DB tables are pruned too (tasks, waf_logs,
+// refresh_tokens, …). These four were the remaining loose ends with no
+// retention at all:
+//
+// NB: this list used to name `notifications` among the pruned tables. It
+// was not pruned — only `notification_deliveries` was, and the inbox table
+// itself had no age retention until 2026-09-10. It is now handled by
+// modules/notifications/retention (90 days), not by this sweep.
 //
 //   - audit_logs                    : one row per admin/security action
 //   - tenant_lifecycle_transitions  : one row per tenant state change;

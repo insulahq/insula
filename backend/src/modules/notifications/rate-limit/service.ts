@@ -91,7 +91,8 @@ export async function incrementBucket(
 }
 
 /**
- * Daily cron: delete rows whose window has elapsed. Returns deletion count.
+ * Retention cron (startup + every 6h, see ../retention/scheduler.ts):
+ * delete rows whose window has elapsed. Returns deletion count.
  */
 export async function purgeStaleBuckets(
   db: Database,
