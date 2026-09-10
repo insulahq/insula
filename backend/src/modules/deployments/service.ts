@@ -783,6 +783,13 @@ export async function updateDeployment(
   // Replaces the whole list. A volumeMount change is a pod-template change,
   // so the redeploy below is what actually applies it.
   if (input.extra_mounts !== undefined) updateValues.extraMounts = input.extra_mounts;
+  // RE-POINT, not move. storagePath is the `subPath` of the tenant-storage
+  // volumeMount, so writing it here and redeploying below is the whole change:
+  // the pod comes back reading the new folder and the old one keeps its
+  // contents, unmounted. Nothing is copied and nothing is deleted, which is
+  // what makes this safely reversible — set the previous value back and the
+  // old data is live again.
+  if (input.storage_path !== undefined) updateValues.storagePath = input.storage_path;
   // Status transitions:
   //   stopped from any state → land directly on 'stopped'. Operator/customer
   //     intent is "kill it now" — going via 'pending' would re-show the
@@ -835,7 +842,15 @@ export async function updateDeployment(
   const replicaCountChanged = input.replica_count !== undefined
     && input.replica_count !== (deployment.replicaCount ?? 1);
 
-  const podTemplateChanged = mountsChanged || configurationChanged || replicaCountChanged;
+  // Every volumeMount this deployment has is rendered as `<storagePath>/<key>`
+  // (k8s-deployer.ts), so re-pointing the storage path re-bases ALL of them.
+  // Persisting it without the redeploy would leave the pod on the old subPath
+  // forever — the exact failure mode `configuration` had before it was fixed.
+  const storagePathChanged = input.storage_path !== undefined
+    && input.storage_path !== (deployment.storagePath ?? '');
+
+  const podTemplateChanged = mountsChanged || configurationChanged || replicaCountChanged
+    || storagePathChanged;
 
   // Apply K8s changes for status transitions
   if (k8s && input.status) {
@@ -1879,15 +1894,33 @@ export async function regenerateDeploymentCredentials(
 
 // ─── Storage Folder Listing ──────────────────────────────────────────────────
 
+/**
+ * List the directories directly under `path` on the tenant's PVC.
+ *
+ * `path` is relative to the PVC ROOT and defaults to the root itself, so the
+ * caller can walk the whole tree one level at a time. It used to be pinned to
+ * `<entryType>/<entryCode>`, which meant "use custom folder" could only ever
+ * offer folders the platform had created for that one catalog entry — a tenant
+ * could not point a deployment at a site directory they already had
+ * (`business.na`) or at a shared media tree.
+ *
+ * A folder already claimed by another deployment is returned with
+ * `usedByDeployment` set rather than filtered out: sharing one folder between
+ * deployments is legitimate (that is what extra mounts are for) and the caller
+ * warns instead of hiding the option.
+ *
+ * `hasSubfolders` drives the drill-down affordance in the picker.
+ */
 export async function listStorageFolders(
   db: Database,
   tenantId: string,
-  entryType: string,
-  entryCode: string,
+  path: string,
   k8s?: K8sClients,
   kubeconfigPath?: string,
 ) {
-  const basePath = `${entryType}/${entryCode}`;
+  // '' is the PVC root. Trim any stray slashes so `/foo/` and `foo` agree.
+  const basePath = path.replace(/^\/+|\/+$/g, '');
+  const parentPath = basePath === '' ? null : basePath.split('/').slice(0, -1).join('/');
 
   // Get existing deployments for this tenant to mark folders as "in use"
   const existingDeployments = await db
@@ -1907,7 +1940,13 @@ export async function listStorageFolders(
   }
 
   // Try to list directories via file-manager sidecar
-  const folders: Array<{ name: string; path: string; isEmpty: boolean; usedByDeployment: string | null }> = [];
+  const folders: Array<{
+    name: string;
+    path: string;
+    isEmpty: boolean;
+    hasSubfolders: boolean;
+    usedByDeployment: string | null;
+  }> = [];
 
   if (k8s) {
     const namespace = await getTenantNamespace(db, tenantId);
@@ -1915,21 +1954,26 @@ export async function listStorageFolders(
       const { fileManagerRequest } = await import('../file-manager/service.js');
       const { getFileManagerImage } = await import('../file-manager/image.js');
       const listing = await fileManagerRequest(k8s, kubeconfigPath, namespace, getFileManagerImage(), '/ls', {
-        query: { path: basePath, dirs_only: 'true' },
+        // '.' is how the file-manager addresses the PVC root; an empty string
+        // would list the sidecar's own cwd.
+        query: { path: basePath === '' ? '.' : basePath, dirs_only: 'true' },
       });
       const entries = (JSON.parse(listing.body) as { entries?: Array<{ name: string; type: string; size?: number }> })?.entries ?? [];
 
       for (const entry of entries) {
         if (entry.type === 'directory') {
-          const fullPath = `${basePath}/${entry.name}`;
-          // Check if directory is empty by listing its contents
+          const fullPath = basePath === '' ? entry.name : `${basePath}/${entry.name}`;
+          // One listing answers both questions: whether the folder is empty,
+          // and whether it is worth offering a drill-down into it.
           let isEmpty = true;
+          let hasSubfolders = false;
           try {
             const subListing = await fileManagerRequest(k8s, kubeconfigPath, namespace, getFileManagerImage(), '/ls', {
               query: { path: fullPath },
             });
-            const subEntries = (JSON.parse(subListing.body) as { entries?: unknown[] })?.entries ?? [];
+            const subEntries = (JSON.parse(subListing.body) as { entries?: Array<{ type?: string }> })?.entries ?? [];
             isEmpty = subEntries.length === 0;
+            hasSubfolders = subEntries.some((e) => e?.type === 'directory');
           } catch {
             // If we can't list, assume non-empty
             isEmpty = false;
@@ -1939,6 +1983,7 @@ export async function listStorageFolders(
             name: entry.name,
             path: fullPath,
             isEmpty,
+            hasSubfolders,
             usedByDeployment: pathToDeployment.get(fullPath) ?? null,
           });
         }
@@ -1948,7 +1993,8 @@ export async function listStorageFolders(
     }
   }
 
-  return { basePath, folders };
+  folders.sort((a, b) => a.name.localeCompare(b.name));
+  return { basePath, parentPath, folders };
 }
 
 /**

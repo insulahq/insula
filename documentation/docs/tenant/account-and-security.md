@@ -93,18 +93,34 @@ from the left menu.
 **Add a user**
 
 1. Click **Add User**.
-2. Enter their **email**, **full name**, and an initial **password**.
+2. Enter their **email** and **full name**. There is no password field — the
+   platform generates a strong password for you.
 3. Choose a **Role**:
     - **Member (read-only)** — can view your account but not change things.
     - **Administrator (can manage team)** — can add, edit, and remove users, and
       manage your account.
-4. Create the user, then share the login details with them securely.
+4. Create the user. The generated password appears once, in an amber box with
+   a copy button. **Copy it now — it is never shown again.** Share it with
+   your colleague over a secure channel; they are not emailed automatically.
+
+!!! note "Passwords are always generated, never chosen"
+    You cannot type a password for someone else, here or when resetting one.
+    The password is stored only as a one-way hash, which is why it can be
+    shown at the moment it is created and never again. Your colleague can
+    change it themselves under **Change your password** once they sign in.
 
 **Manage users**
 
 From the list you can **edit** a user's name and role, **enable/disable** their
 access, **reset their password**, or **delete** them. Disabling immediately
 removes access without deleting the account.
+
+**Reset a user's password**
+
+Click the key icon on their row. The dialog asks you to confirm, then
+generates a **new** password and shows it once — you don't choose it. Their
+old password stops working immediately and they are signed out everywhere, so
+pass the new one on promptly and securely.
 
 !!! note "Who can manage the team"
     Only administrators (and your provider's support staff) can add or change

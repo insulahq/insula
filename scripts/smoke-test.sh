@@ -26,6 +26,10 @@ require_cmds curl jq
 _CALLER_API_URL="${API_URL:-}"
 _CALLER_ADMIN_EMAIL="${ADMIN_EMAIL:-}"
 _CALLER_ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
+# Same reasoning for MAIL_HOST. Captured separately because the remote
+# fallback below needs to tell "the caller pinned a mail host" apart from
+# "nobody said, so we defaulted to the local apex".
+_CALLER_MAIL_HOST="${MAIL_HOST:-}"
 if [[ -f "$ENV_FILE" ]]; then
   set -a
   # shellcheck source=/dev/null
@@ -35,10 +39,31 @@ fi
 [[ -n "$_CALLER_API_URL" ]] && API_URL="$_CALLER_API_URL"
 [[ -n "$_CALLER_ADMIN_EMAIL" ]] && ADMIN_EMAIL="$_CALLER_ADMIN_EMAIL"
 [[ -n "$_CALLER_ADMIN_PASSWORD" ]] && ADMIN_PASSWORD="$_CALLER_ADMIN_PASSWORD"
+[[ -n "$_CALLER_MAIL_HOST" ]] && MAIL_HOST="$_CALLER_MAIL_HOST"
 
 API_URL="${API_URL:-http://admin.k8s-platform.test:${PORT_INGRESS_HTTP:-2010}}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@k8s-platform.test}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-admin}"
+
+# Derive the mail hostname from API_URL: strip the scheme, any credentials,
+# the path and the port, then swap a leading panel label (admin./tenant./api.)
+# for `mail.`. A bare IP or an already-`mail.` host is returned untouched —
+# there is no `mail.<ip>`, and double-prefixing would resolve nowhere.
+mail_host_from_api_url() {
+  local host="${1#*://}"
+  host="${host%%/*}"; host="${host%%\?*}"; host="${host##*@}"
+  if [[ "$host" == \[* ]]; then                      # [::1]:8443 → ::1
+    host="${host#\[}"; host="${host%%\]*}"
+    printf '%s' "$host"; return
+  fi
+  host="${host%%:*}"
+  if [[ "$host" =~ ^[0-9]+(\.[0-9]+){3}$ || "$host" == mail.* ]]; then
+    printf '%s' "$host"; return
+  fi
+  local apex="$host"
+  [[ "$apex" =~ ^(admin|tenant|api)\. ]] && apex="${apex#*.}"
+  printf 'mail.%s' "$apex"
+}
 
 # Mail server endpoints (Phase 1, dev overlay via docker-compose NodePort mapping)
 MAIL_HOST="${MAIL_HOST:-mail.${PLATFORM_BASE_DOMAIN:-k8s-platform.test}}"
@@ -82,6 +107,55 @@ cleanup_smoke_tenants() {
   done
 }
 trap cleanup_smoke_tenants EXIT
+
+# Creating a tenant does NOT provision it — the row lands `pending` /
+# unprovisioned and "Provision Now" is a separate, explicit action (see
+# documentation/docs/admin/tenants.md). Anything that then configures domains, email or
+# mailboxes therefore has to provision FIRST, or every such call comes back
+# 409 TENANT_NOT_ACTIVE and the whole block collapses with empty ids.
+#
+# Trigger is async (202) and the tenant reaches provisioned/active in ~10s on
+# a healthy cluster; the generous default timeout covers a busy one. Returns
+# non-zero with a reason on stderr so callers can `fail` with a real message
+# instead of reporting an empty variable.
+provision_tenant_and_wait() {
+  local tid="$1"
+  local timeout_s="${2:-${TENANT_PROVISION_TIMEOUT:-240}}"
+  local deadline=$(( SECONDS + timeout_s ))
+  local code state=""
+
+  code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST -H "$AUTH_HEADER" \
+    -H "Content-Type: application/json" -d '{}' \
+    "${API_URL}/api/v1/admin/tenants/${tid}/provision")
+  # 409 = ALREADY_PROVISIONING; that's a race we can simply wait out.
+  case "$code" in
+    200|201|202|409) ;;
+    *) echo "provision trigger for ${tid} returned HTTP ${code}" >&2; return 1 ;;
+  esac
+
+  while (( SECONDS < deadline )); do
+    state=$(curl -sS -H "$AUTH_HEADER" "${API_URL}/api/v1/tenants/${tid}" \
+      | jq -r '"\(.data.provisioningStatus // "?")/\(.data.status // "?")"')
+    case "$state" in
+      provisioned/active) return 0 ;;
+      provisioned/*)      return 0 ;;
+      failed/*)           echo "provisioning FAILED for ${tid}" >&2; return 1 ;;
+    esac
+    sleep 5
+  done
+  echo "provisioning timed out for ${tid} after ${timeout_s}s (last state: ${state:-unknown})" >&2
+  return 1
+}
+
+# Return the id of a plan with room for `$1` tenant-panel users (default 2).
+# The tenant's own owner account occupies one slot, so the seeded Starter
+# plan (max_sub_users=1) makes every sub-user create 403 SUB_USER_LIMIT —
+# picking `.data[0]` blindly is how that went unnoticed.
+plan_id_with_user_slots() {
+  local need="${1:-2}"
+  curl -sS "${API_URL}/api/v1/plans" | jq -r --argjson n "$need" \
+    'first(.data | sort_by(-(.maxSubUsers // 0))[] | select((.maxSubUsers // 0) >= $n) | .id) // empty'
+}
 
 # IMAP Phase 5: orphan-namespace startup warning. If there are many
 # tenant-smoke-test-* namespaces in k3s with no matching DB row,
@@ -448,12 +522,22 @@ if [[ "$MAIL_TESTS_ENABLED" == "1" ]]; then
   # docker-compose published ports for the local stack. A real cluster serves
   # mail on the standard ports via hostPort, so switch those as well unless the
   # caller pinned them.
+  #
+  # And the HOST. This block used to switch the mode and the ports but leave
+  # MAIL_HOST at its line-44 default — `mail.k8s-platform.test`, the LOCAL
+  # apex — so a remote run probed a hostname that only exists on a dev
+  # workstation and reported four "connection refused" failures plus three
+  # empty banners while the remote cluster served mail perfectly. The comment
+  # above already claimed the host came from API_URL; now it actually does.
   if [[ "$MAIL_PROBE_MODE" == "k3s" ]] && [[ ! "$API_URL" =~ ^https?://(localhost|127\.0\.0\.1|\[?::1\]?)([:/]|$) ]]; then
     MAIL_PROBE_MODE=host
     MAIL_PORT_SMTP="${PORT_MAIL_SMTP:-25}"
     MAIL_PORT_SUBMISSION="${PORT_MAIL_SUBMISSION:-587}"
     MAIL_PORT_IMAP="${PORT_MAIL_IMAP:-143}"
     MAIL_PORT_IMAPS="${PORT_MAIL_IMAPS:-993}"
+    if [[ -z "$_CALLER_MAIL_HOST" ]]; then
+      MAIL_HOST="$(mail_host_from_api_url "$API_URL")"
+    fi
     echo "  ⊘ k3s probe mode targets the local DinD stack; API_URL is remote — probing mail on ${MAIL_HOST} :${MAIL_PORT_SMTP}/:${MAIL_PORT_SUBMISSION}/:${MAIL_PORT_IMAP}/:${MAIL_PORT_IMAPS} instead."
   fi
   if [[ "$MAIL_PROBE_MODE" == "k3s" ]] && ! docker inspect "$K3S_CONTAINER" >/dev/null 2>&1; then
@@ -618,6 +702,10 @@ if [[ "$MAIL_E2E_SQL" == "1" && "$MAIL_TESTS_ENABLED" == "1" ]]; then
 
       if [[ -z "$SQL_E2E_TENANT_ID" ]]; then
         fail "SQL E2E create tenant" "${CLIENT_RESP:0:200}"
+      elif ! SQL_E2E_PROV_ERR=$(provision_tenant_and_wait "$SQL_E2E_TENANT_ID" 2>&1); then
+        # Same trap as the webmail block: a freshly created tenant is
+        # `pending`, so the domain create below 409s TENANT_NOT_ACTIVE.
+        fail "SQL E2E provision tenant" "$SQL_E2E_PROV_ERR"
       else
         # 2) Create domain under that tenant
         DOMAIN_RESP=$(curl -sS -X POST -H "$AUTH_HEADER" -H "Content-Type: application/json" \
@@ -779,7 +867,17 @@ fi
 # Requires:  Stalwart + Roundcube running (see local.sh mail-up + webmail-up).
 
 WEBMAIL_E2E="${WEBMAIL_E2E:-0}"
-WEBMAIL_HOST="${WEBMAIL_HOST:-https://webmail.${PLATFORM_BASE_DOMAIN:-k8s-platform.test}:2011}"
+# Default is the local DinD webmail NodePort. Against a remote cluster that
+# hostname resolves nowhere, so derive it from API_URL — same reasoning as
+# MAIL_HOST above. Caller-supplied values still win.
+if [[ -n "${WEBMAIL_HOST:-}" ]]; then
+  WEBMAIL_HOST="$WEBMAIL_HOST"
+elif [[ ! "$API_URL" =~ ^https?://(localhost|127\.0\.0\.1|\[?::1\]?)([:/]|$) ]]; then
+  _WM_APEX="$(mail_host_from_api_url "$API_URL")"; _WM_APEX="${_WM_APEX#mail.}"
+  WEBMAIL_HOST="https://webmail.${_WM_APEX}"
+else
+  WEBMAIL_HOST="https://webmail.${PLATFORM_BASE_DOMAIN:-k8s-platform.test}:2011"
+fi
 
 if [[ "$WEBMAIL_E2E" == "1" && -n "${TOKEN:-}" ]]; then
   log "── Webmail SSO E2E (Phase 2b/2c) ──"
@@ -798,11 +896,12 @@ if [[ "$WEBMAIL_E2E" == "1" && -n "${TOKEN:-}" ]]; then
   WM_CLIENT_NAME="wm-e2e-${WM_SFX}"
   WM_DOMAIN_NAME="wme2e${WM_SFX}.wmtest.local"
 
-  WM_PLAN_ID=$(curl -sS "${API_URL}/api/v1/plans" | jq -r '.data[0].id // empty')
+  # Needs room for the tenant owner AND the sub-user this block creates.
+  WM_PLAN_ID=$(plan_id_with_user_slots 2)
   WM_REGION_ID=$(curl -sS "${API_URL}/api/v1/regions" | jq -r '.data[0].id // empty')
 
   if [[ -z "$WM_PLAN_ID" || -z "$WM_REGION_ID" ]]; then
-    fail "Webmail E2E prereqs" "no plan or region seeded"
+    fail "Webmail E2E prereqs" "no region seeded, or no plan allows 2+ users (the tenant owner takes one slot)"
   else
     WM_TENANT_ID=$(curl -sS -X POST -H "$AUTH_HEADER" -H "Content-Type: application/json" \
       -d "{\"name\":\"${WM_CLIENT_NAME}\",\"primary_email\":\"wm@test.local\",\"plan_id\":\"${WM_PLAN_ID}\",\"region_id\":\"${WM_REGION_ID}\"}" \
@@ -812,6 +911,11 @@ if [[ "$WEBMAIL_E2E" == "1" && -n "${TOKEN:-}" ]]; then
 
     if [[ -z "$WM_TENANT_ID" ]]; then
       fail "Webmail E2E create tenant" ""
+    elif ! WM_PROV_ERR=$(provision_tenant_and_wait "$WM_TENANT_ID" 2>&1); then
+      # Without this the domain create 409s TENANT_NOT_ACTIVE and every id
+      # below is empty — which used to surface as one opaque "mb= user="
+      # failure that told you nothing about the actual cause.
+      fail "Webmail E2E provision tenant" "$WM_PROV_ERR"
     else
       WM_DOMAIN_ID=$(curl -sS -X POST -H "$AUTH_HEADER" -H "Content-Type: application/json" \
         -d "{\"domain_name\":\"${WM_DOMAIN_NAME}\"}" \
@@ -824,45 +928,92 @@ if [[ "$WEBMAIL_E2E" == "1" && -n "${TOKEN:-}" ]]; then
         -d "{\"local_part\":\"alice\",\"password\":\"WmE2E-${WM_SFX}\",\"quota_mb\":50}" \
         "${API_URL}/api/v1/tenants/${WM_TENANT_ID}/email/domains/${WM_EDOMAIN_ID}/mailboxes" | jq -r '.data.id // empty')
 
+      # Sub-user passwords are server-generated and returned once, in
+      # `data.generatedPassword` — the endpoint rejects a supplied one.
       WM_USER_RESP=$(curl -sS -X POST -H "$AUTH_HEADER" -H "Content-Type: application/json" \
-        -d "{\"email\":\"wmcu${WM_SFX}@test.local\",\"full_name\":\"WM Client User\",\"password\":\"WmCu-${WM_SFX}\"}" \
+        -d "{\"email\":\"wmcu${WM_SFX}@test.local\",\"full_name\":\"WM Client User\"}" \
         "${API_URL}/api/v1/tenants/${WM_TENANT_ID}/users")
       WM_USER_ID=$(echo "$WM_USER_RESP" | jq -r '.data.id // empty')
+      WM_CU_PW=$(echo "$WM_USER_RESP" | jq -r '.data.generatedPassword // empty')
 
       curl -sS -X POST -H "$AUTH_HEADER" -H "Content-Type: application/json" \
         -d "{\"user_id\":\"${WM_USER_ID}\"}" \
         "${API_URL}/api/v1/tenants/${WM_TENANT_ID}/mailboxes/${WM_MB_ID}/access" >/dev/null
 
+      # jq builds the login body: a generated password carries
+      # punctuation that must be JSON-escaped, not interpolated.
       WM_CU_TOKEN=$(curl -sS "${API_URL}/api/v1/auth/login" -H "Content-Type: application/json" \
-        -d "{\"email\":\"wmcu${WM_SFX}@test.local\",\"password\":\"WmCu-${WM_SFX}\"}" | jq -r '.data.token // empty')
+        -d "$(jq -nc --arg e "wmcu${WM_SFX}@test.local" --arg p "$WM_CU_PW" '{email:$e,password:$p}')" \
+        | jq -r '.data.token // empty')
 
-      if [[ -z "$WM_MB_ID" || -z "$WM_USER_ID" || -z "$WM_CU_TOKEN" ]]; then
-        fail "Webmail E2E setup" "mb=${WM_MB_ID:0:8} user=${WM_USER_ID:0:8} tok=${WM_CU_TOKEN:0:8}"
+      if [[ -z "$WM_MB_ID" || -z "$WM_USER_ID" || -z "$WM_CU_PW" || -z "$WM_CU_TOKEN" ]]; then
+        # Name the FIRST step that produced nothing. The old message listed
+        # four empty variables, which reads as "webmail is broken" when the
+        # real cause was three calls earlier.
+        WM_WHY="unknown"
+        [[ -z "$WM_DOMAIN_ID" ]] && WM_WHY="domain create returned no id"
+        [[ -n "$WM_DOMAIN_ID" && -z "$WM_EDOMAIN_ID" ]] && WM_WHY="email-domain enable returned no id"
+        [[ -n "$WM_EDOMAIN_ID" && -z "$WM_MB_ID" ]] && WM_WHY="mailbox create returned no id"
+        [[ -n "$WM_MB_ID" && -z "$WM_USER_ID" ]] && WM_WHY="sub-user create returned no id: ${WM_USER_RESP:0:160}"
+        [[ -n "$WM_USER_ID" && -z "$WM_CU_PW" ]] && WM_WHY="sub-user create returned no generatedPassword: ${WM_USER_RESP:0:160}"
+        [[ -n "$WM_CU_PW" && -z "$WM_CU_TOKEN" ]] && WM_WHY="login with the generated password returned no token"
+        fail "Webmail E2E setup" "$WM_WHY"
       else
         WM_RESP=$(curl -sS -X POST -H "Authorization: Bearer ${WM_CU_TOKEN}" -H "Content-Type: application/json" \
           -d "{\"mailbox_id\":\"${WM_MB_ID}\"}" "${API_URL}/api/v1/email/webmail-token")
         WM_JWT=$(echo "$WM_RESP" | jq -r '.data.token // empty')
         WM_URL=$(echo "$WM_RESP" | jq -r '.data.webmailUrl // empty')
+        # The URL shape and the host both depend on which engine is active
+        # (platform_config.default_webmail_engine). Assert against what the
+        # endpoint says it issued rather than assuming Roundcube — these two
+        # checks were written before Bulwark existed and had been unreachable
+        # ever since the block's setup broke, so nothing caught the drift.
+        WM_ENGINE=$(echo "$WM_RESP" | jq -r '.data.engine // empty')
 
         if [[ -z "$WM_JWT" || -z "$WM_URL" ]]; then
           fail "Webmail token" "${WM_RESP:0:200}"
+        elif [[ -z "$WM_ENGINE" ]]; then
+          # Without the engine the checks below cannot pick a branch, and
+          # defaulting to one of them would assert the wrong contract.
+          fail "Webmail token response has no engine field" "${WM_RESP:0:200}"
         else
-          pass "POST /email/webmail-token returns token + URL"
+          pass "POST /email/webmail-token returns token + URL (engine: ${WM_ENGINE})"
 
-          # URL must contain the _task=login and _jwt= params
-          if [[ "$WM_URL" == *"_task=login"* && "$WM_URL" == *"_jwt="* ]]; then
-            pass "webmailUrl contains _task=login&_jwt=…"
-          else
-            fail "webmailUrl shape" "$WM_URL"
-          fi
-
-          # Phase 2c.5: the URL should be derived from the email_domain:
-          # https://webmail.<domain>/?_task=login&_jwt=…
-          if [[ "$WM_URL" == *"webmail.${WM_DOMAIN_NAME}"* ]]; then
-            pass "webmailUrl derived from email_domain (webmail.${WM_DOMAIN_NAME})"
-          else
-            fail "webmailUrl is not derived" "$WM_URL"
-          fi
+          case "$WM_ENGINE" in
+            bulwark)
+              # Bulwark is JMAP-native: a Next.js impersonation endpoint.
+              if [[ "$WM_URL" == *"/api/auth/impersonate?token="* ]]; then
+                pass "webmailUrl is a Bulwark impersonation URL"
+              else
+                fail "webmailUrl shape (bulwark)" "$WM_URL"
+              fi
+              # Bulwark is ONE platform-wide Deployment — there is no
+              # per-tenant webmail.<customer-domain>, by design (see
+              # mailboxes/service.ts). It must serve from the platform host.
+              if [[ "$WM_URL" == *"webmail.${WM_DOMAIN_NAME}"* ]]; then
+                fail "webmailUrl (bulwark) is per-domain" "bulwark has no per-tenant host: $WM_URL"
+              else
+                pass "webmailUrl (bulwark) uses the platform-wide webmail host"
+              fi
+              ;;
+            roundcube)
+              if [[ "$WM_URL" == *"_task=login"* && "$WM_URL" == *"_jwt="* ]]; then
+                pass "webmailUrl contains _task=login&_jwt=…"
+              else
+                fail "webmailUrl shape (roundcube)" "$WM_URL"
+              fi
+              # Roundcube DOES prefer webmail.<clientdomain> so the cert in
+              # the address bar matches the customer's own domain.
+              if [[ "$WM_URL" == *"webmail.${WM_DOMAIN_NAME}"* ]]; then
+                pass "webmailUrl derived from email_domain (webmail.${WM_DOMAIN_NAME})"
+              else
+                fail "webmailUrl is not derived" "$WM_URL"
+              fi
+              ;;
+            *)
+              fail "Unknown webmail engine" "$WM_ENGINE (expected bulwark or roundcube)"
+              ;;
+          esac
 
           # Phase 2c.5: verify the webmail Ingress was created in the
           # tenant's namespace (the backend calls ensureWebmailIngress
@@ -870,7 +1021,14 @@ if [[ "$WEBMAIL_E2E" == "1" && -n "${TOKEN:-}" ]]; then
           # the Ingress is created in the same HTTP handler as the email
           # domain — normally it's ready when the POST returns, but k3s
           # can lag a moment on busy dev boxes.
-          if [[ -n "${K3S_CONTAINER:-}" ]]; then
+          # Roundcube only: the per-domain webmail Ingress exists because
+          # Roundcube serves each customer from webmail.<their-domain>.
+          # Bulwark is one platform-wide Deployment behind a single host, so
+          # there is no per-tenant Ingress to look for and reporting MISSING
+          # would read as a failure of something that was never created.
+          if [[ "$WM_ENGINE" != "roundcube" ]]; then
+            echo "  ⊘ per-tenant webmail Ingress check skipped — not applicable to the ${WM_ENGINE} engine."
+          elif [[ -n "${K3S_CONTAINER:-}" ]]; then
             WM_NS=$(curl -sS -H "$AUTH_HEADER" "${API_URL}/api/v1/tenants/${WM_TENANT_ID}" | jq -r '.data.kubernetesNamespace // empty')
             if [[ -n "$WM_NS" ]]; then
               # Mirror backend logic: email-domains/service.ts uses
@@ -916,24 +1074,35 @@ print(p.get('mailbox','') + '|' + str(p.get('exp',0) - p.get('iat',0)))
             fail "JWT payload" "$WM_PAYLOAD_CLAIM"
           fi
 
-          # Hit the Roundcube SSO URL (replace the default host with the
-          # configured WEBMAIL_HOST so we can point at the local NodePort).
-          WM_TEST_URL="${WEBMAIL_HOST}/?_task=login&_jwt=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote('$WM_JWT'))")"
-          WM_FLOW=$(curl -sS -c /tmp/wm-cookies.txt -b /tmp/wm-cookies.txt -L \
-            -o /tmp/wm-body.html -w "%{http_code}|%{url_effective}" "$WM_TEST_URL" 2>&1)
-
-          WM_CODE="${WM_FLOW%%|*}"
-          WM_FINAL_URL="${WM_FLOW##*|}"
-
-          if [[ "$WM_CODE" == "200" && "$WM_FINAL_URL" == *"_task=mail"* ]]; then
-            pass "Roundcube SSO: JWT → /?_task=mail (authenticated)"
-          elif [[ "$WM_CODE" == "000" ]]; then
-            # Webmail container not reachable — skip, don't fail.
-            echo "  ⊘ Webmail container not reachable at ${WEBMAIL_HOST}, skipping flow test"
+          # Drive the SSO URL end to end. Roundcube-only: it asserts the
+          # redirect lands on `_task=mail`, which is Roundcube's own routing.
+          # Bulwark's impersonation endpoint has a different flow and is
+          # covered by the URL-shape and JWT assertions above.
+          if [[ "$WM_ENGINE" != "roundcube" ]]; then
+            echo "  ⊘ SSO flow test skipped — written against Roundcube's _task=mail redirect, engine is ${WM_ENGINE}."
           else
-            fail "Roundcube SSO flow" "code=$WM_CODE final=$WM_FINAL_URL"
+            WM_TEST_URL="${WEBMAIL_HOST}/?_task=login&_jwt=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote('$WM_JWT'))")"
+            # `|| true` is load-bearing: the script runs under `set -e`, and an
+            # unresolvable webmail host makes curl exit 6, which killed the
+            # ENTIRE run — no RESULTS block, and the SFTP section below never
+            # executed. The "000 → skip" branch this block already had was
+            # unreachable for exactly that reason.
+            WM_FLOW=$(curl -sS -c /tmp/wm-cookies.txt -b /tmp/wm-cookies.txt -L \
+              -o /tmp/wm-body.html -w "%{http_code}|%{url_effective}" "$WM_TEST_URL" 2>&1) || WM_FLOW="000|"
+
+            WM_CODE="${WM_FLOW%%|*}"
+            WM_FINAL_URL="${WM_FLOW##*|}"
+
+            if [[ "$WM_CODE" == "200" && "$WM_FINAL_URL" == *"_task=mail"* ]]; then
+              pass "Roundcube SSO: JWT → /?_task=mail (authenticated)"
+            elif [[ "$WM_CODE" == "000" ]]; then
+              # Webmail container not reachable — skip, don't fail.
+              echo "  ⊘ Webmail container not reachable at ${WEBMAIL_HOST}, skipping flow test"
+            else
+              fail "Roundcube SSO flow" "code=$WM_CODE final=$WM_FINAL_URL"
+            fi
+            rm -f /tmp/wm-cookies.txt /tmp/wm-body.html
           fi
-          rm -f /tmp/wm-cookies.txt /tmp/wm-body.html
         fi
       fi
 
