@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { authenticate, requireRole, requireTenantAccess, requireTenantRoleByMethod } from '../../middleware/auth.js';
 import { createDeploymentSchema, updateDeploymentSchema, updateDeploymentResourcesSchema } from './schema.js';
-import { triggerUpgradeSchema, batchUpgradeSchema } from '@insula/api-contracts';
+import { triggerUpgradeSchema, batchUpgradeSchema, folderProblem } from '@insula/api-contracts';
 import * as service from './service.js';
 import * as upgradeVersion from './upgrade-version.js';
 import { success, paginated } from '../../shared/response.js';
@@ -64,24 +64,47 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     return paginated(result.data, result.pagination);
   });
 
-  // GET /api/v1/tenants/:tenantId/deployments/storage-folders?type=database&code=mariadb
+  // GET /api/v1/tenants/:tenantId/deployments/storage-folders?path=media/library
+  //
+  // Browses the tenant PVC one level at a time. `path` is relative to the PVC
+  // root and defaults to the root, so the folder picker can reach ANY folder
+  // rather than only the ones under a catalog entry's `<type>/<code>` prefix.
+  //
+  // `type` + `code` are still accepted and, when no `path` is given, seed the
+  // starting directory — that keeps the old call shape working and lands the
+  // picker where a new folder would be created by default.
   app.get('/tenants/:tenantId/deployments/storage-folders', async (request) => {
     const { tenantId } = request.params as { tenantId: string };
     const query = request.query as Record<string, unknown>;
     const entryType = String(query.type ?? '');
     const entryCode = String(query.code ?? '');
+    const rawPath = query.path === undefined ? undefined : String(query.path);
 
-    if (!entryType || !entryCode) {
-      throw new ApiError(
-        'MISSING_REQUIRED_FIELD',
-        'Both type and code query parameters are required',
-        400,
-        { field: 'type, code' },
-      );
+    let path: string;
+    if (rawPath !== undefined) {
+      // Strip a TRAILING slash only. Stripping a leading one too would turn
+      // `/etc` into `etc` and quietly list a different directory than the
+      // caller asked for — `folderProblem` has a clear message for an
+      // absolute path ("Folder is relative to your storage root…") and extra
+      // mounts already reject it that way, so let it through to be refused
+      // rather than silently reinterpreted.
+      path = rawPath.replace(/\/+$/g, '');
+      // Anything non-empty must satisfy the same rule as a mount folder —
+      // this is the guard that stops `..` from walking out of the PVC.
+      if (path !== '') {
+        const problem = folderProblem(path);
+        if (problem) {
+          throw new ApiError('INVALID_FIELD_VALUE', problem, 400, { field: 'path' });
+        }
+      }
+    } else if (entryType && entryCode) {
+      path = `${entryType}/${entryCode}`;
+    } else {
+      path = '';
     }
 
     const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
-    const result = await service.listStorageFolders(app.db, tenantId, entryType, entryCode, getK8s(), kubeconfigPath);
+    const result = await service.listStorageFolders(app.db, tenantId, path, getK8s(), kubeconfigPath);
     return success(result);
   });
 

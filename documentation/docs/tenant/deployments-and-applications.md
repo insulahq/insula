@@ -48,6 +48,54 @@ To make a deployed website reachable, connect a domain route to it — see
     This is by design and is not an error condition: a database showing no
     route is healthy.
 
+### Choosing the storage folder
+
+Every deployment reads and writes one folder on your storage. The deploy
+dialog's **Storage Folder** step decides which:
+
+- **Use Default Path** — a new folder named after the app, in the tidy
+  location the platform picks (`<type>/<code>/<name>`). Fine for most cases.
+- **Use Custom Folder** — browse your storage and pick **any** folder, at any
+  depth, or create a new one wherever you are. Use this to point a new
+  deployment at a site directory you already have (`business.na`), at content
+  restored from a backup, or at a folder shared with another app.
+
+The browser starts in the app's default location, but you are not limited to
+it — click **storage root** in the breadcrumb to go to the top, use the arrow
+on a folder to open it, and click a folder's name to select it. Each folder
+shows whether it is empty, already has data, or is already used by one of your
+other apps.
+
+!!! warning "Sharing a folder between two apps"
+    Selecting a folder another app already uses is allowed — two websites
+    serving the same content directory is a perfectly normal setup. But two
+    apps writing the same **database** directory will corrupt it. The picker
+    warns you when the folder is in use; heed it for databases.
+
+If you pick a folder that already has content, the app uses that content
+as-is. Nothing is emptied or overwritten just by selecting it.
+
+### Changing an app's storage folder later
+
+Open the app, find **Storage Path** in the details panel, and click
+**Change**. Pick the new folder the same way.
+
+!!! danger "Your files do not move"
+    This re-points the app at a different folder. It does **not** move
+    anything:
+
+    - the old folder keeps everything in it — nothing is copied, nothing is
+      deleted;
+    - the app will serve whatever is in the new folder, so if that folder is
+      empty, **the app will look empty**;
+    - the app restarts to pick up the change (or picks it up at next start, if
+      stopped).
+
+    It is reversible: set the old folder back and your data is live again.
+
+    To actually move content, copy it in **File Manager** first, then change
+    the folder here.
+
 ### Extra mounts
 
 Every app already has its own folder on your storage, mounted where the app

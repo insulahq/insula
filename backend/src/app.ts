@@ -103,8 +103,7 @@ import { notificationUserRoutes } from './modules/notifications/routes-tenant.js
 import { seedCategoriesIfMissing } from './modules/notifications/categories/service.js';
 import { seedTemplatesIfMissing } from './modules/notifications/templates/seed-loader.js';
 import { ensureCommunityBlocklistDefault } from './modules/security-hardening/crowdsec.js';
-import { purgeOldDeliveriesSafe } from './modules/notifications/retention/purge.js';
-import { purgeStaleBuckets } from './modules/notifications/rate-limit/service.js';
+import { startNotificationRetention } from './modules/notifications/retention/scheduler.js';
 import { startEmailWorker } from './modules/notifications/queue/worker.js';
 import { startNtfyWorker } from './modules/notifications/queue/ntfy-worker.js';
 import { stopBoss } from './modules/notifications/queue/bootstrap.js';
@@ -1101,23 +1100,16 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       const dataRetentionTimer = startDataRetention(app.db);
       app.addHook('onClose', () => clearInterval(dataRetentionTimer));
 
-      // Notification system Phase 1: daily retention pass.
-      //  - notification_deliveries: rows older than 30 days are dropped
-      //    (audit-log retention; tenant-visible notifications stay).
+      // Notification retention — runs once at startup then every 6h.
+      //  - notification_deliveries: rows older than 30 days are dropped.
+      //  - notifications: in-app inbox rows older than 90 days are dropped.
       //  - notification_rate_limit_buckets: rows whose window has ended
       //    are removed so the bucket table doesn't grow unboundedly.
-      // Both are best-effort; failures log but don't crash.
-      const NOTIFICATION_RETENTION_INTERVAL = 24 * 60 * 60 * 1000;
-      const notificationRetentionTimer = setInterval(async () => {
-        try {
-          await purgeOldDeliveriesSafe(app.db);
-          await purgeStaleBuckets(app.db);
-        } catch (err) {
-          app.log.warn({ err }, '[notifications] retention pass failed');
-        }
-      }, NOTIFICATION_RETENTION_INTERVAL);
-      // unref so the timer doesn't keep the event loop alive after close.
-      notificationRetentionTimer.unref?.();
+      // Best-effort; failures log but don't crash. This was a bare 24h
+      // setInterval with no startup run, which meant it never fired on a
+      // cluster that rolls pods more often than daily — see the note in
+      // modules/notifications/retention/scheduler.ts.
+      const notificationRetentionTimer = startNotificationRetention(app.db);
       app.addHook('onClose', () => clearInterval(notificationRetentionTimer));
 
       // Phase 2: pg-boss email send worker. Best-effort start —

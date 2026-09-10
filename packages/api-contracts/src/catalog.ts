@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { extraMountsSchema } from './extra-mounts.js';
+import { extraMountsSchema, folderProblem } from './extra-mounts.js';
 import { uuidField, paginatedResponseSchema } from './shared.js';
 import { customDeploymentSpecSchema } from './custom-deployments.js';
 
@@ -281,7 +281,24 @@ export const createDeploymentSchema = z.object({
   configuration: z.record(z.string(), z.unknown()).optional(),
   version: z.string().max(50).optional(),
   storage_mode: z.enum(['default', 'custom']).default('default'),
-  storage_path: z.string().max(500).optional(),
+  /**
+   * Folder on the tenant's PVC that backs this deployment, relative to the
+   * PVC ROOT — ANY folder, not only one under `<type>/<code>`. The picker
+   * seeds that prefix for a new folder because it is a tidy default, but a
+   * tenant reusing an existing site directory (`business.na`) or a shared
+   * media tree must be able to say so.
+   *
+   * Shares `folderProblem` with extra mounts so both surfaces enforce one
+   * rule: PVC-root-relative, at most `MAX_FOLDER_SEGMENTS` deep, segments
+   * that cannot express `.`, `..` or a dotfile. Every storage path in the
+   * field today is `<type>/<code>/<name>` (depth 3), so this validation
+   * accepts all existing rows.
+   */
+  storage_path: z.string().max(500).optional().superRefine((v, ctx) => {
+    if (v === undefined) return;
+    const problem = folderProblem(v);
+    if (problem) ctx.addIssue({ code: z.ZodIssueCode.custom, message: problem });
+  }),
   /** Tenant-defined mounts on top of the catalog manifest's own volumes. */
   extra_mounts: extraMountsSchema.optional(),
   /**
@@ -306,6 +323,20 @@ export const updateDeploymentSchema = z.object({
   /** Replaces the whole list. Editing mounts restarts the pod, because a
    *  volumeMount change is a pod-template change. */
   extra_mounts: extraMountsSchema.optional(),
+  /**
+   * Re-point this deployment at a different folder on the tenant PVC.
+   *
+   * RE-POINT, NOT MOVE. The pod restarts with the new `subPath` and then
+   * serves whatever is in the new folder — possibly nothing. The old folder
+   * keeps its contents and is simply no longer mounted. Nothing is copied and
+   * nothing is deleted, so the change is reversible by setting the old value
+   * back; moving content between folders is a File Manager job.
+   */
+  storage_path: z.string().max(500).optional().superRefine((v, ctx) => {
+    if (v === undefined) return;
+    const problem = folderProblem(v);
+    if (problem) ctx.addIssue({ code: z.ZodIssueCode.custom, message: problem });
+  }),
 });
 
 export const updateDeploymentResourcesSchema = z.object({

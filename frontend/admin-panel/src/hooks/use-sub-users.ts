@@ -1,6 +1,8 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import type {
   CreateSubUserInput,
+  CreatedSubUser,
+  ResetSubUserPasswordResponse,
   SubUser,
   SubUserRole,
   UpdateSubUserInput,
@@ -10,6 +12,8 @@ import { apiFetch } from '@/lib/api-client';
 export type {
   SubUser,
   CreateSubUserInput,
+  CreatedSubUser,
+  ResetSubUserPasswordResponse,
   SubUserRole,
   UpdateSubUserInput,
 } from '@insula/api-contracts';
@@ -40,11 +44,16 @@ export function useAdminSubUsers(tenantId: string | null) {
   });
 }
 
+/**
+ * Create a team member on the tenant's behalf. The password is NOT
+ * part of the input — the server generates one and returns it in
+ * `data.generatedPassword`, the only time it is ever available.
+ */
 export function useAdminCreateSubUser(tenantId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (input: CreateSubUserInput) =>
-      apiFetch<{ data: SubUser }>(`/api/v1/tenants/${tenantId}/users`, {
+      apiFetch<{ data: CreatedSubUser }>(`/api/v1/tenants/${tenantId}/users`, {
         method: 'POST',
         body: JSON.stringify(input),
       }),
@@ -68,13 +77,18 @@ export function useAdminUpdateSubUser(tenantId: string) {
   });
 }
 
+/**
+ * Regenerate a sub-user's password. Takes no password — the server
+ * picks one and returns it in `data.password` for the operator to
+ * pass on out-of-band.
+ */
 export function useAdminResetSubUserPassword(tenantId: string) {
   return useMutation({
-    mutationFn: ({ userId, newPassword }: { userId: string; newPassword: string }) =>
-      apiFetch<void>(`/api/v1/tenants/${tenantId}/users/${userId}/reset-password`, {
-        method: 'POST',
-        body: JSON.stringify({ new_password: newPassword }),
-      }),
+    mutationFn: ({ userId }: { userId: string }) =>
+      apiFetch<{ data: ResetSubUserPasswordResponse }>(
+        `/api/v1/tenants/${tenantId}/users/${userId}/reset-password`,
+        { method: 'POST' },
+      ),
   });
 }
 

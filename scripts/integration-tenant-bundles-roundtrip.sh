@@ -153,11 +153,12 @@ TENANT_ID=$(printf '%s' "$BODY" | jq -r '.data[] | select(.status=="active" and 
 [[ -n "$TENANT_ID" ]] || { fail "no active non-SYSTEM tenant"; exit 1; }
 ok "target tenant: $TENANT_ID"
 
-# Provision a tenant_admin user (uses the same approach as the smoke harness)
+# Provision a tenant_admin user (uses the same approach as the smoke harness).
+# The password is server-generated and returned once — the endpoint
+# rejects a supplied one.
 TENANT_USER_EMAIL="rt-e2e-$(date +%s)@example.test"
-TENANT_USER_PASSWORD="RT-Test-$(date +%s)"
 RAW=$(api "$ADMIN_HOST" POST "/tenants/$TENANT_ID/users" \
-  "{\"email\":\"$TENANT_USER_EMAIL\",\"password\":\"$TENANT_USER_PASSWORD\",\"full_name\":\"RT E2E\",\"role_name\":\"tenant_admin\"}" \
+  "{\"email\":\"$TENANT_USER_EMAIL\",\"full_name\":\"RT E2E\",\"role_name\":\"tenant_admin\"}" \
   "$ADMIN_TOKEN")
 parse "$RAW"
 if [[ "$STATUS" == "201" || "$STATUS" == "200" ]]; then
@@ -166,9 +167,13 @@ else
   fail "tenant_admin provision: $STATUS $BODY"
   exit 1
 fi
+TENANT_USER_PASSWORD=$(printf '%s' "$BODY" | jq -r '.data.generatedPassword // empty')
+[[ -n "$TENANT_USER_PASSWORD" ]] || { fail "create returned no generatedPassword: $BODY"; exit 1; }
 
+# jq builds the login body — a generated password carries punctuation
+# that must be JSON-escaped rather than interpolated.
 RAW=$(api "$ADMIN_HOST" POST /auth/login \
-  "{\"email\":\"$TENANT_USER_EMAIL\",\"password\":\"$TENANT_USER_PASSWORD\",\"panel\":\"tenant\"}")
+  "$(jq -nc --arg e "$TENANT_USER_EMAIL" --arg p "$TENANT_USER_PASSWORD" '{email:$e,password:$p,panel:"tenant"}')")
 parse "$RAW"
 TENANT_TOKEN=$(printf '%s' "$BODY" | jq -r '.data.token // empty')
 [[ -n "$TENANT_TOKEN" ]] || { fail "tenant login"; exit 1; }
