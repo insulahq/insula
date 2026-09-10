@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.9.16-rc.2] - 2026-09-10
+
 ### Added
 - **"Use Custom Folder" can now reach any folder on your storage.** It used to
   offer only folders sitting beside the app's own default location, so if you
