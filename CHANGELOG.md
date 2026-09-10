@@ -12,8 +12,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.9.15-rc.1] - 2026-09-10
-
 ### Added
 - **POP3 is now available to mailbox users (port 995, TLS).** The mail server
   had always spoken POP3 internally, and the automatic setup files handed to
