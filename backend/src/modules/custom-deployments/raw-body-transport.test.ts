@@ -83,19 +83,35 @@ describe('custom-deployments raw body transport (ADR-060)', () => {
     await app.close();
   });
 
-  it('does NOT register the parser on an app that never called it', async () => {
-    // Guards the encapsulation property the security review turned on: the
-    // parser must not leak to Fastify instances that did not opt in. Verified
-    // in-cluster too — /domains returns 415 for octet-stream.
+  it('stays confined to the plugin that registered it', async () => {
+    // The security-relevant property: registering the parser inside one plugin
+    // must NOT make every other route accept octet-stream. If someone wraps
+    // this module in `fastify-plugin`, encapsulation breaks and /outside starts
+    // parsing — which is exactly what this asserts against.
+    //
+    // Asserting only "an app that never registered it returns 415" would be
+    // vacuous: a bare Fastify instance 415s any unregistered content type
+    // whether or not this module exists.
     const app = Fastify();
-    app.post('/echo', async (req) => ({ got: req.body }));
+    await app.register(async (scope) => {
+      registerRawBodyParser(scope);
+      scope.post('/inside', async (req) => ({ got: req.body }));
+    });
+    app.post('/outside', async (req) => ({ got: req.body }));
     await app.ready();
-    const res = await app.inject({
-      method: 'POST', url: '/echo',
+
+    const send = (url: string) => app.inject({
+      method: 'POST', url,
       headers: { 'content-type': 'application/octet-stream' },
       payload: JSON.stringify(COMPOSE),
     });
-    expect(res.statusCode).toBe(415);
+
+    const inside = await send('/inside');
+    expect(inside.statusCode).toBe(200);          // opted in -> parsed
+    expect(inside.json().got).toEqual(COMPOSE);
+
+    const outside = await send('/outside');
+    expect(outside.statusCode).toBe(415);         // sibling scope -> untouched
     await app.close();
   });
 });

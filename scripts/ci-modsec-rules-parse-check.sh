@@ -36,8 +36,15 @@ IMAGE="${MODSEC_IMAGE:-docker.io/owasp/modsecurity-crs:4.28.0-nginx-alpine-20260
 RULES_MOUNT=/etc/modsecurity.d/owasp-crs/rules/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf
 BASE_DIR="k8s/base/modsecurity-crs"
 WORK=$(mktemp -d)
-trap 'rm -rf "$WORK"; docker rm -f "$CID" >/dev/null 2>&1 || true' EXIT
-CID=""
+# `loads()` runs inside $( ), i.e. a SUBSHELL, so a CID assigned in it can never
+# reach this scope — a trap reading a shell variable would always see "" and
+# clean up nothing. Record the id in a FILE instead, which the subshell and the
+# trap both share, so an interrupted run (cancelled job, runner timeout) still
+# tears the container down.
+CIDFILE="$WORK/cid"
+trap 'if [ -s "$CIDFILE" ]; then docker rm -f "$(cat "$CIDFILE")" >/dev/null 2>&1 || true; fi
+      if [ -s "$WORK/tag" ]; then docker rmi -f "$(cat "$WORK/tag")" >/dev/null 2>&1 || true; fi
+      rm -rf "$WORK"' EXIT
 
 if ! command -v docker >/dev/null 2>&1; then
   echo "ci-modsec-rules-parse-check: docker unavailable — SKIPPING (this check is not optional in CI; investigate if you see this there)" >&2
@@ -85,14 +92,16 @@ loads() {
 FROM $IMAGE
 COPY rules.conf $RULES_MOUNT
 DOCKERFILE
+  printf '%s' "$tag" > "$WORK/tag"
   if ! docker build -q -t "$tag" "$ctx" >/dev/null 2>&1; then
     rm -rf "$ctx"; echo "no"; return
   fi
   rm -rf "$ctx"
   # No --rm: it deletes the container before `docker logs` can explain WHY.
   CID=$(docker run -d -e BACKEND=http://127.0.0.1:8080 "$tag" 2>/dev/null) || {
-    docker rmi -f "$tag" >/dev/null 2>&1; echo "no"; return
+    docker rmi -f "$tag" >/dev/null 2>&1; : > "$WORK/tag"; echo "no"; return
   }
+  printf '%s' "$CID" > "$CIDFILE"
   local verdict=ok
   # nginx dies within a second or two on a rules error; give it room.
   for _ in $(seq 1 15); do
@@ -105,7 +114,7 @@ DOCKERFILE
   done
   docker rm -f "$CID" >/dev/null 2>&1 || true
   docker rmi -f "$tag" >/dev/null 2>&1 || true
-  CID=""
+  : > "$CIDFILE"; : > "$WORK/tag"
   echo "$verdict"
 }
 
