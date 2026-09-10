@@ -133,10 +133,15 @@ parse "$(api GET "/tenants/$TENANT_ID/users" "" "$ADMIN_TOKEN")"
 TU_ID=$(printf '%s' "$BODY" | jq -r '.data[0].id // empty')
 TU_EMAIL=$(printf '%s' "$BODY" | jq -r '.data[0].email // empty')
 [[ -n "$TU_ID" && -n "$TU_EMAIL" ]] || { fail "no tenant user to use: $STATUS $BODY"; exit 1; }
-TU_PW="Files-E2E-$(date +%s)-x"
-parse "$(api POST "/tenants/$TENANT_ID/users/$TU_ID/reset-password" "{\"new_password\":\"$TU_PW\"}" "$ADMIN_TOKEN")"
-[[ "$STATUS" == "204" || "$STATUS" == "200" ]] || { fail "reset tenant user pw: $STATUS $BODY"; exit 1; }
-parse "$(api POST /auth/login "{\"email\":\"$TU_EMAIL\",\"password\":\"$TU_PW\",\"panel\":\"tenant\"}")"
+# The reset endpoint GENERATES the password and returns it — it no
+# longer accepts one. Read it back rather than picking a known value.
+parse "$(api POST "/tenants/$TENANT_ID/users/$TU_ID/reset-password" "{}" "$ADMIN_TOKEN")"
+[[ "$STATUS" == "200" ]] || { fail "reset tenant user pw: $STATUS $BODY"; exit 1; }
+TU_PW=$(printf '%s' "$BODY" | jq -r '.data.password // empty')
+[[ -n "$TU_PW" ]] || { fail "reset-password returned no password: $STATUS $BODY"; exit 1; }
+# Build the login body with jq — a generated password contains
+# punctuation that must be JSON-escaped rather than interpolated.
+parse "$(api POST /auth/login "$(jq -nc --arg e "$TU_EMAIL" --arg p "$TU_PW" '{email:$e,password:$p,panel:"tenant"}')")"
 TENANT_TOKEN=$(printf '%s' "$BODY" | jq -r '.data.token // empty')
 [[ -n "$TENANT_TOKEN" ]] || { fail "tenant login: $STATUS $BODY"; exit 1; }; ok "tenant login as $TU_EMAIL"
 
