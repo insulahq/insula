@@ -31,6 +31,8 @@ export const ingressRouteResponseSchema = z.object({
   forceHttps: z.boolean(),
   wwwRedirect: z.enum(['none', 'add-www', 'remove-www']),
   redirectUrl: z.string().nullable(),
+  /** Status code the redirect emits. 302 = temporary (default), 301 = permanent. */
+  redirectStatusCode: z.union([z.literal(301), z.literal(302)]),
   // Security settings
   ipAllowlist: z.string().nullable(),
   rateLimitRps: z.number().nullable(),
@@ -180,6 +182,10 @@ export const updateRedirectSettingsSchema = z.object({
   force_https: z.boolean().optional(),
   www_redirect: z.enum(['none', 'add-www', 'remove-www']).optional(),
   redirect_url: z.string().url().max(2048).nullable().optional(),
+  // 301 permanent / 302 temporary. Literals rather than a number range: a
+  // 307 or 308 typed by a caller must 400, not reach the middleware builder
+  // and quietly collapse to one of the two Traefik actually supports.
+  redirect_status_code: z.union([z.literal(301), z.literal(302)]).optional(),
 }).strict();
 
 export const updateSecuritySettingsSchema = z.object({

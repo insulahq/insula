@@ -1,4 +1,6 @@
 import { useAdminUsers } from '@/hooks/use-admin-users';
+import { useTenantUsers } from '@/hooks/use-tenant-users';
+import { MAX_PAGE_LIMIT } from '@insula/api-contracts';
 
 /**
  * Render an actor as a person, not a UUID.
@@ -9,8 +11,14 @@ import { useAdminUsers } from '@/hooks/use-admin-users';
  * value the operator has to go and look up somewhere else, so in practice
  * nobody did.
  *
- * One component, one shared query. `useAdminUsers` is cached by React Query
- * under a single key, so twenty rows on a page cost one request no matter how
+ * Resolves against BOTH admin-panel and tenant-panel users. Admin users alone
+ * was not enough: a WAF rule exclusion or allowlist entry created by a TENANT
+ * shows an id that is not in `/admin/users`, so those rows fell through to the
+ * truncated-uuid branch and the "By / When" column read as a raw id — the exact
+ * problem this component exists to prevent, just for the other panel.
+ *
+ * One component, two shared queries. Both are cached by React Query under a
+ * single key each, so twenty rows on a page cost two requests no matter how
  * many tables are on screen.
  *
  * Falls back to the id — never to blank. An id that resolves to nobody is
@@ -51,8 +59,14 @@ export default function UserLabel({
   readonly userId: string | null | undefined;
   readonly className?: string;
 }) {
-  const { data } = useAdminUsers();
-  const { text, title, known } = formatUserLabel(userId, data?.data ?? []);
+  const { data: admins } = useAdminUsers();
+  // One page at the contract's max: this is a lookup table, not a browsable
+  // list, and MAX_PAGE_LIMIT is the most the endpoint will return per request.
+  // A tenant user beyond that page still falls back to the short id + full-id
+  // tooltip, which is the same behaviour as a deleted actor — never blank.
+  const { data: tenantUsers } = useTenantUsers({ limit: MAX_PAGE_LIMIT });
+  const known_ = [...(admins?.data ?? []), ...(tenantUsers?.data ?? [])];
+  const { text, title, known } = formatUserLabel(userId, known_);
   return (
     <span
       className={className ?? (known ? undefined : 'font-mono text-[11px] text-gray-500 dark:text-gray-400')}

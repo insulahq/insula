@@ -73,6 +73,7 @@ export async function updateRedirectSettings(
   if (input.force_https !== undefined) updateValues.forceHttps = input.force_https ? 1 : 0;
   if (input.www_redirect !== undefined) updateValues.wwwRedirect = input.www_redirect;
   if (input.redirect_url !== undefined) updateValues.redirectUrl = input.redirect_url;
+  if (input.redirect_status_code !== undefined) updateValues.redirectStatusCode = input.redirect_status_code;
 
   if (Object.keys(updateValues).length > 0) {
     await db.update(ingressRoutes).set(updateValues).where(eq(ingressRoutes.id, routeId));

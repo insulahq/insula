@@ -52,7 +52,7 @@ data:
     # debugging staging POST /system-backup/dr-drill/runs that
     # silently kept getting 403 even after the exclusion was
     # mounted + modsec rolled.
-    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\." \
+    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\.${DOMAIN}(:[0-9]+)?$" \
         "id:9000100,\
          phase:1,\
          pass,\
@@ -74,7 +74,7 @@ data:
     # debugging staging POST /system-backup/dr-drill/runs that
     # silently kept getting 403 even after the exclusion was
     # mounted + modsec rolled.
-    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\." \
+    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\.${DOMAIN}(:[0-9]+)?$" \
         "id:9000101,\
          phase:1,\
          pass,\
@@ -113,14 +113,14 @@ data:
     # swallows the first rule of the next-loaded (901 dynamic) file.
     # (Reported 2026-08-03: POST /api/v1/admin/dns-servers with
     # connection_config.api_url = http://<mesh-ip>:8081 → 403.)
-    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\." \
+    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\.${DOMAIN}(:[0-9]+)?$" \
         "id:9000103,\
          phase:1,\
          pass,\
          nolog,\
          chain,\
          ctl:ruleRemoveById=931100"
-        SecRule REQUEST_URI "@rx ^/api/v1/"
+        SecRule REQUEST_URI "@rx ^/api/v1/" "t:none"
 
     # ── Catalog deploys: parameter VALUES are container config, not
     #    paths the platform opens ──────────────────────────────────────
@@ -276,7 +276,7 @@ data:
     #
     # Chained host+URI like 9000103: a tenant workload serving its own
     # /api/v1/tenants/…/deployments on a tenant domain keeps coverage.
-    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\." \
+    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\.${DOMAIN}(:[0-9]+)?$" \
         "id:9000108,\
          phase:1,\
          pass,\
@@ -285,7 +285,7 @@ data:
          ctl:ruleRemoveTargetById=930120;ARGS,\
          ctl:ruleRemoveById=932000-932999,\
          ctl:ruleRemoveById=934000-934999"
-        SecRule REQUEST_URI "@rx ^/api/v1/(tenants/[^/]+/(deployments|custom-deployments|cron-jobs)|admin/cron-jobs)(/|\?|$)"
+        SecRule REQUEST_URI "@rx ^/api/v1/(tenants/[^/]+/(deployments|custom-deployments|cron-jobs)|admin/cron-jobs)(/|\?|$)" "t:none"
 
     # ── Custom containers: env values, commands, mount paths and
     #    compose documents are the tenant's own container spec ────────
@@ -382,19 +382,23 @@ data:
     # pushing the inbound anomaly score to 5 → 949110 blocks it with a
     # 403 (nginx page from the modsec sidecar). It's an API endpoint,
     # not a served file, so the extension check is a false positive.
-    # Single (non-chained) rule matching the crl.pem URI only — that path
-    # is platform-API-specific (no tenant workload serves it), so a host
-    # guard is unnecessary, and avoiding the chain keeps the rule from
-    # leaving a dangling `chain` that would bleed into the next-loaded
-    # (dynamic) exclusion file. 920440 still guards `.bak`/`.key`/etc.
+    # Host-scoped chain (2026-09-09). It was previously a bare
+    # REQUEST_URI match on the argument that no tenant workload serves this
+    # path — true today, but it is an assumption about tenant content rather
+    # than something we enforce, and the exclusion applied on EVERY WAF'd
+    # host. The chain costs nothing: the `t:none` action list on the second
+    # rule is what keeps a dangling `chain` from bleeding into the
+    # next-loaded (dynamic) file. 920440 still guards `.bak`/`.key`/etc.
     # everywhere else. (ADR-054; confirmed 2026-07-01 via the modsec audit
     # log — ruleId 920440, TX:EXTENSION=`.pem`.)
-    SecRule REQUEST_URI "@rx /mtls-providers/[^/]+/crl\.pem" \
+    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\.${DOMAIN}(:[0-9]+)?$" \
         "id:9000102,\
          phase:1,\
          pass,\
          nolog,\
+         chain,\
          ctl:ruleRemoveById=920440"
+        SecRule REQUEST_URI "@rx /mtls-providers/[^/]+/crl\.pem" "t:none"
 
     # ── File-manager content is opaque DATA, not a request parameter ──
     #
@@ -428,15 +432,18 @@ data:
     # coverage, which is what actually matters here: `path` is the field a
     # traversal attack would use.
     #
-    # Non-chained, matching a platform-API-specific URI, for the reason given
-    # in the crl.pem rule above: a dangling `chain` bleeds into the next-loaded
+    # Host-scoped chain (2026-09-09) so a tenant app serving this URI on its
+    # own domain keeps full coverage. The `t:none` action list on the second
+    # rule is what prevents a dangling `chain` bleeding into the next-loaded
     # (dynamic) exclusion file.
-    SecRule REQUEST_URI "@rx ^/api/v1/tenants/[^/]+/files/write" \
+    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\.${DOMAIN}(:[0-9]+)?$" \
         "id:9000104,\
          phase:1,\
          pass,\
          nolog,\
+         chain,\
          ctl:ruleRemoveTargetByTag=OWASP_CRS;ARGS:json.content"
+        SecRule REQUEST_URI "@rx ^/api/v1/tenants/[^/]+/files/write" "t:none"
 
     # ── Raw upload: the body IS the file ──────────────────────────
     #
@@ -456,14 +463,16 @@ data:
     # it as a request payload is a category error — and SFTP writes the same
     # bytes to the same place with no WAF at all. The `path` query argument is
     # untouched and keeps full coverage.
-    SecRule REQUEST_URI "@rx ^/api/v1/tenants/[^/]+/files/upload-raw" \
+    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\.${DOMAIN}(:[0-9]+)?$" \
         "id:9000105,\
          phase:1,\
          pass,\
          nolog,\
+         chain,\
          ctl:ruleRemoveById=920420,\
          ctl:ruleRemoveTargetByTag=OWASP_CRS;REQUEST_BODY,\
          ctl:ruleRemoveTargetByTag=OWASP_CRS;ARGS_POST"
+        SecRule REQUEST_URI "@rx ^/api/v1/tenants/[^/]+/files/upload-raw" "t:none"
 
     # ── Multipart upload: same reasoning, different variables ─────
     #
@@ -474,15 +483,17 @@ data:
     #
     # FILES_NAMES (the form field name) keeps coverage — that is our own field
     # name, not tenant data, so a match there is a real anomaly.
-    SecRule REQUEST_URI "@rx ^/api/v1/tenants/[^/]+/files/upload(\?|$)" \
+    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\.${DOMAIN}(:[0-9]+)?$" \
         "id:9000106,\
          phase:1,\
          pass,\
          nolog,\
+         chain,\
          ctl:ruleRemoveById=920420,\
          ctl:ruleRemoveTargetByTag=OWASP_CRS;FILES,\
          ctl:ruleRemoveTargetByTag=OWASP_CRS;FILES_TMP_CONTENT,\
          ctl:ruleRemoveTargetByTag=OWASP_CRS;REQUEST_BODY"
+        SecRule REQUEST_URI "@rx ^/api/v1/tenants/[^/]+/files/upload(\?|$)" "t:none"
 
     # ── Reading a file back must not be treated as data leakage ───
     #
@@ -496,15 +507,17 @@ data:
     #
     # Scoped to the file read/download endpoints only. Every other response on
     # the platform keeps outbound inspection.
-    SecRule REQUEST_URI "@rx ^/api/v1/tenants/[^/]+/files/(read|download)" \
+    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\.${DOMAIN}(:[0-9]+)?$" \
         "id:9000107,\
          phase:1,\
          pass,\
          nolog,\
+         chain,\
          ctl:ruleRemoveByTag=OWASP_CRS/LEAKAGE,\
          ctl:ruleRemoveById=953100,\
          ctl:ruleRemoveById=953110,\
          ctl:ruleRemoveById=953120"
+        SecRule REQUEST_URI "@rx ^/api/v1/tenants/[^/]+/files/(read|download)" "t:none"
 
     # ── File-manager path ARGUMENTS are file paths, by definition ──
     #
@@ -535,17 +548,22 @@ data:
     # headers and the request body as a whole stay inspected by every other
     # rule; only these four rules stop looking at ARGS on these paths.
     #
-    # Deliberately NOT scoped by X-Forwarded-Host: the file-manager API is
-    # reached from both admin.<apex> and tenant.<apex>, and both were failing.
-    SecRule REQUEST_URI "@rx ^/api/v1/tenants/[^/]+/files/" \
+    # Host-scoped 2026-09-09. It was previously unscoped on the grounds that
+    # "the file-manager API is reached from both admin.<apex> and
+    # tenant.<apex>" — but the guard used throughout this file is
+    # `^(admin|tenant|api)\.`, which matches BOTH, so that was never a reason
+    # to leave it open to every other WAF'd host.
+    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\.${DOMAIN}(:[0-9]+)?$" \
         "id:9000111,\
          phase:1,\
          pass,\
          nolog,\
+         chain,\
          ctl:ruleRemoveTargetById=930100;ARGS,\
          ctl:ruleRemoveTargetById=930110;ARGS,\
          ctl:ruleRemoveTargetById=930120;ARGS,\
          ctl:ruleRemoveTargetById=930130;ARGS"
+        SecRule REQUEST_URI "@rx ^/api/v1/tenants/[^/]+/files/" "t:none"
 
     # ── 930120 OS-file DICTIONARY vs. a hosting control panel ──
     #
@@ -610,7 +628,7 @@ data:
     # ConfigMap deployed, `grep 9000112` found it inside the running container,
     # and every probe case was still blocked. 9000108/9000109/9000110 all put
     # the ctl in the starter; copy that shape, not this comment.
-    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\." \
+    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\.${DOMAIN}(:[0-9]+)?$" \
         "id:9000112,\
          phase:1,\
          pass,\
@@ -630,3 +648,57 @@ data:
         # are mid-file — the parser recovers on the next comment line. Never
         # copy that shape to the end of this file.
         SecRule REQUEST_URI "@rx ^/api/v1/" "t:none"
+
+    # ── ADR-060: raw transport for custom-container specs ─────────────
+    #
+    # A compose document and its env files are shell commands and KEY=value
+    # configuration by definition. Sent as application/json the WAF parses
+    # them into ARGS and CRS matches content the tenant is entitled to submit.
+    # Measured on DEV 2026-09-09 — a realistic compose file plus a .env is
+    # refused at the edge with a bare 403 the API never sees:
+    #
+    #   933120  PHP Injection: Configuration Directive   <- .env KEY=value
+    #   942190  MSSQL code execution                     <- mysql -e "..." command
+    #   933100/130/150/160, 941390                       <- an env file holding PHP
+    #   949110  Inbound Anomaly Score Exceeded           <- the block
+    #
+    # 9000108 above already removed 932xxx/934xxx for this same path after an
+    # earlier round of exactly this. Excluding 933/941/942 next would move the
+    # treadmill along again: the content is arbitrary, so no finite rule list
+    # ever finishes. The panel therefore sends the SAME JSON body labelled
+    # application/octet-stream, which ModSecurity never parses into ARGS.
+    #
+    # This rule makes that possible and does two things only:
+    #   920420 — CRS rejects application/octet-stream outright by default, so
+    #            without this every raw-transport request 403s immediately.
+    #   REQUEST_BODY / ARGS_POST targets — an octet-stream body still lands in
+    #            REQUEST_BODY, which a few rules read directly.
+    # Everything else still applies here: URL, method, header and QUERY-STRING
+    # rules are untouched, so ?path=../../etc/passwd is still caught.
+    #
+    # Host-scoped chain (2026-09-09). LAST rule in the file, so the `t:none`
+    # action list on the second rule is REQUIRED — a chained SecRule with no
+    # actions leaves the parser expecting one and it continues into the
+    # next-loaded (dynamic) file, which crash-loops modsec and 502s every
+    # WAF'd request.
+    #
+    # SCOPE — `(/[^/]+)?(\?|$)` is load-bearing, do not relax it to a bare
+    # prefix. Only three routes send raw transport: POST <base>, POST /validate
+    # and PATCH /<id>. A bare prefix also matched the sibling mutations that
+    # still send JSON — /<id>/pull-credentials, /upgrade-tag, /auto-update,
+    # /stop, /start, /update-now — and, because the octet-stream body parser is
+    # registered for the whole plugin, let a caller post an opaque uninspected
+    # body to any of them. One trailing segment at most keeps those out (they
+    # carry a second segment) and also stops `custom-deploymentsXXX` matching.
+    # Verified 2026-09-09 on DEV: PUT /<id>/pull-credentials as octet-stream
+    # returned 401 (past the WAF) before this narrowing, 403 after.
+    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\.${DOMAIN}(:[0-9]+)?$" \
+        "id:9000115,\
+         phase:1,\
+         pass,\
+         nolog,\
+         chain,\
+         ctl:ruleRemoveById=920420,\
+         ctl:ruleRemoveTargetByTag=OWASP_CRS;REQUEST_BODY,\
+         ctl:ruleRemoveTargetByTag=OWASP_CRS;ARGS_POST"
+        SecRule REQUEST_URI "@rx ^/api/v1/tenants/[^/]+/custom-deployments(/[^/]+)?(\?|$)" "t:none"

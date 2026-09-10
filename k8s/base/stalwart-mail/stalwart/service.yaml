@@ -86,6 +86,10 @@ spec:
       port: 993
       targetPort: imaps
       protocol: TCP
+    - name: pop3s
+      port: 995
+      targetPort: pop3s
+      protocol: TCP
     - name: sieve
       port: 4190
       targetPort: sieve
@@ -115,6 +119,10 @@ spec:
     - name: imaps-proxy
       port: 12993
       targetPort: 12993
+      protocol: TCP
+    - name: pop3s-proxy
+      port: 12995
+      targetPort: 12995
       protocol: TCP
     - name: sieve-proxy
       port: 14190

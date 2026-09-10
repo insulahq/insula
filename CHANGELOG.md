@@ -12,6 +12,47 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **POP3 is now available to mailbox users (port 995, TLS).** The mail server
+  had always spoken POP3 internally, and the automatic setup files handed to
+  Thunderbird and Outlook already listed port 995 — but nothing carried that
+  port from the outside world to the mail server, so any client that chose
+  POP3 got "connection refused". The port is now served on every mail node,
+  covered by the mail health and certificate checks, reachable from tenant
+  websites, and published as a `_pop3s._tcp` SRV record in new mail domains'
+  DNS. Plain, unencrypted POP3 (port 110) is deliberately NOT offered.
+  Existing mailboxes need no change — POP3 access was already part of every
+  mailbox's permissions, and send-only mailboxes stay blocked as before.
+
+### Fixed
+- **Saving a Compose file or a `.env` no longer fails with a "forbidden"
+  error.** The web firewall inspects request contents for attack patterns, and
+  a normal Compose file trips it — a `mysql -e "..."` command reads as SQL
+  injection, and `KEY=value` lines in a `.env` read as PHP configuration
+  tampering. Those are correct matches on content you are entitled to send.
+  The editor now submits these files as opaque data, so the firewall no longer
+  parses them as form fields. Every other protection is unchanged, including
+  the URL, method and query-string rules that block real scanning.
+
+### Security
+- **Web-firewall exemptions now apply only on the admin and tenant panels.**
+  The firewall carries a small set of exemptions so ordinary hosting work isn't
+  mistaken for an attack — saving a PHP file, renaming `.htaccess`, uploading
+  an image, editing a Compose file. Seven of those exemptions were matched on
+  the request path alone, so they also took effect on any other site behind the
+  firewall. They are now tied to the panel hostnames, and one exemption that
+  covered a wider range of addresses than the feature needed has been narrowed
+  to the three that use it. Nothing an operator or tenant does changes; sites
+  behind the firewall are inspected more strictly than before, not less.
+
+- **Each website now keeps its own login sessions.** They were previously
+  written to a shared temporary area, where a session's filename is its
+  identifier — so one website could read a visitor's session from a
+  neighbouring site and act as that visitor. Sessions now live inside each
+  site's own folder. (File uploads still use the shared temporary area while
+  being received; that is a much shorter window and a much less predictable
+  name, and it is the remaining piece.)
+
 ## [2026.9.14] - 2026-09-09
 
 ### Security

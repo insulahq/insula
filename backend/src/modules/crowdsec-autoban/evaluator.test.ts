@@ -146,8 +146,20 @@ describe('computeBanDuration', () => {
   });
 
   it('caps at max duration', () => {
-    // 1h * 4^5 = 1024h > 7d (168h) → capped to 168h = 7d
-    expect(computeBanDuration(cfg, 5)).toBe('7d');
+    // 1h * 4^5 = 1024h > 7d (168h) → capped to 168h, emitted as HOURS.
+    // Whole days are deliberately NOT collapsed to `Nd` — see
+    // msToCrowdsecDuration. cscli accepts both, but echoing hours keeps
+    // the operator's configured value recognisable in the run history.
+    expect(computeBanDuration(cfg, 5)).toBe('168h');
+  });
+
+  it('echoes an hours-based initial duration unchanged (regression)', () => {
+    // Operator sets 48h; the run history must show `48h`, not `2d`. The
+    // `2d` rendering made a correctly-applied setting look ignored.
+    const c = { initialBanDuration: '48h', repeatBackoffMultiplier: 4, maxBanDuration: '30d' };
+    expect(computeBanDuration(c, 0)).toBe('48h');
+    // And the 30d cap is expressed in hours too.
+    expect(computeBanDuration(c, 9)).toBe('720h');
   });
 
   it('handles fractional multipliers (2.25h → 135m)', () => {
