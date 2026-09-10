@@ -110,7 +110,7 @@ trap cleanup_smoke_tenants EXIT
 
 # Creating a tenant does NOT provision it — the row lands `pending` /
 # unprovisioned and "Provision Now" is a separate, explicit action (see
-# docs/admin/tenants.md). Anything that then configures domains, email or
+# documentation/docs/admin/tenants.md). Anything that then configures domains, email or
 # mailboxes therefore has to provision FIRST, or every such call comes back
 # 409 TENANT_NOT_ACTIVE and the whole block collapses with empty ids.
 #
