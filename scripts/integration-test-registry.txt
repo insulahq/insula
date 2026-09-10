@@ -66,6 +66,7 @@ manual        integration-tenant-bundles-mailbox-engine.sh            # L1 seed 
 suite        integration-bundle-coverage.sh
 suite        integration-backups-ui.sh
 suite        integration-waf-deploy-surfaces.sh                      # WAF lets deploy payloads through, blocks attacks
+suite        integration-waf-api-scope.sh                            # ADR-060 scope guard. Asserts BODY inspection is off for /api/v1/** on panel hosts while every URL/method/header rule still blocks (930130 REQUEST_FILENAME, 920440 REQUEST_BASENAME, 911100 METHOD, 920420 Content-Type), query-string ARGS stay inspected, and a TENANT host keeps FULL coverage. Directed --expect-before/--expect-after modes so an after-run that silently still blocks FAILS instead of passing loosely. Unauthenticated throughout (the WAF answers before auth) — safe against production, mutates nothing. TENANT_HOST optional; section D self-skips without it.
 manual        integration-catalog-local.sh
 suite        integration-private-worker.sh
 suite        integration-custom-deployments.sh                       # ADR-036 phase-1

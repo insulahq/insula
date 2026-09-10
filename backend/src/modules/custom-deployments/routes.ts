@@ -20,6 +20,7 @@ import {
   requireRole,
 } from '../../middleware/auth.js';
 import { ApiError } from '../../shared/errors.js';
+import { registerRawBodyParser } from './raw-body-transport.js';
 import { success } from '../../shared/response.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import * as service from './service.js';
@@ -38,6 +39,8 @@ import type { CallerRole } from './role-types.js';
 
 export async function customDeploymentRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
+
+  registerRawBodyParser(app);
   app.addHook('onRequest', requireTenantRoleByMethod());
   app.addHook('onRequest', requireTenantAccess());
 

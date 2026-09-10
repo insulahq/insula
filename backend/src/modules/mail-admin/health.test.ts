@@ -88,9 +88,9 @@ describe('mail-admin/health.getMailHealth', () => {
     expect(r.components.rocksdb.currentFile).toBe(true);
     expect(r.components.rocksdb.lockFile).toBe(true);
     expect(r.components.tcp.healthy).toBe(true);
-    expect(r.components.tcp.ports).toHaveLength(6);
+    expect(r.components.tcp.ports).toHaveLength(7);
     expect(r.components.cert.healthy).toBe(true);
-    expect(r.components.cert.ports).toHaveLength(2);
+    expect(r.components.cert.ports).toHaveLength(3);
     expect(r.components.cert.ports[0].daysUntilExpiry).toBeGreaterThan(0);
   });
 
@@ -228,8 +228,8 @@ describe('mail-admin/health.getMailHealth', () => {
     const tcpProbe = vi.fn().mockResolvedValue({ reachable: true, latencyMs: 7, error: null });
     const deps = buildDeps({ tcpProbe });
     const r = await getMailHealth(deps);
-    expect(tcpProbe).toHaveBeenCalledTimes(6);
-    expect(r.components.tcp.ports.map((p) => p.port).sort((a, b) => a - b)).toEqual([25, 143, 465, 587, 993, 4190]);
+    expect(tcpProbe).toHaveBeenCalledTimes(7);
+    expect(r.components.tcp.ports.map((p) => p.port).sort((a, b) => a - b)).toEqual([25, 143, 465, 587, 993, 995, 4190]);
     expect(r.components.tcp.ports.every((p) => p.reachable)).toBe(true);
   });
 
@@ -245,7 +245,7 @@ describe('mail-admin/health.getMailHealth', () => {
     const deps = buildDeps({ tcpProbe });
     const r = await getMailHealth(deps);
     expect(r.components.tcp.healthy).toBe(false);
-    expect(r.components.tcp.error).toMatch(/2\/6.*25.*4190/);
+    expect(r.components.tcp.error).toMatch(/2\/7.*25.*4190/);
   });
 
   it('cert probe is not_implemented without a mail hostname', async () => {

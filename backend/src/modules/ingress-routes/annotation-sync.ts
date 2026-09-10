@@ -194,6 +194,7 @@ export interface RouteSettingsLike {
   forceHttps: number;
   wwwRedirect: string;
   redirectUrl: string | null;
+  redirectStatusCode: number;
   ipAllowlist: string | null;
   rateLimitRps: number | null;
   rateLimitConnections: number | null;
@@ -377,6 +378,11 @@ export function buildMiddlewaresForRoute(
   // ── Generic URL redirect (operator-configured) ──────────────────────
   // Sends a 301/302 to `redirectUrl` for any request path. We use
   // redirectRegex with `.*` regex so every path matches.
+  //
+  // `permanent` maps 1:1 onto the status code: true → 301, false → 302.
+  // Defaults to 302 when the column is absent (older rows read through a
+  // narrowed type) — matching the DB default rather than the pre-0106
+  // hardcoded 301, so the two defaults cannot drift apart.
   if (route.redirectUrl) {
     const name = middlewareName(routeId, 'redirect');
     middlewares.push(buildMiddleware({
@@ -385,7 +391,7 @@ export function buildMiddlewaresForRoute(
       spec: redirectRegexSpec({
         regex: '.*',
         replacement: route.redirectUrl,
-        permanent: true,
+        permanent: route.redirectStatusCode === 301,
       }),
       labels: {
         'hosting-platform/route-id': routeId,

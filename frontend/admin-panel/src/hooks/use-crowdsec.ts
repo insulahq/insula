@@ -81,8 +81,20 @@ export function useCrowdsecStatus() {
   return useQuery<Envelope<CrowdsecStatus>>({
     queryKey: STATUS_KEY,
     queryFn: () => apiFetch('/api/v1/admin/security/crowdsec/status'),
+    // While LAPI reports UNHEALTHY, poll fast. Several operator actions —
+    // toggling the community blocklist, editing CAPI config, flipping L4
+    // enforcement — deliberately ROLL the LAPI pod (rollCrowdsecLapiSafely).
+    // The invalidation those mutations fire therefore lands mid-restart and
+    // truthfully reports "unreachable / no bouncers"… and then sat on that
+    // snapshot for a full 60s refetch interval, so the operator saw a broken
+    // stack until they reloaded the page by hand.
+    //
+    // Keying the cadence off `lapiHealthy` rather than special-casing one
+    // mutation fixes the whole class: any transient unreachability, whatever
+    // caused it, now corrects itself within ~5s instead of up to a minute.
+    // Once healthy it drops back to the quiet 60s cadence.
     staleTime: 30_000,
-    refetchInterval: 60_000,
+    refetchInterval: (query) => (query.state.data?.data?.lapiHealthy === false ? 5_000 : 60_000),
   });
 }
 
