@@ -24,10 +24,18 @@ export type SubUserRole = z.infer<typeof subUserRoleSchema>;
 
 // ─── Create ─────────────────────────────────────────────────────────────────
 
+/**
+ * No `password` field — the server always generates one and returns
+ * it in the create response (`createdSubUserSchema.generatedPassword`).
+ * This matches the main tenant login, which has always been
+ * auto-generated at tenant-create time.
+ *
+ * `.strict()` is load-bearing: a caller that still sends `password`
+ * gets a 400 instead of a 201 whose password silently did nothing.
+ */
 export const createSubUserSchema = z.object({
   email: identityEmailSchema,
   full_name: z.string().min(1, 'full_name is required').max(255),
-  password: z.string().min(8, 'password must be at least 8 characters').max(255),
   /**
    * Optional — defaults to `tenant_user` server-side. Only
    * `tenant_admin` (or staff) callers may create another
@@ -35,7 +43,7 @@ export const createSubUserSchema = z.object({
    * at all because backend middleware rejects it.
    */
   role_name: subUserRoleSchema.optional(),
-});
+}).strict();
 export type CreateSubUserInput = z.infer<typeof createSubUserSchema>;
 
 // ─── Update (Phase 3) ───────────────────────────────────────────────────────
@@ -64,15 +72,25 @@ export type UpdateSubUserInput = z.infer<typeof updateSubUserSchema>;
 // ─── Reset password (Phase 4) ───────────────────────────────────────────────
 
 /**
- * Admin-assisted password reset. The caller sets the new password
- * directly — they are responsible for communicating it to the user
+ * Admin-assisted password reset. Takes NO input: the server
+ * regenerates a strong password and returns it once, in the response.
+ * The caller is responsible for communicating it to the user
  * out-of-band. No email is sent (the self-service forgot-password
  * flow is a separate deferred epic).
+ *
+ * `.strict()` on an empty object is deliberate — a caller still
+ * sending `new_password` must fail loudly rather than receive a 200
+ * carrying a *different*, randomly generated password than the one
+ * they asked for.
  */
-export const resetSubUserPasswordSchema = z.object({
-  new_password: z.string().min(8, 'new_password must be at least 8 characters').max(255),
-});
+export const resetSubUserPasswordSchema = z.object({}).strict();
 export type ResetSubUserPasswordInput = z.infer<typeof resetSubUserPasswordSchema>;
+
+/** Response body of the reset endpoint — the one-shot new password. */
+export const resetSubUserPasswordResponseSchema = z.object({
+  password: z.string(),
+});
+export type ResetSubUserPasswordResponse = z.infer<typeof resetSubUserPasswordResponseSchema>;
 
 // ─── Response shapes ────────────────────────────────────────────────────────
 
@@ -102,5 +120,11 @@ export const createdSubUserSchema = z.object({
   roleName: subUserRoleSchema,
   status: z.string(),
   createdAt: dateLike,
+  /**
+   * The server-generated login password, returned exactly once at
+   * creation. Only the bcrypt hash is persisted, so there is no way
+   * to read it back later — a lost password needs a reset.
+   */
+  generatedPassword: z.string(),
 });
 export type CreatedSubUser = z.infer<typeof createdSubUserSchema>;

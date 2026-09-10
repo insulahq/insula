@@ -2,6 +2,7 @@ import { eq, and } from 'drizzle-orm';
 import bcrypt from 'bcrypt';
 import { users, hostingPlans, tenants } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
+import { generateStrongPassword } from '../../shared/password.js';
 import type { Database } from '../../db/index.js';
 
 /**
@@ -38,10 +39,18 @@ export interface CreatedSubUserDto {
   readonly createdAt: Date;
 }
 
+/**
+ * What `createSubUser` hands back: the persisted row plus the
+ * one-shot generated password. Only the hash reaches the database,
+ * so this is the single opportunity to show the credential.
+ */
+export interface CreatedSubUserWithPasswordDto extends CreatedSubUserDto {
+  readonly generatedPassword: string;
+}
+
 export interface CreateSubUserInput {
   readonly email: string;
   readonly full_name: string;
-  readonly password: string;
   /**
    * Phase 2: optional — defaults to `tenant_user`. Callers
    * upstream of the service are responsible for enforcing that
@@ -139,16 +148,24 @@ export async function listSubUsers(
   return db.listByTenantId(tenantId);
 }
 
+/**
+ * Create a tenant-panel sub-user with a server-generated password.
+ *
+ * The password is NOT an input: manual entry is unavailable on this
+ * path, exactly as it is for the tenant's own `tenant_admin` login
+ * minted by `createTenant`. The generated value is returned to the
+ * caller once, in `generatedPassword`.
+ */
 export async function createSubUser(
   db: SubUsersDb,
   tenantId: string,
   input: CreateSubUserInput,
   options: CreateSubUserOptions = {},
-): Promise<CreatedSubUserDto> {
-  if (!input.email || !input.full_name || !input.password) {
+): Promise<CreatedSubUserWithPasswordDto> {
+  if (!input.email || !input.full_name) {
     throw new ApiError(
       'MISSING_REQUIRED_FIELD',
-      'email, full_name, and password are required',
+      'email and full_name are required',
       400,
     );
   }
@@ -177,10 +194,11 @@ export async function createSubUser(
     );
   }
 
-  const passwordHash = await bcrypt.hash(input.password, 12);
+  const generatedPassword = generateStrongPassword();
+  const passwordHash = await bcrypt.hash(generatedPassword, 12);
   const id = crypto.randomUUID();
 
-  return db.insertSubUser({
+  const created = await db.insertSubUser({
     id,
     email: input.email,
     passwordHash,
@@ -188,6 +206,8 @@ export async function createSubUser(
     roleName,
     tenantId,
   });
+
+  return { ...created, generatedPassword };
 }
 
 export async function deleteSubUser(
@@ -285,37 +305,34 @@ export async function updateSubUser(
 }
 
 /**
- * Phase 4: admin-assisted password reset. Hashes the new password
- * with bcrypt and writes it to the users row. Verifies the user
- * belongs to the tenant before writing.
+ * Admin-assisted password reset. Generates a fresh strong password,
+ * writes its bcrypt hash to the users row, and returns the plaintext
+ * to the caller once. Verifies the user belongs to the tenant before
+ * writing.
+ *
+ * There is no caller-supplied password: a reset always produces a
+ * new random credential, so a weak or reused one cannot be pinned on
+ * an account from the panel.
  *
  * Does NOT send email or notify the user — the caller is
  * responsible for communicating the new password out-of-band.
- * Does NOT invalidate existing JWTs — Phase 9 will address session
- * invalidation when the sessions table lands.
+ * Does NOT invalidate existing access JWTs (the route revokes
+ * refresh tokens; access tokens expire naturally within 30 min).
  */
 export async function resetSubUserPassword(
   db: SubUsersDb,
   tenantId: string,
   userId: string,
-  newPassword: string,
-): Promise<void> {
-  if (!newPassword || newPassword.length < 8) {
-    throw new ApiError(
-      'INVALID_FIELD_VALUE',
-      'new_password must be at least 8 characters',
-      400,
-      { field: 'new_password' },
-    );
-  }
-
+): Promise<string> {
   const existing = await db.findByIdAndTenantId(userId, tenantId);
   if (!existing) {
     throw new ApiError('USER_NOT_FOUND', 'User not found', 404);
   }
 
+  const newPassword = generateStrongPassword();
   const passwordHash = await bcrypt.hash(newPassword, 12);
   await db.updatePasswordHash(userId, tenantId, passwordHash);
+  return newPassword;
 }
 
 // ─── Production Drizzle adapter ────────────────────────────────────────────

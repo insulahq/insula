@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import bcrypt from 'bcrypt';
 import {
   listSubUsers,
   createSubUser,
@@ -7,6 +8,7 @@ import {
   resetSubUserPassword,
   type SubUsersDb,
 } from './sub-users-service.js';
+import { GENERATED_PASSWORD_LENGTH } from '../../shared/password.js';
 
 /**
  * Phase 1: tests for the extracted sub-users service module.
@@ -158,7 +160,28 @@ function makeStubWithPasswordReadback(initialRows: SubUserRow[]): {
       const row = state.rows.find((r) => r.id === userId && r.tenantId === tenantId);
       return row ? { id: row.id, roleName: row.roleName, status: row.status } : null;
     },
-    insertSubUser: async () => { throw new Error('not implemented in readback stub'); },
+    insertSubUser: async (input) => {
+      const row: SubUserRow = {
+        id: input.id,
+        email: input.email,
+        fullName: input.fullName,
+        roleName: input.roleName,
+        status: 'active',
+        tenantId: input.tenantId,
+        createdAt: new Date('2026-04-09T12:00:00Z'),
+        lastLoginAt: null,
+        passwordHash: input.passwordHash,
+      };
+      state.rows.push(row);
+      return {
+        id: row.id,
+        email: row.email,
+        fullName: row.fullName,
+        roleName: row.roleName,
+        status: row.status,
+        createdAt: row.createdAt,
+      };
+    },
     updateSubUser: async () => { throw new Error('not implemented in readback stub'); },
     updatePasswordHash: async (userId, tenantId, passwordHash) => {
       const idx = state.rows.findIndex((r) => r.id === userId && r.tenantId === tenantId);
@@ -242,7 +265,6 @@ describe('sub-users-service', () => {
       const created = await createSubUser(db, 'c1', {
         email: 'new@c1.com',
         full_name: 'New User',
-        password: 'password123',
       });
       expect(created.email).toBe('new@c1.com');
       expect(created.roleName).toBe('tenant_user');
@@ -258,7 +280,6 @@ describe('sub-users-service', () => {
       const created = await createSubUser(db, 'c1', {
         email: 'promoted@c1.com',
         full_name: 'Promoted User',
-        password: 'password123',
         role_name: 'tenant_admin',
       });
       expect(created.roleName).toBe('tenant_admin');
@@ -269,7 +290,6 @@ describe('sub-users-service', () => {
       const created = await createSubUser(db, 'c1', {
         email: 'member@c1.com',
         full_name: 'Team Member',
-        password: 'password123',
         role_name: 'tenant_user',
       });
       expect(created.roleName).toBe('tenant_user');
@@ -281,7 +301,6 @@ describe('sub-users-service', () => {
         createSubUser(db, 'c1', {
           email: 'bad@c1.com',
           full_name: 'Bad',
-          password: 'password123',
           // Cast around the TS union so we can simulate a caller
           // that bypasses the route-level Zod parse.
           role_name: 'super_admin' as unknown as 'tenant_admin',
@@ -310,7 +329,7 @@ describe('sub-users-service', () => {
         createSubUser(
           db,
           'c3',
-          { email: 'over@c3.com', full_name: 'Over', password: 'password123' },
+          { email: 'over@c3.com', full_name: 'Over' },
           { maxSubUsers: 5 },
         ),
       ).rejects.toMatchObject({
@@ -329,7 +348,6 @@ describe('sub-users-service', () => {
           {
             email: `u${i}@c4.com`,
             full_name: `U${i}`,
-            password: 'password123',
           },
           { maxSubUsers: 3 },
         );
@@ -341,7 +359,6 @@ describe('sub-users-service', () => {
           {
             email: 'over@c4.com',
             full_name: 'Over',
-            password: 'password123',
           },
           { maxSubUsers: 3 },
         ),
@@ -354,23 +371,50 @@ describe('sub-users-service', () => {
         createSubUser(db, 'c1', {
           email: '',
           full_name: 'User',
-          password: 'password123',
         }),
       ).rejects.toMatchObject({ code: 'MISSING_REQUIRED_FIELD' });
       await expect(
         createSubUser(db, 'c1', {
           email: 'ok@c1.com',
           full_name: '',
-          password: 'password123',
         }),
       ).rejects.toMatchObject({ code: 'MISSING_REQUIRED_FIELD' });
-      await expect(
-        createSubUser(db, 'c1', {
-          email: 'ok@c1.com',
-          full_name: 'User',
-          password: '',
-        }),
-      ).rejects.toMatchObject({ code: 'MISSING_REQUIRED_FIELD' });
+    });
+
+    it('generates the password itself and returns it exactly once', async () => {
+      const db = makeStubWithPasswordReadback([]);
+      const created = await createSubUser(db.db, 'c1', {
+        email: 'generated@c1.com',
+        full_name: 'Generated',
+      });
+
+      expect(created.generatedPassword).toHaveLength(GENERATED_PASSWORD_LENGTH);
+
+      // The plaintext is never persisted — the stored hash must be a
+      // bcrypt hash that VERIFIES against the returned password. A
+      // weaker assertion (hash !== password) would also pass if the
+      // row held some unrelated string.
+      const stored = db.readHash(created.id);
+      expect(stored).toMatch(/^\$2[aby]\$/);
+      expect(await bcrypt.compare(created.generatedPassword, stored!)).toBe(true);
+
+      // It must not leak into the listing surface.
+      const [listed] = await listSubUsers(db.db, 'c1');
+      expect(listed).not.toHaveProperty('generatedPassword');
+      expect(listed).not.toHaveProperty('passwordHash');
+    });
+
+    it('issues a different password to every sub-user', async () => {
+      const db = makeStub([]);
+      const passwords = new Set<string>();
+      for (let i = 0; i < 10; i++) {
+        const created = await createSubUser(db, 'c1', {
+          email: `u${i}@c1.com`,
+          full_name: `U${i}`,
+        });
+        passwords.add(created.generatedPassword);
+      }
+      expect(passwords.size).toBe(10);
     });
   });
 
@@ -551,43 +595,49 @@ describe('sub-users-service', () => {
     });
   });
 
-  describe('resetSubUserPassword (Phase 4)', () => {
-    it('resets a user password to a new bcrypt hash', async () => {
+  describe('resetSubUserPassword', () => {
+    it('regenerates the password and stores only its bcrypt hash', async () => {
       const { db, readHash } = makeStubWithPasswordReadback(SEED);
       const before = readHash('u-user-1');
-      await resetSubUserPassword(db, 'c1', 'u-user-1', 'brand-new-pw-123');
+
+      const issued = await resetSubUserPassword(db, 'c1', 'u-user-1');
+
+      expect(issued).toHaveLength(GENERATED_PASSWORD_LENGTH);
       const after = readHash('u-user-1');
       expect(after).not.toBe(before);
-      expect(after).not.toBe('brand-new-pw-123'); // Should be hashed, not stored plaintext
-      // Bcrypt hash starts with $2a$ or $2b$
+      expect(after).not.toBe(issued); // hashed, never plaintext
       expect(after).toMatch(/^\$2[aby]\$/);
+      // The returned value must be the one that actually logs in —
+      // asserting only "the hash changed" would pass even if the
+      // service hashed something else and handed back a stray string.
+      expect(await bcrypt.compare(issued, after!)).toBe(true);
     });
 
-    it('rejects short passwords', async () => {
+    it('issues a different password on every reset', async () => {
       const { db } = makeStubWithPasswordReadback(SEED);
-      await expect(
-        resetSubUserPassword(db, 'c1', 'u-user-1', 'short'),
-      ).rejects.toMatchObject({ code: 'INVALID_FIELD_VALUE' });
+      const first = await resetSubUserPassword(db, 'c1', 'u-user-1');
+      const second = await resetSubUserPassword(db, 'c1', 'u-user-1');
+      expect(first).not.toBe(second);
     });
 
-    it('rejects an empty password', async () => {
-      const { db } = makeStubWithPasswordReadback(SEED);
-      await expect(
-        resetSubUserPassword(db, 'c1', 'u-user-1', ''),
-      ).rejects.toMatchObject({ code: 'INVALID_FIELD_VALUE' });
+    it('leaves the old password unusable after a reset', async () => {
+      const { db, readHash } = makeStubWithPasswordReadback(SEED);
+      const first = await resetSubUserPassword(db, 'c1', 'u-user-1');
+      await resetSubUserPassword(db, 'c1', 'u-user-1');
+      expect(await bcrypt.compare(first, readHash('u-user-1')!)).toBe(false);
     });
 
     it('returns 404 for users not in this tenant', async () => {
       const { db } = makeStubWithPasswordReadback(SEED);
       await expect(
-        resetSubUserPassword(db, 'c1', 'u-admin-2', 'brand-new-pw-123'),
+        resetSubUserPassword(db, 'c1', 'u-admin-2'),
       ).rejects.toMatchObject({ code: 'USER_NOT_FOUND' });
     });
 
     it('returns 404 for non-existent users', async () => {
       const { db } = makeStubWithPasswordReadback(SEED);
       await expect(
-        resetSubUserPassword(db, 'c1', 'u-does-not-exist', 'brand-new-pw-123'),
+        resetSubUserPassword(db, 'c1', 'u-does-not-exist'),
       ).rejects.toMatchObject({ code: 'USER_NOT_FOUND' });
     });
   });

@@ -449,11 +449,26 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
   }, async (request, reply) => {
     const { tenantId } = request.params as { tenantId: string };
 
+    // Sub-user passwords are always server-generated. Reject an
+    // explicit `password` with a message that says why — the generic
+    // "Unrecognized key(s) in object" from `.strict()` would leave the
+    // caller guessing, and silently ignoring it would hand back a 201
+    // for a password that never took effect.
+    if (request.body && typeof request.body === 'object' && 'password' in request.body) {
+      throw new ApiError(
+        'INVALID_FIELD_VALUE',
+        'password cannot be set manually; the server generates one and returns it as generatedPassword',
+        400,
+        { field: 'password' },
+      );
+    }
+
     const parsed = createSubUserSchema.safeParse(request.body);
     if (!parsed.success) {
       const firstError = parsed.error.issues[0];
+      const isUnknownKey = firstError.code === 'unrecognized_keys';
       throw new ApiError(
-        firstError.path.length > 0 ? 'INVALID_FIELD_VALUE' : 'MISSING_REQUIRED_FIELD',
+        firstError.path.length > 0 || isUnknownKey ? 'INVALID_FIELD_VALUE' : 'MISSING_REQUIRED_FIELD',
         `Validation error: ${firstError.message}${firstError.path.length > 0 ? ` (${firstError.path.join('.')})` : ''}`,
         400,
         { field: firstError.path.join('.') },
@@ -519,11 +534,12 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // POST /api/v1/tenants/:tenantId/users/:userId/reset-password — admin-
-  // assisted password reset. Phase 4: tenant_admin + staff can set a new
-  // password for a sub-user. The caller is responsible for communicating
-  // the new password to the user out-of-band (no email is sent). JWTs
-  // issued before the reset are NOT invalidated — that's blocked on the
-  // deferred session-management epic.
+  // assisted password reset. tenant_admin + staff can REGENERATE a
+  // sub-user's password; the new value is server-generated and returned
+  // once in the response body. The caller communicates it to the user
+  // out-of-band (no email is sent). Access JWTs issued before the reset
+  // are NOT invalidated — that's blocked on the deferred
+  // session-management epic; refresh tokens are revoked below.
   app.post('/tenants/:tenantId/users/:userId/reset-password', {
     onRequest: [
       requireRole('super_admin', 'admin', 'tenant_admin'),
@@ -532,7 +548,23 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
   }, async (request, reply) => {
     const { tenantId, userId } = request.params as { tenantId: string; userId: string };
 
-    const parsed = resetSubUserPasswordSchema.safeParse(request.body);
+    // A caller still sending `new_password` must fail loudly: the
+    // endpoint would otherwise return 200 with a DIFFERENT password
+    // than the one they asked for, and they would hand the user a
+    // credential that never worked.
+    if (request.body && typeof request.body === 'object' && 'new_password' in request.body) {
+      throw new ApiError(
+        'INVALID_FIELD_VALUE',
+        'new_password is no longer accepted; this endpoint generates a new password and returns it',
+        400,
+        { field: 'new_password' },
+      );
+    }
+
+    // The endpoint takes no input, so clients legitimately send no
+    // body at all — `safeParse(undefined)` against an object schema
+    // would reject that. Normalise to `{}` first.
+    const parsed = resetSubUserPasswordSchema.safeParse(request.body ?? {});
     if (!parsed.success) {
       const firstError = parsed.error.issues[0];
       throw new ApiError(
@@ -543,11 +575,10 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
       );
     }
 
-    await resetSubUserPassword(
+    const password = await resetSubUserPassword(
       makeDrizzleSubUsersDb(app.db),
       tenantId,
       userId,
-      parsed.data.new_password,
     );
 
     // Phase 3: invalidate every active refresh token so the user
@@ -556,7 +587,7 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
     const { revokeAllUserRefreshTokens } = await import('../auth/refresh-token-service.js');
     await revokeAllUserRefreshTokens(app.db, userId, 'password_change');
 
-    reply.status(204).send();
+    reply.status(200).send(success({ password }));
   });
 
   // DELETE /api/v1/tenants/:tenantId/users/:userId

@@ -64,6 +64,59 @@ describe('getTenantById', () => {
   });
 });
 
+/**
+ * Drive a full `createTenant` against the chainable-mock db and hand
+ * back every row it tried to insert, in order: [0] the tenants row,
+ * [1] the auto-provisioned tenant_admin users row.
+ *
+ * Select results fire in the order the service issues them:
+ *   1. plan validation  2. region validation
+ *   3. created-tenant read-back  4. existing-user check (empty = free)
+ */
+async function runCreateTenant(
+  input: Parameters<typeof createTenant>[1],
+): Promise<{ insertValuesCalls: Array<Record<string, unknown>> }> {
+  const selects: unknown[][] = [
+    [{ id: 'plan' }],
+    [{ id: 'region' }],
+    [{ id: 'c-new', name: input.name, timezone: 'UTC' }],
+    [],
+  ];
+  const makeWhereResult = () => {
+    const value = selects.shift() ?? [];
+    const promise = Promise.resolve(value);
+    (promise as unknown as { limit: (n: number) => Promise<unknown> }).limit = () => Promise.resolve(value);
+    return promise;
+  };
+  const whereFn = vi.fn().mockImplementation(makeWhereResult);
+  const fromFn = vi.fn().mockReturnValue({ where: whereFn });
+  const selectFn = vi.fn().mockReturnValue({ from: fromFn });
+
+  const insertValuesCalls: Array<Record<string, unknown>> = [];
+  const insertValues = vi.fn((row: Record<string, unknown>) => {
+    insertValuesCalls.push(row);
+    return Promise.resolve(undefined);
+  });
+  const insertFn = vi.fn().mockReturnValue({ values: insertValues });
+
+  const db = {
+    select: selectFn,
+    insert: insertFn,
+  } as unknown as Parameters<typeof createTenant>[0];
+
+  await createTenant(db, input, 'creator');
+
+  // Guard against a silently short-circuited create: if the service
+  // bailed before the users insert, every assertion on
+  // `insertValuesCalls[1]` would read `undefined` and vacuously pass.
+  if (insertValuesCalls.length < 2) {
+    throw new Error(
+      `createTenant inserted ${insertValuesCalls.length} row(s); expected the tenant row AND the tenant_admin user row`,
+    );
+  }
+  return { insertValuesCalls };
+}
+
 describe('createTenant', () => {
   it('applies the system default timezone when input does not specify one', async () => {
     // Selects fire in order:
@@ -152,6 +205,43 @@ describe('createTenant', () => {
     }, 'creator');
 
     expect(insertValuesCalls[0].timezone).toBe('America/Los_Angeles');
+  });
+
+  /**
+   * The auto-provisioned tenant_admin login belongs to a PERSON, so
+   * it carries `contact_name`. It used to be seeded with the
+   * organisation name, which then surfaced as the user's full name in
+   * the team list, the audit-log actor column, and mail headers.
+   */
+  it('names the auto-created tenant login after the contact, not the organisation', async () => {
+    const { insertValuesCalls } = await runCreateTenant({
+      name: 'Acme Corp',
+      primary_email: 'admin@acme.test',
+      contact_name: 'Jane Doe',
+      plan_id: '550e8400-e29b-41d4-a716-446655440000',
+      region_id: '550e8400-e29b-41d4-a716-446655440001',
+    });
+
+    // [0] is the tenants row, [1] is the users row.
+    expect(insertValuesCalls[0].name).toBe('Acme Corp');
+    expect(insertValuesCalls[0].contactName).toBe('Jane Doe');
+    expect(insertValuesCalls[1].fullName).toBe('Jane Doe');
+    expect(insertValuesCalls[1].roleName).toBe('tenant_admin');
+  });
+
+  it('falls back to the organisation name when contact_name is omitted', async () => {
+    // `contact_name` is optional at the API layer (scripted callers
+    // may omit it) and `users.full_name` is NOT NULL, so the fallback
+    // has to be a real value rather than an empty string.
+    const { insertValuesCalls } = await runCreateTenant({
+      name: 'Acme Corp',
+      primary_email: 'admin@acme.test',
+      plan_id: '550e8400-e29b-41d4-a716-446655440000',
+      region_id: '550e8400-e29b-41d4-a716-446655440001',
+    });
+
+    expect(insertValuesCalls[0].contactName).toBeNull();
+    expect(insertValuesCalls[1].fullName).toBe('Acme Corp');
   });
 
   it('should insert and return created tenant', async () => {

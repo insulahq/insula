@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import {
   Users, Plus, Loader2, AlertCircle, Trash2, X, Edit2,
-  Power, PowerOff, KeyRound, CheckCircle, Info,
+  Power, PowerOff, KeyRound, CheckCircle, Info, Copy,
 } from 'lucide-react';
 import {
   useAdminSubUsers,
@@ -33,6 +33,64 @@ const ROLE_BADGE_CLASSES: Record<SubUserRole, string> = {
   tenant_user: 'bg-blue-50 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300',
 };
 
+/**
+ * One-shot credential display. Sub-user passwords are always
+ * server-generated (at create and at reset) and only their bcrypt
+ * hash is stored, so this render is the single chance to capture the
+ * value.
+ */
+function GeneratedCredentials({
+  email,
+  password,
+  testId,
+}: {
+  readonly email: string;
+  readonly password: string;
+  readonly testId: string;
+}) {
+  const [copied, setCopied] = useState(false);
+
+  return (
+    <div className="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 p-4" data-testid={testId}>
+      <div className="mb-2 flex items-center gap-2">
+        <KeyRound size={16} className="text-amber-600 dark:text-amber-400" />
+        <span className="text-sm font-semibold text-amber-800 dark:text-amber-300">
+          Generated password
+        </span>
+      </div>
+      <p className="mb-3 text-xs text-amber-700 dark:text-amber-400">
+        Copy this now — it is not stored and will never be shown again. Share it
+        with the user over a secure channel; they are not notified automatically.
+      </p>
+      <div className="space-y-1 text-sm">
+        <div>
+          <span className="text-gray-500 dark:text-gray-400">Email:</span>{' '}
+          <span className="font-mono font-medium text-gray-900 dark:text-gray-100">{email}</span>
+        </div>
+        <div>
+          <span className="text-gray-500 dark:text-gray-400">Password:</span>{' '}
+          <span className="font-mono font-medium text-gray-900 dark:text-gray-100" data-testid={`${testId}-value`}>
+            {password}
+          </span>
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={() => {
+          void navigator.clipboard.writeText(`Email: ${email}\nPassword: ${password}`);
+          setCopied(true);
+          setTimeout(() => setCopied(false), 2000);
+        }}
+        className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-amber-300 dark:border-amber-700 bg-white dark:bg-gray-800 px-3 py-1.5 text-xs font-medium text-amber-700 dark:text-amber-400 hover:bg-amber-100 dark:hover:bg-amber-900/30"
+        data-testid={`${testId}-copy`}
+      >
+        {copied ? <CheckCircle size={12} /> : <Copy size={12} />}
+        {copied ? 'Copied!' : 'Copy Credentials'}
+      </button>
+    </div>
+  );
+}
+
 export default function TenantUsersTab({ tenantId }: { readonly tenantId: string }) {
   const { data, isLoading, isError } = useAdminSubUsers(tenantId);
   const createUser = useAdminCreateSubUser(tenantId);
@@ -46,18 +104,24 @@ export default function TenantUsersTab({ tenantId }: { readonly tenantId: string
   const [resetPasswordUser, setResetPasswordUser] = useState<SubUser | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [disableConfirmId, setDisableConfirmId] = useState<string | null>(null);
+  // The password the server generated for the user we just created.
+  // Held until dismissed — it cannot be re-fetched.
+  const [newCredentials, setNewCredentials] = useState<{ email: string; password: string } | null>(null);
   const [form, setForm] = useState<{
     email: string;
     full_name: string;
-    password: string;
     role_name: SubUserRole;
-  }>({ email: '', full_name: '', password: '', role_name: 'tenant_user' });
+  }>({ email: '', full_name: '', role_name: 'tenant_user' });
 
   const handleCreate = async (e: FormEvent) => {
     e.preventDefault();
     try {
-      await createUser.mutateAsync(form);
-      setForm({ email: '', full_name: '', password: '', role_name: 'tenant_user' });
+      const result = await createUser.mutateAsync(form);
+      setNewCredentials({
+        email: result.data.email,
+        password: result.data.generatedPassword,
+      });
+      setForm({ email: '', full_name: '', role_name: 'tenant_user' });
       setShowForm(false);
     } catch {
       // Error surfaces via createUser.error
@@ -170,18 +234,6 @@ export default function TenantUsersTab({ tenantId }: { readonly tenantId: string
               />
             </div>
             <div>
-              <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Password</label>
-              <input
-                type="password"
-                className={INPUT_CLASS + ' mt-1'}
-                value={form.password}
-                onChange={(e) => setForm({ ...form, password: e.target.value })}
-                required
-                minLength={8}
-                data-testid="tenant-users-password-input"
-              />
-            </div>
-            <div>
               <label htmlFor="tenant-users-role" className="block text-xs font-medium text-gray-700 dark:text-gray-300">Role</label>
               <select
                 id="tenant-users-role"
@@ -195,6 +247,11 @@ export default function TenantUsersTab({ tenantId }: { readonly tenantId: string
               </select>
             </div>
           </div>
+          <p className="mt-3 flex items-start gap-2 text-[11px] text-gray-500 dark:text-gray-400">
+            <Info size={13} className="mt-0.5 shrink-0" />
+            A strong password is generated automatically and shown once after
+            the user is created. Passwords cannot be chosen by hand.
+          </p>
           {createUser.error && (
             <div className="mt-3 flex items-center gap-2 text-sm text-red-600">
               <AlertCircle size={14} />
@@ -213,6 +270,26 @@ export default function TenantUsersTab({ tenantId }: { readonly tenantId: string
             </button>
           </div>
         </form>
+      )}
+
+      {newCredentials && (
+        <div className="space-y-3">
+          <GeneratedCredentials
+            email={newCredentials.email}
+            password={newCredentials.password}
+            testId="tenant-users-new-credentials"
+          />
+          <div className="flex justify-end">
+            <button
+              type="button"
+              onClick={() => setNewCredentials(null)}
+              className="rounded-lg border border-gray-200 dark:border-gray-700 px-4 py-2 text-sm font-medium text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
+              data-testid="tenant-users-dismiss-credentials"
+            >
+              Done
+            </button>
+          </div>
+        </div>
       )}
 
       {users.length === 0 ? (
@@ -370,18 +447,15 @@ export default function TenantUsersTab({ tenantId }: { readonly tenantId: string
             setResetPasswordUser(null);
             resetPassword.reset();
           }}
-          onSave={async (newPassword) => {
+          onConfirm={async () => {
             try {
-              await resetPassword.mutateAsync({
-                userId: resetPasswordUser.id,
-                newPassword,
-              });
+              await resetPassword.mutateAsync({ userId: resetPasswordUser.id });
             } catch {
               // surfaced via resetPassword.error
             }
           }}
           isPending={resetPassword.isPending}
-          isSuccess={resetPassword.isSuccess}
+          newPassword={resetPassword.data?.data.password ?? null}
           error={resetPassword.error}
         />
       )}
@@ -522,37 +596,29 @@ function EditUserModal({
   );
 }
 
+/**
+ * Reset = REGENERATE. There is no password field: the server picks a
+ * new strong password and returns it once, which this modal then
+ * displays. Typing a password by hand is deliberately unavailable.
+ */
 function ResetPasswordModal({
   user,
   onClose,
-  onSave,
+  onConfirm,
   isPending,
-  isSuccess,
+  newPassword,
   error,
 }: {
   readonly user: SubUser;
   readonly onClose: () => void;
-  readonly onSave: (newPassword: string) => Promise<void>;
+  readonly onConfirm: () => Promise<void>;
   readonly isPending: boolean;
-  readonly isSuccess: boolean;
+  readonly newPassword: string | null;
   readonly error: Error | null;
 }) {
-  const [newPassword, setNewPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
-  const [mismatchError, setMismatchError] = useState<string | null>(null);
-
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
-    setMismatchError(null);
-    if (newPassword !== confirmPassword) {
-      setMismatchError('Passwords do not match');
-      return;
-    }
-    if (newPassword.length < 8) {
-      setMismatchError('Password must be at least 8 characters');
-      return;
-    }
-    void onSave(newPassword);
+    void onConfirm();
   };
 
   return (
@@ -577,15 +643,20 @@ function ResetPasswordModal({
           </button>
         </div>
 
-        {isSuccess ? (
+        {newPassword ? (
           <div className="space-y-4">
             <div className="flex items-start gap-2 rounded-lg border border-green-200 dark:border-green-800 bg-green-50 dark:bg-green-900/20 px-4 py-3 text-sm text-green-700 dark:text-green-300" data-testid="tenant-users-reset-success">
               <CheckCircle size={16} className="mt-0.5 shrink-0" />
               <div>
-                Password updated for <strong>{user.fullName}</strong>. Share the
-                new password with them securely — it is not shown again.
+                A new password was generated for <strong>{user.fullName}</strong>.
+                Their previous password no longer works.
               </div>
             </div>
+            <GeneratedCredentials
+              email={user.email}
+              password={newPassword}
+              testId="tenant-users-reset-credentials"
+            />
             <div className="flex justify-end">
               <button
                 type="button"
@@ -602,47 +673,14 @@ function ResetPasswordModal({
             <div className="flex items-start gap-2 rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 px-4 py-3 text-xs text-amber-700 dark:text-amber-300">
               <Info size={14} className="mt-0.5 shrink-0" />
               <div>
-                Setting a new password for <strong>{user.fullName}</strong>
-                {' '}({user.email}). The user is not notified automatically.
+                This generates a new password for <strong>{user.fullName}</strong>
+                {' '}({user.email}) and shows it once. Their current password stops
+                working immediately, and they are not notified automatically.
                 This action is recorded in the audit log.
               </div>
             </div>
-            <div>
-              <label htmlFor="admin-reset-new-password" className="block text-xs font-medium text-gray-700 dark:text-gray-300">New Password</label>
-              <input
-                id="admin-reset-new-password"
-                type="password"
-                value={newPassword}
-                onChange={(e) => setNewPassword(e.target.value)}
-                required
-                minLength={8}
-                maxLength={255}
-                className={INPUT_CLASS + ' mt-1'}
-                data-testid="tenant-users-reset-new-input"
-              />
-            </div>
-            <div>
-              <label htmlFor="admin-reset-confirm-password" className="block text-xs font-medium text-gray-700 dark:text-gray-300">Confirm New Password</label>
-              <input
-                id="admin-reset-confirm-password"
-                type="password"
-                value={confirmPassword}
-                onChange={(e) => setConfirmPassword(e.target.value)}
-                required
-                minLength={8}
-                maxLength={255}
-                className={INPUT_CLASS + ' mt-1'}
-                data-testid="tenant-users-reset-confirm-input"
-              />
-            </div>
-            {mismatchError && (
-              <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400" data-testid="tenant-users-reset-mismatch-error">
-                <AlertCircle size={14} />
-                {mismatchError}
-              </div>
-            )}
-            {error && !mismatchError && (
-              <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400">
+            {error && (
+              <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400" data-testid="tenant-users-reset-error">
                 <AlertCircle size={14} />
                 {error instanceof Error ? error.message : 'Failed to reset password'}
               </div>
@@ -663,7 +701,7 @@ function ResetPasswordModal({
                 data-testid="tenant-users-reset-save"
               >
                 {isPending && <Loader2 size={14} className="animate-spin" />}
-                Reset Password
+                Generate New Password
               </button>
             </div>
           </form>

@@ -1,6 +1,8 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import type {
   CreateSubUserInput,
+  CreatedSubUser,
+  ResetSubUserPasswordResponse,
   SubUser,
   SubUserRole,
   UpdateSubUserInput,
@@ -10,6 +12,8 @@ import { apiFetch } from '@/lib/api-client';
 export type {
   SubUser,
   CreateSubUserInput,
+  CreatedSubUser,
+  ResetSubUserPasswordResponse,
   SubUserRole,
   UpdateSubUserInput,
 } from '@insula/api-contracts';
@@ -22,11 +26,17 @@ export function useSubUsers(tenantId: string | null) {
   });
 }
 
+/**
+ * Create a team member. The password is NOT part of the input — the
+ * server generates one and returns it in `data.generatedPassword`.
+ * That response is the only time it is ever available, so the caller
+ * must surface it to the operator.
+ */
 export function useCreateSubUser(tenantId: string | null) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (input: CreateSubUserInput) =>
-      apiFetch<{ data: SubUser }>(`/api/v1/tenants/${tenantId}/users`, {
+      apiFetch<{ data: CreatedSubUser }>(`/api/v1/tenants/${tenantId}/users`, {
         method: 'POST', body: JSON.stringify(input),
       }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['sub-users', tenantId] }); },
@@ -49,17 +59,20 @@ export function useUpdateSubUser(tenantId: string | null) {
 }
 
 /**
- * Phase 4: admin-assisted password reset. The calling tenant_admin
- * sets a new password for a teammate and is responsible for
- * communicating it out-of-band. No email is sent.
+ * Admin-assisted password reset. Takes no password: the server
+ * regenerates one and returns it in `data.password`. The calling
+ * tenant_admin communicates it out-of-band — no email is sent.
+ *
+ * Sent with no request body at all, which `apiFetch` turns into a
+ * POST with no Content-Type. The route normalises that to `{}`.
  */
 export function useResetSubUserPassword(tenantId: string | null) {
   return useMutation({
-    mutationFn: ({ userId, newPassword }: { userId: string; newPassword: string }) =>
-      apiFetch<void>(`/api/v1/tenants/${tenantId}/users/${userId}/reset-password`, {
-        method: 'POST',
-        body: JSON.stringify({ new_password: newPassword }),
-      }),
+    mutationFn: ({ userId }: { userId: string }) =>
+      apiFetch<{ data: ResetSubUserPasswordResponse }>(
+        `/api/v1/tenants/${tenantId}/users/${userId}/reset-password`,
+        { method: 'POST' },
+      ),
   });
 }
 

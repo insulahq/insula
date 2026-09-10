@@ -37,7 +37,9 @@ const updateUserMutate = vi.fn();
 const resetPasswordMutate = vi.fn();
 const resetPasswordReset = vi.fn();
 const deleteUserMutate = vi.fn();
-let resetPasswordIsSuccess = false;
+// The reset mutation now RESOLVES WITH the regenerated password, so
+// the modal renders from `data` rather than a bare `isSuccess` flag.
+let resetPasswordData: { data: { password: string } } | undefined;
 vi.mock('../hooks/use-sub-users', () => ({
   useSubUsers: vi.fn(() => ({
     data: { data: [] },
@@ -51,7 +53,7 @@ vi.mock('../hooks/use-sub-users', () => ({
     mutateAsync: resetPasswordMutate,
     reset: resetPasswordReset,
     isPending: false,
-    isSuccess: resetPasswordIsSuccess,
+    data: resetPasswordData,
     error: null,
   })),
   useDeleteSubUser: vi.fn(() => ({ mutateAsync: deleteUserMutate, isPending: false, error: null })),
@@ -60,6 +62,27 @@ vi.mock('../hooks/use-sub-users', () => ({
 import { useSubUsers } from '../hooks/use-sub-users';
 
 const mockedUseSubUsers = vi.mocked(useSubUsers);
+
+/**
+ * Shape of a successful create response. The page reads
+ * `data.generatedPassword` off it, so a stub missing that field would
+ * render `undefined` as the credential instead of failing loudly.
+ */
+function createdUserResponse(
+  overrides: { email?: string; generatedPassword?: string } = {},
+) {
+  return {
+    data: {
+      id: 'u-new',
+      email: overrides.email ?? 'new@c1.com',
+      fullName: 'New Guy',
+      roleName: 'tenant_user',
+      status: 'active',
+      createdAt: '2026-01-02T00:00:00Z',
+      generatedPassword: overrides.generatedPassword ?? 'Generated!Password01',
+    },
+  };
+}
 
 function createTestQueryClient() {
   return new QueryClient({
@@ -93,7 +116,7 @@ describe('SubUsers Page', () => {
     updateUserMutate.mockReset();
     resetPasswordMutate.mockReset();
     resetPasswordReset.mockReset();
-    resetPasswordIsSuccess = false;
+    resetPasswordData = undefined;
     deleteUserMutate.mockReset();
   });
 
@@ -213,13 +236,12 @@ describe('SubUsers Page', () => {
     });
 
     it('defaults new users to tenant_user', async () => {
-      createUserMutate.mockResolvedValueOnce({ data: { id: 'u-new' } });
+      createUserMutate.mockResolvedValueOnce(createdUserResponse());
       const user = userEvent.setup();
       renderWithProviders(<SubUsers />);
       await user.click(screen.getByTestId('add-user-button'));
       await user.type(screen.getByTestId('user-name-input'), 'New Guy');
       await user.type(screen.getByTestId('user-email-input'), 'new@c1.com');
-      await user.type(screen.getByTestId('user-password-input'), 'password123');
       await user.click(screen.getByTestId('submit-user'));
       expect(createUserMutate).toHaveBeenCalledWith(
         expect.objectContaining({ role_name: 'tenant_user' }),
@@ -227,18 +249,61 @@ describe('SubUsers Page', () => {
     });
 
     it('creates a tenant_admin when that role is selected', async () => {
-      createUserMutate.mockResolvedValueOnce({ data: { id: 'u-new' } });
+      createUserMutate.mockResolvedValueOnce(createdUserResponse());
       const user = userEvent.setup();
       renderWithProviders(<SubUsers />);
       await user.click(screen.getByTestId('add-user-button'));
       await user.type(screen.getByTestId('user-name-input'), 'Promoted');
       await user.type(screen.getByTestId('user-email-input'), 'promo@c1.com');
-      await user.type(screen.getByTestId('user-password-input'), 'password123');
       await user.selectOptions(screen.getByTestId('user-role-select'), 'tenant_admin');
       await user.click(screen.getByTestId('submit-user'));
       expect(createUserMutate).toHaveBeenCalledWith(
         expect.objectContaining({ role_name: 'tenant_admin' }),
       );
+    });
+
+    // ─── Server-generated passwords ────────────────────────────────
+    it('offers no password field — the server generates one', async () => {
+      const user = userEvent.setup();
+      renderWithProviders(<SubUsers />);
+      await user.click(screen.getByTestId('add-user-button'));
+      expect(screen.queryByTestId('user-password-input')).not.toBeInTheDocument();
+      // Nothing password-shaped anywhere in the form.
+      expect(
+        screen.getByTestId('create-user-form').querySelectorAll('input[type="password"]'),
+      ).toHaveLength(0);
+    });
+
+    it('never sends a password field to the API', async () => {
+      createUserMutate.mockResolvedValueOnce(createdUserResponse());
+      const user = userEvent.setup();
+      renderWithProviders(<SubUsers />);
+      await user.click(screen.getByTestId('add-user-button'));
+      await user.type(screen.getByTestId('user-name-input'), 'New Guy');
+      await user.type(screen.getByTestId('user-email-input'), 'new@c1.com');
+      await user.click(screen.getByTestId('submit-user'));
+      expect(createUserMutate).toHaveBeenCalledWith(
+        expect.not.objectContaining({ password: expect.anything() }),
+      );
+    });
+
+    it('shows the generated password once after creating a user', async () => {
+      createUserMutate.mockResolvedValueOnce(
+        createdUserResponse({ email: 'new@c1.com', generatedPassword: 'Sup3rSecret!Value00' }),
+      );
+      const user = userEvent.setup();
+      renderWithProviders(<SubUsers />);
+      await user.click(screen.getByTestId('add-user-button'));
+      await user.type(screen.getByTestId('user-name-input'), 'New Guy');
+      await user.type(screen.getByTestId('user-email-input'), 'new@c1.com');
+      await user.click(screen.getByTestId('submit-user'));
+
+      expect(await screen.findByTestId('new-user-credentials')).toBeInTheDocument();
+      expect(screen.getByTestId('new-user-credentials-value')).toHaveTextContent('Sup3rSecret!Value00');
+
+      // Dismissing clears it — there is no way back to the value.
+      await user.click(screen.getByTestId('dismiss-new-user-credentials'));
+      expect(screen.queryByTestId('new-user-credentials')).not.toBeInTheDocument();
     });
 
     it('renders the role column as "Admin" or "Member" (not the raw enum)', () => {
@@ -387,60 +452,35 @@ describe('SubUsers Page', () => {
         expect(screen.getByTestId('reset-password-u1')).toBeInTheDocument();
       });
 
-      it('opens the reset password modal on button click', async () => {
+      it('opens a confirm-only modal with no password fields', async () => {
         const user = userEvent.setup();
         renderWithProviders(<SubUsers />);
         await user.click(screen.getByTestId('reset-password-u1'));
-        expect(screen.getByTestId('reset-password-modal')).toBeInTheDocument();
-        expect(screen.getByTestId('reset-new-password-input')).toBeInTheDocument();
-        expect(screen.getByTestId('reset-confirm-password-input')).toBeInTheDocument();
+        const modal = screen.getByTestId('reset-password-modal');
+        expect(modal).toBeInTheDocument();
+        // A reset REGENERATES — there is nothing to type.
+        expect(screen.queryByTestId('reset-new-password-input')).not.toBeInTheDocument();
+        expect(screen.queryByTestId('reset-confirm-password-input')).not.toBeInTheDocument();
+        expect(modal.querySelectorAll('input')).toHaveLength(0);
       });
 
-      it('rejects mismatched confirmation before calling the mutation', async () => {
+      it('calls the mutation with only the user id', async () => {
+        resetPasswordMutate.mockResolvedValueOnce({ data: { password: 'x' } });
         const user = userEvent.setup();
         renderWithProviders(<SubUsers />);
         await user.click(screen.getByTestId('reset-password-u1'));
-        await user.type(screen.getByTestId('reset-new-password-input'), 'password123');
-        await user.type(screen.getByTestId('reset-confirm-password-input'), 'different999');
         await user.click(screen.getByTestId('reset-password-save'));
-        expect(screen.getByTestId('reset-password-mismatch-error')).toBeInTheDocument();
-        expect(resetPasswordMutate).not.toHaveBeenCalled();
+        expect(resetPasswordMutate).toHaveBeenCalledWith({ userId: 'u1' });
       });
 
-      it('rejects a password shorter than 8 characters', async () => {
-        const user = userEvent.setup();
-        renderWithProviders(<SubUsers />);
-        await user.click(screen.getByTestId('reset-password-u1'));
-        // HTML5 minLength prevents <form onSubmit> from firing at all, so
-        // we verify the mutation wasn't called when the user tried to
-        // submit a short password. The mismatch helper also covers length.
-        await user.type(screen.getByTestId('reset-new-password-input'), 'short');
-        await user.type(screen.getByTestId('reset-confirm-password-input'), 'short');
-        await user.click(screen.getByTestId('reset-password-save'));
-        expect(resetPasswordMutate).not.toHaveBeenCalled();
-      });
-
-      it('calls the mutation with matching passwords', async () => {
-        resetPasswordMutate.mockResolvedValueOnce(undefined);
-        const user = userEvent.setup();
-        renderWithProviders(<SubUsers />);
-        await user.click(screen.getByTestId('reset-password-u1'));
-        await user.type(screen.getByTestId('reset-new-password-input'), 'brand-new-pw-123');
-        await user.type(screen.getByTestId('reset-confirm-password-input'), 'brand-new-pw-123');
-        await user.click(screen.getByTestId('reset-password-save'));
-        expect(resetPasswordMutate).toHaveBeenCalledWith({
-          userId: 'u1',
-          newPassword: 'brand-new-pw-123',
-        });
-      });
-
-      it('shows a success state after the mutation resolves', async () => {
-        resetPasswordIsSuccess = true;
+      it('displays the regenerated password once the mutation resolves', async () => {
+        resetPasswordData = { data: { password: 'Regenerated!Pw02' } };
         const user = userEvent.setup();
         renderWithProviders(<SubUsers />);
         await user.click(screen.getByTestId('reset-password-u1'));
         expect(screen.getByTestId('reset-password-success')).toBeInTheDocument();
-        expect(screen.getByText(/Password updated for/)).toBeInTheDocument();
+        expect(screen.getByTestId('reset-password-credentials-value'))
+          .toHaveTextContent('Regenerated!Pw02');
         await user.click(screen.getByTestId('reset-password-done'));
         expect(resetPasswordReset).toHaveBeenCalled();
       });

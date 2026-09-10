@@ -10,7 +10,9 @@ const updateMutate = vi.fn();
 const resetMutate = vi.fn();
 const resetResetFn = vi.fn();
 const deleteMutate = vi.fn();
-let resetIsSuccess = false;
+// The reset mutation now RESOLVES WITH the regenerated password, so
+// the modal renders from `data` rather than a bare `isSuccess` flag.
+let resetData: { data: { password: string } } | undefined;
 
 vi.mock('../hooks/use-sub-users', () => ({
   useAdminSubUsers: vi.fn(() => ({
@@ -32,7 +34,7 @@ vi.mock('../hooks/use-sub-users', () => ({
     mutateAsync: resetMutate,
     reset: resetResetFn,
     isPending: false,
-    isSuccess: resetIsSuccess,
+    data: resetData,
     error: null,
   })),
   useAdminDeleteSubUser: vi.fn(() => ({
@@ -43,6 +45,27 @@ vi.mock('../hooks/use-sub-users', () => ({
 
 import { useAdminSubUsers } from '../hooks/use-sub-users';
 const mockedUseAdminSubUsers = vi.mocked(useAdminSubUsers);
+
+/**
+ * Shape of a successful create response. The tab reads
+ * `data.generatedPassword` off it, so a stub missing that field would
+ * render `undefined` as the credential instead of failing loudly.
+ */
+function createdUserResponse(
+  overrides: { email?: string; generatedPassword?: string } = {},
+) {
+  return {
+    data: {
+      id: 'u-new',
+      email: overrides.email ?? 'charlie@c1.com',
+      fullName: 'Charlie',
+      roleName: 'tenant_user',
+      status: 'active',
+      createdAt: '2026-01-02T00:00:00Z',
+      generatedPassword: overrides.generatedPassword ?? 'Generated!Password01',
+    },
+  };
+}
 
 function createWrapper() {
   const qc = new QueryClient({
@@ -64,7 +87,7 @@ describe('TenantUsersTab', () => {
     resetMutate.mockReset();
     resetResetFn.mockReset();
     deleteMutate.mockReset();
-    resetIsSuccess = false;
+    resetData = undefined;
     mockedUseAdminSubUsers.mockReturnValue({
       data: { data: [] },
       isLoading: false,
@@ -144,18 +167,54 @@ describe('TenantUsersTab', () => {
     });
 
     it('opens the Add User form and calls the create mutation', async () => {
-      createMutate.mockResolvedValueOnce({ data: { id: 'u-new' } });
+      createMutate.mockResolvedValueOnce(createdUserResponse());
       const user = userEvent.setup();
       render(<TenantUsersTab tenantId="c1" />, { wrapper: createWrapper() });
       await user.click(screen.getByTestId('tenant-users-add-button'));
       expect(screen.getByTestId('tenant-users-create-form')).toBeInTheDocument();
       await user.type(screen.getByTestId('tenant-users-name-input'), 'Charlie');
       await user.type(screen.getByTestId('tenant-users-email-input'), 'charlie@c1.com');
-      await user.type(screen.getByTestId('tenant-users-password-input'), 'password123');
       await user.click(screen.getByTestId('tenant-users-submit'));
       expect(createMutate).toHaveBeenCalledWith(
         expect.objectContaining({ email: 'charlie@c1.com', role_name: 'tenant_user' }),
       );
+    });
+
+    it('offers no password field and never sends one', async () => {
+      createMutate.mockResolvedValueOnce(createdUserResponse());
+      const user = userEvent.setup();
+      render(<TenantUsersTab tenantId="c1" />, { wrapper: createWrapper() });
+      await user.click(screen.getByTestId('tenant-users-add-button'));
+      expect(screen.queryByTestId('tenant-users-password-input')).not.toBeInTheDocument();
+      expect(
+        screen.getByTestId('tenant-users-create-form').querySelectorAll('input[type="password"]'),
+      ).toHaveLength(0);
+
+      await user.type(screen.getByTestId('tenant-users-name-input'), 'Charlie');
+      await user.type(screen.getByTestId('tenant-users-email-input'), 'charlie@c1.com');
+      await user.click(screen.getByTestId('tenant-users-submit'));
+      expect(createMutate).toHaveBeenCalledWith(
+        expect.not.objectContaining({ password: expect.anything() }),
+      );
+    });
+
+    it('shows the generated password once after creating a user', async () => {
+      createMutate.mockResolvedValueOnce(
+        createdUserResponse({ email: 'charlie@c1.com', generatedPassword: 'Sup3rSecret!Value00' }),
+      );
+      const user = userEvent.setup();
+      render(<TenantUsersTab tenantId="c1" />, { wrapper: createWrapper() });
+      await user.click(screen.getByTestId('tenant-users-add-button'));
+      await user.type(screen.getByTestId('tenant-users-name-input'), 'Charlie');
+      await user.type(screen.getByTestId('tenant-users-email-input'), 'charlie@c1.com');
+      await user.click(screen.getByTestId('tenant-users-submit'));
+
+      expect(await screen.findByTestId('tenant-users-new-credentials')).toBeInTheDocument();
+      expect(screen.getByTestId('tenant-users-new-credentials-value'))
+        .toHaveTextContent('Sup3rSecret!Value00');
+
+      await user.click(screen.getByTestId('tenant-users-dismiss-credentials'));
+      expect(screen.queryByTestId('tenant-users-new-credentials')).not.toBeInTheDocument();
     });
 
     it('requires confirmation before disabling an active user', async () => {
@@ -198,41 +257,37 @@ describe('TenantUsersTab', () => {
       });
     });
 
-    it('opens the reset password modal and validates mismatch', async () => {
+    it('opens a confirm-only reset modal with no password fields', async () => {
       const user = userEvent.setup();
       render(<TenantUsersTab tenantId="c1" />, { wrapper: createWrapper() });
       await user.click(screen.getByTestId('tenant-users-reset-u1'));
-      expect(screen.getByTestId('tenant-users-reset-modal')).toBeInTheDocument();
-      await user.type(screen.getByTestId('tenant-users-reset-new-input'), 'password123');
-      await user.type(screen.getByTestId('tenant-users-reset-confirm-input'), 'different999');
-      await user.click(screen.getByTestId('tenant-users-reset-save'));
-      expect(screen.getByTestId('tenant-users-reset-mismatch-error')).toBeInTheDocument();
-      expect(resetMutate).not.toHaveBeenCalled();
+      const modal = screen.getByTestId('tenant-users-reset-modal');
+      expect(modal).toBeInTheDocument();
+      // A reset REGENERATES — there is nothing to type.
+      expect(screen.queryByTestId('tenant-users-reset-new-input')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('tenant-users-reset-confirm-input')).not.toBeInTheDocument();
+      expect(modal.querySelectorAll('input')).toHaveLength(0);
     });
 
-    it('calls the reset-password mutation with matching passwords', async () => {
-      resetMutate.mockResolvedValueOnce(undefined);
+    it('calls the reset-password mutation with only the user id', async () => {
+      resetMutate.mockResolvedValueOnce({ data: { password: 'x' } });
       const user = userEvent.setup();
       render(<TenantUsersTab tenantId="c1" />, { wrapper: createWrapper() });
       await user.click(screen.getByTestId('tenant-users-reset-u1'));
-      await user.type(screen.getByTestId('tenant-users-reset-new-input'), 'brand-new-pw-123');
-      await user.type(screen.getByTestId('tenant-users-reset-confirm-input'), 'brand-new-pw-123');
       await user.click(screen.getByTestId('tenant-users-reset-save'));
-      expect(resetMutate).toHaveBeenCalledWith({
-        userId: 'u1',
-        newPassword: 'brand-new-pw-123',
-      });
+      expect(resetMutate).toHaveBeenCalledWith({ userId: 'u1' });
     });
 
-    it('shows reset success state after opening the modal when isSuccess=true', async () => {
-      resetIsSuccess = true;
+    it('displays the regenerated password once the mutation resolves', async () => {
+      resetData = { data: { password: 'Regenerated!Pw02' } };
       const user = userEvent.setup();
       render(<TenantUsersTab tenantId="c1" />, { wrapper: createWrapper() });
       await user.click(screen.getByTestId('tenant-users-reset-u1'));
       // Modal must be open AND showing the success branch
       expect(screen.getByTestId('tenant-users-reset-modal')).toBeInTheDocument();
       expect(screen.getByTestId('tenant-users-reset-success')).toBeInTheDocument();
-      expect(screen.getByText(/Password updated for/)).toBeInTheDocument();
+      expect(screen.getByTestId('tenant-users-reset-credentials-value'))
+        .toHaveTextContent('Regenerated!Pw02');
       // The success branch has a Done button, not Save
       expect(screen.getByTestId('tenant-users-reset-done')).toBeInTheDocument();
       expect(screen.queryByTestId('tenant-users-reset-save')).not.toBeInTheDocument();
