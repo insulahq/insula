@@ -52,12 +52,18 @@ jobs:
         # Contracts are the single source of truth for every API shape in the
         # platform, so this is the last place that should be silently skipped.
         #
-        # Invoked as the hoisted binary rather than `npm run -w`: vitest is not
-        # a declared dependency of THIS workspace (adding it would mean
-        # regenerating package-lock.json for a package that otherwise needs no
-        # dependency change), and npm only puts a binary on a workspace's PATH
-        # when that workspace declares it. AGENTS.md documents calling
-        # node_modules/.bin/<tool> directly for this class of problem.
+        # Invoked through node against the hoisted package, not `npm run -w`
+        # and not node_modules/.bin/vitest.
+        #
+        # vitest is a devDependency of backend and both panels, never of this
+        # workspace, so npm hoists the PACKAGE to the root but creates no
+        # root-level .bin shim for it — `node_modules/.bin/vitest` exists on a
+        # developer machine with an incremental install and does NOT exist
+        # after a clean `npm ci`, which is how the first attempt at this step
+        # passed locally and failed on the runner with exit 127. Declaring the
+        # dependency here would fix the shim but means regenerating
+        # package-lock.json for a package that needs no other dependency
+        # change. The package's own entry point is stable either way.
         #
         # Asserts the number of tests that ACTUALLY RAN, not the exit code and
         # not the number of files on disk. `vitest run` over an empty match set
@@ -71,7 +77,7 @@ jobs:
           # filename lands in packages/api-contracts/ and the jq below reads a
           # file that is not there.
           OUT="${RUNNER_TEMP:-/tmp}/vitest-api-contracts.json"
-          node_modules/.bin/vitest run --root packages/api-contracts \
+          node node_modules/vitest/vitest.mjs run --root packages/api-contracts \
             --reporter=default --reporter=json --outputFile.json="$OUT"
           total=$(jq -r '.numTotalTests // 0' "$OUT")
           passed=$(jq -r '.numPassedTests // 0' "$OUT")
