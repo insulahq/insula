@@ -251,12 +251,31 @@ unreleased_body() {
   awk '/^## \[Unreleased\]/{f=1;next} /^## \[/{f=0} f' "$CHANGELOG"
 }
 
+# Capture once, then match against the string — NOT `unreleased_body | grep -q`.
+# `grep -q` exits at the first match; if awk still has output buffered it takes
+# SIGPIPE, and `set -o pipefail` (line 36) turns the whole pipeline into 141.
+# That makes the gate depend on how long [Unreleased] happens to be and where
+# the heading sits in it: measured 2026-09-10, a 68-line section with the
+# heading at line 19 returned 141 on 18 of 20 runs while the 40-line section on
+# `development` returned 0 on 20 of 20. Both gates then misfire — the first
+# blocks a legitimate --breaking cut, and the second (where non-zero means "no
+# heading found") FAILS OPEN, silently cutting a release that carries a
+# BREAKING heading without the acknowledgement auto-update relies on.
+# Same hazard as the `head -1` pipeline at line 151.
+UNRELEASED_BODY=$(unreleased_body)
+
 # Case-insensitive, 3-or-4-hash so a misformatted heading can't slip the gate.
-if [ "$BREAKING" -eq 1 ] && ! unreleased_body | grep -qiE '^#{3,4} +BREAKING'; then
+if grep -qiE '^#{3,4} +BREAKING' <<<"$UNRELEASED_BODY"; then
+  HAS_BREAKING=1
+else
+  HAS_BREAKING=0
+fi
+
+if [ "$BREAKING" -eq 1 ] && [ "$HAS_BREAKING" -eq 0 ]; then
   echo "cut-release: --breaking set but [Unreleased] has no '### BREAKING' heading" >&2
   exit 1
 fi
-if [ "$BREAKING" -eq 0 ] && unreleased_body | grep -qiE '^#{3,4} +BREAKING'; then
+if [ "$BREAKING" -eq 0 ] && [ "$HAS_BREAKING" -eq 1 ]; then
   echo "cut-release: [Unreleased] contains a '### BREAKING' heading — pass --breaking to acknowledge" >&2
   exit 1
 fi

@@ -3,6 +3,7 @@ import bcrypt from 'bcrypt';
 import { users, hostingPlans, tenants } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { generateStrongPassword } from '../../shared/password.js';
+import { eraseUserNotificationsInTx } from '../notifications/retention/gdpr-erasure.js';
 import type { Database } from '../../db/index.js';
 
 /**
@@ -121,6 +122,13 @@ export interface SubUsersDb {
     passwordHash: string,
   ): Promise<void>;
   deleteById(userId: string, tenantId: string): Promise<void>;
+  /**
+   * GDPR Art. 17 — drop the user's notification + delivery rows.
+   * `notifications.user_id` has no FK, so nothing cascades at the database
+   * layer; without this call a deleted tenant user's inbox rows are
+   * orphaned in place forever.
+   */
+  eraseNotifications(userId: string): Promise<void>;
   runInTransaction<T>(fn: (tx: SubUsersDb) => Promise<T>): Promise<T>;
 }
 
@@ -233,6 +241,12 @@ export async function deleteSubUser(
     }
 
     await tx.deleteById(userId, tenantId);
+
+    // Same transaction as the delete: the user row and their notification
+    // rows must disappear together. Committing the delete and then failing
+    // the erase would leave inbox rows keyed to a user id that no longer
+    // resolves, and nothing downstream ever attributes those to anyone.
+    await tx.eraseNotifications(userId);
   });
 }
 
@@ -485,6 +499,12 @@ function buildAdapter(db: DbOrTx): SubUsersDb {
       await db
         .delete(users)
         .where(and(eq(users.id, userId), tenantUserScope(tenantId)));
+    },
+    async eraseNotifications(userId) {
+      // `db` here is whatever context buildAdapter was handed — inside
+      // runInTransaction that is the tx, so this joins the caller's
+      // transaction rather than opening a nested one.
+      await eraseUserNotificationsInTx(db, userId);
     },
     async runInTransaction(fn) {
       return db.transaction(async (tx) => fn(buildAdapter(tx as unknown as Database)));
