@@ -43,6 +43,11 @@ FROM deps AS prod-deps
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     npm ci --workspace @insula/backend --include-workspace-root --omit=dev \
            --ignore-scripts --prefer-offline --no-audit --no-fund
+# The runtime stage copies backend/node_modules on top of the root one to pick
+# up whatever npm chose to nest (see the note there). `COPY` hard-fails on a
+# missing source, so guarantee the path exists even when npm hoists everything
+# — otherwise this fix would break the build the moment it becomes unnecessary.
+RUN mkdir -p /repo/backend/node_modules
 
 # ─── builder: compile shared contracts, then the backend ───────────────────
 #
@@ -108,10 +113,26 @@ WORKDIR /app
 # node_modules/, package.json and platform/cosign.pub, and the entrypoint runs
 # `node dist/…` relative to /app. Only the provenance of node_modules changed.
 #
-# node_modules is hoisted to the workspace root, and @insula/api-contracts
+# node_modules is MOSTLY hoisted to the workspace root, and @insula/api-contracts
 # inside it is a workspace SYMLINK to ../packages/api-contracts — so the built
 # contracts must be copied to the sibling path for that link to resolve.
+#
+# "Mostly": npm does not hoist everything. A dependency npm chooses to nest
+# lands in /repo/backend/node_modules instead, and copying only the root leaves
+# it out of the image entirely — the build succeeds and the container then dies
+# at boot with ERR_MODULE_NOT_FOUND. That is not hypothetical: bumping
+# nodemailer 9 → 10 moved it from the root into backend/node_modules (verified
+# with a full `npm install`, not just --package-lock-only — npm nests it either
+# way), and v2026.9.16-rc.1 crash-looped platform-api on staging because of it.
+# Every test suite passed: they resolve from the repo root, where the nested
+# path works fine. Nothing in CI boots the built image.
+#
+# In the repo, `backend/` is the package root; in the image, /app is. So
+# /repo/backend/node_modules → /app/node_modules is the faithful mapping, and
+# it is copied SECOND so a deliberately-nested version wins over the root one —
+# the same precedence Node's own resolution gives it.
 COPY --from=prod-deps /repo/node_modules ./node_modules
+COPY --from=prod-deps /repo/backend/node_modules ./node_modules
 COPY --from=builder /repo/packages/api-contracts/ ./packages/api-contracts/
 COPY --from=builder /repo/backend/dist/ dist/
 COPY backend/package.json ./
