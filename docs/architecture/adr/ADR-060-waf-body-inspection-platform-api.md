@@ -134,7 +134,8 @@ opaque transport over inspection exemptions.
 ### What is explicitly NOT exempted
 
 - **Tenant websites.** Every exclusion in the file is chained behind
-  `REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\."`, so a tenant
+  `REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\.${DOMAIN}(:[0-9]+)?$"`,
+  so a tenant
   app serving its own `/api/v1/` on its own domain keeps full coverage.
 
   **This was not true when the ADR was first written, and the original wording
@@ -150,15 +151,45 @@ opaque transport over inspection exemptions.
     chain's final rule, which `9000112` already demonstrated in the same file.
 
   `9000111` additionally justified being unscoped with "the file-manager API is
-  reached from both `admin.<apex>` and `tenant.<apex>`" — but the guard is
-  `^(admin|tenant|api)\.`, which matches both. That rule never needed to be open
-  to every other host.
+  reached from both `admin.<apex>` and `tenant.<apex>`" — but the guard matches
+  both. That rule never needed to be open to every other host.
 
   Measured before the fix (DEV, `tunnels.<apex>` — a WAF'd host that is *not* a
   panel host): the excluded path returned 405, i.e. it reached the upstream,
   while a non-excluded path on the same host returned 403. All twelve rules were
   converted 2026-09-09; every chain now carries an action list on its final
   rule, so none can bleed into the next-loaded file regardless of ordering.
+
+  **The guard is anchored to the apex, not to a label.** It was originally
+  `^(admin|tenant|api)\.` — a bare *first-label* match that fires on any apex.
+  Measured against the real CRS image, driving `X-Forwarded-Host`, with
+  `930120` (relaxed by `9000112`) as the probe:
+
+  | `X-Forwarded-Host` | before anchoring |
+  |---|---|
+  | `shop.customer.example` | 403 — control, no exclusion |
+  | `admin.<platform apex>` | 200 — correct |
+  | `api.some-other-company.com` | **200 — inherited the exclusion** |
+
+  So a tenant hosting `api.<their-company>.com` who enabled the WAF silently
+  lost protections they had every reason to think were on — most
+  consequentially `9000103`, which removes `931100` outright for `/api/v1/`.
+  `${DOMAIN}` is the apex Flux substitutes at apply time; panel hosts are
+  `admin.${DOMAIN}` / `tenant.${DOMAIN}` on every cluster (verified on dev,
+  staging and production before the change). The optional `(:[0-9]+)?` is
+  insurance: seven days of `waf_logs` show the header arriving without a port
+  on all 500 requests, but a bare `$` would stop *every* exclusion matching if
+  that ever changed, breaking ordinary tenant work with unexplained 403s.
+
+  **Two residual limits, stated rather than implied.** The substituted apex is
+  interpolated verbatim, so its dots are regex "any character" — a domain
+  differing from the apex by a single character would still match, which
+  requires registering that domain and pointing it at this cluster, and weakens
+  only that attacker's own site. And a failed substitution is not detectable by
+  the parse test: a literal `${DOMAIN}` still *parses*, it simply never matches,
+  silently disabling every exclusion. Flux 2.9's strict envsubst fails the build
+  on an undefined variable, and deploy verification asserts the running pods
+  carry the real apex and zero `${DOMAIN}` occurrences.
 - **Query-string arguments.** `ARGS` covers query *and* body args; turning off
   body access removes only the body half. `?id=1' OR 1=1--` against any API
   endpoint is still matched by the 942xxx family.
