@@ -40,3 +40,41 @@ jobs:
         # function"). The panels' vitest now resolves contracts from source, so
         # this is the CI step that imports the compiled output for real.
         run: ./scripts/ci-api-contracts-runtime-exports.sh
+      - name: Unit tests
+        # Until 2026-09-10 the *.test.ts files in this package were collected by
+        # NO runner: the backend's vitest is scoped `--dir src` (its own src),
+        # and this workflow only built the package and checked its exports. Four
+        # test files sat here passing by never running, and extra-mounts.test.ts
+        # had gone stale against a validation rule that was deliberately
+        # reversed — uppercase folder names became legal, the test still
+        # asserted they were refused, and nothing noticed.
+        #
+        # Contracts are the single source of truth for every API shape in the
+        # platform, so this is the last place that should be silently skipped.
+        #
+        # Invoked as the hoisted binary rather than `npm run -w`: vitest is not
+        # a declared dependency of THIS workspace (adding it would mean
+        # regenerating package-lock.json for a package that otherwise needs no
+        # dependency change), and npm only puts a binary on a workspace's PATH
+        # when that workspace declares it. AGENTS.md documents calling
+        # node_modules/.bin/<tool> directly for this class of problem.
+        #
+        # Asserts the number of tests that ACTUALLY RAN, not the exit code and
+        # not the number of files on disk. `vitest run` over an empty match set
+        # can exit 0, so a green step is no evidence anything executed — which
+        # is exactly how these four files went unnoticed for months. A future
+        # change that mis-scopes the runner then fails here instead of quietly
+        # reverting the package to zero coverage.
+        run: |
+          set -euo pipefail
+          # ABSOLUTE path: `--outputFile` resolves against `--root`, so a bare
+          # filename lands in packages/api-contracts/ and the jq below reads a
+          # file that is not there.
+          OUT="${RUNNER_TEMP:-/tmp}/vitest-api-contracts.json"
+          node_modules/.bin/vitest run --root packages/api-contracts \
+            --reporter=default --reporter=json --outputFile.json="$OUT"
+          total=$(jq -r '.numTotalTests // 0' "$OUT")
+          passed=$(jq -r '.numPassedTests // 0' "$OUT")
+          echo "vitest executed ${total} test(s), ${passed} passed"
+          test "${total}" -gt 0
+          rm -f "$OUT"

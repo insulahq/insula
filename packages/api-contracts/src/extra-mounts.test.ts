@@ -49,7 +49,28 @@ describe('folderProblem', () => {
   it('rejects an absolute folder', () => expect(folderProblem('/media')).toMatch(/must not start/));
   it('rejects traversal', () => expect(folderProblem('../other-tenant')).toMatch(/segments may use/));
   it('rejects too deep', () => expect(folderProblem('a/b/c/d/e')).toMatch(/levels deep/));
-  it('rejects uppercase', () => expect(folderProblem('Media')).toMatch(/segments may use/));
+
+  /**
+   * Uppercase and dots are ACCEPTED, deliberately — see the SEGMENT comment in
+   * extra-mounts.ts. A web host's folders are named after the sites they hold
+   * (`business.na`, `www.example.com`, `Website`), and the lowercase-only rule
+   * rejected the most natural naming scheme a tenant has while the folder
+   * picker happily offered those exact folders because they exist on disk.
+   *
+   * This test asserted the OLD rule (`rejects uppercase`) and kept asserting it
+   * after the rule was reversed, because nothing ever ran it — the file sat in
+   * packages/api-contracts, which no test runner looked at until this commit.
+   */
+  it('accepts uppercase and dots — real site-folder names', () => {
+    expect(folderProblem('Media')).toBeNull();
+    expect(folderProblem('business.na')).toBeNull();
+    expect(folderProblem('www.example.com')).toBeNull();
+  });
+
+  it('still refuses a leading dot, so dotfiles stay unaddressable', () => {
+    expect(folderProblem('.ssh')).toMatch(/segments may use/);
+    expect(folderProblem('media/.git')).toMatch(/segments may use/);
+  });
 });
 
 describe('extraMountSchema', () => {
