@@ -824,20 +824,26 @@ if [[ "$WEBMAIL_E2E" == "1" && -n "${TOKEN:-}" ]]; then
         -d "{\"local_part\":\"alice\",\"password\":\"WmE2E-${WM_SFX}\",\"quota_mb\":50}" \
         "${API_URL}/api/v1/tenants/${WM_TENANT_ID}/email/domains/${WM_EDOMAIN_ID}/mailboxes" | jq -r '.data.id // empty')
 
+      # Sub-user passwords are server-generated and returned once, in
+      # `data.generatedPassword` — the endpoint rejects a supplied one.
       WM_USER_RESP=$(curl -sS -X POST -H "$AUTH_HEADER" -H "Content-Type: application/json" \
-        -d "{\"email\":\"wmcu${WM_SFX}@test.local\",\"full_name\":\"WM Client User\",\"password\":\"WmCu-${WM_SFX}\"}" \
+        -d "{\"email\":\"wmcu${WM_SFX}@test.local\",\"full_name\":\"WM Client User\"}" \
         "${API_URL}/api/v1/tenants/${WM_TENANT_ID}/users")
       WM_USER_ID=$(echo "$WM_USER_RESP" | jq -r '.data.id // empty')
+      WM_CU_PW=$(echo "$WM_USER_RESP" | jq -r '.data.generatedPassword // empty')
 
       curl -sS -X POST -H "$AUTH_HEADER" -H "Content-Type: application/json" \
         -d "{\"user_id\":\"${WM_USER_ID}\"}" \
         "${API_URL}/api/v1/tenants/${WM_TENANT_ID}/mailboxes/${WM_MB_ID}/access" >/dev/null
 
+      # jq builds the login body: a generated password carries
+      # punctuation that must be JSON-escaped, not interpolated.
       WM_CU_TOKEN=$(curl -sS "${API_URL}/api/v1/auth/login" -H "Content-Type: application/json" \
-        -d "{\"email\":\"wmcu${WM_SFX}@test.local\",\"password\":\"WmCu-${WM_SFX}\"}" | jq -r '.data.token // empty')
+        -d "$(jq -nc --arg e "wmcu${WM_SFX}@test.local" --arg p "$WM_CU_PW" '{email:$e,password:$p}')" \
+        | jq -r '.data.token // empty')
 
-      if [[ -z "$WM_MB_ID" || -z "$WM_USER_ID" || -z "$WM_CU_TOKEN" ]]; then
-        fail "Webmail E2E setup" "mb=${WM_MB_ID:0:8} user=${WM_USER_ID:0:8} tok=${WM_CU_TOKEN:0:8}"
+      if [[ -z "$WM_MB_ID" || -z "$WM_USER_ID" || -z "$WM_CU_PW" || -z "$WM_CU_TOKEN" ]]; then
+        fail "Webmail E2E setup" "mb=${WM_MB_ID:0:8} user=${WM_USER_ID:0:8} pw=${WM_CU_PW:+set} tok=${WM_CU_TOKEN:0:8}"
       else
         WM_RESP=$(curl -sS -X POST -H "Authorization: Bearer ${WM_CU_TOKEN}" -H "Content-Type: application/json" \
           -d "{\"mailbox_id\":\"${WM_MB_ID}\"}" "${API_URL}/api/v1/email/webmail-token")

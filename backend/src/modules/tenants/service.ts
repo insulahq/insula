@@ -4,6 +4,7 @@ import { tenants, domains, deployments, cronJobs, users, hostingPlans, clusterNo
 import { tenantNotFound } from '../../shared/errors.js';
 import { ApiError } from '../../shared/errors.js';
 import { encodeCursor, decodeCursor } from '../../shared/pagination.js';
+import { generateStrongPassword } from '../../shared/password.js';
 import { assertNotSystem } from '../system-tenant/guards.js';
 import type { Database } from '../../db/index.js';
 import type { CreateTenantInput, UpdateTenantInput } from './schema.js';
@@ -276,11 +277,18 @@ export async function createTenant(
     );
   }
 
+  // The login belongs to a PERSON, so it carries the contact name —
+  // `tenants.name` is the organisation ("Acme Corp") and reads wrong
+  // as a user's full name everywhere the account is rendered (team
+  // list, audit log actor, mail From). `contact_name` is optional at
+  // the API layer (the admin UI marks it required; scripted callers
+  // may omit it), so fall back to the organisation name rather than
+  // writing an empty string into a NOT NULL column.
   await db.insert(users).values({
     id: tenantUserId,
     email: input.primary_email,
     passwordHash,
-    fullName: input.name,
+    fullName: input.contact_name ?? input.name,
     roleName: 'tenant_admin',
     panel: 'tenant',
     tenantId: id,
@@ -289,13 +297,6 @@ export async function createTenant(
   });
 
   return { ...toTenantResponse(created), _generatedPassword: generatedPassword, _clientUserId: tenantUserId };
-}
-
-function generateStrongPassword(): string {
-  const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%&*';
-  const bytes = new Uint8Array(20);
-  crypto.getRandomValues(bytes);
-  return Array.from(bytes, (b) => chars[b % chars.length]).join('');
 }
 
 export async function getTenantById(db: Database, id: string) {

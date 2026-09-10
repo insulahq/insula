@@ -75,6 +75,12 @@ an amber box, with a copy button. **Save it now — it is never shown
 again.** After you acknowledge it, the **provisioning progress modal**
 opens and walks the namespace, quota, and resource creation step by step.
 
+The login this creates is named after the **Contact name**, not the
+company — it belongs to a person, and that name is what appears in the
+tenant's own team list and in the audit log. If you leave Contact name
+empty (only possible for scripted callers; the form requires it), the
+company Name is used instead.
+
 ??? info "Under the hood"
     Creation writes the tenant row first, then triggers provisioning,
     which builds the Kubernetes namespace, `ResourceQuota`,
@@ -107,6 +113,14 @@ something is wrong — see [When a tenant is over quota](#when-a-tenant-is-over-
 Backups, Users. Each shows that tenant's resources with a count. The
 **Files** tab is intentionally a pointer — the file browser lives in the
 tenant panel; use **Login as Tenant** to reach it.
+
+The **Users** tab manages the tenant's team on their behalf — the same
+add / edit / enable / reset / delete actions the tenant sees, attributed
+to your staff account in the audit log. Passwords work the same way here
+as they do for the tenant: **Add User** takes an email, name, and role but
+no password, and **reset password** regenerates rather than letting you
+choose one. Either way the new password is shown once, with a copy button.
+You cannot set a password of your choosing on a tenant's account.
 
 ### Header actions
 

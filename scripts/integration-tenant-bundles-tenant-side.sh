@@ -97,9 +97,10 @@ log "cross-tenant id for negative test: $OTHER_TENANT_ID"
 
 # Provision a tenant_admin user for this tenant.
 log "provisioning tenant_admin user"
+# The password is server-generated and returned once — the endpoint
+# rejects a supplied one.
 TENANT_USER_EMAIL="tenant-restore-e2e-$(date +%s)@example.test"
-TENANT_USER_PASSWORD="TestRestore!$(date +%s)"
-RAW=$(api "$ADMIN_HOST" POST "/tenants/$TENANT_ID/users" "{\"email\":\"$TENANT_USER_EMAIL\",\"password\":\"$TENANT_USER_PASSWORD\",\"full_name\":\"Restore E2E User\",\"role_name\":\"tenant_admin\"}" "$ADMIN_TOKEN")
+RAW=$(api "$ADMIN_HOST" POST "/tenants/$TENANT_ID/users" "{\"email\":\"$TENANT_USER_EMAIL\",\"full_name\":\"Restore E2E User\",\"role_name\":\"tenant_admin\"}" "$ADMIN_TOKEN")
 parse "$RAW"
 if [[ "$STATUS" == "201" || "$STATUS" == "200" ]]; then
   ok "tenant_admin provisioned: $TENANT_USER_EMAIL"
@@ -107,16 +108,20 @@ else
   fail "tenant_admin provisioning returned $STATUS: $BODY"
   exit 1
 fi
+TENANT_USER_PASSWORD=$(printf '%s' "$BODY" | jq -r '.data.generatedPassword // empty')
+[[ -n "$TENANT_USER_PASSWORD" ]] || { fail "create returned no generatedPassword: $BODY"; exit 1; }
 
-# Login as the tenant_admin via tenant panel.
+# Login as the tenant_admin via tenant panel. jq builds the body — a
+# generated password carries punctuation that must be JSON-escaped.
 log "logging in as tenant_admin"
-RAW=$(api "$TENANT_HOST" POST /auth/login "{\"email\":\"$TENANT_USER_EMAIL\",\"password\":\"$TENANT_USER_PASSWORD\",\"panel\":\"tenant\"}")
+LOGIN_BODY=$(jq -nc --arg e "$TENANT_USER_EMAIL" --arg p "$TENANT_USER_PASSWORD" '{email:$e,password:$p,panel:"tenant"}')
+RAW=$(api "$TENANT_HOST" POST /auth/login "$LOGIN_BODY")
 parse "$RAW"
 if [[ "$STATUS" != "200" ]]; then
   fail "tenant_admin login failed ($STATUS): $BODY"
   # Try via admin host (panel claim still works)
   log "retrying via admin host"
-  RAW=$(api "$ADMIN_HOST" POST /auth/login "{\"email\":\"$TENANT_USER_EMAIL\",\"password\":\"$TENANT_USER_PASSWORD\",\"panel\":\"tenant\"}")
+  RAW=$(api "$ADMIN_HOST" POST /auth/login "$LOGIN_BODY")
   parse "$RAW"
 fi
 TENANT_TOKEN=$(printf '%s' "$BODY" | jq -r '.data.token // .token // empty')

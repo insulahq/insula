@@ -42,6 +42,14 @@ const listSubUsersMock = vi.fn().mockResolvedValue([
     lastLoginAt: null,
   },
 ]);
+/**
+ * Stand-in for the password the service generates. The real
+ * generator is exercised in sub-users-service.test.ts; here we only
+ * need a recognisable value to prove the route forwards it to the
+ * client instead of dropping it.
+ */
+const GENERATED_TEST_PASSWORD = 'generated-by-the-service';
+
 const createSubUserMock = vi.fn().mockImplementation(
   (_db: unknown, _tenantId: string, input: { email: string; full_name: string; role_name?: string }) => {
     return Promise.resolve({
@@ -53,11 +61,12 @@ const createSubUserMock = vi.fn().mockImplementation(
       roleName: input.role_name ?? 'tenant_user',
       status: 'active',
       createdAt: new Date('2026-01-02'),
+      generatedPassword: GENERATED_TEST_PASSWORD,
     });
   },
 );
 const deleteSubUserMock = vi.fn().mockResolvedValue(undefined);
-const resetSubUserPasswordMock = vi.fn().mockResolvedValue(undefined);
+const resetSubUserPasswordMock = vi.fn().mockResolvedValue(GENERATED_TEST_PASSWORD);
 const updateSubUserMock = vi.fn().mockImplementation(
   (_db: unknown, _tenantId: string, userId: string, payload: { fullName?: string; roleName?: string; status?: string }) => {
     return Promise.resolve({
@@ -334,7 +343,7 @@ describe('tenant routes', () => {
   });
 
   describe('POST /api/v1/tenants/:tenantId/users', () => {
-    const validBody = { email: 'new@c1.com', full_name: 'New User', password: 'password123' };
+    const validBody = { email: 'new@c1.com', full_name: 'New User' };
 
     it('allows tenant_admin to create a sub-user in their own tenant', async () => {
       const res = await app.inject({
@@ -383,21 +392,35 @@ describe('tenant routes', () => {
         method: 'POST',
         url: '/api/v1/tenants/c1/users',
         headers: { authorization: `Bearer ${tenantAdminToken}` },
-        payload: { email: 'notanemail', full_name: 'Bad', password: 'password123' },
+        payload: { email: 'notanemail', full_name: 'Bad' },
       });
       expect(res.statusCode).toBe(400);
       expect(createSubUserMock).not.toHaveBeenCalled();
     });
 
-    it('rejects a password shorter than 8 characters', async () => {
+    it('refuses a caller-supplied password instead of silently ignoring it', async () => {
       const res = await app.inject({
         method: 'POST',
         url: '/api/v1/tenants/c1/users',
         headers: { authorization: `Bearer ${tenantAdminToken}` },
-        payload: { email: 'ok@c1.com', full_name: 'OK', password: 'short' },
+        payload: { email: 'ok@c1.com', full_name: 'OK', password: 'hunter2hunter2' },
       });
       expect(res.statusCode).toBe(400);
+      expect(res.json().error.code).toBe('INVALID_FIELD_VALUE');
+      // The user must NOT be created: a 201 here would hand back an
+      // account whose password is not the one the caller supplied.
       expect(createSubUserMock).not.toHaveBeenCalled();
+    });
+
+    it('returns the server-generated password in the create response', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/tenants/c1/users',
+        headers: { authorization: `Bearer ${tenantAdminToken}` },
+        payload: validBody,
+      });
+      expect(res.statusCode).toBe(201);
+      expect(res.json().data.generatedPassword).toBe(GENERATED_TEST_PASSWORD);
     });
 
     it('rejects a missing full_name', async () => {
@@ -405,7 +428,7 @@ describe('tenant routes', () => {
         method: 'POST',
         url: '/api/v1/tenants/c1/users',
         headers: { authorization: `Bearer ${tenantAdminToken}` },
-        payload: { email: 'ok@c1.com', full_name: '', password: 'password123' },
+        payload: { email: 'ok@c1.com', full_name: '' },
       });
       expect(res.statusCode).toBe(400);
       expect(createSubUserMock).not.toHaveBeenCalled();
@@ -419,7 +442,6 @@ describe('tenant routes', () => {
         payload: {
           email: 'promoted@c1.com',
           full_name: 'Promoted',
-          password: 'password123',
           role_name: 'tenant_admin',
         },
       });
@@ -443,7 +465,6 @@ describe('tenant routes', () => {
         payload: {
           email: 'escalate@c1.com',
           full_name: 'Escalate',
-          password: 'password123',
           role_name: 'tenant_admin',
         },
       });
@@ -459,7 +480,6 @@ describe('tenant routes', () => {
         payload: {
           email: 'member@c1.com',
           full_name: 'Member',
-          password: 'password123',
           role_name: 'tenant_user',
         },
       });
@@ -474,7 +494,6 @@ describe('tenant routes', () => {
         payload: {
           email: 'bad@c1.com',
           full_name: 'Bad',
-          password: 'password123',
           role_name: 'super_admin',
         },
       });
@@ -574,44 +593,54 @@ describe('tenant routes', () => {
     });
   });
 
-  describe('POST /api/v1/tenants/:tenantId/users/:userId/reset-password (Phase 4)', () => {
-    const validBody = { new_password: 'brand-new-pw-123' };
+  describe('POST /api/v1/tenants/:tenantId/users/:userId/reset-password', () => {
+    // The endpoint takes no input — a reset always regenerates.
+    const validBody = {};
 
-    it('allows tenant_admin to reset a sub-user password', async () => {
+    it('regenerates the password and returns it to the caller', async () => {
       const res = await app.inject({
         method: 'POST',
         url: '/api/v1/tenants/c1/users/u1/reset-password',
         headers: { authorization: `Bearer ${tenantAdminToken}` },
         payload: validBody,
       });
-      expect(res.statusCode).toBe(204);
+      expect(res.statusCode).toBe(200);
+      expect(res.json().data.password).toBe(GENERATED_TEST_PASSWORD);
+      // No password argument — the service picks it.
       expect(resetSubUserPasswordMock).toHaveBeenCalledWith(
         expect.anything(),
         'c1',
         'u1',
-        'brand-new-pw-123',
       );
     });
 
-    it('rejects passwords shorter than 8 characters', async () => {
+    it('works with no request body at all', async () => {
+      // The tenant panel sends a bodyless POST (apiFetch only sets a
+      // Content-Type when there is a body), so `request.body` arrives
+      // as undefined. Parsing that against an object schema without
+      // normalising would 400 every real reset.
       const res = await app.inject({
         method: 'POST',
         url: '/api/v1/tenants/c1/users/u1/reset-password',
         headers: { authorization: `Bearer ${tenantAdminToken}` },
-        payload: { new_password: 'short' },
       });
-      expect(res.statusCode).toBe(400);
-      expect(resetSubUserPasswordMock).not.toHaveBeenCalled();
+      expect(res.statusCode).toBe(200);
+      expect(res.json().data.password).toBe(GENERATED_TEST_PASSWORD);
     });
 
-    it('rejects a missing new_password field', async () => {
+    it('refuses a caller-supplied new_password', async () => {
       const res = await app.inject({
         method: 'POST',
         url: '/api/v1/tenants/c1/users/u1/reset-password',
         headers: { authorization: `Bearer ${tenantAdminToken}` },
-        payload: {},
+        payload: { new_password: 'brand-new-pw-123' },
       });
       expect(res.statusCode).toBe(400);
+      expect(res.json().error.code).toBe('INVALID_FIELD_VALUE');
+      // Critically: the password must NOT have been rotated. A 200
+      // here would silently replace the credential with a different
+      // random one than the caller asked for.
+      expect(resetSubUserPasswordMock).not.toHaveBeenCalled();
     });
 
     it('rejects tenant_user (read-only cannot reset passwords)', async () => {
