@@ -52,18 +52,20 @@ jobs:
         # Contracts are the single source of truth for every API shape in the
         # platform, so this is the last place that should be silently skipped.
         #
-        # Invoked through node against the hoisted package, not `npm run -w`
-        # and not node_modules/.bin/vitest.
-        #
-        # vitest is a devDependency of backend and both panels, never of this
-        # workspace, so npm hoists the PACKAGE to the root but creates no
-        # root-level .bin shim for it — `node_modules/.bin/vitest` exists on a
-        # developer machine with an incremental install and does NOT exist
-        # after a clean `npm ci`, which is how the first attempt at this step
-        # passed locally and failed on the runner with exit 127. Declaring the
-        # dependency here would fix the shim but means regenerating
-        # package-lock.json for a package that needs no other dependency
-        # change. The package's own entry point is stable either way.
+        # vitest is a devDependency of backend and both panels, never of THIS
+        # workspace, so where it lands after `npm ci` is an npm hoisting
+        # decision rather than something this repo states anywhere. Two guesses
+        # both failed on the runner while passing locally:
+        #   node_modules/.bin/vitest            -> 127, no such file (no root
+        #                                          .bin shim is created for a
+        #                                          dependency no root-level
+        #                                          package declares)
+        #   node node_modules/vitest/vitest.mjs -> MODULE_NOT_FOUND (not
+        #                                          hoisted to the root either)
+        # So locate it instead of assuming, and fail loudly if it is absent
+        # rather than skipping the tests. Declaring the dependency here would
+        # settle the location but means regenerating package-lock.json for a
+        # package that needs no other dependency change.
         #
         # Asserts the number of tests that ACTUALLY RAN, not the exit code and
         # not the number of files on disk. `vitest run` over an empty match set
@@ -77,7 +79,28 @@ jobs:
           # filename lands in packages/api-contracts/ and the jq below reads a
           # file that is not there.
           OUT="${RUNNER_TEMP:-/tmp}/vitest-api-contracts.json"
-          node node_modules/vitest/vitest.mjs run --root packages/api-contracts \
+          # Where vitest lands depends on how the tree was installed, and the
+          # two layouts genuinely differ: package-lock.json resolves it under
+          # each DECLARING workspace (backend, both panels), while an
+          # incremental developer install leaves it hoisted at the root. A
+          # single hardcoded path is therefore unverifiable in one of the two
+          # environments — which is how the first two attempts here passed
+          # locally and failed on the runner. Try the real candidates and fail
+          # loudly if none exists, rather than silently skipping the tests.
+          VITEST=""
+          for candidate in \
+            node_modules/vitest/vitest.mjs \
+            backend/node_modules/vitest/vitest.mjs \
+            frontend/admin-panel/node_modules/vitest/vitest.mjs \
+            frontend/tenant-panel/node_modules/vitest/vitest.mjs; do
+            if [ -f "$candidate" ]; then VITEST="$candidate"; break; fi
+          done
+          if [ -z "$VITEST" ]; then
+            echo "vitest not found in any known workspace location; cannot run the contract tests" >&2
+            exit 1
+          fi
+          echo "using ${VITEST}"
+          node "$VITEST" run --root packages/api-contracts \
             --reporter=default --reporter=json --outputFile.json="$OUT"
           total=$(jq -r '.numTotalTests // 0' "$OUT")
           passed=$(jq -r '.numPassedTests // 0' "$OUT")
