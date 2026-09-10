@@ -35,6 +35,16 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   the URL, method and query-string rules that block real scanning.
 
 ### Security
+- **Web-firewall exemptions now apply only on the admin and tenant panels.**
+  The firewall carries a small set of exemptions so ordinary hosting work isn't
+  mistaken for an attack — saving a PHP file, renaming `.htaccess`, uploading
+  an image, editing a Compose file. Seven of those exemptions were matched on
+  the request path alone, so they also took effect on any other site behind the
+  firewall. They are now tied to the panel hostnames, and one exemption that
+  covered a wider range of addresses than the feature needed has been narrowed
+  to the three that use it. Nothing an operator or tenant does changes; sites
+  behind the firewall are inspected more strictly than before, not less.
+
 - **Each website now keeps its own login sessions.** They were previously
   written to a shared temporary area, where a session's filename is its
   identifier — so one website could read a visitor's session from a
