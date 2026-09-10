@@ -1,13 +1,15 @@
 import { useState, useEffect, useMemo, type FormEvent } from 'react';
-import { X, Loader2, Search, Rocket, CheckCircle, AlertCircle, AlertTriangle, Info, FolderOpen } from 'lucide-react';
+import { X, Loader2, Search, Rocket, CheckCircle, AlertCircle, AlertTriangle } from 'lucide-react';
 import { useTenantContext } from '@/hooks/use-tenant-context';
 import { useCatalog, useCatalogEntryVersions } from '@/hooks/use-catalog';
-import { useCreateDeployment, useStorageFolders } from '@/hooks/use-deployments';
+import { useCreateDeployment } from '@/hooks/use-deployments';
 import { useDomains } from '@/hooks/use-domains';
 import type { CatalogEntry } from '@/types/api';
 import ParameterForm from './ParameterForm';
 import ExtraMountsEditor, { extraMountErrors, type ExtraMountRow } from './ExtraMountsEditor';
 import ResourceRequirementCheck from './ResourceRequirementCheck';
+import StorageFolderPicker from './StorageFolderPicker';
+import { folderProblem } from '@insula/api-contracts';
 
 interface DeployWorkloadModalProps {
   readonly open: boolean;
@@ -52,8 +54,9 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId,
   const [paramValues, setParamValues] = useState<Record<string, unknown>>({});
   const [storageMode, setStorageMode] = useState<'default' | 'custom'>('default');
   const [extraMounts, setExtraMounts] = useState<ExtraMountRow[]>([]);
-  const [customFolderName, setCustomFolderName] = useState('');
-  const [selectedExistingFolder, setSelectedExistingFolder] = useState<string | null>(null);
+  // The picker resolves "an existing folder" and "a new folder here" into one
+  // PVC-root-relative path, so the modal only tracks the result.
+  const [selectedFolderPath, setSelectedFolderPath] = useState<string | null>(null);
   const [deployState, setDeployState] = useState<'form' | 'deploying' | 'success' | 'error'>('form');
   const [resourcesFit, setResourcesFit] = useState(true);
 
@@ -69,13 +72,6 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId,
   const [multihostEnabled, setMultihostEnabled] = useState(false);
   const multihostCapable = Boolean((selectedImage as { multihost?: unknown } | undefined)?.multihost);
 
-  const { data: storageFoldersData, isLoading: storageFoldersLoading } = useStorageFolders(
-    tenantId ?? undefined,
-    selectedImage?.type,
-    selectedImage?.code,
-  );
-  const storageFolders = storageFoldersData?.data;
-
   const nameError = useMemo(() => {
     if (!name) return null;
     if (!DNS_NAME_PATTERN.test(name)) {
@@ -84,13 +80,13 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId,
     return null;
   }, [name]);
 
-  const customFolderNameError = useMemo(() => {
-    if (!customFolderName) return null;
-    if (!DNS_NAME_PATTERN.test(customFolderName)) {
-      return 'Folder name must be DNS-compatible: lowercase letters, digits, and hyphens only (max 63 chars)';
-    }
-    return null;
-  }, [customFolderName]);
+  // Folder names are validated inside the picker against the SAME rule the
+  // API enforces (folderProblem), which allows the dots and capitals a web
+  // host's directories actually use — `business.na`, `www.example.com`.
+  const customFolderPathError = useMemo(
+    () => (selectedFolderPath ? folderProblem(selectedFolderPath) : null),
+    [selectedFolderPath],
+  );
 
   const selectedResources = selectedImage?.resources as { minimum?: { cpu?: string; memory?: string; storage?: string } } | null;
   const minCpu = selectedResources?.minimum?.cpu;
@@ -211,8 +207,7 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId,
     setParamValues({});
     setStorageMode('default');
     setExtraMounts([]);
-    setCustomFolderName('');
-    setSelectedExistingFolder(null);
+    setSelectedFolderPath(null);
     setDeployState('form');
     createDeployment.reset();
   };
@@ -243,9 +238,9 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId,
         configuration: Object.keys(paramValues).length > 0 ? paramValues : undefined,
         version: selectedVersion || undefined,
         storage_mode: storageMode,
-        storage_path: storageMode === 'custom'
-          ? (selectedExistingFolder ?? `${selectedImage?.type}/${selectedImage?.code}/${customFolderName}`)
-          : undefined,
+        // Whatever the picker resolved — any folder on the PVC, not only one
+        // under this catalog entry's `<type>/<code>` prefix.
+        storage_path: storageMode === 'custom' ? (selectedFolderPath ?? undefined) : undefined,
         extra_mounts: filledExtraMounts.length > 0 ? filledExtraMounts : undefined,
         multihost_enabled: multihostCapable && multihostEnabled ? true : undefined,
       });
@@ -595,8 +590,7 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId,
                 onChange={(e) => {
                   const mode = e.target.value as 'default' | 'custom';
                   setStorageMode(mode);
-                  setCustomFolderName('');
-                  setSelectedExistingFolder(null);
+                  setSelectedFolderPath(null);
                 }}
                 className={INPUT_CLASS}
                 data-testid="deploy-storage-mode-select"
@@ -614,95 +608,19 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId,
               )}
 
               {storageMode === 'custom' && (
-                <div className="mt-3 space-y-3">
-                  {storageFoldersLoading ? (
-                    <div className="flex items-center gap-2 px-3 py-4 text-sm text-gray-500 dark:text-gray-400">
-                      <Loader2 size={14} className="animate-spin" />
-                      Loading existing folders...
-                    </div>
-                  ) : (
-                    <>
-                      {/* Existing folders list */}
-                      {storageFolders && storageFolders.folders.length > 0 && (
-                        <div className="space-y-1.5">
-                          <p className="text-xs font-medium text-gray-600 dark:text-gray-400">Existing folders</p>
-                          {storageFolders.folders.map(folder => {
-                            const inUse = folder.usedByDeployment !== null;
-                            const isSelected = selectedExistingFolder === folder.path;
-                            const label = inUse
-                              ? `(in use by: ${folder.usedByDeployment})`
-                              : folder.isEmpty
-                                ? '(unused - empty)'
-                                : '(unused - has data)';
-                            return (
-                              <button
-                                key={folder.path}
-                                type="button"
-                                disabled={inUse}
-                                onClick={() => {
-                                  setSelectedExistingFolder(isSelected ? null : folder.path);
-                                  setCustomFolderName('');
-                                }}
-                                className={`flex w-full items-center gap-2 px-3 py-2 rounded-lg border text-left text-sm transition-colors ${
-                                  inUse
-                                    ? 'opacity-50 cursor-not-allowed border-gray-200 dark:border-gray-700'
-                                    : isSelected
-                                      ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 cursor-pointer'
-                                      : 'border-gray-200 dark:border-gray-700 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700/50'
-                                }`}
-                                data-testid={`storage-folder-${folder.name}`}
-                              >
-                                <FolderOpen size={14} className={`shrink-0 ${inUse ? 'text-gray-400 dark:text-gray-500' : 'text-gray-600 dark:text-gray-400'}`} />
-                                <span className={`font-medium ${inUse ? 'text-gray-400 dark:text-gray-500' : 'text-gray-900 dark:text-gray-100'}`}>
-                                  {folder.name}
-                                </span>
-                                <span className={`text-xs ${inUse ? 'text-gray-400 dark:text-gray-500' : 'text-gray-500 dark:text-gray-400'}`}>
-                                  {label}
-                                </span>
-                              </button>
-                            );
-                          })}
-                        </div>
-                      )}
-
-                      {/* Info banner for non-empty existing folder selection */}
-                      {selectedExistingFolder && storageFolders?.folders.some(f => f.path === selectedExistingFolder && !f.isEmpty) && (
-                        <div className="rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 px-3 py-2 text-sm text-blue-700 dark:text-blue-300 flex items-center gap-2">
-                          <Info size={14} className="shrink-0" />
-                          Existing folder contents will be used for this deployment.
-                        </div>
-                      )}
-
-                      {/* New folder name input */}
-                      <div>
-                        <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
-                          Or create a new folder
-                        </label>
-                        <div className="flex items-center gap-1.5">
-                          {storageFolders?.basePath && (
-                            <span className="text-xs text-gray-400 dark:text-gray-500 font-mono shrink-0">
-                              {storageFolders.basePath}/
-                            </span>
-                          )}
-                          <input
-                            type="text"
-                            maxLength={63}
-                            value={customFolderName}
-                            onChange={(e) => {
-                              setCustomFolderName(e.target.value.toLowerCase());
-                              setSelectedExistingFolder(null);
-                            }}
-                            className={INPUT_CLASS}
-                            placeholder="my-folder"
-                            data-testid="deploy-custom-folder-input"
-                          />
-                        </div>
-                        {customFolderNameError && (
-                          <p className="mt-1 text-xs text-red-600 dark:text-red-400">{customFolderNameError}</p>
-                        )}
-                      </div>
-                    </>
-                  )}
+                <div className="mt-3 space-y-2">
+                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                    Pick any folder on your storage, or create a new one. Browsing
+                    starts in this app&apos;s default location — you are not limited
+                    to it.
+                  </p>
+                  <StorageFolderPicker
+                    tenantId={tenantId ?? undefined}
+                    seedPath={selectedImage ? `${selectedImage.type}/${selectedImage.code}` : ''}
+                    value={selectedFolderPath}
+                    onChange={setSelectedFolderPath}
+                    testIdPrefix="deploy-folder-picker"
+                  />
                 </div>
               )}
             </div>
@@ -816,7 +734,7 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId,
             </button>
             <button
               type="submit"
-              disabled={!tenantId || !selectedImageId || !name || !!nameError || createDeployment.isPending || hasRequiredMissing || !resourcesFit || !!resourceError || !!customFolderNameError || extraMountsInvalid || (storageMode === 'custom' && !selectedExistingFolder && !customFolderName)}
+              disabled={!tenantId || !selectedImageId || !name || !!nameError || createDeployment.isPending || hasRequiredMissing || !resourcesFit || !!resourceError || !!customFolderPathError || extraMountsInvalid || (storageMode === 'custom' && !selectedFolderPath)}
               className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
               data-testid="deploy-submit-button"
             >

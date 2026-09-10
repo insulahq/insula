@@ -44,6 +44,7 @@ function compareSemver(a: string, b: string): number {
 }
 import DatabaseManagementModal from './DatabaseManagementModal';
 import LogViewer from './LogViewer';
+import ChangeStoragePathModal from './ChangeStoragePathModal';
 import WebTerminal from './WebTerminal';
 import type { Deployment, CatalogEntry } from '@/types/api';
 
@@ -175,6 +176,7 @@ export default function InstalledAppDetailModal({
   const availability = useResourceAvailability(tenantId, editingResources ? deployment?.id : undefined);
   const avail = availability.data?.data;
   const [showLogs, setShowLogs] = useState(false);
+  const [changingStoragePath, setChangingStoragePath] = useState(false);
   const [showTerminal, setShowTerminal] = useState(false);
   const liveMetrics = useDeploymentLiveMetrics(tenantId, deployment?.status === 'running' ? deployment?.id : undefined);
 
@@ -416,7 +418,17 @@ export default function InstalledAppDetailModal({
             {deployment.storagePath && (
               <div>
                 <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Storage Path</span>
-                <p className="font-mono text-gray-900 dark:text-gray-100">{absPath(deployment.storagePath)}</p>
+                <div className="flex items-center gap-2">
+                  <p className="font-mono text-gray-900 dark:text-gray-100">{absPath(deployment.storagePath)}</p>
+                  <button
+                    type="button"
+                    onClick={() => setChangingStoragePath(true)}
+                    className="shrink-0 rounded-md border border-gray-200 dark:border-gray-700 px-2 py-0.5 text-xs font-medium text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
+                    data-testid="change-storage-path-button"
+                  >
+                    Change
+                  </button>
+                </div>
               </div>
             )}
             {deployment.lastUpgradedAt && (
@@ -1142,6 +1154,20 @@ export default function InstalledAppDetailModal({
           catalogEntry={catalogEntry}
           tenantId={tenantId}
           onClose={() => setDbModalOpen(false)}
+        />
+      )}
+
+      {changingStoragePath && deployment.storagePath && (
+        <ChangeStoragePathModal
+          tenantId={tenantId}
+          deploymentId={deployment.id}
+          deploymentName={deployment.name}
+          currentPath={deployment.storagePath}
+          isRunning={deployment.status === 'running'}
+          onClose={() => setChangingStoragePath(false)}
+          onChanged={() => {
+            void queryClient.invalidateQueries({ queryKey: ['deployments', tenantId] });
+          }}
         />
       )}
     </div>

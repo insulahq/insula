@@ -444,19 +444,42 @@ export interface StorageFolder {
   readonly name: string;
   readonly path: string;
   readonly isEmpty: boolean;
+  /** Whether drilling into this folder would show anything. */
+  readonly hasSubfolders: boolean;
   readonly usedByDeployment: string | null;
 }
 
 export interface StorageFolderList {
+  /** Directory being listed, relative to the PVC root. '' is the root. */
   readonly basePath: string;
+  /** One level up, or null when already at the root. */
+  readonly parentPath: string | null;
   readonly folders: readonly StorageFolder[];
 }
 
-export function useStorageFolders(tenantId: string | undefined, entryType: string | undefined, entryCode: string | undefined) {
+/**
+ * List the folders directly under `path` on the tenant's PVC.
+ *
+ * `path` is PVC-root-relative and browsable one level at a time — pass `''`
+ * for the root. Callers that hand in `undefined` get the deployment-scoped
+ * default (`<type>/<code>`), which is only the picker's STARTING point now,
+ * not the limit of what can be selected.
+ */
+export function useStorageFolders(
+  tenantId: string | undefined,
+  entryType: string | undefined,
+  entryCode: string | undefined,
+  path?: string,
+) {
+  const qs = path !== undefined
+    ? `path=${encodeURIComponent(path)}`
+    : `type=${entryType}&code=${entryCode}`;
   return useQuery({
-    queryKey: ['storage-folders', tenantId, entryType, entryCode],
-    queryFn: () => apiFetch<{ data: StorageFolderList }>(`/api/v1/tenants/${tenantId}/deployments/storage-folders?type=${entryType}&code=${entryCode}`),
-    enabled: Boolean(tenantId && entryType && entryCode),
+    queryKey: ['storage-folders', tenantId, entryType, entryCode, path],
+    queryFn: () => apiFetch<{ data: StorageFolderList }>(`/api/v1/tenants/${tenantId}/deployments/storage-folders?${qs}`),
+    // With an explicit path the catalog entry is irrelevant — the browser must
+    // still work at the PVC root, where there is no type/code to speak of.
+    enabled: Boolean(tenantId) && (path !== undefined || Boolean(entryType && entryCode)),
   });
 }
 
