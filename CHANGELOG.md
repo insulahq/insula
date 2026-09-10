@@ -12,6 +12,23 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **"Use Custom Folder" can now reach any folder on your storage.** It used to
+  offer only folders sitting beside the app's own default location, so if you
+  already had a site directory — restored from a backup, uploaded over SFTP, or
+  shared with another app — there was no way to point a new deployment at it.
+  The picker now browses your whole storage area, and you can create a folder
+  wherever you are. A folder another app already uses is offered with a warning
+  rather than hidden: sharing content between two websites is normal, sharing a
+  database directory corrupts it.
+- **An app's storage folder can be changed after it is deployed.** Open the app
+  and click **Change** next to Storage Path. This **re-points** the app — your
+  files do not move. The old folder keeps everything in it, nothing is copied or
+  deleted, and the app serves whatever is in the new folder (so pointing it at an
+  empty folder makes it look empty). The app restarts to pick up the change, and
+  setting the old folder back restores the previous state. To move content, copy
+  it in File Manager first.
+
 ### BREAKING
 - **The two tenant-user password endpoints no longer accept a password.**
   `POST /api/v1/tenants/{id}/users` rejects a `password` field, and
