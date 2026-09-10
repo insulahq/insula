@@ -82,7 +82,13 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
 
     let path: string;
     if (rawPath !== undefined) {
-      path = rawPath.replace(/^\/+|\/+$/g, '');
+      // Strip a TRAILING slash only. Stripping a leading one too would turn
+      // `/etc` into `etc` and quietly list a different directory than the
+      // caller asked for — `folderProblem` has a clear message for an
+      // absolute path ("Folder is relative to your storage root…") and extra
+      // mounts already reject it that way, so let it through to be refused
+      // rather than silently reinterpreted.
+      path = rawPath.replace(/\/+$/g, '');
       // Anything non-empty must satisfy the same rule as a mount folder —
       // this is the guard that stops `..` from walking out of the PVC.
       if (path !== '') {
