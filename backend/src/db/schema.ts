@@ -4133,6 +4133,13 @@ export const nodeHealthState = pgTable('node_health_state', {
   severity: varchar('severity', { length: 16 }).notNull().default('normal'),
   lastNotifiedAt: timestamp('last_notified_at', { withTimezone: true }),
   observedAt: timestamp('observed_at', { withTimezone: true }).notNull().defaultNow(),
+  // Kernel bootID (status.nodeInfo.bootID). A CHANGE is proof of a reboot; a
+  // kubelet restart or a NotReady flap leaves it alone. Migration 0107.
+  bootId: text('boot_id'),
+  // Did a "rebooting" notice go out for the CURRENT boot? Lets the startup
+  // notification say whether the operator was warned — a single-node control
+  // plane usually cannot announce its own shutdown.
+  rebootAnnounced: boolean('reboot_announced').notNull().default(false),
 });
 
 export type NodeHealthState = typeof nodeHealthState.$inferSelect;

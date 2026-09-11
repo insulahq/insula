@@ -23,9 +23,20 @@ import { eq, inArray, sql } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { nodeHealthState, notifications, users } from '../../db/schema.js';
-import { notifyAdminNodeDown } from '../notifications/events.js';
+import {
+  notifyAdminNodeDown,
+  notifyAdminNodeRebooting,
+  notifyAdminNodeStartupComplete,
+} from '../notifications/events.js';
+import {
+  detectBootTransitions,
+  formatDowntime,
+  type BootFacts,
+  type PrevBootState,
+} from './boot-events.js';
 import { recordMemoryEvents } from './memory-events.js';
 import { readNodeDiskStats } from './kubelet-disk.js';
+import { reapShutdownDebris } from './shutdown-debris.js';
 import {
   buildEntry,
   computeClusterBaseline,
@@ -48,7 +59,11 @@ interface RawNode {
     readonly conditions?: ReadonlyArray<{
       readonly type?: string;
       readonly status?: string;
+      /** Ready's transition time is, in practice, the moment the node booted. */
+      readonly lastTransitionTime?: string;
     }>;
+    /** Kernel bootID — changes on every boot. See boot-events.ts. */
+    readonly nodeInfo?: { readonly bootID?: string };
   };
 }
 
@@ -134,13 +149,24 @@ export async function reconcileNodeHealth(
   const diskPctByNode = await readNodeDiskStats(nodeNames);
 
   const facts: NodeFacts[] = [];
+  const bootFacts: BootFacts[] = [];
   for (const n of nodeList.items ?? []) {
     const name = n.metadata?.name;
     if (!name) continue;
     const conditions = n.status?.conditions ?? [];
     const cond = (type: string) =>
       conditions.find((c) => c.type === type)?.status === 'True';
-    const ready = conditions.find((c) => c.type === 'Ready')?.status === 'True';
+    const readyCond = conditions.find((c) => c.type === 'Ready');
+    const ready = readyCond?.status === 'True';
+    const readyAt = readyCond?.lastTransitionTime
+      ? new Date(readyCond.lastTransitionTime)
+      : null;
+    bootFacts.push({
+      nodeName: name,
+      bootId: n.status?.nodeInfo?.bootID ?? null,
+      ready,
+      readySince: readyAt && !Number.isNaN(readyAt.getTime()) ? readyAt : null,
+    });
     facts.push({
       name,
       ready,
@@ -161,6 +187,23 @@ export async function reconcileNodeHealth(
   const prevRows = await db.select().from(nodeHealthState);
   const prevByName = new Map(prevRows.map((r) => [r.nodeName, r]));
 
+  // ── 5a. Node reboot lifecycle (operator request 2026-09-11) ────
+  // Computed from prevRows BEFORE the upsert loop overwrites them, and applied
+  // into that same upsert so bootId/rebootAnnounced advance atomically with the
+  // rest of the row. Notifications are dispatched after the writes so a
+  // notification failure cannot replay the transition on the next tick.
+  const prevBoot = new Map<string, PrevBootState>(
+    prevRows.map((r) => [r.nodeName, {
+      bootId: r.bootId ?? null,
+      ready: r.ready,
+      observedAt: r.observedAt ?? null,
+      rebootAnnounced: r.rebootAnnounced,
+    }]),
+  );
+  const bootTransitions = detectBootTransitions(bootFacts, prevBoot, now);
+  const transitionByNode = new Map(bootTransitions.map((t) => [t.nodeName, t]));
+  const bootFactByNode = new Map(bootFacts.map((b) => [b.nodeName, b]));
+
   const adminUserIds = await getAdminUserIds(db);
   const notified: string[] = [];
 
@@ -176,10 +219,24 @@ export async function reconcileNodeHealth(
     });
     const notifiedAt = willNotify ? now : lastNotifiedAt;
 
+    // A new boot resets the "already announced" flag; announcing a shutdown
+    // sets it. Anything else carries the previous value forward.
+    const bootFact = bootFactByNode.get(entry.name);
+    const transition = transitionByNode.get(entry.name);
+    const nextBootId = bootFact?.bootId ?? prev?.bootId ?? null;
+    const bootRolled = Boolean(
+      bootFact?.bootId && prev?.bootId && bootFact.bootId !== prev.bootId,
+    );
+    const nextRebootAnnounced = bootRolled
+      ? false
+      : transition?.kind === 'rebooting' ? true : (prev?.rebootAnnounced ?? false);
+
     await db.insert(nodeHealthState)
       .values({
         nodeName: entry.name,
         ready: entry.ready,
+        bootId: nextBootId,
+        rebootAnnounced: nextRebootAnnounced,
         pressures: [...entry.pressures],
         csiDriversPresent: entry.csiDriversPresent,
         csiDriversExpected: entry.csiDriversExpected,
@@ -194,6 +251,8 @@ export async function reconcileNodeHealth(
         target: nodeHealthState.nodeName,
         set: {
           ready: entry.ready,
+          bootId: nextBootId,
+          rebootAnnounced: nextRebootAnnounced,
           pressures: [...entry.pressures],
           csiDriversPresent: entry.csiDriversPresent,
           csiDriversExpected: entry.csiDriversExpected,
@@ -209,6 +268,26 @@ export async function reconcileNodeHealth(
     if (willNotify) {
       await fanoutNotification(db, adminUserIds, entry, prevSeverity);
       notified.push(entry.name);
+    }
+  }
+
+  // ── 5b. Dispatch the reboot lifecycle notifications ────────────
+  // After persistence: a dispatch failure must not cause the transition to be
+  // re-detected (and re-sent) on the next tick. dispatchSafe never throws, but
+  // the ordering is the guarantee, not its implementation.
+  for (const t of bootTransitions) {
+    if (t.kind === 'rebooting') {
+      const boot = bootFactByNode.get(t.nodeName)?.bootId ?? 'unknown';
+      await notifyAdminNodeRebooting(db, { nodeName: t.nodeName }, `node-reboot:${t.nodeName}:${boot}`);
+    } else {
+      await notifyAdminNodeStartupComplete(db, {
+        nodeName: t.nodeName,
+        downtimeText: t.downtimeMs === null ? 'unknown' : `~${formatDowntime(t.downtimeMs)}`,
+        bootedAtText: t.bootedAt ? ` at ${t.bootedAt.toISOString().replace('T', ' ').slice(0, 16)} UTC` : '',
+        announcementNote: t.rebootWasAnnounced
+          ? 'The shutdown was announced beforehand.'
+          : 'No shutdown notice was sent — on a single-node cluster the control plane goes down with the node, so the reboot can only be reported once it is back.',
+      }, `node-startup:${t.nodeName}:${t.bootId}`);
     }
   }
 
@@ -236,6 +315,19 @@ export async function reconcileNodeHealth(
     (podList.items ?? []) as Parameters<typeof recordMemoryEvents>[3],
     now,
   );
+
+  // ── 7. Reap node-reboot debris ─────────────────────────────────
+  // Nothing in Kubernetes removes these (terminated-pod-gc-threshold defaults
+  // to 12500), so they pile up across reboots — 822 from one reboot in
+  // tigera-operator on 2026-09-03, still 20 per reboot after the priority-class
+  // fix. They are also pod objects carrying exit-137 container statuses, which
+  // is what made the OOM detectors report reboot corpses as tenant OOM kills.
+  // Runs AFTER recordMemoryEvents so a kill is recorded before its record goes.
+  await reapShutdownDebris(
+    k8s,
+    (podList.items ?? []) as Parameters<typeof reapShutdownDebris>[1],
+    now.getTime(),
+  ).catch(() => 0);
 
   return { entries, notified };
 }

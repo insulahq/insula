@@ -28,7 +28,7 @@ import type { Database } from '../../db/index.js';
 import { nodeMemoryEvents, tenants } from '../../db/schema.js';
 import { notifyAdminNodeMemoryEvents } from '../notifications/events.js';
 import type { NodeMemoryEvent } from '@insula/api-contracts';
-import { classifyOom } from '../../lib/container-termination.js';
+import { classifyOom, isExpectedSigkill } from '../../lib/container-termination.js';
 import { isSystemNamespace } from '../../lib/namespace-tier.js';
 
 const RETENTION_MS = 30 * 24 * 60 * 60 * 1000; // UI window: 30 days
@@ -94,6 +94,12 @@ export interface RawPod {
   };
   readonly spec?: { readonly nodeName?: string };
   readonly status?: {
+    /**
+     * Pod-level reason. `Terminated` / `NodeShutdown` mean the kubelet killed
+     * or refused this pod for a node shutdown — its exit 137s are by design.
+     * Distinct from the CONTAINER's `terminated.reason` read below.
+     */
+    readonly reason?: string;
     readonly containerStatuses?: ReadonlyArray<{
       readonly name?: string;
       readonly restartCount?: number;
@@ -133,10 +139,20 @@ export function collectOomKilledContainers(
     const podName = pod.metadata?.name ?? null;
     const nodeName = pod.spec?.nodeName ?? '';
     if (!uid || !nodeName) continue;
-    // A terminating pod's containers are SIGKILLed on purpose once the grace
-    // period expires, which is exit 137 — indistinguishable from a cgroup OOM
-    // by exit code alone. Only kubelet's explicit `OOMKilled` reason counts here.
-    const terminating = Boolean(pod.metadata?.deletionTimestamp);
+    // A pod that is shutting down has its containers SIGKILLed on purpose once
+    // the grace period expires, which is exit 137 — indistinguishable from a
+    // cgroup OOM by exit code alone. Only kubelet's explicit `OOMKilled` counts.
+    //
+    // Two ways that happens, and this used to test only the first:
+    //   deletionTimestamp  — a rollout/scale-down/drain deletes the pod.
+    //   status.reason      — a NODE SHUTDOWN never deletes the pod, it marks it
+    //                        Failed in place, so deletionTimestamp is ABSENT.
+    // Missing the second reported five reboot corpses as OOMs on production
+    // 2026-09-11. See isExpectedSigkill().
+    const expectedKill = isExpectedSigkill({
+      deletionTimestamp: pod.metadata?.deletionTimestamp,
+      reason: pod.status?.reason,
+    });
     for (const cs of pod.status?.containerStatuses ?? []) {
       // A terminal pod (restartPolicy Never) carries the kill in
       // state.terminated; a restarting one in lastState.terminated.
@@ -155,7 +171,7 @@ export function collectOomKilledContainers(
         // exclusion reconciler rolled the deployment, while its cgroup reported
         // `oom_kill 0` and a peak of 8.5 MB against a 64 MiB limit, and the
         // node's kernel ring buffer held no cgroup OOM for it at all.
-        if (!oomExplicit && terminating) continue;
+        if (!oomExplicit && expectedKill) continue;
         const finished = term.finishedAt ? new Date(term.finishedAt) : null;
         if (!finished || Number.isNaN(finished.getTime()) || finished.getTime() < cutoff) continue;
         out.push({

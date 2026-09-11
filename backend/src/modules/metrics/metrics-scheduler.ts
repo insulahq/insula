@@ -3,7 +3,7 @@ import { hostingPlans, tenants, platformSettings } from '../../db/schema.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { collectTenantMetrics } from './resource-metrics.js';
 import { evaluateTenantSaturation } from './tenant-saturation.js';
-import { scanTenantOom } from './oom-scan.js';
+import { scanTenantOom, describeOomEvent } from './oom-scan.js';
 import { notifyAdminTenantOom } from '../notifications/events.js';
 import { recordHourlyUsage } from './usage-rollup.js';
 import type { Database } from '../../db/index.js';
@@ -95,10 +95,18 @@ export function startMetricsScheduler(db: Database): NodeJS.Timeout {
           try {
             const ooms = await scanTenantOom(k8s, tenant.namespace);
             for (const o of ooms) {
+              const { killSummary, killDetail } = describeOomEvent(o);
               await notifyAdminTenantOom(
                 db,
                 tenant.id,
-                { tenantLabel: tenant.name, podName: o.podName, containerName: o.containerName, restartCount: String(o.restartCount) },
+                {
+                  tenantLabel: tenant.name,
+                  podName: o.podName,
+                  containerName: o.containerName,
+                  restartCount: String(o.restartCount),
+                  killSummary,
+                  killDetail,
+                },
                 `oom:${tenant.id}:${o.podName}:${o.containerName}:${o.restartCount}`,
               );
             }

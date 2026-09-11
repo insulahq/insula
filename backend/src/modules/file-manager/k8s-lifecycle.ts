@@ -304,6 +304,42 @@ export async function ensureFileManagerRunning(
                   // ceiling, only the request is reserved, so this frees 64Mi
                   // per tenant FM rather than costing anything.
                   //
+                  // RE-MEASURED 2026-09-11, same production FM, 2h after a
+                  // reboot and 4 days after this 256Mi limit landed. The limit
+                  // WORKED — zero OOM kills since (the last was 2026-09-06
+                  // 23:25, before it) — but the composition has completely
+                  // changed, and reading it wrong leads straight back here:
+                  //
+                  //   memory.current       249.6 Mi   of 256 Mi   (97%!)
+                  //   anon                  14.2 Mi
+                  //   page cache            11.5 Mi   <- was 100 Mi
+                  //   slab_reclaimable     222.1 Mi   <- was ~0
+                  //   slab_unreclaimable     0.35 Mi
+                  //   memory.events        max 0, oom 0, oom_kill 0
+                  //   memory.pressure      avg10/60/300 all 0.00
+                  //
+                  // That is the DENTRY/INODE cache, which the kernel grows to
+                  // fill whatever headroom a cgroup has and reclaims on demand.
+                  // Sitting at 97% is normal and benign here: zero pressure and
+                  // zero max-events over hours prove reclaim is not struggling.
+                  //
+                  // DO NOT "fix" this by raising the limit again. Reclaimable
+                  // slab expands into whatever you give it, so a bigger limit
+                  // buys a bigger dentry cache and the same 97% reading.
+                  //
+                  // The trap is that `kubectl top` makes it look urgent: the
+                  // kubelet's working set is memory.current MINUS inactive_file,
+                  // so it EXCLUDES page cache but INCLUDES slab_reclaimable —
+                  // reporting ~242 Mi here. Note this is the exact mirror of the
+                  // 2026-09-06 trap above, where working set UNDERSTATED the
+                  // problem. Neither number is the cgroup's real need. Read
+                  // memory.stat and memory.events before touching the limit.
+                  //
+                  // FM carries `platform.io/system: "true"`, so isSystemPod() in
+                  // metrics/resource-metrics.ts keeps all of this out of the
+                  // tenant's usage figures — it cannot raise a false tenant
+                  // saturation alert.
+                  //
                   // FM runs under platform-tenant-overhead PriorityClass and is
                   // exempted from tenant quota by scopeSelector.
                   requests: { cpu: '25m', memory: FM_MEMORY_REQUEST },

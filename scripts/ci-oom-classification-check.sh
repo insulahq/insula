@@ -23,7 +23,7 @@ fail=0
 cd "$ROOT" || exit 1
 
 # 1) The helper must exist and export the three entry points.
-for sym in isOomTermination describeTermination messageIndicatesOom; do
+for sym in isOomTermination describeTermination messageIndicatesOom isExpectedSigkill; do
   if ! grep -q "export function $sym" "$HELPER" 2>/dev/null; then
     echo "ci-oom-classification: $HELPER does not export $sym" >&2
     fail=1
@@ -82,6 +82,42 @@ if [ -n "$narrowed" ]; then
   echo "$narrowed" | sed 's/^/  /' >&2
   fail=1
 fi
+
+# 5) Every INFERRING call site must also apply the node-shutdown guard.
+#    A graceful node shutdown SIGKILLs whatever is still alive at the end of the
+#    grace period; those containers exit 137 and are indistinguishable from a
+#    cgroup OOM by exit code alone. On production 2026-09-11 that reported five
+#    reboot corpses as OOMs — three of them to admins as "<tenant>: apache-php
+#    OOM-killed" — while the kernel logged no cgroup OOM for that boot at all.
+#
+#    So: any module that acts on an INFERRED oom (classifyOom()=='inferred', or
+#    the isOomTermination() boolean, which folds inferred in) must consult
+#    isExpectedSigkill(). Modules that only ever read an EXPLICIT kill do not.
+for f in \
+  backend/src/modules/metrics/oom-scan.ts \
+  backend/src/modules/node-health/memory-events.ts
+do
+  if ! grep -qE '(^|[^A-Za-z0-9_])isExpectedSigkill\(' "$f" 2>/dev/null; then
+    echo "ci-oom-classification: $f infers OOMs from exit 137 but never calls isExpectedSigkill()," >&2
+    echo "  so a node reboot will be reported as an OOM. See lib/container-termination.ts." >&2
+    fail=1
+  fi
+done
+
+# 6) The guard is only reachable if the pod-level fields it reads are part of
+#    the call site's pod type. `status.reason` is the one a node shutdown sets
+#    (deletionTimestamp is ABSENT on those pods) — omitting it compiles fine and
+#    silently restores the bug, which is precisely how this shipped.
+for f in \
+  backend/src/modules/metrics/oom-scan.ts \
+  backend/src/modules/node-health/memory-events.ts
+do
+  if ! grep -qE '(^|[^A-Za-z0-9_])reason\?: string' "$f" 2>/dev/null; then
+    echo "ci-oom-classification: $f does not model pod-level status.reason," >&2
+    echo "  so isExpectedSigkill() can never see a node shutdown." >&2
+    fail=1
+  fi
+done
 
 [ "$fail" -eq 0 ] && echo "ci-oom-classification: ok"
 exit "$fail"

@@ -160,7 +160,7 @@ describe('summarizeForNotification', () => {
 function oomPod(overrides: Partial<{
   uid: string; pod: string; ns: string; node: string; container: string;
   restarts: number; reason: string; exitCode: number; finishedAt: string; terminal: boolean;
-  deletionTimestamp: string;
+  deletionTimestamp: string; podReason: string;
 }> = {}): RawPod {
   const term = {
     reason: overrides.reason ?? 'OOMKilled',
@@ -176,6 +176,7 @@ function oomPod(overrides: Partial<{
     },
     spec: { nodeName: overrides.node ?? 'worker' },
     status: {
+      ...(overrides.podReason ? { reason: overrides.podReason } : {}),
       containerStatuses: [{
         name: overrides.container ?? 'app',
         restartCount: overrides.restarts ?? 1,
@@ -280,5 +281,48 @@ describe('collectOomKilledContainers', () => {
     expect(summaries.find((s) => s.nodeName === 'worker')?.summary).toContain('1 tenant container(s) OOM-killed');
     expect(summaries.find((s) => s.nodeName === 'staging1')?.summary).toContain('1 SYSTEM container(s) OOM-killed');
     expect(summaries.find((s) => s.nodeName === 'staging1')?.severity).toBe('critical');
+  });
+
+});
+
+// ── node-shutdown exclusion (production false alarms, 2026-09-11) ──
+//
+// The deletionTimestamp guard below was correct for rollout SIGKILLs and blind
+// to the far bigger source: a node reboot. Graceful node shutdown marks a pod
+// Failed IN PLACE — it never deletes it — so deletionTimestamp is absent while
+// status.reason carries kubelet's own explanation.
+describe('collectOomKilledContainers — node shutdown', () => {
+  it('drops an inferred kill on a pod terminated by node shutdown', () => {
+    const events = collectOomKilledContainers(
+      [oomPod({ podReason: 'Terminated', reason: 'Error', exitCode: 137, terminal: true, restarts: 0 })],
+      NOW,
+    );
+    expect(events).toEqual([]);
+  });
+
+  it('drops an inferred kill on a pod rejected by a shutting-down node', () => {
+    const events = collectOomKilledContainers(
+      [oomPod({ podReason: 'NodeShutdown', reason: 'ContainerStatusUnknown', exitCode: 137, terminal: true, restarts: 0 })],
+      NOW,
+    );
+    expect(events).toEqual([]);
+  });
+
+  it('KEEPS an explicit OOMKilled even during a node shutdown', () => {
+    const events = collectOomKilledContainers(
+      [oomPod({ podReason: 'Terminated', reason: 'OOMKilled', exitCode: 137, terminal: true })],
+      NOW,
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0].oomConfidence).toBe('confirmed');
+  });
+
+  it('KEEPS an inferred kill on a pod that is NOT shutting down', () => {
+    const events = collectOomKilledContainers(
+      [oomPod({ reason: 'Error', exitCode: 137, restarts: 3 })],
+      NOW,
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0].oomConfidence).toBe('unconfirmed');
   });
 });
