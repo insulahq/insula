@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -22,7 +23,7 @@ func collectHardening(hostRoot string, ssh sshConfigView, ssh22Public bool) Hard
 	h.TimeSinceRebootSecs = bootAgeSeconds(hostRoot)
 	h.Fail2banPresent = anyBinaryPresent(hostRoot, "fail2ban-server", "fail2ban-client")
 	h.SshguardPresent = anyBinaryPresent(hostRoot, "sshguard")
-	h.UnattendedUpgradesActive = unattendedUpgradesPresent(hostRoot)
+	h.UnattendedUpgradesActive = unattendedUpgradesActive(hostRoot)
 	h.AutomaticRebootWindow = nil
 	h.PendingKernelUpdate = false
 	h.KernelEOL = false
@@ -101,17 +102,158 @@ func anyBinaryPresent(hostRoot string, names ...string) bool {
 	return false
 }
 
-// unattendedUpgradesPresent looks for the apt unattended-upgrades
-// binary OR the dnf-automatic binary. Doesn't VERIFY the service is
-// enabled — that'd require a `systemctl is-enabled` call which we
-// can't issue from a read-only container without exec capability.
-// Presence of the binary is a useful first signal; the CIS finding
-// downgrades severity to medium for that reason.
-func unattendedUpgradesPresent(hostRoot string) bool {
-	return anyBinaryPresent(hostRoot,
-		"unattended-upgrade", "unattended-upgrades",
-		"dnf-automatic",
-	)
+// unattendedUpgradesActive reports whether this host is actually configured to
+// INSTALL OS security updates on a timer.
+//
+// It used to check only whether a binary existed, with a comment excusing that
+// as "a useful first signal". It was not: on the production node the binary was
+// absent while apt-daily.timer and apt-daily-upgrade.timer were enabled, active
+// and firing daily — installing nothing, because APT::Periodic::Unattended-
+// Upgrade was unset and the package was never installed. 20 pending security
+// updates accumulated behind a check named "...Active" that never looked at
+// whether anything was active. The inverse is just as wrong: an installed
+// binary with the periodic knob set to "0" reports healthy while patching
+// nothing.
+//
+// `systemctl is-enabled` is still unavailable (read-only mount, no exec), but
+// enablement does not need it — a systemd timer is enabled iff a symlink for it
+// exists under a timers.target.wants directory, which is plainly readable.
+func unattendedUpgradesActive(hostRoot string) bool {
+	return aptUnattendedActive(hostRoot) || dnfAutomaticActive(hostRoot)
+}
+
+// hostPathsForAutoUpdateCheck is every host path unattendedUpgradesActive reads,
+// relative to hostRoot.
+//
+// The DaemonSet mounts an ALLOWLIST of host paths. A path that is not mounted
+// does not read as an error — it reads as ABSENT, so the check reports false on
+// every node forever and looks like a real finding. That is not hypothetical:
+// the first deployment of this rewrite did exactly that, because apt.conf.d and
+// the timers.target.wants directories were not mounted. Hermetic tests cannot
+// catch it (they build their own root), so daemonset_mounts_test.go asserts this
+// list against the committed manifest. Add a read here AND a mount there.
+var hostPathsForAutoUpdateCheck = []string{
+	"usr/bin",
+	"usr/sbin",
+	"etc/apt/apt.conf.d",
+	"etc/dnf",
+	"etc/systemd/system/timers.target.wants",
+	"usr/lib/systemd/system/timers.target.wants",
+}
+
+// aptUnattendedActive: package installed AND the periodic knob on AND the timer
+// that runs it enabled. All three are required — any one alone patches nothing.
+func aptUnattendedActive(hostRoot string) bool {
+	if !anyBinaryPresent(hostRoot, "unattended-upgrade", "unattended-upgrades") {
+		return false
+	}
+	if !aptPeriodicUnattendedEnabled(hostRoot) {
+		return false
+	}
+	return systemdTimerEnabled(hostRoot, "apt-daily-upgrade.timer")
+}
+
+// aptPeriodicUnattendedEnabled scans /etc/apt/apt.conf.d for
+// APT::Periodic::Unattended-Upgrade and returns true when the winning value is
+// non-zero.
+//
+// apt reads that directory in lexical order and LAST ASSIGNMENT WINS, so this
+// must not stop at the first hit: a 99- file setting "0" legitimately disables
+// what 20auto-upgrades turned on, and reporting the 20- value would be a false
+// green. Files are sorted and every match is taken, keeping the last.
+func aptPeriodicUnattendedEnabled(hostRoot string) bool {
+	dir := filepath.Join(hostRoot, "etc/apt/apt.conf.d")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if !e.IsDir() {
+			names = append(names, e.Name())
+		}
+	}
+	sort.Strings(names)
+
+	found, enabled := false, false
+	for _, n := range names {
+		b, err := os.ReadFile(filepath.Join(dir, n))
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(b), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "//") || strings.HasPrefix(line, "#") {
+				continue
+			}
+			if !strings.Contains(line, "APT::Periodic::Unattended-Upgrade") {
+				continue
+			}
+			// APT::Periodic::Unattended-Upgrade "1";
+			v := line
+			if i := strings.Index(v, "APT::Periodic::Unattended-Upgrade"); i >= 0 {
+				v = v[i+len("APT::Periodic::Unattended-Upgrade"):]
+			}
+			v = strings.Trim(strings.TrimSpace(v), ";")
+			v = strings.Trim(strings.TrimSpace(v), "\"'")
+			found = true
+			enabled = v != "" && v != "0"
+		}
+	}
+	return found && enabled
+}
+
+// dnfAutomaticActive: binary installed AND apply_updates=yes AND a
+// dnf-automatic timer enabled. RHEL 9 / AL2023 ship dnf-automatic.timer; older
+// builds used dnf-automatic-install.timer, so either counts.
+func dnfAutomaticActive(hostRoot string) bool {
+	if !anyBinaryPresent(hostRoot, "dnf-automatic") {
+		return false
+	}
+	if !iniKeyEquals(filepath.Join(hostRoot, "etc/dnf/automatic.conf"), "apply_updates", "yes") {
+		return false
+	}
+	return systemdTimerEnabled(hostRoot, "dnf-automatic.timer") ||
+		systemdTimerEnabled(hostRoot, "dnf-automatic-install.timer")
+}
+
+// iniKeyEquals reports whether an ini-style file assigns key the given value.
+// Last assignment wins, matching how these parsers behave.
+func iniKeyEquals(path, key, want string) bool {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	got := ""
+	for _, line := range strings.Split(string(b), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
+			continue
+		}
+		k, v, ok := strings.Cut(line, "=")
+		if !ok || !strings.EqualFold(strings.TrimSpace(k), key) {
+			continue
+		}
+		got = strings.TrimSpace(v)
+	}
+	return strings.EqualFold(got, want)
+}
+
+// systemdTimerEnabled reports whether unit is enabled, by the same rule
+// `systemctl is-enabled` applies for a static-target want: a symlink (or file)
+// named after the unit under a timers.target.wants directory. Both the admin
+// location (/etc/systemd/system) and the vendor-preset one (/usr/lib/...) count.
+func systemdTimerEnabled(hostRoot, unit string) bool {
+	for _, base := range []string{
+		"etc/systemd/system/timers.target.wants",
+		"usr/lib/systemd/system/timers.target.wants",
+		"lib/systemd/system/timers.target.wants",
+	} {
+		if _, err := os.Lstat(filepath.Join(hostRoot, base, unit)); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // buildCISFindings encodes the Phase 1 ≤10 rules. Each rule's
@@ -192,7 +334,7 @@ func buildCISFindings(ssh sshConfigView, h Hardening, ssh22Public bool) []CISFin
 		{
 			ID:       "HARDEN-002",
 			Severity: "medium",
-			Title:    "unattended-upgrades / dnf-automatic installed",
+			Title:    "OS security updates install automatically",
 			Observed: boolStr(h.UnattendedUpgradesActive),
 			Expected: "true",
 			Passing:  h.UnattendedUpgradesActive,

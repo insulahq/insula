@@ -12,6 +12,24 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Security
+- **Your servers now install OS security updates automatically.** They did not
+  before. The daily update job that ships with the operating system was enabled
+  and running, but the component that actually installs the updates was never
+  installed or switched on, so the job ran every day and applied nothing. A
+  production node had 21 pending updates, 20 of them security, including the
+  TLS library. New installations are configured during setup; existing servers
+  are updated in place when they take this release — no action needed.
+- **Updates are installed, but your servers are never rebooted automatically.**
+  Some updates (the kernel, TLS libraries) only take effect after a restart.
+  Rebooting on its own would take your sites down without warning, so the
+  platform installs the patches and leaves the restart to you.
+- **The "automatic updates" check on the Security Hardening page now checks
+  whether updates actually install.** It previously only looked for the
+  presence of a program file, so a server that was patching nothing could still
+  show it as satisfied — which is how the gap above went unnoticed. It now
+  verifies the package, the setting and the timer together.
+
 ## [2026.9.16] - 2026-09-10
 
 ### Added
