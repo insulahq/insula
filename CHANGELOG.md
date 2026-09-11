@@ -13,6 +13,12 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Added
+- **A node outage now says when it took a platform service with it.** The
+  banner reported "No tenant impact detected" during an outage in which backups
+  were unreachable the entire time — true, and badly incomplete, because no
+  tenant workload happened to run on that node. Services that have no reachable
+  instance are now named next to the tenant count, and the reassuring "no tenant
+  impact" line only appears when nothing else is broken either.
 - **A node coming back no longer leaves tenants displaced in silence.** While a
   node is down the platform moves tenants off it — HA-tier automatically,
   local-tier through the recovery wizard — and when the node rejoined, nothing
@@ -108,6 +114,25 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   never a running workload, and never a database pod.
 
 ### Fixed
+- **Moving a tenant off a dead node now actually brings it back.** The move
+  succeeded in every visible way — workload re-pinned, storage re-pinned,
+  records updated — and the tenant stayed down anyway, indefinitely. A tenant's
+  workload is configured to stop its old copy before starting a new one,
+  because its disk can only be mounted in one place at a time; a copy on a node
+  whose kubelet is gone never finishes stopping, because nothing is left to
+  confirm it did, so the replacement waited behind it forever. Those leftovers
+  are now cleared as part of the move, and only ever on a node that is
+  genuinely offline. A temporary outage hid this completely — when the node came
+  back the leftovers cleared and everything proceeded — so it only ever bit on
+  the permanent loss the move exists for.
+- **A tenant whose data had just become unreachable was told no action was
+  required.** When a node dies, the storage layer immediately earmarks space on
+  a surviving node and begins copying into it. Counting that empty placeholder
+  as a surviving copy meant a tenant with a single copy of its disk — which had
+  just died with the node — was reported as *"running on reduced redundancy,
+  this resolves itself."* It could not resolve itself: the only source was the
+  dead node. The platform now counts only copies that actually hold data, and
+  believes the storage layer when it reports a volume as faulted.
 - **Database backups are now one switch, not two half-features.** The System
   Backups page offered "WAL Streaming" and "Scheduled Base Backups" as separate
   toggles, which the storage layer never supported: a full copy can only be
