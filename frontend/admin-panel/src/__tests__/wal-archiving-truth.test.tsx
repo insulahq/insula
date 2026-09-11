@@ -49,7 +49,8 @@ const PROD_STATE: WalArchiveCluster = {
     lastFailedArchiveTime: null,
     lastFailedArchiveError: null,
     archivedCount: 4477,
-    failedCount: 0,
+    failedCount: 64,
+    statsResetAt: '2026-08-27T12:39:06.098Z',
     archivingHealthySince: '2026-08-12T22:45:32Z',
   },
 };
@@ -126,6 +127,17 @@ describe('WAL chip on the Database Backup Health card', () => {
     routeApi(streamingState());
     renderWith(<CnpgBackupHealthCard />);
     expect(await screen.findByTestId('cnpg-wal-badge-streaming')).toBeInTheDocument();
+  });
+
+  it('does not render "WAL failing" for a failure that later archives overtook', async () => {
+    // DEV's real counters: 64 lifetime failures, the last one three days before
+    // the last success. pg_stat_archiver keeps it forever; the backend only
+    // fills lastFailedArchiveTime when nothing was archived since. This asserts
+    // the UI contract that goes with that.
+    routeApi(PROD_STATE);
+    renderWith(<CnpgBackupHealthCard />);
+    await screen.findByTestId('cnpg-wal-badge-implied');
+    expect(screen.queryByTestId('cnpg-wal-badge-failing')).toBeNull();
   });
 
   it('says WAL off when the plugin entry is gone', async () => {

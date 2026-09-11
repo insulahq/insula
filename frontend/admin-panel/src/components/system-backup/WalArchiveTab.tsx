@@ -580,9 +580,16 @@ function StatusPanel({ cluster }: { cluster: WalArchiveCluster }) {
               ? lastArchivedLabel
               : (cluster.status?.lastFailedArchiveTime ? 'unhealthy' : (cluster.walArchivingActive ? 'no segment archived yet' : 'not archiving'))}
             {cluster.status?.archivedCount !== null && cluster.status?.archivedCount !== undefined && (
-              <span className="ml-1 text-[10px] text-gray-500 dark:text-gray-400">
+              <span
+                className="ml-1 text-[10px] text-gray-500 dark:text-gray-400"
+                title={cluster.status.statsResetAt
+                  ? `Counters since pg_stat_archiver was reset at ${new Date(cluster.status.statsResetAt).toLocaleString()}. A non-zero failure count is history, not a current alarm.`
+                  : undefined}
+              >
                 ({cluster.status.archivedCount} archived
-                {cluster.status.failedCount ? `, ${cluster.status.failedCount} failed` : ''})
+                {cluster.status.failedCount
+                  ? `, ${cluster.status.failedCount} failed since counters reset`
+                  : ''})
               </span>
             )}
           </span>
