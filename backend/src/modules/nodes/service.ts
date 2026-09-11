@@ -1582,5 +1582,67 @@ export async function deleteNode(
   // 3) Delete from inventory.
   await db.delete(clusterNodes).where(eq(clusterNodes.name, name));
 
+  // 4) Reap the residue a node deletion leaves behind.
+  //
+  // Both of these were observed on staging after the 2026-09-11 decommission
+  // drill. Neither breaks anything immediately, which is exactly why they sit
+  // there unnoticed until they confuse someone mid-incident.
+  //
+  // Best-effort throughout: the node IS deleted by this point, and failing
+  // the request over leftover bookkeeping would be worse than the leftovers.
+  const residue: string[] = [];
+
+  // (a) Longhorn keeps its own Node CR. Deleting the Kubernetes node does not
+  //     remove it, so it lingers as a stale object advertising a host that no
+  //     longer exists.
+  try {
+    await k8s.custom.deleteNamespacedCustomObject({
+      group: 'longhorn.io', version: 'v1beta2',
+      namespace: 'longhorn-system', plural: 'nodes', name,
+    } as unknown as Parameters<typeof k8s.custom.deleteNamespacedCustomObject>[0]);
+    residue.push('longhorn node CR');
+  } catch (err) {
+    const status = (err as { code?: number }).code ?? (err as { statusCode?: number }).statusCode;
+    // 404 = already gone (Longhorn reaped it, or never knew the node).
+    if (status !== 404) {
+      console.warn(`[nodes] could not delete Longhorn node CR for ${name}:`, (err as Error).message);
+    }
+  }
+
+  // (b) Mail placement can still name the deleted node as primary, secondary
+  //     or tertiary. Failover walks the candidate list and skips unreadable
+  //     nodes, so this does not break failover — but the placement UI shows a
+  //     machine that no longer exists, and an operator reading it during an
+  //     incident has no way to tell. Clear the dangling references.
+  try {
+    const { systemSettings } = await import('../../db/schema.js');
+    const [row] = await db
+      .select({
+        primary: systemSettings.mailPrimaryNode,
+        secondary: systemSettings.mailSecondaryNode,
+        tertiary: systemSettings.mailTertiaryNode,
+      })
+      .from(systemSettings)
+      .where(eq(systemSettings.id, 'system'));
+    if (row) {
+      const patch: Record<string, null> = {};
+      if (row.primary === name) patch.mailPrimaryNode = null;
+      if (row.secondary === name) patch.mailSecondaryNode = null;
+      if (row.tertiary === name) patch.mailTertiaryNode = null;
+      if (Object.keys(patch).length > 0) {
+        await db.update(systemSettings)
+          .set(patch as Record<string, never>)
+          .where(eq(systemSettings.id, 'system'));
+        residue.push(`mail placement (${Object.keys(patch).join(', ')})`);
+      }
+    }
+  } catch (err) {
+    console.warn(`[nodes] could not clear mail placement references to ${name}:`, (err as Error).message);
+  }
+
+  if (residue.length > 0) {
+    console.info(`[nodes] cleaned residue after deleting ${name}: ${residue.join('; ')}`);
+  }
+
   return { deletedFromKubernetes, deletedFromInventory: true };
 }

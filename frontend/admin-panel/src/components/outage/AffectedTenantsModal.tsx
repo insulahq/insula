@@ -1,7 +1,9 @@
+import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { X, AlertTriangle, XCircle, Info, HelpCircle } from 'lucide-react';
+import { X, AlertTriangle, XCircle, Info, HelpCircle, Wrench } from 'lucide-react';
 import type { ClusterOutageImpact, TenantHealthEntry } from '@insula/api-contracts';
 import { RECOVERY_ACTIONS } from './recovery-actions';
+import TenantRecoveryWizard from './TenantRecoveryWizard';
 
 /**
  * Which tenants an outage is affecting, and what to do about each.
@@ -50,7 +52,8 @@ function StateBadge({ state }: { readonly state: TenantHealthEntry['state'] }) {
 }
 
 function TenantCard({ entry }: { readonly entry: TenantHealthEntry }) {
-  return (
+  const [wizardOpen, setWizardOpen] = useState(false);
+  return (<>
     <div
       className="rounded-lg border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800"
       data-testid={`affected-tenant-${entry.tenantId}`}
@@ -105,7 +108,23 @@ function TenantCard({ entry }: { readonly entry: TenantHealthEntry }) {
           );
         })}
       </ul>
+
+      {/* The guided path. Individual "next step" links above stay, because an
+          operator who already knows what they are doing should not be forced
+          through three steps. */}
+      <button
+        type="button"
+        onClick={() => setWizardOpen(true)}
+        data-testid={`recover-tenant-${entry.tenantId}`}
+        className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-blue-300 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-800 hover:bg-blue-100 dark:border-blue-700 dark:bg-blue-900/30 dark:text-blue-200 dark:hover:bg-blue-900/50"
+      >
+        <Wrench size={13} aria-hidden="true" /> Guide me through recovery
+      </button>
     </div>
+    {wizardOpen && (
+      <TenantRecoveryWizard entry={entry} onClose={() => setWizardOpen(false)} />
+    )}
+    </>
   );
 }
 

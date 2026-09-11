@@ -134,3 +134,32 @@ export const clusterOutageImpactSchema = z.object({
   readError: z.string().nullable(),
 });
 export type ClusterOutageImpact = z.infer<typeof clusterOutageImpactSchema>;
+
+/**
+ * Recovery actions the wizard can execute directly.
+ *
+ * Deliberately small. `repin` is the one recovery that is safe to automate
+ * from a modal: it is reversible, moves no data, and is exactly what the
+ * drain flow already does. Restoring from a backup bundle is destructive and
+ * has its own established flow — the wizard links to it rather than
+ * re-implementing it behind a different button.
+ */
+export const tenantRecoveryActionSchema = z.enum(['repin']);
+export type TenantRecoveryAction = z.infer<typeof tenantRecoveryActionSchema>;
+
+export const tenantRepinRequestSchema = z.object({
+  /** A node name, or '' to clear the pin and let the scheduler choose. */
+  targetNode: z.string().max(253),
+  /** Typed tenant name — the same confirmation shape as node recovery. */
+  confirm: z.literal(true),
+  reason: z.string().min(3).max(500),
+});
+export type TenantRepinRequest = z.infer<typeof tenantRepinRequestSchema>;
+
+export const tenantRepinResponseSchema = z.object({
+  tenantId: z.string(),
+  targetNode: z.string().nullable(),
+  workloadsPatched: z.number().int(),
+  volumesPatched: z.number().int(),
+});
+export type TenantRepinResponse = z.infer<typeof tenantRepinResponseSchema>;

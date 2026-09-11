@@ -1951,6 +1951,13 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         // node-health reconciler's 5 min, which took 4m20s to notice a dead
         // node during the 2026-09-11 drill.
         // Kill switch: AUTO_REPIN_HA_TENANTS=disable
+        // Fast node-down watch — one listNode every 30s so an outage is
+        // announced in ~30s instead of the reconciler's 4m20s. Shares the
+        // reconciler's dedupeKey, so whichever fires first wins.
+        const { startFastNodeDownWatch } = await import('./modules/node-health/fast-down-watch.js');
+        const fastDownHandle = startFastNodeDownWatch({ db: app.db, k8s: k8sForImapsync });
+        app.addHook('onClose', () => fastDownHandle.stop());
+
         const { startAutoRepinScheduler } = await import('./modules/tenant-health/scheduler.js');
         const autoRepinHandle = startAutoRepinScheduler({ db: app.db, k8s: k8sForImapsync });
         app.addHook('onClose', () => autoRepinHandle());
