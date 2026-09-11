@@ -84,6 +84,24 @@ export interface CatalogueBackup {
   kind?: 'scheduled' | 'on-demand' | 'pre-restore' | 'unknown' | null;
 }
 
+/**
+ * What the WAL side of the archive costs and covers.
+ *
+ * The base backups are only half of an offsite Postgres backup: between them,
+ * every WAL segment is uploaded, and those segments are what let a restore land
+ * on an arbitrary moment. Operators had no way to see how many there were or
+ * what they cost — the Backups page reported base-backup bytes only.
+ */
+export interface WalArchiveSummary {
+  readonly segmentCount: number;
+  readonly totalBytes: number;
+  /** LastModified of the oldest / newest segment still retained. */
+  readonly oldestAt: string | null;
+  readonly newestAt: string | null;
+  /** True when the LIST hit its page cap — counts are a floor, not a total. */
+  readonly truncated: boolean;
+}
+
 export interface CatalogueResult {
   readonly source: CatalogueSource;
   readonly objectStoreName: string;
@@ -94,6 +112,8 @@ export interface CatalogueResult {
   readonly unavailableReason: string | null;
   /** Wall-clock latency of the LIST + GETs. */
   readonly queryDurationMs: number;
+  /** Null when the WAL prefix could not be listed (never fails the call). */
+  readonly walSummary: WalArchiveSummary | null;
 }
 
 // ─── ObjectStore resolution ─────────────────────────────────────────────────
@@ -214,6 +234,94 @@ export interface ListBackupsOpts {
   readonly timeoutMs?: number;
 }
 
+
+/**
+ * Sum the WAL segments barman has uploaded for these clusters.
+ *
+ * Layout written by barman-cloud: `<prefix>/<cluster>/wals/<0000…>/<segment>`.
+ * We LIST with sizes rather than HEAD each key — one page per 1000 segments.
+ *
+ * Bounded: a busy cluster retains tens of thousands of segments and the panel
+ * that shows this is not worth an unbounded LIST, so we stop at
+ * WAL_LIST_MAX_PAGES and say so (`truncated`) rather than reporting a number
+ * that silently means "the first 20 000".
+ */
+const WAL_LIST_MAX_PAGES = 20;
+
+/** One listed WAL object: what the summary needs from an S3 LIST entry. */
+export interface WalObjectEntry {
+  readonly Size?: number;
+  readonly LastModified?: Date;
+}
+
+/**
+ * Fold listed WAL objects into the summary. Pure so it can be tested with the
+ * shapes S3 actually returns (missing Size, missing LastModified, empty page)
+ * without standing up a bucket.
+ */
+export function accumulateWalObjects(
+  objects: ReadonlyArray<WalObjectEntry>,
+  acc?: { segmentCount: number; totalBytes: number; oldest: number | null; newest: number | null },
+): { segmentCount: number; totalBytes: number; oldest: number | null; newest: number | null } {
+  const out = acc ?? { segmentCount: 0, totalBytes: 0, oldest: null, newest: null };
+  for (const obj of objects) {
+    out.segmentCount += 1;
+    out.totalBytes += obj.Size ?? 0;
+    const t = obj.LastModified ? obj.LastModified.getTime() : null;
+    if (t !== null) {
+      if (out.oldest === null || t < out.oldest) out.oldest = t;
+      if (out.newest === null || t > out.newest) out.newest = t;
+    }
+  }
+  return out;
+}
+
+async function summariseWalArchive(
+  s3: { send: (cmd: unknown) => Promise<unknown> },
+  ListObjectsV2Command: new (args: Record<string, unknown>) => unknown,
+  bucket: string,
+  prefix: string,
+  clusterNames: ReadonlyArray<string>,
+  log: Pick<Logger, 'warn' | 'debug' | 'info'>,
+): Promise<WalArchiveSummary | null> {
+  const acc = { segmentCount: 0, totalBytes: 0, oldest: null as number | null, newest: null as number | null };
+  let truncated = false;
+  let sawAny = false;
+
+  for (const cluster of clusterNames) {
+    const walPrefix = prefix ? `${prefix}/${cluster}/wals/` : `${cluster}/wals/`;
+    let token: string | undefined;
+    let pages = 0;
+    try {
+      do {
+        const res = await s3.send(new ListObjectsV2Command({
+          Bucket: bucket, Prefix: walPrefix, ContinuationToken: token, MaxKeys: 1000,
+        })) as {
+          Contents?: ReadonlyArray<WalObjectEntry>;
+          NextContinuationToken?: string;
+          IsTruncated?: boolean;
+        };
+        sawAny = true;
+        accumulateWalObjects(res.Contents ?? [], acc);
+        token = res.IsTruncated ? res.NextContinuationToken : undefined;
+        pages += 1;
+        if (token && pages >= WAL_LIST_MAX_PAGES) { truncated = true; break; }
+      } while (token);
+    } catch (err) {
+      log.warn?.({ err: err instanceof Error ? err.message : String(err), cluster }, 'catalogue: WAL LIST failed; continuing');
+    }
+  }
+
+  if (!sawAny) return null;
+  return {
+    segmentCount: acc.segmentCount,
+    totalBytes: acc.totalBytes,
+    oldestAt: acc.oldest === null ? null : new Date(acc.oldest).toISOString(),
+    newestAt: acc.newest === null ? null : new Date(acc.newest).toISOString(),
+    truncated,
+  };
+}
+
 export async function listBackupsFromObjectStore(
   core: k8s.CoreV1Api,
   custom: k8s.CustomObjectsApi,
@@ -231,10 +339,11 @@ export async function listBackupsFromObjectStore(
     return cached.value;
   }
 
-  const finalize = (value: CatalogueResult): CatalogueResult => {
-    cache.set(ck, { at: Date.now(), value });
+  const finalize = (value: Omit<CatalogueResult, 'walSummary'> & { walSummary?: WalArchiveSummary | null }): CatalogueResult => {
+    const full: CatalogueResult = { ...value, walSummary: value.walSummary ?? null };
+    cache.set(ck, { at: Date.now(), value: full });
     pruneCache();
-    return value;
+    return full;
   };
 
   // ── 1. Resolve ObjectStore CR → destinationPath → bucket + prefix
@@ -467,10 +576,18 @@ export async function listBackupsFromObjectStore(
       }
     }
 
+    // WAL side of the same archive — what it costs and how far back it goes.
+    const walSummary = await summariseWalArchive(
+      s3 as unknown as { send: (cmd: unknown) => Promise<unknown> },
+      ListObjectsV2Command as unknown as new (args: Record<string, unknown>) => unknown,
+      bucket, prefix, clusterNames, log,
+    );
+
     return finalize({
       source: 'object-store', objectStoreName, namespace,
       backups, unavailableReason: null,
       queryDurationMs: Date.now() - t0,
+      walSummary,
     });
   } finally {
     // CRITICAL: destroy the S3Client to free the Keep-Alive socket pool.

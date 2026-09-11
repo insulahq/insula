@@ -46,23 +46,25 @@ PITR restores run out-of-band (from a recovery host, not the panel) and create a
 *new* CNPG cluster from the backup, leaving the live database intact until you
 deliberately cut over. The Disaster Recovery page gives you the exact command.
 
-!!! info "Scheduled base backups archive WAL too"
-    **Turning on scheduled base backups turns on WAL archiving**, whether or not
-    you enable *WAL Streaming*. A base backup is only restorable together with
-    the WAL written while it ran, so the plugin the schedule needs is the same
-    one that ships WAL — and its presence is what makes Postgres archive.
+### What you configure
 
-    The difference the **WAL Streaming** toggle makes is the **`archive_timeout`**,
-    i.e. the recovery-point window on an idle database. Enable it and you choose
-    that number; leave it off and CNPG's own default of **5 minutes** applies.
-    The WAL archive panel says which of the two you are on, and the health card
-    shows *WAL archiving (implied)* rather than *WAL streaming* when nobody
-    picked a value.
+**Backups → System → Targets, Schedules & Retention** holds everything for the
+platform database, as one switch and three settings:
 
-    It also means **disabling WAL Streaming does not stop WAL from being
-    archived** while a base-backup schedule is active. To stop archiving
-    altogether, turn off the scheduled base backups as well — at the cost of
-    having no CNPG backups of the platform database.
+| Setting | What it does |
+|---|---|
+| **Offsite backups on / off** | Turns the whole thing on: full copies *and* the write-ahead log. They cannot be separated — a full copy is only restorable together with the log written while it ran. |
+| **Base backup cadence** | How often a full copy is taken. |
+| **Archive timeout** | How often the write-ahead log is shipped. This is your recovery-point target: lose the server and you lose at most this much work. |
+| **Retention** | How long copies *and* log are kept. Keep it at least twice the cadence, or the last full copy is deleted before the next one is taken and there is nothing left to restore onto — the panel warns you if you go below that. |
+
+Below the settings the same card reports what the archive actually holds: the
+window you can restore to, when the last and next base backups run, when the log
+was last shipped and how often that succeeds, and how much storage the copies and
+the log use at the target.
+
+Turning offsite backups **off** stops both. There is no way to keep base backups
+while stopping the log, because such a backup could not be restored.
 
 ## The DR bundle and your age key
 

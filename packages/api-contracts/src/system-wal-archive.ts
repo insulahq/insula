@@ -68,72 +68,19 @@ export type WalArchiveDisableRequest = z.infer<typeof walArchiveDisableRequestSc
 // use .strict() to reject unknown fields and surface the dropped
 // pre-Phase-6 targetConfigId / baseBackupRetentionDays explicitly.
 
-export const walStreamingEnableRequestSchema = z.object({
-  clusterNamespace: dnsLabelSchema,
-  clusterName: dnsLabelSchema,
-  archiveTimeout: archiveTimeoutSchema.optional(),
-  /** Retention days for the ObjectStore (governs WAL + base backups
-   *  together — barman-cloud has a single retentionPolicy). */
-  retentionDays: z.number().int().min(1).max(3650).default(30),
-}).strict();
-export type WalStreamingEnableRequest = z.infer<typeof walStreamingEnableRequestSchema>;
 
-export const walStreamingDisableRequestSchema = z.object({
-  clusterNamespace: dnsLabelSchema,
-  clusterName: dnsLabelSchema,
-}).strict();
-export type WalStreamingDisableRequest = z.infer<typeof walStreamingDisableRequestSchema>;
 
-export const scheduledBackupsEnableRequestSchema = z.object({
-  clusterNamespace: dnsLabelSchema,
-  clusterName: dnsLabelSchema,
-  cron: baseBackupScheduleSchema,
-}).strict();
-export type ScheduledBackupsEnableRequest = z.infer<typeof scheduledBackupsEnableRequestSchema>;
 
-export const scheduledBackupsDisableRequestSchema = z.object({
-  clusterNamespace: dnsLabelSchema,
-  clusterName: dnsLabelSchema,
-}).strict();
-export type ScheduledBackupsDisableRequest = z.infer<typeof scheduledBackupsDisableRequestSchema>;
 
 // One entry per cluster in the GET /clusters list. Combines the DB
 // state row (operator intent) with a snapshot of the CNPG CR's
 // `.status` (cluster-reported truth: last archived WAL, archiver
 // errors). When `enabled=false`, `state` is null.
 /**
- * WHY WAL is being archived — the distinction the UI got wrong until
- * 2026-09-11.
- *
- *   'streaming'         — the operator enabled WAL streaming; an explicit
- *                         `archive_timeout` bounds the RPO.
- *   'scheduled_backups' — nobody enabled streaming, but scheduled base backups
- *                         are on, and those attach the barman-cloud plugin.
- *                         CNPG archives WAL continuously for as long as that
- *                         plugin ENTRY exists (its presence, not
- *                         `isWALArchiver`, is the gate) at its own default
- *                         `archive_timeout` of 5min. Archiving is therefore
- *                         ACTIVE and cannot be turned off without also giving
- *                         up the base backups, which need the WAL spanning
- *                         their window to be restorable.
- *   'target_binding'    — neither toggle is on, yet the plugin is attached:
- *                         the backup-rclone-shim reconciler adds it whenever a
- *                         SYSTEM backup target is bound, independently of this
- *                         module. Observed on the DEV cluster 2026-09-11 with
- *                         no `system_wal_archive_state` row at all and 4468
- *                         segments archived.
- *   'none'              — no plugin entry: `wal-archive` no-op-succeeds and
- *                         Postgres recycles WAL.
+ * CNPG's own `archive_timeout` default. It applies the moment the barman-cloud
+ * plugin is attached and nobody set an explicit value — so it is the real
+ * recovery-point window in that state, not "unset".
  */
-export const walArchivingSourceSchema = z.enum([
-  'streaming',
-  'scheduled_backups',
-  'target_binding',
-  'none',
-]);
-export type WalArchivingSource = z.infer<typeof walArchivingSourceSchema>;
-
-/** CNPG's own default when nothing sets `archive_timeout` explicitly. */
 export const CNPG_DEFAULT_ARCHIVE_TIMEOUT = '5min';
 
 export const walArchiveClusterSchema = z.object({
@@ -153,7 +100,6 @@ export const walArchiveClusterSchema = z.object({
    * every 5 minutes.
    */
   walArchivingActive: z.boolean(),
-  walArchivingSource: walArchivingSourceSchema,
   /**
    * The `archive_timeout` actually in force: the operator's explicit value when
    * WAL streaming is on, otherwise CNPG's default while archiving is active,
