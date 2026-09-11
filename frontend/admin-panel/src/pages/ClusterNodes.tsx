@@ -12,6 +12,7 @@ import NodeEditModal from '@/components/NodeEditModal';
 import NodeDrainDeleteModal from '@/components/NodeDrainDeleteModal';
 import NodeStorageCard from '@/components/NodeStorageCard';
 import { useTerminalSessions } from '@/stores/terminal-sessions';
+import FailbackReviewPanel from '@/components/outage/FailbackReviewPanel';
 
 // Saturation thresholds shared by the per-node compact summary, the cluster
 // health bar, and the in-card UsageBar. Mirrors UsageBar's scale so the
@@ -107,6 +108,14 @@ export default function ClusterNodes({ embedded = false }: ClusterNodesProps = {
           </div>
         </div>
       )}
+
+      {/*
+        Failback review sits above the node list because it is about a node
+        that has just come back: the operator arrives here to confirm the node
+        is healthy, and this is the thing the healthy node does not tell them.
+        It renders nothing when no tenant is displaced.
+      */}
+      <FailbackReviewPanel />
 
       {error && (
         <div className="rounded-lg border border-red-300 bg-red-50 px-4 py-3 dark:border-red-700 dark:bg-red-900/30">
