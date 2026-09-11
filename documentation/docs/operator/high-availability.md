@@ -16,9 +16,10 @@ panel offers **Apply HA**, and one action scales everything that matters.
 
 | Component | Local (default) | HA |
 |---|---|---|
-| Longhorn volumes (Postgres + mail) | 1 replica | 3 replicas, spread across nodes |
+| Longhorn volumes (metrics, CrowdSec) | 1 replica | 3 replicas, spread across nodes |
 | PostgreSQL (CNPG cluster) | 1 instance | 3 instances, synchronous replication |
-| Stateless Deployments (admin-panel, tenant-panel, platform-api, oauth2-proxy, dex) | 2 replicas | 3 replicas, one per node (topology spread) |
+| Stateless Deployments (admin-panel, tenant-panel, platform-api, oauth2-proxy, dex) | 1 replica | 3 replicas, one per node (topology spread) |
+| Background operators (cert-manager, Flux, CNPG operator **and its backup plugin**) | 1 | 2 — a leader and a warm standby |
 
 What Apply HA does **not** touch, because it is already covered or handled
 differently:
@@ -28,7 +29,14 @@ differently:
 - **The mail server** — stays single-replica; failover is handled separately
   (see [Mail HA](#mail-ha) below).
 - **Per-tenant workloads** — these have their own storage tier and are not
-  changed by Apply HA.
+  changed by Apply HA. What that means when a node dies is covered in
+  [Nodes & cluster → When a node goes offline](nodes-and-cluster.md#when-a-node-goes-offline).
+
+!!! note "Why the backup plugin matters"
+    The CNPG operator will not reconcile the database — including promoting a
+    new primary — if it cannot reach its backup plugin. Running the operator
+    with two replicas while the plugin had only one meant a single node loss
+    could still take the database offline. Both now scale together.
 
 ## When to enable it
 

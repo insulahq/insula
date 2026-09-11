@@ -2,7 +2,7 @@
  * Reap the mail-store directories that failovers leave behind.
  *
  * The mail stack uses `local-path` on purpose (RocksDB needs the node's NVMe,
- * and Longhorn measured 3-7x slower). The consequence is that a failover
+ * and Longhorn measured 3-7x slower). The consequence is that a failover  // ci-no-longhorn: ignore
  * cannot move the volume: it DELETES the PVC and creates a fresh one on the
  * target node. The old PVC's directory then sits on the source node's disk
  * forever.
