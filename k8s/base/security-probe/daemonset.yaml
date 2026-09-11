@@ -7,8 +7,10 @@
 #      proc (when present),
 #   3. samples /proc/net/nf_conntrack for recent denies,
 #   4. reads /etc/os-release, /proc/sys/kernel/osrelease,
-#      /proc/1 boot time, presence of fail2ban/sshguard/
-#      unattended-upgrades binaries,
+#      /proc/1 boot time, presence of fail2ban/sshguard, and
+#      whether OS security updates actually install (package +
+#      apt.conf.d / dnf automatic.conf setting + an enabled
+#      timer, read from timers.target.wants),
 #   5. WRITES exactly ONE ConfigMap (security-probe-<node>) in
 #      platform-system with the JSON snapshot in data.snapshot.
 #
@@ -160,6 +162,27 @@ spec:
             - name: usr-bin
               mountPath: /host/usr/bin
               readOnly: true
+            # HARDEN-002 inputs. The check needs all three of package, periodic
+            # setting and enabled timer — a binary alone patches nothing — and
+            # the mounts are an allowlist, so a path that is not here reads as
+            # absent and the check reports false on EVERY node, forever. That is
+            # not hypothetical: it is what happened when the check was first
+            # rewritten with only the binary mounts present.
+            - name: etc-apt-conf-d
+              mountPath: /host/etc/apt/apt.conf.d
+              readOnly: true
+            - name: etc-dnf
+              mountPath: /host/etc/dnf
+              readOnly: true
+            # systemd enablement is a symlink under a timers.target.wants dir —
+            # readable, unlike `systemctl is-enabled`, which this container
+            # cannot call. Both the admin and vendor-preset locations count.
+            - name: etc-systemd-timers-wants
+              mountPath: /host/etc/systemd/system/timers.target.wants
+              readOnly: true
+            - name: usr-lib-systemd-timers-wants
+              mountPath: /host/usr/lib/systemd/system/timers.target.wants
+              readOnly: true
             - name: etc-hosting-platform
               mountPath: /host/etc/hosting-platform
               readOnly: true
@@ -209,6 +232,27 @@ spec:
         - name: usr-bin
           hostPath:
             path: /usr/bin
+            type: DirectoryOrCreate
+        # DirectoryOrCreate, matching /var/lib/fail2ban and sshd_config.d: these
+        # are per-distro paths (apt.conf.d on Debian/Ubuntu, dnf on the RHEL
+        # family) and `type: Directory` would crashloop the DaemonSet on the
+        # half of the matrix that lacks each one. Worst case an empty directory
+        # is created on a node whose package manager never uses it.
+        - name: etc-apt-conf-d
+          hostPath:
+            path: /etc/apt/apt.conf.d
+            type: DirectoryOrCreate
+        - name: etc-dnf
+          hostPath:
+            path: /etc/dnf
+            type: DirectoryOrCreate
+        - name: etc-systemd-timers-wants
+          hostPath:
+            path: /etc/systemd/system/timers.target.wants
+            type: DirectoryOrCreate
+        - name: usr-lib-systemd-timers-wants
+          hostPath:
+            path: /usr/lib/systemd/system/timers.target.wants
             type: DirectoryOrCreate
         - name: etc-hosting-platform
           hostPath:
