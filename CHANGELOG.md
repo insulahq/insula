@@ -13,6 +13,13 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Added
+- **Two more logs now get cleaned up on a schedule.** The CrowdSec auto-ban
+  record and the SFTP access log were kept forever — nothing anywhere deleted
+  them. Both are now trimmed to **90 days**, in line with the other logs the
+  platform keeps. Neither is large day to day, but the auto-ban record is
+  bursty: a single scanner run against one server wrote 1,391 entries in one
+  day, against 3–23 on a normal day.
+
 - **You now get told when a node reboots, and when it has finished booting.**
   Previously a server restart produced no notification at all — the only thing
   that arrived was a burst of misleading OOM alerts (fixed below), so the real
@@ -36,6 +43,15 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   never a running workload, and never a database pod.
 
 ### Fixed
+- **Removed a CrowdSec cleanup job that had never once worked.** It was
+  scheduled daily and had failed on every single run since the server was
+  built, leaving a failed job behind each day. The command it ran used an
+  option CrowdSec does not have, so it could never have succeeded — and it was
+  not needed in the first place: CrowdSec already trims its own alert table
+  (7 days / 5,000 entries). That limit is now written explicitly by the
+  platform rather than relying on CrowdSec's built-in default, so it cannot
+  change quietly under you when the software is updated.
+
 - **A slow-starting service is no longer reported as running out of memory.**
   When a container is slow to answer its health check after a restart,
   Kubernetes kills and restarts it — and the platform was reporting that as a
