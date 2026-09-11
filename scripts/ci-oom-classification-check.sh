@@ -119,5 +119,28 @@ do
   fi
 done
 
+# 7) node-health must also consult the kubelet's probe-kill events.
+#    A failed liveness/startup probe SIGKILLs the container -- exit 137, pod
+#    stays Running, container restarts -- so NONE of the pod-level shutdown
+#    markers apply and isExpectedSigkill() correctly does not fire. Found by a
+#    real DEV reboot 2026-09-11: two crowdsec containers slow to answer /health
+#    after a cold boot were reported as a CRITICAL node memory event while the
+#    kernel logged zero cgroup OOMs. The kubelet names the cause in a Killing
+#    event; an inference must not overrule it.
+f=backend/src/modules/node-health/memory-events.ts
+# Must be a CALL, not the export declaration itself -- grepping the bare
+# name matches the function's own definition and can never fail.
+if ! grep -E '(^|[^A-Za-z0-9_])indexProbeKills\(' "$f" 2>/dev/null | grep -qv 'export function'; then
+  echo "ci-oom-classification: $f no longer consults indexProbeKills()," >&2
+  echo "  so a liveness-probe restart will be reported as an OOM." >&2
+  fail=1
+fi
+# Quoted exactly: a bare "reason=Killing" also matches "reason=KillingXX".
+if ! grep -qF "'reason=Killing'" backend/src/modules/node-health/scheduler.ts 2>/dev/null; then
+  echo "ci-oom-classification: the node-health reconciler no longer fetches" >&2
+  echo "  reason=Killing events, so indexProbeKills() can only ever be empty." >&2
+  fail=1
+fi
+
 [ "$fail" -eq 0 ] && echo "ci-oom-classification: ok"
 exit "$fail"

@@ -36,6 +36,15 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   never a running workload, and never a database pod.
 
 ### Fixed
+- **A slow-starting service is no longer reported as running out of memory.**
+  When a container is slow to answer its health check after a restart,
+  Kubernetes kills and restarts it — and the platform was reporting that as a
+  **critical** "node memory event". Caught on a real test-cluster reboot: two
+  CrowdSec containers, slow to answer `/health` on a cold boot, were reported
+  as memory incidents while the kernel had recorded no out-of-memory kill at
+  all. Kubernetes says plainly why it killed them ("failed liveness probe"), and
+  the platform now takes it at its word instead of guessing at memory.
+
 - **A node reboot no longer reports your tenants' workloads as out of memory.**
   Restarting a server sent admins a burst of alerts claiming tenant containers
   had been "OOM-killed", including three named tenants by name. None of it was
