@@ -108,6 +108,26 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   never a running workload, and never a database pod.
 
 ### Fixed
+- **Database backups are now one switch, not two half-features.** The System
+  Backups page offered "WAL Streaming" and "Scheduled Base Backups" as separate
+  toggles, which the storage layer never supported: a full copy can only be
+  restored together with the write-ahead log written while it ran, so turning
+  the log off was an option that did nothing except produce a confusing
+  explanation. The page now has one switch — **offsite backups on or off** —
+  and three settings: base backup cadence, archive timeout (your
+  recovery-point target) and retention. The "implied" amber state, the separate
+  WAL disable button and the retention-policy notice are gone.
+
+- **The backups page now shows what the archive actually holds.** New on the
+  same card: the window you can restore to, when the last and next base backups
+  run, how often the write-ahead log uploads succeed, and the storage used at
+  the target split into full copies and log segments — the log was previously
+  invisible even though it is a comparable share of the bill.
+
+- **Every backup page now says what it stores and why an unbound target
+  matters.** The target panel on the System, Mail and Tenants pages showed a
+  name and a drain timeout without ever explaining what lands there.
+
 - **The management API died when the Postgres primary's node did.** Measured at
   ~3 minutes unreachable during the 2026-09-11 node-outage drill. The probes
   were never the cause — liveness and readiness both use the shallow

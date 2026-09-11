@@ -22,48 +22,27 @@ import { describe, it, expect } from 'vitest';
 import {
   isPlatformDbCluster,
   readArchiverStats,
-  classifyWalArchiving as classify,
+  effectiveArchiveTimeout,
   isArchivingCurrentlyFailing,
 } from './archiver-stats.js';
 import type { Database } from '../../db/index.js';
 
-describe('WAL archiving source classification', () => {
-  it('reports ACTIVE via scheduled backups when streaming was never enabled (the production case)', () => {
-    const r = classify(true, null, '0 0 3 * * *');
-    expect(r.active).toBe(true);
-    expect(r.source).toBe('scheduled_backups');
-    // RPO is CNPG's default, not something the operator chose.
-    expect(r.effectiveArchiveTimeout).toBe('5min');
+describe('effectiveArchiveTimeout', () => {
+  it("reports CNPG's default when the plugin is attached and nobody chose a value", () => {
+    // The state production was in: archiving every 5 minutes with no explicit
+    // setting. Reporting null there would have hidden that WAL was moving at
+    // all, which is how the old panel came to claim archiving was off.
+    expect(effectiveArchiveTimeout(true, null)).toBe('5min');
+    expect(effectiveArchiveTimeout(true, undefined)).toBe('5min');
   });
 
-  it('names the target binding when neither toggle is on (the DEV case)', () => {
-    // DEV 2026-09-11: NO system_wal_archive_state row at all, yet the plugin was
-    // attached by the shim reconciler because a SYSTEM target is bound — and
-    // 4468 segments had been archived. Calling that "scheduled backups" would
-    // have been a second wrong story.
-    const r = classify(true, null, null);
-    expect(r.active).toBe(true);
-    expect(r.source).toBe('target_binding');
-    expect(r.effectiveArchiveTimeout).toBe('5min');
+  it("reports the operator's value when they chose one", () => {
+    expect(effectiveArchiveTimeout(true, '60s')).toBe('60s');
   });
 
-  it('reports ACTIVE via streaming when the operator set an archive_timeout', () => {
-    const r = classify(true, '60s', '0 0 3 * * *');
-    expect(r.source).toBe('streaming');
-    expect(r.effectiveArchiveTimeout).toBe('60s');
-  });
-
-  it('reports inactive only when the plugin entry is gone', () => {
-    const r = classify(false, null, null);
-    expect(r.active).toBe(false);
-    expect(r.source).toBe('none');
-    expect(r.effectiveArchiveTimeout).toBeNull();
-  });
-
-  it('does not call a cluster inactive just because archive_timeout is null', () => {
-    // The bug: `!!archiveTimeout` was the whole answer on the settings tab, so
-    // a cluster archiving every 5 minutes read "not enabled".
-    expect(classify(true, null, null).active).toBe(true);
+  it('reports nothing when the plugin entry is gone — nothing is being archived', () => {
+    expect(effectiveArchiveTimeout(false, null)).toBeNull();
+    expect(effectiveArchiveTimeout(false, '60s')).toBeNull();
   });
 });
 

@@ -1,5 +1,6 @@
 /**
- * `<BackupRoutingTab>` — the tab (c) of every backup-class page.
+ * `<BackupRoutingTab>` — the "Targets, Schedules & Retention" tab of every
+ * backup-class page (system / mail / tenants).
  *
  * Phase 3 (2026-05-22) consolidates three previously-scattered
  * surfaces into one tab per class:
@@ -32,13 +33,31 @@ import {
 } from '@/hooks/use-backup-rclone-shim';
 import { useBackupConfigs } from '@/hooks/use-backup-config';
 import ScheduleCard from '@/components/backups/ScheduleCard';
-import WalArchiveTab from '@/components/system-backup/WalArchiveTab';
+import PostgresBackupsSection from '@/components/system-backup/PostgresBackupsSection';
 import PreSwitchConfirmModal from '@/components/backups/PreSwitchConfirmModal';
 
 interface Props {
   readonly shimClass: BackupShimClass;
   readonly scheduleSubsystems: ReadonlyArray<string>;
 }
+
+/**
+ * One sentence per class saying WHAT lands at the target. Operators asked for
+ * this on all three pages (2026-09-11): the binding panel showed a target name
+ * and a drain timeout without ever saying what was being stored, or why an
+ * unbound class is dangerous.
+ */
+const CLASS_COPY: Record<BackupShimClass, { what: string }> = {
+  system: {
+    what: 'Backups of the platform itself land here: the platform database (full copies plus its write-ahead log), etcd snapshots, and the encrypted secrets bundle.',
+  },
+  mail: {
+    what: 'Snapshots of the mail server\u2019s data directory land here — every mailbox, alias and mail setting the platform hosts.',
+  },
+  tenant: {
+    what: 'Per-tenant bundles land here: each tenant\u2019s files, mailboxes, databases and configuration, captured as one restorable unit.',
+  },
+};
 
 // Subsystem labels for the schedules section. Lifted from the legacy
 // per-page hard-codings so each ScheduleCard renders with a meaningful
@@ -94,11 +113,11 @@ export default function BackupRoutingTab({ shimClass, scheduleSubsystems }: Prop
         className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-700 dark:bg-gray-800"
         data-testid="routing-tab-targets"
       >
-        <header className="mb-3 flex items-center justify-between gap-3">
+        <header className="mb-2 flex items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             <Cloud size={16} className="text-gray-500" />
             <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
-              Target binding
+              Where these backups are stored
             </h2>
           </div>
           <Link
@@ -108,6 +127,16 @@ export default function BackupRoutingTab({ shimClass, scheduleSubsystems }: Prop
             Manage targets →
           </Link>
         </header>
+
+        <p className="mb-3 max-w-3xl text-sm leading-relaxed text-gray-600 dark:text-gray-300">
+          {CLASS_COPY[shimClass].what} Uploads go through the platform&apos;s internal
+          storage gateway, so the target can be S3, SFTP, CIFS or NFS without any
+          of these backups knowing the difference.{' '}
+          <strong>Nothing is stored off the cluster until a target is bound</strong> —
+          until then a lost cluster cannot be recovered. Switching targets waits for
+          in-flight uploads to finish first; backups already at the old target stay
+          where they are, so keep it until you no longer need them.
+        </p>
 
         {assignmentsQuery.isLoading ? (
           <div className="flex items-center gap-2 text-sm text-gray-500">
@@ -214,41 +243,20 @@ export default function BackupRoutingTab({ shimClass, scheduleSubsystems }: Prop
         </section>
       )}
 
-      {/* ── WAL Streaming (system class only) ──────────────────────
-          Phase 4 (2026-05-24): WAL Archive configuration moved from
-          the Backups tab. It's a target+cadence decision (which S3
-          gets the WAL stream, how often a base backup runs) so it
-          belongs alongside Targets + Schedules. Only the `system`
-          class hosts a CNPG cluster, so we render it conditionally. */}
+      {/* ── Platform database (system class only) ─────────────────────
+          The CNPG cluster lives in the system class, and its backups are
+          configured as ONE thing: base copies + write-ahead log, on or off
+          together. See PostgresBackupsSection for why that is not a choice. */}
       {shimClass === 'system' && (
         <section
           className="space-y-3"
           data-testid="routing-tab-wal-streaming"
-          aria-label="WAL Streaming"
+          aria-label="Platform database backups"
           id="wal-streaming"
         >
-          <header className="flex items-center gap-2">
-            <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
-              WAL Streaming
-            </h2>
-          </header>
-          <WalArchiveTab />
+          <PostgresBackupsSection />
         </section>
       )}
-
-      {/* ── Retention info box ─────────────────────────────────────── */}
-      <section
-        className="rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900 dark:border-blue-800 dark:bg-blue-950/30 dark:text-blue-200"
-        data-testid="routing-tab-retention"
-      >
-        <p className="font-semibold">Retention policy</p>
-        <p className="mt-1">
-          Retention for snapshots in this class is controlled per-schedule
-          (Days / Count fields on each Schedule card above). A dedicated
-          per-class retention panel is planned — for now, edit the values
-          inline.
-        </p>
-      </section>
 
       {/* Phase 5 (2026-05-24): pre-switch confirm modal — opens when the
           operator picks a new target in TargetSwitcher; on confirm calls

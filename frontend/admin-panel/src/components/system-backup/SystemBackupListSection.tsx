@@ -84,10 +84,10 @@ export default function SystemBackupListSection() {
           <div className="flex items-start gap-2">
             <AlertTriangle size={14} className="mt-0.5 flex-shrink-0" />
             <div>
-              No <code>ObjectStore</code> attached to{' '}
-              <code>{ref.ns}/{ref.cluster}</code>. Enable WAL streaming on{' '}
-              <code>/backups/system?tab=routing</code> to wire the cluster
-              to an off-site target.
+              The platform database <code>{ref.ns}/{ref.cluster}</code> has
+              nowhere to upload to. Turn on offsite backups under{' '}
+              <code>Targets, Schedules &amp; Retention</code> to start storing
+              full copies and its write-ahead log at the bound target.
             </div>
           </div>
         </div>

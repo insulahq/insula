@@ -9,10 +9,6 @@ import type {
   WalArchiveEnableRequest,
   WalArchiveDisableRequest,
   WalArchiveActionResponse,
-  WalStreamingEnableRequest,
-  WalStreamingDisableRequest,
-  ScheduledBackupsEnableRequest,
-  ScheduledBackupsDisableRequest,
 } from '@insula/api-contracts';
 
 interface ApiEnv<T> { data: T }
@@ -59,55 +55,3 @@ export function useDisableWalArchive() {
   });
 }
 
-// ─── Phase 7a (2026-05-24): split WAL streaming vs Scheduled Backups ──
-// Each pair is idempotent — calling enable while already enabled
-// UPDATES the settings, so the operator's "Save" button can re-call
-// without disable+re-enable.
-
-export function useEnableWalStreaming() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (input: WalStreamingEnableRequest) =>
-      apiFetch<ApiEnv<WalArchiveActionResponse>>(
-        '/api/v1/system-backup/wal-archive/streaming/enable',
-        { method: 'POST', body: JSON.stringify(input) },
-      ).then((r) => r.data),
-    onSuccess: () => { void qc.invalidateQueries({ queryKey: KEY }); },
-  });
-}
-
-export function useDisableWalStreaming() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (input: WalStreamingDisableRequest) =>
-      apiFetch<ApiEnv<WalArchiveActionResponse>>(
-        '/api/v1/system-backup/wal-archive/streaming/disable',
-        { method: 'POST', body: JSON.stringify(input) },
-      ).then((r) => r.data),
-    onSuccess: () => { void qc.invalidateQueries({ queryKey: KEY }); },
-  });
-}
-
-export function useEnableScheduledBackups() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (input: ScheduledBackupsEnableRequest) =>
-      apiFetch<ApiEnv<{ enabled: true; cron: string }>>(
-        '/api/v1/system-backup/wal-archive/schedule/enable',
-        { method: 'POST', body: JSON.stringify(input) },
-      ).then((r) => r.data),
-    onSuccess: () => { void qc.invalidateQueries({ queryKey: KEY }); },
-  });
-}
-
-export function useDisableScheduledBackups() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (input: ScheduledBackupsDisableRequest) =>
-      apiFetch<ApiEnv<{ enabled: false }>>(
-        '/api/v1/system-backup/wal-archive/schedule/disable',
-        { method: 'POST', body: JSON.stringify(input) },
-      ).then((r) => r.data),
-    onSuccess: () => { void qc.invalidateQueries({ queryKey: KEY }); },
-  });
-}

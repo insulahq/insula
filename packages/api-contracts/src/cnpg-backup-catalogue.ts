@@ -42,6 +42,22 @@ export const cnpgCatalogueBackupSchema = z.object({
 });
 export type CnpgCatalogueBackup = z.infer<typeof cnpgCatalogueBackupSchema>;
 
+/**
+ * The WAL half of the archive: how many segments are retained offsite, what
+ * they cost, and how far back they reach. Base backups alone cannot answer
+ * "how far back can I recover to" — the WAL between them is what makes an
+ * arbitrary point in time restorable.
+ */
+export const walArchiveSummarySchema = z.object({
+  segmentCount: z.number().int().nonnegative(),
+  totalBytes: z.number().int().nonnegative(),
+  oldestAt: z.string().nullable(),
+  newestAt: z.string().nullable(),
+  /** LIST hit its page cap — the counts are a floor. */
+  truncated: z.boolean(),
+});
+export type WalArchiveSummary = z.infer<typeof walArchiveSummarySchema>;
+
 export const cnpgBackupCatalogueResponseSchema = z.object({
   source: catalogueSourceSchema,
   objectStoreName: z.string(),
@@ -50,5 +66,7 @@ export const cnpgBackupCatalogueResponseSchema = z.object({
   /** Set when source='unavailable'; surface to the operator as the reason. */
   unavailableReason: z.string().nullable(),
   queryDurationMs: z.number().int().nonnegative(),
+  /** Null when the WAL prefix could not be listed. */
+  walSummary: walArchiveSummarySchema.nullable(),
 });
 export type CnpgBackupCatalogueResponse = z.infer<typeof cnpgBackupCatalogueResponseSchema>;
