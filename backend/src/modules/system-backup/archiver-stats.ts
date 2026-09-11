@@ -75,6 +75,25 @@ export interface ArchiverStats {
   readonly lastFailedArchiveTime: string | null;
   readonly archivedCount: number | null;
   readonly failedCount: number | null;
+  /** When these counters were last zeroed — the window they describe. */
+  readonly statsResetAt: string | null;
+}
+
+/**
+ * Is archiving failing RIGHT NOW?
+ *
+ * `pg_stat_archiver` keeps `last_failed_wal`/`last_failed_time` forever (until
+ * the stats are reset), so their mere presence says nothing about the current
+ * state. Caught on DEV 2026-09-11 the moment this shipped: 64 failures with the
+ * last one on 2026-09-08, 4472 successes with the last one seconds earlier —
+ * and the health chip rendered a red "WAL failing". A failure counts only when
+ * nothing has been archived SINCE it.
+ */
+export function isArchivingCurrentlyFailing(stats: ArchiverStats | null | undefined): boolean {
+  if (!stats?.lastFailedArchiveTime) return false;
+  if (!stats.lastArchivedWalTime) return true;
+  return new Date(stats.lastFailedArchiveTime).getTime()
+    > new Date(stats.lastArchivedWalTime).getTime();
 }
 
 interface ArchiverRow {
@@ -84,6 +103,7 @@ interface ArchiverRow {
   readonly failed_count: number | string | null;
   readonly last_failed_wal: string | null;
   readonly last_failed_time: Date | string | null;
+  readonly stats_reset: Date | string | null;
 }
 
 function toIso(v: Date | string | null): string | null {
@@ -106,7 +126,7 @@ export async function readArchiverStats(db: Database): Promise<ArchiverStats | n
   try {
     const result = await db.execute(sql`
       SELECT archived_count, last_archived_wal, last_archived_time,
-             failed_count, last_failed_wal, last_failed_time
+             failed_count, last_failed_wal, last_failed_time, stats_reset
         FROM pg_stat_archiver
     `) as unknown as { rows?: ArchiverRow[] } | ArchiverRow[];
 
@@ -121,6 +141,7 @@ export async function readArchiverStats(db: Database): Promise<ArchiverStats | n
       lastFailedArchiveTime: toIso(row.last_failed_time),
       archivedCount: toCount(row.archived_count),
       failedCount: toCount(row.failed_count),
+      statsResetAt: toIso(row.stats_reset),
     };
   } catch {
     return null;

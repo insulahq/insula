@@ -46,7 +46,12 @@ import {
   extractStatus,
   BARMAN_PLUGIN_NAME,
 } from './wal-archive.js';
-import { readArchiverStats, isPlatformDbCluster, classifyWalArchiving } from './archiver-stats.js';
+import {
+  readArchiverStats,
+  isPlatformDbCluster,
+  classifyWalArchiving,
+  isArchivingCurrentlyFailing,
+} from './archiver-stats.js';
 
 // Hardcoded list of system CNPG clusters with WAL archive surface.
 // Names are version-agnostic so future PG-major bumps don't require
@@ -106,18 +111,25 @@ export async function systemBackupWalArchiveRoutes(app: FastifyInstance): Promis
       const archiver = isPlatformDbCluster(c.clusterNamespace, c.clusterName)
         ? await readArchiverStats(app.db)
         : null;
+      const archiverFailingNow = isArchivingCurrentlyFailing(archiver);
       const status = condStatus === null && archiver === null ? null : {
         firstRecoverabilityPoint: condStatus?.firstRecoverabilityPoint ?? null,
         lastArchivedWal: archiver?.lastArchivedWal ?? null,
         lastArchivedWalTime: archiver?.lastArchivedWalTime ?? null,
-        // A failure the archiver itself recorded wins over the condition: it
-        // carries the instant of the failed segment, not of a health flip.
-        lastFailedArchiveTime: archiver?.lastFailedArchiveTime
-          ?? condStatus?.lastFailedArchiveTime ?? null,
+        // ONLY a failure with nothing archived since it. pg_stat_archiver keeps
+        // the last failure forever, so passing it through unconditionally made
+        // the chip read "WAL failing" on DEV three days after a transient
+        // failure that 4472 successful archives had long overtaken.
+        lastFailedArchiveTime: archiverFailingNow
+          ? archiver?.lastFailedArchiveTime ?? null
+          : condStatus?.lastFailedArchiveTime ?? null,
         lastFailedArchiveError: condStatus?.lastFailedArchiveError
-          ?? (archiver?.lastFailedWal ? `last failed WAL: ${archiver.lastFailedWal}` : null),
+          ?? (archiverFailingNow && archiver?.lastFailedWal
+            ? `last failed WAL: ${archiver.lastFailedWal}`
+            : null),
         archivedCount: archiver?.archivedCount ?? null,
         failedCount: archiver?.failedCount ?? null,
+        statsResetAt: archiver?.statsResetAt ?? null,
         archivingHealthySince: condStatus?.archivingHealthySince ?? null,
       };
       // Plugin model: WAL archive is "attached" when the cluster's

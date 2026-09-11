@@ -192,9 +192,15 @@ export const walArchiveClusterSchema = z.object({
     lastArchivedWalTime: z.string().nullable(),
     lastFailedArchiveTime: z.string().nullable(),
     lastFailedArchiveError: z.string().nullable(),
-    /** Cumulative counters from `pg_stat_archiver` (null when unavailable). */
+    /**
+     * Cumulative counters from `pg_stat_archiver` since `statsResetAt` (null
+     * when unavailable). `failedCount` is a LIFETIME total — a non-zero value
+     * says nothing about whether archiving is failing now; `lastFailedArchiveTime`
+     * is only populated when nothing has been archived since that failure.
+     */
     archivedCount: z.number().int().nullable(),
     failedCount: z.number().int().nullable(),
+    statsResetAt: z.string().nullable(),
     /** CNPG's ContinuousArchiving condition — health, NOT recency. */
     archivingHealthySince: z.string().nullable(),
   }).nullable(),
