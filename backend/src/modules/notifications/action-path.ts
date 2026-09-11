@@ -42,6 +42,8 @@ const STATIC_PATHS: Record<string, string> = {
   'admin.slo_alert_critical': '/monitoring',
   'admin.slo_alert_resolved': '/monitoring',
   'admin.node_down': '/cluster/nodes',
+  'admin.node_rebooting': '/cluster/nodes',
+  'admin.node_startup_complete': '/cluster/nodes',
   'admin.node_memory_event_warning': '/cluster/nodes',
   'admin.node_memory_event_critical': '/cluster/nodes',
   'admin.security_hardening_drift': '/security/posture',
