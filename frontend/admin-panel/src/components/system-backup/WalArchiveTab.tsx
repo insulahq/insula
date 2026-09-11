@@ -20,7 +20,7 @@ import { useState, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   ArchiveRestore, RefreshCw, AlertCircle, CheckCircle2,
-  Power, PowerOff, Cloud, Link as LinkIcon, Info, PauseCircle,
+  Power, PowerOff, Cloud, Link as LinkIcon, Info, PauseCircle, Radio,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import {
@@ -197,6 +197,10 @@ function WalStreamingSection({
   const savedCron = cluster.state?.baseBackupSchedule ?? null;
   const minRetention = minSafeRetentionDays(savedCron);
   const retentionTooShort = !!savedCron && retentionDays < minRetention;
+  // Archiving is running, but nobody asked for it here. Production 2026-09-11
+  // sat in exactly this state and the tab said "disabled".
+  const impliedBySchedule = cluster.walArchivingActive
+    && cluster.walArchivingSource === 'scheduled_backups';
 
   const onEnable = (): void => {
     // First-time enable flips archive_mode on the CNPG cluster — a
@@ -211,7 +215,9 @@ function WalStreamingSection({
   };
   const onDisable = (): void => {
     if (!window.confirm(
-      `Disable WAL streaming for ${cluster.clusterNamespace}/${cluster.clusterName}? Existing WAL files at the target are kept. Scheduled backups (if enabled) stay on.`,
+      savedCron
+        ? `Disable WAL streaming for ${cluster.clusterNamespace}/${cluster.clusterName}?\n\nThis clears the explicit archive_timeout, but WAL WILL KEEP BEING ARCHIVED: scheduled base backups (${savedCron}) stay on and the plugin they need is what makes CNPG archive — it falls back to CNPG's default 5min. To stop archiving entirely, disable scheduled base backups too.\n\nExisting WAL files at the target are kept.`
+        : `Disable WAL streaming for ${cluster.clusterNamespace}/${cluster.clusterName}? Archiving stops and Postgres recycles WAL locally. Existing WAL files at the target are kept.`,
     )) return;
     void disable.mutateAsync({
       clusterNamespace: cluster.clusterNamespace,
@@ -226,9 +232,24 @@ function WalStreamingSection({
     >
       <SectionHeader
         title="WAL Streaming"
-        tooltip="Continuous Postgres WAL streaming via the barman-cloud plugin. Required for PITR — without WAL streaming you can only recover to base-backup points in time. RPO = archive_timeout. WAL files are pushed continuously to the SYSTEM backup target's bucket via the internal S3 shim."
+        tooltip="Continuous Postgres WAL archiving via the barman-cloud plugin — required for PITR; without it you can only recover to base-backup points in time. This toggle sets the explicit archive_timeout (the RPO ceiling on an idle database). Note that ENABLING SCHEDULED BASE BACKUPS also archives WAL: the plugin they need is what makes CNPG archive, at its default archive_timeout of 5min."
         active={active}
+        impliedLabel={impliedBySchedule ? 'archiving (implied)' : null}
       />
+      {impliedBySchedule && (
+        <p
+          className="mt-2 rounded border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] leading-snug text-amber-900 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-200"
+          data-testid={`wal-archiving-implied-${cluster.clusterName}`}
+        >
+          <strong>WAL is being archived right now</strong> even though streaming
+          was not enabled here — scheduled base backups attach the barman-cloud
+          plugin, and its presence is what makes CNPG archive. RPO is CNPG&apos;s
+          default <code>{cluster.effectiveArchiveTimeout ?? '5min'}</code>.
+          Enabling streaming replaces that with an explicit archive_timeout;
+          it cannot be stopped without also turning off scheduled base backups,
+          which need the WAL spanning their window to be restorable.
+        </p>
+      )}
       <div className="mt-3 grid grid-cols-1 gap-3 text-xs md:grid-cols-2">
         <Setting label="archive_timeout (RPO)">
           <select
@@ -517,10 +538,17 @@ function ScheduledBackupsSection({
 // ── Status panel (read-only) ───────────────────────────────────────
 
 function StatusPanel({ cluster }: { cluster: WalArchiveCluster }) {
+  // `lastArchivedWalTime` is now the real pg_stat_archiver instant. It used to
+  // be the ContinuousArchiving condition's lastTransitionTime, which only moves
+  // when archiving HEALTH changes — production rendered a month-old timestamp
+  // as the last archive while segments shipped every five minutes.
   const archivingHealthy = cluster.status?.lastArchivedWalTime
     && !cluster.status?.lastFailedArchiveTime;
-  const archivingSinceLabel = cluster.status?.lastArchivedWalTime
+  const lastArchivedLabel = cluster.status?.lastArchivedWalTime
     ? `${new Date(cluster.status.lastArchivedWalTime).toLocaleString()} (${formatAgoFromIso(cluster.status.lastArchivedWalTime)} ago)`
+    : '—';
+  const healthySinceLabel = cluster.status?.archivingHealthySince
+    ? `${new Date(cluster.status.archivingHealthySince).toLocaleString()} (${formatAgoFromIso(cluster.status.archivingHealthySince)} ago)`
     : '—';
 
   // Fallback for the "first recoverability point" cell when CNPG hasn't
@@ -540,8 +568,33 @@ function StatusPanel({ cluster }: { cluster: WalArchiveCluster }) {
     <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs dark:border-gray-700 dark:bg-gray-900/30">
       <SectionHeader title="Cluster archiver status" tooltip={null} />
       <div className="mt-2 grid grid-cols-1 gap-x-6 gap-y-1 md:grid-cols-2">
-        <Field label="Continuous archiving since">
-          {archivingHealthy ? archivingSinceLabel : (cluster.status?.lastArchivedWalTime ? 'unhealthy' : 'not archiving')}
+        <Field label="Last WAL archived">
+          <span data-testid={`wal-last-archived-${cluster.clusterName}`}>
+            {archivingHealthy
+              ? lastArchivedLabel
+              : (cluster.status?.lastFailedArchiveTime ? 'unhealthy' : (cluster.walArchivingActive ? 'no segment archived yet' : 'not archiving'))}
+            {cluster.status?.archivedCount !== null && cluster.status?.archivedCount !== undefined && (
+              <span className="ml-1 text-[10px] text-gray-500 dark:text-gray-400">
+                ({cluster.status.archivedCount} archived
+                {cluster.status.failedCount ? `, ${cluster.status.failedCount} failed` : ''})
+              </span>
+            )}
+          </span>
+        </Field>
+        <Field label="Archiving healthy since">
+          <span title="CNPG's ContinuousArchiving condition — when archiving health last CHANGED. Not a last-archive time.">
+            {healthySinceLabel}
+          </span>
+        </Field>
+        <Field label="Effective archive_timeout (RPO)">
+          <span data-testid={`wal-effective-timeout-${cluster.clusterName}`}>
+            {cluster.effectiveArchiveTimeout ?? '—'}
+            {cluster.walArchivingSource === 'scheduled_backups' && (
+              <span className="ml-1 text-[10px] text-gray-500 dark:text-gray-400">
+                (CNPG default — streaming not configured)
+              </span>
+            )}
+          </span>
         </Field>
         <Field label="First recoverability point">
           {firstRecoverabilityValue ? (
@@ -599,11 +652,17 @@ function StatusPanel({ cluster }: { cluster: WalArchiveCluster }) {
 // ── Small primitives ───────────────────────────────────────────────
 
 function SectionHeader({
-  title, tooltip, active,
+  title, tooltip, active, impliedLabel,
 }: {
   title: string;
   tooltip: string | null;
   active?: boolean;
+  /**
+   * Shown INSTEAD of "disabled" when the underlying capability is running even
+   * though this toggle is off — WAL archiving implied by scheduled base
+   * backups. "disabled" there is a false statement about the cluster.
+   */
+  impliedLabel?: string | null;
 }) {
   return (
     <div className="flex items-center gap-2">
@@ -624,6 +683,13 @@ function SectionHeader({
         active ? (
           <span className="ml-auto inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200">
             <CheckCircle2 size={10} /> enabled
+          </span>
+        ) : impliedLabel ? (
+          <span
+            className="ml-auto inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-200"
+            data-testid="section-implied-badge"
+          >
+            <Radio size={10} /> {impliedLabel}
           </span>
         ) : (
           <span className="ml-auto inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-700 dark:bg-gray-900/40 dark:text-gray-300">

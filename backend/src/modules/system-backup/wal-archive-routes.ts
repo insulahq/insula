@@ -46,6 +46,7 @@ import {
   extractStatus,
   BARMAN_PLUGIN_NAME,
 } from './wal-archive.js';
+import { readArchiverStats, isPlatformDbCluster, classifyWalArchiving } from './archiver-stats.js';
 
 // Hardcoded list of system CNPG clusters with WAL archive surface.
 // Names are version-agnostic so future PG-major bumps don't require
@@ -98,14 +99,43 @@ export async function systemBackupWalArchiveRoutes(app: FastifyInstance): Promis
         readClusterCR(k8s, c.clusterNamespace, c.clusterName),
         readScheduledBackup(k8s, c.clusterNamespace, c.clusterName),
       ]);
-      const status = extractStatus(cr);
+      const condStatus = extractStatus(cr);
+      // Recency from pg_stat_archiver (the authority); health from the CNPG
+      // condition. Only the platform DB itself is reachable this way — any
+      // other cluster keeps the condition-only view rather than a wrong number.
+      const archiver = isPlatformDbCluster(c.clusterNamespace, c.clusterName)
+        ? await readArchiverStats(app.db)
+        : null;
+      const status = condStatus === null && archiver === null ? null : {
+        firstRecoverabilityPoint: condStatus?.firstRecoverabilityPoint ?? null,
+        lastArchivedWal: archiver?.lastArchivedWal ?? null,
+        lastArchivedWalTime: archiver?.lastArchivedWalTime ?? null,
+        // A failure the archiver itself recorded wins over the condition: it
+        // carries the instant of the failed segment, not of a health flip.
+        lastFailedArchiveTime: archiver?.lastFailedArchiveTime
+          ?? condStatus?.lastFailedArchiveTime ?? null,
+        lastFailedArchiveError: condStatus?.lastFailedArchiveError
+          ?? (archiver?.lastFailedWal ? `last failed WAL: ${archiver.lastFailedWal}` : null),
+        archivedCount: archiver?.archivedCount ?? null,
+        failedCount: archiver?.failedCount ?? null,
+        archivingHealthySince: condStatus?.archivingHealthySince ?? null,
+      };
       // Plugin model: WAL archive is "attached" when the cluster's
       // spec.plugins[] lists the barman-cloud plugin entry. Replaces
       // the deprecated check on spec.backup.barmanObjectStore.
+      // The barman-cloud plugin ENTRY is the real gate on WAL archiving —
+      // its presence, not `isWALArchiver` (see
+      // backup-rclone-shim/postgres-objectstore.ts). Scheduled base backups
+      // attach the same entry, which is why production was archiving WAL every
+      // five minutes on 2026-09-11 with WAL streaming never enabled.
       const crHasBackup = Boolean(
         cr?.spec?.plugins?.some((p) => p.name === BARMAN_PLUGIN_NAME),
       );
       const dbEnabled = state !== undefined;
+      // `archive_timeout` is written ONLY by enableWalStreaming and cleared
+      // ONLY by disableWalStreaming — the canonical "operator turned streaming
+      // on" signal (wal-archive.ts says so at the sentinel-inference comment).
+      const archiving = classifyWalArchiving(crHasBackup, state?.archiveTimeout);
       const baseBackupStatus = sb
         ? {
             lastScheduleTime: sb.status?.lastScheduleTime ?? null,
@@ -116,6 +146,9 @@ export async function systemBackupWalArchiveRoutes(app: FastifyInstance): Promis
         clusterNamespace: c.clusterNamespace,
         clusterName: c.clusterName,
         enabled: dbEnabled && crHasBackup,
+        walArchivingActive: archiving.active,
+        walArchivingSource: archiving.source,
+        effectiveArchiveTimeout: archiving.effectiveArchiveTimeout,
         state: state
           ? {
               targetConfigId: state.targetConfigId,

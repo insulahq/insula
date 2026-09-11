@@ -86,6 +86,24 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   never a running workload, and never a database pod.
 
 ### Fixed
+- **The System Backups page said WAL archiving was off while it was running.**
+  Enabling scheduled base backups also archives write-ahead logs — the same
+  plugin does both, and a base backup is only restorable with the WAL written
+  while it ran. The WAL panel only looked at whether *you* had chosen an
+  `archive_timeout`, so it reported "not enabled" on a database that was
+  shipping a log segment off-site every five minutes, while the health card
+  beside it showed a green "WAL streaming" badge. Both now say the same thing:
+  archiving is shown as active with *(implied)* when a backup schedule is what
+  switched it on, the recovery-point window in force is named (yours, or
+  CNPG's five-minute default), and turning WAL streaming off now warns that
+  archiving continues until the base-backup schedule is also off.
+
+- **"Last WAL archived" showed a month-old timestamp.** It was reading when
+  archiving last became *healthy*, not when a log was last written — on
+  production that meant a date four weeks stale next to a database archiving
+  every five minutes. It now reports what Postgres itself records, with the
+  number of archived and failed segments.
+
 - **A running application could be shown as FAILED — "Workload ran out of
   memory" — while it was serving perfectly.** When a server reboots, Kubernetes
   leaves the pods it shut down behind as dead records, and nothing removes them
