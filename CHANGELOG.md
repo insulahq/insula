@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.9.17] - 2026-09-11
+
 ### Security
 - **Your servers now install OS security updates automatically.** They did not
   before. The daily update job that ships with the operating system was enabled
