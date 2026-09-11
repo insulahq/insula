@@ -35,7 +35,6 @@ import { tenantRoutes } from './modules/tenants/routes.js';
 import { domainRoutes } from './modules/domains/routes.js';
 import { subscriptionRoutes } from './modules/subscriptions/routes.js';
 import { bandwidthRoutes } from './modules/bandwidth/routes.js';
-import { backupRoutes } from './modules/backups/routes.js';
 import { metricsRoutes } from './modules/metrics/routes.js';
 import { cronJobRoutes } from './modules/cron-jobs/routes.js';
 import { authRoutes } from './modules/auth/routes.js';
@@ -577,7 +576,6 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(domainRoutes, { prefix: '/api/v1' });
   await app.register(subscriptionRoutes, { prefix: '/api/v1' });
   await app.register(bandwidthRoutes, { prefix: '/api/v1' });
-  await app.register(backupRoutes, { prefix: '/api/v1' });
   await app.register(metricsRoutes, { prefix: '/api/v1' });
   await app.register(cronJobRoutes, { prefix: '/api/v1' });
   await app.register(catalogRoutes, { prefix: '/api/v1' });

@@ -16,7 +16,7 @@ import { eq, and, ne, inArray, desc, sql, or, ilike } from 'drizzle-orm';
 import { catalogEntries, deployments, tenants } from '../../db/schema.js';
 import { fileManagerRequest } from '../file-manager/service.js';
 import { getFileManagerImage } from '../file-manager/image.js';
-import { describeTermination } from '../../lib/container-termination.js';
+import { describeTermination, isReplacedPodRecord } from '../../lib/container-termination.js';
 
 export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
   // Phase 6: method-aware role guard — read for all tenant roles,
@@ -333,8 +333,16 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
       namespace,
       labelSelector: `app=${deployment.name}`,
     });
-    const pods = (podList as { items?: readonly { metadata?: { name?: string }; status?: { phase?: string; containerStatuses?: readonly { lastState?: { terminated?: { reason?: string; exitCode?: number } } }[] } }[] }).items ?? [];
-    const runningPod = pods.find(p => p.status?.phase === 'Running') ?? pods[0];
+    const pods = (podList as { items?: readonly { metadata?: { name?: string; deletionTimestamp?: string }; status?: { phase?: string; reason?: string; containerStatuses?: readonly { lastState?: { terminated?: { reason?: string; exitCode?: number } } }[] } }[] }).items ?? [];
+    // Prefer the live pod; a dead record (node-reboot corpse, drained pod) has
+    // no useful log tail and its exit-137 lastState would be reported to the
+    // tenant as an OOM for a workload that is serving right now.
+    const livePods = pods.filter(p => !isReplacedPodRecord({
+      phase: p.status?.phase,
+      reason: p.status?.reason,
+      deletionTimestamp: p.metadata?.deletionTimestamp,
+    }));
+    const runningPod = pods.find(p => p.status?.phase === 'Running') ?? livePods[0] ?? pods[0];
 
     if (!runningPod?.metadata?.name) {
       throw new ApiError('POD_NOT_FOUND', 'No pod found for this deployment', 404);

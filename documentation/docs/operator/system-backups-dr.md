@@ -46,6 +46,26 @@ PITR restores run out-of-band (from a recovery host, not the panel) and create a
 *new* CNPG cluster from the backup, leaving the live database intact until you
 deliberately cut over. The Disaster Recovery page gives you the exact command.
 
+### What you configure
+
+**Backups → System → Targets, Schedules & Retention** holds everything for the
+platform database, as one switch and three settings:
+
+| Setting | What it does |
+|---|---|
+| **Offsite backups on / off** | Turns the whole thing on: full copies *and* the write-ahead log. They cannot be separated — a full copy is only restorable together with the log written while it ran. |
+| **Base backup cadence** | How often a full copy is taken. |
+| **Archive timeout** | How often the write-ahead log is shipped. This is your recovery-point target: lose the server and you lose at most this much work. |
+| **Retention** | How long copies *and* log are kept. Keep it at least twice the cadence, or the last full copy is deleted before the next one is taken and there is nothing left to restore onto — the panel warns you if you go below that. |
+
+Below the settings the same card reports what the archive actually holds: the
+window you can restore to, when the last and next base backups run, when the log
+was last shipped and how often that succeeds, and how much storage the copies and
+the log use at the target.
+
+Turning offsite backups **off** stops both. There is no way to keep base backups
+while stopping the log, because such a backup could not be restored.
+
 ## The DR bundle and your age key
 
 The whole-cluster recovery story rests on two things: an encrypted **bundle** of

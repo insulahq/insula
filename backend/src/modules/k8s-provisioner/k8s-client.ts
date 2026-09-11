@@ -8,6 +8,8 @@ export interface K8sClients {
   readonly batch: k8s.BatchV1Api;
   readonly rbac: k8s.RbacAuthorizationV1Api;
   readonly storage: k8s.StorageV1Api;
+  /** EndpointSlices — what traffic actually reaches, as opposed to what is Running. */
+  readonly disco: k8s.DiscoveryV1Api;
 }
 
 /**
@@ -31,5 +33,6 @@ export function createK8sClients(kubeconfigPath?: string): K8sClients {
     batch: kc.makeApiClient(k8s.BatchV1Api),
     rbac: kc.makeApiClient(k8s.RbacAuthorizationV1Api),
     storage: kc.makeApiClient(k8s.StorageV1Api),
+    disco: kc.makeApiClient(k8s.DiscoveryV1Api),
   };
 }

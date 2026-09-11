@@ -18,8 +18,20 @@ import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { collectFacts } from './collect.js';
 import { computeOutageImpact } from './service.js';
 import { ApiError } from '../../shared/errors.js';
-import { tenantRepinRequestSchema } from '@insula/api-contracts';
-import type { ClusterOutageImpact } from '@insula/api-contracts';
+import {
+  tenantRepinRequestSchema,
+  failbackAcknowledgeRequestSchema,
+} from '@insula/api-contracts';
+import type { ClusterOutageImpact, FailbackReview } from '@insula/api-contracts';
+import {
+  selectFailbackReviewItems,
+  returnedNodesFrom,
+  PLACEMENT_AUDIT_ACTIONS,
+  FAILBACK_ACK_ACTION,
+} from './failback.js';
+import { tenants as tenantsTable, auditLogs } from '../../db/schema.js';
+import { inArray, desc, eq } from 'drizzle-orm';
+import crypto from 'node:crypto';
 
 const CACHE_TTL_MS = 15_000;
 
@@ -68,6 +80,7 @@ export async function tenantHealthRoutes(app: FastifyInstance): Promise<void> {
         downTenantCount: 0,
         degradedTenantCount: 0,
         mailAffected: false,
+        degradedServices: [],
         observedAt: new Date().toISOString(),
         readError: (err as Error).message ?? 'cluster read failed',
       };
@@ -173,8 +186,6 @@ export async function tenantHealthRoutes(app: FastifyInstance): Promise<void> {
     );
 
     try {
-      const { auditLogs } = await import('../../db/schema.js');
-      const crypto = await import('node:crypto');
       await app.db.insert(auditLogs).values({
         id: crypto.randomUUID(),
         actorId: request.user?.sub ?? 'system',
@@ -188,6 +199,7 @@ export async function tenantHealthRoutes(app: FastifyInstance): Promise<void> {
           to: targetNode === '' ? null : targetNode,
           workloadsPatched: counts.workloads,
           volumesPatched: counts.pvcs,
+          strandedPodsEvicted: counts.evictedPods,
         } as unknown as Record<string, unknown>,
       });
     } catch (err) {
@@ -204,5 +216,152 @@ export async function tenantHealthRoutes(app: FastifyInstance): Promise<void> {
       workloadsPatched: counts.workloads,
       volumesPatched: counts.pvcs,
     });
+  });
+
+  /**
+   * GET /api/v1/admin/cluster/failback-review
+   *
+   * What is still displaced from a node that has since come back. Derived from
+   * the placement audit rows rather than a table of its own — see failback.ts.
+   * Deliberately NOT cached with the outage impact: it is polled from one panel
+   * on demand, not from every admin page, and it must reflect an acknowledgement
+   * immediately or the operator will click it twice.
+   */
+  app.get('/admin/cluster/failback-review', {
+    onRequest: [requireRole('super_admin', 'admin', 'support', 'read_only')],
+    schema: {
+      tags: ['Cluster'],
+      summary: 'Tenants still displaced from a node that has come back online',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (): Promise<{ data: FailbackReview }> => {
+    const observedAt = new Date().toISOString();
+    const errors: string[] = [];
+
+    let readyNodes = new Set<string>();
+    try {
+      const k8s = createK8sClients();
+      const resp = await k8s.core.listNode() as {
+        items?: Array<{
+          metadata?: { name?: string };
+          status?: { conditions?: Array<{ type?: string; status?: string }> };
+        }>;
+      };
+      readyNodes = new Set(
+        (resp.items ?? [])
+          .filter((n) => (n.status?.conditions ?? []).some((c) => c.type === 'Ready' && c.status === 'True'))
+          .map((n) => n.metadata?.name ?? '')
+          .filter(Boolean),
+      );
+    } catch (err) {
+      errors.push(`nodes: ${(err as Error).message ?? 'read failed'}`);
+    }
+
+    let rows: Array<{
+      tenantId: string; actionType: string; createdAt: Date; changes: Record<string, unknown> | null;
+    }> = [];
+    let tenantFacts: Array<{
+      tenantId: string; tenantName: string; currentNode: string | null; storageTier: string;
+    }> = [];
+    try {
+      // Newest first, bounded: a review only needs each tenant's latest
+      // placement event, and an unbounded scan of the audit table during an
+      // outage is exactly the wrong time to be slow.
+      const raw = await app.db
+        .select({
+          resourceId: auditLogs.resourceId,
+          actionType: auditLogs.actionType,
+          createdAt: auditLogs.createdAt,
+          changes: auditLogs.changes,
+        })
+        .from(auditLogs)
+        .where(inArray(auditLogs.actionType, [...PLACEMENT_AUDIT_ACTIONS]))
+        .orderBy(desc(auditLogs.createdAt))
+        .limit(500);
+      rows = raw
+        .filter((r) => !!r.resourceId)
+        .map((r) => ({
+          tenantId: r.resourceId as string,
+          actionType: r.actionType,
+          createdAt: r.createdAt instanceof Date ? r.createdAt : new Date(r.createdAt as unknown as string),
+          changes: (r.changes ?? null) as Record<string, unknown> | null,
+        }));
+
+      const ids = [...new Set(rows.map((r) => r.tenantId))];
+      if (ids.length > 0) {
+        const trows = await app.db
+          .select({
+            id: tenantsTable.id,
+            name: tenantsTable.name,
+            nodeName: tenantsTable.nodeName,
+            tier: tenantsTable.storageTier,
+          })
+          .from(tenantsTable)
+          .where(inArray(tenantsTable.id, ids));
+        tenantFacts = trows.map((t) => ({
+          tenantId: t.id,
+          tenantName: t.name,
+          currentNode: t.nodeName ?? null,
+          storageTier: String(t.tier ?? 'local'),
+        }));
+      }
+    } catch (err) {
+      errors.push(`placement history: ${(err as Error).message ?? 'read failed'}`);
+    }
+
+    const items = selectFailbackReviewItems({ rows, tenants: tenantFacts, readyNodes });
+    return success({
+      returnedNodes: returnedNodesFrom(items),
+      items,
+      observedAt,
+      readError: errors.length > 0 ? errors.join('; ') : null,
+    });
+  });
+
+  /**
+   * POST /api/v1/admin/tenants/:id/failback/acknowledge
+   *
+   * Records that the operator has decided the current placement is fine. This
+   * moves NO data — it writes the audit row that ends the review, which is why
+   * it takes a reason: six months later the row has to explain itself.
+   */
+  app.post<{ Params: { id: string } }>('/admin/tenants/:id/failback/acknowledge', {
+    onRequest: [requireRole('super_admin', 'admin')],
+    schema: {
+      tags: ['Cluster'],
+      summary: 'Accept a tenant\'s current placement and close its failback review',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request) => {
+    const { id } = request.params;
+    const parsed = failbackAcknowledgeRequestSchema.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      throw new ApiError(
+        'VALIDATION_ERROR',
+        'A reason of at least 3 characters is required so the decision is explainable later.',
+        400,
+      );
+    }
+
+    const [tenant] = await app.db
+      .select({ id: tenantsTable.id, name: tenantsTable.name, nodeName: tenantsTable.nodeName })
+      .from(tenantsTable)
+      .where(eq(tenantsTable.id, id));
+    if (!tenant) throw new ApiError('TENANT_NOT_FOUND', 'No such tenant.', 404);
+
+    await app.db.insert(auditLogs).values({
+      id: crypto.randomUUID(),
+      actorId: request.user?.sub ?? 'system',
+      actorType: 'user',
+      actionType: FAILBACK_ACK_ACTION,
+      resourceType: 'tenant',
+      resourceId: id,
+      changes: {
+        reason: parsed.data.reason,
+        acceptedPlacement: tenant.nodeName ?? null,
+      } as unknown as Record<string, unknown>,
+    });
+
+    return success({ tenantId: id, acknowledged: true });
   });
 }

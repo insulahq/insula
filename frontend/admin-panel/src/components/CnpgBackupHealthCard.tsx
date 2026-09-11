@@ -34,8 +34,8 @@ interface Props {
  */
 export function CnpgBackupHealthCard({ clusterFilter }: Props) {
   const { data, isLoading, error } = useCnpgBackupHealth();
-  // WAL streaming health — surfaced as a per-cluster header chip + as
-  // the "Last WAL write" metric cell.
+  // WAL archive health — a per-cluster header chip + the "Last WAL write"
+  // metric cell.
   const walQ = useWalArchiveClusters();
 
   if (isLoading) {
@@ -275,34 +275,40 @@ function formatAgoFromIso(iso: string): string {
   return formatAge(Math.floor(ms / 1000));
 }
 
-// Phase 2 (2026-05-24) — WAL streaming as a discrete header chip.
-// Three states match the original inline-row palette so the meaning
-// carries forward: emerald = streaming healthily; rose = failing;
-// amber = enabled but no archive yet OR disabled.
+// WAL chip — one fact, three states: shipping, failing, off.
+//
+// It briefly had an amber "implied" state, back when WAL archiving could be on
+// while the panel claimed it was off. That state is gone because the underlying
+// split is gone: offsite backups are one switch (see PostgresBackupsSection),
+// so the chip just reports whether the log is reaching the target.
 function WalStreamingBadge({ wal }: { wal: WalArchiveCluster | null }) {
-  if (wal?.enabled && wal.status?.lastArchivedWalTime && !wal.status.lastFailedArchiveTime) {
-    return (
-      <span
-        className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200"
-        title={`Last WAL archived at ${wal.status.lastArchivedWalTime}`}
-        data-testid="cnpg-wal-badge-streaming"
-      >
-        <Radio size={10} /> WAL streaming
-      </span>
-    );
-  }
-  if (wal?.enabled && wal.status?.lastFailedArchiveTime) {
+  const active = wal?.walArchivingActive ?? wal?.enabled ?? false;
+  const failing = Boolean(wal?.status?.lastFailedArchiveTime);
+  const archived = Boolean(wal?.status?.lastArchivedWalTime);
+
+  if (active && failing) {
     return (
       <span
         className="inline-flex items-center gap-1 rounded-full bg-rose-100 px-2 py-0.5 text-xs font-medium text-rose-800 dark:bg-rose-900/40 dark:text-rose-200"
-        title={wal.status.lastFailedArchiveError ?? 'WAL archive failing'}
+        title={wal?.status?.lastFailedArchiveError ?? 'WAL archive failing'}
         data-testid="cnpg-wal-badge-failing"
       >
         <Radio size={10} /> WAL failing
       </span>
     );
   }
-  if (wal?.enabled) {
+  if (active && archived) {
+    return (
+      <span
+        className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200"
+        title={`Last segment archived at ${wal?.status?.lastArchivedWalTime} (pg_stat_archiver). Uploaded every ${wal?.effectiveArchiveTimeout ?? '5min'}.`}
+        data-testid="cnpg-wal-badge-streaming"
+      >
+        <Radio size={10} /> WAL archiving
+      </span>
+    );
+  }
+  if (active) {
     return (
       <span
         className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-200"
@@ -317,7 +323,7 @@ function WalStreamingBadge({ wal }: { wal: WalArchiveCluster | null }) {
       className="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600 dark:bg-gray-900/30 dark:text-gray-400"
       data-testid="cnpg-wal-badge-disabled"
     >
-      <Radio size={10} /> WAL off
+      <Radio size={10} /> Backups off
     </span>
   );
 }

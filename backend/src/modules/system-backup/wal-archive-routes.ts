@@ -26,10 +26,6 @@ import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import {
   walArchiveEnableRequestSchema,
   walArchiveDisableRequestSchema,
-  walStreamingEnableRequestSchema,
-  walStreamingDisableRequestSchema,
-  scheduledBackupsEnableRequestSchema,
-  scheduledBackupsDisableRequestSchema,
   type WalArchiveActionResponse,
   type WalArchiveCluster,
   type WalArchiveListResponse,
@@ -37,15 +33,17 @@ import {
 import {
   enableWalArchive,
   disableWalArchive,
-  enableWalStreaming,
-  disableWalStreaming,
-  enableScheduledBackups,
-  disableScheduledBackups,
   readClusterCR,
   readScheduledBackup,
   extractStatus,
   BARMAN_PLUGIN_NAME,
 } from './wal-archive.js';
+import {
+  readArchiverStats,
+  isPlatformDbCluster,
+  effectiveArchiveTimeout,
+  isArchivingCurrentlyFailing,
+} from './archiver-stats.js';
 
 // Hardcoded list of system CNPG clusters with WAL archive surface.
 // Names are version-agnostic so future PG-major bumps don't require
@@ -98,14 +96,50 @@ export async function systemBackupWalArchiveRoutes(app: FastifyInstance): Promis
         readClusterCR(k8s, c.clusterNamespace, c.clusterName),
         readScheduledBackup(k8s, c.clusterNamespace, c.clusterName),
       ]);
-      const status = extractStatus(cr);
+      const condStatus = extractStatus(cr);
+      // Recency from pg_stat_archiver (the authority); health from the CNPG
+      // condition. Only the platform DB itself is reachable this way — any
+      // other cluster keeps the condition-only view rather than a wrong number.
+      const archiver = isPlatformDbCluster(c.clusterNamespace, c.clusterName)
+        ? await readArchiverStats(app.db)
+        : null;
+      const archiverFailingNow = isArchivingCurrentlyFailing(archiver);
+      const status = condStatus === null && archiver === null ? null : {
+        firstRecoverabilityPoint: condStatus?.firstRecoverabilityPoint ?? null,
+        lastArchivedWal: archiver?.lastArchivedWal ?? null,
+        lastArchivedWalTime: archiver?.lastArchivedWalTime ?? null,
+        // ONLY a failure with nothing archived since it. pg_stat_archiver keeps
+        // the last failure forever, so passing it through unconditionally made
+        // the chip read "WAL failing" on DEV three days after a transient
+        // failure that 4472 successful archives had long overtaken.
+        lastFailedArchiveTime: archiverFailingNow
+          ? archiver?.lastFailedArchiveTime ?? null
+          : condStatus?.lastFailedArchiveTime ?? null,
+        lastFailedArchiveError: condStatus?.lastFailedArchiveError
+          ?? (archiverFailingNow && archiver?.lastFailedWal
+            ? `last failed WAL: ${archiver.lastFailedWal}`
+            : null),
+        archivedCount: archiver?.archivedCount ?? null,
+        failedCount: archiver?.failedCount ?? null,
+        statsResetAt: archiver?.statsResetAt ?? null,
+        archivingHealthySince: condStatus?.archivingHealthySince ?? null,
+      };
       // Plugin model: WAL archive is "attached" when the cluster's
       // spec.plugins[] lists the barman-cloud plugin entry. Replaces
       // the deprecated check on spec.backup.barmanObjectStore.
+      // The barman-cloud plugin ENTRY is the real gate on WAL archiving —
+      // its presence, not `isWALArchiver` (see
+      // backup-rclone-shim/postgres-objectstore.ts). Scheduled base backups
+      // attach the same entry, which is why production was archiving WAL every
+      // five minutes on 2026-09-11 with WAL streaming never enabled.
       const crHasBackup = Boolean(
         cr?.spec?.plugins?.some((p) => p.name === BARMAN_PLUGIN_NAME),
       );
       const dbEnabled = state !== undefined;
+      // `archive_timeout` is written by the combined enable path; its presence
+      // means the operator has chosen an upload interval rather than inheriting
+      // CNPG's default.
+      const archiveTimeoutInForce = effectiveArchiveTimeout(crHasBackup, state?.archiveTimeout);
       const baseBackupStatus = sb
         ? {
             lastScheduleTime: sb.status?.lastScheduleTime ?? null,
@@ -116,6 +150,8 @@ export async function systemBackupWalArchiveRoutes(app: FastifyInstance): Promis
         clusterNamespace: c.clusterNamespace,
         clusterName: c.clusterName,
         enabled: dbEnabled && crHasBackup,
+        walArchivingActive: crHasBackup,
+        effectiveArchiveTimeout: archiveTimeoutInForce,
         state: state
           ? {
               targetConfigId: state.targetConfigId,
@@ -333,141 +369,12 @@ export async function systemBackupWalArchiveRoutes(app: FastifyInstance): Promis
     }
   });
 
-  // ─── Phase 7a (2026-05-24): split WAL streaming vs Scheduled Backups ──
-  //
-  // Four narrow endpoints replace the combined enable/disable. Each is
-  // idempotent — calling enable while already enabled UPDATES the
-  // settings so operators can edit archive_timeout / cron without
-  // disable+re-enable. The combined endpoints above stay for back-compat.
-
-  // POST /system-backup/wal-archive/streaming/enable
-  app.post('/system-backup/wal-archive/streaming/enable', {
-    schema: {
-      tags: ['SystemBackup'],
-      summary: 'Turn on continuous WAL streaming for a CNPG cluster',
-      security: [{ bearerAuth: [] }],
-    },
-  }, async (request) => {
-    const parsed = walStreamingEnableRequestSchema.safeParse(request.body ?? {});
-    if (!parsed.success) {
-      throw new ApiError('SYSTEM_WAL_BAD_REQUEST', parsed.error.message, 400);
-    }
-    const userId = requireUserId(request);
-    assertKnownCluster(parsed.data.clusterNamespace, parsed.data.clusterName);
-    try {
-      const r = await enableWalStreaming({
-        db: app.db, k8s: createK8sClients(),
-        clusterNamespace: parsed.data.clusterNamespace,
-        clusterName: parsed.data.clusterName,
-        retentionDays: parsed.data.retentionDays,
-        archiveTimeout: parsed.data.archiveTimeout,
-        operatorUserId: userId,
-        operatorIp: tenantIp(request),
-      });
-      return success<WalArchiveActionResponse>({
-        clusterNamespace: parsed.data.clusterNamespace,
-        clusterName: parsed.data.clusterName,
-        enabled: true,
-        destinationPath: r.destinationPath,
-      });
-    } catch (err) {
-      throw new ApiError('SYSTEM_WAL_STREAMING_ENABLE_FAILED',
-        err instanceof Error ? err.message : String(err), 500);
-    }
-  });
-
-  // POST /system-backup/wal-archive/streaming/disable
-  app.post('/system-backup/wal-archive/streaming/disable', {
-    schema: {
-      tags: ['SystemBackup'],
-      summary: 'Turn off continuous WAL streaming (keep scheduled backups if enabled)',
-      security: [{ bearerAuth: [] }],
-    },
-  }, async (request) => {
-    const parsed = walStreamingDisableRequestSchema.safeParse(request.body ?? {});
-    if (!parsed.success) {
-      throw new ApiError('SYSTEM_WAL_BAD_REQUEST', parsed.error.message, 400);
-    }
-    const userId = requireUserId(request);
-    assertKnownCluster(parsed.data.clusterNamespace, parsed.data.clusterName);
-    try {
-      await disableWalStreaming({
-        db: app.db, k8s: createK8sClients(),
-        clusterNamespace: parsed.data.clusterNamespace,
-        clusterName: parsed.data.clusterName,
-        operatorUserId: userId,
-        operatorIp: tenantIp(request),
-      });
-      return success<WalArchiveActionResponse>({
-        clusterNamespace: parsed.data.clusterNamespace,
-        clusterName: parsed.data.clusterName,
-        enabled: false,
-        destinationPath: null,
-      });
-    } catch (err) {
-      throw new ApiError('SYSTEM_WAL_STREAMING_DISABLE_FAILED',
-        err instanceof Error ? err.message : String(err), 500);
-    }
-  });
-
-  // POST /system-backup/wal-archive/schedule/enable
-  app.post('/system-backup/wal-archive/schedule/enable', {
-    schema: {
-      tags: ['SystemBackup'],
-      summary: 'Turn on scheduled base backups (idempotent — call again to update cron)',
-      security: [{ bearerAuth: [] }],
-    },
-  }, async (request) => {
-    const parsed = scheduledBackupsEnableRequestSchema.safeParse(request.body ?? {});
-    if (!parsed.success) {
-      throw new ApiError('SYSTEM_WAL_BAD_REQUEST', parsed.error.message, 400);
-    }
-    const userId = requireUserId(request);
-    assertKnownCluster(parsed.data.clusterNamespace, parsed.data.clusterName);
-    try {
-      await enableScheduledBackups({
-        db: app.db, k8s: createK8sClients(),
-        clusterNamespace: parsed.data.clusterNamespace,
-        clusterName: parsed.data.clusterName,
-        cron: parsed.data.cron,
-        operatorUserId: userId,
-        operatorIp: tenantIp(request),
-      });
-      return success({ enabled: true, cron: parsed.data.cron });
-    } catch (err) {
-      throw new ApiError('SYSTEM_SCHEDULED_BACKUPS_ENABLE_FAILED',
-        err instanceof Error ? err.message : String(err), 500);
-    }
-  });
-
-  // POST /system-backup/wal-archive/schedule/disable
-  app.post('/system-backup/wal-archive/schedule/disable', {
-    schema: {
-      tags: ['SystemBackup'],
-      summary: 'Turn off scheduled base backups (keep WAL streaming if enabled)',
-      security: [{ bearerAuth: [] }],
-    },
-  }, async (request) => {
-    const parsed = scheduledBackupsDisableRequestSchema.safeParse(request.body ?? {});
-    if (!parsed.success) {
-      throw new ApiError('SYSTEM_WAL_BAD_REQUEST', parsed.error.message, 400);
-    }
-    const userId = requireUserId(request);
-    assertKnownCluster(parsed.data.clusterNamespace, parsed.data.clusterName);
-    try {
-      await disableScheduledBackups({
-        db: app.db, k8s: createK8sClients(),
-        clusterNamespace: parsed.data.clusterNamespace,
-        clusterName: parsed.data.clusterName,
-        operatorUserId: userId,
-        operatorIp: tenantIp(request),
-      });
-      return success({ enabled: false });
-    } catch (err) {
-      throw new ApiError('SYSTEM_SCHEDULED_BACKUPS_DISABLE_FAILED',
-        err instanceof Error ? err.message : String(err), 500);
-    }
-  });
+  // The per-feature toggles (streaming/enable, streaming/disable,
+  // schedule/enable, schedule/disable) were REMOVED 2026-09-11. They modelled
+  // WAL archiving and base backups as independently switchable, which the
+  // storage layer does not support: the barman-cloud plugin entry ships both,
+  // so "disable streaming" left archiving running and the UI had to explain
+  // why. /enable and /disable below take all three settings together.
 
 }
 
