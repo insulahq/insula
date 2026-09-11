@@ -29,7 +29,7 @@ const ACTIONS: ReadonlyArray<ActionDef> = [
     kind: 'clean-stale-pods',
     label: 'Clean stale pod records on this node',
     description:
-      'Bulk-deletes Failed/Evicted/ContainerStatusUnknown pods on this node. Refuses tenant + CNPG instance pods. Zero risk — they are already dead K8s records.',
+      'Bulk-deletes Failed/Evicted/ContainerStatusUnknown pods on this node, plus node-reboot casualties in any namespace. Refuses CNPG instance pods, and outside reboot debris refuses tenant pods. Zero risk — they are already dead K8s records.',
     // stalePods is the DIRECT signal and takes precedence: a plain node reboot
     // leaves Failed pods behind while producing neither evictions nor pressure,
     // so the pressure heuristic missed the single most common cause of stale

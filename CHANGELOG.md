@@ -43,6 +43,20 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   never a running workload, and never a database pod.
 
 ### Fixed
+- **The "Recover…" button now appears when there is something to clean up.** It
+  only showed on a server already flagged as unhealthy — but the most common
+  thing needing cleanup is leftover pod records from a restart, which leave the
+  server perfectly healthy. So the button stayed hidden and there was no way to
+  clear them from the panel at all. Production had accumulated 17 such records
+  across four restarts.
+
+- **Restart leftovers can now be cleared in every namespace, including your
+  customers'.** The cleanup refused customer namespaces and anything not on a
+  fixed internal list, which left 5 of those 17 permanently stuck. Records the
+  server itself marks as restart casualties are now clearable wherever they are
+  — their replacement is already running. Everything else keeps the old, narrow
+  rule, and database pods are never touched.
+
 - **Removed a CrowdSec cleanup job that had never once worked.** It was
   scheduled daily and had failed on every single run since the server was
   built, leaving a failed job behind each day. The command it ran used an
