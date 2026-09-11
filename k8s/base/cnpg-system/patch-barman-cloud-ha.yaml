@@ -57,6 +57,28 @@
 # acquires the lease as soon as it expires — seconds, versus the ~6.5 minutes
 # it took when a single pod had to wait for Kubernetes' 300s eviction before
 # being rescheduled.
+#
+# WHY THERE IS NO PodDisruptionBudget (measured on staging, 2026-09-11):
+#
+# A PDB cannot protect this workload, because its readiness reflects
+# LEADERSHIP, not health. With exactly one Ready pod by design, every
+# non-trivial PDB computes zero allowed disruptions:
+#
+#   maxUnavailable: 1 -> desiredHealthy = expectedPods - 1 = 1
+#                        currentHealthy = 1  (only the leader is Ready)
+#                        disruptionsAllowed = 0        <- drains blocked
+#   minAvailable: 1   -> same answer by the other route.
+#
+# Both were tried on a live cluster and both reported
+# `disruptionsAllowed: 0`, which turns routine node maintenance into a
+# "delete the PDB first" ritual — strictly worse than no PDB.
+#
+# What actually provides the protection a PDB would have:
+#   - topologySpreadConstraints below pins the two replicas to different
+#     nodes, so draining one node can never take both.
+#   - The standby exists precisely so evicting the leader is safe: the
+#     lease transfers within its timeout (~15s) and the standby serves.
+# Upstream ships no PDB either.
 apiVersion: apps/v1
 kind: Deployment
 metadata:

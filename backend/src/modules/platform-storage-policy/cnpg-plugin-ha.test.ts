@@ -13,7 +13,7 @@
  * the manifest stops being shaped for multi-replica scheduling.
  */
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import {
@@ -74,15 +74,16 @@ describe('CNPG plugin HA', () => {
     expect(patch).toMatch(/^\s+maxUnavailable: 1$/m);
     expect(patch).not.toMatch(/^\s+maxUnavailable: 0$/m);
 
-    const pdb = readFileSync(resolve(cnpgDir, 'barman-cloud-pdb.yaml'), 'utf8');
-    expect(pdb).toContain('kind: PodDisruptionBudget');
-    // Same reason: with a permanent ready-count of 1, `minAvailable: 1` yields
-    // zero allowed disruptions and blocks draining the leader's node forever.
-    expect(pdb).toMatch(/^\s+maxUnavailable: 1$/m);
-    expect(pdb).not.toMatch(/^\s+minAvailable: 1$/m);
+    // Deliberately NO PodDisruptionBudget. Readiness here reflects LEADERSHIP,
+    // not health — exactly one pod is ever Ready — so every non-trivial PDB
+    // computes `disruptionsAllowed: 0` and blocks node drains forever. Both
+    // `minAvailable: 1` and `maxUnavailable: 1` were measured on a live
+    // cluster and both reported 0. topologySpread (asserted above) is what
+    // actually stops one drain taking both replicas.
+    expect(existsSync(resolve(cnpgDir, 'barman-cloud-pdb.yaml'))).toBe(false);
 
     const kustomization = readFileSync(resolve(cnpgDir, 'kustomization.yaml'), 'utf8');
-    expect(kustomization).toContain('barman-cloud-pdb.yaml');
+    expect(kustomization).not.toContain('barman-cloud-pdb.yaml');
     expect(kustomization).toContain('patch-barman-cloud-ha.yaml');
   });
 });
