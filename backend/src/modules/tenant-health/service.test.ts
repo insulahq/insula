@@ -25,6 +25,15 @@ const node = (name: string, ready: boolean, over: Partial<NodeFact> = {}): NodeF
   ...over,
 });
 
+/**
+ * A real, data-holding replica. `running` is what separates a copy of the data
+ * from an empty rebuild target Longhorn just scheduled — the fixtures below all
+ * mean the former, so they say so explicitly.
+ */
+const replicaOn = (volumeName: string, nodeId: string, running = true) => ({
+  volumeName, nodeId, running,
+});
+
 const localTenant = (over: Partial<TenantFact> = {}): TenantFact => ({
   id: 't1', name: 'Acme', namespace: 'tenant-acme', storageTier: 'local',
   pinnedNode: 'node-c', status: 'active', hasMailboxes: true, ...over,
@@ -66,8 +75,8 @@ describe('degradation matrix', () => {
       tenants: [t],
       volumes: [{ volumeName: 'pvc-1', namespace: 'tenant-acme', pvcName: 'data', robustness: 'degraded' }],
       replicas: [
-        { volumeName: 'pvc-1', nodeId: 'node-a' },
-        { volumeName: 'pvc-1', nodeId: 'node-c' },
+        replicaOn('pvc-1', 'node-a'),
+        replicaOn('pvc-1', 'node-c'),
       ],
     }));
     expect(out.affectedTenants[0].state).toBe('degraded');
@@ -80,7 +89,7 @@ describe('degradation matrix', () => {
     const out = computeOutageImpact(baseInput({
       tenants: [t],
       volumes: [{ volumeName: 'pvc-1', namespace: 'tenant-acme', pvcName: 'acme-storage', robustness: 'faulted' }],
-      replicas: [{ volumeName: 'pvc-1', nodeId: 'node-c' }],
+      replicas: [replicaOn('pvc-1', 'node-c')],
     }));
     const f = out.affectedTenants[0].findings.find((x) => x.kind === 'volume_last_replica_on_down_node');
     expect(f?.severity).toBe('down');
@@ -163,8 +172,8 @@ describe('fleet view', () => {
       ],
       volumes: [{ volumeName: 'pvc-2', namespace: 'tenant-acme', pvcName: 'd', robustness: 'degraded' }],
       replicas: [
-        { volumeName: 'pvc-2', nodeId: 'node-a' },
-        { volumeName: 'pvc-2', nodeId: 'node-c' },
+        replicaOn('pvc-2', 'node-a'),
+        replicaOn('pvc-2', 'node-c'),
       ],
     }));
     expect(out.affectedTenantCount).toBe(2);
@@ -227,5 +236,64 @@ describe('down-node ingress reachability', () => {
       ],
     }));
     expect(out.nodesDown[0].ingressAddresses).toEqual(['198.51.100.9']);
+  });
+});
+
+/**
+ * A replica object on a live node is not the same thing as a copy of the data.
+ *
+ * When a node dies, Longhorn immediately schedules a fresh replica on a
+ * survivor and starts rebuilding into it. That object is on a live node while
+ * holding nothing. Observed on staging 2026-09-11: a one-replica local-tier
+ * volume whose only replica died was reported as *"running on reduced
+ * redundancy while Longhorn rebuilds — no action required, this resolves
+ * itself"*. It could never resolve itself; the only source was the dead node,
+ * and the volume went `faulted` minutes later.
+ *
+ * Saying "no action required" to an operator whose tenant data has just become
+ * unreachable is the most damaging thing this endpoint could get wrong, so it
+ * is asserted directly.
+ */
+describe('an empty rebuild target is not a surviving copy', () => {
+  const vol = { volumeName: 'pvc-1', namespace: 'tenant-acme', pvcName: 'acme-storage', robustness: 'degraded' };
+
+  it('reports DOWN when the only running replica was on the dead node', () => {
+    const [entry] = computeOutageImpact(baseInput({
+      tenants: [localTenant({ pinnedNode: 'node-a' })],
+      volumes: [vol],
+      replicas: [
+        replicaOn('pvc-1', 'node-c', true),   // the real copy — on the dead node
+        replicaOn('pvc-1', 'node-a', false),  // empty rebuild target on a survivor
+      ],
+    })).affectedTenants;
+    const kinds = entry.findings.map((f) => f.kind);
+    expect(kinds).toContain('volume_last_replica_on_down_node');
+    expect(kinds).not.toContain('volume_degraded_rebuilding');
+  });
+
+  it('still reports rebuilding when a running replica genuinely survives', () => {
+    // The change must not turn every real rebuild into a false alarm.
+    const [entry] = computeOutageImpact(baseInput({
+      tenants: [localTenant({ pinnedNode: 'node-a' })],
+      volumes: [vol],
+      replicas: [
+        replicaOn('pvc-1', 'node-c', true),
+        replicaOn('pvc-1', 'node-a', true),
+      ],
+    })).affectedTenants;
+    const kinds = entry.findings.map((f) => f.kind);
+    expect(kinds).toContain('volume_degraded_rebuilding');
+    expect(kinds).not.toContain('volume_last_replica_on_down_node');
+  });
+
+  it('trusts a faulted volume even if a replica object looks live', () => {
+    // Longhorn has already concluded the data is unreachable; the platform
+    // must not talk it out of that.
+    const [entry] = computeOutageImpact(baseInput({
+      tenants: [localTenant({ pinnedNode: 'node-a' })],
+      volumes: [{ ...vol, robustness: 'faulted' }],
+      replicas: [replicaOn('pvc-1', 'node-a', true)],
+    })).affectedTenants;
+    expect(entry.findings.map((f) => f.kind)).toContain('volume_last_replica_on_down_node');
   });
 });

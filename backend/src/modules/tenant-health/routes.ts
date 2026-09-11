@@ -198,6 +198,7 @@ export async function tenantHealthRoutes(app: FastifyInstance): Promise<void> {
           to: targetNode === '' ? null : targetNode,
           workloadsPatched: counts.workloads,
           volumesPatched: counts.pvcs,
+          strandedPodsEvicted: counts.evictedPods,
         } as unknown as Record<string, unknown>,
       });
     } catch (err) {

@@ -1119,6 +1119,8 @@ export interface RepinCounts {
   pvcs: number;
   workloads: number;
   tenants: number;
+  /** Pods force-deleted because they were stranded on a NotReady node. */
+  evictedPods: number;
 }
 
 /**
@@ -1164,6 +1166,33 @@ export function makeLonghornHostTagEnsurer(k8s: K8sClients): (target: string) =>
  * Longhorn place freely. `releaseFromNode` is the node whose nodeAffinity pin
  * should be stripped from workloads.
  */
+/**
+ * Pods of `namespace` sitting on `nodeName`, but ONLY when that node is
+ * NotReady. Returns an empty list for a healthy node, so a caller cannot
+ * accidentally force-delete pods whose kubelet is alive and able to stop
+ * them cleanly.
+ */
+export async function strandedPodsOnDeadNode(
+  k8s: K8sClients,
+  namespace: string,
+  nodeName: string,
+): Promise<string[]> {
+  const node = await k8s.core.readNode({ name: nodeName } as unknown as Parameters<typeof k8s.core.readNode>[0]) as {
+    status?: { conditions?: Array<{ type?: string; status?: string }> };
+  };
+  const ready = (node.status?.conditions ?? []).find((c) => c.type === 'Ready');
+  // Only `Ready=True` counts as alive. A dead node reports `Unknown`.
+  if (ready?.status === 'True') return [];
+
+  const pods = await k8s.core.listNamespacedPod({
+    namespace,
+    fieldSelector: `spec.nodeName=${nodeName}`,
+  } as unknown as Parameters<typeof k8s.core.listNamespacedPod>[0]) as {
+    items?: Array<{ metadata?: { name?: string } }>;
+  };
+  return (pods.items ?? []).map((p) => p.metadata?.name ?? '').filter(Boolean);
+}
+
 export async function repinTenantPlacement(
   k8s: K8sClients,
   db: Database,
@@ -1172,7 +1201,7 @@ export async function repinTenantPlacement(
   releaseFromNode: string,
   ensureHostTag: (target: string) => Promise<string>,
 ): Promise<RepinCounts> {
-  const counts: RepinCounts = { pvcs: 0, workloads: 0, tenants: 0 };
+  const counts: RepinCounts = { pvcs: 0, workloads: 0, tenants: 0, evictedPods: 0 };
   const ns = tenant.namespace;
 
   // (a) Resolve the Longhorn host-tag for the target. Failure here
@@ -1255,6 +1284,49 @@ export async function repinTenantPlacement(
       counts.workloads += 1;
     } catch (err) {
       console.warn(`[nodes] re-pin tenant=${tenant.tenantId} ${w.kind}/${w.name} in ${ns} failed:`, (err as Error).message);
+    }
+  }
+
+  // (c2) Evict pods stranded on the released node, but ONLY if that node is
+  //      NotReady.
+  //
+  //      Tenant workloads use `strategy: Recreate` — correct, because their
+  //      volume is RWO and two pods cannot mount it at once. Recreate waits
+  //      for every old pod to be FULLY GONE before it creates a new one. A pod
+  //      on a dead node never gets there: its kubelet is the only thing that
+  //      can confirm the container stopped, so the pod object sits in
+  //      `Terminating` forever and the Deployment waits behind it forever.
+  //
+  //      Measured on staging 2026-09-11: a re-pin patched the Deployment, the
+  //      Longhorn volume and the platform DB — all three succeeded — and the
+  //      tenant stayed down with `0/1` and no replacement ReplicaSet. Force-
+  //      deleting the stranded pod produced a new ReplicaSet on the target node
+  //      within seconds. So the re-pin was never the missing piece; this was.
+  //
+  //      The NotReady check is the safety boundary, not a nicety. Force-delete
+  //      drops the pod object without any confirmation the container stopped,
+  //      which on a LIVE node would risk two writers on one RWO volume. On a
+  //      drain the kubelet is alive and terminates pods properly, so this step
+  //      must not run there — and it does not.
+  if (releaseFromNode) {
+    try {
+      const stranded = await strandedPodsOnDeadNode(k8s, ns, releaseFromNode);
+      for (const podName of stranded) {
+        try {
+          await k8s.core.deleteNamespacedPod({
+            namespace: ns,
+            name: podName,
+            gracePeriodSeconds: 0,
+          } as unknown as Parameters<typeof k8s.core.deleteNamespacedPod>[0]);
+          counts.evictedPods += 1;
+        } catch (err) {
+          console.warn(`[nodes] re-pin tenant=${tenant.tenantId} could not evict stranded pod ${ns}/${podName}:`, (err as Error).message);
+        }
+      }
+    } catch (err) {
+      // Never fail the re-pin over this: the placement change is still correct
+      // and an operator can delete the node to achieve the same thing.
+      console.warn(`[nodes] re-pin tenant=${tenant.tenantId} stranded-pod scan on ${releaseFromNode} failed:`, (err as Error).message);
     }
   }
 

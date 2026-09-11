@@ -57,6 +57,7 @@ interface RawPod {
 }
 interface LhReplica {
   spec?: { volumeName?: string; nodeID?: string };
+  status?: { currentState?: string };
 }
 interface LhVolume {
   metadata?: { name?: string };
@@ -207,6 +208,11 @@ export async function collectFacts(
   const replicas: ReplicaFact[] = (replicaResp.items ?? []).map((r) => ({
     volumeName: r.spec?.volumeName ?? '',
     nodeId: r.spec?.nodeID ?? null,
+    // Only a RUNNING replica holds data. Longhorn schedules an empty rebuild
+    // target on a survivor the moment a node dies; counting that as a copy is
+    // how "your data is on the dead node" becomes "rebuilding, no action
+    // required".
+    running: r.status?.currentState === 'running',
   })).filter((r) => r.volumeName !== '');
 
   const volumes: VolumeFact[] = (volumeResp.items ?? []).map((v) => ({

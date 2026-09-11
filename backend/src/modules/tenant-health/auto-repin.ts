@@ -166,7 +166,9 @@ export async function applyAutoRepin(
       repinned.push(c.tenantId);
       log.info(
         `[auto-repin] tenant=${c.tenantId} (${c.tenantName}) unpinned from offline ${c.strandedOn} — `
-        + `${counts.workloads} workload(s), ${counts.pvcs} volume(s); live replicas on ${c.liveReplicaNodes.join(', ') || 'n/a'}`,
+        + `${counts.workloads} workload(s), ${counts.pvcs} volume(s), `
+        + `${counts.evictedPods} stranded pod(s) evicted; `
+        + `live replicas on ${c.liveReplicaNodes.join(', ') || 'n/a'}`,
       );
 
       await db.insert(auditLogs).values({
@@ -182,6 +184,7 @@ export async function applyAutoRepin(
           liveReplicaNodes: c.liveReplicaNodes,
           workloadsPatched: counts.workloads,
           volumesPatched: counts.pvcs,
+          strandedPodsEvicted: counts.evictedPods,
         } as unknown as Record<string, unknown>,
       }).catch((err) => log.warn('[auto-repin] audit insert failed:', (err as Error).message));
 
