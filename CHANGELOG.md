@@ -13,6 +13,28 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Added
+- **A node coming back no longer leaves tenants displaced in silence.** While a
+  node is down the platform moves tenants off it — HA-tier automatically,
+  local-tier through the recovery wizard — and when the node rejoined, nothing
+  moved back and nothing said so. The placement change simply became permanent:
+  the returned node looked healthy while sitting empty, and an operator who had
+  pinned a tenant deliberately had that intent erased without a word.
+  **Cluster → Nodes** now shows a failback review listing every tenant still
+  placed elsewhere, how it got there, and which way the platform leans — *keep
+  as is* for an unpinned HA-tier tenant (more resilient than the pin it lost),
+  *consider re-pinning* for a local-tier one. Each row can be acknowledged (with
+  a reason, recorded; moves no data) or re-placed. It is a review, not an
+  automatic failback: moving storage back is real data movement with no urgency
+  behind it. Derived from audit rows the platform already wrote, so no new table
+  and no background job.
+- **The manual DNS step is finally stated where the operator is looking.** The
+  platform does not own DNS and will not withdraw records for a dead node — by
+  decision, not oversight. But the only place it admitted that was a
+  strikethrough on an ingress badge on the Cluster Nodes page: no addresses, no
+  instruction, on a surface nobody opens mid-incident. The affected-tenants
+  modal now opens with the exact stale A/AAAA addresses, says plainly that
+  nothing will remove them, and offers a copy button. Nodes set to
+  `ingress: none` are omitted — nothing was ever published for them.
 - **A node going offline is now impossible to miss, and tells you who it
   hurts.** Previously the only page that showed a node outage was Cluster →
   Nodes; the dashboard you actually land on reported *"Platform: Healthy"*
@@ -86,6 +108,27 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   never a running workload, and never a database pod.
 
 ### Fixed
+- **The management API died when the Postgres primary's node did.** Measured at
+  ~3 minutes unreachable during the 2026-09-11 node-outage drill. The probes
+  were never the cause — liveness and readiness both use the shallow
+  `/healthz`, which has no database dependency — the process was killed
+  outright. `safeTick`, the helper whose entire job is to stop a failing
+  scheduler tick from killing the process, extracted its logger as `log?.warn`,
+  which detaches the method from its object; every caller passes a real pino
+  logger whose `warn` needs its receiver. So on the failure path the error
+  handler itself threw, inside an async timer callback, which is fatal on
+  Node 15+. The database errors were all caught and logged correctly; the
+  process was killed by the code reporting them. Fixed, plus global
+  unhandled-rejection and uncaught-exception guards so the next instance of
+  this class degrades instead of killing the API. Every prior test passed a
+  plain `{ warn }` object with no receiver to lose, which is why the suite
+  stayed green — the new guards use a receiver-bound logger.
+- **The outage banner could go blind at exactly the wrong moment.** Its cluster
+  reads were guarded but its database reads were not, so if the dead node had
+  been carrying the Postgres primary the whole endpoint failed while the
+  operator was trying to find out what broke. Node readiness comes from
+  Kubernetes and survives a database outage, so the banner now still names the
+  down node and reports tenant impact as *unknown* — never as a reassuring zero.
 - **The System Backups page said WAL archiving was off while it was running.**
   Enabling scheduled base backups also archives write-ahead logs — the same
   plugin does both, and a base backup is only restorable with the WAL written
