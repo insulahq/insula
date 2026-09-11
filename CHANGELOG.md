@@ -86,6 +86,23 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   never a running workload, and never a database pod.
 
 ### Fixed
+- **A running application could be shown as FAILED — "Workload ran out of
+  memory" — while it was serving perfectly.** When a server reboots, Kubernetes
+  leaves the pods it shut down behind as dead records, and nothing removes them
+  for weeks. Those records carry the same exit code as an out-of-memory kill, so
+  the status check read the corpse instead of the live application. On
+  production three tenants' applications were marked failed this way while every
+  one of them was up. Status, the host-node column, the log viewer and the
+  after-import database health check now all ignore dead pod records. A genuine
+  crash or memory kill on the live pod is still reported exactly as before.
+
+- **Tenants with backups were told they had none.** The tenant dashboard's
+  "Backups" tile and the admin panel's per-tenant Backups tab read a retired
+  table that no backup has ever been written to — so a tenant with 17 off-site
+  backups saw a "0" tile next to a Backups page listing all 17. Both now count
+  the real off-site bundles, as does the platform metrics endpoint. The retired
+  `/api/v1/tenants/{id}/backups` API and its empty table are gone.
+
 - **A single backup-plugin pod could take the whole database offline.** The
   component that ships PostgreSQL backups ran as one copy with no spare, and
   the database operator refuses to do anything at all — including promoting a

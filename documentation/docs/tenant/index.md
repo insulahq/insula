@@ -60,7 +60,7 @@ account.
 | What you see | What it means |
 |---|---|
 | **Welcome back, …** | Your name (or email). |
-| **Quick stats** row | Counts of your Domains, Applications, Backups, Deployments, and Email accounts. Click any card to jump straight there. |
+| **Quick stats** row | Counts of your Domains, Applications, Backups, Deployments, and Email accounts. Click any card to jump straight there. The **Backups** count is the number of off-site backup bundles on your account — the same list the [Backups](backups-and-restore.md) page shows. |
 | **Subscription** card | Your current plan and its limits (CPU, memory, storage). Click to open Settings. |
 | **Deployed Applications** card | Your running websites and apps with a status dot. |
 | **Resource Usage** card | Live bars for CPU, memory and storage, each showing **in use / reserved / available** against your plan — the same three figures as the full [Resource Usage](#resource-usage) page. |
