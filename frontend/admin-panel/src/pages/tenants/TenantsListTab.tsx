@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Plus, Search, Loader2, Ban, PlayCircle, Trash2, LogIn } from 'lucide-react';
 import StatusBadge from '@/components/ui/StatusBadge';
+import TenantHealthChip from '@/components/outage/TenantHealthChip';
 import PaginationBar from '@/components/ui/PaginationBar';
 import BulkActionBar, { SelectCheckbox } from '@/components/ui/BulkActionBar';
 import BulkResultModal, { type BulkResult } from '@/components/BulkResultModal';
@@ -275,6 +276,10 @@ export default function TenantsListTab() {
                           {tenant.storageLifecycleState && tenant.storageLifecycleState !== 'idle' && (
                             <StatusBadge status={tenant.storageLifecycleState} />
                           )}
+                          {/* Availability, not lifecycle: renders only when this
+                              tenant is actually impaired. Click for what broke
+                              and how to recover it. */}
+                          <TenantHealthChip tenantId={tenant.id} />
                         </div>
                       </td>
                       <MetricsCell metrics={metricsMap[tenant.id]} loading={metricsLoading} resource="cpu" tenantStatus={tenant.status} />

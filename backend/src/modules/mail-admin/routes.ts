@@ -1319,6 +1319,69 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
+  // ─── Mail failover readiness ──────────────────────────────────────
+  //
+  // Powers the "mail failover is not configured" banner added after the
+  // 2026-09-11 node-outage drill, where staging sat in HA mode with
+  // auto-failover OFF and no secondary/tertiary set. `dr-watcher` returns
+  // immediately when auto-failover is off — it does not even mark the state
+  // degraded — so a mail-node death produced no alert and no action at all.
+  //
+  // Enabling failover stays a DELIBERATE OPERATOR DECISION (it can destroy
+  // and recreate the mail PVC), so this endpoint only ever WARNS. It never
+  // changes configuration.
+  //
+  // Role is admin+super_admin rather than super_admin-only: the banner
+  // renders for every admin, and a 403 on every page poll would be noise.
+  app.get(
+    '/admin/mail/failover-readiness',
+    { preHandler: requireRole('super_admin', 'admin') },
+    async () => {
+      const { systemSettings, platformStoragePolicy } = await import('../../db/schema.js');
+      const { eq } = await import('drizzle-orm');
+      const [settings] = await app.db
+        .select({
+          autoFailoverEnabled: systemSettings.mailAutoFailoverEnabled,
+          secondaryNode: systemSettings.mailSecondaryNode,
+          tertiaryNode: systemSettings.mailTertiaryNode,
+          primaryNode: systemSettings.mailPrimaryNode,
+          activeNode: systemSettings.mailActiveNode,
+        })
+        .from(systemSettings)
+        .where(eq(systemSettings.id, 'system'));
+
+      const [policy] = await app.db
+        .select({ systemTier: platformStoragePolicy.systemTier })
+        .from(platformStoragePolicy);
+
+      const systemTier = (policy?.systemTier as 'local' | 'ha' | undefined) ?? 'local';
+      const autoFailoverEnabled = settings?.autoFailoverEnabled ?? false;
+      const candidates = [settings?.secondaryNode, settings?.tertiaryNode]
+        .filter((n): n is string => !!n);
+
+      // Only warn in HA mode: a single-server cluster has nowhere to fail
+      // over TO, so nagging about it would be pure noise.
+      const reasons: string[] = [];
+      if (systemTier === 'ha') {
+        if (!autoFailoverEnabled) reasons.push('automatic failover is disabled');
+        if (candidates.length === 0) reasons.push('no secondary or tertiary node is configured');
+      }
+
+      return success({
+        systemTier,
+        autoFailoverEnabled,
+        primaryNode: settings?.primaryNode ?? null,
+        secondaryNode: settings?.secondaryNode ?? null,
+        tertiaryNode: settings?.tertiaryNode ?? null,
+        activeNode: settings?.activeNode ?? null,
+        candidateCount: candidates.length,
+        /** True when the platform is in HA mode but mail cannot fail over. */
+        shouldWarn: reasons.length > 0,
+        reasons,
+      });
+    },
+  );
+
   // ─── Mail placement policy ────────────────────────────────────────
   // GET reads primary/secondary/tertiary node assignment + DR state.
   // PATCH updates the assignment (validates nodes exist in cluster).

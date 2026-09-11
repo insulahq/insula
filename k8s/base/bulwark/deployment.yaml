@@ -179,12 +179,41 @@ spec:
                   standby_age_ok=false
                 fi
               fi
+              # copy_into_pvc <srcdir> — copy a restored tree into the PVC.
+              #
+              # NOT `cp -a "$$src/." /app/data/`. That form makes cp try to
+              # preserve timestamps on the DESTINATION DIRECTORY ITSELF, which
+              # is root-owned while this init container runs as UID 1000
+              # (pod-level runAsNonRoot: true). cp copies every real file
+              # correctly and THEN exits non-zero:
+              #
+              #   cp: preserving times for '/app/data/.': Operation not permitted
+              #
+              # The old code read that exit code as failure and declared a
+              # fresh start — so EVERY successful Bulwark restore wrote a
+              # `.fresh-started-at` sentinel claiming the data was lost. A real
+              # restore on 2026-09-11 recovered 312 files and admin.json and
+              # still reported `reason=restic-copy-failed`. Stalwart never hit
+              # this because its pod runs as root.
+              #
+              # Copying the CHILDREN leaves the destination's own attributes
+              # alone. lost+found is skipped for the same reason the standby
+              # rsync excludes it: it is a root-owned ext4 artefact, never data.
+              copy_into_pvc() {
+                _src="$$1"; _rc=0
+                for _entry in "$$_src"/* "$$_src"/.[!.]*; do
+                  [ -e "$$_entry" ] || continue
+                  case "$$(basename "$$_entry")" in lost+found) continue ;; esac
+                  cp -a "$$_entry" /app/data/ || _rc=1
+                done
+                return $$_rc
+              }
               if [ "$$standby_age_ok" = "true" ] && [ -f "$$STANDBY_COMPLETE" ] && [ -d "$$STANDBY" ] && [ -f "$$STANDBY/admin/admin.json" ]; then
                 echo "restore-state: FAST PATH — found pre-staged standby data at $$STANDBY (complete marker present, age within limit)"
                 # Copy preserving ownership so Bulwark's UID 1000 can
                 # read its own files (standby-replicate.sh ran the
                 # earlier copy with -a preserving original UIDs).
-                if cp -a "$$STANDBY/." /app/data/; then
+                if copy_into_pvc "$$STANDBY"; then
                   echo "restore-state: standby-data copy complete ($$(find /app/data -type f -not -path '*/lost+found/*' | wc -l) files)"
                   exit 0
                 fi
@@ -215,7 +244,7 @@ spec:
                 echo "$$(date -Iseconds) reason=restic-no-bulwark-subdir" > /app/data/.fresh-started-at
                 exit 0
               fi
-              if ! cp -a "$$RESTORED_BULWARK/." /app/data/; then
+              if ! copy_into_pvc "$$RESTORED_BULWARK"; then
                 echo "RESTORE-STATE-WARNING: restic→PVC copy failed — Bulwark will FRESH-START"
                 mkdir -p /app/data/admin
                 echo "$$(date -Iseconds) reason=restic-copy-failed" > /app/data/.fresh-started-at

@@ -73,6 +73,7 @@ import { loadBalancerRoutes } from './modules/load-balancer/routes.js';
 import { tenantMigrationRoutes } from './modules/tenant-migration/routes.js';
 import { clusterHealthRoutes } from './modules/cluster-health/routes.js';
 import { nodeHealthRoutes } from './modules/node-health/routes.js';
+import { tenantHealthRoutes } from './modules/tenant-health/routes.js';
 import { monitoringRoutes } from './modules/monitoring/routes.js';
 import { platformStoragePolicyRoutes } from './modules/platform-storage-policy/routes.js';
 import { namespaceIntegrityRoutes } from './modules/namespace-integrity/routes.js';
@@ -635,6 +636,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(tenantMigrationRoutes, { prefix: '/api/v1' });
   await app.register(clusterHealthRoutes, { prefix: '/api/v1' });
   await app.register(nodeHealthRoutes, { prefix: '/api/v1' });
+  await app.register(tenantHealthRoutes, { prefix: '/api/v1' });
   await app.register(monitoringRoutes, { prefix: '/api/v1' });
   await app.register(platformStoragePolicyRoutes, { prefix: '/api/v1' });
   await app.register(namespaceIntegrityRoutes, { prefix: '/api/v1' });
