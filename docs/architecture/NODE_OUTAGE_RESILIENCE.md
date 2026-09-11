@@ -232,7 +232,7 @@ recoverable — the one single point of failure that replication cannot address.
 | G4 | Auto re-pin verified on a real HA-tier tenant | **done** (§8.4) |
 | G5 | Mail-failover-not-configured banner verified rendering | **done** (§8.4) |
 | G6 | Re-pin driven end to end through the recovery wizard | **done** (§8.4) |
-| G7 | Worker-node loss drilled | pending |
+| G7 | Worker-node loss drilled (§8.6) | **done** |
 | G8 | Re-pin evicts pods stranded on the dead node (§8.5) | **done** |
 
 ### Known doc inaccuracies to fix under C2
@@ -407,3 +407,59 @@ Saying "no action required" to an operator whose tenant data has just become
 unreachable is close to the most damaging thing this endpoint could get wrong.
 A live replica now means a **running** one, and a `faulted` volume is believed
 outright rather than argued with.
+
+
+## 8.6 Drill: worker-node loss (G7, 2026-09-11)
+
+`systemctl stop k3s-agent` on `worker` at 22:15:19 UTC. The worker carried no
+tenant workloads but did hold the **barman-cloud leader**, one of two CNPG
+operator replicas, a Traefik DaemonSet pod, oauth2-proxy and two small platform
+Deployments.
+
+| Check | Result |
+|---|---|
+| Detection | `worker=NotReady` at 22:16:35 — **76 s** |
+| Outage endpoint | `down=['worker'] tenants=0` — correct |
+| Platform health | `degraded`; `kubernetes: degraded`, `database: ok` |
+| Database | writable throughout, every probe returned a row |
+
+### The drill is not a machine loss, and that is the interesting part
+
+Stopping `k3s-agent` stops the kubelet; it does **not** stop the containers.
+Three minutes after the "kill", the barman leader was still renewing its
+15-second leader lease with a `renewTime` one second old. The node was NotReady
+while its workloads were alive and still talking to the API server — a kubelet
+failure, which is a real and common mode (agent crash, partial partition).
+
+The HA arrangement does not survive it:
+
+    barman ready endpoints: 0 of 2
+
+Kubernetes marks an endpoint on a NotReady node not-ready even though the
+process behind it is healthy, so the Service will not route to the live leader —
+and the standby cannot take over, because the lease is legitimately held and
+still being renewed. The backup plugin was therefore **unreachable while its
+leader was fine**, and it stayed that way for the full 5m37s, recovering only
+when the node rejoined (at which point the standby on staging3 took the lease).
+
+This is distinct from the earlier ~76 s recovery measured by **rebooting** a
+node: that kills the containers, the lease expires, and the standby takes over.
+Both are real; the second replica only covers the first. "barman is HA" should
+not be read as covering a kubelet-only failure on the leader's node.
+
+The platform cannot safely resolve this automatically — from the cluster's side
+a live-but-unmanageable node is indistinguishable from a partition, and forcing a
+second leader is precisely the split-brain the lease exists to prevent. The
+operator action is to fix the kubelet or delete the node; either releases the
+lease. What the platform *can* do is stop it being invisible, which it now does:
+the outage banner reports watched platform Services with zero ready endpoints
+next to the tenant count, and the "No tenant impact detected" reassurance only
+appears when nothing else is broken either.
+
+### Noticed, not fixed
+
+`/api/v1/admin/status` reports a `redis` service as `ok`. Redis was removed in
+M14; `shared/redis.ts` is now an in-process LRU cache whose `ping()` cannot fail.
+The check can only ever return `ok`, so it tells an operator nothing while naming
+a component that no longer exists. Left alone here — it is a health-API shape
+change, not a failover gap.
