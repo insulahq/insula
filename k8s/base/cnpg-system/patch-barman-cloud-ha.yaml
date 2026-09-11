@@ -31,9 +31,32 @@
 # 2. Spreads replicas one-per-node (DoNotSchedule), matching the
 #    "all servers same state" invariant — two replicas on one node would
 #    not have helped at all during the drill.
-# 3. Replaces `Recreate` with a surge-first RollingUpdate so an image bump
-#    never drops the plugin to zero, which is the same outage by another
-#    route.
+# 3. Replaces `Recreate` with a RollingUpdate so an image bump does not drop
+#    every replica at once.
+#
+# WHY maxUnavailable IS 1 AND NOT 0 (learned the hard way on staging
+# 2026-09-11, v2026.9.18-rc.2):
+#
+# Only the LEADER is ever Ready. The readiness probe is a TCP check on :9090,
+# and the plugin opens that port only after it wins the leader lease — a
+# standby sits in "Attempting to acquire leader lease..." with the port shut.
+# So `readyReplicas` is 1 no matter how many replicas run.
+#
+# With `maxUnavailable: 0` the rollout therefore DEADLOCKS: Kubernetes will
+# not remove the old leader until a new pod reports Ready, and no new pod can
+# report Ready while the old leader still holds the lease. Observed exactly
+# that on staging — 1/2 ready, two new pods stuck at 0/1, the old ReplicaSet's
+# pod still serving, and the rollout never finishing.
+#
+# `maxUnavailable: 1` lets the old leader go first. The lease frees, a new pod
+# takes it within the lease timeout (~15s) and opens :9090. That brief gap is
+# strictly better than upstream's `Recreate`, which took every replica down.
+#
+# None of this weakens the node-failure fix, which is the point of the extra
+# replica: when the leader's NODE dies, the standby is already running and
+# acquires the lease as soon as it expires — seconds, versus the ~6.5 minutes
+# it took when a single pod had to wait for Kubernetes' 300s eviction before
+# being rescheduled.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -44,7 +67,7 @@ spec:
     type: RollingUpdate
     rollingUpdate:
       maxSurge: 1
-      maxUnavailable: 0
+      maxUnavailable: 1
   template:
     spec:
       topologySpreadConstraints:

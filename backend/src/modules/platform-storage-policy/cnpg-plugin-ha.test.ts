@@ -63,11 +63,23 @@ describe('CNPG plugin HA', () => {
     expect(patch).toContain('whenUnsatisfiable: DoNotSchedule');
     // Recreate would drop the plugin to zero on every image bump.
     expect(patch).toContain('RollingUpdate');
-    expect(patch).toContain('maxUnavailable: 0');
+    // maxUnavailable MUST be 1. Only the leader is ever Ready (the readiness
+    // probe is a TCP check on :9090, which the plugin opens only after winning
+    // the leader lease), so `maxUnavailable: 0` deadlocks the rollout: the old
+    // leader is never removed because no new pod can become Ready while it
+    // holds the lease. Observed on staging v2026.9.18-rc.2.
+    // Anchored to a real YAML line: the comment above it deliberately mentions
+    // `maxUnavailable: 0` to explain why that value is wrong, and a bare
+    // substring check would match the explanation instead of the setting.
+    expect(patch).toMatch(/^\s+maxUnavailable: 1$/m);
+    expect(patch).not.toMatch(/^\s+maxUnavailable: 0$/m);
 
     const pdb = readFileSync(resolve(cnpgDir, 'barman-cloud-pdb.yaml'), 'utf8');
     expect(pdb).toContain('kind: PodDisruptionBudget');
-    expect(pdb).toContain('minAvailable: 1');
+    // Same reason: with a permanent ready-count of 1, `minAvailable: 1` yields
+    // zero allowed disruptions and blocks draining the leader's node forever.
+    expect(pdb).toMatch(/^\s+maxUnavailable: 1$/m);
+    expect(pdb).not.toMatch(/^\s+minAvailable: 1$/m);
 
     const kustomization = readFileSync(resolve(cnpgDir, 'kustomization.yaml'), 'utf8');
     expect(kustomization).toContain('barman-cloud-pdb.yaml');

@@ -1,18 +1,22 @@
-# Keep at least one barman-cloud replica serving during voluntary
-# disruption (node drain, cluster upgrade).
+# Allow node maintenance to proceed one node at a time, while never taking
+# every barman-cloud pod down at once.
 #
-# `minAvailable: 1` rather than a percentage or `maxUnavailable: 1`: the
-# plugin runs 1 replica in local tier and 2 in HA, and a static
-# `maxUnavailable: 1` would let a drain take the only replica down in local
-# tier. `minAvailable: 1` is correct at both counts — it simply blocks a
-# drain that would leave zero, which is exactly the condition that wedged
-# CNPG reconciliation during the 2026-09-11 drill.
+# `maxUnavailable: 1`, NOT `minAvailable: 1` (corrected on staging 2026-09-11).
 #
-# See feedback: a static PDB against dynamic replicas can hang a drain at
-# 1 replica. That is intended here — the drain SHOULD block rather than
-# silently take the platform database's reconciliation offline. The
-# operator's escape hatch is to scale up first, or delete the PDB
-# deliberately.
+# Only the LEADER is ever Ready — the readiness probe is a TCP check on :9090
+# and the plugin opens that port only after winning the leader lease, so a warm
+# standby reports 0/1 by design. `minAvailable: 1` against a permanently
+# ready-count of 1 therefore computes ALLOWED DISRUPTIONS = 0 and blocks
+# draining the leader's node FOREVER — turning a safety net into a maintenance
+# deadlock. Confirmed on staging: `kubectl get pdb` showed 0 allowed
+# disruptions with two replicas running.
+#
+# `maxUnavailable: 1` permits evicting one pod — the leader — at which point
+# the standby acquires the lease within the lease timeout and serves. Draining
+# a second node concurrently is still refused, which is the protection worth
+# keeping: the 2026-09-11 drill showed that losing every plugin replica stops
+# the CNPG operator reconciling the database at all, including promoting a new
+# primary.
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
@@ -21,7 +25,7 @@ metadata:
   labels:
     app: barman-cloud
 spec:
-  minAvailable: 1
+  maxUnavailable: 1
   selector:
     matchLabels:
       app: barman-cloud
