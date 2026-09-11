@@ -171,6 +171,23 @@ Moving a tenant to a healthy node is done for you there. Restoring data from a
 backup is deliberately *not* — that is destructive, so it stays on the
 [tenant backups](tenant-backups.md) page where it belongs.
 
+Moving a tenant also removes any of its pods left behind on the offline node.
+That step is not cosmetic. A tenant's workload is set to stop its old pod before
+starting a new one, because its disk can only be mounted in one place at a time —
+and a pod on a node whose kubelet is gone never finishes stopping, because
+nothing is left to confirm it did. Without clearing those, the tenant would wait
+behind them for as long as the node stayed offline. You may see the old pods
+disappear abruptly rather than shutting down gracefully; on a node that is no
+longer running, there is nothing to shut down gracefully.
+
+!!! warning "Moving a local-tier tenant does not move its data"
+    A local-tier tenant has a single copy of its disk, on the offline node.
+    Re-pinning moves where its workload *runs*, but the data is still on the node
+    that is down, so the tenant will not come back until that node returns or you
+    restore it from a backup. The tenant's health panel says which of the two
+    situations you are in — look for *the data is unreachable* rather than
+    *Longhorn is rebuilding*.
+
 ### Traffic keeps being sent to the offline node
 
 Insula does not manage your DNS, and it will not withdraw records for you. If
