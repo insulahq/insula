@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.9.18-rc.3] - 2026-09-11
+
 ### Added
 - **A node going offline is now impossible to miss, and tells you who it
   hurts.** Previously the only page that showed a node outage was Cluster →
