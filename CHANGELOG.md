@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.9.18-rc.1] - 2026-09-11
+
 ### Fixed
 - **"No pending kernel update" now actually checks.** The Node Hardening tab
   always showed this as satisfied, on every node, because nothing ever worked
