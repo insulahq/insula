@@ -20,52 +20,22 @@
  */
 
 import { sql } from 'drizzle-orm';
-import { CNPG_DEFAULT_ARCHIVE_TIMEOUT, type WalArchivingSource } from '@insula/api-contracts';
+import { CNPG_DEFAULT_ARCHIVE_TIMEOUT } from '@insula/api-contracts';
 import type { Database } from '../../db/index.js';
 
 /**
- * Is WAL actually being archived, and why?
+ * The archive_timeout actually in force.
  *
- * `pluginAttached` — the barman-cloud entry exists in `Cluster.spec.plugins[]`.
- * Its PRESENCE is the gate (see backup-rclone-shim/postgres-objectstore.ts);
- * `isWALArchiver` is not, and neither is the `system_wal_archive_state` row.
- *
- * `archiveTimeout` — written ONLY by enableWalStreaming, cleared ONLY by
- * disableWalStreaming, so it is the canonical "the operator asked for
- * streaming" signal.
- *
- * The two are independent, which is the whole bug: production had
- * pluginAttached=true (scheduled base backups need it) with archiveTimeout
- * NULL, and the settings tab answered the second question while claiming to
- * answer the first — "WAL streaming: not enabled" on a cluster shipping a
- * segment off-site every five minutes.
+ * The operator's explicit value when they set one, otherwise CNPG's own default
+ * — which is what applies the moment the barman-cloud plugin is attached. A
+ * blank here would hide the fact that WAL is being uploaded on SOME interval.
  */
-export function classifyWalArchiving(
+export function effectiveArchiveTimeout(
   pluginAttached: boolean,
   archiveTimeout: string | null | undefined,
-  baseBackupSchedule?: string | null,
-): {
-  readonly active: boolean;
-  readonly source: WalArchivingSource;
-  readonly effectiveArchiveTimeout: string | null;
-} {
-  if (!pluginAttached) {
-    return { active: false, source: 'none', effectiveArchiveTimeout: null };
-  }
-  // Three ways the plugin can be attached, and the operator deserves to know
-  // WHICH: they turned streaming on; a base-backup schedule needs it; or the
-  // shim reconciler attached it simply because a SYSTEM target is bound (DEV
-  // 2026-09-11: no state row at all, 4468 segments archived).
-  const source: WalArchivingSource = archiveTimeout
-    ? 'streaming'
-    : (baseBackupSchedule ? 'scheduled_backups' : 'target_binding');
-  return {
-    active: true,
-    source,
-    // No explicit value means CNPG's own default is in force — an RPO the
-    // operator never chose, which is worth naming rather than showing blank.
-    effectiveArchiveTimeout: archiveTimeout ?? CNPG_DEFAULT_ARCHIVE_TIMEOUT,
-  };
+): string | null {
+  if (!pluginAttached) return null;
+  return archiveTimeout ?? CNPG_DEFAULT_ARCHIVE_TIMEOUT;
 }
 
 export interface ArchiverStats {

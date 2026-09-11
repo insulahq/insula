@@ -34,8 +34,8 @@ interface Props {
  */
 export function CnpgBackupHealthCard({ clusterFilter }: Props) {
   const { data, isLoading, error } = useCnpgBackupHealth();
-  // WAL streaming health — surfaced as a per-cluster header chip + as
-  // the "Last WAL write" metric cell.
+  // WAL archive health — a per-cluster header chip + the "Last WAL write"
+  // metric cell.
   const walQ = useWalArchiveClusters();
 
   if (isLoading) {
@@ -275,22 +275,14 @@ function formatAgoFromIso(iso: string): string {
   return formatAge(Math.floor(ms / 1000));
 }
 
-// WAL chip. Reports what the cluster is DOING, and says when nobody asked for
-// it — the two surfaces disagreed until 2026-09-11, when this chip read green
-// "WAL streaming" while Backups → System said streaming was not enabled. Both
-// were describing a cluster that had never had streaming enabled and was
-// archiving a segment every five minutes anyway, because scheduled base backups
-// attach the plugin whose presence is the real gate.
+// WAL chip — one fact, three states: shipping, failing, off.
 //
-// States: emerald = streaming as configured; amber = archiving, but implied by
-// scheduled base backups (no explicit archive_timeout); rose = failing;
-// amber-pending = on but nothing archived yet; grey = genuinely off.
+// It briefly had an amber "implied" state, back when WAL archiving could be on
+// while the panel claimed it was off. That state is gone because the underlying
+// split is gone: offsite backups are one switch (see PostgresBackupsSection),
+// so the chip just reports whether the log is reaching the target.
 function WalStreamingBadge({ wal }: { wal: WalArchiveCluster | null }) {
   const active = wal?.walArchivingActive ?? wal?.enabled ?? false;
-  // Anything other than an explicit archive_timeout is "implied": either a
-  // base-backup schedule or a bare SYSTEM target binding attached the plugin.
-  const implied = wal?.walArchivingSource === 'scheduled_backups'
-    || wal?.walArchivingSource === 'target_binding';
   const failing = Boolean(wal?.status?.lastFailedArchiveTime);
   const archived = Boolean(wal?.status?.lastArchivedWalTime);
 
@@ -305,25 +297,14 @@ function WalStreamingBadge({ wal }: { wal: WalArchiveCluster | null }) {
       </span>
     );
   }
-  if (active && implied) {
-    return (
-      <span
-        className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-200"
-        title={`WAL is being archived because ${wal?.walArchivingSource === 'scheduled_backups' ? 'scheduled base backups are on' : 'a SYSTEM backup target is bound'} — the barman-cloud plugin that implies is what makes CNPG archive. No explicit archive_timeout: RPO is CNPG's default ${wal?.effectiveArchiveTimeout ?? '5min'}.${archived ? ` Last segment archived at ${wal?.status?.lastArchivedWalTime}.` : ''}`}
-        data-testid="cnpg-wal-badge-implied"
-      >
-        <Radio size={10} /> WAL archiving (implied)
-      </span>
-    );
-  }
   if (active && archived) {
     return (
       <span
         className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200"
-        title={`Last WAL archived at ${wal?.status?.lastArchivedWalTime} (pg_stat_archiver). archive_timeout ${wal?.effectiveArchiveTimeout ?? 'unset'}.`}
+        title={`Last segment archived at ${wal?.status?.lastArchivedWalTime} (pg_stat_archiver). Uploaded every ${wal?.effectiveArchiveTimeout ?? '5min'}.`}
         data-testid="cnpg-wal-badge-streaming"
       >
-        <Radio size={10} /> WAL streaming
+        <Radio size={10} /> WAL archiving
       </span>
     );
   }
@@ -342,7 +323,7 @@ function WalStreamingBadge({ wal }: { wal: WalArchiveCluster | null }) {
       className="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600 dark:bg-gray-900/30 dark:text-gray-400"
       data-testid="cnpg-wal-badge-disabled"
     >
-      <Radio size={10} /> WAL off
+      <Radio size={10} /> Backups off
     </span>
   );
 }

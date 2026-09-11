@@ -123,7 +123,7 @@ export default function PreSwitchConfirmModal({
               <ul className="space-y-1 rounded border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-700 dark:bg-amber-900/20 dark:text-amber-100">
                 {previewData.schedulesToPause.length === 0 && previewData.walToDisable === null && (
                   <li className="italic text-gray-600 dark:text-gray-400">
-                    No active schedules or WAL streaming on this class.
+                    Nothing is currently running for this class.
                   </li>
                 )}
                 {previewData.schedulesToPause.map((s) => (
@@ -140,7 +140,7 @@ export default function PreSwitchConfirmModal({
                       WAL
                     </span>
                     <span>
-                      WAL streaming on{' '}
+                      Database backups (full copies + write-ahead log) on{' '}
                       <code>{previewData.walToDisable.clusterNamespace}/{previewData.walToDisable.clusterName}</code>
                       {previewData.walToDisable.currentTargetName && (
                         <span className="text-amber-800 dark:text-amber-300">
@@ -154,9 +154,9 @@ export default function PreSwitchConfirmModal({
 
               <p className="text-xs text-gray-600 dark:text-gray-400">
                 {newTargetId === null ? (
-                  <>After unbind, schedules + WAL streaming stay off. Bind a new target to resume backups.</>
+                  <>After unbind, schedules and database backups stay off. Bind a new target to resume them.</>
                 ) : (
-                  <>After the switch you&apos;ll need to: re-enable WAL streaming on the new target, resume schedules, and click <strong>Backup Now</strong> on the Backups tab to seed it.</>
+                  <>After the switch you&apos;ll need to: turn database backups back on against the new target, resume schedules, and click <strong>Backup Now</strong> on the Backups tab to seed it.</>
                 )}
               </p>
             </div>
