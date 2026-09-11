@@ -1,0 +1,27 @@
+# Keep at least one barman-cloud replica serving during voluntary
+# disruption (node drain, cluster upgrade).
+#
+# `minAvailable: 1` rather than a percentage or `maxUnavailable: 1`: the
+# plugin runs 1 replica in local tier and 2 in HA, and a static
+# `maxUnavailable: 1` would let a drain take the only replica down in local
+# tier. `minAvailable: 1` is correct at both counts — it simply blocks a
+# drain that would leave zero, which is exactly the condition that wedged
+# CNPG reconciliation during the 2026-09-11 drill.
+#
+# See feedback: a static PDB against dynamic replicas can hang a drain at
+# 1 replica. That is intended here — the drain SHOULD block rather than
+# silently take the platform database's reconciliation offline. The
+# operator's escape hatch is to scale up first, or delete the PDB
+# deliberately.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: barman-cloud
+  namespace: cnpg-system
+  labels:
+    app: barman-cloud
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: barman-cloud

@@ -144,3 +144,4 @@ export * from './cert-download.js';
 export * from './storage-lifecycle.js';
 export * from './dns-servers.js';
 export * from './node-operations.js';
+export * from './tenant-health.js';

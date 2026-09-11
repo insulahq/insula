@@ -5,6 +5,8 @@ import Header from './Header';
 import Footer from './Footer';
 import UpdateBanner from '../UpdateBanner';
 import SystemHealthBanner from '../SystemHealthBanner';
+import NodeOutageBanner from '../outage/NodeOutageBanner';
+import MailFailoverReadinessBanner from '../outage/MailFailoverReadinessBanner';
 import PlatformStorageHaBanner from '../PlatformStorageHaBanner';
 import { useTokenRefresh } from '@/hooks/use-token-refresh';
 import { useDocumentTitle } from '@/hooks/use-system-info';
@@ -25,6 +27,8 @@ export default function Layout() {
 
       <div className="flex flex-1 flex-col overflow-hidden">
         <Header onMenuClick={openSidebar} />
+        <NodeOutageBanner />
+        <MailFailoverReadinessBanner />
         <SystemHealthBanner />
         <PlatformStorageHaBanner />
         <UpdateBanner />

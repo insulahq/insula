@@ -1103,6 +1103,177 @@ export function countOtherSchedulableTenantNodes(
  * as 200 with details or as 5xx; we return both and let the route choose
  * (currently: 200 always — operator sees the failures and retries).
  */
+/** One tenant's placement, as buildDrainImpact already shapes it. */
+export interface RepinTenantTarget {
+  readonly tenantId: string;
+  readonly namespace: string;
+  readonly workloads: ReadonlyArray<{
+    kind: 'Deployment' | 'StatefulSet';
+    name: string;
+    pinKind: 'nodeSelector' | 'nodeAffinity';
+  }>;
+  readonly pvcs: ReadonlyArray<{ volumeName: string }>;
+}
+
+export interface RepinCounts {
+  pvcs: number;
+  workloads: number;
+  tenants: number;
+}
+
+/**
+ * Build the memoised Longhorn host-tag ensurer.
+ *
+ * Adding the per-host tag to a target Longhorn Node CR must happen exactly
+ * once per target even when several tenants move to the same node, so the
+ * memo lives in the closure and is shared across one re-pin batch.
+ */
+export function makeLonghornHostTagEnsurer(k8s: K8sClients): (target: string) => Promise<string> {
+  const PER_HOST_TAG_PREFIX = 'node-';
+  const tagged = new Set<string>();
+  return async (target: string): Promise<string> => {
+    const hostTag = `${PER_HOST_TAG_PREFIX}${target}`;
+    if (tagged.has(target)) return hostTag;
+    const existing = await k8s.custom.getNamespacedCustomObject({
+      group: 'longhorn.io', version: 'v1beta2',
+      namespace: 'longhorn-system', plural: 'nodes', name: target,
+    } as unknown as Parameters<typeof k8s.custom.getNamespacedCustomObject>[0]) as { spec?: { tags?: string[] } };
+    const currentTags = existing.spec?.tags ?? [];
+    if (!currentTags.includes(hostTag)) {
+      await k8s.custom.patchNamespacedCustomObject({
+        group: 'longhorn.io', version: 'v1beta2',
+        namespace: 'longhorn-system', plural: 'nodes', name: target,
+        body: { spec: { tags: [...currentTags, hostTag] } },
+      } as unknown as Parameters<typeof k8s.custom.patchNamespacedCustomObject>[0],
+        MERGE_PATCH);
+    }
+    tagged.add(target);
+    return hostTag;
+  };
+}
+
+/**
+ * Move one tenant's placement: Longhorn volumes, workloads, and the DB row.
+ *
+ * Extracted from drainNode 2026-09-11 so the node-outage auto-repin path can
+ * reuse it instead of growing a second, drifting implementation. Behaviour is
+ * unchanged — including the ordering, which matters: the DB row is written
+ * LAST so it never advertises a pin the cluster refused.
+ *
+ * `target` is a node name, or '' to clear the pin and let the scheduler and
+ * Longhorn place freely. `releaseFromNode` is the node whose nodeAffinity pin
+ * should be stripped from workloads.
+ */
+export async function repinTenantPlacement(
+  k8s: K8sClients,
+  db: Database,
+  tenant: RepinTenantTarget,
+  target: string,
+  releaseFromNode: string,
+  ensureHostTag: (target: string) => Promise<string>,
+): Promise<RepinCounts> {
+  const counts: RepinCounts = { pvcs: 0, workloads: 0, tenants: 0 };
+  const ns = tenant.namespace;
+
+  // (a) Resolve the Longhorn host-tag for the target. Failure here
+  //     skips the entire tenant — none of (b)/(c)/(d) run, so no
+  //     partial state.
+  let nextSelector: string[] = [];
+  if (target !== '') {
+    try {
+      nextSelector = [await ensureHostTag(target)];
+    } catch (err) {
+      console.warn(`[nodes] re-pin tenant=${tenant.tenantId} target tag step on ${target} failed (skipping tenant):`, (err as Error).message);
+      return counts;
+    }
+  }
+
+  // (b) Patch every Longhorn volume in the namespace.
+  for (const p of tenant.pvcs) {
+    try {
+      await k8s.custom.patchNamespacedCustomObject({
+        group: 'longhorn.io', version: 'v1beta2',
+        namespace: 'longhorn-system', plural: 'volumes',
+        name: p.volumeName, body: { spec: { nodeSelector: nextSelector } },
+      } as unknown as Parameters<typeof k8s.custom.patchNamespacedCustomObject>[0],
+        MERGE_PATCH);
+      counts.pvcs += 1;
+    } catch (err) {
+      console.warn(`[nodes] re-pin tenant=${tenant.tenantId} volume=${p.volumeName} → ${target || 'auto'} failed:`, (err as Error).message);
+    }
+  }
+
+  // (c) Patch every Deployment + StatefulSet in the namespace.
+  //     MERGE_PATCH (RFC 7396) so null on a key deletes it — the
+  //     only patch type that reliably clears the hostname selector
+  //     when target=''. Strategic-merge silently merges {} into the
+  //     existing map.
+  const selectorPatch: Record<string, string | null> =
+    target === ''
+      ? { 'kubernetes.io/hostname': null }
+      : { 'kubernetes.io/hostname': target };
+  const body = { spec: { template: { spec: { nodeSelector: selectorPatch } } } };
+
+  for (const w of tenant.workloads) {
+    try {
+      // A workload pinned by nodeAffinity is NOT released by the nodeSelector
+      // patch above — and buildDrainImpact counts BOTH forms (detectNodePin),
+      // so the drain would report success while the impact preview kept
+      // listing the node as occupied forever. Measured on the multi-node VM
+      // run 2026-08-10: pods moved, volumes moved, tenants.node_name cleared,
+      // nodeSelector cleared — and drain-impact still returned
+      // "Σ workloads=4 / pinnedTenants=3" for an empty node, which is exactly
+      // the counter the delete gate reads. The node became undeletable.
+      //
+      // Read-modify-write, because the removal has to be surgical: see
+      // stripHostnamePin. Only workloads the preview flagged as
+      // pinKind='nodeAffinity' pay the extra GET.
+      let affinityPatch: Record<string, unknown> | undefined;
+      if (w.pinKind === 'nodeAffinity') {
+        const live = w.kind === 'Deployment'
+          ? await k8s.apps.readNamespacedDeployment({ namespace: ns, name: w.name })
+          : await k8s.apps.readNamespacedStatefulSet({ namespace: ns, name: w.name });
+        const cur = (live as { spec?: { template?: { spec?: { affinity?: unknown } } } })
+          .spec?.template?.spec?.affinity as Parameters<typeof stripHostnamePin>[0];
+        const stripped = stripHostnamePin(cur, releaseFromNode);
+        if (stripped.changed) affinityPatch = { affinity: stripped.affinity };
+      }
+      const wBody = affinityPatch
+        ? { spec: { template: { spec: { ...affinityPatch, nodeSelector: selectorPatch } } } }
+        : body;
+      if (w.kind === 'Deployment') {
+        await k8s.apps.patchNamespacedDeployment({
+          namespace: ns, name: w.name, body: wBody,
+        } as unknown as Parameters<typeof k8s.apps.patchNamespacedDeployment>[0],
+          MERGE_PATCH);
+      } else {
+        await k8s.apps.patchNamespacedStatefulSet({
+          namespace: ns, name: w.name, body: wBody,
+        } as unknown as Parameters<typeof k8s.apps.patchNamespacedStatefulSet>[0],
+          MERGE_PATCH);
+      }
+      counts.workloads += 1;
+    } catch (err) {
+      console.warn(`[nodes] re-pin tenant=${tenant.tenantId} ${w.kind}/${w.name} in ${ns} failed:`, (err as Error).message);
+    }
+  }
+
+  // (d) Persist the new pin in the platform DB. Done LAST so the DB
+  //     never advertises a pin the cluster failed to accept; if (b)
+  //     or (c) partially failed, the reconciler reads this row on
+  //     its next tick and re-applies the patches.
+  try {
+    const { tenants: tenantsTbl } = await import('../../db/schema.js');
+    await db.update(tenantsTbl)
+      .set({ nodeName: target === '' ? null : target, updatedAt: sql`NOW()` })
+      .where(eq(tenantsTbl.id, tenant.tenantId));
+  } catch (err) {
+    console.warn(`[nodes] platform pin DB sync failed for tenant=${tenant.tenantId}:`, (err as Error).message);
+  }
+  counts.tenants += 1;
+  return counts;
+}
+
 export async function drainNode(
   k8s: K8sClients,
   db: Database,
@@ -1230,30 +1401,10 @@ export async function drainNode(
     }
   }
 
-  // Per-host Longhorn tag tracking — we add the tag to the target
-  // Longhorn Node CR exactly once even when several tenants are
-  // re-pinned to it.
-  const PER_HOST_TAG_PREFIX = 'node-';
-  const taggedTargets = new Set<string>();
-  const ensureLonghornHostTag = async (target: string): Promise<string> => {
-    const hostTag = `${PER_HOST_TAG_PREFIX}${target}`;
-    if (taggedTargets.has(target)) return hostTag;
-    const existing = await k8s.custom.getNamespacedCustomObject({
-      group: 'longhorn.io', version: 'v1beta2',
-      namespace: 'longhorn-system', plural: 'nodes', name: target,
-    } as unknown as Parameters<typeof k8s.custom.getNamespacedCustomObject>[0]) as { spec?: { tags?: string[] } };
-    const currentTags = existing.spec?.tags ?? [];
-    if (!currentTags.includes(hostTag)) {
-      await k8s.custom.patchNamespacedCustomObject({
-        group: 'longhorn.io', version: 'v1beta2',
-        namespace: 'longhorn-system', plural: 'nodes', name: target,
-        body: { spec: { tags: [...currentTags, hostTag] } },
-      } as unknown as Parameters<typeof k8s.custom.patchNamespacedCustomObject>[0],
-        MERGE_PATCH);
-    }
-    taggedTargets.add(target);
-    return hostTag;
-  };
+  // Per-host Longhorn tag tracking, shared with the auto-repin path so the
+  // two cannot drift. Memoised per batch: several tenants moving to the same
+  // node tag it once.
+  const ensureLonghornHostTag = makeLonghornHostTagEnsurer(k8s);
 
   let rePinnedTenants = 0;
   let rePinnedWorkloads = 0;
@@ -1284,104 +1435,16 @@ export async function drainNode(
     if (target === 'stay') continue;
     const c = tenantById.get(tenantId);
     if (!c) continue; // operator targeted a tenant that has no pins on this node — no-op
-    const ns = c.namespace;
-
-    // (a) Resolve the Longhorn host-tag for the target. Failure here
-    //     skips the entire tenant — none of (b)/(c)/(d) run, so no
-    //     partial state.
-    let nextSelector: string[] = [];
-    if (target !== '') {
-      try {
-        nextSelector = [await ensureLonghornHostTag(target)];
-      } catch (err) {
-        console.warn(`[nodes] re-pin tenant=${tenantId} target tag step on ${target} failed (skipping tenant):`, (err as Error).message);
-        continue;
-      }
-    }
-
-    // (b) Patch every Longhorn volume in the namespace.
-    for (const p of c.pvcs) {
-      try {
-        await k8s.custom.patchNamespacedCustomObject({
-          group: 'longhorn.io', version: 'v1beta2',
-          namespace: 'longhorn-system', plural: 'volumes',
-          name: p.volumeName, body: { spec: { nodeSelector: nextSelector } },
-        } as unknown as Parameters<typeof k8s.custom.patchNamespacedCustomObject>[0],
-          MERGE_PATCH);
-        rePinnedPvcs += 1;
-      } catch (err) {
-        console.warn(`[nodes] re-pin tenant=${tenantId} volume=${p.volumeName} → ${target || 'auto'} failed:`, (err as Error).message);
-      }
-    }
-
-    // (c) Patch every Deployment + StatefulSet in the namespace.
-    //     MERGE_PATCH (RFC 7396) so null on a key deletes it — the
-    //     only patch type that reliably clears the hostname selector
-    //     when target=''. Strategic-merge silently merges {} into the
-    //     existing map.
-    const selectorPatch: Record<string, string | null> =
-      target === ''
-        ? { 'kubernetes.io/hostname': null }
-        : { 'kubernetes.io/hostname': target };
-    const body = { spec: { template: { spec: { nodeSelector: selectorPatch } } } };
-
-    for (const w of c.workloads) {
-      try {
-        // A workload pinned by nodeAffinity is NOT released by the nodeSelector
-        // patch above — and buildDrainImpact counts BOTH forms (detectNodePin),
-        // so the drain would report success while the impact preview kept
-        // listing the node as occupied forever. Measured on the multi-node VM
-        // run 2026-08-10: pods moved, volumes moved, tenants.node_name cleared,
-        // nodeSelector cleared — and drain-impact still returned
-        // "Σ workloads=4 / pinnedTenants=3" for an empty node, which is exactly
-        // the counter the delete gate reads. The node became undeletable.
-        //
-        // Read-modify-write, because the removal has to be surgical: see
-        // stripHostnamePin. Only workloads the preview flagged as
-        // pinKind='nodeAffinity' pay the extra GET.
-        let affinityPatch: Record<string, unknown> | undefined;
-        if (w.pinKind === 'nodeAffinity') {
-          const live = w.kind === 'Deployment'
-            ? await k8s.apps.readNamespacedDeployment({ namespace: ns, name: w.name })
-            : await k8s.apps.readNamespacedStatefulSet({ namespace: ns, name: w.name });
-          const cur = (live as { spec?: { template?: { spec?: { affinity?: unknown } } } })
-            .spec?.template?.spec?.affinity as Parameters<typeof stripHostnamePin>[0];
-          const stripped = stripHostnamePin(cur, name);
-          if (stripped.changed) affinityPatch = { affinity: stripped.affinity };
-        }
-        const wBody = affinityPatch
-          ? { spec: { template: { spec: { ...affinityPatch, nodeSelector: selectorPatch } } } }
-          : body;
-        if (w.kind === 'Deployment') {
-          await k8s.apps.patchNamespacedDeployment({
-            namespace: ns, name: w.name, body: wBody,
-          } as unknown as Parameters<typeof k8s.apps.patchNamespacedDeployment>[0],
-            MERGE_PATCH);
-        } else {
-          await k8s.apps.patchNamespacedStatefulSet({
-            namespace: ns, name: w.name, body: wBody,
-          } as unknown as Parameters<typeof k8s.apps.patchNamespacedStatefulSet>[0],
-            MERGE_PATCH);
-        }
-        rePinnedWorkloads += 1;
-      } catch (err) {
-        console.warn(`[nodes] re-pin tenant=${tenantId} ${w.kind}/${w.name} in ${ns} failed:`, (err as Error).message);
-      }
-    }
-
-    // (d) Persist the new pin in the platform DB. Done LAST so the DB
-    //     never advertises a pin the cluster failed to accept; if (b)
-    //     or (c) partially failed, the reconciler reads this row on
-    //     its next tick and re-applies the patches.
-    try {
-      const { tenants: tenantsTbl } = await import('../../db/schema.js');
-      await db.update(tenantsTbl)
-        .set({ nodeName: target === '' ? null : target, updatedAt: sql`NOW()` })
-        .where(eq(tenantsTbl.id, tenantId));
-    } catch (err) {
-      console.warn(`[nodes] platform pin DB sync failed for tenant=${tenantId}:`, (err as Error).message);
-    }
-    rePinnedTenants += 1;
+    const counts = await repinTenantPlacement(
+      k8s, db,
+      { tenantId, namespace: c.namespace, workloads: c.workloads, pvcs: c.pvcs },
+      target,
+      name,
+      ensureLonghornHostTag,
+    );
+    rePinnedPvcs += counts.pvcs;
+    rePinnedWorkloads += counts.workloads;
+    rePinnedTenants += counts.tenants;
   }
 
   // 2) Cordon (idempotent — patch unschedulable=true).
@@ -1518,6 +1581,68 @@ export async function deleteNode(
 
   // 3) Delete from inventory.
   await db.delete(clusterNodes).where(eq(clusterNodes.name, name));
+
+  // 4) Reap the residue a node deletion leaves behind.
+  //
+  // Both of these were observed on staging after the 2026-09-11 decommission
+  // drill. Neither breaks anything immediately, which is exactly why they sit
+  // there unnoticed until they confuse someone mid-incident.
+  //
+  // Best-effort throughout: the node IS deleted by this point, and failing
+  // the request over leftover bookkeeping would be worse than the leftovers.
+  const residue: string[] = [];
+
+  // (a) Longhorn keeps its own Node CR. Deleting the Kubernetes node does not
+  //     remove it, so it lingers as a stale object advertising a host that no
+  //     longer exists.
+  try {
+    await k8s.custom.deleteNamespacedCustomObject({
+      group: 'longhorn.io', version: 'v1beta2',
+      namespace: 'longhorn-system', plural: 'nodes', name,
+    } as unknown as Parameters<typeof k8s.custom.deleteNamespacedCustomObject>[0]);
+    residue.push('longhorn node CR');
+  } catch (err) {
+    const status = (err as { code?: number }).code ?? (err as { statusCode?: number }).statusCode;
+    // 404 = already gone (Longhorn reaped it, or never knew the node).
+    if (status !== 404) {
+      console.warn(`[nodes] could not delete Longhorn node CR for ${name}:`, (err as Error).message);
+    }
+  }
+
+  // (b) Mail placement can still name the deleted node as primary, secondary
+  //     or tertiary. Failover walks the candidate list and skips unreadable
+  //     nodes, so this does not break failover — but the placement UI shows a
+  //     machine that no longer exists, and an operator reading it during an
+  //     incident has no way to tell. Clear the dangling references.
+  try {
+    const { systemSettings } = await import('../../db/schema.js');
+    const [row] = await db
+      .select({
+        primary: systemSettings.mailPrimaryNode,
+        secondary: systemSettings.mailSecondaryNode,
+        tertiary: systemSettings.mailTertiaryNode,
+      })
+      .from(systemSettings)
+      .where(eq(systemSettings.id, 'system'));
+    if (row) {
+      const patch: Record<string, null> = {};
+      if (row.primary === name) patch.mailPrimaryNode = null;
+      if (row.secondary === name) patch.mailSecondaryNode = null;
+      if (row.tertiary === name) patch.mailTertiaryNode = null;
+      if (Object.keys(patch).length > 0) {
+        await db.update(systemSettings)
+          .set(patch as Record<string, never>)
+          .where(eq(systemSettings.id, 'system'));
+        residue.push(`mail placement (${Object.keys(patch).join(', ')})`);
+      }
+    }
+  } catch (err) {
+    console.warn(`[nodes] could not clear mail placement references to ${name}:`, (err as Error).message);
+  }
+
+  if (residue.length > 0) {
+    console.info(`[nodes] cleaned residue after deleting ${name}: ${residue.join('; ')}`);
+  }
 
   return { deletedFromKubernetes, deletedFromInventory: true };
 }

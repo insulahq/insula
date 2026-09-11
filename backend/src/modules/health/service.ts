@@ -80,6 +80,49 @@ export async function checkOidc(db: Database): Promise<ServiceStatus> {
   }
 }
 
+/**
+ * Nodes whose `Ready` condition is not `True`, by name.
+ *
+ * Exported so the readiness verdict can be unit-tested against raw Node
+ * objects without standing up a cluster. `Ready` is tri-state: `True`,
+ * `False` (kubelet says unhealthy) and `Unknown` (kubelet stopped posting —
+ * what a dead node actually looks like). Only `True` counts as ready, so a
+ * missing condition is treated as not-ready rather than silently passing.
+ */
+export function notReadyNodeNames(
+  items: ReadonlyArray<{
+    metadata?: { name?: string };
+    status?: { conditions?: ReadonlyArray<{ type?: string; status?: string }> };
+  }>,
+): string[] {
+  const out: string[] = [];
+  for (const node of items) {
+    const ready = (node.status?.conditions ?? []).find((c) => c.type === 'Ready');
+    if (ready?.status !== 'True') out.push(node.metadata?.name ?? '<unnamed>');
+  }
+  return out.sort();
+}
+
+/**
+ * Kubernetes health — reachability AND node readiness.
+ *
+ * This check used to call `listNode()` and return `ok` whenever the call
+ * succeeded, reporting only a node COUNT. That made the platform's only
+ * globally-mounted banner structurally incapable of showing a node outage:
+ * during the 2026-09-11 drill the dashboard rendered "Platform: Healthy —
+ * 4 / 4 services healthy" while a control-plane node was dead, eight volumes
+ * were stranded and mail was down. A green banner during an outage is worse
+ * than no banner, because it stops the operator looking further.
+ *
+ * A NotReady node is `degraded`, not `error`: the cluster is still serving
+ * from its surviving nodes, and reserving `error` for "the API itself is
+ * unreachable" keeps the two failure modes distinguishable in the banner.
+ *
+ * Readiness is read live from the API rather than from `node_health_state`
+ * on purpose — that table is written by a 5-minute reconciler, so during the
+ * drill it reported `ready: true` for a node that had been dead for over four
+ * minutes. Live truth beats a cached snapshot for a health endpoint.
+ */
 export async function checkKubernetes(core?: k8s.CoreV1Api): Promise<ServiceStatus> {
   if (!core) {
     return { name: 'kubernetes', status: 'degraded', message: 'No kubeconfig configured' };
@@ -88,7 +131,18 @@ export async function checkKubernetes(core?: k8s.CoreV1Api): Promise<ServiceStat
   try {
     const res = await core.listNode();
     const latencyMs = Date.now() - start;
-    const nodeCount = res.items.length;
+    const items = res.items ?? [];
+    const nodeCount = items.length;
+    const notReady = notReadyNodeNames(items);
+    if (notReady.length > 0) {
+      return {
+        name: 'kubernetes',
+        status: 'degraded',
+        latencyMs,
+        message: `${nodeCount - notReady.length}/${nodeCount} node(s) Ready — `
+          + `NotReady: ${notReady.join(', ')}`,
+      };
+    }
     return { name: 'kubernetes', status: 'ok', latencyMs, message: `${nodeCount} node(s)` };
   } catch (err) {
     const latencyMs = Date.now() - start;

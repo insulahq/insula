@@ -22,6 +22,20 @@ the store replicated to standbys for failover (see
 node and the {primary, secondary, tertiary} placement set, and configure
 automatic failover.
 
+Insula pre-stages a copy of the mail store on **every node in that set except
+the one currently running mail**, so whichever node you fail over *to* — or
+back to — already has recent data and recovers in seconds rather than minutes.
+
+!!! warning "Automatic failover is off until you turn it on"
+    Turning it on is your call: a failover recreates the mail volume, so Insula
+    will not do it behind your back. But while the platform is in HA mode and
+    mail failover is either disabled or has no secondary/tertiary configured,
+    a banner says so — because in that state a lost mail node means mail stays
+    down until a person notices and recovers it by hand.
+
+Old copies of the mail store left behind by previous failovers are cleaned up
+automatically after 48 hours. The node currently serving mail is never touched.
+
 ## Port exposure modes
 
 Mail uses fixed ports — **25, 465, 587, 143, 993, 995, 4190** — that must be
