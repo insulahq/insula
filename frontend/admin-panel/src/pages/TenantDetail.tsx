@@ -1649,7 +1649,10 @@ function BackupsTab({ bundles, isLoading, error, tenantId }: {
             <td className="py-2"><StatusBadge status={b.status} /></td>
             <td className="py-2 text-gray-600 dark:text-gray-400">{b.sizeBytes ? formatBytes(b.sizeBytes) : '—'}</td>
             <td className="py-2 text-gray-600 dark:text-gray-400">{b.initiator}</td>
-            <td className="py-2 text-gray-500 dark:text-gray-400">{b.expiresAt ? <TimeCell iso={b.expiresAt} /> : '—'}</td>
+            {/* mode="until": an expiry is in the FUTURE, and TimeCell's default
+                age mode renders any future instant as "just now" (caught in the
+                browser on DEV). Same rendering the cross-tenant Backups page uses. */}
+            <td className="py-2 text-gray-500 dark:text-gray-400">{b.expiresAt ? <TimeCell iso={b.expiresAt} mode="until" /> : '—'}</td>
             <td className="py-2 text-right">
               <Link
                 to={`/backups/tenants?tab=backups&tenant=${tenantId ?? b.tenantId}&bundle=${b.id}`}

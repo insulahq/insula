@@ -70,7 +70,7 @@ const MOCK_BUNDLES = {
       initiator: 'system', systemTrigger: 'scheduled', status: 'completed',
       targetKind: 's3', targetUri: 's3://tenant/acme', targetConfigId: null,
       label: null, description: null, sizeBytes: 5242880, retentionDays: 30,
-      expiresAt: '2026-04-01T00:00:00Z', exportMode: null, exportArtifact: null,
+      expiresAt: new Date(Date.now() + 30 * 86_400_000).toISOString(), exportMode: null, exportArtifact: null,
       startedAt: '2026-03-01T00:00:00Z', finishedAt: '2026-03-01T00:01:00Z',
       lastError: null, databaseDumps: null,
       createdAt: '2026-03-01T00:00:00Z', updatedAt: '2026-03-01T00:01:00Z',
@@ -200,6 +200,11 @@ describe('TenantDetail resource tabs', () => {
     // tab and the tenant dashboard both showed 0 — operator report 2026-09-11).
     expect(screen.getByTestId('tenant-bundles-summary')).toHaveTextContent('1 off-site backup bundle');
     expect(screen.getByText('system')).toBeInTheDocument();
+    // An expiry is a FUTURE instant: TimeCell's default age mode renders those
+    // as "just now" (seen in the browser on DEV), so the column must use
+    // mode="until".
+    expect(screen.getByTestId('backups-table')).toHaveTextContent(/in 30d/);
+    expect(screen.getByTestId('backups-table')).not.toHaveTextContent('just now');
   });
 
   it('still shows tenant account info alongside tabs', async () => {
