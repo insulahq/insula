@@ -78,6 +78,14 @@ tell a real flag from one its own mount had created, and reading it without
 creating it would mean mounting `/run` — which holds credentials and secrets the
 probe is not permitted to see.
 
+The comparison uses the version numbers only, ignoring the flavour and
+architecture suffix, so a node with both the generic and the cloud kernel
+installed at the same version is not reported as needing a reboot. The
+trade-off is that a **same-version vendor rebuild** (Debian's `+deb13` →
+`+deb13.1`) is not detected either — the check errs towards missing one rather
+than showing a reboot prompt you cannot clear. `/var/run/reboot-required` on the
+node remains authoritative if you want to be certain.
+
 The **OS security updates install automatically** check verifies all three of:
 the package is installed, the periodic setting is on, and the timer that runs it
 is enabled. Any one alone patches nothing — a node can have the stock

@@ -235,6 +235,23 @@ func newestInstalledKernel(hostRoot string) string {
 // When the shared numeric prefix is equal the versions are treated as equal,
 // even if one has MORE numeric components. That keeps "6.8.0-139-generic-64k"
 // (trailing 64) from outranking "6.8.0-139-generic".
+//
+// KNOWN LIMITATION — a same-upstream VENDOR REBUILD is not detected.
+// Debian ships these: both "6.12.90+deb13-cloud-amd64" and
+// "6.12.90+deb13.1-cloud-amd64" exist in the fleet (seen on the DEV node
+// 2026-09-11). The revision lives after the first letter, so the two compare
+// equal and a node running the former with the latter installed reports no
+// pending update.
+//
+// Accepted deliberately. Distinguishing a vendor revision (+deb13 → +deb13.1)
+// from a flavor (-amd64 → -cloud-amd64) from the directory name alone needs
+// dpkg version semantics the probe cannot apply here, and every way of
+// comparing the trailing text positionally misaligns when the two sides
+// tokenise to different lengths — which is what produced the flavor false
+// positive this function was rewritten to fix. A MISS leaves the operator with
+// Debian's own /var/run/reboot-required and is corrected by the next upstream
+// bump; a FALSE POSITIVE is a red finding on the panel that nothing can clear.
+// Given the choice, miss.
 func compareKernelVersions(a, b string) int {
 	na, nb := kernelVersionNumbers(a), kernelVersionNumbers(b)
 	for i := 0; i < len(na) && i < len(nb); i++ {
