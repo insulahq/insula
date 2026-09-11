@@ -24,6 +24,10 @@ export interface NodeFact {
   readonly role: string | null;
   /** Ready condition's lastTransitionTime — when it went NotReady. */
   readonly notReadySince: string | null;
+  /** `insula.host/ingress-mode`; absent label means 'all'. */
+  readonly ingressMode: string | null;
+  /** Public addresses, one per family — what DNS still points at. */
+  readonly ingressAddresses: readonly string[];
 }
 
 export interface PodFact {
@@ -225,6 +229,12 @@ export function computeOutageImpact(input: OutageInput): ClusterOutageImpact {
     role: n.role,
     notReadySince: n.notReadySince,
     isMailActiveNode: n.name === input.mailActiveNode,
+    ingressMode: n.ingressMode,
+    // Only worth listing when the node actually serves ingress: a
+    // `none`-mode node's addresses were never published, so telling the
+    // operator to withdraw them would send them after records that do not
+    // exist.
+    ingressAddresses: n.ingressMode === 'none' ? [] : [...n.ingressAddresses],
   })).sort((a, b) => a.name.localeCompare(b.name));
 
   const affected: TenantHealthEntry[] = [];
