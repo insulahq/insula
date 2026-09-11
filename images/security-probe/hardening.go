@@ -25,7 +25,7 @@ func collectHardening(hostRoot string, ssh sshConfigView, ssh22Public bool) Hard
 	h.SshguardPresent = anyBinaryPresent(hostRoot, "sshguard")
 	h.UnattendedUpgradesActive = unattendedUpgradesActive(hostRoot)
 	h.AutomaticRebootWindow = nil
-	h.PendingKernelUpdate = false
+	h.PendingKernelUpdate = pendingKernelUpdate(hostRoot)
 	h.KernelEOL = false
 
 	h.CISFindings = buildCISFindings(ssh, h, ssh22Public)
@@ -139,6 +139,124 @@ var hostPathsForAutoUpdateCheck = []string{
 	"etc/dnf",
 	"etc/systemd/system/timers.target.wants",
 	"usr/lib/systemd/system/timers.target.wants",
+	// KERNEL-002 — see pendingKernelUpdate.
+	"usr/lib/modules",
+}
+
+// pendingKernelUpdate reports whether a kernel NEWER than the running one is
+// installed, i.e. rebooting would change the running kernel.
+//
+// KERNEL-002 ("No pending kernel update") was `Passing: !h.PendingKernelUpdate`
+// over a field hardcoded to false, so it was PERMANENTLY GREEN. That mattered
+// little while nothing installed kernels; now that security updates install
+// automatically, a node can pick up a kernel and sit on the old one
+// indefinitely — the platform deliberately never reboots — with the panel
+// reporting no pending update.
+//
+// NOT read from /var/run/reboot-required, despite that being the obvious
+// source. Two blockers, both measured on the production node 2026-09-11:
+//   - the file is EMPTY (0 bytes; the text lives in reboot-required.pkgs), so a
+//     hostPath `FileOrCreate` mount is byte-identical to the real flag and
+//     every node would report a pending reboot forever;
+//   - reading it without creating it means mounting its parent, /run, which
+//     holds `credentials` and `secrets` — material this DaemonSet deliberately
+//     cannot see.
+//
+// Comparing installed against running is also a closer match for a field named
+// pendingKernelUpdate: reboot-required is set for any reason, not just kernels.
+//
+// An installed kernel is identified by a modules tree WITH a kernel/ subdir.
+// A removed kernel leaves modules.dep behind but not kernel/ — on production
+// 6.12.94 (auto-removed) still had modules.dep, so keying on that alone would
+// count kernels that are gone.
+func pendingKernelUpdate(hostRoot string) bool {
+	running := readKernelVersion(hostRoot)
+	if running == "" {
+		return false
+	}
+	newest := newestInstalledKernel(hostRoot)
+	if newest == "" {
+		return false
+	}
+	return compareVersionStrings(newest, running) > 0
+}
+
+func newestInstalledKernel(hostRoot string) string {
+	newest := ""
+	for _, base := range []string{"usr/lib/modules", "lib/modules"} {
+		entries, err := os.ReadDir(filepath.Join(hostRoot, base))
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			// kernel/ present ⇒ the kernel package is installed, not merely
+			// a leftover modules directory from a removed one.
+			if _, err := os.Stat(filepath.Join(hostRoot, base, e.Name(), "kernel")); err != nil {
+				continue
+			}
+			if newest == "" || compareVersionStrings(e.Name(), newest) > 0 {
+				newest = e.Name()
+			}
+		}
+	}
+	return newest
+}
+
+// compareVersionStrings compares release strings like "6.12.107+deb13-amd64" or
+// "5.14.0-503.el9.x86_64" by splitting into digit and non-digit runs and
+// comparing digit runs NUMERICALLY. A plain string compare gets 6.12.99 vs
+// 6.12.101 backwards, which is the exact shape of a Debian point release.
+func compareVersionStrings(a, b string) int {
+	ta, tb := versionTokens(a), versionTokens(b)
+	for i := 0; i < len(ta) && i < len(tb); i++ {
+		x, y := ta[i], tb[i]
+		xn, xErr := strconv.Atoi(x)
+		yn, yErr := strconv.Atoi(y)
+		if xErr == nil && yErr == nil {
+			if xn != yn {
+				if xn > yn {
+					return 1
+				}
+				return -1
+			}
+			continue
+		}
+		if x != y {
+			if x > y {
+				return 1
+			}
+			return -1
+		}
+	}
+	switch {
+	case len(ta) > len(tb):
+		return 1
+	case len(ta) < len(tb):
+		return -1
+	}
+	return 0
+}
+
+func versionTokens(s string) []string {
+	var out []string
+	i := 0
+	for i < len(s) {
+		j := i
+		isDigit := s[i] >= '0' && s[i] <= '9'
+		for j < len(s) && ((s[j] >= '0' && s[j] <= '9') == isDigit) {
+			j++
+		}
+		tok := s[i:j]
+		// Separators carry no ordering information of their own.
+		if tok != "." && tok != "-" && tok != "+" && tok != "_" {
+			out = append(out, tok)
+		}
+		i = j
+	}
+	return out
 }
 
 // aptUnattendedActive: package installed AND the periodic knob on AND the timer
