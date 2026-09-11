@@ -9,6 +9,8 @@ import {
   STORAGE_APPLY_RUN_RETENTION_DAYS,
   DR_DRILL_RUN_RETENTION_DAYS,
   IMAGE_REAP_LOG_RETENTION_DAYS,
+  CROWDSEC_AUTOBAN_RUN_RETENTION_DAYS,
+  SFTP_AUDIT_LOG_RETENTION_DAYS,
 } from './service.js';
 import {
   auditLogs,
@@ -21,6 +23,8 @@ import {
   platformStorageApplyRuns,
   drDrillRuns,
   imageReapLog,
+  crowdsecAutobanRuns,
+  sftpAuditLog,
   platformUpgradeSnapshots,
 } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
@@ -96,6 +100,8 @@ describe('data-retention runDataRetention', () => {
         [platformStorageApplyRuns, rows(3)],
         [drDrillRuns, rows(1)],
         [imageReapLog, rows(6)],
+        [crowdsecAutobanRuns, rows(9)],
+        [sftpAuditLog, rows(4)],
       ]),
     );
 
@@ -113,6 +119,8 @@ describe('data-retention runDataRetention', () => {
       storageApplyRuns: 3,
       drDrillRuns: 1,
       imageReapLogRows: 6,
+      crowdsecAutobanRuns: 9,
+      sftpAuditLogRows: 4,
     });
     // Exactly the target tables, each deleted once.
     expect(deletedTables).toEqual([
@@ -126,6 +134,8 @@ describe('data-retention runDataRetention', () => {
       platformStorageApplyRuns,
       drDrillRuns,
       imageReapLog,
+      crowdsecAutobanRuns,
+      sftpAuditLog,
     ]);
   });
 
@@ -154,6 +164,8 @@ describe('data-retention runDataRetention', () => {
       storageApplyRuns: 0,
       drDrillRuns: 0,
       imageReapLogRows: 0,
+      crowdsecAutobanRuns: 0,
+      sftpAuditLogRows: 0,
     });
   });
 
@@ -204,5 +216,39 @@ describe('data-retention runDataRetention', () => {
     expect(IMAGE_REAP_LOG_RETENTION_DAYS).toBe(90);
     // DR drills are restore evidence — kept as long as the audit trail.
     expect(DR_DRILL_RUN_RETENTION_DAYS).toBe(180);
+  });
+
+  // ── the two caps added 2026-09-11 ──
+  //
+  // Both tables were pruned by NOTHING anywhere in the codebase, found by a
+  // production sweep. Neither is huge, but both are append-only, and
+  // crowdsec_autoban_runs is bursty: one scanner burst wrote 1391 rows in a
+  // single day (2026-09-06) against 3-23/day either side of it.
+
+  it('prunes crowdsec_autoban_runs by triggered_at at 90 days', async () => {
+    const { db, conditions } = makeDb(new Map([[crowdsecAutobanRuns, rows(3)]]));
+    await runDataRetention(db);
+    const cond = conditions.get(crowdsecAutobanRuns) ?? '';
+    // The column matters: this table has NO created_at, so a copy-paste of
+    // another prune would reference a column that does not exist.
+    expect(cond).toContain('triggered_at');
+    expect(cond).toContain(String(CROWDSEC_AUTOBAN_RUN_RETENTION_DAYS));
+    expect(cond).toContain('NOW()');
+  });
+
+  it('prunes sftp_audit_log by created_at at 90 days', async () => {
+    const { db, conditions } = makeDb(new Map([[sftpAuditLog, rows(2)]]));
+    await runDataRetention(db);
+    const cond = conditions.get(sftpAuditLog) ?? '';
+    expect(cond).toContain('created_at');
+    expect(cond).toContain(String(SFTP_AUDIT_LOG_RETENTION_DAYS));
+    // sftp_audit_log.created_at is timestamp WITHOUT time zone, unlike most
+    // tables here. The cutoff must stay DB-side so that cannot matter.
+    expect(cond).toContain('NOW()');
+  });
+
+  it('keeps both caps at 90 days', () => {
+    expect(CROWDSEC_AUTOBAN_RUN_RETENTION_DAYS).toBe(90);
+    expect(SFTP_AUDIT_LOG_RETENTION_DAYS).toBe(90);
   });
 });

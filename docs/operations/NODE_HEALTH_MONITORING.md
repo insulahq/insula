@@ -23,12 +23,40 @@ three signal classes per node:
 
 Plus `not Ready` → critical.
 
+## Detection latency — two loops, on purpose
+
+| Loop | Interval | What it does |
+|---|---|---|
+| `fast-down-watch` | **30 s** | One `listNode`. Announces a node it observed transition into NotReady, and nothing else. |
+| `node-health` reconciler | 5 min | Everything else: pressure, CSI drivers, evictions, kubelet disk stats, severity, `node_health_state`. |
+
+The split exists because the reconciler's other signals are expensive (a
+kubelet `/stats/summary` per node, two cluster-wide event lists), and that
+cadence is right for those and wrong for "is a node dead". During the
+2026-09-11 drill the platform served `ready: true` for a node that had been
+offline **4 m 20 s** — and because losing that node restarted the platform-api
+pods, the reconciler's timer restarted too, delaying detection of the very
+event that caused it.
+
+The fast watch shares the reconciler's dedupe key, so whichever fires first
+wins and the operator never gets two notifications for one node going down.
+
+> **A NotReady node's metrics are frozen, not live.** Its kubelet has stopped
+> posting, so CPU / memory / pod counts stay at their last reported values.
+> The Cluster Nodes page used to render those beside a NotReady pill labelled
+> "just now"; it now says *metrics unavailable — kubelet not reporting*.
+
 ## How notifications fire
 
 - Severity transition (any direction) → 1 notification per admin /
   super_admin user.
 - Sustained warning or critical → 1 re-notification every 24 h.
 - Recovery to normal → 1 notification.
+- A node going NotReady is announced **once**, by the categorised
+  `admin.node_down` dispatch. The raw per-severity row is suppressed in that
+  case — emitting both produced two notifications for one event, one of which
+  carried the wrong severity (the raw insert never set `severity`, so a
+  CRITICAL transition defaulted to `info`).
 
 Notifications carry `resourceType=node_health` and `resourceId=<node-name>`
 so the admin panel's bell icon can deep-link.
@@ -262,3 +290,113 @@ After this feature deploys to staging, validate end-to-end by:
    - Notification appears in the bell icon for admin role.
 4. Remove the test fill (`rm /tmp/big`); next tick clears severity
    and emits a "Node X recovered to normal" notification.
+
+---
+
+## Node reboot lifecycle (2026-09-11)
+
+The 5-minute reconciler tracks each node's kernel **bootID**
+(`status.nodeInfo.bootID`) in `node_health_state.boot_id` and emits two admin
+notifications, both naming the node.
+
+| Category | When | Severity |
+|---|---|---|
+| `admin.node_rebooting` | node leaves `Ready` on the same boot | warning |
+| `admin.node_startup_complete` | bootID **changed** and the node is `Ready` | info |
+
+### Why bootID and not the Ready condition
+
+A changed bootID is proof the machine actually rebooted. A kubelet restart, an
+API blip or a `Ready` flap all leave it untouched, so keying the "startup
+complete" notification on it means that alert cannot cry wolf. The reconciler
+never reports a reboot for a node it is seeing for the first time, and never for
+a node whose previous bootID it does not have on record — a fresh install, a
+restored database or a newly joined worker adopts the current value silently.
+
+### The single-node limitation — read this before filing a bug
+
+`admin.node_rebooting` needs an API server that is still running to observe the
+node leaving `Ready`. On a **single-node** cluster the control plane drains with
+the node:
+
+* the shutdown budget is `shutdownGracePeriodByPodPriority`, 120 s total;
+* `platform-api` sits at priority 10000 and is drained in the second group,
+  roughly 70 s in;
+* the reconciler ticks every 5 minutes.
+
+So there is only a ~30 s window in which the node is NotReady *and* the API
+still answers — about a 1-in-10 chance per reboot. **This is expected.**
+`admin.node_startup_complete` covers it: it always fires, reports the
+approximate downtime, and states explicitly whether a shutdown notice was sent.
+A multi-node cluster gets both notifications reliably.
+
+Downtime is measured from the last tick that saw the node to the moment it came
+back `Ready`, so it **overstates by up to one tick interval**. The notification
+says "approximate" for that reason — do not treat it as an SLA measurement.
+
+### Reboot debris is reaped automatically
+
+A graceful shutdown leaves dead pod *objects* behind and nothing in Kubernetes
+removes them (`--terminated-pod-gc-threshold` defaults to 12500):
+
+```
+status.reason = "NodeShutdown"   Pod was rejected as the node is shutting down.
+status.reason = "Terminated"     Pod was terminated in response to imminent
+                                 node shutdown.
+```
+
+One 2026-09-03 production reboot left **822** of these in `tigera-operator`
+alone. Giving that Deployment a real `priorityClassName` (PR #363) moved it into
+the last drain group and cut it to **20 per reboot**, but not to zero: a
+Deployment with blanket `operator: Exists` tolerations will always get a few
+replacements bound to a node that is draining but still heartbeating. Kubelet
+does not cordon a node it is shutting down, so this residue is inherent.
+
+`node-health/shutdown-debris.ts` deletes them on each tick, **30 minutes** after
+creation so the immediate post-reboot picture stays intact. It only ever selects
+pods that are in terminal phase `Failed`, carry one of the two kubelet
+shutdown reasons, and are owned by a controller that has therefore already
+replaced them. Running pods, bare (uncontrolled) pods and CNPG instance pods are
+never touched. Unlike the operator-facing **Clean stale pod records** action in
+`recovery.ts`, this one *does* cover `tenant-*` namespaces — those records are
+what used to poison the per-tenant OOM alerts.
+
+### Why this matters beyond tidiness
+
+These records are pod objects carrying `exitCode: 137` container statuses. Exit
+137 is `128 + SIGKILL` from **any** cause, and reading it as an out-of-memory
+kill is what made the platform tell admins on 2026-09-11 that three named
+tenants' `apache-php` containers had been OOM-killed by a reboot that killed
+nothing of the sort. See `backend/src/lib/container-termination.ts` —
+`isExpectedSigkill()` is the guard, and `scripts/ci-oom-classification-check.sh`
+fails the build if a detector infers an OOM without consulting it.
+
+### Exit 137 has three benign sources, not one
+
+`exit 137` is `128 + SIGKILL` and the platform infers an OOM from it, because
+some containerd versions report a real cgroup group-kill as
+`{exitCode: 137, reason: "Error"}` rather than `OOMKilled`. Three things produce
+the same exit code without any memory problem, and each is suppressed by
+believing what the kubelet already said:
+
+| Source | Kubelet's own signal | Guard |
+|---|---|---|
+| rollout / scale-down / drain | `metadata.deletionTimestamp` set | `isExpectedSigkill()` |
+| node shutdown | `status.reason` = `Terminated` / `NodeShutdown` | `isExpectedSigkill()` |
+| **failed liveness/startup probe** | `Killing` event: *"Container X failed liveness probe, will be restarted"* | `indexProbeKills()` |
+
+The probe case is the one the shutdown guard cannot catch: the pod stays
+**Running** and the container restarts, so no pod-level shutdown marker applies.
+It is correlated by `<namespace>/<pod>/<container>` within 5 minutes of the
+termination, so an unrelated OOM hours later is still reported.
+
+In every case only the **inferred** arm is dropped. An explicit `OOMKilled` from
+the kubelet always reports — a container can genuinely hit its limit *and* fail
+a probe, or be killed mid-drain.
+
+Found on a real DEV reboot 2026-09-11, after the node-shutdown fix: the reboot
+produced zero false tenant OOM alerts but still raised a `critical` node memory
+event for two CrowdSec containers that were merely slow to answer `/health` on a
+cold boot. `scripts/ci-oom-classification-check.sh` now fails the build if
+`memory-events.ts` stops calling `indexProbeKills()`, or if the reconciler stops
+fetching `reason=Killing` events (which would make the index silently empty).

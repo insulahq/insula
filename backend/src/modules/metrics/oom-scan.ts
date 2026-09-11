@@ -13,7 +13,7 @@
  */
 
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
-import { isOomTermination } from '../../lib/container-termination.js';
+import { classifyOom, isExpectedSigkill } from '../../lib/container-termination.js';
 
 export interface OomEvent {
   readonly podName: string;
@@ -22,10 +22,20 @@ export interface OomEvent {
   readonly restartCount: number;
   /** finishedAt of the OOM-terminated state (ISO), or null if kubelet omitted it. */
   readonly at: string | null;
+  /**
+   * 'confirmed'   — the kubelet reported `OOMKilled`.
+   * 'unconfirmed' — inferred from exit 137 alone. Still worth alerting on (it
+   *                 is how cgroup group-kills surface) but the alert must SAY
+   *                 so rather than asserting an OOM. Three tenants were told
+   *                 "apache-php OOM-killed" for a node reboot on 2026-09-11.
+   */
+  readonly confidence: 'confirmed' | 'unconfirmed';
 }
 
 interface ContainerTerminated {
   readonly reason?: string;
+  /** Required for the exit-137 arm of classifyOom() to be reachable at all. */
+  readonly exitCode?: number;
   readonly finishedAt?: string;
 }
 interface ContainerStatus {
@@ -35,8 +45,17 @@ interface ContainerStatus {
   readonly lastState?: { readonly terminated?: ContainerTerminated };
 }
 interface PodItem {
-  readonly metadata?: { readonly name?: string; readonly labels?: Record<string, string> };
-  readonly status?: { readonly containerStatuses?: readonly ContainerStatus[] };
+  readonly metadata?: {
+    readonly name?: string;
+    readonly labels?: Record<string, string>;
+    /** Present once a rollout/scale-down/drain starts deleting the pod. */
+    readonly deletionTimestamp?: string;
+  };
+  readonly status?: {
+    /** Pod-level reason — `Terminated`/`NodeShutdown` on a node shutdown. */
+    readonly reason?: string;
+    readonly containerStatuses?: readonly ContainerStatus[];
+  };
 }
 
 /** Platform system pods (file-manager, sftp helper, …) don't count as tenant OOMs. */
@@ -60,13 +79,23 @@ export function extractOomEvents(
     const podName = pod.metadata?.name;
     if (!podName) continue;
     if (isSystemPod(pod.metadata?.labels)) continue;
+    // A pod the kubelet is shutting down SIGKILLs its containers by design.
+    // Computed once per pod: it is a pod-level fact, not a container one.
+    const expectedKill = isExpectedSigkill({
+      deletionTimestamp: pod.metadata?.deletionTimestamp,
+      reason: pod.status?.reason,
+    });
     for (const cs of pod.status?.containerStatuses ?? []) {
       const term = cs.lastState?.terminated ?? cs.state?.terminated;
       // Not `reason !== 'OOMKilled'`: the kubelet reports some cgroup OOM
       // group-kills as {exitCode:137, reason:"Error"}, and this scan is the
       // ONLY thing that raises a per-tenant OOM alert — so it silently
       // skipped exactly the kills that node-health was already inferring.
-      if (!term || !isOomTermination(term)) continue;
+      const kind = term ? classifyOom(term) : null;
+      if (!term || !kind) continue;
+      // ...but exit 137 on a pod that is shutting down is the shutdown itself.
+      // Dropping these is the whole fix for the 2026-09-11 reboot false alarms.
+      if (kind === 'inferred' && expectedKill) continue;
       const at = term.finishedAt ?? null;
       if (at) {
         const t = Date.parse(at);
@@ -77,6 +106,7 @@ export function extractOomEvents(
         containerName: cs.name ?? 'container',
         restartCount: cs.restartCount ?? 0,
         at,
+        confidence: kind === 'explicit' ? 'confirmed' : 'unconfirmed',
       });
     }
   }
@@ -99,4 +129,38 @@ export async function scanTenantOom(
   } catch {
     return [];
   }
+}
+
+/** Wording for the admin alert, split so the subject can stay short. */
+export interface OomPhrasing {
+  /** Subject fragment. */
+  readonly killSummary: string;
+  /** Body sentence, including what to do about it. */
+  readonly killDetail: string;
+}
+
+/**
+ * Render an event for an operator. A CONFIRMED kill names the memory limit as
+ * the cause because the kubelet established it; an UNCONFIRMED one must not,
+ * because exit 137 is 128+SIGKILL from any source. Telling an admin to raise a
+ * limit on a container using 13% of it is the failure this wording prevents —
+ * see lib/container-termination.ts and node-health/memory-events.ts, which
+ * draws the same line for the node-scoped alert.
+ */
+export function describeOomEvent(e: OomEvent): OomPhrasing {
+  if (e.confidence === 'confirmed') {
+    return {
+      killSummary: 'OOM-killed',
+      killDetail: `was OOM-killed at its memory limit (restarts: ${e.restartCount}). `
+        + 'Repeated kills usually mean the workload needs a larger memory limit/plan '
+        + "or has a leak — check the tenant's Resource Limits and the deployment.",
+    };
+  }
+  return {
+    killSummary: 'SIGKILLed (cause unconfirmed)',
+    killDetail: `was SIGKILLed (exit 137, restarts: ${e.restartCount}). The cause is `
+      + 'UNCONFIRMED — exit 137 is 128+SIGKILL from any source, including a cgroup OOM '
+      + 'group-kill, a failed liveness probe or a node drain. Check the container\'s '
+      + 'memory.peak against its limit before changing anything.',
+  };
 }

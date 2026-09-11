@@ -493,6 +493,64 @@ export async function notifyAdminNodeDown(
   await dispatchSafe(db, 'admin.node_down', { kind: 'admin' }, payload, undefined, { dedupeKey });
 }
 
+export interface AdminNodeRebootingPayload {
+  readonly nodeName: string;
+}
+/**
+ * A node has left Ready and is shutting down. Best-effort by nature: on a
+ * single-node cluster the API server is drained with the node, so this often
+ * cannot be sent at all — `admin.node_startup_complete` is the one that always
+ * arrives. dedupeKey is per (node x boot) so a drain lasting several ticks
+ * notifies once.
+ */
+export interface AdminTenantAutoRepinnedPayload {
+  readonly tenantName: string;
+  readonly strandedOn: string;
+}
+/**
+ * An HA-tier tenant was unpinned from an offline node so it could reschedule.
+ * Warning, not info: nothing is broken, but the operator's explicit placement
+ * decision was overridden by the platform and they need to know. dedupeKey is
+ * per (tenant x node) so a multi-tick outage notifies once.
+ */
+export async function notifyAdminTenantAutoRepinned(
+  db: Database,
+  payload: AdminTenantAutoRepinnedPayload,
+  dedupeKey?: string,
+): Promise<void> {
+  await dispatchSafe(db, 'admin.tenant_auto_repinned', { kind: 'admin' }, payload, undefined, { dedupeKey });
+}
+
+export async function notifyAdminNodeRebooting(
+  db: Database,
+  payload: AdminNodeRebootingPayload,
+  dedupeKey?: string,
+): Promise<void> {
+  await dispatchSafe(db, 'admin.node_rebooting', { kind: 'admin' }, payload, undefined, { dedupeKey });
+}
+
+export interface AdminNodeStartupCompletePayload {
+  readonly nodeName: string;
+  /** Approximate outage, pre-rendered ("6m 50s"). Overstates by up to one tick. */
+  readonly downtimeText: string;
+  /** " at 14:32 UTC" or "" — leading space included so the sentence reads. */
+  readonly bootedAtText: string;
+  /** Says whether the shutdown was announced; explains the gap when it wasn't. */
+  readonly announcementNote: string;
+}
+/**
+ * A node finished booting and is Ready. Keyed on the kubelet's bootID, so it
+ * fires once per real reboot and never for a NotReady flap. dedupeKey is per
+ * (node x bootID).
+ */
+export async function notifyAdminNodeStartupComplete(
+  db: Database,
+  payload: AdminNodeStartupCompletePayload,
+  dedupeKey?: string,
+): Promise<void> {
+  await dispatchSafe(db, 'admin.node_startup_complete', { kind: 'admin' }, payload, undefined, { dedupeKey });
+}
+
 export interface AdminNodeMemoryEventPayload {
   readonly nodeName: string;
   /** Human summary, e.g. "3 tenant pod(s) evicted" or "kernel SystemOOM (2 events)". */
@@ -770,6 +828,10 @@ export interface AdminOomPayload {
   readonly podName: string;
   readonly containerName: string;
   readonly restartCount: string;
+  /** Subject fragment from describeOomEvent() — confirmed vs inferred kill. */
+  readonly killSummary: string;
+  /** Body sentence from describeOomEvent(), including the remediation hint. */
+  readonly killDetail: string;
 }
 /**
  * A tenant container was OOM-killed. `dedupeKey` (caller passes

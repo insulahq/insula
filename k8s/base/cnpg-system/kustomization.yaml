@@ -24,6 +24,31 @@ kind: Kustomization
 
 resources:
   - plugin-barman-cloud-v0.13.0.yaml
+  - barman-cloud-pdb.yaml
+
+# HA shape for the plugin Deployment. See patch-barman-cloud-ha.yaml for the
+# full rationale (2026-09-11 drill: a single-replica plugin wedged all CNPG
+# reconciliation and took the platform DB + management API down with it).
+#
+# The `remove` op on spec.replicas must run as a JSON6902 patch — a
+# strategic-merge patch cannot delete a scalar field, and leaving `replicas: 1`
+# in the applied output would let Flux fight the platform-storage-policy
+# reconciler for ownership every tick.
+patches:
+  - path: patch-barman-cloud-ha.yaml
+    target:
+      group: apps
+      version: v1
+      kind: Deployment
+      name: barman-cloud
+  - target:
+      group: apps
+      version: v1
+      kind: Deployment
+      name: barman-cloud
+    patch: |-
+      - op: remove
+        path: /spec/replicas
 
 # SECURITY NOTE (review HIGH #2, R-X6):
 #
