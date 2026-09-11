@@ -61,8 +61,30 @@ already scope updates to the running release's security suite.
 !!! warning "Patches are installed; your nodes are never rebooted for you"
     Kernel and TLS-library updates only take effect after a restart. An
     unattended reboot on a single-node cluster is an unannounced outage, so the
-    platform does not take one. Watch for `/var/run/reboot-required` and drain
-    and reboot the node yourself when it suits you.
+    platform does not take one. The **No pending kernel update** check flags any
+    node running an older kernel than the newest one installed, so drain and
+    reboot that node when it suits you.
+
+    Shared libraries such as OpenSSL are a smaller concern than they look:
+    k3s and containerd are statically linked, and every workload carries its own
+    copy inside its container image, so a host OpenSSL upgrade is in force for
+    almost everything without a restart. The kernel is the part that waits.
+
+**No pending kernel update** compares the running kernel
+(`/proc/sys/kernel/osrelease`) against the newest kernel whose modules are
+installed under `/usr/lib/modules`. It deliberately does **not** read
+`/var/run/reboot-required`: that file is empty on Debian, so the probe could not
+tell a real flag from one its own mount had created, and reading it without
+creating it would mean mounting `/run` — which holds credentials and secrets the
+probe is not permitted to see.
+
+The comparison uses the version numbers only, ignoring the flavour and
+architecture suffix, so a node with both the generic and the cloud kernel
+installed at the same version is not reported as needing a reboot. The
+trade-off is that a **same-version vendor rebuild** (Debian's `+deb13` →
+`+deb13.1`) is not detected either — the check errs towards missing one rather
+than showing a reboot prompt you cannot clear. `/var/run/reboot-required` on the
+node remains authoritative if you want to be certain.
 
 The **OS security updates install automatically** check verifies all three of:
 the package is installed, the periodic setting is on, and the timer that runs it
