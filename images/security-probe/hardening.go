@@ -122,8 +122,10 @@ func unattendedUpgradesActive(hostRoot string) bool {
 	return aptUnattendedActive(hostRoot) || dnfAutomaticActive(hostRoot)
 }
 
-// hostPathsForAutoUpdateCheck is every host path unattendedUpgradesActive reads,
-// relative to hostRoot.
+// hostPathsReadByHardeningChecks is every host path the hardening checks read,
+// relative to hostRoot — currently unattendedUpgradesActive (HARDEN-002) and
+// pendingKernelUpdate (KERNEL-002). Shared by both; add to it whenever a check
+// starts reading somewhere new.
 //
 // The DaemonSet mounts an ALLOWLIST of host paths. A path that is not mounted
 // does not read as an error — it reads as ABSENT, so the check reports false on
@@ -132,7 +134,7 @@ func unattendedUpgradesActive(hostRoot string) bool {
 // the timers.target.wants directories were not mounted. Hermetic tests cannot
 // catch it (they build their own root), so daemonset_mounts_test.go asserts this
 // list against the committed manifest. Add a read here AND a mount there.
-var hostPathsForAutoUpdateCheck = []string{
+var hostPathsReadByHardeningChecks = []string{
 	"usr/bin",
 	"usr/sbin",
 	"etc/apt/apt.conf.d",
@@ -178,81 +180,107 @@ func pendingKernelUpdate(hostRoot string) bool {
 	if newest == "" {
 		return false
 	}
-	return compareVersionStrings(newest, running) > 0
+	return compareKernelVersions(newest, running) > 0
 }
 
+// newestInstalledKernel returns the highest-versioned installed kernel, or ""
+// when none can be read.
+//
+// Only `usr/lib/modules` is scanned. `/lib/modules` is a symlink to it on every
+// supported OS — verified 2026-09-11 by installing a real kernel package in
+// Debian 12/13, Ubuntu 22.04/24.04, Rocky 9, AlmaLinux 9, CentOS Stream 9 and
+// Amazon Linux 2023 images — and only `usr/lib/modules` is mounted, so a
+// `lib/modules` fallback would be dead code that reads as absent anyway.
 func newestInstalledKernel(hostRoot string) string {
+	base := filepath.Join(hostRoot, "usr/lib/modules")
+	entries, err := os.ReadDir(base)
+	if err != nil {
+		return ""
+	}
 	newest := ""
-	for _, base := range []string{"usr/lib/modules", "lib/modules"} {
-		entries, err := os.ReadDir(filepath.Join(hostRoot, base))
-		if err != nil {
+	for _, e := range entries {
+		// Deliberately NOT gated on e.IsDir(): DirEntry reports the entry's own
+		// type, so a symlinked modules directory would be skipped. The Stat
+		// below follows symlinks and is the real test — a kernel/ subdirectory
+		// means the kernel package is installed, as opposed to a leftover tree
+		// from a removed one (which keeps modules.dep but loses kernel/).
+		if _, err := os.Stat(filepath.Join(base, e.Name(), "kernel")); err != nil {
 			continue
 		}
-		for _, e := range entries {
-			if !e.IsDir() {
-				continue
-			}
-			// kernel/ present ⇒ the kernel package is installed, not merely
-			// a leftover modules directory from a removed one.
-			if _, err := os.Stat(filepath.Join(hostRoot, base, e.Name(), "kernel")); err != nil {
-				continue
-			}
-			if newest == "" || compareVersionStrings(e.Name(), newest) > 0 {
-				newest = e.Name()
-			}
+		if newest == "" || compareKernelVersions(e.Name(), newest) > 0 {
+			newest = e.Name()
 		}
 	}
 	return newest
 }
 
-// compareVersionStrings compares release strings like "6.12.107+deb13-amd64" or
-// "5.14.0-503.el9.x86_64" by splitting into digit and non-digit runs and
-// comparing digit runs NUMERICALLY. A plain string compare gets 6.12.99 vs
-// 6.12.101 backwards, which is the exact shape of a Debian point release.
-func compareVersionStrings(a, b string) int {
-	ta, tb := versionTokens(a), versionTokens(b)
-	for i := 0; i < len(ta) && i < len(tb); i++ {
-		x, y := ta[i], tb[i]
-		xn, xErr := strconv.Atoi(x)
-		yn, yErr := strconv.Atoi(y)
-		if xErr == nil && yErr == nil {
-			if xn != yn {
-				if xn > yn {
-					return 1
-				}
-				return -1
-			}
-			continue
-		}
-		if x != y {
-			if x > y {
+// compareKernelVersions orders two kernel release strings by their NUMERIC
+// components only.
+//
+// Two properties matter, and both are load-bearing:
+//
+//  1. Digit runs compare numerically. A plain string compare puts 6.12.99 above
+//     6.12.101 — the exact shape of a Debian point release.
+//
+//  2. Non-numeric text is IGNORED rather than compared. It encodes the flavor
+//     (`-amd64`, `-cloud-amd64`, `-generic`, `-generic-64k`, `.el9.x86_64`),
+//     which carries no ordering. Comparing it lexically made two flavors
+//     installed at the SAME version look like an upgrade:
+//     "6.1.0-18-cloud-amd64" > "6.1.0-18-amd64" because "-cloud-amd" > "-amd".
+//     A node running the generic kernel with a cloud kernel co-installed — an
+//     ordinary state on a cloud VPS image — would then show a pending reboot
+//     permanently. A false positive here is worse than a miss: it puts an
+//     un-clearable finding on the operator's panel.
+//
+// When the shared numeric prefix is equal the versions are treated as equal,
+// even if one has MORE numeric components. That keeps "6.8.0-139-generic-64k"
+// (trailing 64) from outranking "6.8.0-139-generic".
+func compareKernelVersions(a, b string) int {
+	na, nb := kernelVersionNumbers(a), kernelVersionNumbers(b)
+	for i := 0; i < len(na) && i < len(nb); i++ {
+		if na[i] != nb[i] {
+			if na[i] > nb[i] {
 				return 1
 			}
 			return -1
 		}
 	}
-	switch {
-	case len(ta) > len(tb):
-		return 1
-	case len(ta) < len(tb):
-		return -1
-	}
 	return 0
 }
 
-func versionTokens(s string) []string {
-	var out []string
-	i := 0
-	for i < len(s) {
+// kernelVersionNumbers extracts the digit runs of the VERSION PREFIX of a
+// release string — everything before the first letter, which is where the
+// flavor and architecture begin.
+//
+//	6.12.107+deb13-amd64          → [6 12 107]
+//	6.1.0-18-cloud-amd64          → [6 1 0 18]
+//	5.14.0-687.44.1.el9_8.x86_64  → [5 14 0 687 44 1]
+//
+// Stopping at the first letter is what keeps flavor and architecture out of the
+// comparison. Reading digits from the whole string instead pulls in the 86 and
+// 64 of "x86_64" and the 13 of "+deb13", so "…el9.x86_64" outranked
+// "…el9.aarch64" — meaningless, since a node has exactly one architecture, but
+// the same class of error as comparing flavor text lexically. Everything a
+// kernel is actually ordered by (upstream version, ABI, vendor revision) is
+// numeric and appears before the first letter on all supported distros.
+func kernelVersionNumbers(s string) []int {
+	var out []int
+	for i := 0; i < len(s); {
+		c := s[i]
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') {
+			break
+		}
+		if c < '0' || c > '9' {
+			i++
+			continue
+		}
 		j := i
-		isDigit := s[i] >= '0' && s[i] <= '9'
-		for j < len(s) && ((s[j] >= '0' && s[j] <= '9') == isDigit) {
+		for j < len(s) && s[j] >= '0' && s[j] <= '9' {
 			j++
 		}
-		tok := s[i:j]
-		// Separators carry no ordering information of their own.
-		if tok != "." && tok != "-" && tok != "+" && tok != "_" {
-			out = append(out, tok)
+		// A run too long for an int is dropped rather than wrapped negative.
+		if n, err := strconv.Atoi(s[i:j]); err == nil {
+			out = append(out, n)
 		}
 		i = j
 	}

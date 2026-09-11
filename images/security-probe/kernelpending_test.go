@@ -78,24 +78,24 @@ func TestPendingKernelUpdate_RemovedKernelDoesNotCount(t *testing.T) {
 }
 
 // The comparison that a plain string compare gets BACKWARDS.
-func TestCompareVersionStrings_NumericNotLexical(t *testing.T) {
-	if compareVersionStrings("6.12.101+deb13-amd64", "6.12.99+deb13-amd64") <= 0 {
+func TestCompareKernelVersions_NumericNotLexical(t *testing.T) {
+	if compareKernelVersions("6.12.101+deb13-amd64", "6.12.99+deb13-amd64") <= 0 {
 		t.Fatal("6.12.101 must sort ABOVE 6.12.99 — string compare says otherwise")
 	}
-	if compareVersionStrings("6.12.99+deb13-amd64", "6.12.101+deb13-amd64") >= 0 {
+	if compareKernelVersions("6.12.99+deb13-amd64", "6.12.101+deb13-amd64") >= 0 {
 		t.Fatal("6.12.99 must sort BELOW 6.12.101")
 	}
-	if compareVersionStrings("6.12.107+deb13-amd64", "6.12.107+deb13-amd64") != 0 {
+	if compareKernelVersions("6.12.107+deb13-amd64", "6.12.107+deb13-amd64") != 0 {
 		t.Fatal("identical releases must compare equal")
 	}
-	if compareVersionStrings("6.13.0+deb13-amd64", "6.12.999+deb13-amd64") <= 0 {
+	if compareKernelVersions("6.13.0+deb13-amd64", "6.12.999+deb13-amd64") <= 0 {
 		t.Fatal("minor version outranks patch")
 	}
 }
 
 // RHEL-family release strings must order correctly too.
-func TestCompareVersionStrings_RHELShape(t *testing.T) {
-	if compareVersionStrings("5.14.0-503.el9.x86_64", "5.14.0-70.el9.x86_64") <= 0 {
+func TestCompareKernelVersions_RHELShape(t *testing.T) {
+	if compareKernelVersions("5.14.0-503.el9.x86_64", "5.14.0-70.el9.x86_64") <= 0 {
 		t.Fatal("503 must sort above 70")
 	}
 }
@@ -104,7 +104,7 @@ func TestCompareVersionStrings_RHELShape(t *testing.T) {
 // OS image on 2026-09-11, not invented. Every one of these hosts puts the tree
 // at /usr/lib/modules/<ver>/kernel with /lib/modules symlinked to it, which is
 // the layout newestInstalledKernel depends on.
-func TestCompareVersionStrings_RealReleasesFromEverySupportedOS(t *testing.T) {
+func TestCompareKernelVersions_RealReleasesFromEverySupportedOS(t *testing.T) {
 	for _, tc := range []struct{ os, older, newer string }{
 		{"Debian 12", "6.1.0-53-amd64", "6.1.0-54-amd64"},
 		{"Debian 13", "6.12.101+deb13-amd64", "6.12.107+deb13-amd64"},
@@ -115,15 +115,70 @@ func TestCompareVersionStrings_RealReleasesFromEverySupportedOS(t *testing.T) {
 		{"CentOS Stream 9", "5.14.0-70.el9.x86_64", "5.14.0-742.el9.x86_64"},
 		{"Amazon Linux 2023", "6.1.180-225.360.amzn2023.x86_64", "6.1.181-225.360.amzn2023.x86_64"},
 	} {
-		if compareVersionStrings(tc.newer, tc.older) <= 0 {
+		if compareKernelVersions(tc.newer, tc.older) <= 0 {
 			t.Errorf("%s: %q must sort ABOVE %q", tc.os, tc.newer, tc.older)
 		}
-		if compareVersionStrings(tc.older, tc.newer) >= 0 {
+		if compareKernelVersions(tc.older, tc.newer) >= 0 {
 			t.Errorf("%s: %q must sort BELOW %q", tc.os, tc.older, tc.newer)
 		}
-		if compareVersionStrings(tc.newer, tc.newer) != 0 {
+		if compareKernelVersions(tc.newer, tc.newer) != 0 {
 			t.Errorf("%s: %q must equal itself", tc.os, tc.newer)
 		}
+	}
+}
+
+// REGRESSION (code review, 2026-09-11). Two kernel FLAVORS installed at the
+// same version is an ordinary state on a cloud VPS image — the generic and the
+// cloud-optimised kernel side by side. The first implementation compared the
+// non-numeric text lexically, so "-cloud-amd" > "-amd" made the sibling package
+// look like an upgrade, and the node showed a pending reboot permanently with
+// no way for the operator to clear it. A false positive is worse here than a
+// miss: it is an un-actionable red finding on the panel.
+func TestPendingKernelUpdate_CoInstalledFlavoursAreNotAnUpgrade(t *testing.T) {
+	for _, tc := range []struct{ name, running, sibling string }{
+		{"debian cloud", "6.1.0-18-amd64", "6.1.0-18-cloud-amd64"},
+		{"debian rt", "6.1.0-18-amd64", "6.1.0-18-rt-amd64"},
+		{"ubuntu 64k pages", "6.8.0-139-generic", "6.8.0-139-generic-64k"},
+		{"ubuntu cloud", "6.8.0-139-generic", "6.8.0-139-aws"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			runningKernel(t, root, tc.running)
+			installedKernel(t, root, tc.running)
+			installedKernel(t, root, tc.sibling)
+			if pendingKernelUpdate(root) {
+				t.Fatalf("%q is a co-installed flavour of %q at the same version, not an upgrade",
+					tc.sibling, tc.running)
+			}
+		})
+	}
+}
+
+// Flavour text must not decide ordering in either direction.
+func TestCompareKernelVersions_FlavourTextIsIgnored(t *testing.T) {
+	for _, tc := range []struct{ a, b string }{
+		{"6.1.0-18-amd64", "6.1.0-18-cloud-amd64"},
+		{"6.8.0-139-generic", "6.8.0-139-generic-64k"},
+		{"5.14.0-687.el9.x86_64", "5.14.0-687.el9.aarch64"},
+	} {
+		if got := compareKernelVersions(tc.a, tc.b); got != 0 {
+			t.Errorf("compareKernelVersions(%q, %q) = %d, want 0 — flavour carries no ordering", tc.a, tc.b, got)
+		}
+		if got := compareKernelVersions(tc.b, tc.a); got != 0 {
+			t.Errorf("compareKernelVersions(%q, %q) = %d, want 0 — comparison must be symmetric", tc.b, tc.a, got)
+		}
+	}
+}
+
+// A genuinely newer kernel must still be caught even when the flavour differs,
+// e.g. across a distro upgrade where the suffix changes shape entirely.
+func TestPendingKernelUpdate_NewerVersionAcrossFlavourChange(t *testing.T) {
+	root := t.TempDir()
+	runningKernel(t, root, "6.1.0-18-amd64")
+	installedKernel(t, root, "6.1.0-18-amd64")
+	installedKernel(t, root, "6.12.107+deb13-amd64")
+	if !pendingKernelUpdate(root) {
+		t.Fatal("6.12.107 is numerically newer than 6.1.0 — a reboot would change the kernel")
 	}
 }
 
