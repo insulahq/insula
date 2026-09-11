@@ -24,6 +24,10 @@ export interface NodeFact {
   readonly role: string | null;
   /** Ready condition's lastTransitionTime — when it went NotReady. */
   readonly notReadySince: string | null;
+  /** `insula.host/ingress-mode`; absent label means 'all'. */
+  readonly ingressMode: string | null;
+  /** Public addresses, one per family — what DNS still points at. */
+  readonly ingressAddresses: readonly string[];
 }
 
 export interface PodFact {
@@ -38,6 +42,16 @@ export interface PodFact {
 export interface ReplicaFact {
   readonly volumeName: string;
   readonly nodeId: string | null;
+  /**
+   * Longhorn `status.currentState === 'running'`.
+   *
+   * A replica that merely EXISTS is not a copy of the data. When a node dies,
+   * Longhorn schedules a fresh replica on a survivor and starts rebuilding into
+   * it — that object appears on a live node immediately while holding nothing.
+   * Counting it as a surviving copy is how a tenant whose only real replica
+   * just died gets reported as "rebuilding, no action required".
+   */
+  readonly running: boolean;
 }
 
 export interface VolumeFact {
@@ -73,6 +87,15 @@ export interface OutageInput {
   readonly observedAt: Date;
   /** Non-null when a cluster read failed — forces `unknown` rather than green. */
   readonly readError?: string | null;
+  /**
+   * Ready-endpoint counts for the watched platform services. Absent (or an
+   * empty array) means "not measured" and produces no claim — never a green one.
+   */
+  readonly endpoints?: ReadonlyArray<{
+    readonly namespace: string;
+    readonly serviceName: string;
+    readonly readyEndpoints: number;
+  }>;
 }
 
 /**
@@ -95,6 +118,15 @@ function worstState(findings: ReadonlyArray<TenantHealthFinding>): TenantHealthS
  *
  * Exported for focused unit tests of the degradation matrix.
  */
+/** Nodes holding a RUNNING replica of `volumeName` that are still up. */
+function liveRunningReplicaNodes(
+  volumeName: string,
+  byVolumeRunning: Map<string, string[]>,
+  downNodeNames: ReadonlySet<string>,
+): string[] {
+  return (byVolumeRunning.get(volumeName) ?? []).filter((n) => !downNodeNames.has(n));
+}
+
 export function findingsForTenant(
   tenant: TenantFact,
   input: OutageInput,
@@ -122,10 +154,16 @@ export function findingsForTenant(
   // ── Storage: volumes whose only replica is on a dead node ───────
   const nsVolumes = input.volumes.filter((v) => v.namespace === tenant.namespace);
   const byVolume = new Map<string, string[]>();
+  const byVolumeRunning = new Map<string, string[]>();
   for (const r of input.replicas) {
     const list = byVolume.get(r.volumeName) ?? [];
     if (r.nodeId) list.push(r.nodeId);
     byVolume.set(r.volumeName, list);
+    if (r.nodeId && r.running) {
+      const running = byVolumeRunning.get(r.volumeName) ?? [];
+      running.push(r.nodeId);
+      byVolumeRunning.set(r.volumeName, running);
+    }
   }
 
   const stranded: string[] = [];
@@ -133,9 +171,16 @@ export function findingsForTenant(
   const rebuilding: string[] = [];
   for (const v of nsVolumes) {
     const replicaNodes = byVolume.get(v.volumeName) ?? [];
-    const live = replicaNodes.filter((n) => !downNodeNames.has(n));
+    // A live copy means a RUNNING replica on a live node. An empty
+    // rebuild target that Longhorn just scheduled is on a live node but
+    // holds no data, and treating it as a survivor turns "your data is on
+    // the dead node" into "rebuilding, no action required" — the single
+    // most reassuring thing the platform could wrongly say. Observed on
+    // staging 2026-09-11 for a one-replica local-tier volume, which can
+    // never rebuild because the only source is the node that died.
+    const live = liveRunningReplicaNodes(v.volumeName, byVolumeRunning, downNodeNames);
     const dead = replicaNodes.filter((n) => downNodeNames.has(n));
-    if (replicaNodes.length > 0 && live.length === 0) {
+    if (v.robustness === 'faulted' || (replicaNodes.length > 0 && live.length === 0)) {
       // Every replica is on a downed node: the data is unreachable until a
       // node returns or the tenant is restored from a bundle.
       stranded.push(v.pvcName ?? v.volumeName);
@@ -215,6 +260,43 @@ export function findingsForTenant(
  * modal only ever want the affected ones, and a 100-tenant fleet should not
  * ship 100 green rows to render a pill.
  */
+/**
+ * Watched platform services that currently have NO ready endpoint.
+ *
+ * The 2026-09-11 worker drill is the case this exists for: the lost node held
+ * no tenant workloads, so the banner said "0 tenants affected" — true, and
+ * badly incomplete, because the backup plugin's Service had zero ready
+ * endpoints and backups were unavailable the entire time.
+ *
+ * Kubernetes marks an endpoint on a NotReady node not-ready even when the
+ * process behind it is healthy and still renewing its leader lease. The standby
+ * therefore cannot take over, and nothing resolves it until the node is fixed
+ * or removed — measured wedged for the full 5m37s of that drill.
+ */
+export function degradedServicesFrom(
+  endpoints: OutageInput['endpoints'],
+): Array<{ namespace: string; name: string; label: string }> {
+  if (!endpoints || endpoints.length === 0) return [];
+  const out: Array<{ namespace: string; name: string; label: string }> = [];
+  for (const e of endpoints) {
+    if (e.readyEndpoints > 0) continue;
+    const watched = WATCHED_SERVICE_LABELS.find(
+      (w) => w.namespace === e.namespace && w.name === e.serviceName,
+    );
+    out.push({
+      namespace: e.namespace,
+      name: e.serviceName,
+      label: watched?.label ?? `${e.namespace}/${e.serviceName}`,
+    });
+  }
+  return out.sort((a, b) => a.label.localeCompare(b.label));
+}
+
+/** Operator-facing names. Kept here so the computation stays pure. */
+const WATCHED_SERVICE_LABELS: ReadonlyArray<{ namespace: string; name: string; label: string }> = [
+  { namespace: 'cnpg-system', name: 'barman-cloud', label: 'Backups (barman-cloud plugin)' },
+];
+
 export function computeOutageImpact(input: OutageInput): ClusterOutageImpact {
   const downNodes = input.nodes.filter((n) => !n.ready);
   const downNodeNames = new Set(downNodes.map((n) => n.name));
@@ -225,6 +307,12 @@ export function computeOutageImpact(input: OutageInput): ClusterOutageImpact {
     role: n.role,
     notReadySince: n.notReadySince,
     isMailActiveNode: n.name === input.mailActiveNode,
+    ingressMode: n.ingressMode,
+    // Only worth listing when the node actually serves ingress: a
+    // `none`-mode node's addresses were never published, so telling the
+    // operator to withdraw them would send them after records that do not
+    // exist.
+    ingressAddresses: n.ingressMode === 'none' ? [] : [...n.ingressAddresses],
   })).sort((a, b) => a.name.localeCompare(b.name));
 
   const affected: TenantHealthEntry[] = [];
@@ -277,6 +365,10 @@ export function computeOutageImpact(input: OutageInput): ClusterOutageImpact {
     downTenantCount: affected.filter((t) => t.state === 'down').length,
     degradedTenantCount: affected.filter((t) => t.state === 'degraded').length,
     mailAffected: mailDown,
+    // A service with zero ready endpoints is unreachable no matter how healthy
+    // its pods look. Reported only while a node is actually down, so a rollout
+    // blip on a healthy cluster does not raise an outage alarm.
+    degradedServices: downNodes.length === 0 ? [] : degradedServicesFrom(input.endpoints),
     observedAt: input.observedAt.toISOString(),
     readError: input.readError ?? null,
   };

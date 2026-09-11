@@ -61,3 +61,65 @@ describe('safeTick', () => {
     }
   });
 });
+
+/**
+ * Regression for the 2026-09-11 staging crash.
+ *
+ * Every test above passes `{ warn: vi.fn() }` — a bare object literal, whose
+ * `warn` has no `this` dependency. That is precisely why they all passed while
+ * `safeTick` extracted its logger as `log?.warn`, which DETACHES the method
+ * from its object. Real callers pass a pino logger, and pino's `warn` needs its
+ * receiver:
+ *
+ *     TypeError: Cannot read properties of undefined (reading 'Symbol(pino.msgPrefix)')
+ *
+ * That throw lands on the FAILURE path — the one path this helper exists to
+ * make safe — so it stayed invisible until a real outage, and then it killed
+ * the process it was written to protect. The fix is to call through the object
+ * (`(m, e) => log.warn(m, e)`), and the guard is a logger that actually has a
+ * receiver to lose.
+ */
+describe('safeTick with a real (receiver-bound) logger', () => {
+  class ReceiverLogger {
+    public readonly lines: string[] = [];
+    private readonly prefix = '[svc] ';
+    warn(msg: string, _err?: unknown): void {
+      // Throws if invoked unbound — exactly as pino's warn does.
+      this.lines.push(this.prefix + msg);
+    }
+  }
+
+  it('does not detach warn from its logger', async () => {
+    const log = new ReceiverLogger();
+    safeTick('unit', () => Promise.reject(new Error('boom')), log);
+    await new Promise((r) => setImmediate(r));
+
+    expect(log.lines).toHaveLength(1);
+    expect(log.lines[0]).toContain('[svc] ');
+    expect(log.lines[0]).toContain('[unit]');
+  });
+
+  it('survives the SYNCHRONOUS-throw path with a receiver-bound logger too', async () => {
+    const log = new ReceiverLogger();
+    expect(() => safeTick('unit', () => { throw new Error('sync boom'); }, log)).not.toThrow();
+    await new Promise((r) => setImmediate(r));
+
+    expect(log.lines).toHaveLength(1);
+    expect(log.lines[0]).toContain('threw synchronously');
+  });
+
+  it('leaves no unhandled rejection behind when the logger has a receiver', async () => {
+    const log = new ReceiverLogger();
+    const seen: unknown[] = [];
+    const onUnhandled = (err: unknown) => seen.push(err);
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      safeTick('unit', () => Promise.reject(new Error('would have killed the API')), log);
+      await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setTimeout(r, 10));
+      expect(seen).toHaveLength(0);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+  });
+});

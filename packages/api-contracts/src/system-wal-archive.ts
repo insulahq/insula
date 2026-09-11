@@ -68,43 +68,44 @@ export type WalArchiveDisableRequest = z.infer<typeof walArchiveDisableRequestSc
 // use .strict() to reject unknown fields and surface the dropped
 // pre-Phase-6 targetConfigId / baseBackupRetentionDays explicitly.
 
-export const walStreamingEnableRequestSchema = z.object({
-  clusterNamespace: dnsLabelSchema,
-  clusterName: dnsLabelSchema,
-  archiveTimeout: archiveTimeoutSchema.optional(),
-  /** Retention days for the ObjectStore (governs WAL + base backups
-   *  together — barman-cloud has a single retentionPolicy). */
-  retentionDays: z.number().int().min(1).max(3650).default(30),
-}).strict();
-export type WalStreamingEnableRequest = z.infer<typeof walStreamingEnableRequestSchema>;
 
-export const walStreamingDisableRequestSchema = z.object({
-  clusterNamespace: dnsLabelSchema,
-  clusterName: dnsLabelSchema,
-}).strict();
-export type WalStreamingDisableRequest = z.infer<typeof walStreamingDisableRequestSchema>;
 
-export const scheduledBackupsEnableRequestSchema = z.object({
-  clusterNamespace: dnsLabelSchema,
-  clusterName: dnsLabelSchema,
-  cron: baseBackupScheduleSchema,
-}).strict();
-export type ScheduledBackupsEnableRequest = z.infer<typeof scheduledBackupsEnableRequestSchema>;
 
-export const scheduledBackupsDisableRequestSchema = z.object({
-  clusterNamespace: dnsLabelSchema,
-  clusterName: dnsLabelSchema,
-}).strict();
-export type ScheduledBackupsDisableRequest = z.infer<typeof scheduledBackupsDisableRequestSchema>;
 
 // One entry per cluster in the GET /clusters list. Combines the DB
 // state row (operator intent) with a snapshot of the CNPG CR's
 // `.status` (cluster-reported truth: last archived WAL, archiver
 // errors). When `enabled=false`, `state` is null.
+/**
+ * CNPG's own `archive_timeout` default. It applies the moment the barman-cloud
+ * plugin is attached and nobody set an explicit value — so it is the real
+ * recovery-point window in that state, not "unset".
+ */
+export const CNPG_DEFAULT_ARCHIVE_TIMEOUT = '5min';
+
 export const walArchiveClusterSchema = z.object({
   clusterNamespace: z.string(),
   clusterName: z.string(),
+  /**
+   * The operator INTENT flag: a state row exists and the plugin is attached.
+   * Kept for back-compat — read `walArchivingActive` for what is actually
+   * happening and `walArchivingSource` for why.
+   */
   enabled: z.boolean(),
+  /**
+   * Whether WAL is REALLY being shipped off-site right now — the barman-cloud
+   * plugin entry is present on the Cluster CR. Production 2026-09-11 had this
+   * true with WAL streaming never enabled: enabling scheduled base backups is
+   * enough, and the UI showed "not enabled" while a segment went off-site
+   * every 5 minutes.
+   */
+  walArchivingActive: z.boolean(),
+  /**
+   * The `archive_timeout` actually in force: the operator's explicit value when
+   * WAL streaming is on, otherwise CNPG's default while archiving is active,
+   * otherwise null. This is the RPO ceiling on an idle database.
+   */
+  effectiveArchiveTimeout: z.string().nullable(),
   state: z.object({
     targetConfigId: z.string(),
     targetName: z.string().nullable(),
@@ -126,10 +127,28 @@ export const walArchiveClusterSchema = z.object({
   // effort — null when not yet populated by CNPG.
   status: z.object({
     firstRecoverabilityPoint: z.string().nullable(),
+    /**
+     * Real values from `pg_stat_archiver` on the cluster itself where we can
+     * reach it. Before 2026-09-11 these were SYNTHESISED from the
+     * ContinuousArchiving condition's `lastTransitionTime` — on production
+     * that read 2026-08-12 while WAL was being archived every five minutes,
+     * i.e. the card presented a month-old timestamp as "last WAL archived".
+     */
     lastArchivedWal: z.string().nullable(),
     lastArchivedWalTime: z.string().nullable(),
     lastFailedArchiveTime: z.string().nullable(),
     lastFailedArchiveError: z.string().nullable(),
+    /**
+     * Cumulative counters from `pg_stat_archiver` since `statsResetAt` (null
+     * when unavailable). `failedCount` is a LIFETIME total — a non-zero value
+     * says nothing about whether archiving is failing now; `lastFailedArchiveTime`
+     * is only populated when nothing has been archived since that failure.
+     */
+    archivedCount: z.number().int().nullable(),
+    failedCount: z.number().int().nullable(),
+    statsResetAt: z.string().nullable(),
+    /** CNPG's ContinuousArchiving condition — health, NOT recency. */
+    archivingHealthySince: z.string().nullable(),
   }).nullable(),
 });
 export type WalArchiveCluster = z.infer<typeof walArchiveClusterSchema>;

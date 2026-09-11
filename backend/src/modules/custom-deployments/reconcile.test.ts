@@ -197,3 +197,52 @@ describe('readReplicaCreateFailure — admission refusals with no Pod to inspect
     expect(await readReplicaCreateFailure(k8s, 'ns', 'x')).toBeNull();
   });
 });
+
+/**
+ * Custom deployments (ADR-036) take this reconcile path, so they were exposed
+ * to the same node-reboot false positive that hit catalog workloads on
+ * production 2026-09-11: a dead pod OBJECT left behind by a graceful node
+ * shutdown keeps `exitCode: 137` in its container status, which
+ * `isOomTermination()` infers as an OOM. The corpse is not the workload.
+ */
+describe('readFirstPodObservation ignores node-reboot debris', () => {
+  const corpse = {
+    metadata: { name: 'app-old' },
+    spec: { nodeName: 'node-dead' },
+    status: {
+      phase: 'Failed',
+      reason: 'Terminated',
+      message: 'Pod was terminated in response to imminent node shutdown.',
+      containerStatuses: [container({ ready: false, restartCount: 0, state: { terminated: { reason: 'Error', exitCode: 137 } } })],
+    },
+  };
+  const healthy = {
+    metadata: { name: 'app-live' },
+    spec: { nodeName: 'node-live' },
+    status: { phase: 'Running', containerStatuses: [container({ ready: true, state: { running: {} } })] },
+  };
+
+  it('does not report a reboot corpse as an OOM kill', async () => {
+    const obs = await readFirstPodObservation(k8sWithPods([corpse, healthy]), 'ns', 'app');
+    expect(obs.failureReason).toBeNull();
+    expect(obs.pendingReason).toBeNull();
+  });
+
+  it('reports the LIVE pod’s node, not the dead one', async () => {
+    const obs = await readFirstPodObservation(k8sWithPods([corpse, healthy]), 'ns', 'app');
+    expect(obs.node).toBe('node-live');
+  });
+
+  it('still reports a genuine OOM on a live pod', async () => {
+    const dying = {
+      metadata: { name: 'app-live' },
+      spec: { nodeName: 'node-live' },
+      status: {
+        phase: 'Running',
+        containerStatuses: [container({ ready: false, restartCount: 2, state: { terminated: { reason: 'OOMKilled', exitCode: 137 } } })],
+      },
+    };
+    const obs = await readFirstPodObservation(k8sWithPods([dying]), 'ns', 'app');
+    expect(obs.failureReason).toContain('OOMKilled');
+  });
+});

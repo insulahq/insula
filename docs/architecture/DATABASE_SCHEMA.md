@@ -991,28 +991,15 @@ CREATE TABLE ssh_keys (
   FOREIGN KEY (tenant_id) REFERENCES clients(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE TABLE backups (
-  id VARCHAR(36) PRIMARY KEY DEFAULT (UUID()),
-  tenant_id VARCHAR(36) NOT NULL,
-  backup_type ENUM('auto', 'manual', 'scheduled') DEFAULT 'auto',
-  resource_type ENUM('workload', 'database', 'filesystem') NOT NULL,
-  resource_id VARCHAR(36) NOT NULL,
-  storage_path VARCHAR(500) COMMENT 'Offsite server filesystem path',
-  size_bytes BIGINT,
-  checksum VARCHAR(255),
-  status ENUM('completed', 'in_progress', 'failed') DEFAULT 'in_progress',
-  retention_days INT DEFAULT 30,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  expires_at TIMESTAMP NULL,
-  
-  KEY idx_client_id (tenant_id),
-  KEY idx_resource (resource_type, resource_id),
-  KEY idx_status (status),
-  KEY idx_expires_at (expires_at),
-  
-  FOREIGN KEY (tenant_id) REFERENCES clients(id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+-- REMOVED 2026-09-11 (migration 0108_drop_retired_backups_table.sql).
+-- The `backups` table was never written by any backup engine: real tenant
+-- backups are off-site BUNDLES in `backup_jobs` + `backup_components`
+-- (ADR-032/ADR-047), Postgres goes through CNPG/barman, and mail through
+-- restic. The table held zero rows on every cluster while the tenant
+-- dashboard and the admin tenant Backups tab read it — so tenants with
+-- bundles were shown "0 backups". Design sketch kept below for history only.
+--
+-- CREATE TABLE backups (...)  -- see git history
 
 CREATE TABLE application_instances (
   id VARCHAR(36) PRIMARY KEY DEFAULT (UUID()),

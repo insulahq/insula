@@ -13,6 +13,34 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Added
+- **A node outage now says when it took a platform service with it.** The
+  banner reported "No tenant impact detected" during an outage in which backups
+  were unreachable the entire time — true, and badly incomplete, because no
+  tenant workload happened to run on that node. Services that have no reachable
+  instance are now named next to the tenant count, and the reassuring "no tenant
+  impact" line only appears when nothing else is broken either.
+- **A node coming back no longer leaves tenants displaced in silence.** While a
+  node is down the platform moves tenants off it — HA-tier automatically,
+  local-tier through the recovery wizard — and when the node rejoined, nothing
+  moved back and nothing said so. The placement change simply became permanent:
+  the returned node looked healthy while sitting empty, and an operator who had
+  pinned a tenant deliberately had that intent erased without a word.
+  **Cluster → Nodes** now shows a failback review listing every tenant still
+  placed elsewhere, how it got there, and which way the platform leans — *keep
+  as is* for an unpinned HA-tier tenant (more resilient than the pin it lost),
+  *consider re-pinning* for a local-tier one. Each row can be acknowledged (with
+  a reason, recorded; moves no data) or re-placed. It is a review, not an
+  automatic failback: moving storage back is real data movement with no urgency
+  behind it. Derived from audit rows the platform already wrote, so no new table
+  and no background job.
+- **The manual DNS step is finally stated where the operator is looking.** The
+  platform does not own DNS and will not withdraw records for a dead node — by
+  decision, not oversight. But the only place it admitted that was a
+  strikethrough on an ingress badge on the Cluster Nodes page: no addresses, no
+  instruction, on a surface nobody opens mid-incident. The affected-tenants
+  modal now opens with the exact stale A/AAAA addresses, says plainly that
+  nothing will remove them, and offers a copy button. Nodes set to
+  `ingress: none` are omitted — nothing was ever published for them.
 - **A node going offline is now impossible to miss, and tells you who it
   hurts.** Previously the only page that showed a node outage was Cluster →
   Nodes; the dashboard you actually land on reported *"Platform: Healthy"*
@@ -86,191 +114,101 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   never a running workload, and never a database pod.
 
 ### Fixed
-- **A single backup-plugin pod could take the whole database offline.** The
-  component that ships PostgreSQL backups ran as one copy with no spare, and
-  the database operator refuses to do anything at all — including promoting a
-  new primary — while it cannot reach that component. Losing the one server
-  running it therefore took the platform database *and* the entire admin panel
-  down until Kubernetes noticed and moved the pod, measured at about six and a
-  half minutes. It now runs with a standby alongside the operator it serves.
+- **Moving a tenant off a dead node now actually brings it back.** The move
+  succeeded in every visible way — workload re-pinned, storage re-pinned,
+  records updated — and the tenant stayed down anyway, indefinitely. A tenant's
+  workload is configured to stop its old copy before starting a new one,
+  because its disk can only be mounted in one place at a time; a copy on a node
+  whose kubelet is gone never finishes stopping, because nothing is left to
+  confirm it did, so the replacement waited behind it forever. Those leftovers
+  are now cleared as part of the move, and only ever on a node that is
+  genuinely offline. A temporary outage hid this completely — when the node came
+  back the leftovers cleared and everything proceeded — so it only ever bit on
+  the permanent loss the move exists for.
+- **A tenant whose data had just become unreachable was told no action was
+  required.** When a node dies, the storage layer immediately earmarks space on
+  a surviving node and begins copying into it. Counting that empty placeholder
+  as a surviving copy meant a tenant with a single copy of its disk — which had
+  just died with the node — was reported as *"running on reduced redundancy,
+  this resolves itself."* It could not resolve itself: the only source was the
+  dead node. The platform now counts only copies that actually hold data, and
+  believes the storage layer when it reports a volume as faulted.
+- **Database backups are now one switch, not two half-features.** The System
+  Backups page offered "WAL Streaming" and "Scheduled Base Backups" as separate
+  toggles, which the storage layer never supported: a full copy can only be
+  restored together with the write-ahead log written while it ran, so turning
+  the log off was an option that did nothing except produce a confusing
+  explanation. The page now has one switch — **offsite backups on or off** —
+  and three settings: base backup cadence, archive timeout (your
+  recovery-point target) and retention. The "implied" amber state, the separate
+  WAL disable button and the retention-policy notice are gone.
 
-- **Webmail reported losing your data every time it successfully restored it.**
-  After a mail failover, the webmail component wrote a "started with empty
-  data" marker even when the restore had worked perfectly — and nothing in the
-  platform ever read that marker, so a genuine reset a month earlier had gone
-  unnoticed while the migration that caused it was recorded as successful. The
-  false alarm is fixed, and both mail components' markers are now checked after
-  every migration.
+- **The backups page now shows what the archive actually holds.** New on the
+  same card: the window you can restore to, when the last and next base backups
+  run, how often the write-ahead log uploads succeed, and the storage used at
+  the target split into full copies and log segments — the log was previously
+  invisible even though it is a comparable share of the bill.
 
-- **Recovering mail from a dead node no longer stalls for five minutes.**
-  Starting a mail failover away from an offline node made the platform wait for
-  a backup it could never take, with mail already stopped, before continuing.
-  It now skips that step when the node is gone, which is what the automatic
-  path already did.
+- **Every backup page now says what it stores and why an unbound target
+  matters.** The target panel on the System, Mail and Tenants pages showed a
+  name and a drain timeout without ever explaining what lands there.
 
-- **Standby copies of the mail store are kept in the right places.** They were
-  being written to the node already running mail — copying from itself — while
-  the node you would fail *back* to had nothing recent, making every failback
-  take the slow path. They now go to every configured node except the one
-  currently serving mail.
+- **The management API died when the Postgres primary's node did.** Measured at
+  ~3 minutes unreachable during the 2026-09-11 node-outage drill. The probes
+  were never the cause — liveness and readiness both use the shallow
+  `/healthz`, which has no database dependency — the process was killed
+  outright. `safeTick`, the helper whose entire job is to stop a failing
+  scheduler tick from killing the process, extracted its logger as `log?.warn`,
+  which detaches the method from its object; every caller passes a real pino
+  logger whose `warn` needs its receiver. So on the failure path the error
+  handler itself threw, inside an async timer callback, which is fatal on
+  Node 15+. The database errors were all caught and logged correctly; the
+  process was killed by the code reporting them. Fixed, plus global
+  unhandled-rejection and uncaught-exception guards so the next instance of
+  this class degrades instead of killing the API. Every prior test passed a
+  plain `{ warn }` object with no receiver to lose, which is why the suite
+  stayed green — the new guards use a receiver-bound logger.
+- **The outage banner could go blind at exactly the wrong moment.** Its cluster
+  reads were guarded but its database reads were not, so if the dead node had
+  been carrying the Postgres primary the whole endpoint failed while the
+  operator was trying to find out what broke. Node readiness comes from
+  Kubernetes and survives a database outage, so the banner now still names the
+  down node and reports tenant impact as *unknown* — never as a reassuring zero.
+- **The System Backups page said WAL archiving was off while it was running.**
+  Enabling scheduled base backups also archives write-ahead logs — the same
+  plugin does both, and a base backup is only restorable with the WAL written
+  while it ran. The WAL panel only looked at whether *you* had chosen an
+  `archive_timeout`, so it reported "not enabled" on a database that was
+  shipping a log segment off-site every five minutes, while the health card
+  beside it showed a green "WAL streaming" badge. Both now say the same thing:
+  archiving is shown as active with *(implied)* when a backup schedule is what
+  switched it on, the recovery-point window in force is named (yours, or
+  CNPG's five-minute default), and turning WAL streaming off now warns that
+  archiving continues until the base-backup schedule is also off.
 
-- **One node going down produced two notifications, one of them mislabelled.**
-  A node dropping out sent both a correct critical alert and a duplicate marked
-  merely informational, and neither title named the node. Now one alert, with
-  the right severity and the node's name in it.
+- **"Last WAL archived" showed a month-old timestamp.** It was reading when
+  archiving last became *healthy*, not when a log was last written — on
+  production that meant a date four weeks stale next to a database archiving
+  every five minutes. It now reports what Postgres itself records, with the
+  number of archived and failed segments.
 
-- **An offline node no longer displays live-looking statistics.** Its CPU,
-  memory and pod counts stopped updating but were shown as current; the card
-  now says the node is not reporting. Its ingress badge is struck through as a
-  reminder that traffic is still being sent to an address that cannot answer —
-  Insula does not manage DNS, so removing that record is still your call.
+- **A running application could be shown as FAILED — "Workload ran out of
+  memory" — while it was serving perfectly.** When a server reboots, Kubernetes
+  leaves the pods it shut down behind as dead records, and nothing removes them
+  for weeks. Those records carry the same exit code as an out-of-memory kill, so
+  the status check read the corpse instead of the live application. On
+  production three tenants' applications were marked failed this way while every
+  one of them was up. Status, the host-node column, the log viewer and the
+  after-import database health check now all ignore dead pod records. A genuine
+  crash or memory kill on the live pod is still reported exactly as before.
 
-- **Deleting a node cleans up after itself**, removing its storage-system
-  record and clearing any mail placement setting that pointed at it, so the
-  mail settings can no longer name a machine that no longer exists.
-- **The "Recover…" button now appears when there is something to clean up.** It
-  only showed on a server already flagged as unhealthy — but the most common
-  thing needing cleanup is leftover pod records from a restart, which leave the
-  server perfectly healthy. So the button stayed hidden and there was no way to
-  clear them from the panel at all. Production had accumulated 17 such records
-  across four restarts.
+- **Tenants with backups were told they had none.** The tenant dashboard's
+  "Backups" tile and the admin panel's per-tenant Backups tab read a retired
+  table that no backup has ever been written to — so a tenant with 17 off-site
+  backups saw a "0" tile next to a Backups page listing all 17. Both now count
+  the real off-site bundles, as does the platform metrics endpoint. The retired
+  `/api/v1/tenants/{id}/backups` API and its empty table are gone.
 
-- **Restart leftovers can now be cleared in every namespace, including your
-  customers'.** The cleanup refused customer namespaces and anything not on a
-  fixed internal list, which left 5 of those 17 permanently stuck. Records the
-  server itself marks as restart casualties are now clearable wherever they are
-  — their replacement is already running. Everything else keeps the old, narrow
-  rule, and database pods are never touched.
-
-- **Removed a CrowdSec cleanup job that had never once worked.** It was
-  scheduled daily and had failed on every single run since the server was
-  built, leaving a failed job behind each day. The command it ran used an
-  option CrowdSec does not have, so it could never have succeeded — and it was
-  not needed in the first place: CrowdSec already trims its own alert table
-  (7 days / 5,000 entries). That limit is now written explicitly by the
-  platform rather than relying on CrowdSec's built-in default, so it cannot
-  change quietly under you when the software is updated.
-
-- **A slow-starting service is no longer reported as running out of memory.**
-  When a container is slow to answer its health check after a restart,
-  Kubernetes kills and restarts it — and the platform was reporting that as a
-  **critical** "node memory event". Caught on a real test-cluster reboot: two
-  CrowdSec containers, slow to answer `/health` on a cold boot, were reported
-  as memory incidents while the kernel had recorded no out-of-memory kill at
-  all. Kubernetes says plainly why it killed them ("failed liveness probe"), and
-  the platform now takes it at its word instead of guessing at memory.
-
-- **A node reboot no longer reports your tenants' workloads as out of memory.**
-  Restarting a server sent admins a burst of alerts claiming tenant containers
-  had been "OOM-killed", including three named tenants by name. None of it was
-  true: nothing ran out of memory, the node had 8 GB free and had never been
-  under memory pressure, and the kernel recorded no out-of-memory kills at all.
-
-  The cause: when a node shuts down, anything that does not stop promptly is
-  force-killed, and a force-kill looks identical to an out-of-memory kill if you
-  only read the exit code. The platform reads the kubelet's own explanation now
-  — it records that the pod was "terminated in response to imminent node
-  shutdown" — and stays quiet for those.
-
-  Genuine out-of-memory kills are still reported, including the awkward kind the
-  kubelet labels only as a generic error. Where that has to be inferred rather
-  than confirmed, the alert now says so plainly instead of asserting an OOM, so
-  you are never sent to raise a memory limit on a container that was nowhere
-  near it.
-
-- **"No pending kernel update" now actually checks.** The Node Hardening tab
-  always showed this as satisfied, on every node, because nothing ever worked
-  out whether a newer kernel was waiting. It now compares the kernel your node
-  is running against the newest one installed on disk, so a node that has
-  picked up a kernel update and is still running the old one is flagged until
-  you restart it. This matters more since the platform began installing
-  security updates on its own: it never reboots your node, so a new kernel can
-  sit there unused indefinitely.
-
-## [2026.9.18-rc.5] - 2026-09-11
-
-Re-cut of rc.3 with no code changes — see the rc.3 notes below.
-
-## [2026.9.18-rc.4] - 2026-09-11
-
-Re-cut of rc.3 with no code changes — see the rc.3 notes below.
-
-## [2026.9.18-rc.3] - 2026-09-11
-
-### Added
-- **A node going offline is now impossible to miss, and tells you who it
-  hurts.** Previously the only page that showed a node outage was Cluster →
-  Nodes; the dashboard you actually land on reported *"Platform: Healthy"*
-  throughout. A red banner now appears on **every** admin page within about 30
-  seconds, naming the offline node, with an **"N tenants affected"** button
-  that opens exactly which tenants are hurting, what is wrong with each, and
-  what to do about it. The platform's own health check now reads node
-  readiness rather than merely asking whether Kubernetes answers the phone.
-
-- **Tenants now show whether they are actually serving.** The tenant list only
-  ever showed lifecycle status — *Active*, *Suspended* — so a tenant whose only
-  copy of its data had been stranded on a dead node still read "Active". A
-  tenant that is impaired now shows **Degraded** or **Down**, and clicking it
-  explains which part is broken. Sites and mail are reported separately,
-  because a tenant can lose one and keep the other, and the fix differs.
-
-- **A guided recovery wizard for degraded tenants.** Every recovery step
-  already existed; nothing connected *"this tenant is down"* to *"press this"*.
-  The wizard shows what is wrong, offers only the actions that apply, and asks
-  you to type the tenant's name before acting. Moving a tenant to a healthy
-  node it does for you. Restoring data from a backup it deliberately does not —
-  that is destructive and stays on the backups page.
-
-- **Tenants on the HA storage tier recover from a node loss on their own.** If
-  such a tenant was pinned to a node that goes offline, the pin outlived the
-  node and kept the tenant down even though a full copy of its data was sitting
-  on a healthy node. That pin is now cleared automatically and you are told.
-  Tenants on the local tier are never moved automatically — their only copy of
-  the data is on the offline node, so moving them would recover nothing.
-
-- **Old copies of the mail store are cleaned up.** Because mail lives on one
-  node's local disk, each failover leaves the previous copy behind on the node
-  it left. Nothing removed them, so they accumulated for as long as the cluster
-  had been running — on a large mailbox store each failover permanently
-  consumed another full copy of it. They are now removed after 48 hours. The
-  copy currently serving mail is never touched.
-
-- **A warning when mail cannot fail over.** Turning on automatic mail failover
-  stays your decision — it recreates the mail volume, so the platform will not
-  do it behind your back. But if the platform is running in HA mode while mail
-  failover is switched off or has no standby node configured, a banner now says
-  so, because in that state losing the mail node means mail stays down until
-  somebody notices.
-- **Two more logs now get cleaned up on a schedule.** The CrowdSec auto-ban
-  record and the SFTP access log were kept forever — nothing anywhere deleted
-  them. Both are now trimmed to **90 days**, in line with the other logs the
-  platform keeps. Neither is large day to day, but the auto-ban record is
-  bursty: a single scanner run against one server wrote 1,391 entries in one
-  day, against 3–23 on a normal day.
-
-- **You now get told when a node reboots, and when it has finished booting.**
-  Previously a server restart produced no notification at all — the only thing
-  that arrived was a burst of misleading OOM alerts (fixed below), so the real
-  event was invisible and the noise was wrong. Two new notification types, both
-  naming the node: *Node rebooting* and *Node startup complete*, the latter
-  reporting roughly how long the node was down.
-
-  One honest limitation, stated in the notification itself: on a single-node
-  cluster the control plane goes down **with** the node, so the platform usually
-  cannot announce its own shutdown as it happens. In that case only the startup
-  notification arrives, and it says so — it still tells you the node rebooted
-  and for how long it was gone. On a multi-node cluster both arrive.
-
-- **Dead pod records left behind by a reboot are now cleaned up on their own.**
-  A node restart leaves behind pod records that no longer exist — Kubernetes
-  keeps up to 12,500 of them before it starts tidying, so in practice they piled
-  up for months. One production reboot left 822 of them; after an earlier fix,
-  20 per reboot. They are now removed automatically half an hour after the
-  reboot, which is late enough that you can still see what the restart killed.
-  Only records the kubelet itself marked as reboot casualties are touched —
-  never a running workload, and never a database pod.
-
-### Fixed
 - **A single backup-plugin pod could take the whole database offline.** The
   component that ships PostgreSQL backups ran as one copy with no spare, and
   the database operator refuses to do anything at all — including promoting a

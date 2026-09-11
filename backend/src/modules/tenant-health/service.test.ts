@@ -5,12 +5,33 @@
  * They are unit tests because reproducing them live means killing nodes.
  */
 import { describe, it, expect } from 'vitest';
-import { computeOutageImpact, findingsForTenant, type OutageInput, type TenantFact } from './service.js';
+import {
+  computeOutageImpact, findingsForTenant,
+  type OutageInput, type TenantFact, type NodeFact,
+} from './service.js';
 
 const OBSERVED = new Date('2026-09-11T15:00:00Z');
 
-const node = (name: string, ready: boolean) => ({
-  name, ready, role: 'server', notReadySince: ready ? null : '2026-09-11T14:55:00Z',
+// Real nodes carry an ingress mode and public addresses; the fixture does too,
+// so that a down node's "DNS still points here" surface is exercised rather
+// than silently defaulting to empty.
+const node = (name: string, ready: boolean, over: Partial<NodeFact> = {}): NodeFact => ({
+  name,
+  ready,
+  role: 'server',
+  notReadySince: ready ? null : '2026-09-11T14:55:00Z',
+  ingressMode: 'all',
+  ingressAddresses: [`198.51.100.${name.charCodeAt(name.length - 1) % 250}`, `2001:db8::${name.slice(-1)}`],
+  ...over,
+});
+
+/**
+ * A real, data-holding replica. `running` is what separates a copy of the data
+ * from an empty rebuild target Longhorn just scheduled — the fixtures below all
+ * mean the former, so they say so explicitly.
+ */
+const replicaOn = (volumeName: string, nodeId: string, running = true) => ({
+  volumeName, nodeId, running,
 });
 
 const localTenant = (over: Partial<TenantFact> = {}): TenantFact => ({
@@ -54,8 +75,8 @@ describe('degradation matrix', () => {
       tenants: [t],
       volumes: [{ volumeName: 'pvc-1', namespace: 'tenant-acme', pvcName: 'data', robustness: 'degraded' }],
       replicas: [
-        { volumeName: 'pvc-1', nodeId: 'node-a' },
-        { volumeName: 'pvc-1', nodeId: 'node-c' },
+        replicaOn('pvc-1', 'node-a'),
+        replicaOn('pvc-1', 'node-c'),
       ],
     }));
     expect(out.affectedTenants[0].state).toBe('degraded');
@@ -68,7 +89,7 @@ describe('degradation matrix', () => {
     const out = computeOutageImpact(baseInput({
       tenants: [t],
       volumes: [{ volumeName: 'pvc-1', namespace: 'tenant-acme', pvcName: 'acme-storage', robustness: 'faulted' }],
-      replicas: [{ volumeName: 'pvc-1', nodeId: 'node-c' }],
+      replicas: [replicaOn('pvc-1', 'node-c')],
     }));
     const f = out.affectedTenants[0].findings.find((x) => x.kind === 'volume_last_replica_on_down_node');
     expect(f?.severity).toBe('down');
@@ -151,8 +172,8 @@ describe('fleet view', () => {
       ],
       volumes: [{ volumeName: 'pvc-2', namespace: 'tenant-acme', pvcName: 'd', robustness: 'degraded' }],
       replicas: [
-        { volumeName: 'pvc-2', nodeId: 'node-a' },
-        { volumeName: 'pvc-2', nodeId: 'node-c' },
+        replicaOn('pvc-2', 'node-a'),
+        replicaOn('pvc-2', 'node-c'),
       ],
     }));
     expect(out.affectedTenantCount).toBe(2);
@@ -171,5 +192,167 @@ describe('fleet view', () => {
     expect(out.affectedTenants[0].state).toBe('unknown');
     // Crucially NOT an empty list — an empty result would render as "all fine".
     expect(out.affectedTenantCount).toBe(1);
+  });
+});
+
+/**
+ * Dead DNS records are an accepted state (operator decision, 2026-09-11: the
+ * platform does not own DNS). Accepted, but not invisible — the outage payload
+ * has to carry enough for the UI to name the manual action, because the drill
+ * found this stated only in a tooltip on a page the operator had no reason to
+ * open while firefighting.
+ */
+describe('down-node ingress reachability', () => {
+  it('reports the addresses that DNS still points at', () => {
+    const out = computeOutageImpact(baseInput({
+      nodes: [
+        node('node-a', true),
+        node('node-c', false, { ingressAddresses: ['198.51.100.7', '2001:db8::7'] }),
+      ],
+    }));
+    expect(out.nodesDown).toHaveLength(1);
+    expect(out.nodesDown[0].ingressMode).toBe('all');
+    expect(out.nodesDown[0].ingressAddresses).toEqual(['198.51.100.7', '2001:db8::7']);
+  });
+
+  it('lists NO addresses for an ingress:none node — those records were never published', () => {
+    // Sending the operator to withdraw records that do not exist is worse than
+    // saying nothing: it burns the one thing they have during an outage, time.
+    const out = computeOutageImpact(baseInput({
+      nodes: [
+        node('node-a', true),
+        node('node-c', false, { ingressMode: 'none', ingressAddresses: ['198.51.100.7'] }),
+      ],
+    }));
+    expect(out.nodesDown[0].ingressMode).toBe('none');
+    expect(out.nodesDown[0].ingressAddresses).toEqual([]);
+  });
+
+  it('keeps addresses for an ingress:local node — it still served its own routes', () => {
+    const out = computeOutageImpact(baseInput({
+      nodes: [
+        node('node-a', true),
+        node('node-c', false, { ingressMode: 'local', ingressAddresses: ['198.51.100.9'] }),
+      ],
+    }));
+    expect(out.nodesDown[0].ingressAddresses).toEqual(['198.51.100.9']);
+  });
+});
+
+/**
+ * A replica object on a live node is not the same thing as a copy of the data.
+ *
+ * When a node dies, Longhorn immediately schedules a fresh replica on a
+ * survivor and starts rebuilding into it. That object is on a live node while
+ * holding nothing. Observed on staging 2026-09-11: a one-replica local-tier
+ * volume whose only replica died was reported as *"running on reduced
+ * redundancy while Longhorn rebuilds — no action required, this resolves
+ * itself"*. It could never resolve itself; the only source was the dead node,
+ * and the volume went `faulted` minutes later.
+ *
+ * Saying "no action required" to an operator whose tenant data has just become
+ * unreachable is the most damaging thing this endpoint could get wrong, so it
+ * is asserted directly.
+ */
+describe('an empty rebuild target is not a surviving copy', () => {
+  const vol = { volumeName: 'pvc-1', namespace: 'tenant-acme', pvcName: 'acme-storage', robustness: 'degraded' };
+
+  it('reports DOWN when the only running replica was on the dead node', () => {
+    const [entry] = computeOutageImpact(baseInput({
+      tenants: [localTenant({ pinnedNode: 'node-a' })],
+      volumes: [vol],
+      replicas: [
+        replicaOn('pvc-1', 'node-c', true),   // the real copy — on the dead node
+        replicaOn('pvc-1', 'node-a', false),  // empty rebuild target on a survivor
+      ],
+    })).affectedTenants;
+    const kinds = entry.findings.map((f) => f.kind);
+    expect(kinds).toContain('volume_last_replica_on_down_node');
+    expect(kinds).not.toContain('volume_degraded_rebuilding');
+  });
+
+  it('still reports rebuilding when a running replica genuinely survives', () => {
+    // The change must not turn every real rebuild into a false alarm.
+    const [entry] = computeOutageImpact(baseInput({
+      tenants: [localTenant({ pinnedNode: 'node-a' })],
+      volumes: [vol],
+      replicas: [
+        replicaOn('pvc-1', 'node-c', true),
+        replicaOn('pvc-1', 'node-a', true),
+      ],
+    })).affectedTenants;
+    const kinds = entry.findings.map((f) => f.kind);
+    expect(kinds).toContain('volume_degraded_rebuilding');
+    expect(kinds).not.toContain('volume_last_replica_on_down_node');
+  });
+
+  it('trusts a faulted volume even if a replica object looks live', () => {
+    // Longhorn has already concluded the data is unreachable; the platform
+    // must not talk it out of that.
+    const [entry] = computeOutageImpact(baseInput({
+      tenants: [localTenant({ pinnedNode: 'node-a' })],
+      volumes: [{ ...vol, robustness: 'faulted' }],
+      replicas: [replicaOn('pvc-1', 'node-a', true)],
+    })).affectedTenants;
+    expect(entry.findings.map((f) => f.kind)).toContain('volume_last_replica_on_down_node');
+  });
+});
+
+/**
+ * "0 tenants affected" can be true and badly incomplete.
+ *
+ * The 2026-09-11 worker drill: the lost node held no tenant workloads, so the
+ * banner reported no impact — correctly — while the backup plugin's Service had
+ * zero ready endpoints and backups were unavailable for the whole outage.
+ *
+ * Kubernetes marks an endpoint on a NotReady node not-ready even when the
+ * process behind it is healthy and still renewing its leader lease, so the
+ * standby cannot take over and nothing resolves it until the node is fixed or
+ * removed. Measured wedged for the full 5m37s.
+ */
+describe('platform services with no ready endpoint', () => {
+  const downOnly = { nodes: [node('node-a', true), node('node-c', false)] };
+
+  it('names a watched service that has no ready endpoint', () => {
+    const out = computeOutageImpact(baseInput({
+      ...downOnly,
+      endpoints: [{ namespace: 'cnpg-system', serviceName: 'barman-cloud', readyEndpoints: 0 }],
+    }));
+    expect(out.degradedServices).toEqual([
+      { namespace: 'cnpg-system', name: 'barman-cloud', label: 'Backups (barman-cloud plugin)' },
+    ]);
+  });
+
+  it('stays quiet when the service still has a ready endpoint', () => {
+    const out = computeOutageImpact(baseInput({
+      ...downOnly,
+      endpoints: [{ namespace: 'cnpg-system', serviceName: 'barman-cloud', readyEndpoints: 1 }],
+    }));
+    expect(out.degradedServices).toEqual([]);
+  });
+
+  it('reports nothing when no node is down — a rollout blip is not an outage', () => {
+    // Endpoints go briefly empty during an ordinary rollout. Raising an outage
+    // alarm for that would train the operator to ignore this field.
+    const out = computeOutageImpact(baseInput({
+      nodes: [node('node-a', true), node('node-b', true)],
+      endpoints: [{ namespace: 'cnpg-system', serviceName: 'barman-cloud', readyEndpoints: 0 }],
+    }));
+    expect(out.nodesDown).toEqual([]);
+    expect(out.degradedServices).toEqual([]);
+  });
+
+  it('makes no claim when endpoints were not measured', () => {
+    // Absent data must not render as "everything is reachable".
+    expect(computeOutageImpact(baseInput(downOnly)).degradedServices).toEqual([]);
+    expect(computeOutageImpact(baseInput({ ...downOnly, endpoints: [] })).degradedServices).toEqual([]);
+  });
+
+  it('falls back to namespace/name for a service with no friendly label', () => {
+    const out = computeOutageImpact(baseInput({
+      ...downOnly,
+      endpoints: [{ namespace: 'platform', serviceName: 'something-new', readyEndpoints: 0 }],
+    }));
+    expect(out.degradedServices[0].label).toBe('platform/something-new');
   });
 });

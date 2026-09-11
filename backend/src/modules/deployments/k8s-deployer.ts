@@ -21,7 +21,7 @@ import { buildPasswordResetInitContainer } from './password-reset.js';
 import { STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
 import { allocateResources, InsufficientResourceBudgetError } from './resource-allocator.js';
 import { isNotFound } from '../../shared/k8s-errors.js';
-import { describeTermination, isOomTermination } from '../../lib/container-termination.js';
+import { describeTermination, isOomTermination, isReplacedPodRecord } from '../../lib/container-termination.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -1636,11 +1636,18 @@ async function getK8sDeploymentStatus(
 
   // Check for pod failures — use baseName for app label selector
   type PodItem = {
+    // metadata.deletionTimestamp + status.reason are what tell a live pod from
+    // a dead record — omitting them compiles fine and silently restores the
+    // node-reboot false positive below. See lib/container-termination.ts.
+    metadata?: {
+      deletionTimestamp?: string;
+    };
     spec?: {
       nodeName?: string;
     };
     status?: {
       phase?: string;
+      reason?: string;
       conditions?: Array<{ type?: string; status?: string; reason?: string; message?: string }>;
       containerStatuses?: Array<{ state?: { waiting?: { reason?: string; message?: string }; terminated?: { reason?: string; message?: string; exitCode?: number } } }>;
     };
@@ -1648,11 +1655,25 @@ async function getK8sDeploymentStatus(
   const pods = await k8s.core.listNamespacedPod({ namespace, labelSelector: `app=${baseName}` });
   const podList = (pods as { items?: PodItem[] }).items ?? [];
 
+  // Dead pod OBJECTS the controller has already replaced — a node-reboot
+  // corpse, a drained pod, a completed rollout casualty — sit in the namespace
+  // for as long as the kubelet's terminated-pod GC lets them (default: 12500
+  // pods, i.e. effectively forever). They are not this workload; reading their
+  // container statuses is what reported three healthy 1/1 production tenants as
+  // "Workload ran out of memory" on 2026-09-11 (their corpses exited 137 at a
+  // node shutdown). Filter once, up front, so neither the failure scan NOR the
+  // host-node column can pick one up.
+  const livePods = podList.filter((p) => !isReplacedPodRecord({
+    phase: p.status?.phase,
+    reason: p.status?.reason,
+    deletionTimestamp: p.metadata?.deletionTimestamp,
+  }));
+
   // First scheduled node — used by status-reconciler to populate
   // deployments.current_node_name for the admin UI's "host node" column.
-  const nodeName = podList.find((p) => p.spec?.nodeName)?.spec?.nodeName ?? null;
+  const nodeName = livePods.find((p) => p.spec?.nodeName)?.spec?.nodeName ?? null;
 
-  for (const pod of podList) {
+  for (const pod of livePods) {
     for (const cs of (pod.status?.containerStatuses ?? [])) {
       // Check waiting state (CrashLoopBackOff, ImagePullBackOff, etc.)
       const waitReason = cs.state?.waiting?.reason;
@@ -1745,7 +1766,7 @@ async function getK8sDeploymentStatus(
       // Pod-level volume / image / config errors. We classify a few
       // well-known reasons to user-friendly text, fall through to
       // the raw event message for everything else.
-      const podName = podList[0] && (podList[0] as { metadata?: { name?: string } }).metadata?.name;
+      const podName = livePods[0] && (livePods[0] as { metadata?: { name?: string } }).metadata?.name;
       const podEvents = podName
         ? eventItems.filter(e => e.involvedObject?.kind === 'Pod' && e.involvedObject?.name === podName)
         : eventItems.filter(e => e.involvedObject?.kind === 'Pod');

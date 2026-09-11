@@ -64,6 +64,15 @@ rules:
   - apiGroups: [""]
     resources: ["pods/log"]
     verbs: ["get", "list"]
+  # EndpointSlices — read-only, for the node-outage banner's "is this platform
+  # service actually reachable?" check (tenant-health/collect.ts). A pod on a
+  # NotReady node keeps reporting Running while its endpoint is marked
+  # not-ready, so the EndpointSlice is the only honest source for what traffic
+  # still reaches. Cluster-scoped because the watched services live outside the
+  # platform namespace (cnpg-system).
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["get", "list"]
   # Subresource: pods/exec — used directly by SQL Manager (kubectl exec into
   # DB pods to run queries) and indirectly via RBAC privilege-escalation
   # prevention (platform-api must hold any permission it grants to

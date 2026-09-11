@@ -104,6 +104,23 @@ export const nodeDownSchema = z.object({
   notReadySince: z.string().nullable(),
   /** True when this node is where the mail stack currently runs. */
   isMailActiveNode: z.boolean(),
+  /**
+   * `insula.host/ingress-mode` — 'all' | 'local' | 'none'. A down node with a
+   * mode other than 'none' is still an advertised ingress endpoint.
+   */
+  ingressMode: z.string().nullable(),
+  /**
+   * The node's public addresses, one per family. These are what the platform
+   * published as A/AAAA records for every route it serves, and they keep
+   * resolving after the node dies.
+   *
+   * The platform deliberately does NOT own DNS (operator decision, 2026-09-11):
+   * dead records are accepted and withdrawing them is a manual action. That
+   * makes it all the more important to SAY so during an outage — the drill
+   * found this stated only as a tooltip on one page the operator had no reason
+   * to open.
+   */
+  ingressAddresses: z.array(z.string()),
 });
 export type NodeDown = z.infer<typeof nodeDownSchema>;
 
@@ -124,6 +141,27 @@ export const clusterOutageImpactSchema = z.object({
   degradedTenantCount: z.number().int(),
   /** True when the mail stack's active node is among nodesDown. */
   mailAffected: z.boolean(),
+  /**
+   * Platform services that currently have ZERO ready endpoints.
+   *
+   * "0 tenants affected" is true and reassuring and can be badly incomplete.
+   * The 2026-09-11 worker drill produced exactly that: no tenant workloads ran
+   * on the lost node, so the banner reported no impact — while the backup
+   * plugin's Service had no ready endpoint at all and backups were silently
+   * unavailable.
+   *
+   * Kubernetes marks an endpoint on a NotReady node not-ready even when the
+   * process behind it is perfectly healthy, so a leader-elected singleton whose
+   * node loses only its kubelet becomes unroutable while its standby cannot
+   * take over — the lease is still being renewed by the live leader. Nothing
+   * resolves that on its own, so it has to be said out loud.
+   */
+  degradedServices: z.array(z.object({
+    namespace: z.string(),
+    name: z.string(),
+    /** Operator-facing name, e.g. "Backups" rather than "barman-cloud". */
+    label: z.string(),
+  })),
   /** ISO timestamp of the cluster read. */
   observedAt: z.string(),
   /**
@@ -163,3 +201,78 @@ export const tenantRepinResponseSchema = z.object({
   volumesPatched: z.number().int(),
 });
 export type TenantRepinResponse = z.infer<typeof tenantRepinResponseSchema>;
+
+/**
+ * Failback review — what is still displaced after a node comes back.
+ *
+ * The 2026-09-11 drill covered the outage well and the RETURN not at all.
+ * When a node goes NotReady the platform moves tenants off it: `ha`-tier
+ * tenants are unpinned automatically, `local`-tier ones are re-pinned by the
+ * operator through the recovery wizard. When that node later rejoins, nothing
+ * moved back and nothing said so — the placement change simply became the new
+ * normal, silently, and the returned node looked healthy while sitting empty.
+ *
+ * That silence is a problem in both directions. An operator who pinned a
+ * tenant deliberately (node class, data locality, a licence tied to a host)
+ * has had that intent erased without being told. An operator who did not care
+ * about the pin needs to know the tenant is now floating so they stop
+ * expecting it on the old host.
+ *
+ * So this is a REVIEW, not an automatic failback. Moving a tenant's storage
+ * back is a data movement with real cost and no urgency, and for an `ha`-tier
+ * tenant the unpinned state is usually the better one. The platform states
+ * what changed, recommends the action it believes is right, and leaves the
+ * decision with the operator — the same stance as mail failover, which is
+ * never auto-enabled.
+ */
+export const failbackRecommendationSchema = z.enum([
+  /**
+   * Leave it. The tenant is `ha`-tier and now unpinned, which is a strictly
+   * better placement than the pin it lost — more replicas eligible, no single
+   * node to lose again.
+   */
+  'keep_current_placement',
+  /**
+   * Consider re-pinning. The tenant is `local`-tier and was pinned before the
+   * outage, so the pin was load-bearing; the operator may want it back on the
+   * returned node.
+   */
+  'consider_repin',
+]);
+export type FailbackRecommendation = z.infer<typeof failbackRecommendationSchema>;
+
+export const failbackReviewItemSchema = z.object({
+  tenantId: z.string(),
+  tenantName: z.string(),
+  /** The node the tenant was moved OFF during the outage. Now Ready again. */
+  movedFromNode: z.string(),
+  /** Where it is pinned now; null means unpinned (scheduler places it freely). */
+  currentNode: z.string().nullable(),
+  storageTier: z.string(),
+  /** `auto` = the platform unpinned it; `operator` = someone drove the wizard. */
+  movedBy: z.enum(['auto', 'operator']),
+  movedAt: z.string(),
+  recommendation: failbackRecommendationSchema,
+  /** One operator-facing sentence explaining the recommendation. */
+  detail: z.string(),
+});
+export type FailbackReviewItem = z.infer<typeof failbackReviewItemSchema>;
+
+export const failbackReviewSchema = z.object({
+  /** Nodes that were down, are Ready again, and still have displaced tenants. */
+  returnedNodes: z.array(z.string()),
+  items: z.array(failbackReviewItemSchema),
+  observedAt: z.string(),
+  /**
+   * Non-null when a read failed. As with the outage impact, an empty `items`
+   * list with a `readError` means "unknown", never "nothing to review".
+   */
+  readError: z.string().nullable(),
+});
+export type FailbackReview = z.infer<typeof failbackReviewSchema>;
+
+/** Dismissing a review item records the decision; it never moves data. */
+export const failbackAcknowledgeRequestSchema = z.object({
+  reason: z.string().min(3).max(500),
+});
+export type FailbackAcknowledgeRequest = z.infer<typeof failbackAcknowledgeRequestSchema>;

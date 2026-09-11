@@ -61,11 +61,22 @@ const MOCK_DEPLOYMENTS = {
   pagination: { total_count: 3, cursor: null, has_more: false, page_size: 25 },
 };
 
-const MOCK_BACKUPS = {
+// Off-site bundles (`backup_jobs`) — what the Backups tab reads since the
+// retired per-resource `backups` table was dropped (2026-09-11).
+const MOCK_BUNDLES = {
   data: [
-    { id: 'b1', tenantId: 'tenant-001', backupType: 'auto', resourceType: 'database', resourceId: 'db1', storagePath: null, sizeBytes: 5242880, status: 'completed', completedAt: '2026-03-01T00:01:00Z', expiresAt: '2026-04-01T00:00:00Z', notes: null, createdAt: '2026-03-01T00:00:00Z' },
+    {
+      id: 'bundle-1', tenantId: 'tenant-001', tenantStatus: 'active', tenantName: 'Acme Corp',
+      initiator: 'system', systemTrigger: 'scheduled', status: 'completed',
+      targetKind: 's3', targetUri: 's3://tenant/acme', targetConfigId: null,
+      label: null, description: null, sizeBytes: 5242880, retentionDays: 30,
+      expiresAt: new Date(Date.now() + 30 * 86_400_000).toISOString(), exportMode: null, exportArtifact: null,
+      startedAt: '2026-03-01T00:00:00Z', finishedAt: '2026-03-01T00:01:00Z',
+      lastError: null, databaseDumps: null,
+      createdAt: '2026-03-01T00:00:00Z', updatedAt: '2026-03-01T00:01:00Z',
+    },
   ],
-  pagination: { total_count: 1, cursor: null, has_more: false, page_size: 25 },
+  pagination: { total_count: 1, cursor: null, has_more: false, page_size: 50 },
 };
 
 const MOCK_EMAIL_DOMAINS = { data: [] };
@@ -75,7 +86,7 @@ function setupMockApi() {
   mockApiFetch.mockImplementation((path: string) => {
     if (path.includes('/deployments')) return Promise.resolve(MOCK_DEPLOYMENTS);
     if (path.includes('/databases')) return Promise.resolve(MOCK_DATABASES);
-    if (path.includes('/backups')) return Promise.resolve(MOCK_BACKUPS);
+    if (path.includes('/tenant-bundles')) return Promise.resolve(MOCK_BUNDLES);
     if (path.includes('/mailboxes')) return Promise.resolve(MOCK_MAILBOXES);
     if (path.includes('/email/domains')) return Promise.resolve(MOCK_EMAIL_DOMAINS);
     if (path.includes('/domains')) return Promise.resolve(MOCK_DOMAINS);
@@ -184,7 +195,16 @@ describe('TenantDetail resource tabs', () => {
     await waitFor(() => {
       expect(screen.getByTestId('backups-table')).toBeInTheDocument();
     });
-    expect(screen.getByText('database')).toBeInTheDocument();
+    // The row is a real off-site BUNDLE, not a row from the retired
+    // per-resource `backups` table (which was empty on every cluster, so this
+    // tab and the tenant dashboard both showed 0 — operator report 2026-09-11).
+    expect(screen.getByTestId('tenant-bundles-summary')).toHaveTextContent('1 off-site backup bundle');
+    expect(screen.getByText('system')).toBeInTheDocument();
+    // An expiry is a FUTURE instant: TimeCell's default age mode renders those
+    // as "just now" (seen in the browser on DEV), so the column must use
+    // mode="until".
+    expect(screen.getByTestId('backups-table')).toHaveTextContent(/in 30d/);
+    expect(screen.getByTestId('backups-table')).not.toHaveTextContent('just now');
   });
 
   it('still shows tenant account info alongside tabs', async () => {
@@ -230,7 +250,7 @@ describe('TenantDetail impersonation', () => {
         });
       }
       if (path.includes('/deployments')) return Promise.resolve(MOCK_DEPLOYMENTS);
-      if (path.includes('/backups')) return Promise.resolve(MOCK_BACKUPS);
+      if (path.includes('/tenant-bundles')) return Promise.resolve(MOCK_BUNDLES);
       if (path.includes('/mailboxes')) return Promise.resolve(MOCK_MAILBOXES);
       if (path.includes('/email/domains')) return Promise.resolve(MOCK_EMAIL_DOMAINS);
       if (path.includes('/domains')) return Promise.resolve(MOCK_DOMAINS);

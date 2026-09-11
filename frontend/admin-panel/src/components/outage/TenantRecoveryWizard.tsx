@@ -249,6 +249,10 @@ export default function TenantRecoveryWizard({ entry, onClose }: Props) {
               </p>
               <p className="text-xs text-gray-600 dark:text-gray-400">
                 The tenant stays listed as degraded until its pods report Ready again.
+                {' '}Any pods left stranded on the offline node were removed as part of the
+                move — without that, the tenant&rsquo;s workloads would wait behind them
+                indefinitely, because a pod on a node with no running kubelet never finishes
+                terminating.
               </p>
               <button
                 type="button"

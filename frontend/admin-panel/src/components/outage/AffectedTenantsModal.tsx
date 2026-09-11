@@ -4,6 +4,7 @@ import { X, AlertTriangle, XCircle, Info, HelpCircle, Wrench } from 'lucide-reac
 import type { ClusterOutageImpact, TenantHealthEntry } from '@insula/api-contracts';
 import { RECOVERY_ACTIONS } from './recovery-actions';
 import TenantRecoveryWizard from './TenantRecoveryWizard';
+import DnsManualActionNotice from './DnsManualActionNotice';
 
 /**
  * Which tenants an outage is affecting, and what to do about each.
@@ -167,6 +168,12 @@ export default function AffectedTenantsModal({ impact, onClose, onlyTenantId }: 
         </div>
 
         <div className="max-h-[70vh] space-y-3 overflow-y-auto p-5">
+          {/*
+            First, above the tenant list: this is the one recovery step the
+            platform cannot take for the operator, so it must not be buried
+            under a scroll of tenant cards.
+          */}
+          <DnsManualActionNotice nodesDown={impact.nodesDown} />
           {impact.readError && (
             <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-900/30 dark:text-amber-200">
               <strong>Tenant impact could not be determined.</strong> {impact.readError}

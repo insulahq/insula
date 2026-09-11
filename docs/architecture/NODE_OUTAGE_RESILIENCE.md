@@ -226,6 +226,14 @@ recoverable — the one single point of failure that replication cannot address.
 | D2 | Restoration wizard for degraded tenants | **done** |
 | C1 | Exact DR drill procedure, executed and recorded | **done** (validate + dind run and logged; `bootstrap` RTO still unmeasured) |
 | C2 | Correct the runbooks (see below) | **done** |
+| G1 | API survives a DB-primary failover (§8.1) | **done** |
+| G2 | Failback review after a node returns (§8.2) | **done** |
+| G3 | Manual DNS action surfaced during an outage (§8.3) | **done** |
+| G4 | Auto re-pin verified on a real HA-tier tenant | **done** (§8.4) |
+| G5 | Mail-failover-not-configured banner verified rendering | **done** (§8.4) |
+| G6 | Re-pin driven end to end through the recovery wizard | **done** (§8.4) |
+| G7 | Worker-node loss drilled (§8.6) | **done** |
+| G8 | Re-pin evicts pods stranded on the dead node (§8.5) | **done** |
 
 ### Known doc inaccuracies to fix under C2
 
@@ -241,3 +249,217 @@ recoverable — the one single point of failure that replication cannot address.
 - `NODE_HEALTH_MONITORING.md` does not mention that a dead node's row keeps rendering
   stale metrics, nor the detection latency.
 - `DISASTER_RECOVERY.md` RTO/RPO table has never been filled in.
+
+
+## 8. Gaps closed after the first drill round (2026-09-11)
+
+Answering "is every failover scenario except total cluster loss now either automated or
+visible?" honestly meant saying **no** first. These are the gaps that answer covered.
+
+### 8.1 The management API died with its database (G1)
+
+The drill recorded the API unreachable for ~3 minutes after the node carrying the Postgres
+primary went NotReady, and the first explanation — "it waits for the DB" — was wrong. The
+probes were never implicated: liveness and readiness both hit `/api/v1/healthz`, which is
+shallow and has no DB dependency, so a DB blip cannot evict the pod.
+
+The pod **died**: `exitCode=1`, `reason=Error`, and in the previous container's log
+
+```
+TypeError: Cannot read properties of undefined (reading 'Symbol(pino.msgPrefix)')
+```
+
+`safeTick` — the helper whose entire job is to stop a failing scheduler tick from killing
+the process — extracted its logger as `log?.warn`, which **detaches the method from its
+object**. Every caller passes a real pino logger, whose `warn` needs its receiver. So the
+moment a tick failed, the error handler itself threw, inside an async timer callback, which
+is an unhandled rejection, which is fatal on Node 15+. The DB errors were all caught and
+logged correctly; the process was killed by the code that was reporting them.
+
+Every existing `safeTick` test passed `{ warn: vi.fn() }` — a bare object literal with no
+`this` to lose — which is exactly why the suite stayed green. The guard tests now use a
+receiver-bound logger; reverting the fix fails those three and leaves the original five
+passing.
+
+Also hardened, so the next instance of this class degrades instead of killing:
+
+- global `unhandledRejection` (log loudly, keep serving) and `uncaughtException` (log, exit)
+  handlers in `server.ts`;
+- the outage collector's **DB** reads are now guarded like its cluster reads. A node loss is
+  the one moment that endpoint exists for, and it is also the moment the DB may be mid-
+  failover. Node readiness comes from Kubernetes and survives that, so the banner still
+  names the down node and sets `readError` — "tenant impact unknown", never a reassuring
+  zero.
+
+### 8.2 Placement changes became permanent in silence (G2)
+
+§3 analysed failback for storage and mail. It did not cover the tenants themselves. While a
+node is down the platform moves tenants off it — HA-tier automatically, local-tier by
+operator through the recovery wizard — and when the node rejoined, nothing moved back and
+**nothing said so**. The returned node looked healthy while sitting empty, and an operator
+who had pinned a tenant deliberately had that intent erased without a word.
+
+The fix is a *review*, not an automatic failback. Moving storage back is real data movement
+with no urgency behind it, and for an HA-tier tenant the unpinned state is usually the
+better one — more nodes eligible, no single host left to lose. The platform states what
+changed, says which way it leans, and leaves the decision with the operator. The same stance
+as mail failover, which is never auto-enabled.
+
+It is a projection over audit rows the platform already writes (`tenant.auto_repin` records
+`strandedOn`; `tenant.repin` records `from`/`to`), so there is no new table and no background
+job holding state. Acknowledgement uses the same mechanism (`tenant.failback_reviewed`),
+which reduces the whole rule to **latest placement event wins** — and that falls out
+correctly for repeated outages: a tenant moved off A and later off B is displaced from B, and
+an ack that predates a move does not silence it.
+
+### 8.3 The one step the platform cannot take was the quietest (G3)
+
+The platform does not own DNS and will not withdraw records for a dead node — deliberate, per
+the operator decision in §6. But the only place it admitted this was a strikethrough on an
+ingress pill on the Cluster Nodes page: no addresses, no instruction, on a surface nobody
+opens mid-incident. The affected-tenants modal now leads with the stale A/AAAA records, states
+that nothing will remove them, and offers a copy button. Nodes with `ingress-mode: none`
+contribute nothing — their addresses were never published.
+
+
+## 8.4 Drill: staging1 loss — auto re-pin and the recovery wizard (2026-09-11)
+
+Set up so the drill isolated placement behaviour: the Postgres primary
+(`system-db-1`) and the active mail node were both staging3, so killing staging1
+exercised re-pinning **without** the noise of a database failover. An `ha`-tier
+tenant was created for the drill with a real two-replica Longhorn volume, live on
+staging1 *and* staging3 — the auto-repin gate requires a **proven** live replica,
+not one inferred from the tier.
+
+| Time (UTC) | Event |
+|---|---|
+| 21:53:13 | `systemctl stop k3s` on staging1 |
+| 21:54:02 | **auto re-pin fires** — the HA-tier tenant is unpinned, 49 s after the kill |
+| 21:54:30 | node observed `NotReady`; outage endpoint reports `down=[staging1] tenants=3` |
+| ~21:55 | operator drives banner → pill → modal → wizard in a real browser |
+| 21:56:02 | **wizard re-pin commits** — a local-tier tenant moves staging1 → staging2 |
+
+Auto re-pin beat the 30 s node poll because the fast-down watch sees the
+readiness flip directly rather than waiting for a sample.
+
+**G4.** The audit row, not a log line:
+`tenant.auto_repin strandedOn=staging1 liveReplicaNodes=[staging2, staging3]
+workloadsPatched=2 volumesPatched=1`. The HA-tier tenant was unpinned and its
+Deployment `nodeSelector` cleared; the two **local**-tier tenants were left
+pinned, correctly — a local-tier volume has one replica, so moving the pin would
+not move the data. That selectivity is the point: the gate acted on the tenant it
+could prove was safe to move and declined the ones it could not.
+
+**G6.** Executed end to end in a browser, from a surviving node's address. The
+wizard's target list offered `worker, staging2, staging3` — **staging1 absent**,
+so the dead node cannot be chosen as a recovery target. The execute button was
+asserted **disabled before** the typed-name confirmation and enabled only after
+(both states, not just the second). Zero JS errors and zero failed `/api/v1`
+responses throughout.
+
+**G5.** With mail failover configured, `shouldWarn` is correctly `false`. Toggling
+auto-failover off (and restoring it immediately afterwards) produced
+`shouldWarn: true, reasons: ['automatic failover is disabled']` and the banner
+rendered on the dashboard **and** on every other admin page.
+
+One thing worth keeping: the wizard reported "was moved" about 8 seconds before
+the database showed the new pin. That is the write landing after the optimistic
+UI, not a bug — but it is exactly the shape that makes a self-reported success
+untrustworthy. The pass here is the audit row and `tenants.node_name`.
+
+## 8.5 What the drill found that analysis had not (G8)
+
+Re-pinning succeeded in every visible way and **the tenant stayed down anyway**
+— `0/1`, no replacement ReplicaSet, still unchanged twenty minutes later.
+
+Tenant workloads use `strategy: Recreate`, which is correct: the volume is RWO
+and two pods cannot mount it at once. Recreate waits for every old pod to be
+*fully gone* before creating a new one, and a pod on a dead node never gets
+there — only its kubelet can confirm the container stopped, so the pod object
+sits in `Terminating` indefinitely and the Deployment waits behind it
+indefinitely. Force-deleting the stranded pod produced a new ReplicaSet on the
+target node within seconds, which is what identified the cause.
+
+This had been invisible because **a temporary outage hides it**: when the node
+comes back its kubelet confirms the deletions, the stranded pods clear, and
+everything proceeds. Observed directly here — the HA-tier tenant that had been
+stuck for twenty minutes got a new ReplicaSet moments after staging1 rejoined.
+The failure only bites on a **permanent** loss, which is exactly the case a
+re-pin exists for.
+
+`repinTenantPlacement` now evicts pods stranded on the released node, but only
+when that node is `NotReady`. That check is the safety boundary, not a nicety:
+force-delete drops the pod object with no confirmation the container stopped, so
+on a live node it would risk two writers on one RWO volume. On a drain the
+kubelet is alive and terminates pods properly, so the step must not run there.
+
+### A replica object is not a copy of the data
+
+The same drill surfaced a second, quieter problem. When a node dies Longhorn
+immediately schedules an empty rebuild target on a survivor. Counting that as a
+surviving replica made the platform tell an operator whose **one-replica**
+local-tier volume had just died that it was *"running on reduced redundancy while
+Longhorn rebuilds — no action required, this resolves itself."* It could never
+resolve itself: the only source was the dead node, and the volume went `faulted`
+minutes later.
+
+Saying "no action required" to an operator whose tenant data has just become
+unreachable is close to the most damaging thing this endpoint could get wrong.
+A live replica now means a **running** one, and a `faulted` volume is believed
+outright rather than argued with.
+
+
+## 8.6 Drill: worker-node loss (G7, 2026-09-11)
+
+`systemctl stop k3s-agent` on `worker` at 22:15:19 UTC. The worker carried no
+tenant workloads but did hold the **barman-cloud leader**, one of two CNPG
+operator replicas, a Traefik DaemonSet pod, oauth2-proxy and two small platform
+Deployments.
+
+| Check | Result |
+|---|---|
+| Detection | `worker=NotReady` at 22:16:35 — **76 s** |
+| Outage endpoint | `down=['worker'] tenants=0` — correct |
+| Platform health | `degraded`; `kubernetes: degraded`, `database: ok` |
+| Database | writable throughout, every probe returned a row |
+
+### The drill is not a machine loss, and that is the interesting part
+
+Stopping `k3s-agent` stops the kubelet; it does **not** stop the containers.
+Three minutes after the "kill", the barman leader was still renewing its
+15-second leader lease with a `renewTime` one second old. The node was NotReady
+while its workloads were alive and still talking to the API server — a kubelet
+failure, which is a real and common mode (agent crash, partial partition).
+
+The HA arrangement does not survive it:
+
+    barman ready endpoints: 0 of 2
+
+Kubernetes marks an endpoint on a NotReady node not-ready even though the
+process behind it is healthy, so the Service will not route to the live leader —
+and the standby cannot take over, because the lease is legitimately held and
+still being renewed. The backup plugin was therefore **unreachable while its
+leader was fine**, and it stayed that way for the full 5m37s, recovering only
+when the node rejoined (at which point the standby on staging3 took the lease).
+
+This is distinct from the earlier ~76 s recovery measured by **rebooting** a
+node: that kills the containers, the lease expires, and the standby takes over.
+Both are real; the second replica only covers the first. "barman is HA" should
+not be read as covering a kubelet-only failure on the leader's node.
+
+The platform cannot safely resolve this automatically — from the cluster's side
+a live-but-unmanageable node is indistinguishable from a partition, and forcing a
+second leader is precisely the split-brain the lease exists to prevent. The
+operator action is to fix the kubelet or delete the node; either releases the
+lease. What the platform *can* do is stop it being invisible, which it now does:
+the outage banner reports watched platform Services with zero ready endpoints
+next to the tenant count, and the "No tenant impact detected" reassurance only
+appears when nothing else is broken either.
+
+### Noticed, not fixed
+
+`/api/v1/admin/status` reports a `redis` service as `ok`. Redis was removed in
+M14; `shared/redis.ts` is now an in-process LRU cache whose `ping()` cannot fail.
+The check can only ever return `ok`, so it tells an operator nothing while naming
+a component that no longer exists. Left alone here — it is a health-API shape
+change, not a failover gap.

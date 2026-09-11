@@ -49,9 +49,20 @@ export function safeTick(
   fn: () => Promise<unknown>,
   log?: TickLogger,
 ): void {
-  const warn = log?.warn
+  // Bind, do NOT detach. `log?.warn` alone extracts the method from its object
+  // and loses the receiver, so a caller passing a real pino logger gets a
+  // `this === undefined` inside pino:
+  //
+  //     TypeError: Cannot read properties of undefined (reading 'Symbol(pino.msgPrefix)')
+  //
+  // That throw happens on the FAILURE path — the one place this helper exists
+  // to make safe — so it is invisible until a real outage, and then it kills
+  // the process it was written to protect. Exactly the crash seen on staging
+  // during a Postgres-primary failover on 2026-09-11.
+  const warn = log
+    ? (msg: string, err?: unknown) => log.warn(msg, err)
     // eslint-disable-next-line no-console
-    ?? ((msg: string, err?: unknown) => console.warn(msg, err ?? ''));
+    : (msg: string, err?: unknown) => console.warn(msg, err ?? '');
   try {
     void fn().catch((err: unknown) => {
       warn(`[${name}] tick failed (continuing — a scheduler tick must never terminate the API)`, err);
