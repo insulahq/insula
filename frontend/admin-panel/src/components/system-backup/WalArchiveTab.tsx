@@ -200,7 +200,13 @@ function WalStreamingSection({
   // Archiving is running, but nobody asked for it here. Production 2026-09-11
   // sat in exactly this state and the tab said "disabled".
   const impliedBySchedule = cluster.walArchivingActive
-    && cluster.walArchivingSource === 'scheduled_backups';
+    && (cluster.walArchivingSource === 'scheduled_backups'
+      || cluster.walArchivingSource === 'target_binding');
+  // WHY it is on decides the sentence — a base-backup schedule is the operator's
+  // own doing; a bare target binding is the shim reconciler's.
+  const impliedReason = cluster.walArchivingSource === 'scheduled_backups'
+    ? 'scheduled base backups attach the barman-cloud plugin, and its presence is what makes CNPG archive'
+    : 'a SYSTEM backup target is bound, and the backup reconciler attaches the barman-cloud plugin whenever one is — its presence is what makes CNPG archive';
 
   const onEnable = (): void => {
     // First-time enable flips archive_mode on the CNPG cluster — a
@@ -242,12 +248,12 @@ function WalStreamingSection({
           data-testid={`wal-archiving-implied-${cluster.clusterName}`}
         >
           <strong>WAL is being archived right now</strong> even though streaming
-          was not enabled here — scheduled base backups attach the barman-cloud
-          plugin, and its presence is what makes CNPG archive. RPO is CNPG&apos;s
-          default <code>{cluster.effectiveArchiveTimeout ?? '5min'}</code>.
-          Enabling streaming replaces that with an explicit archive_timeout;
-          it cannot be stopped without also turning off scheduled base backups,
-          which need the WAL spanning their window to be restorable.
+          was not enabled here — {impliedReason}. RPO is CNPG&apos;s default{' '}
+          <code>{cluster.effectiveArchiveTimeout ?? '5min'}</code>. Enabling
+          streaming replaces that with an explicit archive_timeout.
+          {cluster.walArchivingSource === 'scheduled_backups'
+            ? ' Archiving cannot be stopped without also turning off scheduled base backups, which need the WAL spanning their window to be restorable.'
+            : ' Archiving stops only when the SYSTEM backup target is unbound, which also disables system backups.'}
         </p>
       )}
       <div className="mt-3 grid grid-cols-1 gap-3 text-xs md:grid-cols-2">
@@ -589,7 +595,7 @@ function StatusPanel({ cluster }: { cluster: WalArchiveCluster }) {
         <Field label="Effective archive_timeout (RPO)">
           <span data-testid={`wal-effective-timeout-${cluster.clusterName}`}>
             {cluster.effectiveArchiveTimeout ?? '—'}
-            {cluster.walArchivingSource === 'scheduled_backups' && (
+            {cluster.walArchivingSource !== 'streaming' && cluster.walArchivingActive && (
               <span className="ml-1 text-[10px] text-gray-500 dark:text-gray-400">
                 (CNPG default — streaming not configured)
               </span>

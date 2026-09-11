@@ -43,6 +43,7 @@ import type { Database } from '../../db/index.js';
 export function classifyWalArchiving(
   pluginAttached: boolean,
   archiveTimeout: string | null | undefined,
+  baseBackupSchedule?: string | null,
 ): {
   readonly active: boolean;
   readonly source: WalArchivingSource;
@@ -51,9 +52,16 @@ export function classifyWalArchiving(
   if (!pluginAttached) {
     return { active: false, source: 'none', effectiveArchiveTimeout: null };
   }
+  // Three ways the plugin can be attached, and the operator deserves to know
+  // WHICH: they turned streaming on; a base-backup schedule needs it; or the
+  // shim reconciler attached it simply because a SYSTEM target is bound (DEV
+  // 2026-09-11: no state row at all, 4468 segments archived).
+  const source: WalArchivingSource = archiveTimeout
+    ? 'streaming'
+    : (baseBackupSchedule ? 'scheduled_backups' : 'target_binding');
   return {
     active: true,
-    source: archiveTimeout ? 'streaming' : 'scheduled_backups',
+    source,
     // No explicit value means CNPG's own default is in force — an RPO the
     // operator never chose, which is worth naming rather than showing blank.
     effectiveArchiveTimeout: archiveTimeout ?? CNPG_DEFAULT_ARCHIVE_TIMEOUT,

@@ -135,7 +135,11 @@ export async function systemBackupWalArchiveRoutes(app: FastifyInstance): Promis
       // `archive_timeout` is written ONLY by enableWalStreaming and cleared
       // ONLY by disableWalStreaming — the canonical "operator turned streaming
       // on" signal (wal-archive.ts says so at the sentinel-inference comment).
-      const archiving = classifyWalArchiving(crHasBackup, state?.archiveTimeout);
+      const archiving = classifyWalArchiving(
+        crHasBackup,
+        state?.archiveTimeout,
+        state?.baseBackupSchedule,
+      );
       const baseBackupStatus = sb
         ? {
             lastScheduleTime: sb.status?.lastScheduleTime ?? null,

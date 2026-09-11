@@ -287,7 +287,10 @@ function formatAgoFromIso(iso: string): string {
 // amber-pending = on but nothing archived yet; grey = genuinely off.
 function WalStreamingBadge({ wal }: { wal: WalArchiveCluster | null }) {
   const active = wal?.walArchivingActive ?? wal?.enabled ?? false;
-  const implied = wal?.walArchivingSource === 'scheduled_backups';
+  // Anything other than an explicit archive_timeout is "implied": either a
+  // base-backup schedule or a bare SYSTEM target binding attached the plugin.
+  const implied = wal?.walArchivingSource === 'scheduled_backups'
+    || wal?.walArchivingSource === 'target_binding';
   const failing = Boolean(wal?.status?.lastFailedArchiveTime);
   const archived = Boolean(wal?.status?.lastArchivedWalTime);
 
@@ -306,7 +309,7 @@ function WalStreamingBadge({ wal }: { wal: WalArchiveCluster | null }) {
     return (
       <span
         className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-200"
-        title={`WAL is being archived because scheduled base backups are on — the barman-cloud plugin they need is what makes CNPG archive. No explicit archive_timeout: RPO is CNPG's default ${wal?.effectiveArchiveTimeout ?? '5min'}.${archived ? ` Last segment archived at ${wal?.status?.lastArchivedWalTime}.` : ''}`}
+        title={`WAL is being archived because ${wal?.walArchivingSource === 'scheduled_backups' ? 'scheduled base backups are on' : 'a SYSTEM backup target is bound'} — the barman-cloud plugin that implies is what makes CNPG archive. No explicit archive_timeout: RPO is CNPG's default ${wal?.effectiveArchiveTimeout ?? '5min'}.${archived ? ` Last segment archived at ${wal?.status?.lastArchivedWalTime}.` : ''}`}
         data-testid="cnpg-wal-badge-implied"
       >
         <Radio size={10} /> WAL archiving (implied)
