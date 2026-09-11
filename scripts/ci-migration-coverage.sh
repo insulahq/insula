@@ -56,7 +56,7 @@ BASE_REF="${BASE_REF:-origin/main}"
 # would quietly shrink to nothing and every future unit edit would pass. An
 # empty or incomplete set is a HARD FAIL, never a pass — the same lesson as
 # "0 violations is also true of an empty table".
-REQUIRED_UNITS="${FWSHAPE_REQUIRED_UNITS:-platform-ops-update.service platform-ops-update.timer platform-ops-host-config.service platform-ops-host-config.timer}"
+REQUIRED_UNITS="${FWSHAPE_REQUIRED_UNITS:-platform-ops-update.service platform-ops-update.timer platform-ops-host-config.service platform-ops-host-config.timer /etc/apt/apt.conf.d/20auto-upgrades /etc/apt/apt.conf.d/99platform-unattended-upgrades}"
 
 # Helm releases that MUST appear in the values shape — same anti-vacuity role as
 # REQUIRED_UNITS. If the extraction stops matching (someone reformats the helm
@@ -118,7 +118,14 @@ infra_pin_shape() {
 # comment edit must not churn the hash) and whitespace is normalised, so
 # reindenting a unit is not a "change". The destination is part of the
 # fingerprint, so MOVING a unit counts as a change too.
-UNIT_DEST_RE='\.(service|timer)$'
+# Also covers the unattended-security-update config (2026-09-11). It is not a
+# unit, but it is the same class the rest of this function exists for: bootstrap
+# writes it ONCE and nothing reconverges it, so an edit reaches FRESH INSTALLS
+# ONLY. That gap is not theoretical here — the platform shipped for months with
+# no auto-update config at all while Debian's stock apt timers ran daily and
+# installed nothing, and production accumulated 20 pending security updates.
+# Covered so the next edit to these files cannot repeat it without a migration.
+UNIT_DEST_RE='\.(service|timer)$|/etc/apt/apt\.conf\.d/|/etc/dnf/automatic\.conf$'
 install_time_unit_shape() {
   local f
   for f in "$BOOTSTRAP" "$LIB_DIR"/*.sh; do
@@ -262,6 +269,16 @@ assert_helm_shape_non_vacuous() {
 
 assert_unit_shape_non_vacuous() {
   local shape missing=""
+  # Test seam, mirroring assert_helm_shape_non_vacuous: when FWSHAPE_BOOTSTRAP
+  # points at a fixture that is not a real bootstrap.sh, "this fixture does not
+  # contain the platform's required destinations" is expected, not a broken
+  # extraction. The canary still runs in full for the DEFAULT bootstrap (i.e. in
+  # CI, where it matters) and for any fixture that opts in by setting the list.
+  # Until the apt/dnf destinations joined REQUIRED_UNITS this happened to pass
+  # for every fixture by coincidence — each one carried the platform-ops units.
+  if [ -n "${FWSHAPE_BOOTSTRAP:-}" ] && [ -z "${FWSHAPE_REQUIRED_UNITS:-}" ]; then
+    return 0
+  fi
   shape="$(install_time_unit_shape)"
   if [ -z "$shape" ]; then
     echo "::error::ci-migration-coverage: install-time unit shape is EMPTY — the heredoc extraction matched nothing." >&2
