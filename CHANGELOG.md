@@ -114,6 +114,14 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   never a running workload, and never a database pod.
 
 ### Fixed
+- **The backup page's storage figures no longer hang.** Reading the archive
+  took over three minutes on a test cluster, so "measuring…" was all an
+  operator ever saw. Measuring the write-ahead log is now a separate, far
+  cheaper read with its own time budget, the base-backup listing stops at a
+  deadline and says so, and every figure ends on a definite answer — a number,
+  a number marked as a floor, or "could not measure — check the storage
+  target".
+
 - **Moving a tenant off a dead node now actually brings it back.** The move
   succeeded in every visible way — workload re-pinned, storage re-pinned,
   records updated — and the tenant stayed down anyway, indefinitely. A tenant's
