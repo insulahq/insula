@@ -171,11 +171,56 @@ Moving a tenant to a healthy node is done for you there. Restoring data from a
 backup is deliberately *not* — that is destructive, so it stays on the
 [tenant backups](tenant-backups.md) page where it belongs.
 
-!!! warning "Traffic keeps being sent to the offline node"
-    Insula does not manage your DNS. If the offline node published an address
-    for your sites or mail, that address stays published and a share of
-    requests will fail until you remove the record at your DNS provider. The
-    node card marks its ingress badge struck-through as a reminder.
+### Traffic keeps being sent to the offline node
+
+Insula does not manage your DNS, and it will not withdraw records for you. If
+the offline node published an address for your sites or mail, that address
+stays published and a share of requests keeps being sent into a hole until you
+remove the record at your DNS provider.
+
+This is on purpose. Your records usually live somewhere Insula has no access
+to, TTLs outlast most outages anyway, and rewriting a zone automatically in the
+middle of an incident is a good way to turn one outage into two.
+
+So it tells you instead. The affected-tenants list opens with an orange
+**Manual action: DNS still points at &lt;node&gt;** panel listing the exact
+A/AAAA addresses to remove, with a copy button. Put them back when the node
+returns.
+
+Nodes set to **ingress: none** are left out of that list — they never published
+an address, so there is nothing to withdraw. The node card also marks a
+still-configured ingress badge struck-through as a second reminder.
+
+## When the node comes back
+
+Bringing the node back does **not** move tenants back. Anything that was
+unpinned or re-pinned while it was down stays where it is, and that is usually
+the right outcome — but it should never be a surprise.
+
+**Cluster → Nodes** shows a **&lt;node&gt; is back online** panel listing every
+tenant still placed elsewhere, how it got there (automatically, or by an
+operator), and which way Insula leans:
+
+| It says | Meaning |
+|---|---|
+| **Keep as is** | An HA-tier tenant that is now unpinned. This is *better* than the pin it lost — any node with a copy of its data can serve it. Re-pinning would put the single point of failure back. |
+| **Consider re-pinning** | A local-tier tenant. Its placement is load-bearing, so decide deliberately rather than letting the outage choose for you. |
+
+Two buttons per tenant:
+
+- **Accept current placement** — records your decision, with a reason, and
+  removes the tenant from the list. Moves no data.
+- **Change placement…** — moves the tenant, including back to the node that
+  just returned. This copies volume data, so it takes time proportional to the
+  volume size and the tenant may be briefly unavailable.
+
+The panel is absent when nothing is displaced. If it cannot read the placement
+history it says so explicitly rather than showing an empty list — an empty list
+would read as "nothing to do".
+
+!!! note "Mail does not appear here"
+    Mail failover is its own process with its own runbook. See
+    [high availability](high-availability.md).
 
 ### A node's numbers freeze when it goes offline
 
