@@ -101,10 +101,54 @@ export type ScheduledBackupsDisableRequest = z.infer<typeof scheduledBackupsDisa
 // state row (operator intent) with a snapshot of the CNPG CR's
 // `.status` (cluster-reported truth: last archived WAL, archiver
 // errors). When `enabled=false`, `state` is null.
+/**
+ * WHY WAL is being archived — the distinction the UI got wrong until
+ * 2026-09-11.
+ *
+ *   'streaming'         — the operator enabled WAL streaming; an explicit
+ *                         `archive_timeout` bounds the RPO.
+ *   'scheduled_backups' — nobody enabled streaming, but scheduled base backups
+ *                         are on, and those attach the barman-cloud plugin.
+ *                         CNPG archives WAL continuously for as long as that
+ *                         plugin ENTRY exists (its presence, not
+ *                         `isWALArchiver`, is the gate) at its own default
+ *                         `archive_timeout` of 5min. Archiving is therefore
+ *                         ACTIVE and cannot be turned off without also giving
+ *                         up the base backups, which need the WAL spanning
+ *                         their window to be restorable.
+ *   'none'              — no plugin entry: `wal-archive` no-op-succeeds and
+ *                         Postgres recycles WAL.
+ */
+export const walArchivingSourceSchema = z.enum(['streaming', 'scheduled_backups', 'none']);
+export type WalArchivingSource = z.infer<typeof walArchivingSourceSchema>;
+
+/** CNPG's own default when nothing sets `archive_timeout` explicitly. */
+export const CNPG_DEFAULT_ARCHIVE_TIMEOUT = '5min';
+
 export const walArchiveClusterSchema = z.object({
   clusterNamespace: z.string(),
   clusterName: z.string(),
+  /**
+   * The operator INTENT flag: a state row exists and the plugin is attached.
+   * Kept for back-compat — read `walArchivingActive` for what is actually
+   * happening and `walArchivingSource` for why.
+   */
   enabled: z.boolean(),
+  /**
+   * Whether WAL is REALLY being shipped off-site right now — the barman-cloud
+   * plugin entry is present on the Cluster CR. Production 2026-09-11 had this
+   * true with WAL streaming never enabled: enabling scheduled base backups is
+   * enough, and the UI showed "not enabled" while a segment went off-site
+   * every 5 minutes.
+   */
+  walArchivingActive: z.boolean(),
+  walArchivingSource: walArchivingSourceSchema,
+  /**
+   * The `archive_timeout` actually in force: the operator's explicit value when
+   * WAL streaming is on, otherwise CNPG's default while archiving is active,
+   * otherwise null. This is the RPO ceiling on an idle database.
+   */
+  effectiveArchiveTimeout: z.string().nullable(),
   state: z.object({
     targetConfigId: z.string(),
     targetName: z.string().nullable(),
@@ -126,10 +170,22 @@ export const walArchiveClusterSchema = z.object({
   // effort — null when not yet populated by CNPG.
   status: z.object({
     firstRecoverabilityPoint: z.string().nullable(),
+    /**
+     * Real values from `pg_stat_archiver` on the cluster itself where we can
+     * reach it. Before 2026-09-11 these were SYNTHESISED from the
+     * ContinuousArchiving condition's `lastTransitionTime` — on production
+     * that read 2026-08-12 while WAL was being archived every five minutes,
+     * i.e. the card presented a month-old timestamp as "last WAL archived".
+     */
     lastArchivedWal: z.string().nullable(),
     lastArchivedWalTime: z.string().nullable(),
     lastFailedArchiveTime: z.string().nullable(),
     lastFailedArchiveError: z.string().nullable(),
+    /** Cumulative counters from `pg_stat_archiver` (null when unavailable). */
+    archivedCount: z.number().int().nullable(),
+    failedCount: z.number().int().nullable(),
+    /** CNPG's ContinuousArchiving condition — health, NOT recency. */
+    archivingHealthySince: z.string().nullable(),
   }).nullable(),
 });
 export type WalArchiveCluster = z.infer<typeof walArchiveClusterSchema>;

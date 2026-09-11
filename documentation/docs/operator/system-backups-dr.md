@@ -46,6 +46,24 @@ PITR restores run out-of-band (from a recovery host, not the panel) and create a
 *new* CNPG cluster from the backup, leaving the live database intact until you
 deliberately cut over. The Disaster Recovery page gives you the exact command.
 
+!!! info "Scheduled base backups archive WAL too"
+    **Turning on scheduled base backups turns on WAL archiving**, whether or not
+    you enable *WAL Streaming*. A base backup is only restorable together with
+    the WAL written while it ran, so the plugin the schedule needs is the same
+    one that ships WAL — and its presence is what makes Postgres archive.
+
+    The difference the **WAL Streaming** toggle makes is the **`archive_timeout`**,
+    i.e. the recovery-point window on an idle database. Enable it and you choose
+    that number; leave it off and CNPG's own default of **5 minutes** applies.
+    The WAL archive panel says which of the two you are on, and the health card
+    shows *WAL archiving (implied)* rather than *WAL streaming* when nobody
+    picked a value.
+
+    It also means **disabling WAL Streaming does not stop WAL from being
+    archived** while a base-backup schedule is active. To stop archiving
+    altogether, turn off the scheduled base backups as well — at the cost of
+    having no CNPG backups of the platform database.
+
 ## The DR bundle and your age key
 
 The whole-cluster recovery story rests on two things: an encrypted **bundle** of

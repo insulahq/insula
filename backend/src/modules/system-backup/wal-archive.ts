@@ -223,6 +223,11 @@ interface ClusterStatus {
   readonly lastArchivedWalTime: string | null;
   readonly lastFailedArchiveTime: string | null;
   readonly lastFailedArchiveError: string | null;
+  /**
+   * When the ContinuousArchiving condition last flipped to healthy. This is a
+   * HEALTH fact, not a recency one — see extractStatus().
+   */
+  readonly archivingHealthySince: string | null;
 }
 
 interface ClusterPluginEntry {
@@ -274,9 +279,16 @@ export function extractStatus(cr: ClusterCRSpec | null): ClusterStatus | null {
   const transitionTime = cond?.lastTransitionTime ?? null;
   return {
     firstRecoverabilityPoint: s.firstRecoverabilityPoint ?? null,
-    // Synthetic — represents archiving health, not a literal WAL filename.
-    lastArchivedWal: isHealthy ? (cond?.reason ?? 'ContinuousArchivingSuccess') : null,
-    lastArchivedWalTime: isHealthy ? transitionTime : null,
+    // NOT a last-archive time. The condition only flips when archiving health
+    // CHANGES, so a cluster archiving happily every five minutes keeps the
+    // transition time of the day it started: production read 2026-08-12 on
+    // 2026-09-11 while segments were going off-site continuously, and the card
+    // rendered that month-old instant as "Last WAL archived at …". Recency now
+    // comes from pg_stat_archiver (readArchiverStats); these two fields stay
+    // null here and are filled in by the route where the real values exist.
+    lastArchivedWal: null,
+    lastArchivedWalTime: null,
+    archivingHealthySince: isHealthy ? transitionTime : null,
     lastFailedArchiveTime: isFailing ? transitionTime : null,
     lastFailedArchiveError: isFailing ? (cond?.message ?? cond?.reason ?? null) : null,
   };

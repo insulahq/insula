@@ -275,34 +275,56 @@ function formatAgoFromIso(iso: string): string {
   return formatAge(Math.floor(ms / 1000));
 }
 
-// Phase 2 (2026-05-24) — WAL streaming as a discrete header chip.
-// Three states match the original inline-row palette so the meaning
-// carries forward: emerald = streaming healthily; rose = failing;
-// amber = enabled but no archive yet OR disabled.
+// WAL chip. Reports what the cluster is DOING, and says when nobody asked for
+// it — the two surfaces disagreed until 2026-09-11, when this chip read green
+// "WAL streaming" while Backups → System said streaming was not enabled. Both
+// were describing a cluster that had never had streaming enabled and was
+// archiving a segment every five minutes anyway, because scheduled base backups
+// attach the plugin whose presence is the real gate.
+//
+// States: emerald = streaming as configured; amber = archiving, but implied by
+// scheduled base backups (no explicit archive_timeout); rose = failing;
+// amber-pending = on but nothing archived yet; grey = genuinely off.
 function WalStreamingBadge({ wal }: { wal: WalArchiveCluster | null }) {
-  if (wal?.enabled && wal.status?.lastArchivedWalTime && !wal.status.lastFailedArchiveTime) {
-    return (
-      <span
-        className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200"
-        title={`Last WAL archived at ${wal.status.lastArchivedWalTime}`}
-        data-testid="cnpg-wal-badge-streaming"
-      >
-        <Radio size={10} /> WAL streaming
-      </span>
-    );
-  }
-  if (wal?.enabled && wal.status?.lastFailedArchiveTime) {
+  const active = wal?.walArchivingActive ?? wal?.enabled ?? false;
+  const implied = wal?.walArchivingSource === 'scheduled_backups';
+  const failing = Boolean(wal?.status?.lastFailedArchiveTime);
+  const archived = Boolean(wal?.status?.lastArchivedWalTime);
+
+  if (active && failing) {
     return (
       <span
         className="inline-flex items-center gap-1 rounded-full bg-rose-100 px-2 py-0.5 text-xs font-medium text-rose-800 dark:bg-rose-900/40 dark:text-rose-200"
-        title={wal.status.lastFailedArchiveError ?? 'WAL archive failing'}
+        title={wal?.status?.lastFailedArchiveError ?? 'WAL archive failing'}
         data-testid="cnpg-wal-badge-failing"
       >
         <Radio size={10} /> WAL failing
       </span>
     );
   }
-  if (wal?.enabled) {
+  if (active && implied) {
+    return (
+      <span
+        className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-200"
+        title={`WAL is being archived because scheduled base backups are on — the barman-cloud plugin they need is what makes CNPG archive. No explicit archive_timeout: RPO is CNPG's default ${wal?.effectiveArchiveTimeout ?? '5min'}.${archived ? ` Last segment archived at ${wal?.status?.lastArchivedWalTime}.` : ''}`}
+        data-testid="cnpg-wal-badge-implied"
+      >
+        <Radio size={10} /> WAL archiving (implied)
+      </span>
+    );
+  }
+  if (active && archived) {
+    return (
+      <span
+        className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200"
+        title={`Last WAL archived at ${wal?.status?.lastArchivedWalTime} (pg_stat_archiver). archive_timeout ${wal?.effectiveArchiveTimeout ?? 'unset'}.`}
+        data-testid="cnpg-wal-badge-streaming"
+      >
+        <Radio size={10} /> WAL streaming
+      </span>
+    );
+  }
+  if (active) {
     return (
       <span
         className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-200"
