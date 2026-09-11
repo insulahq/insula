@@ -2223,7 +2223,7 @@ install_packages_apt() {
   # the helm install step never depends on a base-image quirk.
   apt-get install -y -qq \
     curl wget gnupg2 ca-certificates openssl \
-    nftables iptables fail2ban jq unzip tar git open-iscsi nfs-common \
+    nftables iptables fail2ban unattended-upgrades jq unzip tar git open-iscsi nfs-common \
     xfsprogs e2fsprogs \
     wireguard-tools \
     gettext-base \
@@ -2304,7 +2304,7 @@ install_packages_dnf() {
   # available, which is also a safe no-op when dnf provides age.
   dnf install -y -q --allowerasing \
     wget gnupg2 ca-certificates openssl \
-    nftables iptables fail2ban jq unzip tar git iscsi-initiator-utils nfs-utils \
+    nftables iptables fail2ban dnf-automatic jq unzip tar git iscsi-initiator-utils nfs-utils \
     xfsprogs e2fsprogs \
     wireguard-tools \
     gettext \
@@ -3077,6 +3077,95 @@ EOF
   systemctl restart fail2ban
   marker_set "fail2ban-configured"
   log "fail2ban configured."
+}
+
+# Unattended OS security updates.
+#
+# WHY THIS EXISTS AT ALL: until 2026-09-11 nothing here installed or configured
+# unattended-upgrades / dnf-automatic. Debian's stock apt-daily.timer and
+# apt-daily-upgrade.timer ARE enabled out of the box, so `systemctl list-timers`
+# showed a daily "apt upgrade" job firing successfully — but apt.systemd.daily
+# consults APT::Periodic::Unattended-Upgrade, which was unset, and the package
+# providing the actual upgrade step was never installed. The timers ran every
+# day and installed nothing. Measured on the production node: 21 upgradable,
+# 20 of them security, including libssl3t64 and libexpat1.
+#
+# REACH: this function is bootstrap-only, i.e. FRESH INSTALLS. Existing clusters
+# are converged by the matching host-migration (ADR-045 W10c) shipped in the
+# same release — see platform/host-migrations/*/0001-unattended-security-updates.sh.
+# Keep the two in step; they deliberately write byte-identical files.
+#
+# NO AUTOMATIC REBOOT. A kernel or libssl update needs a restart to take effect,
+# and on a single-node cluster an unattended reboot is an unannounced outage.
+# Patches are installed automatically; taking them into use stays a planned,
+# operator-driven drain. `needrestart`/`/var/run/reboot-required` still flags it.
+configure_auto_updates() {
+  if [[ "$SKIP_HARDENING" == true ]]; then
+    log "Skipping unattended security updates (--skip-hardening)."
+    return 0
+  fi
+  if marker_exists "auto-updates-configured"; then
+    log "Unattended security updates already configured, skipping."
+    return 0
+  fi
+
+  log "Configuring unattended security updates..."
+  if [[ "$OS_FAMILY" == "debian" ]]; then
+    # Turn the stock apt timers into something that actually installs.
+    cat > /etc/apt/apt.conf.d/20auto-upgrades <<'AUTOUPGRADES'
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+AUTOUPGRADES
+
+    # 99- so it is read LAST and wins over the distro's 50unattended-upgrades.
+    # Deliberately overrides ONLY reboot/mail behaviour: the shipped default
+    # already restricts Origins-Pattern to the running distro's -security
+    # suite, and hand-writing origin patterns here is how you silently end up
+    # matching nothing on the next release (Debian and Ubuntu spell them
+    # differently, and the codename is interpolated by u-u itself).
+    cat > /etc/apt/apt.conf.d/99platform-unattended-upgrades <<'PLATFORMUU'
+// Managed by Insula bootstrap.sh / host-migrations. Security updates are
+// installed automatically; the reboot they may require is NOT taken
+// automatically — see configure_auto_updates() in bootstrap.sh.
+Unattended-Upgrade::Automatic-Reboot "false";
+Unattended-Upgrade::Remove-Unused-Kernel-Packages "false";
+Unattended-Upgrade::Mail "";
+PLATFORMUU
+
+    systemctl enable --now apt-daily.timer apt-daily-upgrade.timer >/dev/null 2>&1 || true
+  else
+    # dnf-automatic has no drop-in directory, so keys are edited in place
+    # rather than the file rewritten — an operator may have tuned it.
+    local conf=/etc/dnf/automatic.conf
+    if [[ -f "$conf" ]]; then
+      _set_dnf_automatic_key "$conf" upgrade_type security
+      _set_dnf_automatic_key "$conf" apply_updates yes
+      _set_dnf_automatic_key "$conf" reboot never
+    else
+      log "WARNING: ${conf} missing — dnf-automatic may not be installed; skipping its configuration."
+    fi
+    # RHEL 9 / AL2023 ship dnf-automatic.timer; older builds used
+    # dnf-automatic-install.timer. Enable whichever exists.
+    systemctl enable --now dnf-automatic.timer >/dev/null 2>&1 \
+      || systemctl enable --now dnf-automatic-install.timer >/dev/null 2>&1 \
+      || log "WARNING: no dnf-automatic timer found to enable."
+  fi
+
+  marker_set "auto-updates-configured"
+  log "Unattended security updates configured (no automatic reboot)."
+}
+
+# Set KEY = VALUE in a dnf-automatic ini, replacing an existing assignment or
+# appending under [commands]. Idempotent: re-running leaves the file unchanged.
+_set_dnf_automatic_key() {
+  local file="$1" key="$2" val="$3"
+  if grep -qE "^[[:space:]]*${key}[[:space:]]*=" "$file"; then
+    sed -i -E "s|^[[:space:]]*${key}[[:space:]]*=.*|${key} = ${val}|" "$file"
+  elif grep -qE '^\[commands\]' "$file"; then
+    sed -i -E "s|^\[commands\]|[commands]\n${key} = ${val}|" "$file"
+  else
+    printf '[commands]\n%s = %s\n' "$key" "$val" >> "$file"
+  fi
 }
 
 verify_underlay() {
@@ -10234,6 +10323,7 @@ main() {
   verify_underlay
   configure_firewall
   configure_fail2ban
+  configure_auto_updates
 
   # M12: refuse asymmetric joins (e.g. server-2 forgot --cluster-network-cidr
   # while joining a private-network cluster). Only meaningful when both

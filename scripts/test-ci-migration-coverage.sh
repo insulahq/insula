@@ -179,17 +179,25 @@ run_lib "$D/bootstrap.sh" "$D/unitbase" "$D/lib" 0 0 0
 expect "unit moved to a new path → FAIL" 1 $?
 
 echo "== anti-vacuity: a fingerprint that matched nothing must FAIL, never pass =="
+# These OPT IN to the unit canary via FWSHAPE_REQUIRED_UNITS, the same contract
+# the helm anti-vacuity tests use. Without it the guard treats a fixture
+# bootstrap as "not the real one" and skips the canary — necessary since the
+# required set now includes destinations (the apt/dnf auto-update config) that
+# no fixture carries. Naming the units the fixture DOES contain keeps these
+# tests asserting the canary rather than silently skipping it.
+FIXTURE_UNITS="platform-ops-update.service platform-ops-update.timer platform-ops-host-config.service platform-ops-host-config.timer"
 mkdir -p "$D/emptylib"
-run_lib "$D/bootstrap.sh" "$D/unitbase" "$D/emptylib" 1 0 1
+FWSHAPE_REQUIRED_UNITS="$FIXTURE_UNITS" run_lib "$D/bootstrap.sh" "$D/unitbase" "$D/emptylib" 1 0 1
 expect "no units extracted → hard FAIL (not a silent pass)" 1 $?
 # --update-baseline must not be able to freeze a broken extraction as correct.
+FWSHAPE_REQUIRED_UNITS="$FIXTURE_UNITS" \
 FWSHAPE_BOOTSTRAP="$D/bootstrap.sh" FWSHAPE_BASELINE="$D/vac" FWSHAPE_LIB_DIR="$D/emptylib" \
   bash "$GUARD" --update-baseline >/dev/null 2>&1
 expect "--update-baseline refuses a vacuous shape" 1 $?
 # A required unit disappearing (extraction silently lost it) must FAIL too.
 fake_lib "" "baseline"
 sed -i '/platform-ops-host-config.timer/,+3d' "$D/lib/bootstrap-phases.sh"
-run_lib "$D/bootstrap.sh" "$D/unitbase" "$D/lib" 1 0 1
+FWSHAPE_REQUIRED_UNITS="$FIXTURE_UNITS" run_lib "$D/bootstrap.sh" "$D/unitbase" "$D/lib" 1 0 1
 expect "required unit missing → hard FAIL" 1 $?
 
 echo "== helm --set flags and values-file heredocs are fingerprinted (2026-08-20) =="

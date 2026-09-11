@@ -39,10 +39,38 @@ re-fetches the snapshot without restarting the probes.
 
 The Node Hardening tab shows ten checks per node, including: `PermitRootLogin
 no`, `PasswordAuthentication no`, an `AllowUsers` whitelist, recent boot / no
-pending kernel update, presence of `fail2ban`/`sshguard` and unattended-upgrades,
-and — the one critical check — **SSH not exposed to `0.0.0.0/0`**. When the probe
-can't parse `sshd_config`, the SSH checks are marked non-passing rather than
-falsely "secure".
+pending kernel update, presence of `fail2ban`/`sshguard`, whether OS security
+updates install automatically, and — the one critical check — **SSH not exposed
+to `0.0.0.0/0`**. When the probe can't parse `sshd_config`, the SSH checks are
+marked non-passing rather than falsely "secure".
+
+## Automatic OS security updates
+
+Every node installs its own OS security updates. New nodes are configured during
+bootstrap; nodes installed before this was added are converged in place when
+they take the release.
+
+On Debian and Ubuntu this is `unattended-upgrades` driven by
+`apt-daily-upgrade.timer`; on the RHEL family it is `dnf-automatic` with
+`upgrade_type = security`. The platform writes
+`/etc/apt/apt.conf.d/99platform-unattended-upgrades` (or sets the equivalent
+`dnf-automatic` keys) and deliberately overrides only the reboot and mail
+behaviour — package selection is left to the distribution's own defaults, which
+already scope updates to the running release's security suite.
+
+!!! warning "Patches are installed; your nodes are never rebooted for you"
+    Kernel and TLS-library updates only take effect after a restart. An
+    unattended reboot on a single-node cluster is an unannounced outage, so the
+    platform does not take one. Watch for `/var/run/reboot-required` and drain
+    and reboot the node yourself when it suits you.
+
+The **OS security updates install automatically** check verifies all three of:
+the package is installed, the periodic setting is on, and the timer that runs it
+is enabled. Any one alone patches nothing — a node can have the stock
+`apt-daily` timers enabled and firing daily while installing no updates at all,
+which is exactly the state this check exists to surface. To opt a node out,
+set `APT::Periodic::Unattended-Upgrade "0"` in a file that sorts after `99`;
+the check will then report the node as non-passing, which is the honest result.
 
 ## SSH-via-mesh lockdown
 
