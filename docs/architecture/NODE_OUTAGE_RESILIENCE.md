@@ -229,10 +229,11 @@ recoverable — the one single point of failure that replication cannot address.
 | G1 | API survives a DB-primary failover (§8.1) | **done** |
 | G2 | Failback review after a node returns (§8.2) | **done** |
 | G3 | Manual DNS action surfaced during an outage (§8.3) | **done** |
-| G4 | Auto re-pin verified on a real HA-tier tenant | pending — needs an `ha`-tier tenant on staging |
-| G5 | Mail-failover-not-configured banner verified rendering | pending |
-| G6 | Re-pin driven end to end through the recovery wizard | pending |
+| G4 | Auto re-pin verified on a real HA-tier tenant | **done** (§8.4) |
+| G5 | Mail-failover-not-configured banner verified rendering | **done** (§8.4) |
+| G6 | Re-pin driven end to end through the recovery wizard | **done** (§8.4) |
 | G7 | Worker-node loss drilled | pending |
+| G8 | Re-pin evicts pods stranded on the dead node (§8.5) | **done** |
 
 ### Known doc inaccuracies to fix under C2
 
@@ -319,3 +320,90 @@ ingress pill on the Cluster Nodes page: no addresses, no instruction, on a surfa
 opens mid-incident. The affected-tenants modal now leads with the stale A/AAAA records, states
 that nothing will remove them, and offers a copy button. Nodes with `ingress-mode: none`
 contribute nothing — their addresses were never published.
+
+
+## 8.4 Drill: staging1 loss — auto re-pin and the recovery wizard (2026-09-11)
+
+Set up so the drill isolated placement behaviour: the Postgres primary
+(`system-db-1`) and the active mail node were both staging3, so killing staging1
+exercised re-pinning **without** the noise of a database failover. An `ha`-tier
+tenant was created for the drill with a real two-replica Longhorn volume, live on
+staging1 *and* staging3 — the auto-repin gate requires a **proven** live replica,
+not one inferred from the tier.
+
+| Time (UTC) | Event |
+|---|---|
+| 21:53:13 | `systemctl stop k3s` on staging1 |
+| 21:54:02 | **auto re-pin fires** — the HA-tier tenant is unpinned, 49 s after the kill |
+| 21:54:30 | node observed `NotReady`; outage endpoint reports `down=[staging1] tenants=3` |
+| ~21:55 | operator drives banner → pill → modal → wizard in a real browser |
+| 21:56:02 | **wizard re-pin commits** — a local-tier tenant moves staging1 → staging2 |
+
+Auto re-pin beat the 30 s node poll because the fast-down watch sees the
+readiness flip directly rather than waiting for a sample.
+
+**G4.** The audit row, not a log line:
+`tenant.auto_repin strandedOn=staging1 liveReplicaNodes=[staging2, staging3]
+workloadsPatched=2 volumesPatched=1`. The HA-tier tenant was unpinned and its
+Deployment `nodeSelector` cleared; the two **local**-tier tenants were left
+pinned, correctly — a local-tier volume has one replica, so moving the pin would
+not move the data. That selectivity is the point: the gate acted on the tenant it
+could prove was safe to move and declined the ones it could not.
+
+**G6.** Executed end to end in a browser, from a surviving node's address. The
+wizard's target list offered `worker, staging2, staging3` — **staging1 absent**,
+so the dead node cannot be chosen as a recovery target. The execute button was
+asserted **disabled before** the typed-name confirmation and enabled only after
+(both states, not just the second). Zero JS errors and zero failed `/api/v1`
+responses throughout.
+
+**G5.** With mail failover configured, `shouldWarn` is correctly `false`. Toggling
+auto-failover off (and restoring it immediately afterwards) produced
+`shouldWarn: true, reasons: ['automatic failover is disabled']` and the banner
+rendered on the dashboard **and** on every other admin page.
+
+One thing worth keeping: the wizard reported "was moved" about 8 seconds before
+the database showed the new pin. That is the write landing after the optimistic
+UI, not a bug — but it is exactly the shape that makes a self-reported success
+untrustworthy. The pass here is the audit row and `tenants.node_name`.
+
+## 8.5 What the drill found that analysis had not (G8)
+
+Re-pinning succeeded in every visible way and **the tenant stayed down anyway**
+— `0/1`, no replacement ReplicaSet, still unchanged twenty minutes later.
+
+Tenant workloads use `strategy: Recreate`, which is correct: the volume is RWO
+and two pods cannot mount it at once. Recreate waits for every old pod to be
+*fully gone* before creating a new one, and a pod on a dead node never gets
+there — only its kubelet can confirm the container stopped, so the pod object
+sits in `Terminating` indefinitely and the Deployment waits behind it
+indefinitely. Force-deleting the stranded pod produced a new ReplicaSet on the
+target node within seconds, which is what identified the cause.
+
+This had been invisible because **a temporary outage hides it**: when the node
+comes back its kubelet confirms the deletions, the stranded pods clear, and
+everything proceeds. Observed directly here — the HA-tier tenant that had been
+stuck for twenty minutes got a new ReplicaSet moments after staging1 rejoined.
+The failure only bites on a **permanent** loss, which is exactly the case a
+re-pin exists for.
+
+`repinTenantPlacement` now evicts pods stranded on the released node, but only
+when that node is `NotReady`. That check is the safety boundary, not a nicety:
+force-delete drops the pod object with no confirmation the container stopped, so
+on a live node it would risk two writers on one RWO volume. On a drain the
+kubelet is alive and terminates pods properly, so the step must not run there.
+
+### A replica object is not a copy of the data
+
+The same drill surfaced a second, quieter problem. When a node dies Longhorn
+immediately schedules an empty rebuild target on a survivor. Counting that as a
+surviving replica made the platform tell an operator whose **one-replica**
+local-tier volume had just died that it was *"running on reduced redundancy while
+Longhorn rebuilds — no action required, this resolves itself."* It could never
+resolve itself: the only source was the dead node, and the volume went `faulted`
+minutes later.
+
+Saying "no action required" to an operator whose tenant data has just become
+unreachable is close to the most damaging thing this endpoint could get wrong.
+A live replica now means a **running** one, and a `faulted` volume is believed
+outright rather than argued with.
