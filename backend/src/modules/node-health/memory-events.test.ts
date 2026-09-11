@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  indexProbeKills,
   collectOomKilledContainers,
   normalizeMemoryEvents,
   summarizeForNotification,
@@ -324,5 +325,90 @@ describe('collectOomKilledContainers — node shutdown', () => {
     );
     expect(events).toHaveLength(1);
     expect(events[0].oomConfidence).toBe('unconfirmed');
+  });
+});
+
+// ── probe-restart exclusion (found by a real DEV reboot, 2026-09-11) ──
+//
+// A failed liveness/startup probe SIGKILLs the container: exit 137, pod stays
+// RUNNING, container restarts. None of the pod-level shutdown markers apply, so
+// isExpectedSigkill() correctly does not fire — but the kubelet has already
+// named the cause in a Killing event. Believe it.
+describe('probe-restart exclusion', () => {
+  // Verbatim from the DEV cluster: crowdsec is slow to answer /health after a
+  // cold boot, and this was raised as a CRITICAL node memory event.
+  const probeEvent = {
+    reason: 'Killing',
+    message: 'Container crowdsec failed liveness probe, will be restarted',
+    involvedObject: { kind: 'Pod', namespace: 'crowdsec', name: 'crowdsec-cf64d6d77-hl4sr' },
+    eventTime: '2026-07-25T11:00:00Z',
+  };
+
+  it('indexes a probe kill by namespace/pod/container', () => {
+    const idx = indexProbeKills([probeEvent]);
+    expect([...idx.keys()]).toEqual(['crowdsec/crowdsec-cf64d6d77-hl4sr/crowdsec']);
+  });
+
+  it('indexes a STARTUP probe kill too', () => {
+    const idx = indexProbeKills([{ ...probeEvent, message: 'Container crowdsec failed startup probe, will be restarted' }]);
+    expect(idx.size).toBe(1);
+  });
+
+  it('ignores Killing events that are not probe failures', () => {
+    // A plain rollout kill names no probe and must not mute anything.
+    expect(indexProbeKills([{ ...probeEvent, message: 'Stopping container crowdsec' }]).size).toBe(0);
+    expect(indexProbeKills([{ ...probeEvent, reason: 'Evicted' }]).size).toBe(0);
+  });
+
+  it('DROPS an inferred kill the kubelet blamed on a probe', () => {
+    const events = collectOomKilledContainers(
+      [oomPod({ ns: 'crowdsec', pod: 'crowdsec-cf64d6d77-hl4sr', container: 'crowdsec',
+                reason: 'Error', exitCode: 137, restarts: 1, finishedAt: '2026-07-25T11:00:00Z' })],
+      NOW,
+      indexProbeKills([probeEvent]),
+    );
+    expect(events).toEqual([]);
+  });
+
+  it('KEEPS an explicit OOMKilled even when a probe also failed', () => {
+    // A container CAN hit its limit and fail a probe; the kubelet's explicit
+    // OOMKilled is authoritative and must survive.
+    const events = collectOomKilledContainers(
+      [oomPod({ ns: 'crowdsec', pod: 'crowdsec-cf64d6d77-hl4sr', container: 'crowdsec',
+                reason: 'OOMKilled', exitCode: 137, restarts: 1, finishedAt: '2026-07-25T11:00:00Z' })],
+      NOW,
+      indexProbeKills([probeEvent]),
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0].oomConfidence).toBe('confirmed');
+  });
+
+  it('KEEPS an inferred kill when the probe event is for a DIFFERENT container', () => {
+    const events = collectOomKilledContainers(
+      [oomPod({ ns: 'crowdsec', pod: 'crowdsec-cf64d6d77-hl4sr', container: 'sidecar',
+                reason: 'Error', exitCode: 137, restarts: 1, finishedAt: '2026-07-25T11:00:00Z' })],
+      NOW,
+      indexProbeKills([probeEvent]),
+    );
+    expect(events).toHaveLength(1);
+  });
+
+  it('KEEPS an inferred kill that happened FAR from the probe event', () => {
+    // A real OOM hours later must not be muted by an old probe restart.
+    const events = collectOomKilledContainers(
+      [oomPod({ ns: 'crowdsec', pod: 'crowdsec-cf64d6d77-hl4sr', container: 'crowdsec',
+                reason: 'Error', exitCode: 137, restarts: 1, finishedAt: '2026-07-25T11:40:00Z' })],
+      NOW,
+      indexProbeKills([probeEvent]),
+    );
+    expect(events).toHaveLength(1);
+  });
+
+  it('KEEPS everything when no probe events were supplied', () => {
+    const events = collectOomKilledContainers(
+      [oomPod({ reason: 'Error', exitCode: 137, restarts: 1 })],
+      NOW,
+    );
+    expect(events).toHaveLength(1);
   });
 });
