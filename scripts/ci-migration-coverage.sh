@@ -269,6 +269,16 @@ assert_helm_shape_non_vacuous() {
 
 assert_unit_shape_non_vacuous() {
   local shape missing=""
+  # Test seam, mirroring assert_helm_shape_non_vacuous: when FWSHAPE_BOOTSTRAP
+  # points at a fixture that is not a real bootstrap.sh, "this fixture does not
+  # contain the platform's required destinations" is expected, not a broken
+  # extraction. The canary still runs in full for the DEFAULT bootstrap (i.e. in
+  # CI, where it matters) and for any fixture that opts in by setting the list.
+  # Until the apt/dnf destinations joined REQUIRED_UNITS this happened to pass
+  # for every fixture by coincidence — each one carried the platform-ops units.
+  if [ -n "${FWSHAPE_BOOTSTRAP:-}" ] && [ -z "${FWSHAPE_REQUIRED_UNITS:-}" ]; then
+    return 0
+  fi
   shape="$(install_time_unit_shape)"
   if [ -z "$shape" ]; then
     echo "::error::ci-migration-coverage: install-time unit shape is EMPTY — the heredoc extraction matched nothing." >&2
