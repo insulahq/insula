@@ -19,7 +19,12 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { isPlatformDbCluster, readArchiverStats, classifyWalArchiving as classify } from './archiver-stats.js';
+import {
+  isPlatformDbCluster,
+  readArchiverStats,
+  classifyWalArchiving as classify,
+  isArchivingCurrentlyFailing,
+} from './archiver-stats.js';
 import type { Database } from '../../db/index.js';
 
 describe('WAL archiving source classification', () => {
@@ -75,6 +80,7 @@ describe('readArchiverStats', () => {
       failed_count: 0,
       last_failed_wal: null,
       last_failed_time: null,
+      stats_reset: '2026-08-27T12:39:06.098Z',
     }]));
     expect(stats?.lastArchivedWal).toBe('0000000100000021000000BB');
     expect(stats?.lastArchivedWalTime).toBe('2026-09-11T20:14:31.046Z');
@@ -91,6 +97,7 @@ describe('readArchiverStats', () => {
       failed_count: 3,
       last_failed_wal: '00000001000000000000000A',
       last_failed_time: '2026-09-11T11:00:00.000Z',
+      stats_reset: '2026-08-27T12:39:06.098Z',
     }]));
     expect(stats?.failedCount).toBe(3);
     expect(stats?.lastFailedWal).toBe('00000001000000000000000A');
@@ -110,5 +117,47 @@ describe('readArchiverStats', () => {
     expect(isPlatformDbCluster('platform', 'system-db')).toBe(true);
     expect(isPlatformDbCluster('platform', 'other-db')).toBe(false);
     expect(isPlatformDbCluster('tenant-x', 'system-db')).toBe(false);
+  });
+});
+
+describe('isArchivingCurrentlyFailing', () => {
+  /** The DEV cluster's real counters, 2026-09-11 21:57. */
+  const DEV_HEALTHY = {
+    lastArchivedWal: '00000002000000250000005E',
+    lastArchivedWalTime: '2026-09-11T21:57:09.470Z',
+    lastFailedWal: '000000020000002100000058',
+    lastFailedArchiveTime: '2026-09-08T08:51:26.195Z',
+    archivedCount: 4472,
+    failedCount: 64,
+    statsResetAt: '2026-08-27T12:39:06.098Z',
+  };
+
+  it('is FALSE when 4472 successes have overtaken a three-day-old failure', () => {
+    // Shipped wrong once: the chip read a red "WAL failing" on a cluster
+    // archiving every five minutes, because pg_stat_archiver keeps the last
+    // failure forever.
+    expect(isArchivingCurrentlyFailing(DEV_HEALTHY)).toBe(false);
+  });
+
+  it('is TRUE when the last failure is newer than the last success', () => {
+    expect(isArchivingCurrentlyFailing({
+      ...DEV_HEALTHY,
+      lastFailedArchiveTime: '2026-09-11T22:00:00.000Z',
+    })).toBe(true);
+  });
+
+  it('is TRUE when nothing has ever been archived but a failure exists', () => {
+    expect(isArchivingCurrentlyFailing({
+      ...DEV_HEALTHY,
+      lastArchivedWal: null,
+      lastArchivedWalTime: null,
+    })).toBe(true);
+  });
+
+  it('is FALSE with no failure recorded at all', () => {
+    expect(isArchivingCurrentlyFailing({
+      ...DEV_HEALTHY, lastFailedWal: null, lastFailedArchiveTime: null, failedCount: 0,
+    })).toBe(false);
+    expect(isArchivingCurrentlyFailing(null)).toBe(false);
   });
 });
