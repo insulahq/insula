@@ -9,7 +9,7 @@ import { useAuth } from '@/hooks/use-auth';
 import { useTenantContext } from '@/hooks/use-tenant-context';
 import { useMyLifecycle } from '@/hooks/use-my-lifecycle';
 import { useDomains } from '@/hooks/use-domains';
-import { useBackups } from '@/hooks/use-backups';
+import { useTenantBundles } from '@/hooks/use-tenant-backups';
 import { useDeployments } from '@/hooks/use-deployments';
 import { useResourceMetrics } from '@/hooks/use-resource-metrics';
 import { resourceBarColor, resourcePercent, resourceRatio, formatCpu, formatGiB } from '@/lib/resource-usage';
@@ -25,7 +25,11 @@ export default function Dashboard() {
   const displayName = user?.fullName ?? user?.email ?? 'there';
 
   const { data: domainsData } = useDomains(tenantId ?? undefined);
-  const { data: backupsData } = useBackups(tenantId ?? undefined);
+  // The SAME source the Backups page lists from. It used to read the retired
+  // per-resource `backups` table, which no backup engine has ever written to —
+  // so this tile said "0" to tenants holding dozens of off-site bundles
+  // (operator report 2026-09-11).
+  const { data: bundlesData } = useTenantBundles();
   const { data: deploymentsData } = useDeployments(tenantId ?? undefined);
   const { data: mailboxUsageData, isLoading: mailboxUsageLoading } = useMailboxUsage(
     tenantId ?? undefined,
@@ -38,7 +42,7 @@ export default function Dashboard() {
   const { data: notificationsData } = useNotifications(5);
 
   const domainCount = domainsData?.data?.length ?? 0;
-  const backupCount = backupsData?.data?.length ?? 0;
+  const backupCount = bundlesData?.data?.length ?? 0;
   const deploymentCount = deploymentsData?.data?.length ?? 0;
   const mailboxUsage = mailboxUsageData?.data;
   const mailboxStat: number | string = mailboxUsageLoading || !mailboxUsage

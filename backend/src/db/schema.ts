@@ -103,8 +103,6 @@ export const notificationTypeEnum = pgEnum('notification_type', ['info', 'warnin
 // drop_pg_dump_schedules; this migration was 0026_drop_nfs in the
 // original PR but renamed to avoid the prefix collision.)
 export const storageTypeEnum = pgEnum('storage_type', ['ssh', 's3', 'cifs']);
-export const backupTypeEnum = pgEnum('backup_type', ['auto', 'manual', 'scheduled']);
-export const backupStatusEnum = pgEnum('backup_status', ['pending', 'in_progress', 'completed', 'failed']);
 export const metricTypeEnum = pgEnum('metric_type', ['cpu_cores', 'memory_gb', 'storage_gb', 'bandwidth_gb']);
 /** Phase 2 rollup resolution: hourly rows kept 30d, folded to daily kept 1y. */
 export const usageResolutionEnum = pgEnum('usage_resolution', ['hourly', 'daily']);
@@ -961,25 +959,6 @@ export const backupConfigurations = pgTable('backup_configurations', {
 
 // ─── Backup & Metrics Tables ───
 
-export const backups = pgTable('backups', {
-  id: varchar('id', { length: 36 }).primaryKey(),
-  tenantId: varchar('tenant_id', { length: 36 })
-    .notNull()
-    .references(() => tenants.id, { onDelete: 'cascade' }),
-  backupType: backupTypeEnum().notNull().default('manual'),
-  resourceType: varchar('resource_type', { length: 50 }).notNull().default('full'),
-  resourceId: varchar('resource_id', { length: 36 }),
-  storagePath: varchar('storage_path', { length: 500 }),
-  sizeBytes: integer('size_bytes'),
-  status: backupStatusEnum().notNull().default('pending'),
-  completedAt: timestamp('completed_at'),
-  expiresAt: timestamp('expires_at'),
-  notes: text('notes'),
-  createdAt: timestamp('created_at').notNull().defaultNow(),
-}, (table) => [
-  index('backups_tenant_idx').on(table.tenantId),
-  index('backups_status_idx').on(table.status),
-]);
 
 export const usageMetrics = pgTable('usage_metrics', {
   id: varchar('id', { length: 36 }).primaryKey(),
@@ -2748,8 +2727,6 @@ export type Domain = typeof domains.$inferSelect;
 export type NewDomain = typeof domains.$inferInsert;
 export type HostingPlan = typeof hostingPlans.$inferSelect;
 export type Region = typeof regions.$inferSelect;
-export type Backup = typeof backups.$inferSelect;
-export type NewBackup = typeof backups.$inferInsert;
 export type UsageMetric = typeof usageMetrics.$inferSelect;
 export type CronJob = typeof cronJobs.$inferSelect;
 export type NewCronJob = typeof cronJobs.$inferInsert;

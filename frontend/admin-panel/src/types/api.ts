@@ -7,8 +7,6 @@ export type {
   PaginationMeta,
   CronJobResponse as CronJob,
   CronJobListResponse,
-  BackupResponse as Backup,
-  BackupListResponse,
   DashboardResponse as DashboardMetrics,
   MetricsResponse,
   SubscriptionResponse,

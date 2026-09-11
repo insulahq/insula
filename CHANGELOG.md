@@ -96,6 +96,13 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   after-import database health check now all ignore dead pod records. A genuine
   crash or memory kill on the live pod is still reported exactly as before.
 
+- **Tenants with backups were told they had none.** The tenant dashboard's
+  "Backups" tile and the admin panel's per-tenant Backups tab read a retired
+  table that no backup has ever been written to — so a tenant with 17 off-site
+  backups saw a "0" tile next to a Backups page listing all 17. Both now count
+  the real off-site bundles, as does the platform metrics endpoint. The retired
+  `/api/v1/tenants/{id}/backups` API and its empty table are gone.
+
 - **A single backup-plugin pod could take the whole database offline.** The
   component that ships PostgreSQL backups ran as one copy with no spare, and
   the database operator refuses to do anything at all — including promoting a
