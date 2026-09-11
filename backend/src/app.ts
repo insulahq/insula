@@ -1944,6 +1944,17 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         const nodeHealthMonitorHandle = startNodeHealthScheduler(app.db, k8sForImapsync);
         app.addHook('onClose', () => nodeHealthMonitorHandle.stop());
 
+        // Auto-repin: an HA-tier tenant pinned to a node that goes offline is
+        // down even though its data has a replica on a healthy node. Clearing
+        // the pin lets it reschedule. Local-tier tenants are never moved —
+        // their only replica is on the dead node. 60s tick rather than the
+        // node-health reconciler's 5 min, which took 4m20s to notice a dead
+        // node during the 2026-09-11 drill.
+        // Kill switch: AUTO_REPIN_HA_TENANTS=disable
+        const { startAutoRepinScheduler } = await import('./modules/tenant-health/scheduler.js');
+        const autoRepinHandle = startAutoRepinScheduler({ db: app.db, k8s: k8sForImapsync });
+        app.addHook('onClose', () => autoRepinHandle());
+
         // Released-PV janitor — daily sweep reaping the CNPG-recreate
         // leak class only (Released platform/system-db-N PV with a Bound
         // successor; reclaimPolicy=Retain leaks one per instance
@@ -1951,6 +1962,17 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         // orphaned-volumes UI. See orphaned-volumes/janitor.ts.
         const pvJanitorHandle = startReleasedPvJanitor(app.db, k8sForImapsync);
         app.addHook('onClose', () => pvJanitorHandle.stop());
+
+        // Mail-store reaper — every mail failover leaves the old local-path
+        // PVC directory on the source node forever (six found on staging
+        // after one day of drills). Nothing else reaps them: the standby
+        // janitor only matches mail-stack-standby.deelected-*, and
+        // orphaned-volumes looks at PV objects, not local-path directories
+        // whose PV is already deleted. 48h grace so a failover stays
+        // reversible by hand.
+        const { startMailPvcReaper } = await import('./modules/mail-admin/mail-pvc-reaper.js');
+        const mailPvcReaperHandle = startMailPvcReaper(app.db, k8sForImapsync);
+        app.addHook('onClose', () => mailPvcReaperHandle.stop());
 
         // ADR-045 W14 follow-up: upgrade reconciler (MONITOR-ONLY). While an
         // upgrade is in flight (pending_update_version set) it advances the

@@ -210,11 +210,14 @@ recoverable — the one single point of failure that replication cannot address.
 | B5 | Warn when mail failover is unconfigured in HA mode | **done** |
 | B6 | Skip snapshotting on a dead source in operator-triggered failover | **done** |
 | B7 | Fix Bulwark false restore-failure; read both sentinels | **done** |
-| B8 | Node-outage notification severity / dedupe / naming | todo |
+| B8 | Node-outage notification severity / dedupe / naming | **done** |
 | B9 | Faster node-readiness detection | todo |
-| B10 | Stop rendering stale metrics for NotReady nodes | todo |
-| B11 | Derive standby nodes from non-active candidates | todo |
+| B10 | Stop rendering stale metrics for NotReady nodes | **done** |
+| B11 | Derive standby nodes from non-active candidates | **done** |
 | B12 | Decommission residue: Longhorn node CR, placement refs, orphaned mail PVC dirs | todo |
+| D1 | Reap orphaned mail-store directories left by failovers (§3.2) | **done** |
+| D3 | Auto re-pin HA-tier tenants off a downed node | **done** |
+| D2 | Restoration wizard for degraded tenants | todo |
 | C1 | Exact DR drill procedure, executed and recorded | todo |
 | C2 | Correct the runbooks (see below) | todo |
 
