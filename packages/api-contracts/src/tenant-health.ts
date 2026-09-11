@@ -104,6 +104,23 @@ export const nodeDownSchema = z.object({
   notReadySince: z.string().nullable(),
   /** True when this node is where the mail stack currently runs. */
   isMailActiveNode: z.boolean(),
+  /**
+   * `insula.host/ingress-mode` — 'all' | 'local' | 'none'. A down node with a
+   * mode other than 'none' is still an advertised ingress endpoint.
+   */
+  ingressMode: z.string().nullable(),
+  /**
+   * The node's public addresses, one per family. These are what the platform
+   * published as A/AAAA records for every route it serves, and they keep
+   * resolving after the node dies.
+   *
+   * The platform deliberately does NOT own DNS (operator decision, 2026-09-11):
+   * dead records are accepted and withdrawing them is a manual action. That
+   * makes it all the more important to SAY so during an outage — the drill
+   * found this stated only as a tooltip on one page the operator had no reason
+   * to open.
+   */
+  ingressAddresses: z.array(z.string()),
 });
 export type NodeDown = z.infer<typeof nodeDownSchema>;
 

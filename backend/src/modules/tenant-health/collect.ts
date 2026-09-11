@@ -17,11 +17,34 @@ import { tenants, mailboxes, systemSettings } from '../../db/schema.js';
 import type { NodeFact, PodFact, ReplicaFact, TenantFact, VolumeFact } from './service.js';
 
 const NODE_ROLE_LABEL = 'insula.host/node-role';
+const INGRESS_MODE_LABEL = 'insula.host/ingress-mode';
+
+/**
+ * The node's public addresses, one per family.
+ *
+ * Per-family on purpose: a dual-stack node carries two InternalIPs and often
+ * two ExternalIPs, so a bare `.find(ExternalIP)` returns whichever k3s listed
+ * first (always the v4) and the node's IPv6 goes missing — the same bug
+ * k8s-sync already documents. v4 keeps the ExternalIP-then-InternalIP
+ * fallback, because on a single-NIC cloud VPS the InternalIP IS the public
+ * address.
+ */
+function publicAddresses(node: RawNode): string[] {
+  const addrs = node.status?.addresses ?? [];
+  const isV6 = (a: { address?: string }) => (a.address ?? '').includes(':');
+  const pick = (type: string, v6: boolean) =>
+    addrs.find((a) => a.type === type && isV6(a) === v6)?.address ?? null;
+  return [
+    pick('ExternalIP', false) ?? pick('InternalIP', false),
+    pick('ExternalIP', true) ?? pick('InternalIP', true),
+  ].filter((a): a is string => !!a);
+}
 
 interface RawNode {
   metadata?: { name?: string; labels?: Record<string, string> };
   status?: {
     conditions?: Array<{ type?: string; status?: string; lastTransitionTime?: string }>;
+    addresses?: Array<{ type?: string; address?: string }>;
   };
 }
 interface RawPod {
@@ -161,6 +184,10 @@ export async function collectFacts(
     name: n.metadata?.name ?? '<unnamed>',
     ready: nodeIsReady(n),
     role: n.metadata?.labels?.[NODE_ROLE_LABEL] ?? null,
+    // Absent label means 'all' — the same clamp k8s-sync applies, so a node
+    // with no explicit mode is not mistaken for one that serves no traffic.
+    ingressMode: n.metadata?.labels?.[INGRESS_MODE_LABEL] ?? 'all',
+    ingressAddresses: publicAddresses(n),
     notReadySince: nodeIsReady(n) ? null : readyTransition(n),
   }));
 

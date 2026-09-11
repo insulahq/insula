@@ -5,12 +5,24 @@
  * They are unit tests because reproducing them live means killing nodes.
  */
 import { describe, it, expect } from 'vitest';
-import { computeOutageImpact, findingsForTenant, type OutageInput, type TenantFact } from './service.js';
+import {
+  computeOutageImpact, findingsForTenant,
+  type OutageInput, type TenantFact, type NodeFact,
+} from './service.js';
 
 const OBSERVED = new Date('2026-09-11T15:00:00Z');
 
-const node = (name: string, ready: boolean) => ({
-  name, ready, role: 'server', notReadySince: ready ? null : '2026-09-11T14:55:00Z',
+// Real nodes carry an ingress mode and public addresses; the fixture does too,
+// so that a down node's "DNS still points here" surface is exercised rather
+// than silently defaulting to empty.
+const node = (name: string, ready: boolean, over: Partial<NodeFact> = {}): NodeFact => ({
+  name,
+  ready,
+  role: 'server',
+  notReadySince: ready ? null : '2026-09-11T14:55:00Z',
+  ingressMode: 'all',
+  ingressAddresses: [`198.51.100.${name.charCodeAt(name.length - 1) % 250}`, `2001:db8::${name.slice(-1)}`],
+  ...over,
 });
 
 const localTenant = (over: Partial<TenantFact> = {}): TenantFact => ({
@@ -171,5 +183,49 @@ describe('fleet view', () => {
     expect(out.affectedTenants[0].state).toBe('unknown');
     // Crucially NOT an empty list — an empty result would render as "all fine".
     expect(out.affectedTenantCount).toBe(1);
+  });
+});
+
+/**
+ * Dead DNS records are an accepted state (operator decision, 2026-09-11: the
+ * platform does not own DNS). Accepted, but not invisible — the outage payload
+ * has to carry enough for the UI to name the manual action, because the drill
+ * found this stated only in a tooltip on a page the operator had no reason to
+ * open while firefighting.
+ */
+describe('down-node ingress reachability', () => {
+  it('reports the addresses that DNS still points at', () => {
+    const out = computeOutageImpact(baseInput({
+      nodes: [
+        node('node-a', true),
+        node('node-c', false, { ingressAddresses: ['198.51.100.7', '2001:db8::7'] }),
+      ],
+    }));
+    expect(out.nodesDown).toHaveLength(1);
+    expect(out.nodesDown[0].ingressMode).toBe('all');
+    expect(out.nodesDown[0].ingressAddresses).toEqual(['198.51.100.7', '2001:db8::7']);
+  });
+
+  it('lists NO addresses for an ingress:none node — those records were never published', () => {
+    // Sending the operator to withdraw records that do not exist is worse than
+    // saying nothing: it burns the one thing they have during an outage, time.
+    const out = computeOutageImpact(baseInput({
+      nodes: [
+        node('node-a', true),
+        node('node-c', false, { ingressMode: 'none', ingressAddresses: ['198.51.100.7'] }),
+      ],
+    }));
+    expect(out.nodesDown[0].ingressMode).toBe('none');
+    expect(out.nodesDown[0].ingressAddresses).toEqual([]);
+  });
+
+  it('keeps addresses for an ingress:local node — it still served its own routes', () => {
+    const out = computeOutageImpact(baseInput({
+      nodes: [
+        node('node-a', true),
+        node('node-c', false, { ingressMode: 'local', ingressAddresses: ['198.51.100.9'] }),
+      ],
+    }));
+    expect(out.nodesDown[0].ingressAddresses).toEqual(['198.51.100.9']);
   });
 });
