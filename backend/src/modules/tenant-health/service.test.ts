@@ -297,3 +297,62 @@ describe('an empty rebuild target is not a surviving copy', () => {
     expect(entry.findings.map((f) => f.kind)).toContain('volume_last_replica_on_down_node');
   });
 });
+
+/**
+ * "0 tenants affected" can be true and badly incomplete.
+ *
+ * The 2026-09-11 worker drill: the lost node held no tenant workloads, so the
+ * banner reported no impact — correctly — while the backup plugin's Service had
+ * zero ready endpoints and backups were unavailable for the whole outage.
+ *
+ * Kubernetes marks an endpoint on a NotReady node not-ready even when the
+ * process behind it is healthy and still renewing its leader lease, so the
+ * standby cannot take over and nothing resolves it until the node is fixed or
+ * removed. Measured wedged for the full 5m37s.
+ */
+describe('platform services with no ready endpoint', () => {
+  const downOnly = { nodes: [node('node-a', true), node('node-c', false)] };
+
+  it('names a watched service that has no ready endpoint', () => {
+    const out = computeOutageImpact(baseInput({
+      ...downOnly,
+      endpoints: [{ namespace: 'cnpg-system', serviceName: 'barman-cloud', readyEndpoints: 0 }],
+    }));
+    expect(out.degradedServices).toEqual([
+      { namespace: 'cnpg-system', name: 'barman-cloud', label: 'Backups (barman-cloud plugin)' },
+    ]);
+  });
+
+  it('stays quiet when the service still has a ready endpoint', () => {
+    const out = computeOutageImpact(baseInput({
+      ...downOnly,
+      endpoints: [{ namespace: 'cnpg-system', serviceName: 'barman-cloud', readyEndpoints: 1 }],
+    }));
+    expect(out.degradedServices).toEqual([]);
+  });
+
+  it('reports nothing when no node is down — a rollout blip is not an outage', () => {
+    // Endpoints go briefly empty during an ordinary rollout. Raising an outage
+    // alarm for that would train the operator to ignore this field.
+    const out = computeOutageImpact(baseInput({
+      nodes: [node('node-a', true), node('node-b', true)],
+      endpoints: [{ namespace: 'cnpg-system', serviceName: 'barman-cloud', readyEndpoints: 0 }],
+    }));
+    expect(out.nodesDown).toEqual([]);
+    expect(out.degradedServices).toEqual([]);
+  });
+
+  it('makes no claim when endpoints were not measured', () => {
+    // Absent data must not render as "everything is reachable".
+    expect(computeOutageImpact(baseInput(downOnly)).degradedServices).toEqual([]);
+    expect(computeOutageImpact(baseInput({ ...downOnly, endpoints: [] })).degradedServices).toEqual([]);
+  });
+
+  it('falls back to namespace/name for a service with no friendly label', () => {
+    const out = computeOutageImpact(baseInput({
+      ...downOnly,
+      endpoints: [{ namespace: 'platform', serviceName: 'something-new', readyEndpoints: 0 }],
+    }));
+    expect(out.degradedServices[0].label).toBe('platform/something-new');
+  });
+});

@@ -80,6 +80,7 @@ export async function tenantHealthRoutes(app: FastifyInstance): Promise<void> {
         downTenantCount: 0,
         degradedTenantCount: 0,
         mailAffected: false,
+        degradedServices: [],
         observedAt: new Date().toISOString(),
         readError: (err as Error).message ?? 'cluster read failed',
       };

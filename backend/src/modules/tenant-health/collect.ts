@@ -67,6 +67,26 @@ interface LhVolume {
   };
 }
 
+/**
+ * Platform services whose loss an operator must be told about by name.
+ *
+ * Deliberately a short, curated list rather than "every Service in the
+ * platform namespaces": the point is to say *backups are unavailable*, not to
+ * emit a wall of internal service names during an incident. Add an entry when
+ * a service's silent absence would mislead.
+ */
+export const WATCHED_PLATFORM_SERVICES: ReadonlyArray<{
+  namespace: string; name: string; label: string;
+}> = [
+  { namespace: 'cnpg-system', name: 'barman-cloud', label: 'Backups (barman-cloud plugin)' },
+];
+
+export interface EndpointFact {
+  readonly namespace: string;
+  readonly serviceName: string;
+  readonly readyEndpoints: number;
+}
+
 export interface CollectedFacts {
   readonly nodes: NodeFact[];
   readonly pods: PodFact[];
@@ -74,6 +94,7 @@ export interface CollectedFacts {
   readonly volumes: VolumeFact[];
   readonly tenants: TenantFact[];
   readonly mailActiveNode: string | null;
+  readonly endpoints: EndpointFact[];
   readonly readError: string | null;
 }
 
@@ -234,12 +255,35 @@ export async function collectFacts(
       hasMailboxes: hasMail.has(t.id),
     }));
 
+  // Ready-endpoint counts for the watched platform services. Read per service
+  // rather than listing every slice in the cluster: a handful of targeted reads
+  // during an incident beats one large one.
+  const endpoints: EndpointFact[] = [];
+  for (const svc of WATCHED_PLATFORM_SERVICES) {
+    const slices = await guard(
+      `endpoints ${svc.namespace}/${svc.name}`,
+      () => k8s.disco.listNamespacedEndpointSlice({
+        namespace: svc.namespace,
+        labelSelector: `kubernetes.io/service-name=${svc.name}`,
+      } as unknown as Parameters<typeof k8s.disco.listNamespacedEndpointSlice>[0]) as Promise<{
+        items?: Array<{ endpoints?: Array<{ conditions?: { ready?: boolean } }> }>;
+      }>,
+      { items: [] },
+    );
+    let ready = 0;
+    for (const sl of slices.items ?? []) {
+      for (const ep of sl.endpoints ?? []) if (ep.conditions?.ready) ready += 1;
+    }
+    endpoints.push({ namespace: svc.namespace, serviceName: svc.name, readyEndpoints: ready });
+  }
+
   return {
     nodes,
     pods,
     replicas,
     volumes,
     tenants: tenantFacts,
+    endpoints,
     mailActiveNode: settings?.activeNode ?? null,
     // A node-list failure is fatal to the verdict; the rest degrade the
     // detail but not the headline. Reporting any error is the safe choice.

@@ -141,6 +141,27 @@ export const clusterOutageImpactSchema = z.object({
   degradedTenantCount: z.number().int(),
   /** True when the mail stack's active node is among nodesDown. */
   mailAffected: z.boolean(),
+  /**
+   * Platform services that currently have ZERO ready endpoints.
+   *
+   * "0 tenants affected" is true and reassuring and can be badly incomplete.
+   * The 2026-09-11 worker drill produced exactly that: no tenant workloads ran
+   * on the lost node, so the banner reported no impact — while the backup
+   * plugin's Service had no ready endpoint at all and backups were silently
+   * unavailable.
+   *
+   * Kubernetes marks an endpoint on a NotReady node not-ready even when the
+   * process behind it is perfectly healthy, so a leader-elected singleton whose
+   * node loses only its kubelet becomes unroutable while its standby cannot
+   * take over — the lease is still being renewed by the live leader. Nothing
+   * resolves that on its own, so it has to be said out loud.
+   */
+  degradedServices: z.array(z.object({
+    namespace: z.string(),
+    name: z.string(),
+    /** Operator-facing name, e.g. "Backups" rather than "barman-cloud". */
+    label: z.string(),
+  })),
   /** ISO timestamp of the cluster read. */
   observedAt: z.string(),
   /**
