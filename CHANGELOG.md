@@ -12,7 +12,48 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **You now get told when a node reboots, and when it has finished booting.**
+  Previously a server restart produced no notification at all — the only thing
+  that arrived was a burst of misleading OOM alerts (fixed below), so the real
+  event was invisible and the noise was wrong. Two new notification types, both
+  naming the node: *Node rebooting* and *Node startup complete*, the latter
+  reporting roughly how long the node was down.
+
+  One honest limitation, stated in the notification itself: on a single-node
+  cluster the control plane goes down **with** the node, so the platform usually
+  cannot announce its own shutdown as it happens. In that case only the startup
+  notification arrives, and it says so — it still tells you the node rebooted
+  and for how long it was gone. On a multi-node cluster both arrive.
+
+- **Dead pod records left behind by a reboot are now cleaned up on their own.**
+  A node restart leaves behind pod records that no longer exist — Kubernetes
+  keeps up to 12,500 of them before it starts tidying, so in practice they piled
+  up for months. One production reboot left 822 of them; after an earlier fix,
+  20 per reboot. They are now removed automatically half an hour after the
+  reboot, which is late enough that you can still see what the restart killed.
+  Only records the kubelet itself marked as reboot casualties are touched —
+  never a running workload, and never a database pod.
+
 ### Fixed
+- **A node reboot no longer reports your tenants' workloads as out of memory.**
+  Restarting a server sent admins a burst of alerts claiming tenant containers
+  had been "OOM-killed", including three named tenants by name. None of it was
+  true: nothing ran out of memory, the node had 8 GB free and had never been
+  under memory pressure, and the kernel recorded no out-of-memory kills at all.
+
+  The cause: when a node shuts down, anything that does not stop promptly is
+  force-killed, and a force-kill looks identical to an out-of-memory kill if you
+  only read the exit code. The platform reads the kubelet's own explanation now
+  — it records that the pod was "terminated in response to imminent node
+  shutdown" — and stays quiet for those.
+
+  Genuine out-of-memory kills are still reported, including the awkward kind the
+  kubelet labels only as a generic error. Where that has to be inferred rather
+  than confirmed, the alert now says so plainly instead of asserting an OOM, so
+  you are never sent to raise a memory limit on a container that was nowhere
+  near it.
+
 - **"No pending kernel update" now actually checks.** The Node Hardening tab
   always showed this as satisfied, on every node, because nothing ever worked
   out whether a newer kernel was waiting. It now compares the kernel your node

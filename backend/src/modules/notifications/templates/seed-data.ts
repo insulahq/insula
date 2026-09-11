@@ -1271,6 +1271,68 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     ];
   }),
 
+  // ── Node reboot lifecycle (operator request 2026-09-11) ──
+  ...((): SeedTemplate[] => {
+    const rebootVars: readonly NotificationTemplateVariable[] = [
+      ...COMMON_VARS,
+      { name: 'nodeName', type: 'string', required: true },
+    ];
+    const startupVars: readonly NotificationTemplateVariable[] = [
+      ...COMMON_VARS,
+      { name: 'nodeName', type: 'string', required: true },
+      { name: 'downtimeText', type: 'string', required: true },
+      { name: 'bootedAtText', type: 'string', required: true },
+      { name: 'announcementNote', type: 'string', required: true },
+    ];
+    return [
+      {
+        categoryId: 'admin.node_rebooting',
+        channel: 'email',
+        locale: 'en',
+        subjectTemplate: '[NODE] {{nodeName}} is rebooting',
+        bodyTemplate: emailMjml(
+          'Node {{nodeName}} is rebooting',
+          'Cluster node {{nodeName}} has left Ready and is shutting down. Workloads on it are '
+          + 'being drained. You will get a "startup complete" notification when it is back, '
+          + 'with the downtime.',
+        ),
+        bodyFormat: 'mjml',
+        variablesSchema: rebootVars,
+      },
+      {
+        categoryId: 'admin.node_rebooting',
+        channel: 'in_app',
+        locale: 'en',
+        subjectTemplate: '[NODE] {{nodeName}} is rebooting',
+        bodyTemplate: 'Cluster node {{nodeName}} has left Ready and is shutting down. Workloads are being drained.',
+        bodyFormat: 'plaintext',
+        variablesSchema: rebootVars,
+      },
+      {
+        categoryId: 'admin.node_startup_complete',
+        channel: 'email',
+        locale: 'en',
+        subjectTemplate: '[NODE] {{nodeName}} startup complete ({{downtimeText}} down)',
+        bodyTemplate: emailMjml(
+          'Node {{nodeName}} is back',
+          'Cluster node {{nodeName}} rebooted and is Ready again{{bootedAtText}}. Approximate '
+          + 'downtime: {{downtimeText}}. {{announcementNote}}',
+        ),
+        bodyFormat: 'mjml',
+        variablesSchema: startupVars,
+      },
+      {
+        categoryId: 'admin.node_startup_complete',
+        channel: 'in_app',
+        locale: 'en',
+        subjectTemplate: '[NODE] {{nodeName}} startup complete',
+        bodyTemplate: '{{nodeName}} rebooted and is Ready again{{bootedAtText}}. Approximate downtime: {{downtimeText}}. {{announcementNote}}',
+        bodyFormat: 'plaintext',
+        variablesSchema: startupVars,
+      },
+    ];
+  })(),
+
   // ── admin.tenant_pod_oom (Phase 1d) ──
   ...((): SeedTemplate[] => {
     const oomVars: readonly NotificationTemplateVariable[] = [
@@ -1279,19 +1341,18 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
       { name: 'podName', type: 'string', required: true },
       { name: 'containerName', type: 'string', required: true },
       { name: 'restartCount', type: 'string', required: true },
+      { name: 'killSummary', type: 'string', required: true },
+      { name: 'killDetail', type: 'string', required: true },
     ];
     return [
       {
         categoryId: 'admin.tenant_pod_oom',
         channel: 'email',
         locale: 'en',
-        subjectTemplate: '[OOM] Tenant workload OOM-killed: {{tenantLabel}} ({{containerName}})',
+        subjectTemplate: '[OOM] Tenant workload {{killSummary}}: {{tenantLabel}} ({{containerName}})',
         bodyTemplate: emailMjml(
-          'Tenant workload OOM-killed: {{tenantLabel}}',
-          'Container {{containerName}} in pod {{podName}} (tenant {{tenantLabel}}) was killed by the '
-          + 'kernel OOM killer — restart count {{restartCount}}. Repeated OOM kills usually mean the '
-          + 'workload needs a larger memory limit/plan or has a memory leak. Check the tenant\'s '
-          + 'Resource Limits and the deployment.',
+          'Tenant workload {{killSummary}}: {{tenantLabel}}',
+          'Container {{containerName}} in pod {{podName}} (tenant {{tenantLabel}}) {{killDetail}}',
         ),
         bodyFormat: 'mjml',
         variablesSchema: oomVars,
@@ -1300,8 +1361,8 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
         categoryId: 'admin.tenant_pod_oom',
         channel: 'in_app',
         locale: 'en',
-        subjectTemplate: '[OOM] {{tenantLabel}}: {{containerName}} OOM-killed',
-        bodyTemplate: '{{tenantLabel}} — {{containerName}} in {{podName}} was OOM-killed (restarts: {{restartCount}}).',
+        subjectTemplate: '[OOM] {{tenantLabel}}: {{containerName}} {{killSummary}}',
+        bodyTemplate: '{{tenantLabel}} — {{containerName}} in {{podName}} {{killDetail}}',
         bodyFormat: 'plaintext',
         variablesSchema: oomVars,
       },

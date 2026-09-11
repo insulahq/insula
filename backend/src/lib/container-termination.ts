@@ -99,3 +99,65 @@ export function describeTermination(t: TerminationState | undefined | null): str
 export function messageIndicatesOom(message: string): boolean {
   return message.includes('OOMKilled') || message.includes(`exit code ${OOM_EXIT_CODE}`);
 }
+
+/**
+ * Pod-level status fields that say a SIGKILL was EXPECTED.
+ *
+ * WHY THIS EXISTS
+ * ---------------
+ * The exit-137 inference above is what catches cgroup group-kills the kubelet
+ * labels `reason: "Error"`. It also catches every SIGKILL that has nothing to
+ * do with memory — and the biggest source of those is a node reboot.
+ *
+ * Measured on production 2026-09-11. A graceful node shutdown SIGKILLs any
+ * container still alive at the end of its `shutdownGracePeriodByPodPriority`
+ * group. Five containers exited 137 that way; all five were reported as OOM,
+ * three of them to admins as "<tenant>: apache-php OOM-killed". The kernel ring
+ * buffer for that boot held ZERO cgroup OOM kills, the node never left
+ * `MemoryPressure=False` with 8 GiB free, no pod was ever evicted, and the live
+ * replacements sat at 20-32% of their limits. Eight of the thirteen inferred
+ * OOMs ever recorded on that cluster were reboot debris from two reboots.
+ *
+ * The kubelet hands us the answer in the pod's own status:
+ *
+ *   status.reason  = "Terminated"    status.message = "Pod was terminated in
+ *                                     response to imminent node shutdown."
+ *   status.reason  = "NodeShutdown"  status.message = "Pod was rejected as the
+ *                                     node is shutting down."
+ *
+ * Neither carries `deletionTimestamp` — the pod is never deleted, just marked
+ * Failed — which is why the `deletionTimestamp`-only guard in
+ * node-health/memory-events.ts (correct for rollout SIGKILLs) did not catch it.
+ *
+ * Deliberately NOT `restartCount > 0`, which the module comment above uses as
+ * its informal justification: a `restartPolicy: Never` pod (a Job) that really
+ * is OOM-killed has restartCount 0 and carries the kill in `state.terminated`.
+ * Gating on the restart count would trade this false positive for a false
+ * negative. The pod-level shutdown markers are what actually distinguish them.
+ */
+export interface PodShutdownState {
+  readonly deletionTimestamp?: string;
+  /** Pod-level `status.reason` (NOT the container's `terminated.reason`). */
+  readonly reason?: string;
+}
+
+/**
+ * `status.reason` values the kubelet sets on pods it killed or refused because
+ * the node was going down. `Terminated` is the graceful-shutdown manager's own
+ * reason string, `NodeShutdown` the admission rejection for a replacement the
+ * scheduler bound to an already-draining node.
+ */
+export const NODE_SHUTDOWN_POD_REASONS: readonly string[] = ['NodeShutdown', 'Terminated'];
+
+/**
+ * True when this pod's containers were SIGKILLed by design — a deletion
+ * (rollout, scale-down, drain) or a node shutdown. An *inferred* OOM on such a
+ * pod is meaningless and must be dropped; an EXPLICIT `OOMKilled` from the
+ * kubelet still counts, because a container can genuinely hit its limit while
+ * the pod happens to be shutting down.
+ */
+export function isExpectedSigkill(pod: PodShutdownState | undefined | null): boolean {
+  if (!pod) return false;
+  if (pod.deletionTimestamp) return true;
+  return pod.reason !== undefined && NODE_SHUTDOWN_POD_REASONS.includes(pod.reason);
+}
