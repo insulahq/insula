@@ -28,7 +28,7 @@ import type { Database } from '../../db/index.js';
 import { nodeMemoryEvents, tenants } from '../../db/schema.js';
 import { notifyAdminNodeMemoryEvents } from '../notifications/events.js';
 import type { NodeMemoryEvent } from '@insula/api-contracts';
-import { classifyOom } from '../../lib/container-termination.js';
+import { classifyOom, isExpectedSigkill } from '../../lib/container-termination.js';
 import { isSystemNamespace } from '../../lib/namespace-tier.js';
 
 const RETENTION_MS = 30 * 24 * 60 * 60 * 1000; // UI window: 30 days
@@ -94,6 +94,12 @@ export interface RawPod {
   };
   readonly spec?: { readonly nodeName?: string };
   readonly status?: {
+    /**
+     * Pod-level reason. `Terminated` / `NodeShutdown` mean the kubelet killed
+     * or refused this pod for a node shutdown — its exit 137s are by design.
+     * Distinct from the CONTAINER's `terminated.reason` read below.
+     */
+    readonly reason?: string;
     readonly containerStatuses?: ReadonlyArray<{
       readonly name?: string;
       readonly restartCount?: number;
@@ -121,9 +127,78 @@ interface RawTermination {
  * containerd versions (observed on DEV) — the message marks the
  * inference. Pure — unit tested directly.
  */
+/**
+ * Containers the kubelet killed because a probe failed, indexed as
+ * `<namespace>/<pod>/<container>` with the times it said so.
+ *
+ * WHY
+ * ---
+ * A failed liveness/startup probe makes the kubelet SIGKILL the container, which
+ * is exit 137 — indistinguishable from a cgroup OOM by exit code alone, exactly
+ * like the node-shutdown case. Unlike that one the pod stays RUNNING and the
+ * container restarts, so none of the pod-level shutdown markers apply and
+ * isExpectedSigkill() correctly does not fire.
+ *
+ * Found by a real DEV reboot on 2026-09-11, after the node-shutdown fix: the
+ * reboot produced no false tenant OOM alerts, but still raised a CRITICAL
+ * "Node memory event" for two crowdsec containers. The kernel logged ZERO
+ * cgroup OOMs for that boot, and the kubelet had already explained itself:
+ *
+ *   Normal   Killing    Container crowdsec failed liveness probe, will be restarted
+ *   Warning  Unhealthy  Liveness probe failed: … connect: connection refused
+ *
+ * crowdsec is simply slow to answer /health after a cold boot. Believe the
+ * kubelet: it names the cause, so an inference must not overrule it.
+ *
+ * Matches the kubelet's own message format (`kubelet/prober`). Startup probes
+ * are included — they kill the same way.
+ */
+export function indexProbeKills(
+  events: ReadonlyArray<RawMemoryEvent>,
+): Map<string, Date[]> {
+  const out = new Map<string, Date[]>();
+  for (const e of events) {
+    if (e.reason !== 'Killing') continue;
+    const msg = e.message ?? '';
+    // "Container <name> failed liveness probe, will be restarted"
+    const m = /Container (\S+) failed (?:liveness|startup) probe/.exec(msg);
+    if (!m) continue;
+    const ns = e.involvedObject?.namespace;
+    const pod = e.involvedObject?.name;
+    if (!ns || !pod) continue;
+    const at = eventTimestamp(e);
+    if (!at) continue;
+    const key = `${ns}/${pod}/${m[1]}`;
+    const list = out.get(key);
+    if (list) list.push(at); else out.set(key, [at]);
+  }
+  return out;
+}
+
+/**
+ * How far apart a probe-kill event and the container termination it explains
+ * may be. The kubelet posts the event as it kills, so these are near-
+ * simultaneous; the window only absorbs clock skew and event-time rounding.
+ */
+const PROBE_KILL_WINDOW_MS = 5 * 60 * 1000;
+
+function killedByProbe(
+  index: ReadonlyMap<string, Date[]>,
+  namespace: string | null,
+  podName: string | null,
+  containerName: string,
+  finishedAt: Date,
+): boolean {
+  if (!namespace || !podName) return false;
+  const times = index.get(`${namespace}/${podName}/${containerName}`);
+  if (!times) return false;
+  return times.some((t) => Math.abs(t.getTime() - finishedAt.getTime()) <= PROBE_KILL_WINDOW_MS);
+}
+
 export function collectOomKilledContainers(
   pods: ReadonlyArray<RawPod>,
   now: Date = new Date(),
+  probeKills: ReadonlyMap<string, Date[]> = new Map(),
 ): NormalizedMemoryEvent[] {
   const cutoff = now.getTime() - RETENTION_MS;
   const out: NormalizedMemoryEvent[] = [];
@@ -133,10 +208,20 @@ export function collectOomKilledContainers(
     const podName = pod.metadata?.name ?? null;
     const nodeName = pod.spec?.nodeName ?? '';
     if (!uid || !nodeName) continue;
-    // A terminating pod's containers are SIGKILLed on purpose once the grace
-    // period expires, which is exit 137 — indistinguishable from a cgroup OOM
-    // by exit code alone. Only kubelet's explicit `OOMKilled` reason counts here.
-    const terminating = Boolean(pod.metadata?.deletionTimestamp);
+    // A pod that is shutting down has its containers SIGKILLed on purpose once
+    // the grace period expires, which is exit 137 — indistinguishable from a
+    // cgroup OOM by exit code alone. Only kubelet's explicit `OOMKilled` counts.
+    //
+    // Two ways that happens, and this used to test only the first:
+    //   deletionTimestamp  — a rollout/scale-down/drain deletes the pod.
+    //   status.reason      — a NODE SHUTDOWN never deletes the pod, it marks it
+    //                        Failed in place, so deletionTimestamp is ABSENT.
+    // Missing the second reported five reboot corpses as OOMs on production
+    // 2026-09-11. See isExpectedSigkill().
+    const expectedKill = isExpectedSigkill({
+      deletionTimestamp: pod.metadata?.deletionTimestamp,
+      reason: pod.status?.reason,
+    });
     for (const cs of pod.status?.containerStatuses ?? []) {
       // A terminal pod (restartPolicy Never) carries the kill in
       // state.terminated; a restarting one in lastState.terminated.
@@ -155,9 +240,14 @@ export function collectOomKilledContainers(
         // exclusion reconciler rolled the deployment, while its cgroup reported
         // `oom_kill 0` and a peak of 8.5 MB against a 64 MiB limit, and the
         // node's kernel ring buffer held no cgroup OOM for it at all.
-        if (!oomExplicit && terminating) continue;
+        if (!oomExplicit && expectedKill) continue;
         const finished = term.finishedAt ? new Date(term.finishedAt) : null;
         if (!finished || Number.isNaN(finished.getTime()) || finished.getTime() < cutoff) continue;
+        // Same rule, second source: if the kubelet said it killed this exact
+        // container for a failed probe at about this time, that IS the cause.
+        // Only drops the INFERRED arm — an explicit OOMKilled still counts,
+        // because a container can genuinely hit its limit and fail a probe.
+        if (!oomExplicit && killedByProbe(probeKills, namespace, podName, cs.name ?? '', finished)) continue;
         out.push({
           dedupeKey: `oomk:${uid}:${cs.name ?? ''}:${cs.restartCount ?? 0}:${finished.getTime()}`,
           kind: 'container-oom',
@@ -383,11 +473,13 @@ export async function recordMemoryEvents(
   systemOom: ReadonlyArray<RawMemoryEvent>,
   pods: ReadonlyArray<RawPod> = [],
   now: Date = new Date(),
+  killingEvents: ReadonlyArray<RawMemoryEvent> = [],
 ): Promise<{ readonly insertedCount: number }> {
   try {
+    const probeKills = indexProbeKills(killingEvents);
     const normalized = [
       ...normalizeMemoryEvents(evicted, systemOom, now),
-      ...collectOomKilledContainers(pods, now),
+      ...collectOomKilledContainers(pods, now, probeKills),
     ];
 
     const inserted: NormalizedMemoryEvent[] = [];

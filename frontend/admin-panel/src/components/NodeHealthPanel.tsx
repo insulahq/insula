@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Loader2, RefreshCw, AlertCircle, AlertTriangle, CheckCircle2, Wrench, Flame } from 'lucide-react';
 import StatusBadge from '@/components/ui/StatusBadge';
-import { useNodeHealth, useNodeMemoryEvents, useReconcileNodeHealth, type NodeHealthEntry, type NodeHealthSeverity, type NodeMemoryEvent } from '@/hooks/use-node-health';
+import { useNodeHealth, useNodeMemoryEvents, useReconcileNodeHealth, useStalePodCounts, type NodeHealthEntry, type NodeHealthSeverity, type NodeMemoryEvent } from '@/hooks/use-node-health';
 import NodeRecoveryModal from '@/components/NodeRecoveryModal';
 
 const SEVERITY_BADGE: Record<NodeHealthSeverity, 'error' | 'warning' | 'healthy'> = {
@@ -31,6 +31,28 @@ function formatRelative(iso: string | null): string {
   return `${Math.floor(ms / (24 * 60 * 60_000))} d ago`;
 }
 
+/**
+ * Should the row offer "Recover…"?
+ *
+ * Severity alone is NOT enough. A node reboot leaves Failed pod records behind
+ * while producing no evictions and no disk/memory pressure, so the node stays
+ * `normal` and this column used to render a bare em-dash — with the recovery
+ * modal, and every action in it, unreachable. Production sat on 17 such records
+ * accumulated across four reboots with no way to clear them from the UI.
+ *
+ * NodeRecoveryModal's own `suggestedWhen` had ALREADY been fixed for exactly
+ * this case (it keys on stalePods > 0, with a comment saying the pressure
+ * heuristic "missed the single most common cause of stale records"). That fix
+ * landed one level too deep: the modal suggested the right action, but the
+ * button that opens it was still gated on severity. This is the outer half.
+ *
+ * `undefined` means the count could not be fetched — fall back to severity
+ * rather than offering an action whose target set is unknown.
+ */
+function canRecover(entry: NodeHealthEntry, stalePods: number | undefined): boolean {
+  return entry.severity !== 'normal' || (stalePods ?? 0) > 0;
+}
+
 function pressureSummary(entry: NodeHealthEntry): string {
   const parts: string[] = [];
   if (!entry.ready) parts.push('NotReady');
@@ -43,6 +65,10 @@ function pressureSummary(entry: NodeHealthEntry): string {
 
 export default function NodeHealthPanel() {
   const { data, isLoading, isError, error } = useNodeHealth();
+  // Stale-pod counts gate the Recover button (see canRecover below). The modal
+  // already fetches these; TanStack Query dedupes on the shared key, so
+  // hoisting the hook here costs no extra request.
+  const { data: stalePodCounts } = useStalePodCounts(true);
   const reconcile = useReconcileNodeHealth();
   const [recoveryNode, setRecoveryNode] = useState<NodeHealthEntry | null>(null);
 
@@ -174,7 +200,7 @@ export default function NodeHealthPanel() {
                       {pressureSummary(n)}
                     </td>
                     <td className="px-3 py-2 text-right">
-                      {n.severity !== 'normal' ? (
+                      {canRecover(n, stalePodCounts?.[n.name]) ? (
                         <button
                           type="button"
                           onClick={() => setRecoveryNode(n)}

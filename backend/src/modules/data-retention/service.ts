@@ -41,6 +41,8 @@ import {
   platformStorageApplyRuns,
   drDrillRuns,
   imageReapLog,
+  crowdsecAutobanRuns,
+  sftpAuditLog,
 } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 
@@ -78,6 +80,22 @@ export const DR_DRILL_RUN_RETENTION_DAYS = 180;
 export const IMAGE_REAP_LOG_RETENTION_DAYS = 90;
 
 /**
+ * CrowdSec autoban evaluation log. Event-driven, NOT a timer: production wrote
+ * 1391 rows in a single day (2026-09-06) during one scanner burst and 3-23/day
+ * either side of it, because a row is written for every evaluation including
+ * the ones that take no action (`outcome = skipped_below_threshold`). So the
+ * table is quiet until it very much isn't, which is exactly the shape that
+ * needs a cap rather than a row limit.
+ */
+export const CROWDSEC_AUTOBAN_RUN_RETENTION_DAYS = 90;
+
+/**
+ * SFTP session/transfer/auth audit trail. Low volume (~12 rows/day observed on
+ * production) but append-only and previously pruned by nothing at all.
+ */
+export const SFTP_AUDIT_LOG_RETENTION_DAYS = 90;
+
+/**
  * DELIBERATELY NOT PRUNED — read this before "finishing the sweep".
  *
  * `platform_upgrade_snapshots` looks like per-event history and is not: it is
@@ -108,6 +126,8 @@ export interface DataRetentionResult {
   readonly storageApplyRuns: number;
   readonly drDrillRuns: number;
   readonly imageReapLogRows: number;
+  readonly crowdsecAutobanRuns: number;
+  readonly sftpAuditLogRows: number;
 }
 
 /**
@@ -247,6 +267,29 @@ export async function runDataRetention(db: Database): Promise<DataRetentionResul
     )
     .returning({ id: imageReapLog.id });
 
+  // 12. crowdsec_autoban_runs — append-only evaluation log. Pruned by age
+  //     rather than row count: the volume is bursty (one 2026-09-06 scanner
+  //     burst produced 1391 rows in a day), so a row cap would silently drop
+  //     the burst that is the interesting part while leaving quiet weeks
+  //     untouched.
+  const autobanRuns = await db
+    .delete(crowdsecAutobanRuns)
+    .where(
+      sql`${crowdsecAutobanRuns.triggeredAt} < NOW() - INTERVAL '${sql.raw(String(CROWDSEC_AUTOBAN_RUN_RETENTION_DAYS))} days'`,
+    )
+    .returning({ id: crowdsecAutobanRuns.id });
+
+  // 13. sftp_audit_log — append-only. Note the column is `created_at` WITHOUT
+  //     a timezone (unlike most of this file's tables), so the DB-side
+  //     NOW() - INTERVAL comparison is what keeps this correct; do not
+  //     reintroduce a client-computed cutoff here.
+  const sftpAudit = await db
+    .delete(sftpAuditLog)
+    .where(
+      sql`${sftpAuditLog.createdAt} < NOW() - INTERVAL '${sql.raw(String(SFTP_AUDIT_LOG_RETENTION_DAYS))} days'`,
+    )
+    .returning({ id: sftpAuditLog.id });
+
   return {
     auditLogs: audit.length,
     lifecycleTransitions: transitions.length,
@@ -259,5 +302,7 @@ export async function runDataRetention(db: Database): Promise<DataRetentionResul
     storageApplyRuns: applyRuns.length,
     drDrillRuns: drills.length,
     imageReapLogRows: reapLog.length,
+    crowdsecAutobanRuns: autobanRuns.length,
+    sftpAuditLogRows: sftpAudit.length,
   };
 }

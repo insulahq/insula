@@ -25,6 +25,11 @@ resources:
   # NOTE: the log-processing agent is NOT here. It needs a hostPath, which
   # this namespace's `baseline` Pod Security level forbids, so it lives in
   # k8s/base/crowdsec-agent (namespace platform-system).
-  # Bounds the LAPI alert/decision tables — the agent makes them grow.
-  - retention-cronjob.yaml
   - networkpolicy.yaml
+
+# The LAPI alert table is bounded by `db_config.flush` (max_age 7d /
+# max_items 5000), set explicitly by the seed-config init container in
+# deployment.yaml. It used to be a `crowdsec-retention` CronJob; that was
+# removed 2026-09-11 after it was found never to have succeeded once in 29
+# days on production — it called `cscli alerts delete --older-than`, a flag
+# that does not exist in v1.7.8.
