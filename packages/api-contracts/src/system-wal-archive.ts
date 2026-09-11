@@ -116,10 +116,21 @@ export type ScheduledBackupsDisableRequest = z.infer<typeof scheduledBackupsDisa
  *                         ACTIVE and cannot be turned off without also giving
  *                         up the base backups, which need the WAL spanning
  *                         their window to be restorable.
+ *   'target_binding'    — neither toggle is on, yet the plugin is attached:
+ *                         the backup-rclone-shim reconciler adds it whenever a
+ *                         SYSTEM backup target is bound, independently of this
+ *                         module. Observed on the DEV cluster 2026-09-11 with
+ *                         no `system_wal_archive_state` row at all and 4468
+ *                         segments archived.
  *   'none'              — no plugin entry: `wal-archive` no-op-succeeds and
  *                         Postgres recycles WAL.
  */
-export const walArchivingSourceSchema = z.enum(['streaming', 'scheduled_backups', 'none']);
+export const walArchivingSourceSchema = z.enum([
+  'streaming',
+  'scheduled_backups',
+  'target_binding',
+  'none',
+]);
 export type WalArchivingSource = z.infer<typeof walArchivingSourceSchema>;
 
 /** CNPG's own default when nothing sets `archive_timeout` explicitly. */

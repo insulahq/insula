@@ -167,6 +167,19 @@ describe('WAL archive settings tab', () => {
     expect(cell).toHaveTextContent('CNPG default');
   });
 
+  it('names a bare SYSTEM target binding rather than blaming a schedule', async () => {
+    // DEV's shape: no state row, plugin attached by the shim, WAL flowing.
+    routeApi({
+      ...PROD_STATE,
+      walArchivingSource: 'target_binding',
+      state: null,
+    });
+    renderWith(<WalArchiveTab />);
+    const banner = await screen.findByTestId('wal-archiving-implied-system-db');
+    expect(banner).toHaveTextContent('SYSTEM backup target is bound');
+    expect(banner.textContent).not.toMatch(/scheduled base backups attach/);
+  });
+
   it('does not show the implied banner once streaming is configured', async () => {
     routeApi(streamingState());
     renderWith(<WalArchiveTab />);
