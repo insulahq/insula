@@ -6,5 +6,5 @@ metadata:
   name: platform-version
   namespace: platform
 data:
-  version: "2026.9.17-f68c18c"
+  version: "2026.9.17-2dd44fa"
   branch: "development"
