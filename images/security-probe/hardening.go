@@ -25,7 +25,7 @@ func collectHardening(hostRoot string, ssh sshConfigView, ssh22Public bool) Hard
 	h.SshguardPresent = anyBinaryPresent(hostRoot, "sshguard")
 	h.UnattendedUpgradesActive = unattendedUpgradesActive(hostRoot)
 	h.AutomaticRebootWindow = nil
-	h.PendingKernelUpdate = false
+	h.PendingKernelUpdate = pendingKernelUpdate(hostRoot)
 	h.KernelEOL = false
 
 	h.CISFindings = buildCISFindings(ssh, h, ssh22Public)
@@ -122,8 +122,10 @@ func unattendedUpgradesActive(hostRoot string) bool {
 	return aptUnattendedActive(hostRoot) || dnfAutomaticActive(hostRoot)
 }
 
-// hostPathsForAutoUpdateCheck is every host path unattendedUpgradesActive reads,
-// relative to hostRoot.
+// hostPathsReadByHardeningChecks is every host path the hardening checks read,
+// relative to hostRoot — currently unattendedUpgradesActive (HARDEN-002) and
+// pendingKernelUpdate (KERNEL-002). Shared by both; add to it whenever a check
+// starts reading somewhere new.
 //
 // The DaemonSet mounts an ALLOWLIST of host paths. A path that is not mounted
 // does not read as an error — it reads as ABSENT, so the check reports false on
@@ -132,13 +134,157 @@ func unattendedUpgradesActive(hostRoot string) bool {
 // the timers.target.wants directories were not mounted. Hermetic tests cannot
 // catch it (they build their own root), so daemonset_mounts_test.go asserts this
 // list against the committed manifest. Add a read here AND a mount there.
-var hostPathsForAutoUpdateCheck = []string{
+var hostPathsReadByHardeningChecks = []string{
 	"usr/bin",
 	"usr/sbin",
 	"etc/apt/apt.conf.d",
 	"etc/dnf",
 	"etc/systemd/system/timers.target.wants",
 	"usr/lib/systemd/system/timers.target.wants",
+	// KERNEL-002 — see pendingKernelUpdate.
+	"usr/lib/modules",
+}
+
+// pendingKernelUpdate reports whether a kernel NEWER than the running one is
+// installed, i.e. rebooting would change the running kernel.
+//
+// KERNEL-002 ("No pending kernel update") was `Passing: !h.PendingKernelUpdate`
+// over a field hardcoded to false, so it was PERMANENTLY GREEN. That mattered
+// little while nothing installed kernels; now that security updates install
+// automatically, a node can pick up a kernel and sit on the old one
+// indefinitely — the platform deliberately never reboots — with the panel
+// reporting no pending update.
+//
+// NOT read from /var/run/reboot-required, despite that being the obvious
+// source. Two blockers, both measured on the production node 2026-09-11:
+//   - the file is EMPTY (0 bytes; the text lives in reboot-required.pkgs), so a
+//     hostPath `FileOrCreate` mount is byte-identical to the real flag and
+//     every node would report a pending reboot forever;
+//   - reading it without creating it means mounting its parent, /run, which
+//     holds `credentials` and `secrets` — material this DaemonSet deliberately
+//     cannot see.
+//
+// Comparing installed against running is also a closer match for a field named
+// pendingKernelUpdate: reboot-required is set for any reason, not just kernels.
+//
+// An installed kernel is identified by a modules tree WITH a kernel/ subdir.
+// A removed kernel leaves modules.dep behind but not kernel/ — on production
+// 6.12.94 (auto-removed) still had modules.dep, so keying on that alone would
+// count kernels that are gone.
+func pendingKernelUpdate(hostRoot string) bool {
+	running := readKernelVersion(hostRoot)
+	if running == "" {
+		return false
+	}
+	newest := newestInstalledKernel(hostRoot)
+	if newest == "" {
+		return false
+	}
+	return compareKernelVersions(newest, running) > 0
+}
+
+// newestInstalledKernel returns the highest-versioned installed kernel, or ""
+// when none can be read.
+//
+// Only `usr/lib/modules` is scanned. `/lib/modules` is a symlink to it on every
+// supported OS — verified 2026-09-11 by installing a real kernel package in
+// Debian 12/13, Ubuntu 22.04/24.04, Rocky 9, AlmaLinux 9, CentOS Stream 9 and
+// Amazon Linux 2023 images — and only `usr/lib/modules` is mounted, so a
+// `lib/modules` fallback would be dead code that reads as absent anyway.
+func newestInstalledKernel(hostRoot string) string {
+	base := filepath.Join(hostRoot, "usr/lib/modules")
+	entries, err := os.ReadDir(base)
+	if err != nil {
+		return ""
+	}
+	newest := ""
+	for _, e := range entries {
+		// Deliberately NOT gated on e.IsDir(): DirEntry reports the entry's own
+		// type, so a symlinked modules directory would be skipped. The Stat
+		// below follows symlinks and is the real test — a kernel/ subdirectory
+		// means the kernel package is installed, as opposed to a leftover tree
+		// from a removed one (which keeps modules.dep but loses kernel/).
+		if _, err := os.Stat(filepath.Join(base, e.Name(), "kernel")); err != nil {
+			continue
+		}
+		if newest == "" || compareKernelVersions(e.Name(), newest) > 0 {
+			newest = e.Name()
+		}
+	}
+	return newest
+}
+
+// compareKernelVersions orders two kernel release strings by their NUMERIC
+// components only.
+//
+// Two properties matter, and both are load-bearing:
+//
+//  1. Digit runs compare numerically. A plain string compare puts 6.12.99 above
+//     6.12.101 — the exact shape of a Debian point release.
+//
+//  2. Non-numeric text is IGNORED rather than compared. It encodes the flavor
+//     (`-amd64`, `-cloud-amd64`, `-generic`, `-generic-64k`, `.el9.x86_64`),
+//     which carries no ordering. Comparing it lexically made two flavors
+//     installed at the SAME version look like an upgrade:
+//     "6.1.0-18-cloud-amd64" > "6.1.0-18-amd64" because "-cloud-amd" > "-amd".
+//     A node running the generic kernel with a cloud kernel co-installed — an
+//     ordinary state on a cloud VPS image — would then show a pending reboot
+//     permanently. A false positive here is worse than a miss: it puts an
+//     un-clearable finding on the operator's panel.
+//
+// When the shared numeric prefix is equal the versions are treated as equal,
+// even if one has MORE numeric components. That keeps "6.8.0-139-generic-64k"
+// (trailing 64) from outranking "6.8.0-139-generic".
+func compareKernelVersions(a, b string) int {
+	na, nb := kernelVersionNumbers(a), kernelVersionNumbers(b)
+	for i := 0; i < len(na) && i < len(nb); i++ {
+		if na[i] != nb[i] {
+			if na[i] > nb[i] {
+				return 1
+			}
+			return -1
+		}
+	}
+	return 0
+}
+
+// kernelVersionNumbers extracts the digit runs of the VERSION PREFIX of a
+// release string — everything before the first letter, which is where the
+// flavor and architecture begin.
+//
+//	6.12.107+deb13-amd64          → [6 12 107]
+//	6.1.0-18-cloud-amd64          → [6 1 0 18]
+//	5.14.0-687.44.1.el9_8.x86_64  → [5 14 0 687 44 1]
+//
+// Stopping at the first letter is what keeps flavor and architecture out of the
+// comparison. Reading digits from the whole string instead pulls in the 86 and
+// 64 of "x86_64" and the 13 of "+deb13", so "…el9.x86_64" outranked
+// "…el9.aarch64" — meaningless, since a node has exactly one architecture, but
+// the same class of error as comparing flavor text lexically. Everything a
+// kernel is actually ordered by (upstream version, ABI, vendor revision) is
+// numeric and appears before the first letter on all supported distros.
+func kernelVersionNumbers(s string) []int {
+	var out []int
+	for i := 0; i < len(s); {
+		c := s[i]
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') {
+			break
+		}
+		if c < '0' || c > '9' {
+			i++
+			continue
+		}
+		j := i
+		for j < len(s) && s[j] >= '0' && s[j] <= '9' {
+			j++
+		}
+		// A run too long for an int is dropped rather than wrapped negative.
+		if n, err := strconv.Atoi(s[i:j]); err == nil {
+			out = append(out, n)
+		}
+		i = j
+	}
+	return out
 }
 
 // aptUnattendedActive: package installed AND the periodic knob on AND the timer
