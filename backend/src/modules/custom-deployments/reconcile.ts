@@ -21,7 +21,7 @@ import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { recordImageAudit } from './image-audit.js';
 import { isNotFound } from '../../shared/k8s-errors.js';
 import { notifyAdminCustomDeploymentFailed } from '../notifications/events.js';
-import { isOomTermination } from '../../lib/container-termination.js';
+import { isOomTermination, isReplacedPodRecord } from '../../lib/container-termination.js';
 import { formatQuotaExceededMessage } from '../deployments/k8s-deployer.js';
 
 const STALE_TIMEOUT_MS = 60 * 60 * 1000; // 60 minutes
@@ -237,9 +237,14 @@ export async function readFirstPodObservation(
   deploymentName: string,
 ): Promise<PodObservation> {
   type PodListItem = {
+    // metadata.deletionTimestamp + status.reason are the pod-level markers
+    // isReplacedPodRecord() reads. Omitting either compiles fine and silently
+    // restores the node-reboot false positive — see lib/container-termination.ts.
+    metadata?: { deletionTimestamp?: string };
     spec?: { nodeName?: string };
     status?: {
       phase?: string;
+      reason?: string;
       containerStatuses?: Array<{
         name?: string;
         state?: {
@@ -269,6 +274,16 @@ export async function readFirstPodObservation(
   let failureReason: string | null = null;
   let pendingReason: string | null = null;
   for (const pod of pods.items ?? []) {
+    // Skip dead pod OBJECTS the ReplicaSet has already replaced. A node-reboot
+    // corpse keeps its exit-137 container status for as long as terminated-pod
+    // GC lets it (default 12500 pods), and reading it reported healthy 1/1
+    // production workloads as OOM-killed on 2026-09-11. The live replica's own
+    // state carries a real crash.
+    if (isReplacedPodRecord({
+      phase: pod.status?.phase,
+      reason: pod.status?.reason,
+      deletionTimestamp: pod.metadata?.deletionTimestamp,
+    })) continue;
     if (!node && pod.spec?.nodeName) node = pod.spec.nodeName;
     for (const cs of pod.status?.containerStatuses ?? []) {
       const name = cs.name ?? 'container';

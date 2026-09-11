@@ -12,7 +12,7 @@ import { Exec, KubeConfig } from '@kubernetes/client-node';
 import { Readable, Writable } from 'node:stream';
 import { ApiError } from '../../shared/errors.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
-import { isOomTermination, messageIndicatesOom } from '../../lib/container-termination.js';
+import { isOomTermination, isReplacedPodRecord, messageIndicatesOom } from '../../lib/container-termination.js';
 
 // ─── Binary Not Found Detection ────────────────────────────────────────────
 
@@ -2079,8 +2079,12 @@ export async function importSqlFromPvcFile(
           labelSelector: `app=${ctx.podName.replace(/-[a-z0-9]+-[a-z0-9]+$/, '')}`,
         });
         type HealthPod = {
+          // Pod-level shutdown markers: without them isReplacedPodRecord()
+          // cannot fire and a reboot corpse reads as an import-time OOM.
+          metadata?: { deletionTimestamp?: string };
           status?: {
             phase?: string;
+            reason?: string;
             containerStatuses?: readonly {
               state?: { waiting?: { reason?: string } };
               lastState?: { terminated?: { reason?: string; exitCode?: number } };
@@ -2089,6 +2093,15 @@ export async function importSqlFromPvcFile(
         };
         const healthPodItems = (healthPods as { items?: readonly HealthPod[] }).items ?? [];
         for (const pod of healthPodItems) {
+          // A dead pod record from a node reboot carries exit 137 in
+          // lastState.terminated — attributing that to the SQL we just imported
+          // would tell the tenant their import OOM-killed the database when it
+          // did not. Only a live pod can testify about this import.
+          if (isReplacedPodRecord({
+            phase: pod.status?.phase,
+            reason: pod.status?.reason,
+            deletionTimestamp: pod.metadata?.deletionTimestamp,
+          })) continue;
           for (const cs of pod.status?.containerStatuses ?? []) {
             const waitingReason = cs.state?.waiting?.reason;
             const restartCount = (cs as { restartCount?: number }).restartCount ?? 0;

@@ -161,3 +161,48 @@ export function isExpectedSigkill(pod: PodShutdownState | undefined | null): boo
   if (pod.deletionTimestamp) return true;
   return pod.reason !== undefined && NODE_SHUTDOWN_POD_REASONS.includes(pod.reason);
 }
+
+/**
+ * Pod-level fields needed to tell a LIVE pod from a dead record its controller
+ * has already replaced.
+ */
+export interface PodRecordState extends PodShutdownState {
+  /** Pod-level `status.phase`. */
+  readonly phase?: string;
+}
+
+/**
+ * True when this pod object is a dead record rather than a running workload.
+ *
+ * WHY THIS EXISTS
+ * ---------------
+ * Nothing in Kubernetes deletes a terminal pod promptly
+ * (`--terminated-pod-gc-threshold` defaults to 12500), so a Deployment that is
+ * serving perfectly well can have `Failed`/`Succeeded` corpses sitting beside
+ * its live replica for days. Any scan that looks for failure signals across
+ * `listNamespacedPod(app=<name>)` will read those corpses, and a corpse from a
+ * node reboot carries `exitCode: 137` — which `classifyOom()` infers as an OOM.
+ *
+ * Measured on production 2026-09-11: three tenants (`my-apache-php`,
+ * `fpl-app`, `perfex`) were shown as FAILED with "Workload ran out of memory"
+ * while every one of them was `1/1` READY. Each namespace held exactly one
+ * `status.reason=Terminated` corpse from that morning's reboot. Deleting the
+ * four corpses flipped all three rows back to `running` on the next 15 s
+ * reconcile tick, with no change to the live pods.
+ *
+ * A terminal pod says nothing about the workload's CURRENT state: its
+ * controller observed the terminal phase and made the replacement. The live
+ * replica's own `state`/`lastState` is what carries a real crash, and
+ * `readyReplicas` is what carries a real outage.
+ *
+ * Broader than {@link isExpectedSigkill}, which answers a different question —
+ * "was this SIGKILL expected?" — and deliberately still lets an EXPLICIT
+ * `OOMKilled` through, because a container can genuinely hit its limit while
+ * its pod is being drained. For "is this pod still the workload?" the phase
+ * settles it whatever the kill reason was.
+ */
+export function isReplacedPodRecord(pod: PodRecordState | undefined | null): boolean {
+  if (!pod) return false;
+  if (pod.phase === 'Failed' || pod.phase === 'Succeeded') return true;
+  return isExpectedSigkill(pod);
+}

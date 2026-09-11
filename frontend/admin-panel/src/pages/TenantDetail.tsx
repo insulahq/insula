@@ -14,7 +14,7 @@ import TenantUsersTab from '@/components/TenantUsersTab';
 import { useAdminSubUsers } from '@/hooks/use-sub-users';
 import { useTenant, useDeleteTenant, useUpdateTenant } from '@/hooks/use-tenants';
 import { useDomains, useRefreshRouteDns } from '@/hooks/use-domains';
-import { useBackups } from '@/hooks/use-backups';
+import { useTenantBundles } from '@/hooks/use-tenant-bundles';
 // BackupScheduleEditor removed 2026-05-28 — tenants no longer have
 // per-tenant schedules. The platform-global `backup_schedules.tenant_bundle`
 // runs daily for all eligible tenants. To control which tenants get
@@ -31,12 +31,10 @@ import { useWorkerUsageSummary, type WorkerUsage } from '@/hooks/use-worker-usag
 import { useMigrateTenantToWorker } from '@/hooks/use-tenant-migration';
 import { useEmailDomains, useMailboxes, useImapSyncJobs, useCreateImapSyncJob, useCancelImapSyncJob, type ImapSyncJob } from '@/hooks/use-email';
 import type { Domain, PaginatedResponse } from '@/types/api';
-import type { Backup } from '@/hooks/use-backups';
+import type { BundleSummary } from '@insula/api-contracts';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
 import TimeCell from '@/components/ui/TimeCell';
-import { useQuery } from '@tanstack/react-query';
-import { apiFetch } from '@/lib/api-client';
 import { useTriggerProvisioning } from '@/hooks/use-provisioning';
 import { useTenantMetrics } from '@/hooks/use-resource-metrics';
 import ProvisioningProgressModal from '@/components/ProvisioningProgressModal';
@@ -87,7 +85,7 @@ export default function TenantDetail() {
 
   const domainsQuery = useDomains(id);
   const deploymentsQuery = useDeployments(id);
-  const backupsQuery = useBackups(id);
+  const bundlesQuery = useTenantBundles(id);
   const subscriptionQuery = useSubscription(id);
   const emailDomainsQuery = useEmailDomains(id);
   const mailboxesQuery = useMailboxes(id);
@@ -259,7 +257,11 @@ export default function TenantDetail() {
   const domainCount = domainsQuery.data?.data.length ?? 0;
   const deploymentCount = deploymentsQuery.data?.data.length ?? 0;
   const applicationCount = deploymentsQuery.data?.data.filter((d) => d.type === 'application').length ?? 0;
-  const backupCount = backupsQuery.data?.data.length ?? 0;
+  // Bundle count comes from the paginated total, not the page length — the
+  // endpoint caps a page at 50 and a long-lived tenant has more than that.
+  const backupCount = bundlesQuery.data?.pagination?.total_count
+    ?? bundlesQuery.data?.data.length
+    ?? 0;
   const emailDomainCount = emailDomainsQuery.data?.data.length ?? 0;
   const subUserCount = subUsersQuery.data?.data.length ?? 0;
   const snapshotCount = snapshotsQuery.data?.data?.snapshots?.length ?? 0;
@@ -632,7 +634,12 @@ export default function TenantDetail() {
           {activeTab === 'backups' && (
             <div className="space-y-4">
               {id && <TenantBundlesSummary tenantId={id} />}
-              <BackupsTab data={backupsQuery.data} isLoading={backupsQuery.isLoading} error={backupsQuery.error} />
+              <BackupsTab
+                bundles={bundlesQuery.data?.data}
+                isLoading={bundlesQuery.isLoading}
+                error={bundlesQuery.error as Error | null}
+                tenantId={id}
+              />
             </div>
           )}
           {activeTab === 'snapshots' && id && <TenantSnapshotsPanel tenantId={id} />}
@@ -1580,13 +1587,9 @@ function DeploymentsTab({ data, isLoading, error, tenantId }: TabContentProps<De
  * per-resource `backups` rows.
  */
 function TenantBundlesSummary({ tenantId }: { readonly tenantId: string }) {
-  const q = useQuery({
-    queryKey: ['admin', 'tenant-bundles', tenantId],
-    queryFn: () => apiFetch<{ data: ReadonlyArray<{ id: string; status: string; sizeBytes: number; createdAt: string; initiator: string }> }>(
-      `/api/v1/admin/tenant-bundles?tenantId=${encodeURIComponent(tenantId)}`,
-    ),
-    staleTime: 15_000,
-  });
+  // Same hook (and therefore the same cached query) the tab body uses, so the
+  // headline count and the table below it can never disagree.
+  const q = useTenantBundles(tenantId);
   const bundles = Array.isArray(q.data?.data) ? q.data.data : [];
   return (
     <div
@@ -1594,7 +1597,7 @@ function TenantBundlesSummary({ tenantId }: { readonly tenantId: string }) {
       data-testid="tenant-bundles-summary"
     >
       <div className="text-gray-700 dark:text-gray-300">
-        <span className="font-medium">{q.isLoading ? '…' : bundles.length}</span>{' '}
+        <span className="font-medium">{q.isLoading ? '…' : (q.data?.pagination?.total_count ?? bundles.length)}</span>{' '}
         off-site backup bundle{bundles.length === 1 ? '' : 's'} for this tenant
         {bundles.length > 0 && (
           <span className="ml-1 text-xs text-gray-500 dark:text-gray-400">
@@ -1613,10 +1616,15 @@ function TenantBundlesSummary({ tenantId }: { readonly tenantId: string }) {
   );
 }
 
-function BackupsTab({ data, isLoading, error }: TabContentProps<Backup>) {
+function BackupsTab({ bundles, isLoading, error, tenantId }: {
+  readonly bundles: readonly BundleSummary[] | undefined;
+  readonly isLoading: boolean;
+  readonly error: Error | null;
+  readonly tenantId: string | undefined;
+}) {
   // Hook order must not depend on load state (Rules of Hooks) — the
   // early returns come after every hook call.
-  const items = useMemo(() => data?.data ?? [], [data]);
+  const items = useMemo(() => (bundles ? [...bundles] : []), [bundles]);
   const { sortedData: sortedItems, sortKey, sortDirection, onSort } = useSortable(items, 'createdAt', 'desc');
   if (isLoading) return <TabLoading />;
   if (error) return <TabError message="Failed to load backups." />;
@@ -1626,21 +1634,30 @@ function BackupsTab({ data, isLoading, error }: TabContentProps<Backup>) {
     <table className="w-full text-left text-sm" data-testid="backups-table">
       <thead>
         <tr className="border-b border-gray-100 dark:border-gray-700 text-xs font-medium uppercase text-gray-500 dark:text-gray-400">
-          <SortableHeader label="Resource" sortKey="resourceType" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
-          <SortableHeader label="Type" sortKey="backupType" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
-          <SortableHeader label="Size" sortKey="sizeBytes" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
           <SortableHeader label="Created" sortKey="createdAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+          <SortableHeader label="Status" sortKey="status" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+          <SortableHeader label="Size" sortKey="sizeBytes" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+          <SortableHeader label="Started by" sortKey="initiator" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
           <SortableHeader label="Expires" sortKey="expiresAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+          <th className="py-2" />
         </tr>
       </thead>
       <tbody>
         {sortedItems.map((b) => (
           <tr key={b.id} className="border-b border-gray-50 dark:border-gray-700">
-            <td className="py-2 font-medium text-gray-900 dark:text-gray-100">{b.resourceType}</td>
-            <td className="py-2 text-gray-600 dark:text-gray-400">{b.backupType}</td>
+            <td className="py-2 font-medium text-gray-900 dark:text-gray-100"><TimeCell iso={b.createdAt} /></td>
+            <td className="py-2"><StatusBadge status={b.status} /></td>
             <td className="py-2 text-gray-600 dark:text-gray-400">{b.sizeBytes ? formatBytes(b.sizeBytes) : '—'}</td>
-            <td className="py-2 text-gray-500 dark:text-gray-400">{new Date(b.createdAt).toLocaleDateString()}</td>
-            <td className="py-2 text-gray-500 dark:text-gray-400">{b.expiresAt ? new Date(b.expiresAt).toLocaleDateString() : '—'}</td>
+            <td className="py-2 text-gray-600 dark:text-gray-400">{b.initiator}</td>
+            <td className="py-2 text-gray-500 dark:text-gray-400">{b.expiresAt ? <TimeCell iso={b.expiresAt} /> : '—'}</td>
+            <td className="py-2 text-right">
+              <Link
+                to={`/backups/tenants?tab=backups&tenant=${tenantId ?? b.tenantId}&bundle=${b.id}`}
+                className="text-xs font-medium text-blue-600 hover:underline dark:text-blue-400"
+              >
+                Restore…
+              </Link>
+            </td>
           </tr>
         ))}
       </tbody>

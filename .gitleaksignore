@@ -24,8 +24,8 @@ backend/src/modules/tenant-bundles/restic-driver.ts:generic-api-key:159
 backend/src/modules/tenant-bundles/routes.ts:generic-api-key:1637
 docs/features/FILE_TRANSFER_FTP_SFTP_SPECIFICATION.md:generic-api-key:529
 docs/features/FILE_TRANSFER_FTP_SFTP_SPECIFICATION.md:generic-api-key:617
-docs/architecture/MANAGEMENT_API_SPEC.md:generic-api-key:1868
-docs/architecture/MANAGEMENT_API_SPEC.md:generic-api-key:1963
+docs/architecture/MANAGEMENT_API_SPEC.md:generic-api-key:1867
+docs/architecture/MANAGEMENT_API_SPEC.md:generic-api-key:1962
 docs/features/PASSWORD_PROTECTED_DIRECTORIES.md:curl-auth-user:1085
 k8s/base/backend-deployment.yaml:generic-api-key:301
 # integration-all.sh suite labels + integration-cluster-trusted-proxies.sh

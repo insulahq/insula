@@ -5,8 +5,7 @@ import {
   describeTermination,
   messageIndicatesOom,
   isExpectedSigkill,
-  NODE_SHUTDOWN_POD_REASONS,
-} from './container-termination.js';
+  NODE_SHUTDOWN_POD_REASONS, isReplacedPodRecord } from './container-termination.js';
 
 describe('container-termination', () => {
   describe('isOomTermination', () => {
@@ -109,5 +108,26 @@ describe('container-termination', () => {
     it('exports the reason list it matches on', () => {
       expect([...NODE_SHUTDOWN_POD_REASONS].sort()).toEqual(['NodeShutdown', 'Terminated']);
     });
+  });
+});
+
+describe('isReplacedPodRecord', () => {
+  it('is true for a node-shutdown corpse (Failed in place, no deletionTimestamp)', () => {
+    expect(isReplacedPodRecord({ phase: 'Failed', reason: 'Terminated' })).toBe(true);
+  });
+
+  it('is true for a completed corpse and for a NodeShutdown rejection', () => {
+    expect(isReplacedPodRecord({ phase: 'Succeeded' })).toBe(true);
+    expect(isReplacedPodRecord({ phase: 'Failed', reason: 'NodeShutdown' })).toBe(true);
+  });
+
+  it('is true for a pod being deleted even while it still reports Running', () => {
+    expect(isReplacedPodRecord({ phase: 'Running', deletionTimestamp: '2026-09-11T12:30:00Z' })).toBe(true);
+  });
+
+  it('is FALSE for a live pod — including one that is crashing right now', () => {
+    expect(isReplacedPodRecord({ phase: 'Running' })).toBe(false);
+    expect(isReplacedPodRecord({ phase: 'Pending' })).toBe(false);
+    expect(isReplacedPodRecord(undefined)).toBe(false);
   });
 });

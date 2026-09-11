@@ -25,8 +25,12 @@ vi.mock('../hooks/use-domains', () => ({
   useDomains: vi.fn(() => ({ data: { data: [] } })),
 }));
 
-vi.mock('../hooks/use-backups', () => ({
-  useBackups: vi.fn(() => ({ data: { data: [] } })),
+// The Backups tile counts OFF-SITE BUNDLES — the same source the Backups page
+// lists. It used to read the retired `backups` table and always showed 0.
+vi.mock('../hooks/use-tenant-backups', () => ({
+  useTenantBundles: vi.fn(() => ({
+    data: { data: [{ id: 'b1' }, { id: 'b2' }, { id: 'b3' }] },
+  })),
 }));
 
 vi.mock('../hooks/use-deployments', async (importOriginal) => {
@@ -111,12 +115,20 @@ describe('Dashboard Page', () => {
     expect(screen.getByTestId('stat-email accounts')).toHaveTextContent('3/50');
   });
 
-  it('shows zero values in non-email stats cards when no data', () => {
+  it('shows zero values in the empty stats cards', () => {
     renderWithProviders(<Dashboard />);
-    // Four stat cards (Domains, Applications, Backups, Deployments) default
-    // to 0; Email accounts is driven by useMailboxUsage mock.
+    // Domains, Applications and Deployments default to 0; Email accounts is
+    // driven by useMailboxUsage and Backups by useTenantBundles (3 bundles).
     const zeros = screen.getAllByText('0');
-    expect(zeros.length).toBe(4);
+    expect(zeros.length).toBe(3);
+  });
+
+  // Regression: the tile read the retired `backups` table, so a tenant with
+  // bundles was told "0 backups" while the Backups page listed them all
+  // (operator report 2026-09-11).
+  it('counts off-site bundles in the Backups tile', () => {
+    renderWithProviders(<Dashboard />);
+    expect(screen.getByTestId('stat-backups')).toHaveTextContent('3');
   });
 
   it('renders overview description under the welcome heading', () => {

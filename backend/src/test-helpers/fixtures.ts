@@ -1,4 +1,4 @@
-import { regions, hostingPlans, tenants, domains, backups } from '../db/schema.js';
+import { regions, hostingPlans, tenants, domains } from '../db/schema.js';
 import type { Database } from '../db/index.js';
 
 export async function seedRegion(db: Database, overrides: Partial<typeof regions.$inferInsert> = {}) {
@@ -58,17 +58,3 @@ export async function seedDomain(db: Database, tenantId: string, overrides: Part
   return { ...defaults, ...overrides };
 }
 
-export async function seedBackup(db: Database, tenantId: string, overrides: Partial<typeof backups.$inferInsert> = {}) {
-  const id = crypto.randomUUID();
-  const defaults = {
-    id,
-    tenantId,
-    backupType: 'manual' as const,
-    resourceType: 'full',
-    status: 'completed' as const,
-    sizeBytes: 1024000,
-    storagePath: `/backups/${tenantId}/${id}.tar.gz`,
-  };
-  await db.insert(backups).values({ ...defaults, ...overrides });
-  return { ...defaults, ...overrides };
-}

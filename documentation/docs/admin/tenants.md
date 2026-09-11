@@ -114,6 +114,12 @@ Backups, Users. Each shows that tenant's resources with a count. The
 **Files** tab is intentionally a pointer — the file browser lives in the
 tenant panel; use **Login as Tenant** to reach it.
 
+The **Backups** tab lists that tenant's off-site backup bundles — when each
+ran, whether it completed, how large it is, who started it, and when it
+expires — with a **Restore…** link into the full
+[Backups → Tenants](../operator/tenant-backups.md) page. The count on the tab
+is the tenant's total bundle count.
+
 The **Users** tab manages the tenant's team on their behalf — the same
 add / edit / enable / reset / delete actions the tenant sees, attributed
 to your staff account in the audit log. Passwords work the same way here

@@ -23,7 +23,6 @@ export * from './node-terminal.js';
 export * from './tenants.js';
 export * from './domains.js';
 export * from './platform-domain.js';
-export * from './backups.js';
 export * from './backup-schedules.js';
 export * from './backups-overview.js';
 export * from './tenant-bundles.js';

@@ -23,7 +23,7 @@ fail=0
 cd "$ROOT" || exit 1
 
 # 1) The helper must exist and export the three entry points.
-for sym in isOomTermination describeTermination messageIndicatesOom isExpectedSigkill; do
+for sym in isOomTermination describeTermination messageIndicatesOom isExpectedSigkill isReplacedPodRecord; do
   if ! grep -q "export function $sym" "$HELPER" 2>/dev/null; then
     echo "ci-oom-classification: $HELPER does not export $sym" >&2
     fail=1
@@ -93,13 +93,25 @@ fi
 #    So: any module that acts on an INFERRED oom (classifyOom()=='inferred', or
 #    the isOomTermination() boolean, which folds inferred in) must consult
 #    isExpectedSigkill(). Modules that only ever read an EXPLICIT kill do not.
+#
+#    The WORKLOAD-STATUS scans (deployment reconcilers, the post-import health
+#    check, the log viewer's pod picker) read whole pod LISTS, so they need the
+#    broader isReplacedPodRecord() — a Failed/Succeeded pod object is a record
+#    the controller already replaced, not the workload. Production 2026-09-11:
+#    three tenants' 1/1-READY deployments were shown as FAILED "Workload ran out
+#    of memory" because one reboot corpse per namespace still carried exit 137.
 for f in \
+  backend/src/modules/custom-deployments/reconcile.ts \
+  backend/src/modules/deployments/db-manager.ts \
+  backend/src/modules/deployments/k8s-deployer.ts \
+  backend/src/modules/deployments/routes.ts \
   backend/src/modules/metrics/oom-scan.ts \
   backend/src/modules/node-health/memory-events.ts
 do
-  if ! grep -qE '(^|[^A-Za-z0-9_])isExpectedSigkill\(' "$f" 2>/dev/null; then
-    echo "ci-oom-classification: $f infers OOMs from exit 137 but never calls isExpectedSigkill()," >&2
-    echo "  so a node reboot will be reported as an OOM. See lib/container-termination.ts." >&2
+  if ! grep -qE '(^|[^A-Za-z0-9_])(isExpectedSigkill|isReplacedPodRecord)\(' "$f" 2>/dev/null; then
+    echo "ci-oom-classification: $f infers OOMs from exit 137 but never calls" >&2
+    echo "  isExpectedSigkill()/isReplacedPodRecord(), so a node reboot will be reported" >&2
+    echo "  as an OOM. See lib/container-termination.ts." >&2
     fail=1
   fi
 done
@@ -108,13 +120,22 @@ done
 #    the call site's pod type. `status.reason` is the one a node shutdown sets
 #    (deletionTimestamp is ABSENT on those pods) — omitting it compiles fine and
 #    silently restores the bug, which is precisely how this shipped.
+#
+#    Checked as the ARGUMENT actually handed to the guard, not as a type
+#    declaration: every one of these files also has a CONTAINER-level
+#    `reason?: string` (waiting.reason, terminated.reason), so grepping the
+#    declaration alone passes while the pod-level field is still missing.
 for f in \
+  backend/src/modules/custom-deployments/reconcile.ts \
+  backend/src/modules/deployments/db-manager.ts \
+  backend/src/modules/deployments/k8s-deployer.ts \
+  backend/src/modules/deployments/routes.ts \
   backend/src/modules/metrics/oom-scan.ts \
   backend/src/modules/node-health/memory-events.ts
 do
-  if ! grep -qE '(^|[^A-Za-z0-9_])reason\?: string' "$f" 2>/dev/null; then
-    echo "ci-oom-classification: $f does not model pod-level status.reason," >&2
-    echo "  so isExpectedSigkill() can never see a node shutdown." >&2
+  if ! grep -qE 'reason: +[A-Za-z_][A-Za-z0-9_]*\.status\?\.reason' "$f" 2>/dev/null; then
+    echo "ci-oom-classification: $f never passes pod-level status.reason to the guard," >&2
+    echo "  so a node shutdown (which sets NO deletionTimestamp) stays invisible to it." >&2
     fail=1
   fi
 done

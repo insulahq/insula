@@ -53,7 +53,6 @@ Authorization: Bearer <JWT_TOKEN>
 | `/tenants/{id}/domains` | ✅ | ✅ | ✅ | ✅ | admin, support |
 | `/tenants/{id}/databases` | ✅ | ✅ | ✅ | ✅ | admin, support |
 | `/tenants/{id}/cron-jobs` | ✅ | ✅ | ✅ | ✅ | admin, support |
-| `/tenants/{id}/backups` | ✅ | ✅ | - | ✅ | admin, support |
 | `/tenants/{id}/metrics` | ✅ | - | - | - | admin, read-only |
 | `/admin/cron-jobs` | ✅ | - | - | - | admin |
 | `/admin/status` | ✅ | - | - | - | admin |
@@ -2490,97 +2489,23 @@ Cancel an export job.
 
 ### 4. Backup & Restore
 
-#### GET `/api/v1/tenants/{id}/backups`
-List backups for a client.
+**Removed 2026-09-11.** `GET/POST/DELETE /api/v1/tenants/{id}/backups` and
+`POST /api/v1/tenants/{id}/backups/{backup_id}/restore` are gone, together with
+the `backups` table they read (migration `0108_drop_retired_backups_table.sql`).
+Nothing in the platform's backup machinery ever wrote a row there — the table
+held zero rows on every cluster — so the endpoints reported "no backups" for
+tenants holding dozens of real ones.
 
-**Query Parameters:**
-- `type` (optional) — Filter: `application`, `database`, `full`
-- `status` (optional) — Filter: `completed`, `failed`, `in_progress`
+Use instead:
 
-**Response:**
-```json
-{
-  "success": true,
-  "data": [
-    {
-      "id": "backup_001",
-      "type": "full",
-      "created_at": "2025-02-28T23:00:00Z",
-      "size_gb": 45.2,
-      "status": "completed",
-      "retention_until": "2025-05-30T23:00:00Z",
-      "checksum": "sha256:abc123..."
-    }
-  ],
-  "pagination": { ... }
-}
-```
+| Purpose | Endpoint |
+|---------|----------|
+| Tenant self-service bundle list / detail / data-export | `GET /api/v1/tenant/backups/bundles[/{id}[/data-export]]` |
+| Run an on-demand bundle for a tenant | `POST /api/v1/tenants/{id}/bundles/run-now` |
+| Admin bundle list (filter `?tenantId=`) | `GET /api/v1/admin/tenant-bundles` |
+| Restore | the restore-cart API — `POST /api/v1/tenants/{id}/restore-carts` |
 
-**Status Codes:** 200, 401, 403, 404
-
----
-
-#### POST `/api/v1/tenants/{id}/backups`
-Trigger a manual backup.
-
-**Request Body:**
-```json
-{
-  "type": "full",
-  "retention_days": 30
-}
-```
-
-**Response (202 Accepted):**
-```json
-{
-  "success": true,
-  "data": {
-    "id": "backup_001",
-    "status": "in_progress",
-    "created_at": "2025-03-01T10:00:00Z"
-  }
-}
-```
-
-**Status Codes:** 202, 400, 401, 403
-
----
-
-#### POST `/api/v1/tenants/{id}/backups/{backup_id}/restore`
-Restore from a backup.
-
-**Request Body:**
-```json
-{
-  "mode": "full",
-  "target_date": "2025-02-28T23:00:00Z"
-}
-```
-
-**Validation:**
-- `mode` — `full` (all) or `selective` (specific items)
-- `target_date` — Must be within backup retention
-
-**Response (202 Accepted):**
-```json
-{
-  "success": true,
-  "data": {
-    "restore_id": "restore_042",
-    "status": "in_progress",
-    "estimated_completion": "2025-03-01T10:30:00Z"
-  }
-}
-```
-
-**Status Codes:** 202, 400, 401, 403
-
-**Critical Safety Checks:**
-1. Verify checksum before restore
-2. Create snapshot of current data before overwriting
-3. If restore fails, rollback to snapshot
-4. Send confirmation notification to client
+Bundles live in `backup_jobs` + `backup_components` (ADR-032/ADR-047).
 
 ---
 
@@ -2786,7 +2711,7 @@ API rate limiting protects against abuse and ensures fair usage. Implemented via
 | **Global (per IP)** | 100 requests | 1 minute | All endpoints |
 | **Authentication** | 10 requests | 1 minute | `/auth/*`, failed login attempts |
 | **Write operations** | 30 requests | 1 minute | POST, PATCH, DELETE |
-| **Backup/restore** | 5 requests | 10 minutes | `/api/v1/tenants/{id}/backups/*` |
+| **Backup/restore** | 5 requests | 10 minutes | `/api/v1/tenants/{id}/bundles/*`, `/api/v1/tenant/backups/*` |
 
 **Response headers:**
 - `X-RateLimit-Limit` — Maximum requests in window

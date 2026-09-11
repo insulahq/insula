@@ -185,6 +185,15 @@ node, or move/upsize the noisy tenant. A **SYSTEM** row in that card is
 different: platform components should never lose the memory fight — treat it
 as an incident and check node sizing immediately.
 
+!!! note "After a node reboot, don't trust a lone \"out of memory\" report"
+    A graceful node shutdown kills whatever is still running and leaves those
+    pods behind as dead records with the same exit code as a memory kill. The
+    platform now ignores those records when judging whether an application is
+    healthy, so a rebooted node no longer marks running tenants as failed. If
+    you are looking at an older incident, cross-check **Monitoring → Node
+    Health → Memory events**: a real memory kill appears there, reboot debris
+    does not.
+
 ## Something fails with "Too Many Requests" (429)
 
 The API allows **100 requests per minute per user**. That budget is shared by
