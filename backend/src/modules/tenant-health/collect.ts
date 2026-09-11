@@ -108,33 +108,54 @@ export async function collectFacts(
     ),
   ]);
 
-  // Tenant rows. `is_system` tenants are included deliberately — the SYSTEM
-  // tenant owns the apex domain and its mail, so an operator needs to see it
-  // degrade too.
-  const tenantRows = await db
-    .select({
-      id: tenants.id,
-      name: tenants.name,
-      ns: tenants.kubernetesNamespace,
-      tier: tenants.storageTier,
-      pin: tenants.nodeName,
-      status: tenants.status,
-    })
-    .from(tenants);
+  // The DB reads below are guarded exactly like the cluster reads above, because
+  // the single most important moment for this endpoint is a node loss — and if
+  // that node held the Postgres primary, the database is mid-failover for a
+  // couple of minutes precisely while the operator is trying to see what broke.
+  //
+  // Node readiness comes from Kubernetes, so "which node is down" survives a
+  // database outage. Tenant impact does not. Degrading to "that node is offline,
+  // tenant impact unknown" beats failing the whole response, and `readError`
+  // keeps that honest instead of reporting a reassuring zero affected tenants.
+  //
+  // Tenant rows include `is_system` tenants deliberately — the SYSTEM tenant owns
+  // the apex domain and its mail, so an operator needs to see it degrade too.
+  const tenantRows = await guard(
+    'tenants',
+    () => db
+      .select({
+        id: tenants.id,
+        name: tenants.name,
+        ns: tenants.kubernetesNamespace,
+        tier: tenants.storageTier,
+        pin: tenants.nodeName,
+        status: tenants.status,
+      })
+      .from(tenants),
+    [],
+  );
 
   // One grouped count instead of a query per tenant.
-  const mailboxCounts = await db
-    .select({ tenantId: mailboxes.tenantId, n: sql<number>`count(*)::int` })
-    .from(mailboxes)
-    .groupBy(mailboxes.tenantId);
+  const mailboxCounts = await guard(
+    'mailbox counts',
+    () => db
+      .select({ tenantId: mailboxes.tenantId, n: sql<number>`count(*)::int` })
+      .from(mailboxes)
+      .groupBy(mailboxes.tenantId),
+    [],
+  );
   const hasMail = new Set(
     mailboxCounts.filter((r) => Number(r.n) > 0 && r.tenantId).map((r) => r.tenantId as string),
   );
 
-  const [settings] = await db
-    .select({ activeNode: systemSettings.mailActiveNode })
-    .from(systemSettings)
-    .where(eq(systemSettings.id, 'system'));
+  const [settings] = await guard(
+    'mail placement',
+    () => db
+      .select({ activeNode: systemSettings.mailActiveNode })
+      .from(systemSettings)
+      .where(eq(systemSettings.id, 'system')),
+    [],
+  );
 
   const nodes: NodeFact[] = (nodeResp.items ?? []).map((n) => ({
     name: n.metadata?.name ?? '<unnamed>',

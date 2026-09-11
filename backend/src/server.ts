@@ -33,6 +33,57 @@ const shutdown = async () => {
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
 
+/**
+ * Never let a stray promise rejection terminate the management API.
+ *
+ * Node 15+ treats an unhandled rejection as fatal. For a management API whose
+ * entire job is to remain reachable while the infrastructure underneath it is
+ * failing, that default is backwards: the process dies exactly when operators
+ * need it.
+ *
+ * Measured on staging 2026-09-11. Killing the node holding the Postgres primary
+ * produced ~3 minutes of 502 — and every outage surface the platform has (the
+ * node-down banner, affected-tenants modal, recovery wizard) is served BY this
+ * API, so the operator was blind for precisely the first three minutes of the
+ * incident. The container exit was:
+ *
+ *     exitCode=1 reason=Error
+ *     TypeError: Cannot read properties of undefined (reading 'Symbol(pino.msgPrefix)')
+ *
+ * The database errors themselves were caught and logged correctly. What killed
+ * the process was an ERROR PATH that threw — a scheduler's catch block calling
+ * a logger method that had lost its receiver — inside an `async` setInterval
+ * callback, where a throw becomes an unhandled rejection with nowhere to go.
+ *
+ * `safe-tick.ts` already argues this case per-call-site ("a scheduler tick must
+ * never terminate the API"). This makes it true universally, including for the
+ * error paths that safeTick itself cannot guard.
+ *
+ * NOT a licence to ignore these: every line logged here is a bug worth fixing,
+ * and the log is deliberately loud so they surface. It is the difference
+ * between a logged defect and an outage.
+ *
+ * `uncaughtException` stays fatal. A synchronous throw that escaped every frame
+ * can leave module state inconsistent, and a restart is the honest response —
+ * but it is logged first, because the 2026-09-11 crash was diagnosable only
+ * from `kubectl logs --previous`.
+ */
+process.on('unhandledRejection', (reason: unknown) => {
+  const err = reason instanceof Error ? reason : new Error(String(reason));
+  // eslint-disable-next-line no-console
+  console.error(
+    '[fatal-guard] unhandled promise rejection (continuing — the API must not die '
+    + 'with its dependencies; THIS IS A BUG, fix the rejecting path):',
+    err.stack ?? err.message,
+  );
+});
+
+process.on('uncaughtException', (err: Error) => {
+  // eslint-disable-next-line no-console
+  console.error('[fatal-guard] uncaught exception (exiting):', err.stack ?? err.message);
+  process.exit(1);
+});
+
 await app.listen({ port: config.PORT, host: '0.0.0.0' });
 console.log(`Server listening on port ${config.PORT}`);
 
