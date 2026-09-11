@@ -179,6 +179,34 @@ spec:
               # in this container. load_str keeps the content inside yq, never
               # passing it through a quoting layer. Verified against a hostile
               # value on DEV: `p"wd$(id)` round-trips literally.
+              # Alert retention. CrowdSec's LAPI flushes its own alert table;
+              # these are its stock defaults, restated so the bound is OURS and
+              # cannot silently change on an image bump.
+              #
+              # This replaces the `crowdsec-retention` CronJob, removed
+              # 2026-09-11 after it was found never to have succeeded once in
+              # 29 days on production (`lastSuccessfulTime` empty). Two reasons,
+              # both verified against the real v1.7.8 image:
+              #   * `cscli alerts delete --older-than` — no such flag. The
+              #     command has NO age filter at all.
+              #   * cscli's own help: "can be used only on the same machine
+              #     than the local API", so driving it from a separate Job pod
+              #     over --url could not have worked either.
+              # Its premises had also expired: the DB is no longer a fixed 1GiB
+              # PVC (it is Postgres, set below), and its stated reason for
+              # avoiding this block — that /etc/crowdsec is an emptyDir the
+              # entrypoint populates — does not apply to an init container that
+              # already rewrites config.yaml in place, which is exactly what
+              # the db_config edit below does.
+              #
+              # Runs unconditionally: retention must hold on the SQLite
+              # fallback too, not only once Postgres credentials exist.
+              TMPDIR=/etc/crowdsec yq -i '
+                .db_config.flush.max_age   = "7d" |
+                .db_config.flush.max_items = 5000
+              ' /etc/crowdsec/config.yaml
+              echo "seed-config: alert retention -> max_age 7d / max_items 5000"
+
               CS_DB_OK=1
               for f in host port username password dbname sslmode; do
                 [ -s "/db/$f" ] || CS_DB_OK=0

@@ -43,14 +43,11 @@ spec:
           podSelector:
             matchLabels:
               app.kubernetes.io/name: crowdsec-agent
-        # The retention CronJob prunes via cscli against this same LAPI. Third
-        # time this omission would have bitten in one change — the placeholder
-        # pages, the agent, and now this — so state the rule plainly: anything
-        # that talks to the LAPI must be listed here, and the symptom of
-        # forgetting is never an error, only silence.
-        - podSelector:
-            matchLabels:
-              app.kubernetes.io/name: crowdsec-retention
+        # RULE (kept after the crowdsec-retention CronJob was removed
+        # 2026-09-11): anything that talks to the LAPI must be listed here, and
+        # the symptom of forgetting is never an error, only silence. That
+        # omission would have bitten three times in one change — the
+        # placeholder pages, the agent, and the retention job.
       ports:
         - protocol: TCP
           port: 8080
