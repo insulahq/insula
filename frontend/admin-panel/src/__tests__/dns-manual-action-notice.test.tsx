@@ -30,8 +30,12 @@ describe('DnsManualActionNotice', () => {
   it('says explicitly that the platform will not remove them', () => {
     // The operator must not wait for an automatic cleanup that is never coming.
     render(<DnsManualActionNotice nodesDown={[down()]} />);
-    expect(screen.getByTestId('dns-manual-action-notice').textContent)
-      .toContain('does not manage your DNS');
+    const text = screen.getByTestId('dns-manual-action-notice').textContent ?? '';
+    expect(text).toContain('does not manage your DNS');
+    // And must not assert the records exist — the platform cannot see the zone,
+    // so telling the operator they ARE published would send them after records
+    // that may never have been created for this node.
+    expect(text).toContain('cannot see which of these addresses you actually published');
   });
 
   it('stays silent for an ingress:none node — nothing was ever published for it', () => {

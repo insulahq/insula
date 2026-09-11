@@ -49,14 +49,15 @@ export default function DnsManualActionNotice({ nodesDown }: Props) {
         <Globe size={16} className="mt-0.5 shrink-0 text-orange-600 dark:text-orange-400" aria-hidden="true" />
         <div className="min-w-0 flex-1">
           <p className="font-medium text-orange-900 dark:text-orange-200">
-            Manual action: DNS still points at{' '}
+            Check DNS for{' '}
             {serving.map((n) => n.name).join(', ')}
           </p>
           <p className="mt-1 text-orange-800 dark:text-orange-300">
-            The platform does not manage your DNS, so these records stay published and every
-            request that resolves to them will time out until you withdraw them. Remove or
-            repoint the following A/AAAA records at your DNS provider, then restore them when
-            the node is back.
+            The platform does not manage your DNS, so it cannot withdraw anything and cannot
+            see which of these addresses you actually published. Any A/AAAA record pointing at
+            one of them is still resolving, and every request that lands there will time out
+            until you remove or repoint it at your DNS provider. Put it back when the node
+            returns.
           </p>
           <ul className="mt-2 space-y-0.5" data-testid="dns-stale-addresses">
             {serving.map((n) => (
