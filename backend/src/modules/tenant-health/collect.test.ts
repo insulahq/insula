@@ -39,6 +39,13 @@ const okK8s = () => ({
     listPodForAllNamespaces: async () => ({ items: [] }),
   },
   custom: { listNamespacedCustomObject: async () => ({ items: [] }) },
+  // A watched platform service with one ready endpoint — the healthy case, so
+  // the DB-outage assertions below are about the DB and nothing else.
+  disco: {
+    listNamespacedEndpointSlice: async () => ({
+      items: [{ endpoints: [{ conditions: { ready: true } }] }],
+    }),
+  },
 }) as unknown as Parameters<typeof collectFacts>[1];
 
 /** A db whose every query rejects, the way pg does when the primary is gone. */

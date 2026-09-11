@@ -87,6 +87,15 @@ export interface OutageInput {
   readonly observedAt: Date;
   /** Non-null when a cluster read failed — forces `unknown` rather than green. */
   readonly readError?: string | null;
+  /**
+   * Ready-endpoint counts for the watched platform services. Absent (or an
+   * empty array) means "not measured" and produces no claim — never a green one.
+   */
+  readonly endpoints?: ReadonlyArray<{
+    readonly namespace: string;
+    readonly serviceName: string;
+    readonly readyEndpoints: number;
+  }>;
 }
 
 /**
@@ -251,6 +260,43 @@ export function findingsForTenant(
  * modal only ever want the affected ones, and a 100-tenant fleet should not
  * ship 100 green rows to render a pill.
  */
+/**
+ * Watched platform services that currently have NO ready endpoint.
+ *
+ * The 2026-09-11 worker drill is the case this exists for: the lost node held
+ * no tenant workloads, so the banner said "0 tenants affected" — true, and
+ * badly incomplete, because the backup plugin's Service had zero ready
+ * endpoints and backups were unavailable the entire time.
+ *
+ * Kubernetes marks an endpoint on a NotReady node not-ready even when the
+ * process behind it is healthy and still renewing its leader lease. The standby
+ * therefore cannot take over, and nothing resolves it until the node is fixed
+ * or removed — measured wedged for the full 5m37s of that drill.
+ */
+export function degradedServicesFrom(
+  endpoints: OutageInput['endpoints'],
+): Array<{ namespace: string; name: string; label: string }> {
+  if (!endpoints || endpoints.length === 0) return [];
+  const out: Array<{ namespace: string; name: string; label: string }> = [];
+  for (const e of endpoints) {
+    if (e.readyEndpoints > 0) continue;
+    const watched = WATCHED_SERVICE_LABELS.find(
+      (w) => w.namespace === e.namespace && w.name === e.serviceName,
+    );
+    out.push({
+      namespace: e.namespace,
+      name: e.serviceName,
+      label: watched?.label ?? `${e.namespace}/${e.serviceName}`,
+    });
+  }
+  return out.sort((a, b) => a.label.localeCompare(b.label));
+}
+
+/** Operator-facing names. Kept here so the computation stays pure. */
+const WATCHED_SERVICE_LABELS: ReadonlyArray<{ namespace: string; name: string; label: string }> = [
+  { namespace: 'cnpg-system', name: 'barman-cloud', label: 'Backups (barman-cloud plugin)' },
+];
+
 export function computeOutageImpact(input: OutageInput): ClusterOutageImpact {
   const downNodes = input.nodes.filter((n) => !n.ready);
   const downNodeNames = new Set(downNodes.map((n) => n.name));
@@ -319,6 +365,10 @@ export function computeOutageImpact(input: OutageInput): ClusterOutageImpact {
     downTenantCount: affected.filter((t) => t.state === 'down').length,
     degradedTenantCount: affected.filter((t) => t.state === 'degraded').length,
     mailAffected: mailDown,
+    // A service with zero ready endpoints is unreachable no matter how healthy
+    // its pods look. Reported only while a node is actually down, so a rollout
+    // blip on a healthy cluster does not raise an outage alarm.
+    degradedServices: downNodes.length === 0 ? [] : degradedServicesFrom(input.endpoints),
     observedAt: input.observedAt.toISOString(),
     readError: input.readError ?? null,
   };

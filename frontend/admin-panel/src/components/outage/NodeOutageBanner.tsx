@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ServerCrash, Mail } from 'lucide-react';
+import { ServerCrash, Mail, PlugZap } from 'lucide-react';
 import { useOutageImpact } from '@/hooks/use-outage-impact';
 import AffectedTenantsModal from './AffectedTenantsModal';
 
@@ -75,7 +75,25 @@ export default function NodeOutageBanner() {
             </button>
           )}
 
-          {impact.affectedTenantCount === 0 && (
+          {/*
+            Say what IS broken before saying what isn't. The 2026-09-11 worker
+            drill produced "No tenant impact detected" — true, and badly
+            incomplete: backups were unreachable for the whole outage because
+            their Service had no ready endpoint. A node on which no tenant runs
+            can still take a platform service with it.
+          */}
+          {impact.degradedServices.length > 0 && (
+            <span
+              data-testid="node-outage-services-pill"
+              className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2.5 py-0.5 text-xs font-semibold text-red-800 dark:bg-red-800/50 dark:text-red-200"
+              title="This service has no reachable instance while the node is offline. It does not recover on its own — fix or remove the node."
+            >
+              <PlugZap size={12} aria-hidden="true" />
+              {impact.degradedServices.map((s) => s.label).join(', ')} unavailable
+            </span>
+          )}
+
+          {impact.affectedTenantCount === 0 && impact.degradedServices.length === 0 && (
             <span className="text-xs text-red-800 dark:text-red-300">
               No tenant impact detected
             </span>
