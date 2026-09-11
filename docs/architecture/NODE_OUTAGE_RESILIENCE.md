@@ -226,6 +226,13 @@ recoverable — the one single point of failure that replication cannot address.
 | D2 | Restoration wizard for degraded tenants | **done** |
 | C1 | Exact DR drill procedure, executed and recorded | **done** (validate + dind run and logged; `bootstrap` RTO still unmeasured) |
 | C2 | Correct the runbooks (see below) | **done** |
+| G1 | API survives a DB-primary failover (§8.1) | **done** |
+| G2 | Failback review after a node returns (§8.2) | **done** |
+| G3 | Manual DNS action surfaced during an outage (§8.3) | **done** |
+| G4 | Auto re-pin verified on a real HA-tier tenant | pending — needs an `ha`-tier tenant on staging |
+| G5 | Mail-failover-not-configured banner verified rendering | pending |
+| G6 | Re-pin driven end to end through the recovery wizard | pending |
+| G7 | Worker-node loss drilled | pending |
 
 ### Known doc inaccuracies to fix under C2
 
@@ -241,3 +248,74 @@ recoverable — the one single point of failure that replication cannot address.
 - `NODE_HEALTH_MONITORING.md` does not mention that a dead node's row keeps rendering
   stale metrics, nor the detection latency.
 - `DISASTER_RECOVERY.md` RTO/RPO table has never been filled in.
+
+
+## 8. Gaps closed after the first drill round (2026-09-11)
+
+Answering "is every failover scenario except total cluster loss now either automated or
+visible?" honestly meant saying **no** first. These are the gaps that answer covered.
+
+### 8.1 The management API died with its database (G1)
+
+The drill recorded the API unreachable for ~3 minutes after the node carrying the Postgres
+primary went NotReady, and the first explanation — "it waits for the DB" — was wrong. The
+probes were never implicated: liveness and readiness both hit `/api/v1/healthz`, which is
+shallow and has no DB dependency, so a DB blip cannot evict the pod.
+
+The pod **died**: `exitCode=1`, `reason=Error`, and in the previous container's log
+
+```
+TypeError: Cannot read properties of undefined (reading 'Symbol(pino.msgPrefix)')
+```
+
+`safeTick` — the helper whose entire job is to stop a failing scheduler tick from killing
+the process — extracted its logger as `log?.warn`, which **detaches the method from its
+object**. Every caller passes a real pino logger, whose `warn` needs its receiver. So the
+moment a tick failed, the error handler itself threw, inside an async timer callback, which
+is an unhandled rejection, which is fatal on Node 15+. The DB errors were all caught and
+logged correctly; the process was killed by the code that was reporting them.
+
+Every existing `safeTick` test passed `{ warn: vi.fn() }` — a bare object literal with no
+`this` to lose — which is exactly why the suite stayed green. The guard tests now use a
+receiver-bound logger; reverting the fix fails those three and leaves the original five
+passing.
+
+Also hardened, so the next instance of this class degrades instead of killing:
+
+- global `unhandledRejection` (log loudly, keep serving) and `uncaughtException` (log, exit)
+  handlers in `server.ts`;
+- the outage collector's **DB** reads are now guarded like its cluster reads. A node loss is
+  the one moment that endpoint exists for, and it is also the moment the DB may be mid-
+  failover. Node readiness comes from Kubernetes and survives that, so the banner still
+  names the down node and sets `readError` — "tenant impact unknown", never a reassuring
+  zero.
+
+### 8.2 Placement changes became permanent in silence (G2)
+
+§3 analysed failback for storage and mail. It did not cover the tenants themselves. While a
+node is down the platform moves tenants off it — HA-tier automatically, local-tier by
+operator through the recovery wizard — and when the node rejoined, nothing moved back and
+**nothing said so**. The returned node looked healthy while sitting empty, and an operator
+who had pinned a tenant deliberately had that intent erased without a word.
+
+The fix is a *review*, not an automatic failback. Moving storage back is real data movement
+with no urgency behind it, and for an HA-tier tenant the unpinned state is usually the
+better one — more nodes eligible, no single host left to lose. The platform states what
+changed, says which way it leans, and leaves the decision with the operator. The same stance
+as mail failover, which is never auto-enabled.
+
+It is a projection over audit rows the platform already writes (`tenant.auto_repin` records
+`strandedOn`; `tenant.repin` records `from`/`to`), so there is no new table and no background
+job holding state. Acknowledgement uses the same mechanism (`tenant.failback_reviewed`),
+which reduces the whole rule to **latest placement event wins** — and that falls out
+correctly for repeated outages: a tenant moved off A and later off B is displaced from B, and
+an ack that predates a move does not silence it.
+
+### 8.3 The one step the platform cannot take was the quietest (G3)
+
+The platform does not own DNS and will not withdraw records for a dead node — deliberate, per
+the operator decision in §6. But the only place it admitted this was a strikethrough on an
+ingress pill on the Cluster Nodes page: no addresses, no instruction, on a surface nobody
+opens mid-incident. The affected-tenants modal now leads with the stale A/AAAA records, states
+that nothing will remove them, and offers a copy button. Nodes with `ingress-mode: none`
+contribute nothing — their addresses were never published.
