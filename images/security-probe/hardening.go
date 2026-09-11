@@ -122,6 +122,25 @@ func unattendedUpgradesActive(hostRoot string) bool {
 	return aptUnattendedActive(hostRoot) || dnfAutomaticActive(hostRoot)
 }
 
+// hostPathsForAutoUpdateCheck is every host path unattendedUpgradesActive reads,
+// relative to hostRoot.
+//
+// The DaemonSet mounts an ALLOWLIST of host paths. A path that is not mounted
+// does not read as an error — it reads as ABSENT, so the check reports false on
+// every node forever and looks like a real finding. That is not hypothetical:
+// the first deployment of this rewrite did exactly that, because apt.conf.d and
+// the timers.target.wants directories were not mounted. Hermetic tests cannot
+// catch it (they build their own root), so daemonset_mounts_test.go asserts this
+// list against the committed manifest. Add a read here AND a mount there.
+var hostPathsForAutoUpdateCheck = []string{
+	"usr/bin",
+	"usr/sbin",
+	"etc/apt/apt.conf.d",
+	"etc/dnf",
+	"etc/systemd/system/timers.target.wants",
+	"usr/lib/systemd/system/timers.target.wants",
+}
+
 // aptUnattendedActive: package installed AND the periodic knob on AND the timer
 // that runs it enabled. All three are required — any one alone patches nothing.
 func aptUnattendedActive(hostRoot string) bool {
