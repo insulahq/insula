@@ -175,10 +175,16 @@ and secrets bundles daily, mail restic every 30 min, Longhorn volume backups dai
 weekly. `DISASTER_RECOVERY.md`, `dr-restore.sh` and `dr-drill.sh` (three fidelity modes up
 to a real recovery onto a throwaway VM) all exist.
 
-**The gap is proof, not machinery.** `DR_DRILL_LOG.md` does not exist, the runbook's RTO
-cell still reads *"measured during Phase 5 drill — record in DR_DRILL_LOG.md"*, and the
-≤ 2 h target has never been measured. There is no cadence, no reminder, and no surface
-telling an operator how stale their last rehearsal is.
+**The gap was proof, not machinery** — partly closed 2026-09-11. `DR_DRILL_LOG.md` now
+exists with an exact, repeatable procedure and two recorded runs: `validate` (1 s) and
+`dind` (30 s), the latter confirming the bundle decrypts, the production restore library
+processes it, and every restored Secret passes a **server-side dry-run against a live
+cluster**. A quarterly/annual cadence is written down.
+
+**Still open:** the `bootstrap` mode — a real recovery onto a throwaway VM — has never
+been run, so the ≤ 2 h RTO remains an aspiration rather than an observation. And the
+operator age key on staging currently lives on a cluster node, i.e. on the machine that a
+total-cluster-loss scenario assumes is gone; an off-cluster copy needs confirming.
 
 Everything is encrypted to the operator age key. If that key is lost, none of it is
 recoverable — the one single point of failure that replication cannot address.
@@ -218,8 +224,8 @@ recoverable — the one single point of failure that replication cannot address.
 | D1 | Reap orphaned mail-store directories left by failovers (§3.2) | **done** |
 | D3 | Auto re-pin HA-tier tenants off a downed node | **done** |
 | D2 | Restoration wizard for degraded tenants | **done** |
-| C1 | Exact DR drill procedure, executed and recorded | todo |
-| C2 | Correct the runbooks (see below) | todo |
+| C1 | Exact DR drill procedure, executed and recorded | **done** (validate + dind run and logged; `bootstrap` RTO still unmeasured) |
+| C2 | Correct the runbooks (see below) | **done** |
 
 ### Known doc inaccuracies to fix under C2
 

@@ -22,8 +22,18 @@ What it does **not** cover:
 
 | Objective | Target | Actual (last measured) |
 |---|---|---|
-| RTO (cluster back up) | ≤ 2 hours | _measured during Phase 5 drill — record in DR_DRILL_LOG.md_ |
+| RTO (cluster back up) | ≤ 2 hours | **Never measured.** Requires a `--mode bootstrap` drill; see [DR_DRILL_LOG.md](DR_DRILL_LOG.md). Treat the 2-hour figure as an aspiration until a row exists there. |
+| Bundle recoverability | must always pass | ✅ 2026-09-11 — `dr-drill --mode dind` passed in 30 s on staging: bundle decrypts, the production restore library processes it, and every restored Secret passed a server-side dry-run against a live cluster |
 | RPO (data loss window) | ≤ 24 hours | bounded by the nightly tenant-bundle wave + CNPG base backup (WAL archiving narrows Postgres to minutes) + `secrets-backup` (daily) |
+| RPO (mail store) | ≤ 30 min | restic snapshot CronJob every 30 min; the standby rsync narrows a *failover* to ≤ 5 min |
+
+> **What is actually proven.** Backup *coverage* is verified and current —
+> etcd hourly offsite, Postgres base + continuous WAL, cluster-state and
+> secrets daily, mail every 30 min, Longhorn daily/weekly. Bundle
+> *recoverability* is verified (above). What has never been exercised
+> end-to-end is the **full cold restore onto fresh hardware**, which is the
+> only thing that turns the RTO target into a number. Log every drill in
+> [DR_DRILL_LOG.md](DR_DRILL_LOG.md).
 
 ## Prerequisites (BEFORE you start)
 
