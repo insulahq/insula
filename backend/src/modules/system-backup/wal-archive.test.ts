@@ -223,8 +223,13 @@ describe('extractStatus', () => {
         conditions: [{ type: 'ContinuousArchiving', status: 'True', reason: 'ContinuousArchivingSuccess', lastTransitionTime: '2026-05-07T10:01:00Z' }],
       },
     });
-    expect(s?.lastArchivedWal).toBe('ContinuousArchivingSuccess');
-    expect(s?.lastArchivedWalTime).toBe('2026-05-07T10:01:00Z');
+    // Health, not recency: the condition only transitions when archiving
+    // health CHANGES. Reporting its lastTransitionTime as "last WAL archived"
+    // showed production a month-old instant (2026-08-12) while segments were
+    // going off-site every five minutes. Recency comes from pg_stat_archiver.
+    expect(s?.archivingHealthySince).toBe('2026-05-07T10:01:00Z');
+    expect(s?.lastArchivedWal).toBeNull();
+    expect(s?.lastArchivedWalTime).toBeNull();
     expect(s?.lastFailedArchiveTime).toBeNull();
     expect(s?.firstRecoverabilityPoint).toBe('2026-05-07T10:00:00Z');
   });
@@ -235,6 +240,7 @@ describe('extractStatus', () => {
       },
     });
     expect(s?.lastArchivedWal).toBeNull();
+    expect(s?.archivingHealthySince).toBeNull();
     expect(s?.lastFailedArchiveTime).toBe('2026-05-07T10:02:00Z');
     expect(s?.lastFailedArchiveError).toBe('s3: connection refused');
   });
