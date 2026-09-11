@@ -102,7 +102,7 @@ export async function reconcileNodeHealth(
   readonly notified: ReadonlyArray<string>;
 }> {
   // ── 1. Pull all data sources in parallel ────────────────────────
-  const [nodeList, csiNodeList, eventList, oomEventList] = await Promise.all([
+  const [nodeList, csiNodeList, eventList, oomEventList, killingEventList] = await Promise.all([
     k8s.core.listNode({}) as Promise<{ items?: ReadonlyArray<RawNode> }>,
     k8s.storage.listCSINode({}) as Promise<{ items?: ReadonlyArray<RawCSINode> }>,
     k8s.core.listEventForAllNamespaces({
@@ -113,6 +113,13 @@ export async function reconcileNodeHealth(
     // NODE object (operator decision 2026-07-25: must be visible + alerted).
     k8s.core.listEventForAllNamespaces({
       fieldSelector: 'reason=SystemOOM',
+    } as Parameters<typeof k8s.core.listEventForAllNamespaces>[0])
+      .catch(() => ({ items: [] as RawEvent[] })) as Promise<{ items?: ReadonlyArray<RawEvent> }>,
+    // Probe restarts SIGKILL the container (exit 137) exactly like a cgroup
+    // OOM. The kubelet posts a Killing event naming the probe as the cause —
+    // believe it, rather than inferring memory. See indexProbeKills().
+    k8s.core.listEventForAllNamespaces({
+      fieldSelector: 'reason=Killing',
     } as Parameters<typeof k8s.core.listEventForAllNamespaces>[0])
       .catch(() => ({ items: [] as RawEvent[] })) as Promise<{ items?: ReadonlyArray<RawEvent> }>,
   ]);
@@ -314,6 +321,7 @@ export async function reconcileNodeHealth(
     oomEventList.items ?? [],
     (podList.items ?? []) as Parameters<typeof recordMemoryEvents>[3],
     now,
+    killingEventList.items ?? [],
   );
 
   // ── 7. Reap node-reboot debris ─────────────────────────────────

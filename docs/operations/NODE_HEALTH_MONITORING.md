@@ -342,3 +342,33 @@ tenants' `apache-php` containers had been OOM-killed by a reboot that killed
 nothing of the sort. See `backend/src/lib/container-termination.ts` —
 `isExpectedSigkill()` is the guard, and `scripts/ci-oom-classification-check.sh`
 fails the build if a detector infers an OOM without consulting it.
+
+### Exit 137 has three benign sources, not one
+
+`exit 137` is `128 + SIGKILL` and the platform infers an OOM from it, because
+some containerd versions report a real cgroup group-kill as
+`{exitCode: 137, reason: "Error"}` rather than `OOMKilled`. Three things produce
+the same exit code without any memory problem, and each is suppressed by
+believing what the kubelet already said:
+
+| Source | Kubelet's own signal | Guard |
+|---|---|---|
+| rollout / scale-down / drain | `metadata.deletionTimestamp` set | `isExpectedSigkill()` |
+| node shutdown | `status.reason` = `Terminated` / `NodeShutdown` | `isExpectedSigkill()` |
+| **failed liveness/startup probe** | `Killing` event: *"Container X failed liveness probe, will be restarted"* | `indexProbeKills()` |
+
+The probe case is the one the shutdown guard cannot catch: the pod stays
+**Running** and the container restarts, so no pod-level shutdown marker applies.
+It is correlated by `<namespace>/<pod>/<container>` within 5 minutes of the
+termination, so an unrelated OOM hours later is still reported.
+
+In every case only the **inferred** arm is dropped. An explicit `OOMKilled` from
+the kubelet always reports — a container can genuinely hit its limit *and* fail
+a probe, or be killed mid-drain.
+
+Found on a real DEV reboot 2026-09-11, after the node-shutdown fix: the reboot
+produced zero false tenant OOM alerts but still raised a `critical` node memory
+event for two CrowdSec containers that were merely slow to answer `/health` on a
+cold boot. `scripts/ci-oom-classification-check.sh` now fails the build if
+`memory-events.ts` stops calling `indexProbeKills()`, or if the reconciler stops
+fetching `reason=Killing` events (which would make the index silently empty).
