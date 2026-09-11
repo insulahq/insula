@@ -1,0 +1,56 @@
+# Make the barman-cloud plugin survive a single node loss.
+#
+# WHY THIS EXISTS (2026-09-11 node-outage drill):
+#
+# The vendored upstream manifest ships `replicas: 1` with
+# `strategy: Recreate` and no topology constraint. During a staging drill
+# the node hosting the single barman-cloud pod was killed. The CNPG
+# operator could not reach the plugin:
+#
+#   Reconciler error … while getting plugin connection:
+#   rpc error: code = Unavailable … connect: connection refused
+#
+# and therefore **stopped reconciling the Cluster entirely** — so it never
+# promoted a new Postgres primary. The platform database and the whole
+# management API stayed down for ~6.5 minutes, clearing only when
+# Kubernetes' default 300 s not-ready eviction finally rescheduled the pod.
+#
+# The plugin already runs with `--leader-elect`, so multiple replicas are
+# safe and upstream clearly anticipates them. `cnpg-cloudnative-pg` was
+# already in the platform's LEADER_ELECT_DEPLOYMENTS list; barman-cloud was
+# simply omitted — which made the operator's own HA pointless, because a
+# reachable operator that cannot load its plugin does not reconcile.
+#
+# WHAT THIS PATCH DOES
+#
+# 1. Removes `spec.replicas` so Flux's server-side apply does not claim the
+#    field. The platform-storage-policy reconciler then owns it via the
+#    /scale subresource (1 in local tier, 2 in HA), exactly as it already
+#    does for cert-manager, Flux and the CNPG operator itself. Without this
+#    removal Flux would reset the count to 1 on every reconcile.
+# 2. Spreads replicas one-per-node (DoNotSchedule), matching the
+#    "all servers same state" invariant — two replicas on one node would
+#    not have helped at all during the drill.
+# 3. Replaces `Recreate` with a surge-first RollingUpdate so an image bump
+#    never drops the plugin to zero, which is the same outage by another
+#    route.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: barman-cloud
+  namespace: cnpg-system
+spec:
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    spec:
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: barman-cloud

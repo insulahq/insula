@@ -82,7 +82,7 @@ describe('health service', () => {
     });
 
     const k8sCore = {
-      listNode: vi.fn().mockResolvedValue({ items: [{ metadata: { name: 'n1' } }] }),
+      listNode: vi.fn().mockResolvedValue({ items: [{ metadata: { name: 'n1' }, status: { conditions: [{ type: 'Ready', status: 'True' }] } }] }),
     };
 
     const result = await runAllChecks(db, '0'.repeat(64), k8sCore as any);
@@ -128,7 +128,7 @@ describe('health service', () => {
     });
 
     const k8sCore = {
-      listNode: vi.fn().mockResolvedValue({ items: [{ metadata: { name: 'n1' } }] }),
+      listNode: vi.fn().mockResolvedValue({ items: [{ metadata: { name: 'n1' }, status: { conditions: [{ type: 'Ready', status: 'True' }] } }] }),
     };
 
     const result = await runAllChecks(db, '0'.repeat(64), k8sCore as any);
@@ -140,7 +140,7 @@ describe('health service', () => {
 
   it('kubernetes check returns ok with node count', async () => {
     const k8sCore = {
-      listNode: vi.fn().mockResolvedValue({ items: [{ metadata: { name: 'node1' } }, { metadata: { name: 'node2' } }] }),
+      listNode: vi.fn().mockResolvedValue({ items: [{ metadata: { name: 'node1' }, status: { conditions: [{ type: 'Ready', status: 'True' }] } }, { metadata: { name: 'node2' }, status: { conditions: [{ type: 'Ready', status: 'True' }] } }] }),
     };
     const result = await checkKubernetes(k8sCore as any);
     expect(result.name).toBe('kubernetes');
@@ -207,7 +207,7 @@ describe('health service', () => {
     });
 
     const k8sCore = {
-      listNode: vi.fn().mockResolvedValue({ items: [{ metadata: { name: 'n1' } }] }),
+      listNode: vi.fn().mockResolvedValue({ items: [{ metadata: { name: 'n1' }, status: { conditions: [{ type: 'Ready', status: 'True' }] } }] }),
     };
 
     const result = await runAllChecks(db, '0'.repeat(64), k8sCore as any);

@@ -422,7 +422,7 @@ function NodeCard({ node, subsystem, health }: { readonly node: ClusterNodeRespo
                   Orphaned
                 </span>
               )}
-              <IngressModePill mode={node.ingressMode} />
+              <IngressModePill mode={node.ingressMode} serving={ready === 'Ready'} />
               <ReadyPill ready={ready} />
               {subsystemBad && (
                 <span
@@ -457,12 +457,29 @@ function NodeCard({ node, subsystem, health }: { readonly node: ClusterNodeRespo
         {/* Compact resource summary — visible without expanding. Three dots
             with values; same colour scale as UsageBar so the operator can
             scan a list of cards without opening each. */}
+        {/* A NotReady node's kubelet has stopped posting, so these numbers are
+            frozen at whatever it last reported. Rendering them as live —
+            "CPU 47% · Mem 36% · 38 pods · just now" next to a NotReady pill —
+            is how the 2026-09-11 drill's Cluster Nodes page contradicted
+            itself. Show the last-known values as explicitly stale instead. */}
         <div className="hidden md:flex items-center gap-3 text-xs text-gray-600 dark:text-gray-300 shrink-0">
-          <SummaryDot label="CPU" pct={cpuPct} />
-          <SummaryDot label="Mem" pct={memPct} />
-          <span className="tabular-nums" title="scheduled pods">
-            {node.scheduledPods ?? '—'} pods
-          </span>
+          {ready === 'Ready' ? (
+            <>
+              <SummaryDot label="CPU" pct={cpuPct} />
+              <SummaryDot label="Mem" pct={memPct} />
+              <span className="tabular-nums" title="scheduled pods">
+                {node.scheduledPods ?? '—'} pods
+              </span>
+            </>
+          ) : (
+            <span
+              className="italic text-gray-400 dark:text-gray-500"
+              data-testid={`node-metrics-stale-${node.name}`}
+              title="The kubelet on this node has stopped reporting, so CPU, memory and pod counts are frozen at their last known values."
+            >
+              metrics unavailable — kubelet not reporting
+            </span>
+          )}
         </div>
 
         <div className="flex items-center gap-2 shrink-0" onClick={stop}>
@@ -579,13 +596,28 @@ function SummaryDot({ label, pct }: { readonly label: string; readonly pct: numb
   );
 }
 
-function IngressModePill({ mode }: { readonly mode: NodeIngressMode }) {
+function IngressModePill({ mode, serving = true }: { readonly mode: NodeIngressMode; readonly serving?: boolean }) {
   const styles = {
     all: { className: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300', label: 'ingress: all' },
     local: { className: 'bg-sky-100 text-sky-800 dark:bg-sky-900/40 dark:text-sky-300', label: 'ingress: local' },
     none: { className: 'bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-300', label: 'ingress: none' },
   } as const;
   const s = styles[mode];
+  // The pill states CONFIGURATION, but on an offline node it reads as a
+  // capability claim — the drill's dead node advertised "ingress: all" while
+  // every request to its address timed out. The platform does not own DNS, so
+  // its records stay published until an operator removes them; the least we
+  // can do is stop the UI implying the node is still serving.
+  if (!serving && mode !== 'none') {
+    return (
+      <span
+        className="rounded-full bg-gray-200 px-2 py-0.5 text-xs font-medium text-gray-600 line-through decoration-red-500/70 dark:bg-gray-700 dark:text-gray-300"
+        title="This node is configured for ingress but is offline: traffic sent to its address will fail. The platform does not manage DNS — withdraw its records manually if the outage will be long."
+      >
+        {s.label}
+      </span>
+    );
+  }
   return <span className={clsx('rounded-full px-2 py-0.5 text-xs font-medium', s.className)}>{s.label}</span>;
 }
 

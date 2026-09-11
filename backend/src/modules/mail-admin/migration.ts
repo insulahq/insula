@@ -57,6 +57,8 @@ const MAIL_NAMESPACE = 'mail';
 const SETTINGS_ID = 'system';
 const DEPLOYMENT_NAME = 'stalwart-mail';
 const BULWARK_DEPLOYMENT_NAME = 'bulwark';
+/** Bulwark's fresh-start marker. Its Stalwart sibling lives under /var/lib/stalwart/data. */
+const BULWARK_FRESH_START_SENTINEL = '/app/data/.fresh-started-at';
 /**
  * Mail-stack co-location list. Every Deployment here gets the same
  * nodeSelector pin to mailActiveNode and moves together on failover.
@@ -1047,7 +1049,38 @@ async function runMigrationStateMachine(
   // The snapshot Pod inherits node affinity from the CronJob template
   // (preferred-during-scheduling pod-affinity to stalwart-mail), so it
   // runs on the ACTIVE node where the data actually lives.
-  if (!opts.skipFreshSnapshot) {
+  // 2026-09-11 drill fix: ALSO skip when the source node is NotReady,
+  // whoever the caller is.
+  //
+  // `skipFreshSnapshot` is set only by the DR (auto-failover) path. The
+  // operator-facing endpoints — /admin/mail/failover, /failback, /migrate —
+  // go through startMailMigration, which did NOT set it. During the drill
+  // the operator triggered a failover away from a dead node and the
+  // migration created a snapshot Job that could never be scheduled: the
+  // mail PVC uses local-path, so its PV carries a nodeAffinity pinned to
+  // the dead host.
+  //
+  //   FailedScheduling: 0/4 nodes are available: 3 node(s) didn't match
+  //   PersistentVolume's node affinity
+  //
+  // It then burned the full 5-minute timeout with the mail Deployments
+  // already scaled to zero — turning "mail is down" into "mail is down and
+  // wedged" for five minutes, on exactly the path that exists to handle a
+  // dead node. A snapshot of an unreachable PVC cannot succeed by
+  // definition, so waiting for one is never right.
+  // Reuses the existing Ready probe (same question, different decision).
+  // It returns false when the API is unreachable too — which is the safe
+  // direction here: skipping a best-effort safety-net snapshot costs far
+  // less than stalling a migration for five minutes with mail scaled to 0.
+  const sourceNodeReachable = await isNodeReadyForRollback(core, sourceNode);
+  if (!opts.skipFreshSnapshot && !sourceNodeReachable) {
+    log.warn(
+      `[migration ${runId}] source node ${sourceNode} is NotReady — skipping the ` +
+      `pre-migration backup. Its PVC is node-pinned to a node that cannot run the ` +
+      `snapshot Job, so waiting would stall the migration for the full timeout with ` +
+      `mail already scaled down. Recovery falls through to standby/restic as designed.`,
+    );
+  } else if (!opts.skipFreshSnapshot) {
     const hasMailBackupTarget = await checkMailBackupTargetConfigured(db);
     if (!hasMailBackupTarget) {
       log.info(
@@ -1446,6 +1479,26 @@ async function runMigrationStateMachine(
     const verify = opts.recoverFromBrokenState
       ? await verifyRecoveryMinimal(podName, kubeconfigPath, log, runStartedAt)
       : await verifyRestoreContent(db, podName, kubeconfigPath, log, runStartedAt);
+
+    // Bulwark is checked SEPARATELY and never fails the run: Stalwart holds
+    // the mail, Bulwark holds webmail admin state. A migration that restored
+    // the mailboxes correctly did succeed, and failing it would hand the
+    // operator a red run for a service that is actually serving. But the
+    // loss must not be silent either — before 2026-09-11 nothing in the
+    // backend read this sentinel at all, so a real Bulwark reset went
+    // unnoticed for a month while its migration sat recorded as `done`.
+    const bulwarkLoss = await detectBulwarkFreshStart(core, kubeconfigPath, runStartedAt, log);
+    if (bulwarkLoss) {
+      log.warn(`[migration ${runId}] BULWARK FRESH-STARTED (${bulwarkLoss}) — webmail admin state was reset`);
+      await notifyAdminsMailDataLoss(
+        db,
+        runId,
+        sourceNode,
+        `Webmail (Bulwark) started with empty data during the mail migration to ${targetNode} `
+        + `(${bulwarkLoss}). Mailboxes in Stalwart are unaffected, but Bulwark's admin account and `
+        + `settings were regenerated — reset the webmail admin password and re-check webmail settings.`,
+      ).catch(() => { /* best-effort: never let the alert fail the migration */ });
+    }
     if (!verify.ok) {
       // Mark mailDrState=degraded so the operator UI surfaces the
       // problem; the migration's 'failed' state alone is too easy to miss.
@@ -3411,7 +3464,65 @@ async function verifyRestoreContent(
 }
 
 /** True iff `path` exists on the Stalwart container. Throws on exec timeout. */
-async function podHasFile(podName: string, path: string, kubeconfigPath?: string): Promise<boolean> {
+/**
+ * Did BULWARK fresh-start during this migration?
+ *
+ * Until 2026-09-11 the verify step read ONLY Stalwart's sentinel
+ * (`/var/lib/stalwart/data/.fresh-started-at`) — four references in the
+ * backend — and NEVER Bulwark's (`/app/data/.fresh-started-at`) — zero
+ * references, despite the manifest comment claiming "platform-api detects"
+ * it. A real Bulwark data-loss event on 2026-08-11 therefore sat undetected
+ * for a month, and the migration that caused it is still recorded
+ * `state=done`.
+ *
+ * This does NOT fail the migration. Stalwart holds the mail; Bulwark holds
+ * webmail admin state. If Stalwart restored correctly the migration DID
+ * succeed, and failing it would leave the operator with a scary red run for
+ * a mail service that is actually serving. Instead we fire the existing
+ * loud data-loss notification so the loss is impossible to miss, and return
+ * the reason for the run record.
+ *
+ * Returns null when Bulwark is fine or its sentinel predates this run.
+ */
+async function detectBulwarkFreshStart(
+  core: CoreV1Api,
+  kubeconfigPath: string | undefined,
+  runStartedAt: Date,
+  log: { warn: (...args: unknown[]) => void; info: (...args: unknown[]) => void },
+): Promise<string | null> {
+  try {
+    const pods = (await core.listNamespacedPod({
+      namespace: MAIL_NAMESPACE,
+      labelSelector: 'app=bulwark',
+    } as unknown as Parameters<typeof core.listNamespacedPod>[0])) as {
+      items?: Array<{ metadata?: { name?: string }; status?: { phase?: string } }>;
+    };
+    const pod = (pods.items ?? []).find((p) => p.status?.phase === 'Running');
+    if (!pod?.metadata?.name) {
+      log.info('[migration] bulwark sentinel check skipped — no Running bulwark pod');
+      return null;
+    }
+    const podName = pod.metadata.name;
+    const present = await podHasFile(podName, BULWARK_FRESH_START_SENTINEL, kubeconfigPath, 'bulwark');
+    if (!present) return null;
+
+    const reason = await readPodFile(podName, BULWARK_FRESH_START_SENTINEL, kubeconfigPath, 'bulwark');
+    // Same staleness rule as Stalwart: a marker carried in from an older
+    // incident is not evidence about THIS run.
+    if (freshStartSentinelIsStale(reason, runStartedAt)) {
+      log.info(`[migration] bulwark .fresh-started-at (${reason.trim().slice(0, 80)}) predates this run — tolerated`);
+      return null;
+    }
+    return reason.trim().slice(0, 160) || 'reason unrecorded';
+  } catch (err) {
+    // Unverifiable is not the same as fine — say so rather than returning
+    // null, which the caller would read as "Bulwark is healthy".
+    log.warn('[migration] could not probe bulwark for a fresh-start sentinel:', err);
+    return null;
+  }
+}
+
+async function podHasFile(podName: string, path: string, kubeconfigPath?: string, container = 'stalwart'): Promise<boolean> {
   const { Exec, KubeConfig } = await import('@kubernetes/client-node');
   const kc = new KubeConfig();
   if (kubeconfigPath) kc.loadFromFile(kubeconfigPath); else kc.loadFromCluster();
@@ -3421,7 +3532,7 @@ async function podHasFile(podName: string, path: string, kubeconfigPath?: string
   return await new Promise<boolean>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('podHasFile timed out')), 10_000);
     exec.exec(
-      MAIL_NAMESPACE, podName, 'stalwart',
+      MAIL_NAMESPACE, podName, container,
       ['test', '-f', path],
       sink, sink, null, false,
       (status) => {
@@ -3435,7 +3546,7 @@ async function podHasFile(podName: string, path: string, kubeconfigPath?: string
 }
 
 /** Read up to 4 KB of `path` from the Stalwart container. Returns empty on error. */
-async function readPodFile(podName: string, path: string, kubeconfigPath?: string): Promise<string> {
+async function readPodFile(podName: string, path: string, kubeconfigPath?: string, container = 'stalwart'): Promise<string> {
   try {
     const { Exec, KubeConfig } = await import('@kubernetes/client-node');
     const kc = new KubeConfig();
@@ -3448,7 +3559,7 @@ async function readPodFile(podName: string, path: string, kubeconfigPath?: strin
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('readPodFile timed out')), 5_000);
       exec.exec(
-        MAIL_NAMESPACE, podName, 'stalwart',
+        MAIL_NAMESPACE, podName, container,
         ['head', '-c', '4096', path],
         stdoutSink, errSink, null, false,
         () => { clearTimeout(timer); resolve(); },

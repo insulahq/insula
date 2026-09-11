@@ -610,10 +610,50 @@ export async function ensureMailStackPlacementApplied(
   // evicted but `/var/lib/mail-stack-standby/` would otherwise stay on
   // disk indefinitely. The cleanup Job renames to
   // `.deelected-<ts>/` and the janitor CronJob deletes after 48h.
-  const standbyNodes: string[] = [];
-  if (row?.mailSecondaryNode) standbyNodes.push(row.mailSecondaryNode);
-  if (row?.mailTertiaryNode) standbyNodes.push(row.mailTertiaryNode);
+  //
+  // 2026-09-11: derive the set as "configured candidates MINUS the node the
+  // stack is currently running on", instead of labelling secondary+tertiary
+  // literally, and add the PRIMARY as a candidate.
+  //
+  // The old rule produced two wrong outcomes after a failover, both seen on
+  // staging. The active node was itself one of secondary/tertiary, so it ran
+  // a standby replicator that rsynced from its own pod — pure waste. And the
+  // PRIMARY, which is the target of `POST /admin/mail/failback`, was never a
+  // standby, so it carried NO fresh data: its sentinel was two months old,
+  // the FAST PATH max-age gate correctly rejected it, and failback fell
+  // through to the slow restic path every time.
+  //
+  // Staging a copy on the primary is exactly what makes failback fast, and
+  // staging one on the active node is exactly what never helps.
+  const standbyNodes = deriveStandbyNodes({
+    primary: row?.mailPrimaryNode ?? null,
+    secondary: row?.mailSecondaryNode ?? null,
+    tertiary: row?.mailTertiaryNode ?? null,
+    activeNode,
+  });
   await reconcileMailStandbyLabel(core, batch, standbyNodes, opts.logger);
+}
+
+/**
+ * Which nodes should pre-stage a copy of the mail store.
+ *
+ * "Every configured placement candidate except wherever the stack is running
+ * right now." Pure so the rule can be tested without a cluster.
+ *
+ * Replaced a literal secondary+tertiary list on 2026-09-11. That version put
+ * a standby replicator on the ACTIVE node (rsyncing from its own pod) while
+ * leaving the PRIMARY — the failback target — with no fresh data at all, so
+ * every failback took the slow restic path.
+ */
+export function deriveStandbyNodes(input: {
+  readonly primary: string | null;
+  readonly secondary: string | null;
+  readonly tertiary: string | null;
+  readonly activeNode: string | null;
+}): string[] {
+  const candidates = [input.primary, input.secondary, input.tertiary]
+    .filter((n): n is string => !!n);
+  return [...new Set(candidates)].filter((n) => n !== input.activeNode);
 }
 
 /**

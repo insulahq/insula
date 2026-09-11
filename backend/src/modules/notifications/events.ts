@@ -503,6 +503,24 @@ export interface AdminNodeRebootingPayload {
  * arrives. dedupeKey is per (node x boot) so a drain lasting several ticks
  * notifies once.
  */
+export interface AdminTenantAutoRepinnedPayload {
+  readonly tenantName: string;
+  readonly strandedOn: string;
+}
+/**
+ * An HA-tier tenant was unpinned from an offline node so it could reschedule.
+ * Warning, not info: nothing is broken, but the operator's explicit placement
+ * decision was overridden by the platform and they need to know. dedupeKey is
+ * per (tenant x node) so a multi-tick outage notifies once.
+ */
+export async function notifyAdminTenantAutoRepinned(
+  db: Database,
+  payload: AdminTenantAutoRepinnedPayload,
+  dedupeKey?: string,
+): Promise<void> {
+  await dispatchSafe(db, 'admin.tenant_auto_repinned', { kind: 'admin' }, payload, undefined, { dedupeKey });
+}
+
 export async function notifyAdminNodeRebooting(
   db: Database,
   payload: AdminNodeRebootingPayload,

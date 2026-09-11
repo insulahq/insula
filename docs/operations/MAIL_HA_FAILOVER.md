@@ -85,9 +85,17 @@ Three placement variables in `system_settings`:
 
 The `mail-stack-standby-replicate` DaemonSet runs on every node labelled
 `insula.host/mail-standby=true`. Platform-api's
-`ensureMailStackPlacementApplied` reconciler keeps that label aligned
-with `mailSecondaryNode + mailTertiaryNode` — operators never label
-nodes manually.
+`ensureMailStackPlacementApplied` reconciler keeps that label aligned with
+**every configured candidate (primary, secondary, tertiary) EXCEPT the node
+the stack is currently running on** — operators never label nodes manually.
+
+> Changed 2026-09-11 (`deriveStandbyNodes`). The label used to follow
+> `mailSecondaryNode + mailTertiaryNode` literally, which after a failover put
+> a replicator on the ACTIVE node — rsyncing from its own pod — while leaving
+> the PRIMARY, the target of `POST /admin/mail/failback`, with no fresh data
+> at all. On staging the primary's sentinel was two months old, so the
+> max-age gate correctly rejected it and every failback fell through to the
+> slow restic path.
 
 ## Initial setup (new cluster)
 
@@ -153,6 +161,15 @@ Active node's kubelet dies, k8s reports `Ready=False/Unknown` within
 
 Total time-to-recovery on a 13 MB working set: ~2-3 minutes from node
 death to Stalwart Ready.
+
+> **Operator-triggered failover no longer stalls on a dead source.**
+> `startMailMigration` (the path behind `/admin/mail/failover`, `/failback`
+> and `/migrate`) used to take a pre-migration snapshot unconditionally. With
+> the source node dead that snapshot Job can never be scheduled — the mail PVC
+> is `local-path`, so its PV carries a nodeAffinity pinned to the dead host —
+> and the migration burned the full 5-minute timeout with the mail Deployments
+> already scaled to zero. It now skips the snapshot whenever the source node
+> is NotReady, matching what the automatic DR path always did.
 
 ### Scenario B: Operator-triggered explicit migration
 
@@ -377,9 +394,24 @@ kubectl logs -n mail -l app=bulwark -c restore-state --tail=20 | grep RESTORE-ST
 - `no-standby-no-restic` — Bulwark had neither standby data nor RESTIC_REPOSITORY
 - `restic-no-bulwark-subdir` — restic snapshot was pre-A2.5 (no bulwark/ subtree)
 
-**Follow-up (filed)**: platform-api should periodically check both
-sentinels + surface a banner in the admin UI. Today the detection is
-operator-pull (kubectl exec) rather than alert-push.
+**Status 2026-09-11**: the migration's verify step now reads **both**
+sentinels. It previously read only Stalwart's — four references in the backend
+versus zero for Bulwark's, despite a manifest comment claiming platform-api
+detected it — so a real Bulwark reset on 2026-08-11 went unnoticed for a month
+while the migration that caused it stayed recorded `state=done`.
+
+A Bulwark fresh-start now fires the loud admin data-loss notification but does
+**not** fail the migration: Stalwart holds the mail, Bulwark holds webmail
+admin state, so a run that restored the mailboxes correctly did succeed and
+marking it failed would hand the operator a red run for a service that is
+serving.
+
+**Also fixed**: Bulwark used to report data loss on every SUCCESSFUL restore.
+Its init ran `cp -a "$src/." /app/data/` as UID 1000, which tries to preserve
+timestamps on the root-owned PVC root and exits non-zero **after copying every
+file correctly** — so the script declared a fresh start and wrote the
+sentinel. Stalwart was never affected because its pod runs as root. The copy
+now walks children instead.
 
 ### 9. Bulwark restic-restore fallback (added 2026-05-25)
 
@@ -557,6 +589,28 @@ kubectl run restic-list --restart=Never --rm -it \
 Operator resets admin passwords + asks users to recover from their
 own client-side mail copies (IMAP IDLE clients often have local
 caches).
+
+### D2. Orphaned mail-store directories (automatic since 2026-09-11)
+
+Because the PVC does not migrate, every failover leaves the **old PVC's
+directory** on the source node's disk. Nothing used to reap it: the
+`mail-standby-janitor` DaemonSet only matches
+`mail-stack-standby.deelected-*`, and `orphaned-volumes` classifies PV objects
+rather than local-path directories whose PV is already deleted. Staging
+accumulated six orphans across three nodes in a single day of drills. On a
+40 GB mail store two failovers leak 80 GB, and the resulting disk pressure is
+itself a cause of node outages.
+
+A daily reaper now handles this. platform-api resolves the live PVC directory
+from the bound PV and passes it to a per-node Job that **refuses to run
+without it**; everything else matching `*_mail_mail-stack-data` is deleted
+only once it is older than **48 h**, matching the standby janitor's recovery
+window. To inspect what is on a node:
+
+```bash
+ssh root@<node> 'du -sh /var/lib/rancher/k3s/storage/*_mail_mail-stack-data'
+kubectl logs -n mail -l app.kubernetes.io/component=mail-pvc-reaper --tail=20
+```
 
 ### D. Decommission a standby node
 

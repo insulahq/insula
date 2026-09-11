@@ -23,12 +23,40 @@ three signal classes per node:
 
 Plus `not Ready` → critical.
 
+## Detection latency — two loops, on purpose
+
+| Loop | Interval | What it does |
+|---|---|---|
+| `fast-down-watch` | **30 s** | One `listNode`. Announces a node it observed transition into NotReady, and nothing else. |
+| `node-health` reconciler | 5 min | Everything else: pressure, CSI drivers, evictions, kubelet disk stats, severity, `node_health_state`. |
+
+The split exists because the reconciler's other signals are expensive (a
+kubelet `/stats/summary` per node, two cluster-wide event lists), and that
+cadence is right for those and wrong for "is a node dead". During the
+2026-09-11 drill the platform served `ready: true` for a node that had been
+offline **4 m 20 s** — and because losing that node restarted the platform-api
+pods, the reconciler's timer restarted too, delaying detection of the very
+event that caused it.
+
+The fast watch shares the reconciler's dedupe key, so whichever fires first
+wins and the operator never gets two notifications for one node going down.
+
+> **A NotReady node's metrics are frozen, not live.** Its kubelet has stopped
+> posting, so CPU / memory / pod counts stay at their last reported values.
+> The Cluster Nodes page used to render those beside a NotReady pill labelled
+> "just now"; it now says *metrics unavailable — kubelet not reporting*.
+
 ## How notifications fire
 
 - Severity transition (any direction) → 1 notification per admin /
   super_admin user.
 - Sustained warning or critical → 1 re-notification every 24 h.
 - Recovery to normal → 1 notification.
+- A node going NotReady is announced **once**, by the categorised
+  `admin.node_down` dispatch. The raw per-severity row is suppressed in that
+  case — emitting both produced two notifications for one event, one of which
+  carried the wrong severity (the raw insert never set `severity`, so a
+  CRITICAL transition defaulted to `info`).
 
 Notifications carry `resourceType=node_health` and `resourceId=<node-name>`
 so the admin panel's bell icon can deep-link.

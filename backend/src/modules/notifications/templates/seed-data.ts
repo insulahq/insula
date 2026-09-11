@@ -704,7 +704,7 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     categoryId: 'admin.node_down',
     channel: 'email',
     locale: 'en',
-    subjectTemplate: 'Cluster node down',
+    subjectTemplate: '[NODE] {{nodeName}} is down',
     bodyTemplate: emailMjml(
       'Cluster node down',
       'Node {{nodeName}} is reporting NotReady.',
@@ -719,7 +719,7 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     categoryId: 'admin.node_down',
     channel: 'in_app',
     locale: 'en',
-    subjectTemplate: 'Node down',
+    subjectTemplate: '[NODE] {{nodeName}} is down',
     bodyTemplate: 'Node {{nodeName}} is NotReady.',
     bodyFormat: 'plaintext',
     variablesSchema: [
@@ -1285,6 +1285,38 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
       { name: 'announcementNote', type: 'string', required: true },
     ];
     return [
+      {
+        categoryId: 'admin.tenant_auto_repinned',
+        channel: 'email',
+        locale: 'en',
+        subjectTemplate: '[TENANT] {{tenantName}} was re-pinned off offline node {{strandedOn}}',
+        bodyTemplate: emailMjml(
+          '{{tenantName}} was automatically re-pinned',
+          'Tenant {{tenantName}} was pinned to {{strandedOn}}, which went offline. Because the '
+          + 'tenant is on the HA storage tier its data has a replica on a healthy node, so the '
+          + 'pin was cleared and the workloads can reschedule. No data was moved or lost. '
+          + 'Re-pin it deliberately once {{strandedOn}} is back if you want it to live there.',
+        ),
+        bodyFormat: 'mjml',
+        variablesSchema: [
+          ...COMMON_VARS,
+          { name: 'tenantName', type: 'string', required: true },
+          { name: 'strandedOn', type: 'string', required: true },
+        ],
+      },
+      {
+        categoryId: 'admin.tenant_auto_repinned',
+        channel: 'in_app',
+        locale: 'en',
+        subjectTemplate: '[TENANT] {{tenantName}} re-pinned off {{strandedOn}}',
+        bodyTemplate: 'HA-tier tenant {{tenantName}} was pinned to offline node {{strandedOn}}. '
+          + 'Its data has a live replica elsewhere, so the pin was cleared and it can reschedule.',
+        bodyFormat: 'plaintext',
+        variablesSchema: [
+          { name: 'tenantName', type: 'string', required: true },
+          { name: 'strandedOn', type: 'string', required: true },
+        ],
+      },
       {
         categoryId: 'admin.node_rebooting',
         channel: 'email',

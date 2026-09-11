@@ -133,6 +133,56 @@ detached cleanly instead of being cut away mid-write.
 Draining is still the right move before *planned* maintenance — it moves
 workloads off the node instead of just stopping them politely.
 
+## When a node goes offline
+
+You do not have to go looking. Within about 30 seconds of a node leaving
+`Ready`, a red banner appears on **every** admin page naming the node, and a
+notification is sent.
+
+The banner carries two things worth clicking:
+
+- **`N tenants affected`** — opens a list of exactly which tenants are hurting,
+  what is wrong with each, and what to do about it.
+- **`Mail server affected`** — shown when the offline node was the one running
+  mail. Every tenant with mailboxes loses mail at once, regardless of where
+  their sites live.
+
+### What happens to a tenant
+
+It depends on the tenant's **storage tier**, because the tier decides whether
+the tenant is tied to one node:
+
+| Tier | What happens | What you do |
+|---|---|---|
+| **HA** | Its data has a copy on another node, so it reschedules. If it had been pinned to the offline node, Insula clears that pin automatically and tells you. | Usually nothing. |
+| **Local** | Its single copy of the data lives on the offline node, and its workloads are pinned there. The tenant is down. | Wait for the node to come back, or restore the tenant from its latest backup. |
+
+A tenant can be hit on both fronts at once — sites down *and* mail down — or on
+only one. The affected-tenants list reports them separately, because the fix is
+different for each.
+
+### Recovering a tenant
+
+In the affected-tenants list, each tenant has **Guide me through recovery**.
+It shows what is wrong, offers the actions that actually apply, and asks you to
+type the tenant's name before doing anything.
+
+Moving a tenant to a healthy node is done for you there. Restoring data from a
+backup is deliberately *not* — that is destructive, so it stays on the
+[tenant backups](tenant-backups.md) page where it belongs.
+
+!!! warning "Traffic keeps being sent to the offline node"
+    Insula does not manage your DNS. If the offline node published an address
+    for your sites or mail, that address stays published and a share of
+    requests will fail until you remove the record at your DNS provider. The
+    node card marks its ingress badge struck-through as a reminder.
+
+### A node's numbers freeze when it goes offline
+
+An offline node stops reporting, so its CPU, memory and pod counts would
+otherwise sit there looking current. The card says *metrics unavailable —
+kubelet not reporting* instead.
+
 ## Removing a node
 
 1. **Drain** it (above) and wait for tenants to reschedule.
@@ -141,6 +191,10 @@ workloads off the node instead of just stopping them politely.
    running** — Insula does not power it off.
 3. On the host, uninstall k3s: `/usr/local/bin/k3s-uninstall.sh` (server) or
    `k3s-agent-uninstall.sh` (worker), then release the VPS.
+
+Deleting a node also tidies up after it: its storage-system record is removed,
+and if it was named as a mail primary/secondary/tertiary, that reference is
+cleared so the mail settings never point at a machine that no longer exists.
 
 ### Orphaned nodes
 

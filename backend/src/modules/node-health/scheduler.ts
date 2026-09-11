@@ -358,18 +358,36 @@ async function fanoutNotification(
   const type = entry.severity === 'critical' ? 'error'
     : entry.severity === 'warning' ? 'warning'
     : 'info';
-  for (const uid of adminUserIds) {
-    await db.insert(notifications).values({
-      id: crypto.randomUUID(),
-      userId: uid,
-      type,
-      title,
-      message,
-      resourceType: 'node_health',
-      resourceId: entry.name,
-    }).catch((err) => {
-      console.error('[node-health-monitor] notification insert failed:', (err as Error).message);
-    });
+
+  // A NotReady node is already reported by the categorised `admin.node_down`
+  // dispatch below, which carries a better title and an action path. Emitting
+  // the raw row as well produced TWO notifications for one event during the
+  // 2026-09-11 drill — "Node down" (critical) and "Node X flagged CRITICAL"
+  // (info) — landing seconds apart in an inbox with 880 unread items.
+  const coveredByNodeDown = !entry.ready && entry.severity === 'critical';
+
+  if (!coveredByNodeDown) {
+    for (const uid of adminUserIds) {
+      await db.insert(notifications).values({
+        id: crypto.randomUUID(),
+        userId: uid,
+        type,
+        // `severity` drives the bell's colour and every downstream filter, and
+        // this raw insert never set it — so it defaulted to `info` and a
+        // CRITICAL node transition arrived looking routine. The categorised
+        // dispatch path sets it from the category; this one has to do it
+        // itself.
+        severity: entry.severity === 'critical' ? 'critical'
+          : entry.severity === 'warning' ? 'warning'
+          : 'info',
+        title,
+        message,
+        resourceType: 'node_health',
+        resourceId: entry.name,
+      }).catch((err) => {
+        console.error('[node-health-monitor] notification insert failed:', (err as Error).message);
+      });
+    }
   }
 
   // Phase 6A: route critical node-down transitions through the
@@ -378,7 +396,7 @@ async function fanoutNotification(
   // suppresses identical-key emits within 30 days, so the operator
   // sees one notification per node-down day even with 5-min reconciler
   // ticks. We only fire for ready=false transitions (not warnings).
-  if (!entry.ready && entry.severity === 'critical') {
+  if (coveredByNodeDown) {
     const dedupeKey = `node-down:${entry.name}:${new Date().toISOString().slice(0, 10)}`;
     await notifyAdminNodeDown(db, { nodeName: entry.name }, dedupeKey);
   }

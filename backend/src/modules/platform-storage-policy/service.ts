@@ -140,7 +140,7 @@ export function deploymentReplicasForSystemTier(tier: 'local' | 'ha', readyServe
 // on the next tick (≤5 min). One-replica window during that interval —
 // acceptable for an operator workload (no user-visible blip; leader
 // keeps working).
-const LEADER_ELECT_DEPLOYMENTS: ReadonlyArray<{ namespace: string; name: string }> = [
+export const LEADER_ELECT_DEPLOYMENTS: ReadonlyArray<{ namespace: string; name: string }> = [
   { namespace: 'cert-manager', name: 'cert-manager' },
   { namespace: 'cert-manager', name: 'cert-manager-cainjector' },
   { namespace: 'cert-manager', name: 'cert-manager-webhook' },
@@ -151,6 +151,20 @@ const LEADER_ELECT_DEPLOYMENTS: ReadonlyArray<{ namespace: string; name: string 
   { namespace: 'kube-system', name: 'sealed-secrets-controller' },
   { namespace: 'kube-system', name: 'snapshot-controller' },
   { namespace: 'cnpg-system', name: 'cnpg-cloudnative-pg' },
+  // barman-cloud is the CNPG backup plugin. It was missing from this list
+  // until the 2026-09-11 node-outage drill showed why that matters: the
+  // CNPG operator refuses to reconcile a Cluster whose plugin it cannot
+  // reach ("Reconciler error … while getting plugin connection"), so it
+  // never promotes a new primary. Killing the single plugin pod's node
+  // therefore took the platform database AND the management API down for
+  // ~6.5 min — until Kubernetes' 300 s not-ready eviction moved the pod.
+  //
+  // Scaling the operator without scaling its plugin is not HA: a reachable
+  // operator that cannot load its plugin does not reconcile. The plugin
+  // already runs with --leader-elect, so it belongs in this tier.
+  // k8s/base/cnpg-system/ strips the vendored `replicas: 1` and adds the
+  // topologySpread + PDB this scaling depends on.
+  { namespace: 'cnpg-system', name: 'barman-cloud' },
 ];
 
 // Leader-elect cap is 2 — see the LEADER_ELECT_DEPLOYMENTS comment.

@@ -6,13 +6,34 @@ Single-button operation that takes the platform from "any-node-failure causes ou
 
 | Component | Local tier | HA tier | Reversible? |
 |---|---|---|---|
-| Longhorn volumes (postgres + stalwart + crowdsec + vmsingle metrics) | 1 replica | 3 replicas, spread across nodes | ✓ (extra replicas deleted) |
+| Longhorn volumes (crowdsec + vmsingle metrics) | 1 replica | 3 replicas, spread across nodes | ✓ (extra replicas deleted) |
+| CNPG **instance** PVCs | ≤2 replicas | **1** replica each | ✓ |
 | Postgres CNPG `Cluster` `spec.instances` | 1 | 3 (sync replication) | ✓ (replicas removed; primary keeps data) |
-| `admin-panel`, `tenant-panel`, `platform-api`, `oauth2-proxy`, `dex` Deployments | 2 replicas | 3 replicas + `topologySpreadConstraints` (one per node) | ✓ (replica count) |
+| `admin-panel`, `tenant-panel`, `platform-api`, `oauth2-proxy`, `dex` Deployments | 1 replica | 3 replicas + `topologySpreadConstraints` (one per node) | ✓ (replica count) |
+| Leader-elect operators: cert-manager (×3), Flux (×4), sealed-secrets, snapshot-controller, `cnpg-cloudnative-pg`, **`barman-cloud`** | 1 | 2 (leader + warm standby) | ✓ |
+
+> **CNPG instance PVCs go DOWN in HA, not up.** Postgres streaming replication
+> already keeps three copies; giving each instance PVC three Longhorn replicas
+> as well would store nine. Disk-failure tolerance comes from CNPG instance
+> failover.
+
+> **`barman-cloud` is in the leader-elect tier for a reason.** It is the CNPG
+> backup plugin, and the CNPG operator **refuses to reconcile a Cluster whose
+> plugin it cannot reach** — including refusing to promote a new primary. It
+> shipped at `replicas: 1`, so during the 2026-09-11 drill the node holding it
+> died and took the platform database and the whole management API down for
+> ~6.5 minutes, clearing only when Kubernetes' 300s eviction moved the pod.
+> Scaling an operator without its plugin is not HA.
 
 What `Apply HA` does NOT do:
-- Per-tenant client workloads (separate per-tenant storage tier)
-- Stalwart-mail StatefulSet — stays at `replicas=1`. Failover handled by Longhorn HA volume rebind to a new node (~30-60s recovery time)
+- Per-tenant client workloads (separate per-tenant storage tier — see
+  `NODE_OUTAGE_RESILIENCE.md` §2 for how a tenant degrades on node loss)
+- **The mail stack.** Stalwart and Bulwark are **Deployments** (not a
+  StatefulSet) on a **`local-path`** PVC (not Longhorn), so the volume cannot
+  rebind to another node. Failover is the restore-based state machine in
+  `MAIL_HA_FAILOVER.md` — measured at **~4 min** on staging, not 30-60s. An
+  earlier version of this table described a StatefulSet recovering via
+  "Longhorn HA volume rebind"; both halves were wrong.
 - Redis was removed in M14 — replaced by per-pod in-memory LRU. No HA concern.
 - ingress-nginx — already a DaemonSet (one pod per node)
 - etcd — already 3-server quorum from bootstrap
@@ -105,7 +126,7 @@ Run via `make smoke` after any Apply HA / Revert to Local action.
 
 ## Why not also do stalwart-mail / redis / k3s
 
-- **stalwart-mail**: clustering across pods isn't validated for our deployment. Active-active over RWX risks mailbox state corruption. Single-replica + Longhorn HA volume + automatic pod reschedule gives ~30-60s mail downtime on node failure — acceptable for a small platform; revisit when stalwart >0.10 cluster mode is mature.
+- **stalwart-mail**: clustering across pods isn't validated for our deployment. Active-active over RWX risks mailbox state corruption. The stack is a single replica on a node-pinned `local-path` PVC, so recovery is the restore-based failover in `MAIL_HA_FAILOVER.md` (measured ~4 min on staging, with a ~3 min failback), NOT a volume rebind. Revisit when stalwart >0.10 cluster mode is mature.
 - **redis**: removed in M14. The previous use was a per-pod TTL cache; `lru-cache` in-memory replaces it. No HA concern.
 - **k3s control plane**: already 3-server etcd quorum from bootstrap. No further action.
 

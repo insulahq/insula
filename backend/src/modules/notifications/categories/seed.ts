@@ -287,6 +287,16 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
     gdprBasis: 'legitimate_interest',
   },
   {
+    id: 'admin.tenant_auto_repinned',
+    displayName: 'Tenant automatically re-pinned',
+    description: 'An HA-tier tenant was pinned to a node that went offline. Because its data has a replica on a healthy node, the platform cleared the pin so the tenant could reschedule. Local-tier tenants are never moved automatically.',
+    audience: 'admin',
+    defaultSeverity: 'warning',
+    defaultChannels: ALL_NOTIFICATION_CHANNELS,
+    isMandatory: false,
+    gdprBasis: 'legitimate_interest',
+  },
+  {
     id: 'admin.node_rebooting',
     displayName: 'Node rebooting',
     description: 'A cluster node has begun shutting down. On a single-node cluster the control plane goes down with it, so this cannot always be sent — the startup notification reports the reboot either way.',
