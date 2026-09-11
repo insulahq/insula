@@ -20,6 +20,7 @@
  */
 
 import { eq, and, sql } from 'drizzle-orm';
+import { NODE_SHUTDOWN_POD_REASONS } from '../../lib/container-termination.js';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { auditLogs } from '../../db/schema.js';
@@ -67,6 +68,9 @@ interface RawPod {
     readonly name?: string;
     readonly namespace?: string;
     readonly labels?: Record<string, string>;
+    /** Needed by the node-shutdown arm: a controller-owned pod has already
+     *  been replaced, a bare one has not. */
+    readonly ownerReferences?: ReadonlyArray<{ readonly controller?: boolean }>;
   };
   readonly spec?: { readonly nodeName?: string };
   readonly status?: {
@@ -238,8 +242,16 @@ export async function recyclePod(input: {
  * delete, and a modal offering to clean 3 pods that then removes 0 (or refuses
  * a node that does have them) is worse than not offering it at all.
  *
- * Refuses tenant namespaces and CNPG instances even when Failed — those are
- * not disposable records.
+ * TWO ARMS, deliberately different in scope:
+ *
+ *   1. Node-shutdown debris the kubelet stamped itself (`status.reason` of
+ *      `Terminated` / `NodeShutdown`) on a controller-owned pod in a terminal
+ *      phase — allowed in ANY namespace, tenants included. These are pure
+ *      records whose replacement already exists.
+ *   2. Everything else — Failed/Evicted/Unknown-state — stays restricted to
+ *      SAFE_NAMESPACES and still refuses `tenant-*`.
+ *
+ * CNPG Postgres instance pods are refused under both arms, even when Failed.
  */
 export function selectStalePodTargets(
   pods: ReadonlyArray<RawPod>,
@@ -249,17 +261,48 @@ export function selectStalePodTargets(
     const ns = pod.metadata?.namespace ?? '';
     const name = pod.metadata?.name ?? '';
     if (!ns || !name) continue;
-    if (ns.startsWith('tenant-')) continue;
-    if (!SAFE_NAMESPACES.has(ns)) continue;
+    // A CNPG Postgres INSTANCE pod is never a disposable record, in any
+    // namespace and under either arm below.
     if (isStatefulCnpgInstance(pod)) continue;
 
     const phase = pod.status?.phase ?? '';
     const reasonStr = pod.status?.reason ?? '';
-    const hasUnknownState = (pod.status?.containerStatuses ?? []).some(
-      (cs) => cs.state?.unknown !== undefined,
-    );
-    const isStale = phase === 'Failed' || reasonStr === 'Evicted' || hasUnknownState;
-    if (!isStale) continue;
+
+    // ── Arm 1: node-shutdown debris, allowed in ANY namespace ──
+    //
+    // The kubelet stamped these itself — `Terminated` ("Pod was terminated in
+    // response to imminent node shutdown") or `NodeShutdown` ("Pod was rejected
+    // as the node is shutting down"). They are pure records: the pod is in a
+    // terminal phase and its controller has already created the replacement.
+    //
+    // Deliberately NOT subject to the tenant-namespace refusal or the
+    // SAFE_NAMESPACES allow-list below. Production carried 17 of these across
+    // four reboots and five were unclearable from the UI — four in `tenant-*`
+    // and one in `mail`, which is simply absent from that list. Nothing about a
+    // reboot casualty is namespace-specific, and leaving them is what fed the
+    // false tenant OOM alerts (see lib/container-termination.ts).
+    //
+    // Requiring a controller owner is what keeps this safe: a bare pod has no
+    // replacement, so deleting it would destroy the only record of it.
+    const ownedByController = (pod.metadata?.ownerReferences ?? [])
+      .some((ref) => ref.controller);
+    const isShutdownDebris = phase === 'Failed'
+      && NODE_SHUTDOWN_POD_REASONS.includes(reasonStr)
+      && ownedByController;
+
+    if (!isShutdownDebris) {
+      // ── Arm 2: the original, deliberately narrow rule ──
+      // Anything that is NOT kubelet-attributed reboot debris still has to earn
+      // its way in: platform namespaces only, never a tenant's.
+      if (ns.startsWith('tenant-')) continue;
+      if (!SAFE_NAMESPACES.has(ns)) continue;
+
+      const hasUnknownState = (pod.status?.containerStatuses ?? []).some(
+        (cs) => cs.state?.unknown !== undefined,
+      );
+      const isStale = phase === 'Failed' || reasonStr === 'Evicted' || hasUnknownState;
+      if (!isStale) continue;
+    }
 
     targets.push({ ns, name, node: pod.spec?.nodeName ?? '' });
   }
