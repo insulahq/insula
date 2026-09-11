@@ -42,6 +42,16 @@ export interface PodFact {
 export interface ReplicaFact {
   readonly volumeName: string;
   readonly nodeId: string | null;
+  /**
+   * Longhorn `status.currentState === 'running'`.
+   *
+   * A replica that merely EXISTS is not a copy of the data. When a node dies,
+   * Longhorn schedules a fresh replica on a survivor and starts rebuilding into
+   * it — that object appears on a live node immediately while holding nothing.
+   * Counting it as a surviving copy is how a tenant whose only real replica
+   * just died gets reported as "rebuilding, no action required".
+   */
+  readonly running: boolean;
 }
 
 export interface VolumeFact {
@@ -99,6 +109,15 @@ function worstState(findings: ReadonlyArray<TenantHealthFinding>): TenantHealthS
  *
  * Exported for focused unit tests of the degradation matrix.
  */
+/** Nodes holding a RUNNING replica of `volumeName` that are still up. */
+function liveRunningReplicaNodes(
+  volumeName: string,
+  byVolumeRunning: Map<string, string[]>,
+  downNodeNames: ReadonlySet<string>,
+): string[] {
+  return (byVolumeRunning.get(volumeName) ?? []).filter((n) => !downNodeNames.has(n));
+}
+
 export function findingsForTenant(
   tenant: TenantFact,
   input: OutageInput,
@@ -126,10 +145,16 @@ export function findingsForTenant(
   // ── Storage: volumes whose only replica is on a dead node ───────
   const nsVolumes = input.volumes.filter((v) => v.namespace === tenant.namespace);
   const byVolume = new Map<string, string[]>();
+  const byVolumeRunning = new Map<string, string[]>();
   for (const r of input.replicas) {
     const list = byVolume.get(r.volumeName) ?? [];
     if (r.nodeId) list.push(r.nodeId);
     byVolume.set(r.volumeName, list);
+    if (r.nodeId && r.running) {
+      const running = byVolumeRunning.get(r.volumeName) ?? [];
+      running.push(r.nodeId);
+      byVolumeRunning.set(r.volumeName, running);
+    }
   }
 
   const stranded: string[] = [];
@@ -137,9 +162,16 @@ export function findingsForTenant(
   const rebuilding: string[] = [];
   for (const v of nsVolumes) {
     const replicaNodes = byVolume.get(v.volumeName) ?? [];
-    const live = replicaNodes.filter((n) => !downNodeNames.has(n));
+    // A live copy means a RUNNING replica on a live node. An empty
+    // rebuild target that Longhorn just scheduled is on a live node but
+    // holds no data, and treating it as a survivor turns "your data is on
+    // the dead node" into "rebuilding, no action required" — the single
+    // most reassuring thing the platform could wrongly say. Observed on
+    // staging 2026-09-11 for a one-replica local-tier volume, which can
+    // never rebuild because the only source is the node that died.
+    const live = liveRunningReplicaNodes(v.volumeName, byVolumeRunning, downNodeNames);
     const dead = replicaNodes.filter((n) => downNodeNames.has(n));
-    if (replicaNodes.length > 0 && live.length === 0) {
+    if (v.robustness === 'faulted' || (replicaNodes.length > 0 && live.length === 0)) {
       // Every replica is on a downed node: the data is unreachable until a
       // node returns or the tenant is restored from a bundle.
       stranded.push(v.pvcName ?? v.volumeName);
