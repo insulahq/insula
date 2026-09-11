@@ -12,9 +12,188 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **A node going offline is now impossible to miss, and tells you who it
+  hurts.** Previously the only page that showed a node outage was Cluster →
+  Nodes; the dashboard you actually land on reported *"Platform: Healthy"*
+  throughout. A red banner now appears on **every** admin page within about 30
+  seconds, naming the offline node, with an **"N tenants affected"** button
+  that opens exactly which tenants are hurting, what is wrong with each, and
+  what to do about it. The platform's own health check now reads node
+  readiness rather than merely asking whether Kubernetes answers the phone.
+
+- **Tenants now show whether they are actually serving.** The tenant list only
+  ever showed lifecycle status — *Active*, *Suspended* — so a tenant whose only
+  copy of its data had been stranded on a dead node still read "Active". A
+  tenant that is impaired now shows **Degraded** or **Down**, and clicking it
+  explains which part is broken. Sites and mail are reported separately,
+  because a tenant can lose one and keep the other, and the fix differs.
+
+- **A guided recovery wizard for degraded tenants.** Every recovery step
+  already existed; nothing connected *"this tenant is down"* to *"press this"*.
+  The wizard shows what is wrong, offers only the actions that apply, and asks
+  you to type the tenant's name before acting. Moving a tenant to a healthy
+  node it does for you. Restoring data from a backup it deliberately does not —
+  that is destructive and stays on the backups page.
+
+- **Tenants on the HA storage tier recover from a node loss on their own.** If
+  such a tenant was pinned to a node that goes offline, the pin outlived the
+  node and kept the tenant down even though a full copy of its data was sitting
+  on a healthy node. That pin is now cleared automatically and you are told.
+  Tenants on the local tier are never moved automatically — their only copy of
+  the data is on the offline node, so moving them would recover nothing.
+
+- **Old copies of the mail store are cleaned up.** Because mail lives on one
+  node's local disk, each failover leaves the previous copy behind on the node
+  it left. Nothing removed them, so they accumulated for as long as the cluster
+  had been running — on a large mailbox store each failover permanently
+  consumed another full copy of it. They are now removed after 48 hours. The
+  copy currently serving mail is never touched.
+
+- **A warning when mail cannot fail over.** Turning on automatic mail failover
+  stays your decision — it recreates the mail volume, so the platform will not
+  do it behind your back. But if the platform is running in HA mode while mail
+  failover is switched off or has no standby node configured, a banner now says
+  so, because in that state losing the mail node means mail stays down until
+  somebody notices.
+- **Two more logs now get cleaned up on a schedule.** The CrowdSec auto-ban
+  record and the SFTP access log were kept forever — nothing anywhere deleted
+  them. Both are now trimmed to **90 days**, in line with the other logs the
+  platform keeps. Neither is large day to day, but the auto-ban record is
+  bursty: a single scanner run against one server wrote 1,391 entries in one
+  day, against 3–23 on a normal day.
+
+- **You now get told when a node reboots, and when it has finished booting.**
+  Previously a server restart produced no notification at all — the only thing
+  that arrived was a burst of misleading OOM alerts (fixed below), so the real
+  event was invisible and the noise was wrong. Two new notification types, both
+  naming the node: *Node rebooting* and *Node startup complete*, the latter
+  reporting roughly how long the node was down.
+
+  One honest limitation, stated in the notification itself: on a single-node
+  cluster the control plane goes down **with** the node, so the platform usually
+  cannot announce its own shutdown as it happens. In that case only the startup
+  notification arrives, and it says so — it still tells you the node rebooted
+  and for how long it was gone. On a multi-node cluster both arrive.
+
+- **Dead pod records left behind by a reboot are now cleaned up on their own.**
+  A node restart leaves behind pod records that no longer exist — Kubernetes
+  keeps up to 12,500 of them before it starts tidying, so in practice they piled
+  up for months. One production reboot left 822 of them; after an earlier fix,
+  20 per reboot. They are now removed automatically half an hour after the
+  reboot, which is late enough that you can still see what the restart killed.
+  Only records the kubelet itself marked as reboot casualties are touched —
+  never a running workload, and never a database pod.
+
+### Fixed
+- **A single backup-plugin pod could take the whole database offline.** The
+  component that ships PostgreSQL backups ran as one copy with no spare, and
+  the database operator refuses to do anything at all — including promoting a
+  new primary — while it cannot reach that component. Losing the one server
+  running it therefore took the platform database *and* the entire admin panel
+  down until Kubernetes noticed and moved the pod, measured at about six and a
+  half minutes. It now runs with a standby alongside the operator it serves.
+
+- **Webmail reported losing your data every time it successfully restored it.**
+  After a mail failover, the webmail component wrote a "started with empty
+  data" marker even when the restore had worked perfectly — and nothing in the
+  platform ever read that marker, so a genuine reset a month earlier had gone
+  unnoticed while the migration that caused it was recorded as successful. The
+  false alarm is fixed, and both mail components' markers are now checked after
+  every migration.
+
+- **Recovering mail from a dead node no longer stalls for five minutes.**
+  Starting a mail failover away from an offline node made the platform wait for
+  a backup it could never take, with mail already stopped, before continuing.
+  It now skips that step when the node is gone, which is what the automatic
+  path already did.
+
+- **Standby copies of the mail store are kept in the right places.** They were
+  being written to the node already running mail — copying from itself — while
+  the node you would fail *back* to had nothing recent, making every failback
+  take the slow path. They now go to every configured node except the one
+  currently serving mail.
+
+- **One node going down produced two notifications, one of them mislabelled.**
+  A node dropping out sent both a correct critical alert and a duplicate marked
+  merely informational, and neither title named the node. Now one alert, with
+  the right severity and the node's name in it.
+
+- **An offline node no longer displays live-looking statistics.** Its CPU,
+  memory and pod counts stopped updating but were shown as current; the card
+  now says the node is not reporting. Its ingress badge is struck through as a
+  reminder that traffic is still being sent to an address that cannot answer —
+  Insula does not manage DNS, so removing that record is still your call.
+
+- **Deleting a node cleans up after itself**, removing its storage-system
+  record and clearing any mail placement setting that pointed at it, so the
+  mail settings can no longer name a machine that no longer exists.
+- **The "Recover…" button now appears when there is something to clean up.** It
+  only showed on a server already flagged as unhealthy — but the most common
+  thing needing cleanup is leftover pod records from a restart, which leave the
+  server perfectly healthy. So the button stayed hidden and there was no way to
+  clear them from the panel at all. Production had accumulated 17 such records
+  across four restarts.
+
+- **Restart leftovers can now be cleared in every namespace, including your
+  customers'.** The cleanup refused customer namespaces and anything not on a
+  fixed internal list, which left 5 of those 17 permanently stuck. Records the
+  server itself marks as restart casualties are now clearable wherever they are
+  — their replacement is already running. Everything else keeps the old, narrow
+  rule, and database pods are never touched.
+
+- **Removed a CrowdSec cleanup job that had never once worked.** It was
+  scheduled daily and had failed on every single run since the server was
+  built, leaving a failed job behind each day. The command it ran used an
+  option CrowdSec does not have, so it could never have succeeded — and it was
+  not needed in the first place: CrowdSec already trims its own alert table
+  (7 days / 5,000 entries). That limit is now written explicitly by the
+  platform rather than relying on CrowdSec's built-in default, so it cannot
+  change quietly under you when the software is updated.
+
+- **A slow-starting service is no longer reported as running out of memory.**
+  When a container is slow to answer its health check after a restart,
+  Kubernetes kills and restarts it — and the platform was reporting that as a
+  **critical** "node memory event". Caught on a real test-cluster reboot: two
+  CrowdSec containers, slow to answer `/health` on a cold boot, were reported
+  as memory incidents while the kernel had recorded no out-of-memory kill at
+  all. Kubernetes says plainly why it killed them ("failed liveness probe"), and
+  the platform now takes it at its word instead of guessing at memory.
+
+- **A node reboot no longer reports your tenants' workloads as out of memory.**
+  Restarting a server sent admins a burst of alerts claiming tenant containers
+  had been "OOM-killed", including three named tenants by name. None of it was
+  true: nothing ran out of memory, the node had 8 GB free and had never been
+  under memory pressure, and the kernel recorded no out-of-memory kills at all.
+
+  The cause: when a node shuts down, anything that does not stop promptly is
+  force-killed, and a force-kill looks identical to an out-of-memory kill if you
+  only read the exit code. The platform reads the kubelet's own explanation now
+  — it records that the pod was "terminated in response to imminent node
+  shutdown" — and stays quiet for those.
+
+  Genuine out-of-memory kills are still reported, including the awkward kind the
+  kubelet labels only as a generic error. Where that has to be inferred rather
+  than confirmed, the alert now says so plainly instead of asserting an OOM, so
+  you are never sent to raise a memory limit on a container that was nowhere
+  near it.
+
+- **"No pending kernel update" now actually checks.** The Node Hardening tab
+  always showed this as satisfied, on every node, because nothing ever worked
+  out whether a newer kernel was waiting. It now compares the kernel your node
+  is running against the newest one installed on disk, so a node that has
+  picked up a kernel update and is still running the old one is flagged until
+  you restart it. This matters more since the platform began installing
+  security updates on its own: it never reboots your node, so a new kernel can
+  sit there unused indefinitely.
+
 ## [2026.9.18-rc.5] - 2026-09-11
 
+Re-cut of rc.3 with no code changes — see the rc.3 notes below.
+
 ## [2026.9.18-rc.4] - 2026-09-11
+
+Re-cut of rc.3 with no code changes — see the rc.3 notes below.
 
 ## [2026.9.18-rc.3] - 2026-09-11
 
