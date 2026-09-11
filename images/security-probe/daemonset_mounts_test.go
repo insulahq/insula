@@ -30,15 +30,15 @@ func TestDaemonSetMountsEveryPathTheAutoUpdateCheckReads(t *testing.T) {
 	yaml := string(b)
 
 	var missing []string
-	for _, p := range hostPathsForAutoUpdateCheck {
+	for _, p := range hostPathsReadByHardeningChecks {
 		want := "mountPath: /host/" + p
 		if !strings.Contains(yaml, want) {
 			missing = append(missing, p)
 		}
 	}
 	if len(missing) > 0 {
-		t.Fatalf("host path(s) read by unattendedUpgradesActive but NOT mounted by the DaemonSet: %v\n"+
-			"Each one reads as absent in the container, so HARDEN-002 reports false on every node.\n"+
+		t.Fatalf("host path(s) read by a hardening check but NOT mounted by the DaemonSet: %v\n"+
+			"Each one reads as absent in the container, so the check reports false on every node.\n"+
 			"Add a readOnly hostPath mount at /host/<path> (type: DirectoryOrCreate — the path is\n"+
 			"per-distro and `Directory` would crashloop the DaemonSet on the other half of the matrix).",
 			missing)
@@ -48,19 +48,19 @@ func TestDaemonSetMountsEveryPathTheAutoUpdateCheckReads(t *testing.T) {
 // Non-vacuity: if the declared list were ever emptied, the loop above would pass
 // trivially. Pin that it actually covers the paths the apt and dnf branches use.
 func TestAutoUpdatePathListIsNotEmpty(t *testing.T) {
-	if len(hostPathsForAutoUpdateCheck) == 0 {
-		t.Fatal("hostPathsForAutoUpdateCheck is empty — the mount guard would pass trivially")
+	if len(hostPathsReadByHardeningChecks) == 0 {
+		t.Fatal("hostPathsReadByHardeningChecks is empty — the mount guard would pass trivially")
 	}
 	for _, needed := range []string{"etc/apt/apt.conf.d", "etc/systemd/system/timers.target.wants"} {
 		found := false
-		for _, p := range hostPathsForAutoUpdateCheck {
+		for _, p := range hostPathsReadByHardeningChecks {
 			if p == needed {
 				found = true
 				break
 			}
 		}
 		if !found {
-			t.Fatalf("%s is read by the apt branch but missing from hostPathsForAutoUpdateCheck", needed)
+			t.Fatalf("%s is read by a hardening check but missing from hostPathsReadByHardeningChecks", needed)
 		}
 	}
 }

@@ -12,6 +12,16 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **"No pending kernel update" now actually checks.** The Node Hardening tab
+  always showed this as satisfied, on every node, because nothing ever worked
+  out whether a newer kernel was waiting. It now compares the kernel your node
+  is running against the newest one installed on disk, so a node that has
+  picked up a kernel update and is still running the old one is flagged until
+  you restart it. This matters more since the platform began installing
+  security updates on its own: it never reboots your node, so a new kernel can
+  sit there unused indefinitely.
+
 ## [2026.9.17] - 2026-09-11
 
 ### Security

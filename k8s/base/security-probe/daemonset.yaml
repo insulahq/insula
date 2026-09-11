@@ -183,6 +183,15 @@ spec:
             - name: usr-lib-systemd-timers-wants
               mountPath: /host/usr/lib/systemd/system/timers.target.wants
               readOnly: true
+            # KERNEL-002: one directory per installed kernel. Compared against
+            # /proc/sys/kernel/osrelease to tell whether a reboot would change
+            # the running kernel. NOT /var/run/reboot-required — that file is
+            # empty (so a FileOrCreate mount is indistinguishable from the real
+            # flag) and reading it without creating it means mounting /run,
+            # which holds credentials/ and secrets/.
+            - name: usr-lib-modules
+              mountPath: /host/usr/lib/modules
+              readOnly: true
             - name: etc-hosting-platform
               mountPath: /host/etc/hosting-platform
               readOnly: true
@@ -253,6 +262,10 @@ spec:
         - name: usr-lib-systemd-timers-wants
           hostPath:
             path: /usr/lib/systemd/system/timers.target.wants
+            type: DirectoryOrCreate
+        - name: usr-lib-modules
+          hostPath:
+            path: /usr/lib/modules
             type: DirectoryOrCreate
         - name: etc-hosting-platform
           hostPath:
