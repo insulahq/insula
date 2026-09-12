@@ -114,6 +114,13 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   never a running workload, and never a database pod.
 
 ### Fixed
+- **Backup storage figures are now measured in the background.** Adding up
+  what an archive holds means listing every stored file through the storage
+  gateway, which takes minutes on a real archive — so the page used to wait,
+  time out, and tell you it could not measure. The measurement now runs behind
+  the scenes and the page shows the figure with its age ("measured 20 minutes
+  ago"), refreshing it quietly. Nothing on the page waits on it.
+
 - **A rebooted server could not rejoin the cluster.** The firewall restores its
   rules at boot but not their dynamic contents, and the list of cluster peers is
   dynamic — so a node came back with an empty peer list, silently refused every
