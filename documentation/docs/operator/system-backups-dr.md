@@ -69,6 +69,25 @@ with its age — *"8.85 GiB · measured 20 minutes ago"*. It refreshes on its ow
 nothing on the page waits for it. A figure ending in *"or more"* means the count
 was cut short by its time budget and is a floor, not a total.
 
+!!! danger "One missing log segment caps how far a restore can go"
+    Recovery replays the write-ahead log **in order**. Postgres asks the archive
+    for the next segment, and if it is not there, replay stops — it does not skip
+    the hole and continue. So a single absent segment makes every later point in
+    time unreachable, no matter how much log was kept afterwards, and a restore
+    aimed past it fails partway through with *"recovery ended before configured
+    recovery target was reached"*.
+
+    The platform checks the chain while it measures the archive. If segments are
+    missing you get a red notice naming how many and the **last point a restore
+    can actually reach**, the restorable window on the card ends at that point
+    rather than at *now*, and the restore wizard refuses to start a restore aimed
+    past it.
+
+    If the archive listing could not finish, the page says the chain **could not
+    be checked** — that is not the same as saying it is intact, and the wizard
+    warns rather than blocks, because refusing a restore on an unproven suspicion
+    during an incident is its own failure.
+
 Turning offsite backups **off** stops both. There is no way to keep base backups
 while stopping the log, because such a backup could not be restored.
 
