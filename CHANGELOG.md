@@ -12,8 +12,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.9.18-rc.8] - 2026-09-12
-
 ### Added
 - **A node outage now says when it took a platform service with it.** The
   banner reported "No tenant impact detected" during an outage in which backups

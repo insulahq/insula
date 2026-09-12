@@ -402,6 +402,13 @@ function StatusGrid({ cluster }: { readonly cluster: WalArchiveCluster }) {
   const wal = archive.walSummary;
   const gaps = wal?.gaps ?? [];
   const chainBroken = gaps.length > 0 && !wal?.continuityInconclusive;
+  // "We do not know whether the chain is intact" has TWO sources: a walk that
+  // finished but was cut short, and a walk that failed outright. The second was
+  // silent — on DEV, where the storage target cannot be listed at all, the card
+  // said nothing about the log chain while implying the window was simply
+  // unknown for storage reasons. Both must say the same thing: unverified.
+  const chainUnknown = !chainBroken && archive.walState !== 'loading'
+    && (archive.walState === 'error' || Boolean(wal?.continuityInconclusive));
   const ceilingIso = chainBroken ? wal?.continuousUntil ?? null : null;
   const missingSegments = gaps.reduce((n, g) => n + g.missingCount, 0);
 
@@ -425,8 +432,12 @@ function StatusGrid({ cluster }: { readonly cluster: WalArchiveCluster }) {
   // archive, and saying "nothing restorable yet" there would be a lie about the
   // operator's disaster-recovery position.
   const listingInconclusive = archive.basePartial && archive.backupCount === 0;
+  // "→ now" is a PROMISE that every log segment between the base backup and now
+  // is present. When the chain could not be checked, the claim has to carry its
+  // own caveat — a qualification sitting in a separate box above it is read as
+  // being about something else.
   const windowValue = floor
-    ? `${new Date(floor).toLocaleString()} → ${windowEnd}${windowDays !== null ? ` · ${windowDays} day${windowDays === 1 ? '' : 's'}` : ''}`
+    ? `${new Date(floor).toLocaleString()} → ${windowEnd}${windowDays !== null ? ` · ${windowDays} day${windowDays === 1 ? '' : 's'}` : ''}${chainUnknown ? ' — if no log segments are missing' : ''}`
     : archive.baseState === 'loading'
       ? 'reading the archive…'
       : archive.baseState === 'error'
@@ -440,6 +451,12 @@ function StatusGrid({ cluster }: { readonly cluster: WalArchiveCluster }) {
   // reasonable time (DEV 2026-09-12: rclone itself could not list the prefix in
   // 25s). When that happens we still know the base copies exactly, so we show
   // that and say what is missing instead of throwing the whole cell away.
+  // "Not counted yet" and "could not be counted" are different statements and
+  // the cell used to make the second one while the walk was still running:
+  // seen on DEV rendering "could not be listed in time" during an in-progress
+  // measurement. Only a walk that actually FAILED earns that verdict.
+  const walPending = archive.walState === 'loading';
+  const walFailed = archive.walState === 'error';
   const baseOnly = baseBytes !== null && walBytes === null;
   const storageValue = totalBytes !== null
     ? `${formatBytes(totalBytes)}${archive.walSummary?.truncated || archive.basePartial ? ' or more' : ''}${baseOnly ? ' (base copies only)' : ''}`
@@ -450,7 +467,11 @@ function StatusGrid({ cluster }: { readonly cluster: WalArchiveCluster }) {
   const storageSub = totalBytes === null
     ? undefined
     : baseOnly
-      ? 'log volume not counted — this storage target could not be listed in time'
+      ? (walPending
+        ? 'log volume still being measured — this can take a few minutes'
+        : walFailed
+          ? 'log volume not counted — this storage target could not be listed in time'
+          : 'log volume not counted')
       : `${baseBytes !== null ? formatBytes(baseBytes) : '—'} base copies · ${
         walBytes !== null ? formatBytes(walBytes) : '—'} log${
         archive.walSummary ? ` (${archive.walSummary.segmentCount}${archive.walSummary.truncated ? '+' : ''} segments)` : ''}${
@@ -483,7 +504,7 @@ function StatusGrid({ cluster }: { readonly cluster: WalArchiveCluster }) {
         </div>
       </div>
     )}
-    {wal?.continuityInconclusive && wal.state !== 'measuring' && (
+    {chainUnknown && (
       <div
         className="flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-900/20 dark:text-amber-200"
         data-testid={`pg-wal-gap-unknown-${cluster.clusterName}`}
