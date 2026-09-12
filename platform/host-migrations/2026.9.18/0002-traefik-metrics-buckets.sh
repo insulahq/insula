@@ -8,8 +8,9 @@
 #   already applied and skips, and a racing `helm upgrade` with identical
 #   values is a no-op release.
 # allow-paths: none — operates solely on the cluster via helm + the node
-#   kubeconfig. Writes no managed host files (helm refreshes its own
-#   $HOME/.cache/helm + $HOME/.config/helm repo metadata, which are caches).
+#   kubeconfig. Writes no managed host files: helm's cache/config/data dirs are
+#   redirected to a private mktemp -d under the unit's PrivateTmp and removed on
+#   EXIT, because ProtectHome=yes makes the default $HOME/.config unwritable.
 # blocks-on-failure: no     # ADR-056: metrics resolution only. If this fails,
 #   Traefik keeps its default buckets and every SLO rule still evaluates —
 #   `platform-latency-slow-share` deliberately keys on le="1.2", an edge that
@@ -74,6 +75,30 @@ for h in helm /usr/local/bin/helm; do
   if command -v "$h" >/dev/null 2>&1; then HELM="$h"; break; fi
 done
 [ -n "$HELM" ] || { echo "traefik-metrics-buckets: helm not found on PATH — skipping." >&2; exit 0; }
+
+# --- give helm a WRITABLE home ----------------------------------------------
+# The converge unit runs with ProtectHome=yes, so /root is mounted read-only,
+# and the runner hands migrations a clean env whose HOME is /root. helm creates
+# $HOME/.config/helm and $HOME/.cache/helm on essentially every invocation, so
+# it dies before doing anything:
+#
+#   Error: mkdir /root/.config: read-only file system
+#
+# Measured on staging 2026-09-12: this failed the migration on its first real
+# run. The unit sets PrivateTmp=yes, so /tmp is private and writable — point
+# HOME and every HELM_*_HOME at a temp dir there. Verified under a systemd-run
+# sandbox with the same ProtectHome/PrivateTmp properties: identical helm
+# command fails with HOME=/root and succeeds with the redirect.
+#
+# Not merely cosmetic for `helm repo add`, which the script tolerates with
+# `|| true` — `helm upgrade` below is NOT tolerated and runs under `set -e`.
+HELM_HOME_DIR="$(mktemp -d)"
+trap 'rm -rf "$HELM_HOME_DIR"' EXIT
+export HOME="$HELM_HOME_DIR"
+export HELM_CACHE_HOME="$HELM_HOME_DIR/cache"
+export HELM_CONFIG_HOME="$HELM_HOME_DIR/config"
+export HELM_DATA_HOME="$HELM_HOME_DIR/data"
+mkdir -p "$HELM_CACHE_HOME" "$HELM_CONFIG_HOME" "$HELM_DATA_HOME"
 
 "$HELM" repo add traefik https://traefik.github.io/charts 2>/dev/null || true
 "$HELM" repo update traefik >/dev/null 2>&1 || "$HELM" repo update >/dev/null 2>&1 || true
