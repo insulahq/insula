@@ -14,8 +14,16 @@
 -- outright makes the operator's override a deliberate re-entry rather than a
 -- silent misreading.
 --
--- A stale `monitoring_alert_state` row would also leave a firing alert with no
--- rule behind it: the evaluator only resolves subjects it re-queries, so the
--- row (and the Active Alerts entry it drives) would never clear.
+-- A stale `alert_state` row would also leave a firing alert with no rule behind
+-- it: the evaluator only resolves subjects it re-queries, so the row (and the
+-- Active Alerts entry it drives) would never clear. DEV had exactly one such
+-- row for this rule id.
+--
+-- The table is `alert_state`, NOT `monitoring_alert_state` — the Drizzle symbol
+-- is `alertState` but the mapped name is unprefixed (schema.ts: `pgTable
+-- ('alert_state', …)`), unlike its siblings `monitoring_rule_overrides` and
+-- `monitoring_evaluator_lease`. The first version of this migration guessed the
+-- prefixed name, which made every boot fail on 42P01 and crash-looped
+-- platform-api. Check the pgTable() literal, never the export identifier.
 DELETE FROM monitoring_rule_overrides WHERE rule_id = 'api-latency-p95';--> statement-breakpoint
-DELETE FROM monitoring_alert_state WHERE rule_id = 'api-latency-p95';
+DELETE FROM alert_state WHERE rule_id = 'api-latency-p95';
