@@ -29,7 +29,6 @@ set -euo pipefail
 
 CONF=/etc/nftables.conf
 DROPIN_DIR=/etc/nftables.d
-INCLUDE_LINE='include "/etc/nftables.d/*.conf"'
 
 mkdir -p "$DROPIN_DIR"
 
