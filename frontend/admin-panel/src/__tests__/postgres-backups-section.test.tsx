@@ -268,6 +268,17 @@ describe('Status block — what the archive holds', () => {
     expect(await screen.findByTestId('pg-base-system-db')).toHaveTextContent(/timed out before any were read/);
   });
 
+  it('says the log is still being measured, not that it failed, while the walk runs', async () => {
+    // Seen on DEV: the cell asserted "could not be listed in time" during an
+    // IN-PROGRESS measurement. Not counted yet and could not be counted are
+    // different statements.
+    routeApi(ON, { walSummary: { ...WAL_SUMMARY, state: 'measuring', measuredAt: null } });
+    renderWith(<PostgresBackupsSection />);
+    const s = await screen.findByTestId('pg-storage-system-db');
+    await waitFor(() => expect(s).toHaveTextContent(/still being measured/));
+    expect(s.textContent).not.toMatch(/could not be listed/);
+  });
+
   it('still reports base copies when the log cannot be listed', async () => {
     // Some targets cannot enumerate the log prefix in any reasonable time —
     // rclone itself could not on DEV. Throwing away the base figure we DO have
@@ -354,6 +365,33 @@ describe('A broken WAL chain caps what can be restored', () => {
     renderWith(<PostgresBackupsSection />);
     const win = await screen.findByTestId('pg-window-system-db');
     await waitFor(() => expect(win).toHaveTextContent(/→ now/));
+    expect(screen.queryByTestId('pg-wal-gap-warning-system-db')).toBeNull();
+  });
+
+  it('qualifies the restore window itself when the chain is unverified', async () => {
+    // A caveat in a separate box reads as being about something else. The claim
+    // carries its own condition.
+    routeApi(ON, { walSummary: 'reject' });
+    renderWith(<PostgresBackupsSection />);
+    const w = await screen.findByTestId('pg-window-system-db');
+    await waitFor(() => expect(w).toHaveTextContent(/if no log segments are missing/));
+  });
+
+  it('does not qualify the window when the chain IS verified', async () => {
+    routeApi(ON);
+    renderWith(<PostgresBackupsSection />);
+    const w = await screen.findByTestId('pg-window-system-db');
+    await waitFor(() => expect(w).toHaveTextContent(/→ now/));
+    expect(w.textContent).not.toMatch(/if no log segments are missing/);
+  });
+
+  it('says the chain is unverified when the archive read FAILED, not just when it was cut short', async () => {
+    // DEV's storage target cannot be listed at all. The card used to say nothing
+    // whatsoever about the log chain in that state — silence reads as "fine".
+    routeApi(ON, { walSummary: 'reject' });
+    renderWith(<PostgresBackupsSection />);
+    const u = await screen.findByTestId('pg-wal-gap-unknown-system-db');
+    expect(u).toHaveTextContent(/could not be checked for gaps/);
     expect(screen.queryByTestId('pg-wal-gap-warning-system-db')).toBeNull();
   });
 

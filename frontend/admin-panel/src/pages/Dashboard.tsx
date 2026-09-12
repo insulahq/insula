@@ -53,8 +53,8 @@ export default function Dashboard() {
   const { data: tenantsResp, isLoading: tenantsLoading } = useTenants({ limit: 5 });
   const { data: healthResp } = useHealth();
   const { data: statusResp } = usePlatformStatus();
-  const { data: podsResp } = usePods();
-  const { data: backupHealth } = useBackupHealth();
+  const { data: podsResp, isError: podsUnreadable } = usePods();
+  const { data: backupHealth, isError: backupsUnreadable } = useBackupHealth();
   // Show last 50 transitions; we filter in-flight client-side.
   const { data: lifecycleResp } = useLifecycleTransitions({ limit: 50, refetchInterval: 15_000 });
   // Pull a bigger window than the 24h slice so the count is accurate
@@ -161,16 +161,29 @@ export default function Dashboard() {
       {/* ── Incident stat cards ─────────────────────────────────── */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <div data-testid="stat-failed-pods">
+          {/*
+            A zero here means "nothing wrong" ONLY if the read succeeded. When
+            the cluster is unreadable the query errors, the list falls back to
+            empty, and the card would otherwise render a green "0 · all clear"
+            directly beneath an "unhealthy" banner — which is what the
+            2026-09-12 quorum-loss drill showed.
+          */}
           <StatCard
             title="Failed / Orphaned Pods"
-            value={podsNeedingAttention}
+            value={podsUnreadable ? '—' : podsNeedingAttention}
             subtitle={
-              podsNeedingAttention === 0
-                ? 'all clear'
-                : `${failedPods.length} failed · ${orphanedPods.length} orphaned`
+              podsUnreadable
+                ? 'cannot read pods — unknown, not zero'
+                : podsNeedingAttention === 0
+                  ? 'all clear'
+                  : `${failedPods.length} failed · ${orphanedPods.length} orphaned`
             }
             icon={ServerCrash}
-            accent={failedPods.length > 0 ? 'red' : orphanedPods.length > 0 ? 'amber' : 'green'}
+            accent={
+              podsUnreadable ? 'unknown'
+                : failedPods.length > 0 ? 'red'
+                  : orphanedPods.length > 0 ? 'amber' : 'green'
+            }
           />
         </div>
         <div data-testid="stat-5xx-alerts">
@@ -185,16 +198,22 @@ export default function Dashboard() {
         <div data-testid="stat-failing-backups">
           <StatCard
             title="Failing Backups"
-            value={failingBackups.length}
+            value={backupsUnreadable ? '—' : failingBackups.length}
             subtitle={
-              failingBackups.length > 0
-                ? `${failingBackups.length} failing, ${neverRunBackups.length} never-run`
-                : neverRunBackups.length > 0
-                  ? `${neverRunBackups.length} never run yet`
-                  : 'all healthy'
+              backupsUnreadable
+                ? 'cannot read backup health — unknown, not zero'
+                : failingBackups.length > 0
+                  ? `${failingBackups.length} failing, ${neverRunBackups.length} never-run`
+                  : neverRunBackups.length > 0
+                    ? `${neverRunBackups.length} never run yet`
+                    : 'all healthy'
             }
             icon={Archive}
-            accent={failingBackups.length > 0 ? 'red' : neverRunBackups.length > 0 ? 'amber' : 'green'}
+            accent={
+              backupsUnreadable ? 'unknown'
+                : failingBackups.length > 0 ? 'red'
+                  : neverRunBackups.length > 0 ? 'amber' : 'green'
+            }
           />
         </div>
         <div data-testid="stat-transitions">

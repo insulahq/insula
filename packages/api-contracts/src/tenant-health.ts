@@ -170,6 +170,21 @@ export const clusterOutageImpactSchema = z.object({
    * empty list is a claim, and a failed read must not make it.
    */
   readError: z.string().nullable(),
+  /**
+   * When `nodesDown` came from the platform's own inventory rather than a live
+   * cluster read, this is the oldest `last_seen_at` behind it. Null means the
+   * node list is live.
+   *
+   * The 2026-09-12 quorum-loss drill left the platform able to say *something
+   * is wrong* but not *which machine* — the node list is itself read from the
+   * API server, so losing the control plane lost the names too. The database
+   * survives that (its primary sat on the surviving node and served
+   * throughout), and the node-sync reconciler already persists node conditions
+   * to `cluster_nodes` every 60 s. So the names are recoverable; they are just
+   * a minute or two stale, and must be labelled as such rather than presented
+   * as current.
+   */
+  nodesAsOf: z.string().nullable(),
 });
 export type ClusterOutageImpact = z.infer<typeof clusterOutageImpactSchema>;
 
