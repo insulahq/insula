@@ -114,7 +114,7 @@ describe('rules keep the labels that identify what is broken', () => {
   });
 
   it('gives platform-wide rules no subject rather than an empty one', () => {
-    expect(describeSubject(ruleById('api-latency-p95')!, {})).toBeNull();
+    expect(describeSubject(ruleById('platform-latency-slow-share')!, {})).toBeNull();
   });
 
   it('keys subjects stably regardless of label order', () => {
@@ -160,5 +160,102 @@ describe('platform-migration registry alerting', () => {
     const r = ruleById('platform-migrations-pending');
     expect(r).toBeDefined();
     expect(r!.forSeconds).toBeGreaterThan(0); // tolerate a deploy in flight
+  });
+});
+
+describe('SLO_RULES — platform-surface latency (replaces api-latency-p95)', () => {
+  const rule = () => ruleById('platform-latency-slow-share')!;
+
+  it('retires the entrypoint-wide p95 rule outright', () => {
+    // Not renamed — RETIRED. Its threshold meant SECONDS and the replacement's
+    // means a RATIO, so an operator override carried across the rename would be
+    // silently reinterpreted (0.5s → "50% of requests slow", an alert that can
+    // never fire). Migration 0109 deletes the old rows for the same reason.
+    expect(ruleById('api-latency-p95')).toBeUndefined();
+    expect(rule()).toBeDefined();
+  });
+
+  it('scores only platform-owned surfaces, never tenant websites', () => {
+    // The defect that made the old rule unusable: 103 of 107 slow requests in
+    // the sampled production hour were ONE tenant's Nextcloud DAV sync, and the
+    // platform operator got paged for it.
+    const expr = rule().expr;
+    expect(expr).toContain('service=~"(platform|mail)-.*"');
+    // The entrypoint histogram aggregates every tenant site into one number and
+    // is what made that possible — this rule must not read it.
+    expect(expr).not.toContain('traefik_entrypoint_request_duration_seconds');
+  });
+
+  it('gates on an ABSOLUTE count of slow requests, not just the ratio', () => {
+    // Production serves a median of 6 requests per 30m to platform surfaces.
+    // Without a floor, 1 slow request out of 6 is a 16% ratio and clears any
+    // threshold — the same near-idle-denominator trap the availability rules
+    // grew a floor for.
+    expect(rule().expr).toMatch(/>=\s*\d+/);
+  });
+
+  it('reports an exactly-measurable value, not an interpolated percentile', () => {
+    // histogram_quantile() between two bucket edges is arithmetic, not
+    // measurement: the retired rule reported "615ms" from a bucket split that
+    // could only prove "somewhere in 0.3s..1.2s". A share-of-requests is exact.
+    expect(rule().expr).not.toContain('histogram_quantile');
+    expect(rule().unit).toBe('ratio');
+  });
+});
+
+describe('SLO_RULES — histogram bucket edges must exist', () => {
+  // Traefik's DEFAULT latency buckets. scripts/bootstrap.sh configures a wider
+  // set (a strict superset) and 2026.9.18/0002 backfills it, but a cluster that
+  // has not run that host-migration still exports only these.
+  //
+  // Selecting an `le` that a cluster does not export yields an EMPTY vector,
+  // which sums to nothing, which makes the rule silently unable to fire — a
+  // dead alert that looks configured. Every bucket edge a rule keys on must
+  // therefore be present in the default set.
+  const TRAEFIK_DEFAULT_BUCKET_EDGES = ['0.1', '0.3', '1.2', '5', '5.0', '+Inf'];
+
+  it('keys every le= selector on an edge present in Traefik\'s default buckets', () => {
+    const offenders: string[] = [];
+    for (const r of SLO_RULES) {
+      for (const m of r.expr.matchAll(/le="([^"]+)"/g)) {
+        if (!TRAEFIK_DEFAULT_BUCKET_EDGES.includes(m[1])) offenders.push(`${r.id}: le="${m[1]}"`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('actually inspects some le= selectors (the guard is not vacuous)', () => {
+    // An empty scan satisfies the assertion above trivially. Prove the pack
+    // contains at least one bucket selector for it to have checked.
+    const total = SLO_RULES.reduce((n, r) => n + [...r.expr.matchAll(/le="/g)].length, 0);
+    expect(total).toBeGreaterThan(0);
+  });
+});
+
+describe('SLO_RULES — ratios must not mix metric families', () => {
+  // Measured on DEV 2026-09-12: with the per-service `_bucket` series freshly
+  // created by a scrape-config change while `_count` had months of history,
+  // sum(rate(_bucket{le="1.2"}[30m])) exceeded sum(rate(_count[30m])) — rate()
+  // extrapolates a young series across a window it does not span. The
+  // difference went negative and the ratio evaluated to an empty vector: a rule
+  // that CANNOT FIRE, indistinguishable from a healthy one.
+  //
+  // Any rule dividing one histogram family by another is exposed to this. The
+  // le="+Inf" bucket is the same counter as _count by definition, so a
+  // same-family quotient is always well-defined and always in [0,1].
+  it('never divides a _count series by a _bucket series of the same metric', () => {
+    const offenders: string[] = [];
+    for (const r of SLO_RULES) {
+      if (!r.expr.includes('_bucket')) continue;
+      const base = /(\w+?)_bucket/.exec(r.expr)?.[1];
+      if (base && r.expr.includes(`${base}_count`)) {
+        offenders.push(`${r.id}: mixes ${base}_count with ${base}_bucket`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('checks at least one rule that uses buckets (the guard is not vacuous)', () => {
+    expect(SLO_RULES.filter((r) => r.expr.includes('_bucket')).length).toBeGreaterThan(0);
   });
 });

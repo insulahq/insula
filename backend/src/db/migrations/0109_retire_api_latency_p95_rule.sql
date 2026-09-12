@@ -1,0 +1,29 @@
+-- Retire the `api-latency-p95` SLO rule (2026-09-12).
+--
+-- The rule pack ships in code (monitoring/rules.ts), but two tables key rows to
+-- a rule id and would keep stale rows for one that no longer exists:
+-- `monitoring_rule_overrides` (operator threshold/enable overrides) and
+-- `monitoring_alert_state` (the per-subject firing state the evaluator dedupes
+-- against). Neither is cleaned up when a rule leaves the pack.
+--
+-- Deleting them matters beyond tidiness because the replacement rule,
+-- `platform-latency-slow-share`, CHANGES THE UNIT: the old threshold was 0.5
+-- SECONDS, the new one is a 0.05 RATIO. An override row carried forward under a
+-- renamed id would silently reinterpret "0.5" as "50% of platform requests
+-- slower than 1.2s" — an alert that can essentially never fire. Retiring the id
+-- outright makes the operator's override a deliberate re-entry rather than a
+-- silent misreading.
+--
+-- A stale `alert_state` row would also leave a firing alert with no rule behind
+-- it: the evaluator only resolves subjects it re-queries, so the row (and the
+-- Active Alerts entry it drives) would never clear. DEV had exactly one such
+-- row for this rule id.
+--
+-- The table is `alert_state`, NOT `monitoring_alert_state` — the Drizzle symbol
+-- is `alertState` but the mapped name is unprefixed (schema.ts: `pgTable
+-- ('alert_state', …)`), unlike its siblings `monitoring_rule_overrides` and
+-- `monitoring_evaluator_lease`. The first version of this migration guessed the
+-- prefixed name, which made every boot fail on 42P01 and crash-looped
+-- platform-api. Check the pgTable() literal, never the export identifier.
+DELETE FROM monitoring_rule_overrides WHERE rule_id = 'api-latency-p95';--> statement-breakpoint
+DELETE FROM alert_state WHERE rule_id = 'api-latency-p95';

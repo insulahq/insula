@@ -94,6 +94,71 @@ admin API or `kubectl label`) drives:
    auto-deletes — the node's IP is now in `cluster_peers` via the Node
    path.
 
+## Deleting a Node evicts it from the firewall — and it cannot rejoin
+
+`cluster_peers_v{4,6}` is reconciled **from the kube-API node list**. Delete a
+Node object and the reconciler removes that machine's IP from every surviving
+node's allowlist within seconds. Since the chain policy is `drop`, the machine
+can then no longer reach `6443`, so its agent cannot re-register:
+
+```
+node1 cluster_peers_v4 = { 192.0.2.11, 192.0.2.12, 192.0.2.13 }
+                          (the deleted node's IP is gone)
+
+worker → node1:6443 = BLOCKED
+k3s-agent: Failed to validate connection to cluster ...
+           failed to get CA certs: context deadline exceeded
+```
+
+Measured on staging 2026-09-12. The machine was healthy throughout; it was
+locked out of its own cluster by an intended-as-harmless `kubectl delete node`.
+
+**This is correct behaviour** — a removed node should lose its trust — but it
+makes `kubectl delete node` a *decommissioning* action, not a troubleshooting
+one.
+
+### Recovering a node deleted by mistake
+
+Re-enrol it, exactly like a new peer:
+
+```yaml
+apiVersion: networking.insula.host/v1alpha1
+kind: ClusterPendingPeer
+metadata:
+  name: readd-<node>
+spec:
+  ip: "<node IP>"
+  role: worker        # or server
+  hostname: <node>
+  addedBy: "re-adding after accidental delete"
+```
+
+The reconciler restores the IP within ~20 s and the agent rejoins on its next
+retry. Do **not** hand-edit nft: the reconciler reverts a manual
+`peer-firewall-add` in about 5 seconds.
+
+### When a leader-elected service is stuck on an unmanageable node
+
+If a node loses only its kubelet — a crashed agent, a full disk — its containers
+keep running. A leader-elected singleton there keeps renewing its lease from a
+healthy process while Kubernetes marks its endpoint not-ready, so the standby
+cannot take over and the service is unreachable until a human acts. Measured:
+`barman-cloud` at **0 of 2 ready endpoints for 5m37s**.
+
+In order:
+
+1. **Restart the agent on the node** (`systemctl restart k3s-agent`, or `k3s`
+   on a server). Fastest, and the service returns immediately because the copy
+   there was healthy all along.
+2. **If the machine is unrecoverable, power it off.** The lock releases and the
+   standby takes over within seconds.
+3. **`kubectl delete node` only if decommissioning.** It does release the lock,
+   measured at **~79 s** — but see above: the machine is then outside the
+   firewall and needs re-enrolment to come back.
+
+Tenants are unaffected throughout: their workloads keep serving without the
+control plane.
+
 ## Public-internet ports (every node)
 
 Only these ports face `0.0.0.0/0` (and `::/0`):
