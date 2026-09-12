@@ -32,6 +32,7 @@ import type {
   CnpgBackupCatalogueResponse,
   CnpgClusterBackupHealth,
   WalArchiveCluster,
+  WalArchiveSummary,
 } from '@insula/api-contracts';
 
 interface Envelope<T> { readonly data: T; }
@@ -114,6 +115,30 @@ export default function BarmanRestoreWizard({ onClose, initialSourceName, initia
   // the operator sees the PITR target's max reach.
   const walQ = useWalArchiveClusters();
   const sourceWal = walQ.data?.find((w) => w.clusterNamespace === NS && w.clusterName === sourceName) ?? null;
+  // Whether the archived WAL chain is actually unbroken. Replay stops at the
+  // first missing segment, so a gap makes every target time past it
+  // unreachable — the wizard must refuse those rather than start a restore
+  // that fails partway through.
+  const walSummaryQ = useQuery({
+    queryKey: ['cnpg-wal-summary', NS, objStoreForSource],
+    queryFn: () => apiFetch<{ data: WalArchiveSummary }>(
+      `/api/v1/admin/cnpg-backup-catalogue/${encodeURIComponent(NS)}/${encodeURIComponent(objStoreForSource)}/wal-summary?cluster=${encodeURIComponent(sourceName)}`,
+    ),
+    staleTime: 60_000,
+    retry: false,
+    enabled: Boolean(sourceName && objStoreForSource),
+    refetchInterval: (q) => (q.state.data?.data?.state === 'measuring' ? 10_000 : false),
+  });
+  const walChain = walSummaryQ.data?.data ?? null;
+  const chainBroken = Boolean(walChain && walChain.gaps.length > 0 && !walChain.continuityInconclusive);
+  const reachableUntilIso = chainBroken ? walChain?.continuousUntil ?? null : null;
+  // Unreachable ONLY when we know the ceiling and the operator asked past it.
+  // An unmeasured or inconclusive chain must not block a restore — during an
+  // incident a refusal we cannot justify is worse than a warning.
+  const targetUnreachable = Boolean(
+    targetTime && reachableUntilIso
+    && new Date(targetTime).getTime() > new Date(reachableUntilIso).getTime(),
+  );
   // P4a: derive the source cluster's HA state + auto-default instances.
   // Re-evaluate whenever the user picks a different source. Skip the
   // auto-default if the operator has already edited the field manually
@@ -231,6 +256,10 @@ export default function BarmanRestoreWizard({ onClose, initialSourceName, initia
               instances={instances}
               submitError={submitError}
               sourceWal={sourceWal}
+              walChain={walChain}
+              chainBroken={chainBroken}
+              reachableUntilIso={reachableUntilIso}
+              targetUnreachable={targetUnreachable}
             />
           )}
           {step === 'in-flight' && activeCluster && (
@@ -299,7 +328,10 @@ export default function BarmanRestoreWizard({ onClose, initialSourceName, initia
                 <button
                   type="button"
                   onClick={submit}
-                  disabled={startMut.isPending}
+                  disabled={startMut.isPending || targetUnreachable}
+                  title={targetUnreachable
+                    ? 'The archive cannot replay that far — pick a time at or before the last reachable point.'
+                    : undefined}
                   className="inline-flex items-center gap-1.5 rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
                   data-testid="barman-restore-wizard-start"
                 >
@@ -480,6 +512,10 @@ function Step3Confirm({
   instances,
   submitError,
   sourceWal,
+  walChain,
+  chainBroken,
+  reachableUntilIso,
+  targetUnreachable,
 }: {
   readonly sourceName: string;
   readonly targetTime: string;
@@ -487,6 +523,10 @@ function Step3Confirm({
   readonly instances: number;
   readonly submitError: string | null;
   readonly sourceWal: WalArchiveCluster | null;
+  readonly walChain: WalArchiveSummary | null;
+  readonly chainBroken: boolean;
+  readonly reachableUntilIso: string | null;
+  readonly targetUnreachable: boolean;
 }) {
   return (
     <div className="space-y-3">
@@ -548,7 +588,33 @@ function Step3Confirm({
       */}
       <div className="rounded border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-700 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300">
         <div className="font-semibold text-gray-700 dark:text-gray-300">WAL coverage</div>
-        {sourceWal?.enabled && sourceWal.status?.lastArchivedWalTime && !sourceWal.status.lastFailedArchiveTime && (
+        {chainBroken && (
+          <div className="mb-1 rounded border border-rose-300 bg-rose-50 px-2 py-1.5 text-rose-900 dark:border-rose-700 dark:bg-rose-900/30 dark:text-rose-200" data-testid="barman-restore-wal-gap">
+            <AlertTriangle size={12} className="-mt-0.5 mr-1 inline" />
+            <strong>
+              {walChain?.gaps.reduce((n, g) => n + g.missingCount, 0)} WAL segment(s) missing from the archive.
+            </strong>{' '}
+            Replay stops at the first absent segment, so this restore can reach
+            <span className="ml-1 font-mono">
+              {reachableUntilIso ? new Date(reachableUntilIso).toLocaleString() : 'the break'}
+            </span>{' '}
+            at the latest.
+          </div>
+        )}
+        {targetUnreachable && (
+          <div className="mb-1 rounded border border-rose-400 bg-rose-100 px-2 py-1.5 font-medium text-rose-900 dark:border-rose-600 dark:bg-rose-900/40 dark:text-rose-100" data-testid="barman-restore-target-unreachable">
+            Your target time is past that point, so this restore cannot succeed —
+            it would fail partway through replay. Go back and pick a time at or
+            before the last reachable point.
+          </div>
+        )}
+        {walChain?.continuityInconclusive && walChain.state !== 'measuring' && (
+          <div className="mb-1 rounded border border-amber-300 bg-amber-50 px-2 py-1.5 text-amber-900 dark:border-amber-700 dark:bg-amber-900/30 dark:text-amber-200" data-testid="barman-restore-wal-unknown">
+            The archive listing did not finish, so whether every WAL segment is
+            present is unknown. A restore may stop early.
+          </div>
+        )}
+        {!chainBroken && sourceWal?.enabled && sourceWal.status?.lastArchivedWalTime && !sourceWal.status.lastFailedArchiveTime && (
           <div>
             ✓ WAL archived continuously to the object store. Latest archive
             <span className="ml-1 font-mono">{new Date(sourceWal.status.lastArchivedWalTime).toLocaleString()}</span>.
