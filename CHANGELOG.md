@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.9.19] - 2026-09-12
+
 ### Fixed
 - **The latency-histogram upgrade now actually applies to an existing cluster.**
   2026.9.18 widened Traefik's latency buckets so the SLO page reports a measured
