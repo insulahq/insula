@@ -357,6 +357,16 @@ describe('A broken WAL chain caps what can be restored', () => {
     expect(screen.queryByTestId('pg-wal-gap-warning-system-db')).toBeNull();
   });
 
+  it('says the chain is unverified when the archive read FAILED, not just when it was cut short', async () => {
+    // DEV's storage target cannot be listed at all. The card used to say nothing
+    // whatsoever about the log chain in that state — silence reads as "fine".
+    routeApi(ON, { walSummary: 'reject' });
+    renderWith(<PostgresBackupsSection />);
+    const u = await screen.findByTestId('pg-wal-gap-unknown-system-db');
+    expect(u).toHaveTextContent(/could not be checked for gaps/);
+    expect(screen.queryByTestId('pg-wal-gap-warning-system-db')).toBeNull();
+  });
+
   it('never claims the chain is intact from a listing that was cut short', async () => {
     // "no gaps found" is TRUE of a walk that read almost nothing.
     routeApi(ON, { walSummary: { ...WAL_SUMMARY, state: 'ready', gaps: [], continuityInconclusive: true } });
