@@ -232,6 +232,19 @@ describe('Status block — what the archive holds', () => {
     expect(s.textContent).not.toMatch(/could not measure/);
   });
 
+  it('still reports base copies when the log cannot be listed', async () => {
+    // Some targets cannot enumerate the log prefix in any reasonable time —
+    // rclone itself could not on DEV. Throwing away the base figure we DO have
+    // would be the worse answer.
+    routeApi(ON, { walSummary: { ...WAL_SUMMARY, state: 'error', measuredAt: null, readError: 'timed out' } });
+    renderWith(<PostgresBackupsSection />);
+    const s = await screen.findByTestId('pg-storage-system-db');
+    await waitFor(() => expect(s).toHaveTextContent(/base copies only/));
+    expect(s).toHaveTextContent(/5\.68 GiB/);
+    expect(s).toHaveTextContent(/log volume not counted/);
+    expect(s.textContent).not.toMatch(/could not measure/);
+  });
+
   it('says it could not measure rather than spinning forever', async () => {
     // The failure this replaces: the storage cell sat on "measuring…" because
     // the catalogue call ran for minutes through the storage shim.
