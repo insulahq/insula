@@ -268,6 +268,17 @@ describe('Status block — what the archive holds', () => {
     expect(await screen.findByTestId('pg-base-system-db')).toHaveTextContent(/timed out before any were read/);
   });
 
+  it('says the log is still being measured, not that it failed, while the walk runs', async () => {
+    // Seen on DEV: the cell asserted "could not be listed in time" during an
+    // IN-PROGRESS measurement. Not counted yet and could not be counted are
+    // different statements.
+    routeApi(ON, { walSummary: { ...WAL_SUMMARY, state: 'measuring', measuredAt: null } });
+    renderWith(<PostgresBackupsSection />);
+    const s = await screen.findByTestId('pg-storage-system-db');
+    await waitFor(() => expect(s).toHaveTextContent(/still being measured/));
+    expect(s.textContent).not.toMatch(/could not be listed/);
+  });
+
   it('still reports base copies when the log cannot be listed', async () => {
     // Some targets cannot enumerate the log prefix in any reasonable time —
     // rclone itself could not on DEV. Throwing away the base figure we DO have
