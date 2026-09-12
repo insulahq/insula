@@ -83,16 +83,27 @@ export async function cnpgBackupCatalogueRoutes(app: FastifyInstance): Promise<v
           objectStoreName: { type: 'string', minLength: 1, maxLength: 253 },
         },
       },
+      querystring: {
+        type: 'object',
+        properties: {
+          // Naming the cluster skips a bucket-wide discovery LIST, which on the
+          // rclone shim costs more than the measurement itself.
+          cluster: { type: 'string', minLength: 1, maxLength: 253 },
+        },
+      },
     },
   }, async (request) => {
     const p = request.params as { namespace: string; objectStoreName: string };
+    const q = request.query as { cluster?: string };
     validateName(p.namespace, 'namespace');
     validateName(p.objectStoreName, 'objectStoreName');
+    if (q.cluster !== undefined) validateName(q.cluster, 'cluster');
 
     const kc = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
     const k8s = createK8sClients(kc);
     const result = await summariseWalArchiveForStore(
-      k8s.core, k8s.custom, p.namespace, p.objectStoreName, { log: request.log },
+      k8s.core, k8s.custom, p.namespace, p.objectStoreName,
+      { log: request.log, clusterName: q.cluster },
     );
     return success(result);
   });
