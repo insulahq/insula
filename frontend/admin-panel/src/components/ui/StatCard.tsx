@@ -7,7 +7,7 @@ interface StatCardProps {
   readonly subtitle?: string;
   readonly icon: LucideIcon;
   readonly trend?: 'up' | 'down' | 'neutral';
-  readonly accent?: 'brand' | 'green' | 'amber' | 'red';
+  readonly accent?: 'brand' | 'green' | 'amber' | 'red' | 'unknown';
 }
 
 const accentColors = {
@@ -15,6 +15,10 @@ const accentColors = {
   green: 'border-l-green-500 bg-green-50/50 dark:border-l-green-400 dark:bg-green-950/30',
   amber: 'border-l-amber-500 bg-amber-50/50 dark:border-l-amber-400 dark:bg-amber-950/30',
   red: 'border-l-red-500 bg-red-50/50 dark:border-l-red-400 dark:bg-red-950/30',
+  // Deliberately colourless: a card whose data could not be read must not
+  // borrow the visual language of "fine". Grey reads as absent, which is what
+  // it is.
+  unknown: 'border-l-gray-400 bg-gray-50/60 dark:border-l-gray-500 dark:bg-gray-900/40',
 } as const;
 
 const iconColors = {
@@ -22,6 +26,7 @@ const iconColors = {
   green: 'text-green-600 dark:text-green-400',
   amber: 'text-amber-600 dark:text-amber-400',
   red: 'text-red-600 dark:text-red-400',
+  unknown: 'text-gray-500 dark:text-gray-400',
 } as const;
 
 export default function StatCard({
