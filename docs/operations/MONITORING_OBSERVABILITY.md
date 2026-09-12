@@ -27,7 +27,7 @@ node-exporter, no kube-state-metrics:
 | --- | --- | --- |
 | `kubelet-cadvisor` | every node :10250 (SA bearer token) | node/container CPU + memory (hard `keep` allowlist — see below) |
 | `kubelet-resource` | every node :10250 | per-pod resource usage |
-| `traefik` | traefik pods :9100 | request rate / 5xx ratio / latency (availability + p95 SLOs) |
+| `traefik` | traefik pods :9100 | request rate / 5xx ratio / latency (availability + platform-latency SLOs) |
 | `cert-manager` | controller :9402 | certificate expiry + readiness |
 | `longhorn` | longhorn-manager :9500 | per-node storage capacity/usage (headroom SLO) |
 | `flux` | controllers :8080 | reconcile errors |
@@ -35,11 +35,19 @@ node-exporter, no kube-state-metrics:
 | `coredns` | kube-system :9153 | DNS health |
 | `platform-api` | :9090 (phase 2) | HTTP histogram, ACME order/renewal counters, mail TLS expiry, Stalwart task-queue depth |
 
-**Cardinality rule:** `kubelet-cadvisor` is the only job whose series
-count grows with tenant count. Its `metric_relabel_configs` keep-regex in
-`k8s/base/monitoring/scrape-config.yaml` is a hard allowlist — extend it
+**Cardinality rule:** `kubelet-cadvisor` and `traefik` are the jobs whose
+series count grows with tenant count. Their `metric_relabel_configs` in
+`k8s/base/monitoring/scrape-config.yaml` are hard allowlists — extend them
 deliberately per-metric, never wholesale. Check the live series count via
 VMUI → `/api/v1/status/tsdb` after changes.
+
+For `traefik` specifically: `traefik_service_*` carries a per-backend-service
+label, so it scales with tenant workloads. The `_bucket` family is kept ONLY
+for `platform-*` and `mail-*` services — a fixed-size set, since tenant
+namespaces are always `tenant-*` — and dropped for the rest. That is what lets
+the `platform-latency-slow-share` SLO measure the platform's own surfaces
+without scoring tenant websites. Tenant `_sum`/`_count` survive, so per-service
+average latency stays available for every tenant.
 
 **envsubst warning:** Flux postBuild runs envsubst over the rendered
 scrape config. Relabel `replacement` fields must use `$1`, never `${1}`
@@ -62,8 +70,8 @@ scrape config. Relabel `replacement` fields must use `$1`, never `${1}`
 
 - The default SLO rule pack lives in code
   (`backend/src/modules/monitoring/rules.ts`), derived from
-  `docs/roadmap/SLI_SLO_DEFINITION.md`: availability burn rates, p95
-  latency, cert expiry (<14d), Longhorn headroom (80/90%), node memory
+  `docs/roadmap/SLI_SLO_DEFINITION.md`: availability burn rates,
+  platform-surface latency, cert expiry (<14d), Longhorn headroom (80/90%), node memory
   (90/95%), CNPG up + replication lag, Flux reconcile errors,
   scrape-target down, ACME order failures.
 - A 60s evaluator (HA-deduped across the 3 platform-api replicas via a
@@ -78,6 +86,30 @@ scrape config. Relabel `replacement` fields must use `$1`, never `${1}`
 - Node **disk** is intentionally absent from the PromQL pack: kubelet
   `DiskPressure` alerts come from the node-health module; the Longhorn
   headroom rule covers data disks. Don't add node-exporter to "fix" this.
+
+### Latency alerting: why it is a share, not a percentile
+
+`platform-latency-slow-share` fires when **more than 5% of requests to the
+platform's own surfaces took over 1.2s, and at least 10 of them did**, for 15
+minutes. It replaced `api-latency-p95` (retired 2026-09-12), which paged on a
+p95 over the whole ingress and was noise 18.8% of the week on production.
+
+Three properties are deliberate, and a future "improvement" that drops any of
+them brings the noise back:
+
+- **Scoped to `platform-*`/`mail-*` services.** A tenant's slow app is that
+  tenant's problem and belongs on their health page. The retired rule scored
+  every tenant website into one number, and 103 of 107 slow requests in the
+  hour that was sampled were a single tenant's Nextcloud DAV sync.
+- **An absolute floor alongside the ratio.** Platform surfaces see a median of
+  6 requests per 30 minutes. Any pure ratio — including a percentile — turns
+  one slow request into a page at that volume.
+- **A share, not a percentile.** `histogram_quantile()` between two bucket
+  edges is interpolation, so a p95 reported to the millisecond is arithmetic
+  rather than measurement. A count of requests past a bucket edge is exact.
+
+If the alert fires, the usual cause is platform-api waiting on Postgres —
+check the API pods and `system-db` before the panels.
 
 ## External service health checks (ADR-022)
 

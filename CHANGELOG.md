@@ -114,6 +114,26 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   never a running workload, and never a database pod.
 
 ### Fixed
+- **The latency alert stops paging you about other people's websites.** The
+  "Ingress p95 latency" warning fired 23 times in three weeks on production and
+  not one of them was a platform problem. It measured a 95th percentile across
+  every site the cluster serves, against a 0.5s target — three flaws at once. It
+  had no minimum-request floor, so on a cluster serving ~40 requests in five
+  minutes the 95th percentile *was the second-slowest request* and one slow
+  request tripped it. Its target was finer than the measurement could resolve:
+  the underlying histogram only distinguishes 0.3s from 1.2s, so the "615ms" in
+  the notification was interpolation, not something anyone timed. And it counted
+  tenant traffic as a platform breach — in one sampled hour, 103 of the 107 slow
+  requests were a single tenant's Nextcloud sync client, and the alert could not
+  even say whose. It is replaced by **Platform surfaces — slow requests**, which
+  fires when more than 5% of requests to the platform's own surfaces take over
+  1.2 seconds *and* at least ten of them did, sustained for fifteen minutes.
+  Measured against the same week of production traffic, the old rule was in
+  breach 18.8% of the time and the new one 0.2%. Traefik's latency buckets were
+  also widened (a strict superset of the defaults, so nothing else changes) so
+  the SLO page reports a latency figure that was actually measured. Any
+  threshold override on the retired rule is dropped rather than reinterpreted —
+  its number meant seconds and the new one means a percentage.
 - **The backups page no longer offers restores that cannot succeed.** Recovery
   replays the database's write-ahead log in order and stops dead at the first
   piece it cannot find — so one missing piece makes every later point in time

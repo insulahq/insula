@@ -69,7 +69,34 @@ notification you receive:
 
 Two broken certificates are two alerts, and each resolves on its own — fixing
 one does not clear the other. Rules with no narrower subject (whole-ingress
-error ratio, p95 latency, "is monitoring reachable") show **platform-wide**.
+error ratio, platform-surface latency, "is monitoring reachable") show
+**platform-wide**.
+
+### "Platform surfaces — slow requests"
+
+This warning means **more than 5% of requests to the platform's own surfaces —
+admin panel, tenant panel, webmail, Stalwart admin — took longer than 1.2
+seconds, and at least ten of them did**, for fifteen minutes. The usual cause is
+the management API waiting on the database, so check the API pods and the
+platform database before the panels themselves.
+
+It deliberately **excludes tenant websites**. A slow tenant application is that
+tenant's problem and appears on their own health page; it is not a platform
+breach, and mixing the two produced warnings no one could act on.
+
+It also deliberately reports a *share of requests* rather than a percentile.
+Percentiles need a reasonable number of requests to mean anything, and the
+platform's own surfaces are quiet — a median of six requests every thirty
+minutes. At that volume a "95th percentile" is just the second-slowest request,
+and one slow page load would page you.
+
+!!! note "Replaces the old 'Ingress p95 latency' warning"
+    That rule measured every site the cluster serves against a 0.5 second
+    target, with no minimum number of requests, and warned constantly without
+    ever indicating a real problem. If you had set a custom threshold on it,
+    that override was **removed rather than carried over**: the old number meant
+    seconds and the new one means a percentage, so reusing it would have been
+    misread. Set a new threshold if you want one.
 
 !!! note "SOA and certificate alerts you cannot action"
     A `cert-not-ready` alert naming a domain that is still **unverified** is

@@ -96,10 +96,10 @@ describe('SLO alert content', () => {
   it('still shows the value where it carries information', () => {
     const r = renderTemplate(
       seed('admin.slo_alert_warning', 'in_app'),
-      payloadFor('api-latency-p95', 0.62),
+      payloadFor('platform-latency-slow-share', 0.062),
       { skipMjml: true },
     );
-    expect(r.body).toContain('Current value: 620ms');
+    expect(r.body).toContain('Current value: 6.20%');
   });
 
   it('carries the subject through the resolved leg too', () => {
