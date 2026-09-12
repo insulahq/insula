@@ -410,19 +410,27 @@ function StatusGrid({ cluster }: { readonly cluster: WalArchiveCluster }) {
         ? 'could not read the archive — check the storage target'
         : 'nothing restorable yet — the first base backup has not run';
 
+  // Partial knowledge beats none. Measuring the log means listing every segment
+  // through the storage gateway, and some targets cannot do that in any
+  // reasonable time (DEV 2026-09-12: rclone itself could not list the prefix in
+  // 25s). When that happens we still know the base copies exactly, so we show
+  // that and say what is missing instead of throwing the whole cell away.
+  const baseOnly = baseBytes !== null && walBytes === null;
   const storageValue = totalBytes !== null
-    ? `${formatBytes(totalBytes)}${archive.walSummary?.truncated || archive.basePartial ? ' or more' : ''}`
+    ? `${formatBytes(totalBytes)}${archive.walSummary?.truncated || archive.basePartial ? ' or more' : ''}${baseOnly ? ' (base copies only)' : ''}`
     : archive.baseState === 'loading' || archive.walState === 'loading'
       ? 'measuring — this can take a few minutes on a large archive'
       : 'could not measure — check the storage target';
 
-  const storageSub = totalBytes !== null
-    ? `${baseBytes !== null ? formatBytes(baseBytes) : (archive.baseState === 'error' ? 'unreadable' : '—')} base copies · ${
-      walBytes !== null ? formatBytes(walBytes) : (archive.walState === 'error' ? 'unreadable' : '—')} log${
-      archive.walSummary ? ` (${archive.walSummary.segmentCount}${archive.walSummary.truncated ? '+' : ''} segments)` : ''}${
-      archive.walMeasuredAt ? ` · measured ${formatAgo(archive.walMeasuredAt)}` : ''}${
-      archive.walMeasuring ? ' · refreshing' : ''}`
-    : undefined;
+  const storageSub = totalBytes === null
+    ? undefined
+    : baseOnly
+      ? 'log volume not counted — this storage target could not be listed in time'
+      : `${baseBytes !== null ? formatBytes(baseBytes) : '—'} base copies · ${
+        walBytes !== null ? formatBytes(walBytes) : '—'} log${
+        archive.walSummary ? ` (${archive.walSummary.segmentCount}${archive.walSummary.truncated ? '+' : ''} segments)` : ''}${
+        archive.walMeasuredAt ? ` · measured ${formatAgo(archive.walMeasuredAt)}` : ''}${
+        archive.walMeasuring ? ' · refreshing' : ''}`;
 
   return (
     <div
