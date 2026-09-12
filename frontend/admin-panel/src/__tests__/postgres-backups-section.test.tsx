@@ -368,6 +368,23 @@ describe('A broken WAL chain caps what can be restored', () => {
     expect(screen.queryByTestId('pg-wal-gap-warning-system-db')).toBeNull();
   });
 
+  it('qualifies the restore window itself when the chain is unverified', async () => {
+    // A caveat in a separate box reads as being about something else. The claim
+    // carries its own condition.
+    routeApi(ON, { walSummary: 'reject' });
+    renderWith(<PostgresBackupsSection />);
+    const w = await screen.findByTestId('pg-window-system-db');
+    await waitFor(() => expect(w).toHaveTextContent(/if no log segments are missing/));
+  });
+
+  it('does not qualify the window when the chain IS verified', async () => {
+    routeApi(ON);
+    renderWith(<PostgresBackupsSection />);
+    const w = await screen.findByTestId('pg-window-system-db');
+    await waitFor(() => expect(w).toHaveTextContent(/→ now/));
+    expect(w.textContent).not.toMatch(/if no log segments are missing/);
+  });
+
   it('says the chain is unverified when the archive read FAILED, not just when it was cut short', async () => {
     // DEV's storage target cannot be listed at all. The card used to say nothing
     // whatsoever about the log chain in that state — silence reads as "fine".

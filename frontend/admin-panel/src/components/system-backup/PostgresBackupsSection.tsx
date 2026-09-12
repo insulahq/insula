@@ -432,8 +432,12 @@ function StatusGrid({ cluster }: { readonly cluster: WalArchiveCluster }) {
   // archive, and saying "nothing restorable yet" there would be a lie about the
   // operator's disaster-recovery position.
   const listingInconclusive = archive.basePartial && archive.backupCount === 0;
+  // "→ now" is a PROMISE that every log segment between the base backup and now
+  // is present. When the chain could not be checked, the claim has to carry its
+  // own caveat — a qualification sitting in a separate box above it is read as
+  // being about something else.
   const windowValue = floor
-    ? `${new Date(floor).toLocaleString()} → ${windowEnd}${windowDays !== null ? ` · ${windowDays} day${windowDays === 1 ? '' : 's'}` : ''}`
+    ? `${new Date(floor).toLocaleString()} → ${windowEnd}${windowDays !== null ? ` · ${windowDays} day${windowDays === 1 ? '' : 's'}` : ''}${chainUnknown ? ' — if no log segments are missing' : ''}`
     : archive.baseState === 'loading'
       ? 'reading the archive…'
       : archive.baseState === 'error'
