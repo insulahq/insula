@@ -48,7 +48,18 @@ export type CnpgCatalogueBackup = z.infer<typeof cnpgCatalogueBackupSchema>;
  * "how far back can I recover to" — the WAL between them is what makes an
  * arbitrary point in time restorable.
  */
+/**
+ * Measuring retained WAL means listing every segment through the storage
+ * gateway — minutes on a real archive — so it runs in the background and the
+ * panel polls. 'measuring' carries the PREVIOUS figures when there are any.
+ */
+export const walSummaryStateSchema = z.enum(['ready', 'measuring', 'error']);
+export type WalSummaryState = z.infer<typeof walSummaryStateSchema>;
+
 export const walArchiveSummarySchema = z.object({
+  state: walSummaryStateSchema,
+  /** When these figures were produced; null before the first walk finishes. */
+  measuredAt: z.string().nullable(),
   segmentCount: z.number().int().nonnegative(),
   totalBytes: z.number().int().nonnegative(),
   oldestAt: z.string().nullable(),

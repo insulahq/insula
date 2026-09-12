@@ -413,13 +413,15 @@ function StatusGrid({ cluster }: { readonly cluster: WalArchiveCluster }) {
   const storageValue = totalBytes !== null
     ? `${formatBytes(totalBytes)}${archive.walSummary?.truncated || archive.basePartial ? ' or more' : ''}`
     : archive.baseState === 'loading' || archive.walState === 'loading'
-      ? 'measuring…'
+      ? 'measuring — this can take a few minutes on a large archive'
       : 'could not measure — check the storage target';
 
   const storageSub = totalBytes !== null
     ? `${baseBytes !== null ? formatBytes(baseBytes) : (archive.baseState === 'error' ? 'unreadable' : '—')} base copies · ${
       walBytes !== null ? formatBytes(walBytes) : (archive.walState === 'error' ? 'unreadable' : '—')} log${
-      archive.walSummary ? ` (${archive.walSummary.segmentCount}${archive.walSummary.truncated ? '+' : ''} segments)` : ''}`
+      archive.walSummary ? ` (${archive.walSummary.segmentCount}${archive.walSummary.truncated ? '+' : ''} segments)` : ''}${
+      archive.walMeasuredAt ? ` · measured ${formatAgo(archive.walMeasuredAt)}` : ''}${
+      archive.walMeasuring ? ' · refreshing' : ''}`
     : undefined;
 
   return (
@@ -503,6 +505,8 @@ function useArchiveContents(cluster: WalArchiveCluster): {
   readonly baseBytes: number | null;
   readonly basePartial: boolean;
   readonly walSummary: WalArchiveSummary | null;
+  readonly walMeasuring: boolean;
+  readonly walMeasuredAt: string | null;
   readonly baseState: 'loading' | 'ready' | 'error';
   readonly walState: 'loading' | 'ready' | 'error';
 } {
@@ -531,9 +535,12 @@ function useArchiveContents(cluster: WalArchiveCluster): {
     queryFn: () => apiFetch<{ data: WalArchiveSummary }>(
       `${base}/wal-summary?cluster=${encodeURIComponent(cluster.clusterName)}`,
     ),
-    staleTime: 5 * 60_000,
+    staleTime: 60_000,
     retry: false,
     enabled: !!objectStoreName,
+    // The first answer is usually "measuring" — the walk runs server-side.
+    // Poll while it does, then fall back to the long interval.
+    refetchInterval: (q) => (q.state.data?.data?.state === 'measuring' ? 10_000 : false),
   });
 
   return useMemo(() => {
@@ -543,9 +550,13 @@ function useArchiveContents(cluster: WalArchiveCluster): {
         : (healthLoading || (objectStoreName !== null && catalogueQ.isLoading) ? 'loading' : 'ready');
 
     const wal = walQ.data?.data ?? null;
+    // 'measuring' with previous figures is still usable — show them with their
+    // age rather than blanking the cell.
     const walState: 'loading' | 'ready' | 'error' =
-      walQ.isError || (wal?.readError != null) ? 'error'
-        : (healthLoading || (objectStoreName !== null && walQ.isLoading) ? 'loading' : 'ready');
+      walQ.isError || wal?.state === 'error' ? 'error'
+        : (healthLoading || (objectStoreName !== null && walQ.isLoading) || (wal?.state === 'measuring' && wal.measuredAt === null)
+          ? 'loading'
+          : 'ready');
 
     const sorted = cat && cat.source === 'object-store'
       ? [...cat.backups].sort((a, b) => (a.startedAt ?? a.uploadedAt ?? '').localeCompare(b.startedAt ?? b.uploadedAt ?? ''))
@@ -557,7 +568,9 @@ function useArchiveContents(cluster: WalArchiveCluster): {
       backupCount: cat && cat.source === 'object-store' ? cat.backups.length : null,
       baseBytes: sized.length > 0 ? sized.reduce((n, b) => n + (b.dataSizeBytes ?? 0), 0) : null,
       basePartial: Boolean(cat?.partial),
-      walSummary: wal && wal.readError == null ? wal : null,
+      walSummary: wal && wal.measuredAt !== null && wal.readError == null ? wal : null,
+      walMeasuring: wal?.state === 'measuring',
+      walMeasuredAt: wal?.measuredAt ?? null,
       baseState,
       walState,
     } as const;

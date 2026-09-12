@@ -55,28 +55,28 @@ describe('accumulateWalObjects', () => {
   });
 });
 
-describe('wal-summary deadline discipline', () => {
-  it('answers within its budget even when the kube read never settles', async () => {
-    // The bug this pins: a 20s per-request timeout plus the AWS SDK's default 3
-    // retries became a >60s endpoint on DEV, and the panel cell sat on
-    // "measuring…" until curl gave up. Bounding only the S3 walk was not enough
-    // either — the ObjectStore read is a kube call that can hang on its own.
-    const { summariseWalArchiveForStore, __clearWalSummaryCache } = await import('./wal-summary.js');
+describe('getWalSummary — never blocks the request', () => {
+  it('returns immediately with state=measuring and starts the walk in the background', async () => {
+    // The failure this replaces: the endpoint waited on the walk, the walk
+    // exceeded its budget on a real archive (DEV: >20s for ~4 500 segments),
+    // and the panel could only ever render "could not measure".
+    const { getWalSummary, __clearWalSummaryCache } = await import('./wal-summary.js');
     __clearWalSummaryCache();
 
+    let started = false;
     const hangingCustom = {
-      getNamespacedCustomObject: () => new Promise(() => { /* never settles */ }),
+      getNamespacedCustomObject: () => { started = true; return new Promise(() => {}); },
     } as never;
 
     const t0 = Date.now();
-    const result = await summariseWalArchiveForStore(
-      {} as never, hangingCustom, 'platform', 'store', { deadlineMs: 800 },
-    );
-    const elapsed = Date.now() - t0;
+    const first = getWalSummary({} as never, hangingCustom, 'platform', 'store');
+    expect(Date.now() - t0).toBeLessThan(100);
+    expect(first.state).toBe('measuring');
+    expect(first.measuredAt).toBeNull();
+    expect(started).toBe(true);
 
-    expect(elapsed).toBeLessThan(3_000);
-    // And it SAYS what happened rather than reporting a confident zero.
-    expect(result.readError).toMatch(/timed out/);
-    expect(result.truncated).toBe(true);
-  }, 10_000);
+    // A second call must not start a second walk.
+    const second = getWalSummary({} as never, hangingCustom, 'platform', 'store');
+    expect(second.state).toBe('measuring');
+  });
 });
