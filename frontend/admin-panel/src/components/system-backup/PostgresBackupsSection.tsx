@@ -527,7 +527,10 @@ function useArchiveContents(cluster: WalArchiveCluster): {
 
   const walQ = useQuery({
     queryKey: ['cnpg-wal-summary', cluster.clusterNamespace, objectStoreName],
-    queryFn: () => apiFetch<{ data: WalArchiveSummary }>(`${base}/wal-summary`),
+    // Naming the cluster lets the backend skip a bucket-wide discovery LIST.
+    queryFn: () => apiFetch<{ data: WalArchiveSummary }>(
+      `${base}/wal-summary?cluster=${encodeURIComponent(cluster.clusterName)}`,
+    ),
     staleTime: 5 * 60_000,
     retry: false,
     enabled: !!objectStoreName,
