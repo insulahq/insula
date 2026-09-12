@@ -12,8 +12,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.9.18-rc.7] - 2026-09-12
-
 ### Added
 - **A node outage now says when it took a platform service with it.** The
   banner reported "No tenant impact detected" during an outage in which backups
@@ -116,6 +114,19 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   never a running workload, and never a database pod.
 
 ### Fixed
+- **The backups page no longer offers restores that cannot succeed.** Recovery
+  replays the database's write-ahead log in order and stops dead at the first
+  piece it cannot find — so one missing piece makes every later point in time
+  unreachable, however much log was kept afterwards. The page used to present
+  the retention period as the recovery window regardless, inviting a restore
+  that fails partway through during an incident. The platform now checks the
+  log for gaps while it measures the archive: if any are missing you get a red
+  notice naming how many and the last point a restore can actually reach, the
+  restorable window ends there rather than at "now", and the restore wizard
+  refuses to start a restore aimed past it. If the archive could not be read
+  fully, the page says the chain could not be checked rather than implying it
+  is intact.
+
 - **Backup storage figures are now measured in the background.** Adding up
   what an archive holds means listing every stored file through the storage
   gateway, which takes minutes on a real archive — so the page used to wait,

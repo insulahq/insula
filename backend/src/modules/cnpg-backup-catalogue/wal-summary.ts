@@ -23,6 +23,13 @@ import { loadBackupTargetKey, SHIM_NAMESPACE } from '../backup-rclone-shim/servi
 import { deriveShimAccessKey, deriveShimSecretKey } from '../backup-rclone-shim/crypto.js';
 import { SHIM_S3_ENDPOINT_URL } from '../backup-rclone-shim/mail-restic.js';
 import { parseDestinationPath, accumulateWalObjects } from './service.js';
+import {
+  parseWalSegment,
+  analyseWalContinuity,
+  DEFAULT_SEGMENTS_PER_FILE,
+  type WalSegmentRef,
+  type WalGap,
+} from './wal-continuity.js';
 
 const OBJSTORE_GROUP = 'barmancloud.cnpg.io';
 const OBJSTORE_VERSION = 'v1';
@@ -49,6 +56,20 @@ export type WalSummaryState = 'ready' | 'measuring' | 'error';
 
 export interface WalSummaryResult {
   readonly state: WalSummaryState;
+  /**
+   * Holes in the WAL chain. Replay stops at the first one, so their presence
+   * caps what a restore can reach — see wal-continuity.ts.
+   */
+  readonly gaps: readonly WalGap[];
+  /** Upload time of the newest segment in the unbroken run reaching the end. */
+  readonly continuousUntil: string | null;
+  readonly continuousSince: string | null;
+  /**
+   * The listing was cut short, so gap findings prove nothing in either
+   * direction — absent segments may simply not have been read.
+   */
+  readonly continuityInconclusive: boolean;
+  readonly timelines: readonly number[];
   /** When the figures below were produced. Null before the first walk finishes. */
   readonly measuredAt: string | null;
   readonly segmentCount: number;
@@ -83,6 +104,11 @@ export interface WalSummaryOpts {
    * cluster (the panel always does) should pass it.
    */
   readonly clusterName?: string;
+  /**
+   * `0x100000000 / wal_segment_size` — 256 for the default 16 MB. Wrong value =
+   * phantom gaps at every log-file roll-over, or real gaps hidden.
+   */
+  readonly segmentsPerFile?: number;
 }
 
 /**
@@ -134,6 +160,8 @@ export function getWalSummary(
       .catch((err: unknown) => {
         cache.set(ck, { at: Date.now(), value: {
           state: 'error', measuredAt: null,
+          gaps: [], continuousUntil: null, continuousSince: null,
+          continuityInconclusive: true, timelines: [],
           segmentCount: 0, totalBytes: 0, oldestAt: null, newestAt: null,
           truncated: false,
           readError: err instanceof Error ? err.message : String(err),
@@ -156,6 +184,8 @@ export function getWalSummary(
   return {
     state: measuring ? 'measuring' : 'error',
     measuredAt: null,
+    gaps: [], continuousUntil: null, continuousSince: null,
+    continuityInconclusive: true, timelines: [],
     segmentCount: 0, totalBytes: 0, oldestAt: null, newestAt: null,
     truncated: false,
     readError: measuring ? null : 'measurement has not started',
@@ -179,6 +209,8 @@ async function walSummaryWork(
 
   const fail = (reason: string): WalSummaryResult => ({
     state: 'error', measuredAt: null,
+    gaps: [], continuousUntil: null, continuousSince: null,
+    continuityInconclusive: true, timelines: [],
     segmentCount: 0, totalBytes: 0, oldestAt: null, newestAt: null,
     truncated: false, readError: reason, queryDurationMs: Date.now() - t0,
   });
@@ -243,6 +275,8 @@ async function walSummaryWork(
     if (clusters.length === 0) return fail('no clusters found under the object store prefix');
 
     const acc = { segmentCount: 0, totalBytes: 0, oldest: null as number | null, newest: null as number | null };
+    const segRefs: WalSegmentRef[] = [];
+    const segmentsPerFile = opts.segmentsPerFile ?? DEFAULT_SEGMENTS_PER_FILE;
     let truncated = false;
     let anyPageRead = false;
     let lastError: string | null = null;
@@ -258,12 +292,22 @@ async function walSummaryWork(
           const res = await s3.send(new ListObjectsV2Command({
             Bucket: bucket, Prefix: walPrefix, ContinuationToken: token, MaxKeys: 1000,
           })) as {
-            Contents?: ReadonlyArray<{ Size?: number; LastModified?: Date }>;
+            Contents?: ReadonlyArray<{ Key?: string; Size?: number; LastModified?: Date }>;
             NextContinuationToken?: string;
             IsTruncated?: boolean;
           };
           anyPageRead = true;
           accumulateWalObjects(res.Contents ?? [], acc);
+          // Names as well as sizes: the chain's continuity is what decides
+          // which points in time are actually restorable.
+          for (const obj of res.Contents ?? []) {
+            const ref = parseWalSegment(
+              obj.Key ?? '',
+              segmentsPerFile,
+              obj.LastModified ? obj.LastModified.toISOString() : null,
+            );
+            if (ref) segRefs.push(ref);
+          }
           token = res.IsTruncated ? res.NextContinuationToken : undefined;
           pages += 1;
           if (token && pages >= MAX_PAGES) { truncated = true; break; }
@@ -284,9 +328,16 @@ async function walSummaryWork(
 
     if (!anyPageRead) return fail(lastError ?? 'WAL prefix could not be listed within the time budget');
 
+    const continuity = analyseWalContinuity(segRefs, { truncated });
+
     return {
       state: 'ready',
       measuredAt: new Date().toISOString(),
+      gaps: continuity.gaps,
+      continuousUntil: continuity.continuousUntil,
+      continuousSince: continuity.continuousSince,
+      continuityInconclusive: continuity.inconclusive,
+      timelines: continuity.timelines,
       segmentCount: acc.segmentCount,
       totalBytes: acc.totalBytes,
       oldestAt: acc.oldest === null ? null : new Date(acc.oldest).toISOString(),

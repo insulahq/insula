@@ -151,3 +151,40 @@ func TestPeerPersistPathIsInsideTheIncludedDirectory(t *testing.T) {
 		t.Errorf("peerPersistPath = %q, want a .conf suffix", peerPersistPath)
 	}
 }
+
+// The persist path is useless unless the DaemonSet actually mounts the host
+// directory it writes to. rc.7 shipped persistPeerSets with no mount at all:
+// the container has readOnlyRootFilesystem, so every tick logged
+//
+//	could not persist peer sets for boot restore
+//	err="mkdir /etc/nftables.d: read-only file system"
+//
+// and the fix silently did nothing on every node. The code was deployed; the
+// behaviour was absent. Guard the contract the manifest has to satisfy.
+func TestPeerPersistPathMatchesTheMountedHostDirectory(t *testing.T) {
+	// k8s/base/firewall-reconciler/daemonset.yaml mounts a hostPath at
+	// exactly this path. If this constant moves, that mount must move with it.
+	const mountedDir = "/etc/nftables.d"
+	if got := filepath.Dir(peerPersistPath); got != mountedDir {
+		t.Fatalf("peerPersistPath dir = %q, but the DaemonSet mounts %q — "+
+			"the write would land in the read-only container rootfs", got, mountedDir)
+	}
+}
+
+func TestPersistPeerSetsSurfacesAnUnwritableTarget(t *testing.T) {
+	// The caller logs a warning rather than failing the apply, so the error
+	// must be returned and descriptive — that warning is the only signal an
+	// operator gets that boot-restore is not working.
+	dir := t.TempDir()
+	blocker := filepath.Join(dir, "blocked")
+	if err := os.WriteFile(blocker, []byte("not a directory"), 0o644); err != nil {
+		t.Fatalf("seed blocker: %v", err)
+	}
+	err := persistPeerSets(filepath.Join(blocker, "peers.conf"), peerNftSets{PeersV4: []string{"10.0.0.1"}})
+	if err == nil {
+		t.Fatal("expected an error when the parent path is not a directory")
+	}
+	if !strings.Contains(err.Error(), "blocked") {
+		t.Errorf("error should name the offending path, got %v", err)
+	}
+}
