@@ -233,6 +233,9 @@ recoverable — the one single point of failure that replication cannot address.
 | G5 | Mail-failover-not-configured banner verified rendering | **done** (§8.4) |
 | G6 | Re-pin driven end to end through the recovery wizard | **done** (§8.4) |
 | G7 | Worker-node loss drilled (§8.6) | **done** |
+| G9 | DB-primary node loss drilled against the RC (§8.7) | **done** |
+| G10 | Degraded-services pill seen rendering (§8.7) | **done** |
+| G11 | Control-plane quorum loss drilled | pending |
 | G8 | Re-pin evicts pods stranded on the dead node (§8.5) | **done** |
 
 ### Known doc inaccuracies to fix under C2
@@ -463,3 +466,79 @@ M14; `shared/redis.ts` is now an in-process LRU cache whose `ping()` cannot fail
 The check can only ever return `ok`, so it tells an operator nothing while naming
 a component that no longer exists. Left alone here — it is a health-API shape
 change, not a failover gap.
+
+
+## 8.7 Drill: DB-primary node loss on rc.6 (G9 + G10, 2026-09-12)
+
+Cut v2026.9.18-rc.6 specifically because none of §8.1–8.6 could be verified where
+it sat: staging ran rc.5, which predates all of it, and DEV has everything but is
+a single node, so it cannot produce a node loss, a database failover or a leader
+failover at all.
+
+Kill target **staging3**, chosen because it held three things at once — the
+Postgres primary, the barman-cloud leader (the only `ready=True` endpoint) and
+the active mail node. That placement was **checked before committing to the
+target**, not assumed; had the barman leader been elsewhere, G10 would have been
+reported as *not exercised* rather than as a pass.
+
+### The first attempt did not test what it looked like it tested
+
+`systemctl stop k3s` produced a NotReady node — and the database kept serving.
+Two minutes in, CNPG still reported `system-db-1` primary and `Cluster in healthy
+state`, and the API's DB-backed reads still returned `err=none`. Checking the
+node directly:
+
+    pgrep -fa postgres  →  1670164 postgres -D /var/lib/postgresql/data/pgdata
+
+Postgres was **still running**. Stopping k3s stops the kubelet, not the
+containers, and the API's pooled connections go straight to the pod IP, so
+nothing broke. This is the trap recorded in §8.6, now confirmed a second time
+against the database itself — and it would have been very easy to write up as
+"the API survived a DB failover". It had not been tested at all. A **reboot** was
+required to produce a real machine loss.
+
+### G9 — the API survives a real failover
+
+Reboot issued 00:06:20 UTC.
+
+| Time | Event |
+|---|---|
+| 00:06:51 | DB-backed endpoint returns nothing — database genuinely gone |
+| 00:06:54 | `system-db-1 \| Failing over` |
+| 00:07:20 | DB answering again (`err=none`) — ~29 s unavailable |
+| 00:07:22 | primary promoted **system-db-1 → system-db-2** |
+
+`healthz` stayed **200 throughout**. The pass condition was fixed in writing
+beforehand and read from `kubectl`, not from the observer's own parsing:
+
+| Pod | Node | restarts before | after |
+|---|---|---|---|
+| …-mbj2g | staging1 | 0 | **0** |
+| …-sn5tp | staging1 | 0 | **0** |
+| …-zwqv7 | staging3 | 0 | killed with the node — not evidence |
+
+Neither surviving pod restarted. This is the scenario that previously took the
+API down for ~3 minutes; the database was gone for ~29 s and the API carried on
+serving everything that did not need it.
+
+"The API answered" was deliberately **not** accepted as evidence: a crashed pod
+is replaced within seconds and would answer either way. Only the restart count
+distinguishes the two.
+
+### G10 — the pill, seen rendering
+
+56 s after the node went down:
+
+    down=['staging3'] tenants=0 svc=['Backups (barman-cloud plugin)']
+
+and on the dashboard:
+
+    Node offline — staging3 · Mail server affected · Backups (barman-cloud plugin) unavailable
+
+Zero JS errors. Before this work the same outage produced only *"No tenant impact
+detected"* — true, since no tenant workload ran there, and silent about backups.
+
+**Noticed, not fixed:** the dashboard's *Failing Backups: 0 — all healthy* card
+sits directly beneath that banner. Not a contradiction (it counts failed backup
+*runs*, and none were attempted during the window) but the two read oddly
+together, and a hurried operator could take the card as reassurance.
