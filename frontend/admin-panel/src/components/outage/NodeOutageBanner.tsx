@@ -1,9 +1,10 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ServerCrash, Mail, PlugZap, AlertTriangle } from 'lucide-react';
+import { ServerCrash, Mail, AlertTriangle } from 'lucide-react';
 import { useOutageImpact } from '@/hooks/use-outage-impact';
 import AffectedTenantsModal from './AffectedTenantsModal';
 import TimeCell from '@/components/ui/TimeCell';
+import DegradedServiceHelp from './DegradedServiceHelp';
 
 /**
  * "A node is down" — on every admin page.
@@ -130,16 +131,14 @@ export default function NodeOutageBanner() {
             their Service had no ready endpoint. A node on which no tenant runs
             can still take a platform service with it.
           */}
-          {impact.degradedServices.length > 0 && (
-            <span
-              data-testid="node-outage-services-pill"
-              className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2.5 py-0.5 text-xs font-semibold text-red-800 dark:bg-red-800/50 dark:text-red-200"
-              title="This service has no reachable instance while the node is offline. It does not recover on its own — fix or remove the node."
-            >
-              <PlugZap size={12} aria-hidden="true" />
-              {impact.degradedServices.map((s) => s.label).join(', ')} unavailable
-            </span>
-          )}
+          {/*
+            The remediation used to live in an HTML `title` tooltip — hover-only,
+            invisible on touch and to keyboard users, unannounced by screen
+            readers. This is the one failure in the outage set with NO automatic
+            recovery, so "it will not fix itself, here is what to do" has to be
+            reachable, not hovered.
+          */}
+          <DegradedServiceHelp services={impact.degradedServices} nodesDown={impact.nodesDown} />
 
           {impact.affectedTenantCount === 0 && impact.degradedServices.length === 0 && (
             <span className="text-xs text-red-800 dark:text-red-300">
