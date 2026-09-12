@@ -80,6 +80,8 @@ const CATALOGUE = {
 
 /** The separate, cheap WAL endpoint. */
 const WAL_SUMMARY = {
+  state: 'ready' as const,
+  measuredAt: '2026-09-12T00:10:00.000Z',
   segmentCount: 812,
   totalBytes: 3_400_000_000,
   oldestAt: '2026-08-24T19:30:00Z',
@@ -91,7 +93,7 @@ const WAL_SUMMARY = {
 
 function routeApi(cluster: WalArchiveCluster, opts: {
   bound?: boolean;
-  walSummary?: typeof WAL_SUMMARY | { readError: string } | 'reject';
+  walSummary?: Record<string, unknown> | 'reject';
   catalogue?: 'reject' | typeof CATALOGUE;
 } = {}) {
   const bound = opts.bound ?? true;
@@ -211,6 +213,23 @@ describe('Status block — what the archive holds', () => {
     await waitFor(() => expect(s.textContent).toMatch(/8\.85 GiB/));
     expect(s).toHaveTextContent(/base copies/);
     expect(s).toHaveTextContent(/812 segments/);
+  });
+
+  it('serves the previous figures while a refresh runs, with their age', async () => {
+    routeApi(ON, { walSummary: { ...WAL_SUMMARY, state: 'measuring' } });
+    renderWith(<PostgresBackupsSection />);
+    const s = await screen.findByTestId('pg-storage-system-db');
+    await waitFor(() => expect(s).toHaveTextContent(/8\.85 GiB/));
+    expect(s).toHaveTextContent(/measured/);
+    expect(s).toHaveTextContent(/refreshing/);
+  });
+
+  it('says the first measurement is under way instead of claiming zero', async () => {
+    routeApi(ON, { walSummary: { ...WAL_SUMMARY, state: 'measuring', measuredAt: null, segmentCount: 0, totalBytes: 0 } });
+    renderWith(<PostgresBackupsSection />);
+    const s = await screen.findByTestId('pg-storage-system-db');
+    await waitFor(() => expect(s).toHaveTextContent(/measuring/));
+    expect(s.textContent).not.toMatch(/could not measure/);
   });
 
   it('says it could not measure rather than spinning forever', async () => {

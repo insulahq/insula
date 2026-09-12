@@ -30,11 +30,27 @@ const OBJSTORE_PLURAL = 'objectstores';
 
 /** Pages of 1000. 20 pages = 20 000 segments ≈ 320 GiB of WAL before we stop. */
 const MAX_PAGES = 20;
-/** Whole-call budget. Past it we report what we counted and say it is a floor. */
-const DEFAULT_DEADLINE_MS = 20_000;
-const CACHE_TTL_MS = 10 * 60_000;
+/**
+ * Budget for the BACKGROUND walk. Generous, because nobody is waiting on it:
+ * the request returns immediately and the panel polls. Measured on DEV
+ * 2026-09-12: listing ~4 500 segments through the rclone shim exceeds 20s, so a
+ * request-blocking measurement could only ever report "could not measure".
+ */
+const DEFAULT_DEADLINE_MS = 300_000;
+/** How long a finished measurement is served before a fresh walk is started. */
+const CACHE_TTL_MS = 30 * 60_000;
+
+/**
+ * 'ready'     — `measuredAt` holds figures from a completed walk.
+ * 'measuring' — a walk is running; figures are from the previous one, if any.
+ * 'error'     — the last walk failed; `readError` says why.
+ */
+export type WalSummaryState = 'ready' | 'measuring' | 'error';
 
 export interface WalSummaryResult {
+  readonly state: WalSummaryState;
+  /** When the figures below were produced. Null before the first walk finishes. */
+  readonly measuredAt: string | null;
   readonly segmentCount: number;
   readonly totalBytes: number;
   readonly oldestAt: string | null;
@@ -90,32 +106,65 @@ async function withDeadline<T>(ms: number, work: Promise<T>, onTimeout: () => T)
 }
 
 /**
- * Public entry point: bounded end to end.
+ * Public entry point — NEVER blocks on the walk.
  *
- * EVERY step races the budget, not just the S3 walk — the ObjectStore read and
- * the shim-credential read go through the kube API and the Secret store, and
- * either can hang. A panel cell waiting on this must always get an answer.
+ * Listing every retained WAL segment through the storage shim takes minutes on
+ * a real archive (DEV 2026-09-12: >20s for ~4 500 segments and still counting).
+ * A request that waits on that can only ever end in a timeout, which is how the
+ * panel came to show "measuring…" forever and then "could not measure".
+ *
+ * So the measurement runs in the BACKGROUND and this returns immediately with
+ * whatever is known: the last completed figures, or `state: 'measuring'` while
+ * the first walk runs. The panel polls and shows the number with its age.
  */
-export async function summariseWalArchiveForStore(
+export function getWalSummary(
   core: k8s.CoreV1Api,
   custom: k8s.CustomObjectsApi,
   namespace: string,
   objectStoreName: string,
   opts: WalSummaryOpts = {},
-): Promise<WalSummaryResult> {
-  const started = Date.now();
-  const budget = opts.deadlineMs ?? DEFAULT_DEADLINE_MS;
-  return withDeadline(
-    budget,
-    walSummaryWork(core, custom, namespace, objectStoreName, opts),
-    () => ({
-      segmentCount: 0, totalBytes: 0, oldestAt: null, newestAt: null,
-      truncated: true,
-      readError: `timed out after ${budget}ms reading the archive`,
-      queryDurationMs: Date.now() - started,
-    }),
-  );
+): WalSummaryResult {
+  const ck = `${namespace}/${objectStoreName}`;
+  const cached = cache.get(ck);
+  const fresh = cached && Date.now() - cached.at < CACHE_TTL_MS;
+
+  if (!fresh && !inFlight.has(ck)) {
+    const run = walSummaryWork(core, custom, namespace, objectStoreName, opts)
+      .then((value) => { cache.set(ck, { at: Date.now(), value }); })
+      .catch((err: unknown) => {
+        cache.set(ck, { at: Date.now(), value: {
+          state: 'error', measuredAt: null,
+          segmentCount: 0, totalBytes: 0, oldestAt: null, newestAt: null,
+          truncated: false,
+          readError: err instanceof Error ? err.message : String(err),
+          queryDurationMs: 0,
+        } });
+      })
+      .finally(() => { inFlight.delete(ck); });
+    inFlight.set(ck, run);
+  }
+
+  const measuring = inFlight.has(ck);
+  if (cached) {
+    // Keep serving the last good figures while a refresh runs — an operator
+    // reading "12 GiB (measured 20 minutes ago)" is better served than one
+    // watching a spinner.
+    return measuring && cached.value.state === 'ready'
+      ? { ...cached.value, state: 'measuring' }
+      : cached.value;
+  }
+  return {
+    state: measuring ? 'measuring' : 'error',
+    measuredAt: null,
+    segmentCount: 0, totalBytes: 0, oldestAt: null, newestAt: null,
+    truncated: false,
+    readError: measuring ? null : 'measurement has not started',
+    queryDurationMs: 0,
+  };
 }
+
+/** Walks in progress, keyed like the cache — one per object store at a time. */
+const inFlight = new Map<string, Promise<void>>();
 
 async function walSummaryWork(
   core: k8s.CoreV1Api,
@@ -127,21 +176,12 @@ async function walSummaryWork(
   const t0 = Date.now();
   const log = opts.log ?? { warn: () => {}, debug: () => {}, info: () => {} };
   const deadlineMs = opts.deadlineMs ?? DEFAULT_DEADLINE_MS;
-  const ck = `${namespace}/${objectStoreName}`;
 
-  const hit = cache.get(ck);
-  if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.value;
-
-  const fail = (reason: string): WalSummaryResult => {
-    const value: WalSummaryResult = {
-      segmentCount: 0, totalBytes: 0, oldestAt: null, newestAt: null,
-      truncated: false, readError: reason, queryDurationMs: Date.now() - t0,
-    };
-    // Cache failures briefly too — a broken target should not mean a retry
-    // storm from every panel refresh.
-    cache.set(ck, { at: Date.now(), value });
-    return value;
-  };
+  const fail = (reason: string): WalSummaryResult => ({
+    state: 'error', measuredAt: null,
+    segmentCount: 0, totalBytes: 0, oldestAt: null, newestAt: null,
+    truncated: false, readError: reason, queryDurationMs: Date.now() - t0,
+  });
 
   let cr: ObjectStoreCR;
   try {
@@ -244,7 +284,9 @@ async function walSummaryWork(
 
     if (!anyPageRead) return fail(lastError ?? 'WAL prefix could not be listed within the time budget');
 
-    const value: WalSummaryResult = {
+    return {
+      state: 'ready',
+      measuredAt: new Date().toISOString(),
       segmentCount: acc.segmentCount,
       totalBytes: acc.totalBytes,
       oldestAt: acc.oldest === null ? null : new Date(acc.oldest).toISOString(),
@@ -253,8 +295,6 @@ async function walSummaryWork(
       readError: null,
       queryDurationMs: Date.now() - t0,
     };
-    cache.set(ck, { at: Date.now(), value });
-    return value;
   } finally {
     // The S3Client owns a keep-alive socket pool; without this every call leaks
     // sockets until process exit (same trap as the catalogue's client).
