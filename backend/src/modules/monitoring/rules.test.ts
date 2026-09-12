@@ -231,3 +231,31 @@ describe('SLO_RULES — histogram bucket edges must exist', () => {
     expect(total).toBeGreaterThan(0);
   });
 });
+
+describe('SLO_RULES — ratios must not mix metric families', () => {
+  // Measured on DEV 2026-09-12: with the per-service `_bucket` series freshly
+  // created by a scrape-config change while `_count` had months of history,
+  // sum(rate(_bucket{le="1.2"}[30m])) exceeded sum(rate(_count[30m])) — rate()
+  // extrapolates a young series across a window it does not span. The
+  // difference went negative and the ratio evaluated to an empty vector: a rule
+  // that CANNOT FIRE, indistinguishable from a healthy one.
+  //
+  // Any rule dividing one histogram family by another is exposed to this. The
+  // le="+Inf" bucket is the same counter as _count by definition, so a
+  // same-family quotient is always well-defined and always in [0,1].
+  it('never divides a _count series by a _bucket series of the same metric', () => {
+    const offenders: string[] = [];
+    for (const r of SLO_RULES) {
+      if (!r.expr.includes('_bucket')) continue;
+      const base = /(\w+?)_bucket/.exec(r.expr)?.[1];
+      if (base && r.expr.includes(`${base}_count`)) {
+        offenders.push(`${r.id}: mixes ${base}_count with ${base}_bucket`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('checks at least one rule that uses buckets (the guard is not vacuous)', () => {
+    expect(SLO_RULES.filter((r) => r.expr.includes('_bucket')).length).toBeGreaterThan(0);
+  });
+});

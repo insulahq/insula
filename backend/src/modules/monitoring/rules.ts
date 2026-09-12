@@ -304,11 +304,24 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
     name: 'Platform surfaces — slow requests',
     description: 'A sustained share of requests to the platform\'s own surfaces (admin panel, tenant panel, webmail, Stalwart admin) is taking over 1.2 seconds. This excludes tenant websites by design — a slow tenant app shows up on that tenant\'s health page, not here. Check platform-api and the panel pods, then the database: the usual cause is the API waiting on Postgres.',
     severity: 'warning',
+    // Both sides of every comparison come from the SAME metric family
+    // (`_bucket`, le="1.2" vs le="+Inf"), never `_count` vs `_bucket`.
+    //
+    // Mixing them is wrong and was measured wrong on DEV 2026-09-12: with the
+    // per-service `_bucket` series freshly created by the scrape-config change
+    // while `_count` had months of history, `sum(rate(_bucket{le="1.2"}[30m]))`
+    // came out LARGER than `sum(rate(_count[30m]))` — rate() extrapolates a
+    // young series across a window it does not span. The numerator went
+    // NEGATIVE (-0.04) and the ratio evaluated to an empty vector, i.e. a rule
+    // that cannot fire, reported as if it were simply healthy.
+    //
+    // le="+Inf" is the same counter as `_count` by definition, so nothing is
+    // lost: the two series are born together, carry identical labels, and the
+    // quotient is guaranteed to land in [0,1] no matter how new the series is.
     expr:
-      '((sum(rate(traefik_service_request_duration_seconds_count{service=~"(platform|mail)-.*"}[30m]))'
-      + ' - sum(rate(traefik_service_request_duration_seconds_bucket{service=~"(platform|mail)-.*",le="1.2"}[30m])))'
-      + ' / sum(rate(traefik_service_request_duration_seconds_count{service=~"(platform|mail)-.*"}[30m])) > $T)'
-      + ' and ((sum(increase(traefik_service_request_duration_seconds_count{service=~"(platform|mail)-.*"}[30m]))'
+      '((1 - (sum(rate(traefik_service_request_duration_seconds_bucket{service=~"(platform|mail)-.*",le="1.2"}[30m]))'
+      + ' / sum(rate(traefik_service_request_duration_seconds_bucket{service=~"(platform|mail)-.*",le="+Inf"}[30m])))) > $T)'
+      + ' and ((sum(increase(traefik_service_request_duration_seconds_bucket{service=~"(platform|mail)-.*",le="+Inf"}[30m]))'
       + ' - sum(increase(traefik_service_request_duration_seconds_bucket{service=~"(platform|mail)-.*",le="1.2"}[30m]))) >= 10)',
     subjectLabels: [],
     threshold: 0.05,
