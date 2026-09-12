@@ -102,10 +102,10 @@ node's allowlist within seconds. Since the chain policy is `drop`, the machine
 can then no longer reach `6443`, so its agent cannot re-register:
 
 ```
-staging1 cluster_peers_v4 = { 46.224.122.58, 89.167.3.56, 167.235.237.116 }
-                             (the deleted node's IP is gone)
+node1 cluster_peers_v4 = { 192.0.2.11, 192.0.2.12, 192.0.2.13 }
+                          (the deleted node's IP is gone)
 
-worker → staging1:6443 = BLOCKED
+worker → node1:6443 = BLOCKED
 k3s-agent: Failed to validate connection to cluster ...
            failed to get CA certs: context deadline exceeded
 ```
