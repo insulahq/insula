@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ServerCrash, Mail, PlugZap } from 'lucide-react';
+import { ServerCrash, Mail, PlugZap, AlertTriangle } from 'lucide-react';
 import { useOutageImpact } from '@/hooks/use-outage-impact';
 import AffectedTenantsModal from './AffectedTenantsModal';
 
@@ -23,13 +23,45 @@ export default function NodeOutageBanner() {
 
   // A failed cluster read must say so rather than render nothing, which
   // would be indistinguishable from a healthy cluster.
+  //
+  // It must also be READABLE. The 2026-09-12 quorum-loss drill put this in
+  // front of the operator:
+  //
+  //   Cluster health unknown. longhorn replicas: fetch failed; nodes:
+  //   HTTP-Code: 503 Message: Unknown API Status Code! Body: "{\"kind\":
+  //   \"Status\",\"metadata\":{}, ... Headers: {"content-length":"124", ...
+  //
+  // — honest, and close to unreadable. The operator's first question during an
+  // incident is "what can I no longer trust?", not "what did the Kubernetes
+  // client library return?". So lead with the consequence and keep the raw
+  // text available but out of the way.
   if (impact.readError) {
     return (
       <div
         data-testid="node-outage-read-error"
         className="mx-4 mt-4 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900 lg:mx-6 lg:mt-6 dark:border-amber-700 dark:bg-amber-900/30 dark:text-amber-200"
       >
-        <strong>Cluster health unknown.</strong> {impact.readError}
+        <p className="flex items-start gap-2">
+          <AlertTriangle size={16} className="mt-0.5 shrink-0 text-amber-600 dark:text-amber-400" aria-hidden="true" />
+          <span>
+            <strong>Cluster health cannot be determined.</strong>{' '}
+            The platform could not read the cluster, so node status, tenant health and
+            service availability on this page are <strong>unknown rather than healthy</strong>.
+            Tenants already running are unaffected by this — their sites keep serving without
+            the control plane.
+          </span>
+        </p>
+        <details className="mt-2">
+          <summary
+            data-testid="node-outage-read-error-details"
+            className="cursor-pointer text-xs font-medium underline underline-offset-2"
+          >
+            Technical detail
+          </summary>
+          <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded bg-amber-100 p-2 text-xs dark:bg-amber-900/50">
+            {impact.readError}
+          </pre>
+        </details>
       </div>
     );
   }
