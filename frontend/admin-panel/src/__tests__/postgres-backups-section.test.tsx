@@ -82,6 +82,11 @@ const CATALOGUE = {
 const WAL_SUMMARY = {
   state: 'ready' as const,
   measuredAt: '2026-09-12T00:10:00.000Z',
+  gaps: [] as Array<{ afterSegment: string; beforeSegment: string; missingCount: number; timeline: number }>,
+  continuousSince: '2026-08-24T19:30:00Z',
+  continuousUntil: '2026-09-11T20:14:31Z',
+  continuityInconclusive: false,
+  timelines: [1],
   segmentCount: 812,
   totalBytes: 3_400_000_000,
   oldestAt: '2026-08-24T19:30:00Z',
@@ -314,6 +319,53 @@ describe('Status block — what the archive holds', () => {
     expect(b).toHaveTextContent(/last/);
     expect(b).toHaveTextContent(/next/);
     await waitFor(() => expect(b).toHaveTextContent(/2 kept offsite/));
+  });
+});
+
+describe('A broken WAL chain caps what can be restored', () => {
+  beforeEach(() => { mockApiFetch.mockReset(); });
+
+  const BROKEN = {
+    ...WAL_SUMMARY,
+    gaps: [{ afterSegment: '000000010000000100000002', beforeSegment: '000000010000000100000009', missingCount: 6, timeline: 1 }],
+    continuousUntil: '2026-09-05T12:00:00Z',
+  };
+
+  it('warns that segments are missing and names the last reachable point', async () => {
+    routeApi(ON, { walSummary: BROKEN });
+    renderWith(<PostgresBackupsSection />);
+    const w = await screen.findByTestId('pg-wal-gap-warning-system-db');
+    expect(w).toHaveTextContent(/6 write-ahead log segments are missing/);
+    expect(w).toHaveTextContent(/stops at the first segment it cannot find/);
+    expect(w).toHaveTextContent(/000000010000000100000002/);
+  });
+
+  it('ends the restore window at the break, NOT at "now"', async () => {
+    // The whole point: retention says 30 days, but replay cannot pass the gap.
+    routeApi(ON, { walSummary: BROKEN });
+    renderWith(<PostgresBackupsSection />);
+    const win = await screen.findByTestId('pg-window-system-db');
+    await waitFor(() => expect(win.textContent).not.toMatch(/→ now/));
+    expect(win).toHaveTextContent(/9\/5\/2026|2026/);
+  });
+
+  it('says "now" only while the chain is unbroken', async () => {
+    routeApi(ON);
+    renderWith(<PostgresBackupsSection />);
+    const win = await screen.findByTestId('pg-window-system-db');
+    await waitFor(() => expect(win).toHaveTextContent(/→ now/));
+    expect(screen.queryByTestId('pg-wal-gap-warning-system-db')).toBeNull();
+  });
+
+  it('never claims the chain is intact from a listing that was cut short', async () => {
+    // "no gaps found" is TRUE of a walk that read almost nothing.
+    routeApi(ON, { walSummary: { ...WAL_SUMMARY, state: 'ready', gaps: [], continuityInconclusive: true } });
+    renderWith(<PostgresBackupsSection />);
+    const u = await screen.findByTestId('pg-wal-gap-unknown-system-db');
+    expect(u).toHaveTextContent(/could not be checked for gaps/);
+    expect(u).toHaveTextContent(/not a statement that the chain is intact/);
+    // and it must not raise a false alarm either
+    expect(screen.queryByTestId('pg-wal-gap-warning-system-db')).toBeNull();
   });
 });
 

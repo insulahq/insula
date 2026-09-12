@@ -56,8 +56,35 @@ export type CnpgCatalogueBackup = z.infer<typeof cnpgCatalogueBackupSchema>;
 export const walSummaryStateSchema = z.enum(['ready', 'measuring', 'error']);
 export type WalSummaryState = z.infer<typeof walSummaryStateSchema>;
 
+/** A hole in the WAL chain. Replay stops at the first one. */
+export const walGapSchema = z.object({
+  afterSegment: z.string(),
+  beforeSegment: z.string(),
+  missingCount: z.number().int().positive(),
+  timeline: z.number().int().nonnegative(),
+});
+export type WalGap = z.infer<typeof walGapSchema>;
+
 export const walArchiveSummarySchema = z.object({
   state: walSummaryStateSchema,
+  /**
+   * Holes in the archived WAL. Point-in-time recovery replays the log forward
+   * from a base backup and STOPS at the first segment it cannot fetch, so any
+   * gap caps recovery at `continuousUntil` — a target time past that fails with
+   * "recovery ended before configured recovery target was reached".
+   */
+  gaps: z.array(walGapSchema),
+  /** Bounds of the unbroken run that reaches the newest segment. */
+  continuousSince: z.string().nullable(),
+  continuousUntil: z.string().nullable(),
+  /**
+   * The listing was cut short, so gap findings prove nothing EITHER WAY: the
+   * absent segments may simply not have been read. Never render "no gaps" from
+   * this state.
+   */
+  continuityInconclusive: z.boolean(),
+  /** Timelines present. More than one means the cluster was restored at least once. */
+  timelines: z.array(z.number().int().nonnegative()),
   /** When these figures were produced; null before the first walk finishes. */
   measuredAt: z.string().nullable(),
   segmentCount: z.number().int().nonnegative(),

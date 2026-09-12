@@ -20,7 +20,7 @@ import { useState, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   Database, RefreshCw, AlertCircle, CheckCircle2, Power, PowerOff,
-  Loader2, History, HardDrive, Clock, Activity,
+  Loader2, History, HardDrive, Clock, Activity, AlertTriangle,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import {
@@ -394,7 +394,23 @@ function StatusGrid({ cluster }: { readonly cluster: WalArchiveCluster }) {
   const hasBase = (archive.backupCount ?? 0) > 0;
   const floor = cluster.status?.firstRecoverabilityPoint
     ?? (hasBase ? (archive.earliestBackupAt ?? archive.walSummary?.oldestAt ?? null) : null);
-  const windowDays = floor ? Math.max(0, Math.floor((Date.now() - new Date(floor).getTime()) / 86_400_000)) : null;
+
+  // The CEILING is not "now". Recovery replays the log forward and stops dead at
+  // the first segment the archive cannot produce, so a gap caps the reachable
+  // point at the end of the unbroken run. Reporting the retention window as the
+  // recovery window invites a restore that cannot succeed.
+  const wal = archive.walSummary;
+  const gaps = wal?.gaps ?? [];
+  const chainBroken = gaps.length > 0 && !wal?.continuityInconclusive;
+  const ceilingIso = chainBroken ? wal?.continuousUntil ?? null : null;
+  const missingSegments = gaps.reduce((n, g) => n + g.missingCount, 0);
+
+  const windowEnd = ceilingIso ? new Date(ceilingIso).toLocaleString() : 'now';
+  const windowDays = floor
+    ? Math.max(0, Math.floor(
+      ((ceilingIso ? new Date(ceilingIso).getTime() : Date.now()) - new Date(floor).getTime()) / 86_400_000,
+    ))
+    : null;
 
   const baseBytes = archive.baseBytes;
   const walBytes = archive.walSummary?.totalBytes ?? null;
@@ -410,7 +426,7 @@ function StatusGrid({ cluster }: { readonly cluster: WalArchiveCluster }) {
   // operator's disaster-recovery position.
   const listingInconclusive = archive.basePartial && archive.backupCount === 0;
   const windowValue = floor
-    ? `${new Date(floor).toLocaleString()} → now${windowDays !== null ? ` · ${windowDays} day${windowDays === 1 ? '' : 's'}` : ''}`
+    ? `${new Date(floor).toLocaleString()} → ${windowEnd}${windowDays !== null ? ` · ${windowDays} day${windowDays === 1 ? '' : 's'}` : ''}`
     : archive.baseState === 'loading'
       ? 'reading the archive…'
       : archive.baseState === 'error'
@@ -442,6 +458,44 @@ function StatusGrid({ cluster }: { readonly cluster: WalArchiveCluster }) {
         archive.walMeasuring ? ' · refreshing' : ''}`;
 
   return (
+    <>
+    {chainBroken && (
+      <div
+        className="flex items-start gap-2 rounded-lg border border-rose-300 bg-rose-50 p-3 text-sm text-rose-900 dark:border-rose-700 dark:bg-rose-900/20 dark:text-rose-200"
+        data-testid={`pg-wal-gap-warning-${cluster.clusterName}`}
+      >
+        <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+        <div>
+          <strong>
+            {missingSegments} write-ahead log segment{missingSegments === 1 ? ' is' : 's are'} missing
+            from the archive.
+          </strong>{' '}
+          Recovery replays the log in order and stops at the first segment it cannot
+          find, so this database can only be restored to a point at or before{' '}
+          <strong>{ceilingIso ? new Date(ceilingIso).toLocaleString() : 'the break'}</strong> —
+          asking for anything later will fail partway through rather than warn you.
+          {gaps[0] && (
+            <span className="mt-1 block font-mono text-[11px] opacity-80">
+              first break after {gaps[0].afterSegment}
+              {gaps.length > 1 ? ` (+${gaps.length - 1} more)` : ''}
+            </span>
+          )}
+        </div>
+      </div>
+    )}
+    {wal?.continuityInconclusive && wal.state !== 'measuring' && (
+      <div
+        className="flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-900/20 dark:text-amber-200"
+        data-testid={`pg-wal-gap-unknown-${cluster.clusterName}`}
+      >
+        <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+        <div>
+          <strong>The log could not be checked for gaps.</strong> The archive
+          listing did not finish, so whether every segment is present is unknown —
+          this is not a statement that the chain is intact.
+        </div>
+      </div>
+    )}
     <div
       className="grid grid-cols-1 gap-x-6 gap-y-3 rounded-lg border border-gray-200 bg-white p-4 text-sm dark:border-gray-700 dark:bg-gray-800 sm:grid-cols-2"
       data-testid={`pg-status-${cluster.clusterName}`}
@@ -451,7 +505,7 @@ function StatusGrid({ cluster }: { readonly cluster: WalArchiveCluster }) {
         label="Can restore to any point in"
         testid={`pg-window-${cluster.clusterName}`}
         value={windowValue}
-        tone={archive.baseState === 'error' || listingInconclusive ? 'bad' : 'normal'}
+        tone={archive.baseState === 'error' || listingInconclusive || chainBroken ? 'bad' : 'normal'}
       />
       <Stat
         icon={<Clock size={14} />}
@@ -485,6 +539,7 @@ function StatusGrid({ cluster }: { readonly cluster: WalArchiveCluster }) {
         tone={totalBytes === null && archive.walState === 'error' && archive.baseState === 'error' ? 'bad' : 'normal'}
       />
     </div>
+    </>
   );
 }
 

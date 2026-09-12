@@ -125,3 +125,36 @@ export async function readArchiverStats(db: Database): Promise<ArchiverStats | n
 export function isPlatformDbCluster(namespace: string, name: string): boolean {
   return namespace === 'platform' && name === 'system-db';
 }
+
+/**
+ * Segments per WAL log-file value — `0x100000000 / wal_segment_size`.
+ *
+ * The WAL gap detector needs this to know that …0000FF is followed by
+ * …00010000 rather than by a hole. It is 256 for the default 16 MB segment
+ * size (verified on production 2026-09-12), but the setting is configurable at
+ * initdb time and a wrong divisor invents a gap at every roll-over — so it is
+ * read from Postgres rather than assumed.
+ *
+ * Returns null when it cannot be read; the caller then falls back to the
+ * documented default rather than refusing to report anything.
+ */
+export async function readSegmentsPerFile(db: Database): Promise<number | null> {
+  try {
+    const result = await db.execute(sql`SHOW wal_segment_size`) as unknown as
+      { rows?: Array<Record<string, string>> } | Array<Record<string, string>>;
+    const rows = Array.isArray(result) ? result : (result.rows ?? []);
+    const raw = rows[0] ? Object.values(rows[0])[0] : undefined;
+    if (typeof raw !== 'string') return null;
+
+    const m = /^(\d+)\s*([kMG]B)?$/.exec(raw.trim());
+    if (!m) return null;
+    const unit = { kB: 1024, MB: 1024 * 1024, GB: 1024 * 1024 * 1024 }[m[2] ?? 'MB'] ?? 1;
+    const bytes = Number(m[1]) * unit;
+    if (!Number.isFinite(bytes) || bytes <= 0) return null;
+
+    const perFile = Math.floor(0x100000000 / bytes);
+    return perFile > 0 ? perFile : null;
+  } catch {
+    return null;
+  }
+}

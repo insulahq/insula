@@ -5,6 +5,8 @@ import { ApiError } from '../../shared/errors.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { listBackupsFromObjectStore } from './service.js';
 import { getWalSummary } from './wal-summary.js';
+import { readSegmentsPerFile } from '../system-backup/archiver-stats.js';
+import { isPlatformDbCluster } from '../system-backup/archiver-stats.js';
 
 const NAME_RE = /^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$/;
 function validateName(s: string, kind: string): void {
@@ -101,11 +103,17 @@ export async function cnpgBackupCatalogueRoutes(app: FastifyInstance): Promise<v
 
     const kc = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
     const k8s = createK8sClients(kc);
+    // `wal_segment_size` decides where one log file rolls into the next. Read it
+    // for the platform's own cluster; elsewhere the walk uses the documented
+    // 16 MB default rather than guessing from segment names.
+    const segmentsPerFile = q.cluster && isPlatformDbCluster(p.namespace, q.cluster)
+      ? await readSegmentsPerFile(app.db) ?? undefined
+      : undefined;
     // Returns immediately: the walk runs in the background and the response
     // carries `state` so the panel can poll rather than hold a request open.
     const result = getWalSummary(
       k8s.core, k8s.custom, p.namespace, p.objectStoreName,
-      { log: request.log, clusterName: q.cluster },
+      { log: request.log, clusterName: q.cluster, segmentsPerFile },
     );
     return success(result);
   });
