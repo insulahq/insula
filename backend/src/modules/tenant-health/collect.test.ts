@@ -102,3 +102,84 @@ describe('collectFacts under a database outage', () => {
     expect(impact.affectedTenants.map((t) => t.tenantName)).toEqual(['acme']);
   });
 });
+
+/**
+ * Recovering node identity from the platform's own inventory.
+ *
+ * The 2026-09-12 quorum-loss drill left the platform able to report that
+ * something was wrong but not WHICH machine — the node list is itself an
+ * API-server read, so losing the control plane lost the names with it. The
+ * database survives that (it served operator logins throughout the drill) and
+ * the node-sync reconciler already persists conditions to `cluster_nodes`, so
+ * the names are recoverable — stale by a minute or two, and labelled as such.
+ */
+describe('node list fallback to the persisted inventory', () => {
+  const k8sWithDeadNodeRead = () => ({
+    core: {
+      listNode: async () => { throw new Error('apiserver not ready'); },
+      listPodForAllNamespaces: async () => ({ items: [] }),
+    },
+    custom: { listNamespacedCustomObject: async () => ({ items: [] }) },
+    disco: { listNamespacedEndpointSlice: async () => ({ items: [] }) },
+  }) as unknown as Parameters<typeof collectFacts>[1];
+
+  /** A db whose cluster_nodes query returns rows; everything else is empty. */
+  const dbWithInventory = (rows: unknown[]) => {
+    let call = 0;
+    const mk = (): Any => {
+      const idx = call++;
+      const c: Any = {};
+      for (const m of ['from', 'groupBy', 'where']) c[m] = () => c;
+      // 0 tenants, 1 mailbox counts, 2 settings, 3 cluster_nodes
+      c.then = (res: (v: unknown) => void) => res(idx === 3 ? rows : []);
+      return c;
+    };
+    return { select: () => mk() } as unknown as Parameters<typeof collectFacts>[0];
+  };
+
+  const row = (name: string, ready: string, seen: string) => ({
+    name, role: 'server', ingressMode: 'all',
+    publicIp: '198.51.100.1', publicIpv6: null,
+    statusConditions: [{ type: 'Ready', status: ready }],
+    lastSeenAt: new Date(seen),
+  });
+
+  it('uses the inventory when the live node read fails, and reports how stale it is', async () => {
+    const facts = await collectFacts(
+      dbWithInventory([
+        row('staging1', 'True', '2026-09-12T10:45:30Z'),
+        row('staging3', 'Unknown', '2026-09-12T10:45:00Z'),
+      ]),
+      k8sWithDeadNodeRead(),
+    );
+    expect(facts.nodes.map((n) => n.name).sort()).toEqual(['staging1', 'staging3']);
+    expect(facts.nodes.find((n) => n.name === 'staging3')?.ready).toBe(false);
+    // Oldest observation, so the caveat is not more flattering than the data.
+    expect(facts.nodesAsOf).toBe('2026-09-12T10:45:00.000Z');
+    // The live read still failed, and that must not be hidden by the recovery.
+    expect(facts.readError).toContain('nodes');
+  });
+
+  it('does NOT substitute inventory for a live read that legitimately returned no nodes', async () => {
+    // A successful read of an empty cluster is a different fact from a failed
+    // read, and quietly replacing it with stale rows would invent nodes.
+    const k8s = {
+      core: {
+        listNode: async () => ({ items: [] }),
+        listPodForAllNamespaces: async () => ({ items: [] }),
+      },
+      custom: { listNamespacedCustomObject: async () => ({ items: [] }) },
+      disco: { listNamespacedEndpointSlice: async () => ({ items: [] }) },
+    } as unknown as Parameters<typeof collectFacts>[1];
+    const facts = await collectFacts(dbWithInventory([row('staging1', 'True', '2026-09-12T10:45:00Z')]), k8s);
+    expect(facts.nodes).toEqual([]);
+    expect(facts.nodesAsOf).toBeNull();
+  });
+
+  it('claims nothing when the inventory is also empty', async () => {
+    const facts = await collectFacts(dbWithInventory([]), k8sWithDeadNodeRead());
+    expect(facts.nodes).toEqual([]);
+    expect(facts.nodesAsOf).toBeNull();
+    expect(facts.readError).toBeTruthy();
+  });
+});

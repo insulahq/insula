@@ -13,7 +13,7 @@
 import { eq, sql } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
-import { tenants, mailboxes, systemSettings } from '../../db/schema.js';
+import { tenants, mailboxes, systemSettings, clusterNodes } from '../../db/schema.js';
 import type { NodeFact, PodFact, ReplicaFact, TenantFact, VolumeFact } from './service.js';
 
 const NODE_ROLE_LABEL = 'insula.host/node-role';
@@ -96,6 +96,11 @@ export interface CollectedFacts {
   readonly mailActiveNode: string | null;
   readonly endpoints: EndpointFact[];
   readonly readError: string | null;
+  /**
+   * Oldest `last_seen_at` behind `nodes` when they came from the platform's
+   * own inventory instead of a live read. Null means the list is live.
+   */
+  readonly nodesAsOf: string | null;
 }
 
 /** Only `Ready=True` counts. A dead node reports `Unknown`, not `False`. */
@@ -202,7 +207,67 @@ export async function collectFacts(
     [],
   );
 
-  const nodes: NodeFact[] = (nodeResp.items ?? []).map((n) => ({
+  // When the live node read fails, fall back to the inventory the node-sync
+  // reconciler persists every 60 s.
+  //
+  // Losing the control plane otherwise loses the node NAMES too, because the
+  // node list is itself an API-server read — the 2026-09-12 quorum-loss drill
+  // left the platform able to say something was wrong but not which machine.
+  // The database survives that: its primary sat on the surviving node and
+  // served throughout, including operator logins.
+  //
+  // The fallback is deliberately only for the read FAILURE path. A live read
+  // that legitimately returns zero nodes is a different thing and must not be
+  // quietly replaced with stale rows.
+  let nodesAsOf: string | null = null;
+  let rawNodes: RawNode[] = nodeResp.items ?? [];
+  if (errors.some((e) => e.startsWith('nodes:'))) {
+    const cached = await guard(
+      'cached nodes',
+      () => db
+        .select({
+          name: clusterNodes.name,
+          role: clusterNodes.role,
+          ingressMode: clusterNodes.ingressMode,
+          publicIp: clusterNodes.publicIp,
+          publicIpv6: clusterNodes.publicIpv6,
+          statusConditions: clusterNodes.statusConditions,
+          lastSeenAt: clusterNodes.lastSeenAt,
+        })
+        .from(clusterNodes),
+      [] as Array<{
+        name: string; role: string | null; ingressMode: string | null;
+        publicIp: string | null; publicIpv6: string | null;
+        statusConditions: Array<{ type: string; status: string }> | null;
+        lastSeenAt: Date | string;
+      }>,
+    );
+    if (cached.length > 0) {
+      rawNodes = cached.map((c) => ({
+        metadata: {
+          name: c.name,
+          labels: {
+            [NODE_ROLE_LABEL]: c.role ?? 'worker',
+            [INGRESS_MODE_LABEL]: c.ingressMode ?? 'all',
+          },
+        },
+        status: {
+          conditions: (c.statusConditions ?? []) as RawNode['status'] extends undefined
+            ? never : NonNullable<RawNode['status']>['conditions'],
+          addresses: [
+            ...(c.publicIp ? [{ type: 'ExternalIP', address: c.publicIp }] : []),
+            ...(c.publicIpv6 ? [{ type: 'ExternalIP', address: c.publicIpv6 }] : []),
+          ],
+        },
+      }));
+      const oldest = cached
+        .map((c) => (c.lastSeenAt instanceof Date ? c.lastSeenAt : new Date(c.lastSeenAt)))
+        .sort((a, b) => a.getTime() - b.getTime())[0];
+      nodesAsOf = oldest ? oldest.toISOString() : null;
+    }
+  }
+
+  const nodes: NodeFact[] = rawNodes.map((n) => ({
     name: n.metadata?.name ?? '<unnamed>',
     ready: nodeIsReady(n),
     role: n.metadata?.labels?.[NODE_ROLE_LABEL] ?? null,
@@ -285,6 +350,7 @@ export async function collectFacts(
     tenants: tenantFacts,
     endpoints,
     mailActiveNode: settings?.activeNode ?? null,
+    nodesAsOf,
     // A node-list failure is fatal to the verdict; the rest degrade the
     // detail but not the headline. Reporting any error is the safe choice.
     readError: errors.length > 0 ? errors.join('; ') : null,

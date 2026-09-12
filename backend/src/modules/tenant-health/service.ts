@@ -95,8 +95,10 @@ export interface OutageInput {
     readonly namespace: string;
     readonly serviceName: string;
     readonly readyEndpoints: number;
-  }>;
+  }>;  /** Oldest `last_seen_at` when `nodes` came from the inventory; null if live. */
+  readonly nodesAsOf?: string | null;
 }
+
 
 /**
  * Lifecycle states where "unhealthy" is meaningless — the tenant is
@@ -371,5 +373,6 @@ export function computeOutageImpact(input: OutageInput): ClusterOutageImpact {
     degradedServices: downNodes.length === 0 ? [] : degradedServicesFrom(input.endpoints),
     observedAt: input.observedAt.toISOString(),
     readError: input.readError ?? null,
+    nodesAsOf: input.nodesAsOf ?? null,
   };
 }

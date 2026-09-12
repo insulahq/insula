@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { ServerCrash, Mail, PlugZap, AlertTriangle } from 'lucide-react';
 import { useOutageImpact } from '@/hooks/use-outage-impact';
 import AffectedTenantsModal from './AffectedTenantsModal';
+import TimeCell from '@/components/ui/TimeCell';
 
 /**
  * "A node is down" — on every admin page.
@@ -45,10 +46,25 @@ export default function NodeOutageBanner() {
           <AlertTriangle size={16} className="mt-0.5 shrink-0 text-amber-600 dark:text-amber-400" aria-hidden="true" />
           <span>
             <strong>Cluster health cannot be determined.</strong>{' '}
-            The platform could not read the cluster, so node status, tenant health and
-            service availability on this page are <strong>unknown rather than healthy</strong>.
+            The platform could not read the cluster, so tenant health and service
+            availability on this page are <strong>unknown rather than healthy</strong>.
             Tenants already running are unaffected by this — their sites keep serving without
             the control plane.
+            {impact.nodesAsOf && impact.nodesDown.length > 0 && (
+              <>
+                {' '}Last recorded state, from{' '}
+                <TimeCell iso={impact.nodesAsOf} mode="age" />:{' '}
+                <strong>{impact.nodesDown.map((n) => n.name).join(', ')}</strong>
+                {impact.nodesDown.length > 1 ? ' were' : ' was'} offline. That reading is
+                from the platform&rsquo;s own records, not the cluster, so it may have moved on.
+              </>
+            )}
+            {impact.nodesAsOf && impact.nodesDown.length === 0 && (
+              <>
+                {' '}The last recorded state, from{' '}
+                <TimeCell iso={impact.nodesAsOf} mode="age" />, had every node online.
+              </>
+            )}
           </span>
         </p>
         <details className="mt-2">
