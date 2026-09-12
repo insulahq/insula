@@ -232,6 +232,37 @@ describe('Status block — what the archive holds', () => {
     expect(s.textContent).not.toMatch(/could not measure/);
   });
 
+  it('does not promise a recovery window when there is log but no base backup', async () => {
+    // Retained WAL with nothing underneath it restores NOTHING. Using the
+    // oldest segment as the floor would have told the operator they could
+    // recover to a point they cannot.
+    routeApi(
+      { ...ON, status: { ...ON.status!, firstRecoverabilityPoint: null } },
+      { catalogue: { ...CATALOGUE, backups: [], partial: false } },
+    );
+    renderWith(<PostgresBackupsSection />);
+    const w = await screen.findByTestId('pg-window-system-db');
+    await waitFor(() => expect(w).toHaveTextContent(/nothing restorable yet/));
+    expect(w.textContent).not.toMatch(/→ now/);
+  });
+
+  it('does not call an archive empty when the listing timed out before reading it', async () => {
+    // Seen on DEV: the listing hit its deadline with zero entries read, and the
+    // card said "nothing restorable yet — the first base backup has not run".
+    // That is a claim about the operator's DR position that nobody verified.
+    // No firstRecoverabilityPoint either — CNPG's own figure would (rightly)
+    // answer the question when it has one.
+    routeApi(
+      { ...ON, status: { ...ON.status!, firstRecoverabilityPoint: null } },
+      { catalogue: { ...CATALOGUE, backups: [], partial: true } },
+    );
+    renderWith(<PostgresBackupsSection />);
+    const w = await screen.findByTestId('pg-window-system-db');
+    await waitFor(() => expect(w).toHaveTextContent(/listing timed out/));
+    expect(w.textContent).not.toMatch(/nothing restorable yet/);
+    expect(await screen.findByTestId('pg-base-system-db')).toHaveTextContent(/timed out before any were read/);
+  });
+
   it('still reports base copies when the log cannot be listed', async () => {
     // Some targets cannot enumerate the log prefix in any reasonable time —
     // rclone itself could not on DEV. Throwing away the base figure we DO have
