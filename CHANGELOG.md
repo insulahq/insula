@@ -12,6 +12,20 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **The latency-histogram upgrade now actually applies to an existing cluster.**
+  2026.9.18 widened Traefik's latency buckets so the SLO page reports a measured
+  figure instead of one interpolated across a 900 ms-wide gap. On a *new* install
+  that worked; on an existing one the upgrade step failed every time it ran,
+  because the host-side converge deliberately mounts the administrator's home
+  directory read-only and the tooling it invoked insisted on writing a cache
+  there. The step now uses a private scratch directory, so the wider buckets
+  reach clusters that were installed before the change. Until it succeeded, the
+  hourly converge on each node exited with an error, which is visible in
+  `systemctl status platform-ops-host-config` — that stops too. Applying it rolls
+  the ingress DaemonSet one node at a time, so each node's ingress blips for a
+  few seconds, as any ingress configuration change does.
+
 ## [2026.9.18] - 2026-09-12
 
 ### Added
