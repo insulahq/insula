@@ -447,6 +447,12 @@ function StatusGrid({ cluster }: { readonly cluster: WalArchiveCluster }) {
   // reasonable time (DEV 2026-09-12: rclone itself could not list the prefix in
   // 25s). When that happens we still know the base copies exactly, so we show
   // that and say what is missing instead of throwing the whole cell away.
+  // "Not counted yet" and "could not be counted" are different statements and
+  // the cell used to make the second one while the walk was still running:
+  // seen on DEV rendering "could not be listed in time" during an in-progress
+  // measurement. Only a walk that actually FAILED earns that verdict.
+  const walPending = archive.walState === 'loading';
+  const walFailed = archive.walState === 'error';
   const baseOnly = baseBytes !== null && walBytes === null;
   const storageValue = totalBytes !== null
     ? `${formatBytes(totalBytes)}${archive.walSummary?.truncated || archive.basePartial ? ' or more' : ''}${baseOnly ? ' (base copies only)' : ''}`
@@ -457,7 +463,11 @@ function StatusGrid({ cluster }: { readonly cluster: WalArchiveCluster }) {
   const storageSub = totalBytes === null
     ? undefined
     : baseOnly
-      ? 'log volume not counted — this storage target could not be listed in time'
+      ? (walPending
+        ? 'log volume still being measured — this can take a few minutes'
+        : walFailed
+          ? 'log volume not counted — this storage target could not be listed in time'
+          : 'log volume not counted')
       : `${baseBytes !== null ? formatBytes(baseBytes) : '—'} base copies · ${
         walBytes !== null ? formatBytes(walBytes) : '—'} log${
         archive.walSummary ? ` (${archive.walSummary.segmentCount}${archive.walSummary.truncated ? '+' : ''} segments)` : ''}${
