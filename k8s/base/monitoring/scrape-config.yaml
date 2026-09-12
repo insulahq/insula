@@ -167,13 +167,35 @@ data:
           # comment above calling cadvisor "the only job whose series count
           # grows with tenant count" was wrong. The _bucket family alone was
           # 115 series on production at 6 tenants (2026-09-03), the single
-          # largest metric name in this job, and NOTHING queries it: the only
-          # histogram_quantile() in the codebase reads the *entrypoint*
-          # histogram (monitoring/routes.ts + rules.ts, the p95 latency SLO).
-          # _sum and _count survive, so per-service average latency is still
-          # derivable; only the per-le percentile detail is gone.
-          - source_labels: [__name__]
-            regex: 'traefik_service_request_duration_seconds_bucket'
+          # largest metric name in this job.
+          #
+          # It is no longer dropped WHOLESALE (2026-09-12). The
+          # `platform-latency-slow-share` SLO rule needs per-service buckets to
+          # separate the platform's own surfaces from tenant websites — scoring
+          # a tenant's slow app as a platform SLO breach is what made the old
+          # entrypoint-wide p95 rule unusable. So the buckets are kept for
+          # `platform-*` and `mail-*` services and dropped for everything else.
+          #
+          # The bound is what matters: the Traefik `service` label is
+          # `<namespace>-<ingress>-<hash>@kubernetescrd`, and tenant namespaces
+          # are always `tenant-*`, so the kept set is FIXED-SIZE (5 services on
+          # production) and does NOT grow with tenant count — which was the
+          # entire reason for the original drop. Tenant buckets, the part that
+          # scaled, stay dropped; their _sum and _count survive, so per-service
+          # average latency is still derivable for every tenant.
+          #
+          # Two steps because RE2 has no negative lookahead: mark the series to
+          # keep, then drop unmarked ones. `__tmp_*` is stripped automatically
+          # at the end of relabeling, so it never reaches storage.
+          - source_labels: [__name__, service]
+            separator: ';'
+            regex: 'traefik_service_request_duration_seconds_bucket;(platform|mail)-.*'
+            target_label: __tmp_keep_service_bucket
+            replacement: 'yes'
+            action: replace
+          - source_labels: [__name__, __tmp_keep_service_bucket]
+            separator: ';'
+            regex: 'traefik_service_request_duration_seconds_bucket;'
             action: drop
           # Go runtime histograms — GC pause / scheduler latency distributions
           # of the Traefik process. Never queried, and dropped on every Go

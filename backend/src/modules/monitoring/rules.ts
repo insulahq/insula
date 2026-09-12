@@ -256,16 +256,77 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
     forSeconds: 1800,
     unit: 'ratio',
   },
+  // ── Platform-surface latency ────────────────────────────────────────────
+  // REPLACES `api-latency-p95` (retired 2026-09-12; migration 0109 drops its
+  // override + alert_state rows). That rule was a p95 over the whole
+  // `websecure` entrypoint against a 0.5s threshold, and it was wrong three
+  // ways at once. Production fired it 23 times in 21 days, every one of them
+  // noise:
+  //
+  //  1. NO VOLUME FLOOR. The availability rules above grew an
+  //     `and increase(...) >= 20` floor for exactly this reason; the latency
+  //     rule never got one. Production serves ~40 requests per 5-minute
+  //     window, so p95 WAS THE SECOND-SLOWEST REQUEST — one extra slow
+  //     request flipped the alert.
+  //
+  //  2. THE THRESHOLD WAS FINER THAN THE HISTOGRAM. Traefik's default buckets
+  //     are 0.1/0.3/1.2/5, so 0.5s sits mid-way through a 900ms-wide bucket
+  //     and nothing distinguishes 0.31s from 1.19s. The "Current value: 615ms"
+  //     in the notification was linear interpolation, reproducible from the
+  //     bucket counts alone (36 of 39 ≤0.3s, 39 ≤1.2s → 0.3 + 1.05/3 × 0.9).
+  //     No request was ever measured at 615ms.
+  //
+  //  3. IT SCORED TENANT TRAFFIC AS A PLATFORM SLO. 103 of the 107 slow
+  //     requests in the sampled hour were one tenant's Nextcloud DAV sync
+  //     (PROPFIND from a desktop client on a ~155ms link) — the operator was
+  //     paged, with `subjectLabels: []` so the alert could not even say whose
+  //     app it was. Tenant-app latency belongs on the tenant health surface.
+  //
+  // The replacement is a RATIO WITH AN ABSOLUTE FLOOR — the same shape as the
+  // availability burn-rate rules — over platform-owned services only.
+  //
+  // Why not a percentile scoped to platform services: measured on production
+  // 2026-09-12, the platform's own surfaces see a MEDIAN OF 6 REQUESTS PER 30
+  // MINUTES (p25 = 1). No percentile is meaningful on 6 samples, and a floor
+  // large enough to make one meaningful would leave the SLO blind most of the
+  // day. A count of slow requests is well-defined at any volume; the ratio
+  // keeps it from firing on a busy cluster, the floor keeps it from firing on
+  // an idle one, and the reported value is an exact measurement rather than an
+  // interpolation between bucket edges.
+  //
+  // `le="1.2"` is deliberately a bucket edge that exists in BOTH Traefik's
+  // default set and the wider set bootstrap now configures. A cluster that has
+  // not yet run the 2026.9.18/0002 host-migration keeps evaluating this rule
+  // correctly — picking an edge only the new set has (1, 2.5, …) would select
+  // no series, sum to nothing, and leave the rule silently unable to fire.
   {
-    id: 'api-latency-p95',
-    name: 'Ingress p95 latency',
-    description: 'p95 request duration through Traefik websecure exceeds the SLO target.',
+    id: 'platform-latency-slow-share',
+    name: 'Platform surfaces — slow requests',
+    description: 'A sustained share of requests to the platform\'s own surfaces (admin panel, tenant panel, webmail, Stalwart admin) is taking over 1.2 seconds. This excludes tenant websites by design — a slow tenant app shows up on that tenant\'s health page, not here. Check platform-api and the panel pods, then the database: the usual cause is the API waiting on Postgres.',
     severity: 'warning',
-    expr: 'histogram_quantile(0.95, sum by (le) (rate(traefik_entrypoint_request_duration_seconds_bucket{entrypoint="websecure"}[5m]))) > $T',
+    // Both sides of every comparison come from the SAME metric family
+    // (`_bucket`, le="1.2" vs le="+Inf"), never `_count` vs `_bucket`.
+    //
+    // Mixing them is wrong and was measured wrong on DEV 2026-09-12: with the
+    // per-service `_bucket` series freshly created by the scrape-config change
+    // while `_count` had months of history, `sum(rate(_bucket{le="1.2"}[30m]))`
+    // came out LARGER than `sum(rate(_count[30m]))` — rate() extrapolates a
+    // young series across a window it does not span. The numerator went
+    // NEGATIVE (-0.04) and the ratio evaluated to an empty vector, i.e. a rule
+    // that cannot fire, reported as if it were simply healthy.
+    //
+    // le="+Inf" is the same counter as `_count` by definition, so nothing is
+    // lost: the two series are born together, carry identical labels, and the
+    // quotient is guaranteed to land in [0,1] no matter how new the series is.
+    expr:
+      '((1 - (sum(rate(traefik_service_request_duration_seconds_bucket{service=~"(platform|mail)-.*",le="1.2"}[30m]))'
+      + ' / sum(rate(traefik_service_request_duration_seconds_bucket{service=~"(platform|mail)-.*",le="+Inf"}[30m])))) > $T)'
+      + ' and ((sum(increase(traefik_service_request_duration_seconds_bucket{service=~"(platform|mail)-.*",le="+Inf"}[30m]))'
+      + ' - sum(increase(traefik_service_request_duration_seconds_bucket{service=~"(platform|mail)-.*",le="1.2"}[30m]))) >= 10)',
     subjectLabels: [],
-    threshold: 0.5,
-    forSeconds: 600,
-    unit: 'seconds',
+    threshold: 0.05,
+    forSeconds: 900,
+    unit: 'ratio',
   },
   {
     id: 'cert-expiry',

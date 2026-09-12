@@ -5325,6 +5325,25 @@ accessLog:
       names:
         User-Agent: keep
         Referer: keep
+metrics:
+  prometheus:
+    # Latency histogram buckets, in seconds. Traefik's default is
+    # "0.1,0.3,1.2,5.0" — four buckets, with a 900ms-wide gap between 0.3 and
+    # 1.2 that swallows the entire range anyone actually sets a latency
+    # objective in. A p95 landing anywhere in that gap is reported as a linear
+    # interpolation across it, so the Monitoring → SLOs page showed numbers
+    # like "615ms" that were arithmetic, not measurement (production,
+    # 2026-09-12: 36 of 39 requests ≤0.3s and 39 ≤1.2s produced exactly that).
+    #
+    # This set is a strict SUPERSET of the default. Keeping 0.3 and 1.2 means
+    # every existing query and SLO rule evaluates identically on a cluster
+    # before and after the 2026.9.18/0002 host-migration — a bucket edge that
+    # disappeared would select no series and silently stop firing.
+    #
+    # Cost is bounded: buckets multiply the ENTRYPOINT histogram (2
+    # entrypoints, fixed) and the per-service one, which the monitoring scrape
+    # config keeps only for the fixed set of platform/mail services.
+    buckets: "0.05,0.1,0.25,0.3,0.5,1,1.2,2.5,5,10"
 # Traefik needs a writable host path for the access log above, and the
 # CrowdSec agent DaemonSet mounts the same path read-only. Both are
 # DaemonSets, so they are always co-located on a node.
