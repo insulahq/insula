@@ -402,6 +402,13 @@ function StatusGrid({ cluster }: { readonly cluster: WalArchiveCluster }) {
   const wal = archive.walSummary;
   const gaps = wal?.gaps ?? [];
   const chainBroken = gaps.length > 0 && !wal?.continuityInconclusive;
+  // "We do not know whether the chain is intact" has TWO sources: a walk that
+  // finished but was cut short, and a walk that failed outright. The second was
+  // silent — on DEV, where the storage target cannot be listed at all, the card
+  // said nothing about the log chain while implying the window was simply
+  // unknown for storage reasons. Both must say the same thing: unverified.
+  const chainUnknown = !chainBroken && archive.walState !== 'loading'
+    && (archive.walState === 'error' || Boolean(wal?.continuityInconclusive));
   const ceilingIso = chainBroken ? wal?.continuousUntil ?? null : null;
   const missingSegments = gaps.reduce((n, g) => n + g.missingCount, 0);
 
@@ -483,7 +490,7 @@ function StatusGrid({ cluster }: { readonly cluster: WalArchiveCluster }) {
         </div>
       </div>
     )}
-    {wal?.continuityInconclusive && wal.state !== 'measuring' && (
+    {chainUnknown && (
       <div
         className="flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-900/20 dark:text-amber-200"
         data-testid={`pg-wal-gap-unknown-${cluster.clusterName}`}
