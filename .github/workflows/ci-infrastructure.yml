@@ -22,6 +22,13 @@ on:
       # sat out every one of them, then failed on the release promote.
       - 'backend/src/modules/notifications/**'
       - 'images/file-manager/**'
+      # ci-host-migrations-check.sh validates the migration scripts themselves
+      # (naming, the idempotent:/allow-paths: contract, shellcheck). Without
+      # this path a migration-only change never runs its own guard: 2026-09-12,
+      # a migration landed with an SC2034 dead variable, Infrastructure CI did
+      # not fire, and the defect was caught only because an EARLIER commit in
+      # the same series had also touched scripts/.
+      - 'platform/host-migrations/**'
       # A change to this workflow must be exercised BY this workflow.
       # Without it a broken (or, as here, a hanging) job could be edited and
       # merged without the fix ever running.
@@ -44,6 +51,13 @@ on:
       # sat out every one of them, then failed on the release promote.
       - 'backend/src/modules/notifications/**'
       - 'images/file-manager/**'
+      # ci-host-migrations-check.sh validates the migration scripts themselves
+      # (naming, the idempotent:/allow-paths: contract, shellcheck). Without
+      # this path a migration-only change never runs its own guard: 2026-09-12,
+      # a migration landed with an SC2034 dead variable, Infrastructure CI did
+      # not fire, and the defect was caught only because an EARLIER commit in
+      # the same series had also touched scripts/.
+      - 'platform/host-migrations/**'
       - '.github/workflows/ci-infrastructure.yml'
 
 # Least privilege (2026-07-28 security review): these workflows only read the
