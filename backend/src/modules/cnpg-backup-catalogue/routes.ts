@@ -4,6 +4,7 @@ import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { listBackupsFromObjectStore } from './service.js';
+import { summariseWalArchiveForStore } from './wal-summary.js';
 
 const NAME_RE = /^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$/;
 function validateName(s: string, kind: string): void {
@@ -61,4 +62,39 @@ export async function cnpgBackupCatalogueRoutes(app: FastifyInstance): Promise<v
     );
     return success(result);
   });
+  // GET /api/v1/admin/cnpg-backup-catalogue/:namespace/:objectStoreName/wal-summary
+  //
+  // How much write-ahead log is retained at the target, and how far back it
+  // reaches. Deliberately separate from the catalogue above: that one costs a
+  // GET + HEAD per base backup through the shim (minutes on a slow upstream),
+  // this one is paginated LISTs and answers in seconds. Bounded by its own
+  // deadline and cached for 10 minutes; on failure it returns `readError`
+  // rather than throwing, so the panel can SAY it could not measure.
+  app.get('/admin/cnpg-backup-catalogue/:namespace/:objectStoreName/wal-summary', {
+    schema: {
+      tags: ['CnpgBackupCatalogue'],
+      summary: 'Summarise retained WAL segments (count, bytes, age range) for an ObjectStore.',
+      security: [{ bearerAuth: [] }],
+      params: {
+        type: 'object',
+        required: ['namespace', 'objectStoreName'],
+        properties: {
+          namespace: { type: 'string', minLength: 1, maxLength: 253 },
+          objectStoreName: { type: 'string', minLength: 1, maxLength: 253 },
+        },
+      },
+    },
+  }, async (request) => {
+    const p = request.params as { namespace: string; objectStoreName: string };
+    validateName(p.namespace, 'namespace');
+    validateName(p.objectStoreName, 'objectStoreName');
+
+    const kc = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+    const k8s = createK8sClients(kc);
+    const result = await summariseWalArchiveForStore(
+      k8s.core, k8s.custom, p.namespace, p.objectStoreName, { log: request.log },
+    );
+    return success(result);
+  });
+
 }

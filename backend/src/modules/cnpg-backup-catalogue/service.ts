@@ -114,6 +114,14 @@ export interface CatalogueResult {
   readonly queryDurationMs: number;
   /** Null when the WAL prefix could not be listed (never fails the call). */
   readonly walSummary: WalArchiveSummary | null;
+  /**
+   * True when the enumeration hit its deadline and `backups` is what had been
+   * read by then. The shim is an rclone gofakes3 proxy: a LIST or HEAD against
+   * a slow upstream can take seconds, and 29 backups × (GET + HEAD) on DEV
+   * exceeded three minutes — a panel that waits on that shows "measuring…"
+   * forever. Better a bounded, honest partial than an unbounded truth.
+   */
+  readonly partial: boolean;
 }
 
 // ─── ObjectStore resolution ─────────────────────────────────────────────────
@@ -232,6 +240,12 @@ export interface ListBackupsOpts {
   /** S3 LIST/GET timeout in ms. Default 15s — covers a slow upstream
    *  S3, NFS, or SMB without holding the request handler too long. */
   readonly timeoutMs?: number;
+  /**
+   * Wall-clock budget for the whole enumeration. Past it the call returns what
+   * it has with `partial: true` rather than holding an admin request open for
+   * minutes. Default 25s — comfortably under the panel's patience.
+   */
+  readonly deadlineMs?: number;
 }
 
 
@@ -339,8 +353,11 @@ export async function listBackupsFromObjectStore(
     return cached.value;
   }
 
-  const finalize = (value: Omit<CatalogueResult, 'walSummary'> & { walSummary?: WalArchiveSummary | null }): CatalogueResult => {
-    const full: CatalogueResult = { ...value, walSummary: value.walSummary ?? null };
+  const finalize = (value: Omit<CatalogueResult, 'walSummary' | 'partial'> & {
+    walSummary?: WalArchiveSummary | null;
+    partial?: boolean;
+  }): CatalogueResult => {
+    const full: CatalogueResult = { ...value, walSummary: value.walSummary ?? null, partial: value.partial ?? false };
     cache.set(ck, { at: Date.now(), value: full });
     pruneCache();
     return full;
@@ -408,6 +425,7 @@ export async function listBackupsFromObjectStore(
   const { S3Client, ListObjectsV2Command, GetObjectCommand, HeadObjectCommand } = await import('@aws-sdk/client-s3');
   const { NodeHttpHandler } = await import('@smithy/node-http-handler');
   const timeoutMs = opts.timeoutMs ?? 15_000;
+  const deadlineMs = opts.deadlineMs ?? 25_000;
   const s3 = new S3Client({
     endpoint: SHIM_S3_ENDPOINT_URL,
     region: 'us-east-1', // shim ignores; required by SDK
@@ -434,6 +452,7 @@ export async function listBackupsFromObjectStore(
 
     // ── 5. For each cluster, enumerate backupIds + parse backup.info (parallelized).
     const backups: CatalogueBackup[] = [];
+    let partial = false;
     for (const cluster of clusterNames) {
       const basePrefix = prefix ? `${prefix}/${cluster}/base/` : `${cluster}/base/`;
       let ids: ReadonlyArray<string>;
@@ -482,10 +501,17 @@ export async function listBackupsFromObjectStore(
       };
       const CONCURRENCY = 5;
       for (let i = 0; i < ids.length; i += CONCURRENCY) {
+        if (Date.now() - t0 > deadlineMs) {
+          partial = true;
+          log.warn?.({ deadlineMs, gathered: backups.length, of: ids.length, cluster },
+            'catalogue: enumeration deadline hit — returning partial list');
+          break;
+        }
         const chunk = ids.slice(i, i + CONCURRENCY);
         const results = await Promise.all(chunk.map(perId));
         backups.push(...results);
       }
+      if (partial) break;
     }
 
     // Sort newest first by backupId (lexicographic === chronological for
@@ -576,18 +602,15 @@ export async function listBackupsFromObjectStore(
       }
     }
 
-    // WAL side of the same archive — what it costs and how far back it goes.
-    const walSummary = await summariseWalArchive(
-      s3 as unknown as { send: (cmd: unknown) => Promise<unknown> },
-      ListObjectsV2Command as unknown as new (args: Record<string, unknown>) => unknown,
-      bucket, prefix, clusterNames, log,
-    );
-
+    // The WAL side is NOT summarised here: it is a separate, far cheaper LIST
+    // and folding it into this call made an already-slow enumeration slower.
+    // See summariseWalArchiveForStore() / the /wal-summary route.
     return finalize({
       source: 'object-store', objectStoreName, namespace,
       backups, unavailableReason: null,
       queryDurationMs: Date.now() - t0,
-      walSummary,
+      walSummary: null,
+      partial,
     });
   } finally {
     // CRITICAL: destroy the S3Client to free the Keep-Alive socket pool.
