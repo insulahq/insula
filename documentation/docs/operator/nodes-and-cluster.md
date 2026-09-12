@@ -208,6 +208,36 @@ Nodes set to **ingress: none** are left out of that list — they never publishe
 an address, so there is nothing to withdraw. The node card also marks a
 still-configured ingress badge struck-through as a second reminder.
 
+## When the platform cannot see the cluster at all
+
+If enough control-plane servers are offline at once, Insula loses its own view
+of the cluster. Every admin page then shows **Cluster health cannot be
+determined** instead of a health summary.
+
+Read that banner carefully, because it is saying something specific:
+
+- Tenant health, node status and service availability are **unknown, not
+  healthy**. Nothing on those pages should be trusted while it is showing.
+- **Tenants already running keep serving.** Their sites do not need the control
+  plane — this is the single most important thing the banner tells you, and it
+  is why a control-plane outage is not automatically a customer-facing one.
+- What stops is *change*: nothing can be started, moved, or repaired until the
+  control plane is back. A site that fails during this window stays down.
+
+Where it can, the banner also names the nodes that were offline **the last time
+Insula was able to look**, with how long ago that was. That reading comes from
+Insula's own records rather than from the cluster, so treat it as a strong hint
+about where to look first, not as current fact — the situation may have moved on
+since.
+
+Cards that count things — failed pods, failing backups — show **—** rather than
+0 while the cluster is unreadable. A zero would be indistinguishable from
+"nothing wrong", and Insula does not know that.
+
+To recover, bring back enough servers for a majority: on a three-server cluster
+that means two. The control plane returns on its own within seconds of quorum
+being restored.
+
 ## When the node comes back
 
 Bringing the node back does **not** move tenants back. Anything that was
