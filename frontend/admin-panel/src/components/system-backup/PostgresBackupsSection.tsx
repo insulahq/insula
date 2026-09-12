@@ -32,7 +32,7 @@ import { useShimAssignments } from '@/hooks/use-backup-rclone-shim';
 import { useCnpgBackupHealth } from '@/hooks/use-cnpg-backup-health';
 import { apiFetch } from '@/lib/api-client';
 import { formatBytes } from '@/hooks/use-platform-storage';
-import type { WalArchiveCluster, CnpgBackupCatalogueResponse } from '@insula/api-contracts';
+import type { WalArchiveCluster, CnpgBackupCatalogueResponse, WalArchiveSummary } from '@insula/api-contracts';
 
 // ── Setting vocabularies ───────────────────────────────────────────
 
@@ -384,13 +384,16 @@ function StatusGrid({ cluster }: { readonly cluster: WalArchiveCluster }) {
     ? (archived / (archived + failed)) * 100
     : null;
 
-  // Recovery floor: CNPG's own figure, else the oldest thing actually in the
-  // archive. Reported as a RANGE because "you can restore to any moment in
-  // here" is the question an operator has, and neither number answers it alone.
+  // The floor of the restorable range: CNPG's own figure, else the oldest thing
+  // actually in the archive. Reported as a RANGE because "which moments can I
+  // restore to" is the operator's question and no single timestamp answers it.
+  // The floor requires a BASE BACKUP. Retained log with no full copy underneath
+  // it restores nothing, so the oldest WAL segment is only a floor once at least
+  // one base backup exists — otherwise the card would promise a recovery window
+  // the operator does not have. CNPG's own figure already accounts for this.
+  const hasBase = (archive.backupCount ?? 0) > 0;
   const floor = cluster.status?.firstRecoverabilityPoint
-    ?? archive.earliestBackupAt
-    ?? archive.walSummary?.oldestAt
-    ?? null;
+    ?? (hasBase ? (archive.earliestBackupAt ?? archive.walSummary?.oldestAt ?? null) : null);
   const windowDays = floor ? Math.max(0, Math.floor((Date.now() - new Date(floor).getTime()) / 86_400_000)) : null;
 
   const baseBytes = archive.baseBytes;
@@ -399,6 +402,44 @@ function StatusGrid({ cluster }: { readonly cluster: WalArchiveCluster }) {
 
   const lastBase = cluster.state?.baseBackupStatus?.lastScheduleTime ?? null;
   const nextBase = cluster.state?.baseBackupStatus?.nextScheduleTime ?? null;
+
+  // Every cell must end on a definite statement. "Measuring…" that never
+  // resolves is the failure this replaces, so a failed read SAYS so.
+  // A count of zero from a listing that TIMED OUT is not the same as an empty
+  // archive, and saying "nothing restorable yet" there would be a lie about the
+  // operator's disaster-recovery position.
+  const listingInconclusive = archive.basePartial && archive.backupCount === 0;
+  const windowValue = floor
+    ? `${new Date(floor).toLocaleString()} → now${windowDays !== null ? ` · ${windowDays} day${windowDays === 1 ? '' : 's'}` : ''}`
+    : archive.baseState === 'loading'
+      ? 'reading the archive…'
+      : archive.baseState === 'error'
+        ? 'could not read the archive — check the storage target'
+        : listingInconclusive
+          ? 'unknown — the archive listing timed out before it read anything'
+          : 'nothing restorable yet — the first base backup has not run';
+
+  // Partial knowledge beats none. Measuring the log means listing every segment
+  // through the storage gateway, and some targets cannot do that in any
+  // reasonable time (DEV 2026-09-12: rclone itself could not list the prefix in
+  // 25s). When that happens we still know the base copies exactly, so we show
+  // that and say what is missing instead of throwing the whole cell away.
+  const baseOnly = baseBytes !== null && walBytes === null;
+  const storageValue = totalBytes !== null
+    ? `${formatBytes(totalBytes)}${archive.walSummary?.truncated || archive.basePartial ? ' or more' : ''}${baseOnly ? ' (base copies only)' : ''}`
+    : archive.baseState === 'loading' || archive.walState === 'loading'
+      ? 'measuring — this can take a few minutes on a large archive'
+      : 'could not measure — check the storage target';
+
+  const storageSub = totalBytes === null
+    ? undefined
+    : baseOnly
+      ? 'log volume not counted — this storage target could not be listed in time'
+      : `${baseBytes !== null ? formatBytes(baseBytes) : '—'} base copies · ${
+        walBytes !== null ? formatBytes(walBytes) : '—'} log${
+        archive.walSummary ? ` (${archive.walSummary.segmentCount}${archive.walSummary.truncated ? '+' : ''} segments)` : ''}${
+        archive.walMeasuredAt ? ` · measured ${formatAgo(archive.walMeasuredAt)}` : ''}${
+        archive.walMeasuring ? ' · refreshing' : ''}`;
 
   return (
     <div
@@ -409,9 +450,8 @@ function StatusGrid({ cluster }: { readonly cluster: WalArchiveCluster }) {
         icon={<History size={14} />}
         label="Can restore to any point in"
         testid={`pg-window-${cluster.clusterName}`}
-        value={floor
-          ? `${new Date(floor).toLocaleString()} → now${windowDays !== null ? ` · ${windowDays} day${windowDays === 1 ? '' : 's'}` : ''}`
-          : (archive.state === 'loading' ? 'checking archive…' : 'nothing restorable yet — first base backup pending')}
+        value={windowValue}
+        tone={archive.baseState === 'error' || listingInconclusive ? 'bad' : 'normal'}
       />
       <Stat
         icon={<Clock size={14} />}
@@ -420,7 +460,11 @@ function StatusGrid({ cluster }: { readonly cluster: WalArchiveCluster }) {
         value={lastBase
           ? `last ${formatAgo(lastBase)}${nextBase ? ` · next ${new Date(nextBase).toLocaleString()}` : ''}`
           : (nextBase ? `first one due ${new Date(nextBase).toLocaleString()}` : 'none taken yet')}
-        sub={archive.backupCount !== null ? `${archive.backupCount} kept offsite` : undefined}
+        sub={listingInconclusive
+          ? 'listing timed out before any were read'
+          : archive.backupCount !== null
+            ? `${archive.backupCount}${archive.basePartial ? '+' : ''} kept offsite`
+            : (archive.baseState === 'error' ? 'count unavailable' : undefined)}
       />
       <Stat
         icon={<Activity size={14} />}
@@ -436,13 +480,9 @@ function StatusGrid({ cluster }: { readonly cluster: WalArchiveCluster }) {
         icon={<HardDrive size={14} />}
         label="Offsite storage used"
         testid={`pg-storage-${cluster.clusterName}`}
-        value={totalBytes !== null
-          ? formatBytes(totalBytes)
-          : (archive.state === 'loading' ? 'measuring…' : 'unknown')}
-        sub={totalBytes !== null
-          ? `${baseBytes !== null ? formatBytes(baseBytes) : '—'} base copies · ${walBytes !== null ? formatBytes(walBytes) : '—'} log${
-            archive.walSummary ? ` (${archive.walSummary.segmentCount}${archive.walSummary.truncated ? '+' : ''} segments)` : ''}`
-          : undefined}
+        value={storageValue}
+        sub={storageSub}
+        tone={totalBytes === null && archive.walState === 'error' && archive.baseState === 'error' ? 'bad' : 'normal'}
       />
     </div>
   );
@@ -482,44 +522,78 @@ function useArchiveContents(cluster: WalArchiveCluster): {
   readonly earliestBackupAt: string | null;
   readonly backupCount: number | null;
   readonly baseBytes: number | null;
-  readonly walSummary: CnpgBackupCatalogueResponse['walSummary'];
-  readonly state: 'loading' | 'ready';
+  readonly basePartial: boolean;
+  readonly walSummary: WalArchiveSummary | null;
+  readonly walMeasuring: boolean;
+  readonly walMeasuredAt: string | null;
+  readonly baseState: 'loading' | 'ready' | 'error';
+  readonly walState: 'loading' | 'ready' | 'error';
 } {
   const { data: healthResp, isLoading: healthLoading } = useCnpgBackupHealth();
   const objectStoreName = healthResp?.data?.find(
     (c) => c.namespace === cluster.clusterNamespace && c.clusterName === cluster.clusterName,
   )?.objectStoreName ?? null;
 
+  const base = `/api/v1/admin/cnpg-backup-catalogue/${encodeURIComponent(cluster.clusterNamespace)}/${encodeURIComponent(objectStoreName ?? '')}`;
+
+  // TWO queries on purpose. Enumerating base backups costs a GET + a HEAD per
+  // backup through the storage shim and can take minutes; the WAL summary is
+  // paginated LISTs and answers in seconds. Sharing one query made the storage
+  // figure wait on the slow half and the cell never resolved.
   const catalogueQ = useQuery({
     queryKey: ['cnpg-backup-catalogue', cluster.clusterNamespace, objectStoreName],
-    queryFn: () => apiFetch<{ data: CnpgBackupCatalogueResponse }>(
-      `/api/v1/admin/cnpg-backup-catalogue/${encodeURIComponent(cluster.clusterNamespace)}/${encodeURIComponent(objectStoreName ?? '')}`,
-    ),
+    queryFn: () => apiFetch<{ data: CnpgBackupCatalogueResponse }>(base),
     staleTime: 60_000,
     retry: false,
     enabled: !!objectStoreName,
   });
 
-  const loading = healthLoading || (objectStoreName !== null && catalogueQ.isLoading);
+  const walQ = useQuery({
+    queryKey: ['cnpg-wal-summary', cluster.clusterNamespace, objectStoreName],
+    // Naming the cluster lets the backend skip a bucket-wide discovery LIST.
+    queryFn: () => apiFetch<{ data: WalArchiveSummary }>(
+      `${base}/wal-summary?cluster=${encodeURIComponent(cluster.clusterName)}`,
+    ),
+    staleTime: 60_000,
+    retry: false,
+    enabled: !!objectStoreName,
+    // The first answer is usually "measuring" — the walk runs server-side.
+    // Poll while it does, then fall back to the long interval.
+    refetchInterval: (q) => (q.state.data?.data?.state === 'measuring' ? 10_000 : false),
+  });
 
   return useMemo(() => {
     const cat = catalogueQ.data?.data;
-    if (!cat || cat.source !== 'object-store') {
-      return {
-        earliestBackupAt: null, backupCount: null, baseBytes: null,
-        walSummary: null, state: loading ? 'loading' : 'ready',
-      } as const;
-    }
-    const sorted = [...cat.backups].sort((a, b) => (a.startedAt ?? a.uploadedAt ?? '').localeCompare(b.startedAt ?? b.uploadedAt ?? ''));
-    const sized = cat.backups.filter((b) => typeof b.dataSizeBytes === 'number');
+    const baseState: 'loading' | 'ready' | 'error' =
+      catalogueQ.isError || (cat && cat.source !== 'object-store') ? 'error'
+        : (healthLoading || (objectStoreName !== null && catalogueQ.isLoading) ? 'loading' : 'ready');
+
+    const wal = walQ.data?.data ?? null;
+    // 'measuring' with previous figures is still usable — show them with their
+    // age rather than blanking the cell.
+    const walState: 'loading' | 'ready' | 'error' =
+      walQ.isError || wal?.state === 'error' ? 'error'
+        : (healthLoading || (objectStoreName !== null && walQ.isLoading) || (wal?.state === 'measuring' && wal.measuredAt === null)
+          ? 'loading'
+          : 'ready');
+
+    const sorted = cat && cat.source === 'object-store'
+      ? [...cat.backups].sort((a, b) => (a.startedAt ?? a.uploadedAt ?? '').localeCompare(b.startedAt ?? b.uploadedAt ?? ''))
+      : [];
+    const sized = sorted.filter((b) => typeof b.dataSizeBytes === 'number');
+
     return {
       earliestBackupAt: sorted[0]?.startedAt ?? sorted[0]?.uploadedAt ?? null,
-      backupCount: cat.backups.length,
+      backupCount: cat && cat.source === 'object-store' ? cat.backups.length : null,
       baseBytes: sized.length > 0 ? sized.reduce((n, b) => n + (b.dataSizeBytes ?? 0), 0) : null,
-      walSummary: cat.walSummary,
-      state: 'ready',
+      basePartial: Boolean(cat?.partial),
+      walSummary: wal && wal.measuredAt !== null && wal.readError == null ? wal : null,
+      walMeasuring: wal?.state === 'measuring',
+      walMeasuredAt: wal?.measuredAt ?? null,
+      baseState,
+      walState,
     } as const;
-  }, [catalogueQ.data, loading]);
+  }, [catalogueQ.data, catalogueQ.isError, catalogueQ.isLoading, walQ.data, walQ.isError, walQ.isLoading, healthLoading, objectStoreName]);
 }
 
 // ── bits ───────────────────────────────────────────────────────────

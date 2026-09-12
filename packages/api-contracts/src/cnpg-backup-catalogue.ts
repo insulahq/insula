@@ -48,13 +48,30 @@ export type CnpgCatalogueBackup = z.infer<typeof cnpgCatalogueBackupSchema>;
  * "how far back can I recover to" — the WAL between them is what makes an
  * arbitrary point in time restorable.
  */
+/**
+ * Measuring retained WAL means listing every segment through the storage
+ * gateway — minutes on a real archive — so it runs in the background and the
+ * panel polls. 'measuring' carries the PREVIOUS figures when there are any.
+ */
+export const walSummaryStateSchema = z.enum(['ready', 'measuring', 'error']);
+export type WalSummaryState = z.infer<typeof walSummaryStateSchema>;
+
 export const walArchiveSummarySchema = z.object({
+  state: walSummaryStateSchema,
+  /** When these figures were produced; null before the first walk finishes. */
+  measuredAt: z.string().nullable(),
   segmentCount: z.number().int().nonnegative(),
   totalBytes: z.number().int().nonnegative(),
   oldestAt: z.string().nullable(),
   newestAt: z.string().nullable(),
-  /** LIST hit its page cap — the counts are a floor. */
+  /** The page cap or the deadline cut the walk short — counts are a floor. */
   truncated: z.boolean(),
+  /**
+   * Set when nothing could be measured. The panel SAYS so rather than
+   * spinning: an unresolved cell is indistinguishable from a broken target.
+   */
+  readError: z.string().nullable(),
+  queryDurationMs: z.number().int().nonnegative(),
 });
 export type WalArchiveSummary = z.infer<typeof walArchiveSummarySchema>;
 
@@ -66,7 +83,17 @@ export const cnpgBackupCatalogueResponseSchema = z.object({
   /** Set when source='unavailable'; surface to the operator as the reason. */
   unavailableReason: z.string().nullable(),
   queryDurationMs: z.number().int().nonnegative(),
-  /** Null when the WAL prefix could not be listed. */
+  /**
+   * Always null here — the WAL side has its own endpoint because it is orders
+   * of magnitude cheaper than enumerating base backups. Kept so older clients
+   * that read the field still parse.
+   */
   walSummary: walArchiveSummarySchema.nullable(),
+  /**
+   * The enumeration hit its deadline: `backups` is what had been read by then.
+   * Measured on DEV 2026-09-11 — 29 backups took over three minutes through the
+   * shim, so an unbounded call means a panel that never resolves.
+   */
+  partial: z.boolean(),
 });
 export type CnpgBackupCatalogueResponse = z.infer<typeof cnpgBackupCatalogueResponseSchema>;

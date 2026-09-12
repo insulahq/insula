@@ -63,6 +63,12 @@ window you can restore to, when the last and next base backups run, when the log
 was last shipped and how often that succeeds, and how much storage the copies and
 the log use at the target.
 
+The storage figure is measured by listing everything at the target, which takes
+minutes on a large archive, so it is measured **in the background** and shown
+with its age — *"8.85 GiB · measured 20 minutes ago"*. It refreshes on its own;
+nothing on the page waits for it. A figure ending in *"or more"* means the count
+was cut short by its time budget and is a floor, not a total.
+
 Turning offsite backups **off** stops both. There is no way to keep base backups
 while stopping the log, because such a backup could not be restored.
 

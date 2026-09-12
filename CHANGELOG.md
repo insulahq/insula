@@ -12,8 +12,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.9.18-rc.6] - 2026-09-11
-
 ### Added
 - **A node outage now says when it took a platform service with it.** The
   banner reported "No tenant impact detected" during an outage in which backups
@@ -116,6 +114,31 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   never a running workload, and never a database pod.
 
 ### Fixed
+- **Backup storage figures are now measured in the background.** Adding up
+  what an archive holds means listing every stored file through the storage
+  gateway, which takes minutes on a real archive — so the page used to wait,
+  time out, and tell you it could not measure. The measurement now runs behind
+  the scenes and the page shows the figure with its age ("measured 20 minutes
+  ago"), refreshing it quietly. Nothing on the page waits on it.
+
+- **A rebooted server could not rejoin the cluster.** The firewall restores its
+  rules at boot but not their dynamic contents, and the list of cluster peers is
+  dynamic — so a node came back with an empty peer list, silently refused every
+  connection from the other servers, and sat there unable to rejoin. The
+  component that fills that list runs *inside* the cluster, so it could never
+  run on a node stuck outside it. Measured on a test cluster: a rebooted server
+  was stranded for 19 minutes, nothing scheduled repaired it, and it rejoined 21
+  seconds after the list was restored by hand. The list is now saved whenever it
+  changes and restored on boot. This affected any reboot at all — kernel
+  updates, crashes, power loss, and the platform's own security auto-updates.
+- **The backup page's storage figures no longer hang.** Reading the archive
+  took over three minutes on a test cluster, so "measuring…" was all an
+  operator ever saw. Measuring the write-ahead log is now a separate, far
+  cheaper read with its own time budget, the base-backup listing stops at a
+  deadline and says so, and every figure ends on a definite answer — a number,
+  a number marked as a floor, or "could not measure — check the storage
+  target".
+
 - **Moving a tenant off a dead node now actually brings it back.** The move
   succeeded in every visible way — workload re-pinned, storage re-pinned,
   records updated — and the tenant stayed down anyway, indefinitely. A tenant's

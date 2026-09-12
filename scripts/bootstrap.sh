@@ -2732,8 +2732,35 @@ ${calico_wg_rule}
     type filter hook output priority filter; policy accept;
   }
 }
+
+# Last-known-good dynamic set members, re-applied on boot.
+#
+# nftables restores this file at boot, but it carries only the set
+# DECLARATIONS -- set members are runtime state and a reboot discards them.
+# The cluster_peers_v4/v6 sets gate inbound etcd/apiserver/kubelet traffic
+# under a drop-policy chain, so an empty set after a reboot means no peer can reach
+# this node: etcd logs "failed to publish local member to cluster through raft"
+# and the node never rejoins.
+#
+# That deadlocks, because the component that fills the set --
+# images/firewall-reconciler -- is a DaemonSet that runs INSIDE the cluster
+# this node can no longer join. Measured on staging 2026-09-12: a rebooted
+# server sat NotReady for 19 minutes, unaffected by the hourly host-config
+# converger (which does not touch these sets), and rejoined 21 seconds after
+# the members were restored by hand.
+#
+# So the reconciler now writes its members here on every successful apply, and
+# boot replays them. The list can be briefly stale -- a departed peer stays
+# allowed until the first reconcile -- which is a far better failure than a
+# control-plane node that cannot come back.
+include "/etc/nftables.d/*.conf"
 NFT
 
+  mkdir -p /etc/nftables.d
+  # A glob that matches nothing is tolerated by modern nft, but an explicit
+  # placeholder keeps the include meaningful on a fresh host that has not yet
+  # had a reconcile pass.
+  [ -e /etc/nftables.d/00-placeholder.conf ] || printf '# populated by firewall-reconciler\n' > /etc/nftables.d/00-placeholder.conf
   systemctl enable nftables
   nft -f /etc/nftables.conf
   log "Firewall configured (always-on set mode)."

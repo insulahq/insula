@@ -54,3 +54,29 @@ describe('accumulateWalObjects', () => {
     expect(r.newest).toBeNull();
   });
 });
+
+describe('getWalSummary — never blocks the request', () => {
+  it('returns immediately with state=measuring and starts the walk in the background', async () => {
+    // The failure this replaces: the endpoint waited on the walk, the walk
+    // exceeded its budget on a real archive (DEV: >20s for ~4 500 segments),
+    // and the panel could only ever render "could not measure".
+    const { getWalSummary, __clearWalSummaryCache } = await import('./wal-summary.js');
+    __clearWalSummaryCache();
+
+    let started = false;
+    const hangingCustom = {
+      getNamespacedCustomObject: () => { started = true; return new Promise(() => {}); },
+    } as never;
+
+    const t0 = Date.now();
+    const first = getWalSummary({} as never, hangingCustom, 'platform', 'store');
+    expect(Date.now() - t0).toBeLessThan(100);
+    expect(first.state).toBe('measuring');
+    expect(first.measuredAt).toBeNull();
+    expect(started).toBe(true);
+
+    // A second call must not start a second walk.
+    const second = getWalSummary({} as never, hangingCustom, 'platform', 'store');
+    expect(second.state).toBe('measuring');
+  });
+});
