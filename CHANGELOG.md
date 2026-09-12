@@ -114,6 +114,16 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   never a running workload, and never a database pod.
 
 ### Fixed
+- **A rebooted server could not rejoin the cluster.** The firewall restores its
+  rules at boot but not their dynamic contents, and the list of cluster peers is
+  dynamic — so a node came back with an empty peer list, silently refused every
+  connection from the other servers, and sat there unable to rejoin. The
+  component that fills that list runs *inside* the cluster, so it could never
+  run on a node stuck outside it. Measured on a test cluster: a rebooted server
+  was stranded for 19 minutes, nothing scheduled repaired it, and it rejoined 21
+  seconds after the list was restored by hand. The list is now saved whenever it
+  changes and restored on boot. This affected any reboot at all — kernel
+  updates, crashes, power loss, and the platform's own security auto-updates.
 - **The backup page's storage figures no longer hang.** Reading the archive
   took over three minutes on a test cluster, so "measuring…" was all an
   operator ever saw. Measuring the write-ahead log is now a separate, far
