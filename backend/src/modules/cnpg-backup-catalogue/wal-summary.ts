@@ -60,9 +60,64 @@ interface ObjectStoreCR {
 export interface WalSummaryOpts {
   readonly log?: Pick<Logger, 'warn' | 'debug' | 'info'>;
   readonly deadlineMs?: number;
+  /**
+   * The CNPG cluster whose WAL to measure. Supplying it SKIPS the discovery
+   * LIST at the top of the bucket, which on the rclone shim is the expensive
+   * part — it walks every prefix including `base/`. Callers that know the
+   * cluster (the panel always does) should pass it.
+   */
+  readonly clusterName?: string;
 }
 
+/**
+ * Hard ceiling on the whole operation.
+ *
+ * The per-request timeout is NOT enough: the AWS SDK retries a timed-out
+ * request (3 attempts by default), so a 20s request timeout became a >60s call
+ * on DEV 2026-09-12. Retries are disabled below AND the whole walk races this
+ * timer, so the endpoint cannot outlive its budget whatever the shim does.
+ */
+async function withDeadline<T>(ms: number, work: Promise<T>, onTimeout: () => T): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<T>((resolve) => {
+    timer = setTimeout(() => resolve(onTimeout()), ms);
+  });
+  try {
+    return await Promise.race([work, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/**
+ * Public entry point: bounded end to end.
+ *
+ * EVERY step races the budget, not just the S3 walk — the ObjectStore read and
+ * the shim-credential read go through the kube API and the Secret store, and
+ * either can hang. A panel cell waiting on this must always get an answer.
+ */
 export async function summariseWalArchiveForStore(
+  core: k8s.CoreV1Api,
+  custom: k8s.CustomObjectsApi,
+  namespace: string,
+  objectStoreName: string,
+  opts: WalSummaryOpts = {},
+): Promise<WalSummaryResult> {
+  const started = Date.now();
+  const budget = opts.deadlineMs ?? DEFAULT_DEADLINE_MS;
+  return withDeadline(
+    budget,
+    walSummaryWork(core, custom, namespace, objectStoreName, opts),
+    () => ({
+      segmentCount: 0, totalBytes: 0, oldestAt: null, newestAt: null,
+      truncated: true,
+      readError: `timed out after ${budget}ms reading the archive`,
+      queryDurationMs: Date.now() - started,
+    }),
+  );
+}
+
+async function walSummaryWork(
   core: k8s.CoreV1Api,
   custom: k8s.CustomObjectsApi,
   namespace: string,
@@ -121,14 +176,19 @@ export async function summariseWalArchiveForStore(
     credentials: { accessKeyId: accessKey, secretAccessKey: secretKey },
     forcePathStyle: true,
     requestHandler: new NodeHttpHandler({ requestTimeout: deadlineMs, connectionTimeout: 5_000 }),
+    // No retries: a timeout here means the shim is slow, and retrying it turns
+    // a 20s budget into 60s of an operator staring at a spinner.
+    maxAttempts: 1,
   });
 
   try {
     // Clusters are the first level under the prefix; WAL lives at
-    // <prefix>/<cluster>/wals/. LIST the delimiter level first so we do not
-    // walk `base/` (which is where the expensive objects are).
+    // <prefix>/<cluster>/wals/. A caller that knows the cluster skips this
+    // discovery LIST entirely — on the shim it is the slowest call of the lot.
     const clusters: string[] = [];
-    try {
+    if (opts.clusterName) {
+      clusters.push(opts.clusterName);
+    } else try {
       const top = await s3.send(new ListObjectsV2Command({
         Bucket: bucket, Prefix: prefix ? `${prefix}/` : '', Delimiter: '/',
       })) as { CommonPrefixes?: ReadonlyArray<{ Prefix?: string }> };
@@ -147,6 +207,7 @@ export async function summariseWalArchiveForStore(
     let anyPageRead = false;
     let lastError: string | null = null;
 
+    const walk = async (): Promise<void> => {
     for (const cluster of clusters) {
       const walPrefix = prefix ? `${prefix}/${cluster}/wals/` : `${cluster}/wals/`;
       let token: string | undefined;
@@ -172,8 +233,16 @@ export async function summariseWalArchiveForStore(
         log.warn?.({ err: lastError, cluster }, 'wal-summary: LIST failed for cluster');
       }
     }
+    };
 
-    if (!anyPageRead) return fail(lastError ?? 'WAL prefix could not be listed');
+    // Whatever the shim does, we answer within the budget: on timeout we keep
+    // whatever pages were folded in and mark the figures as a floor.
+    await withDeadline(Math.max(1_000, deadlineMs - (Date.now() - t0)), walk(), () => {
+      truncated = true;
+      log.warn?.({ deadlineMs, segments: acc.segmentCount }, 'wal-summary: deadline hit — reporting a floor');
+    });
+
+    if (!anyPageRead) return fail(lastError ?? 'WAL prefix could not be listed within the time budget');
 
     const value: WalSummaryResult = {
       segmentCount: acc.segmentCount,
