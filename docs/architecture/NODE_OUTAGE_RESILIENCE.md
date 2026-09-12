@@ -235,7 +235,7 @@ recoverable — the one single point of failure that replication cannot address.
 | G7 | Worker-node loss drilled (§8.6) | **done** |
 | G9 | DB-primary node loss drilled against the RC (§8.7) | **done** |
 | G10 | Degraded-services pill seen rendering (§8.7) | **done** |
-| G11 | Control-plane quorum loss drilled | pending |
+| G11 | Control-plane quorum loss drilled (§8.8) | **done** |
 | G8 | Re-pin evicts pods stranded on the dead node (§8.5) | **done** |
 
 ### Known doc inaccuracies to fix under C2
@@ -542,3 +542,100 @@ detected"* — true, since no tenant workload ran there, and silent about backup
 sits directly beneath that banner. Not a contradiction (it counts failed backup
 *runs*, and none were attempted during the window) but the two read oddly
 together, and a hurried operator could take the card as reassurance.
+
+
+## 8.8 Drill: control-plane quorum loss (G11, 2026-09-12, rc.8)
+
+Stopped k3s on **staging2 and staging3**, leaving staging1 as the only etcd
+member of three. Run last, and only after a preflight confirmed the
+reboot-rejoin fix was in effect on all three servers — quorum loss is the drill
+most likely to need a reboot to recover from.
+
+### Tenants were untouched
+
+| Measurement | During quorum loss |
+|---|---|
+| Tenant site via staging1 | **200** |
+| Tenant site via staging2 (k3s stopped) | **200** |
+| Tenant site via staging3 (k3s stopped) | **200** |
+| Admin UI, `/healthz`, login, `/tenants` | **200** |
+| `kubectl get nodes` | `ServiceUnavailable` |
+
+Already-running containers keep serving without a control plane: the kubelet and
+containerd do not need etcd to keep a pod alive, and Traefik's hostPort DNAT
+lives in the kernel. Sites served **from the two nodes whose k3s was stopped**,
+which is the clearest available statement that serving and control are separate.
+Operator login worked, so the database was serving too — its primary was on the
+surviving node.
+
+What is lost is *change*: nothing schedules, reschedules or reconciles. A tenant
+whose pod died during the window would have stayed dead.
+
+### Recovery was immediate, and did not exercise the reboot fix
+
+Starting k3s on staging2 restored quorum (2 of 3) and the API answered on the
+next poll, under 10 s. staging3 rejoined the same way; preflight green
+afterwards.
+
+No reboot was required, so this drill did **not** test boot-restore. Stopping
+k3s leaves the nft sets in the kernel; only a reboot clears them. That is
+precisely why the fix had to be verified by preflight rather than inferred from
+a green drill.
+
+### The operator surface was honest but unusable, and is now fixed
+
+No false green — the dashboard showed *"Cluster health unknown"*, *"System
+unhealthy — kubernetes (error)"*, and `database: ok`. `outage-impact` set
+`readError` and reported all tenants as affected rather than healthy.
+
+Two defects, both fixed:
+
+1. The banner printed the raw Kubernetes client output — status code, JSON body,
+   response headers — as its entire message. It now leads with the consequence,
+   keeps the raw text behind a disclosure, and states that already-running
+   tenants keep serving (without which a control-plane outage reads like a total
+   one).
+2. **Failed / Orphaned Pods 0 — all clear** and **Failing Backups 0 — all
+   healthy** rendered green beneath an "unhealthy" banner. Both queries had
+   failed and fallen back to empty lists, so zero-because-unreadable looked
+   exactly like zero-because-fine. They now render an em dash on a colourless
+   accent: *"cannot read pods — unknown, not zero"*.
+
+One limitation remains recorded rather than fixed: with the node list itself
+unreadable, `nodesDown` is empty and the platform cannot name which machine
+broke. The read-error banner covers the state, but not the identity.
+
+## 8.9 The host-migration delivery path, proven
+
+§8.7 noted that a migration rides in the signed `platform-ops` binary and that
+the binary self-upgrades on a **daily** timer, so "the RC is deployed" does not
+imply "the migration ran". That was an observation; this is the proof.
+
+The three servers were unusable as evidence — the migration had been applied to
+them by hand during the earlier repair. The **worker** was clean: `platform-ops
+2026.9.18-rc.6`, catalogue `32 shipped`, and no include line in
+`/etc/nftables.conf`.
+
+Running the real unit the daily timer fires:
+
+    systemctl start platform-ops-update.service
+
+    before:  platform-ops 2026.9.18-rc.6
+    after:   platform-ops 2026.9.18-rc.8
+
+Its `ExecStartPost` chains into host-config, which then logged:
+
+    host-migrations enforce [embedded]: 1 applied, 0 pending, 33 shipped
+      applied          2026.9.18/0001-nftables-peer-set-boot-restore.sh
+
+and left a done-marker at
+`/var/lib/insula/host-migrations/2026.9.18/0001-…​.sh.done`. The include line
+appeared, `/etc/nftables.d/` held both the placeholder and the reconciler's
+drop-in, and `nft -c` validated the result.
+
+A second host-config run fired immediately afterwards and reported **0 applied**
+— idempotency demonstrated on a real host, not only in a sandbox.
+
+So the automatic path works end to end: self-upgrade → catalogue 32 → 33 →
+migration applied → done-marker → valid config. The only caveat is latency: left
+alone, the worker would have waited for the daily timer.
