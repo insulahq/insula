@@ -387,10 +387,13 @@ function StatusGrid({ cluster }: { readonly cluster: WalArchiveCluster }) {
   // The floor of the restorable range: CNPG's own figure, else the oldest thing
   // actually in the archive. Reported as a RANGE because "which moments can I
   // restore to" is the operator's question and no single timestamp answers it.
+  // The floor requires a BASE BACKUP. Retained log with no full copy underneath
+  // it restores nothing, so the oldest WAL segment is only a floor once at least
+  // one base backup exists — otherwise the card would promise a recovery window
+  // the operator does not have. CNPG's own figure already accounts for this.
+  const hasBase = (archive.backupCount ?? 0) > 0;
   const floor = cluster.status?.firstRecoverabilityPoint
-    ?? archive.earliestBackupAt
-    ?? archive.walSummary?.oldestAt
-    ?? null;
+    ?? (hasBase ? (archive.earliestBackupAt ?? archive.walSummary?.oldestAt ?? null) : null);
   const windowDays = floor ? Math.max(0, Math.floor((Date.now() - new Date(floor).getTime()) / 86_400_000)) : null;
 
   const baseBytes = archive.baseBytes;
@@ -402,13 +405,19 @@ function StatusGrid({ cluster }: { readonly cluster: WalArchiveCluster }) {
 
   // Every cell must end on a definite statement. "Measuring…" that never
   // resolves is the failure this replaces, so a failed read SAYS so.
+  // A count of zero from a listing that TIMED OUT is not the same as an empty
+  // archive, and saying "nothing restorable yet" there would be a lie about the
+  // operator's disaster-recovery position.
+  const listingInconclusive = archive.basePartial && archive.backupCount === 0;
   const windowValue = floor
     ? `${new Date(floor).toLocaleString()} → now${windowDays !== null ? ` · ${windowDays} day${windowDays === 1 ? '' : 's'}` : ''}`
     : archive.baseState === 'loading'
       ? 'reading the archive…'
       : archive.baseState === 'error'
         ? 'could not read the archive — check the storage target'
-        : 'nothing restorable yet — the first base backup has not run';
+        : listingInconclusive
+          ? 'unknown — the archive listing timed out before it read anything'
+          : 'nothing restorable yet — the first base backup has not run';
 
   // Partial knowledge beats none. Measuring the log means listing every segment
   // through the storage gateway, and some targets cannot do that in any
@@ -442,7 +451,7 @@ function StatusGrid({ cluster }: { readonly cluster: WalArchiveCluster }) {
         label="Can restore to any point in"
         testid={`pg-window-${cluster.clusterName}`}
         value={windowValue}
-        tone={archive.baseState === 'error' ? 'bad' : 'normal'}
+        tone={archive.baseState === 'error' || listingInconclusive ? 'bad' : 'normal'}
       />
       <Stat
         icon={<Clock size={14} />}
@@ -451,9 +460,11 @@ function StatusGrid({ cluster }: { readonly cluster: WalArchiveCluster }) {
         value={lastBase
           ? `last ${formatAgo(lastBase)}${nextBase ? ` · next ${new Date(nextBase).toLocaleString()}` : ''}`
           : (nextBase ? `first one due ${new Date(nextBase).toLocaleString()}` : 'none taken yet')}
-        sub={archive.backupCount !== null
-          ? `${archive.backupCount}${archive.basePartial ? '+' : ''} kept offsite`
-          : (archive.baseState === 'error' ? 'count unavailable' : undefined)}
+        sub={listingInconclusive
+          ? 'listing timed out before any were read'
+          : archive.backupCount !== null
+            ? `${archive.backupCount}${archive.basePartial ? '+' : ''} kept offsite`
+            : (archive.baseState === 'error' ? 'count unavailable' : undefined)}
       />
       <Stat
         icon={<Activity size={14} />}
