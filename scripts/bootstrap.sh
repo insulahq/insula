@@ -2737,13 +2737,13 @@ ${calico_wg_rule}
 #
 # nftables restores this file at boot, but it carries only the set
 # DECLARATIONS -- set members are runtime state and a reboot discards them.
-# `cluster_peers_v{4,6}` gates inbound etcd/apiserver/kubelet traffic under a
-# `policy drop` chain, so an empty set after a reboot means no peer can reach
+# The cluster_peers_v4/v6 sets gate inbound etcd/apiserver/kubelet traffic
+# under a drop-policy chain, so an empty set after a reboot means no peer can reach
 # this node: etcd logs "failed to publish local member to cluster through raft"
 # and the node never rejoins.
 #
 # That deadlocks, because the component that fills the set --
-# `images/firewall-reconciler/` -- is a DaemonSet that runs INSIDE the cluster
+# images/firewall-reconciler -- is a DaemonSet that runs INSIDE the cluster
 # this node can no longer join. Measured on staging 2026-09-12: a rebooted
 # server sat NotReady for 19 minutes, unaffected by the hourly host-config
 # converger (which does not touch these sets), and rejoined 21 seconds after
