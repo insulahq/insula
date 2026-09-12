@@ -50,6 +50,15 @@ spec:
       # node in set mode).
       tolerations:
         - operator: Exists
+      volumes:
+        - name: nftables-dropin
+          hostPath:
+            path: /etc/nftables.d
+            # DirectoryOrCreate so a node that predates the host-migration
+            # still gets the directory; the migration only has to add the
+            # include line to /etc/nftables.conf.
+            type: DirectoryOrCreate
+
       priorityClassName: system-node-critical
       containers:
         - name: reconciler
@@ -117,6 +126,19 @@ spec:
             readOnlyRootFilesystem: true
             seccompProfile:
               type: RuntimeDefault
+          volumeMounts:
+            # The ONLY writable host path, and deliberately a single directory
+            # rather than /etc. persistPeerSets writes the peer members here so
+            # nftables can replay them at boot; without this mount the write
+            # lands in the container's read-only rootfs and the boot-restore
+            # fix silently does nothing. (It did: rc.7 shipped the code and the
+            # reconciler logged "read-only file system" every tick.)
+            #
+            # Writing a firewall drop-in is well inside this DaemonSet's
+            # existing blast radius — it already holds CAP_NET_ADMIN and
+            # rewrites the live ruleset through netlink.
+            - name: nftables-dropin
+              mountPath: /etc/nftables.d
           resources:
             requests:
               cpu: 5m
