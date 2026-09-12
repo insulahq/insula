@@ -32,6 +32,7 @@ const impact = (over: Partial<ClusterOutageImpact> = {}): ClusterOutageImpact =>
   degradedServices: [],
   observedAt: '2026-09-12T10:47:00Z',
   readError: null,
+  nodesAsOf: null,
   ...over,
 });
 
@@ -110,5 +111,78 @@ describe('NodeOutageBanner read-error state', () => {
     renderBanner();
     expect(screen.getByTestId('node-outage-read-error')).toBeTruthy();
     expect(screen.queryByTestId('node-outage-banner')).toBeNull();
+  });
+});
+
+/**
+ * Recovering the node NAMES from the platform's own inventory.
+ *
+ * The quorum-loss drill left the platform able to say something was wrong but
+ * not which machine — the node list is itself an API-server read. The database
+ * survives that (it served operator logins throughout), and the node-sync
+ * reconciler already persists node conditions every 60 s, so the names are
+ * recoverable. They are stale by a minute or two and must be labelled as such
+ * rather than presented as current.
+ */
+describe('NodeOutageBanner with node names recovered from inventory', () => {
+  beforeEach(() => useOutageImpact.mockReset());
+
+  const downNode = (name: string) => ({
+    name, role: 'server', notReadySince: null,
+    isMailActiveNode: false, ingressMode: 'all', ingressAddresses: [],
+  });
+
+  it('names the last-known-down nodes and marks the reading as not current', () => {
+    useOutageImpact.mockReturnValue({
+      data: {
+        data: impact({
+          readError: RAW_K8S_ERROR,
+          nodesAsOf: '2026-09-12T10:45:00Z',
+          nodesDown: [downNode('staging2'), downNode('staging3')],
+        }),
+      },
+    });
+    renderBanner();
+    const text = screen.getByTestId('node-outage-read-error').textContent ?? '';
+    expect(text).toContain('staging2, staging3');
+    expect(text).toContain('were offline');
+    // The caveat is the point: these names come from records, not the cluster.
+    expect(text).toContain("platform’s own records");
+  });
+
+  it('uses singular phrasing for one node', () => {
+    useOutageImpact.mockReturnValue({
+      data: {
+        data: impact({
+          readError: RAW_K8S_ERROR,
+          nodesAsOf: '2026-09-12T10:45:00Z',
+          nodesDown: [downNode('staging3')],
+        }),
+      },
+    });
+    renderBanner();
+    const text = screen.getByTestId('node-outage-read-error').textContent ?? '';
+    expect(text).toContain('staging3 was offline');
+  });
+
+  it('says the last reading was all-clear rather than staying silent', () => {
+    // Silence here would read as "we have no idea", when in fact the platform
+    // knows the last recorded state had nothing down.
+    useOutageImpact.mockReturnValue({
+      data: { data: impact({ readError: RAW_K8S_ERROR, nodesAsOf: '2026-09-12T10:45:00Z' }) },
+    });
+    renderBanner();
+    expect(screen.getByTestId('node-outage-read-error').textContent)
+      .toContain('had every node online');
+  });
+
+  it('claims nothing about nodes when there is no cached reading', () => {
+    useOutageImpact.mockReturnValue({
+      data: { data: impact({ readError: RAW_K8S_ERROR, nodesAsOf: null }) },
+    });
+    renderBanner();
+    const text = screen.getByTestId('node-outage-read-error').textContent ?? '';
+    expect(text).not.toContain('Last recorded state');
+    expect(text).not.toContain('had every node online');
   });
 });
