@@ -639,3 +639,56 @@ A second host-config run fired immediately afterwards and reported **0 applied**
 So the automatic path works end to end: self-upgrade → catalogue 32 → 33 →
 migration applied → done-marker → valid config. The only caveat is latency: left
 alone, the worker would have waited for the daily timer.
+
+
+## 8.10 rc.9 verified, and the limit of the cached node state
+
+Neither the reworked read-error banner nor the cached-node fallback renders on a
+healthy cluster, so verification meant inducing quorum loss again on rc.9 rather
+than photographing a green dashboard.
+
+### What held
+
+Driven in a real browser during genuine quorum loss:
+
+> **Cluster health cannot be determined.** The platform could not read the
+> cluster, so tenant health and service availability on this page are *unknown
+> rather than healthy*. Tenants already running are unaffected by this — their
+> sites keep serving without the control plane. The last recorded state, from
+> 1m ago, had every node online.
+
+with the raw Kubernetes output behind a disclosure and zero JS errors. The stat
+cards read *"cannot read pods — unknown, not zero"* and *"cannot read backup
+health — unknown, not zero"* in place of green zeros. Tenant sites returned
+**200 from all three addresses** throughout, re-confirming §8.8 under the new
+build. On a healthy cluster `nodesAsOf` is null, so the fallback is not firing
+spuriously.
+
+### What did not, and why it cannot
+
+The fallback fired — `nodesAsOf` populated, `readError` set — but `nodesDown`
+was **empty**, so the banner reported *"had every node online"* instead of
+naming the two stopped nodes.
+
+That is a structural limit, not a defect:
+
+**In a quorum loss the cached state always predates the outage.** The node-sync
+reconciler learns node state by reading the API server. When quorum dies it
+loses that same API server, so it can never observe "staging2 is down" and
+persist it. The last successful write is necessarily from before the failure.
+
+So the cached fallback recovers node identity where the API server stayed up
+long enough to record a failure and *then* became unreadable — a single-node
+loss followed by an API blip, a transient control-plane outage. It does **not**
+recover identity in the scenario that motivated it.
+
+What it does still deliver there is worth keeping: *"as of 1m ago, everything
+was online"* tells an operator the outage is seconds old and that nothing was
+already failing — which is genuinely useful triage, and much better than the
+silence it replaced.
+
+Closing the gap properly needs a source of node liveness that does not depend on
+the API server: a node-level heartbeat writing to Postgres directly. The
+database demonstrably survives quorum loss (§8.8 — it served operator logins
+throughout), so the substrate exists. That is a new subsystem and a design
+decision rather than a fix, and is **not** built.
