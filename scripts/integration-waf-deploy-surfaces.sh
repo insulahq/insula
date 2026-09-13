@@ -31,6 +31,8 @@
 #   CURL_INSECURE — set 1 to ignore TLS errors
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration-env.sh"
+# A WAF suite cannot observe a block while this runner is CrowdSec-allowlisted.
+skip_if_runner_allowlisted "integration-waf-deploy-surfaces"
 set -euo pipefail
 
 ADMIN_HOST="${ADMIN_HOST:-https://admin.$(resolve_platform_apex)}"

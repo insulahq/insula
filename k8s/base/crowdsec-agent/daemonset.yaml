@@ -145,6 +145,19 @@ spec:
           effect: NoSchedule
         - operator: Exists
           effect: NoExecute
+      # Every other host-agent DaemonSet in platform-system carries this
+      # (security-probe, firewall-reconciler, host-config-reconciler,
+      # host-config-kubeconfig, sftp-gateway); this one did not, so under node
+      # memory pressure the kubelet evicted the traffic-detection agent BEFORE
+      # any of its siblings.
+      #
+      # That failure is silent in exactly the way this file keeps warning about:
+      # no agent means no scenario evaluation, so no traffic bans are ever
+      # raised — ingress keeps serving, every pod stays Running, and detection
+      # sensitivity simply drops to zero. Caught by
+      # integration-node-memory-protection.sh on DEV 2026-09-13
+      # ("host-agent DaemonSet pods below system-node-critical").
+      priorityClassName: system-node-critical
       # Root is needed only to read the root-owned access log; every other
       # privilege is dropped. The security-probe DaemonSet sets the precedent
       # (read-only host mounts, ALL caps dropped) and this follows it.

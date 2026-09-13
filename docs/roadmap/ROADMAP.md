@@ -46,7 +46,7 @@
 | [R32](#r32--oauth2-proxy-401-dead-end--resolved-2026-09-05) | oauth2-proxy 401 dead-end | — | ✅ RESOLVED 2026-09-05 |
 | [R33](#r33--dex-configmap-changes-never-reached-the-process--resolved-2026-09-05) | Dex ConfigMap changes never reached the process | — | ✅ RESOLVED 2026-09-05 — residual: other ConfigMap-driven Deployments unaudited |
 | [R34](#r34--decide-the-config-reload-mechanism-deliberately) | Decide the config-reload mechanism, deliberately | P2 | Proposed — three mechanisms in use; wants an ADR + a CI guard |
-| [R35](#r35--the-crowdsec-lapi-is-a-single-point-of-failure-that-no-longer-needs-to-be) | CrowdSec LAPI single point of failure | P2 | ✅ Largely shipped — Postgres + RollingUpdate done; residual `replicas: 2` |
+| [R35](#r35--the-crowdsec-lapi-is-a-single-point-of-failure-that-no-longer-needs-to-be) | CrowdSec LAPI single point of failure | P2 | ✅ **SHIPPED** — Postgres + RollingUpdate + reconciler-owned 2 replicas (verified 2/2 Ready on DEV) |
 | [R36](#r36--every-per-service-postgres-role-can-connect-to-the-platform-database) | Per-service roles can connect to the `platform` database | **P2** | ✅ **SHIPPED 2026-09-13** — `db-isolation` converger + bootstrap + Security→Hardening card; verified on DEV against a real role |
 | [R37](#r37--tenant-pods-can-fill-a-nodes-disk-and-nothing-charges-them-for-it) | Tenant pods can fill a node's disk | P2 | Not started — needs a hosting-plan policy decision (an `ephemeral-storage` limit EVICTS) |
 
@@ -1489,11 +1489,18 @@ is to carry this much, it needs an alert on its own liveness.
 database in the `system-db` CNPG cluster and owns the credentials Secret; the
 LAPI's `seed-config` init container renders `db_config.type = postgresql` with
 `yq` (`k8s/base/crowdsec/deployment.yaml`); the RWO PVC is gone and the strategy
-is `RollingUpdate`. **Residual: `replicas: 2`** — the Deployment still runs a
-single replica, so the rollout gap this item exists to close is narrowed (no
-SQLite single-writer constraint) but not yet removed. The reconciler gates the
-replica count on a live probe that the LAPI is really on Postgres, which is the
-piece that makes raising it safe. Everything below documents how and why.
+is `RollingUpdate`. **No residual — this is done.** `replicas` is deliberately
+absent from the manifest (Flux SSA would revert an imperative scale), so the
+reconciler owns it: `LAPI_REPLICAS_POSTGRES = 2` once a live probe confirms the
+LAPI is really on Postgres, 1 while it is still SQLite. DEV is running 2/2 Ready.
+
+*(An earlier pass of this entry recorded "residual: `replicas: 2`" after reading
+the manifest and finding no `replicas:` line. That absence is the mechanism, not
+a gap. Corrected 2026-09-13 when `integration-waf-crowdsec.sh` — which hardcoded
+`readyReplicas == 1` — failed against a cluster that had correctly scaled to
+two.)*
+
+Everything below documents how and why.
 
 
 `replicas: 1` + `strategy: Recreate`, so **every** rollout has a window with no
