@@ -36,6 +36,8 @@
 
 # resolve_platform_apex(): derive the test apex instead of baking one in.
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration-env.sh"
+# A WAF suite cannot observe a block while this runner is CrowdSec-allowlisted.
+skip_if_runner_allowlisted "integration-waf-crowdsec"
 set -uo pipefail
 
 # ─── Config ────────────────────────────────────────────────────────────
