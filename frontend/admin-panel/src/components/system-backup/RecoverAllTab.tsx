@@ -16,7 +16,7 @@ import {
 import { useDrRecoverAllPreview, useDrRecoverAll } from '@/hooks/use-dr-recover';
 import ErrorPanel from '@/components/ErrorPanel';
 import { extractOperatorError } from '@/lib/extract-operator-error';
-import type { DrRecoverAllTarget, DrRecoverAllResult } from '@insula/api-contracts';
+import type { DrRecoverAllTarget, DrRecoverAllResult, DrRecoverAllSkipped } from '@insula/api-contracts';
 
 type Scope = 'missing' | 'all';
 
@@ -27,6 +27,14 @@ export default function RecoverAllTab() {
   const recover = useDrRecoverAll();
 
   const targets: readonly DrRecoverAllTarget[] = preview.data?.data.targets ?? [];
+  // R25 §3. Present on BOTH responses: the preview answers "what would happen",
+  // the run answers "what did". A tenant that was passed over matters equally
+  // in each, and reading it from only one leaves the other silently reassuring.
+  const skipped: readonly DrRecoverAllSkipped[] =
+    (recover.data?.data.skipped ?? preview.data?.data.skipped ?? []);
+  // `namespace_present` under scope=missing is the feature working as asked;
+  // only a missing/unusable bundle is something an operator must act on.
+  const unrecoverable = skipped.filter((s) => s.reason === 'no_completed_bundle');
   const results: readonly DrRecoverAllResult[] = recover.data?.data.results ?? [];
   const summary = recover.data?.data;
 
@@ -121,13 +129,28 @@ export default function RecoverAllTab() {
       {/* preview target set */}
       {preview.data && !recover.data && (
         targets.length === 0 ? (
-          <p className="rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800 dark:border-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-200">
-            No lost tenants to recover — every tenant with a bundle {scope === 'missing' ? 'has a live namespace.' : 'is accounted for.'}
-          </p>
+          // Only an all-clear when there is genuinely nothing to act on. With
+          // unrecoverable tenants present this used to render green and say
+          // "every tenant with a bundle is accounted for" — the tenants without
+          // a usable bundle were exactly the ones it was not counting.
+          unrecoverable.length > 0 ? (
+            <p className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-900/30 dark:text-amber-200">
+              Nothing can be recovered: {unrecoverable.length} tenant(s) have no completed bundle. See below.
+            </p>
+          ) : (
+            <p className="rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800 dark:border-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-200">
+              No lost tenants to recover — every tenant with a bundle {scope === 'missing' ? 'has a live namespace.' : 'is accounted for.'}
+            </p>
+          )
         ) : (
           <TargetTable rows={targets} />
         )
       )}
+
+      {/* R25 §3: tenants that will NOT be recovered, and why. Rendered whenever
+          the list is non-empty — including after a run, where "recovered 9/9"
+          is true and still not the whole answer. */}
+      {unrecoverable.length > 0 && <UnrecoverableTable rows={unrecoverable} />}
 
       {/* execution results */}
       {summary && (
@@ -151,7 +174,9 @@ function TargetTable({ rows }: { rows: readonly DrRecoverAllTarget[] }) {
       <table className="w-full text-sm">
         <thead>
           <tr className="border-b border-gray-200 text-left text-xs uppercase tracking-wide text-gray-500 dark:border-gray-700 dark:text-gray-400">
-            <th className="px-3 py-2">Tenant</th><th className="px-3 py-2">Bundle</th><th className="px-3 py-2">Namespace</th>
+            <th className="px-3 py-2">Tenant</th><th className="px-3 py-2">Bundle</th>
+            <th className="px-3 py-2">Age</th><th className="px-3 py-2">Components</th>
+            <th className="px-3 py-2">Namespace</th>
           </tr>
         </thead>
         <tbody>
@@ -160,9 +185,65 @@ function TargetTable({ rows }: { rows: readonly DrRecoverAllTarget[] }) {
               <td className="px-3 py-2 text-gray-900 dark:text-gray-100">{t.tenantName ?? <span className="font-mono text-xs">{t.tenantId.slice(0, 8)}…</span>}</td>
               <td className="px-3 py-2 font-mono text-xs text-gray-500 dark:text-gray-400">{t.bundleId.slice(0, 16)}…</td>
               <td className="px-3 py-2">
+                {t.bundleAgeDays === null
+                  ? <span className="text-gray-400 dark:text-gray-500">unknown</span>
+                  : (
+                    <span className={t.bundleAgeDays > 7 ? 'text-amber-700 dark:text-amber-300' : 'text-gray-600 dark:text-gray-300'}>
+                      {t.bundleAgeDays === 0 ? 'today' : `${t.bundleAgeDays}d old`}
+                    </span>
+                  )}
+              </td>
+              <td className="px-3 py-2 text-xs text-gray-600 dark:text-gray-300">
+                {t.components.length > 0
+                  ? t.components.join(', ')
+                  : <span className="text-amber-700 dark:text-amber-300">none</span>}
+              </td>
+              <td className="px-3 py-2">
                 {t.namespacePresent
                   ? <span className="text-amber-700 dark:text-amber-300">present (live)</span>
                   : <span className="text-gray-500 dark:text-gray-400">absent (lost)</span>}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/**
+ * Tenants a batch recover will not touch because there is nothing to restore.
+ *
+ * Deliberately its own table rather than a row style in the target list: these
+ * are not degraded targets, they are tenants the operation cannot help, and
+ * mixing them in is how a "12 of 15" gets read as "12 of 12".
+ */
+function UnrecoverableTable({ rows }: { rows: readonly DrRecoverAllSkipped[] }) {
+  return (
+    <div className="overflow-x-auto rounded-lg border border-amber-300 dark:border-amber-700" data-testid="dr-unrecoverable">
+      <div className="flex items-center gap-2 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-900 dark:bg-amber-900/30 dark:text-amber-200">
+        <AlertTriangle size={15} />
+        {rows.length} tenant(s) cannot be recovered — no completed bundle
+      </div>
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b border-amber-200 text-left text-xs uppercase tracking-wide text-amber-800 dark:border-amber-800 dark:text-amber-300">
+            <th className="px-3 py-2">Tenant</th><th className="px-3 py-2">Newest bundle</th><th className="px-3 py-2">When</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.tenantId} className="border-b border-amber-100 dark:border-amber-800/50">
+              <td className="px-3 py-2 text-gray-900 dark:text-gray-100">
+                {r.tenantName ?? <span className="font-mono text-xs">{r.tenantId.slice(0, 8)}…</span>}
+              </td>
+              <td className="px-3 py-2">
+                {r.latestBundleStatus
+                  ? <span className="text-amber-700 dark:text-amber-300">{r.latestBundleStatus}</span>
+                  : <span className="text-red-600 dark:text-red-400">never backed up</span>}
+              </td>
+              <td className="px-3 py-2 text-xs text-gray-600 dark:text-gray-300">
+                {r.latestBundleAt ? new Date(r.latestBundleAt).toLocaleString() : '—'}
               </td>
             </tr>
           ))}

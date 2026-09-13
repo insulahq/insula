@@ -89,6 +89,22 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 - **Fixed "back to automatic" for the ingress IPv4 override.** Clearing the field
   is how an operator hands the address back to node discovery; the schema for that
   endpoint rejected an empty value for IPv4 while allowing it for IPv6.
+- **A batch disaster recovery now tells you which tenants it cannot restore.**
+  The preview listed the tenants it would recover and silently dropped the rest,
+  so a tenant with no completed bundle looked identical to one that did not
+  exist — and if you named tenants explicitly, a name could come back in neither
+  list. Those tenants are now listed with the status of their most recent backup
+  attempt, so "partial, two days ago" is distinguishable from "never backed up".
+  The list stays on screen after the run as well, where "recovered 9 of 9" can
+  be true and still not the whole story.
+- **An empty recovery preview is no longer reported as good news by default.**
+  It showed a green "No lost tenants to recover — every tenant with a bundle is
+  accounted for" whenever the list was empty, including when it was empty
+  *because* nothing had a usable bundle. The most alarming case produced the
+  most reassuring screen.
+- **The recovery preview now shows how old each bundle is and what it contains**,
+  so a fleet-wide recovery can be judged before it starts rather than one failure
+  at a time.
 - **Tenants were shown as "Down" while their sites were serving normally.** On
   production three of twelve clients carried a red *Down* chip on a cluster whose
   only node was Ready and every site up. The availability check asked "is a
