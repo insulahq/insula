@@ -254,6 +254,31 @@ require_env() {
   fi
 }
 
+# skip_if_runner_allowlisted "suite label" — a WAF suite cannot produce a valid
+# result while this runner is CrowdSec-allowlisted.
+#
+# Allowlisting an IP suppresses WAF (AppSec) enforcement for it, not just
+# CrowdSec decisions. Proven on DEV 2026-09-13: identical payloads from the same
+# runner returned 401 while allowlisted and 403 once the entry was removed. A
+# WAF suite run in that state reports "want 403 got 401" on every assertion —
+# a wall of red that says nothing about the WAF.
+#
+# integration-all.sh sets INTEGRATION_RUNNER_ALLOWLISTED=1 when its self-ban
+# guard is active. Skipping is the honest outcome: the suite has not failed, it
+# could not run.
+skip_if_runner_allowlisted() {
+  local label="$1"
+  if [[ "${INTEGRATION_RUNNER_ALLOWLISTED:-0}" == "1" ]]; then
+    {
+      echo "SKIP: '$label' cannot run while this runner is CrowdSec-allowlisted —"
+      echo "      an allowlist also suppresses WAF enforcement, so every block would"
+      echo "      read as a pass-through (401 instead of 403)."
+      echo "      Re-run with INTEGRATION_SELF_BAN_GUARD=0 to exercise the WAF."
+    } >&2
+    exit "${INTEGRATION_SKIP_RC}"
+  fi
+}
+
 # require_or_skip "human label" VAR [VAR...] — if any named var is unset, print
 # a SKIP notice and exit $INTEGRATION_SKIP_RC (77). Use for OPTIONAL external /
 # confidential targets so an unconfigured environment skips cleanly instead of

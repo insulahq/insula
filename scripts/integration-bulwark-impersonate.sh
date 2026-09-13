@@ -210,7 +210,16 @@ if [[ $NEG_ONLY -eq 0 ]]; then
   [[ "$STATUS" == "303" ]] \
     && pass "B1 valid JWT → 303" \
     || fail "B1 expected 303, got $STATUS (body: $(echo "$RESP" | node -e "console.log(JSON.parse(require('fs').readFileSync(0,'utf8')).body)"))"
-  [[ "$LOCATION" == "/" ]] && pass "B1b redirect Location=/" || fail "B1b unexpected Location: $LOCATION"
+  # Match the PATH, ignore the query. Bulwark redirects to `/?impersonated=1`
+  # so its UI can show an "impersonating" banner; the old exact-match on "/"
+  # turned that upstream addition into a red suite while B1 (303) and every
+  # cookie assertion passed. Bulwark is a separate project — pinning its exact
+  # query string here makes this suite fail on a change that is not ours and
+  # not a regression.
+  case "$LOCATION" in
+    /|/\?*) pass "B1b redirect Location=$LOCATION (path '/')" ;;
+    *)       fail "B1b unexpected Location: $LOCATION" ;;
+  esac
 
   # Save raw_cookies and check session-only (no Max-Age)
   RAW_COOKIES="$(echo "$RESP" | node -e "console.log(JSON.parse(require('fs').readFileSync(0,'utf8')).raw_cookies.join('||'))")"

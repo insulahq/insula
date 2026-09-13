@@ -1395,8 +1395,23 @@ crowdsec_pod() {
   $KUBECTL -n crowdsec get pods --no-headers 2>/dev/null | awk '/^crowdsec-/{print $1; exit}'
 }
 
+# The allowlist is NOT free: CrowdSec allowlisting an IP also suppresses WAF
+# (AppSec) enforcement for it. Proven on DEV 2026-09-13 — the same payloads from
+# the same runner returned 401 while allowlisted and 403 once the entry was
+# removed. So the WAF suites cannot observe a block while the guard is on, and
+# they skip rather than report a false failure (see skip_if_runner_allowlisted).
+#
+# Set INTEGRATION_SELF_BAN_GUARD=0 for a WAF-focused run: the WAF suites then
+# see real enforcement, at the cost of the runner being ban-able partway through.
+: "${INTEGRATION_SELF_BAN_GUARD:=1}"
+export INTEGRATION_RUNNER_ALLOWLISTED=0
+
 allowlist_runner_ip() {
   local ip pod
+  if [[ "$INTEGRATION_SELF_BAN_GUARD" != "1" ]]; then
+    log "self-ban guard: DISABLED (INTEGRATION_SELF_BAN_GUARD=0) — WAF suites will see real enforcement; the runner can be banned mid-run"
+    return 0
+  fi
   ip="$(curl -s --max-time 10 https://api.ipify.org 2>/dev/null || true)"
   [[ "$ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || { log "self-ban guard: could not determine runner egress IP — skipping"; return 0; }
   pod="$(crowdsec_pod)"; [[ -n "$pod" ]] || { log "self-ban guard: no CrowdSec LAPI pod — skipping"; return 0; }
@@ -1406,7 +1421,9 @@ allowlist_runner_ip() {
   # Adding to an allowlist also drops any decision already covering the value.
   $KUBECTL -n crowdsec exec "$pod" -- cscli allowlists add "$INTEGRATION_ALLOWLIST_NAME" "$ip" -d "$INTEGRATION_ALLOWLIST_TAG" >/dev/null 2>&1 || true
   $KUBECTL -n crowdsec exec "$pod" -- cscli decisions delete --ip "$ip" >/dev/null 2>&1 || true
+  export INTEGRATION_RUNNER_ALLOWLISTED=1
   pass "self-ban guard: runner IP allowlisted in CrowdSec for the duration of this run"
+  warn "  WAF suites will SKIP: a CrowdSec allowlist also suppresses WAF enforcement for this IP (run with INTEGRATION_SELF_BAN_GUARD=0 to exercise them)"
 }
 
 unallowlist_runner_ip() {

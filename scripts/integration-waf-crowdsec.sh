@@ -36,6 +36,8 @@
 
 # resolve_platform_apex(): derive the test apex instead of baking one in.
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration-env.sh"
+# A WAF suite cannot observe a block while this runner is CrowdSec-allowlisted.
+skip_if_runner_allowlisted "integration-waf-crowdsec"
 set -uo pipefail
 
 # ─── Config ────────────────────────────────────────────────────────────
@@ -351,8 +353,17 @@ if ! kubectl_run "get pods -n platform -l app=platform-api -o jsonpath='{.items[
 fi
 ok "platform-api pod found"
 
-if ! kubectl_run "get deploy crowdsec -n crowdsec -o jsonpath='{.status.readyReplicas}'" | grep -q '^1$'; then
-  fail "crowdsec Deployment not Ready (expected 1 replica)"
+# Assert FULLY READY, not a fixed count. The LAPI's replica count is owned by
+# the crowdsec-db reconciler, not by the manifest (`replicas` is deliberately
+# absent so Flux SSA cannot revert an imperative scale): it holds 1 while the
+# store is SQLite — single-writer — and scales to LAPI_REPLICAS_POSTGRES (2)
+# once the LAPI is proven on Postgres, which is what removes the rollout gap.
+# Hardcoding 1 here failed the suite on a cluster that had correctly scaled up,
+# after all 14 of its own assertions passed.
+CS_READY=$(kubectl_run "get deploy crowdsec -n crowdsec -o jsonpath='{.status.readyReplicas}'" | tr -d '[:space:]')
+CS_WANT=$(kubectl_run "get deploy crowdsec -n crowdsec -o jsonpath='{.spec.replicas}'" | tr -d '[:space:]')
+if [[ -z "$CS_READY" || -z "$CS_WANT" || "$CS_READY" != "$CS_WANT" || "$CS_READY" == "0" ]]; then
+  fail "crowdsec Deployment not Ready (ready='$CS_READY' of desired='$CS_WANT')"
   exit 1
 fi
 ok "crowdsec Deployment ready"
