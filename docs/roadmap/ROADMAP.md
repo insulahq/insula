@@ -36,7 +36,7 @@
 | [R22](#r22--rc-validation-on-staging-via-flux-adr-045-mode-b) | RC validation on staging via Flux (Mode B) | P3 | ✅ Shipped 2026-06-21 — Flux re-pin now accepts `-rc.N` tags (gated by the prerelease flag) |
 | [R23](#r23--insula-single-binary-install--branding) | `insula` single-binary install + branding | P2 | Proposed (ADR-055, 2026-07-26) — fold bootstrap into the signed binary; rename `platform-ops`→`insula`; consolidate host paths |
 | [R24](#r24--proxy-protocol-support-for-cloud-load-balancers) | PROXY-protocol support for cloud (SNAT) load balancers | P2 | Proposed 2026-07-26 — real client IP is lost behind a SNAT-ing cloud LB (neither Traefik nor HAProxy accept inbound PROXY protocol); today needs a source-preserving L4-passthrough LB or DNS multi-A |
-| [R25](#r25--migration--dr-recover-completeness) | Migration / DR-recover completeness | P2 | Proposed 2026-08-04 — a recreated tenant needs manual follow-up steps (database replay, email re-enable); fold them into the recreate engine |
+| [R25](#r25--migration--dr-recover-completeness) | Migration / DR-recover completeness | P2 | ✅ Mostly shipped — §1 + §2 were already built (roadmap was stale); §3 bundle preflight + skipped-tenant reporting shipped 2026-09-13; §4 up-front key check remains |
 | [R26](#r26--pin-the-k3s-installer-to-a-version-tag-not-master) | Pin the k3s installer to a version tag, not master | P2 | Proposed 2026-08-04 — get.k3s.io serves master, so any upstream edit to install.sh breaks every fresh install until the digest is re-pinned |
 | [R27](#r27--dual-stack-tenant-services-end-to-end-ipv6) | Dual-stack tenant Services (end-to-end IPv6) | P4 | Proposed 2026-08-10 — the residual from R13: globally-routable pod addressing + catalog images binding `::`. COUPLED and inert individually; both only become load-bearing if tenant Services stop being SingleStack IPv4. Needs a provider-delegated prefix |
 | [R28](#r28--make-email-aliases-and-auto-reply-real) | Make email aliases + auto-reply real (Stalwart-backed) | P2 | ✅ **CLOSED 2026-08-24** — auto-reply (vacation), aliases (Stalwart MailingList per alias, fan-out to local + external destinations) and the domain catch-all (native Domain.catchAllAddress) all enforced by the mail server, DB authoritative with boot reconcile |
@@ -971,6 +971,44 @@ operator-actionable today (see
 [CROSS_CLUSTER_MIGRATION.md](../operations/CROSS_CLUSTER_MIGRATION.md)); the
 point of this item is that an operator must know to perform them, and a migration
 of many tenants multiplies the chance one is missed.
+
+**STATUS 2026-09-13 — most of this entry was already built.** Each item was
+re-checked against the code rather than against this write-up:
+
+| # | Item | Actual state |
+|---|---|---|
+| 1 | Add-on databases never replayed | ✅ **Already shipped.** `dr-recover/routes.ts` queues `databases-by-id { kind: 'all' }` immediately after the `files-paths` item (correct order — the `.sql` must land on the PVC first). The migration import reuses that same recover route (`migration/service.ts`), so it inherits the behaviour. Proven end-to-end by `integration-dr-database-restore-e2e.sh` (seed N rows → capture → delete rows → restore → assert N rows back). *Note: the claim below that `recreate.ts` "restores exactly ['config','files','mailboxes','secrets']" mis-read that list — it is the set of **backup-component index rows** the re-create registers, not a restore set. `recreate.ts` does not enqueue restores at all.* |
+| 2 | Mail send-readiness needs a manual re-enable | ✅ **Already shipped.** `dr-recover/reconcile.ts` step 2 regenerates DKIM in Stalwart per email domain (`normalizeDomainDkim`) and pushes an explicit DNS residual gap for the records the platform is not authoritative for. |
+| 3 | No preflight on bundle completeness | ✅ **SHIPPED 2026-09-13** — see below. |
+| 4 | Encryption-key mismatch discovered late | ⚠️ **Partially shipped.** `reconcile.ts` detects `PAT_DECRYPT_FAILED` and surfaces a specific, actionable residual gap ("the registry pull credential was encrypted with the source cluster's key … re-add it"). What remains is the *up-front* refusal: decrypting one bundle secret during the dry run so a whole fleet migration is refused before it starts rather than degrading per-tenant. |
+
+### §3 as shipped (2026-09-13)
+
+`resolveRecoverAllTargets` dropped its non-targets with a bare `continue`, so a
+dry run answered "12 targets" and said nothing about the three tenants it had
+passed over. **An omission read exactly like a tenant that does not exist** —
+and for an explicit `tenantIds` list, a name coming back in neither list
+silently contradicted the request.
+
+The resolver now returns `{ targets, skipped }`:
+
+- **`skipped`** carries a reason (`no_completed_bundle` / `namespace_present`)
+  plus the status and date of the newest bundle of *any* status — because
+  "partial, 2 days ago" and "never backed up" call for completely different
+  responses, and a bare omission made them indistinguishable. Its candidate
+  query was widened from `status = 'completed'` to every tenant that has ever
+  had a bundle: the old filter made a never-completed tenant *unrepresentable*.
+- **`targets`** gained `bundleCreatedAt`, `bundleAgeDays` (floored at 0 — clock
+  skew must not render a bundle as "-2 days old") and the component list, so the
+  fleet can be judged before it starts.
+- The admin panel's empty state used to render **green**: *"No lost tenants to
+  recover — every tenant with a bundle is accounted for."* The tenants without a
+  usable bundle were exactly the ones it was not counting, so the most alarming
+  case produced the most reassuring screen. It is now amber and names them, with
+  a dedicated table that also persists after a run — where "recovered 9/9" is
+  true and still not the whole answer.
+
+**Original write-up follows.**
 
 **The gaps, most consequential first:**
 

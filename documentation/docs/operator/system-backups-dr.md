@@ -201,6 +201,35 @@ The full, scripted cold-restore (etcd → Postgres → secrets → Longhorn → 
 test) is in the
 [Disaster Recovery runbook](https://github.com/insulahq/insula/blob/main/docs/operations/DISASTER_RECOVERY.md).
 
+## Before a batch recover: check what you cannot recover
+
+**Backups → Disaster Recovery → Recover all** has a **Preview** that lists the
+tenants it would restore. Read the second list too.
+
+Preview now answers two questions rather than one:
+
+- **What will be restored** — each tenant with the bundle chosen for it, **how
+  old that bundle is**, and which components it contains. A bundle older than a
+  week is highlighted; an empty component list means the bundle exists but holds
+  nothing worth restoring.
+- **What cannot be restored** — tenants with no completed bundle, shown in an
+  amber panel with the status of their newest attempt. *"partial, 2 days ago"*
+  and *"never backed up"* are very different situations and need different
+  responses.
+
+!!! warning "An empty target list is not automatically good news"
+    Preview used to report *"No lost tenants to recover"* in green whenever the
+    restore list was empty — including when the list was empty **because** no
+    tenant had a usable bundle. The screen was most reassuring in exactly the
+    situation that most needed attention. It now says so plainly, and the
+    unrecoverable list stays on screen after the run, where *"recovered 9 of 9"*
+    can be perfectly true and still not the whole answer.
+
+If a tenant appears in the unrecoverable list, recovering it is not a matter of
+retrying: there is no completed bundle to restore from. Fix the backup first
+(**Backups → Targets**, then take a fresh bundle), or accept the data loss
+knowingly.
+
 ## Moving tenants between clusters
 
 Tenant backups are cluster-agnostic, which makes cluster-to-cluster moves a
