@@ -1784,6 +1784,34 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           );
         }
 
+        // R36: database connection-isolation converger. Revokes the PUBLIC
+        // CONNECT blanket on every database in the CNPG cluster and grants
+        // CONNECT explicitly to each owner plus the CNPG metrics exporter —
+        // which connects to EVERY database (pg_extensions carries
+        // target_databases: ['*']), so the grant is what keeps the revoke from
+        // silently breaking metrics collection. Non-blocking: a cluster whose
+        // CNPG primary is not up yet converges on the next tick.
+        try {
+          const { startDbIsolationReconciler } = await import(
+            './modules/db-isolation/reconciler.js'
+          );
+          const k8sNodeDbIso = await import('@kubernetes/client-node');
+          const kcDbIso = new k8sNodeDbIso.KubeConfig();
+          if (kubePath) kcDbIso.loadFromFile(kubePath);
+          else kcDbIso.loadFromCluster();
+          const dbIsoHandle = startDbIsolationReconciler(
+            k8sForImapsync.core,
+            kcDbIso,
+            app.log,
+          );
+          app.addHook('onClose', () => dbIsoHandle.stop());
+        } catch (err) {
+          app.log.warn(
+            { err },
+            'db-isolation reconciler: failed to start (non-blocking)',
+          );
+        }
+
         // R-X8: mail-restic via shim reconciler. Owns the mail-restic
         // Secret when the 3-class `mail` shim binding is set; defers
         // to legacy mail-target-sync when only `system_mail` is bound.

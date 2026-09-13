@@ -40,6 +40,15 @@
 | [R26](#r26--pin-the-k3s-installer-to-a-version-tag-not-master) | Pin the k3s installer to a version tag, not master | P2 | Proposed 2026-08-04 — get.k3s.io serves master, so any upstream edit to install.sh breaks every fresh install until the digest is re-pinned |
 | [R27](#r27--dual-stack-tenant-services-end-to-end-ipv6) | Dual-stack tenant Services (end-to-end IPv6) | P4 | Proposed 2026-08-10 — the residual from R13: globally-routable pod addressing + catalog images binding `::`. COUPLED and inert individually; both only become load-bearing if tenant Services stop being SingleStack IPv4. Needs a provider-delegated prefix |
 | [R28](#r28--make-email-aliases-and-auto-reply-real) | Make email aliases + auto-reply real (Stalwart-backed) | P2 | ✅ **CLOSED 2026-08-24** — auto-reply (vacation), aliases (Stalwart MailingList per alias, fan-out to local + external destinations) and the domain catch-all (native Domain.catchAllAddress) all enforced by the mail server, DB authoritative with boot reconcile |
+| [R29](#r29--schema-validate-the-rest-of-the-api-surface) | Schema-validate the rest of the API surface | **P2** | R29a in progress 2026-09-13 (43 casts across 29 route files); R29b not started |
+| [R30](#r30--crowdsec-scenario-buckets-dilute-across-nodes) | CrowdSec scenario buckets dilute across nodes | P3 | Not started — affects multi-node (staging) only; needs measurement first |
+| [R31](#r31--per-node-identity-for-the-crowdsec-agents) | Per-node identity for the CrowdSec agents | P3 | Not started — prerequisite for R30 |
+| [R32](#r32--oauth2-proxy-401-dead-end--resolved-2026-09-05) | oauth2-proxy 401 dead-end | — | ✅ RESOLVED 2026-09-05 |
+| [R33](#r33--dex-configmap-changes-never-reached-the-process--resolved-2026-09-05) | Dex ConfigMap changes never reached the process | — | ✅ RESOLVED 2026-09-05 — residual: other ConfigMap-driven Deployments unaudited |
+| [R34](#r34--decide-the-config-reload-mechanism-deliberately) | Decide the config-reload mechanism, deliberately | P2 | Proposed — three mechanisms in use; wants an ADR + a CI guard |
+| [R35](#r35--the-crowdsec-lapi-is-a-single-point-of-failure-that-no-longer-needs-to-be) | CrowdSec LAPI single point of failure | P2 | ✅ Largely shipped — Postgres + RollingUpdate done; residual `replicas: 2` |
+| [R36](#r36--every-per-service-postgres-role-can-connect-to-the-platform-database) | Per-service roles can connect to the `platform` database | **P2** | ✅ **SHIPPED 2026-09-13** — `db-isolation` converger + bootstrap + Security→Hardening card; verified on DEV against a real role |
+| [R37](#r37--tenant-pods-can-fill-a-nodes-disk-and-nothing-charges-them-for-it) | Tenant pods can fill a node's disk | P2 | Not started — needs a hosting-plan policy decision (an `ephemeral-storage` limit EVICTS) |
 
 ---
 
@@ -849,6 +858,16 @@ exercises cosign verify + migrations + the k3s stepping before a stable cut.
 ## R23 — `insula` single-binary install + branding
 
 **Proposed 2026-07-26 — see [ADR-055](../architecture/adr/ADR-055-insula-single-binary-install-and-branding.md).**
+
+> **Re-scope needed before this starts (noted 2026-09-13).** The plan below
+> sequences the three changes together "while the installed base is a single
+> staging cluster (pre-production — the cheapest window)". Production is now
+> live and carrying real tenants, so that window has closed: the host-path
+> rebrand and the artifact rename now have to be safe against a cluster whose
+> DR bundles, migration markers and cosign anchor are in active use. The
+> symlink-not-move decision already anticipates this, but the *ordering* and the
+> dual-name transition release need re-deciding against a real installed base
+> rather than a disposable one.
 Finishes the operator-tooling consolidation ([R18](#r18--operator-script-consolidation-into-the-platform-ops-cli)):
 fold the last bash installer into the signed `platform-ops` binary and rebrand
 the operator footprint to the product name.
@@ -1308,6 +1327,18 @@ is to carry this much, it needs an alert on its own liveness.
 
 ## R35 — The CrowdSec LAPI is a single point of failure that no longer needs to be
 
+**✅ LARGELY SHIPPED — entry below is the design record, not open work.**
+`backend/src/modules/crowdsec-db/reconciler.ts` provisions the `crowdsec` role +
+database in the `system-db` CNPG cluster and owns the credentials Secret; the
+LAPI's `seed-config` init container renders `db_config.type = postgresql` with
+`yq` (`k8s/base/crowdsec/deployment.yaml`); the RWO PVC is gone and the strategy
+is `RollingUpdate`. **Residual: `replicas: 2`** — the Deployment still runs a
+single replica, so the rollout gap this item exists to close is narrowed (no
+SQLite single-writer constraint) but not yet removed. The reconciler gates the
+replica count on a live probe that the LAPI is really on Postgres, which is the
+piece that makes raising it safe. Everything below documents how and why.
+
+
 `replicas: 1` + `strategy: Recreate`, so **every** rollout has a window with no
 LAPI. Until 2026-09-05 that window blocked all traffic after three minutes; with
 `updateMaxFailure: -1` it now only freezes IP reputation, which is why this is a
@@ -1437,21 +1468,60 @@ the `crowdsec` namespace. A leak of those credentials should get an attacker a
 CrowdSec database and nothing else; today it also gets them an authenticated
 session against the platform database to probe from.
 
-**The fix, cluster-level rather than per-service:**
+**✅ SHIPPED 2026-09-13.** `backend/src/modules/db-isolation/` — a converger
+(boot + 5-minute tick, `startDbIsolationReconciler`) that execs psql in the CNPG
+primary and, for every connectable non-template database, grants CONNECT to the
+owner, grants it to `cnpg_metrics_exporter`, then revokes it from PUBLIC:
 
 ```sql
-REVOKE CONNECT ON DATABASE platform FROM PUBLIC;
-GRANT  CONNECT ON DATABASE platform TO platform;   -- and any operator roles
+GRANT  CONNECT ON DATABASE <db> TO <owner>;
+GRANT  CONNECT ON DATABASE <db> TO cnpg_metrics_exporter;
+REVOKE CONNECT ON DATABASE <db> FROM PUBLIC;
 ```
 
-Repeat per database (`crowdsec`, `roundcube`, …) so the property is symmetric
-rather than special-casing `platform`.
+A converger rather than a migration because a migration could only ever own
+`platform` — not `postgres`, `crowdsec` or `roundcube` — and because it runs
+once: a database restored from a pre-R36 dump would come back open with nothing
+noticing. The two creation paths (`crowdsec-db`, `roundcube-db-reconciler`)
+additionally apply the single-database form inline at CREATE time, and
+`bootstrap.sh:harden_database_connect_acls` applies it on fresh installs so a
+new cluster is isolated before platform-api first starts.
 
-**Verify before and after**, since this is exactly the kind of change that looks
-applied and is not: from a pod with network reach, `psql -U crowdsec -d platform`
-should succeed today and be refused afterwards, while `psql -U crowdsec -d
-crowdsec` keeps working. Do it against a real role, not `postgres` — a superuser
-is exempt and would make a broken change look successful.
+**The trap, found on DEV before shipping: `cnpg_metrics_exporter` connects to
+EVERY database.** The `pg_extensions` collector in `cnpg-default-monitoring`
+carries `target_databases: ['*']` and its query calls `current_database()`,
+which only answers from inside each database. A bare `REVOKE … FROM PUBLIC`
+therefore breaks CNPG metrics collection on every database — and breaks it
+silently: the pod stays Running, `/metrics` keeps answering, and only
+`cnpg_collector_last_collection_error` moves. Hence the exporter GRANT, issued
+*before* the revoke; the ordering is asserted by both `sql.test.ts` and
+`ci-db-isolation-check.sh`.
+
+*(Re-verifying this? `pg_stat_activity` is snapshot-cached per transaction, so a
+polling loop inside one transaction returns the same rows forever and you will
+conclude the exporter never connects. Call `pg_stat_clear_snapshot()` each
+iteration.)*
+
+**Surfaced** in **Security → Hardening** as a card plus a detail table that
+appears only when something is actionable. An unreadable state renders as
+*unknown*, never as *isolated*.
+
+**Guards:** `scripts/ci-db-isolation-check.sh` (statement presence, GRANT-before-
+REVOKE ordering in both writers, the bootstrap function is actually called,
+templates excluded) and a `sql.test.ts` case asserting the bootstrap heredoc is
+byte-identical to the converger's emitted SQL.
+
+**Verified on DEV 2026-09-13** against a real role (not `postgres` — a superuser
+is exempt from CONNECT and would make a broken change look successful):
+
+| from → to | before | after |
+|---|---|---|
+| `crowdsec` → `crowdsec` | works | works |
+| `crowdsec` → `platform` | works | `FATAL: permission denied for database "platform"` |
+| `crowdsec` → `postgres` | works | `FATAL: permission denied for database "postgres"` |
+
+with `cnpg_collector_last_collection_error` still 0 and `cnpg_pg_extensions`
+still reporting all four databases.
 
 **Sequencing.** Deliberately not folded into R35: it changes the access
 properties of roles that already exist and predate that work, so it deserves its

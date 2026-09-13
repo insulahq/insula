@@ -133,6 +133,7 @@ export function buildSecurityHardeningRoutes(deps: SecurityHardeningDeps) {
           core: clients.core,
           custom: clients.custom,
           apps: clients.apps,
+          kc: clients.kc,
         });
         return success(snapshot);
       },

@@ -179,6 +179,48 @@ When `sshd_config` parsing fails (file unreadable, drop-in conflict, etc.), SSH-
 - **TLS certs expiring < 30d**: pulls from `certificates.cert-manager.io` cluster-wide. Sorted by `daysRemaining` ascending.
 - **Backup targets**: per-target `encryption_at_rest`, last connection test, last successful snapshot. Surfaces unencrypted off-site backups and stale targets as security risks.
 - **Reserved-hostname collisions**: feed of `RESERVED_PLATFORM_HOSTNAME` 409s from ADR-040 — tenant probing or accidental misconfig.
+- **Database connection isolation** (ROADMAP R36): per-database `CONNECT` ACLs read from `pg_database.datacl` in the CNPG primary. Green means no database grants `CONNECT` to `PUBLIC`, so a leaked per-service credential (`roundcube`, `crowdsec`) buys a session against that service's own database and nothing else. A detail table appears **only** when something is actionable — a database still open, or a role connected that can no longer reconnect. An unreadable state renders as **unknown**, never as isolated.
+
+### Database connection isolation — how it converges
+
+The property is owned by the `db-isolation` converger in platform-api (boot +
+every 5 minutes), not by a migration: a migration could only own `platform`, and
+it runs once, so a database restored from an older dump would come back open
+with nothing noticing. `bootstrap.sh:harden_database_connect_acls` applies the
+same SQL on fresh installs, and the `crowdsec-db` / `roundcube-db-reconciler`
+creation paths apply the single-database form inline so a new database is never
+briefly open.
+
+**Do not revoke without granting `cnpg_metrics_exporter` first.** It connects to
+every database — the `pg_extensions` collector in `cnpg-default-monitoring`
+carries `target_databases: ['*']` and its query calls `current_database()`.
+Revoking without that grant breaks CNPG metrics collection on every database and
+breaks it silently: the pod stays Running, `/metrics` keeps answering, and only
+`cnpg_collector_last_collection_error` moves off 0.
+
+**Verifying by hand** — use a real role, never `postgres`; a superuser bypasses
+`CONNECT` entirely and would make a broken change look successful:
+
+```bash
+PRIMARY=$(kubectl -n platform get pods -l cnpg.io/cluster=system-db,role=primary \
+  -o jsonpath='{.items[0].metadata.name}')
+PW=$(kubectl -n crowdsec get secret crowdsec-db-credentials -o jsonpath='{.data.password}' | base64 -d)
+
+# its own database: must work
+kubectl -n platform exec "$PRIMARY" -c postgres -- \
+  env PGPASSWORD="$PW" psql -h 127.0.0.1 -U crowdsec -d crowdsec -Atc 'select 1'
+# the platform database: must be REFUSED
+kubectl -n platform exec "$PRIMARY" -c postgres -- \
+  env PGPASSWORD="$PW" psql -h 127.0.0.1 -U crowdsec -d platform  -Atc 'select 1'
+#   FATAL:  permission denied for database "platform"
+#   DETAIL:  User does not have CONNECT privilege.
+```
+
+**If a role is listed as at-risk**, it was relying on the `PUBLIC` blanket.
+Existing sessions keep working (CONNECT is checked at connection time) and fail
+on the next reconnect. Either point the service at its own database, or grant it
+explicitly: `GRANT CONNECT ON DATABASE <db> TO <role>;` — the converger only
+revokes from `PUBLIC`, so an explicit grant survives every tick.
 
 ## NetworkPolicy hardening templates (Network Policies tab)
 
@@ -278,6 +320,7 @@ that survives a re-test; partial suppression will not.
 
 - `scripts/ci-firewall-check.sh` — validates bootstrap.sh has the right SSH rendering paths AND dual-stack symmetry on saddr scopes.
 - `scripts/test-ssh-via-mesh.sh` — re-runs ci-firewall-check + asserts firewall.conf persistence format (3 cases: mesh-off, wt0, tailscale0).
+- `scripts/ci-db-isolation-check.sh` — asserts the converger and `bootstrap.sh` carry the same three statements, that both GRANTs precede the REVOKE in each (the ordering that keeps the metrics exporter alive), that `harden_database_connect_acls` is actually called, and that neither writer touches a template database.
 
 Both should pass on every PR; both will be wired into CI under `Infrastructure CI`.
 
