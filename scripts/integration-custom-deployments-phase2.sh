@@ -249,7 +249,15 @@ cleanup() {
   local cnt
   cnt=$(remote_kubectl get all,configmap,secret -n "$TENANT_NS" \
     -l "insula.host/e2e-phase2=$STAMP" \
-    -o jsonpath='{.items[*].metadata.name}' 2>/dev/null | wc -w || echo "0")
+    -o jsonpath='{.items[*].metadata.name}' 2>/dev/null | wc -w) || true
+  # `|| true` on the ASSIGNMENT, not `|| echo 0` inside it. Under
+  # `set -o pipefail` a failing earlier stage fails the pipeline even though
+  # the counting stage already printed a number, so an inner fallback appends
+  # a SECOND line and the value becomes $'0\n0' — which breaks the arithmetic
+  # that reads it. And `grep -c` exits 1 on ZERO matches, so under `set -e`
+  # simply dropping the fallback would abort the script on the normal
+  # "nothing matched" path. The digit guard covers both.
+  [[ "$cnt" =~ ^[0-9]+$ ]] || cnt=0
   if [[ "$cnt" -gt "0" ]]; then
     info "$cnt lingering Phase-2 resources — removing…"
     remote_kubectl delete all,configmap,secret -n "$TENANT_NS" \
@@ -1139,7 +1147,7 @@ else:
     # Also check Deployment events for quota messages as a fallback.
     local events_quota
     events_quota=$(remote_kubectl get events -n "$TENANT_NS" \
-      --field-selector "involvedObject.name=$deploy_name" 2>/dev/null | grep -i "quota\|exceeded" | wc -l || echo "0")
+      --field-selector "involvedObject.name=$deploy_name" 2>/dev/null | grep -ci "quota\|exceeded") || true
     if echo "$replica_fail_reason" | grep -qi "failedcreate\|quota\|exceeded" || \
        [[ "$events_quota" -gt "0" ]]; then
       pass "T15: Deployment has ReplicaFailure due to quota ($replica_fail_reason) ✓"
@@ -1508,7 +1516,8 @@ drain_deployments() {
   # drain (this tenant is phase2-dedicated during SERIAL_POST), 45s cap.
   local waited=0 n
   while (( waited < 45 )); do
-    n=$(remote_kubectl get pods -n "$TENANT_NS" --no-headers 2>/dev/null | grep -vcE 'Completed' || echo 0)
+    n=$(remote_kubectl get pods -n "$TENANT_NS" --no-headers 2>/dev/null | grep -vcE 'Completed') || true
+    [[ "$n" =~ ^[0-9]+$ ]] || n=0
     [[ "${n:-0}" -le 0 ]] && break
     sleep 3; waited=$((waited+3))
   done
