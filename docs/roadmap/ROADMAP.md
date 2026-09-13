@@ -16,7 +16,7 @@
 | [R2](#r2--monitoring-stack-decision--slislo) | Monitoring stack decision + SLI/SLO | **P1** | Shipped (ADR-051, PRs #50–#63) — logs deferred |
 | [R3](#r3--load-testing-in-ci) | Load testing in CI | P3 | Not built — low value for the traffic profile (decision 2026-06-20) |
 | [R4](#r4--fbl-complaint-processing) | FBL complaint processing | **P1** (for production mail) | Shipped (PRs #64–#69) |
-| [R5](#r5--dmarc-aggregate-report-ingestion) | DMARC aggregate-report ingestion | P2 | Not started |
+| [R5](#r5--dmarc-aggregate-report-ingestion) | DMARC aggregate-report ingestion | P2 | ✅ **SHIPPED 2026-09-13** — Stalwart parses the XML; platform ingests + surfaces + recommends. Also fixed a published `rua=` pointing at a mailbox that never existed |
 | [R6](#r6--rolling-sending-quota-enforcement) | Rolling sending-quota enforcement | P2 | Shipped (PRs #64–#69) |
 | [R7](#r7--ip-warm-up-pools-and-per-domain-relay) | IP warm-up, pools, per-domain relay | P3 | Not started |
 | [R8](#r8--notification-channels-slack--webhook--sms) | Notification channels: Slack/Webhook/SMS | P3 | Email + in-app shipped |
@@ -145,9 +145,81 @@ Runbook: [MAIL_FBL.md](../operations/MAIL_FBL.md).
 
 ## R5 — DMARC aggregate-report ingestion
 
-Parse aggregate reports (Gmail/Outlook/Yahoo), compute per-domain pass rates,
-surface in the email UI, and recommend policy tightening (p=none →
-quarantine → reject) once pass-rate thresholds hold.
+**✅ SHIPPED 2026-09-13.**
+
+**The platform does not parse the XML — Stalwart already does.** Its
+report-analysis intercepts mail to the configured report addresses, un-gzips the
+attachment, parses the RFC 7489 aggregate XML and stores a typed
+`x:DmarcExternalReport` registry object. Confirmed against a live server by
+delivering a real aggregate report and reading the object back; `x:DmarcReport`
+and `x:IncomingReport` return `unknownMethod` on the same server, so the type is
+the real one rather than a catch-all. R5 is therefore the same shape as R4's FBL
+path: poll → attribute → persist → destroy.
+
+### The bug this found first
+
+The DMARC record the platform published was:
+
+```
+v=DMARC1; p=quarantine; rua=mailto:dmarc-reports@<domain>
+```
+
+**`dmarc-reports@` is an address nothing in the platform has ever created.**
+Stalwart does not bypass RCPT validation for report addresses — an unregistered
+one is refused with `550 5.1.2 Mailbox does not exist` (proven on DEV against
+`postmaster@<apex>`, which is in the intake pattern list and has no account). So
+every aggregate report every receiver has ever tried to send was refused and
+discarded, and nothing surfaced it. That is why there was no data to ingest.
+
+Fixed to `rua=mailto:dmarc@<domain>`, with `report-intake-reconciler` creating
+the matching `dmarc@` mailbox on **every enabled email domain**.
+Same-domain rather than a central `dmarc@<apex>` because RFC 7489 §7.1 requires
+an authorisation record (`<domain>._report._dmarc.<apex> TXT "v=DMARC1"`) in the
+reporting domain's zone before a reporter will send cross-domain, and
+`syncRecordToProviders` is scoped to one domainId — a cross-domain `rua`
+published without that record is one most reporters refuse, which would look
+identical to the bug being fixed.
+
+### Two wire-format details the RFC does not tell you
+
+Both observed on a live server, and both fail **silently**:
+
+1. `records`, `dkimResults`, `spfResults` and `errors` are **objects keyed by
+   decimal-string index** (`{"0": …, "1": …}`), not arrays. A `.map()` over them
+   yields nothing, and the domain reports as having sent zero messages.
+2. Result values are **camelCase** — SPF softfail arrives as `softFail`, not the
+   RFC's `softfail`. A lowercase comparison misses it, and a missed softfail
+   counts as neither pass nor fail.
+
+`indexedValues()` accepts both shapes so a future Stalwart release that switches
+to real arrays cannot quietly zero the counts.
+
+### As built
+
+- `mail-events/dmarc.ts` — poll + attribute by policy domain + persist + destroy,
+  on the existing 5-minute mail tick and the `incoming-report.*` webhook debounce.
+  An unattributed report is stored with a null tenant rather than dropped:
+  dropping it would make "we host nothing for that domain" indistinguishable from
+  "no reports arrived".
+- Migration `0110` — `email_dmarc_reports` (summary, counts denormalised at
+  ingest) + `email_dmarc_sources` (per source IP, so "which senders are failing"
+  is an indexed query rather than a jsonb scan).
+- `mail-events/dmarc-policy.ts` — the p=none → quarantine → reject
+  recommendation. Every rule fails closed. Notably it refuses while **any** source
+  is still failing even when the aggregate rate clears the bar: the rate can look
+  fine while a low-volume legitimate sender fails every message it sends, and that
+  sender is exactly who breaks on a tightening.
+- `GET /admin/mail/dmarc` + `…/dmarc/sources`, surfaced under **Monitoring →
+  Mail**. Nothing rewrites a published policy — `p=reject` on a domain with one
+  unaligned legitimate sender stops that sender's mail immediately rather than
+  degrading, so the tightening stays an operator decision.
+
+### Open follow-up
+
+The default policy published for a new domain is `p=quarantine`, which is
+enforcement *before* any alignment has been observed. R5's model argues for
+`p=none` first, tightening on evidence. Left unchanged because it is an operator
+policy decision rather than a bug — worth a deliberate call.
 
 - Spec: the original email-deliverability spec (DMARC sections; see the git history).
 

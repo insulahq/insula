@@ -13,6 +13,19 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Added
+- **DMARC aggregate reports are now collected and shown.** Receivers like Gmail
+  and Outlook send a daily report saying how much of your mail passed
+  authentication and which servers sent it. The platform now ingests those,
+  shows a pass rate per domain under **Monitoring → Mail** — always alongside the
+  message count, because a pass rate without one is the number that gets acted on
+  when it shouldn't be — and lists the individual sending servers that are
+  failing, worst first.
+- **It also says when it is safe to tighten your DMARC policy**, and refuses to
+  say so early: not on a short history, not on thin traffic, and not while any
+  sending server is still failing — even when the overall percentage looks fine.
+  A low-volume but legitimate sender can fail every message it sends while the
+  average still looks healthy, and that sender is exactly who stops being
+  delivered when a policy is tightened. Nothing is changed automatically.
 - **The Banned IPs list now says who banned each address, in plain language.**
   It previously printed CrowdSec's internal field: `cscli` for three different
   things the platform does, and `crowdsec` for the platform's *own* detection —
@@ -71,6 +84,12 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   last checkbox in a dense grid, is now a labelled row of its own.
 
 ### Fixed
+- **DMARC reports were being thrown away by the receiving mail server.** Every
+  domain published a `rua=` address of `dmarc-reports@<domain>` — an address the
+  platform never created. Mail to an address with no mailbox is refused outright,
+  so every report any receiver ever sent was rejected and lost, and nothing
+  reported it. The published address is now `dmarc@<domain>`, and that mailbox is
+  created automatically for every domain with email enabled.
 - **A wrong field in an API request is now an error instead of a silent no-op.**
   Nineteen endpoints read the request body without checking it, so a misspelled
   or wrongly-typed field was not rejected — the endpoint skipped whatever that
