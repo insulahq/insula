@@ -69,9 +69,14 @@ d=json.load(sys.stdin).get('data') or []
 print('yes' if any((s.get('providerType') or s.get('provider_type'))=='powerdns'
       and (s.get('enabled') in (1,True)) and s.get('role')=='primary' for s in d) else 'no')")
 if [[ "$PDNS_OK" != "yes" ]]; then
-  echo "dns-records-e2e: PRECONDITION FAILED — no enabled primary PowerDNS registered." >&2
-  echo "  run scripts/vm-integration-tests/setup-dns-provider.sh first." >&2
-  exit 1
+  # SKIP (77), not FAIL (1). A cluster with no DNS provider registered has not
+  # failed this suite — it cannot run it. Exiting 1 reported DEV, which has no
+  # provider group bound at all, as a red suite on every run and buried the
+  # failures that were real. `tier-flip` and `drain` already use this
+  # convention; this one did not.
+  echo "SKIP: dns-records-e2e needs an enabled PRIMARY PowerDNS provider — none registered." >&2
+  echo "      run scripts/vm-integration-tests/setup-dns-provider.sh first." >&2
+  exit "${INTEGRATION_SKIP_RC:-77}"
 fi
 GROUP_ID=$(api GET /admin/dns-provider-groups | body_of - 2>/dev/null | jqp "
 d=json.load(sys.stdin).get('data') or []
