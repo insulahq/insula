@@ -12,6 +12,31 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **Tenants were shown as "Down" while their sites were serving normally.** On
+  production three of twelve clients carried a red *Down* chip on a cluster whose
+  only node was Ready and every site up. The availability check asked "is a
+  storage replica running for this tenant?", but Longhorn shuts every replica
+  process down when the last workload unmounts a volume — so any idle volume, on
+  any healthy cluster, answered no. A detached volume is now judged by where its
+  replicas *live*: it is only unreachable when every node holding one is offline.
+  A real node loss still reports exactly as before.
+- **A re-provisioned tenant kept a ghost volume that reported it as down
+  forever.** Re-provisioning leaves the previous storage volume behind, and it
+  keeps the original client and disk name recorded against it indefinitely — so
+  it is indistinguishable from the live one by name, and being permanently idle
+  it always looked like total data loss. Volumes that no longer belong to any
+  live disk claim are now ignored, because nothing they report describes the
+  client that is running today.
+- **Routine restarts no longer flash a red "Down" chip.** Client workloads are
+  replaced one-at-a-time-with-nothing-in-between, so for a few seconds after any
+  env-var edit, image update or node reboot the client legitimately has nothing
+  ready — which is the exact shape of a total outage. A workload is now given two
+  minutes to become ready before it counts as broken, and finished or evicted
+  pods are excluded from the judgement entirely: whether Kubernetes has swept up
+  a dead pod yet is not a fact about the client. *Down* now means precisely
+  "nothing is serving", and *Degraded* "some of it is".
+
 ## [2026.9.19] - 2026-09-12
 
 ### Fixed

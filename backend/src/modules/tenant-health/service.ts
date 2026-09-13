@@ -36,6 +36,15 @@ export interface PodFact {
   readonly nodeName: string | null;
   readonly ready: boolean;
   readonly phase: string;
+  /**
+   * `metadata.creationTimestamp`, ISO. Null when the API omitted it.
+   *
+   * Used only for the not-Ready grace window: every tenant Deployment runs
+   * `strategy: Recreate` at one replica, so an ordinary restart deletes the
+   * only pod before creating its replacement and the namespace legitimately
+   * holds nothing Ready for a few seconds.
+   */
+  readonly createdAt: string | null;
 }
 
 /** One Longhorn replica: which volume it belongs to and where it lives. */
@@ -61,6 +70,30 @@ export interface VolumeFact {
   readonly pvcName: string | null;
   /** Longhorn `status.robustness`: healthy | degraded | faulted | unknown. */
   readonly robustness: string | null;
+  /**
+   * Longhorn `status.state === 'attached'`.
+   *
+   * A DETACHED volume has no replica PROCESS running anywhere — Longhorn stops
+   * them all when the last workload unmounts. "No running replica" is therefore
+   * its normal resting state, not a fault, and judging it by the same rule as an
+   * attached volume reported three healthy production tenants as fully Down on
+   * a cluster where every node was Ready.
+   *
+   * Transitional states (attaching / detaching / creating) count as NOT
+   * attached: the placement test below is the non-alarming one, and a volume
+   * mid-transition is not evidence of data loss.
+   */
+  readonly attached: boolean;
+  /**
+   * Longhorn `status.kubernetesStatus.lastPVCRefAt` — set to the moment the
+   * volume STOPPED being referenced by a live PVC, empty while it still is.
+   *
+   * Non-empty means this is a leftover Longhorn volume, not the tenant's data.
+   * They keep the old `kubernetesStatus.namespace`/`pvcName` forever, so a
+   * re-provisioned tenant carries a ghost that looks exactly like its real
+   * volume — one such ghost was reporting a serving tenant as Down.
+   */
+  readonly pvcRefLostAt: string | null;
 }
 
 export interface TenantFact {
@@ -120,6 +153,30 @@ function worstState(findings: ReadonlyArray<TenantHealthFinding>): TenantHealthS
  *
  * Exported for focused unit tests of the degradation matrix.
  */
+/**
+ * How long a not-Ready pod is given before it counts as broken.
+ *
+ * Every tenant Deployment runs `strategy: Recreate` at `replicas: 1`, so any
+ * ordinary restart — an env-var edit, an image bump, a node reboot — deletes
+ * the only pod and then creates its replacement. For the seconds in between,
+ * the namespace holds exactly one pod that is not Ready and nothing else, which
+ * is precisely the shape of a total outage. Without this window the tenant list
+ * flashes a red "Down" chip on every routine change.
+ *
+ * 120s is comfortably longer than a pull-cached container takes to pass its
+ * readiness probe and far shorter than any stuck state worth reporting
+ * (ImagePullBackOff, CrashLoopBackOff and unschedulable all outlive it).
+ */
+const POD_START_GRACE_MS = 120_000;
+
+/** True while a pod is still young enough that "not Ready" means "starting". */
+function withinStartGrace(pod: PodFact, observedAt: Date): boolean {
+  if (!pod.createdAt) return false;
+  const created = Date.parse(pod.createdAt);
+  if (!Number.isFinite(created)) return false;
+  return observedAt.getTime() - created < POD_START_GRACE_MS;
+}
+
 /** Nodes holding a RUNNING replica of `volumeName` that are still up. */
 function liveRunningReplicaNodes(
   volumeName: string,
@@ -172,7 +229,19 @@ export function findingsForTenant(
   const strandedNodes = new Set<string>();
   const rebuilding: string[] = [];
   for (const v of nsVolumes) {
+    // A volume Longhorn no longer links to a live PVC is a LEFTOVER, not this
+    // tenant's data — it keeps the old namespace/pvcName in `kubernetesStatus`
+    // indefinitely, so it is indistinguishable from the real volume by name.
+    // Nothing about it can tell us whether the tenant is serving.
+    if (v.pvcRefLostAt) continue;
+
     const replicaNodes = byVolume.get(v.volumeName) ?? [];
+    // No replica scheduled yet (volume still being created): nothing to claim.
+    if (replicaNodes.length === 0) continue;
+
+    const dead = replicaNodes.filter((n) => downNodeNames.has(n));
+    // Where the data physically SITS, ignoring whether a process is serving it.
+    const liveNodes = replicaNodes.filter((n) => !downNodeNames.has(n));
     // A live copy means a RUNNING replica on a live node. An empty
     // rebuild target that Longhorn just scheduled is on a live node but
     // holds no data, and treating it as a survivor turns "your data is on
@@ -180,9 +249,20 @@ export function findingsForTenant(
     // most reassuring thing the platform could wrongly say. Observed on
     // staging 2026-09-11 for a one-replica local-tier volume, which can
     // never rebuild because the only source is the node that died.
-    const live = liveRunningReplicaNodes(v.volumeName, byVolumeRunning, downNodeNames);
-    const dead = replicaNodes.filter((n) => downNodeNames.has(n));
-    if (v.robustness === 'faulted' || (replicaNodes.length > 0 && live.length === 0)) {
+    const liveRunning = liveRunningReplicaNodes(v.volumeName, byVolumeRunning, downNodeNames);
+
+    // ATTACHED: a replica process must be running somewhere alive, or the data
+    // is not reachable. Unchanged from the rule the 2026-09-11 drill produced.
+    //
+    // DETACHED: Longhorn stops every replica process on the last unmount, so
+    // `liveRunning` is empty for every idle volume on a perfectly healthy
+    // cluster. Judge it by PLACEMENT instead — the data is only unreachable
+    // when every node holding a replica is down. Applying the attached rule
+    // here marked the SYSTEM tenant and two serving tenants fully Down on
+    // production 2026-09-13 with the single node Ready and sites up.
+    const unreachable = v.attached ? liveRunning.length === 0 : liveNodes.length === 0;
+
+    if (v.robustness === 'faulted' || unreachable) {
       // Every replica is on a downed node: the data is unreachable until a
       // node returns or the tenant is restored from a bundle.
       stranded.push(v.pvcName ?? v.volumeName);
@@ -219,9 +299,18 @@ export function findingsForTenant(
   // tenant with no running pods is correct, not degraded.
   if (!NON_SERVING_STATUSES.has(tenant.status)) {
     const nsPods = input.pods.filter((p) => p.namespace === tenant.namespace);
-    const broken = nsPods.filter(
-      (p) => !p.ready && p.phase !== 'Succeeded',
+    // TERMINAL pods are records, not workloads. A Succeeded rollout corpse or
+    // an evicted Failed pod is not something the tenant is missing, and it must
+    // not sit in the denominator either: the old rule escalated to `down` only
+    // when EVERY pod was broken, so a leftover corpse silently downgraded a
+    // genuinely dead tenant to `degraded` while its absence promoted a healthy
+    // one to `down`. Whether a corpse has been garbage-collected yet is not a
+    // fact about the tenant.
+    const workloads = nsPods.filter((p) => p.phase !== 'Succeeded' && p.phase !== 'Failed');
+    const broken = workloads.filter(
+      (p) => !p.ready && !withinStartGrace(p, input.observedAt),
     );
+    const readyPods = workloads.filter((p) => p.ready);
     // Suppress when already explained by the pin finding — otherwise every
     // pinned-to-dead-node tenant reports the same problem twice.
     const alreadyExplained = findings.some(
@@ -230,8 +319,10 @@ export function findingsForTenant(
     if (broken.length > 0 && !alreadyExplained) {
       findings.push({
         kind: 'workloads_not_ready',
-        severity: nsPods.length > 0 && broken.length === nsPods.length ? 'down' : 'degraded',
-        detail: `${broken.length} of ${nsPods.length} pod(s) are not Ready.`,
+        // `down` means NOTHING is serving, which is the question an operator is
+        // actually asking. Counting "all pods broken" answered a different one.
+        severity: readyPods.length === 0 ? 'down' : 'degraded',
+        detail: `${broken.length} of ${workloads.length} pod(s) are not Ready.`,
         nodes: [...new Set(broken.map((p) => p.nodeName).filter((n): n is string => !!n))].sort(),
         resources: broken.map((p) => `${p.namespace}/${p.name}`).sort().slice(0, 20),
       });
