@@ -1278,8 +1278,17 @@ name. And it would retire the four hand-rolled hash reconcilers.
 the new pod template arrive in the same apply, so there is no window where pods
 run old config, and no runtime component whose failure silently stops
 propagation — the exact class of failure this whole area kept producing. For
-`crowdsec-agent-acquis`, which decides whether a scenario bans real users, that
-guarantee is worth keeping.
+`crowdsec-agent-acquis` that guarantee is worth keeping.
+
+**Update 2026-09-13:** the part of that config which decides whether a scenario
+bans real users — `simulation.yaml` — is no longer in the hashed ConfigMap. It
+became operator-editable from the admin panel, so it moved to the fixed-name,
+backend-owned `crowdsec-agent-simulation` ConfigMap and lands squarely in
+category 2 below. It does not rely on Reloader alone: the backend deletes the
+agent pods itself after a write, because "a runtime component whose failure
+silently stops propagation" is precisely the risk this section names, and a
+security toggle that quietly fails to apply is the failure this feature has
+already produced once.
 
 **Proposed rule — two mechanisms, chosen deliberately rather than three by
 accident:**

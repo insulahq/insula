@@ -33,6 +33,7 @@ import type {
   CrowdsecListDecisionsResponse,
   CrowdsecMachine,
   CrowdsecStatus,
+  CrowdsecAddedBy,
 } from '@insula/api-contracts';
 
 const CROWDSEC_NAMESPACE = 'crowdsec';
@@ -321,6 +322,30 @@ async function lapiHealth(): Promise<{ healthy: boolean; error: string | null }>
 
 // ─── Decision shape mapping ───────────────────────────────────────────
 
+/**
+ * Map CrowdSec's raw `origin` + scenario onto the platform's own vocabulary.
+ *
+ * Derived HERE rather than in the panel so every consumer agrees on one set of
+ * prefix rules. The order matters: the auto-ban scheduler bans through the same
+ * `addBan` helper an operator does, so its scenario ALSO starts with
+ * `admin-panel:` — check the more specific prefixes first or every automatic
+ * ban reads as a human action, which is a bug this table already shipped once.
+ */
+export function deriveAddedBy(origin: string, scenario: string): CrowdsecAddedBy {
+  if (origin === 'cscli') {
+    if (scenario.startsWith(MANUAL_STATIC_BAN_REASON_PREFIX)) return 'static-list';
+    if (scenario.startsWith(AUTO_BAN_SCENARIO_PREFIX)) return 'auto-ban-waf';
+    if (scenario.startsWith(MANUAL_BAN_REASON_PREFIX)) return 'operator';
+    // cscli with no platform prefix: added on the host, outside this panel.
+    return 'external';
+  }
+  // Our own log-processing agent. Named for what it IS, not for the CrowdSec
+  // internal that produced it — "crowdsec" reads as third-party to operators.
+  if (origin === 'crowdsec') return 'auto-ban-traffic';
+  if (origin === 'CAPI' || origin === 'capi') return 'community';
+  return 'external';
+}
+
 function parseLapiDecision(d: LapiRawDecision): CrowdsecDecision | null {
   const idNum = typeof d.id === 'number' ? d.id : Number(d.id);
   const origin = String(d.origin ?? '');
@@ -350,6 +375,7 @@ function parseLapiDecision(d: LapiRawDecision): CrowdsecDecision | null {
       && !scenario.startsWith(AUTO_BAN_SCENARIO_PREFIX),
     staticByOperator: origin === 'cscli' && scenario.startsWith(MANUAL_STATIC_BAN_REASON_PREFIX),
     autoBanned: origin === 'cscli' && scenario.startsWith(AUTO_BAN_SCENARIO_PREFIX),
+    addedBy: deriveAddedBy(origin, scenario),
     simulated: Boolean(d.simulated),
   };
 }

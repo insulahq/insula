@@ -12,6 +12,47 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **The Banned IPs list now says who banned each address, in plain language.**
+  It previously printed CrowdSec's internal field: `cscli` for three different
+  things the platform does, and `crowdsec` for the platform's *own* detection —
+  which reads as some third-party product. Every row now carries one of
+  **Operator**, **Static list**, **Auto · WAF** (a ModSecurity rule was tripped)
+  or **Auto · Traffic** (the platform's own agent spotted the behaviour in the
+  ingress log). Both automatic engines are labelled; previously only one of them
+  was, so half the automatic bans looked like they had no explanation.
+- **One row per address, not one per detection.** A single scanner could occupy
+  seven rows that each looked like a separate incident and expired at different
+  times. Addresses are now grouped, the row shows when the address is actually
+  free again rather than when the first of several bans lapses, and clicking it
+  expands the individual detections. Unban acts on the whole group.
+- **Reasons are written out.** `crowdsecurity/http-sensitive-files` becomes
+  "Detect attempt to access sensitive files"; an automatic WAF ban becomes
+  "Tripped 4 WAF rules — 20 blocked requests" instead of a truncated string of
+  rule numbers. Where no description exists the raw name is still shown, because
+  a wrong explanation for a block is worse than none.
+- **A row that is blocking nothing says so.** Detections running in alert-only
+  mode were listed identically to enforced bans, so the table could report an
+  address as banned while it was not blocked at all. Those now read
+  **not enforced**.
+- **Traffic detection is now a settings page.** The 53 behaviour patterns the
+  agent watches for had no UI at all — no list, no descriptions, and no way to
+  stop one banning short of turning the whole feed off. They are now listed with
+  what each detects, how much traffic it has seen, how many alerts it raised, and
+  a per-pattern switch between **Bans** and **Alert only**. The log sources the
+  agent reads are shown alongside, because patterns for log types this agent does
+  not read sit at zero and otherwise look broken.
+- **Every list on the Web Defense page is sortable** — banned addresses, WAF
+  events, the allowlist, auto-ban history, the calibration preview and the
+  community feed. Addresses sort numerically, so 9.x no longer lands after 10.x.
+
+### Changed
+- **The two automatic ban engines are now presented as two engines.** WAF
+  auto-ban and Traffic detection are grouped under one *Automatic bans* heading
+  that states both write to the same list and that turning one off does not
+  affect the other. The **Include tenant routes** scope switch, previously the
+  last checkbox in a dense grid, is now a labelled row of its own.
+
 ### Fixed
 - **Tenants were shown as "Down" while their sites were serving normally.** On
   production three of twelve clients carried a red *Down* chip on a cluster whose
