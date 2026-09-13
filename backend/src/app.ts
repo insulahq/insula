@@ -1300,6 +1300,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         const { ensureMailEventsWebhook } = await import('./modules/mail-events/webhook-reconciler.js');
         const { ensureReportIntake } = await import('./modules/mail-events/report-intake-reconciler.js');
         const { pollFblComplaints } = await import('./modules/mail-events/fbl.js');
+        const { pollDmarcReports } = await import('./modules/mail-events/dmarc.js');
         const { evaluateMailThresholds } = await import('./modules/mail-events/thresholds.js');
         const { createK8sClients } = await import('./modules/k8s-provisioner/k8s-client.js');
         let mailK8s: import('./modules/k8s-provisioner/k8s-client.js').K8sClients | undefined;
@@ -1318,6 +1319,12 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           });
           pollFblComplaints(app.db, app.log).catch((err) => {
             app.log.warn({ err }, 'fbl poll failed');
+          });
+          // R5. Separate catch from the FBL poll on purpose: the two read
+          // different Stalwart registry objects, and one being unreachable
+          // must not stop the other from draining.
+          pollDmarcReports(app.db, app.log).catch((err) => {
+            app.log.warn({ err }, 'dmarc poll failed');
           });
           // Independent of the poll — a poll DB hiccup must not skip
           // threshold evaluation (in auto mode that would skip
