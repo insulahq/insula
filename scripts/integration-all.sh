@@ -1376,6 +1376,21 @@ assert_global_state "startup-baseline"
 # Smoke gate (P3): a fast health check BEFORE the long suites — fail in
 # seconds, not 40 minutes, if the platform is already broken. --no-smoke skips.
 if [[ "$RUN_SMOKE" == 1 ]]; then
+  # The gate needs the SAME readiness wait every suite gets. It did not have
+  # one, and it is the thing that runs FIRST — so a run started while a
+  # rollout was still in flight hit nginx's 502 page and died before any suite
+  # executed, reporting a red platform.
+  #
+  # Observed on DEV 2026-09-13, immediately after a deploy:
+  #     ✓ GET /sftp-users (list) (HTTP 200)
+  #     jq: parse error: Invalid numeric literal at line 1, column 7
+  #     ✗ smoke gate FAILED (rc=5)
+  # An identical re-run once the rollout settled passed with zero failures.
+  #
+  # That `jq` line is the signature wait_admin_ready was written for — see its
+  # docblock, which names it exactly. The fix was applied to suites, groups and
+  # the retry pass in 2026-08, and the gate ahead of all three was missed.
+  wait_admin_ready "smoke-gate" || true
   log "Smoke gate: scripts/smoke-test.sh (abort on red; --no-smoke to skip)"
   # Arm the mail DELIVERY gate. Without MAIL_E2E_USER/PASS smoke-test can only
   # probe port liveness, and a listener answering "220" passes that while the
