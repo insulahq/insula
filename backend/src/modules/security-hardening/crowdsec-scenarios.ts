@@ -51,6 +51,7 @@ import type {
   CrowdsecScenariosResponse,
 } from '@insula/api-contracts';
 import { AGENT_TARGET, cscliExec, findCrowdsecPodName, parseCscliJson } from './cscli-exec.js';
+import { MERGE_PATCH } from '../../shared/k8s-patch.js';
 
 export const AGENT_NAMESPACE = 'platform-system';
 export const SIMULATION_CONFIGMAP_NAME = 'crowdsec-agent-simulation';
@@ -430,18 +431,16 @@ export async function setScenarioSimulation(
 
   const core = kc.makeApiClient(k8s.CoreV1Api);
   const body = { data: { [SIMULATION_CONFIGMAP_KEY]: renderSimulationYaml(next) } };
-  if (current) {
-    await core.patchNamespacedConfigMap(
-      { name: SIMULATION_CONFIGMAP_NAME, namespace: AGENT_NAMESPACE, body },
-      k8s.setHeaderOptions('Content-Type', k8s.PatchStrategy.MergePatch),
-    );
-  } else {
-    await ensureAgentSimulationDefault(kubeconfigPath);
-    await core.patchNamespacedConfigMap(
-      { name: SIMULATION_CONFIGMAP_NAME, namespace: AGENT_NAMESPACE, body },
-      k8s.setHeaderOptions('Content-Type', k8s.PatchStrategy.MergePatch),
-    );
-  }
+  // Create first if the ConfigMap is absent — a PATCH cannot create it, and an
+  // absent one means this cluster has not booted the current API yet.
+  if (!current) await ensureAgentSimulationDefault(kubeconfigPath);
+  // MERGE_PATCH, not the SDK default: v1.4 sends `application/json-patch+json`
+  // for every PATCH regardless of body shape, and the apiserver rejects a merge
+  // object with "cannot unmarshal object into Go value of type []jsonPatchOp".
+  await core.patchNamespacedConfigMap(
+    { name: SIMULATION_CONFIGMAP_NAME, namespace: AGENT_NAMESPACE, body },
+    MERGE_PATCH,
+  );
 
   // The file is durable now; the roll is what makes it live. Report a failure
   // instead of throwing, so the operator learns the change is saved but pending
