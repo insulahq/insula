@@ -1,10 +1,12 @@
 import { eq, and } from 'drizzle-orm';
+import { pullDnsRecordSchema, pushDnsRecordSchema } from '@insula/api-contracts';
 import type { FastifyInstance } from 'fastify';
 import { authenticate, requireRole, requireTenantAccess, requireTenantRoleByMethod } from '../../middleware/auth.js';
 import { domains } from '../../db/schema.js';
 import { createDnsRecordSchema, updateDnsRecordSchema } from './schema.js';
 import * as service from './service.js';
 import { success } from '../../shared/response.js';
+import { parseBody } from '../../shared/validate-body.js';
 import { ApiError } from '../../shared/errors.js';
 
 async function assertNotSecondaryDns(app: FastifyInstance, tenantId: string, domainId: string): Promise<void> {
@@ -98,7 +100,7 @@ export async function dnsRecordRoutes(app: FastifyInstance): Promise<void> {
   // POST /api/v1/tenants/:tenantId/domains/:domainId/dns-records/pull
   app.post('/tenants/:tenantId/domains/:domainId/dns-records/pull', async (request, reply) => {
     const { tenantId, domainId } = request.params as { tenantId: string; domainId: string };
-    const body = request.body as { type: string; name: string; value: string; ttl?: number; local_id?: string };
+    const body = parseBody(pullDnsRecordSchema, request.body);
 
     if (body.local_id) {
       // Adopt the REMOTE value into the local row — local-only by definition.
@@ -132,10 +134,7 @@ export async function dnsRecordRoutes(app: FastifyInstance): Promise<void> {
   // POST /api/v1/tenants/:tenantId/domains/:domainId/dns-records/push
   app.post('/tenants/:tenantId/domains/:domainId/dns-records/push', async (request) => {
     const { tenantId, domainId } = request.params as { tenantId: string; domainId: string };
-    const body = request.body as {
-      type: string; name: string; value: string; ttl?: number;
-      priority?: number; weight?: number; port?: number;
-    };
+    const body = parseBody(pushDnsRecordSchema, request.body);
 
     const [domain] = await app.db.select().from(domains).where(eq(domains.id, domainId));
     if (!domain) throw new ApiError('DOMAIN_NOT_FOUND', 'Domain not found', 404);

@@ -1126,14 +1126,61 @@ Every locally-declared request **body** in both panels now comes from
 
 ### R29a — Request validation on the routes that still cast
 
-**49 mutating routes take `request.body as unknown as X` with no parse.** On those,
-a wrong or misspelled field is not a 400 — it is a field the handler reads as
-`undefined` and silently skips. That is how `PATCH /admin/nodes/:name/storage/:diskKey`
-returned 200 while changing nothing, and how the OIDC provider PATCH appeared to
-rotate a client id it never wrote.
+**✅ SHIPPED 2026-09-13.** The count was 43 by the time the work started (not 49).
+All 43 were read and classified; **19 were converted**, and the remaining 24 were
+found to be defensible and are now frozen by a guard.
 
-- Enumerate with `grep -rn "request.body as" backend/src/modules/*/routes*.ts`.
-- Each needs a Zod schema in `@insula/api-contracts` and a `safeParse` in the route.
+**Converted** to `parseBody(schema, request.body)`
+(`backend/src/shared/validate-body.ts`):
+
+| Route | Was |
+|---|---|
+| `catalog` badges · `eol-scanner` · `tls-settings` · `ingress-routes` settings · `resource-quotas` · `oidc` global settings | body passed straight to a service that reads `if (input.X !== undefined)` — a misspelled field wrote nothing and returned **200** |
+| `node-health` recovery ×2 · `platform-updates` capacity · `system-snapshots` recurring-job · `dns-records` pull/push · `postgres-barman-restore` ×2 | unchecked fields reaching a k8s/provider call |
+| `cron-jobs` · `admin-users` · `tenants` ×2 · `domains` bulk | the action enum was checked, but array **elements** were not — `tenant_ids: [123]` reached the DB layer |
+
+**Four of those schemas already existed in `@insula/api-contracts` and had never
+been wired to their route** — the request-side echo of R29b below.
+
+**One of them was wrong, and wiring it unchanged would have been worse than
+leaving the route unvalidated.** `saveOidcGlobalSettingsSchema` declared
+`protect_tenant_via_proxy` — the **database column** name, not a field
+`saveGlobalSettings` reads — and omitted `proxy_protect_admin` /
+`proxy_protect_tenant`, which are the two the admin panel actually sends. Zod
+strips unknown keys by default, so the OIDC proxy-protection toggles would have
+parsed clean, arrived empty, and silently stopped working with the endpoint still
+answering 200. Re-authored from the handler (which accepts either spelling of
+each toggle) and pinned by route tests. The admin panel's
+`use-oidc-settings.ts` was also re-declaring the request type locally; it now
+imports the contract.
+
+**A second latent bug, found the same way:** `updateIngressSettingsSchema` (also
+never wired) required a valid IPv4 while the handler treats `''` as *clear the
+override and return to node discovery* — and permitted `''` for IPv6. Wiring it
+as written would have made "back to automatic" unreachable for v4.
+
+**Error codes are derived, not flattened.** `MISSING_REQUIRED_FIELD` when the
+field is absent, `INVALID_FIELD_VALUE` when it is present and wrong — both are
+asserted by existing route tests and by `integration-file-manager-bulk-e2e.sh` /
+`integration-notifications.sh`, so a single new code would have been a silent API
+change. Note Zod **4** (the repo is on 4.4.3, not the 3.25 `AGENTS.md` still
+claims) dropped `received` from the issue object, so absence is determined by
+reading the input at the issue path rather than by matching the message text.
+
+**The 24 remaining casts are deliberate**, listed with per-file reasons in
+`scripts/.route-body-cast-allowlist.txt`: two are not JSON bodies at all (a raw
+webhook `Buffer`, a form-encoded OIDC back-channel logout), most already reject
+what they cannot use (so a bad field is a 400 today, not a silent skip), and a
+few are validated by the service that consumes them. Removing an entry is the
+goal; adding one needs a reason in the PR.
+
+**Guard:** `scripts/ci-route-body-validation-check.sh`, wired into **Backend CI**
+(with the allowlist and the script itself in the workflow's `paths:`, so an
+allowlist edit cannot land without the guard running). It keys on the **file**,
+not a count — a count passes whenever one cast is removed and another added,
+reporting success through exactly the change it exists to catch.
+
+*Still open (original guidance, for the residual work):*
 - Prefer `.strict()` on PATCH: an unknown key there is not a 400 anyone notices, it
   is a field that silently does not change.
 - Author the schema from **what the handler actually reads**, never from what the

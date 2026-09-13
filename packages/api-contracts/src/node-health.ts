@@ -116,3 +116,19 @@ export const nodeMemoryEventsResponseSchema = z.object({
   }),
 });
 export type NodeMemoryEventsResponse = z.infer<typeof nodeMemoryEventsResponseSchema>;
+
+// ─── R29a: request validation for a route that previously cast ─────────
+//
+// These fields are consumed by the service as `if (input.X !== undefined)`,
+// so before this schema a MISSPELLED field was not a 400 — it was a field the
+// service skipped, and the route answered 200 having changed nothing.
+// `.strict()` is the point: Zod's default STRIPS unknown keys, which would
+// preserve exactly that silence.
+
+export const nodeRecoveryActionSchema = z.object({
+  node: z.string().min(1).max(253),
+  // Recorded against the actor in the audit log — a recovery action with no
+  // stated reason is the one nobody can explain afterwards.
+  reason: z.string().min(1).max(1000),
+}).strict();
+export type NodeRecoveryAction = z.infer<typeof nodeRecoveryActionSchema>;

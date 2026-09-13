@@ -84,3 +84,20 @@ export const systemSnapshotPruneResponseSchema = z.object({
   kept: z.array(z.string()),
 });
 export type SystemSnapshotPruneResponse = z.infer<typeof systemSnapshotPruneResponseSchema>;
+
+// ─── R29a: request validation for a route that previously cast ─────────
+//
+// These fields are consumed by the service as `if (input.X !== undefined)`,
+// so before this schema a MISSPELLED field was not a 400 — it was a field the
+// service skipped, and the route answered 200 having changed nothing.
+// `.strict()` is the point: Zod's default STRIPS unknown keys, which would
+// preserve exactly that silence.
+
+export const patchRecurringJobSchema = z.object({
+  cron: z.string().min(1).max(100).optional(),
+  retain: z.number().int().min(0).max(1000).optional(),
+}).strict().refine(
+  (v) => v.cron !== undefined || v.retain !== undefined,
+  { message: 'Provide at least one of cron / retain' },
+);
+export type PatchRecurringJob = z.infer<typeof patchRecurringJobSchema>;

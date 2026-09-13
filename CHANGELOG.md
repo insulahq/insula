@@ -71,6 +71,24 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   last checkbox in a dense grid, is now a labelled row of its own.
 
 ### Fixed
+- **A wrong field in an API request is now an error instead of a silent no-op.**
+  Nineteen endpoints read the request body without checking it, so a misspelled
+  or wrongly-typed field was not rejected — the endpoint skipped whatever that
+  field controlled and still answered "OK". That is how a node-storage change
+  could report success while changing nothing. Those endpoints now validate, and
+  say which field was wrong. Affected: catalog badges, EOL-scanner settings, TLS
+  settings, ingress settings, tenant resource quotas, OIDC global settings, node
+  recovery actions, capacity checks, snapshot schedules, DNS record pull/push,
+  Postgres restore + promote, and the bulk actions for cron jobs, admin users,
+  tenants and domains.
+- **Fixed the OIDC "protect via proxy" toggles before they could break.** The
+  shared schema for that endpoint named a database column rather than the fields
+  the admin panel sends. Validating against it as written would have accepted the
+  form, discarded both toggles, and reported success — so the schema was
+  corrected first and pinned by tests.
+- **Fixed "back to automatic" for the ingress IPv4 override.** Clearing the field
+  is how an operator hands the address back to node discovery; the schema for that
+  endpoint rejected an empty value for IPv4 while allowing it for IPv6.
 - **Tenants were shown as "Down" while their sites were serving normally.** On
   production three of twelve clients carried a red *Down* chip on a cluster whose
   only node was Ready and every site up. The availability check asked "is a

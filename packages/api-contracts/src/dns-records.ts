@@ -150,3 +150,32 @@ export type CreateDnsRecordRequest = z.input<typeof createDnsRecordSchema>;
 export type UpdateDnsRecordInput = z.infer<typeof updateDnsRecordSchema>;
 export type DnsRecordResponse = z.infer<typeof dnsRecordResponseSchema>;
 export type DnsRecordListResponse = z.infer<typeof dnsRecordListResponseSchema>;
+
+// ─── R29a: request validation for a route that previously cast ─────────
+//
+// These fields are consumed by the service as `if (input.X !== undefined)`,
+// so before this schema a MISSPELLED field was not a 400 — it was a field the
+// service skipped, and the route answered 200 having changed nothing.
+// `.strict()` is the point: Zod's default STRIPS unknown keys, which would
+// preserve exactly that silence.
+
+export const pullDnsRecordSchema = z.object({
+  type: z.string().min(1).max(16),
+  name: z.string().max(253),
+  /** Full wire content ('10 mail.example.test.' for MX), stored verbatim. */
+  value: z.string().max(65535),
+  ttl: z.number().int().min(0).max(2147483647).optional(),
+  local_id: z.string().min(1).max(36).optional(),
+}).strict();
+export type PullDnsRecord = z.infer<typeof pullDnsRecordSchema>;
+
+export const pushDnsRecordSchema = z.object({
+  type: z.string().min(1).max(16),
+  name: z.string().max(253),
+  value: z.string().max(65535),
+  ttl: z.number().int().min(0).max(2147483647).optional(),
+  priority: z.number().int().min(0).max(65535).optional(),
+  weight: z.number().int().min(0).max(65535).optional(),
+  port: z.number().int().min(0).max(65535).optional(),
+}).strict();
+export type PushDnsRecord = z.infer<typeof pushDnsRecordSchema>;
