@@ -37,6 +37,7 @@ import {
   type DrRecoverAllResponse,
   type MailboxRestoreMode,
   type RestoreJobStatus,
+  type DrRecoverAllSkipped,
 } from '@insula/api-contracts';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 
@@ -460,11 +461,11 @@ export async function drRecoverRoutes(app: FastifyInstance): Promise<void> {
     const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined
       ?? process.env.KUBECONFIG_PATH ?? process.env.KUBECONFIG;
     const existingNamespaces = await listClusterNamespaces(kubeconfigPath);
-    const targets = await resolveRecoverAllTargets(app, input, existingNamespaces);
+    const { targets, skipped } = await resolveRecoverAllTargets(app, input, existingNamespaces);
 
     if (input.dryRun) {
       const dry: DrRecoverAllResponse = {
-        dryRun: true, scope: input.scope, total: targets.length, recovered: 0, failed: 0, targets,
+        dryRun: true, scope: input.scope, total: targets.length, recovered: 0, failed: 0, targets, skipped,
       };
       return reply.status(200).send(success(dry));
     }
@@ -505,6 +506,7 @@ export async function drRecoverRoutes(app: FastifyInstance): Promise<void> {
       recovered: results.filter((r) => r.ok && r.status === 'done').length,
       failed: results.filter((r) => !r.ok || r.status === 'failed').length,
       results,
+      skipped,
     };
     reply.status(202).send(success(response));
   });
@@ -534,33 +536,106 @@ async function listClusterNamespaces(kubeconfigPath?: string): Promise<Set<strin
  * resolves to its NEWEST completed bundle; `scope: 'missing'` drops tenants
  * whose namespace still exists (never restores over a live tenant).
  */
-async function resolveRecoverAllTargets(
+/**
+ * Resolve which tenants a batch recover would act on — AND which it would pass
+ * over, and why (ROADMAP R25 §3).
+ *
+ * The previous version dropped both classes of non-target with a bare
+ * `continue`, so the dry run answered "12 targets" and said nothing about the
+ * three tenants it had skipped. That is the wrong silence for the question a
+ * fleet migration is actually asking: an omission reads exactly like a tenant
+ * that does not exist, and the operator finds out per-tenant, during the
+ * migration, one failure at a time.
+ *
+ * It matters most for an EXPLICIT `tenantIds` list — the operator named those
+ * tenants, so a name that comes back in neither list is a silent contradiction
+ * of their request.
+ */
+export async function resolveRecoverAllTargets(
   app: FastifyInstance,
   input: { tenantIds?: readonly string[]; scope: 'missing' | 'all' },
   existingNamespaces: ReadonlySet<string>,
-): Promise<DrRecoverAllTarget[]> {
+  now: Date = new Date(),
+): Promise<{ targets: DrRecoverAllTarget[]; skipped: DrRecoverAllSkipped[] }> {
   let candidateIds: string[];
   if (input.tenantIds && input.tenantIds.length > 0) {
     candidateIds = [...input.tenantIds];
   } else {
-    const rows = await app.db.selectDistinct({ tenantId: backupJobs.tenantId })
-      .from(backupJobs).where(eq(backupJobs.status, 'completed'));
+    // Widened from `status = 'completed'` to every tenant that has EVER had a
+    // bundle: a tenant whose only bundles are partial/failed is precisely the
+    // one worth reporting, and the old filter made it unrepresentable.
+    const rows = await app.db.selectDistinct({ tenantId: backupJobs.tenantId }).from(backupJobs);
     candidateIds = rows.map((r) => r.tenantId);
   }
 
   const targets: DrRecoverAllTarget[] = [];
+  const skipped: DrRecoverAllSkipped[] = [];
+
   for (const tenantId of candidateIds) {
-    const [bundle] = await app.db.select({ id: backupJobs.id })
+    const [t] = await app.db.select({ name: tenants.name, ns: tenants.kubernetesNamespace })
+      .from(tenants).where(eq(tenants.id, tenantId)).limit(1);
+    const tenantName = t?.name ?? null;
+
+    const [bundle] = await app.db.select({
+      id: backupJobs.id,
+      createdAt: backupJobs.createdAt,
+      finishedAt: backupJobs.finishedAt,
+    })
       .from(backupJobs)
       .where(and(eq(backupJobs.tenantId, tenantId), eq(backupJobs.status, 'completed')))
       .orderBy(desc(backupJobs.createdAt)).limit(1);
-    if (!bundle) continue; // no completed bundle → not recoverable
-    const [t] = await app.db.select({ name: tenants.name, ns: tenants.kubernetesNamespace })
-      .from(tenants).where(eq(tenants.id, tenantId)).limit(1);
+
+    if (!bundle) {
+      // Report the newest bundle of ANY status, so the operator sees *why*
+      // there is nothing to restore — "partial, 2 days ago" and "never backed
+      // up" call for completely different responses.
+      const [latest] = await app.db.select({ status: backupJobs.status, createdAt: backupJobs.createdAt })
+        .from(backupJobs).where(eq(backupJobs.tenantId, tenantId))
+        .orderBy(desc(backupJobs.createdAt)).limit(1);
+      skipped.push({
+        tenantId,
+        tenantName,
+        reason: 'no_completed_bundle',
+        latestBundleStatus: latest?.status ?? null,
+        latestBundleAt: latest?.createdAt ? new Date(latest.createdAt).toISOString() : null,
+      });
+      continue;
+    }
+
     const ns = t?.ns ?? null;
     const namespacePresent = ns ? existingNamespaces.has(ns) : false;
-    if (input.scope === 'missing' && namespacePresent) continue; // skip live tenants
-    targets.push({ tenantId, tenantName: t?.name ?? null, bundleId: bundle.id, namespacePresent });
+    const stamp = bundle.finishedAt ?? bundle.createdAt;
+    const bundleCreatedAt = stamp ? new Date(stamp).toISOString() : null;
+    const bundleAgeDays = stamp
+      ? Math.max(0, Math.floor((now.getTime() - new Date(stamp).getTime()) / 86_400_000))
+      : null;
+
+    if (input.scope === 'missing' && namespacePresent) {
+      // Not a fault — 'missing' means "only the lost ones". Reported anyway so
+      // the totals add up against what the operator asked for.
+      skipped.push({
+        tenantId,
+        tenantName,
+        reason: 'namespace_present',
+        latestBundleStatus: 'completed',
+        latestBundleAt: bundleCreatedAt,
+      });
+      continue;
+    }
+
+    const comps = await app.db.select({ component: backupComponents.component })
+      .from(backupComponents)
+      .where(and(eq(backupComponents.backupJobId, bundle.id), eq(backupComponents.status, 'completed')));
+
+    targets.push({
+      tenantId,
+      tenantName,
+      bundleId: bundle.id,
+      namespacePresent,
+      bundleCreatedAt,
+      bundleAgeDays,
+      components: comps.map((c) => c.component),
+    });
   }
-  return targets;
+  return { targets, skipped };
 }
