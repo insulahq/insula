@@ -1301,6 +1301,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         const { ensureReportIntake } = await import('./modules/mail-events/report-intake-reconciler.js');
         const { pollFblComplaints } = await import('./modules/mail-events/fbl.js');
         const { pollDmarcReports } = await import('./modules/mail-events/dmarc.js');
+        const { repairDmarcRuaRecords } = await import('./modules/mail-events/dmarc-rua-repair.js');
         const { evaluateMailThresholds } = await import('./modules/mail-events/thresholds.js');
         const { createK8sClients } = await import('./modules/k8s-provisioner/k8s-client.js');
         let mailK8s: import('./modules/k8s-provisioner/k8s-client.js').K8sClients | undefined;
@@ -1326,6 +1327,20 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           pollDmarcReports(app.db, app.log).catch((err) => {
             app.log.warn({ err }, 'dmarc poll failed');
           });
+          // R5. The generator fix only reaches domains provisioned AFTER it;
+          // the `_dmarc` record is written once at enable time and dns-sync
+          // deliberately leaves it alone. Without this, every already-enabled
+          // domain keeps publishing a rua= address that cannot receive mail —
+          // i.e. the whole installed base, and the feature delivers nothing to
+          // any of it. A no-op once converged.
+          {
+            const encKey = (app.config as Record<string, unknown>).PLATFORM_ENCRYPTION_KEY as string | undefined;
+            if (encKey) {
+              repairDmarcRuaRecords(app.db, app.log, encKey).catch((err) => {
+                app.log.warn({ err }, 'dmarc rua repair failed');
+              });
+            }
+          }
           // Independent of the poll — a poll DB hiccup must not skip
           // threshold evaluation (in auto mode that would skip
           // enforcement, not just notifications).
