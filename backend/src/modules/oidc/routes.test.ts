@@ -222,10 +222,19 @@ describe('oidc routes', () => {
     expect(res.json().error.code).toBe('INVALID_FIELD_VALUE');
   });
 
-  it('rejects protect_tenant_via_proxy — a column name the endpoint never read', async () => {
-    // Declared by the old contract schema. Accepting it would tell a caller
-    // their setting had been applied when nothing reads it.
-    const res = await putSettings({ protect_tenant_via_proxy: true });
-    expect(res.statusCode).toBe(400);
+  it('accepts protect_tenant_via_proxy — the symmetric name, now actually read', async () => {
+    // Initially rejected as "a column name the endpoint never read". That was
+    // right about the handler and wrong about the fix: it is the SYMMETRIC
+    // counterpart of protect_admin_via_proxy, the name a caller writes by
+    // reflex, and integration-oidc-dex.sh had been sending it since it was
+    // written — with its tenant intent silently dropped the whole time.
+    // The handler now reads it; making it a 400 would have kept the bug and
+    // added a break.
+    const service = await import('./service.js');
+    vi.mocked(service.saveGlobalSettings).mockClear();
+    const res = await putSettings({ protect_admin_via_proxy: true, protect_tenant_via_proxy: false });
+    expect(res.statusCode).toBe(200);
+    const [, input] = vi.mocked(service.saveGlobalSettings).mock.calls[0];
+    expect(input).toMatchObject({ protect_admin_via_proxy: true, protect_tenant_via_proxy: false });
   });
 });

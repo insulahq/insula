@@ -37,6 +37,10 @@ export const saveOidcGlobalSettingsSchema = z.object({
   protect_admin_via_proxy: z.boolean().optional(),
   proxy_protect_admin: z.boolean().optional(),
   protect_client_via_proxy: z.boolean().optional(),
+  // The symmetric counterpart of protect_admin_via_proxy. Previously declared
+  // here but NOT read by the handler, so it was a silent no-op; `.strict()`
+  // turned that into a 400 and exposed it. The handler now reads it.
+  protect_tenant_via_proxy: z.boolean().optional(),
   proxy_protect_tenant: z.boolean().optional(),
   break_glass_path: z.union([
     z.string().min(1).max(100).regex(BREAK_GLASS_PATH_RE, {
