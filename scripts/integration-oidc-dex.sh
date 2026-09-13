@@ -56,6 +56,22 @@ ADMIN_HOST="${ADMIN_HOST:-https://admin.$(resolve_platform_apex)}"
 # explicitly set. Avoids the hardcoded staging URL breaking runs
 # against testing.example.test or any other cluster.
 DEX_HOST="${DEX_HOST:-$(echo "$ADMIN_HOST" | sed 's|//admin\.|//dex.|')}"
+# TENANT-scoped flows MUST be driven against the TENANT host.
+#
+# The backend derives the OIDC callback from the Host header of the request, so
+# initiating a tenant-scoped authorize on the ADMIN host builds an ADMIN-host
+# callback — and Dex rejects it, because `hosting-platform-tenant` is registered
+# with the tenant host's callback:
+#
+#   level=ERROR msg="unregistered redirect_uri"
+#     redirect_uri=https://admin.<apex>/api/v1/auth/oidc/callback
+#     client_id=hosting-platform-tenant
+#
+# which surfaced here only as `no Dex state in /dex/auth/local redirect
+# (status: HTTP/2 400)`. This is documented behaviour — see the
+# "The redirect URI follows the panel, not the address bar" warning in
+# documentation/docs/admin/security.md — and the suite was not following it.
+TENANT_HOST="${TENANT_HOST:-$(echo "$ADMIN_HOST" | sed 's|//admin\.|//tenant.|')}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@example.test}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 
@@ -264,7 +280,7 @@ check_authorize_redirect() {
   local pid="$1" expected_cid="$2" panel="$3" frontend_redirect="$4"
   local resp loc
   resp=$(curl -sk --max-time 10 -i \
-    "$ADMIN_HOST/api/v1/auth/oidc/authorize/$pid?redirect_uri=$(printf %s "$frontend_redirect" | jq -sRr @uri)")
+    "${AUTHORIZE_ORIGIN:-$ADMIN_HOST}/api/v1/auth/oidc/authorize/$pid?redirect_uri=$(printf %s "$frontend_redirect" | jq -sRr @uri)")
   loc=$(echo "$resp" | grep -i '^location:' | head -1 | awk '{print $2}' | tr -d '\r')
   if [[ -z "$loc" ]]; then
     fail "$panel: no Location header from authorize"
@@ -294,7 +310,7 @@ check_authorize_redirect() {
 }
 
 ADMIN_AUTHORIZE_LOC=$(check_authorize_redirect "$ADMIN_PROVIDER_ID" "$ADMIN_CLIENT_ID" admin "$ADMIN_HOST/login" | tail -1)
-TENANT_AUTHORIZE_LOC=$(check_authorize_redirect "$TENANT_PROVIDER_ID" "$TENANT_CLIENT_ID" client "$ADMIN_HOST/tenant-login" | tail -1)
+TENANT_AUTHORIZE_LOC=$(AUTHORIZE_ORIGIN="$TENANT_HOST" check_authorize_redirect "$TENANT_PROVIDER_ID" "$TENANT_CLIENT_ID" client "$TENANT_HOST/login" | tail -1)
 
 # ─── Scenarios 6 & 7: drive Dex login → assert platform JWT ──────────────────
 
@@ -307,7 +323,7 @@ drive_dex_login() {
 
   # 1. Initiate platform authorize → get redirect to Dex /dex/auth
   resp=$(curl -sk --max-time 10 -i -c "$jar" -b "$jar" \
-    "$ADMIN_HOST/api/v1/auth/oidc/authorize/$pid?redirect_uri=$(printf %s "$frontend_redirect" | jq -sRr @uri)")
+    "${AUTHORIZE_ORIGIN:-$ADMIN_HOST}/api/v1/auth/oidc/authorize/$pid?redirect_uri=$(printf %s "$frontend_redirect" | jq -sRr @uri)")
   loc=$(echo "$resp" | grep -i '^location:' | head -1 | awk '{print $2}' | tr -d '\r')
   platform_state=$(echo "$loc" | grep -oE 'state=[a-zA-Z0-9_-]+' | head -1 | cut -d= -f2)
   if [[ -z "$platform_state" ]]; then
@@ -429,7 +445,8 @@ log "Scenario 6: end-to-end Dex login → platform JWT (admin panel)"
 drive_dex_login admin "$ADMIN_PROVIDER_ID" "$DEX_ADMIN_USER" "$DEX_ADMIN_PW" "$ADMIN_HOST/login"
 
 log "Scenario 7: end-to-end Dex login → platform JWT (client panel)"
-drive_dex_login tenant "$TENANT_PROVIDER_ID" "$DEX_TENANT_USER" "$DEX_TENANT_PW" "$ADMIN_HOST/tenant-login"
+AUTHORIZE_ORIGIN="$TENANT_HOST" \
+  drive_dex_login tenant "$TENANT_PROVIDER_ID" "$DEX_TENANT_USER" "$DEX_TENANT_PW" "$TENANT_HOST/login"
 
 # ─── Scenario 8: cross-panel token rejection ─────────────────────────────────
 
