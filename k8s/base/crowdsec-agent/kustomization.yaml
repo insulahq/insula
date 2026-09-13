@@ -15,7 +15,6 @@ configMapGenerator:
   - name: crowdsec-agent-acquis
     files:
       - config/acquis.yaml
-      - config/simulation.yaml
     options:
       labels:
         app.kubernetes.io/name: crowdsec-agent
@@ -23,8 +22,17 @@ configMapGenerator:
         app.kubernetes.io/component: waf
 
 # Name-suffix hash left ON (the default) — deliberately, and the opposite of
-# what the Dex overlays did until 2026-09-05. CrowdSec parses acquis.yaml and
-# simulation.yaml once at startup, so with a fixed name an edit would reach the
-# cluster and never reach the process. Nothing references this ConfigMap by
-# literal name (checked across scripts/, backend/ and platform/), so the
-# generated suffix is contained to this kustomization.
+# what the Dex overlays did until 2026-09-05. CrowdSec parses acquis.yaml once
+# at startup, so with a fixed name an edit would reach the cluster and never
+# reach the process. Nothing references this ConfigMap by literal name (checked
+# across scripts/, backend/ and platform/), so the generated suffix is contained
+# to this kustomization.
+#
+# simulation.yaml is NO LONGER generated here. It became operator-editable from
+# the admin panel (Security → Web Defense → WAF Settings → Traffic detection),
+# and an operator toggle cannot live in a hashed, Flux-owned ConfigMap: Flux
+# would revert it on the next reconcile. It now lives in the fixed-name
+# `crowdsec-agent-simulation` ConfigMap, created and owned by the backend
+# (backend/src/modules/security-hardening/crowdsec-scenarios.ts) — the same
+# division of labour as crowdsec-capi-config. The roll problem the hash solved
+# is handled there by deleting the agent pods after a write.

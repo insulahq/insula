@@ -77,18 +77,27 @@
 # from the host it probed. That is why http-crawl-non_statics ships SIMULATED
 # below — on a multi-tenant host, "many non-static requests from one IP" is
 # also an accurate description of a legitimate search-engine crawler.
-# NOTE: the acquisition + simulation config is NOT inlined here. It is
-# generated from k8s/base/crowdsec-agent/config/*.yaml by a configMapGenerator
-# with the name-suffix hash ON, so editing either file mints a new ConfigMap
-# name and this DaemonSet rolls to pick it up.
+# CONFIG COMES FROM TWO CONFIGMAPS, OWNED BY DIFFERENT THINGS
 #
-# That matters specifically for simulation.yaml. Its own comment invites a
-# future operator to promote http-crawl-non_statics out of simulation by
-# deleting a line — and with a fixed ConfigMap name that edit would have
-# applied to the cluster and changed nothing in the running agent, because
-# CrowdSec parses both files once at startup. A security control quietly
-# disagreeing with its own config is the exact failure this feature has
-# already produced once (the hyphen/underscore bug, 2026-09-05).
+#   acquis.yaml     — generated from config/acquis.yaml with the name-suffix
+#                     hash ON, so editing it mints a new ConfigMap name and
+#                     this DaemonSet rolls. CrowdSec parses it once at startup,
+#                     so a fixed name would let an edit reach the cluster and
+#                     never reach the process.
+#
+#   simulation.yaml — the fixed-name `crowdsec-agent-simulation` ConfigMap,
+#                     created and owned by the BACKEND. It is operator-editable
+#                     from Security → Web Defense → WAF Settings, and an
+#                     operator toggle cannot live in a Flux-owned generated
+#                     ConfigMap — Flux would revert it. The backend deletes
+#                     these pods after a write, which is what the hash did for
+#                     acquis.yaml.
+#
+# Getting that roll wrong is not cosmetic: CrowdSec parses both files once at
+# startup, so a security control can quietly disagree with its own config. This
+# feature has already produced that failure once (the hyphen/underscore bug,
+# 2026-09-05) — which is also why the backend validates a scenario name against
+# what the agent REPORTS before writing it.
 ---
 apiVersion: apps/v1
 kind: DaemonSet
@@ -106,6 +115,12 @@ metadata:
     # can land after this DaemonSet; this annotation is what makes the wait
     # self-healing instead of permanent.
     secret.reloader.stakater.com/reload: crowdsec-agent-credentials
+    # The simulation list is operator-editable at runtime and CrowdSec parses
+    # it ONCE at startup, so a write must roll this DaemonSet. The backend also
+    # deletes the pods itself after a write — belt and braces, because Reloader
+    # is an optional component and a silently-unapplied security toggle is the
+    # failure this feature has already produced once (2026-09-05).
+    configmap.reloader.stakater.com/reload: crowdsec-agent-simulation
   labels:
     app.kubernetes.io/name: crowdsec-agent
     app.kubernetes.io/part-of: hosting-platform
@@ -208,7 +223,18 @@ spec:
               mountPath: /etc/crowdsec/acquis.yaml
               subPath: acquis.yaml
               readOnly: true
-            - name: acquis
+            # Operator-editable from the admin panel, so it comes from a
+            # FIXED-name ConfigMap the backend owns — not the hashed generator
+            # beside it, which Flux would revert a toggle in.
+            #
+            # NOT optional, deliberately. If it is missing this pod stays in
+            # ContainerCreating, and that is the safe direction: no agent means
+            # no traffic bans and ingress is untouched (the bouncer reads the
+            # LAPI). An optional mount would start the agent with NO simulation
+            # file, which promotes http-crawl-non_statics to ENFORCING — and
+            # that scenario bans search-engine crawlers from every tenant site
+            # at once, because a decision is cluster-wide.
+            - name: simulation
               mountPath: /etc/crowdsec/simulation.yaml
               subPath: simulation.yaml
               readOnly: true
@@ -242,6 +268,9 @@ spec:
         - name: acquis
           configMap:
             name: crowdsec-agent-acquis
+        - name: simulation
+          configMap:
+            name: crowdsec-agent-simulation
         - name: data
           emptyDir:
             # Hub datafiles only. Bounded so a runaway download cannot consume
