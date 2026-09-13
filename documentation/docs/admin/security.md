@@ -291,6 +291,20 @@ strictly authentication is enforced:
     OAuth2 Proxy uses `/oauth2/callback`, the panel's own OIDC login uses
     `/api/v1/auth/oidc/callback`.
 
+!!! note "If you script the proxy-protection toggles over the API"
+    The panel's own toggles are unaffected. But if you set these through
+    `PUT /api/v1/admin/oidc/settings` directly, note that the tenant toggle
+    accepts three field names — `protect_client_via_proxy`,
+    `protect_tenant_via_proxy` and `proxy_protect_tenant` — and **one of them
+    used to do nothing**.
+
+    `protect_tenant_via_proxy` (the symmetric partner of
+    `protect_admin_via_proxy`, and the one most people write) was accepted and
+    silently ignored: the call returned success and the setting did not move.
+    It now works. If you have a script that appeared to configure tenant proxy
+    protection and never did, it will start taking effect — check the intended
+    value before running it again.
+
 !!! tip "Enable a provider before locking the door"
     The "disable local auth" toggles only unlock after a matching
     (admin- or tenant-scoped) provider is enabled — the panel won't let
