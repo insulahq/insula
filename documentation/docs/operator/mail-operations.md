@@ -171,3 +171,44 @@ further, which can stop the classifier retraining — is in
     runbooks:
     [Mail Server Operations](https://github.com/insulahq/insula/blob/main/docs/operations/MAIL_SERVER_OPERATIONS.md),
     [Mail Port Exposure](https://github.com/insulahq/insula/blob/main/docs/operations/MAIL_PORT_EXPOSURE.md).
+
+## DMARC reports — who is sending as you
+
+Receivers such as Gmail, Outlook and Yahoo send a daily summary of the mail they
+saw claiming to be from your domains: how much passed authentication, and which
+servers sent it. **Monitoring → Mail → DMARC aggregate reports** collects them.
+
+Each domain shows:
+
+- **Pass rate**, always with the number of messages behind it. A rate on its own
+  is the figure that gets acted on when it should not be — *100% of eleven
+  messages* is a quiet week, not evidence. With no messages at all it reads
+  **no data**, never 0% or 100%.
+- **Published policy** — what receivers actually resolved, not what the platform
+  believes it published.
+- **Failing sources** — expand the row to see individual sending servers, ordered
+  by failing messages. The biggest sender is rarely the problem, so this is not
+  sorted by volume.
+- **Recommendation** — whether it is safe to tighten your policy yet.
+
+!!! warning "No reports is not the same as everything passing"
+    An empty list can mean your mail is perfect, or that reports are not reaching
+    you. Receivers only send to the `rua=` address published in the domain's
+    `_dmarc` record. The platform publishes `dmarc@<your domain>` and creates
+    that mailbox for you; reports usually start arriving within 24–48 hours of
+    the record going live.
+
+### About tightening the policy
+
+DMARC has three settings, from most to least permissive: `p=none` (report only),
+`p=quarantine` (spam-folder failures), `p=reject` (refuse failures outright).
+
+The platform will tell you when tightening looks safe, and deliberately holds
+back until it is: at least two weeks of reports, enough traffic to mean
+something, a high pass rate, **and no sending server still failing**. That last
+one matters most — one small but legitimate sender can fail every message it
+sends while your overall percentage still looks healthy, and it is that sender
+whose mail stops when you tighten.
+
+Nothing is changed for you. The recommendation is a prompt to edit the record
+yourself once you are satisfied the failing senders are not ones you rely on.
