@@ -24,6 +24,28 @@ export type CrowdsecDecisionScope = z.infer<typeof crowdsecDecisionScopeSchema>;
 export const crowdsecDecisionTypeSchema = z.enum(['ban', 'captcha', 'throttle', 'mfa']);
 export type CrowdsecDecisionType = z.infer<typeof crowdsecDecisionTypeSchema>;
 
+/**
+ * WHO added a ban, in the platform's own vocabulary.
+ *
+ * CrowdSec's raw `origin` field is a poor label for operators: it says `cscli`
+ * for three different things the platform does and `crowdsec` for the
+ * platform's OWN log-processing agent, which reads as "some external CrowdSec
+ * thing" to everyone who has not read the source. Both automatic engines were
+ * also indistinguishable in the table — only the WAF one carried an "auto-ban"
+ * pill, because that pill was a prefix check on a scenario string.
+ *
+ *   operator         — a human clicked Add ban.
+ *   static-list      — a human added a long-duration entry to the static list.
+ *   auto-ban-waf     — the WAF auto-ban scheduler, from ModSecurity rule hits.
+ *   auto-ban-traffic — this platform's CrowdSec agent, from Traefik access logs.
+ *   community        — CrowdSec's shared CAPI feed (community viewer only).
+ *   external         — anything else: console blocklists, third-party lists.
+ */
+export const crowdsecAddedBySchema = z.enum([
+  'operator', 'static-list', 'auto-ban-waf', 'auto-ban-traffic', 'community', 'external',
+]);
+export type CrowdsecAddedBy = z.infer<typeof crowdsecAddedBySchema>;
+
 export const crowdsecDecisionSchema = z.object({
   /** LAPI's numeric decision ID — required for delete-by-id. */
   id: z.number().int().min(0),
@@ -53,6 +75,11 @@ export const crowdsecDecisionSchema = z.object({
   autoBanned: z.boolean(),
   /** True if simulated (won't actually be enforced). */
   simulated: z.boolean(),
+  /**
+   * Derived label for the UI. Computed from origin + scenario so the panel and
+   * any other consumer agree, instead of each re-deriving the prefix rules.
+   */
+  addedBy: crowdsecAddedBySchema,
 });
 export type CrowdsecDecision = z.infer<typeof crowdsecDecisionSchema>;
 
@@ -357,3 +384,75 @@ export const crowdsecPruneBouncersResponseSchema = z.object({
   olderThanSeconds: z.number().int().positive(),
 });
 export type CrowdsecPruneBouncersResponse = z.infer<typeof crowdsecPruneBouncersResponseSchema>;
+
+
+// ─── Traffic detection: CrowdSec scenarios on the log-processing agent ───
+
+/**
+ * One scenario the agent has loaded.
+ *
+ * `eventsPoured` / `alertsRaised` come from `cscli metrics show scenarios` on
+ * the agent — real counters, not an estimate of what a scenario "could" do.
+ * They are what makes this list actionable: a scenario with thousands of
+ * events and zero alerts is tuned differently from one that has never seen a
+ * single event, and neither is visible from the name.
+ */
+export const crowdsecScenarioSchema = z.object({
+  /** Hub name, e.g. "crowdsecurity/http-probing". */
+  name: z.string(),
+  /** Hub description. Empty string when the hub item carries none. */
+  description: z.string(),
+  /** Hub status string, e.g. "enabled". */
+  status: z.string(),
+  /**
+   * True when the scenario is listed in the agent's simulation exclusions:
+   * it still raises alerts but issues NO ban.
+   */
+  simulated: z.boolean(),
+  /** Events that entered this scenario's buckets since the agent started. */
+  eventsPoured: z.number().int().min(0),
+  /** Buckets that overflowed — i.e. alerts raised — since the agent started. */
+  alertsRaised: z.number().int().min(0),
+});
+export type CrowdsecScenario = z.infer<typeof crowdsecScenarioSchema>;
+
+/** One log source the agent is actually reading. */
+export const crowdsecLogSourceSchema = z.object({
+  /** Acquisition `labels.type`, e.g. "traefik". */
+  type: z.string(),
+  /** Where it reads from, e.g. "/var/log/traefik/access.log". */
+  source: z.string(),
+});
+export type CrowdsecLogSource = z.infer<typeof crowdsecLogSourceSchema>;
+
+export const crowdsecScenariosResponseSchema = z.object({
+  scenarios: z.array(crowdsecScenarioSchema),
+  /**
+   * The agent's `simulation:` key. When true EVERY scenario is simulated and
+   * the per-scenario flags inverted — surfaced so the UI can say so rather
+   * than showing per-row toggles that the global switch overrides.
+   */
+  globalSimulation: z.boolean(),
+  /**
+   * What the agent reads. A scenario can only ever fire on an event type some
+   * source produces, so this is the context that makes "0 events" legible —
+   * the SSH scenarios on an agent with only an HTTP source are not broken,
+   * they have nothing to read.
+   */
+  logSources: z.array(crowdsecLogSourceSchema),
+  /** Non-null when the agent could not be reached; the lists are then empty. */
+  error: z.string().nullable(),
+});
+export type CrowdsecScenariosResponse = z.infer<typeof crowdsecScenariosResponseSchema>;
+
+export const crowdsecSetScenarioSimulationRequestSchema = z.object({
+  /** Hub name exactly as `cscli scenarios list` reports it. */
+  name: z.string().min(1).max(200).regex(
+    /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/,
+    'expected a hub scenario name like "crowdsecurity/http-probing"',
+  ),
+  /** true = simulate (alert only, no ban); false = enforce. */
+  simulated: z.boolean(),
+});
+export type CrowdsecSetScenarioSimulationRequest =
+  z.infer<typeof crowdsecSetScenarioSimulationRequestSchema>;

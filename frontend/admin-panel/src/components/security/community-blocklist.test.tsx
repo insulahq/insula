@@ -40,6 +40,8 @@ vi.mock('@/hooks/use-crowdsec', () => {
     usePatchCrowdsecConsoleMeta: mut,
     usePatchCrowdsecL4Mode: mut,
     usePruneCrowdsecBouncers: mut,
+    useCrowdsecScenarios: idle,
+    useSetScenarioSimulation: mut,
     useRemoveCrowdsecAllowlistEntry: mut,
   };
 });

@@ -103,6 +103,7 @@ import { notificationUserRoutes } from './modules/notifications/routes-tenant.js
 import { seedCategoriesIfMissing } from './modules/notifications/categories/service.js';
 import { seedTemplatesIfMissing } from './modules/notifications/templates/seed-loader.js';
 import { ensureCommunityBlocklistDefault } from './modules/security-hardening/crowdsec.js';
+import { ensureAgentSimulationDefault } from './modules/security-hardening/crowdsec-scenarios.js';
 import { startNotificationRetention } from './modules/notifications/retention/scheduler.js';
 import { startEmailWorker } from './modules/notifications/queue/worker.js';
 import { startNtfyWorker } from './modules/notifications/queue/ntfy-worker.js';
@@ -241,6 +242,25 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
     }
   } catch (err) {
     console.warn('[waf] could not ensure the community-blocklist default:', err instanceof Error ? err.message : err);
+  }
+
+  // Traffic detection: the agent's simulation list. Same division of labour as
+  // the CAPI switch above and for the same reason — the ConfigMap carries
+  // `reconcile: disabled` so an operator's toggle survives, which makes Flux
+  // skip it during apply and never create it.
+  //
+  // The agent mounts this file NON-optionally, so until it exists the DaemonSet
+  // sits in ContainerCreating. That is the safe direction: no agent means no
+  // traffic bans, whereas starting with no simulation file would promote
+  // http-crawl-non_statics to enforcing and ban search-engine crawlers from
+  // every tenant site at once.
+  try {
+    const sim = await ensureAgentSimulationDefault(process.env.KUBECONFIG);
+    if (sim === 'created') {
+      console.info('[waf] crowdsec-agent-simulation created — http-crawl-non_statics defaults to alert-only');
+    }
+  } catch (err) {
+    console.warn('[waf] could not ensure the scenario-simulation default:', err instanceof Error ? err.message : err);
   }
 
   const app = Fastify({

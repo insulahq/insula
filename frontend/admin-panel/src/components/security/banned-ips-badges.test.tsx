@@ -28,6 +28,7 @@ const decision = (over: Record<string, unknown>) => ({
   staticByOperator: false,
   autoBanned: true,
   simulated: false,
+  addedBy: 'auto-ban-waf',
   ...over,
 });
 
@@ -59,6 +60,8 @@ vi.mock('@/hooks/use-crowdsec', () => {
     usePatchCrowdsecConsoleMeta: mut,
     usePatchCrowdsecL4Mode: mut,
     usePruneCrowdsecBouncers: mut,
+    useCrowdsecScenarios: idle,
+    useSetScenarioSimulation: mut,
     useRemoveCrowdsecAllowlistEntry: mut,
   };
 });
@@ -75,34 +78,67 @@ const withDecisions = (rows: unknown[]) => {
   });
 };
 
-describe('Banned IPs — auto-ban badge', () => {
-  it('tags a scheduler ban as auto-ban', () => {
-    withDecisions([decision({})]);
+describe('Banned IPs — who added the ban', () => {
+  it('labels a scheduler ban as the WAF engine, not as "cscli"', () => {
+    withDecisions([decision({ addedBy: 'auto-ban-waf' })]);
     render(<BannedIpsTab />, { wrapper });
-    expect(screen.getByTestId('ban-badge-auto')).toHaveTextContent(/auto-ban/i);
+    expect(screen.getByTestId('ban-badge-auto-ban-waf')).toHaveTextContent(/auto/i);
   });
 
-  it('does NOT also label that row "manual"', () => {
-    withDecisions([decision({})]);
+  it('does NOT read an automatic ban as an operator action', () => {
+    withDecisions([decision({ addedBy: 'auto-ban-waf' })]);
     render(<BannedIpsTab />, { wrapper });
-    // The whole point: an automatic ban must not read as an operator action.
-    expect(screen.queryByTestId('ban-badge-manual')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('ban-badge-operator')).not.toBeInTheDocument();
   });
 
-  it('still labels a real operator ban "manual" and shows no auto-ban badge', () => {
+  it('gives the AGENT engine its own label instead of the raw origin "crowdsec"', () => {
+    // The complaint this replaced: those rows printed `crowdsec`, which reads
+    // as a third-party product rather than this platform's own detection.
     withDecisions([decision({
+      addedBy: 'auto-ban-traffic',
+      origin: 'crowdsec',
+      scenario: 'crowdsecurity/http-probing',
+    })]);
+    render(<BannedIpsTab />, { wrapper });
+    const badge = screen.getByTestId('ban-badge-auto-ban-traffic');
+    expect(badge.textContent?.toLowerCase()).not.toContain('crowdsec');
+    expect(screen.queryByTestId('ban-badge-operator')).not.toBeInTheDocument();
+  });
+
+  it('still labels a real operator ban as an operator action', () => {
+    withDecisions([decision({
+      addedBy: 'operator',
       scenario: 'admin-panel:user-123:probing /.env',
       manualByOperator: true,
       autoBanned: false,
     })]);
     render(<BannedIpsTab />, { wrapper });
-    expect(screen.queryByTestId('ban-badge-auto')).not.toBeInTheDocument();
-    expect(screen.getByTestId('ban-badge-manual')).toHaveTextContent(/manual/i);
+    expect(screen.queryByTestId('ban-badge-auto-ban-waf')).not.toBeInTheDocument();
+    expect(screen.getByTestId('ban-badge-operator')).toHaveTextContent(/operator/i);
   });
 
   it('offers an auto-bans-only filter', () => {
     withDecisions([decision({})]);
     render(<BannedIpsTab />, { wrapper });
     expect(screen.getByTestId('bans-filter-auto')).toBeInTheDocument();
+  });
+
+  it('collapses one address with several scenarios into a single row', () => {
+    withDecisions([
+      decision({ id: 1, value: '203.0.113.9', scenario: 'crowdsecurity/http-probing' }),
+      decision({ id: 2, value: '203.0.113.9', scenario: 'crowdsecurity/http-sensitive-files' }),
+      decision({ id: 3, value: '203.0.113.9', scenario: 'crowdsecurity/http-bad-user-agent' }),
+    ]);
+    render(<BannedIpsTab />, { wrapper });
+    expect(screen.getAllByTestId(/^ban-group-/)).toHaveLength(1);
+    expect(screen.getByTestId('ban-group-203.0.113.9')).toHaveTextContent('+2 more');
+  });
+
+  it('says so when every decision on an address is simulated', () => {
+    // "Banned" for an address that is NOT blocked is the worst thing this
+    // table can tell an operator.
+    withDecisions([decision({ simulated: true })]);
+    render(<BannedIpsTab />, { wrapper });
+    expect(screen.getByTestId('ban-badge-simulated')).toHaveTextContent(/not enforced/i);
   });
 });

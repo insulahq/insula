@@ -23,6 +23,8 @@ import type {
   CrowdsecAutobanListRunsResponse,
   CrowdsecAutobanPatchConfigRequest,
   CrowdsecConsoleEnrollRequest,
+  CrowdsecScenariosResponse,
+  CrowdsecSetScenarioSimulationRequest,
   CrowdsecConsoleMetaPatch,
   CrowdsecConsoleStatus,
   CrowdsecDeleteByIdResponse,
@@ -348,6 +350,46 @@ export function usePruneCrowdsecBouncers(olderThanSeconds: number = 300) {
       apiFetch(`/api/v1/admin/security/crowdsec/bouncers/prune?olderThanSeconds=${olderThanSeconds}`, { method: 'POST' }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: STATUS_KEY });
+    },
+  });
+}
+
+// ─── Traffic detection: CrowdSec scenarios on the agent ───────────────
+
+const SCENARIOS_KEY = ['crowdsec', 'scenarios'] as const;
+
+/**
+ * The scenarios the log-processing agent has loaded.
+ *
+ * Also feeds the Banned IPs table: the hub `description` is what turns
+ * `crowdsecurity/http-sensitive-files` into a sentence, and taking it from the
+ * agent means the copy is upstream's rather than a table maintained here that
+ * would drift the moment a scenario is added.
+ */
+export function useCrowdsecScenarios() {
+  return useQuery<Envelope<CrowdsecScenariosResponse>>({
+    queryKey: SCENARIOS_KEY,
+    queryFn: () => apiFetch('/api/v1/admin/security/crowdsec/scenarios'),
+    staleTime: 60_000,
+  });
+}
+
+export function useSetScenarioSimulation() {
+  const qc = useQueryClient();
+  return useMutation<
+    Envelope<{ simulated: string[]; rolledPods: number; rollError: string | null }>,
+    Error,
+    CrowdsecSetScenarioSimulationRequest
+  >({
+    mutationFn: (body) => apiFetch('/api/v1/admin/security/crowdsec/scenarios', {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: SCENARIOS_KEY });
+      // A scenario moving in or out of simulation changes what future decisions
+      // look like, so the ban table's reason copy is refetched too.
+      void qc.invalidateQueries({ queryKey: DECISIONS_KEY });
     },
   });
 }
