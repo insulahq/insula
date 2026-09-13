@@ -1006,7 +1006,14 @@ export function BannedIpsTab() {
       {payload && (
         <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 overflow-hidden">
           <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-700 text-sm font-medium text-gray-900 dark:text-gray-100 flex items-center justify-between">
-            <span>Active platform bans ({payload.decisions.length} shown / {payload.totalMatching} matching)</span>
+            {/* Count ADDRESSES, because the table now has one row per address.
+                Reporting the decision count beside a 14-row table ("43 shown")
+                reads as a paging bug. Both numbers are useful, so say which is
+                which rather than dropping one. */}
+            <span>
+              Active platform bans ({sortedGroups.length} address{sortedGroups.length === 1 ? '' : 'es'}
+              {payload.decisions.length !== sortedGroups.length && <> · {payload.decisions.length} decisions</>})
+            </span>
             {del.isError && (
               <span className="text-xs text-red-600 dark:text-red-400">
                 Unban failed: {del.error?.message ?? 'unknown error'}
