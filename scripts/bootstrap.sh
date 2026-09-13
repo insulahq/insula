@@ -7889,6 +7889,73 @@ RCSQL
   fi
 }
 
+# ─── Database connection isolation (ROADMAP R36) ────────────────────────────
+#
+# Postgres grants CONNECT on every database to PUBLIC unless it is explicitly
+# revoked. Without this, every per-service login role (roundcube, crowdsec, …)
+# can authenticate into the `platform` database with its own credentials — not
+# a data breach (table privileges are not granted to PUBLIC on PG15+), but the
+# per-database isolation the architecture implies does not hold at the
+# connection layer.
+#
+# The backend `db-isolation` converger owns this property and re-applies it
+# every 5 minutes. Doing it here too means a fresh install is isolated before
+# platform-api ever starts, rather than for the first few minutes of its life.
+#
+# SOURCE OF TRUTH for these three statements is
+# backend/src/modules/db-isolation/sql.ts. CI guard: ci-db-isolation-check.sh
+# fails when the two copies drift.
+#
+# cnpg_metrics_exporter is granted because it connects to EVERY database — the
+# pg_extensions collector in cnpg-default-monitoring carries
+# target_databases: ['*'] and its query calls current_database(). Revoking
+# without that grant breaks metrics collection silently: the pod stays Running
+# and only cnpg_collector_last_collection_error moves.
+harden_database_connect_acls() {
+  log ""
+  log "── Database connection isolation ──"
+
+  local pg_pod
+  pg_pod=$(kctl get pod -n platform -l cnpg.io/cluster=system-db,role=primary \
+    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+  if [[ -z "$pg_pod" ]]; then
+    warn "  No platform system-db primary pod found — skipping (converger will apply)."
+    return 0
+  fi
+
+  local sql
+  sql=$(cat <<'DBISOSQL'
+DO $do$
+DECLARE
+  d record;
+  has_exporter boolean := EXISTS (
+    SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'cnpg_metrics_exporter'
+  );
+BEGIN
+  FOR d IN
+    SELECT datname, pg_catalog.pg_get_userbyid(datdba) AS owner
+      FROM pg_catalog.pg_database
+     WHERE datistemplate = false
+       AND datallowconn  = true
+  LOOP
+    EXECUTE format('GRANT CONNECT ON DATABASE %I TO %I', d.datname, d.owner);
+    IF has_exporter THEN
+      EXECUTE format('GRANT CONNECT ON DATABASE %I TO %I', d.datname, 'cnpg_metrics_exporter');
+    END IF;
+    EXECUTE format('REVOKE CONNECT ON DATABASE %I FROM PUBLIC', d.datname);
+  END LOOP;
+END
+$do$;
+DBISOSQL
+)
+  if echo "$sql" | kctl exec -i -n platform "$pg_pod" -- \
+      psql -U postgres -d postgres -v ON_ERROR_STOP=1 >/dev/null 2>&1; then
+    log "  PUBLIC CONNECT revoked; owners + metrics exporter granted."
+  else
+    warn "  Connection-isolation apply failed — the db-isolation converger retries every 5m."
+  fi
+}
+
 # ─── Stalwart master-user (impersonation) provisioning ──────────────────────
 #
 # Cut 3 (2026-05-04): Stalwart 0.16 master-auth is implemented as an Account
@@ -10489,6 +10556,7 @@ main() {
     # Runs after Stalwart bootstrap so platform CNPG is up + Roundcube
     # secrets exist. Idempotent — DO BLOCK skips if role/db already exist.
     create_roundcube_db
+    harden_database_connect_acls
     # Cut 3 (2026-05-04): Stalwart master user (Roundcube SSO impersonator).
     # Runs after bootstrap_stalwart_v016 (so Stalwart is up + the recovery
     # admin can authenticate to the cli). Idempotent — re-runs only update

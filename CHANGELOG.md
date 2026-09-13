@@ -46,6 +46,23 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   events, the allowlist, auto-ban history, the calibration preview and the
   community feed. Addresses sort numerically, so 9.x no longer lands after 10.x.
 
+### Security
+- **Per-service database credentials no longer open a session against the
+  platform database.** Postgres grants `CONNECT` on every database to `PUBLIC`
+  unless it is explicitly revoked, and nothing revoked it — so the login roles
+  the platform creates for Roundcube and for the WAF's CrowdSec LAPI could each
+  authenticate into the `platform` database with their own credentials. No
+  tenant, user or billing data was ever readable that way (table privileges are
+  not granted to `PUBLIC`), but the per-database isolation the architecture
+  implies did not hold at the connection layer, and the role closest to
+  attacker-influenced input in the whole platform was one of the two. `CONNECT`
+  is now revoked from `PUBLIC` on every database and granted explicitly to each
+  owner, re-applied on boot and every five minutes so a database created later —
+  or restored from an older dump — cannot quietly reopen it. **Security →
+  Hardening** gains a card showing which databases are isolated, and names any
+  role that is connected but would be refused on its next reconnect. (ROADMAP
+  R36.)
+
 ### Changed
 - **The two automatic ban engines are now presented as two engines.** WAF
   auto-ban and Traffic detection are grouped under one *Automatic bans* heading

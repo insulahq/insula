@@ -42,6 +42,7 @@
 import * as k8s from '@kubernetes/client-node';
 import type { Logger } from 'pino';
 import { PassThrough, Writable } from 'node:stream';
+import { buildSingleDbIsolationSql } from '../db-isolation/sql.js';
 
 export const ROUNDCUBE_SECRET_NAMESPACE = 'mail';
 export const ROUNDCUBE_SECRET_NAME = 'mail-secrets';
@@ -194,6 +195,10 @@ function buildSql(): string {
     `SELECT 'CREATE DATABASE roundcube OWNER roundcube'`,
     `  WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'roundcube') \\gexec`,
     `GRANT ALL PRIVILEGES ON DATABASE roundcube TO roundcube;`,
+    // R36: close the PUBLIC CONNECT blanket on the database we just created,
+    // rather than leaving it open until the db-isolation converger's next tick.
+    // Shares its statement body with that converger — see modules/db-isolation/sql.ts.
+    buildSingleDbIsolationSql('roundcube'),
   ].join('\n');
 }
 
