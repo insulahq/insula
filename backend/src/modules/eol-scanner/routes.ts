@@ -1,6 +1,8 @@
 import type { FastifyInstance } from 'fastify';
+import { updateEolSettingsSchema } from '@insula/api-contracts';
 import { authenticate, requireRole } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
+import { parseBody } from '../../shared/validate-body.js';
 import { getEolSettings, updateEolSettings, runEolScan } from './service.js';
 
 export async function eolScannerRoutes(app: FastifyInstance): Promise<void> {
@@ -36,11 +38,7 @@ export async function eolScannerRoutes(app: FastifyInstance): Promise<void> {
       },
     },
   }, async (request) => {
-    const body = request.body as {
-      graceDays?: number;
-      warningDays?: number;
-      autoUpgradeEnabled?: boolean;
-    };
+    const body = parseBody(updateEolSettingsSchema, request.body);
     const settings = await updateEolSettings(app.db, body);
     return success(settings);
   });

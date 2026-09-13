@@ -3,8 +3,11 @@ import { eq, lt } from 'drizzle-orm';
 import { authenticate, requireRole } from '../../middleware/auth.js';
 import * as service from './service.js';
 import type { SaveGlobalSettingsInput } from './service.js';
-import { createOidcProviderSchema, updateOidcProviderSchema } from '@insula/api-contracts';
+import { createOidcProviderSchema, updateOidcProviderSchema,
+  saveOidcGlobalSettingsSchema,
+} from '@insula/api-contracts';
 import { success } from '../../shared/response.js';
+import { parseBody } from '../../shared/validate-body.js';
 import { ApiError } from '../../shared/errors.js';
 import { syncProxyIngressAnnotations, syncOAuth2ProxySecret } from './ingress-proxy-manager.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -301,7 +304,7 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
   app.put('/admin/oidc/settings', {
     onRequest: [authenticate, requireRole('super_admin', 'admin')],
   }, async (request) => {
-    const input = request.body as unknown as SaveGlobalSettingsInput;
+    const input = parseBody(saveOidcGlobalSettingsSchema, request.body);
     const settings = await service.saveGlobalSettings(app.db, input, encryptionKey);
 
     // Sync K8s Ingress annotations + cookie secret when proxy settings change

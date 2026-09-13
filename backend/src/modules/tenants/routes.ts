@@ -4,6 +4,8 @@ import {
   createSubUserSchema,
   updateSubUserSchema,
   resetSubUserPasswordSchema,
+  bulkTenantActionSchema,
+  bulkDeleteTenantsSchema,
 } from '@insula/api-contracts';
 import { authenticate, requireRole, requireTenantAccess } from '../../middleware/auth.js';
 import { users } from '../../db/schema.js';
@@ -20,6 +22,7 @@ import {
 } from './sub-users-service.js';
 import { bulkUpdateTenantStatus, bulkDeleteTenants } from './bulk.js';
 import { success, paginated } from '../../shared/response.js';
+import { parseBody } from '../../shared/validate-body.js';
 import { parsePaginationParams } from '../../shared/pagination.js';
 import { ApiError } from '../../shared/errors.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -608,15 +611,7 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
   app.post('/admin/tenants/bulk', {
     onRequest: [requireRole('super_admin', 'admin')],
   }, async (request) => {
-    const body = request.body as { tenant_ids?: string[]; action?: string };
-
-    if (!Array.isArray(body.tenant_ids) || !body.action) {
-      throw new ApiError('MISSING_REQUIRED_FIELD', 'tenant_ids (array) and action are required', 400);
-    }
-
-    if (body.action !== 'suspend' && body.action !== 'reactivate') {
-      throw new ApiError('INVALID_FIELD_VALUE', "action must be 'suspend' or 'reactivate'", 400, { field: 'action' });
-    }
+    const body = parseBody(bulkTenantActionSchema, request.body);
 
     const userId = (request.user as { sub?: string } | undefined)?.sub ?? null;
     const result = await bulkUpdateTenantStatus(app.db, body.tenant_ids, body.action, getK8s(), userId);
@@ -627,11 +622,7 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
   app.delete('/admin/tenants/bulk', {
     onRequest: [requireRole('super_admin')],
   }, async (request, reply) => {
-    const body = request.body as { tenant_ids?: string[] };
-
-    if (!Array.isArray(body.tenant_ids) || body.tenant_ids.length === 0) {
-      throw new ApiError('MISSING_REQUIRED_FIELD', 'tenant_ids (non-empty array) is required', 400);
-    }
+    const body = parseBody(bulkDeleteTenantsSchema, request.body);
 
     const userId = (request.user as { sub?: string } | undefined)?.sub ?? null;
     const result = await bulkDeleteTenants(app.db, body.tenant_ids, getK8s(), userId);

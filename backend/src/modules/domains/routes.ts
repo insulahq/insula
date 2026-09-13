@@ -1,4 +1,5 @@
 import { eq } from 'drizzle-orm';
+import { bulkDomainActionSchema } from '@insula/api-contracts';
 import type { FastifyInstance } from 'fastify';
 import { authenticate, requireRole, requireTenantAccess, requireTenantRoleByMethod } from '../../middleware/auth.js';
 import { domains, tenants } from '../../db/schema.js';
@@ -7,6 +8,7 @@ import * as service from './service.js';
 import { bulkVerifyDomains, bulkDeleteDomains } from './bulk.js';
 import { verifyDomain, getPlatformConfig } from './verification.js';
 import { success, paginated } from '../../shared/response.js';
+import { parseBody } from '../../shared/validate-body.js';
 import { parsePaginationParams } from '../../shared/pagination.js';
 import { ApiError } from '../../shared/errors.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -290,15 +292,7 @@ export async function domainRoutes(app: FastifyInstance): Promise<void> {
   app.post('/admin/domains/bulk', {
     onRequest: [authenticate, requireRole('super_admin', 'admin')],
   }, async (request) => {
-    const body = request.body as { domain_ids?: string[]; action?: string };
-
-    if (!Array.isArray(body.domain_ids) || body.domain_ids.length === 0 || !body.action) {
-      throw new ApiError('MISSING_REQUIRED_FIELD', 'domain_ids (non-empty array) and action are required', 400);
-    }
-
-    if (body.action !== 'verify' && body.action !== 'delete') {
-      throw new ApiError('INVALID_FIELD_VALUE', "action must be 'verify' or 'delete'", 400, { field: 'action' });
-    }
+    const body = parseBody(bulkDomainActionSchema, request.body);
 
     if (body.action === 'verify') {
       const result = await bulkVerifyDomains(app.db, body.domain_ids);

@@ -1,0 +1,58 @@
+# Routes that read `request.body as …` without a Zod parse (ROADMAP R29a).
+#
+# Each line is `<module>/<file>` — the FILE, not the line number, so ordinary
+# edits above a cast do not churn this list. `ci-route-body-validation-check.sh`
+# fails when a file NOT listed here introduces a cast, which is what stops the
+# class from growing back while the remaining entries are worked off.
+#
+# Every entry below was read and classified on 2026-09-13. They fall into three
+# groups, none of which is the silent-no-op bug R29a is about:
+#
+#  1. NOT A JSON BODY — parsing it with Zod would be wrong.
+#       mail-events/routes.ts   raw Buffer (signed webhook payload)
+#       oidc/routes.ts:202      form-encoded OIDC back-channel logout
+#
+#  2. THE HANDLER ALREADY REJECTS WHAT IT CANNOT USE, so a missing or
+#     misspelled field is a 400 today, not a silent skip:
+#       admin-users/routes.ts        refreshToken: typeof-checked, falls back to cookie
+#       auth/routes.ts               loginSchema.safeParse runs two lines later;
+#                                    the cast reads `panel` only for a pre-check
+#       custom-deployments/routes.ts image: type + length checked
+#       deployments/routes.ts        enabled: boolean-checked (x2);
+#                                    password: rejected if PRESENT (a guard, not an input)
+#       domains/routes.ts            target_group_id: presence-checked
+#       ingress-auth/routes.ts       issuerUrl: URL-checked; deliberately answers
+#                                    200 {ok:false} rather than 400
+#       platform-storage-policy/…    confirmName: must equal the namespace
+#       postgres-restore/routes.ts   validateName() on every name field
+#       system-snapshots/routes.ts   validateName() on every name field
+#       tenant-bundles/routes.ts     passphrase: optional, checked when present
+#       ziti-providers/routes.ts     controllerUrl: presence-checked
+#       zrok-providers/routes.ts     controllerUrl: presence-checked
+#       ai-editor/routes.ts          operations + plan: presence-checked
+#       file-manager/routes.ts       url + path: presence-checked (x2)
+#
+#  3. VALIDATED DOWNSTREAM by the service that consumes the body:
+#       export-import/routes.ts  importData() validates the structure itself
+#       plans/routes.ts          a schema already parsed; only `description`
+#                                is read raw (x2)
+#
+# Removing an entry is the goal. Adding one needs a reason in the PR.
+admin-users/routes.ts
+ai-editor/routes.ts
+auth/routes.ts
+custom-deployments/routes.ts
+deployments/routes.ts
+domains/routes.ts
+export-import/routes.ts
+file-manager/routes.ts
+ingress-auth/routes.ts
+mail-events/routes.ts
+oidc/routes.ts
+plans/routes.ts
+platform-storage-policy/routes.ts
+postgres-restore/routes.ts
+system-snapshots/routes.ts
+tenant-bundles/routes.ts
+ziti-providers/routes.ts
+zrok-providers/routes.ts

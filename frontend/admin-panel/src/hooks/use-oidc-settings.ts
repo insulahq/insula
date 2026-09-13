@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import type { CreateOidcProviderInput } from '@insula/api-contracts';
+import type { CreateOidcProviderInput , SaveOidcGlobalSettingsInput } from '@insula/api-contracts';
 import { apiFetch } from '@/lib/api-client';
 
 // ─── Provider Types ──────────────────────────────────────────────────────────
@@ -107,13 +107,11 @@ export function useOidcGlobalSettings() {
   });
 }
 
-interface SaveGlobalSettingsInput {
-  readonly disable_local_auth_admin?: boolean;
-  readonly disable_local_auth_tenant?: boolean;
-  readonly break_glass_secret?: string;
-  readonly proxy_protect_admin?: boolean;
-  readonly proxy_protect_tenant?: boolean;
-}
+// Was a hand-written interface duplicating the request shape — the drift the
+// shared-contract rule exists to prevent, and it had already drifted from the
+// contract package (which declared two field names the endpoint does not read).
+// Sourced from the contract now, so a rename becomes a compile error here.
+type SaveGlobalSettingsInput = SaveOidcGlobalSettingsInput;
 
 export function useSaveOidcGlobalSettings() {
   const queryClient = useQueryClient();
