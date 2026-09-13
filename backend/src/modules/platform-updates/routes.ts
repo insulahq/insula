@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import { capacityCheckRequestSchema } from '@insula/api-contracts';
 import { authenticate, requireRole } from '../../middleware/auth.js';
 import { updateSettingsSchema } from './schema.js';
 import * as service from './service.js';
@@ -6,6 +7,7 @@ import { runVersionPoll, readPinnedPublicKey } from './poller/index.js';
 import { getImageInventory } from './image-inventory.js';
 import { getStorageInventory } from './storage-inventory.js';
 import { success } from '../../shared/response.js';
+import { parseBody } from '../../shared/validate-body.js';
 import { ApiError } from '../../shared/errors.js';
 
 export async function platformUpdateRoutes(app: FastifyInstance): Promise<void> {
@@ -207,7 +209,7 @@ export async function platformUpdateRoutes(app: FastifyInstance): Promise<void> 
       },
     },
   }, async (request) => {
-    const { cpu, memory, storage } = request.body as { cpu: string; memory: string; storage: string };
+    const { cpu, memory, storage } = parseBody(capacityCheckRequestSchema, request.body);
     const result = await service.getCapacityCheck(app.db, cpu, memory, storage);
     return success(result);
   });

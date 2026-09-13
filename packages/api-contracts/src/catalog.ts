@@ -549,3 +549,18 @@ export type DeletePreviewRoute = z.infer<typeof deletePreviewRouteSchema>;
 export type DeletePreviewResponse = z.infer<typeof deletePreviewResponseSchema>;
 export type StorageFolder = z.infer<typeof storageFolderSchema>;
 export type StorageFolderListResponse = z.infer<typeof storageFolderListResponseSchema>;
+
+// ─── R29a: request validation for a route that previously cast ─────────
+//
+// These fields are consumed by the service as `if (input.X !== undefined)`,
+// so before this schema a MISSPELLED field was not a 400 — it was a field the
+// service skipped, and the route answered 200 having changed nothing.
+// `.strict()` is the point: Zod's default STRIPS unknown keys, which would
+// preserve exactly that silence.
+
+export const updateCatalogBadgesSchema = z.object({
+  featured: z.boolean().optional(),
+  popular: z.boolean().optional(),
+  disabled: z.boolean().optional(),
+}).strict();
+export type UpdateCatalogBadges = z.infer<typeof updateCatalogBadgesSchema>;

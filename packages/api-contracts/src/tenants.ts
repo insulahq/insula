@@ -298,3 +298,21 @@ export const tenantBandwidthUsageSchema = z.object({
   source: z.enum(['override', 'plan', 'default']),
 });
 export type TenantBandwidthUsage = z.infer<typeof tenantBandwidthUsageSchema>;
+
+// ─── Bulk actions (ROADMAP R29a) ───────────────────────────────────────
+//
+// Authored from what the HANDLER reads, not from what the panel sends.
+// Id columns are `varchar(36)` — UUID-shaped but not UUID-constrained — so
+// these mirror the column rather than asserting `.uuid()`: a schema stricter
+// than the storage rejects ids the platform itself is able to mint.
+
+export const bulkTenantActionSchema = z.object({
+  tenant_ids: z.array(z.string().min(1).max(36)),
+  action: z.enum(['suspend', 'reactivate']),
+});
+export type BulkTenantAction = z.infer<typeof bulkTenantActionSchema>;
+
+export const bulkDeleteTenantsSchema = z.object({
+  tenant_ids: z.array(z.string().min(1).max(36)).min(1),
+});
+export type BulkDeleteTenants = z.infer<typeof bulkDeleteTenantsSchema>;

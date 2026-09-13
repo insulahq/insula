@@ -321,7 +321,12 @@ export const ingressSettingsResponseSchema = z.object({
 // ingressDefaultIpv6 accepts null/empty-string to clear the field.
 export const updateIngressSettingsSchema = z.object({
   ingressBaseDomain: z.string().min(1).max(255).optional(),
-  ingressDefaultIpv4: z.ipv4().optional(),
+  // `''` CLEARS the override and hands the field back to node discovery —
+  // see updateIngressSettings. A bare `z.ipv4()` here rejects that, which is
+  // an asymmetry with ipv6 below and would make "back to automatic"
+  // unreachable for v4 (this schema had never been wired to the route, so the
+  // gap had never been exercised).
+  ingressDefaultIpv4: z.union([z.ipv4(), z.literal('')]).optional(),
   ingressDefaultIpv6: z
     .union([z.ipv6(), z.literal('')])
     .nullable()

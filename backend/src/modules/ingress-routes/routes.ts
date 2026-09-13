@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { eq, and } from 'drizzle-orm';
 import { authenticate, requireRole, requireTenantRoleByMethod, requireTenantAccess } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
+import { parseBody } from '../../shared/validate-body.js';
 import { ApiError } from '../../shared/errors.js';
 import { tenants, domains, ingressRoutes } from '../../db/schema.js';
 import {
@@ -46,6 +47,7 @@ import {
   createAuthUserSchema,
   toggleAuthUserSchema,
   changeAuthUserPasswordSchema,
+  updateIngressSettingsSchema,
 } from '@insula/api-contracts';
 import {
   createExclusionForTenantRoute,
@@ -649,11 +651,7 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
       security: [{ bearerAuth: [] }],
     },
   }, async (request) => {
-    const body = request.body as {
-      ingressBaseDomain?: string;
-      ingressDefaultIpv4?: string;
-      ingressDefaultIpv6?: string | null;
-    };
+    const body = parseBody(updateIngressSettingsSchema, request.body);
     return success(await updateIngressSettings(app.db, body));
   });
 }

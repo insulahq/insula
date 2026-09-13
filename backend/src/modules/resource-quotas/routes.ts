@@ -1,8 +1,10 @@
 import type { FastifyInstance } from 'fastify';
+import { updateResourceQuotaSchema } from '@insula/api-contracts';
 import crypto from 'node:crypto';
 import { authenticate, requireRole, requireTenantAccess } from '../../middleware/auth.js';
 import * as service from './service.js';
 import { success } from '../../shared/response.js';
+import { parseBody } from '../../shared/validate-body.js';
 import { validateQuotaFitsHeadroom } from './headroom-gate.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { auditLogs, notifications, users } from '../../db/schema.js';
@@ -41,7 +43,7 @@ export async function resourceQuotaRoutes(app: FastifyInstance): Promise<void> {
     onRequest: [authenticate, requireRole('super_admin', 'admin')],
   }, async (request, reply) => {
     const { tenantId } = request.params as { tenantId: string };
-    const input = request.body as Record<string, unknown>;
+    const input = parseBody(updateResourceQuotaSchema, request.body);
     const query = request.query as { force?: string };
     const force = query.force === 'true' || query.force === '1';
     const userSub = (request.user as { sub?: string; role?: string } | undefined)?.sub ?? 'system';

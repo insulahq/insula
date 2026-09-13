@@ -13,19 +13,38 @@ import { z } from 'zod';
 // shape; operator-set values must too.
 const BREAK_GLASS_PATH_RE = /^[a-z0-9-]+$/;
 
+// R29a. This schema existed but was never wired to the route, and it did not
+// describe the endpoint: it declared `protect_tenant_via_proxy` — which is the
+// DATABASE COLUMN name (`oidc_global_settings.protect_tenant_via_proxy`), not a
+// field `saveGlobalSettings` reads — while omitting `proxy_protect_admin` /
+// `proxy_protect_tenant`, which are the two the admin panel actually sends.
+//
+// Wiring it unchanged would have been worse than leaving the route unvalidated:
+// Zod STRIPS unknown keys by default, so the panel's proxy-protection toggles
+// would have parsed clean, arrived empty, and stopped working with the endpoint
+// still answering 200. This is the exact hazard ROADMAP R29a warns about —
+// author the schema from what the HANDLER reads, never from what the panel
+// sends, and never from what an earlier schema asserted.
+//
+// The handler takes either spelling of each toggle:
+//   adminProxy  = input.protect_admin_via_proxy  ?? input.proxy_protect_admin
+//   tenantProxy = input.protect_client_via_proxy ?? input.proxy_protect_tenant
+// so all four are accepted here.
 export const saveOidcGlobalSettingsSchema = z.object({
   disable_local_auth_admin: z.boolean().optional(),
   disable_local_auth_tenant: z.boolean().optional(),
   break_glass_secret: z.string().min(8).optional(),
   protect_admin_via_proxy: z.boolean().optional(),
-  protect_tenant_via_proxy: z.boolean().optional(),
+  proxy_protect_admin: z.boolean().optional(),
+  protect_client_via_proxy: z.boolean().optional(),
+  proxy_protect_tenant: z.boolean().optional(),
   break_glass_path: z.union([
     z.string().min(1).max(100).regex(BREAK_GLASS_PATH_RE, {
       message: 'break_glass_path must contain only lowercase alphanumerics and hyphens',
     }),
     z.null(),
   ]).optional(),
-});
+}).strict();
 
 // ─── Response Schemas ────────────────────────────────────────────────────────
 

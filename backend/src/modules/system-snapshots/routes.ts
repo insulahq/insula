@@ -1,6 +1,8 @@
 import type { FastifyInstance } from 'fastify';
+import { patchRecurringJobSchema } from '@insula/api-contracts';
 import { authenticate, requireRole, requirePanel } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
+import { parseBody } from '../../shared/validate-body.js';
 import { ApiError } from '../../shared/errors.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import {
@@ -74,10 +76,7 @@ export async function systemSnapshotsRoutes(app: FastifyInstance): Promise<void>
   }, async (request) => {
     const { jobName } = request.params as { jobName: string };
     validateName(jobName, 'jobName');
-    const body = request.body as { cron?: string; retain?: number };
-    if (body.cron === undefined && body.retain === undefined) {
-      throw new ApiError('INVALID_INPUT', 'Provide at least one of cron / retain', 400);
-    }
+    const body = parseBody(patchRecurringJobSchema, request.body);
     const kc = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
     const k8s = createK8sClients(kc);
     await patchRecurringJob(k8s, jobName, body);

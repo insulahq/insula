@@ -3,10 +3,18 @@ name: Backend CI
 on:
   push:
     branches: [development]
-    paths: ['backend/**', 'packages/api-contracts/**']
+    # The guard script and its allowlist live under scripts/, so a change to
+    # EITHER must trigger this workflow — otherwise an entry can be added to
+    # the allowlist without the guard that reads it ever running (the #391
+    # lesson: a paths filter that omits its own subject is not a guard).
+    paths: ['backend/**', 'packages/api-contracts/**',
+            'scripts/ci-route-body-validation-check.sh',
+            'scripts/.route-body-cast-allowlist.txt']
   pull_request:
     branches: [development, main]
-    paths: ['backend/**', 'packages/api-contracts/**']
+    paths: ['backend/**', 'packages/api-contracts/**',
+            'scripts/ci-route-body-validation-check.sh',
+            'scripts/.route-body-cast-allowlist.txt']
 
 # Least privilege (2026-07-28 security review): these workflows only read the
 # repo, so drop the token to read-only instead of inheriting the repository
@@ -37,6 +45,14 @@ jobs:
   # see that PowerDNS REJECTS it. That gap let MX, SRV and CAA stay broken
   # indefinitely — the 422 was swallowed and the API still answered 201 —
   # and published every mail record to `<apex>.<apex>.`.
+  route-body-validation-guard:
+    name: Request bodies are parsed, not cast (ROADMAP R29a)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Verify no new route reads request.body without a Zod parse
+        run: ./scripts/ci-route-body-validation-check.sh
+
   dns-powerdns-live:
     name: DNS record types against a live PowerDNS
     runs-on: ubuntu-latest

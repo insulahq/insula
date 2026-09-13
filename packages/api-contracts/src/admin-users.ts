@@ -53,3 +53,17 @@ export type TenantUserResponse = z.infer<typeof tenantUserResponseSchema>;
 
 export const tenantUserListResponseSchema = paginatedResponseSchema(tenantUserResponseSchema);
 export type TenantUserListResponse = z.infer<typeof tenantUserListResponseSchema>;
+
+// ─── Bulk actions (ROADMAP R29a) ───────────────────────────────────────
+//
+// Authored from what the HANDLER reads, not from what the panel sends.
+// Id columns are `varchar(36)` — UUID-shaped but not UUID-constrained — so
+// these mirror the column rather than asserting `.uuid()`: a schema stricter
+// than the storage rejects ids the platform itself is able to mint.
+
+export const bulkDeleteAdminUsersSchema = z.object({
+  // The handler requires at least one id and rejected an empty array itself;
+  // stating it here is what makes that a contract rather than a local check.
+  user_ids: z.array(z.string().min(1).max(36)).min(1),
+});
+export type BulkDeleteAdminUsers = z.infer<typeof bulkDeleteAdminUsersSchema>;

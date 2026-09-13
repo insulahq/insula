@@ -234,3 +234,20 @@ export const hostMigrationStatusResponseSchema = z.object({
   runbookUrl: z.string(),
 });
 export type HostMigrationStatusResponse = z.infer<typeof hostMigrationStatusResponseSchema>;
+
+// ─── R29a: request validation for a route that previously cast ─────────
+//
+// These fields are consumed by the service as `if (input.X !== undefined)`,
+// so before this schema a MISSPELLED field was not a 400 — it was a field the
+// service skipped, and the route answered 200 having changed nothing.
+// `.strict()` is the point: Zod's default STRIPS unknown keys, which would
+// preserve exactly that silence.
+
+export const capacityCheckRequestSchema = z.object({
+  // Kubernetes quantity strings ('500m', '2Gi'), parsed downstream — validated
+  // here as present and non-empty rather than re-implementing the grammar.
+  cpu: z.string().min(1).max(32),
+  memory: z.string().min(1).max(32),
+  storage: z.string().min(1).max(32),
+}).strict();
+export type CapacityCheckRequest = z.infer<typeof capacityCheckRequestSchema>;
