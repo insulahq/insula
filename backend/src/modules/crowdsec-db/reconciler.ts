@@ -40,6 +40,7 @@ import { randomBytes } from 'node:crypto';
 import { PassThrough, Writable } from 'node:stream';
 import { rollCrowdsecLapiSafely } from '../security-hardening/crowdsec.js';
 import { MERGE_PATCH } from '../../shared/k8s-patch.js';
+import { buildSingleDbIsolationSql } from '../db-isolation/sql.js';
 
 export const CROWDSEC_NAMESPACE = 'crowdsec';
 export const CROWDSEC_DB_SECRET = 'crowdsec-db-credentials';
@@ -213,6 +214,10 @@ export function buildCrowdsecDbSql(): string {
     `SELECT 'CREATE DATABASE ${CROWDSEC_DB_NAME} OWNER ${CROWDSEC_DB_USER}'`,
     `  WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '${CROWDSEC_DB_NAME}') \\gexec`,
     `GRANT ALL PRIVILEGES ON DATABASE ${CROWDSEC_DB_NAME} TO ${CROWDSEC_DB_USER};`,
+    // R36: close the PUBLIC CONNECT blanket on the database we just created,
+    // rather than leaving it open until the db-isolation converger's next tick.
+    // Shares its statement body with that converger — see modules/db-isolation/sql.ts.
+    buildSingleDbIsolationSql(CROWDSEC_DB_NAME),
   ].join('\n');
 }
 

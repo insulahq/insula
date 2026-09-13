@@ -4,7 +4,7 @@
  * no IO of its own.
  */
 
-import type { CoreV1Api, CustomObjectsApi, AppsV1Api } from '@kubernetes/client-node';
+import type { CoreV1Api, CustomObjectsApi, AppsV1Api, KubeConfig } from '@kubernetes/client-node';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import {
   type SecurityHardeningSnapshot,
@@ -28,6 +28,7 @@ import {
   type LoadOptions,
 } from './k8s-client.js';
 import { STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
+import { readDbIsolationState } from '../db-isolation/reconciler.js';
 
 export interface BuildSnapshotDeps {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -35,6 +36,12 @@ export interface BuildSnapshotDeps {
   readonly core: CoreV1Api;
   readonly custom: CustomObjectsApi;
   readonly apps: AppsV1Api;
+  /**
+   * Optional: required only for the database-isolation card, which execs psql
+   * in the CNPG primary. Omitted by unit tests, which then get a null card —
+   * the same value a cluster with an unreachable primary produces.
+   */
+  readonly kc?: KubeConfig;
   readonly now?: () => Date;
 }
 
@@ -58,6 +65,25 @@ export async function buildSecurityHardeningSnapshot(
       buildAuthPosture(deps.db, deps.apps, now),
     ]);
 
+  // R36. Deliberately NOT inside the Promise.all above: it execs into the
+  // CNPG primary, and a 15s exec timeout there should not delay the other
+  // eight readers. Null on any failure — and null renders as "unknown" in the
+  // UI, never as "isolated", because a card that reports a failed readout as
+  // the safe state is worse than no card.
+  const isolationRead = deps.kc ? await readDbIsolationState(deps.core, deps.kc) : null;
+  const databaseIsolation = isolationRead
+    ? {
+        // The reconciler's types are readonly; the contract's inferred types
+        // are mutable. Copy rather than cast — a cast here would be a lie the
+        // next refactor gets to discover.
+        databases: isolationRead.state.map((d) => ({
+          ...d,
+          connectGrantees: [...d.connectGrantees],
+        })),
+        atRisk: isolationRead.atRisk.map((r) => ({ ...r })),
+      }
+    : null;
+
   const calicoWg = await buildCalicoWgStatus(
     snapshots.length,
     publicPortsPerNode.map((p) => ({ nodeName: p.nodeName, udp: p.udp })),
@@ -75,6 +101,7 @@ export async function buildSecurityHardeningSnapshot(
     auditLogHealth,
     k8sPosture,
     authPosture,
+    databaseIsolation,
   };
 }
 

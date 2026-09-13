@@ -45,6 +45,7 @@ import {
   Trash2,
   Plus,
   ShieldOff,
+  Database,
 } from 'lucide-react';
 import {
   useSecurityHardeningSnapshot,
@@ -358,8 +359,115 @@ function OverviewTab({ snapshot }: { snapshot: SecurityHardeningSnapshot }) {
             note="Tenant tried to register a reserved platform hostname (ADR-040)"
           />
         )}
+        <DatabaseIsolationCard isolation={snapshot.databaseIsolation} />
       </div>
+
+      <DatabaseIsolationTable isolation={snapshot.databaseIsolation} />
     </section>
+  );
+}
+
+/**
+ * Summary card for the connection-layer isolation of the platform's databases
+ * (ROADMAP R36).
+ *
+ * Three states, not two. `null` means the CNPG primary could not be reached or
+ * the read-back could not be parsed — it renders as "unknown", never as
+ * "isolated". A posture card that shows a failed readout as the safe state is
+ * strictly worse than no card at all.
+ */
+export function DatabaseIsolationCard({ isolation }: { isolation: SecurityHardeningSnapshot['databaseIsolation'] }) {
+  if (!isolation) {
+    return (
+      <Phase2Card
+        icon={Database}
+        title="Database connection isolation"
+        ok={false}
+        metric="unknown"
+        note="Could not read pg_database from the CNPG primary — this is not a clean bill of health"
+      />
+    );
+  }
+  const open = isolation.databases.filter((d) => d.publicConnect);
+  const total = isolation.databases.length;
+  const atRisk = isolation.atRisk.length;
+  return (
+    <Phase2Card
+      icon={Database}
+      title="Database connection isolation"
+      ok={open.length === 0 && atRisk === 0}
+      metric={`${total - open.length} / ${total} isolated`}
+      note={
+        atRisk > 0
+          ? `${atRisk} connected role(s) cannot reconnect — grant CONNECT explicitly`
+          : open.length > 0
+            ? `PUBLIC still holds CONNECT on: ${open.map((d) => d.datname).join(', ')}`
+            : 'Every database refuses PUBLIC; owners + metrics exporter granted'
+      }
+    />
+  );
+}
+
+/**
+ * Per-database detail.
+ *
+ * Rendered only when there is something an operator can act on — an open
+ * database, a role about to be locked out, or an unreadable state. A table of
+ * four green rows on every page load trains people to stop reading it.
+ */
+export function DatabaseIsolationTable({ isolation }: { isolation: SecurityHardeningSnapshot['databaseIsolation'] }) {
+  if (!isolation) return null;
+  const open = isolation.databases.filter((d) => d.publicConnect);
+  if (open.length === 0 && isolation.atRisk.length === 0) return null;
+
+  return (
+    <div
+      className="rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/30 overflow-hidden"
+      data-testid="db-isolation-detail"
+    >
+      <div className="px-4 py-2 text-sm font-medium text-amber-900 dark:text-amber-200 flex items-center gap-2">
+        <Database size={14} />
+        Database connection isolation — action needed
+      </div>
+      <div className="overflow-x-auto">
+        <table className="min-w-full text-sm">
+          <thead className="bg-amber-100/60 dark:bg-amber-900/30 text-amber-900 dark:text-amber-200 text-xs uppercase">
+            <tr>
+              <th className="px-4 py-2 text-left">Database</th>
+              <th className="px-4 py-2 text-left">Owner</th>
+              <th className="px-4 py-2 text-left">PUBLIC CONNECT</th>
+              <th className="px-4 py-2 text-left">Explicit CONNECT grantees</th>
+            </tr>
+          </thead>
+          <tbody>
+            {open.map((d) => (
+              <tr key={d.datname} className="border-t border-amber-200 dark:border-amber-800">
+                <td className="px-4 py-2 font-mono text-gray-900 dark:text-gray-100">{d.datname}</td>
+                <td className="px-4 py-2 text-gray-700 dark:text-gray-300">{d.owner}</td>
+                <td className="px-4 py-2 text-amber-700 dark:text-amber-300">granted</td>
+                <td className="px-4 py-2 text-gray-700 dark:text-gray-300">
+                  {d.connectGrantees.length > 0 ? d.connectGrantees.join(', ') : '—'}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {isolation.atRisk.length > 0 && (
+        <div className="px-4 py-3 border-t border-amber-200 dark:border-amber-800 text-xs text-amber-900 dark:text-amber-200">
+          <span className="font-medium">Connected but cannot reconnect:</span>{' '}
+          {isolation.atRisk.map((r) => `${r.usename} → ${r.datname}`).join(', ')}
+          <div className="mt-1 text-amber-800/80 dark:text-amber-300/80">
+            These sessions keep working until they reconnect, then fail. Grant CONNECT explicitly,
+            or point the service at its own database.
+          </div>
+        </div>
+      )}
+      <div className="px-4 py-2 border-t border-amber-200 dark:border-amber-800 text-xs text-amber-800/80 dark:text-amber-300/80">
+        The db-isolation converger re-applies this every 5 minutes; a row here that persists across
+        two refreshes means the apply is failing — check the platform-api log for <code>db-isolation</code>.
+      </div>
+    </div>
   );
 }
 
