@@ -234,7 +234,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     subjectTemplate: 'Mailbox {{mailboxAddress}} is full — mail is being rejected',
     bodyTemplate: emailMjml(
       'Mailbox full',
-      'Mailbox {{mailboxAddress}} on {{tenantName}} has reached its {{quotaMb}} MB quota ({{usedMb}} MB used) '
+      'Mailbox {{mailboxAddress}} on {{tenantName}} has reached its {{quotaMb}} MB quota ({{usedMb}} MB used, {{percent}}%) '
       + 'as of {{occurredAt}}. New mail addressed to it is being REJECTED. Delete messages or increase the '
       + 'quota to start receiving again.',
     ),
@@ -253,7 +253,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: 'Mailbox {{mailboxAddress}} is full',
-    bodyTemplate: '{{mailboxAddress}} on {{tenantName}} is at 100% of its {{quotaMb}} MB quota as of {{occurredAt}} — new mail is being rejected.',
+    bodyTemplate: '{{mailboxAddress}} on {{tenantName}} is at {{percent}}% of its {{quotaMb}} MB quota ({{usedMb}} MB) as of {{occurredAt}} — new mail is being rejected.',
     bodyFormat: 'plaintext',
     variablesSchema: [
       ...COMMON_VARS,
