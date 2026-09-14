@@ -189,7 +189,32 @@ Consequences, measured over 14 days:
 
 Replace per-category guesswork with derivation from two declared properties.
 
-#### Axis 1 — Audience → available channels
+#### Audience is a SET, not a value
+
+An event declares one or more **bindings** — `(audience, class, threshold)` — and channels are
+*derived* from each binding, never hand-set. The proof that this was the missing abstraction:
+two features built weeks apart each got exactly one audience, and they chose opposite ones.
+
+| event | implemented in | tenant admin | platform admin | fired in prod |
+|---|---|---|---|---|
+| **Storage quota** (warn 90 / crit 95) | `metrics/tenant-saturation.ts` | **never told** | notified | never |
+| **Email sending limit** (hour + day) | `mail-events/thresholds.ts` | notified | **never told** | never |
+| **Mailbox quota** (80/90/100) | `mail-stats/quota-notifications.ts` | **never told** | an unnamed global counter | **never — 0 events, ever** |
+
+The tenant whose disk is filling is never warned; the operator never learns a tenant is
+saturating the sending limit. Neither is a bug inside either feature — both are the same
+missing question, *"who else needs to know?"*, which a single-valued `audience` field cannot
+even express.
+
+`mailbox.quota` modelled with bindings:
+
+| audience | fires at | class | delivery |
+|---|---|---|---|
+| `mailbox_user` | 80 / 90 / 99 / 100 | Action | direct mail to the mailbox |
+| `tenant_admin` | 80 / 90 / 99 / 100 | Action | panel + email to contact |
+| `platform_admin` | **100 only** | Action | inbox + email, **aggregated** across tenants |
+
+#### Audience → available channels
 
 | audience | in_app | email | ntfy | direct mail |
 |---|---|---|---|---|
@@ -197,34 +222,57 @@ Replace per-category guesswork with derivation from two declared properties.
 | `tenant_admin` | tenant panel | contact address | **barred** | — |
 | `mailbox_user` | *no account* | — | — | **to the mailbox** |
 
-Barring ntfy for tenant audiences removes an entire class of leak and noise in one line.
+ntfy is a single operator broadcast topic (one emit per event, no per-user leg,
+`dispatcher/dispatch.ts:225`), so barring it for tenant audiences removes both the noise and
+the leak of tenant data onto a shared channel.
 
-#### Axis 2 — Class: why the recipient is being told
+#### The channel must outlive the event
 
-Severity says how loud. **Class decides whether a message leaves the platform UI at all.**
+**A notification delivered only through the thing it reports on is not a notification.**
+"Node finished booting" was routed in-app — to a panel that was unreachable for the whole
+outage it describes. Every category declares the **subsystem it reports on**, and the router
+excludes the channel that depends on it, guaranteeing at least one independent path:
+
+| reports on | cannot be trusted | primary delivery |
+|---|---|---|
+| platform/panel availability (node down, rebooting, startup complete, monitoring unreachable) | **in-app** — the panel was down | email + push; in-app is the after-the-fact record |
+| mail delivery (mail health degraded, blocklisted, queue backlog) | **email** — the transport is the subject | push + in-app |
+| push transport (ntfy unreachable) | **push** | email + in-app |
+| everything else | — | class default |
+
+#### Class — six, applied *per binding*
+
+Severity says how loud; class says why the recipient is being told, which decides whether a
+message leaves the platform UI. The same event can be Incident for one audience and Action for
+another.
 
 | class | meaning | default routing |
 |---|---|---|
-| **Ambient** | For the record, never actionable | **in-app only** — never email, never push |
+| **Ambient** | For the record, never actionable, and the reader was there | **in-app only** |
 | **Record** | A durable receipt needed later | in-app + email; no push |
-| **Action** | Recipient must act or it degrades | in-app + email, escalating; push only at the final threshold; digest-eligible below it |
-| **Incident** | Broken now, someone must respond | all channels, immediately; never digested or rate-limited; bypasses quiet hours |
-| **Security** | Identity, access, account state | in-app + email, **mandatory** (cannot be muted); push for operators only |
+| **Action** | Must act or it degrades | in-app + email, escalating; digest-eligible early, push at the final threshold |
+| **Incident** | Broken now, someone must respond | all available channels; never digested; bypasses quiet hours |
+| **Availability** | The platform's own reachability | **out-of-band always** — the dependent channel is excluded |
+| **Security** | Identity, access, account state | in-app + email, **mandatory**; push for operators only |
 
-Two assignments alone remove most of the noise: `admin.slo_alert_resolved` becomes **Ambient**
-(-130 emails, -130 pushes per fortnight) and `tls.certificate_issued` becomes **Ambient**, so
-routine renewals stop mailing customers.
+`admin.slo_alert_resolved` becomes **Ambient**, removing 130 emails and 130 pushes a fortnight.
 
-#### Not every audience gets every event
+### 2.0.2 The three missing coverages
 
-A mailbox at 90% is urgent to its owner, useful to the tenant admin, and **not the operator's
-business** until it is a fleet pattern:
+**Tenant storage quota.** `tenant-saturation.ts` already computes it at 90/95% and notifies only
+the operator. Add: `tenant_admin` Action at 90%, `tenant_admin` Incident at 95%,
+`platform_admin` Incident at 95% aggregated by tenant.
 
-| audience | delivery | message |
-|---|---|---|
-| `mailbox_user` | direct mail | "Your mailbox `user@example.test` is 90% full (1350 of 1500 MB)…" |
-| `tenant_admin` | panel + email | "Hi Alex — mailbox `user@example.test` on Example Ltd is 90% full. Two others are above 80%." |
-| `platform_admin` | **nothing** | Only at 100%, or when the fleet count crosses its threshold — then **one aggregated** message naming every mailbox, tenant and contact |
+**Email sending limit.** `mail-events/thresholds.ts` notifies only the tenant. Add:
+`platform_admin` Incident at 100%, aggregated by tenant — a saturated sending limit is the shape
+of both a compromised account and a platform-wide deliverability risk.
+
+**Subscription expiry cadence.** The scheduler fires at **7 / 3 / 1 days**, tenant-only
+(`expiry-warning-scheduler.ts:50`). Seven days is not enough notice to raise a purchase order.
+Change to **weekly for five weeks — 35 / 28 / 21 / 14 / 7** — and add a `platform_admin` binding
+that aggregates into one weekly digest line. The dedupe key
+(`subscription-expiry:<tenant>:<daysOut>d:<date>`) already has the right shape; it needs the
+window list widened and a second binding, not new machinery.
 
 ### 2.0.1 Configuration precedence — five layers, highest wins
 
@@ -373,42 +421,39 @@ never once rendered is how `nextBillingAt` survived to production.
 
 ---
 
-## 4. UI surfaces
+## 4. Surfaces
 
-### 4.1 Admin panel
+**Tenant problems belong on the tenant, not on a page about the problem.** An earlier draft
+proposed a standalone mailbox-quota page; that creates one page per subsystem and makes the
+operator remember to visit each.
 
-| surface | status | work |
-|---|---|---|
-| **Notification inbox** | **missing entirely** | new page: severity, subsystem chip, tenant chip, object deep link; filters by audience/subsystem/tenant/severity/unread; bulk mark-read; "why did I get this" → category |
-| **Mail → Mailbox quotas** | **missing entirely** | platform-wide table of mailboxes by % used, sortable, with tenant, contact, last-notified-at and a quota-edit action — the surface that answers "which mailbox?" |
-| Bell dropdown | title+message only | severity colour, subsystem chip, tenant, relative time, link |
-| Tenant detail → Notifications tab | missing | what this tenant was told, and when — support's first question |
-| Delivery Log | exists | add `degraded_vars` column + "needs data" filter + resend |
-| Sources (categories) | exists | show 3-way audience, last-fired, 30-day volume; flag never-fired |
-| Providers | exists | warn loudly when no default provider exists (85 DLQ'd emails) |
+A **tenant issue** is an open, self-clearing condition — mailbox over quota, storage at 95%,
+subscription expiring, certificate failing, sending limit hit — derived from the same threshold
+state the notifications fire from, so a banner and a notification can never disagree.
 
-### 4.2 Tenant panel
-
-| surface | work |
+| existing surface | addition |
 |---|---|
-| Notifications page | subsystem + severity chips, deep link to the object, explicit "what to do" line |
-| Dashboard | actionable-items strip (quota, expiry, cert failures) instead of burying them in a list |
-| Email page | per-mailbox quota bar + "request increase" action |
-| Notification preferences | group by the 3-way audience; show which channel each category will use |
-
----
+| **Tenants table** → status column | Beside *Active*, a yellow **"3 issues"** chip (red when any issue is Incident). Sortable + filterable, so "every tenant with a problem" is the existing table with a filter — not a new page |
+| **Tenant detail** → top of page | A yellow banner listing every current issue — object, value, age — each linking to the tab that fixes it. Red when any is critical |
+| **Tenant detail** → mailbox table | The existing *Used / Quota* column gains a bar and a colour at 80 / 90 / 99. Already the place a quota is edited |
+| **Tenant panel** → dashboard | The same issue list, tenant-side, above the fold — the customer sees what the operator sees about them |
+| **Tenant panel** → email page | Per-mailbox quota bar + "request increase" |
+| **Admin** → notification inbox | The one genuinely new surface. `/platform/notifications` is the *settings* screen; the only place an operator reads a notification is the bell dropdown, which renders title + message and nothing else |
+| **Admin** → delivery log | `degraded_vars` column, "needs data" filter, resend |
+| **Admin** → sources | Show bindings (audience × class), last fired, 30-day volume; flag the 37 that never fire |
 
 ## 5. Phasing
 
-| phase | scope | outcome |
-|---|---|---|
-| **1 — stop the silence** | non-throwing render, `degraded_vars`, CI variable-contract guard, boot self-test, envelope fallback | the 9 still-dropping emails stop; every later phase is safe to build on |
-| **2 — mailbox quota chain** | tenant-admin + mailbox recipients, 80/90/99/100, retire the SLO rule + global gauge, admin mailbox-quota view | the reported bug is closed end-to-end |
-| **3 — class + audience become real** | `class` field, three-way audience, channel derivation, ntfy barred for tenants, §3 assignment applied | the noise drops |
-| **4 — identity everywhere** | `NotificationEnvelope`, contact-name addressing, real `platformName`, localised dates, all 18 contract defects fixed | every notification answers the five questions |
-| **5 — convenience** | digests, aggregation, quiet hours, object mute, escalation, tenant contact routing | notifications become tunable instead of endurable |
-| **6 — surfaces** | admin inbox, tenant-detail notification tab, tenant panel upgrades | notifications become navigable and actionable |
-| **7 — retire the second system** | migrate 9 `notifyUser()` call sites, delete `legacy.*`, triage the 37 never-fired categories | one notification system, fully audited |
+| phase | scope |
+|---|---|
+| **1 — stop the silence** | non-throwing render, `degraded_vars`, CI variable-contract guard, boot self-test, envelope fallback |
+| **2 — bindings replace audience** | the `(audience, class, threshold)` binding set, subsystem-dependency exclusion, ntfy barred for tenants, channel derivation |
+| **3 — mailbox quota chain** | tenant-admin + mailbox-user bindings, 80/90/99/100, retire the SLO rule + global gauge |
+| **4 — close the coverage gaps** | tenant storage quota, operator sending-limit visibility, five-week expiry cadence for both audiences |
+| **5 — identity everywhere** | `NotificationEnvelope`, contact-name addressing, real `platformName`, localised dates, all 18 contract defects |
+| **6 — issues on tenant surfaces** | issue model, status-column chip, tenant-detail banner, mailbox usage bars, tenant dashboard, operator inbox |
+| **7 — convenience** | digests, aggregation, quiet hours, object mute, escalation, tenant contact routing |
+| **8 — retire the second system** | migrate 9 `notifyUser()` call sites, delete `legacy.*`, triage the 37 never-fired categories |
 
 ## 6. Guards this work must leave behind
 
