@@ -382,3 +382,37 @@ describe('provisionEmailDns — recorded vs published', () => {
     warn.mockRestore();
   });
 });
+
+describe('the published DMARC policy for a NEW domain', () => {
+  const dmarcOf = (domain = 'example.com') =>
+    buildEmailDnsRecordsForDisplay(domain, MOCK_DKIM_SELECTOR, MOCK_DKIM_PUBLIC_KEY, MOCK_MAIL_HOSTNAME)
+      .find((r) => r.purpose === 'dmarc');
+
+  it('starts at p=none — a new domain has no evidence its mail aligns', () => {
+    // Enforcement on day one spam-folders whatever does not align yet (a CRM,
+    // a newsletter provider, the tenant's own office server) and does it
+    // silently from the sender's side. Pinned so it cannot drift back without
+    // a deliberate decision.
+    expect(dmarcOf()?.recordValue).toContain('p=none');
+    expect(dmarcOf()?.recordValue).not.toContain('p=quarantine');
+    expect(dmarcOf()?.recordValue).not.toContain('p=reject');
+  });
+
+  it('points rua= at a same-domain address the platform actually creates', () => {
+    // `dmarc@<domain>` has a real mailbox (report-intake-reconciler). It used
+    // to be `dmarc-reports@`, which nothing ever created, so Stalwart refused
+    // every report at RCPT with 550 and they were discarded.
+    expect(dmarcOf()?.recordValue).toContain('rua=mailto:dmarc@example.com');
+    expect(dmarcOf()?.recordValue).not.toContain('dmarc-reports@');
+    expect(dmarcOf()?.recordValue).not.toContain('postmaster@');
+  });
+
+  it('keeps rua= inside the policy domain, so no RFC 7489 §7.1 authorisation is needed', () => {
+    const v = dmarcOf('tenant.example.net')?.recordValue ?? '';
+    expect(v).toContain('rua=mailto:dmarc@tenant.example.net');
+  });
+
+  it('publishes _dmarc at the conventional name', () => {
+    expect(dmarcOf()?.recordName).toBe('_dmarc.example.com');
+  });
+});

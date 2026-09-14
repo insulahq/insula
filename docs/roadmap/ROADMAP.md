@@ -215,12 +215,27 @@ to real arrays cannot quietly zero the counts.
   unaligned legitimate sender stops that sender's mail immediately rather than
   degrading, so the tightening stays an operator decision.
 
-### Open follow-up
+### The default policy — settled 2026-09-14
 
-The default policy published for a new domain is `p=quarantine`, which is
-enforcement *before* any alignment has been observed. R5's model argues for
-`p=none` first, tightening on evidence. Left unchanged because it is an operator
-policy decision rather than a bug — worth a deliberate call.
+The default published for a new domain **was** `p=quarantine`: enforcement before
+a single message had been observed. Anything not yet aligned — a CRM, a
+newsletter provider, a contact form, the tenant's own office server — is
+spam-foldered, and DMARC gives the sender no signal that it happened. It was
+defensible only while the platform ingested no reports: starting at `none` meant
+never learning when tightening was safe, so `quarantine` at least ended
+somewhere.
+
+R5 removes that constraint. The default is now **`p=none`** — report-only,
+protecting nothing, but collecting the evidence — and `dmarc-policy.ts` says when
+the domain is ready for `quarantine` and then `reject` (operator decision: it is
+never applied automatically). `dns-provisioning.ts` carries the reasoning; a test
+in `dns-provisioning.test.ts` pins the emitted value so it cannot drift back.
+
+**Newly provisioned records only.** Domains already publishing `p=quarantine` or
+`p=reject` are untouched: silently loosening enforcement a domain already has is
+a downgrade nobody asked for, and unlike the `rua=` repair there is no
+correctness argument for it — the record works, it is just stricter than the new
+default.
 
 - Spec: the original email-deliverability spec (DMARC sections; see the git history).
 

@@ -77,6 +77,15 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   R36.)
 
 ### Changed
+- **A new email domain now starts at DMARC `p=none`, not `p=quarantine`.** The
+  platform used to publish enforcement on day one, before it had seen a single
+  message. Anything that does not align yet — a CRM, a newsletter provider, a
+  contact form, a tenant's own office server — goes to the recipient's spam
+  folder, and nothing tells the sender it is happening. `p=none` protects nothing
+  on its own, but it collects the reports that say when enforcing is safe, and
+  the platform now reads those reports and tells you when that is (above).
+  **Domains that already publish `p=quarantine` or `p=reject` keep it** — the
+  platform does not loosen enforcement you already have.
 - **The two automatic ban engines are now presented as two engines.** WAF
   auto-ban and Traffic detection are grouped under one *Automatic bans* heading
   that states both write to the same list and that turning one off does not
