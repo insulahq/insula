@@ -359,6 +359,20 @@ export interface TenantCertificatePayload {
 }
 
 /**
+ * Success has no error to report.
+ *
+ * `tls.certificate_issued` used to reuse TenantCertificatePayload, which
+ * carries `errorMessage` — so the variable-contract guard correctly flagged a
+ * field collected for a category whose template can never render it. A shared
+ * interface across success and failure hides exactly that: the emitter looks
+ * like it supplies something meaningful and the reader never sees it.
+ */
+export interface TenantCertificateIssuedPayload {
+  readonly hostname: string;
+  readonly expiresAt?: string;
+}
+
+/**
  * TLS issuance failed for a tenant hostname.
  *
  * Both audiences get told: the tenant because their visitors are the
@@ -379,7 +393,7 @@ export async function notifyTenantCertificateFailed(
 export async function notifyTenantCertificateIssued(
   db: Database,
   tenantId: string,
-  payload: TenantCertificatePayload,
+  payload: TenantCertificateIssuedPayload,
   dedupeKey?: string,
 ): Promise<void> {
   await dispatchSafe(db, 'tls.certificate_issued', { kind: 'tenant', tenantId }, payload, tenantId, { dedupeKey });
@@ -634,6 +648,31 @@ export async function notifyAdminSloAlertResolved(
 
 // ── R4/R6 PR 4: outbound-mail protection ───────────────────────────────────
 
+export interface ScheduledTaskFailurePayload {
+  readonly taskName: string;
+  readonly errorMessage: string;
+}
+/**
+ * A tenant's scheduled task (web cron) run failed.
+ *
+ * `tasks.scheduled_failure` shipped with templates on all three channels and
+ * NO emitter anywhere — the cron scheduler recorded `lastRunStatus: 'failed'`
+ * with the response body and told nobody. A tenant's nightly job could fail
+ * every night indefinitely and the only trace was a column in the panel they
+ * had to think to open.
+ *
+ * Dedupe per (job, day): a job on a 5-minute schedule that is broken would
+ * otherwise send 288 notifications before breakfast.
+ */
+export async function notifyTenantScheduledTaskFailure(
+  db: Database,
+  tenantId: string,
+  payload: ScheduledTaskFailurePayload,
+  dedupeKey?: string,
+): Promise<void> {
+  await dispatchSafe(db, 'tasks.scheduled_failure', { kind: 'tenant', tenantId }, payload, tenantId, { dedupeKey });
+}
+
 export interface TenantEmailQuotaPayload {
   readonly window: 'hour' | 'day';
   readonly percent: string;
@@ -732,6 +771,15 @@ export interface CustomDeploymentRolledBackPayload {
   readonly failedDigest: string;
   /** Digest restored, or 'none' when there was nothing to restore. */
   readonly restoredDigest: string;
+  /**
+   * Deep link to the deployment in the tenant panel.
+   *
+   * The email template has always rendered `{{panelUrl}}` as its call to
+   * action and no caller ever supplied it, so under strict mode the bare
+   * reference threw and the EMAIL leg of this notification could never be
+   * delivered — a rolled-back deployment told the tenant nothing by mail.
+   */
+  readonly panelUrl?: string;
 }
 /**
  * An auto-update pulled a republished image that never became Ready, so the

@@ -56,6 +56,7 @@ const SLO_ALERT_VARS: readonly NotificationTemplateVariable[] = [
   { name: 'description', type: 'string', required: false },
   { name: 'value', type: 'string', required: false },
   { name: 'subject', type: 'string', required: false },
+  { name: 'severity', type: 'string', required: false },
 ];
 
 /**
@@ -130,12 +131,13 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     subjectTemplate: 'Unusual sign-in to your account',
     bodyTemplate: emailMjml(
       'Unusual sign-in',
-      'A sign-in to {{userName}} was detected from {{newIp}}. If this was not you, change your password immediately.',
+      'A sign-in to {{userName}} was detected from {{newIp}} ({{userAgent}}). If this was not you, change your password immediately.',
     ),
     bodyFormat: 'mjml',
     variablesSchema: [
       ...COMMON_VARS,
       { name: 'newIp', type: 'string', required: true },
+      { name: 'userAgent', type: 'string', required: false },
     ],
   },
   {
@@ -143,11 +145,12 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: 'Unusual sign-in detected',
-    bodyTemplate: 'A sign-in from {{newIp}} was detected. If this was not you, change your password immediately.',
+    bodyTemplate: 'A sign-in from {{newIp}} ({{userAgent}}) was detected. If this was not you, change your password immediately.',
     bodyFormat: 'plaintext',
     variablesSchema: [
       ...COMMON_VARS,
       { name: 'newIp', type: 'string', required: true },
+      { name: 'userAgent', type: 'string', required: false },
     ],
   },
 
@@ -159,12 +162,13 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     subjectTemplate: 'Your subscription expires soon',
     bodyTemplate: emailMjml(
       'Subscription expiring soon',
-      'Your subscription for {{tenantName}} expires on {{expiresAt}}. Renew now to avoid service interruption.',
+      'Your subscription for {{tenantName}} expires in {{daysUntilExpiry}} days, on {{expiresAt}}. Renew now to avoid service interruption.',
     ),
     bodyFormat: 'mjml',
     variablesSchema: [
       ...COMMON_VARS,
       { name: 'expiresAt', type: 'string', required: true },
+      { name: 'daysUntilExpiry', type: 'string', required: false },
     ],
   },
   {
@@ -172,11 +176,12 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: 'Subscription expiring soon',
-    bodyTemplate: 'Your subscription expires on {{expiresAt}}. Renew to avoid service interruption.',
+    bodyTemplate: 'Your subscription for {{tenantName}} expires in {{daysUntilExpiry}} days, on {{expiresAt}}. Renew to avoid service interruption.',
     bodyFormat: 'plaintext',
     variablesSchema: [
       ...COMMON_VARS,
       { name: 'expiresAt', type: 'string', required: true },
+      { name: 'daysUntilExpiry', type: 'string', required: false },
     ],
   },
 
@@ -188,12 +193,12 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     subjectTemplate: 'Subscription renewed',
     bodyTemplate: emailMjml(
       'Subscription renewed',
-      'Your subscription for {{tenantName}} was renewed. The next billing cycle starts on {{nextBillingAt}}.',
+      'Your subscription for {{tenantName}} was renewed. It now runs until {{newExpiresAt}}.',
     ),
     bodyFormat: 'mjml',
     variablesSchema: [
       ...COMMON_VARS,
-      { name: 'nextBillingAt', type: 'string', required: false },
+      { name: 'newExpiresAt', type: 'string', required: false },
     ],
   },
   {
@@ -201,11 +206,11 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: 'Subscription renewed',
-    bodyTemplate: 'Your subscription was renewed for another billing cycle.{{#if nextBillingAt}} Next billing: {{nextBillingAt}}.{{/if}}',
+    bodyTemplate: 'Your subscription for {{tenantName}} was renewed. It now runs until {{newExpiresAt}}.',
     bodyFormat: 'plaintext',
     variablesSchema: [
       ...COMMON_VARS,
-      { name: 'nextBillingAt', type: 'string', required: false },
+      { name: 'newExpiresAt', type: 'string', required: false },
     ],
   },
 
@@ -217,19 +222,27 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     subjectTemplate: 'Subscription changed',
     bodyTemplate: emailMjml(
       'Subscription changed',
-      'Your subscription for {{tenantName}} was modified. Review the new plan in the tenant panel.',
+      'Your subscription for {{tenantName}} changed from the {{oldPlanName}} plan to the {{newPlanName}} plan.',
     ),
     bodyFormat: 'mjml',
-    variablesSchema: COMMON_VARS,
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'oldPlanName', type: 'string', required: false },
+      { name: 'newPlanName', type: 'string', required: false },
+    ],
   },
   {
     categoryId: 'subscription.changed',
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: 'Subscription changed',
-    bodyTemplate: 'Your subscription was modified.',
+    bodyTemplate: '{{tenantName}}: plan changed from {{oldPlanName}} to {{newPlanName}}.',
     bodyFormat: 'plaintext',
-    variablesSchema: COMMON_VARS,
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'oldPlanName', type: 'string', required: false },
+      { name: 'newPlanName', type: 'string', required: false },
+    ],
   },
 
   // ── account.sub_account_added ──────────────────────────────────────
@@ -391,7 +404,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     subjectTemplate: 'Email sending at {{percent}}% of your {{window}} limit',
     bodyTemplate: emailMjml(
       'Email usage at {{percent}}%',
-      'You have sent {{used}} of {{limit}} messages in the current {{window}} window. '
+      'You have sent {{used}} of {{limit}} messages ({{percent}}%) in the current {{window}} window. '
       + 'Messages beyond the limit are deferred until the window rolls over.',
     ),
     bodyFormat: 'mjml',
@@ -442,13 +455,14 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: 'Email sending limit reached ({{window}})',
-    bodyTemplate: '{{used}} of {{limit}} messages sent — further messages are deferred this {{window}}.',
+    bodyTemplate: '{{used}} of {{limit}} messages sent ({{percent}}%) — further messages are deferred this {{window}}.',
     bodyFormat: 'plaintext',
     variablesSchema: [
       ...COMMON_VARS,
       { name: 'window', type: 'string', required: true },
       { name: 'used', type: 'string', required: true },
       { name: 'limit', type: 'string', required: true },
+      { name: 'percent', type: 'string', required: false },
     ],
   },
 
@@ -460,6 +474,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     bodyTemplate: emailMjml(
       'Certificate could not be issued',
       'We could not obtain a TLS certificate for {{hostname}}: {{errorMessage}} ' +
+        'The current certificate expires {{expiresAt}}. ' +
         'Visitors will see a security warning until this is resolved. ' +
         'The most common cause is DNS for the domain not yet pointing at the platform.',
     ),
@@ -468,6 +483,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
       ...COMMON_VARS,
       { name: 'hostname', type: 'string', required: true },
       { name: 'errorMessage', type: 'string', required: false },
+      { name: 'expiresAt', type: 'string', required: false },
     ],
   },
   {
@@ -475,12 +491,14 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: 'Certificate failed for {{hostname}}',
-    bodyTemplate: 'TLS certificate for {{hostname}} could not be issued: {{errorMessage}}',
+    bodyTemplate: 'TLS certificate for {{hostname}} could not be issued: {{errorMessage}}'
+      + ' The current certificate expires {{expiresAt}}.',
     bodyFormat: 'plaintext',
     variablesSchema: [
       ...COMMON_VARS,
       { name: 'hostname', type: 'string', required: true },
       { name: 'errorMessage', type: 'string', required: false },
+      { name: 'expiresAt', type: 'string', required: false },
     ],
   },
   {
@@ -520,7 +538,8 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     subjectTemplate: 'Using per-hostname certificates for {{hostname}}',
     bodyTemplate: emailMjml(
       'Wildcard certificate unavailable',
-      'The wildcard certificate for {{hostname}} could not be issued ({{errorMessage}}), so each hostname is being ' +
+      'The wildcard certificate for {{hostname}} could not be issued ({{errorMessage}}, current certificate expires ' +
+        '{{expiresAt}}), so each hostname is being ' +
         'secured with its own certificate instead. Your sites stay reachable over HTTPS; new subdomains just need ' +
         'their own certificate until the wildcard succeeds. We keep retrying it in the background.',
     ),
@@ -529,6 +548,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
       ...COMMON_VARS,
       { name: 'hostname', type: 'string', required: true },
       { name: 'errorMessage', type: 'string', required: false },
+      { name: 'expiresAt', type: 'string', required: false },
     ],
   },
   {
@@ -537,12 +557,14 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     locale: 'en',
     subjectTemplate: 'Wildcard unavailable for {{hostname}}',
     bodyTemplate:
-      'Using per-hostname certificates for {{hostname}} while the wildcard is retried: {{errorMessage}}',
+      'Using per-hostname certificates for {{hostname}} while the wildcard is retried: {{errorMessage}}'
+      + ' (current certificate expires {{expiresAt}})',
     bodyFormat: 'plaintext',
     variablesSchema: [
       ...COMMON_VARS,
       { name: 'hostname', type: 'string', required: true },
       { name: 'errorMessage', type: 'string', required: false },
+      { name: 'expiresAt', type: 'string', required: false },
     ],
   },
 ];
@@ -594,6 +616,7 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
       ...COMMON_VARS,
       { name: 'certSubject', type: 'string', required: true },
       { name: 'expiresAt', type: 'string', required: true },
+      { name: 'daysUntilExpiry', type: 'string', required: false },
     ],
   },
   {
@@ -607,6 +630,7 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
       ...COMMON_VARS,
       { name: 'certSubject', type: 'string', required: true },
       { name: 'expiresAt', type: 'string', required: true },
+      { name: 'daysUntilExpiry', type: 'string', required: false },
     ],
   },
 
@@ -857,7 +881,8 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     bodyTemplate: emailMjml(
       'SLO alert firing: {{ruleName}}',
       '{{#if subject}}Affected: {{subject}}. {{/if}}{{description}}'
-      + '{{#if value}} Current value: {{value}}.{{/if}}',
+      + '{{#if value}} Current value: {{value}}.{{/if}}'
+      + ' (rule {{ruleId}}, severity {{severity}})',
     ),
     bodyFormat: 'mjml',
     variablesSchema: SLO_ALERT_VARS,
@@ -868,7 +893,8 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     locale: 'en',
     subjectTemplate: '[SLO CRITICAL] {{ruleName}}{{#if subject}} — {{subject}}{{/if}}',
     bodyTemplate: '{{#if subject}}Affected: {{subject}}. {{/if}}{{description}}'
-      + '{{#if value}} Current value: {{value}}.{{/if}}',
+      + '{{#if value}} Current value: {{value}}.{{/if}}'
+      + ' (rule {{ruleId}}, severity {{severity}})',
     bodyFormat: 'plaintext',
     variablesSchema: SLO_ALERT_VARS,
   },
@@ -879,7 +905,9 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     subjectTemplate: '[SLO RESOLVED] {{ruleName}}{{#if subject}} — {{subject}}{{/if}}',
     bodyTemplate: emailMjml(
       'SLO alert resolved: {{ruleName}}',
-      '{{ruleName}} recovered{{#if subject}} for {{subject}}{{/if}}. No further action required.',
+      '{{ruleName}} recovered{{#if subject}} for {{subject}}{{/if}}. '
+      + '{{description}}{{#if value}} Last value: {{value}}.{{/if}} '
+      + '(rule {{ruleId}}, severity {{severity}}). No further action required.',
     ),
     bodyFormat: 'mjml',
     variablesSchema: SLO_ALERT_VARS,
@@ -889,7 +917,8 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: '[SLO RESOLVED] {{ruleName}}{{#if subject}} — {{subject}}{{/if}}',
-    bodyTemplate: '{{ruleName}} recovered{{#if subject}} for {{subject}}{{/if}}.',
+    bodyTemplate: '{{ruleName}} recovered{{#if subject}} for {{subject}}{{/if}}'
+      + ' (rule {{ruleId}}, severity {{severity}}).',
     bodyFormat: 'plaintext',
     variablesSchema: SLO_ALERT_VARS,
   },
@@ -901,7 +930,8 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     bodyTemplate: emailMjml(
       'SLO alert firing: {{ruleName}}',
       '{{#if subject}}Affected: {{subject}}. {{/if}}{{description}}'
-      + '{{#if value}} Current value: {{value}}.{{/if}}',
+      + '{{#if value}} Current value: {{value}}.{{/if}}'
+      + ' (rule {{ruleId}}, severity {{severity}})',
     ),
     bodyFormat: 'mjml',
     variablesSchema: SLO_ALERT_VARS,
@@ -912,7 +942,8 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     locale: 'en',
     subjectTemplate: '[SLO WARNING] {{ruleName}}{{#if subject}} — {{subject}}{{/if}}',
     bodyTemplate: '{{#if subject}}Affected: {{subject}}. {{/if}}{{description}}'
-      + '{{#if value}} Current value: {{value}}.{{/if}}',
+      + '{{#if value}} Current value: {{value}}.{{/if}}'
+      + ' (rule {{ruleId}}, severity {{severity}})',
     bodyFormat: 'plaintext',
     variablesSchema: SLO_ALERT_VARS,
   },
@@ -1384,7 +1415,8 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
         subjectTemplate: '[OOM] Tenant workload {{killSummary}}: {{tenantLabel}} ({{containerName}})',
         bodyTemplate: emailMjml(
           'Tenant workload {{killSummary}}: {{tenantLabel}}',
-          'Container {{containerName}} in pod {{podName}} (tenant {{tenantLabel}}) {{killDetail}}',
+          'Container {{containerName}} in pod {{podName}} (tenant {{tenantLabel}}) {{killDetail}} '
+          + 'The container has restarted {{restartCount}} time(s).',
         ),
         bodyFormat: 'mjml',
         variablesSchema: oomVars,
@@ -1394,7 +1426,8 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
         channel: 'in_app',
         locale: 'en',
         subjectTemplate: '[OOM] {{tenantLabel}}: {{containerName}} {{killSummary}}',
-        bodyTemplate: '{{tenantLabel}} — {{containerName}} in {{podName}} {{killDetail}}',
+        bodyTemplate: '{{tenantLabel}} — {{containerName}} in {{podName}} {{killDetail}}'
+          + ' ({{restartCount}} restart(s))',
         bodyFormat: 'plaintext',
         variablesSchema: oomVars,
       },

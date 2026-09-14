@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { ALL_SEED_TEMPLATES } from './seed-data.js';
+import { renderForDelivery } from './render-for-delivery.js';
 import { renderTemplate } from './renderer.js';
 
 /**
@@ -19,7 +20,7 @@ const CASES: Array<{ categoryId: string; field: string; sample: string }> = [
   { categoryId: 'admin.security_hardening_drift', field: 'driftSummary', sample: 'sshd root login re-enabled' },
   { categoryId: 'admin.wal_archive_failing', field: 'reason', sample: 'S3 403' },
   { categoryId: 'admin.wal_archive_auto_disabled', field: 'reason', sample: 'repeated 403s' },
-  { categoryId: 'subscription.renewed', field: 'nextBillingAt', sample: '2026-09-01' },
+  { categoryId: 'subscription.renewed', field: 'newExpiresAt', sample: '2026-09-01' },
   { categoryId: 'tasks.scheduled_failure', field: 'errorMessage', sample: 'exit 2' },
 ];
 
@@ -49,11 +50,25 @@ describe('in-app notifications include their diagnostic detail', () => {
       expect(renderTemplate(t, vars).body).toContain(sample);
     });
 
-    it(`${categoryId}: still renders when ${field} is absent`, () => {
+    // Asserted against the DELIVERY path, not the strict one.
+    //
+    // This used to require that strict `renderTemplate` not throw when the
+    // field was absent, which in practice forced every optional detail into a
+    // `{{#if}}` block — and `{{#if}}` is exactly the form that renders '' and
+    // strips the fact with no error. The requirement was right ("a missing
+    // detail must not cost the message") and the mechanism was wrong.
+    //
+    // renderForDelivery now guarantees it directly: the variable is pre-filled
+    // with a visible placeholder, the message still goes out, and the omission
+    // is reported in degradedVars instead of being hidden.
+    it(`${categoryId}: still delivers when ${field} is absent, and reports it`, async () => {
       const t = inAppTemplate(categoryId);
       const vars = seedAll(t);
       delete vars[field]; // omit the optional field entirely
-      expect(() => renderTemplate(t, vars)).not.toThrow();
+      const r = await renderForDelivery(t, vars);
+      expect(r.fallbackUsed).toBe(false);
+      expect(r.body.length).toBeGreaterThan(0);
+      expect(r.degradedVars).toContain(field);
     });
   }
 });
