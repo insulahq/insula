@@ -99,16 +99,40 @@ api() {
 
 # ─── Resolve a target ────────────────────────────────────────────
 
-target_id=$(api GET "/admin/backup-configs" \
+# Resolution order matches integration-migration-e2e.sh:
+#
+#   1. the shim assignment for the `tenant` class — how the platform ACTUALLY
+#      routes tenant bundles since the 3-class shim landed;
+#   2. `active==true` on a backup config — the LEGACY path, kept only for
+#      clusters older than migration 0090.
+#
+# Order matters: `0090_retire_backup_target_activate.sql` sets `active = FALSE`
+# on every row, and activateBackupConfig/deactivateBackupConfig were removed on
+# 2026-08-26. So on any current cluster the legacy lookup finds nothing and
+# there is no supported way to make it find something — this suite hard-failed
+# with rc=2 telling the operator to "run /tenant-backup → Off-site Targets
+# first", which is advice for a UI control that no longer exists.
+target_id=$(api GET "/admin/backup-rclone-shim/assignments" \
   | python3 -c 'import json,sys
+d = json.load(sys.stdin).get("data") or {}
+a = next((x for x in (d.get("assignments") or []) if x.get("className") == "tenant"), None)
+print((a or {}).get("targetId") or "")' 2>/dev/null)
+if [[ -z "$target_id" || "$target_id" == "null" ]]; then
+  target_id=$(api GET "/admin/backup-configs" \
+    | python3 -c 'import json,sys
 d = json.load(sys.stdin).get("data", [])
-active = next((c for c in d if c.get("active")), None)
+active = next((c for c in d if c.get("active") or c.get("isActive")), None)
 print(active.get("id","") if active else "")' 2>/dev/null)
-if [[ -z "$target_id" ]]; then
-  fail "target: no active backup config — run /tenant-backup → Off-site Targets first"
-  exit 2
 fi
-ok "using target $target_id"
+if [[ -z "$target_id" || "$target_id" == "null" ]]; then
+  # No tenant-class binding is an UNRUNNABLE suite, not a failed one — the
+  # established convention for that is exit 77 (SKIP), as tier-flip and drain
+  # already do. rc=2 (require_env hard-fail) scored a missing optional
+  # dependency as a regression.
+  echo "  SKIP (77): no tenant-class shim binding and no active off-site target" >&2
+  exit 77
+fi
+ok "using target $target_id (tenant-class shim binding)"
 
 # ─── Pick (or create) a tenant with non-trivial state ────────────
 
