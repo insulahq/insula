@@ -17,7 +17,7 @@ import { apiFetch } from '@/lib/api-client';
 import type {
   DrRecoverRequest,
   DrRecoverResponse,
-  DrRecoverAllRequest,
+  DrRecoverAllRequestInput,
   DrRecoverAllResponse,
   RestoreJobDetail,
   RestoreJobStatus,
@@ -67,7 +67,7 @@ export function useRecoverTenantFromBundle() {
  */
 export function useDrRecoverAllPreview() {
   return useMutation({
-    mutationFn: (input: Omit<DrRecoverAllRequest, 'dryRun'>) =>
+    mutationFn: (input: Omit<DrRecoverAllRequestInput, 'dryRun'>) =>
       apiFetch<DrRecoverAllEnvelope>('/api/v1/admin/dr/tenants/recover-all', {
         method: 'POST',
         body: JSON.stringify({ ...input, dryRun: true }),
@@ -82,7 +82,7 @@ export function useDrRecoverAllPreview() {
 export function useDrRecoverAll() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (input: Omit<DrRecoverAllRequest, 'dryRun'>) =>
+    mutationFn: (input: Omit<DrRecoverAllRequestInput, 'dryRun'>) =>
       apiFetch<DrRecoverAllEnvelope>('/api/v1/admin/dr/tenants/recover-all', {
         method: 'POST',
         body: JSON.stringify({ ...input, dryRun: false }),

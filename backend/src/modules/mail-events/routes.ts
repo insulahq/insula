@@ -19,6 +19,10 @@
  */
 
 import { z } from 'zod';
+import { dmarcDomainSummaries, dmarcSourcesForDomain, DMARC_WINDOW_DAYS } from './dmarc-summary.js';
+import { DMARC_LOCAL_PART } from './report-intake-reconciler.js';
+import { dmarcSourcesQuerySchema, type DmarcOverview } from '@insula/api-contracts';
+
 import type { FastifyInstance } from 'fastify';
 import { authenticate, requireRole, requireTenantAccess } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
@@ -85,6 +89,13 @@ export async function mailEventsWebhookRoutes(app: FastifyInstance): Promise<voi
   });
 }
 
+// Window only — the domain list is not filterable here on purpose: an
+// operator looking at DMARC wants the whole estate, and a filtered view that
+// hides a failing domain is the wrong default.
+const dmarcOverviewQuerySchema = z.object({
+  windowDays: z.coerce.number().int().min(1).max(365).optional(),
+});
+
 const complaintQuerySchema = z.object({
   tenantId: z.string().uuid().optional(),
   domain: z.string().min(1).max(255).optional(),
@@ -116,6 +127,42 @@ export async function mailComplaintRoutes(app: FastifyInstance): Promise<void> {
 
   // GET /api/v1/admin/mail/overview — Monitoring -> Mail tab aggregate
   // (send totals, top senders, live queue, protection mode).
+  // ── ROADMAP R5: DMARC aggregate reports ──────────────────────────────
+  //
+  // Read-only. Nothing here rewrites a published DMARC policy — the
+  // recommendation is for an operator to act on, because `p=reject` on a
+  // domain with one legitimate unaligned sender stops that sender's mail
+  // immediately rather than degrading.
+  app.get('/admin/mail/dmarc', async (request) => {
+    const q = dmarcOverviewQuerySchema.safeParse(request.query ?? {});
+    const windowDays = q.success ? (q.data.windowDays ?? DMARC_WINDOW_DAYS) : DMARC_WINDOW_DAYS;
+    const domains = await dmarcDomainSummaries(app.db, { windowDays });
+    const overview: DmarcOverview = {
+      windowDays,
+      domains,
+      intakeLocalPart: DMARC_LOCAL_PART,
+    };
+    return success(overview);
+  });
+
+  app.get('/admin/mail/dmarc/sources', async (request) => {
+    const parsed = dmarcSourcesQuerySchema.safeParse(request.query ?? {});
+    if (!parsed.success) {
+      const first = parsed.error.issues[0];
+      throw new ApiError(
+        'INVALID_FIELD_VALUE',
+        `Validation error: ${first.message} (${first.path.join('.')})`,
+        400,
+        { field: first.path.join('.') },
+      );
+    }
+    const sources = await dmarcSourcesForDomain(app.db, parsed.data.domain, {
+      windowDays: parsed.data.windowDays,
+      limit: parsed.data.limit,
+    });
+    return success(sources);
+  });
+
   app.get('/admin/mail/overview', async () => {
     return success(await getMailOverview(app.db));
   });

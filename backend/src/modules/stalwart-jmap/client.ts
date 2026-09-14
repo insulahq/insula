@@ -719,6 +719,129 @@ export async function arfExternalReportDestroy(params: {
   );
 }
 
+// ── DMARC aggregate reports (x:DmarcExternalReport/*) ───────────────────────
+//
+// Stalwart's report-analysis does the whole RFC 7489 job for us: it intercepts
+// mail to the configured report addresses, un-gzips the attachment, parses the
+// aggregate XML, and stores a typed registry object. The platform never sees
+// the XML. Confirmed against a live server on 2026-09-13 by delivering a real
+// aggregate report and reading the object back — `x:DmarcReport` and
+// `x:IncomingReport` return `unknownMethod` on the same server, so the types
+// below are the real ones rather than a catch-all responding to anything.
+//
+// TWO SHAPE DETAILS THAT A PARSER WRITTEN FROM THE RFC WOULD GET WRONG, both
+// observed on the wire:
+//
+//   1. `records`, `dkimResults`, `spfResults` and `errors` are OBJECTS KEYED BY
+//      DECIMAL-STRING INDEX (`{"0": …, "1": …}`), not arrays. `.map()` over
+//      them yields nothing and silently reports zero messages.
+//   2. Result values are camelCase — SPF softfail arrives as `softFail`, not
+//      the RFC's `softfail`. A lowercase comparison misses it, and a missed
+//      softfail counts as neither pass nor fail.
+//
+// Retention is Stalwart's default 30d (`expiresAt`), but the platform destroys
+// each object once persisted, exactly as it does for ARF.
+
+/** One DKIM or SPF auth result inside a report record. */
+export interface StalwartDmarcAuthResult {
+  readonly domain?: string | null;
+  readonly selector?: string | null;
+  readonly scope?: string | null;
+  /** camelCase on the wire: `pass` | `fail` | `softFail` | `temperror` | … */
+  readonly result?: string | null;
+  readonly humanResult?: string | null;
+}
+
+/** One row of the aggregate report — a source IP and its message counts. */
+export interface StalwartDmarcRecord {
+  readonly sourceIp?: string | null;
+  readonly count?: number;
+  readonly evaluatedDisposition?: string | null;
+  readonly evaluatedDkim?: string | null;
+  readonly evaluatedSpf?: string | null;
+  readonly policyOverrideReasons?: Record<string, unknown>;
+  readonly envelopeTo?: string | null;
+  readonly envelopeFrom?: string | null;
+  readonly headerFrom?: string | null;
+  /** Index-keyed, not an array. */
+  readonly dkimResults?: Record<string, StalwartDmarcAuthResult>;
+  /** Index-keyed, not an array. */
+  readonly spfResults?: Record<string, StalwartDmarcAuthResult>;
+}
+
+export interface StalwartDmarcReportRow {
+  readonly id: string;
+  readonly from?: string;
+  readonly subject?: string;
+  readonly to?: Record<string, boolean>;
+  readonly receivedAt?: string;
+  readonly expiresAt?: string;
+  readonly report?: {
+    readonly orgName?: string | null;
+    readonly email?: string | null;
+    readonly extraContactInfo?: string | null;
+    readonly reportId?: string | null;
+    readonly dateRangeBegin?: string | null;
+    readonly dateRangeEnd?: string | null;
+    /** The domain the policy was published for — the attribution key. */
+    readonly policyDomain?: string | null;
+    readonly policyAdkim?: string | null;
+    readonly policyAspf?: string | null;
+    readonly policyDisposition?: string | null;
+    readonly policySubdomainDisposition?: string | null;
+    readonly policyTestingMode?: boolean;
+    /** Index-keyed, not an array. */
+    readonly records?: Record<string, StalwartDmarcRecord>;
+    readonly errors?: Record<string, unknown>;
+  };
+}
+
+interface XDmarcGetResponse {
+  readonly list?: readonly StalwartDmarcReportRow[];
+}
+
+/**
+ * List + fetch stored DMARC aggregate reports.
+ *
+ * Capped at 200 per poll for the same reason as ARF: a large backlog should
+ * drain across ticks rather than produce one unbounded fetch + insert loop.
+ * An aggregate report can carry thousands of records, so the per-report cost
+ * here is higher than for ARF and the cap matters more.
+ */
+export async function dmarcExternalReportList(params: {
+  baseUrl?: string;
+  env?: NodeJS.ProcessEnv;
+} = {}): Promise<readonly StalwartDmarcReportRow[]> {
+  const { baseUrl, env } = params;
+  const auth = adminBasicAuth(env);
+  const req: JmapRequest = {
+    using: [JMAP_CORE, JMAP_STALWART],
+    methodCalls: [
+      ['x:DmarcExternalReport/query', { limit: 200 }, 'q'],
+      ['x:DmarcExternalReport/get', {
+        '#ids': { resultOf: 'q', name: 'x:DmarcExternalReport/query', path: '/ids' },
+      }, 'g'],
+    ],
+  };
+  const res = await jmapPost(baseUrl ?? STALWART_MGMT_URL, auth, req);
+  const get = extractResponse<XDmarcGetResponse>(res, 'x:DmarcExternalReport/get', 'g');
+  return get.list ?? [];
+}
+
+export async function dmarcExternalReportDestroy(params: {
+  ids: readonly string[];
+  baseUrl?: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<JmapSetResponse<{ id: string }>> {
+  const { ids, baseUrl, env } = params;
+  return _xCall<JmapSetResponse<{ id: string }>>(
+    JMAP_STALWART,
+    'x:DmarcExternalReport/set',
+    { destroy: ids },
+    baseUrl, env,
+  );
+}
+
 /** One page of `x:SpamTrainingSample` destroys for a single principal. */
 export interface SpamTrainingSamplePage {
   /** Sample ids actually destroyed in this page. */

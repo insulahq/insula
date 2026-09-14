@@ -1,4 +1,7 @@
 import { eq } from 'drizzle-orm';
+// R5: one constant for the report address, so the published `rua=` and the
+// mailbox the reconciler creates cannot drift apart.
+import { DMARC_LOCAL_PART as DMARC_REPORT_LOCAL_PART } from '../mail-events/report-intake-reconciler.js';
 import crypto from 'crypto';
 import { dnsRecords, emailDomains, domains } from '../../db/schema.js';
 import { getActiveServersForDomain, getProviderForServer } from '../dns-servers/service.js';
@@ -263,8 +266,9 @@ function buildBaseRecords(
     },
     // DKIM TXT — only when a selector is actually provided. Since M13
     // the enable flow passes dkimSelector='' (Stalwart owns key
-    // generation; dns-sync publishes the real selector records from
-    // Stalwart's zone expectation), which used to produce a junk
+    // generation; the real selector record is published inline by
+    // `upsertDkimTxtRecord` from the enable flow, rotation and drift
+    // repair — there is no background reconcile), which used to produce a junk
     // "._domainkey.<domain>" row with an empty selector on every
     // email-domain enable. Rotation inserts its own record directly.
     ...(dkimSelector
@@ -277,10 +281,48 @@ function buildBaseRecords(
           purpose: 'dkim' as const,
         }]
       : []),
+    // ROADMAP R5. The `rua=` address MUST be a real principal and MUST be in
+    // this same domain.
+    //
+    // It used to be `dmarc-reports@<domain>` — an address nothing in the
+    // platform ever created. Stalwart does not bypass RCPT validation for
+    // report addresses, so every aggregate report any receiver sent was
+    // refused with `550 5.1.2 Mailbox does not exist` and silently discarded.
+    // Confirmed on DEV 2026-09-13: the record was published, the mailbox did
+    // not exist, and no report had ever been ingested.
+    //
+    // Same-domain rather than a central `dmarc@<apex>`: RFC 7489 §7.1 requires
+    // an authorisation record (`<domain>._report._dmarc.<apex> TXT v=DMARC1`)
+    // in the REPORTING domain's zone before a reporter will send cross-domain,
+    // and this builder writes into one zone only — `syncRecordToProviders` is
+    // scoped to this domainId. A cross-domain rua published without that record
+    // is one most reporters simply refuse, which would look identical to the
+    // bug being fixed. `report-intake-reconciler` creates the matching
+    // `dmarc@` mailbox for every enabled email domain.
     {
       recordType: 'TXT',
       recordName: `_dmarc.${domainName}`,
-      recordValue: `v=DMARC1; p=quarantine; rua=mailto:dmarc-reports@${domainName}`,
+      // p=none, NOT p=quarantine (changed 2026-09-14, operator decision).
+      //
+      // A newly-enabled domain has no evidence that its legitimate mail
+      // aligns. Publishing enforcement on day one spam-folders whatever does
+      // not — a CRM, a newsletter provider, a web form, the tenant's own
+      // office server — and it does so SILENTLY from the sender's side. The
+      // tenant finds out when a customer says the invoice never arrived.
+      //
+      // `p=none` is report-only: it protects nothing, but it collects the
+      // evidence. Until R5 the platform never ingested DMARC reports, so
+      // starting at `none` meant never learning when it was safe to tighten,
+      // and `quarantine` was the defensible default. That changed: reports are
+      // ingested now and Monitoring → Mail says when a domain is ready to move
+      // to quarantine and then reject (see mail-events/dmarc-policy.ts, which
+      // refuses to recommend a tightening while ANY source is still failing).
+      //
+      // This affects NEWLY provisioned records only. Domains already
+      // publishing p=quarantine keep it — silently loosening enforcement on a
+      // domain that is already enforcing would be a downgrade nobody asked
+      // for.
+      recordValue: `v=DMARC1; p=none; rua=mailto:${DMARC_REPORT_LOCAL_PART}@${domainName}`,
       ttl: 3600,
       priority: null,
       purpose: 'dmarc',

@@ -16,6 +16,34 @@ set -uo pipefail
 
 ADMIN_HOST="${ADMIN_HOST:?ADMIN_HOST required}"
 TENANT_HOST="${TENANT_HOST:-}"
+
+# Accept BOTH conventions for these variables.
+#
+# This script builds `https://$ADMIN_HOST…`, i.e. it wants a bare hostname. The
+# rest of the harness — and scripts/integration.env — sets ADMIN_HOST to a full
+# URL (`https://admin.<apex>`). Run through integration-all.sh this produced
+# `https://https://admin.<apex>/…`, so every probe came back HTTP 000 and the
+# whole suite reported red without a single request leaving the machine:
+#
+#     FAIL  GET /api/v1/.env (930130)   HTTP 000 (wanted ^403$)
+#
+# 000 is "no connection", never a WAF verdict — a suite that reports it for
+# every row is not testing anything. Normalising here keeps both the standalone
+# usage in the header comment and the aggregate runner working.
+strip_scheme() { local v="${1#http://}"; v="${v#https://}"; printf '%s' "${v%%/*}"; }
+ADMIN_HOST="$(strip_scheme "$ADMIN_HOST")"
+[ -n "$TENANT_HOST" ] && TENANT_HOST="$(strip_scheme "$TENANT_HOST")"
+
+# A WAF suite cannot observe a block while this runner is CrowdSec-allowlisted:
+# the allowlist suppresses WAF enforcement, so every block reads as a
+# pass-through (401 instead of 403). Standalone copy of
+# lib/integration-env.sh:skip_if_runner_allowlisted — this script deliberately
+# does not source that library.
+if [ "${INTEGRATION_RUNNER_ALLOWLISTED:-0}" = "1" ]; then
+  echo "SKIP: waf-api-scope cannot run while this runner is CrowdSec-allowlisted." >&2
+  echo "      Re-run with INTEGRATION_SELF_BAN_GUARD=0 to exercise the WAF." >&2
+  exit "${INTEGRATION_SKIP_RC:-77}"
+fi
 MODE="${1:---report}"
 NIL=00000000-0000-0000-0000-000000000000
 

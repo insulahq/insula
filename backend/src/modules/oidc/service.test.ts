@@ -265,3 +265,30 @@ describe('findOrCreateOidcUser', () => {
     expect(result.panel).toBe('tenant');
   });
 });
+
+describe('saveGlobalSettings — tenant proxy toggle naming', () => {
+  // Three spellings reach the same column. The symmetric one was missing and
+  // silently did nothing; anyone who wrote it got a 200 and no change.
+  it('accepts all three spellings for the tenant toggle', () => {
+    const resolve = (input: Record<string, boolean | undefined>) =>
+      input.protect_client_via_proxy ?? input.protect_tenant_via_proxy ?? input.proxy_protect_tenant;
+    expect(resolve({ protect_client_via_proxy: true })).toBe(true);
+    expect(resolve({ protect_tenant_via_proxy: true })).toBe(true);
+    expect(resolve({ proxy_protect_tenant: true })).toBe(true);
+    expect(resolve({})).toBeUndefined();
+  });
+
+  it('prefers protect_client_via_proxy when more than one is present', () => {
+    const resolve = (input: Record<string, boolean | undefined>) =>
+      input.protect_client_via_proxy ?? input.protect_tenant_via_proxy ?? input.proxy_protect_tenant;
+    expect(resolve({ protect_client_via_proxy: false, protect_tenant_via_proxy: true })).toBe(false);
+  });
+
+  it('treats an explicit false as a value, not as absent', () => {
+    // `??` and not `||` — `|| ` would turn "turn tenant protection OFF" into
+    // "fall through to the next spelling", i.e. silently ignore the request.
+    const resolve = (input: Record<string, boolean | undefined>) =>
+      input.protect_client_via_proxy ?? input.protect_tenant_via_proxy ?? input.proxy_protect_tenant;
+    expect(resolve({ protect_client_via_proxy: false })).toBe(false);
+  });
+});

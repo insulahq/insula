@@ -65,8 +65,11 @@ describe('email-dkim/rotate: planDkimRotation', () => {
 
   it('legacy domain (null active selector) targets dkim-1 and does NOT sweep the auto signature', () => {
     // The Stalwart auto row may be the ONLY active signer — destroying
-    // it would break verification of in-flight mail (its TXT gets
-    // pruned by dns-sync once the signature disappears).
+    // it would break verification of in-flight mail. NOTE: its TXT is NOT
+    // pruned automatically — there is no background DNS reconcile, so a
+    // superseded selector's TXT stays published until removed by hand. Extra
+    // DKIM TXT records are harmless to delivery (receivers select by the
+    // signature's s= tag), just untidy.
     const rows = [
       row('auto-rsa', 'd1', 'v1-rsa-20260101'),
       row('auto-ed', 'd1', 'v1-ed25519-20260101', 'Dkim1Ed25519Sha256'),

@@ -145,8 +145,34 @@ const STALWART_EXTERNAL_IPS_PATCH = applyPatch(
 // Mail ports that Stalwart binds via hostPort in 'thisNodeOnly' mode.
 const MAIL_HOST_PORTS = [25, 465, 587, 143, 993, 995, 4190] as const;
 
+/** Default settle window after de-labelling haproxy nodes. See `settleMs`. */
+export const HAPROXY_SETTLE_MS = 5_000;
+
 export interface PortExposureOptions {
   readonly kubeconfigPath: string | undefined;
+  /**
+   * How long to wait after de-labelling haproxy nodes, so the kubelet can evict
+   * the de-selected pod and release hostPort 25 before Stalwart's pod schedules
+   * onto it. Defaults to `HAPROXY_SETTLE_MS`.
+   *
+   * Exposed because it is a REAL wall-clock sleep. Unit tests drive this code
+   * against mocked API clients where no kubelet exists and nothing can be
+   * racing, yet each such test still burned the full 5s — five of them in
+   * port-exposure.test.ts, 25s of a 66s file. Under a loaded worker pool that
+   * pushed individual tests past the 15s timeout, and a timed-out test's
+   * orphaned continuation then landed its Deployment patch inside the NEXT
+   * test ("expected 1 call, got 2"). Do not lower it in production: the race it
+   * prevents is FailedScheduling("didn't have free ports"), which stalls the
+   * rollout wait for its full 90s budget.
+   */
+  readonly settleMs?: number;
+  /**
+   * Poll interval for the post-patch rollout wait (default: rollout-wait.ts's
+   * own 2s). Same reasoning as `settleMs` — the one test that must observe the
+   * loop ITERATE (it asserts the haproxy DS is created only after the rollout
+   * settles) otherwise spends 4 real seconds doing it.
+   */
+  readonly rolloutPollIntervalMs?: number;
 }
 
 interface K8sAppsBundle {
@@ -566,7 +592,7 @@ async function applyModeToClusterUnlocked(
     // budget. Without this delay the next addHostPortsToDeployment ->
     // scheduler race hits FailedScheduling("didn't have free ports")
     // and waitForStalwartRollout times out at 90s.
-    await sleepMs(5_000);
+    await sleepMs(opts.settleMs ?? HAPROXY_SETTLE_MS);
   }
 
   // Step 2: SSA Stalwart hostPorts + wait rollout.
@@ -577,7 +603,7 @@ async function applyModeToClusterUnlocked(
       text: 'Ensuring Stalwart Deployment binds host ports on active node',
     });
   }
-  await addHostPortsToDeployment(apps);
+  await addHostPortsToDeployment(apps, opts);
 
   if (onProgress) {
     await onProgress({
@@ -728,6 +754,7 @@ async function reconcileMailServiceExternalIPsByName(
  */
 async function addHostPortsToDeployment(
   apps: import('@kubernetes/client-node').AppsV1Api,
+  opts: PortExposureOptions = { kubeconfigPath: undefined },
 ): Promise<void> {
   const mailPortSpecs: Array<{ name: string; containerPort: number }> = [
     { name: 'smtp', containerPort: 25 },
@@ -785,7 +812,10 @@ async function addHostPortsToDeployment(
   // pod restart + local-path PVC re-attach + restore-state init.
   // Follow-up: short-circuit when the apiserver returned the same
   // metadata.resourceVersion (no diff applied) to skip the wait.
-  await waitForStalwartRollout(apps);
+  await waitForStalwartRollout(
+    apps,
+    opts.rolloutPollIntervalMs != null ? { pollIntervalMs: opts.rolloutPollIntervalMs } : {},
+  );
 }
 
 function sleepMs(ms: number): Promise<void> {

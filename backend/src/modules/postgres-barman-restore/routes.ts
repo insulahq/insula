@@ -1,6 +1,8 @@
 import type { FastifyInstance } from 'fastify';
+import { barmanRestoreRequestSchema, barmanPromoteRequestSchema } from '@insula/api-contracts';
 import { authenticate, requireRole, requirePanel } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
+import { parseBody } from '../../shared/validate-body.js';
 import { ApiError } from '../../shared/errors.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import {
@@ -53,13 +55,7 @@ export async function postgresBarmanRestoreRoutes(app: FastifyInstance): Promise
       },
     },
   }, async (request, reply) => {
-    const body = request.body as {
-      namespace: string;
-      sourceClusterName: string;
-      newClusterName: string;
-      recoveryTargetTime?: string;
-      instances?: number;
-    };
+    const body = parseBody(barmanRestoreRequestSchema, request.body);
     const kc = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
     const k8s = createK8sClients(kc);
     let result;
@@ -180,7 +176,7 @@ export async function postgresBarmanRestoreRoutes(app: FastifyInstance): Promise
     },
   }, async (request, reply) => {
     const p = request.params as { namespace: string; newClusterName: string };
-    const body = request.body as { sourceClusterName: string; confirmSourceClusterName: string };
+    const body = parseBody(barmanPromoteRequestSchema, request.body);
     const kc = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
     const k8s = createK8sClients(kc);
     const actor = (request as unknown as { user?: { sub?: string } }).user;

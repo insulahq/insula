@@ -1,9 +1,11 @@
 import type { FastifyInstance } from 'fastify';
+import { bulkCronJobActionSchema } from '@insula/api-contracts';
 import { authenticate, requireRole, requireTenantAccess, requireTenantRoleByMethod } from '../../middleware/auth.js';
 import { createCronJobSchema, updateCronJobSchema } from './schema.js';
 import * as service from './service.js';
 import { bulkUpdateCronJobEnabled, bulkDeleteCronJobs } from './service.js';
 import { success, paginated } from '../../shared/response.js';
+import { parseBody } from '../../shared/validate-body.js';
 import { parsePaginationParams } from '../../shared/pagination.js';
 import { ApiError } from '../../shared/errors.js';
 
@@ -18,15 +20,7 @@ export async function cronJobRoutes(app: FastifyInstance): Promise<void> {
   app.post('/admin/cron-jobs/bulk', {
     onRequest: [authenticate, requireRole('super_admin', 'admin')],
   }, async (request) => {
-    const body = request.body as { cron_job_ids?: string[]; action?: string };
-
-    if (!Array.isArray(body.cron_job_ids) || !body.action) {
-      throw new ApiError('MISSING_REQUIRED_FIELD', 'cron_job_ids (array) and action are required', 400);
-    }
-
-    if (body.action !== 'enable' && body.action !== 'disable' && body.action !== 'delete') {
-      throw new ApiError('INVALID_FIELD_VALUE', "action must be 'enable', 'disable', or 'delete'", 400, { field: 'action' });
-    }
+    const body = parseBody(bulkCronJobActionSchema, request.body);
 
     if (body.action === 'enable') {
       const result = await bulkUpdateCronJobEnabled(app.db, body.cron_job_ids, true);

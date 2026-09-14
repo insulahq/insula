@@ -50,6 +50,17 @@ silently. The A/B pair removes that window at no extra cost.
   two `v=DKIM1` TXT records at one name is a verifier-dependent
   permfail, RFC 6376 §3.6.2.2), persist the flip.
 - **No retirement, ever.** Both TXT records are permanent zone fixtures.
+
+> **Correction (2026-09-14).** The phrase "its TXT stays published via the
+> dns-sync ownership model" above names a mechanism that never ran:
+> `stalwart-jmap/dns-sync.ts` was never wired into the application and has been
+> deleted (reconciling mail DNS from Stalwart's zone file would delete a
+> tenant's own apex MX or SPF include — the platform ships Mailgun/Postmark
+> relay adapters, so external senders are a supported configuration). The
+> DECISION here is unaffected: with no background reconcile, nothing prunes a
+> superseded selector's TXT, so "permanent zone fixtures" is what actually
+> happens. DKIM TXT records are published inline by `upsertDkimTxtRecord` from
+> the enable flow, rotation and drift repair.
   The `recommendedRetireOldAt` response field is gone.
 
 ## Consequences

@@ -26,6 +26,28 @@ ships with the source.
 |---|---|---|
 | `MISSING_REQUIRED_FIELD` | 400 | A required field is absent |
 | `INVALID_FIELD_FORMAT` / `INVALID_FIELD_VALUE` | 400 | A field doesn't match the schema |
+
+Validation errors name the field that was wrong, in both the message and an
+`error.details.field` property — including the index of the offending element
+for a list (`tenant_ids.2`) and the offending key itself when a request carries
+a field the endpoint does not accept.
+
+!!! note "Changed: a field the endpoint does not recognise is now an error"
+    A number of endpoints previously accepted the request, ignored any field
+    they did not recognise, and answered **200** — so a typo in a field name
+    looked like success while nothing had changed. Those endpoints now return
+    **400** naming the field instead.
+
+    If a script of yours starts receiving `400 INVALID_FIELD_VALUE` where it
+    used to get `200`, the field it names was never being applied: the call had
+    not been doing what it appeared to do. Correct the field name rather than
+    ignoring the error.
+
+    Affected: catalog badges, EOL-scanner settings, TLS settings, ingress
+    settings, tenant resource quotas, OIDC global settings, node recovery
+    actions, capacity checks, snapshot schedules, DNS record pull/push,
+    Postgres restore and promote, and the bulk actions for cron jobs, admin
+    users, tenants and domains.
 | `INVALID_PAGINATION_LIMIT` | 400 | `limit` must be 1–100 |
 
 ## Domains & provisioning

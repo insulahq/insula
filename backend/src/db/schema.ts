@@ -1626,6 +1626,67 @@ export const emailFblComplaints = pgTable('email_fbl_complaints', {
   index('email_fbl_complaints_received_idx').on(table.receivedAt),
 ]);
 
+// ROADMAP R5 (mig 0110): DMARC aggregate reports.
+//
+// Stalwart parses the RFC 7489 XML and hands us a typed object; these tables
+// hold the summary and the per-source breakdown. Counts are denormalised at
+// ingest — they never change once written, and recomputing them on read would
+// re-walk every source row for every page view.
+export const emailDmarcReports = pgTable('email_dmarc_reports', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  stalwartReportId: varchar('stalwart_report_id', { length: 64 }).notNull(),
+  tenantId: varchar('tenant_id', { length: 36 })
+    .references(() => tenants.id, { onDelete: 'set null' }),
+  emailDomainId: varchar('email_domain_id', { length: 36 })
+    .references(() => emailDomains.id, { onDelete: 'set null' }),
+  policyDomain: varchar('policy_domain', { length: 255 }),
+  orgName: varchar('org_name', { length: 255 }),
+  reporterEmail: varchar('reporter_email', { length: 320 }),
+  reportId: varchar('report_id', { length: 255 }),
+  dateRangeBegin: timestamp('date_range_begin', { withTimezone: true }),
+  dateRangeEnd: timestamp('date_range_end', { withTimezone: true }),
+  policyDisposition: varchar('policy_disposition', { length: 32 }),
+  policyAdkim: varchar('policy_adkim', { length: 16 }),
+  policyAspf: varchar('policy_aspf', { length: 16 }),
+  totalMessages: integer('total_messages').notNull().default(0),
+  passMessages: integer('pass_messages').notNull().default(0),
+  failMessages: integer('fail_messages').notNull().default(0),
+  dkimPassMessages: integer('dkim_pass_messages').notNull().default(0),
+  spfPassMessages: integer('spf_pass_messages').notNull().default(0),
+  quarantinedMessages: integer('quarantined_messages').notNull().default(0),
+  rejectedMessages: integer('rejected_messages').notNull().default(0),
+  receivedAt: timestamp('received_at', { withTimezone: true }).notNull(),
+  raw: jsonb('raw').$type<Record<string, unknown>>(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('email_dmarc_reports_report_unique').on(table.stalwartReportId),
+  index('email_dmarc_reports_tenant_idx').on(table.tenantId, table.receivedAt),
+  index('email_dmarc_reports_domain_idx').on(table.policyDomain, table.receivedAt),
+  index('email_dmarc_reports_received_idx').on(table.receivedAt),
+]);
+
+export const emailDmarcSources = pgTable('email_dmarc_sources', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  reportId: varchar('report_id', { length: 36 })
+    .notNull()
+    .references(() => emailDmarcReports.id, { onDelete: 'cascade' }),
+  tenantId: varchar('tenant_id', { length: 36 })
+    .references(() => tenants.id, { onDelete: 'set null' }),
+  policyDomain: varchar('policy_domain', { length: 255 }),
+  sourceIp: varchar('source_ip', { length: 64 }),
+  messageCount: integer('message_count').notNull().default(0),
+  evaluatedDkim: varchar('evaluated_dkim', { length: 16 }),
+  evaluatedSpf: varchar('evaluated_spf', { length: 16 }),
+  disposition: varchar('disposition', { length: 32 }),
+  headerFrom: varchar('header_from', { length: 255 }),
+  receivedAt: timestamp('received_at', { withTimezone: true }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('email_dmarc_sources_report_idx').on(table.reportId),
+  index('email_dmarc_sources_domain_idx').on(table.policyDomain, table.receivedAt),
+  index('email_dmarc_sources_tenant_idx').on(table.tenantId, table.receivedAt),
+]);
+
 // R4/R6 PR 4 (mig 0060): threshold-evaluator dedupe state.
 export const emailQuotaEvents = pgTable('email_quota_events', {
   tenantId: varchar('tenant_id', { length: 36 })

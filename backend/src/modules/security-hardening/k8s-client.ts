@@ -11,7 +11,7 @@
  * fake never pay the import cost.
  */
 
-import type { AppsV1Api, CoreV1Api, CustomObjectsApi, NetworkingV1Api } from '@kubernetes/client-node';
+import type { AppsV1Api, CoreV1Api, CustomObjectsApi, KubeConfig, NetworkingV1Api } from '@kubernetes/client-node';
 
 export const PROBE_NAMESPACE = 'platform-system';
 export const PROBE_CONFIGMAP_PREFIX = 'security-probe-';
@@ -22,6 +22,15 @@ export interface SecurityHardeningClients {
   readonly custom: CustomObjectsApi;
   readonly apps: AppsV1Api;
   readonly networking: NetworkingV1Api;
+  /**
+   * The KubeConfig itself, not just the typed API clients.
+   *
+   * `k8s.Exec` is constructed from a KubeConfig rather than from an Api
+   * client, and the database-isolation card reads its state by exec'ing psql
+   * in the CNPG primary. Previously this was built and thrown away here, so
+   * every caller that needed an Exec had to build a second one.
+   */
+  readonly kc: KubeConfig;
 }
 
 export interface LoadOptions {
@@ -43,6 +52,7 @@ export async function loadSecurityHardeningClients(
     custom: kc.makeApiClient(k8s.CustomObjectsApi),
     apps: kc.makeApiClient(k8s.AppsV1Api),
     networking: kc.makeApiClient(k8s.NetworkingV1Api),
+    kc,
   };
 }
 

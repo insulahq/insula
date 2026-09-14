@@ -90,7 +90,11 @@ The hard-won rules. Violating these is how past sessions broke things.
 - `npx` is broken in this environment (exits 216) — call `node_modules/.bin/<tool>` directly.
 - Inline shell inside **Flux-rendered YAML** must escape `${VAR}` as `$${VAR}` — `postBuild.substituteFrom`
   silently eats unescaped ones.
-- Email-domain TLDs are alpha-only (Zod 3.25 strictness) — keep test fixtures valid.
+- Email-domain TLDs are alpha-only (Zod strictness) — keep test fixtures valid.
+- **Zod is v4** (4.4.3). Note v4 removed `received` from the issue object — it survives
+  only inside the message text, so code that classifies "field absent" vs "field wrong"
+  must read the input at the issue path, not match the message. (This note previously
+  said 3.25; corrected 2026-09-13 while wiring R29a.)
 - Every script that writes to `/tmp` must `trap … EXIT` clean up — tmpfs leftovers pin node RAM.
 
 ### Cluster / infra invariants & safety

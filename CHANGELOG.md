@@ -12,6 +12,181 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **DMARC aggregate reports are now collected and shown.** Receivers like Gmail
+  and Outlook send a daily report saying how much of your mail passed
+  authentication and which servers sent it. The platform now ingests those,
+  shows a pass rate per domain under **Monitoring → Mail** — always alongside the
+  message count, because a pass rate without one is the number that gets acted on
+  when it shouldn't be — and lists the individual sending servers that are
+  failing, worst first.
+- **It also says when it is safe to tighten your DMARC policy**, and refuses to
+  say so early: not on a short history, not on thin traffic, and not while any
+  sending server is still failing — even when the overall percentage looks fine.
+  A low-volume but legitimate sender can fail every message it sends while the
+  average still looks healthy, and that sender is exactly who stops being
+  delivered when a policy is tightened. Nothing is changed automatically.
+- **The Banned IPs list now says who banned each address, in plain language.**
+  It previously printed CrowdSec's internal field: `cscli` for three different
+  things the platform does, and `crowdsec` for the platform's *own* detection —
+  which reads as some third-party product. Every row now carries one of
+  **Operator**, **Static list**, **Auto · WAF** (a ModSecurity rule was tripped)
+  or **Auto · Traffic** (the platform's own agent spotted the behaviour in the
+  ingress log). Both automatic engines are labelled; previously only one of them
+  was, so half the automatic bans looked like they had no explanation.
+- **One row per address, not one per detection.** A single scanner could occupy
+  seven rows that each looked like a separate incident and expired at different
+  times. Addresses are now grouped, the row shows when the address is actually
+  free again rather than when the first of several bans lapses, and clicking it
+  expands the individual detections. Unban acts on the whole group.
+- **Reasons are written out.** `crowdsecurity/http-sensitive-files` becomes
+  "Detect attempt to access sensitive files"; an automatic WAF ban becomes
+  "Tripped 4 WAF rules — 20 blocked requests" instead of a truncated string of
+  rule numbers. Where no description exists the raw name is still shown, because
+  a wrong explanation for a block is worse than none.
+- **A row that is blocking nothing says so.** Detections running in alert-only
+  mode were listed identically to enforced bans, so the table could report an
+  address as banned while it was not blocked at all. Those now read
+  **not enforced**.
+- **Traffic detection is now a settings page.** The 53 behaviour patterns the
+  agent watches for had no UI at all — no list, no descriptions, and no way to
+  stop one banning short of turning the whole feed off. They are now listed with
+  what each detects, how much traffic it has seen, how many alerts it raised, and
+  a per-pattern switch between **Bans** and **Alert only**. The log sources the
+  agent reads are shown alongside, because patterns for log types this agent does
+  not read sit at zero and otherwise look broken.
+- **Every list on the Web Defense page is sortable** — banned addresses, WAF
+  events, the allowlist, auto-ban history, the calibration preview and the
+  community feed. Addresses sort numerically, so 9.x no longer lands after 10.x.
+- **A batch tenant recover now checks the encryption key before it starts, and
+  refuses when it does not match.** After a cluster loss you restore the platform
+  database from the old cluster — so every encrypted credential in it (backup
+  targets, registry pull tokens, provider secrets) is scrambled under the *old*
+  cluster's key. Bootstrap the rebuilt cluster with a fresh key instead of the
+  old one and none of it can be read. That used to be silent: each tenant
+  recover provisions a namespace, volume and quota *before* it needs a secret, so
+  fifty tenants meant fifty provisioned namespaces on the way to fifty identical
+  failures. **Preview** now reports whether this cluster can read its own stored
+  credentials, names the ones it cannot, and states the fix — re-bootstrap with
+  the source cluster's key from its secrets bundle. **Recover anyway** is still
+  available for an operator who intends to re-enter each credential by hand.
+  A cluster with nothing to test against is reported as *not verified* rather
+  than as a pass.
+
+### Changed
+- **A new email domain now starts at DMARC `p=none`, not `p=quarantine`.** The
+  platform used to publish enforcement on day one, before it had seen a single
+  message. Anything that does not align yet — a CRM, a newsletter provider, a
+  contact form, a tenant's own office server — goes to the recipient's spam
+  folder, and nothing tells the sender it is happening. `p=none` protects nothing
+  on its own, but it collects the reports that say when enforcing is safe, and
+  the platform now reads those reports and tells you when that is (above).
+  **Domains that already publish `p=quarantine` or `p=reject` keep it** — the
+  platform does not loosen enforcement you already have.
+- **The two automatic ban engines are now presented as two engines.** WAF
+  auto-ban and Traffic detection are grouped under one *Automatic bans* heading
+  that states both write to the same list and that turning one off does not
+  affect the other. The **Include tenant routes** scope switch, previously the
+  last checkbox in a dense grid, is now a labelled row of its own.
+
+### Fixed
+- **Traffic detection could be killed first when a node ran short of memory,
+  and nothing said so.** Every other host agent the platform runs — the security
+  probe, the firewall reconciler, the host-config reconcilers, the SFTP gateway
+  — is marked as node-critical, so the kubelet evicts them last. The CrowdSec
+  agent was not, so it was evicted *first*: exactly the moment a node is under
+  pressure is when it stopped watching the ingress log and stopped raising bans.
+  The failure is invisible from every angle an operator would check — ingress
+  keeps serving, every pod reads Running, and the Banned IPs list simply stops
+  growing. It is now node-critical like its siblings.
+- **A mail-drift repair no longer tells you to wait for something that never
+  happens.** After repairing a drifted mail domain the platform reported that
+  DNS "updates automatically on the next reconcile tick". There is no reconcile
+  tick. In the normal case this was merely misleading — the DKIM record is
+  published immediately as part of the repair — but when that step could not
+  complete, the message told you to do nothing at exactly the moment you needed
+  to republish the record yourself. It now says which of the two happened.
+- **DMARC reports were being thrown away by the receiving mail server.** Every
+  domain published a `rua=` address of `dmarc-reports@<domain>` — an address the
+  platform never created. Mail to an address with no mailbox is refused outright,
+  so every report any receiver ever sent was rejected and lost, and nothing
+  reported it. The published address is now `dmarc@<domain>`, and that mailbox is
+  created automatically for every domain with email enabled.
+- **A wrong field in an API request is now an error instead of a silent no-op.**
+  Nineteen endpoints read the request body without checking it, so a misspelled
+  or wrongly-typed field was not rejected — the endpoint skipped whatever that
+  field controlled and still answered "OK". That is how a node-storage change
+  could report success while changing nothing. Those endpoints now validate, and
+  say which field was wrong. Affected: catalog badges, EOL-scanner settings, TLS
+  settings, ingress settings, tenant resource quotas, OIDC global settings, node
+  recovery actions, capacity checks, snapshot schedules, DNS record pull/push,
+  Postgres restore + promote, and the bulk actions for cron jobs, admin users,
+  tenants and domains.
+- **Fixed the OIDC "protect via proxy" toggles before they could break.** The
+  shared schema for that endpoint named a database column rather than the fields
+  the admin panel sends. Validating against it as written would have accepted the
+  form, discarded both toggles, and reported success — so the schema was
+  corrected first and pinned by tests.
+- **Fixed "back to automatic" for the ingress IPv4 override.** Clearing the field
+  is how an operator hands the address back to node discovery; the schema for that
+  endpoint rejected an empty value for IPv4 while allowing it for IPv6.
+- **A batch disaster recovery now tells you which tenants it cannot restore.**
+  The preview listed the tenants it would recover and silently dropped the rest,
+  so a tenant with no completed bundle looked identical to one that did not
+  exist — and if you named tenants explicitly, a name could come back in neither
+  list. Those tenants are now listed with the status of their most recent backup
+  attempt, so "partial, two days ago" is distinguishable from "never backed up".
+  The list stays on screen after the run as well, where "recovered 9 of 9" can
+  be true and still not the whole story.
+- **An empty recovery preview is no longer reported as good news by default.**
+  It showed a green "No lost tenants to recover — every tenant with a bundle is
+  accounted for" whenever the list was empty, including when it was empty
+  *because* nothing had a usable bundle. The most alarming case produced the
+  most reassuring screen.
+- **The recovery preview now shows how old each bundle is and what it contains**,
+  so a fleet-wide recovery can be judged before it starts rather than one failure
+  at a time.
+- **Tenants were shown as "Down" while their sites were serving normally.** On
+  production three of twelve clients carried a red *Down* chip on a cluster whose
+  only node was Ready and every site up. The availability check asked "is a
+  storage replica running for this tenant?", but Longhorn shuts every replica
+  process down when the last workload unmounts a volume — so any idle volume, on
+  any healthy cluster, answered no. A detached volume is now judged by where its
+  replicas *live*: it is only unreachable when every node holding one is offline.
+  A real node loss still reports exactly as before.
+- **A re-provisioned tenant kept a ghost volume that reported it as down
+  forever.** Re-provisioning leaves the previous storage volume behind, and it
+  keeps the original client and disk name recorded against it indefinitely — so
+  it is indistinguishable from the live one by name, and being permanently idle
+  it always looked like total data loss. Volumes that no longer belong to any
+  live disk claim are now ignored, because nothing they report describes the
+  client that is running today.
+- **Routine restarts no longer flash a red "Down" chip.** Client workloads are
+  replaced one-at-a-time-with-nothing-in-between, so for a few seconds after any
+  env-var edit, image update or node reboot the client legitimately has nothing
+  ready — which is the exact shape of a total outage. A workload is now given two
+  minutes to become ready before it counts as broken, and finished or evicted
+  pods are excluded from the judgement entirely: whether Kubernetes has swept up
+  a dead pod yet is not a fact about the client. *Down* now means precisely
+  "nothing is serving", and *Degraded* "some of it is".
+
+### Security
+- **Per-service database credentials no longer open a session against the
+  platform database.** Postgres grants `CONNECT` on every database to `PUBLIC`
+  unless it is explicitly revoked, and nothing revoked it — so the login roles
+  the platform creates for Roundcube and for the WAF's CrowdSec LAPI could each
+  authenticate into the `platform` database with their own credentials. No
+  tenant, user or billing data was ever readable that way (table privileges are
+  not granted to `PUBLIC`), but the per-database isolation the architecture
+  implies did not hold at the connection layer, and the role closest to
+  attacker-influenced input in the whole platform was one of the two. `CONNECT`
+  is now revoked from `PUBLIC` on every database and granted explicitly to each
+  owner, re-applied on boot and every five minutes so a database created later —
+  or restored from an older dump — cannot quietly reopen it. **Security →
+  Hardening** gains a card showing which databases are isolated, and names any
+  role that is connected but would be refused on its next reconnect. (ROADMAP
+  R36.)
+
 ## [2026.9.19] - 2026-09-12
 
 ### Fixed

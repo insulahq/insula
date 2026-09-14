@@ -12,32 +12,53 @@
 import { useState } from 'react';
 import {
   LifeBuoy, RefreshCw, Play, CheckCircle2, XCircle, Loader2, AlertTriangle,
+  KeyRound, ShieldAlert, HelpCircle,
 } from 'lucide-react';
 import { useDrRecoverAllPreview, useDrRecoverAll } from '@/hooks/use-dr-recover';
 import ErrorPanel from '@/components/ErrorPanel';
 import { extractOperatorError } from '@/lib/extract-operator-error';
-import type { DrRecoverAllTarget, DrRecoverAllResult } from '@insula/api-contracts';
+import type {
+  DrRecoverAllTarget, DrRecoverAllResult, DrRecoverAllSkipped, DrEncryptionKeyPreflight,
+} from '@insula/api-contracts';
 
 type Scope = 'missing' | 'all';
 
 export default function RecoverAllTab() {
   const [scope, setScope] = useState<Scope>('missing');
   const [confirming, setConfirming] = useState(false);
+  // R25 §4. Opting past the encryption-key refusal is a separate, deliberate
+  // act from confirming the recover — so it is a separate control, and it
+  // resets with every new preview rather than persisting across runs.
+  const [overrideKeyMismatch, setOverrideKeyMismatch] = useState(false);
   const preview = useDrRecoverAllPreview();
   const recover = useDrRecoverAll();
 
   const targets: readonly DrRecoverAllTarget[] = preview.data?.data.targets ?? [];
+  // R25 §3. Present on BOTH responses: the preview answers "what would happen",
+  // the run answers "what did". A tenant that was passed over matters equally
+  // in each, and reading it from only one leaves the other silently reassuring.
+  const skipped: readonly DrRecoverAllSkipped[] =
+    (recover.data?.data.skipped ?? preview.data?.data.skipped ?? []);
+  // `namespace_present` under scope=missing is the feature working as asked;
+  // only a missing/unusable bundle is something an operator must act on.
+  const unrecoverable = skipped.filter((s) => s.reason === 'no_completed_bundle');
   const results: readonly DrRecoverAllResult[] = recover.data?.data.results ?? [];
   const summary = recover.data?.data;
+  // Read from the run when there is one: a run started from a stale preview
+  // carries the verdict that actually applied.
+  const keyCheck: DrEncryptionKeyPreflight | undefined =
+    recover.data?.data.encryptionKey ?? preview.data?.data.encryptionKey;
+  const keyBlocked = keyCheck?.verdict === 'mismatch' && !overrideKeyMismatch;
 
   const runPreview = () => {
     setConfirming(false);
+    setOverrideKeyMismatch(false);
     recover.reset();
     preview.mutate({ scope });
   };
   const runRecover = () => {
     setConfirming(false);
-    recover.mutate({ scope });
+    recover.mutate({ scope, allowEncryptionKeyMismatch: overrideKeyMismatch });
   };
 
   return (
@@ -88,7 +109,7 @@ export default function RecoverAllTab() {
           {preview.isPending ? <Loader2 size={15} className="animate-spin" /> : <RefreshCw size={15} />}
           Preview lost tenants
         </button>
-        {preview.data && targets.length > 0 && !recover.data && (
+        {preview.data && targets.length > 0 && !recover.data && !keyBlocked && (
           confirming ? (
             <span className="inline-flex items-center gap-2 text-sm">
               <span className="text-gray-700 dark:text-gray-300">Recover {targets.length} tenant(s){scope === 'all' ? ' (incl. live)' : ''}?</span>
@@ -118,16 +139,43 @@ export default function RecoverAllTab() {
       {preview.isError && <ErrorPanel error={extractOperatorError(preview.error)} severity="error" onRetry={runPreview} />}
       {recover.isError && <ErrorPanel error={extractOperatorError(recover.error)} severity="error" />}
 
+      {/* R25 §4: can this cluster read its own encrypted credentials? Shown on
+          every preview and run — an operator cannot tell a check that passed
+          from one that never ran unless both say so. */}
+      {keyCheck && (
+        <EncryptionKeyPanel
+          check={keyCheck}
+          overridden={overrideKeyMismatch}
+          onOverride={setOverrideKeyMismatch}
+          canOverride={!recover.data}
+        />
+      )}
+
       {/* preview target set */}
       {preview.data && !recover.data && (
         targets.length === 0 ? (
-          <p className="rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800 dark:border-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-200">
-            No lost tenants to recover — every tenant with a bundle {scope === 'missing' ? 'has a live namespace.' : 'is accounted for.'}
-          </p>
+          // Only an all-clear when there is genuinely nothing to act on. With
+          // unrecoverable tenants present this used to render green and say
+          // "every tenant with a bundle is accounted for" — the tenants without
+          // a usable bundle were exactly the ones it was not counting.
+          unrecoverable.length > 0 ? (
+            <p className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-900/30 dark:text-amber-200">
+              Nothing can be recovered: {unrecoverable.length} tenant(s) have no completed bundle. See below.
+            </p>
+          ) : (
+            <p className="rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800 dark:border-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-200">
+              No lost tenants to recover — every tenant with a bundle {scope === 'missing' ? 'has a live namespace.' : 'is accounted for.'}
+            </p>
+          )
         ) : (
           <TargetTable rows={targets} />
         )
       )}
+
+      {/* R25 §3: tenants that will NOT be recovered, and why. Rendered whenever
+          the list is non-empty — including after a run, where "recovered 9/9"
+          is true and still not the whole answer. */}
+      {unrecoverable.length > 0 && <UnrecoverableTable rows={unrecoverable} />}
 
       {/* execution results */}
       {summary && (
@@ -145,13 +193,94 @@ export default function RecoverAllTab() {
   );
 }
 
+/**
+ * The encryption-key preflight (R25 §4).
+ *
+ * Three states, three different jobs:
+ *  - `mismatch` blocks, because every tenant recover provisions a namespace,
+ *    PVC and quota BEFORE it needs a secret — running anyway leaves a fleet of
+ *    empty tenants behind a failure that was knowable now.
+ *  - `unverified` is NOT a pass and does not read like one. Nothing was
+ *    testable, so nothing is claimed.
+ *  - `ok` is stated rather than left silent, and says what it does not cover.
+ */
+function EncryptionKeyPanel({ check, overridden, onOverride, canOverride }: {
+  check: DrEncryptionKeyPreflight;
+  overridden: boolean;
+  onOverride: (v: boolean) => void;
+  canOverride: boolean;
+}) {
+  if (check.verdict === 'ok') {
+    return (
+      <p className="flex items-start gap-2 rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800 dark:border-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-200">
+        <KeyRound size={15} className="mt-0.5 flex-shrink-0" />
+        <span>
+          <span className="font-medium">Encryption key verified</span> — {check.summary}
+        </span>
+      </p>
+    );
+  }
+
+  if (check.verdict === 'unverified') {
+    return (
+      <p className="flex items-start gap-2 rounded-md border border-gray-200 bg-gray-50 p-3 text-sm text-gray-700 dark:border-gray-700 dark:bg-gray-800/50 dark:text-gray-300">
+        <HelpCircle size={15} className="mt-0.5 flex-shrink-0" />
+        <span>
+          <span className="font-medium">Encryption key not verified</span> — {check.summary}
+        </span>
+      </p>
+    );
+  }
+
+  const failing = check.probes.filter((p) => p.verdict === 'wrong_key');
+  return (
+    <div className="rounded-md border border-red-300 bg-red-50 p-3 dark:border-red-800 dark:bg-red-900/30">
+      <div className="flex items-start gap-2">
+        <ShieldAlert size={16} className="mt-0.5 flex-shrink-0 text-red-600 dark:text-red-400" />
+        <div className="space-y-2 text-sm">
+          <p className="font-medium text-red-900 dark:text-red-200">
+            This cluster cannot decrypt {check.failed} of {check.probed} stored credentials
+          </p>
+          <p className="text-red-800 dark:text-red-300">{check.summary}</p>
+          {check.remedy && <p className="text-red-800 dark:text-red-300">{check.remedy}</p>}
+          {failing.length > 0 && (
+            <ul className="list-inside list-disc text-xs text-red-700 dark:text-red-400">
+              {failing.map((p) => (
+                <li key={`${p.source}:${p.ref}`}>
+                  {p.label ?? p.ref} <span className="opacity-70">({p.source.replace(/_/g, ' ')})</span>
+                </li>
+              ))}
+            </ul>
+          )}
+          {canOverride && (
+            <label className="flex items-start gap-2 pt-1 text-xs text-red-900 dark:text-red-200">
+              <input
+                type="checkbox"
+                checked={overridden}
+                onChange={(e) => onOverride(e.target.checked)}
+                className="mt-0.5"
+              />
+              <span>
+                Recover anyway. Every credential listed above must then be re-entered by hand,
+                and private-image workloads will not pull until it is done.
+              </span>
+            </label>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function TargetTable({ rows }: { rows: readonly DrRecoverAllTarget[] }) {
   return (
     <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700">
       <table className="w-full text-sm">
         <thead>
           <tr className="border-b border-gray-200 text-left text-xs uppercase tracking-wide text-gray-500 dark:border-gray-700 dark:text-gray-400">
-            <th className="px-3 py-2">Tenant</th><th className="px-3 py-2">Bundle</th><th className="px-3 py-2">Namespace</th>
+            <th className="px-3 py-2">Tenant</th><th className="px-3 py-2">Bundle</th>
+            <th className="px-3 py-2">Age</th><th className="px-3 py-2">Components</th>
+            <th className="px-3 py-2">Namespace</th>
           </tr>
         </thead>
         <tbody>
@@ -160,9 +289,65 @@ function TargetTable({ rows }: { rows: readonly DrRecoverAllTarget[] }) {
               <td className="px-3 py-2 text-gray-900 dark:text-gray-100">{t.tenantName ?? <span className="font-mono text-xs">{t.tenantId.slice(0, 8)}…</span>}</td>
               <td className="px-3 py-2 font-mono text-xs text-gray-500 dark:text-gray-400">{t.bundleId.slice(0, 16)}…</td>
               <td className="px-3 py-2">
+                {t.bundleAgeDays === null
+                  ? <span className="text-gray-400 dark:text-gray-500">unknown</span>
+                  : (
+                    <span className={t.bundleAgeDays > 7 ? 'text-amber-700 dark:text-amber-300' : 'text-gray-600 dark:text-gray-300'}>
+                      {t.bundleAgeDays === 0 ? 'today' : `${t.bundleAgeDays}d old`}
+                    </span>
+                  )}
+              </td>
+              <td className="px-3 py-2 text-xs text-gray-600 dark:text-gray-300">
+                {t.components.length > 0
+                  ? t.components.join(', ')
+                  : <span className="text-amber-700 dark:text-amber-300">none</span>}
+              </td>
+              <td className="px-3 py-2">
                 {t.namespacePresent
                   ? <span className="text-amber-700 dark:text-amber-300">present (live)</span>
                   : <span className="text-gray-500 dark:text-gray-400">absent (lost)</span>}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/**
+ * Tenants a batch recover will not touch because there is nothing to restore.
+ *
+ * Deliberately its own table rather than a row style in the target list: these
+ * are not degraded targets, they are tenants the operation cannot help, and
+ * mixing them in is how a "12 of 15" gets read as "12 of 12".
+ */
+function UnrecoverableTable({ rows }: { rows: readonly DrRecoverAllSkipped[] }) {
+  return (
+    <div className="overflow-x-auto rounded-lg border border-amber-300 dark:border-amber-700" data-testid="dr-unrecoverable">
+      <div className="flex items-center gap-2 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-900 dark:bg-amber-900/30 dark:text-amber-200">
+        <AlertTriangle size={15} />
+        {rows.length} tenant(s) cannot be recovered — no completed bundle
+      </div>
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b border-amber-200 text-left text-xs uppercase tracking-wide text-amber-800 dark:border-amber-800 dark:text-amber-300">
+            <th className="px-3 py-2">Tenant</th><th className="px-3 py-2">Newest bundle</th><th className="px-3 py-2">When</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.tenantId} className="border-b border-amber-100 dark:border-amber-800/50">
+              <td className="px-3 py-2 text-gray-900 dark:text-gray-100">
+                {r.tenantName ?? <span className="font-mono text-xs">{r.tenantId.slice(0, 8)}…</span>}
+              </td>
+              <td className="px-3 py-2">
+                {r.latestBundleStatus
+                  ? <span className="text-amber-700 dark:text-amber-300">{r.latestBundleStatus}</span>
+                  : <span className="text-red-600 dark:text-red-400">never backed up</span>}
+              </td>
+              <td className="px-3 py-2 text-xs text-gray-600 dark:text-gray-300">
+                {r.latestBundleAt ? new Date(r.latestBundleAt).toLocaleString() : '—'}
               </td>
             </tr>
           ))}

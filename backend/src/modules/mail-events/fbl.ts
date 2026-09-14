@@ -203,6 +203,14 @@ export function schedulePollSoon(
   if (pollTimer) return; // already scheduled
   pollTimer = setTimeout(() => {
     pollTimer = null;
+    // R5: an incoming-report.* event does not say WHICH report type arrived,
+    // so both pollers run. A DMARC report landing must not wait 5 minutes
+    // because the event looked like an ARF one.
+    void import('./dmarc.js').then(({ pollDmarcReports }) =>
+      pollDmarcReports(db, logger).catch((err) => {
+        logger.warn({ err }, 'dmarc poll (debounced) failed');
+      }),
+    ).catch(() => { /* module load failure is already fatal elsewhere */ });
     pollFblComplaints(db, logger).catch((err) => {
       logger.warn({ err }, 'fbl poll (webhook-triggered) failed');
     });
