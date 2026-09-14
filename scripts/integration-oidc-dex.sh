@@ -795,24 +795,48 @@ fi
 # so the EXIT trap always has restore_proxy_settings available — even if the
 # first curl errors and fail() increments the counter before we reach here.
 restore_proxy_settings() {
-  curl -sk --max-time 15 -X PUT "${AUTH_H[@]}" \
+  # The PUT's result is CHECKED, not discarded. It used to end in
+  # `>/dev/null 2>&1 || true`, so a restore that the API refused — a
+  # validation error, an expired token, NO_ADMIN_PROVIDER — left proxy
+  # protection ENABLED with nothing but the reachability probe below to hint
+  # at it. That turns a recoverable blip into a cluster-wide global that the
+  # runner's leak detector attributes to this suite and aborts the whole run
+  # on, which is exactly what happened on 2026-09-14.
+  local put_res
+  put_res=$(curl -sk --max-time 15 -X PUT "${AUTH_H[@]}" \
     -H "Content-Type: application/json" \
     -d "$(jq -nc \
       --argjson pa "$ORIG_PROTECT_ADMIN" \
       --argjson pt "$ORIG_PROTECT_TENANT" \
       --arg bgp "$ORIG_BG_PATH" \
       '{protect_admin_via_proxy:$pa, protect_tenant_via_proxy:$pt, break_glass_path:$bgp}')" \
-    "$ADMIN_HOST/api/v1/admin/oidc/settings" >/dev/null 2>&1 || true
-  # Post-restore reachability assertion — the panel MUST return 200
-  # after we restore. Was silently leaving 401 prior to 2026-05-16
-  # when a script errored before this trap could fire.
-  for _try in 1 2 3 4 5; do
+    "$ADMIN_HOST/api/v1/admin/oidc/settings" 2>/dev/null || echo '')
+  local put_err
+  put_err=$(printf '%s' "$put_res" | jq -r '.error.code // empty' 2>/dev/null || echo '')
+  if [[ -n "$put_err" ]]; then
+    printf '\033[31m✗\033[0m teardown: restore PUT REJECTED (%s) — proxy protection may still be ON\n' "$put_err" >&2
+  fi
+
+  # Post-restore reachability assertion — the panel MUST return 200 after we
+  # restore. Was silently leaving 401 prior to 2026-05-16 when a script errored
+  # before this trap could fire.
+  #
+  # The budget matches the ENABLE path's ${BG_RECONCILE_WAIT:-45}s, and for the
+  # same documented reason: "Traefik IngressRoute reconcile/propagation can
+  # exceed 15s on a multi-node cluster". Waiting 45s to put the gate UP and
+  # only 15s to take it DOWN meant a reconcile in the 15-45s band read as a
+  # permanent leak — the teardown warned, the runner's leak detector sampled
+  # immediately after and aborted the run, on a cluster that was seconds away
+  # from being fine.
+  local restore_wait="${BG_RECONCILE_WAIT:-45}"
+  for _try in $(seq 1 $((restore_wait / 3))); do
     code=$(curl -sk -o /dev/null -w "%{http_code}" --max-time 10 "${ADMIN_HOST}/" 2>/dev/null || echo "000")
     [[ "$code" == "200" ]] && break
     sleep 3
   done
   if [[ "$code" != "200" ]]; then
-    printf '\033[31m✗\033[0m teardown WARNING: admin panel returned %s after restore — manual intervention may be needed\n' "$code" >&2
+    printf '\033[31m✗\033[0m teardown WARNING: admin panel returned %s after restore + %ss reconcile wait — proxy protection is likely still ON.\n' "$code" "$restore_wait" >&2
+    printf '\033[31m✗\033[0m   recover with: PUT /api/v1/admin/oidc/settings {"protect_admin_via_proxy":false}\n' >&2
   fi
 }
 cleanup_bg_temp_provider() {
