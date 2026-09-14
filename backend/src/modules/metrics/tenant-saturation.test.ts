@@ -1,7 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const { notify } = vi.hoisted(() => ({ notify: vi.fn() }));
-vi.mock('../notifications/events.js', () => ({ notifyAdminTenantResourceSaturation: notify }));
+// BOTH audiences now. The tenant binding was the gap: the operator has always
+// been told a tenant is out of space, and the tenant — the only party who can
+// delete files or upgrade — was not.
+const notifyTenant = vi.fn(async () => undefined);
+vi.mock('../notifications/events.js', () => ({
+  notifyAdminTenantResourceSaturation: notify,
+  notifyTenantResourceSaturation: (...a: unknown[]) => notifyTenant(...(a as [])),
+}));
 
 import {
   saturationLevel,

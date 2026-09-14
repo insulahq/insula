@@ -61,7 +61,27 @@ export async function evaluateTenantSaturation(
     const level = saturationLevel(ratio, SATURATION_WARN, d.crit);
     if (!level) continue;
     try {
-      const { notifyAdminTenantResourceSaturation } = await import('../notifications/events.js');
+      const {
+        notifyAdminTenantResourceSaturation,
+        notifyTenantResourceSaturation,
+      } = await import('../notifications/events.js');
+      const occurredAt = new Date().toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
+      // BOTH audiences. The operator needs the fleet view; the tenant is the
+      // only party who can actually free space or upgrade, and was never told.
+      await notifyTenantResourceSaturation(
+        db,
+        tenantId,
+        level,
+        {
+          resource: d.resource,
+          usedPct: String(Math.round(ratio * 100)),
+          used: String(Math.round(d.inUse * 100) / 100),
+          limit: String(d.available),
+          unit: d.unit,
+          occurredAt,
+        },
+        `sat-tenant:${tenantId}:${d.resource}:${level}:${hourBucket}`,
+      );
       await notifyAdminTenantResourceSaturation(
         db,
         tenantId,
