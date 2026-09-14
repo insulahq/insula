@@ -302,7 +302,27 @@ function buildBaseRecords(
     {
       recordType: 'TXT',
       recordName: `_dmarc.${domainName}`,
-      recordValue: `v=DMARC1; p=quarantine; rua=mailto:${DMARC_REPORT_LOCAL_PART}@${domainName}`,
+      // p=none, NOT p=quarantine (changed 2026-09-14, operator decision).
+      //
+      // A newly-enabled domain has no evidence that its legitimate mail
+      // aligns. Publishing enforcement on day one spam-folders whatever does
+      // not — a CRM, a newsletter provider, a web form, the tenant's own
+      // office server — and it does so SILENTLY from the sender's side. The
+      // tenant finds out when a customer says the invoice never arrived.
+      //
+      // `p=none` is report-only: it protects nothing, but it collects the
+      // evidence. Until R5 the platform never ingested DMARC reports, so
+      // starting at `none` meant never learning when it was safe to tighten,
+      // and `quarantine` was the defensible default. That changed: reports are
+      // ingested now and Monitoring → Mail says when a domain is ready to move
+      // to quarantine and then reject (see mail-events/dmarc-policy.ts, which
+      // refuses to recommend a tightening while ANY source is still failing).
+      //
+      // This affects NEWLY provisioned records only. Domains already
+      // publishing p=quarantine keep it — silently loosening enforcement on a
+      // domain that is already enforcing would be a downgrade nobody asked
+      // for.
+      recordValue: `v=DMARC1; p=none; rua=mailto:${DMARC_REPORT_LOCAL_PART}@${domainName}`,
       ttl: 3600,
       priority: null,
       purpose: 'dmarc',
