@@ -1328,8 +1328,8 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
             app.log.warn({ err }, 'dmarc poll failed');
           });
           // R5. The generator fix only reaches domains provisioned AFTER it;
-          // the `_dmarc` record is written once at enable time and dns-sync
-          // deliberately leaves it alone. Without this, every already-enabled
+          // the `_dmarc` record is written once at enable time and nothing
+          // reconciles it afterwards. Without this, every already-enabled
           // domain keeps publishing a rua= address that cannot receive mail —
           // i.e. the whole installed base, and the feature delivers nothing to
           // any of it. A no-op once converged.
