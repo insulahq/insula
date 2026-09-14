@@ -203,6 +203,14 @@ Each domain shows:
 DMARC has three settings, from most to least permissive: `p=none` (report only),
 `p=quarantine` (spam-folder failures), `p=reject` (refuse failures outright).
 
+**New domains are published at `p=none`.** That is deliberate: on day one there
+is no evidence that your legitimate mail aligns, and enforcing before you know
+sends real mail to spam without telling the sender. `p=none` protects nothing
+yet — it collects the evidence that tells you when enforcing is safe.
+
+Domains that are already publishing `p=quarantine` or `p=reject` are left as
+they are; the platform will not loosen enforcement you already have.
+
 The platform will tell you when tightening looks safe, and deliberately holds
 back until it is: at least two weeks of reports, enough traffic to mean
 something, a high pass rate, **and no sending server still failing**. That last
