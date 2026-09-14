@@ -13,22 +13,23 @@
 
 ## 1. Evidence
 
-### 1.1 Delivery is failing at scale
+### 1.1 Delivery health — and a withdrawn claim
 
-All-time `notification_deliveries` on production:
+An earlier draft of this document reported email delivery as **57% failing**, citing 85
+dead-lettered rows labelled `no_default_notification_provider`. **That was wrong** — it read a
+lifetime counter as a current state.
 
-| channel | sent | dlq | skipped | failure rate |
-|---|---|---|---|---|
-| in_app | 180 | 0 | 0 | 0% |
-| email | 76 | 85 | 16 | **57%** |
-| ntfy | 94 | 0 | 0 | 0% |
+There **is** a default email provider (`is_default=t`, `enabled=t`, last test `success`). The
+last dead-letter was **2026-09-06**. Current window (since 2026-09-07):
 
-Two distinct causes:
+| channel | sent | dlq | skipped |
+|---|---|---|---|
+| in_app | 74 | 0 | 0 |
+| email | 65 | 0 | **9** |
+| ntfy | 74 | 0 | 0 |
 
-- **85 × `no_default_notification_provider`** — no default SMTP provider row exists, so
-  essentially every *admin* email notification has been dead-lettering since the provider
-  model shipped.
-- **16 × `render_failed`** — one missing Handlebars variable, below.
+The provider is not a defect and nothing in this plan is justified by it. What survives is the
+render failure — **9 skipped emails in the current window, still occurring today**.
 
 ### 1.2 One missing variable silently destroys a notification
 
@@ -169,6 +170,75 @@ ones an operator most needs to work on the day they finally fire.
 ---
 
 ## 2. Design
+
+### 2.0 The root cause: there is no routing policy
+
+**All 53 categories ship with all three channels enabled.** No exception. Only 14 carry any
+rate limit. Channel selection is 53 independent guesses, and the result is that everything is
+broadcast everywhere.
+
+Consequences, measured over 14 days:
+
+- **75% of all notification traffic is SLO alerts.** The single largest source is
+  `admin.slo_alert_resolved` at **130 deliveries** — each one emailed *and* pushed to say
+  something stopped being broken.
+- **ntfy is a single platform-wide operator broadcast topic**, emitted once per event with no
+  per-user leg (`dispatcher/dispatch.ts:225`). Because every tenant category has ntfy on,
+  **tenant billing events are pushed to the operator topic** — 10 `subscription.renewed`
+  pushes. Noise for the operator, and tenant data on a shared channel.
+
+Replace per-category guesswork with derivation from two declared properties.
+
+#### Axis 1 — Audience → available channels
+
+| audience | in_app | email | ntfy | direct mail |
+|---|---|---|---|---|
+| `platform_admin` | admin panel | staff address | operator topic | — |
+| `tenant_admin` | tenant panel | contact address | **barred** | — |
+| `mailbox_user` | *no account* | — | — | **to the mailbox** |
+
+Barring ntfy for tenant audiences removes an entire class of leak and noise in one line.
+
+#### Axis 2 — Class: why the recipient is being told
+
+Severity says how loud. **Class decides whether a message leaves the platform UI at all.**
+
+| class | meaning | default routing |
+|---|---|---|
+| **Ambient** | For the record, never actionable | **in-app only** — never email, never push |
+| **Record** | A durable receipt needed later | in-app + email; no push |
+| **Action** | Recipient must act or it degrades | in-app + email, escalating; push only at the final threshold; digest-eligible below it |
+| **Incident** | Broken now, someone must respond | all channels, immediately; never digested or rate-limited; bypasses quiet hours |
+| **Security** | Identity, access, account state | in-app + email, **mandatory** (cannot be muted); push for operators only |
+
+Two assignments alone remove most of the noise: `admin.slo_alert_resolved` becomes **Ambient**
+(-130 emails, -130 pushes per fortnight) and `tls.certificate_issued` becomes **Ambient**, so
+routine renewals stop mailing customers.
+
+#### Not every audience gets every event
+
+A mailbox at 90% is urgent to its owner, useful to the tenant admin, and **not the operator's
+business** until it is a fleet pattern:
+
+| audience | delivery | message |
+|---|---|---|
+| `mailbox_user` | direct mail | "Your mailbox `user@example.test` is 90% full (1350 of 1500 MB)…" |
+| `tenant_admin` | panel + email | "Hi Alex — mailbox `user@example.test` on Example Ltd is 90% full. Two others are above 80%." |
+| `platform_admin` | **nothing** | Only at 100%, or when the fleet count crosses its threshold — then **one aggregated** message naming every mailbox, tenant and contact |
+
+### 2.0.1 Configuration precedence — five layers, highest wins
+
+1. **Class default** — derived from (audience × class); correct for 53 of 53 on day one.
+2. **Platform policy** — operator retunes channels, rate limit, digest window, severity.
+3. **Tenant policy** — tenant admin routes billing vs technical vs security to different contacts.
+4. **User preference** — per-category, per-channel opt-out + quiet hours, bounded by `isMandatory`.
+5. **Object mute** — "mute this mailbox / domain / node for 7 days".
+
+Convenience mechanics: **digests** (Ambient + non-final Action roll into one daily summary),
+**aggregation** (repeats collapse — "3 mailboxes over quota across 2 tenants"), **quiet hours**
+(Incident and Security pass through), and **escalation** (an unacknowledged Action escalates a
+level, or to the platform admin when a tenant does not respond).
+
 
 ### 2.1 Three audiences, not two
 
@@ -332,12 +402,13 @@ never once rendered is how `nextBillingAt` survived to production.
 
 | phase | scope | outcome |
 |---|---|---|
-| **1 — stop the silence** | §2.3 robustness (non-throwing render, `degraded_vars`, CI contract guard, boot self-test, default provider self-heal) | no notification is ever lost to a missing variable again; 85 DLQ'd emails start flowing |
-| **2 — mailbox quota chain** | tenant_admin + mailbox_user recipients, 80/90/99/100, retire the SLO rule, admin mailbox-quota view | the reported bug is fixed end-to-end, with identity |
-| **3 — envelope + identity** | `NotificationEnvelope`, central population, contact name, real `platformName`, formatted dates; fix all 18 mismatches | every notification answers the five questions |
-| **4 — audience enforcement** | 3-way audience drives recipients + channels + content; per-audience templates | admin vs tenant vs mailbox differ in content *and* delivery |
-| **5 — UI surfaces** | admin inbox, tenant detail tab, tenant panel upgrades | notifications become navigable and actionable |
-| **6 — legacy retirement** | migrate 9 `notifyUser` call sites, delete `legacy.*`, triage 37 dead categories | one notification system, fully audited |
+| **1 — stop the silence** | non-throwing render, `degraded_vars`, CI variable-contract guard, boot self-test, envelope fallback | the 9 still-dropping emails stop; every later phase is safe to build on |
+| **2 — mailbox quota chain** | tenant-admin + mailbox recipients, 80/90/99/100, retire the SLO rule + global gauge, admin mailbox-quota view | the reported bug is closed end-to-end |
+| **3 — class + audience become real** | `class` field, three-way audience, channel derivation, ntfy barred for tenants, §3 assignment applied | the noise drops |
+| **4 — identity everywhere** | `NotificationEnvelope`, contact-name addressing, real `platformName`, localised dates, all 18 contract defects fixed | every notification answers the five questions |
+| **5 — convenience** | digests, aggregation, quiet hours, object mute, escalation, tenant contact routing | notifications become tunable instead of endurable |
+| **6 — surfaces** | admin inbox, tenant-detail notification tab, tenant panel upgrades | notifications become navigable and actionable |
+| **7 — retire the second system** | migrate 9 `notifyUser()` call sites, delete `legacy.*`, triage the 37 never-fired categories | one notification system, fully audited |
 
 ## 6. Guards this work must leave behind
 
