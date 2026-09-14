@@ -82,6 +82,12 @@ const STATIC_PATHS: Record<string, string> = {
   'mailbox.quota_threshold': '/email',
   'mailbox.quota_exceeded': '/email',
   'admin.mailbox_quota_fleet': '/tenants',
+  'admin.email_quota_exceeded': '/tenants',
+  'admin.subscriptions_expiring': '/tenants',
+  // The tenant lands on the page that shows the usage bars, not on a page
+  // about the concept of a limit.
+  'tenant.resource_saturation_warning': '/dashboard',
+  'tenant.resource_saturation_critical': '/dashboard',
   'tls.certificate_issued': '/domains',
   'tls.certificate_failed': '/domains',
   'tls.certificate_fallback': '/domains',

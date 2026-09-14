@@ -190,6 +190,19 @@ async function evaluateQuotaUsage(db: Database, logger: OutboundReconcileLogger)
         };
         if (highestNew.threshold >= 100) {
           await notifyTenantEmailQuotaExceeded(db, highestNew.tenantId, payload);
+          // The operator too, at 100% only. A tenant saturating the sending
+          // limit is the shape of both a compromised account and a
+          // platform-wide deliverability risk — and until now this event had
+          // exactly one audience, so nobody on the platform side ever heard.
+          const { notifyAdminEmailQuotaExceeded } = await import('../notifications/events.js');
+          await notifyAdminEmailQuotaExceeded(db, {
+            tenantLabel: highestNew.tenantId,
+            window: highestNew.window,
+            used: payload.used,
+            limit: payload.limit,
+            percent: payload.percent,
+            occurredAt: new Date().toISOString().slice(0, 16).replace('T', ' ') + ' UTC',
+          }, `email-quota-admin:${highestNew.tenantId}:${highestNew.window}:${new Date().toISOString().slice(0, 10)}`);
         } else {
           await notifyTenantEmailQuotaWarning(db, highestNew.tenantId, payload);
         }

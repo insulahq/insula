@@ -649,6 +649,79 @@ export async function notifyAdminSloAlertResolved(
 
 // ── R4/R6 PR 4: outbound-mail protection ───────────────────────────────────
 
+export interface AdminSubscriptionsExpiringPayload {
+  readonly tenantCount: string;
+  readonly horizonDays: string;
+  readonly tenantList: string;
+  readonly occurredAt: string;
+}
+/**
+ * Subscriptions approaching expiry, aggregated for the operator.
+ *
+ * The tenant-facing warning has existed since Phase 4; the operator, who has
+ * to chase the renewal, was never told at all. One notification per run rather
+ * than one per tenant per slot — the fleet view is a list, not a stream.
+ */
+export async function notifyAdminSubscriptionsExpiring(
+  db: Database,
+  payload: AdminSubscriptionsExpiringPayload,
+  dedupeKey?: string,
+): Promise<void> {
+  await dispatchSafe(db, 'admin.subscriptions_expiring', { kind: 'admin' }, payload, undefined, { dedupeKey });
+}
+
+export interface TenantResourceSaturationPayload {
+  readonly resource: string;
+  readonly usedPct: string;
+  readonly used: string;
+  readonly limit: string;
+  readonly unit: string;
+  readonly occurredAt: string;
+}
+/**
+ * A tenant resource crossed its warning or critical threshold.
+ *
+ * The operator has always been told (admin.tenant_resource_saturation_*). The
+ * TENANT — the only party who can delete files or upgrade the plan — was not,
+ * because the event was given exactly one audience when it was built. This is
+ * the other half.
+ */
+export async function notifyTenantResourceSaturation(
+  db: Database,
+  tenantId: string,
+  level: 'warning' | 'critical',
+  payload: TenantResourceSaturationPayload,
+  dedupeKey?: string,
+): Promise<void> {
+  const categoryId = level === 'critical'
+    ? 'tenant.resource_saturation_critical'
+    : 'tenant.resource_saturation_warning';
+  await dispatchSafe(db, categoryId, { kind: 'tenant', tenantId }, payload, tenantId, { dedupeKey });
+}
+
+export interface AdminEmailQuotaPayload {
+  readonly tenantLabel: string;
+  readonly window: string;
+  readonly used: string;
+  readonly limit: string;
+  readonly percent: string;
+  readonly occurredAt: string;
+}
+/**
+ * A tenant saturated its sending limit.
+ *
+ * The mirror image of the gap above: this event was built tenant-only, so the
+ * operator never learned that a tenant was hammering the limit — which is the
+ * shape of both a compromised account and a platform-wide deliverability risk.
+ */
+export async function notifyAdminEmailQuotaExceeded(
+  db: Database,
+  payload: AdminEmailQuotaPayload,
+  dedupeKey?: string,
+): Promise<void> {
+  await dispatchSafe(db, 'admin.email_quota_exceeded', { kind: 'admin' }, payload, undefined, { dedupeKey });
+}
+
 export interface MailboxQuotaPayload {
   readonly mailboxAddress: string;
   readonly tenantName: string;
