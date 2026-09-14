@@ -108,23 +108,30 @@ tenantName: null,                        // every {{tenantName}} renders '' unle
 - `platformName` is hardcoded in **4** places (`dispatch.ts` ×2, `channels/email.ts:65`,
   `lifecycle-hooks/notify-on-transition.ts:48`), so renaming the platform changes nothing.
 
-### 1.5 There are two parallel notification systems
+### 1.5 There are THREE parallel notification systems
 
-| | modern path | legacy path |
-|---|---|---|
-| entry point | `dispatchSafe()` → `emitEvent` | `notifyUser()` / `notifyUsers()` |
-| templates | yes, operator-editable | **no**, hardcoded English strings |
-| email / ntfy | yes | **no — in-app only** |
-| delivery audit | yes | **no rows written** |
-| preferences / rate limit | yes | **bypassed** |
+| | dispatcher | `notifyUser()` | **raw insert** |
+|---|---|---|---|
+| call sites | 53 categories | 9 | **15 modules** |
+| template | yes | no | no |
+| email / push | yes | **no** | **no** |
+| preferences / rate limit | yes | **no** | **no** |
+| delivery audit | yes | **no** | **no** |
+| appears in Sources UI | yes | as `legacy.*` | **no — category is NULL** |
 
-**67 of ~220** production in-app notifications are `legacy.*` (39 success, 23 info, 5 error)
-with **zero** delivery rows. The events on the legacy path are precisely the operational
-tenant-facing ones: IMAPSync completed/failed, email enabled for a domain, mailbox limit
-reached, DKIM rotated, and mailbox quota. **None of these has ever reached a tenant by email.**
+`notifications.category_id` is nullable with no default (`schema.ts:847`), so a raw
+`db.insert(notifications)` lands a row the dispatcher never sees. **Proven live:** the two
+"Domain not yet verified" rows on production carry `category_id = NULL`.
 
-Nine call sites still use it: `backup-health`, `cnpg-backup-health`, `backup-restore`,
-`eol-scanner` (×3), `mail-stats/quota-notifications`, plus four helpers inside `events.ts`.
+The third path carries the most consequential events on the platform — **cluster storage
+capacity** (80% warn / 95% critical, computed every 5 min across every Longhorn node), node
+subsystem health, node health, namespace-integrity violations, stuck PITR restores, image cache
+pressure, and the platform-upgrade `abort-recommended` signal. An operator learns their cluster
+is 95% full by happening to open the panel.
+
+**67 of ~220** in-app rows are `legacy.*` from the second path, with zero delivery rows. Those
+are the operational tenant-facing events — IMAPSync, email enabled for a domain, mailbox limit,
+DKIM rotation, mailbox quota. **None has ever reached a tenant by email.**
 
 ### 1.6 The mailbox quota chain has never fired
 
@@ -377,6 +384,100 @@ act; at 100% mail is already bouncing.
 
 ---
 
+### 2.0.3 Channels are declared objects
+
+ntfy leaked tenant billing events onto the operator topic because the channel had no properties
+of its own — it was a string in a per-category list, and the seed gave it to all 53. Adding
+Slack, SMS or webhooks to that model repeats the bug exactly. Each channel declares:
+
+- **audiences** — who may route through it at all
+- **addressing** — `per_user` | `per_tenant` | `broadcast`. *A broadcast channel may never carry
+  tenant-scoped content.* That one rule is the ntfy fix and pre-empts it for every shared Slack
+  channel or team webhook added later
+- **outOfBand** — whether it survives the platform being unreachable (what Availability routes on)
+- **dependsOn** — the subsystem the channel itself needs, which drives the survivability
+  exclusion automatically rather than from a hand-maintained list
+- **richness** — `full` | `short`; push and SMS need a truncated render, not a clipped email body
+
+| channel | audiences | addressing | out-of-band | depends on | richness |
+|---|---|---|---|---|---|
+| `in_app` | both | per_user | no | platform API + panel | full |
+| `email` | both | per_user | yes | mail subsystem | full |
+| `ntfy` | **platform_admin only** | **broadcast** | yes | external push | short |
+| `direct_mail` *(new)* | mailbox_user | per_user | yes | mail subsystem | full |
+| `webhook` *(future)* | both | per_tenant | yes | external HTTP | full |
+| `slack`/`teams` *(future)* | platform_admin | **broadcast** | yes | external HTTP | full |
+| `sms` *(future)* | both | per_user | yes | external gateway | **short** |
+
+Effective channels for a binding compose rather than being listed:
+
+```
+class defaults ∩ audience's allowed channels ∩ channels admitting that audience
+               − channels depending on the failing subsystem ∩ policy overrides
+```
+
+Adding a channel becomes one registry row, and no category can acquire a channel wrong for its
+audience — which is exactly how all 53 acquired ntfy.
+
+### 2.0.4 What isn't being said at all
+
+A sweep of all 125 backend modules and 76 schedulers/reconcilers, ordered by cost to fix.
+
+**A — detected, announced to nobody.** The condition is already computed and persisted; only the
+binding is missing.
+
+| event | detected by | proposed bindings |
+|---|---|---|
+| **Deployment crash-looping** (CrashLoopBackOff/OOMKilled/ImagePullBackOff) | `deployments/status-reconciler.ts` | tenant_admin Incident · platform_admin Action (aggregated) |
+| **Scheduled task failed** (records status + output) | `cron-jobs/scheduler.ts` | tenant_admin Action |
+| **Node terminal session opened** (privileged host shell) | `node-terminal/*` | platform_admin Security — every session |
+| **DNS apex drift** | `dns-apex-drift/scheduler.ts` | platform_admin Action |
+| **WAF autoban activity** | `crowdsec-autoban/scheduler.ts` | platform_admin Ambient — daily digest |
+| **Platform update available** | `platform-updates/*` | platform_admin Record |
+| **Tenant storage 90/95%** | `metrics/tenant-saturation.ts` | tenant_admin Action / Incident |
+| **Sending limit saturated** | `mail-events/thresholds.ts` | platform_admin Incident (aggregated) |
+
+**B — in-app only on the third path.** Already notified, as a category-less row that can never be
+emailed, pushed, muted or audited. Promote each to a real category. *Cluster storage capacity
+first.*
+
+Cluster storage capacity · node subsystem health · node health · domain verification failed ·
+upgrade abort-recommended · PITR/restore stuck · namespace-integrity violation · image cache
+pressure · mail principals-sync drift — plus resource-quotas, storage-policy, mail migration and
+system-settings. 15 modules.
+
+**C — orphan categories.** Templates on all three channels, nothing emits them:
+
+- `tasks.scheduled_failure` — **no emitter exists anywhere.** The cron scheduler in group A is
+  what should fire it.
+- `security.suspicious_activity` — the helper *is* written in `events.ts`; **nothing calls it.**
+  A new-IP sign-in is detected nowhere.
+
+**D — absent entirely.**
+
+| audience | missing | class |
+|---|---|---|
+| tenant_admin | Backup completed / failed — *the tenant never learns their backup ran, or didn't* | Record / Incident |
+| tenant_admin | Restore completed / failed | Record / Incident |
+| tenant_admin | Certificate expiring (operators get this; tenants only get failure) | Action |
+| tenant_admin | Plan limit approaching 80% (only "reached" exists — too late to act) | Action |
+| tenant_admin | Maintenance window announced / started / finished | Availability |
+| tenant_admin | Migration completed / failed | Record |
+| tenant_admin | Database or SFTP credential created / rotated | Security |
+| mailbox_user | Mailbox created — welcome + connection settings | Record |
+| mailbox_user | Mailbox password changed or reset | Security |
+| mailbox_user | Forwarding or auto-responder changed | Security |
+| mailbox_user | Sign-in from an unrecognised location | Security |
+| platform_admin | Admin created, role changed, super_admin granted | Security |
+| platform_admin | Failed admin sign-in streak / lockout | Security |
+| platform_admin | DR readiness degraded (cluster cannot decrypt its own backups) | Incident |
+| platform_admin | External provider unreachable (DNS, mesh VPN, identity) | Availability |
+| platform_admin | Orphaned volumes accumulating | Ambient (digest) |
+| platform_admin | Signing key or platform certificate expiring | Action |
+
+Groups A and B are ~17 notifications the platform **already has the data for** — bindings, not
+detection, which makes them the cheapest meaningful improvement available.
+
 ## 3. Per-category remediation
 
 All 53 categories, with the required identity fields each gains. `BROKEN` = drops deliveries
@@ -447,13 +548,14 @@ state the notifications fire from, so a banner and a notification can never disa
 | phase | scope |
 |---|---|
 | **1 — stop the silence** | non-throwing render, `degraded_vars`, CI variable-contract guard, boot self-test, envelope fallback |
-| **2 — bindings replace audience** | the `(audience, class, threshold)` binding set, subsystem-dependency exclusion, ntfy barred for tenants, channel derivation |
+| **2 — bindings replace audience** | `(audience, class, threshold)` binding set, subsystem-dependency exclusion, channel derivation |
 | **3 — mailbox quota chain** | tenant-admin + mailbox-user bindings, 80/90/99/100, retire the SLO rule + global gauge |
-| **4 — close the coverage gaps** | tenant storage quota, operator sending-limit visibility, five-week expiry cadence for both audiences |
-| **5 — identity everywhere** | `NotificationEnvelope`, contact-name addressing, real `platformName`, localised dates, all 18 contract defects |
-| **6 — issues on tenant surfaces** | issue model, status-column chip, tenant-detail banner, mailbox usage bars, tenant dashboard, operator inbox |
-| **7 — convenience** | digests, aggregation, quiet hours, object mute, escalation, tenant contact routing |
-| **8 — retire the second system** | migrate 9 `notifyUser()` call sites, delete `legacy.*`, triage the 37 never-fired categories |
+| **4 — channel registry** | channels become declared objects (audiences, addressing, out-of-band, dependsOn, richness); ntfy barred for tenants falls out of the model |
+| **5 — close the gaps** | tenant storage quota, operator sending-limit visibility, five-week expiry cadence, and catalogue groups A + B — 17 notifications the data already exists for |
+| **6 — identity everywhere** | `NotificationEnvelope`, contact-name addressing, real `platformName`, localised dates, all 18 contract defects |
+| **7 — issues on tenant surfaces** | issue model, status-column chip, tenant-detail banner, mailbox usage bars, tenant dashboard, operator inbox |
+| **8 — convenience** | digests, aggregation, quiet hours, object mute, escalation, tenant contact routing |
+| **9 — retire the other two paths** | migrate 9 `notifyUser()` call sites + 15 raw-insert modules, delete `legacy.*`, triage the 37 never-fired categories |
 
 ## 6. Guards this work must leave behind
 
