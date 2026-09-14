@@ -5,7 +5,7 @@
  *   1. Look up the category. Unknown → no-op (event silently dropped).
  *   2. Resolve recipients via `resolveRecipients`.
  *   3. If scope='tenant' + opts.suppressTenantNotification, skip tenant users.
- *   4. For each (recipient × channel) in category.defaultChannels:
+ *   4. For each (recipient × channel) in the DERIVED channel set:
  *        a. Preference gate. Disabled → write status='muted', skip.
  *        b. Quiet hours (severity < critical). Active → status='muted', skip.
  *        c. Rate limit. Exceeded → status='rate_limited', skip.
@@ -34,6 +34,7 @@ import { getCategory } from '../categories/service.js';
 import { getActiveTemplate } from '../templates/service.js';
 import { renderForDelivery } from '../templates/render-for-delivery.js';
 import { recordDegradedRender, clampDegradedVars } from './degraded.js';
+import { effectiveChannels } from '../routing/effective-channels.js';
 import { emitNtfyForEvent } from './ntfy.js';
 import { isCategoryAllowedForUser } from '../preferences/gate.js';
 import { getUserSettings } from '../preferences/service.js';
@@ -234,7 +235,25 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
   // independent of) recipient resolution, so suppressed-tenant or
   // recipient-less events still reach the operator feed. Never throws:
   // the per-user channels must not die on a broken ntfy server.
-  if (category.defaultChannels.includes('ntfy')) {
+  // Channels are DERIVED, not read. `default_channels` is the operator's
+  // override; the class, the audience and the subsystem being reported on
+  // still filter it. This is what stops tenant events reaching the shared
+  // operator push topic and what keeps an availability alert out of a panel
+  // that may be down.
+  const routed = effectiveChannels({
+    categoryId: category.id,
+    storedChannels: category.defaultChannels,
+    tenantId: opts.tenantId ?? null,
+  });
+  const routedChannels = routed.channels;
+  if (routed.excluded.length > 0 && process.env.NOTIFICATION_ROUTING_DEBUG === 'true') {
+    for (const ex of routed.excluded) {
+      // eslint-disable-next-line no-console
+      console.debug(`[notifications] ${category.id}: excluded ${ex.channel} — ${ex.reason}`);
+    }
+  }
+
+  if (routedChannels.includes('ntfy')) {
     const ntfySalt = opts.encryptionKey ?? process.env.PLATFORM_ENCRYPTION_KEY;
     if (ntfySalt) {
       try {
@@ -299,7 +318,7 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
     if (dedupeKey) {
       const existing = await findDedupedNotification(db, userId, dedupeKey);
       if (existing) {
-        for (const channel of category.defaultChannels) {
+        for (const channel of routedChannels) {
           statuses.push({ userId, channel, status: 'skipped', error: 'duplicate' });
         }
         continue;
@@ -328,7 +347,7 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
       }).map(([k, v]) => [k, v === undefined ? null : v]),
     );
 
-    for (const channel of category.defaultChannels) {
+    for (const channel of routedChannels) {
       // ntfy is handled once per EVENT above (topic broadcast, no
       // per-user leg) — skip it here.
       if (channel === 'ntfy') continue;

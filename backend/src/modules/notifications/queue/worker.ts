@@ -32,7 +32,7 @@ import { eq } from 'drizzle-orm';
 import nodemailer from 'nodemailer';
 import { notificationCategories, notificationDeliveries, users } from '../../../db/schema.js';
 import { renderTemplateAsync } from '../templates/renderer.js';
-import { renderForDelivery } from '../templates/render-for-delivery.js';
+import { renderForDelivery, type DeliveryRender } from '../templates/render-for-delivery.js';
 import { recordDegradedRender, clampDegradedVars } from '../dispatcher/degraded.js';
 import { getTemplate } from '../templates/service.js';
 import { getProviderForCategoryEmail } from '../providers/service.js';
@@ -209,8 +209,12 @@ export async function processDelivery(
     const rendered = opts.render
       ? await opts.render(tpl, row.eventVariables ?? {})
       : await renderForDelivery(tpl, row.eventVariables ?? {}, { fallbackTitle: row.categoryId });
-    const degradedVars = 'degradedVars' in rendered ? rendered.degradedVars : [];
-    const fallbackUsed = 'fallbackUsed' in rendered ? rendered.fallbackUsed === true : false;
+    // `opts.render` is a test seam typed as the STRICT renderer, which returns
+    // no degradation info; the production path returns DeliveryRender. Narrow
+    // explicitly rather than with an `in` check, which widens to unknown.
+    const deliveryRender = rendered as Partial<DeliveryRender>;
+    const degradedVars: readonly string[] = deliveryRender.degradedVars ?? [];
+    const fallbackUsed = deliveryRender.fallbackUsed === true;
     if (degradedVars.length > 0 || fallbackUsed) {
       recordDegradedRender(row.categoryId, 'email', degradedVars, fallbackUsed);
     }
