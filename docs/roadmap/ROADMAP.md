@@ -1129,11 +1129,33 @@ The resolver now returns `{ targets, skipped }`:
    components. `list-tenants` already surfaces newest-bundle metadata — this is
    a presentation + hard-gate change, not new machinery.
 
-4. **Encryption-key mismatch is discovered late.** Bundle secrets are encrypted
-   with the *source* `PLATFORM_ENCRYPTION_KEY`. If B's key differs, the failure
-   appears per-secret during import. *Fix:* verify decryptability of one secret
-   during the dry-run and refuse up front with the remedy (bootstrap B from A's
-   age-encrypted secrets bundle).
+4. ~~**Encryption-key mismatch is discovered late.**~~ **Done 2026-09-14** —
+   `dr-recover/encryption-preflight.ts`, wired into `recover-all` on both the
+   preview and the run.
+
+   The premise needed correcting first. A key mismatch does not fail the restore
+   at all: the `secrets` component is never restored (`drRecoverComponentSchema`
+   excludes it — TLS secrets are re-issued by provisioning), and `config-tables`
+   inserts encrypted columns verbatim without reading them. What actually
+   happens is quieter and worse — the recover *succeeds*, and every encrypted
+   credential it restored is unreadable, surfacing one workload at a time as
+   `PAT_DECRYPT_FAILED`. Meanwhile each tenant recover provisions a namespace,
+   PVC and quota **before** reaching anything that needs a cleartext secret, so a
+   50-tenant fleet provisions 50 namespaces on the way to the same failure.
+
+   The check is LOCAL — it decrypts credentials already in this cluster's
+   platform DB (backup-target credentials behind the chosen bundles, and the
+   target tenants' registry pull tokens), so it costs nothing and runs on every
+   preview. `mismatch` refuses the run with `DR_ENCRYPTION_KEY_MISMATCH` (409)
+   and the remedy; `allowEncryptionKeyMismatch: true` overrides it.
+
+   **Deliberate limit:** an `ok` verdict says *this cluster's stored secrets are
+   readable*, not *every secret this migration touches is readable*. On a
+   cross-cluster migration the destination's own rows were entered here and
+   decrypt fine while the bundle's tokens are still the source cluster's — only
+   reading a bundle could settle that, and `reconcile.ts` already reports it
+   afterwards as a residual gap. `unverified` is a third verdict precisely so an
+   unprobeable cluster does not read as a passing one.
 
 **Not in scope:** changing the bundle format or adding a `databases` component.
 The dump is already captured; this item is about *replaying* it and about

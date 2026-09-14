@@ -156,8 +156,24 @@ export const drRecoverAllRequestSchema = z.object({
   targetNode: z.string().min(1).optional(),
   /** Forwarded to each per-tenant recover; omit → all components in each bundle. */
   components: z.array(drRecoverComponentSchema).min(1).optional(),
+  /**
+   * Run even when the encryption-key preflight reports a mismatch (R25 §4).
+   *
+   * The refusal exists because a mismatch normally means the recover cannot
+   * succeed — but it is a judgement about stored credentials, and an operator
+   * who intends to re-enter every one of them by hand is entitled to proceed.
+   * Ignored on a dry run, which never refuses.
+   */
+  allowEncryptionKeyMismatch: z.boolean().default(false),
 });
 export type DrRecoverAllRequest = z.infer<typeof drRecoverAllRequestSchema>;
+/**
+ * What a CALLER sends: every field with a `.default()` is optional here, unlike
+ * the parsed `DrRecoverAllRequest` where the default has already been applied.
+ * The UI builds requests against this one so adding a defaulted field does not
+ * become a compile error at every call site.
+ */
+export type DrRecoverAllRequestInput = z.input<typeof drRecoverAllRequestSchema>;
 
 /** One tenant selected for recovery (also the dry-run preview row). */
 export const drRecoverAllTargetSchema = z.object({
@@ -206,6 +222,53 @@ export const drRecoverAllResultSchema = drRecoverAllTargetSchema.extend({
 });
 export type DrRecoverAllResult = z.infer<typeof drRecoverAllResultSchema>;
 
+// ── ROADMAP R25 §4: encryption-key preflight ─────────────────────────────────
+
+/** Where one probed ciphertext came from. Never carries the secret itself. */
+export const drEncryptionProbeSourceSchema = z.enum(['backup_target', 'image_pull_credential']);
+export type DrEncryptionProbeSource = z.infer<typeof drEncryptionProbeSourceSchema>;
+
+/**
+ * Outcome of one decrypt attempt.
+ *
+ * `malformed` and `absent` are NOT failures: a column that holds no envelope
+ * says nothing about the key, and treating it as a failure would let one legacy
+ * plaintext row block a migration. Only `ok` and `wrong_key` are evidence.
+ */
+export const drEncryptionProbeVerdictSchema = z.enum(['ok', 'wrong_key', 'malformed', 'absent']);
+export type DrEncryptionProbeVerdict = z.infer<typeof drEncryptionProbeVerdictSchema>;
+
+export const drEncryptionProbeSchema = z.object({
+  source: drEncryptionProbeSourceSchema,
+  /** Identifier of the row probed (config id / deployment id) — never a secret. */
+  ref: z.string(),
+  /** Operator-recognisable label for that row (target name, deployment name). */
+  label: z.string().nullable(),
+  verdict: drEncryptionProbeVerdictSchema,
+});
+export type DrEncryptionProbe = z.infer<typeof drEncryptionProbeSchema>;
+
+/**
+ * Can this cluster read its own encrypted credentials?
+ *
+ * `unverified` is deliberately distinct from `ok`: with nothing to probe there
+ * is no evidence either way, and an empty probe set reported as a pass is the
+ * familiar bug where absence satisfies every assertion.
+ */
+export const drEncryptionKeyPreflightSchema = z.object({
+  verdict: z.enum(['ok', 'mismatch', 'unverified']),
+  /** Probes that could actually test the key (`ok` + `wrong_key`). */
+  probed: z.number().int().nonnegative(),
+  ok: z.number().int().nonnegative(),
+  failed: z.number().int().nonnegative(),
+  probes: z.array(drEncryptionProbeSchema),
+  /** Operator-facing explanation, including what the check does NOT cover. */
+  summary: z.string(),
+  /** What to do about a mismatch. Null when there is nothing to fix. */
+  remedy: z.string().nullable(),
+});
+export type DrEncryptionKeyPreflight = z.infer<typeof drEncryptionKeyPreflightSchema>;
+
 export const drRecoverAllResponseSchema = z.object({
   dryRun: z.boolean(),
   scope: z.enum(['missing', 'all']),
@@ -223,5 +286,11 @@ export const drRecoverAllResponseSchema = z.object({
    * trustworthy if the field is populated on every response.
    */
   skipped: z.array(drRecoverAllSkippedSchema).default([]),
+  /**
+   * R25 §4. Always present, on preview and run alike — an absent field would be
+   * indistinguishable from a clean check, which is exactly the reassurance this
+   * is meant to withhold.
+   */
+  encryptionKey: drEncryptionKeyPreflightSchema,
 });
 export type DrRecoverAllResponse = z.infer<typeof drRecoverAllResponseSchema>;
