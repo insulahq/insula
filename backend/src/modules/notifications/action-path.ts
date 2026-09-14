@@ -76,6 +76,12 @@ const STATIC_PATHS: Record<string, string> = {
   'subscription.renewed': '/settings',
   'subscription.expiry_warning': '/settings',
   'tasks.scheduled_failure': '/cron-jobs',
+  // Both mailbox-quota categories land on the tenant's own email page, where
+  // the mailbox list and its quota control already live — the issue belongs on
+  // the surface that fixes it, not on a page about the problem.
+  'mailbox.quota_threshold': '/email',
+  'mailbox.quota_exceeded': '/email',
+  'admin.mailbox_quota_fleet': '/tenants',
   'tls.certificate_issued': '/domains',
   'tls.certificate_failed': '/domains',
   'tls.certificate_fallback': '/domains',

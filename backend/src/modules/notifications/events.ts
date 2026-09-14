@@ -36,7 +36,7 @@ async function dispatchSafe(
   scope: Parameters<typeof emitEvent>[1]['scope'],
   variables: object,
   tenantId?: string,
-  extraOpts?: { readonly dedupeKey?: string },
+  extraOpts?: { readonly dedupeKey?: string; readonly externalRecipients?: readonly string[] },
 ): Promise<void> {
   try {
     await emitEvent(db, {
@@ -45,6 +45,7 @@ async function dispatchSafe(
       variables: { ...variables } as Record<string, unknown>,
       tenantId,
       dedupeKey: extraOpts?.dedupeKey,
+      externalRecipients: extraOpts?.externalRecipients,
     });
   } catch {
     // Legacy contract: never throw from an event helper.
@@ -647,6 +648,67 @@ export async function notifyAdminSloAlertResolved(
 }
 
 // ── R4/R6 PR 4: outbound-mail protection ───────────────────────────────────
+
+export interface MailboxQuotaPayload {
+  readonly mailboxAddress: string;
+  readonly tenantName: string;
+  readonly percent: string;
+  readonly usedMb: string;
+  readonly quotaMb: string;
+  readonly occurredAt: string;
+}
+
+/**
+ * A mailbox crossed a storage threshold.
+ *
+ * TWO audiences, which is the whole point. The tenant admin gets it in their
+ * panel and by email; the mailbox owner — who has NO platform account and is
+ * therefore invisible to every user-id-based resolver in the system — is
+ * mailed directly at the mailbox address. That second binding is why the old
+ * implementation notified nobody: it resolved recipients from `mailbox_access`,
+ * a table with zero rows platform-wide.
+ */
+export async function notifyMailboxQuotaThreshold(
+  db: Database,
+  tenantId: string,
+  mailboxAddress: string,
+  payload: MailboxQuotaPayload,
+  opts: { readonly exceeded: boolean; readonly dedupeKey?: string },
+): Promise<void> {
+  await dispatchSafe(
+    db,
+    opts.exceeded ? 'mailbox.quota_exceeded' : 'mailbox.quota_threshold',
+    { kind: 'tenant', tenantId },
+    payload,
+    tenantId,
+    { dedupeKey: opts.dedupeKey, externalRecipients: [mailboxAddress] },
+  );
+}
+
+export interface AdminMailboxQuotaFleetPayload {
+  readonly mailboxCount: string;
+  readonly tenantCount: string;
+  /** Every affected mailbox with its tenant and contact, already formatted. */
+  readonly mailboxList: string;
+  readonly occurredAt: string;
+}
+/**
+ * The operator's view: ONE aggregated notification naming every mailbox at
+ * 100%, its tenant and its contact.
+ *
+ * Replaces the `mail-mailbox-over-quota` SLO rule, which alerted on
+ * `max(platform_mail_mailboxes_over_quota) > 0` — a single global counter with
+ * `subjectLabels: []`, structurally incapable of naming a mailbox, a tenant or
+ * a contact. A mailbox filling up is a tenant capacity event, not a platform
+ * service-level objective.
+ */
+export async function notifyAdminMailboxQuotaFleet(
+  db: Database,
+  payload: AdminMailboxQuotaFleetPayload,
+  dedupeKey?: string,
+): Promise<void> {
+  await dispatchSafe(db, 'admin.mailbox_quota_fleet', { kind: 'admin' }, payload, undefined, { dedupeKey });
+}
 
 export interface ScheduledTaskFailurePayload {
   readonly taskName: string;

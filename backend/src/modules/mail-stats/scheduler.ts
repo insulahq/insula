@@ -73,9 +73,9 @@ export function startMailStatsScheduler(db: Database): NodeJS.Timeout {
       // crossing thanks to the mailbox_quota_events dedupe table.
       try {
         const quota = await checkQuotaThresholds(db);
-        if (quota.fired > 0 || quota.cleared > 0) {
+        if (quota.fired > 0 || quota.cleared > 0 || quota.overQuota > 0) {
           console.log(
-            `[mail-stats-scheduler] Quota notifications: fired=${quota.fired} cleared=${quota.cleared} skipped=${quota.skipped}`,
+            `[mail-stats-scheduler] Quota notifications: fired=${quota.fired} cleared=${quota.cleared} overQuota=${quota.overQuota}`,
           );
         }
       } catch (err) {

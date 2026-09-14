@@ -586,16 +586,6 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
     threshold: 0,
     forSeconds: 1800,
   },
-  {
-    id: 'mail-mailbox-over-quota',
-    name: 'Mailboxes over storage quota',
-    description: 'One or more active mailboxes are at 100% of their storage quota (platform_mail_mailboxes_over_quota) — new mail to them is being rejected by Stalwart.',
-    severity: 'warning',
-    expr: 'max(platform_mail_mailboxes_over_quota) > $T',
-    subjectLabels: [],
-    threshold: 0,
-    forSeconds: 900,
-  },
 ];
 
 /** Synthetic rule id used by the evaluator when vmsingle is unreachable. */

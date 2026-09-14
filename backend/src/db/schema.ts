@@ -2114,6 +2114,13 @@ export const notificationDeliveries = pgTable('notification_deliveries', {
   // satisfies GDPR right-to-erasure when the higher-level erasure
   // path (eraseUserNotifications) hasn't fired yet.
   userId: varchar('user_id', { length: 36 }).references(() => users.id, { onDelete: 'set null' }),
+  /**
+   * Recipient for an audience with NO platform account — today, a mailbox
+   * owner. Exactly one of userId / recipientAddress identifies the recipient
+   * (CHECK constraint, migration 0113); ntfy is the exception, being a topic
+   * broadcast rather than an addressed delivery.
+   */
+  recipientAddress: varchar('recipient_address', { length: 320 }),
   tenantId: varchar('tenant_id', { length: 36 }).references(() => tenants.id, { onDelete: 'set null' }),
   categoryId: varchar('category_id', { length: 64 }).notNull().references(() => notificationCategories.id, { onDelete: 'restrict' }),
   channel: channelIdEnum('channel').notNull(),

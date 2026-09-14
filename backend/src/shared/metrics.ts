@@ -123,14 +123,6 @@ export const mailOutboundQueueDepth = new Gauge({
 mailOutboundQueueDepth.set(-1);
 
 /**
- * Count of active mailboxes at or above 100% of their storage quota,
- * refreshed by the mailbox quota-threshold pass (mail-stats, ~15min).
- * Feeds the `mail-mailbox-over-quota` rule so an operator sees full
- * mailboxes in aggregate even when the tenant-side owner can't be
- * notified (no mailbox_access rows). Cardinality: a single global gauge,
- * never per-mailbox.
- */
-/**
  * Notifications that went out with at least one referenced-but-unsupplied
  * template variable, or that fell back to the envelope entirely.
  *
@@ -147,11 +139,6 @@ export const notificationDegradedTotal = new Counter({
   registers: [metricsRegistry],
 });
 
-export const mailMailboxesOverQuota = new Gauge({
-  name: 'platform_mail_mailboxes_over_quota',
-  help: 'Active mailboxes at or above 100% of their storage quota',
-  registers: [metricsRegistry],
-});
 
 /**
  * Count of Flux resources whose Ready condition is False, by kind.
