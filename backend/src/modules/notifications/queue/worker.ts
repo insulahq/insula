@@ -120,6 +120,7 @@ interface DeliveryRow {
   id: string;
   userId: string | null;
   categoryId: string;
+  recipientAddress: string | null;
   channel: 'in_app' | 'email';
   templateId: string | null;
   locale: string;
@@ -148,6 +149,7 @@ export async function processDelivery(
     id: notificationDeliveries.id,
     userId: notificationDeliveries.userId,
     categoryId: notificationDeliveries.categoryId,
+    recipientAddress: notificationDeliveries.recipientAddress,
     channel: notificationDeliveries.channel,
     templateId: notificationDeliveries.templateId,
     locale: notificationDeliveries.locale,
@@ -164,6 +166,7 @@ export async function processDelivery(
     id: raw.id,
     userId: raw.userId,
     categoryId: raw.categoryId,
+    recipientAddress: raw.recipientAddress,
     channel: raw.channel === 'email' ? 'email' : 'in_app',
     templateId: raw.templateId,
     locale: raw.locale,
@@ -219,17 +222,27 @@ export async function processDelivery(
       recordDegradedRender(row.categoryId, 'email', degradedVars, fallbackUsed);
     }
 
-    // 4. Look up recipient email.
-    if (!row.userId) {
-      return await markFailedOrDlq(db, row.id, row.attempt + 1, 'user_id_missing', opts);
+    // 4. Resolve the recipient address.
+    //
+    // Two kinds of recipient: a platform user (look up their address) and an
+    // audience with no account at all — a mailbox owner, addressed directly.
+    // The second is why the mailbox-quota warnings could never be delivered:
+    // every resolver in the system returned user ids and there was no user.
+    let recipientEmail: string | null = row.recipientAddress;
+    if (!recipientEmail) {
+      if (!row.userId) {
+        return await markFailedOrDlq(db, row.id, row.attempt + 1, 'user_id_missing', opts);
+      }
+      const [u] = await db.select({ email: users.email })
+        .from(users)
+        .where(eq(users.id, row.userId))
+        .limit(1);
+      recipientEmail = u?.email ?? null;
     }
-    const [u] = await db.select({ email: users.email })
-      .from(users)
-      .where(eq(users.id, row.userId))
-      .limit(1);
-    if (!u?.email) {
+    if (!recipientEmail) {
       return await markFailedOrDlq(db, row.id, row.attempt + 1, 'recipient_email_missing', opts);
     }
+    const u = { email: recipientEmail };
 
     // 5. Look up the notification provider for this category. Phase 5
     //    introduces a per-source override (notification_categories

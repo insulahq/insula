@@ -58,6 +58,13 @@ export interface EmitEventOptions {
   readonly eventId?: string;
   /** Override locale for the template lookup (rare). */
   readonly localeOverride?: string;
+  /**
+   * Addresses for an audience with NO platform account — today, mailbox
+   * owners. They receive the email leg only, because
+   * channelsForAudience('mailbox_user') is ['email'] and there is no account
+   * for an in-app row to live in.
+   */
+  readonly externalRecipients?: readonly string[];
   /** Override encryption key (tests). Production reads PLATFORM_ENCRYPTION_KEY. */
   readonly encryptionKey?: string;
   /**
@@ -142,7 +149,8 @@ async function writeDelivery(
   input: {
     notificationId: string | null;
     eventId: string;
-    userId: string;
+    userId: string | null;
+    recipientAddress?: string | null;
     tenantId: string | null;
     categoryId: string;
     channel: Channel;
@@ -168,6 +176,7 @@ async function writeDelivery(
     notificationId: input.notificationId,
     eventId: input.eventId,
     userId: input.userId,
+    recipientAddress: input.recipientAddress ?? null,
     tenantId: input.tenantId,
     categoryId: input.categoryId,
     channel: input.channel,
@@ -582,6 +591,57 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
         const msg = err instanceof Error ? err.message : String(err);
         statuses.push({ userId, channel, status: 'queued', error: `enqueue_warn:${msg}` });
       }
+    }
+  }
+
+  // 5. External recipients — an audience with no platform account.
+  //
+  // Queued through the SAME delivery table and worker as everyone else, so
+  // provider resolution, credential decryption, retry, DLQ and the audit trail
+  // are reused rather than reimplemented. A fourth delivery path is what this
+  // overhaul removes, not something it adds.
+  const externalLocale = opts.localeOverride ?? 'en';
+  for (const address of opts.externalRecipients ?? []) {
+    const tpl = await getActiveTemplate(db, category.id, 'email', externalLocale);
+    if (!tpl) {
+      statuses.push({ userId: null, channel: 'email', status: 'skipped', error: 'template_not_found' });
+      continue;
+    }
+    const renderVars: Record<string, unknown> = Object.fromEntries(
+      Object.entries({
+        platformName: 'Hosting Platform',
+        userName: address.split('@')[0],
+        tenantName: null,
+        ...opts.variables,
+      }).map(([k, v]) => [k, v === undefined ? null : v]),
+    );
+    const rendered = await renderForDelivery(tpl, renderVars, { fallbackTitle: category.displayName });
+    if (rendered.degradedVars.length > 0 || rendered.fallbackUsed) {
+      recordDegradedRender(category.id, 'email', rendered.degradedVars, rendered.fallbackUsed);
+    }
+    const deliveryId = await writeDelivery(db, {
+      notificationId: null,
+      eventId,
+      userId: null,
+      recipientAddress: address,
+      tenantId: opts.tenantId ?? null,
+      categoryId: category.id,
+      channel: 'email',
+      templateId: tpl.id,
+      templateVersion: tpl.version,
+      locale: externalLocale,
+      status: 'queued',
+      recipientHash: sha256(address, hashSalt),
+      contentHash: sha256(`${rendered.subject ?? ''}::${rendered.body}`, hashSalt),
+      dedupeKey,
+      degradedVars: rendered.degradedVars,
+      eventVariables: renderVars,
+    });
+    try {
+      await enqueueDelivery(deliveryId);
+      statuses.push({ userId: null, channel: 'email', status: 'queued' });
+    } catch (err) {
+      statuses.push({ userId: null, channel: 'email', status: 'queued', error: `enqueue_warn:${err instanceof Error ? err.message : String(err)}` });
     }
   }
 
