@@ -84,6 +84,13 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   last checkbox in a dense grid, is now a labelled row of its own.
 
 ### Fixed
+- **A mail-drift repair no longer tells you to wait for something that never
+  happens.** After repairing a drifted mail domain the platform reported that
+  DNS "updates automatically on the next reconcile tick". There is no reconcile
+  tick. In the normal case this was merely misleading — the DKIM record is
+  published immediately as part of the repair — but when that step could not
+  complete, the message told you to do nothing at exactly the moment you needed
+  to republish the record yourself. It now says which of the two happened.
 - **DMARC reports were being thrown away by the receiving mail server.** Every
   domain published a `rua=` address of `dmarc-reports@<domain>` — an address the
   platform never created. Mail to an address with no mailbox is refused outright,

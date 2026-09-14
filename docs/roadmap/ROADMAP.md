@@ -49,6 +49,7 @@
 | [R35](#r35--the-crowdsec-lapi-is-a-single-point-of-failure-that-no-longer-needs-to-be) | CrowdSec LAPI single point of failure | P2 | ✅ **SHIPPED** — Postgres + RollingUpdate + reconciler-owned 2 replicas (verified 2/2 Ready on DEV) |
 | [R36](#r36--every-per-service-postgres-role-can-connect-to-the-platform-database) | Per-service roles can connect to the `platform` database | **P2** | ✅ **SHIPPED 2026-09-13** — `db-isolation` converger + bootstrap + Security→Hardening card; verified on DEV against a real role |
 | [R37](#r37--tenant-pods-can-fill-a-nodes-disk-and-nothing-charges-them-for-it) | Tenant pods can fill a node's disk | P2 | Not started — needs a hosting-plan policy decision (an `ephemeral-storage` limit EVICTS) |
+| [R38](#r38--mail-dns-is-written-once-and-never-reconciled-deliberate) | Mail DNS is written once, never reconciled | — | ✅ **DECIDED 2026-09-14** — dead `dns-sync` deleted; blind reconciliation would delete a tenant's own MX/SPF |
 
 ---
 
@@ -1694,6 +1695,53 @@ Found by the security review of R35 (2026-09-07).
 
 
 ---
+
+## R38 — Mail DNS is written once and never reconciled (deliberate)
+
+**Decided 2026-09-14 — recorded so it is not "fixed" by accident.**
+
+`stalwart-jmap/dns-sync.ts` polled Stalwart's `dnsZoneFile` every 5 minutes and
+converged `dns_records` against it. It was **never wired** into the application
+— `createDnsSyncScheduler` had no call sites, its documented kill-switch
+(`STALWART_DNS_SYNC_DISABLE`) was never read, and its documented ownership model
+cited a `source='stalwart'` column that does not exist. 653 lines, imported only
+by its own test. **Deleted.**
+
+**Why deleted rather than wired.** Its ownership heuristic claims any apex MX and
+any apex SPF for the platform:
+
+```ts
+case 'MX':  return n === d;                             // ANY apex MX
+case 'TXT': if (n === d) return v.startsWith('v=spf1');  // ANY apex SPF
+```
+
+A tenant running **their own mail server** has an apex MX that Stalwart's zone
+file does not contain — it would be deleted. A tenant on an **email gateway**
+has `v=spf1 include:<provider> …` — it would be replaced by Stalwart's
+`v=spf1 mx ~all`. The platform already ships Mailgun and Postmark relay
+adapters, so these are supported configurations today, not hypotheticals.
+
+It would also have regressed R5: Stalwart suggests
+`_dmarc … "v=DMARC1; p=reject; rua=mailto:postmaster@<domain>"`, which sets
+enforcement on day one and points reports at `postmaster@` — an address Stalwart
+itself refuses at RCPT (`550 5.1.2`, proven on DEV).
+
+**What this means in practice.** Mail DNS is written once, at email-domain enable
+time (`buildEmailDnsRecords`), plus inline on DKIM rotation and drift repair
+(`upsertDkimTxtRecord`). There is **no background reconcile**, so:
+
+- a mail record deleted or edited at the provider is not restored;
+- a change in Stalwart's expectations (new selector, MTA-STS, TLSA) is not picked up;
+- a superseded DKIM selector's TXT is never pruned (which ADR-047 wants anyway).
+
+Read-only drift *detection* still exists and is the right shape:
+`dns-apex-drift` and `email-dkim/jmap-status` read Stalwart's zone file and
+report, without writing.
+
+**If reconciliation is ever wanted**, build it against the platform's OWN
+expected record set with explicit per-record ownership (`dns_records.managed_by`),
+never against Stalwart's zone file, and never touching a record the platform did
+not write.
 
 ## R37 — Tenant pods can fill a node's disk, and nothing charges them for it
 
