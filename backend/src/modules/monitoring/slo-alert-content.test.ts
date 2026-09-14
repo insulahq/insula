@@ -49,6 +49,7 @@ function payloadFor(ruleId: string, rawValue: number, subject?: string) {
   return {
     ruleId: rule.id,
     ruleName: rule.name,
+    severity: rule.severity,
     description: rule.description,
     value: sloValueIsInformative(rule.unit) ? formatSloValue(rawValue, rule.unit) : undefined,
     subject,

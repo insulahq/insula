@@ -32,6 +32,8 @@ import { eq } from 'drizzle-orm';
 import nodemailer from 'nodemailer';
 import { notificationCategories, notificationDeliveries, users } from '../../../db/schema.js';
 import { renderTemplateAsync } from '../templates/renderer.js';
+import { renderForDelivery } from '../templates/render-for-delivery.js';
+import { recordDegradedRender, clampDegradedVars } from '../dispatcher/degraded.js';
 import { getTemplate } from '../templates/service.js';
 import { getProviderForCategoryEmail } from '../providers/service.js';
 import { readStalwartMasterCredentials } from '../providers/stalwart-master-creds.js';
@@ -200,8 +202,18 @@ export async function processDelivery(
     if (!tpl) {
       return await markFailedOrDlq(db, row.id, row.attempt + 1, 'template_not_found', opts);
     }
-    const render = opts.render ?? renderTemplateAsync;
-    const rendered = await render(tpl, row.eventVariables ?? {});
+    // The worker re-renders at send time from `event_variables`. A render
+    // failure here used to burn all six retry attempts and then dead-letter —
+    // six guaranteed-identical failures, because a template/variable mismatch
+    // is deterministic. It now degrades once and sends.
+    const rendered = opts.render
+      ? await opts.render(tpl, row.eventVariables ?? {})
+      : await renderForDelivery(tpl, row.eventVariables ?? {}, { fallbackTitle: row.categoryId });
+    const degradedVars = 'degradedVars' in rendered ? rendered.degradedVars : [];
+    const fallbackUsed = 'fallbackUsed' in rendered ? rendered.fallbackUsed === true : false;
+    if (degradedVars.length > 0 || fallbackUsed) {
+      recordDegradedRender(row.categoryId, 'email', degradedVars, fallbackUsed);
+    }
 
     // 4. Look up recipient email.
     if (!row.userId) {
@@ -290,9 +302,17 @@ export async function processDelivery(
       html: rendered.body,
     });
 
-    // 7. Success.
+    // 7. Success. A degraded send is still a success — but the row records
+    // what was missing, so the Delivery Log can separate "delivered whole"
+    // from "delivered thin" instead of showing one undifferentiated `sent`.
     await db.update(notificationDeliveries)
-      .set({ status: 'sent', sentAt: new Date(), attempt: row.attempt + 1 })
+      .set({
+        status: 'sent',
+        sentAt: new Date(),
+        attempt: row.attempt + 1,
+        ...(degradedVars.length > 0 ? { degradedVars: clampDegradedVars(degradedVars) } : {}),
+        ...(fallbackUsed ? { lastError: 'render_fallback: template unrenderable at send time' } : {}),
+      })
       .where(eq(notificationDeliveries.id, deliveryId));
     return { status: 'sent' };
   } catch (err) {

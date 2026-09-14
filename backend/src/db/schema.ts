@@ -2128,6 +2128,13 @@ export const notificationDeliveries = pgTable('notification_deliveries', {
   maxAttempts: integer('max_attempts').notNull().default(6),
   nextAttemptAt: timestamp('next_attempt_at', { withTimezone: true }),
   lastError: text('last_error'),
+  /**
+   * Template variables that were referenced but never supplied, filled with a
+   * visible placeholder so the delivery could still go out. NULL = healthy.
+   * A non-empty array is a payload<->template contract defect that reached
+   * production; the admin delivery log filters on it.
+   */
+  degradedVars: jsonb('degraded_vars').$type<string[] | null>(),
   providerMessageId: varchar('provider_message_id', { length: 255 }),
   queuedAt: timestamp('queued_at', { withTimezone: true }).notNull().defaultNow(),
   sentAt: timestamp('sent_at', { withTimezone: true }),

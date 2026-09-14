@@ -296,12 +296,17 @@ describe('emitEvent', () => {
     ).rejects.toThrow(/PLATFORM_ENCRYPTION_KEY/);
   });
 
-  it('captures template render errors per-channel without aborting fan-out, persisting visible rows', async () => {
-    // Render failures are deterministic (same template + same vars),
-    // so they persist as status='skipped' (NOT 'failed' — the queue
-    // worker's retry scan picks up 'failed' rows and a retry can never
-    // succeed) with lastError for the Delivery Log. Before 2026-06-12
-    // these were status-array-only and completely invisible.
+  it('DELIVERS through the envelope fallback when the template cannot render', async () => {
+    // Behaviour change 2026-09-14. This used to persist status='skipped' and
+    // stop: a render failure is deterministic, so retrying could not help and
+    // dropping seemed like the honest outcome. It was not — `skipped` raises
+    // no alert and is not in the retry scan, so one variable-name mismatch
+    // silently cost `subscription.renewed` 16 emails and nobody found out
+    // until a customer complained.
+    //
+    // A notification system whose failure mode is silence has no failure mode.
+    // The message now goes out with whatever facts survived, and the row says
+    // what was lost.
     getCategoryMock.mockResolvedValue(baseCategory);
     resolveRecipientsMock.mockResolvedValue(['u1']);
     isAllowedMock.mockResolvedValue(true);
@@ -314,10 +319,16 @@ describe('emitEvent', () => {
       variables: {},
       encryptionKey: 'KEY',
     });
-    expect(r.perChannelStatuses.every((s) => s.status === 'skipped')).toBe(true);
+
+    // Nothing is skipped for a render failure any more.
+    expect(r.perChannelStatuses.some((s) => s.status === 'skipped')).toBe(false);
+
     const inserted = (db.insert as ReturnType<typeof vi.fn>)().values.mock.calls.map((c: unknown[]) => c[0]);
+    // The row survives as a real delivery...
+    expect(inserted.some((v: Record<string, unknown>) => v.status === 'sent' || v.status === 'queued')).toBe(true);
+    // ...and records WHY it is thin, so the Delivery Log can surface it.
     expect(inserted.some((v: Record<string, unknown>) =>
-      v.status === 'skipped' && String(v.lastError).startsWith('render_failed:'))).toBe(true);
+      String(v.lastError ?? '').startsWith('render_fallback:'))).toBe(true);
   });
 
   it('persists a skipped delivery row when no template exists', async () => {
