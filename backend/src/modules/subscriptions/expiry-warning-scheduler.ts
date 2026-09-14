@@ -2,7 +2,8 @@
  * Daily expiry-warning scheduler.
  *
  * Scans tenants whose `subscription_expires_at` falls in the
- * configured warning windows (default: 7 / 3 / 1 day). For each
+ * configured warning windows (default: weekly for five weeks —
+ * 35 / 28 / 21 / 14 / 7 days out). For each
  * window, fires a `subscription.expiry_warning` notification with a
  * dedupeKey scoped to (tenant × window × expiry-date) — the dispatcher
  * silently skips duplicates so a re-run of the scheduler the next day
@@ -21,7 +22,16 @@ import { notifyTenantSubscriptionExpiry } from '../notifications/events.js';
 import type { Database } from '../../db/index.js';
 
 /** Windows in days. Order matters only for log readability. */
-export const DEFAULT_WARNING_WINDOWS = [7, 3, 1] as const;
+/**
+ * Weekly for five weeks.
+ *
+ * Was 7 / 3 / 1. Seven days is not enough notice to raise a purchase order or
+ * get a renewal approved, so the first warning a finance team could act on
+ * arrived after the point they could act. Five weekly slots give a real runway
+ * and the dedupe key already keys on `daysOut`, so widening the list needs no
+ * new machinery.
+ */
+export const DEFAULT_WARNING_WINDOWS = [35, 28, 21, 14, 7] as const;
 
 export interface ExpiryWarningRunResult {
   readonly scanned: number;
@@ -43,6 +53,7 @@ export async function runExpiryWarningPass(
 ): Promise<ExpiryWarningRunResult> {
   const now = opts.now ?? new Date();
   const windows = opts.windowsDays ?? DEFAULT_WARNING_WINDOWS;
+  const expiring: { name: string; daysOut: number; expiry: string }[] = [];
   let scanned = 0;
   let emitted = 0;
   let failed = 0;
@@ -90,9 +101,34 @@ export async function runExpiryWarningPass(
           dedupeKey,
         );
         emitted++;
+        expiring.push({ name: t.name ?? t.id, daysOut, expiry: expiryDateKey });
       } catch {
         failed++;
       }
+    }
+  }
+
+  // The operator chases renewals and was never told any of this. One
+  // aggregated notification per run rather than one per tenant per slot —
+  // the fleet view is a list, not a stream.
+  if (expiring.length > 0) {
+    try {
+      const { notifyAdminSubscriptionsExpiring } = await import('../notifications/events.js');
+      await notifyAdminSubscriptionsExpiring(
+        db,
+        {
+          tenantCount: String(expiring.length),
+          horizonDays: String(Math.max(...windows)),
+          tenantList: expiring
+            .map((e) => `${e.name} (${e.daysOut}d, ${e.expiry})`)
+            .join('; ')
+            .slice(0, 2000),
+          occurredAt: new Date().toISOString().slice(0, 16).replace('T', ' ') + ' UTC',
+        },
+        `subscription-expiry-fleet:${new Date().toISOString().slice(0, 10)}`,
+      );
+    } catch {
+      // Never let the operator digest break the tenant notifications.
     }
   }
 

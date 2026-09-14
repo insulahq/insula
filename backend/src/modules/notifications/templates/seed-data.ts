@@ -185,6 +185,160 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     ],
   },
 
+  // ── admin.subscriptions_expiring ───────────────────────────────────
+  {
+    categoryId: 'admin.subscriptions_expiring',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: '{{tenantCount}} subscription(s) expire within {{horizonDays}} days',
+    bodyTemplate: emailMjml(
+      'Subscriptions expiring',
+      '{{tenantCount}} subscription(s) expire within the next {{horizonDays}} days, as of {{occurredAt}}: '
+      + '{{tenantList}}',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'tenantCount', type: 'string', required: false },
+      { name: 'horizonDays', type: 'string', required: false },
+      { name: 'tenantList', type: 'string', required: false },
+      { name: 'occurredAt', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'admin.subscriptions_expiring',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: '{{tenantCount}} subscription(s) expiring',
+    bodyTemplate: 'Within {{horizonDays}} days as of {{occurredAt}}: {{tenantList}}',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'tenantCount', type: 'string', required: false },
+      { name: 'horizonDays', type: 'string', required: false },
+      { name: 'tenantList', type: 'string', required: false },
+      { name: 'occurredAt', type: 'string', required: false },
+    ],
+  },
+
+  // ── tenant.resource_saturation_* ───────────────────────────────────
+  {
+    categoryId: 'tenant.resource_saturation_warning',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: '{{resource}} for {{tenantName}} is {{usedPct}}% used',
+    bodyTemplate: emailMjml(
+      'Resource nearing its limit',
+      '{{tenantName}} has used {{used}}{{unit}} of its {{limit}}{{unit}} {{resource}} limit ({{usedPct}}%), '
+      + 'as of {{occurredAt}}. Free some up or upgrade the plan before it is refused.',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'resource', type: 'string', required: false },
+      { name: 'usedPct', type: 'string', required: false },
+      { name: 'used', type: 'string', required: false },
+      { name: 'limit', type: 'string', required: false },
+      { name: 'unit', type: 'string', required: false },
+      { name: 'occurredAt', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'tenant.resource_saturation_warning',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: '{{resource}} is {{usedPct}}% used',
+    bodyTemplate: '{{tenantName}}: {{resource}} at {{used}}{{unit}} of {{limit}}{{unit}} ({{usedPct}}%) as of {{occurredAt}}.',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'resource', type: 'string', required: false },
+      { name: 'usedPct', type: 'string', required: false },
+      { name: 'used', type: 'string', required: false },
+      { name: 'limit', type: 'string', required: false },
+      { name: 'unit', type: 'string', required: false },
+      { name: 'occurredAt', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'tenant.resource_saturation_critical',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: '{{resource}} limit reached for {{tenantName}}',
+    bodyTemplate: emailMjml(
+      'Resource limit reached',
+      '{{tenantName}} has reached its {{resource}} limit — {{used}}{{unit}} of {{limit}}{{unit}} ({{usedPct}}%) '
+      + 'as of {{occurredAt}}. Further use is being refused until space is freed or the plan is upgraded.',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'resource', type: 'string', required: false },
+      { name: 'usedPct', type: 'string', required: false },
+      { name: 'used', type: 'string', required: false },
+      { name: 'limit', type: 'string', required: false },
+      { name: 'unit', type: 'string', required: false },
+      { name: 'occurredAt', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'tenant.resource_saturation_critical',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: '{{resource}} limit reached',
+    bodyTemplate: '{{tenantName}}: {{resource}} at {{used}}{{unit}} of {{limit}}{{unit}} ({{usedPct}}%) as of {{occurredAt}} — further use is refused.',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'resource', type: 'string', required: false },
+      { name: 'usedPct', type: 'string', required: false },
+      { name: 'used', type: 'string', required: false },
+      { name: 'limit', type: 'string', required: false },
+      { name: 'unit', type: 'string', required: false },
+      { name: 'occurredAt', type: 'string', required: false },
+    ],
+  },
+  // ── admin.email_quota_exceeded ─────────────────────────────────────
+  {
+    categoryId: 'admin.email_quota_exceeded',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: '{{tenantLabel}} saturated its {{window}} sending limit',
+    bodyTemplate: emailMjml(
+      'Tenant sending limit saturated',
+      '{{tenantLabel}} sent {{used}} of {{limit}} messages ({{percent}}%) in the current {{window}} window, '
+      + 'as of {{occurredAt}}. A saturated sender is the shape of both a compromised account and a '
+      + 'deliverability risk to the whole platform.',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'tenantLabel', type: 'string', required: false },
+      { name: 'window', type: 'string', required: false },
+      { name: 'used', type: 'string', required: false },
+      { name: 'limit', type: 'string', required: false },
+      { name: 'percent', type: 'string', required: false },
+      { name: 'occurredAt', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'admin.email_quota_exceeded',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: '{{tenantLabel}} at its {{window}} sending limit',
+    bodyTemplate: '{{tenantLabel}}: {{used}}/{{limit}} messages ({{percent}}%) this {{window}} as of {{occurredAt}}.',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'tenantLabel', type: 'string', required: false },
+      { name: 'window', type: 'string', required: false },
+      { name: 'used', type: 'string', required: false },
+      { name: 'limit', type: 'string', required: false },
+      { name: 'percent', type: 'string', required: false },
+      { name: 'occurredAt', type: 'string', required: false },
+    ],
+  },
+
   // ── mailbox.quota_threshold / _exceeded ────────────────────────────
   //
   // Answers which tenant, which mailbox, what and when — the four things the
