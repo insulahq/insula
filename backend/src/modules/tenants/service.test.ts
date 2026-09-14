@@ -7,6 +7,63 @@ vi.mock('../system-settings/service.js', () => ({
   getSettings: vi.fn().mockResolvedValue({ id: 'system', timezone: 'UTC', platformName: 'X', apiRateLimit: 100 }),
 }));
 
+// bcrypt at cost 12 is ~400-550ms PER CALL on this hardware, and `createTenant`
+// hashes the auto-created tenant login's password on every path. Seven
+// createTenant tests in this file paid ~3.5s of pure CPU for a hash no assertion
+// here ever looks at — and CPU is exactly what is scarce when 20 vitest workers
+// run at once, which is when this file was timing out. Production cost stays 12.
+vi.mock('bcrypt', () => ({
+  default: {
+    hash: vi.fn().mockResolvedValue('$2b$12$test-hash-not-asserted-on'),
+    compare: vi.fn().mockResolvedValue(true),
+  },
+}));
+
+// ── The shrink pre-flight's three dynamic imports ───────────────────────────
+//
+// `updateTenant`'s destructive-shrink branch dry-runs the resize through
+// `resolveSnapshotStoreForClass` → `resizeDryRunMib`, both of which need a real
+// kube apiserver. Unmocked in a unit test there is none, so every call spent
+// ~4.5 SECONDS on connect attempts before failing — against sibling tests that
+// run in 0-15ms. That is a wall-clock dependency: under a loaded 20-worker pool
+// it crosses the 15s testTimeout and the file flakes.
+//
+// It also meant the shrink test passed for the wrong reason. The pre-flight
+// *failed*, `catch` swallowed it, and the assertion ("does not throw
+// STORAGE_RESIZE_REQUIRED") held — so the test would have stayed green if the
+// entire dry-run had been deleted. Mocking it makes the path succeed, which is
+// both instant and assertable.
+const mockResolveSnapshotStore = vi.fn();
+const mockResizeDryRunMib = vi.fn();
+vi.mock('../storage-lifecycle/snapshot-store.js', () => ({
+  resolveSnapshotStoreForClass: (...args: unknown[]) => mockResolveSnapshotStore(...args),
+}));
+vi.mock('../storage-lifecycle/service.js', () => ({
+  resizeDryRunMib: (...args: unknown[]) => mockResizeDryRunMib(...args),
+  resizeTenant: vi.fn().mockResolvedValue(undefined),
+  archiveTenant: vi.fn().mockResolvedValue(undefined),
+  restoreArchivedTenant: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock('../k8s-provisioner/k8s-client.js', () => ({
+  createK8sClients: vi.fn(() => ({})),
+}));
+// `applyResourceQuota` fires on ANY limits change and talks to the apiserver;
+// its failure is swallowed, so unmocked it only ever contributed latency.
+vi.mock('../k8s-provisioner/service.js', () => ({
+  applyResourceQuota: vi.fn().mockResolvedValue(undefined),
+  runProvisionNamespace: vi.fn().mockResolvedValue(undefined),
+  PROVISION_STEPS: [],
+  buildStepsLog: vi.fn(() => []),
+  mirrorProvisioningToTaskTracker: vi.fn().mockResolvedValue(undefined),
+}));
+
+beforeEach(() => {
+  // Default: a store is assigned and the shrink fits. Individual tests
+  // override to drive the rejection paths.
+  mockResolveSnapshotStore.mockReset().mockResolvedValue({ store: { kind: 'test' } });
+  mockResizeDryRunMib.mockReset().mockResolvedValue({ willFit: true });
+});
+
 import { createTenant, getTenantById, updateTenant, deleteTenant } from './service.js';
 import { ApiError } from '../../shared/errors.js';
 
@@ -638,16 +695,46 @@ describe('updateTenant', () => {
     it('shrink with confirm_destructive_shrink:true: bypasses STORAGE_RESIZE_REQUIRED reject', async () => {
       const { db } = makeStorageMockDb(10, 10);
       // 10 GiB → 5 GiB is a shrink. Without the flag this throws
-      // STORAGE_RESIZE_REQUIRED; with the flag the early reject is
-      // skipped and the dispatch falls through to resizeTenant (which
-      // in unit tests fails to import/connect, but the catch swallows
-      // RESIZE_UNSAFE-only re-throws so the PATCH itself doesn't error).
-      // We only assert "doesn't throw STORAGE_RESIZE_REQUIRED" here.
+      // STORAGE_RESIZE_REQUIRED; with the flag the early reject is skipped and
+      // the dispatch falls through to the pre-flight dry-run.
       const result = await updateTenant(db, 'c1', {
         storage_limit_override: 5,
         confirm_destructive_shrink: true,
       });
       expect(result).toBeDefined();
+      // The pre-flight must actually RUN. This used to be untestable: the
+      // dry-run's k8s call failed, `catch` swallowed it, and the assertion
+      // above held — so deleting the entire pre-flight would not have failed
+      // this test. With the imports mocked, the call is observable.
+      expect(mockResizeDryRunMib).toHaveBeenCalledTimes(1);
+      // 5 GiB, in MiB — the shrink target, not the current size.
+      expect(mockResizeDryRunMib).toHaveBeenCalledWith(expect.anything(), 'c1', 5 * 1024);
+    });
+
+    it('shrink: a dry-run that says it will NOT fit rejects with RESIZE_UNSAFE', async () => {
+      // The path this covers was unreachable before the pre-flight's imports
+      // were mocked — the dry-run never got far enough to return a verdict, so
+      // the one case where a destructive shrink must be REFUSED had no test.
+      const { db } = makeStorageMockDb(10, 10);
+      mockResizeDryRunMib.mockResolvedValue({ willFit: false, rejectReason: 'used 8 GiB > target 5 GiB' });
+
+      await expect(
+        updateTenant(db, 'c1', { storage_limit_override: 5, confirm_destructive_shrink: true }),
+      ).rejects.toMatchObject({ code: 'RESIZE_UNSAFE' });
+    });
+
+    it('shrink: refuses BEFORE writing the override when the dry-run rejects', async () => {
+      // Ordering is the whole point of running the dry-run early: a write that
+      // lands before the rejection leaves the override at the smaller value
+      // while the PVC stays large, and every later PATCH then mis-classifies
+      // grow vs shrink.
+      const { db, updateSet } = makeStorageMockDb(10, 10);
+      mockResizeDryRunMib.mockResolvedValue({ willFit: false, rejectReason: 'too small' });
+
+      await expect(
+        updateTenant(db, 'c1', { storage_limit_override: 5, confirm_destructive_shrink: true }),
+      ).rejects.toMatchObject({ code: 'RESIZE_UNSAFE' });
+      expect(updateSet).not.toHaveBeenCalled();
     });
 
     it('grow path: lets PATCH succeed without throwing (auto-resize is best-effort and offline test env skips it)', async () => {
