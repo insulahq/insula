@@ -76,6 +76,22 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   role that is connected but would be refused on its next reconnect. (ROADMAP
   R36.)
 
+### Added
+- **A batch tenant recover now checks the encryption key before it starts, and
+  refuses when it does not match.** After a cluster loss you restore the platform
+  database from the old cluster — so every encrypted credential in it (backup
+  targets, registry pull tokens, provider secrets) is scrambled under the *old*
+  cluster's key. Bootstrap the rebuilt cluster with a fresh key instead of the
+  old one and none of it can be read. That used to be silent: each tenant
+  recover provisions a namespace, volume and quota *before* it needs a secret, so
+  fifty tenants meant fifty provisioned namespaces on the way to fifty identical
+  failures. **Preview** now reports whether this cluster can read its own stored
+  credentials, names the ones it cannot, and states the fix — re-bootstrap with
+  the source cluster's key from its secrets bundle. **Recover anyway** is still
+  available for an operator who intends to re-enter each credential by hand.
+  A cluster with nothing to test against is reported as *not verified* rather
+  than as a pass.
+
 ### Changed
 - **The two automatic ban engines are now presented as two engines.** WAF
   auto-ban and Traffic detection are grouped under one *Automatic bans* heading

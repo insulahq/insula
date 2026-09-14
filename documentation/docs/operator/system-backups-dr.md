@@ -230,6 +230,40 @@ retrying: there is no completed bundle to restore from. Fix the backup first
 (**Backups → Targets**, then take a fresh bundle), or accept the data loss
 knowingly.
 
+### The encryption-key check
+
+Preview also reports whether **this cluster can decrypt its own stored
+credentials**, and a batch recover refuses to start when it cannot.
+
+The situation it catches is the ordinary one after a cluster loss: you restore
+the platform database from the old cluster, so every encrypted column in it —
+backup-target credentials, registry pull tokens, provider secrets — is ciphertext
+under the *old* cluster's encryption key. If the rebuilt cluster was bootstrapped
+with a fresh key instead of the old one, none of it can be read.
+
+Nothing about that is loud on its own. Each tenant recover provisions a
+namespace, volume and quota *before* it reaches anything that needs a cleartext
+secret, so without the check you would work through fifty tenants, provision
+fifty namespaces, and meet the same failure fifty times.
+
+The panel reports one of three things:
+
+- **Encryption key verified** — the credentials stored here decrypt. Note what
+  this does *not* claim: secrets carried inside a bundle from another cluster are
+  encrypted with *that* cluster's key, and are reported after the restore if they
+  turn out to be unreadable.
+- **Encryption key not verified** — there was nothing to test against. Normal on
+  a fresh cluster whose database was not restored. It is not a pass, and it is
+  not a failure; a key mismatch, if there is one, will surface per tenant.
+- **Cannot decrypt N of M stored credentials** — the recover is blocked, the
+  failing credentials are listed by name, and the fix is to re-bootstrap this
+  cluster with the source cluster's key from its age-encrypted secrets bundle
+  (`make secrets-fetch HOST=…`, then `make secrets-restore BUNDLE=… KEY=…`).
+
+You can tick **Recover anyway** to proceed regardless — reasonable if you intend
+to re-enter every listed credential by hand. Until you do, private-image
+workloads will not be able to pull.
+
 ## Moving tenants between clusters
 
 Tenant backups are cluster-agnostic, which makes cluster-to-cluster moves a

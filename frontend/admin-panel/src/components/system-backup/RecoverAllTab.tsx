@@ -12,17 +12,24 @@
 import { useState } from 'react';
 import {
   LifeBuoy, RefreshCw, Play, CheckCircle2, XCircle, Loader2, AlertTriangle,
+  KeyRound, ShieldAlert, HelpCircle,
 } from 'lucide-react';
 import { useDrRecoverAllPreview, useDrRecoverAll } from '@/hooks/use-dr-recover';
 import ErrorPanel from '@/components/ErrorPanel';
 import { extractOperatorError } from '@/lib/extract-operator-error';
-import type { DrRecoverAllTarget, DrRecoverAllResult, DrRecoverAllSkipped } from '@insula/api-contracts';
+import type {
+  DrRecoverAllTarget, DrRecoverAllResult, DrRecoverAllSkipped, DrEncryptionKeyPreflight,
+} from '@insula/api-contracts';
 
 type Scope = 'missing' | 'all';
 
 export default function RecoverAllTab() {
   const [scope, setScope] = useState<Scope>('missing');
   const [confirming, setConfirming] = useState(false);
+  // R25 §4. Opting past the encryption-key refusal is a separate, deliberate
+  // act from confirming the recover — so it is a separate control, and it
+  // resets with every new preview rather than persisting across runs.
+  const [overrideKeyMismatch, setOverrideKeyMismatch] = useState(false);
   const preview = useDrRecoverAllPreview();
   const recover = useDrRecoverAll();
 
@@ -37,15 +44,21 @@ export default function RecoverAllTab() {
   const unrecoverable = skipped.filter((s) => s.reason === 'no_completed_bundle');
   const results: readonly DrRecoverAllResult[] = recover.data?.data.results ?? [];
   const summary = recover.data?.data;
+  // Read from the run when there is one: a run started from a stale preview
+  // carries the verdict that actually applied.
+  const keyCheck: DrEncryptionKeyPreflight | undefined =
+    recover.data?.data.encryptionKey ?? preview.data?.data.encryptionKey;
+  const keyBlocked = keyCheck?.verdict === 'mismatch' && !overrideKeyMismatch;
 
   const runPreview = () => {
     setConfirming(false);
+    setOverrideKeyMismatch(false);
     recover.reset();
     preview.mutate({ scope });
   };
   const runRecover = () => {
     setConfirming(false);
-    recover.mutate({ scope });
+    recover.mutate({ scope, allowEncryptionKeyMismatch: overrideKeyMismatch });
   };
 
   return (
@@ -96,7 +109,7 @@ export default function RecoverAllTab() {
           {preview.isPending ? <Loader2 size={15} className="animate-spin" /> : <RefreshCw size={15} />}
           Preview lost tenants
         </button>
-        {preview.data && targets.length > 0 && !recover.data && (
+        {preview.data && targets.length > 0 && !recover.data && !keyBlocked && (
           confirming ? (
             <span className="inline-flex items-center gap-2 text-sm">
               <span className="text-gray-700 dark:text-gray-300">Recover {targets.length} tenant(s){scope === 'all' ? ' (incl. live)' : ''}?</span>
@@ -125,6 +138,18 @@ export default function RecoverAllTab() {
 
       {preview.isError && <ErrorPanel error={extractOperatorError(preview.error)} severity="error" onRetry={runPreview} />}
       {recover.isError && <ErrorPanel error={extractOperatorError(recover.error)} severity="error" />}
+
+      {/* R25 §4: can this cluster read its own encrypted credentials? Shown on
+          every preview and run — an operator cannot tell a check that passed
+          from one that never ran unless both say so. */}
+      {keyCheck && (
+        <EncryptionKeyPanel
+          check={keyCheck}
+          overridden={overrideKeyMismatch}
+          onOverride={setOverrideKeyMismatch}
+          canOverride={!recover.data}
+        />
+      )}
 
       {/* preview target set */}
       {preview.data && !recover.data && (
@@ -164,6 +189,85 @@ export default function RecoverAllTab() {
           <ResultTable rows={results} />
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * The encryption-key preflight (R25 §4).
+ *
+ * Three states, three different jobs:
+ *  - `mismatch` blocks, because every tenant recover provisions a namespace,
+ *    PVC and quota BEFORE it needs a secret — running anyway leaves a fleet of
+ *    empty tenants behind a failure that was knowable now.
+ *  - `unverified` is NOT a pass and does not read like one. Nothing was
+ *    testable, so nothing is claimed.
+ *  - `ok` is stated rather than left silent, and says what it does not cover.
+ */
+function EncryptionKeyPanel({ check, overridden, onOverride, canOverride }: {
+  check: DrEncryptionKeyPreflight;
+  overridden: boolean;
+  onOverride: (v: boolean) => void;
+  canOverride: boolean;
+}) {
+  if (check.verdict === 'ok') {
+    return (
+      <p className="flex items-start gap-2 rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800 dark:border-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-200">
+        <KeyRound size={15} className="mt-0.5 flex-shrink-0" />
+        <span>
+          <span className="font-medium">Encryption key verified</span> — {check.summary}
+        </span>
+      </p>
+    );
+  }
+
+  if (check.verdict === 'unverified') {
+    return (
+      <p className="flex items-start gap-2 rounded-md border border-gray-200 bg-gray-50 p-3 text-sm text-gray-700 dark:border-gray-700 dark:bg-gray-800/50 dark:text-gray-300">
+        <HelpCircle size={15} className="mt-0.5 flex-shrink-0" />
+        <span>
+          <span className="font-medium">Encryption key not verified</span> — {check.summary}
+        </span>
+      </p>
+    );
+  }
+
+  const failing = check.probes.filter((p) => p.verdict === 'wrong_key');
+  return (
+    <div className="rounded-md border border-red-300 bg-red-50 p-3 dark:border-red-800 dark:bg-red-900/30">
+      <div className="flex items-start gap-2">
+        <ShieldAlert size={16} className="mt-0.5 flex-shrink-0 text-red-600 dark:text-red-400" />
+        <div className="space-y-2 text-sm">
+          <p className="font-medium text-red-900 dark:text-red-200">
+            This cluster cannot decrypt {check.failed} of {check.probed} stored credentials
+          </p>
+          <p className="text-red-800 dark:text-red-300">{check.summary}</p>
+          {check.remedy && <p className="text-red-800 dark:text-red-300">{check.remedy}</p>}
+          {failing.length > 0 && (
+            <ul className="list-inside list-disc text-xs text-red-700 dark:text-red-400">
+              {failing.map((p) => (
+                <li key={`${p.source}:${p.ref}`}>
+                  {p.label ?? p.ref} <span className="opacity-70">({p.source.replace(/_/g, ' ')})</span>
+                </li>
+              ))}
+            </ul>
+          )}
+          {canOverride && (
+            <label className="flex items-start gap-2 pt-1 text-xs text-red-900 dark:text-red-200">
+              <input
+                type="checkbox"
+                checked={overridden}
+                onChange={(e) => onOverride(e.target.checked)}
+                className="mt-0.5"
+              />
+              <span>
+                Recover anyway. Every credential listed above must then be re-entered by hand,
+                and private-image workloads will not pull until it is done.
+              </span>
+            </label>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

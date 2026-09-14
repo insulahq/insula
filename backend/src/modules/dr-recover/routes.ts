@@ -35,6 +35,7 @@ import {
   type DrRecoverAllTarget,
   type DrRecoverAllResult,
   type DrRecoverAllResponse,
+  type DrEncryptionKeyPreflight,
   type MailboxRestoreMode,
   type RestoreJobStatus,
   type DrRecoverAllSkipped,
@@ -463,11 +464,46 @@ export async function drRecoverRoutes(app: FastifyInstance): Promise<void> {
     const existingNamespaces = await listClusterNamespaces(kubeconfigPath);
     const { targets, skipped } = await resolveRecoverAllTargets(app, input, existingNamespaces);
 
+    // ── R25 §4: can this cluster read its own encrypted credentials? ─────────
+    // Local decrypt probes, no network — cheap enough to run on every preview,
+    // and it answers before the first namespace is provisioned rather than
+    // after the fiftieth. See ./encryption-preflight.ts for what it does and
+    // does not cover.
+    const { runEncryptionKeyPreflight } = await import('./encryption-preflight.js');
+    const encryptionKey: DrEncryptionKeyPreflight = await runEncryptionKeyPreflight(
+      app.db,
+      (app.config as Record<string, unknown>).PLATFORM_ENCRYPTION_KEY as string | undefined
+        ?? process.env.PLATFORM_ENCRYPTION_KEY,
+      targets.map((t) => t.bundleId),
+      targets.map((t) => t.tenantId),
+    );
+
     if (input.dryRun) {
+      // A preview never refuses — reporting the mismatch IS the preview's job,
+      // and an operator who cannot see the finding cannot act on it.
       const dry: DrRecoverAllResponse = {
         dryRun: true, scope: input.scope, total: targets.length, recovered: 0, failed: 0, targets, skipped,
+        encryptionKey,
       };
       return reply.status(200).send(success(dry));
+    }
+
+    // A real run stops here. Every per-tenant recover provisions a namespace,
+    // PVC and quota BEFORE it reaches anything that needs a cleartext secret,
+    // so proceeding would leave a fleet of freshly provisioned, empty tenants
+    // behind a failure that was knowable up front.
+    if (encryptionKey.verdict === 'mismatch' && !input.allowEncryptionKeyMismatch) {
+      throw new ApiError(
+        'DR_ENCRYPTION_KEY_MISMATCH',
+        encryptionKey.summary,
+        409,
+        {
+          probed: encryptionKey.probed,
+          failed: encryptionKey.failed,
+          sources: [...new Set(encryptionKey.probes.filter((p) => p.verdict === 'wrong_key').map((p) => p.source))],
+        },
+        encryptionKey.remedy ?? undefined,
+      );
     }
 
     // SEQUENTIAL by design: a freshly-rebuilt cluster is fragile and each
@@ -507,6 +543,7 @@ export async function drRecoverRoutes(app: FastifyInstance): Promise<void> {
       failed: results.filter((r) => !r.ok || r.status === 'failed').length,
       results,
       skipped,
+      encryptionKey,
     };
     reply.status(202).send(success(response));
   });
