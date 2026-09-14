@@ -58,25 +58,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 - **Every list on the Web Defense page is sortable** — banned addresses, WAF
   events, the allowlist, auto-ban history, the calibration preview and the
   community feed. Addresses sort numerically, so 9.x no longer lands after 10.x.
-
-### Security
-- **Per-service database credentials no longer open a session against the
-  platform database.** Postgres grants `CONNECT` on every database to `PUBLIC`
-  unless it is explicitly revoked, and nothing revoked it — so the login roles
-  the platform creates for Roundcube and for the WAF's CrowdSec LAPI could each
-  authenticate into the `platform` database with their own credentials. No
-  tenant, user or billing data was ever readable that way (table privileges are
-  not granted to `PUBLIC`), but the per-database isolation the architecture
-  implies did not hold at the connection layer, and the role closest to
-  attacker-influenced input in the whole platform was one of the two. `CONNECT`
-  is now revoked from `PUBLIC` on every database and granted explicitly to each
-  owner, re-applied on boot and every five minutes so a database created later —
-  or restored from an older dump — cannot quietly reopen it. **Security →
-  Hardening** gains a card showing which databases are isolated, and names any
-  role that is connected but would be refused on its next reconnect. (ROADMAP
-  R36.)
-
-### Added
 - **A batch tenant recover now checks the encryption key before it starts, and
   refuses when it does not match.** After a cluster loss you restore the platform
   database from the old cluster — so every encrypted credential in it (backup
@@ -109,6 +90,15 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   last checkbox in a dense grid, is now a labelled row of its own.
 
 ### Fixed
+- **Traffic detection could be killed first when a node ran short of memory,
+  and nothing said so.** Every other host agent the platform runs — the security
+  probe, the firewall reconciler, the host-config reconcilers, the SFTP gateway
+  — is marked as node-critical, so the kubelet evicts them last. The CrowdSec
+  agent was not, so it was evicted *first*: exactly the moment a node is under
+  pressure is when it stopped watching the ingress log and stopped raising bans.
+  The failure is invisible from every angle an operator would check — ingress
+  keeps serving, every pod reads Running, and the Banned IPs list simply stops
+  growing. It is now node-critical like its siblings.
 - **A mail-drift repair no longer tells you to wait for something that never
   happens.** After repairing a drifted mail domain the platform reported that
   DNS "updates automatically on the next reconcile tick". There is no reconcile
@@ -179,6 +169,23 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   pods are excluded from the judgement entirely: whether Kubernetes has swept up
   a dead pod yet is not a fact about the client. *Down* now means precisely
   "nothing is serving", and *Degraded* "some of it is".
+
+### Security
+- **Per-service database credentials no longer open a session against the
+  platform database.** Postgres grants `CONNECT` on every database to `PUBLIC`
+  unless it is explicitly revoked, and nothing revoked it — so the login roles
+  the platform creates for Roundcube and for the WAF's CrowdSec LAPI could each
+  authenticate into the `platform` database with their own credentials. No
+  tenant, user or billing data was ever readable that way (table privileges are
+  not granted to `PUBLIC`), but the per-database isolation the architecture
+  implies did not hold at the connection layer, and the role closest to
+  attacker-influenced input in the whole platform was one of the two. `CONNECT`
+  is now revoked from `PUBLIC` on every database and granted explicitly to each
+  owner, re-applied on boot and every five minutes so a database created later —
+  or restored from an older dump — cannot quietly reopen it. **Security →
+  Hardening** gains a card showing which databases are isolated, and names any
+  role that is connected but would be refused on its next reconnect. (ROADMAP
+  R36.)
 
 ## [2026.9.19] - 2026-09-12
 
