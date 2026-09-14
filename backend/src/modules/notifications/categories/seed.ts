@@ -13,6 +13,8 @@
  * fall-throughs last. Within each block sort by `id` ASC so diff
  * review is stable.
  */
+import type { NotificationClass } from '../routing/classes.js';
+import type { Subsystem } from '../routing/channel-spec.js';
 import type {
   NotificationAudience,
   NotificationSeverity,
@@ -49,6 +51,17 @@ export interface CategoryDefinition {
   readonly displayName: string;
   readonly description: string;
   readonly audience: NotificationAudience;
+  /**
+   * WHY the recipient is being told, which decides whether the message leaves
+   * the platform UI at all. Severity says how loud; class says how far.
+   */
+  readonly cls: NotificationClass;
+  /**
+   * The subsystem this event REPORTS ON. The router excludes any channel that
+   * depends on it, so an alert about mail is never sent by mail and an alert
+   * about the platform being down is never left in the platform's own panel.
+   */
+  readonly reportsOn: Subsystem | null;
   readonly defaultSeverity: NotificationSeverity;
   readonly defaultChannels: readonly NotificationChannelId[];
   readonly isMandatory: boolean;
@@ -60,6 +73,8 @@ export interface CategoryDefinition {
 const TENANT_CATEGORIES: readonly CategoryDefinition[] = [
   {
     id: 'security.password_reset',
+    cls: 'security',
+    reportsOn: 'security',
     displayName: 'Password reset requested',
     description: 'Sent when a password reset link is requested for your account.',
     audience: 'tenant',
@@ -70,6 +85,8 @@ const TENANT_CATEGORIES: readonly CategoryDefinition[] = [
   },
   {
     id: 'security.password_changed',
+    cls: 'security',
+    reportsOn: 'security',
     displayName: 'Password changed',
     description: 'Confirmation that your account password was updated.',
     audience: 'tenant',
@@ -80,6 +97,8 @@ const TENANT_CATEGORIES: readonly CategoryDefinition[] = [
   },
   {
     id: 'security.suspicious_activity',
+    cls: 'security',
+    reportsOn: 'security',
     displayName: 'Suspicious sign-in activity',
     description: 'Sign-in from an unusual location or device.',
     audience: 'tenant',
@@ -92,6 +111,8 @@ const TENANT_CATEGORIES: readonly CategoryDefinition[] = [
   },
   {
     id: 'subscription.expiry_warning',
+    cls: 'action',
+    reportsOn: 'billing',
     displayName: 'Subscription expiring soon',
     description: 'Your hosting subscription will expire shortly — action required.',
     audience: 'tenant',
@@ -102,6 +123,8 @@ const TENANT_CATEGORIES: readonly CategoryDefinition[] = [
   },
   {
     id: 'subscription.renewed',
+    cls: 'record',
+    reportsOn: 'billing',
     displayName: 'Subscription renewed',
     description: 'Your hosting subscription was renewed for another billing cycle.',
     audience: 'tenant',
@@ -112,6 +135,8 @@ const TENANT_CATEGORIES: readonly CategoryDefinition[] = [
   },
   {
     id: 'subscription.changed',
+    cls: 'record',
+    reportsOn: 'billing',
     displayName: 'Subscription changed',
     description: 'Your subscription plan or billing details were modified.',
     audience: 'tenant',
@@ -122,6 +147,8 @@ const TENANT_CATEGORIES: readonly CategoryDefinition[] = [
   },
   {
     id: 'account.sub_account_added',
+    cls: 'security',
+    reportsOn: 'security',
     displayName: 'Sub-account added',
     description: 'A new sub-user was added to your account.',
     audience: 'tenant',
@@ -132,6 +159,8 @@ const TENANT_CATEGORIES: readonly CategoryDefinition[] = [
   },
   {
     id: 'tasks.scheduled_failure',
+    cls: 'action',
+    reportsOn: 'compute',
     displayName: 'Scheduled task failed',
     description: 'A scheduled task (cronjob, backup, etc.) failed to complete.',
     audience: 'tenant',
@@ -144,6 +173,8 @@ const TENANT_CATEGORIES: readonly CategoryDefinition[] = [
   },
   {
     id: 'tenant.suspended',
+    cls: 'security',
+    reportsOn: 'billing',
     displayName: 'Account suspended',
     description: 'Your hosting account was suspended.',
     audience: 'tenant',
@@ -154,6 +185,8 @@ const TENANT_CATEGORIES: readonly CategoryDefinition[] = [
   },
   {
     id: 'tenant.restored',
+    cls: 'record',
+    reportsOn: 'billing',
     displayName: 'Account restored',
     description: 'Your hosting account was reactivated.',
     audience: 'tenant',
@@ -164,6 +197,8 @@ const TENANT_CATEGORIES: readonly CategoryDefinition[] = [
   },
   {
     id: 'tenant.archived',
+    cls: 'record',
+    reportsOn: 'billing',
     displayName: 'Account archived',
     description: 'Your hosting account was archived — data is retained read-only.',
     audience: 'tenant',
@@ -174,6 +209,8 @@ const TENANT_CATEGORIES: readonly CategoryDefinition[] = [
   },
   {
     id: 'tenant.deleted',
+    cls: 'record',
+    reportsOn: 'billing',
     displayName: 'Account scheduled for deletion',
     description: 'Your hosting account is being permanently removed.',
     audience: 'tenant',
@@ -187,6 +224,8 @@ const TENANT_CATEGORIES: readonly CategoryDefinition[] = [
     // browser warning, and the usual cause (DNS not pointed at us yet,
     // or a customer-managed zone) is something only they can fix.
     id: 'tls.certificate_failed',
+    cls: 'action',
+    reportsOn: 'tls',
     displayName: 'Certificate could not be issued',
     description:
       'A TLS certificate for one of your domains could not be issued. Visitors will see a security warning until it is.',
@@ -198,6 +237,8 @@ const TENANT_CATEGORIES: readonly CategoryDefinition[] = [
   },
   {
     id: 'tls.certificate_issued',
+    cls: 'ambient',
+    reportsOn: 'tls',
     displayName: 'Certificate issued',
     description: 'A TLS certificate for one of your domains was issued or renewed.',
     audience: 'tenant',
@@ -208,6 +249,8 @@ const TENANT_CATEGORIES: readonly CategoryDefinition[] = [
   },
   {
     id: 'tls.certificate_fallback',
+    cls: 'action',
+    reportsOn: 'tls',
     displayName: 'Wildcard certificate unavailable',
     description:
       'A wildcard certificate could not be issued, so individual per-hostname certificates are being used instead. New subdomains will not be covered automatically until the wildcard succeeds.',
@@ -225,6 +268,8 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
     // the tenant has no working certificate at all (browser warning),
     // not a renewal of one that is still valid for weeks.
     id: 'admin.cert_issuance_failed',
+    cls: 'action',
+    reportsOn: 'tls',
     displayName: 'Certificate issuance failed',
     description:
       'A TLS certificate for a tenant domain could not be issued. The hostname has no valid certificate until this is resolved.',
@@ -236,6 +281,8 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
   },
   {
     id: 'admin.cert_expiring',
+    cls: 'action',
+    reportsOn: 'tls',
     displayName: 'Certificate expiring',
     description: 'A managed TLS certificate is approaching expiry.',
     audience: 'admin',
@@ -246,6 +293,8 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
   },
   {
     id: 'admin.cert_renewal_failed',
+    cls: 'action',
+    reportsOn: 'tls',
     displayName: 'Certificate renewal failed',
     description: 'Automated TLS certificate renewal failed and needs operator attention.',
     audience: 'admin',
@@ -256,6 +305,8 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
   },
   {
     id: 'admin.backup_failed',
+    cls: 'incident',
+    reportsOn: 'storage',
     displayName: 'Backup failed',
     description: 'A scheduled platform or tenant backup did not complete successfully.',
     audience: 'admin',
@@ -266,6 +317,8 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
   },
   {
     id: 'admin.backup_target_unreachable',
+    cls: 'incident',
+    reportsOn: 'storage',
     displayName: 'Backup target unreachable',
     description: 'The configured backup destination cannot be contacted.',
     audience: 'admin',
@@ -278,6 +331,8 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
   },
   {
     id: 'admin.node_down',
+    cls: 'availability',
+    reportsOn: 'platform',
     displayName: 'Cluster node down',
     description: 'A cluster node has gone offline or NotReady.',
     audience: 'admin',
@@ -288,6 +343,8 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
   },
   {
     id: 'admin.tenant_auto_repinned',
+    cls: 'ambient',
+    reportsOn: 'compute',
     displayName: 'Tenant automatically re-pinned',
     description: 'An HA-tier tenant was pinned to a node that went offline. Because its data has a replica on a healthy node, the platform cleared the pin so the tenant could reschedule. Local-tier tenants are never moved automatically.',
     audience: 'admin',
@@ -298,6 +355,8 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
   },
   {
     id: 'admin.node_rebooting',
+    cls: 'availability',
+    reportsOn: 'platform',
     displayName: 'Node rebooting',
     description: 'A cluster node has begun shutting down. On a single-node cluster the control plane goes down with it, so this cannot always be sent — the startup notification reports the reboot either way.',
     audience: 'admin',
@@ -308,6 +367,8 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
   },
   {
     id: 'admin.node_startup_complete',
+    cls: 'availability',
+    reportsOn: 'platform',
     displayName: 'Node startup complete',
     description: 'A cluster node finished booting and is Ready again, with the approximate downtime.',
     audience: 'admin',
@@ -318,6 +379,8 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
   },
   {
     id: 'admin.node_memory_event_critical',
+    cls: 'incident',
+    reportsOn: 'compute',
     displayName: 'Node memory event (system)',
     description: 'Kernel SystemOOM on a node, or a SYSTEM workload was evicted under memory pressure — the eviction design (tenants first) should make this rare.',
     audience: 'admin',
@@ -330,6 +393,8 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
   },
   {
     id: 'admin.node_memory_event_warning',
+    cls: 'action',
+    reportsOn: 'compute',
     displayName: 'Node memory event (tenant evictions)',
     description: 'Tenant pods were evicted by the kubelet under node memory pressure. This is the designed backpressure; frequent occurrences mean the node is oversubscribed or a tenant needs a bigger plan.',
     audience: 'admin',
@@ -342,6 +407,8 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
   },
   {
     id: 'admin.security_hardening_drift',
+    cls: 'action',
+    reportsOn: 'security',
     displayName: 'Security hardening drift',
     description: 'A node has drifted from the desired security hardening baseline.',
     audience: 'admin',
@@ -352,6 +419,8 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
   },
   {
     id: 'admin.slo_alert_critical',
+    cls: 'incident',
+    reportsOn: null,
     displayName: 'SLO alert firing (critical)',
     description: 'A critical SLO monitoring rule is firing (ADR-051 evaluator). Immediate operator '
       + 'attention required — see Monitoring → SLOs.',
@@ -363,6 +432,8 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
   },
   {
     id: 'admin.slo_alert_resolved',
+    cls: 'ambient',
+    reportsOn: null,
     displayName: 'SLO alert resolved',
     description: 'A previously-firing SLO monitoring rule has recovered.',
     audience: 'admin',
@@ -373,6 +444,8 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
   },
   {
     id: 'admin.slo_alert_warning',
+    cls: 'action',
+    reportsOn: null,
     displayName: 'SLO alert firing (warning)',
     description: 'A warning-level SLO monitoring rule is firing (ADR-051 evaluator). '
       + 'See Monitoring → SLOs.',
@@ -384,6 +457,8 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
   },
   {
     id: 'admin.wal_archive_failing',
+    cls: 'incident',
+    reportsOn: 'database',
     displayName: 'Database WAL archiving failing',
     description: 'PostgreSQL continuous WAL archiving to the configured backup target is failing. '
       + 'Un-archived WAL accumulates on disk until the volume fills — fix the backup target sink.',
@@ -397,6 +472,8 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
   },
   {
     id: 'admin.wal_archive_auto_disabled',
+    cls: 'incident',
+    reportsOn: 'database',
     displayName: 'Database WAL archiving auto-disabled',
     description: 'WAL archiving was AUTOMATICALLY disabled because it kept failing and pg_wal was '
       + 'filling the data volume. Backups for this database are now OFF (no PITR) until an operator '
@@ -410,6 +487,8 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
   // ── R4/R6 PR 4: outbound-mail protection (send quotas + FBL complaints) ──
   {
     id: 'tenant.email_quota_warning',
+    cls: 'action',
+    reportsOn: 'mail',
     displayName: 'Email sending quota at 80%',
     description: 'Your outbound email usage crossed 80% of the hourly or daily limit. '
       + 'Further messages may be deferred once the limit is reached.',
@@ -421,6 +500,8 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
   },
   {
     id: 'tenant.email_quota_exceeded',
+    cls: 'incident',
+    reportsOn: 'mail',
     displayName: 'Email sending quota reached',
     description: 'Your outbound email usage reached the hourly or daily limit. '
       + 'Additional messages are deferred until the window rolls over.',
@@ -432,6 +513,8 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
   },
   {
     id: 'admin.email_complaint_warning',
+    cls: 'action',
+    reportsOn: 'mail',
     displayName: 'Spam complaint rate elevated',
     description: 'A sender domain crossed the 0.1% 7-day complaint-rate threshold (FBL reports / '
       + 'sends). Throttle territory — investigate the sender. See Monitoring → Mail.',
@@ -443,6 +526,8 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
   },
   {
     id: 'admin.email_complaint_critical',
+    cls: 'incident',
+    reportsOn: 'mail',
     displayName: 'Spam complaint rate critical',
     description: 'A sender domain crossed the 0.3% 7-day complaint-rate threshold. Mailbox '
       + 'providers will start blocking — suspend outbound for the tenant unless clearly false. '
@@ -456,6 +541,8 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
   // ── Mail monitoring (2026-07): outbound send-limit saturation + blocklist ──
   {
     id: 'admin.email_abuse_warning',
+    cls: 'action',
+    reportsOn: 'mail',
     displayName: 'Outbound send-limit saturation',
     description: 'A tenant is generating an abnormal volume of rate-limited / quota-rejected '
       + 'outbound mail (>= the warning threshold in the last hour) — a runaway sender or early '
@@ -468,6 +555,8 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
   },
   {
     id: 'admin.email_abuse_critical',
+    cls: 'incident',
+    reportsOn: 'mail',
     displayName: 'Outbound send-limit saturation (critical)',
     description: 'A tenant crossed the CRITICAL rate-limited / quota-rejected volume threshold in '
       + 'the last hour — almost certainly a compromised account or a broken loop hammering the send '
@@ -480,6 +569,8 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
   },
   {
     id: 'admin.mail_blocklisted',
+    cls: 'incident',
+    reportsOn: 'mail',
     displayName: 'Mail IP on a DNS blocklist',
     description: 'A server-role node IP that sends mail is listed on a DNS blocklist (DNSBL). '
       + 'Outbound deliverability is degraded until the IP is delisted. See Monitoring → Mail → '
@@ -494,6 +585,8 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
   },
   {
     id: 'tenant.custom_deployment_rolled_back',
+    cls: 'action',
+    reportsOn: 'compute',
     displayName: 'Container auto-update rolled back',
     description: 'An automatic image update for one of your containers failed to start, so the '
       + 'previous image was restored and auto-update was switched off for that container.',
@@ -505,6 +598,8 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
   },
   {
     id: 'admin.custom_deployment_failed',
+    cls: 'action',
+    reportsOn: 'compute',
     displayName: 'Custom deployment failed',
     description: 'A tenant custom container entered a failed state (CrashLoopBackOff, '
       + 'ImagePullBackOff, OOMKilled, or timed out). The notification names the tenant, the '
@@ -520,6 +615,8 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
   },
   {
     id: 'admin.mail_health_degraded',
+    cls: 'incident',
+    reportsOn: 'mail',
     displayName: 'Mail server health check failing',
     description: 'A mail-server health component is FAILING — the Stalwart pod, its JMAP API, the '
       + 'RocksDB store, the TLS certificate, a mail port, or the external deliverability probes. '
@@ -538,6 +635,8 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
   // ── Resource monitoring (2026-07): per-tenant CPU/memory/storage saturation ──
   {
     id: 'admin.tenant_resource_saturation_warning',
+    cls: 'action',
+    reportsOn: 'compute',
     displayName: 'Tenant resource usage high',
     description: 'A tenant crossed the warning threshold (≈90%) of its CPU, memory, or storage '
       + 'allocation. May indicate a runaway workload or a tenant that needs a bigger plan. See the '
@@ -552,6 +651,8 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
   },
   {
     id: 'admin.tenant_resource_saturation_critical',
+    cls: 'incident',
+    reportsOn: 'compute',
     displayName: 'Tenant resource usage at limit',
     description: 'A tenant reached its CPU/memory/storage limit — workloads may be throttled, '
       + 'OOM-killed, or unable to write. Raise the tenant\'s limit/plan or investigate the workload.',
@@ -566,6 +667,8 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
   // ── Phase 1d: per-tenant OOM-kill alert ──
   {
     id: 'admin.tenant_pod_oom',
+    cls: 'action',
+    reportsOn: 'compute',
     displayName: 'Tenant workload OOM-killed',
     description: 'A tenant container was killed by the kernel out-of-memory killer. Repeated kills '
       + 'usually mean the workload needs a larger memory limit/plan or has a leak — check the '
@@ -581,6 +684,8 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
   // ── Monthly bandwidth (BW-3): 80/90 warning, 100 critical (cap active) ──
   {
     id: 'admin.tenant_bandwidth_warning',
+    cls: 'ambient',
+    reportsOn: 'network',
     displayName: 'Tenant bandwidth usage high',
     description: 'A tenant crossed 80%/90% of its monthly bandwidth allowance. At 100% the '
       + 'tenant\'s sites are capped (509) until the month resets — raise the limit/plan if this '
@@ -595,6 +700,8 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
   },
   {
     id: 'admin.tenant_bandwidth_critical',
+    cls: 'action',
+    reportsOn: 'network',
     displayName: 'Tenant bandwidth cap active',
     description: 'A tenant reached 100% of its monthly bandwidth allowance — its sites are now '
       + 'capped (HTTP 509) until the calendar month resets. Raise the limit/plan to restore '
@@ -609,6 +716,8 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
   },
   {
     id: 'tenant.bandwidth_warning',
+    cls: 'action',
+    reportsOn: 'network',
     displayName: 'Bandwidth usage high',
     description: 'Your monthly data-transfer usage crossed 80%/90% of your allowance. If you reach '
       + '100%, your sites will be temporarily unavailable until the month resets — upgrade your '
@@ -621,6 +730,8 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
   },
   {
     id: 'tenant.bandwidth_exceeded',
+    cls: 'incident',
+    reportsOn: 'network',
     displayName: 'Bandwidth limit reached',
     description: 'You reached your monthly data-transfer limit. Your sites are temporarily '
       + 'unavailable (HTTP 509) until the month resets. Upgrade your plan to restore them now.',
@@ -641,6 +752,8 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
 const LEGACY_CATEGORIES: readonly CategoryDefinition[] = [
   {
     id: 'legacy.info',
+    cls: 'ambient',
+    reportsOn: null,
     displayName: 'General notification (info)',
     description: 'Legacy fall-through for callers that did not declare a category.',
     audience: 'tenant',
@@ -651,6 +764,8 @@ const LEGACY_CATEGORIES: readonly CategoryDefinition[] = [
   },
   {
     id: 'legacy.warning',
+    cls: 'action',
+    reportsOn: null,
     displayName: 'General notification (warning)',
     description: 'Legacy fall-through for callers that did not declare a category.',
     audience: 'tenant',
@@ -661,6 +776,8 @@ const LEGACY_CATEGORIES: readonly CategoryDefinition[] = [
   },
   {
     id: 'legacy.error',
+    cls: 'incident',
+    reportsOn: null,
     displayName: 'General notification (error)',
     description: 'Legacy fall-through for callers that did not declare a category.',
     audience: 'tenant',
@@ -671,6 +788,8 @@ const LEGACY_CATEGORIES: readonly CategoryDefinition[] = [
   },
   {
     id: 'legacy.success',
+    cls: 'ambient',
+    reportsOn: null,
     displayName: 'General notification (success)',
     description: 'Legacy fall-through for callers that did not declare a category.',
     audience: 'tenant',
