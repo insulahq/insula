@@ -102,4 +102,26 @@ async function executeWebcron(db: Database, job: typeof cronJobs.$inferSelect): 
     lastRunResponseCode: responseCode,
     lastRunOutput: output?.slice(0, 2000) ?? null,
   }).where(eq(cronJobs.id, job.id));
+
+  // Tell the tenant. Until now this branch recorded the failure and notified
+  // nobody: `tasks.scheduled_failure` had templates on every channel and no
+  // emitter at all, so a nightly job could fail every night and the only
+  // evidence was a column in a panel the tenant had to think to open.
+  //
+  // Dedupe per (job, UTC day) — a broken job on a 5-minute schedule would
+  // otherwise send 288 notifications before breakfast.
+  if (status === 'failed' && job.tenantId) {
+    const reason = responseCode !== null
+      ? `HTTP ${responseCode}${output ? `: ${output.slice(0, 200)}` : ''}`
+      : (output ?? 'Request failed').slice(0, 200);
+    const { notifyTenantScheduledTaskFailure } = await import('../notifications/events.js');
+    await notifyTenantScheduledTaskFailure(
+      db,
+      job.tenantId,
+      { taskName: job.name, errorMessage: reason },
+      `scheduled-task-failure:${job.id}:${new Date().toISOString().slice(0, 10)}`,
+    ).catch((err) => {
+      console.warn('[webcron-scheduler] failure notification failed:', err instanceof Error ? err.message : err);
+    });
+  }
 }

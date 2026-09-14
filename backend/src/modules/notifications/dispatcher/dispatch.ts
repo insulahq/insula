@@ -32,7 +32,8 @@ import {
 import { resolveRecipients, type RecipientScope } from '../recipients.js';
 import { getCategory } from '../categories/service.js';
 import { getActiveTemplate } from '../templates/service.js';
-import { renderTemplateAsync } from '../templates/renderer.js';
+import { renderForDelivery } from '../templates/render-for-delivery.js';
+import { recordDegradedRender, clampDegradedVars } from './degraded.js';
 import { emitNtfyForEvent } from './ntfy.js';
 import { isCategoryAllowedForUser } from '../preferences/gate.js';
 import { getUserSettings } from '../preferences/service.js';
@@ -151,6 +152,8 @@ async function writeDelivery(
     recipientHash: string | null;
     contentHash: string;
     lastError?: string;
+    degradedVars?: readonly string[];
+    fallbackUsed?: boolean;
     providerMessageId?: string;
     sentAt?: Date | null;
     eventVariables?: Record<string, unknown>;
@@ -176,6 +179,12 @@ async function writeDelivery(
     attempt: input.status === 'sent' ? 1 : 0,
     maxAttempts: 6,
     lastError: input.lastError ?? null,
+    // NULL means "rendered cleanly". Only a genuine contract defect writes an
+    // array here, so the partial index stays small and the admin filter is
+    // exactly the set of thin messages.
+    degradedVars: input.degradedVars && input.degradedVars.length > 0
+      ? clampDegradedVars(input.degradedVars)
+      : null,
     providerMessageId: input.providerMessageId ?? null,
     sentAt: input.status === 'sent' ? now : null,
     eventVariables: input.eventVariables ?? null,
@@ -454,32 +463,25 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
         continue;
       }
 
-      // 3e. Render.
-      let rendered;
-      try {
-        rendered = await renderTemplateAsync(tpl, renderVars);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        const contentHash = sha256(`${category.id}::render-error`, hashSalt);
-        await writeDelivery(db, {
-          notificationId: null,
-          eventId,
-          userId,
-          tenantId: opts.tenantId ?? null,
-          categoryId: category.id,
-          channel,
-          templateId: tpl.id,
-          templateVersion: tpl.version,
-          locale,
-          status: 'skipped',
-          recipientHash: null,
-          contentHash,
-          dedupeKey: dedupeKey,
-          lastError: `render_failed: ${msg}`.slice(0, 1000),
-        });
-        statuses.push({ userId, channel, status: 'skipped', error: msg });
-        continue;
+      // 3e. Render. This CANNOT throw and CANNOT skip: a missing variable
+      // degrades the message (visible placeholder + degradedVars) and an
+      // unrenderable template falls back to the envelope. The previous
+      // behaviour — mark `skipped`, raise nothing, retry never — lost 16
+      // renewal emails to a single variable-name mismatch.
+      const rendered = await renderForDelivery(tpl, renderVars, {
+        fallbackTitle: category.displayName,
+      });
+      if (rendered.degradedVars.length > 0 || rendered.fallbackUsed) {
+        recordDegradedRender(category.id, channel, rendered.degradedVars, rendered.fallbackUsed);
       }
+      // A thin delivery is still a delivery. `lastError` explains WHY it is
+      // thin without demoting the row's status — the message went out, and
+      // the Delivery Log needs to say what was lost from it.
+      const degradeNote = rendered.fallbackUsed
+        ? `render_fallback: ${rendered.fallbackReason ?? 'template unrenderable'}`.slice(0, 1000)
+        : rendered.degradedVars.length > 0
+          ? `missing_vars: ${clampDegradedVars(rendered.degradedVars).join(', ')}`.slice(0, 1000)
+          : undefined;
 
       // 3g. Hash recipient + content. recipientEmail was resolved in 3c.
       const recipientHash = sha256(channel === 'email' ? (recipientEmail ?? userId) : userId, hashSalt);
@@ -517,6 +519,8 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
           recipientHash,
           contentHash,
           dedupeKey: dedupeKey,
+          degradedVars: rendered.degradedVars,
+          lastError: degradeNote,
         });
         statuses.push({ userId, channel, status: 'sent', notificationId });
         continue;
@@ -541,6 +545,8 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
         recipientHash,
         contentHash,
         dedupeKey: dedupeKey,
+        degradedVars: rendered.degradedVars,
+        lastError: degradeNote,
         // Persist the MERGED variables (defaults + caller) — the queue
         // worker re-renders from this column at send time and must see
         // the exact context the dispatcher validated here.
