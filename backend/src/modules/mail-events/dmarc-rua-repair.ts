@@ -12,11 +12,16 @@
  *
  * Fixing `buildEmailDnsRecords` fixes the record for domains provisioned
  * *afterwards*. The `_dmarc` record is written once, at email-domain enable
- * time, and `stalwart-jmap/dns-sync.ts` deliberately leaves `_dmarc` alone (it
- * is on the do-not-delete list, so operator-authored DMARC survives a sync).
- * So without this, **every domain already enabled keeps the broken address
- * forever** — which is the entire installed base, and the feature delivers
- * nothing to any of them.
+ * time, and nothing reconciles it afterwards — mail DNS has no background
+ * converger at all. So without this, **every domain already enabled keeps the
+ * broken address forever** — which is the entire installed base, and the
+ * feature delivers nothing to any of them.
+ *
+ * (An earlier version of this comment claimed `stalwart-jmap/dns-sync.ts`
+ * "deliberately leaves `_dmarc` alone". That was wrong twice over: `_dmarc` was
+ * on that module's owned-AND-DELETABLE list, and the module was never wired, so
+ * it never ran. It has since been deleted — reconciling mail DNS from
+ * Stalwart's zone file would delete a tenant's own apex MX or SPF include.)
  *
  * Verified on DEV 2026-09-13: after the generator fix deployed, the published
  * record still read `rua=mailto:dmarc-reports@…`.

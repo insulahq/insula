@@ -16,7 +16,7 @@ const encryptionKey = () => process.env.PLATFORM_ENCRYPTION_KEY ?? '0'.repeat(64
  * Result of pushing one record to the domain's authoritative servers.
  *
  * `syncRecordToProviders` deliberately never throws — a dozen callers
- * (ingress-routes, dkim publish, stalwart dns-sync, apex-drift repair)
+ * (ingress-routes, dkim publish, apex-drift repair)
  * treat DNS publication as best-effort and must not fail their own
  * transaction on it. Callers that DO owe the operator an answer
  * (record CRUD, the Sync Records push button) inspect this instead.

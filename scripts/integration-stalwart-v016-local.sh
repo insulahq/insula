@@ -240,11 +240,14 @@ fi
 
 # ── Step 8: DNS record check (informational) ──────────────────────────────
 echo ""
-echo "Step 8: DNS records (informational — dns-sync not active in dev)"
+echo "Step 8: DNS records (informational)"
 echo "  SKIP: PowerDNS not deployed in local DinD k3s."
-echo "        In staging/production, dns-sync polls Stalwart and publishes"
-echo "        MX/SPF/DKIM records to PowerDNS within 5 minutes of domain creation."
-echo "        Check platform-api logs: kubectl logs -n platform -l app=platform-api | grep stalwart-dns-sync"
+echo "        Mail DNS is written ONCE, at email-domain enable time"
+echo "        (buildEmailDnsRecords), and on DKIM rotation / drift repair"
+echo "        (upsertDkimTxtRecord). There is no background reconcile:"
+echo "        the dns-sync poller was never wired and has been deleted —"
+echo "        blindly reconciling from Stalwart's zone file would delete a"
+echo "        tenant's own apex MX or SPF include (own mail server / gateway)."
 
 # ── Step 8b/8c probe helper ───────────────────────────────────────────────
 # stalwart pod has no curl AND can't reach platform-api Service (NetworkPolicy
