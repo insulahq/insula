@@ -185,6 +185,121 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     ],
   },
 
+  // ── mailbox.quota_threshold / _exceeded ────────────────────────────
+  //
+  // Answers which tenant, which mailbox, what and when — the four things the
+  // retired `mail-mailbox-over-quota` SLO alert could not say, because it read
+  // a single global counter with no subject labels.
+  {
+    categoryId: 'mailbox.quota_threshold',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: 'Mailbox {{mailboxAddress}} is {{percent}}% full',
+    bodyTemplate: emailMjml(
+      'Mailbox nearly full',
+      'Mailbox {{mailboxAddress}} on {{tenantName}} has used {{usedMb}} MB of its {{quotaMb}} MB quota '
+      + '({{percent}}%), as of {{occurredAt}}. Delete messages you no longer need, or increase the quota, '
+      + 'before new mail starts being rejected.',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'mailboxAddress', type: 'string', required: false },
+      { name: 'percent', type: 'string', required: false },
+      { name: 'usedMb', type: 'string', required: false },
+      { name: 'quotaMb', type: 'string', required: false },
+      { name: 'occurredAt', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'mailbox.quota_threshold',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: 'Mailbox {{mailboxAddress}} is {{percent}}% full',
+    bodyTemplate: '{{mailboxAddress}} on {{tenantName}} has used {{usedMb}} of {{quotaMb}} MB ({{percent}}%) as of {{occurredAt}}.',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'mailboxAddress', type: 'string', required: false },
+      { name: 'percent', type: 'string', required: false },
+      { name: 'usedMb', type: 'string', required: false },
+      { name: 'quotaMb', type: 'string', required: false },
+      { name: 'occurredAt', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'mailbox.quota_exceeded',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: 'Mailbox {{mailboxAddress}} is full — mail is being rejected',
+    bodyTemplate: emailMjml(
+      'Mailbox full',
+      'Mailbox {{mailboxAddress}} on {{tenantName}} has reached its {{quotaMb}} MB quota ({{usedMb}} MB used) '
+      + 'as of {{occurredAt}}. New mail addressed to it is being REJECTED. Delete messages or increase the '
+      + 'quota to start receiving again.',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'mailboxAddress', type: 'string', required: false },
+      { name: 'percent', type: 'string', required: false },
+      { name: 'usedMb', type: 'string', required: false },
+      { name: 'quotaMb', type: 'string', required: false },
+      { name: 'occurredAt', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'mailbox.quota_exceeded',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: 'Mailbox {{mailboxAddress}} is full',
+    bodyTemplate: '{{mailboxAddress}} on {{tenantName}} is at 100% of its {{quotaMb}} MB quota as of {{occurredAt}} — new mail is being rejected.',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'mailboxAddress', type: 'string', required: false },
+      { name: 'percent', type: 'string', required: false },
+      { name: 'usedMb', type: 'string', required: false },
+      { name: 'quotaMb', type: 'string', required: false },
+      { name: 'occurredAt', type: 'string', required: false },
+    ],
+  },
+  // ── admin.mailbox_quota_fleet ──────────────────────────────────────
+  {
+    categoryId: 'admin.mailbox_quota_fleet',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: '{{mailboxCount}} mailbox(es) over quota across {{tenantCount}} tenant(s)',
+    bodyTemplate: emailMjml(
+      'Mailboxes over storage quota',
+      '{{mailboxCount}} mailbox(es) across {{tenantCount}} tenant(s) are at 100% of quota as of '
+      + '{{occurredAt}} and are rejecting mail: {{mailboxList}}',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'mailboxCount', type: 'string', required: false },
+      { name: 'tenantCount', type: 'string', required: false },
+      { name: 'mailboxList', type: 'string', required: false },
+      { name: 'occurredAt', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'admin.mailbox_quota_fleet',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: '{{mailboxCount}} mailbox(es) over quota',
+    bodyTemplate: '{{mailboxCount}} mailbox(es) across {{tenantCount}} tenant(s) at 100% of quota as of {{occurredAt}}: {{mailboxList}}',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'mailboxCount', type: 'string', required: false },
+      { name: 'tenantCount', type: 'string', required: false },
+      { name: 'mailboxList', type: 'string', required: false },
+      { name: 'occurredAt', type: 'string', required: false },
+    ],
+  },
+
   // ── subscription.renewed ───────────────────────────────────────────
   {
     categoryId: 'subscription.renewed',

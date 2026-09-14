@@ -7,7 +7,6 @@ describe('SLO_RULES — mail monitoring additions', () => {
     'mail-queue-backlog',
     'mail-cert-expiry',
     'mail-cert-self-signed',
-    'mail-mailbox-over-quota',
   ] as const;
 
   it('registers every new mail rule', () => {
@@ -33,7 +32,17 @@ describe('SLO_RULES — mail monitoring additions', () => {
     expect(ruleById('mail-queue-backlog')!.expr).toContain('platform_mail_outbound_queue_depth');
     expect(ruleById('mail-cert-expiry')!.expr).toContain('platform_mail_tls_cert_expiry_seconds');
     expect(ruleById('mail-cert-self-signed')!.expr).toContain('platform_mail_tls_cert_self_signed');
-    expect(ruleById('mail-mailbox-over-quota')!.expr).toContain('platform_mail_mailboxes_over_quota');
+  });
+
+  it('no longer carries a mailbox-quota rule', () => {
+    // Retired 2026-09-14. It alerted on max(platform_mail_mailboxes_over_quota)
+    // with subjectLabels: [] — a single GLOBAL COUNTER, structurally incapable
+    // of naming the mailbox, the tenant or the contact, delivered to the one
+    // audience that could act on it least directly. A mailbox filling up is a
+    // tenant capacity event, not a platform service-level objective; it is now
+    // `mailbox.quota_threshold` / `_exceeded` for the tenant and the mailbox
+    // owner, and `admin.mailbox_quota_fleet` (aggregated, named) for the operator.
+    expect(ruleById('mail-mailbox-over-quota')).toBeUndefined();
   });
 
   it('mail-server-down folds an absent series to healthy (no false-fire when mail absent)', () => {
