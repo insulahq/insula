@@ -270,3 +270,81 @@ export type MailHealthCertComponent = z.infer<typeof mailHealthCertComponentSche
 export type MailHealthCertPort = z.infer<typeof mailHealthCertPortSchema>;
 export type MailHealthTcpComponent = z.infer<typeof mailHealthTcpComponentSchema>;
 export type MailHealthTcpPort = z.infer<typeof mailHealthTcpPortSchema>;
+
+// ─── DMARC aggregate reports (ROADMAP R5) ──────────────────────────────────
+//
+// Stalwart parses the RFC 7489 XML; the platform ingests the parsed objects and
+// aggregates them here. Every rate is reported WITH its denominator: a pass
+// rate with no message count is exactly the figure that gets acted on when it
+// should not be.
+
+export const dmarcPolicySchema = z.enum(['none', 'quarantine', 'reject']);
+export type DmarcPolicyValue = z.infer<typeof dmarcPolicySchema>;
+
+export const dmarcRecommendationSchema = z.object({
+  policyDomain: z.string(),
+  currentPolicy: dmarcPolicySchema.nullable(),
+  /** What to publish next, or null when nothing should change yet. */
+  recommendedPolicy: dmarcPolicySchema.nullable(),
+  passRate: z.number().min(0).max(1).nullable(),
+  /** One actionable sentence. Never empty. */
+  reason: z.string().min(1),
+  /**
+   * True only when every threshold is met. The UI gates on this rather than on
+   * `recommendedPolicy != null`, so a null-because-unknown can never be read
+   * as a null-because-fine.
+   */
+  ready: z.boolean(),
+});
+export type DmarcRecommendationResponse = z.infer<typeof dmarcRecommendationSchema>;
+
+export const dmarcDomainSummarySchema = z.object({
+  policyDomain: z.string(),
+  tenantId: z.string().nullable(),
+  reportCount: z.number().int().nonnegative(),
+  totalMessages: z.number().int().nonnegative(),
+  passMessages: z.number().int().nonnegative(),
+  failMessages: z.number().int().nonnegative(),
+  dkimPassMessages: z.number().int().nonnegative(),
+  spfPassMessages: z.number().int().nonnegative(),
+  quarantinedMessages: z.number().int().nonnegative(),
+  rejectedMessages: z.number().int().nonnegative(),
+  /** Null when there is no denominator — NOT 0, and NOT 1. */
+  passRate: z.number().min(0).max(1).nullable(),
+  currentPolicy: dmarcPolicySchema.nullable(),
+  firstReportAt: z.string().nullable(),
+  lastReportAt: z.string().nullable(),
+  windowDays: z.number().int().nonnegative(),
+  failingSources: z.number().int().nonnegative(),
+  recommendation: dmarcRecommendationSchema,
+});
+export type DmarcDomainSummary = z.infer<typeof dmarcDomainSummarySchema>;
+
+export const dmarcSourceSummarySchema = z.object({
+  sourceIp: z.string(),
+  policyDomain: z.string().nullable(),
+  messageCount: z.number().int().nonnegative(),
+  passCount: z.number().int().nonnegative(),
+  failCount: z.number().int().nonnegative(),
+  lastSeenAt: z.string().nullable(),
+});
+export type DmarcSourceSummary = z.infer<typeof dmarcSourceSummarySchema>;
+
+export const dmarcOverviewSchema = z.object({
+  windowDays: z.number().int().positive(),
+  domains: z.array(dmarcDomainSummarySchema).default([]),
+  /**
+   * Where reports are expected to arrive. Surfaced so an operator can see the
+   * address the published `rua=` points at without reading DNS — the previous
+   * record pointed at a mailbox that never existed, and nothing showed it.
+   */
+  intakeLocalPart: z.string(),
+});
+export type DmarcOverview = z.infer<typeof dmarcOverviewSchema>;
+
+export const dmarcSourcesQuerySchema = z.object({
+  domain: z.string().min(1).max(255),
+  windowDays: z.coerce.number().int().min(1).max(365).optional(),
+  limit: z.coerce.number().int().min(1).max(500).optional(),
+});
+export type DmarcSourcesQuery = z.infer<typeof dmarcSourcesQuerySchema>;

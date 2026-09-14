@@ -75,10 +75,33 @@ The recovery primitives already exist; what is missing is the mapping and the su
 | Finding | Detect via | Recovery action | Exists today |
 |---|---|---|---|
 | `workloads_pinned_to_down_node` | `tenants.node_name` = a NotReady node | Re-pin the tenant to a live node | yes — the drain flow's `tenantPlacement` already re-pins workloads + volumes + DB row |
-| `volume_last_replica_on_down_node` | Longhorn replica set for the tenant's volumes | Wait for node return, or restore from the latest tenant bundle | yes — `dr-recover` restores a tenant from a bundle |
+| `volume_last_replica_on_down_node` | Longhorn replica set for the tenant's volumes (see §2.5) | Wait for node return, or restore from the latest tenant bundle | yes — `dr-recover` restores a tenant from a bundle |
 | `volume_degraded_rebuilding` | Longhorn `robustness=degraded` | None — informational, self-heals | n/a |
 | `mail_unavailable` | mail active node NotReady / `mail/health` unhealthy | Mail failover, then failback | yes — `/admin/mail/failover`, `/admin/mail/failback` |
 | `namespace_resources_missing` | existing namespace-integrity audit | Repair | yes — `namespace-integrity` |
+
+### 2.5 What does NOT count as a stranded volume
+
+Two Longhorn states look exactly like "the last replica died" and are not:
+
+- **Detached.** Longhorn stops every replica PROCESS when the last workload unmounts a
+  volume, so *no replica is running anywhere* is the resting state of every idle volume on
+  a perfectly healthy cluster. A detached volume is judged by replica **placement** — it is
+  only unreachable when every node holding a replica is down. Judging it by running
+  replicas reported the SYSTEM tenant and two serving tenants as fully Down on production
+  2026-09-13 with the single node Ready and every site up.
+- **No live PVC.** A re-provisioned tenant leaves its old Longhorn volume behind, and
+  `status.kubernetesStatus` keeps the original `namespace` and `pvcName` forever — so the
+  ghost is indistinguishable from the real volume by name. `lastPVCRefAt` is non-empty
+  exactly when the PVC reference has been lost; those volumes are skipped outright, because
+  nothing they report is a fact about the tenant that is running today.
+
+A pod that is not Ready is likewise given a 120s grace window from its creation timestamp.
+Every tenant Deployment runs `strategy: Recreate` at one replica, so an ordinary restart
+deletes the only pod before creating its replacement — without the window the tenant list
+flashes a red "Down" chip on every env-var edit, image bump and node reboot. Terminal pods
+(`Succeeded`/`Failed`) are excluded from both sides of the ratio: whether a corpse has been
+garbage-collected yet is not a fact about the tenant.
 
 `buildDrainImpact` already computes most of the blast radius (per-tenant workloads, PVCs,
 last-replica detection) and **already works against a dead node** — it is simply not

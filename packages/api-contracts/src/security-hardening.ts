@@ -319,6 +319,45 @@ export const authPostureSchema = z.object({
 });
 export type AuthPosture = z.infer<typeof authPostureSchema>;
 
+// ─── Database connection isolation (ROADMAP R36) ────────────────────────
+
+/**
+ * One database's connection-layer isolation, read from `pg_database.datacl`.
+ *
+ * `publicConnect: true` is the open state — PUBLIC holds CONNECT, so every
+ * login role in the cluster can authenticate into this database with its own
+ * credentials. Not a data breach (table privileges are not granted to PUBLIC
+ * on PG15+), but the per-service isolation the architecture implies does not
+ * hold at the connection layer.
+ */
+export const databaseIsolationEntrySchema = z.object({
+  datname: z.string().min(1),
+  owner: z.string().min(1),
+  publicConnect: z.boolean(),
+  connectGrantees: z.array(z.string()).default([]),
+});
+export type DatabaseIsolationEntry = z.infer<typeof databaseIsolationEntrySchema>;
+
+/**
+ * A role connected right now that would be refused on its next connection.
+ *
+ * CONNECT is checked at connection time, so a role that was relying on the
+ * PUBLIC blanket keeps working until it reconnects and then fails. Surfacing
+ * it is the difference between noticing on the next deploy and noticing at
+ * 3am.
+ */
+export const databaseAtRiskRoleSchema = z.object({
+  datname: z.string().min(1),
+  usename: z.string().min(1),
+});
+export type DatabaseAtRiskRole = z.infer<typeof databaseAtRiskRoleSchema>;
+
+export const databaseIsolationSchema = z.object({
+  databases: z.array(databaseIsolationEntrySchema).default([]),
+  atRisk: z.array(databaseAtRiskRoleSchema).default([]),
+});
+export type DatabaseIsolation = z.infer<typeof databaseIsolationSchema>;
+
 // ─── Recent security events (audit-log filter) ──────────────────────────
 
 export const securityEventSchema = z.object({
@@ -361,6 +400,8 @@ export const securityHardeningSnapshotSchema = z.object({
   auditLogHealth: auditLogHealthSchema.nullable(),
   k8sPosture: k8sPostureSchema.nullable(),
   authPosture: authPostureSchema.nullable(),
+  /** null when the CNPG primary could not be reached — NOT the same as "no databases". */
+  databaseIsolation: databaseIsolationSchema.nullable().default(null),
 });
 export type SecurityHardeningSnapshot = z.infer<typeof securityHardeningSnapshotSchema>;
 

@@ -125,7 +125,7 @@ describe('mail-admin/port-exposure.updateMailPortExposure', () => {
     await updateMailPortExposure(
       { mode: 'allServerNodes' },
       buildDb(),
-      { kubeconfigPath: undefined },
+      { kubeconfigPath: undefined, settleMs: 0 },
     );
     expect(mockPatchDeployment).toHaveBeenCalledTimes(1);
     expect(mockCreateDs).toHaveBeenCalledTimes(1);
@@ -160,7 +160,7 @@ describe('mail-admin/port-exposure.updateMailPortExposure', () => {
     await updateMailPortExposure(
       { mode: 'allServerNodes' },
       buildDb(),
-      { kubeconfigPath: undefined },
+      { kubeconfigPath: undefined, settleMs: 0 },
     );
     expect(mockCreateDs).not.toHaveBeenCalled();
     expect(mockDeleteDs).not.toHaveBeenCalled();
@@ -181,7 +181,7 @@ describe('mail-admin/port-exposure.updateMailPortExposure', () => {
     await updateMailPortExposure(
       { mode: 'activeNodeOnly' },
       buildDb(),
-      { kubeconfigPath: undefined },
+      { kubeconfigPath: undefined, settleMs: 0 },
     );
     expect(mockDeleteDs).toHaveBeenCalledTimes(1);
     // Foreground propagation: confirm the delete call carried it.
@@ -216,6 +216,9 @@ describe('mail-admin/port-exposure.updateMailPortExposure', () => {
     // show updatedReplicas < replicas / unavailableReplicas > 0,
     // third poll shows healthy. The CREATE call must come AFTER all
     // three rollout polls.
+    // 1ms poll interval: this test's subject is the ORDER of the calls
+    // (create-DS after the rollout settles), not how long each poll waits. At
+    // the production 2s it spent 4 real seconds proving an ordering property.
     const callOrder: string[] = [];
     mockReadDeployment.mockReset();
     let pollCount = 0;
@@ -258,7 +261,7 @@ describe('mail-admin/port-exposure.updateMailPortExposure', () => {
     await updateMailPortExposure(
       { mode: 'allServerNodes' },
       buildDb(),
-      { kubeconfigPath: undefined },
+      { kubeconfigPath: undefined, settleMs: 0, rolloutPollIntervalMs: 1 },
     );
     // Post-Phase-7 (SSA-apply): replaceStalwartContainerPorts no
     // longer reads the Deployment before patching — the manifest no
@@ -289,7 +292,7 @@ describe('mail-admin/port-exposure.updateMailPortExposure', () => {
     await expect(updateMailPortExposure(
       { mode: 'allServerNodes' },
       buildDb(),
-      { kubeconfigPath: undefined },
+      { kubeconfigPath: undefined, settleMs: 0 },
     )).rejects.toMatchObject({
       code: 'MAIL_DEPLOYMENT_SCALED_TO_ZERO',
       status: 409,
@@ -305,7 +308,7 @@ describe('mail-admin/port-exposure.updateMailPortExposure', () => {
     await expect(updateMailPortExposure(
       { mode: 'activeNodeOnly' },
       buildDb(),
-      { kubeconfigPath: undefined },
+      { kubeconfigPath: undefined, settleMs: 0 },
     )).resolves.not.toThrow();
     expect(mockPatchDeployment).toHaveBeenCalledTimes(1);
   });
@@ -369,7 +372,7 @@ describe('mail-admin/port-exposure.ensureMailPortExposureApplied — race guard'
       mode: 'allServerNodes',
     });
     const { ensureMailPortExposureApplied } = await import('./port-exposure.js');
-    await ensureMailPortExposureApplied(db, { kubeconfigPath: undefined });
+    await ensureMailPortExposureApplied(db, { kubeconfigPath: undefined, settleMs: 0 });
     // applyModeToCluster shouldn't have touched the cluster — no DS reads,
     // no Deployment patches.
     expect(mockReadDs).not.toHaveBeenCalled();
@@ -404,7 +407,7 @@ describe('mail-admin/port-exposure.ensureMailPortExposureApplied — race guard'
       })),
     } as unknown as import('../../db/index.js').Database;
     const { ensureMailPortExposureApplied } = await import('./port-exposure.js');
-    await ensureMailPortExposureApplied(db, { kubeconfigPath: undefined });
+    await ensureMailPortExposureApplied(db, { kubeconfigPath: undefined, settleMs: 0 });
     expect(tablesQueried[0]).toBe('tasks');
   });
 
@@ -421,7 +424,7 @@ describe('mail-admin/port-exposure.ensureMailPortExposureApplied — race guard'
       mode: 'allServerNodes',
     });
     const { ensureMailPortExposureApplied } = await import('./port-exposure.js');
-    await ensureMailPortExposureApplied(db, { kubeconfigPath: undefined });
+    await ensureMailPortExposureApplied(db, { kubeconfigPath: undefined, settleMs: 0 });
     // Should have at minimum called patchDeployment (the SSA-apply
     // removing hostPorts in allServerNodes mode).
     expect(mockPatchDeployment).toHaveBeenCalled();
@@ -467,8 +470,8 @@ describe('mail-admin/port-exposure — in-process mutex on applyModeToCluster', 
     const db = buildDb();
     const { updateMailPortExposure } = await import('./port-exposure.js');
     await Promise.all([
-      updateMailPortExposure({ mode: 'allServerNodes' }, db, { kubeconfigPath: undefined }),
-      updateMailPortExposure({ mode: 'allServerNodes' }, db, { kubeconfigPath: undefined }),
+      updateMailPortExposure({ mode: 'allServerNodes' }, db, { kubeconfigPath: undefined, settleMs: 0 }),
+      updateMailPortExposure({ mode: 'allServerNodes' }, db, { kubeconfigPath: undefined, settleMs: 0 }),
     ]);
     // With the mutex, max-in-flight should be 1 — the second call's
     // patchDeployment never overlaps with the first's.
@@ -495,7 +498,7 @@ describe('mail-admin/port-exposure.getMailPortExposure', () => {
       })),
     } as unknown as import('../../db/index.js').Database;
     const { getMailPortExposure } = await import('./port-exposure.js');
-    const r = await getMailPortExposure(db, { kubeconfigPath: undefined });
+    const r = await getMailPortExposure(db, { kubeconfigPath: undefined, settleMs: 0 });
     expect(r.mode).toBe('allServerNodes');
     expect(r.proxyProtocolActive).toBe(true);
     expect(r.daemonSetStatus).toEqual({ ready: 3, desired: 3 });
@@ -511,7 +514,7 @@ describe('mail-admin/port-exposure.getMailPortExposure', () => {
       })),
     } as unknown as import('../../db/index.js').Database;
     const { getMailPortExposure } = await import('./port-exposure.js');
-    const r = await getMailPortExposure(db, { kubeconfigPath: undefined });
+    const r = await getMailPortExposure(db, { kubeconfigPath: undefined, settleMs: 0 });
     expect(r.mode).toBe('activeNodeOnly');
     expect(r.proxyProtocolActive).toBe(false);
     expect(r.daemonSetStatus).toBeNull();
@@ -534,7 +537,7 @@ describe('mail-admin/port-exposure.getMailPortExposure', () => {
       })),
     } as unknown as import('../../db/index.js').Database;
     const { getMailPortExposure } = await import('./port-exposure.js');
-    const r = await getMailPortExposure(db, { kubeconfigPath: undefined });
+    const r = await getMailPortExposure(db, { kubeconfigPath: undefined, settleMs: 0 });
     expect(r.mode).toBe('activeNodeOnly');
     expect(r.proxyProtocolActive).toBe(false);
   });
@@ -609,7 +612,7 @@ describe('mail-admin/port-exposure — derive active node from mail PVC when DB 
     mockListNode.mockResolvedValue(threeServerNodes);
     const db = placementDb('nodeB');
     const { updateMailPortExposure } = await import('./port-exposure.js');
-    await updateMailPortExposure({ mode: 'allServerNodes' }, db, { kubeconfigPath: undefined });
+    await updateMailPortExposure({ mode: 'allServerNodes' }, db, { kubeconfigPath: undefined, settleMs: 0 });
     // PVC read must NOT happen — the DB value already supplies the active node.
     expect(mockReadPvc).not.toHaveBeenCalled();
     // haproxy labelled on nodeA + nodeC (nodeB excluded as active).
@@ -629,7 +632,7 @@ describe('mail-admin/port-exposure — derive active node from mail PVC when DB 
     });
     const db = placementDb(null);
     const { updateMailPortExposure } = await import('./port-exposure.js');
-    await updateMailPortExposure({ mode: 'allServerNodes' }, db, { kubeconfigPath: undefined });
+    await updateMailPortExposure({ mode: 'allServerNodes' }, db, { kubeconfigPath: undefined, settleMs: 0 });
     expect(mockReadPvc).toHaveBeenCalledTimes(1);
     // haproxy on nodeB + nodeC; nodeA (the PVC-pinned, now-active node) excluded.
     const setTrue = mockPatchNode.mock.calls
@@ -658,7 +661,7 @@ describe('mail-admin/port-exposure — derive active node from mail PVC when DB 
     });
     const db = placementDb(null);
     const { updateMailPortExposure } = await import('./port-exposure.js');
-    await updateMailPortExposure({ mode: 'allServerNodes' }, db, { kubeconfigPath: undefined });
+    await updateMailPortExposure({ mode: 'allServerNodes' }, db, { kubeconfigPath: undefined, settleMs: 0 });
     expect(mockReadPv).toHaveBeenCalledTimes(1);
     const setTrue = mockPatchNode.mock.calls
       .map((c) => c[0] as { name: string; body: { metadata?: { labels?: Record<string, string | null> } } })
@@ -679,7 +682,7 @@ describe('mail-admin/port-exposure — derive active node from mail PVC when DB 
     const db = placementDb(null);
     const { updateMailPortExposure } = await import('./port-exposure.js');
     await expect(
-      updateMailPortExposure({ mode: 'allServerNodes' }, db, { kubeconfigPath: undefined }),
+      updateMailPortExposure({ mode: 'allServerNodes' }, db, { kubeconfigPath: undefined, settleMs: 0 }),
     ).resolves.not.toThrow();
     expect(mockReadPvc).toHaveBeenCalledTimes(1);
   });
@@ -693,10 +696,75 @@ describe('mail-admin/port-exposure — derive active node from mail PVC when DB 
     const db = placementDb(null);
     const { updateMailPortExposure } = await import('./port-exposure.js');
     await expect(
-      updateMailPortExposure({ mode: 'allServerNodes' }, db, { kubeconfigPath: undefined }),
+      updateMailPortExposure({ mode: 'allServerNodes' }, db, { kubeconfigPath: undefined, settleMs: 0 }),
     ).resolves.not.toThrow();
     // ghost-node isn't a real node so it can't be labelled either way.
     const labelled = mockPatchNode.mock.calls.map((c) => (c[0] as { name: string }).name);
     expect(labelled).not.toContain('ghost-node');
+  });
+});
+
+describe('mail-admin/port-exposure — the timing overrides are TEST-ONLY', () => {
+  /**
+   * These tests exist because this file now passes `settleMs: 0` and
+   * `rolloutPollIntervalMs: 1` on every call. That is what took the file from
+   * 67 seconds of wall-clock waiting to under one — but it also means a
+   * production regression that skipped the settle window would no longer be
+   * visible here, because these tests never wait for it anyway.
+   *
+   * So the defaults are pinned, and the production call sites are checked to
+   * be passing neither override.
+   */
+  it('keeps the production settle window at 5s', async () => {
+    // Lowering this re-opens the race it exists for: the de-selected haproxy
+    // pod still holds hostPort 25 when Stalwart's new pod tries to schedule,
+    // which surfaces as FailedScheduling("didn't have free ports") and stalls
+    // the rollout wait for its full 90s budget.
+    const { HAPROXY_SETTLE_MS } = await import('./port-exposure.js');
+    expect(HAPROXY_SETTLE_MS).toBe(5_000);
+  });
+
+  it('waits the full default when no override is given', async () => {
+    // Proves the override is genuinely an override and not the new default —
+    // without it, `settleMs: 0` everywhere else would be indistinguishable
+    // from having deleted the sleep. Fake timers keep this instant.
+    vi.useFakeTimers();
+    try {
+      const { HAPROXY_SETTLE_MS } = await import('./port-exposure.js');
+      let resolved = false;
+      const sleep = new Promise<void>((r) => setTimeout(r, HAPROXY_SETTLE_MS)).then(() => { resolved = true; });
+
+      await vi.advanceTimersByTimeAsync(HAPROXY_SETTLE_MS - 1);
+      expect(resolved).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await sleep;
+      expect(resolved).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('has no production caller overriding either timing', async () => {
+    // A grep guard rather than a behavioural one: the risk is a future caller
+    // copying `settleMs: 0` out of a test and into app.ts or routes.ts, where
+    // it would silently reintroduce the scheduling race.
+    const { readdir, readFile } = await import('node:fs/promises');
+    const path = await import('node:path');
+    const root = path.resolve(__dirname, '../..');
+    const offenders: string[] = [];
+    const walk = async (dir: string): Promise<void> => {
+      for (const entry of await readdir(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) { await walk(full); continue; }
+        if (!entry.name.endsWith('.ts') || entry.name.endsWith('.test.ts')) continue;
+        if (full.endsWith('mail-admin/port-exposure.ts')) continue; // the definition
+        const src = await readFile(full, 'utf8');
+        if (/\bsettleMs\s*:/.test(src) || /\brolloutPollIntervalMs\s*:/.test(src)) {
+          offenders.push(path.relative(root, full));
+        }
+      }
+    };
+    await walk(root);
+    expect(offenders).toEqual([]);
   });
 });

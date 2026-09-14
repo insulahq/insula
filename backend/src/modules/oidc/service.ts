@@ -100,6 +100,8 @@ export interface SaveGlobalSettingsInput {
   readonly break_glass_secret?: string;
   readonly protect_admin_via_proxy?: boolean;
   readonly protect_client_via_proxy?: boolean;
+  /** Symmetric counterpart of `protect_admin_via_proxy`; same target column. */
+  readonly protect_tenant_via_proxy?: boolean;
   readonly proxy_protect_admin?: boolean;
   readonly proxy_protect_tenant?: boolean;
   readonly break_glass_path?: string | null;
@@ -113,9 +115,23 @@ export async function saveGlobalSettings(db: Database, input: SaveGlobalSettings
   if (input.disable_local_auth_tenant !== undefined) updateValues.disableLocalAuthTenant = input.disable_local_auth_tenant ? 1 : 0;
   if (input.break_glass_secret) updateValues.breakGlassSecretHash = await bcrypt.hash(input.break_glass_secret, 12);
 
-  // Handle proxy protection fields (accept both naming conventions)
+  // Handle proxy protection fields (accept every naming convention in use).
+  //
+  // `protect_tenant_via_proxy` is the SYMMETRIC counterpart of
+  // `protect_admin_via_proxy` — and it is the name a caller writes by reflex
+  // once they have written the admin one. It was missing here, so anyone using
+  // it got a silent no-op: the field parsed (the route did not validate at all),
+  // the handler never read it, and the endpoint answered 200 having changed
+  // nothing. `scripts/integration-oidc-dex.sh` has been sending exactly that
+  // since it was written; its tenant intent has never been honoured, and the
+  // test passed because it only asserted on `breakGlassPath`.
+  //
+  // Surfaced by R29a adding `.strict()` to this endpoint's schema, which turned
+  // the silently-ignored field into a 400.
   const adminProxy = input.protect_admin_via_proxy ?? input.proxy_protect_admin;
-  const tenantProxy = input.protect_client_via_proxy ?? input.proxy_protect_tenant;
+  const tenantProxy = input.protect_client_via_proxy
+    ?? input.protect_tenant_via_proxy
+    ?? input.proxy_protect_tenant;
   if (adminProxy !== undefined) {
     updateValues.protectAdminViaProxy = adminProxy ? 1 : 0;
   }

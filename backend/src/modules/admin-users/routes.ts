@@ -4,9 +4,12 @@ import bcrypt from 'bcrypt';
 import { randomUUID } from 'node:crypto';
 import { authenticate, requireRole } from '../../middleware/auth.js';
 import { auditLogs, refreshTokens, users, userPasskeys, tenants } from '../../db/schema.js';
-import { createAdminUserSchema, updateAdminUserSchema } from '@insula/api-contracts';
+import { createAdminUserSchema, updateAdminUserSchema,
+  bulkDeleteAdminUsersSchema,
+} from '@insula/api-contracts';
 import { eraseUserNotifications } from '../notifications/retention/gdpr-erasure.js';
 import { success, paginated } from '../../shared/response.js';
+import { parseBody } from '../../shared/validate-body.js';
 import { ApiError } from '../../shared/errors.js';
 import { parsePaginationParams, encodeCursor, decodeCursor } from '../../shared/pagination.js';
 import {
@@ -426,12 +429,7 @@ export async function adminUserRoutes(app: FastifyInstance): Promise<void> {
   app.delete('/admin/users/bulk', {
     onRequest: [requireRole('super_admin')],
   }, async (request, reply) => {
-    const body = request.body as { user_ids?: string[] };
-    const userIds = body?.user_ids;
-
-    if (!Array.isArray(userIds) || userIds.length === 0) {
-      throw new ApiError('VALIDATION_ERROR', 'user_ids must be a non-empty array', 400);
-    }
+    const { user_ids: userIds } = parseBody(bulkDeleteAdminUsersSchema, request.body);
 
     // Prevent self-deletion
     const callerId = ((request as unknown as Record<string, unknown>).user as { sub: string }).sub;

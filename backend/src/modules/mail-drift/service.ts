@@ -241,6 +241,15 @@ export async function recreateDriftItemEmpty(
     // Converge it onto the fixed dkim-1 selector like the enable flow
     // does (dynamic imports match this file's stalwart-jmap pattern).
     // Soft-fail — the auto pair still signs; rotation converges.
+    //
+    // Whether the TXT actually reached DNS decides what the operator is told
+    // below. It used to be told, unconditionally, that platform-managed DNS
+    // "updates automatically on the next dns-sync reconcile tick" — a reconcile
+    // that never ran (dns-sync was never wired, and has since been deleted). In
+    // the happy path that was merely stale, because the publish below is
+    // inline. On the soft-fail and no-key paths it was actively wrong: DNS was
+    // NOT updated and the operator was told to wait instead of act.
+    let dkimTxtPublished = false;
     try {
       const { normalizeDomainDkim } = await import('../email-dkim/normalize.js');
       const { activeSelector, createdPublicKey } = await normalizeDomainDkim({
@@ -265,6 +274,7 @@ export async function recreateDriftItemEmpty(
           publicKey: createdPublicKey,
           encryptionKey: process.env.PLATFORM_ENCRYPTION_KEY ?? '0'.repeat(64),
         });
+        dkimTxtPublished = true;
       }
     } catch (err) {
       // Scrub PEM blocks + drop error payloads (a raw JmapError
@@ -281,12 +291,17 @@ export async function recreateDriftItemEmpty(
     }
     followUp =
       `Stalwart Domain '${item.expectedName}' was recreated EMPTY with ` +
-      `NEW DKIM keys — the previous keys are unrecoverable. The tenant's ` +
-      `DNS at their registrar still lists the OLD DKIM TXT values, so ` +
-      `mail signed with the new keys WILL fail DMARC at receivers until ` +
-      `the dkim-1/dkim-2 TXT records are republished (visible in Admin ` +
-      `UI → Email → Domain → DKIM tab). Platform-managed DNS updates ` +
-      `automatically on the next dns-sync reconcile tick.`;
+      `NEW DKIM keys — the previous keys are unrecoverable. Mail signed with ` +
+      `the new keys WILL fail DKIM, and therefore DMARC, at receivers until ` +
+      `the DKIM TXT records published in DNS match the new keys (visible in ` +
+      `Admin UI → Email → Domain → DKIM tab). ` +
+      (dkimTxtPublished
+        ? `The platform has already republished the dkim-1 TXT for any zone it ` +
+          `manages. A tenant whose DNS is hosted ELSEWHERE must update it at ` +
+          `their registrar — nothing can do that for them.`
+        : `The platform could NOT republish the DKIM TXT automatically, so ` +
+          `this will NOT resolve on its own: republish it from the DKIM tab ` +
+          `(and at the registrar for externally-hosted DNS).`);
   } else {
     // mailbox kind
     const [mbRow] = await db

@@ -16,7 +16,7 @@
 | [R2](#r2--monitoring-stack-decision--slislo) | Monitoring stack decision + SLI/SLO | **P1** | Shipped (ADR-051, PRs #50–#63) — logs deferred |
 | [R3](#r3--load-testing-in-ci) | Load testing in CI | P3 | Not built — low value for the traffic profile (decision 2026-06-20) |
 | [R4](#r4--fbl-complaint-processing) | FBL complaint processing | **P1** (for production mail) | Shipped (PRs #64–#69) |
-| [R5](#r5--dmarc-aggregate-report-ingestion) | DMARC aggregate-report ingestion | P2 | Not started |
+| [R5](#r5--dmarc-aggregate-report-ingestion) | DMARC aggregate-report ingestion | P2 | ✅ **SHIPPED 2026-09-13** — Stalwart parses the XML; platform ingests + surfaces + recommends. Also fixed a published `rua=` pointing at a mailbox that never existed |
 | [R6](#r6--rolling-sending-quota-enforcement) | Rolling sending-quota enforcement | P2 | Shipped (PRs #64–#69) |
 | [R7](#r7--ip-warm-up-pools-and-per-domain-relay) | IP warm-up, pools, per-domain relay | P3 | Not started |
 | [R8](#r8--notification-channels-slack--webhook--sms) | Notification channels: Slack/Webhook/SMS | P3 | Email + in-app shipped |
@@ -36,10 +36,20 @@
 | [R22](#r22--rc-validation-on-staging-via-flux-adr-045-mode-b) | RC validation on staging via Flux (Mode B) | P3 | ✅ Shipped 2026-06-21 — Flux re-pin now accepts `-rc.N` tags (gated by the prerelease flag) |
 | [R23](#r23--insula-single-binary-install--branding) | `insula` single-binary install + branding | P2 | Proposed (ADR-055, 2026-07-26) — fold bootstrap into the signed binary; rename `platform-ops`→`insula`; consolidate host paths |
 | [R24](#r24--proxy-protocol-support-for-cloud-load-balancers) | PROXY-protocol support for cloud (SNAT) load balancers | P2 | Proposed 2026-07-26 — real client IP is lost behind a SNAT-ing cloud LB (neither Traefik nor HAProxy accept inbound PROXY protocol); today needs a source-preserving L4-passthrough LB or DNS multi-A |
-| [R25](#r25--migration--dr-recover-completeness) | Migration / DR-recover completeness | P2 | Proposed 2026-08-04 — a recreated tenant needs manual follow-up steps (database replay, email re-enable); fold them into the recreate engine |
+| [R25](#r25--migration--dr-recover-completeness) | Migration / DR-recover completeness | P2 | ✅ Mostly shipped — §1 + §2 were already built (roadmap was stale); §3 bundle preflight + skipped-tenant reporting shipped 2026-09-13; §4 up-front key check remains |
 | [R26](#r26--pin-the-k3s-installer-to-a-version-tag-not-master) | Pin the k3s installer to a version tag, not master | P2 | Proposed 2026-08-04 — get.k3s.io serves master, so any upstream edit to install.sh breaks every fresh install until the digest is re-pinned |
 | [R27](#r27--dual-stack-tenant-services-end-to-end-ipv6) | Dual-stack tenant Services (end-to-end IPv6) | P4 | Proposed 2026-08-10 — the residual from R13: globally-routable pod addressing + catalog images binding `::`. COUPLED and inert individually; both only become load-bearing if tenant Services stop being SingleStack IPv4. Needs a provider-delegated prefix |
 | [R28](#r28--make-email-aliases-and-auto-reply-real) | Make email aliases + auto-reply real (Stalwart-backed) | P2 | ✅ **CLOSED 2026-08-24** — auto-reply (vacation), aliases (Stalwart MailingList per alias, fan-out to local + external destinations) and the domain catch-all (native Domain.catchAllAddress) all enforced by the mail server, DB authoritative with boot reconcile |
+| [R29](#r29--schema-validate-the-rest-of-the-api-surface) | Schema-validate the rest of the API surface | **P2** | ✅ **R29a SHIPPED 2026-09-13** — 19 of 43 converted, 24 classified + frozen by a CI guard; R29b not started |
+| [R30](#r30--crowdsec-scenario-buckets-dilute-across-nodes) | CrowdSec scenario buckets dilute across nodes | P3 | Not started — affects multi-node (staging) only; needs measurement first |
+| [R31](#r31--per-node-identity-for-the-crowdsec-agents) | Per-node identity for the CrowdSec agents | P3 | Not started — prerequisite for R30 |
+| [R32](#r32--oauth2-proxy-401-dead-end--resolved-2026-09-05) | oauth2-proxy 401 dead-end | — | ✅ RESOLVED 2026-09-05 |
+| [R33](#r33--dex-configmap-changes-never-reached-the-process--resolved-2026-09-05) | Dex ConfigMap changes never reached the process | — | ✅ RESOLVED 2026-09-05 — residual: other ConfigMap-driven Deployments unaudited |
+| [R34](#r34--decide-the-config-reload-mechanism-deliberately) | Decide the config-reload mechanism, deliberately | P2 | Proposed — three mechanisms in use; wants an ADR + a CI guard |
+| [R35](#r35--the-crowdsec-lapi-is-a-single-point-of-failure-that-no-longer-needs-to-be) | CrowdSec LAPI single point of failure | P2 | ✅ **SHIPPED** — Postgres + RollingUpdate + reconciler-owned 2 replicas (verified 2/2 Ready on DEV) |
+| [R36](#r36--every-per-service-postgres-role-can-connect-to-the-platform-database) | Per-service roles can connect to the `platform` database | **P2** | ✅ **SHIPPED 2026-09-13** — `db-isolation` converger + bootstrap + Security→Hardening card; verified on DEV against a real role |
+| [R37](#r37--tenant-pods-can-fill-a-nodes-disk-and-nothing-charges-them-for-it) | Tenant pods can fill a node's disk | P2 | Not started — needs a hosting-plan policy decision (an `ephemeral-storage` limit EVICTS) |
+| [R38](#r38--mail-dns-is-written-once-and-never-reconciled-deliberate) | Mail DNS is written once, never reconciled | — | ✅ **DECIDED 2026-09-14** — dead `dns-sync` deleted; blind reconciliation would delete a tenant's own MX/SPF |
 
 ---
 
@@ -136,9 +146,96 @@ Runbook: [MAIL_FBL.md](../operations/MAIL_FBL.md).
 
 ## R5 — DMARC aggregate-report ingestion
 
-Parse aggregate reports (Gmail/Outlook/Yahoo), compute per-domain pass rates,
-surface in the email UI, and recommend policy tightening (p=none →
-quarantine → reject) once pass-rate thresholds hold.
+**✅ SHIPPED 2026-09-13.**
+
+**The platform does not parse the XML — Stalwart already does.** Its
+report-analysis intercepts mail to the configured report addresses, un-gzips the
+attachment, parses the RFC 7489 aggregate XML and stores a typed
+`x:DmarcExternalReport` registry object. Confirmed against a live server by
+delivering a real aggregate report and reading the object back; `x:DmarcReport`
+and `x:IncomingReport` return `unknownMethod` on the same server, so the type is
+the real one rather than a catch-all. R5 is therefore the same shape as R4's FBL
+path: poll → attribute → persist → destroy.
+
+### The bug this found first
+
+The DMARC record the platform published was:
+
+```
+v=DMARC1; p=quarantine; rua=mailto:dmarc-reports@<domain>
+```
+
+**`dmarc-reports@` is an address nothing in the platform has ever created.**
+Stalwart does not bypass RCPT validation for report addresses — an unregistered
+one is refused with `550 5.1.2 Mailbox does not exist` (proven on DEV against
+`postmaster@<apex>`, which is in the intake pattern list and has no account). So
+every aggregate report every receiver has ever tried to send was refused and
+discarded, and nothing surfaced it. That is why there was no data to ingest.
+
+Fixed to `rua=mailto:dmarc@<domain>`, with `report-intake-reconciler` creating
+the matching `dmarc@` mailbox on **every enabled email domain**.
+Same-domain rather than a central `dmarc@<apex>` because RFC 7489 §7.1 requires
+an authorisation record (`<domain>._report._dmarc.<apex> TXT "v=DMARC1"`) in the
+reporting domain's zone before a reporter will send cross-domain, and
+`syncRecordToProviders` is scoped to one domainId — a cross-domain `rua`
+published without that record is one most reporters refuse, which would look
+identical to the bug being fixed.
+
+### Two wire-format details the RFC does not tell you
+
+Both observed on a live server, and both fail **silently**:
+
+1. `records`, `dkimResults`, `spfResults` and `errors` are **objects keyed by
+   decimal-string index** (`{"0": …, "1": …}`), not arrays. A `.map()` over them
+   yields nothing, and the domain reports as having sent zero messages.
+2. Result values are **camelCase** — SPF softfail arrives as `softFail`, not the
+   RFC's `softfail`. A lowercase comparison misses it, and a missed softfail
+   counts as neither pass nor fail.
+
+`indexedValues()` accepts both shapes so a future Stalwart release that switches
+to real arrays cannot quietly zero the counts.
+
+### As built
+
+- `mail-events/dmarc.ts` — poll + attribute by policy domain + persist + destroy,
+  on the existing 5-minute mail tick and the `incoming-report.*` webhook debounce.
+  An unattributed report is stored with a null tenant rather than dropped:
+  dropping it would make "we host nothing for that domain" indistinguishable from
+  "no reports arrived".
+- Migration `0110` — `email_dmarc_reports` (summary, counts denormalised at
+  ingest) + `email_dmarc_sources` (per source IP, so "which senders are failing"
+  is an indexed query rather than a jsonb scan).
+- `mail-events/dmarc-policy.ts` — the p=none → quarantine → reject
+  recommendation. Every rule fails closed. Notably it refuses while **any** source
+  is still failing even when the aggregate rate clears the bar: the rate can look
+  fine while a low-volume legitimate sender fails every message it sends, and that
+  sender is exactly who breaks on a tightening.
+- `GET /admin/mail/dmarc` + `…/dmarc/sources`, surfaced under **Monitoring →
+  Mail**. Nothing rewrites a published policy — `p=reject` on a domain with one
+  unaligned legitimate sender stops that sender's mail immediately rather than
+  degrading, so the tightening stays an operator decision.
+
+### The default policy — settled 2026-09-14
+
+The default published for a new domain **was** `p=quarantine`: enforcement before
+a single message had been observed. Anything not yet aligned — a CRM, a
+newsletter provider, a contact form, the tenant's own office server — is
+spam-foldered, and DMARC gives the sender no signal that it happened. It was
+defensible only while the platform ingested no reports: starting at `none` meant
+never learning when tightening was safe, so `quarantine` at least ended
+somewhere.
+
+R5 removes that constraint. The default is now **`p=none`** — report-only,
+protecting nothing, but collecting the evidence — and `dmarc-policy.ts` says when
+the domain is ready for `quarantine` and then `reject` (operator decision: it is
+never applied automatically). `dns-provisioning.ts` carries the reasoning; a test
+in `dns-provisioning.test.ts` pins the emitted value so it cannot drift back.
+
+**Newly provisioned records only.** Domains already publishing `p=quarantine` or
+`p=reject` are untouched: silently loosening enforcement a domain already has is
+a downgrade nobody asked for, and unlike the `rua=` repair there is no
+correctness argument for it — the record works, it is just stricter than the new
+default.
 
 - Spec: the original email-deliverability spec (DMARC sections; see the git history).
 
@@ -849,6 +946,16 @@ exercises cosign verify + migrations + the k3s stepping before a stable cut.
 ## R23 — `insula` single-binary install + branding
 
 **Proposed 2026-07-26 — see [ADR-055](../architecture/adr/ADR-055-insula-single-binary-install-and-branding.md).**
+
+> **Re-scope needed before this starts (noted 2026-09-13).** The plan below
+> sequences the three changes together "while the installed base is a single
+> staging cluster (pre-production — the cheapest window)". Production is now
+> live and carrying real tenants, so that window has closed: the host-path
+> rebrand and the artifact rename now have to be safe against a cluster whose
+> DR bundles, migration markers and cosign anchor are in active use. The
+> symlink-not-move decision already anticipates this, but the *ordering* and the
+> dual-name transition release need re-deciding against a real installed base
+> rather than a disposable one.
 Finishes the operator-tooling consolidation ([R18](#r18--operator-script-consolidation-into-the-platform-ops-cli)):
 fold the last bash installer into the signed `platform-ops` binary and rebrand
 the operator footprint to the product name.
@@ -953,6 +1060,44 @@ operator-actionable today (see
 point of this item is that an operator must know to perform them, and a migration
 of many tenants multiplies the chance one is missed.
 
+**STATUS 2026-09-13 — most of this entry was already built.** Each item was
+re-checked against the code rather than against this write-up:
+
+| # | Item | Actual state |
+|---|---|---|
+| 1 | Add-on databases never replayed | ✅ **Already shipped.** `dr-recover/routes.ts` queues `databases-by-id { kind: 'all' }` immediately after the `files-paths` item (correct order — the `.sql` must land on the PVC first). The migration import reuses that same recover route (`migration/service.ts`), so it inherits the behaviour. Proven end-to-end by `integration-dr-database-restore-e2e.sh` (seed N rows → capture → delete rows → restore → assert N rows back). *Note: the claim below that `recreate.ts` "restores exactly ['config','files','mailboxes','secrets']" mis-read that list — it is the set of **backup-component index rows** the re-create registers, not a restore set. `recreate.ts` does not enqueue restores at all.* |
+| 2 | Mail send-readiness needs a manual re-enable | ✅ **Already shipped.** `dr-recover/reconcile.ts` step 2 regenerates DKIM in Stalwart per email domain (`normalizeDomainDkim`) and pushes an explicit DNS residual gap for the records the platform is not authoritative for. |
+| 3 | No preflight on bundle completeness | ✅ **SHIPPED 2026-09-13** — see below. |
+| 4 | Encryption-key mismatch discovered late | ⚠️ **Partially shipped.** `reconcile.ts` detects `PAT_DECRYPT_FAILED` and surfaces a specific, actionable residual gap ("the registry pull credential was encrypted with the source cluster's key … re-add it"). What remains is the *up-front* refusal: decrypting one bundle secret during the dry run so a whole fleet migration is refused before it starts rather than degrading per-tenant. |
+
+### §3 as shipped (2026-09-13)
+
+`resolveRecoverAllTargets` dropped its non-targets with a bare `continue`, so a
+dry run answered "12 targets" and said nothing about the three tenants it had
+passed over. **An omission read exactly like a tenant that does not exist** —
+and for an explicit `tenantIds` list, a name coming back in neither list
+silently contradicted the request.
+
+The resolver now returns `{ targets, skipped }`:
+
+- **`skipped`** carries a reason (`no_completed_bundle` / `namespace_present`)
+  plus the status and date of the newest bundle of *any* status — because
+  "partial, 2 days ago" and "never backed up" call for completely different
+  responses, and a bare omission made them indistinguishable. Its candidate
+  query was widened from `status = 'completed'` to every tenant that has ever
+  had a bundle: the old filter made a never-completed tenant *unrepresentable*.
+- **`targets`** gained `bundleCreatedAt`, `bundleAgeDays` (floored at 0 — clock
+  skew must not render a bundle as "-2 days old") and the component list, so the
+  fleet can be judged before it starts.
+- The admin panel's empty state used to render **green**: *"No lost tenants to
+  recover — every tenant with a bundle is accounted for."* The tenants without a
+  usable bundle were exactly the ones it was not counting, so the most alarming
+  case produced the most reassuring screen. It is now amber and names them, with
+  a dedicated table that also persists after a run — where "recovered 9/9" is
+  true and still not the whole answer.
+
+**Original write-up follows.**
+
 **The gaps, most consequential first:**
 
 1. **Add-on databases are never replayed from their dump.**
@@ -984,11 +1129,33 @@ of many tenants multiplies the chance one is missed.
    components. `list-tenants` already surfaces newest-bundle metadata — this is
    a presentation + hard-gate change, not new machinery.
 
-4. **Encryption-key mismatch is discovered late.** Bundle secrets are encrypted
-   with the *source* `PLATFORM_ENCRYPTION_KEY`. If B's key differs, the failure
-   appears per-secret during import. *Fix:* verify decryptability of one secret
-   during the dry-run and refuse up front with the remedy (bootstrap B from A's
-   age-encrypted secrets bundle).
+4. ~~**Encryption-key mismatch is discovered late.**~~ **Done 2026-09-14** —
+   `dr-recover/encryption-preflight.ts`, wired into `recover-all` on both the
+   preview and the run.
+
+   The premise needed correcting first. A key mismatch does not fail the restore
+   at all: the `secrets` component is never restored (`drRecoverComponentSchema`
+   excludes it — TLS secrets are re-issued by provisioning), and `config-tables`
+   inserts encrypted columns verbatim without reading them. What actually
+   happens is quieter and worse — the recover *succeeds*, and every encrypted
+   credential it restored is unreadable, surfacing one workload at a time as
+   `PAT_DECRYPT_FAILED`. Meanwhile each tenant recover provisions a namespace,
+   PVC and quota **before** reaching anything that needs a cleartext secret, so a
+   50-tenant fleet provisions 50 namespaces on the way to the same failure.
+
+   The check is LOCAL — it decrypts credentials already in this cluster's
+   platform DB (backup-target credentials behind the chosen bundles, and the
+   target tenants' registry pull tokens), so it costs nothing and runs on every
+   preview. `mismatch` refuses the run with `DR_ENCRYPTION_KEY_MISMATCH` (409)
+   and the remedy; `allowEncryptionKeyMismatch: true` overrides it.
+
+   **Deliberate limit:** an `ok` verdict says *this cluster's stored secrets are
+   readable*, not *every secret this migration touches is readable*. On a
+   cross-cluster migration the destination's own rows were entered here and
+   decrypt fine while the bundle's tokens are still the source cluster's — only
+   reading a bundle could settle that, and `reconcile.ts` already reports it
+   afterwards as a residual gap. `unverified` is a third verdict precisely so an
+   unprobeable cluster does not read as a passing one.
 
 **Not in scope:** changing the bundle format or adding a `databases` component.
 The dump is already captured; this item is about *replaying* it and about
@@ -1107,14 +1274,61 @@ Every locally-declared request **body** in both panels now comes from
 
 ### R29a — Request validation on the routes that still cast
 
-**49 mutating routes take `request.body as unknown as X` with no parse.** On those,
-a wrong or misspelled field is not a 400 — it is a field the handler reads as
-`undefined` and silently skips. That is how `PATCH /admin/nodes/:name/storage/:diskKey`
-returned 200 while changing nothing, and how the OIDC provider PATCH appeared to
-rotate a client id it never wrote.
+**✅ SHIPPED 2026-09-13.** The count was 43 by the time the work started (not 49).
+All 43 were read and classified; **19 were converted**, and the remaining 24 were
+found to be defensible and are now frozen by a guard.
 
-- Enumerate with `grep -rn "request.body as" backend/src/modules/*/routes*.ts`.
-- Each needs a Zod schema in `@insula/api-contracts` and a `safeParse` in the route.
+**Converted** to `parseBody(schema, request.body)`
+(`backend/src/shared/validate-body.ts`):
+
+| Route | Was |
+|---|---|
+| `catalog` badges · `eol-scanner` · `tls-settings` · `ingress-routes` settings · `resource-quotas` · `oidc` global settings | body passed straight to a service that reads `if (input.X !== undefined)` — a misspelled field wrote nothing and returned **200** |
+| `node-health` recovery ×2 · `platform-updates` capacity · `system-snapshots` recurring-job · `dns-records` pull/push · `postgres-barman-restore` ×2 | unchecked fields reaching a k8s/provider call |
+| `cron-jobs` · `admin-users` · `tenants` ×2 · `domains` bulk | the action enum was checked, but array **elements** were not — `tenant_ids: [123]` reached the DB layer |
+
+**Four of those schemas already existed in `@insula/api-contracts` and had never
+been wired to their route** — the request-side echo of R29b below.
+
+**One of them was wrong, and wiring it unchanged would have been worse than
+leaving the route unvalidated.** `saveOidcGlobalSettingsSchema` declared
+`protect_tenant_via_proxy` — the **database column** name, not a field
+`saveGlobalSettings` reads — and omitted `proxy_protect_admin` /
+`proxy_protect_tenant`, which are the two the admin panel actually sends. Zod
+strips unknown keys by default, so the OIDC proxy-protection toggles would have
+parsed clean, arrived empty, and silently stopped working with the endpoint still
+answering 200. Re-authored from the handler (which accepts either spelling of
+each toggle) and pinned by route tests. The admin panel's
+`use-oidc-settings.ts` was also re-declaring the request type locally; it now
+imports the contract.
+
+**A second latent bug, found the same way:** `updateIngressSettingsSchema` (also
+never wired) required a valid IPv4 while the handler treats `''` as *clear the
+override and return to node discovery* — and permitted `''` for IPv6. Wiring it
+as written would have made "back to automatic" unreachable for v4.
+
+**Error codes are derived, not flattened.** `MISSING_REQUIRED_FIELD` when the
+field is absent, `INVALID_FIELD_VALUE` when it is present and wrong — both are
+asserted by existing route tests and by `integration-file-manager-bulk-e2e.sh` /
+`integration-notifications.sh`, so a single new code would have been a silent API
+change. Note Zod **4** (the repo is on 4.4.3, not the 3.25 `AGENTS.md` still
+claims) dropped `received` from the issue object, so absence is determined by
+reading the input at the issue path rather than by matching the message text.
+
+**The 24 remaining casts are deliberate**, listed with per-file reasons in
+`scripts/.route-body-cast-allowlist.txt`: two are not JSON bodies at all (a raw
+webhook `Buffer`, a form-encoded OIDC back-channel logout), most already reject
+what they cannot use (so a bad field is a 400 today, not a silent skip), and a
+few are validated by the service that consumes them. Removing an entry is the
+goal; adding one needs a reason in the PR.
+
+**Guard:** `scripts/ci-route-body-validation-check.sh`, wired into **Backend CI**
+(with the allowlist and the script itself in the workflow's `paths:`, so an
+allowlist edit cannot land without the guard running). It keys on the **file**,
+not a count — a count passes whenever one cast is removed and another added,
+reporting success through exactly the change it exists to catch.
+
+*Still open (original guidance, for the residual work):*
 - Prefer `.strict()` on PATCH: an unknown key there is not a 400 anyone notices, it
   is a field that silently does not change.
 - Author the schema from **what the handler actually reads**, never from what the
@@ -1278,8 +1492,17 @@ name. And it would retire the four hand-rolled hash reconcilers.
 the new pod template arrive in the same apply, so there is no window where pods
 run old config, and no runtime component whose failure silently stops
 propagation — the exact class of failure this whole area kept producing. For
-`crowdsec-agent-acquis`, which decides whether a scenario bans real users, that
-guarantee is worth keeping.
+`crowdsec-agent-acquis` that guarantee is worth keeping.
+
+**Update 2026-09-13:** the part of that config which decides whether a scenario
+bans real users — `simulation.yaml` — is no longer in the hashed ConfigMap. It
+became operator-editable from the admin panel, so it moved to the fixed-name,
+backend-owned `crowdsec-agent-simulation` ConfigMap and lands squarely in
+category 2 below. It does not rely on Reloader alone: the backend deletes the
+agent pods itself after a write, because "a runtime component whose failure
+silently stops propagation" is precisely the risk this section names, and a
+security toggle that quietly fails to apply is the failure this feature has
+already produced once.
 
 **Proposed rule — two mechanisms, chosen deliberately rather than three by
 accident:**
@@ -1298,6 +1521,25 @@ is to carry this much, it needs an alert on its own liveness.
 ---
 
 ## R35 — The CrowdSec LAPI is a single point of failure that no longer needs to be
+
+**✅ LARGELY SHIPPED — entry below is the design record, not open work.**
+`backend/src/modules/crowdsec-db/reconciler.ts` provisions the `crowdsec` role +
+database in the `system-db` CNPG cluster and owns the credentials Secret; the
+LAPI's `seed-config` init container renders `db_config.type = postgresql` with
+`yq` (`k8s/base/crowdsec/deployment.yaml`); the RWO PVC is gone and the strategy
+is `RollingUpdate`. **No residual — this is done.** `replicas` is deliberately
+absent from the manifest (Flux SSA would revert an imperative scale), so the
+reconciler owns it: `LAPI_REPLICAS_POSTGRES = 2` once a live probe confirms the
+LAPI is really on Postgres, 1 while it is still SQLite. DEV is running 2/2 Ready.
+
+*(An earlier pass of this entry recorded "residual: `replicas: 2`" after reading
+the manifest and finding no `replicas:` line. That absence is the mechanism, not
+a gap. Corrected 2026-09-13 when `integration-waf-crowdsec.sh` — which hardcoded
+`readyReplicas == 1` — failed against a cluster that had correctly scaled to
+two.)*
+
+Everything below documents how and why.
+
 
 `replicas: 1` + `strategy: Recreate`, so **every** rollout has a window with no
 LAPI. Until 2026-09-05 that window blocked all traffic after three minutes; with
@@ -1428,21 +1670,60 @@ the `crowdsec` namespace. A leak of those credentials should get an attacker a
 CrowdSec database and nothing else; today it also gets them an authenticated
 session against the platform database to probe from.
 
-**The fix, cluster-level rather than per-service:**
+**✅ SHIPPED 2026-09-13.** `backend/src/modules/db-isolation/` — a converger
+(boot + 5-minute tick, `startDbIsolationReconciler`) that execs psql in the CNPG
+primary and, for every connectable non-template database, grants CONNECT to the
+owner, grants it to `cnpg_metrics_exporter`, then revokes it from PUBLIC:
 
 ```sql
-REVOKE CONNECT ON DATABASE platform FROM PUBLIC;
-GRANT  CONNECT ON DATABASE platform TO platform;   -- and any operator roles
+GRANT  CONNECT ON DATABASE <db> TO <owner>;
+GRANT  CONNECT ON DATABASE <db> TO cnpg_metrics_exporter;
+REVOKE CONNECT ON DATABASE <db> FROM PUBLIC;
 ```
 
-Repeat per database (`crowdsec`, `roundcube`, …) so the property is symmetric
-rather than special-casing `platform`.
+A converger rather than a migration because a migration could only ever own
+`platform` — not `postgres`, `crowdsec` or `roundcube` — and because it runs
+once: a database restored from a pre-R36 dump would come back open with nothing
+noticing. The two creation paths (`crowdsec-db`, `roundcube-db-reconciler`)
+additionally apply the single-database form inline at CREATE time, and
+`bootstrap.sh:harden_database_connect_acls` applies it on fresh installs so a
+new cluster is isolated before platform-api first starts.
 
-**Verify before and after**, since this is exactly the kind of change that looks
-applied and is not: from a pod with network reach, `psql -U crowdsec -d platform`
-should succeed today and be refused afterwards, while `psql -U crowdsec -d
-crowdsec` keeps working. Do it against a real role, not `postgres` — a superuser
-is exempt and would make a broken change look successful.
+**The trap, found on DEV before shipping: `cnpg_metrics_exporter` connects to
+EVERY database.** The `pg_extensions` collector in `cnpg-default-monitoring`
+carries `target_databases: ['*']` and its query calls `current_database()`,
+which only answers from inside each database. A bare `REVOKE … FROM PUBLIC`
+therefore breaks CNPG metrics collection on every database — and breaks it
+silently: the pod stays Running, `/metrics` keeps answering, and only
+`cnpg_collector_last_collection_error` moves. Hence the exporter GRANT, issued
+*before* the revoke; the ordering is asserted by both `sql.test.ts` and
+`ci-db-isolation-check.sh`.
+
+*(Re-verifying this? `pg_stat_activity` is snapshot-cached per transaction, so a
+polling loop inside one transaction returns the same rows forever and you will
+conclude the exporter never connects. Call `pg_stat_clear_snapshot()` each
+iteration.)*
+
+**Surfaced** in **Security → Hardening** as a card plus a detail table that
+appears only when something is actionable. An unreadable state renders as
+*unknown*, never as *isolated*.
+
+**Guards:** `scripts/ci-db-isolation-check.sh` (statement presence, GRANT-before-
+REVOKE ordering in both writers, the bootstrap function is actually called,
+templates excluded) and a `sql.test.ts` case asserting the bootstrap heredoc is
+byte-identical to the converger's emitted SQL.
+
+**Verified on DEV 2026-09-13** against a real role (not `postgres` — a superuser
+is exempt from CONNECT and would make a broken change look successful):
+
+| from → to | before | after |
+|---|---|---|
+| `crowdsec` → `crowdsec` | works | works |
+| `crowdsec` → `platform` | works | `FATAL: permission denied for database "platform"` |
+| `crowdsec` → `postgres` | works | `FATAL: permission denied for database "postgres"` |
+
+with `cnpg_collector_last_collection_error` still 0 and `cnpg_pg_extensions`
+still reporting all four databases.
 
 **Sequencing.** Deliberately not folded into R35: it changes the access
 properties of roles that already exist and predate that work, so it deserves its
@@ -1451,6 +1732,53 @@ Found by the security review of R35 (2026-09-07).
 
 
 ---
+
+## R38 — Mail DNS is written once and never reconciled (deliberate)
+
+**Decided 2026-09-14 — recorded so it is not "fixed" by accident.**
+
+`stalwart-jmap/dns-sync.ts` polled Stalwart's `dnsZoneFile` every 5 minutes and
+converged `dns_records` against it. It was **never wired** into the application
+— `createDnsSyncScheduler` had no call sites, its documented kill-switch
+(`STALWART_DNS_SYNC_DISABLE`) was never read, and its documented ownership model
+cited a `source='stalwart'` column that does not exist. 653 lines, imported only
+by its own test. **Deleted.**
+
+**Why deleted rather than wired.** Its ownership heuristic claims any apex MX and
+any apex SPF for the platform:
+
+```ts
+case 'MX':  return n === d;                             // ANY apex MX
+case 'TXT': if (n === d) return v.startsWith('v=spf1');  // ANY apex SPF
+```
+
+A tenant running **their own mail server** has an apex MX that Stalwart's zone
+file does not contain — it would be deleted. A tenant on an **email gateway**
+has `v=spf1 include:<provider> …` — it would be replaced by Stalwart's
+`v=spf1 mx ~all`. The platform already ships Mailgun and Postmark relay
+adapters, so these are supported configurations today, not hypotheticals.
+
+It would also have regressed R5: Stalwart suggests
+`_dmarc … "v=DMARC1; p=reject; rua=mailto:postmaster@<domain>"`, which sets
+enforcement on day one and points reports at `postmaster@` — an address Stalwart
+itself refuses at RCPT (`550 5.1.2`, proven on DEV).
+
+**What this means in practice.** Mail DNS is written once, at email-domain enable
+time (`buildEmailDnsRecords`), plus inline on DKIM rotation and drift repair
+(`upsertDkimTxtRecord`). There is **no background reconcile**, so:
+
+- a mail record deleted or edited at the provider is not restored;
+- a change in Stalwart's expectations (new selector, MTA-STS, TLSA) is not picked up;
+- a superseded DKIM selector's TXT is never pruned (which ADR-047 wants anyway).
+
+Read-only drift *detection* still exists and is the right shape:
+`dns-apex-drift` and `email-dkim/jmap-status` read Stalwart's zone file and
+report, without writing.
+
+**If reconciliation is ever wanted**, build it against the platform's OWN
+expected record set with explicit per-record ownership (`dns_records.managed_by`),
+never against Stalwart's zone file, and never touching a record the platform did
+not write.
 
 ## R37 — Tenant pods can fill a node's disk, and nothing charges them for it
 

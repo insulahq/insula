@@ -7,7 +7,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   computeOutageImpact, findingsForTenant,
-  type OutageInput, type TenantFact, type NodeFact,
+  type OutageInput, type TenantFact, type NodeFact, type VolumeFact, type PodFact,
 } from './service.js';
 
 const OBSERVED = new Date('2026-09-11T15:00:00Z');
@@ -32,6 +32,33 @@ const node = (name: string, ready: boolean, over: Partial<NodeFact> = {}): NodeF
  */
 const replicaOn = (volumeName: string, nodeId: string, running = true) => ({
   volumeName, nodeId, running,
+});
+
+/**
+ * An ATTACHED Longhorn volume still referenced by a live PVC — the only shape
+ * for which "no running replica" means the data is unreachable. Detached and
+ * orphaned volumes are their own cases below, because production had both and
+ * the first rule reported them as total outages.
+ */
+const vol = (over: Partial<VolumeFact> = {}): VolumeFact => ({
+  volumeName: 'pvc-1',
+  namespace: 'tenant-acme',
+  pvcName: 'acme-storage',
+  robustness: 'healthy',
+  attached: true,
+  pvcRefLostAt: null,
+  ...over,
+});
+
+/** A pod old enough that "not Ready" is a fault, not a start-up. */
+const pod = (over: Partial<PodFact> = {}): PodFact => ({
+  namespace: 'tenant-acme',
+  name: 'website-1',
+  nodeName: 'node-a',
+  ready: true,
+  phase: 'Running',
+  createdAt: '2026-09-11T10:00:00Z',
+  ...over,
 });
 
 const localTenant = (over: Partial<TenantFact> = {}): TenantFact => ({
@@ -73,7 +100,7 @@ describe('degradation matrix', () => {
     const t = localTenant({ storageTier: 'ha', pinnedNode: null });
     const out = computeOutageImpact(baseInput({
       tenants: [t],
-      volumes: [{ volumeName: 'pvc-1', namespace: 'tenant-acme', pvcName: 'data', robustness: 'degraded' }],
+      volumes: [vol({ pvcName: 'data', robustness: 'degraded' })],
       replicas: [
         replicaOn('pvc-1', 'node-a'),
         replicaOn('pvc-1', 'node-c'),
@@ -88,7 +115,7 @@ describe('degradation matrix', () => {
     const t = localTenant({ pinnedNode: null });
     const out = computeOutageImpact(baseInput({
       tenants: [t],
-      volumes: [{ volumeName: 'pvc-1', namespace: 'tenant-acme', pvcName: 'acme-storage', robustness: 'faulted' }],
+      volumes: [vol({ robustness: 'faulted' })],
       replicas: [replicaOn('pvc-1', 'node-c')],
     }));
     const f = out.affectedTenants[0].findings.find((x) => x.kind === 'volume_last_replica_on_down_node');
@@ -170,7 +197,7 @@ describe('fleet view', () => {
         localTenant({ id: 'a', name: 'Down Co', pinnedNode: 'node-c', hasMailboxes: false }),
         localTenant({ id: 'b', name: 'Deg Co', storageTier: 'ha', pinnedNode: null, hasMailboxes: false }),
       ],
-      volumes: [{ volumeName: 'pvc-2', namespace: 'tenant-acme', pvcName: 'd', robustness: 'degraded' }],
+      volumes: [vol({ volumeName: 'pvc-2', pvcName: 'd', robustness: 'degraded' })],
       replicas: [
         replicaOn('pvc-2', 'node-a'),
         replicaOn('pvc-2', 'node-c'),
@@ -255,12 +282,12 @@ describe('down-node ingress reachability', () => {
  * is asserted directly.
  */
 describe('an empty rebuild target is not a surviving copy', () => {
-  const vol = { volumeName: 'pvc-1', namespace: 'tenant-acme', pvcName: 'acme-storage', robustness: 'degraded' };
+  const rebuildVol = vol({ robustness: 'degraded' });
 
   it('reports DOWN when the only running replica was on the dead node', () => {
     const [entry] = computeOutageImpact(baseInput({
       tenants: [localTenant({ pinnedNode: 'node-a' })],
-      volumes: [vol],
+      volumes: [rebuildVol],
       replicas: [
         replicaOn('pvc-1', 'node-c', true),   // the real copy — on the dead node
         replicaOn('pvc-1', 'node-a', false),  // empty rebuild target on a survivor
@@ -275,7 +302,7 @@ describe('an empty rebuild target is not a surviving copy', () => {
     // The change must not turn every real rebuild into a false alarm.
     const [entry] = computeOutageImpact(baseInput({
       tenants: [localTenant({ pinnedNode: 'node-a' })],
-      volumes: [vol],
+      volumes: [rebuildVol],
       replicas: [
         replicaOn('pvc-1', 'node-c', true),
         replicaOn('pvc-1', 'node-a', true),
@@ -291,7 +318,7 @@ describe('an empty rebuild target is not a surviving copy', () => {
     // must not talk it out of that.
     const [entry] = computeOutageImpact(baseInput({
       tenants: [localTenant({ pinnedNode: 'node-a' })],
-      volumes: [{ ...vol, robustness: 'faulted' }],
+      volumes: [{ ...rebuildVol, robustness: 'faulted' }],
       replicas: [replicaOn('pvc-1', 'node-a', true)],
     })).affectedTenants;
     expect(entry.findings.map((f) => f.kind)).toContain('volume_last_replica_on_down_node');
@@ -354,5 +381,180 @@ describe('platform services with no ready endpoint', () => {
       endpoints: [{ namespace: 'platform', serviceName: 'something-new', readyEndpoints: 0 }],
     }));
     expect(out.degradedServices[0].label).toBe('platform/something-new');
+  });
+});
+
+/**
+ * Production 2026-09-13: three tenants rendered a red "Down" chip on a cluster
+ * whose single node was Ready and whose sites were serving normally.
+ *
+ * Two independent causes, both of which made a fact about STORAGE BOOKKEEPING
+ * look like a fact about availability:
+ *
+ *   1. A DETACHED volume has no replica process running anywhere — Longhorn
+ *      stops them all on the last unmount. The stranded test asked "is any
+ *      replica running on a live node?", which is false for every idle volume
+ *      on a perfectly healthy cluster.
+ *   2. A re-provisioned tenant leaves the old Longhorn volume behind, still
+ *      carrying the original namespace and PVC name in `kubernetesStatus`, and
+ *      it is detached forever. It is indistinguishable from the real volume by
+ *      name, so it dragged a serving tenant to `down` on its own.
+ */
+describe('a detached or orphaned volume is not an outage', () => {
+  const healthy = [node('node-a', true), node('node-b', true)];
+  const serving = localTenant({ pinnedNode: 'node-a' });
+
+  it('a detached volume on an all-healthy cluster produces NO finding', () => {
+    const out = computeOutageImpact(baseInput({
+      nodes: healthy,
+      tenants: [serving],
+      volumes: [vol({ attached: false, robustness: 'unknown' })],
+      replicas: [replicaOn('pvc-1', 'node-a', false)],
+    }));
+    expect(out.affectedTenants).toEqual([]);
+    expect(out.downTenantCount).toBe(0);
+  });
+
+  it('the SAME volume attached with no running replica IS down', () => {
+    const out = computeOutageImpact(baseInput({
+      nodes: healthy,
+      tenants: [serving],
+      volumes: [vol({ attached: true, robustness: 'unknown' })],
+      replicas: [replicaOn('pvc-1', 'node-a', false)],
+    }));
+    expect(out.affectedTenants[0].state).toBe('down');
+    expect(out.affectedTenants[0].findings.map((f) => f.kind))
+      .toContain('volume_last_replica_on_down_node');
+  });
+
+  it('a detached volume whose only replica sits on a DEAD node is still down', () => {
+    // Detachment does not make the data reachable — the disk is on node-c.
+    const out = computeOutageImpact(baseInput({
+      tenants: [localTenant({ pinnedNode: null })],
+      volumes: [vol({ attached: false, robustness: 'unknown' })],
+      replicas: [replicaOn('pvc-1', 'node-c', false)],
+    }));
+    const f = out.affectedTenants[0].findings.find((x) => x.kind === 'volume_last_replica_on_down_node');
+    expect(f?.severity).toBe('down');
+    expect(f?.nodes).toEqual(['node-c']);
+  });
+
+  it('a detached volume with a copy on a live node is at worst rebuilding', () => {
+    const out = computeOutageImpact(baseInput({
+      tenants: [localTenant({ pinnedNode: null })],
+      volumes: [vol({ attached: false, robustness: 'unknown' })],
+      replicas: [replicaOn('pvc-1', 'node-a', false), replicaOn('pvc-1', 'node-c', false)],
+    }));
+    const kinds = out.affectedTenants[0]?.findings.map((f) => f.kind) ?? [];
+    expect(kinds).not.toContain('volume_last_replica_on_down_node');
+  });
+
+  it('an orphaned volume is ignored outright — even faulted, even with a dead replica', () => {
+    // `pvcRefLostAt` is Longhorn saying this volume has no live PVC. Nothing it
+    // reports is a fact about the tenant that is running today.
+    const out = computeOutageImpact(baseInput({
+      nodes: healthy,
+      tenants: [serving],
+      volumes: [vol({ attached: false, robustness: 'faulted', pvcRefLostAt: '2026-09-03T12:02:48Z' })],
+      replicas: [replicaOn('pvc-1', 'node-a', false)],
+    }));
+    expect(out.affectedTenants).toEqual([]);
+  });
+
+  it('the real volume is still judged when an orphan shares its PVC name', () => {
+    // Exactly the production shape: one ghost + one live volume, same pvcName.
+    const out = computeOutageImpact(baseInput({
+      nodes: healthy,
+      tenants: [serving],
+      volumes: [
+        vol({ volumeName: 'pvc-ghost', pvcRefLostAt: '2026-09-03T12:02:48Z', attached: false }),
+        vol({ volumeName: 'pvc-live', attached: true, robustness: 'healthy' }),
+      ],
+      replicas: [
+        replicaOn('pvc-ghost', 'node-a', false),
+        replicaOn('pvc-live', 'node-a', true),
+      ],
+    }));
+    expect(out.affectedTenants).toEqual([]);
+  });
+
+  it('a volume with no replica object yet is not an outage', () => {
+    const out = computeOutageImpact(baseInput({
+      nodes: healthy,
+      tenants: [serving],
+      volumes: [vol({ attached: false, robustness: 'unknown' })],
+      replicas: [],
+    }));
+    expect(out.affectedTenants).toEqual([]);
+  });
+});
+
+/**
+ * Every tenant Deployment runs `strategy: Recreate` at one replica, so a
+ * routine change deletes the only pod before creating its replacement. The old
+ * rule ("all pods not Ready") matched that window exactly and flashed a red
+ * chip on every env-var edit, image bump and node reboot.
+ *
+ * It was also asymmetric about corpses: a leftover Succeeded pod sat in the
+ * denominator, so its presence downgraded a genuinely dead tenant to
+ * `degraded` and its garbage collection promoted a healthy one to `down`.
+ */
+describe('pod readiness: start-up grace and corpses', () => {
+  const healthy = [node('node-a', true), node('node-b', true)];
+  const serving = localTenant({ pinnedNode: 'node-a', hasMailboxes: false });
+  const at = (input: Partial<OutageInput>) =>
+    computeOutageImpact(baseInput({ nodes: healthy, tenants: [serving], ...input }));
+
+  it('a pod that started seconds ago is starting, not broken', () => {
+    const out = at({
+      pods: [pod({ ready: false, createdAt: '2026-09-11T14:59:30Z' })], // 30s before OBSERVED
+    });
+    expect(out.affectedTenants).toEqual([]);
+  });
+
+  it('the same pod past the grace window is down', () => {
+    const out = at({
+      pods: [pod({ ready: false, createdAt: '2026-09-11T14:50:00Z' })], // 10min before
+    });
+    expect(out.affectedTenants[0].state).toBe('down');
+    expect(out.affectedTenants[0].findings[0].kind).toBe('workloads_not_ready');
+  });
+
+  it('one broken pod alongside a serving one is DEGRADED, not down', () => {
+    const out = at({
+      pods: [
+        pod({ name: 'website-1', ready: true }),
+        pod({ name: 'mariadb-1', ready: false, createdAt: '2026-09-11T14:00:00Z' }),
+      ],
+    });
+    expect(out.affectedTenants[0].state).toBe('degraded');
+    expect(out.affectedTenants[0].findings[0].detail).toBe('1 of 2 pod(s) are not Ready.');
+  });
+
+  it('a Succeeded corpse no longer masks a tenant with nothing serving', () => {
+    const out = at({
+      pods: [
+        pod({ name: 'website-old', ready: false, phase: 'Succeeded' }),
+        pod({ name: 'website-new', ready: false, createdAt: '2026-09-11T14:00:00Z' }),
+      ],
+    });
+    expect(out.affectedTenants[0].state).toBe('down');
+    // The corpse is not counted in the denominator either.
+    expect(out.affectedTenants[0].findings[0].detail).toBe('1 of 1 pod(s) are not Ready.');
+  });
+
+  it('an evicted (Failed) corpse beside a serving pod is not a degradation', () => {
+    const out = at({
+      pods: [
+        pod({ name: 'website-evicted', ready: false, phase: 'Failed' }),
+        pod({ name: 'website-new', ready: true }),
+      ],
+    });
+    expect(out.affectedTenants).toEqual([]);
+  });
+
+  it('a pod with no creationTimestamp is judged, not excused', () => {
+    const out = at({ pods: [pod({ ready: false, createdAt: null })] });
+    expect(out.affectedTenants[0].state).toBe('down');
   });
 });

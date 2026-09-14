@@ -1,7 +1,10 @@
 import type { FastifyInstance } from 'fastify';
-import { recyclePodSchema } from '@insula/api-contracts';
+import { recyclePodSchema,
+  nodeRecoveryActionSchema,
+} from '@insula/api-contracts';
 import { authenticate, requireRole, requirePanel } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
+import { parseBody } from '../../shared/validate-body.js';
 import { ApiError } from '../../shared/errors.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { readNodeHealthSummary, reconcileNodeHealth } from './scheduler.js';
@@ -173,7 +176,7 @@ export async function nodeHealthRoutes(app: FastifyInstance): Promise<void> {
       },
     },
   }, async (request) => {
-    const body = request.body as { node: string; reason: string };
+    const body = parseBody(nodeRecoveryActionSchema, request.body);
     const userId = request.user?.sub;
     if (!userId) throw new ApiError('AUTH_REQUIRED', 'No actor in request', 401);
     const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
@@ -205,7 +208,7 @@ export async function nodeHealthRoutes(app: FastifyInstance): Promise<void> {
       },
     },
   }, async (request) => {
-    const body = request.body as { node: string; reason: string };
+    const body = parseBody(nodeRecoveryActionSchema, request.body);
     const userId = request.user?.sub;
     if (!userId) throw new ApiError('AUTH_REQUIRED', 'No actor in request', 401);
     const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;

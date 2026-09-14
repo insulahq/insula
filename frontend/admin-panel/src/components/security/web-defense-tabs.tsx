@@ -24,6 +24,16 @@
 import { useEffect, useMemo, useState } from 'react';
 import UserLabel from '@/components/ui/UserLabel';
 import SortableHeader from '@/components/ui/SortableHeader';
+import ScenariosCard from './ScenariosCard';
+import {
+  addedByMeta,
+  compareGroups,
+  describeDecision,
+  groupDecisions,
+  scenarioDescriptionMap,
+  type BanSortKey,
+  type DecisionGroup,
+} from './ban-presentation';
 import { useSortable } from '@/hooks/use-sortable';
 import {
   RefreshCw,
@@ -46,6 +56,8 @@ import {
   ShieldOff,
   Search,
   X,
+  ChevronDown,
+  ChevronRight,
 } from 'lucide-react';
 import { SkeletonLoader } from '@/components/ui/SkeletonLoader';
 import { useDebouncedValue } from '@/hooks/use-debounced-value';
@@ -76,6 +88,7 @@ import {
   usePatchCrowdsecConsoleMeta,
   usePatchCrowdsecL4Mode,
   usePruneCrowdsecBouncers,
+  useCrowdsecScenarios,
   useRemoveCrowdsecAllowlistEntry,
   useSetCrowdsecCommunityBlocklist,
 } from '@/hooks/use-crowdsec';
@@ -183,6 +196,11 @@ export function WafEventsTab() {
 
   const { data, isLoading, isError, isFetching, error, refetch } = useWafEvents(query, { live });
   const payload: WafEventsResponse | undefined = data?.data;
+
+  // Sort the CURRENT PAGE. Paging stays server-side, so this orders what the
+  // operator is looking at rather than silently implying a global ordering.
+  const { sortedData: sortedEvents, sortKey, sortDirection, onSort } =
+    useSortable<WafEvent>(payload?.events ?? [], 'occurredAt', 'desc');
   const refresh = useRefreshWafScraper();
 
   const onRefresh = () => {
@@ -427,17 +445,17 @@ export function WafEventsTab() {
               </colgroup>
               <thead className="bg-gray-50 dark:bg-gray-900/50 text-gray-600 dark:text-gray-400 text-xs uppercase">
                 <tr>
-                  <th className="px-2 py-2 text-left">When</th>
-                  <th className="px-2 py-2 text-left">Rule</th>
-                  <th className="px-2 py-2 text-left">Sev</th>
-                  <th className="px-2 py-2 text-left">Host</th>
-                  <th className="px-2 py-2 text-left">Source IP</th>
-                  <th className="px-2 py-2 text-left">Message</th>
+                  <SortableHeader label="When" sortKey="occurredAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+                  <SortableHeader label="Rule" sortKey="ruleId" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+                  <SortableHeader label="Sev" sortKey="severity" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+                  <SortableHeader label="Host" sortKey="hostname" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+                  <SortableHeader label="Source IP" sortKey="sourceIp" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+                  <SortableHeader label="Message" sortKey="message" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
                   <th className="px-2 py-2 text-left">Request</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
-                {payload.events.map((ev) => (
+                {sortedEvents.map((ev) => (
                   <WafEventRow
                     key={ev.id}
                     ev={ev}
@@ -847,17 +865,48 @@ export function BannedIpsTab() {
 
   const { data, isLoading, isError, error, refetch, isFetching } = useCrowdsecDecisions(query);
   const del = useDeleteCrowdsecDecision();
+  // Hub descriptions turn `crowdsecurity/http-sensitive-files` into a sentence.
+  // Cached for a minute and shared with the WAF Settings tab, so opening this
+  // tab costs one extra request at most.
+  const { data: scenarioData } = useCrowdsecScenarios();
+  const descriptions = useMemo(
+    () => scenarioDescriptionMap(scenarioData?.data?.scenarios),
+    [scenarioData],
+  );
 
   const payload = data?.data;
+
+  // ONE ROW PER ADDRESS. CrowdSec stores one decision per (IP, scenario), so a
+  // single scanner occupied up to seven rows that all looked like separate
+  // incidents and expired at different times.
+  const groups = useMemo(
+    () => groupDecisions(payload?.decisions ?? []),
+    [payload],
+  );
+  const [sortKey, setSortKey] = useState<BanSortKey>('expiresAt');
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
+  const onSort = (key: string) => {
+    setSortDirection((prev) => (sortKey === key && prev === 'asc' ? 'desc' : 'asc'));
+    setSortKey(key as BanSortKey);
+  };
+  const sortedGroups = useMemo(() => {
+    const dir = sortDirection === 'asc' ? 1 : -1;
+    return [...groups].sort((a, b) => compareGroups(a, b, sortKey, descriptions) * dir);
+  }, [groups, sortKey, sortDirection, descriptions]);
 
   return (
     <section className="space-y-4" data-testid="banned-ips-tab">
       <CommunityBlocklistBanner />
       <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 text-sm text-gray-700 dark:text-gray-200">
-        Active PLATFORM ban decisions (operator manual bans, static bans and the auto-ban scheduler). The
-        community blocklist is listed separately — see “View banned IPs” on the LAPI tile under Settings.
-        (includes scenario detections from the log-processing agent
-        + automatic bans from the WAF auto-ban scheduler, tagged <span className="text-[10px] uppercase text-sky-700 dark:text-sky-300">auto-ban</span>).
+        Addresses this platform is blocking, one row per address. Four things add them, and the
+        <strong> Added by</strong> column says which:{' '}
+        <span className="text-[10px] uppercase text-amber-700 dark:text-amber-300">operator</span>,{' '}
+        <span className="text-[10px] uppercase text-purple-700 dark:text-purple-300">static list</span>,{' '}
+        <span className="text-[10px] uppercase text-sky-700 dark:text-sky-300">auto · waf</span> (ModSecurity
+        rule hits) and{' '}
+        <span className="text-[10px] uppercase text-teal-700 dark:text-teal-300">auto · traffic</span> (this
+        platform's CrowdSec agent reading the ingress access log). The community feed is listed
+        separately — see “View banned IPs” on the LAPI tile under Settings.
         Enforcement is cluster-wide — the <code className="text-xs">crowdsec</code> Traefik middleware queries the
         LAPI on every request, so a ban applies on every node simultaneously. Adding or removing a ban here
         propagates to all <code className="text-xs">traefik</code> DaemonSet pods within a few seconds.
@@ -957,7 +1006,14 @@ export function BannedIpsTab() {
       {payload && (
         <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 overflow-hidden">
           <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-700 text-sm font-medium text-gray-900 dark:text-gray-100 flex items-center justify-between">
-            <span>Active platform bans ({payload.decisions.length} shown / {payload.totalMatching} matching)</span>
+            {/* Count ADDRESSES, because the table now has one row per address.
+                Reporting the decision count beside a 14-row table ("43 shown")
+                reads as a paging bug. Both numbers are useful, so say which is
+                which rather than dropping one. */}
+            <span>
+              Active platform bans ({sortedGroups.length} address{sortedGroups.length === 1 ? '' : 'es'}
+              {payload.decisions.length !== sortedGroups.length && <> · {payload.decisions.length} decisions</>})
+            </span>
             {del.isError && (
               <span className="text-xs text-red-600 dark:text-red-400">
                 Unban failed: {del.error?.message ?? 'unknown error'}
@@ -968,37 +1024,34 @@ export function BannedIpsTab() {
             <table className="min-w-full text-sm" data-testid="bans-table">
               <thead className="bg-gray-50 dark:bg-gray-900/50 text-gray-600 dark:text-gray-400 text-xs uppercase">
                 <tr>
-                  <th className="px-4 py-2 text-left">Scope</th>
-                  <th className="px-4 py-2 text-left">Value</th>
-                  <th className="px-4 py-2 text-left">Type</th>
-                  <th className="px-4 py-2 text-left">Origin</th>
-                  <th className="px-4 py-2 text-left">Reason</th>
-                  {/* "Time left" is REMAINING time, counting down — not the
-                      duration the ban was issued for. A ban issued for 48h a
-                      day ago reads "~24h" here, which was misread as the
-                      configured duration having been ignored. The title makes
-                      the distinction explicit on hover. */}
-                  <th
-                    className="px-4 py-2 text-left"
-                    title="Remaining time until the ban expires. This counts down — it is not the duration the ban was issued for. See the auto-ban run history for the duration each ban was issued with."
-                  >
-                    Time left
-                  </th>
+                  <SortableHeader label="Address" sortKey="value" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+                  {/* "Origin" printed CrowdSec's internal field: `cscli` for
+                      three different platform actions and `crowdsec` for the
+                      platform's OWN agent, which reads as a third party. */}
+                  <SortableHeader label="Added by" sortKey="addedBy" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+                  <SortableHeader label="Why" sortKey="reason" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+                  <SortableHeader label="Decisions" sortKey="count" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+                  {/* REMAINING time, counting down — not the duration the ban
+                      was issued for. A ban issued for 48h a day ago reads
+                      "~24h", which was misread as the configured duration
+                      having been ignored. */}
+                  <SortableHeader label="Time left" sortKey="expiresAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
                   <th className="px-4 py-2 text-left">Action</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
-                {payload.decisions.map((d) => (
-                  <DecisionRow
-                    key={d.id}
-                    d={d}
-                    onUnban={() => del.mutate(d.id)}
-                    isUnbanning={del.isPending && del.variables === d.id}
+                {sortedGroups.map((g) => (
+                  <BanGroupRow
+                    key={g.key}
+                    group={g}
+                    descriptions={descriptions}
+                    onUnban={(id) => del.mutate(id)}
+                    unbanningId={del.isPending ? (del.variables ?? null) : null}
                   />
                 ))}
                 {payload.decisions.length === 0 && (
                   <tr>
-                    <td colSpan={7} className="px-4 py-8 text-center text-gray-500 text-sm">
+                    <td colSpan={6} className="px-4 py-8 text-center text-gray-500 text-sm">
                       {payload.totalActive > 0
                         ? 'No bans match the current filters. Clear filters to see all.'
                         : 'No active bans. The community blocklist refreshes hourly — check back, or add a manual ban above.'}
@@ -1153,51 +1206,147 @@ function CrowdsecStatusPanel({ status }: { status: CrowdsecStatus }) {
   );
 }
 
-function DecisionRow({ d, onUnban, isUnbanning }: { d: CrowdsecDecision; onUnban: () => void; isUnbanning: boolean }) {
-  const expiresIn = d.expiresAt
-    ? formatAge(Math.max(0, Math.floor((new Date(d.expiresAt).getTime() - Date.now()) / 1000))).replace(' ago', '')
-    : d.duration;
+/**
+ * One ADDRESS, and everything currently banning it.
+ *
+ * Replaces the old one-row-per-decision rendering. CrowdSec creates a decision
+ * per (IP, scenario), so 192.236.217.91 occupied seven rows on production —
+ * each with a different expiry and a raw scenario string — and nothing said
+ * they were the same incident. The row collapses them and expands on click.
+ */
+function BanGroupRow({
+  group, descriptions, onUnban, unbanningId,
+}: {
+  group: DecisionGroup;
+  descriptions: ReadonlyMap<string, string>;
+  onUnban: (id: number) => void;
+  unbanningId: number | null;
+}) {
+  const [open, setOpen] = useState(false);
+  const primary = group.decisions[0];
+  const multiple = group.decisions.length > 1;
+  // The LATEST expiry is when the address is actually free again. Showing the
+  // earliest would say the ban had lapsed while four other decisions held it.
+  const expiresIn = group.expiresAt
+    ? formatAge(Math.max(0, Math.floor((new Date(group.expiresAt).getTime() - Date.now()) / 1000))).replace(' ago', '')
+    : primary.duration;
+  const absoluteExpiry = group.expiresAt
+    ? new Date(group.expiresAt).toLocaleString()
+    : 'no expiry recorded';
+
   return (
-    <tr>
-      <td className="px-4 py-2 text-xs text-gray-700 dark:text-gray-200 whitespace-nowrap">{d.scope}</td>
-      <td className="px-4 py-2 font-mono text-xs text-gray-900 dark:text-gray-100">{d.value}</td>
-      <td className="px-4 py-2 text-xs">
-        <span className="inline-flex items-center rounded-full bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-200 px-2 py-0.5 text-[10px] font-medium">
-          {d.type}{d.simulated && <span className="ml-1 opacity-70">(sim)</span>}
-        </span>
-      </td>
-      <td className="px-4 py-2 text-xs text-gray-700 dark:text-gray-200">
-        <span className="font-mono">{d.origin || '—'}</span>
-        {d.staticByOperator && <span className="ml-1 text-[9px] uppercase text-purple-700 dark:text-purple-300">static</span>}
-        {/* Auto-ban is checked before manual: the scheduler bans through the
-            same helper an operator does, so both flags used to light up and
-            the row claimed a human had acted. */}
-        {d.autoBanned && (
-          <span
-            className="ml-1 rounded bg-sky-100 px-1 py-0.5 text-[9px] font-medium uppercase text-sky-800 dark:bg-sky-900/40 dark:text-sky-300"
-            title="Added automatically by the WAF auto-ban scheduler"
-            data-testid="ban-badge-auto"
-          >
-            auto-ban
+    <>
+      <tr className={multiple ? 'cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700/40' : undefined}
+        onClick={multiple ? () => setOpen((v) => !v) : undefined}
+        data-testid={`ban-group-${group.value}`}
+      >
+        <td className="px-5 py-2 font-mono text-xs text-gray-900 dark:text-gray-100">
+          <span className="inline-flex items-center gap-1">
+            {multiple && (open
+              ? <ChevronDown size={12} className="text-gray-400" />
+              : <ChevronRight size={12} className="text-gray-400" />)}
+            {group.value}
           </span>
-        )}
-        {d.manualByOperator && !d.staticByOperator && !d.autoBanned && <span className="ml-1 text-[9px] uppercase text-amber-700 dark:text-amber-300" data-testid="ban-badge-manual">manual</span>}
-      </td>
-      <td className="px-4 py-2 text-xs text-gray-700 dark:text-gray-200 max-w-md truncate" title={d.scenario}>{d.scenario}</td>
-      <td className="px-4 py-2 text-xs text-gray-700 dark:text-gray-200 whitespace-nowrap">{expiresIn}</td>
-      <td className="px-4 py-2">
-        <button
-          type="button"
-          onClick={onUnban}
-          disabled={isUnbanning}
-          className="inline-flex items-center gap-1 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-0.5 text-[11px] font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50"
-          data-testid={`bans-unban-${d.id}`}
-          title={`Unban ${d.value} (decision id ${d.id})`}
+          {group.scope !== 'Ip' && (
+            <span className="ml-1 text-[9px] uppercase text-gray-500 dark:text-gray-400">{group.scope}</span>
+          )}
+          {/* A group where every decision is simulated blocks NOTHING. Saying
+              so on the row matters more than the per-decision "(sim)" marker
+              it replaces: the operator's question is whether this address is
+              actually blocked. */}
+          {group.allSimulated && (
+            <span
+              className="ml-2 rounded bg-amber-100 px-1 py-0.5 text-[9px] font-medium uppercase text-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
+              title="Simulated — this address is NOT blocked. The scenario is in alert-only mode."
+              data-testid="ban-badge-simulated"
+            >
+              not enforced
+            </span>
+          )}
+        </td>
+        <td className="px-5 py-2 text-xs">
+          <span className="flex flex-wrap gap-1">
+            {group.addedBy.map((a) => {
+              const meta = addedByMeta(a);
+              return (
+                <span
+                  key={a}
+                  className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${meta.cls}`}
+                  title={meta.title}
+                  data-testid={`ban-badge-${a}`}
+                >
+                  {meta.label}
+                </span>
+              );
+            })}
+          </span>
+        </td>
+        <td className="px-5 py-2 text-xs text-gray-700 dark:text-gray-200">
+          <span className="block max-w-lg truncate" title={primary.scenario}>
+            {describeDecision(primary, descriptions)}
+          </span>
+          {multiple && (
+            <span className="text-[10px] text-gray-500 dark:text-gray-400">
+              +{group.decisions.length - 1} more — click to expand
+            </span>
+          )}
+        </td>
+        <td className="px-5 py-2 text-xs text-gray-700 dark:text-gray-200">{group.decisions.length}</td>
+        <td
+          className="px-5 py-2 text-xs text-gray-700 dark:text-gray-200 whitespace-nowrap"
+          title={`Counts down to ${absoluteExpiry}. This is the time REMAINING, not the duration the ban was issued for.`}
         >
-          <Trash2 size={11} /> {isUnbanning ? 'Unbanning…' : 'Unban'}
-        </button>
-      </td>
-    </tr>
+          {expiresIn}
+        </td>
+        <td className="px-5 py-2">
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); group.decisions.forEach((d) => onUnban(d.id)); }}
+            disabled={unbanningId !== null}
+            className="inline-flex items-center gap-1 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-0.5 text-[11px] font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50"
+            data-testid={`bans-unban-${group.value}`}
+            title={multiple
+              ? `Remove all ${group.decisions.length} decisions banning ${group.value}`
+              : `Unban ${group.value} (decision id ${primary.id})`}
+          >
+            <Trash2 size={11} /> {unbanningId !== null ? 'Unbanning…' : multiple ? `Unban all (${group.decisions.length})` : 'Unban'}
+          </button>
+        </td>
+      </tr>
+      {open && group.decisions.map((d) => (
+        <tr key={d.id} className="bg-gray-50 dark:bg-gray-900/40" data-testid={`ban-detail-${d.id}`}>
+          <td className="px-5 py-1.5 text-[11px] text-gray-500 dark:text-gray-400" />
+          <td className="px-5 py-1.5 text-[10px]">
+            <span className={`inline-flex items-center rounded-full px-2 py-0.5 font-medium ${addedByMeta(d.addedBy).cls}`}>
+              {addedByMeta(d.addedBy).label}
+            </span>
+          </td>
+          <td className="px-5 py-1.5 text-[11px] text-gray-600 dark:text-gray-400">
+            {describeDecision(d, descriptions)}
+            <span className="ml-2 font-mono opacity-60">{d.scenario}</span>
+          </td>
+          <td className="px-5 py-1.5 text-[11px] text-gray-500 dark:text-gray-400">
+            {d.simulated ? 'simulated' : d.type}
+          </td>
+          <td className="px-5 py-1.5 text-[11px] text-gray-600 dark:text-gray-400 whitespace-nowrap">
+            {d.expiresAt
+              ? formatAge(Math.max(0, Math.floor((new Date(d.expiresAt).getTime() - Date.now()) / 1000))).replace(' ago', '')
+              : d.duration}
+          </td>
+          <td className="px-5 py-1.5">
+            <button
+              type="button"
+              onClick={() => onUnban(d.id)}
+              disabled={unbanningId !== null}
+              className="text-[10px] text-gray-500 hover:text-red-600 dark:text-gray-400 dark:hover:text-red-400 disabled:opacity-50"
+              data-testid={`bans-unban-id-${d.id}`}
+            >
+              Unban this one
+            </button>
+          </td>
+        </tr>
+      ))}
+    </>
   );
 }
 
@@ -1358,6 +1507,8 @@ function AllowlistCard() {
   const [scope, setScope] = useState<'Ip' | 'Range'>('Ip');
 
   const entries = list.data?.data?.entries ?? [];
+  const { sortedData: sortedEntries, sortKey, sortDirection, onSort } =
+    useSortable<CrowdsecAllowlistEntry>(entries, 'value', 'asc');
   const valid = /^[a-fA-F0-9.:/]+$/.test(value) && value.length >= 1 && comment.trim().length >= 3;
 
   const onAdd = () => {
@@ -1441,15 +1592,15 @@ function AllowlistCard() {
           <table className="min-w-full text-xs" data-testid="allowlist-table">
             <thead className="text-gray-500 uppercase text-[10px]">
               <tr>
-                <th className="px-2 py-1 text-left">Value</th>
-                <th className="px-2 py-1 text-left">Scope</th>
-                <th className="px-2 py-1 text-left">Comment</th>
-                <th className="px-2 py-1 text-left">Added by</th>
+                <SortableHeader label="Value" sortKey="value" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+                <SortableHeader label="Scope" sortKey="scope" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+                <SortableHeader label="Comment" sortKey="comment" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+                <SortableHeader label="Added by" sortKey="createdBy" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
                 <th className="px-2 py-1"></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-emerald-200/40 dark:divide-emerald-900/40">
-              {entries.map((e: CrowdsecAllowlistEntry) => (
+              {sortedEntries.map((e: CrowdsecAllowlistEntry) => (
                 <tr key={e.value}>
                   <td className="px-2 py-1 font-mono">{e.value}</td>
                   <td className="px-2 py-1">{e.scope}</td>
@@ -1984,8 +2135,25 @@ export function WafSettingsTab() {
       {/* F5 — CrowdSec Console enrollment (opt-in, super_admin only) */}
       <CrowdsecConsoleCard />
 
+      {/* AUTOMATIC BANS — two engines, both feeding the same ban list.
+          They were previously indistinguishable: the scheduler had this card
+          and the scenarios had nothing, while both produced rows in the Banned
+          IPs tab under CrowdSec's internal origin names. */}
+      <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/40 px-4 py-3">
+        <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Automatic bans</h2>
+        <p className="mt-1 max-w-3xl text-xs text-gray-600 dark:text-gray-400">
+          Two independent engines add bans, and both write to the same list under
+          <strong> Banned IPs</strong>. <strong>WAF auto-ban</strong> reacts to ModSecurity rule
+          hits on the platform's own hosts; <strong>Traffic detection</strong> reacts to
+          behaviour in the ingress access log. Turning one off does not affect the other.
+        </p>
+      </div>
+
       {/* F3 UI — Auto-ban config + recent runs + calibration dry-run */}
       <CrowdsecAutobanCard />
+
+      {/* Traffic detection — the scenarios that produce the other half of the bans. */}
+      <ScenariosCard />
 
       {/* F1+F6 — L4 enforcement toggle (highest-risk, operator IP guard) */}
       <CrowdsecL4Card />
@@ -2151,6 +2319,14 @@ function CrowdsecConsoleCard() {
 function CrowdsecAutobanCard() {
   const cfg = useCrowdsecAutobanConfig();
   const runs = useCrowdsecAutobanRuns(50);
+
+  // Two independent tables in this card, so two sort states with distinct
+  // names — a shared one would make sorting the run history reorder the
+  // calibration preview underneath it.
+  const {
+    sortedData: sortedRuns, sortKey: runsSortKey,
+    sortDirection: runsSortDirection, onSort: onRunsSort,
+  } = useSortable<CrowdsecAutobanRun>(runs.data?.data?.runs ?? [], 'triggeredAt', 'desc');
   const patch = usePatchCrowdsecAutobanConfig();
   const calibrate = useCalibrateAutoban();
 
@@ -2163,6 +2339,10 @@ function CrowdsecAutobanCard() {
 
   const [calibHours, setCalibHours] = useState(24);
   const [calibResult, setCalibResult] = useState<CrowdsecAutobanCalibrationResponse | null>(null);
+  const {
+    sortedData: sortedTopRules, sortKey: calibSortKey,
+    sortDirection: calibSortDirection, onSort: onCalibSort,
+  } = useSortable(calibResult?.topRulesInBatch ?? [], 'eventCount', 'desc');
   const [calibError, setCalibError] = useState<string | null>(null);
 
   if (cfg.isLoading || !draft) {
@@ -2398,10 +2578,10 @@ function CrowdsecAutobanCard() {
               <div className="text-blue-900 dark:text-blue-200 mt-1 mb-1 font-medium">Top rules driving bans:</div>
               <table className="min-w-full text-[11px]">
                 <thead className="text-gray-500 dark:text-gray-400">
-                  <tr><th className="text-left pr-3">Rule</th><th className="text-left pr-3">Distinct IPs</th><th className="text-left">Events</th></tr>
+                  <tr><SortableHeader label="Rule" sortKey="ruleId" currentKey={calibSortKey} direction={calibSortDirection} onSort={onCalibSort} /><SortableHeader label="Distinct IPs" sortKey="distinctIps" currentKey={calibSortKey} direction={calibSortDirection} onSort={onCalibSort} /><SortableHeader label="Events" sortKey="eventCount" currentKey={calibSortKey} direction={calibSortDirection} onSort={onCalibSort} /></tr>
                 </thead>
                 <tbody>
-                  {calibResult.topRulesInBatch.map((r) => (
+                  {sortedTopRules.map((r) => (
                     <tr key={r.ruleId}>
                       <td className="font-mono pr-3">{r.ruleId}</td>
                       <td className="pr-3">{r.distinctIps}</td>
@@ -2439,17 +2619,17 @@ function CrowdsecAutobanCard() {
             <table className="min-w-full text-[11px]">
               <thead className="bg-gray-50 dark:bg-gray-900 text-gray-500 dark:text-gray-400 uppercase">
                 <tr>
-                  <th className="text-left px-3 py-1">When</th>
-                  <th className="text-left px-3 py-1">Source IP</th>
-                  <th className="text-left px-3 py-1">Host</th>
+                  <SortableHeader label="When" sortKey="triggeredAt" currentKey={runsSortKey} direction={runsSortDirection} onSort={onRunsSort} />
+                  <SortableHeader label="Source IP" sortKey="sourceIp" currentKey={runsSortKey} direction={runsSortDirection} onSort={onRunsSort} />
+                  <SortableHeader label="Host" sortKey="hostname" currentKey={runsSortKey} direction={runsSortDirection} onSort={onRunsSort} />
                   <th className="text-left px-3 py-1">Rules</th>
-                  <th className="text-left px-3 py-1">Events</th>
-                  <th className="text-left px-3 py-1">Outcome</th>
+                  <SortableHeader label="Events" sortKey="eventCount" currentKey={runsSortKey} direction={runsSortDirection} onSort={onRunsSort} />
+                  <SortableHeader label="Outcome" sortKey="outcome" currentKey={runsSortKey} direction={runsSortDirection} onSort={onRunsSort} />
                   <th className="text-left px-3 py-1">Detail</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
-                {runs.data.data.runs.map((r) => (
+                {sortedRuns.map((r) => (
                   <AutobanRunRow key={r.id} r={r} />
                 ))}
               </tbody>
@@ -2801,6 +2981,8 @@ function CommunityBlocklistViewer({ onClose, total }: { onClose: () => void; tot
 
   const { data, isLoading, isError, error } = useCrowdsecDecisions(query);
   const rows = data?.data.decisions ?? [];
+  const { sortedData: sortedRows, sortKey, sortDirection, onSort } =
+    useSortable<CrowdsecDecision>(rows, 'value', 'asc');
   const matching = data?.data.totalMatching ?? 0;
   const pages = Math.max(1, Math.ceil(matching / pageSize));
 
@@ -2852,14 +3034,14 @@ function CommunityBlocklistViewer({ onClose, total }: { onClose: () => void; tot
             <table className="w-full text-left text-xs">
               <thead className="text-gray-500 dark:text-gray-400">
                 <tr>
-                  <th className="py-1 font-medium">IP</th>
-                  <th className="py-1 font-medium">Scenario</th>
-                  <th className="py-1 font-medium">Expires</th>
+                  <SortableHeader label="IP" sortKey="value" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+                  <SortableHeader label="Scenario" sortKey="scenario" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+                  <SortableHeader label="Expires" sortKey="expiresAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
                   <th className="py-1 font-medium text-right">Exclude</th>
                 </tr>
               </thead>
               <tbody className="text-gray-800 dark:text-gray-100" data-testid="community-viewer-rows">
-                {rows.map((d) => (
+                {sortedRows.map((d) => (
                   <tr key={d.id} className="border-t border-gray-100 dark:border-gray-700">
                     <td className="py-1 font-mono">{d.value}</td>
                     <td className="py-1">{d.scenario}</td>

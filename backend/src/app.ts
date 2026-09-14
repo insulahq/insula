@@ -103,6 +103,7 @@ import { notificationUserRoutes } from './modules/notifications/routes-tenant.js
 import { seedCategoriesIfMissing } from './modules/notifications/categories/service.js';
 import { seedTemplatesIfMissing } from './modules/notifications/templates/seed-loader.js';
 import { ensureCommunityBlocklistDefault } from './modules/security-hardening/crowdsec.js';
+import { ensureAgentSimulationDefault } from './modules/security-hardening/crowdsec-scenarios.js';
 import { startNotificationRetention } from './modules/notifications/retention/scheduler.js';
 import { startEmailWorker } from './modules/notifications/queue/worker.js';
 import { startNtfyWorker } from './modules/notifications/queue/ntfy-worker.js';
@@ -241,6 +242,25 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
     }
   } catch (err) {
     console.warn('[waf] could not ensure the community-blocklist default:', err instanceof Error ? err.message : err);
+  }
+
+  // Traffic detection: the agent's simulation list. Same division of labour as
+  // the CAPI switch above and for the same reason — the ConfigMap carries
+  // `reconcile: disabled` so an operator's toggle survives, which makes Flux
+  // skip it during apply and never create it.
+  //
+  // The agent mounts this file NON-optionally, so until it exists the DaemonSet
+  // sits in ContainerCreating. That is the safe direction: no agent means no
+  // traffic bans, whereas starting with no simulation file would promote
+  // http-crawl-non_statics to enforcing and ban search-engine crawlers from
+  // every tenant site at once.
+  try {
+    const sim = await ensureAgentSimulationDefault(process.env.KUBECONFIG);
+    if (sim === 'created') {
+      console.info('[waf] crowdsec-agent-simulation created — http-crawl-non_statics defaults to alert-only');
+    }
+  } catch (err) {
+    console.warn('[waf] could not ensure the scenario-simulation default:', err instanceof Error ? err.message : err);
   }
 
   const app = Fastify({
@@ -1280,6 +1300,8 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         const { ensureMailEventsWebhook } = await import('./modules/mail-events/webhook-reconciler.js');
         const { ensureReportIntake } = await import('./modules/mail-events/report-intake-reconciler.js');
         const { pollFblComplaints } = await import('./modules/mail-events/fbl.js');
+        const { pollDmarcReports } = await import('./modules/mail-events/dmarc.js');
+        const { repairDmarcRuaRecords } = await import('./modules/mail-events/dmarc-rua-repair.js');
         const { evaluateMailThresholds } = await import('./modules/mail-events/thresholds.js');
         const { createK8sClients } = await import('./modules/k8s-provisioner/k8s-client.js');
         let mailK8s: import('./modules/k8s-provisioner/k8s-client.js').K8sClients | undefined;
@@ -1299,6 +1321,26 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           pollFblComplaints(app.db, app.log).catch((err) => {
             app.log.warn({ err }, 'fbl poll failed');
           });
+          // R5. Separate catch from the FBL poll on purpose: the two read
+          // different Stalwart registry objects, and one being unreachable
+          // must not stop the other from draining.
+          pollDmarcReports(app.db, app.log).catch((err) => {
+            app.log.warn({ err }, 'dmarc poll failed');
+          });
+          // R5. The generator fix only reaches domains provisioned AFTER it;
+          // the `_dmarc` record is written once at enable time and nothing
+          // reconciles it afterwards. Without this, every already-enabled
+          // domain keeps publishing a rua= address that cannot receive mail —
+          // i.e. the whole installed base, and the feature delivers nothing to
+          // any of it. A no-op once converged.
+          {
+            const encKey = (app.config as Record<string, unknown>).PLATFORM_ENCRYPTION_KEY as string | undefined;
+            if (encKey) {
+              repairDmarcRuaRecords(app.db, app.log, encKey).catch((err) => {
+                app.log.warn({ err }, 'dmarc rua repair failed');
+              });
+            }
+          }
           // Independent of the poll — a poll DB hiccup must not skip
           // threshold evaluation (in auto mode that would skip
           // enforcement, not just notifications).
@@ -1761,6 +1803,34 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           app.log.warn(
             { err },
             'crowdsec-db reconciler: failed to start (non-blocking)',
+          );
+        }
+
+        // R36: database connection-isolation converger. Revokes the PUBLIC
+        // CONNECT blanket on every database in the CNPG cluster and grants
+        // CONNECT explicitly to each owner plus the CNPG metrics exporter —
+        // which connects to EVERY database (pg_extensions carries
+        // target_databases: ['*']), so the grant is what keeps the revoke from
+        // silently breaking metrics collection. Non-blocking: a cluster whose
+        // CNPG primary is not up yet converges on the next tick.
+        try {
+          const { startDbIsolationReconciler } = await import(
+            './modules/db-isolation/reconciler.js'
+          );
+          const k8sNodeDbIso = await import('@kubernetes/client-node');
+          const kcDbIso = new k8sNodeDbIso.KubeConfig();
+          if (kubePath) kcDbIso.loadFromFile(kubePath);
+          else kcDbIso.loadFromCluster();
+          const dbIsoHandle = startDbIsolationReconciler(
+            k8sForImapsync.core,
+            kcDbIso,
+            app.log,
+          );
+          app.addHook('onClose', () => dbIsoHandle.stop());
+        } catch (err) {
+          app.log.warn(
+            { err },
+            'db-isolation reconciler: failed to start (non-blocking)',
           );
         }
 

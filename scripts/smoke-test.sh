@@ -172,8 +172,16 @@ if [[ -z "$K3S_CONTAINER" ]]; then
 fi
 ORPHAN_COUNT=0
 if [[ -n "$K3S_CONTAINER" ]]; then
+  # NOTE: no `|| echo 0` here. Under `set -o pipefail` a failing first stage
+  # fails the whole pipeline EVEN THOUGH the counting stage already printed a
+  # number — so the fallback appends a SECOND line and the variable becomes
+  # $'0\n0', which blows up the arithmetic below with
+  #   ((: 0\n0: syntax error in expression (error token is "0")
+  # The counting stage always emits exactly one number, so the guard below is
+  # what handles the genuinely-empty case.
   ORPHAN_COUNT=$(docker exec "$K3S_CONTAINER" kubectl get ns --no-headers 2>/dev/null \
-    | awk '/tenant-smoke-test/ {n++} END {print n+0}' || echo "0")
+    | awk '/tenant-smoke-test/ {n++} END {print n+0}') || true
+  [[ "$ORPHAN_COUNT" =~ ^[0-9]+$ ]] || ORPHAN_COUNT=0
 fi
 if (( ORPHAN_COUNT > 10 )); then
   echo "  ⚠ WARNING: $ORPHAN_COUNT orphaned tenant-smoke-test-* namespaces found in k3s."

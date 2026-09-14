@@ -1,6 +1,8 @@
 import type { FastifyInstance } from 'fastify';
+import { updateTlsSettingsSchema } from '@insula/api-contracts';
 import { authenticate, requireRole } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
+import { parseBody } from '../../shared/validate-body.js';
 import { getTlsSettings, updateTlsSettings } from './service.js';
 import { listClusterIssuers } from './cluster-issuers.js';
 
@@ -53,10 +55,7 @@ export async function tlsSettingsRoutes(app: FastifyInstance): Promise<void> {
       },
     },
   }, async (request) => {
-    const body = request.body as {
-      clusterIssuerName?: string;
-      autoTlsEnabled?: boolean;
-    };
+    const body = parseBody(updateTlsSettingsSchema, request.body);
     const settings = await updateTlsSettings(app.db, body);
     return success(settings);
   });

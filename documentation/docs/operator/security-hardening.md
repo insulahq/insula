@@ -17,7 +17,7 @@ The page is a set of tabs, driven by a per-node probe:
 
 | Tab | What you see |
 |---|---|
-| **Overview** | Cluster summary: nodes with SSH publicly exposed, critical CIS failures, stale probes, plus Calico WireGuard, TLS-expiry, backup-health, audit-log-health, and reserved-hostname cards |
+| **Overview** | Cluster summary: nodes with SSH publicly exposed, critical CIS failures, stale probes, plus Calico WireGuard, TLS-expiry, backup-health, audit-log-health, database-isolation, and reserved-hostname cards |
 | **SSH Lockdown** | Per-node SSH posture and a "restrict to mesh" runbook |
 | **Mesh Status** | Detected mesh provider per node (NetBird / Tailscale / WireGuard / none) and install snippets |
 | **Firewall Posture** | nft sets, trusted-range and cluster-peer counts, public ports per node |
@@ -34,6 +34,35 @@ re-fetches the snapshot without restarting the probes.
     Posture data comes from a `security-probe` DaemonSet that mounts host paths
     **read-only**, drops all capabilities, and never mutates anything. Anything
     destructive (like SSH lockdown) is surfaced as a runbook you run yourself.
+
+## Database connection isolation
+
+The **Database connection isolation** card on the Overview tab answers one
+question: can a service's database password be used to open a session against a
+*different* database?
+
+Each service the platform runs gets its own Postgres login — webmail has one, the
+web-firewall has one. They are supposed to reach only their own data. Postgres,
+however, lets any login connect to any database unless that permission is
+explicitly taken away, so those passwords also opened a session against the
+platform's own database. Nothing in there was readable that way — the tables
+themselves were never shared — but a password that should open one door was
+opening two.
+
+The platform now takes that permission away and hands it back only to the owner
+of each database. It re-checks every five minutes, so a database created or
+restored later cannot quietly reopen the gap.
+
+| Card reads | Meaning |
+|---|---|
+| **N / N isolated** (green) | Every database refuses general connections. Nothing to do. |
+| **N / M isolated** (amber) | One or more databases still accept them. The card names which; the platform closes them on the next five-minute pass. |
+| **unknown** (amber) | The platform could not read the database's permissions. This is **not** a clean bill of health — check that the database is reachable. |
+
+A detail table appears underneath only when there is something to act on. If it
+names a login as *connected but unable to reconnect*, that service was relying on
+the old blanket permission: it keeps working until it next reconnects, then
+fails. Point it at its own database, or grant it access explicitly.
 
 ## CIS-style checks
 

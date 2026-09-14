@@ -98,3 +98,16 @@ export type CreateCronJobRequest = z.input<typeof createCronJobSchema>;
 export type UpdateCronJobInput = z.infer<typeof updateCronJobSchema>;
 export type CronJobResponse = z.infer<typeof cronJobResponseSchema>;
 export type CronJobListResponse = z.infer<typeof cronJobListResponseSchema>;
+
+// ─── Bulk actions (ROADMAP R29a) ───────────────────────────────────────
+//
+// Authored from what the HANDLER reads, not from what the panel sends.
+// Id columns are `varchar(36)` — UUID-shaped but not UUID-constrained — so
+// these mirror the column rather than asserting `.uuid()`: a schema stricter
+// than the storage rejects ids the platform itself is able to mint.
+
+export const bulkCronJobActionSchema = z.object({
+  cron_job_ids: z.array(z.string().min(1).max(36)),
+  action: z.enum(['enable', 'disable', 'delete']),
+});
+export type BulkCronJobAction = z.infer<typeof bulkCronJobActionSchema>;

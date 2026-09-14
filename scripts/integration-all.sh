@@ -1367,6 +1367,81 @@ assert_baseline_state() {
     && warn "baseline gate: ${BASELINE_DRIFT_FOUND} drift item(s) found+healed — a prior run leaked state (see above)" \
     || pass "baseline gate: cluster is at canonical baseline (no drift)"
 }
+# ─── Self-ban guard (2026-09-13) ──────────────────────────────────
+#
+# A full run hammers admin endpoints hard enough to trip the platform's OWN
+# traffic detection. Observed on DEV: partway through `trusted-proxies`,
+# CrowdSec issued `crowdsecurity/http-admin-interface-probing` against the
+# runner's egress IP for ~4h, and from that moment every request got an
+# empty-body 403 from the Traefik bouncer.
+#
+# The damage is not the one suite that fails. The bouncer decision is
+# CLUSTER-WIDE and cached, so EVERY suite after it fails too — for a reason
+# that has nothing to do with the code under test. A full run cannot complete
+# on a cluster with traffic detection enabled without this.
+#
+# It also reads as a platform outage: `POST /0` came back 403 instead of the
+# 400 the suite asserts, and re-running the same call once unbanned returned
+# the correct `400 INVALID_BODY`.
+#
+# Best-effort throughout: a cluster without CrowdSec, or without $KUBECTL
+# reach, simply skips. The entry is labelled so the cleanup removes only its
+# own, never an operator's.
+INTEGRATION_ALLOWLIST_NAME="admin-panel"
+INTEGRATION_ALLOWLIST_TAG="integration-suite runner (auto, self-ban guard)"
+INTEGRATION_RUNNER_IP=""
+
+crowdsec_pod() {
+  $KUBECTL -n crowdsec get pods --no-headers 2>/dev/null | awk '/^crowdsec-/{print $1; exit}'
+}
+
+# The allowlist is NOT free: CrowdSec allowlisting an IP also suppresses WAF
+# (AppSec) enforcement for it. Proven on DEV 2026-09-13 — the same payloads from
+# the same runner returned 401 while allowlisted and 403 once the entry was
+# removed. So the WAF suites cannot observe a block while the guard is on, and
+# they skip rather than report a false failure (see skip_if_runner_allowlisted).
+#
+# Set INTEGRATION_SELF_BAN_GUARD=0 for a WAF-focused run: the WAF suites then
+# see real enforcement, at the cost of the runner being ban-able partway through.
+: "${INTEGRATION_SELF_BAN_GUARD:=1}"
+export INTEGRATION_RUNNER_ALLOWLISTED=0
+
+allowlist_runner_ip() {
+  local ip pod
+  if [[ "$INTEGRATION_SELF_BAN_GUARD" != "1" ]]; then
+    log "self-ban guard: DISABLED (INTEGRATION_SELF_BAN_GUARD=0) — WAF suites will see real enforcement; the runner can be banned mid-run"
+    return 0
+  fi
+  ip="$(curl -s --max-time 10 https://api.ipify.org 2>/dev/null || true)"
+  [[ "$ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || { log "self-ban guard: could not determine runner egress IP — skipping"; return 0; }
+  pod="$(crowdsec_pod)"; [[ -n "$pod" ]] || { log "self-ban guard: no CrowdSec LAPI pod — skipping"; return 0; }
+  INTEGRATION_RUNNER_IP="$ip"
+  $KUBECTL -n crowdsec exec "$pod" -- cscli allowlists inspect "$INTEGRATION_ALLOWLIST_NAME" -o json >/dev/null 2>&1 \
+    || $KUBECTL -n crowdsec exec "$pod" -- cscli allowlists create "$INTEGRATION_ALLOWLIST_NAME" -d "$INTEGRATION_ALLOWLIST_TAG" >/dev/null 2>&1 || true
+  # Adding to an allowlist also drops any decision already covering the value.
+  $KUBECTL -n crowdsec exec "$pod" -- cscli allowlists add "$INTEGRATION_ALLOWLIST_NAME" "$ip" -d "$INTEGRATION_ALLOWLIST_TAG" >/dev/null 2>&1 || true
+  $KUBECTL -n crowdsec exec "$pod" -- cscli decisions delete --ip "$ip" >/dev/null 2>&1 || true
+  export INTEGRATION_RUNNER_ALLOWLISTED=1
+  pass "self-ban guard: runner IP allowlisted in CrowdSec for the duration of this run"
+  warn "  WAF suites will SKIP: a CrowdSec allowlist also suppresses WAF enforcement for this IP (run with INTEGRATION_SELF_BAN_GUARD=0 to exercise them)"
+}
+
+unallowlist_runner_ip() {
+  local pod
+  [[ -n "$INTEGRATION_RUNNER_IP" ]] || return 0
+  pod="$(crowdsec_pod)"; [[ -n "$pod" ]] || return 0
+  $KUBECTL -n crowdsec exec "$pod" -- cscli allowlists remove "$INTEGRATION_ALLOWLIST_NAME" "$INTEGRATION_RUNNER_IP" >/dev/null 2>&1 || true
+  log "self-ban guard: runner IP removed from the CrowdSec allowlist"
+}
+
+allowlist_runner_ip
+# Bash EXIT traps REPLACE rather than stack, and two later `trap … EXIT` calls
+# in this file would silently discard this one — leaving the runner IP
+# allowlisted permanently, which is a security-relevant leak from a test
+# harness. Every EXIT trap below therefore chains through this function.
+integration_exit_cleanup() { unallowlist_runner_ip; }
+trap 'integration_exit_cleanup' EXIT
+
 assert_baseline_state
 # Seed the canonical global-state snapshot AFTER the baseline gate has healed any
 # startup drift — this becomes the reference every serial suite is checked against.
@@ -1376,6 +1451,21 @@ assert_global_state "startup-baseline"
 # Smoke gate (P3): a fast health check BEFORE the long suites — fail in
 # seconds, not 40 minutes, if the platform is already broken. --no-smoke skips.
 if [[ "$RUN_SMOKE" == 1 ]]; then
+  # The gate needs the SAME readiness wait every suite gets. It did not have
+  # one, and it is the thing that runs FIRST — so a run started while a
+  # rollout was still in flight hit nginx's 502 page and died before any suite
+  # executed, reporting a red platform.
+  #
+  # Observed on DEV 2026-09-13, immediately after a deploy:
+  #     ✓ GET /sftp-users (list) (HTTP 200)
+  #     jq: parse error: Invalid numeric literal at line 1, column 7
+  #     ✗ smoke gate FAILED (rc=5)
+  # An identical re-run once the rollout settled passed with zero failures.
+  #
+  # That `jq` line is the signature wait_admin_ready was written for — see its
+  # docblock, which names it exactly. The fix was applied to suites, groups and
+  # the retry pass in 2026-08, and the gate ahead of all three was missed.
+  wait_admin_ready "smoke-gate" || true
   log "Smoke gate: scripts/smoke-test.sh (abort on red; --no-smoke to skip)"
   # Arm the mail DELIVERY gate. Without MAIL_E2E_USER/PASS smoke-test can only
   # probe port liveness, and a listener answering "220" passes that while the
@@ -1386,7 +1476,7 @@ if [[ "$RUN_SMOKE" == 1 ]]; then
   # shellcheck source=scripts/lib/ensure-mail-e2e-mailbox.sh
   source "$SCRIPT_DIR/lib/ensure-mail-e2e-mailbox.sh"
   ensure_mail_e2e_mailbox
-  trap 'cleanup_mail_e2e_mailbox' EXIT
+  trap 'cleanup_mail_e2e_mailbox; integration_exit_cleanup' EXIT
   smoke_rc=0
   ADMIN_PASSWORD="$ADMIN_PASSWORD" MAIL_E2E_USER="${MAIL_E2E_USER:-}" MAIL_E2E_PASS="${MAIL_E2E_PASS:-}" \
     timeout --kill-after=15s 300s "$SCRIPT_DIR/smoke-test.sh" || smoke_rc=$?
@@ -1498,7 +1588,8 @@ if [[ ${#PARALLEL[@]} -gt 0 && "$INTEGRATION_PARALLEL" == "1" ]]; then
   # kill AND wait: a bare kill leaves the refresher as a <defunct> zombie
   # until this shell exits. Reap it. INT/TERM also cleaned up, not just EXIT.
   _reap_refresher() { [[ -n "$_REFRESHER_PID" ]] && { kill "$_REFRESHER_PID" 2>/dev/null; wait "$_REFRESHER_PID" 2>/dev/null; _REFRESHER_PID=""; } || true; }
-  trap _reap_refresher EXIT INT TERM
+  trap '_reap_refresher; integration_exit_cleanup' EXIT
+  trap _reap_refresher INT TERM
 fi
 
 if [[ ${#PARALLEL[@]} -gt 0 ]]; then

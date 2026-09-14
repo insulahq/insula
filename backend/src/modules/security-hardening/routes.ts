@@ -52,6 +52,7 @@ import {
   crowdsecCommunityBlocklistSettingSchema,
   crowdsecAutobanPatchConfigRequestSchema,
   crowdsecListDecisionsQuerySchema,
+  crowdsecSetScenarioSimulationRequestSchema,
   createWafRuleExclusionRequestSchema,
   updateWafRuleExclusionRequestSchema,
 } from '@insula/api-contracts';
@@ -70,6 +71,7 @@ import {
   enrollConsole,
   getConsoleStatus,
 } from './crowdsec-console.js';
+import { listScenarios, setScenarioSimulation } from './crowdsec-scenarios.js';
 import {
   crowdsecConsoleEnrollRequestSchema,
   crowdsecConsoleMetaPatchSchema,
@@ -131,6 +133,7 @@ export function buildSecurityHardeningRoutes(deps: SecurityHardeningDeps) {
           core: clients.core,
           custom: clients.custom,
           apps: clients.apps,
+          kc: clients.kc,
         });
         return success(snapshot);
       },
@@ -679,6 +682,60 @@ export function buildSecurityHardeningRoutes(deps: SecurityHardeningDeps) {
         }
         const final = await loadAutobanConfig(deps.db);
         return success(final);
+      },
+    );
+
+    // ─── Traffic detection: CrowdSec scenarios on the agent ───────────
+    //
+    // Separate from the WAF auto-ban config above on purpose. Two different
+    // engines produce bans — the scheduler from ModSecurity rule hits, these
+    // scenarios from Traefik access logs — and the panel had a settings card
+    // for one of them and nothing at all for the other.
+
+    app.get(
+      '/admin/security/crowdsec/scenarios',
+      { preHandler: requireRole('super_admin') },
+      async (_req: FastifyRequest, reply: FastifyReply) => {
+        try {
+          return success(await listScenarios(kubeconfigPath));
+        } catch (err) {
+          return reply.status(502).send({
+            error: 'CROWDSEC_SCENARIOS_FAILED',
+            message: err instanceof Error ? err.message : String(err),
+            hint: 'Check the crowdsec-agent DaemonSet in platform-system is Running.',
+          });
+        }
+      },
+    );
+
+    app.patch(
+      '/admin/security/crowdsec/scenarios',
+      { preHandler: requireRole('super_admin') },
+      async (req: AuthedRequest & FastifyRequest, reply: FastifyReply) => {
+        const parsed = crowdsecSetScenarioSimulationRequestSchema.safeParse(req.body ?? {});
+        if (!parsed.success) {
+          return reply.status(400).send({
+            error: 'INVALID_BODY',
+            message: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; '),
+          });
+        }
+        const actor = userOf(req as AuthedRequest);
+        const { name, simulated } = parsed.data;
+        app.log.warn({ actor, scenario: name, simulated }, 'crowdsec: scenario simulation changed');
+        try {
+          const out = await setScenarioSimulation(kubeconfigPath, name, simulated);
+          return success(out);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          // An unknown scenario name is the caller's mistake, not a cluster
+          // fault — and it is the mistake this endpoint exists to catch, since
+          // cscli accepts nonexistent names silently.
+          const status = message.startsWith('unknown scenario') ? 400 : 502;
+          return reply.status(status).send({
+            error: status === 400 ? 'UNKNOWN_SCENARIO' : 'CROWDSEC_SCENARIO_PATCH_FAILED',
+            message,
+          });
+        }
       },
     );
 

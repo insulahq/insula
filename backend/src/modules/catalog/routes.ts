@@ -1,4 +1,5 @@
 import { join } from 'node:path';
+import { updateCatalogBadgesSchema } from '@insula/api-contracts';
 import { readFile } from 'node:fs/promises';
 import type { FastifyInstance } from 'fastify';
 import { eq } from 'drizzle-orm';
@@ -7,6 +8,7 @@ import { createCatalogRepoSchema, updateCatalogRepoSchema } from './schema.js';
 import { catalogRepositories } from '../../db/schema.js';
 import * as service from './service.js';
 import { success, paginated } from '../../shared/response.js';
+import { parseBody } from '../../shared/validate-body.js';
 import { parsePaginationParams } from '../../shared/pagination.js';
 import { ApiError } from '../../shared/errors.js';
 import { fileExists } from '../../shared/github-catalog.js';
@@ -150,7 +152,7 @@ export async function catalogRoutes(app: FastifyInstance): Promise<void> {
     },
   }, async (request) => {
     const { id } = request.params as { id: string };
-    const body = request.body as { featured?: boolean; popular?: boolean; disabled?: boolean };
+    const body = parseBody(updateCatalogBadgesSchema, request.body);
     const updated = await service.updateBadges(app.db, id, body);
     return success(updated);
   });

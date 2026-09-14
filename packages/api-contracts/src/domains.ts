@@ -175,3 +175,16 @@ export type CreateDnsProviderGroupRequest = z.input<typeof createDnsProviderGrou
 export type UpdateDnsProviderGroupRequest = z.input<typeof updateDnsProviderGroupSchema>;
 export type MigrateDnsInput = z.infer<typeof migrateDnsSchema>;
 export type DnsProviderGroupResponse = z.infer<typeof dnsProviderGroupResponseSchema>;
+
+// ─── Bulk actions (ROADMAP R29a) ───────────────────────────────────────
+//
+// Authored from what the HANDLER reads, not from what the panel sends.
+// Id columns are `varchar(36)` — UUID-shaped but not UUID-constrained — so
+// these mirror the column rather than asserting `.uuid()`: a schema stricter
+// than the storage rejects ids the platform itself is able to mint.
+
+export const bulkDomainActionSchema = z.object({
+  domain_ids: z.array(z.string().min(1).max(36)).min(1),
+  action: z.enum(['verify', 'delete']),
+});
+export type BulkDomainAction = z.infer<typeof bulkDomainActionSchema>;

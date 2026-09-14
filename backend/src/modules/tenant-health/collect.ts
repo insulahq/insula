@@ -48,7 +48,7 @@ interface RawNode {
   };
 }
 interface RawPod {
-  metadata?: { namespace?: string; name?: string };
+  metadata?: { namespace?: string; name?: string; creationTimestamp?: string | Date };
   spec?: { nodeName?: string };
   status?: {
     phase?: string;
@@ -63,7 +63,14 @@ interface LhVolume {
   metadata?: { name?: string };
   status?: {
     robustness?: string;
-    kubernetesStatus?: { namespace?: string; pvcName?: string };
+    /** attached | detached | attaching | detaching | creating | deleting */
+    state?: string;
+    kubernetesStatus?: {
+      namespace?: string;
+      pvcName?: string;
+      /** Empty while a live PVC still references this volume; a timestamp once it does not. */
+      lastPVCRefAt?: string;
+    };
   };
 }
 
@@ -101,6 +108,13 @@ export interface CollectedFacts {
    * own inventory instead of a live read. Null means the list is live.
    */
   readonly nodesAsOf: string | null;
+}
+
+/** Normalise a k8s timestamp (Date or string, per SDK code path) to ISO, or null. */
+function toIsoOrNull(v: string | Date | undefined): string | null {
+  if (!v) return null;
+  if (v instanceof Date) return Number.isNaN(v.getTime()) ? null : v.toISOString();
+  return v;
 }
 
 /** Only `Ready=True` counts. A dead node reports `Unknown`, not `False`. */
@@ -289,6 +303,10 @@ export async function collectFacts(
       nodeName: p.spec?.nodeName ?? null,
       ready: podIsReady(p),
       phase: p.status?.phase ?? 'Unknown',
+      // The SDK hands back a Date for this field on some code paths and the raw
+      // string on others; normalise so the grace window never silently reads a
+      // "[object Object]" that Date.parse turns into NaN.
+      createdAt: toIsoOrNull(p.metadata?.creationTimestamp),
     }));
 
   const replicas: ReplicaFact[] = (replicaResp.items ?? []).map((r) => ({
@@ -306,6 +324,11 @@ export async function collectFacts(
     namespace: v.status?.kubernetesStatus?.namespace ?? null,
     pvcName: v.status?.kubernetesStatus?.pvcName ?? null,
     robustness: v.status?.robustness ?? null,
+    attached: v.status?.state === 'attached',
+    // Longhorn writes "" while the PVC reference is live, and a timestamp when
+    // it is lost. Treat "" / missing as "still referenced" — only a non-empty
+    // value marks the volume as a leftover.
+    pvcRefLostAt: v.status?.kubernetesStatus?.lastPVCRefAt || null,
   })).filter((v) => v.volumeName !== '');
 
   const tenantFacts: TenantFact[] = tenantRows

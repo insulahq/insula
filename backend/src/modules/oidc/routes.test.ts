@@ -154,4 +154,87 @@ describe('oidc routes', () => {
     expect(body.data).toBeDefined();
     expect(body.data.enforceOidc).toBe(false);
   });
+
+  // ─── PUT /admin/oidc/settings — R29a body validation ───────────────────
+  //
+  // This route used to do `request.body as unknown as SaveGlobalSettingsInput`
+  // with no parse. It now validates, and the schema it validates against had
+  // to be re-authored first: the one already in the contracts package declared
+  // `protect_tenant_via_proxy` (which is the DATABASE COLUMN name, not a field
+  // the handler reads) and omitted `proxy_protect_admin` / `proxy_protect_tenant`
+  // — the two the admin panel actually sends.
+  //
+  // Wiring that schema unchanged would have been WORSE than no validation:
+  // Zod strips unknown keys by default, so the panel's toggles would have
+  // parsed clean, arrived empty, and silently stopped working against a 200.
+  // These tests exist so that cannot be reintroduced.
+  const putSettings = async (payload: unknown) =>
+    app.inject({
+      method: 'PUT',
+      url: '/api/v1/admin/oidc/settings',
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: payload as Record<string, unknown>,
+    });
+
+  it('accepts the field names the admin panel actually sends', async () => {
+    const service = await import('./service.js');
+    vi.mocked(service.saveGlobalSettings).mockClear();
+    const res = await putSettings({
+      disable_local_auth_admin: false,
+      disable_local_auth_tenant: false,
+      proxy_protect_admin: true,
+      proxy_protect_tenant: true,
+    });
+    expect(res.statusCode).toBe(200);
+    // Asserting the SERVICE saw the toggles, not merely that the route
+    // answered 200 — a stripped field also answers 200.
+    const [, input] = vi.mocked(service.saveGlobalSettings).mock.calls[0];
+    expect(input).toMatchObject({ proxy_protect_admin: true, proxy_protect_tenant: true });
+  });
+
+  it('accepts the alternate spellings the handler also reads', async () => {
+    // saveGlobalSettings resolves each toggle as
+    //   protect_admin_via_proxy  ?? proxy_protect_admin
+    //   protect_client_via_proxy ?? proxy_protect_tenant
+    const service = await import('./service.js');
+    vi.mocked(service.saveGlobalSettings).mockClear();
+    const res = await putSettings({
+      protect_admin_via_proxy: true,
+      protect_client_via_proxy: false,
+    });
+    expect(res.statusCode).toBe(200);
+    const [, input] = vi.mocked(service.saveGlobalSettings).mock.calls[0];
+    expect(input).toMatchObject({ protect_admin_via_proxy: true, protect_client_via_proxy: false });
+  });
+
+  it('rejects a misspelled field instead of silently ignoring it', async () => {
+    // The whole point of R29a. Before this, the typo returned 200 and the
+    // toggle simply did not move.
+    const res = await putSettings({ proxy_protect_admni: true });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.code).toBe('INVALID_FIELD_VALUE');
+    expect(res.json().error.message).toContain('proxy_protect_admni');
+  });
+
+  it('rejects a wrongly-typed field', async () => {
+    const res = await putSettings({ disable_local_auth_admin: 'yes' });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.code).toBe('INVALID_FIELD_VALUE');
+  });
+
+  it('accepts protect_tenant_via_proxy — the symmetric name, now actually read', async () => {
+    // Initially rejected as "a column name the endpoint never read". That was
+    // right about the handler and wrong about the fix: it is the SYMMETRIC
+    // counterpart of protect_admin_via_proxy, the name a caller writes by
+    // reflex, and integration-oidc-dex.sh had been sending it since it was
+    // written — with its tenant intent silently dropped the whole time.
+    // The handler now reads it; making it a 400 would have kept the bug and
+    // added a break.
+    const service = await import('./service.js');
+    vi.mocked(service.saveGlobalSettings).mockClear();
+    const res = await putSettings({ protect_admin_via_proxy: true, protect_tenant_via_proxy: false });
+    expect(res.statusCode).toBe(200);
+    const [, input] = vi.mocked(service.saveGlobalSettings).mock.calls[0];
+    expect(input).toMatchObject({ protect_admin_via_proxy: true, protect_tenant_via_proxy: false });
+  });
 });
