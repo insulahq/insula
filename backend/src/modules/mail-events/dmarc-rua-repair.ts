@@ -41,7 +41,7 @@
  */
 
 import { and, eq, like } from 'drizzle-orm';
-import { dnsRecords, domains, emailDomains } from '../../db/schema.js';
+import { dnsRecords, domains, emailDomains, mailboxes } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import type { OutboundReconcileLogger } from '../email-outbound/service.js';
 import { DMARC_LOCAL_PART } from './report-intake-reconciler.js';
@@ -73,6 +73,8 @@ export interface DmarcRuaRepairResult {
   readonly examined: number;
   readonly repaired: number;
   readonly failed: number;
+  /** Waiting on report-intake to create dmarc@<domain>. Not an error. */
+  readonly skippedNoMailbox: number;
 }
 
 /**
@@ -102,12 +104,18 @@ export async function repairDmarcRuaRecords(
       recordName: dnsRecords.recordName,
       recordValue: dnsRecords.recordValue,
       ttl: dnsRecords.ttl,
+      // NULL when report-intake has not (yet) created dmarc@<domain>.
+      intakeMailboxId: mailboxes.id,
     })
     .from(dnsRecords)
     .innerJoin(domains, eq(dnsRecords.domainId, domains.id))
     .innerJoin(emailDomains, and(
       eq(emailDomains.domainId, domains.id),
       eq(emailDomains.enabled, 1),
+    ))
+    .leftJoin(mailboxes, and(
+      eq(mailboxes.emailDomainId, emailDomains.id),
+      eq(mailboxes.localPart, DMARC_LOCAL_PART),
     ))
     .where(and(
       eq(dnsRecords.recordType, 'TXT'),
@@ -118,9 +126,24 @@ export async function repairDmarcRuaRecords(
 
   let repaired = 0;
   let failed = 0;
+  let skippedNoMailbox = 0;
 
   for (const row of rows) {
     if (!row.recordValue || !row.recordName || !row.domainName) continue;
+
+    // Never publish an address that does not exist yet.
+    //
+    // This converger and report-intake both run fire-and-forget on the same
+    // 5-min tick, so their order is not guaranteed; and if mailbox creation
+    // fails persistently for a domain, repairing anyway would swap one
+    // permanently-bouncing address for another. The domain keeps the old
+    // (also broken) record until its intake mailbox exists — no worse than
+    // now, and it converges on the next tick.
+    if (!row.intakeMailboxId) {
+      skippedNoMailbox += 1;
+      continue;
+    }
+
     const next = repairRuaValue(row.recordValue, row.domainName);
     if (next === null) continue;
 
@@ -167,8 +190,11 @@ export async function repairDmarcRuaRecords(
     }
   }
 
-  if (repaired > 0 || failed > 0) {
-    logger.info({ examined: rows.length, repaired, failed }, 'dmarc-rua repair: pass complete');
+  if (repaired > 0 || failed > 0 || skippedNoMailbox > 0) {
+    logger.info(
+      { examined: rows.length, repaired, failed, skippedNoMailbox },
+      'dmarc-rua repair: pass complete',
+    );
   }
-  return { examined: rows.length, repaired, failed };
+  return { examined: rows.length, repaired, failed, skippedNoMailbox };
 }
