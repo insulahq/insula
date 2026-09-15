@@ -731,6 +731,18 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
     gdprBasis: 'legitimate_interest',
   },
   {
+    id: 'admin.cluster_storage_capacity',
+    cls: 'incident',
+    reportsOn: 'storage',
+    displayName: 'Cluster storage capacity',
+    description: 'Longhorn commit ratio crossed 80% (warning) or 95% (critical) cluster-wide or on any node. Previously written straight into the notifications table with NO category, so it could never be emailed, pushed, muted or audited — an operator learned the cluster was nearly full by happening to open the panel.',
+    audience: 'admin',
+    defaultSeverity: 'critical',
+    defaultChannels: ALL_NOTIFICATION_CHANNELS,
+    isMandatory: true,
+    gdprBasis: 'legitimate_interest',
+  },
+  {
     id: 'admin.mailbox_quota_fleet',
     cls: 'action',
     reportsOn: 'mail',

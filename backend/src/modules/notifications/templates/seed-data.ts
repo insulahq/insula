@@ -229,6 +229,43 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     ],
   },
 
+  // ── admin.cluster_storage_capacity ─────────────────────────────────
+  {
+    categoryId: 'admin.cluster_storage_capacity',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: 'Cluster storage {{level}} — {{clusterPct}}% committed',
+    bodyTemplate: emailMjml(
+      'Cluster storage capacity',
+      '{{clusterDetail}} Worst node: {{worstNode}}. As of {{occurredAt}}. {{recommendedAction}}',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'level', type: 'string', required: false },
+      { name: 'clusterPct', type: 'string', required: false },
+      { name: 'clusterDetail', type: 'string', required: false },
+      { name: 'worstNode', type: 'string', required: false },
+      { name: 'recommendedAction', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'admin.cluster_storage_capacity',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: 'Cluster storage {{level}} — {{clusterPct}}%',
+    bodyTemplate: '{{clusterDetail}} Worst node: {{worstNode}}. As of {{occurredAt}}. {{recommendedAction}}',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'level', type: 'string', required: false },
+      { name: 'clusterPct', type: 'string', required: false },
+      { name: 'clusterDetail', type: 'string', required: false },
+      { name: 'worstNode', type: 'string', required: false },
+      { name: 'recommendedAction', type: 'string', required: false },
+    ],
+  },
+
   // ── tenant.resource_saturation_* ───────────────────────────────────
   {
     categoryId: 'tenant.resource_saturation_warning',
