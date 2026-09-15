@@ -43,6 +43,8 @@ export const DISPATCHER_PROVIDED: ReadonlySet<string> = new Set([
   'platformName',
   'userName',
   'tenantName',
+  'contactName',
+  'occurredAt',
 ]);
 
 /**

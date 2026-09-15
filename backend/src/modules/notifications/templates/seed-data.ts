@@ -37,6 +37,14 @@ const COMMON_VARS: readonly NotificationTemplateVariable[] = [
   { name: 'userName', type: 'string', required: false },
   { name: 'tenantName', type: 'string', required: false },
   { name: 'platformName', type: 'string', required: false },
+  // The tenant's billing/technical contact PERSON, distinct from the
+  // organisation name. Populated centrally by the dispatcher from
+  // tenants.contact_name, which was filled in for every tenant and read by
+  // nothing until 2026-09-14.
+  { name: 'contactName', type: 'string', required: false },
+  // Seeded by the dispatcher from "now"; a caller with a more precise instant
+  // (when the threshold was actually crossed) overrides it.
+  { name: 'occurredAt', type: 'string', required: false },
 ];
 
 /**
@@ -95,7 +103,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: 'Password reset requested',
-    bodyTemplate: 'A password reset was requested for your account. If this was not you, contact support immediately.',
+    bodyTemplate: 'A password reset was requested for {{userName}} on {{occurredAt}}. If this was not you, contact support immediately.',
     bodyFormat: 'plaintext',
     variablesSchema: COMMON_VARS,
   },
@@ -118,7 +126,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: 'Password changed',
-    bodyTemplate: 'Your account password was updated.',
+    bodyTemplate: 'The password for {{userName}} was updated on {{occurredAt}}.',
     bodyFormat: 'plaintext',
     variablesSchema: COMMON_VARS,
   },
@@ -162,7 +170,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     subjectTemplate: 'Your subscription expires soon',
     bodyTemplate: emailMjml(
       'Subscription expiring soon',
-      'Your subscription for {{tenantName}} expires in {{daysUntilExpiry}} days, on {{expiresAt}}. Renew now to avoid service interruption.',
+      'Hi {{contactName}} — the subscription for {{tenantName}} expires in {{daysUntilExpiry}} days, on {{expiresAt}}. Renew now to avoid service interruption.',
     ),
     bodyFormat: 'mjml',
     variablesSchema: [
@@ -462,7 +470,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     subjectTemplate: 'Subscription renewed',
     bodyTemplate: emailMjml(
       'Subscription renewed',
-      'Your subscription for {{tenantName}} was renewed. It now runs until {{newExpiresAt}}.',
+      'Hi {{contactName}} — the subscription for {{tenantName}} was renewed and now runs until {{newExpiresAt}}.',
     ),
     bodyFormat: 'mjml',
     variablesSchema: [
@@ -491,7 +499,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     subjectTemplate: 'Subscription changed',
     bodyTemplate: emailMjml(
       'Subscription changed',
-      'Your subscription for {{tenantName}} changed from the {{oldPlanName}} plan to the {{newPlanName}} plan.',
+      'Hi {{contactName}} — the subscription for {{tenantName}} changed from the {{oldPlanName}} plan to the {{newPlanName}} plan.',
     ),
     bodyFormat: 'mjml',
     variablesSchema: [
@@ -592,7 +600,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: 'Account suspended',
-    bodyTemplate: 'Your account has been suspended. Contact support to restore access.',
+    bodyTemplate: '{{tenantName}} was suspended on {{occurredAt}}. Contact support to restore access.',
     bodyFormat: 'plaintext',
     variablesSchema: COMMON_VARS,
   },
@@ -615,7 +623,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: 'Account restored',
-    bodyTemplate: 'Your account has been restored. All services are back online.',
+    bodyTemplate: '{{tenantName}} was restored on {{occurredAt}}. All services are back online.',
     bodyFormat: 'plaintext',
     variablesSchema: COMMON_VARS,
   },
@@ -638,7 +646,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: 'Account archived',
-    bodyTemplate: 'Your account has been archived. Data is retained read-only.',
+    bodyTemplate: '{{tenantName}} was archived on {{occurredAt}}. Data is retained read-only.',
     bodyFormat: 'plaintext',
     variablesSchema: COMMON_VARS,
   },
@@ -661,7 +669,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: 'Account deletion in progress',
-    bodyTemplate: 'Your account is being permanently deleted.',
+    bodyTemplate: '{{tenantName}} is being permanently deleted, effective {{occurredAt}}.',
     bodyFormat: 'plaintext',
     variablesSchema: COMMON_VARS,
   },
