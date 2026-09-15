@@ -406,7 +406,10 @@ async function pruneOrphanedLapiMachines(
     exec, CNPG_NAMESPACE, cnpgPod, 'postgres',
     ['psql', '-X', '-q', '-t', '-A', '-U', 'postgres', '-d', CROWDSEC_DB_NAME],
     `WITH pruned AS (DELETE FROM machines WHERE machine_id ~ '${LAPI_POD_MACHINE_PATTERN}' `
-      + `AND machine_id NOT IN (${keep}) RETURNING 1) SELECT count(*) FROM pruned;`,
+      // allow-array-binding: not a drizzle template — this is raw SQL text piped
+      // to psql, and `keep` is already a joined list of quoted, regex-validated
+      // literals rather than a JS array.
+      + `AND machine_id NOT IN (${keep}) RETURNING 1) SELECT count(*) FROM pruned;`, // allow-array-binding
   );
   if (!r.success) {
     log.warn({ stderr: r.stderr.slice(0, 400) }, 'crowdsec-db: machine prune failed');

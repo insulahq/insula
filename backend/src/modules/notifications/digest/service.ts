@@ -18,7 +18,7 @@
  * batching a panel notification helps nobody, because the panel is already a
  * list the reader chooses when to open.
  */
-import { and, asc, eq, isNull, lt, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, lt, sql } from 'drizzle-orm';
 import { notificationDigestItems } from '../../../db/schema.js';
 import { categoryMeta } from '../routing/effective-channels.js';
 import { CLASS_POLICY } from '../routing/classes.js';
@@ -160,7 +160,10 @@ export async function markSent(db: Database, ids: readonly string[], now: Date =
   await db
     .update(notificationDigestItems)
     .set({ sentAt: now })
-    .where(sql`id = ANY(${ids})`);
+    // Same fix as escalation/service.ts:markEscalated — see the note there.
+    // This copy had not thrown yet only because no DEV user has a digest mode
+    // set, so the path had never run. Identical latent bug.
+    .where(inArray(notificationDigestItems.id, [...ids]));
 }
 
 /**

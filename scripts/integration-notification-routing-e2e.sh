@@ -21,6 +21,14 @@
 #   7. Object mutes work end to end, AND a mandatory class (availability) is
 #      refused with a 409. A mute that appears to work and does not is worse
 #      than being told no.
+#   8. No notification scheduler is throwing on its tick. Every tick runs inside
+#      safeTick, so an exception is caught, logged and swallowed BY DESIGN — the
+#      API keeps serving and the feature silently does nothing. That is not a
+#      hypothetical: escalation shipped with `sql\`id = ANY(${ids})\``, which
+#      drizzle expands into the row constructor `ANY(($2, $3, …))`. Postgres
+#      rejected every mark-as-escalated, so escalations re-fired on a loop while
+#      `escalated_at` stayed NULL on every row. Unit tests passed throughout —
+#      a mocked db accepts the call. Only the running cluster showed it.
 #
 # USAGE: ADMIN_PASSWORD=<…> ADMIN_HOST=https://admin.<env>.example.test \
 #        ./scripts/integration-notification-routing-e2e.sh
@@ -188,6 +196,35 @@ if curl -sk -H "Authorization: Bearer $TOKEN" "$ADMIN_HOST/api/v1/admin/notifica
   fail "the probe mute survived deletion"
 else
   ok "the mute was removed"
+fi
+
+# ── 8. no notification scheduler is silently throwing ────────────────────────
+#
+# Cluster-side, so it is SKIPPED rather than failed where kubectl is absent —
+# a check that reports "unavailable" as "pass" is how absence starts satisfying
+# every assertion.
+if command -v kubectl >/dev/null 2>&1 && kubectl get ns platform >/dev/null 2>&1; then
+  SCHED_LOG="$(kubectl logs -n platform -l app=platform-api --tail=2000 2>/dev/null \
+    | grep -E '^\[notification-(escalation|digest|retention)\] tick failed' || true)"
+  if [[ -z "$SCHED_LOG" ]]; then
+    ok "no notification scheduler reported a failed tick"
+  else
+    fail "a notification scheduler is throwing every tick (swallowed by safeTick): ${SCHED_LOG%%$'\n'*}"
+  fi
+
+  # An escalation that cannot record itself re-fires forever. If the category
+  # has ever fired, at least one row must carry escalated_at.
+  ESC_FIRED="$(kubectl exec -n platform system-db-1 -c postgres -- psql -U postgres -d platform -At -c \
+    "SELECT count(*) FROM notification_deliveries WHERE category_id='admin.notification_escalated'" 2>/dev/null || echo 0)"
+  ESC_MARKED="$(kubectl exec -n platform system-db-1 -c postgres -- psql -U postgres -d platform -At -c \
+    "SELECT count(*) FROM notifications WHERE escalated_at IS NOT NULL" 2>/dev/null || echo 0)"
+  if [[ "${ESC_FIRED:-0}" -eq 0 || "${ESC_MARKED:-0}" -gt 0 ]]; then
+    ok "escalation marks what it escalates (fired=$ESC_FIRED, marked=$ESC_MARKED)"
+  else
+    fail "escalation fired $ESC_FIRED time(s) but marked 0 rows — it will re-fire forever"
+  fi
+else
+  log "SKIP: kubectl/cluster unavailable — scheduler-tick assertions not run"
 fi
 
 echo
