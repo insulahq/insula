@@ -29,6 +29,24 @@ list of accounts, and the other tabs are cross-tenant views:
 | **Email Accounts** | Mailboxes across all tenants. → [Email](email.md) |
 | **Cron Jobs** | Scheduled jobs across all tenants. |
 
+### The "N issues" chip
+
+A tenant with an open problem shows an amber **⚠ N issues** chip in the
+**Status** column, beside the lifecycle badge. It is a live reading, not a
+stored flag: it counts conditions that are true *right now*, and it disappears
+on its own when they stop being true. Nobody has to remember to clear it.
+
+The conditions counted are the same thresholds the notification system fires
+from, so a chip and the message an operator received cannot disagree:
+
+| Condition | Counted when |
+|-----------|--------------|
+| **Mailbox over quota** | a mailbox is at or past 80% — one issue per mailbox, at its highest open threshold |
+| **Subscription expiring** | expiry is within 35 days (critical inside 7) |
+| **Bandwidth capped** | the monthly cap has been reached and traffic is being refused |
+
+Click the tenant to see the detail, which names the specific object.
+
 ### Reading the Placement and Expires columns
 
 **Placement** is the node the tenant's workloads are pinned to. Most tenants
@@ -95,6 +113,12 @@ buttons (below). Underneath are several cards and a tabbed resource view.
 
 **Cards (top to bottom):**
 
+- **Open issues** — an amber banner, shown only when the tenant has at least
+  one open condition. Each line names the object it concerns (the mailbox
+  address, the tenant), the value that tripped it, and how long it has been
+  true, with a link to the page where it gets fixed. It sits above the other
+  cards so the answer to "what is wrong with this tenant" is the first thing
+  on the page, and it clears itself when the condition does.
 - **Account Information** — the editable lifecycle **Status** control,
   the **K8s Status** (provisioning) badge, created date, and namespace.
 - **IDs** — client ID, plan ID, region ID (for support / debugging).
