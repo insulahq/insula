@@ -16,6 +16,11 @@
 #      status='skipped' raises no alert and is not in the retry scan.
 #   5. The tenant-issues endpoint answers, so the tenants-table badge and the
 #      detail banner have a source.
+#   6. No legacy.* category remains — the notifyUser fallback is deleted, not
+#      merely unused.
+#   7. Object mutes work end to end, AND a mandatory class (availability) is
+#      refused with a 409. A mute that appears to work and does not is worse
+#      than being told no.
 #
 # USAGE: ADMIN_PASSWORD=<…> ADMIN_HOST=https://admin.<env>.example.test \
 #        ./scripts/integration-notification-routing-e2e.sh
@@ -124,6 +129,65 @@ if [[ "$HTTP" == "200" ]] && jq -e '.data' "$TMP/issues.json" >/dev/null 2>&1; t
   ok "tenant-issues endpoint answered 200 ($TCOUNT tenant(s) with open issues)"
 else
   fail "tenant-issues endpoint returned HTTP $HTTP — the badge and banner have no source"
+fi
+
+# ── 6. The legacy delivery path is GONE ────────────────────────────────
+#
+# Not "migrated" — gone. 67 in-app rows once travelled on it, reaching no
+# template, no email, no preference gate and no delivery audit. A legacy.*
+# category reappearing means the fallback came back.
+LEGACY="$(jq -r '[.data[] | select(.id | startswith("legacy."))] | length' "$TMP/cats.json")"
+if [[ "$LEGACY" == "0" ]]; then
+  ok "no legacy.* categories remain (the notifyUser fallback is deleted)"
+else
+  fail "$LEGACY legacy.* categories still seeded — the fallback path is back"
+fi
+
+# ── 7. Object mutes ────────────────────────────────────────────────────
+#
+# Exercises the real endpoint rather than asserting the table exists: a mute
+# that appears to work and does not is the failure this feature guards against.
+log "Exercising per-object mutes"
+MUTE_KEY="integration-probe-$$.example.test"
+
+HTTP="$(curl -sk -o "$TMP/mute.json" -w '%{http_code}' -X POST \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"categoryId\":\"tenant.domain_verification\",\"objectKey\":\"$MUTE_KEY\",\"days\":1,\"reason\":\"integration probe\"}" \
+  "$ADMIN_HOST/api/v1/admin/notifications/mutes")"
+if [[ "$HTTP" == "204" ]]; then
+  ok "created a scoped, expiring mute"
+else
+  fail "mute create returned HTTP $HTTP (wanted 204)"
+fi
+
+if curl -sk -H "Authorization: Bearer $TOKEN" "$ADMIN_HOST/api/v1/admin/notifications/mutes" \
+   | jq -e --arg k "$MUTE_KEY" '.data[] | select(.objectKey==$k)' >/dev/null 2>&1; then
+  ok "the mute is listed as active"
+else
+  fail "the mute was accepted but does not appear in the active list"
+fi
+
+# A mandatory class must be REFUSED, with a reason. Silently accepting it would
+# leave the operator believing they are quiet when they are not.
+HTTP="$(curl -sk -o "$TMP/mute-reject.json" -w '%{http_code}' -X POST \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"categoryId\":\"admin.node_down\",\"objectKey\":\"$MUTE_KEY\",\"days\":1}" \
+  "$ADMIN_HOST/api/v1/admin/notifications/mutes")"
+if [[ "$HTTP" == "409" ]]; then
+  ok "refuses to mute an availability category (admin.node_down), with a reason"
+else
+  fail "muting admin.node_down returned HTTP $HTTP (wanted 409) — a mandatory class must not be mutable"
+fi
+
+# Clean up after ourselves; a probe that leaves state behind is a probe that
+# eventually breaks the next run.
+curl -sk -o /dev/null -X DELETE -H "Authorization: Bearer $TOKEN" \
+  "$ADMIN_HOST/api/v1/admin/notifications/mutes?categoryId=tenant.domain_verification&objectKey=$MUTE_KEY"
+if curl -sk -H "Authorization: Bearer $TOKEN" "$ADMIN_HOST/api/v1/admin/notifications/mutes" \
+   | jq -e --arg k "$MUTE_KEY" '.data[] | select(.objectKey==$k)' >/dev/null 2>&1; then
+  fail "the probe mute survived deletion"
+else
+  ok "the mute was removed"
 fi
 
 echo
