@@ -77,3 +77,26 @@ describe('summariseIssues', () => {
     expect(summariseIssues([])).toEqual({ count: 0, severity: null });
   });
 });
+
+describe('where the banner sits on the tenant detail page', () => {
+  // It shipped after ResourceLimitsCard — roughly a full screen down on a real
+  // tenant page — so an operator opening the page to find out what is wrong had
+  // to scroll past everything that is fine. Caught by driving DEV in a browser,
+  // not by a test, because "the banner renders" was true either way.
+  //
+  // Asserting source order rather than layout keeps this independent of a
+  // running cluster: the requirement is that it precedes the cards.
+  it('renders above the Account Information card', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { resolve } = await import('node:path');
+    // cwd is frontend/admin-panel under vitest; import.meta.url is not a file
+    // URL in the jsdom environment.
+    const src = readFileSync(resolve(process.cwd(), 'src/pages/TenantDetail.tsx'), 'utf8');
+
+    const banner = src.indexOf('<TenantIssuesBanner');
+    const accountCard = src.indexOf('Account Information');
+    expect(banner).toBeGreaterThan(-1);
+    expect(accountCard).toBeGreaterThan(-1);
+    expect(banner).toBeLessThan(accountCard);
+  });
+});
