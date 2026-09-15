@@ -66,6 +66,9 @@ function fakeBatch(
     /** The live `reconcile` annotation. Defaults to 'disabled' (steady state,
      *  so no re-stamp op fires); set to null to omit it (un-stamped CronJob). */
     reconcileAnnotation?: string | null;
+    /** false ⇒ the job template carries NO backup-health labels — the state
+     *  every existing cluster was in before the reconciler converged them. */
+    jobTemplateLabels?: boolean;
   } = {},
 ) {
   const reconcileAnno =
@@ -80,8 +83,24 @@ function fakeBatch(
         annotations['kustomize.toolkit.fluxcd.io/reconcile'] = reconcileAnno;
       }
       const spec: Record<string, unknown> = { suspend: opts.live ?? true };
+      // A CONVERGED CronJob now also carries the backup-health labels on its job
+      // template, so the fixture ships them by default; `jobTemplateLabels:
+      // false` expresses the un-converged cluster the reconciler has to fix.
+      const jobTemplateMeta = opts.jobTemplateLabels === false
+        ? {}
+        : {
+          metadata: {
+            labels: {
+              'insula.host/backup-health-watch': 'true',
+              'insula.host/backup-category': 'dr',
+              'insula.host/backup-severity': 'critical',
+            },
+            annotations: { 'insula.host/backup-display-name': 'etcd snapshot via shim' },
+          },
+        };
+      spec.jobTemplate = { ...jobTemplateMeta };
       if (opts.prefixEnv !== undefined) {
-        spec.jobTemplate = {
+        Object.assign(spec.jobTemplate as Record<string, unknown>, {
           spec: {
             template: {
               spec: {
@@ -91,7 +110,7 @@ function fakeBatch(
               },
             },
           },
-        };
+        });
       }
       return { metadata: { annotations }, spec };
     }),
@@ -145,6 +164,25 @@ describe('reconcileEtcdCronJob', () => {
     expect(r.state).toBe('STATE_OK');
     expect(r.patched).toBe(false);
     expect(batch.patchNamespacedCronJob).not.toHaveBeenCalled();
+  });
+
+  it('converges backup-health labels onto an existing, otherwise-settled CronJob', async () => {
+    // The DEV shape: suspend and prefix correct, Flux already disowned, but the
+    // job template carries no labels — so the Jobs it creates are invisible to
+    // the backup-health watcher and etcd-snapshot failures notify nobody.
+    // The manifest cannot fix this: Flux reports "skipped" for a disowned object.
+    const db = fakeDb([{ enabled: 1 }]);
+    const batch = fakeBatch({ live: false, jobTemplateLabels: false });
+    const r = await reconcileEtcdCronJob(db, { batch } as never, silentLog());
+
+    expect(r.patched).toBe(true);
+    const ops = batch.patchNamespacedCronJob.mock.calls[0]![0].body as Array<{
+      op: string; path: string; value: { labels: Record<string, string> };
+    }>;
+    const meta = ops.find((o) => o.path === '/spec/jobTemplate/metadata');
+    expect(meta, 'no job-template metadata op emitted').toBeDefined();
+    expect(meta!.op).toBe('add');
+    expect(meta!.value.labels['insula.host/backup-health-watch']).toBe('true');
   });
 
   it('idempotent suspend case: unbound + already suspended → no patch', async () => {
