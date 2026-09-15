@@ -78,6 +78,21 @@ spec:
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
   jobTemplate:
+    # The backup-health watcher selects JOBS, not CronJobs, and the CronJob
+    # controller copies ONLY spec.jobTemplate.metadata onto the Jobs it
+    # creates — labels on the CronJob's own metadata never reach them.
+    # Proven on DEV 2026-09-15: three labelled CronJobs firing normally,
+    # `kubectl get jobs -A -l insula.host/backup-health-watch=true` empty.
+    # PLATFORM mode fires Jobs from platform-api instead of the CronJob
+    # controller — renderManualSnapshotJob propagates this same block, so
+    # both firing paths land the same labels.
+    metadata:
+      labels:
+        insula.host/backup-health-watch: "true"
+        insula.host/backup-category: "dr"
+        insula.host/backup-severity: "critical"
+      annotations:
+        insula.host/backup-display-name: "Mail snapshot (Stalwart RocksDB)"
     spec:
       backoffLimit: 0
       ttlSecondsAfterFinished: 3600

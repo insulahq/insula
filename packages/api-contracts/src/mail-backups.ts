@@ -47,9 +47,42 @@ export const mailBackupListResponseSchema = z.object({
    * 'mail' class.
    */
   targetName: z.string().nullable(),
+  /**
+   * Restic locks currently held on the repo.
+   *
+   * `repoReachable` alone is a LIE during the failure this exists for: the
+   * listing pod runs `restic snapshots --no-lock`, so it reads a fully wedged
+   * repo happily and reports true while every write — every scheduled snapshot,
+   * every `forget` — fails with "unable to create lock". DEV spent 3 days 17
+   * hours in exactly that state with this surface showing green.
+   *
+   * null means the lock listing could not be run (older image, or the repo was
+   * unreachable anyway) — NOT that there are zero locks.
+   */
+  lockCount: z.number().int().nonnegative().nullable(),
 });
 
 export type MailBackupListResponse = z.infer<typeof mailBackupListResponseSchema>;
+
+/**
+ * Result of clearing stale restic locks on the mail repo.
+ *
+ * Counted before and after rather than echoing restic's own "successfully
+ * removed N locks" line, so a lock that SURVIVES is visible. A surviving lock is
+ * held by a process that is still alive, and that is precisely when an operator
+ * must stop pulling the lever instead of escalating to a forced removal.
+ */
+export const mailResticUnlockResponseSchema = z.object({
+  locksBefore: z.number().int().nonnegative(),
+  locksAfter: z.number().int().nonnegative(),
+  removed: z.number().int().nonnegative(),
+  /** restic's own output, surfaced verbatim for the operator. */
+  output: z.string(),
+  /** Operator-facing summary; always populated. */
+  message: z.string(),
+});
+
+export type MailResticUnlockResponse = z.infer<typeof mailResticUnlockResponseSchema>;
 
 /**
  * POST /admin/mail/backups/:shortId/restore — restore the chosen

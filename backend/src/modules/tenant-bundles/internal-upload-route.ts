@@ -383,6 +383,7 @@ export async function backupsV2InternalUploadRoutes(app: FastifyInstance): Promi
         tags,
         stdin: request.raw as unknown as Readable,
         abortSignal: abortController.signal,
+        log: app.log,
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

@@ -1667,7 +1667,7 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
           await runResticForget({
             target, passwordHex,
             repoUri: buildResticRepoUri(target, job.tenantId, c.component),
-            snapshotIds: [c.sha256],
+            snapshotIds: [c.sha256], log: app.log,
           });
         }
       }

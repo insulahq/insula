@@ -83,6 +83,17 @@ interface CronJobShape {
     schedule?: string;
     suspend?: boolean;
     jobTemplate?: {
+      /**
+       * Labels/annotations the CronJob controller stamps onto each Job it
+       * creates. PLATFORM mode bypasses that controller, so
+       * `renderManualSnapshotJob` copies this block itself — otherwise a
+       * platform-fired snapshot would be invisible to anything selecting on
+       * Job labels (backup-health discovery, above all).
+       */
+      metadata?: {
+        labels?: Record<string, string>;
+        annotations?: Record<string, string>;
+      };
       spec?: Record<string, unknown>;
     };
   };
@@ -524,6 +535,11 @@ function renderManualSnapshotJob(
   opts: SnapshotPurposeOptions = {},
 ): unknown {
   const jobTemplateSpec = (cronJob.spec?.jobTemplate?.spec ?? {}) as Record<string, unknown>;
+  // The manifest's jobTemplate.metadata is what the CronJob controller would
+  // have stamped on. This path replaces that controller, so carry it across —
+  // the manifest stays the single source of truth for both firing modes.
+  const templateLabels = cronJob.spec?.jobTemplate?.metadata?.labels ?? {};
+  const templateAnnotations = cronJob.spec?.jobTemplate?.metadata?.annotations ?? {};
 
   const purposeTagTokens: string[] = [];
   if (opts.purpose) purposeTagTokens.push(opts.purpose);
@@ -569,10 +585,14 @@ function renderManualSnapshotJob(
       name: jobName,
       namespace: MAIL_NAMESPACE,
       labels: {
+        ...templateLabels,
         [SNAPSHOT_JOB_LABEL_KEY]: SNAPSHOT_JOB_LABEL_VALUE,
         'stalwart-snapshot-trigger': 'manual',
         ...purposeLabels,
       },
+      ...(Object.keys(templateAnnotations).length > 0
+        ? { annotations: { ...templateAnnotations } }
+        : {}),
     },
     spec: {
       ...jobTemplateSpec,
