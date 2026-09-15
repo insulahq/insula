@@ -1,6 +1,6 @@
 # Notification System Overhaul
 
-> **Status:** phases 1–7 IMPLEMENTED (branch `feat/notification-overhaul`, merged to `development`)
+> **Status:** phases 1–7 and 9 IMPLEMENTED; 8 mostly done (digests + escalation remain) (branch `feat/notification-overhaul`, merged to `development`)
 > · **Author:** platform · **Date:** 2026-09-14, implementation 2026-09-15
 >
 > A plan to make platform notifications *useful*. Today a notification tells you that
@@ -555,8 +555,8 @@ state the notifications fire from, so a banner and a notification can never disa
 | 5 — close the gaps | **done** | tenant storage saturation, operator sending-limit visibility, expiry 35/28/21/14/7 + operator digest |
 | 6 — identity everywhere | **done** | `dispatcher/envelope.ts` — tenantName, contactName, real platformName, full userName, formatted `occurredAt`; all 15 contract defects fixed |
 | 7 — issues on tenant surfaces | **done** | `tenant-issues/service.ts`, `GET /admin/tenants/issues`, status-column chip, tenant-detail banner |
-| 8 — convenience | **open** | digests, aggregation, quiet hours, object mute, escalation |
-| 9 — retire the other paths | **partial** | `tasks.scheduled_failure` wired; cluster storage capacity moved off the raw-insert path. 14 raw-insert modules and 9 `notifyUser()` call sites remain |
+| 8 — convenience | **mostly done** | quiet hours are class-driven (a warning-severity SECURITY event no longer waits until morning); per-object mutes with a mandatory 30-day cap, unmutable Incident/Availability/Security, and a fail-OPEN lookup. Dedupe + rate limits already existed. **Digests and escalation remain.** |
+| 9 — retire the other paths | **done** | Both legacy paths are GONE. `notifyUser`/`notifyUsers` deleted, `createNotification` requires a category, the four `legacy.*` categories and their templates removed (migration 0115). ~25 call sites across 20 modules now dispatch through a real category. |
 
 Integration coverage: `scripts/integration-notification-routing-e2e.sh` asserts the
 policy as it exists in the DATABASE — ambient categories stay in-app, no tenant category
