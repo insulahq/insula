@@ -36,6 +36,8 @@ import * as templateService from './templates/service.js';
 import * as providerService from './providers/service.js';
 import { notificationDeliveries } from '../../db/schema.js';
 import { enqueueDelivery } from './queue/enqueue.js';
+import { parseBody } from '../../shared/validate-body.js';
+import { createNotificationMuteSchema } from '@insula/api-contracts';
 
 const PROVIDERS_RATE_LIMIT_ERR =
   'PLATFORM_ENCRYPTION_KEY is required for notification provider operations (credential encryption)';
@@ -292,14 +294,12 @@ export async function notificationAdminRoutes(app: FastifyInstance): Promise<voi
   });
 
   app.post('/admin/notifications/mutes', async (request, reply) => {
-    const body = request.body as {
-      categoryId?: string | null; objectKey?: string; days?: number; reason?: string;
-    };
-    if (!body?.objectKey || typeof body.days !== 'number') {
-      return reply.status(400).send({
-        error: { code: 'INVALID_INPUT', message: 'objectKey and days are required' },
-      });
-    }
+    // parseBody, not a cast (ROADMAP R29a). The cast plus the hand-rolled
+    // `!body?.objectKey || typeof body.days !== 'number'` check accepted a
+    // `days` of 0 or -5 as a valid NUMBER and left every other field
+    // unvalidated; the schema rejects those at the boundary and the range rule
+    // stays where it belongs, in createMute.
+    const body = parseBody(createNotificationMuteSchema, request.body);
     const { createMute, MuteRejected } = await import('./mutes/service.js');
     try {
       await createMute(app.db, {
