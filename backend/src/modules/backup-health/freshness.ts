@@ -68,39 +68,77 @@ export interface FreshnessResult {
  * Exported for tests: the counting is the part that decides whether a real
  * outage is seen, so it is worth pinning independently of the verdict logic.
  */
-export function countScheduledFires(
+export interface FireScan {
+  /** Scheduled fires in (from, to], saturating at the scan cap. */
+  readonly count: number;
+  /** The FIRST scheduled fire after `from` — i.e. the run that should have happened. */
+  readonly firstFireAt: Date | null;
+  /** Gap between consecutive fires, for scaling the grace to the schedule. */
+  readonly intervalMs: number | null;
+}
+
+/**
+ * Like countScheduledFires, but also reports WHEN the first missed run was due
+ * and how far apart runs are.
+ *
+ * Both are needed to make lateness proportional. A fixed "3 missed fires"
+ * threshold means silence for three whole periods, which on a daily backup is
+ * three DAYS — almost exactly the outage this detector was built for (DEV went
+ * 3d 17h unreported). The same threshold on a half-hourly schedule is 90
+ * minutes.
+ * One number cannot serve both.
+ */
+export function scanScheduledFires(
   cronExpression: string,
   from: Date,
   to: Date,
   maxScanDays = MAX_SCAN_DAYS,
-  /**
-   * The CronJob's `spec.timeZone`. Kubernetes fires the schedule in THIS zone,
-   * so counting in UTC mis-counts by the offset on any cluster that sets it —
-   * a `0 3 * * *` job in Europe/Berlin fires at 01:00/02:00 UTC. That shows up
-   * as phantom missed fires (a false "backups have stopped") or, in the other
-   * direction, as a real outage that stays invisible. Null/UTC = no shift.
-   */
   timeZone: string | null = null,
-): number {
-  if (!(from instanceof Date) || Number.isNaN(from.getTime())) return 0;
-  if (to.getTime() <= from.getTime()) return 0;
+): FireScan {
+  const empty: FireScan = { count: 0, firstFireAt: null, intervalMs: null };
+  if (!(from instanceof Date) || Number.isNaN(from.getTime())) return empty;
 
   const capMs = maxScanDays * 24 * 60 * MINUTE_MS;
   const start = to.getTime() - from.getTime() > capMs
     ? new Date(to.getTime() - capMs)
     : from;
 
-  // Step to the start of the minute AFTER `start`: a fire at the same minute as
-  // the last success is the run that produced it, not a missed one.
+  const zoned = makeZoneShifter(timeZone);
   let cursor = Math.floor(start.getTime() / MINUTE_MS) * MINUTE_MS + MINUTE_MS;
   const end = to.getTime();
-  const zoned = makeZoneShifter(timeZone);
+  // Keep scanning past `to` purely to find fire #2, so the interval is known
+  // even when only one run has been missed so far — which is the case the
+  // proportional grace exists to handle.
+  const hardStop = Math.max(end, start.getTime() + capMs);
+
   let count = 0;
-  while (cursor <= end) {
-    if (cronMatchesMinute(cronExpression, zoned(cursor))) count += 1;
+  let first: number | null = null;
+  let second: number | null = null;
+  while (cursor <= hardStop) {
+    if (cronMatchesMinute(cronExpression, zoned(cursor))) {
+      if (cursor <= end) count += 1;
+      if (first === null) first = cursor;
+      else if (second === null) { second = cursor; if (cursor > end) break; }
+    }
     cursor += MINUTE_MS;
   }
-  return count;
+
+  return {
+    count,
+    firstFireAt: first === null ? null : new Date(first),
+    intervalMs: first !== null && second !== null ? second - first : null,
+  };
+}
+
+export function countScheduledFires(
+  cronExpression: string,
+  from: Date,
+  to: Date,
+  maxScanDays = MAX_SCAN_DAYS,
+  timeZone: string | null = null,
+): number {
+  if (to.getTime() <= from.getTime()) return 0;
+  return scanScheduledFires(cronExpression, from, to, maxScanDays, timeZone).count;
 }
 
 /**
@@ -194,9 +232,10 @@ export function evaluateFreshness(input: FreshnessInput): FreshnessResult {
   }
 
   const ageMs = input.now.getTime() - input.lastSuccessAt.getTime();
-  const missedFires = countScheduledFires(
+  const scan = scanScheduledFires(
     input.cronExpression, input.lastSuccessAt, input.now, MAX_SCAN_DAYS, input.timeZone ?? null,
   );
+  const missedFires = scan.count;
 
   const hours = (ageMs / 3_600_000).toFixed(1);
   if (missedFires === 0) {
@@ -208,22 +247,48 @@ export function evaluateFreshness(input: FreshnessInput): FreshnessResult {
     };
   }
 
-  if (missedFires >= staleAfter) {
+  // ── Lateness is measured in HALF PERIODS, not in whole missed runs ──
+  //
+  // Counting whole runs makes the alert delay scale with the schedule in the
+  // wrong direction: three missed fires is 90 minutes on a half-hourly job and
+  // three DAYS on a daily one — and three days of silence is almost exactly
+  // the outage this detector exists to catch (DEV: 3d 17h, every surface
+  // green). The rarer the backup, the longer you would wait to hear that it
+  // stopped, which is backwards.
+  //
+  // So: a run is due, it did not happen, and half of one interval has since
+  // passed. That grace is what stops flapping — it is far wider than the
+  // minute-either-side jitter the old fire-count band was guarding against,
+  // and it scales itself: 15 minutes on a half-hourly schedule, 12 hours on a
+  // daily one.
+  const graceMs = scan.intervalMs !== null ? scan.intervalMs / 2 : 0;
+  const lateBy = scan.firstFireAt !== null
+    ? input.now.getTime() - scan.firstFireAt.getTime()
+    : 0;
+  const pastGrace = scan.firstFireAt !== null && lateBy >= graceMs;
+
+  // The fire count stays as an absolute backstop for the case the interval
+  // cannot be derived (a schedule with no second fire inside the scan window),
+  // where there is no period to take half of.
+  if (pastGrace || missedFires >= staleAfter) {
+    const graceNote = scan.intervalMs !== null
+      ? ` (more than half of the ${(scan.intervalMs / 60_000).toFixed(0)}-minute interval late)`
+      : '';
     return {
       verdict: 'stale',
       missedFires,
       ageMs,
-      detail: `${missedFires} scheduled run(s) missed since the last success ${hours}h ago.`,
+      detail: `${missedFires} scheduled run(s) missed since the last success ${hours}h ago${graceNote}.`,
     };
   }
 
-  // Inside the hysteresis band: hold rather than flap.
+  // Due, but still inside the grace. Hold rather than flap.
   const held = input.previous ?? 'fresh';
   return {
     verdict: held === 'never' ? 'stale' : held,
     missedFires,
     ageMs,
     detail: `${missedFires} scheduled run(s) missed since the last success ${hours}h ago `
-      + `(below the ${staleAfter}-miss threshold; holding '${held}').`,
+      + `(within the grace of half an interval; holding '${held}').`,
   };
 }
