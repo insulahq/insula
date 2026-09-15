@@ -570,6 +570,10 @@ declare -A SUITE_TIER=(
   [system-dr-drill]=slow [platform-domain-rename]=slow
   [tenant-bundles-restic]=external [dr-protocols]=external
   [bundle-coverage]=external [backups-ui]=external
+  # mailbox-quota-notify waits out a pending cycle scheduled under the
+  # cluster's ORIGINAL interval (15 min by default) before its own 2-min
+  # cadence applies, then two more cycles. Minutes, not seconds.
+  [mailbox-quota-notify]=slow
 )
 # Per-suite hard-timeout overrides (seconds). Set comfortably ABOVE the
 # expected max so the timeout catches HANGS, never a legitimately long run.
@@ -589,6 +593,10 @@ declare -A SUITE_TIMEOUT=(
   [firewall-blacklist]=600 [dr-protocols]=900
   [mail-dr-failover]=2400 [mail-dr-dataplane]=2400 [mail-mobility]=1800
   [platform-domain-rename]=1800 [system-dr-drill]=3000
+  # mailbox-quota-notify worst case ~34 min: pending old cycle (15) +
+  # 2 tightened cycles + fill + the no-repeat cycle. The 1800 default
+  # SIGKILLs a legitimate run just before its last assertion.
+  [mailbox-quota-notify]=2700
 )
 suite_tier_of()    { echo "${SUITE_TIER[$1]:-core}"; }
 suite_timeout_of() { echo "${SUITE_TIMEOUT[$1]:-$DEFAULT_SUITE_TIMEOUT}"; }
