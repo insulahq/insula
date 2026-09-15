@@ -1,3 +1,4 @@
+import { isReplacedPodRecord } from '../../lib/container-termination.js';
 import { getRedis } from '../../shared/redis.js';
 import { parseResourceValue } from '../../shared/resource-parser.js';
 import { queryInstant } from '../monitoring/vm-client.js';
@@ -35,7 +36,16 @@ type PodMetricsItem = {
 };
 
 type PodItem = {
-  readonly metadata?: { readonly labels?: Record<string, string> };
+  readonly metadata?: {
+    readonly labels?: Record<string, string>;
+    readonly deletionTimestamp?: string;
+  };
+  /**
+   * Pod-level status. Previously NOT modelled here at all, which is precisely
+   * how the bug below survived: with no `status` field there was nothing to
+   * filter on, and every dead pod looked exactly like a running one.
+   */
+  readonly status?: { readonly phase?: string; readonly reason?: string };
   readonly spec?: {
     readonly containers?: ReadonlyArray<{
       readonly resources?: {
@@ -94,6 +104,28 @@ export async function collectTenantMetrics(
 
     for (const pod of pods) {
       if (isSystemPod(pod.metadata?.labels)) continue; // Skip file-manager etc.
+      // A terminal pod keeps its full spec forever — Kubernetes garbage-collects
+      // terminal pods only past --terminated-pod-gc-threshold (default 12500),
+      // so corpses sit beside the running workload for weeks. Summing their
+      // requests reported memory that nothing is holding.
+      //
+      // Production 2026-09-15, tenant PHOENIX: 3.594Gi of a 4Gi plan reported
+      // "reserved" while the workload held 2.172Gi. The 1.422Gi gap was three
+      // Succeeded pods from ONE graceful node shutdown at 12:30:18Z — exit 0,
+      // reason Completed. Kubernetes' own ResourceQuota said 2224Mi (= 2.172Gi)
+      // throughout, because quota excludes terminal pods. Ten tenants were
+      // affected, 1.953Gi phantom in total.
+      //
+      // The in-use loop above needs no such guard: it reads metrics-server,
+      // which only reports pods that are actually running.
+      //
+      // Same helper and same reason as the four scans fixed in PR #517. This
+      // was the fifth, missed then.
+      if (isReplacedPodRecord({
+        phase: pod.status?.phase,
+        reason: pod.status?.reason,
+        deletionTimestamp: pod.metadata?.deletionTimestamp,
+      })) continue;
       for (const container of pod.spec?.containers ?? []) {
         // REQUESTS, not limits. Tenant workloads run asymmetric QoS (ADR-037):
         // CPU request only, memory request==limit — so `limits.cpu` is UNSET on
