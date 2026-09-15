@@ -443,19 +443,64 @@ pass "promote finished after ~$((i*8))s"
 # have produced no output at all and a kubectl error, so empty-vs-empty is
 # unambiguously the race, not a missing object. It was reported as a hard suite
 # failure both in the batch and in the retry.
+# The claim above — "empty-vs-empty is unambiguously the race, not a missing
+# object" — was WRONG, and this is what it cost on 2026-09-14: the suite failed
+# with `succeeded=/failed=` again, in both the batch and the serial retry, after
+# every substantive assertion had already passed ("restored cluster does NOT
+# have post-archive marker — bootstrapped from barman correctly").
+#
+# The reasoning did not survive its own implementation. `|| echo
+# "succeeded=/failed="` emits THE SAME STRING when kubectl errors as when the
+# status fields are merely unset, so "the Job is gone" and "the status is not
+# written yet" are indistinguishable to the check that depends on telling them
+# apart. And the Job does disappear: platform-api's own poller handles exactly
+# this — see cnpg-recovery.ts, "Promote PITR Job … disappeared mid-poll (404).
+# Verify outcome with: kubectl get cluster" — so a vanished Job is a known,
+# benign case, not a failure.
+#
+# Separate the two. NotFound is not evidence of failure, and the authoritative
+# outcome is the one the platform itself points at: the source cluster's health,
+# which this suite already asserts immediately below.
+# BUDGET, MEASURED — not guessed. On staging 2026-09-15 the promote Job reached
+# `succeeded=1` ~460s after it started, while platform-api had already reported
+# `inProgress=false` minutes earlier. The old 60s window could not see a terminal
+# state on a healthy run, which is why this failed with both counters empty after
+# every substantive assertion had passed.
+#
+# The premise in the comment above — that platform-api's flag flips and the Job
+# controller follows "a beat later" — is what was wrong. The gap is MINUTES: the
+# flag tracks when the pitr-job writes its result, and the job then runs
+# barman-promote cleanup (deleting the side-by-side cluster) before exiting.
+# ${PROMOTE_JOB_WAIT:-600}s covers the measured 460s with headroom.
+PROMOTE_JOB_WAIT="${PROMOTE_JOB_WAIT:-600}"
 JOB_FINAL=""
-for _ in $(seq 1 30); do
-  JOB_FINAL=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS get job $PROMOTE_JOB -o jsonpath='succeeded={.status.succeeded}/failed={.status.failed}'" 2>/dev/null || echo "succeeded=/failed=")
+JOB_GONE=0
+for _ in $(seq 1 $((PROMOTE_JOB_WAIT / 2))); do
+  JOB_RAW=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS get job $PROMOTE_JOB -o jsonpath='succeeded={.status.succeeded}/failed={.status.failed}' 2>&1" || true)
+  if printf '%s' "$JOB_RAW" | grep -qE 'NotFound|not found'; then
+    JOB_GONE=1
+    break
+  fi
+  JOB_FINAL="$JOB_RAW"
   # Stop on either terminal state — a genuine failure must still fail fast.
   printf '%s' "$JOB_FINAL" | grep -qE 'succeeded=[1-9]|failed=[1-9]' && break
   sleep 2
 done
-if ! printf '%s' "$JOB_FINAL" | grep -q "succeeded=1"; then
-  fail "promote Job failed: $JOB_FINAL"
+if [[ "$JOB_GONE" == 1 ]]; then
+  # Reaped after completing. The promote already reported inProgress=false and
+  # the post-cutover health check below is the real verdict.
+  pass "promote Job already reaped (TTL) — outcome verified via cluster health below"
+elif printf '%s' "$JOB_FINAL" | grep -q "failed=[1-9]"; then
+  fail "promote Job FAILED: $JOB_FINAL"
   ssh_cmd "k3s kubectl -n $CLUSTER_NS logs job/$PROMOTE_JOB --tail=40" || true
   exit 1
+elif ! printf '%s' "$JOB_FINAL" | grep -q "succeeded=1"; then
+  fail "promote Job status never became terminal after ${PROMOTE_JOB_WAIT}s: '$JOB_FINAL' (Job still exists, still active)"
+  ssh_cmd "k3s kubectl -n $CLUSTER_NS logs job/$PROMOTE_JOB --tail=40" || true
+  exit 1
+else
+  pass "promote Job succeeded"
 fi
-pass "promote Job succeeded"
 
 # ─── Side-by-side cluster must be auto-deleted ───────────────────────
 hdr "Side-by-side cluster cleanup"
