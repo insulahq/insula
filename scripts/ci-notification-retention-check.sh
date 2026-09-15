@@ -34,7 +34,7 @@ MAX_DAYS=90
 
 # Every table the notification domain writes to unboundedly. Adding a table
 # here without a purge fails the build — which is the point.
-TABLES="notifications notification_deliveries notification_rate_limit_buckets notification_template_versions"
+TABLES="notifications notification_deliveries notification_rate_limit_buckets notification_template_versions notification_object_mutes"
 
 # Bounded elsewhere, on purpose — each is pruned by the pass that writes it,
 # where the dedupe semantics live. Listed here so "every notification-domain
@@ -97,7 +97,7 @@ done
 # ── 3. Every purged table is reported ──────────────────────────────────
 # A table missing from the result shape is a table whose growth is invisible
 # in the logs, which is exactly how template_versions went unnoticed.
-for field in deliveries notifications buckets templateVersions; do
+for field in deliveries notifications buckets templateVersions expiredMutes; do
   grep -q "readonly $field:" "$PURGE" \
     || err "NotificationRetentionResult has no '$field' — its pruning is unreported."
   grep -q "$field" "$SCHED" \

@@ -60,7 +60,7 @@ describe('runNotificationRetention', () => {
     const db = { delete: del } as unknown as Db;
 
     const r = await runNotificationRetention(db, { purgeBuckets: async () => 7 });
-    expect(r).toEqual({ deliveries: 2, notifications: 1, buckets: 7, templateVersions: 0 });
+    expect(r).toEqual({ deliveries: 2, notifications: 1, buckets: 7, templateVersions: 0, expiredMutes: 0 });
   });
 
   /**
@@ -90,7 +90,7 @@ describe('runNotificationRetention', () => {
     const r = await runNotificationRetention(db, {
       purgeBuckets: async () => { throw new Error('boom'); },
     });
-    expect(r).toEqual({ deliveries: 0, notifications: 0, buckets: 0, templateVersions: 0 });
+    expect(r).toEqual({ deliveries: 0, notifications: 0, buckets: 0, templateVersions: 0, expiredMutes: 0 });
   });
 });
 
@@ -117,12 +117,12 @@ describe('retention ceiling', () => {
 
   it('reports every table it pruned, so a silent table cannot hide', () => {
     const result: NotificationRetentionResult = {
-      deliveries: 0, notifications: 0, buckets: 0, templateVersions: 0,
+      deliveries: 0, notifications: 0, buckets: 0, templateVersions: 0, expiredMutes: 0,
     };
     // A table missing from this shape is a table whose growth is invisible
     // in the logs — which is how template_versions went unbounded.
     expect(Object.keys(result).sort()).toEqual(
-      ['buckets', 'deliveries', 'notifications', 'templateVersions'],
+      ['buckets', 'deliveries', 'expiredMutes', 'notifications', 'templateVersions'],
     );
   });
 });

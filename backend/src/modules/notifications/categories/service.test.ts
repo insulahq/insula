@@ -23,9 +23,6 @@ function mockReturning(returnRows: unknown[]) {
   return vi.fn().mockResolvedValue(returnRows);
 }
 
-describe('legacyCategoryIdForType', () => {
-});
-
 describe('ALL_CATEGORIES integrity', () => {
   it('every category has at least one default channel', () => {
     for (const c of ALL_CATEGORIES) {

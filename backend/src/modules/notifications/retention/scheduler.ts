@@ -37,13 +37,14 @@ async function runOnce(db: Database): Promise<void> {
   // Sum every counter — a table missing from this total is a table whose
   // pruning is invisible in the logs, which is how the notifications gap
   // survived three months of "notifications are pruned too" in a comment.
-  const total = r.deliveries + r.notifications + r.buckets + r.templateVersions;
+  const total = r.deliveries + r.notifications + r.buckets + r.templateVersions + r.expiredMutes;
   if (total > 0) {
     const parts = Object.entries({
       notification_deliveries: r.deliveries,
       notifications: r.notifications,
       notification_rate_limit_buckets: r.buckets,
       notification_template_versions: r.templateVersions,
+      notification_object_mutes: r.expiredMutes,
     }).filter(([, n]) => n > 0).map(([k, n]) => `${n} ${k}`);
     console.log(`[notification-retention] pruned ${parts.join(' · ')}`);
   }
