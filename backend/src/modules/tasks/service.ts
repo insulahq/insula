@@ -15,7 +15,7 @@
 // On failure they land in `notifications` for the bell, per the UX
 // agreement (chip = my actions; bell = passive arrival).
 
-import { eq, and, sql } from 'drizzle-orm';
+import { eq, and, inArray, sql } from 'drizzle-orm';
 import crypto from 'node:crypto';
 import { tasks } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
@@ -518,7 +518,11 @@ export async function clear(db: Database, userId: string, ids?: readonly string[
           eq(tasks.userId, userId),
           // Only terminal rows can be cleared.
           sql`${tasks.status} IN ('succeeded','failed','cancelled')`,
-          sql`${tasks.id} = ANY(${ids})`,
+          // inArray, not sql`= ANY(${ids})`: drizzle expands an array in a
+          // template into one placeholder per element, producing the row
+          // constructor `ANY(($2, $3, …))`, which Postgres rejects. Clearing
+          // a selection of tasks threw for every non-empty selection.
+          inArray(tasks.id, [...ids]),
         ),
       )
       .returning({ id: tasks.id });

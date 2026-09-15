@@ -421,6 +421,14 @@ jobs:
       - name: Verify no migration asserts anything about existing rows
         run: ./scripts/ci-migration-safety-check.sh
 
+  drizzle-array-binding-guard:
+    name: No JS array bound into ANY()/IN()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Verify no JS array is interpolated into ANY()/IN()
+        run: ./scripts/ci-drizzle-array-binding-check.sh
+
   notification-retention-guard:
     name: No notification table grows without a ceiling
     runs-on: ubuntu-latest
