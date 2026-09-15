@@ -106,6 +106,7 @@ import { ensureCommunityBlocklistDefault } from './modules/security-hardening/cr
 import { ensureAgentSimulationDefault } from './modules/security-hardening/crowdsec-scenarios.js';
 import { startNotificationRetention } from './modules/notifications/retention/scheduler.js';
 import { startDigestScheduler } from './modules/notifications/digest/scheduler.js';
+import { startEscalationScheduler } from './modules/notifications/escalation/scheduler.js';
 import { startEmailWorker } from './modules/notifications/queue/worker.js';
 import { startNtfyWorker } from './modules/notifications/queue/ntfy-worker.js';
 import { stopBoss } from './modules/notifications/queue/bootstrap.js';
@@ -1139,6 +1140,12 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       // the user actually chose.
       const digestTimer = startDigestScheduler(app.db);
       app.addHook('onClose', () => clearInterval(digestTimer));
+
+      // Escalation backstop: action notifications nobody has read. Hourly
+      // against a 48h deadline — a finer sweep would add load for no earlier
+      // signal.
+      const escalationTimer = startEscalationScheduler(app.db);
+      app.addHook('onClose', () => clearInterval(escalationTimer));
 
       // Phase 2: pg-boss email send worker. Best-effort start —
       // failures (no DATABASE_URL in unit tests, pg-boss schema lock
