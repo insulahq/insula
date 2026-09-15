@@ -196,6 +196,24 @@ if ! api PATCH "/tenants/$TENANT_ID" '{"allow_custom_containers_override":true}'
   echo "WARN: could not set allow_custom_containers_override on $TENANT_ID — custom-container scenarios will 403" >&2
 fi
 
+# Headroom for the MULTI-POD scenarios, via the same per-tenant override so no
+# shared plan is mutated.
+#
+# The Starter plan this suite provisions on grants 256Mi memory and 250m cpu —
+# enough for exactly ONE pod. T6 deploys a compose with `writer` AND `reader`;
+# the writer consumes the whole quota and the reader can never be created. The
+# suite's own dump said so and the failure still read as a pod-start timeout:
+#
+#   used={"limits.memory":"256Mi", ...}  hard={"limits.memory":"256Mi", ...}
+#   "ResourceQuota (used vs hard — if used==hard the ReplicaSet cannot create the pod)"
+#
+# T7 (scale 0→1 across suspend/restore) and T18 fail the same way. The platform
+# is enforcing quota correctly — the fixture was simply too small for its own
+# scenarios, which is why the failure survived a serial retry and looked real.
+if ! api PATCH "/tenants/$TENANT_ID" '{"cpu_limit_override":2,"memory_limit_override":2}' >/dev/null 2>&1; then
+  echo "WARN: could not raise cpu/memory overrides on $TENANT_ID — multi-pod scenarios (T6/T7/T18) may hit the quota" >&2
+fi
+
 
 TENANT_NS=$(api GET "/tenants/$TENANT_ID" | python3 -c "
 import json,sys; print(json.load(sys.stdin)['data']['kubernetesNamespace'])
