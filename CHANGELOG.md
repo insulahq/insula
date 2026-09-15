@@ -90,6 +90,29 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   last checkbox in a dense grid, is now a labelled row of its own.
 
 ### Fixed
+- **Mail between two mailboxes on the same server could be silently held for a
+  day.** The per-tenant *sending* limit is meant to cap what a tenant sends out
+  to the internet. It was also being applied to mail that never leaves the
+  server — one of your mailboxes writing to another, the platform's own
+  notification email, and the DMARC reports the platform sends itself. Once a
+  domain reached its daily figure, that internal mail stopped being delivered:
+  the sender was told it was accepted, the recipient never saw it, and it sat
+  until the daily count reset at midnight UTC. Nothing anywhere reported an
+  error. Internal delivery no longer counts against the sending limit. Suspended
+  tenants are unaffected — suspension still stops all their mail, internal
+  included.
+- **The mail server was not writing any logs at all.** Its default setting
+  pointed at a folder that does not exist inside the container, so nothing was
+  written there and nothing reached the normal place operators look. The mail
+  server had therefore never produced a single line of log since it was
+  installed, which is why the delivery problem above was so hard to see: every
+  other indicator said healthy. It now logs normally, on every cluster, without
+  needing an upgrade.
+- **Changing a tenant's daily sending allowance did not fully take effect.** The
+  limit itself updated, but the companion cap on how much mail may sit queued
+  for that tenant kept its original figure — permanently, because the update was
+  rejected every time it was attempted. New domains were never affected, only
+  changes to existing ones.
 - **Traffic detection could be killed first when a node ran short of memory,
   and nothing said so.** Every other host agent the platform runs — the security
   probe, the firewall reconciler, the host-config reconcilers, the SFTP gateway
