@@ -52,6 +52,38 @@ const LIST_TIMEOUT_MS = 180_000;
 // List
 // ─────────────────────────────────────────────────────────────────────
 
+/**
+ * Separates the snapshot JSON from the lock listing in the list pod's stdout.
+ *
+ * Deliberately not a flag or a second pod: one pod, one round-trip, and the
+ * snapshot half stays byte-identical so the existing parser is unaffected.
+ */
+export const LOCK_SENTINEL = '###INSULA-RESTIC-LOCKS###';
+
+/**
+ * Split list-pod output into the snapshot JSON and a lock COUNT.
+ *
+ * Returns `lockCount: null` when the sentinel is absent — an older
+ * tenant-backup-tools image that does not emit the section. null is not zero:
+ * reporting "no locks" for "did not look" is the same class of lie this whole
+ * change exists to remove.
+ */
+export function splitLockSection(out: string): {
+  snapshotsRaw: string;
+  lockCount: number | null;
+} {
+  const idx = out.indexOf(LOCK_SENTINEL);
+  if (idx === -1) return { snapshotsRaw: out, lockCount: null };
+  const snapshotsRaw = out.slice(0, idx);
+  const lockLines = out
+    .slice(idx + LOCK_SENTINEL.length)
+    .split('\n')
+    // `restic list locks` prints one 64-hex lock id per line. Anything else is
+    // noise from the shell or restic, and must not inflate the count.
+    .filter((l) => /^[0-9a-f]{64}$/.test(l.trim()));
+  return { snapshotsRaw, lockCount: lockLines.length };
+}
+
 export async function listMailBackups(deps: {
   db: Database;
   core: CoreV1Api;
@@ -78,6 +110,7 @@ export async function listMailBackups(deps: {
         'No mail BackupTarget configured. Set one at /backups/mail → Targets, ' +
         'then snapshots will start showing up here within ~2 min.',
       targetName: null,
+      lockCount: null,
     };
   }
 
@@ -102,6 +135,8 @@ export async function listMailBackups(deps: {
           'Backup credentials are still being provisioned for this target ' +
           '(usually completes within a minute of assigning it). Retry shortly.',
         targetName,
+        // We never reached the repo, so we never looked at its locks.
+        lockCount: null,
       };
     }
     // Any other read error: fall through — the list Pod surfaces it.
@@ -128,6 +163,8 @@ export async function listMailBackups(deps: {
           'Backup gateway is restarting (a target change is being applied). ' +
           'Snapshots are unaffected; retry in about a minute.',
         targetName,
+        // We never reached the repo, so we never looked at its locks.
+        lockCount: null,
       };
     }
   } catch {
@@ -152,18 +189,29 @@ export async function listMailBackups(deps: {
       repoReachable: false,
       reason: `Failed to spawn list Pod: ${err instanceof Error ? err.message : String(err)}`,
       targetName,
+      // We never reached the repo, so we never looked at its locks.
+      lockCount: null,
     };
   }
 
   // Poll for completion + read pod logs.
   try {
     const out = await waitForJobLogs(deps, jobName, LIST_TIMEOUT_MS);
-    const snapshots = parseResticSnapshotsJson(out);
+    const { snapshotsRaw, lockCount } = splitLockSection(out);
+    const snapshots = parseResticSnapshotsJson(snapshotsRaw);
     return {
       snapshots,
       repoReachable: true,
-      reason: null,
+      // A locked repo reads fine and writes not at all. Say that here rather
+      // than leave the operator to infer it from snapshots that stop arriving.
+      reason: lockCount !== null && lockCount > 0
+        ? `Repository is READABLE but LOCKED (${lockCount} lock${lockCount === 1 ? '' : 's'}). `
+          + 'Snapshots and retention cannot write until the locks clear. A lock left behind by a '
+          + 'killed pod is stale and never expires on its own — clear it from Backups → Mail, or '
+          + 'wait for the next scheduled run, which now clears stale locks itself.'
+        : null,
       targetName,
+      lockCount,
     };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -180,6 +228,8 @@ export async function listMailBackups(deps: {
           'Backup repository not initialized yet — it is created by the first completed ' +
           'snapshot upload. Run a snapshot (or wait for the next scheduled one) and refresh.',
         targetName,
+        // We never reached the repo, so we never looked at its locks.
+        lockCount: null,
       };
     }
     const reason = timedOut
@@ -195,6 +245,8 @@ export async function listMailBackups(deps: {
       repoReachable: false,
       reason,
       targetName,
+      // We never reached the repo, so we never looked at its locks.
+      lockCount: null,
     };
   } finally {
     // Best-effort cleanup — the Job's ttlSecondsAfterFinished handles
@@ -249,7 +301,20 @@ function buildListJob(name: string): Record<string, unknown> {
               // `restic forget` step until manually unlocked. Caught
               // 2026-05-27 on staging — list Pod from prior list call
               // left a 3-hour stale lock that broke every snapshot run.
-              command: ['sh', '-c', 'restic snapshots --json --no-cache --no-lock 2>/dev/null'],
+              //
+              // …which is also why the listing alone cannot be trusted as a
+              // health signal: --no-lock reads a fully WEDGED repo happily.
+              // So enumerate the locks in the same pod and report them. The
+              // sentinel keeps the snapshot JSON parseable on its own; a pod
+              // running an older image emits neither sentinel nor lock lines
+              // and lockCount stays null, which is not the same as zero.
+              command: [
+                'sh',
+                '-c',
+                'restic snapshots --json --no-cache --no-lock 2>/dev/null; '
+                + `printf '\\n%s\\n' '${LOCK_SENTINEL}'; `
+                + 'restic list locks --no-cache --no-lock 2>/dev/null',
+              ],
               envFrom: [
                 {
                   secretRef: {

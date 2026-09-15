@@ -47,6 +47,19 @@ export const mailBackupListResponseSchema = z.object({
    * 'mail' class.
    */
   targetName: z.string().nullable(),
+  /**
+   * Restic locks currently held on the repo.
+   *
+   * `repoReachable` alone is a LIE during the failure this exists for: the
+   * listing pod runs `restic snapshots --no-lock`, so it reads a fully wedged
+   * repo happily and reports true while every write — every scheduled snapshot,
+   * every `forget` — fails with "unable to create lock". DEV spent 3 days 17
+   * hours in exactly that state with this surface showing green.
+   *
+   * null means the lock listing could not be run (older image, or the repo was
+   * unreachable anyway) — NOT that there are zero locks.
+   */
+  lockCount: z.number().int().nonnegative().nullable(),
 });
 
 export type MailBackupListResponse = z.infer<typeof mailBackupListResponseSchema>;

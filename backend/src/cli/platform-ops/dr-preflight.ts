@@ -12,6 +12,7 @@
  * Read-only kubectl + host probes. Exit: 0 when no FAIL (WARNs advisory),
  * 1 when a tier with no fallback is unavailable, 2 usage. `--json` for machines.
  */
+import { evaluateFreshness } from '../../modules/backup-health/freshness.js';
 import type { Deps } from './deps.js';
 
 type Status = 'ok' | 'warn' | 'fail';
@@ -108,11 +109,68 @@ async function checkPostgresObjectStore(deps: Deps, kcPath: string | null): Prom
     : { name: 'postgres ObjectStore', status: 'warn', detail: 'system-postgres-objectstore not found — materialises ~min after a SYSTEM bind; postgres restore needs it' };
 }
 
-async function checkMailResticRepo(deps: Deps, kcPath: string | null): Promise<Check> {
-  const r = await deps.exec(KUBECTL, kc(kcPath, ['-n', 'mail', 'get', 'secret', 'stalwart-snapshot-restic-repo', '-o', 'name']), {});
-  return r.code === 0 && r.stdout.trim()
-    ? { name: 'mail restic repo', status: 'ok', detail: 'stalwart-snapshot-restic-repo present (restore-mail-from-shim ready)' }
-    : { name: 'mail restic repo', status: 'warn', detail: 'stalwart-snapshot-restic-repo not found — bind a MAIL target for mail restore' };
+/**
+ * Mail restore readiness.
+ *
+ * Used to check ONE thing: does the Secret exist? It printed `[ OK ] mail restic
+ * repo` on DEV throughout an outage in which no mail snapshot had completed for
+ * 3 days 17 hours — the Secret was present the whole time, and the Secret is not
+ * the backup. A restore path is only as ready as the most recent thing it can
+ * restore, so freshness is now part of the verdict.
+ */
+async function checkMailResticRepo(
+  deps: Deps,
+  kcPath: string | null,
+  now: Date = new Date(),
+): Promise<Check> {
+  const NAME = 'mail restic repo';
+  const secret = await deps.exec(KUBECTL, kc(kcPath, ['-n', 'mail', 'get', 'secret', 'stalwart-snapshot-restic-repo', '-o', 'name']), {});
+  if (!(secret.code === 0 && secret.stdout.trim())) {
+    return { name: NAME, status: 'warn', detail: 'stalwart-snapshot-restic-repo not found — bind a MAIL target for mail restore' };
+  }
+
+  const cj = await deps.exec(KUBECTL, kc(kcPath, [
+    '-n', 'mail', 'get', 'cronjob', 'stalwart-snapshot',
+    '-o', 'jsonpath={.spec.schedule}|{.spec.suspend}|{.status.lastSuccessfulTime}',
+  ]), {});
+  if (cj.code !== 0) {
+    return { name: NAME, status: 'warn', detail: 'Secret present but the stalwart-snapshot CronJob could not be read — cannot judge whether snapshots are still landing' };
+  }
+
+  const [schedule = '', suspendRaw = '', lastSuccessRaw = ''] = cj.stdout.trim().split('|');
+
+  // PLATFORM mode: the CronJob is force-suspended and platform-api fires the
+  // Jobs on the operator's own cadence, so neither .spec.schedule nor
+  // .status.lastSuccessfulTime describes what is actually running. Say that
+  // rather than judge freshness against a cadence that is not in use.
+  if (suspendRaw === 'true') {
+    return { name: NAME, status: 'warn', detail: 'Secret present, but the CronJob is suspended (platform-fired cadence) — snapshot freshness is not visible from kubectl alone; check Backups → Mail' };
+  }
+
+  const lastSuccessAt = lastSuccessRaw ? new Date(lastSuccessRaw) : null;
+  if (lastSuccessAt && Number.isNaN(lastSuccessAt.getTime())) {
+    return { name: NAME, status: 'warn', detail: `Secret present, but lastSuccessfulTime '${lastSuccessRaw}' is unparseable — cannot judge snapshot freshness` };
+  }
+
+  const f = evaluateFreshness({ lastSuccessAt, cronExpression: schedule || null, now });
+  if (f.verdict === 'fresh') {
+    return { name: NAME, status: 'ok', detail: `Secret present; ${f.detail.charAt(0).toLowerCase()}${f.detail.slice(1)}` };
+  }
+  // Deliberately WARN and not FAIL: `fail` sets the command's exit code, and
+  // flipping that for a condition no operator has been alerted on yet would
+  // break existing automation on the day this ships. Escalation belongs with
+  // the notification work.
+  //
+  // 'never' stays worded apart from 'stale'. A repo that has never produced a
+  // snapshot is a setup problem; telling an operator it "went stale" sends them
+  // hunting a regression that never happened.
+  if (f.verdict === 'never') {
+    return { name: NAME, status: 'warn', detail: 'Secret present but this CronJob has NEVER completed a snapshot — there is nothing to restore from. Check Backups → Mail that a target is bound and the first run succeeds.' };
+  }
+  if (f.verdict === 'unknown') {
+    return { name: NAME, status: 'warn', detail: `Secret present, but snapshot freshness could not be judged — ${f.detail}` };
+  }
+  return { name: NAME, status: 'warn', detail: `Secret present BUT SNAPSHOTS ARE NOT LANDING — ${f.detail} The Secret existing is not a backup.` };
 }
 
 const ICON: Record<Status, string> = { ok: '[ OK ]', warn: '[WARN]', fail: '[FAIL]' };
