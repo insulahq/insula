@@ -1172,6 +1172,80 @@ export async function runResticStats(args: RunResticStatsArgs): Promise<ResticSt
   }
 }
 
+/** A restic failure that means "the repo is locked", not "the repo is broken". */
+export function isResticLockError(exitCode: number, stderr: string): boolean {
+  // restic >= 0.17 exits 11 for "failed to lock repository". Older builds in the
+  // image exit 1 with the message, so match both.
+  return exitCode === 11
+    || /unable to create lock|repository is already locked|repo already locked/i.test(stderr);
+}
+
+export interface RunResticUnlockArgs {
+  readonly target: BackupTarget;
+  readonly repoUri: string;
+  readonly passwordHex: string;
+  readonly semaphore?: { acquire: () => Promise<() => void> };
+}
+
+/**
+ * `restic unlock` — remove STALE locks from a repo.
+ *
+ * Why this exists: restic takes a lock for `backup`, `forget`, `prune`, `init`
+ * and (on a writable bucket) `restore`. If the pod running one of those dies —
+ * OOM, eviction, node drain, a Job deadline, an operator deleting it — the lock
+ * object survives in the repo, and NOTHING in this platform ever removed one.
+ * Every later write to that repo then fails with "unable to create lock",
+ * permanently, for that tenant or class.
+ *
+ * Observed twice: staging 2026-05-27 (mail LIST path, 3-hour stale lock) and
+ * DEV 2026-09-15, where mail snapshots were dead for 3 days 17 hours with every
+ * operator surface still reporting healthy. Both were patched in the mail image
+ * alone; this driver serves every tenant/bundle repo, so recovery belongs here
+ * too. A `bk-files` Job killed by OutOfcpu — which happened on staging the same
+ * day — leaves exactly this state on a tenant's files repo.
+ *
+ * Plain `unlock`, never `--remove-all`: it removes only locks whose owner is
+ * gone, so it cannot trample a run that is genuinely in flight. Callers should
+ * retry the operation ONCE after this returns; a lock that survives an unlock is
+ * held by a live process, and looping past that is the trampling this avoids.
+ */
+export async function runResticUnlock(args: RunResticUnlockArgs): Promise<void> {
+  const sem = args.semaphore ?? DEFAULT_SEM;
+  const release = await sem.acquire();
+  let sftpCleanup: (() => Promise<void>) | null = null;
+  try {
+    const env = {
+      ...buildResticEnv(args.target),
+      RESTIC_PASSWORD: args.passwordHex,
+    };
+    const cliArgs: string[] = [];
+    if (args.target.kind === 'ssh') {
+      const prepared = await prepareSftpArgs(args.target);
+      sftpCleanup = prepared.cleanup;
+      cliArgs.push(...prepared.args);
+    }
+    cliArgs.push('--repo', args.repoUri);
+    cliArgs.push(...performanceOpts(args.target));
+    cliArgs.push('unlock');
+
+    const child = spawnRestic(cliArgs, env);
+    let stderrBuf = '';
+    child.stderr.on('data', (c: Buffer) => { stderrBuf += c.toString('utf8'); });
+    child.stdout.on('data', () => { /* drain */ });
+    const code = await new Promise<number>((resolve) => {
+      const finish = (c: number | null) => resolve(c ?? 0);
+      child.on('exit', finish);
+      child.on('close', finish);
+    });
+    if (code !== 0) {
+      throw new Error(`restic unlock exited ${code}: ${stderrBuf.trim()}`);
+    }
+  } finally {
+    if (sftpCleanup) await sftpCleanup();
+    release();
+  }
+}
+
 /**
  * Parse `restic stats --json`. Exported for unit-testing without a repo.
  *
