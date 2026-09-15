@@ -6,6 +6,8 @@ import { ArrowLeft, Edit, Pause, Play, Square, Trash2, Loader2, CreditCard, Save
 import StatusBadge from '@/components/ui/StatusBadge';
 import EditTenantModal from '@/components/EditTenantModal';
 import NamespaceIntegrityBanner from '@/components/NamespaceIntegrityBanner';
+import TenantIssuesBanner from '@/components/tenants/TenantIssuesBanner';
+import { useTenantIssues } from '@/hooks/use-tenant-issues';
 import DeleteConfirmDialog from '@/components/DeleteConfirmDialog';
 import OperationProgressModal from '@/components/OperationProgressModal';
 import RetainedVolumesCard from '@/components/RetainedVolumesCard';
@@ -63,6 +65,8 @@ type TabKey = 'domains' | 'applications' | 'deployments' | 'files' | 'email' | '
 
 export default function TenantDetail() {
   const { id } = useParams<{ id: string }>();
+  const { data: issuesData } = useTenantIssues();
+  const tenantIssues = id ? issuesData?.data?.[id] : undefined;
   const navigate = useNavigate();
   const { data, isLoading, error } = useTenant(id);
   const tenant = data?.data;
@@ -591,6 +595,11 @@ export default function TenantDetail() {
       <ResourceLimitsCard key={tenant.planId ?? 'no-plan'} tenant={tenant} tenantId={id!} />
 
       <NamespaceIntegrityBanner tenantId={id!} />
+      {/* Every open condition for this tenant, with the object, the value and
+          how long it has been true. Derived from the same thresholds the
+          notifications fire from, so the banner and the message cannot
+          disagree — and it clears itself when the condition does. */}
+      <TenantIssuesBanner issues={tenantIssues} />
 
       <StorageLifecycleCard tenantId={id!} tenant={tenant} onManageSnapshots={() => setActiveTab('snapshots')} />
 
