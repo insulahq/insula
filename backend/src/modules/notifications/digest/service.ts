@@ -80,6 +80,17 @@ export interface PendingDigest {
  * a user who receives one notification a week should get it a day later, not
  * held until something else arrives to trigger a batch.
  */
+/**
+ * Hard cap on one flush pass.
+ *
+ * The queue is drained every 15 minutes, so this is a ceiling on a backlog,
+ * not on throughput: whatever a pass leaves behind is picked up by the next
+ * one. Without it a scheduler that had been down for a day would load the
+ * entire queue into memory at once — an unbounded read is unbounded memory
+ * even when the TABLE is bounded.
+ */
+export const MAX_ITEMS_PER_PASS = 2_000;
+
 export async function dueDigests(
   db: Database,
   modeForUser: (userId: string) => DigestMode,
@@ -96,7 +107,8 @@ export async function dueDigests(
     })
     .from(notificationDigestItems)
     .where(isNull(notificationDigestItems.sentAt))
-    .orderBy(asc(notificationDigestItems.createdAt));
+    .orderBy(asc(notificationDigestItems.createdAt))
+    .limit(MAX_ITEMS_PER_PASS);
 
   const byUser = new Map<string, typeof rows>();
   for (const r of rows) {
@@ -125,15 +137,22 @@ export async function dueDigests(
 }
 
 /** Render one digest body. Plain text: it is a list, not a document. */
+/** Items named individually in one digest body; the rest are counted. */
+export const MAX_ITEMS_RENDERED = 50;
+
 export function renderDigest(items: PendingDigest['items']): { subject: string; body: string } {
   const n = items.length;
   const subject = n === 1
     ? items[0].subject
     : `${n} notifications`;
-  const body = items
-    .map((i, idx) => `${idx + 1}. ${i.subject}\n   ${i.body}`)
-    .join('\n\n');
-  return { subject, body };
+  const shown = items.slice(0, MAX_ITEMS_RENDERED);
+  const lines = shown.map((i, idx) => `${idx + 1}. ${i.subject}\n   ${i.body}`);
+  if (items.length > shown.length) {
+    // Naming 800 notifications individually is not a digest, and the row has a
+    // column limit regardless.
+    lines.push(`… and ${items.length - shown.length} more.`);
+  }
+  return { subject, body: lines.join('\n\n') };
 }
 
 export async function markSent(db: Database, ids: readonly string[], now: Date = new Date()): Promise<void> {
