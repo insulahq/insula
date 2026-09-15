@@ -169,3 +169,40 @@ describe('resolveChannels — never silences a category', () => {
     }
   });
 });
+
+describe('reportsOn means "this channel may be unreachable"', () => {
+  // Found on the live DEV database, not in review. Marking the mailbox-quota
+  // categories as reporting on `mail` excluded the EMAIL channel from them —
+  // which would have silenced the mailbox owner the feature exists to reach,
+  // because a full mailbox does not make the mail SYSTEM unreachable. Quite
+  // the opposite: mail has to work in order to say so.
+  it('keeps email for a quota event, which needs a working mail system to deliver', () => {
+    const r = resolveChannels({ cls: 'action', audience: 'tenant_admin', reportsOn: null, tenantScoped: true });
+    expect(r.channels).toContain('email');
+  });
+
+  it('still drops email when the mail TRANSPORT is the subject', () => {
+    const r = resolveChannels({ cls: 'incident', audience: 'platform_admin', reportsOn: 'mail' });
+    expect(r.channels).not.toContain('email');
+  });
+});
+
+describe('every seeded category resolves to something sane', () => {
+  it('no category is silenced, and no tenant category reaches the shared push topic', async () => {
+    // The assertion that would have caught both DEV findings before deploy:
+    // seven categories seeded with every channel (ntfy on tenant events), and
+    // ten with a reportsOn that excluded their only useful channel.
+    const { ALL_CATEGORIES } = await import('../categories/seed.js');
+    for (const c of ALL_CATEGORIES) {
+      const audience = c.audience === 'admin' ? 'platform_admin' as const : 'tenant_admin' as const;
+      const r = resolveChannels({
+        cls: c.cls, audience, reportsOn: c.reportsOn, tenantScoped: audience === 'tenant_admin',
+      });
+      expect(r.channels.length, `${c.id} resolved to NO channel`).toBeGreaterThan(0);
+      if (audience === 'tenant_admin') {
+        expect(r.channels, `${c.id} is tenant-facing and reaches the operator push topic`)
+          .not.toContain('ntfy');
+      }
+    }
+  });
+});
