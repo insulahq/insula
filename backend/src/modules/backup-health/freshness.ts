@@ -48,6 +48,8 @@ export interface FreshnessInput {
    * alert that gets muted.
    */
   readonly previous?: FreshnessVerdict;
+  /** CronJob `spec.timeZone`. Null/absent = UTC, which is the k8s default. */
+  readonly timeZone?: string | null;
 }
 
 export interface FreshnessResult {
@@ -71,6 +73,14 @@ export function countScheduledFires(
   from: Date,
   to: Date,
   maxScanDays = MAX_SCAN_DAYS,
+  /**
+   * The CronJob's `spec.timeZone`. Kubernetes fires the schedule in THIS zone,
+   * so counting in UTC mis-counts by the offset on any cluster that sets it —
+   * a `0 3 * * *` job in Europe/Berlin fires at 01:00/02:00 UTC. That shows up
+   * as phantom missed fires (a false "backups have stopped") or, in the other
+   * direction, as a real outage that stays invisible. Null/UTC = no shift.
+   */
+  timeZone: string | null = null,
 ): number {
   if (!(from instanceof Date) || Number.isNaN(from.getTime())) return 0;
   if (to.getTime() <= from.getTime()) return 0;
@@ -84,12 +94,63 @@ export function countScheduledFires(
   // the last success is the run that produced it, not a missed one.
   let cursor = Math.floor(start.getTime() / MINUTE_MS) * MINUTE_MS + MINUTE_MS;
   const end = to.getTime();
+  const zoned = makeZoneShifter(timeZone);
   let count = 0;
   while (cursor <= end) {
-    if (cronMatchesMinute(cronExpression, new Date(cursor))) count += 1;
+    if (cronMatchesMinute(cronExpression, zoned(cursor))) count += 1;
     cursor += MINUTE_MS;
   }
   return count;
+}
+
+/**
+ * Offset, in ms, between UTC and `timeZone` at a given instant.
+ *
+ * DST-correct because Intl resolves the zone AT that instant rather than
+ * applying a fixed offset. Unknown zone → 0, i.e. UTC: a single bad
+ * `spec.timeZone` must not take the whole sweep down. Same
+ * formatToParts approach as preferences/quiet-hours.ts — built-in, no
+ * luxon/date-fns-tz dependency.
+ */
+function zoneOffsetMs(at: Date, timeZone: string): number {
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone,
+      hour12: false,
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+    }).formatToParts(at);
+    const get = (t: string): number =>
+      Number.parseInt(parts.find((x) => x.type === t)?.value ?? '0', 10);
+    const hour = get('hour') === 24 ? 0 : get('hour');
+    const asIfUtc = Date.UTC(get('year'), get('month') - 1, get('day'), hour, get('minute'), get('second'));
+    return asIfUtc - at.getTime();
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Minute-stepping is cheap; Intl is not. The offset can only change at a DST
+ * boundary, so resolving it once per UTC hour is exact and ~1000 lookups for a
+ * full 45-day scan instead of ~65,000.
+ */
+function makeZoneShifter(timeZone: string | null): (utcMs: number) => Date {
+  if (!timeZone || timeZone === 'UTC' || timeZone === 'Etc/UTC') {
+    return (utcMs) => new Date(utcMs);
+  }
+  let cachedHour = Number.NaN;
+  let offset = 0;
+  return (utcMs) => {
+    const hour = Math.floor(utcMs / 3_600_000);
+    if (hour !== cachedHour) {
+      cachedHour = hour;
+      offset = zoneOffsetMs(new Date(utcMs), timeZone);
+    }
+    // A Date whose UTC fields read as the zone's wall clock, which is what the
+    // UTC-based matcher needs to see.
+    return new Date(utcMs + offset);
+  };
 }
 
 /** Is this a 5-field expression `cronMatchesMinute` can actually evaluate? */
@@ -133,7 +194,9 @@ export function evaluateFreshness(input: FreshnessInput): FreshnessResult {
   }
 
   const ageMs = input.now.getTime() - input.lastSuccessAt.getTime();
-  const missedFires = countScheduledFires(input.cronExpression, input.lastSuccessAt, input.now);
+  const missedFires = countScheduledFires(
+    input.cronExpression, input.lastSuccessAt, input.now, MAX_SCAN_DAYS, input.timeZone ?? null,
+  );
 
   const hours = (ageMs / 3_600_000).toFixed(1);
   if (missedFires === 0) {

@@ -9,6 +9,7 @@ vi.mock('../notifications/events.js', () => ({
     return Promise.resolve();
   },
 }));
+import { countScheduledFires } from './freshness.js';
 import {
   formatAge,
   oldEnoughToJudgeNever,
@@ -117,5 +118,56 @@ describe('checkMailTargetReachable', () => {
   it('treats a listing that throws as unknown, not as healthy', async () => {
     const thrower = () => Promise.reject(new Error('apiserver down'));
     expect(await checkMailTargetReachable(db, thrower as never, log)).toBe('skipped');
+  });
+});
+
+describe('schedules fire in their own timezone, not the cluster\'s assumption', () => {
+  // cron-match.ts evaluates purely in UTC and documents the assumption that
+  // "the platform runs UTC everywhere". Kubernetes does not: it fires a
+  // CronJob in spec.timeZone. Counting a Europe/Berlin schedule in UTC
+  // mis-counts by the offset — phantom missed fires (a false "backups have
+  // stopped"), or a real outage hidden.
+  it('does not invent a missed fire for a Berlin daily job', () => {
+    // 03:00 Berlin in winter = 02:00 UTC. At 02:30 UTC the 03:00 Berlin run
+    // has ALREADY happened; counting in UTC would still be waiting for 03:00
+    // UTC and would see the gap as a miss.
+    const lastSuccess = new Date('2026-01-10T02:00:30Z'); // the Berlin 03:00 run
+    const now = new Date('2026-01-10T02:30:00Z');
+
+    const berlin = countScheduledFires('0 3 * * *', lastSuccess, now, undefined, 'Europe/Berlin');
+    expect(berlin).toBe(0);
+  });
+
+  it('counts the SAME schedule differently once the zone is applied', () => {
+    const lastSuccess = new Date('2026-01-10T02:00:30Z');
+    const now = new Date('2026-01-10T03:30:00Z');
+
+    // In UTC the 03:00 fire has passed -> 1 "missed" run.
+    expect(countScheduledFires('0 3 * * *', lastSuccess, now)).toBe(1);
+    // In Berlin the next fire is not until 03:00 local (02:00 UTC tomorrow).
+    expect(countScheduledFires('0 3 * * *', lastSuccess, now, undefined, 'Europe/Berlin')).toBe(0);
+  });
+
+  it('is DST-correct rather than applying a fixed offset', () => {
+    // Berlin is UTC+1 in January and UTC+2 in July. A fixed offset would get
+    // one of these wrong.
+    const winter = countScheduledFires(
+      '0 3 * * *', new Date('2026-01-10T00:00:00Z'), new Date('2026-01-10T23:00:00Z'),
+      undefined, 'Europe/Berlin',
+    );
+    const summer = countScheduledFires(
+      '0 3 * * *', new Date('2026-07-10T00:00:00Z'), new Date('2026-07-10T23:00:00Z'),
+      undefined, 'Europe/Berlin',
+    );
+    expect(winter).toBe(1);
+    expect(summer).toBe(1);
+  });
+
+  it('falls back to UTC for an unknown zone instead of throwing', () => {
+    // One bad spec.timeZone must not take the whole sweep down.
+    expect(() => countScheduledFires(
+      '0 3 * * *', new Date('2026-01-10T00:00:00Z'), new Date('2026-01-10T23:00:00Z'),
+      undefined, 'Mars/Olympus_Mons',
+    )).not.toThrow();
   });
 });

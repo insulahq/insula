@@ -62,6 +62,8 @@ export interface WatchedSchedule {
   readonly suspended: boolean;
   readonly lastSuccessAt: Date | null;
   readonly createdAt: Date | null;
+  /** `spec.timeZone`. Kubernetes fires the schedule in THIS zone, not UTC. */
+  readonly timeZone: string | null;
 }
 
 export interface FreshnessSweepResult {
@@ -101,6 +103,7 @@ export async function listWatchedSchedules(
       namespace,
       name,
       schedule: cj.spec?.schedule ?? null,
+      timeZone: cj.spec?.timeZone ?? null,
       suspended: cj.spec?.suspend === true,
       lastSuccessAt: last ? new Date(last) : null,
       createdAt: created ? new Date(created) : null,
@@ -128,7 +131,7 @@ export function oldEnoughToJudgeNever(
   staleAfter = DEFAULT_STALE_AFTER_FIRES,
 ): boolean {
   if (!s.schedule || !s.createdAt) return false;
-  return countScheduledFires(s.schedule, s.createdAt, now) >= staleAfter;
+  return countScheduledFires(s.schedule, s.createdAt, now, undefined, s.timeZone) >= staleAfter;
 }
 
 export async function runFreshnessSweep(
@@ -183,6 +186,10 @@ export async function runFreshnessSweep(
       cronExpression: s.schedule,
       now,
       previous: previous?.verdict,
+      // Per-CronJob, not per-cluster-assumption: a schedule that fires in
+      // Europe/Berlin must be counted in Europe/Berlin or every daily job
+      // looks like it missed a run for an hour or two every day.
+      timeZone: s.timeZone,
     });
     evaluated += 1;
 
