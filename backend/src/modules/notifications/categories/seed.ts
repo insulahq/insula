@@ -827,6 +827,18 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
     gdprBasis: 'legitimate_interest',
   },
   {
+    id: 'admin.notification_escalated',
+    cls: 'action',
+    reportsOn: null,
+    displayName: 'Unacknowledged notifications escalated',
+    description: 'Action-class notifications that have gone unread past the deadline. The operator is the party who can act when the recipient has not — previously the platform could not tell "told and handled" from "told and ignored".',
+    audience: 'admin',
+    defaultSeverity: 'warning',
+    defaultChannels: ALL_NOTIFICATION_CHANNELS,
+    isMandatory: false,
+    gdprBasis: 'legitimate_interest',
+  },
+  {
     id: 'admin.tenant_bandwidth_warning',
     cls: 'ambient',
     reportsOn: 'network',

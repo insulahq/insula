@@ -732,6 +732,27 @@ export async function notifyMailboxQuotaThreshold(
  * the author happened to interpolate it — and carried no category, so they
  * reached no template, no email, no preference gate and no delivery audit.
  */
+export interface EscalationPayload {
+  readonly count: string;
+  readonly ageHours: string;
+  readonly summary: string;
+}
+/**
+ * Action notifications that went unread past the deadline.
+ *
+ * Escalates to the OPERATOR because they are the party who can act when the
+ * recipient has not. Fires once per notification — `notifications.escalated_at`
+ * enforces that, because an escalation that repeats every tick becomes the
+ * noise it was built to cut through.
+ */
+export async function notifyAdminEscalation(
+  db: Database,
+  payload: EscalationPayload,
+  dedupeKey?: string,
+): Promise<void> {
+  await dispatchSafe(db, 'admin.notification_escalated', { kind: 'admin' }, payload, undefined, { dedupeKey });
+}
+
 export interface DigestPayload {
   readonly itemCount: string;
   readonly summary: string;

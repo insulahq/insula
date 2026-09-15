@@ -265,6 +265,40 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     ],
   },
 
+  // ── admin.notification_escalated ───────────────────────────────────
+  {
+    categoryId: 'admin.notification_escalated',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: '{{count}} notification(s) unread for over {{ageHours}}h',
+    bodyTemplate: emailMjml(
+      'Unacknowledged notifications',
+      '{{count}} action notification(s) have gone unread for more than {{ageHours}} hours, as of '
+      + '{{occurredAt}}: {{summary}}',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'count', type: 'string', required: false },
+      { name: 'ageHours', type: 'string', required: false },
+      { name: 'summary', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'admin.notification_escalated',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: '{{count}} unread for over {{ageHours}}h',
+    bodyTemplate: '{{count}} action notification(s) unread for more than {{ageHours}}h as of {{occurredAt}}: {{summary}}',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'count', type: 'string', required: false },
+      { name: 'ageHours', type: 'string', required: false },
+      { name: 'summary', type: 'string', required: false },
+    ],
+  },
+
   // ── platform.digest ────────────────────────────────────────────────
   {
     categoryId: 'platform.digest',

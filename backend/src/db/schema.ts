@@ -841,6 +841,13 @@ export const notifications = pgTable('notifications', {
   resourceId: varchar('resource_id', { length: 64 }),
   isRead: integer('is_read').notNull().default(0),
   readAt: timestamp('read_at'),
+  /**
+   * Set once, when an unread Action notification has been escalated. NULL is
+   * the normal state. Exists so escalation happens exactly once — re-escalating
+   * every tick is how an escalation becomes the noise it was meant to cut
+   * through.
+   */
+  escalatedAt: timestamp('escalated_at', { withTimezone: true }),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   // Migration 0037 — notification-system Phase 1 extension. Nullable
   // until every legacy caller threads a category through events.ts.

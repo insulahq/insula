@@ -95,6 +95,7 @@ const STATIC_PATHS: Record<string, string> = {
   'tenant.backup_event': '/backups',
   'tenant.mail_event': '/email',
   'platform.digest': '/notifications',
+  'admin.notification_escalated': '/platform/notifications',
   'admin.email_quota_exceeded': '/tenants',
   'admin.subscriptions_expiring': '/tenants',
   // The tenant lands on the page that shows the usage bars, not on a page
