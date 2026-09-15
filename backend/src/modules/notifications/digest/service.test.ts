@@ -33,7 +33,8 @@ function db(rows: unknown[]) {
   const chain = {
     from: () => chain,
     where: () => chain,
-    orderBy: () => Promise.resolve(rows),
+    orderBy: () => chain,
+    limit: () => Promise.resolve(rows),
   };
   return { select: () => chain } as never;
 }
@@ -96,5 +97,24 @@ describe('renderDigest', () => {
     expect(r.subject).toBe('2 notifications');
     expect(r.body).toContain('First');
     expect(r.body).toContain('Second');
+  });
+});
+
+describe('bounded reads and bodies', () => {
+  it('caps how many items one digest names individually', async () => {
+    const { renderDigest, MAX_ITEMS_RENDERED } = await import('./service.js');
+    const many = Array.from({ length: MAX_ITEMS_RENDERED + 25 }, (_, i) => ({
+      id: `i${i}`, subject: `Subject ${i}`, body: 'b', categoryId: 'subscription.renewed',
+    }));
+    const r = renderDigest(many);
+    expect(r.body).toContain('and 25 more');
+    // Naming every one of them is not a digest, and the column has a limit.
+    expect(r.body).not.toContain(`Subject ${MAX_ITEMS_RENDERED + 10}`);
+  });
+
+  it('declares a per-pass read cap — an unbounded read is unbounded memory', async () => {
+    const { MAX_ITEMS_PER_PASS } = await import('./service.js');
+    expect(MAX_ITEMS_PER_PASS).toBeGreaterThan(0);
+    expect(MAX_ITEMS_PER_PASS).toBeLessThanOrEqual(10_000);
   });
 });
