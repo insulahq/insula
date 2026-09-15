@@ -42,6 +42,27 @@ export const mailBackupListResponseSchema = z.object({
   /** Operator-facing reason if !repoReachable. */
   reason: z.string().nullable(),
   /**
+   * WHY the repo is not reachable, as a value rather than prose.
+   *
+   * `reason` is written for a human and gets reworded; deciding whether to
+   * raise an alert by matching its text would break the first time someone
+   * improved the wording. These are the cases, and only the last two are
+   * faults:
+   *
+   *   not_configured — no mail BackupTarget assigned yet. Setup, not an
+   *                    outage; alerting on it would fire forever on a fresh
+   *                    install.
+   *   provisioning   — credentials are still being materialised (resolves in
+   *                    about a minute). Transient by construction.
+   *   unreachable    — the listing ran and could not reach the repo.
+   *   timed_out      — the listing pod did not finish in time.
+   *
+   * null when `repoReachable` is true.
+   */
+  unreachableCause: z
+    .enum(['not_configured', 'provisioning', 'unreachable', 'timed_out'])
+    .nullable(),
+  /**
    * Currently-configured mail BackupTarget (target name from
    * backup_configurations). null when no target is assigned to the
    * 'mail' class.

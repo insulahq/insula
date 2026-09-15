@@ -30,6 +30,28 @@ export const DEFAULT_STALE_AFTER_FIRES = 3;
  */
 export const MAX_SCAN_DAYS = 45;
 
+/**
+ * Ceiling on the proportional grace.
+ *
+ * Half an interval is the right SHAPE — it stops a half-hourly schedule
+ * flapping — but as an absolute it is far too generous at the long end: half a
+ * day of silence on a daily backup, half a week on a weekly one. The operator
+ * point that forced this: on `0 3 * * *` the failure is knowable at 03:00 and
+ * a half-interval grace sits on it until 15:00, which overnight is most of the
+ * window to fix it before the next attempt.
+ *
+ * The grace only has to absorb SCHEDULING lag now, not run duration — a run
+ * that is genuinely in progress is excluded by `status.active` in the sweep,
+ * and the observed durations on the watched CronJobs are seconds to minutes
+ * (6s, 58s, 3m30s). An hour is generous against that.
+ *
+ *   half-hourly  grace 15m  -> reported 45m after the last success
+ *   hourly       grace 30m  -> 1.5h
+ *   daily        grace  1h  -> 04:00, i.e. 25h (was 36h)
+ *   weekly       grace  1h  -> 7d 1h (was 10.5d)
+ */
+export const MAX_STALE_GRACE_MS = 60 * 60_000;
+
 const MINUTE_MS = 60_000;
 
 export interface FreshnessInput {
@@ -48,6 +70,8 @@ export interface FreshnessInput {
    * alert that gets muted.
    */
   readonly previous?: FreshnessVerdict;
+  /** CronJob `spec.timeZone`. Null/absent = UTC, which is the k8s default. */
+  readonly timeZone?: string | null;
 }
 
 export interface FreshnessResult {
@@ -66,30 +90,127 @@ export interface FreshnessResult {
  * Exported for tests: the counting is the part that decides whether a real
  * outage is seen, so it is worth pinning independently of the verdict logic.
  */
-export function countScheduledFires(
+export interface FireScan {
+  /** Scheduled fires in (from, to], saturating at the scan cap. */
+  readonly count: number;
+  /** The FIRST scheduled fire after `from` — i.e. the run that should have happened. */
+  readonly firstFireAt: Date | null;
+  /** Gap between consecutive fires, for scaling the grace to the schedule. */
+  readonly intervalMs: number | null;
+}
+
+/**
+ * Like countScheduledFires, but also reports WHEN the first missed run was due
+ * and how far apart runs are.
+ *
+ * Both are needed to make lateness proportional. A fixed "3 missed fires"
+ * threshold means silence for three whole periods, which on a daily backup is
+ * three DAYS — almost exactly the outage this detector was built for (DEV went
+ * 3d 17h unreported). The same threshold on a half-hourly schedule is 90
+ * minutes.
+ * One number cannot serve both.
+ */
+export function scanScheduledFires(
   cronExpression: string,
   from: Date,
   to: Date,
   maxScanDays = MAX_SCAN_DAYS,
-): number {
-  if (!(from instanceof Date) || Number.isNaN(from.getTime())) return 0;
-  if (to.getTime() <= from.getTime()) return 0;
+  timeZone: string | null = null,
+): FireScan {
+  const empty: FireScan = { count: 0, firstFireAt: null, intervalMs: null };
+  if (!(from instanceof Date) || Number.isNaN(from.getTime())) return empty;
 
   const capMs = maxScanDays * 24 * 60 * MINUTE_MS;
   const start = to.getTime() - from.getTime() > capMs
     ? new Date(to.getTime() - capMs)
     : from;
 
-  // Step to the start of the minute AFTER `start`: a fire at the same minute as
-  // the last success is the run that produced it, not a missed one.
+  const zoned = makeZoneShifter(timeZone);
   let cursor = Math.floor(start.getTime() / MINUTE_MS) * MINUTE_MS + MINUTE_MS;
   const end = to.getTime();
+  // Keep scanning past `to` purely to find fire #2, so the interval is known
+  // even when only one run has been missed so far — which is the case the
+  // proportional grace exists to handle.
+  const hardStop = Math.max(end, start.getTime() + capMs);
+
   let count = 0;
-  while (cursor <= end) {
-    if (cronMatchesMinute(cronExpression, new Date(cursor))) count += 1;
+  let first: number | null = null;
+  let second: number | null = null;
+  while (cursor <= hardStop) {
+    if (cronMatchesMinute(cronExpression, zoned(cursor))) {
+      if (cursor <= end) count += 1;
+      if (first === null) first = cursor;
+      else if (second === null) { second = cursor; if (cursor > end) break; }
+    }
     cursor += MINUTE_MS;
   }
-  return count;
+
+  return {
+    count,
+    firstFireAt: first === null ? null : new Date(first),
+    intervalMs: first !== null && second !== null ? second - first : null,
+  };
+}
+
+export function countScheduledFires(
+  cronExpression: string,
+  from: Date,
+  to: Date,
+  maxScanDays = MAX_SCAN_DAYS,
+  timeZone: string | null = null,
+): number {
+  if (to.getTime() <= from.getTime()) return 0;
+  return scanScheduledFires(cronExpression, from, to, maxScanDays, timeZone).count;
+}
+
+/**
+ * Offset, in ms, between UTC and `timeZone` at a given instant.
+ *
+ * DST-correct because Intl resolves the zone AT that instant rather than
+ * applying a fixed offset. Unknown zone → 0, i.e. UTC: a single bad
+ * `spec.timeZone` must not take the whole sweep down. Same
+ * formatToParts approach as preferences/quiet-hours.ts — built-in, no
+ * luxon/date-fns-tz dependency.
+ */
+function zoneOffsetMs(at: Date, timeZone: string): number {
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone,
+      hour12: false,
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+    }).formatToParts(at);
+    const get = (t: string): number =>
+      Number.parseInt(parts.find((x) => x.type === t)?.value ?? '0', 10);
+    const hour = get('hour') === 24 ? 0 : get('hour');
+    const asIfUtc = Date.UTC(get('year'), get('month') - 1, get('day'), hour, get('minute'), get('second'));
+    return asIfUtc - at.getTime();
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Minute-stepping is cheap; Intl is not. The offset can only change at a DST
+ * boundary, so resolving it once per UTC hour is exact and ~1000 lookups for a
+ * full 45-day scan instead of ~65,000.
+ */
+function makeZoneShifter(timeZone: string | null): (utcMs: number) => Date {
+  if (!timeZone || timeZone === 'UTC' || timeZone === 'Etc/UTC') {
+    return (utcMs) => new Date(utcMs);
+  }
+  let cachedHour = Number.NaN;
+  let offset = 0;
+  return (utcMs) => {
+    const hour = Math.floor(utcMs / 3_600_000);
+    if (hour !== cachedHour) {
+      cachedHour = hour;
+      offset = zoneOffsetMs(new Date(utcMs), timeZone);
+    }
+    // A Date whose UTC fields read as the zone's wall clock, which is what the
+    // UTC-based matcher needs to see.
+    return new Date(utcMs + offset);
+  };
 }
 
 /** Is this a 5-field expression `cronMatchesMinute` can actually evaluate? */
@@ -133,7 +254,10 @@ export function evaluateFreshness(input: FreshnessInput): FreshnessResult {
   }
 
   const ageMs = input.now.getTime() - input.lastSuccessAt.getTime();
-  const missedFires = countScheduledFires(input.cronExpression, input.lastSuccessAt, input.now);
+  const scan = scanScheduledFires(
+    input.cronExpression, input.lastSuccessAt, input.now, MAX_SCAN_DAYS, input.timeZone ?? null,
+  );
+  const missedFires = scan.count;
 
   const hours = (ageMs / 3_600_000).toFixed(1);
   if (missedFires === 0) {
@@ -145,22 +269,50 @@ export function evaluateFreshness(input: FreshnessInput): FreshnessResult {
     };
   }
 
-  if (missedFires >= staleAfter) {
+  // ── Lateness is measured in HALF PERIODS, not in whole missed runs ──
+  //
+  // Counting whole runs makes the alert delay scale with the schedule in the
+  // wrong direction: three missed fires is 90 minutes on a half-hourly job and
+  // three DAYS on a daily one — and three days of silence is almost exactly
+  // the outage this detector exists to catch (DEV: 3d 17h, every surface
+  // green). The rarer the backup, the longer you would wait to hear that it
+  // stopped, which is backwards.
+  //
+  // So: a run is due, it did not happen, and half of one interval has since
+  // passed. That grace is what stops flapping — it is far wider than the
+  // minute-either-side jitter the old fire-count band was guarding against,
+  // and it scales itself: 15 minutes on a half-hourly schedule, 12 hours on a
+  // daily one.
+  const graceMs = scan.intervalMs !== null
+    ? Math.min(scan.intervalMs / 2, MAX_STALE_GRACE_MS)
+    : 0;
+  const lateBy = scan.firstFireAt !== null
+    ? input.now.getTime() - scan.firstFireAt.getTime()
+    : 0;
+  const pastGrace = scan.firstFireAt !== null && lateBy >= graceMs;
+
+  // The fire count stays as an absolute backstop for the case the interval
+  // cannot be derived (a schedule with no second fire inside the scan window),
+  // where there is no period to take half of.
+  if (pastGrace || missedFires >= staleAfter) {
+    const graceNote = graceMs > 0
+      ? ` (more than ${(graceMs / 60_000).toFixed(0)} minutes past the run that was due)`
+      : '';
     return {
       verdict: 'stale',
       missedFires,
       ageMs,
-      detail: `${missedFires} scheduled run(s) missed since the last success ${hours}h ago.`,
+      detail: `${missedFires} scheduled run(s) missed since the last success ${hours}h ago${graceNote}.`,
     };
   }
 
-  // Inside the hysteresis band: hold rather than flap.
+  // Due, but still inside the grace. Hold rather than flap.
   const held = input.previous ?? 'fresh';
   return {
     verdict: held === 'never' ? 'stale' : held,
     missedFires,
     ageMs,
     detail: `${missedFires} scheduled run(s) missed since the last success ${hours}h ago `
-      + `(below the ${staleAfter}-miss threshold; holding '${held}').`,
+      + `(within the ${(graceMs / 60_000).toFixed(0)}-minute grace; holding '${held}').`,
   };
 }

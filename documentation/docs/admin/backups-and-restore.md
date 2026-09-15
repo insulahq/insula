@@ -180,6 +180,37 @@ you would rather not wait for it.
     **admin notification** is raised — a silent night is a completed
     night.
 
+## What the platform tells you when a backup goes wrong
+
+Four separate things can go wrong with a backup, and they are reported
+separately because they need different actions.
+
+| You are told | When | What it means |
+|---|---|---|
+| **Backup failed** | a run executed and failed, within ~5 min | Something ran and returned an error. The message names the job and the reason. |
+| **Backups have stopped running** | a scheduled run did not happen | Nothing ran. There is no failed job to look at — this is the only signal you get. |
+| **Backup has never run** | a schedule has never once succeeded | Setup, not a regression: the destination, its credentials, or the schedule have most likely never worked. |
+| **Backup target unreachable** | the destination cannot be contacted | The repository itself is unreachable or timing out. |
+
+!!! note "Silence is measured against the schedule, not the clock"
+    *Backups have stopped* counts **missed scheduled runs**, not elapsed
+    hours. A weekday-only schedule is not called stale over a weekend, and
+    a half-hourly one is not given a day's grace just because a daily one
+    needs it. The schedule's own **timezone** is honoured — a job set to
+    run at 03:00 Berlin is judged at 03:00 Berlin.
+
+    You are told roughly an hour after a run was due and did not happen —
+    for a daily backup that is the same morning, leaving the day to fix it
+    before the next attempt. A run still **in progress** is never counted
+    as missed, and a schedule that is **suspended** is not reported at all:
+    it is off because someone turned it off.
+
+!!! note "\"Never run\" is deliberately not \"stopped\""
+    They are separate alerts because they send you to different places. A
+    backup that has stopped is a regression — something that worked no
+    longer does. A backup that has never run has never worked, and looking
+    for what changed will waste your time.
+
 ## Remote Storage Targets
 
 **Backups → Remote Storage Targets** is where you register the off-cluster

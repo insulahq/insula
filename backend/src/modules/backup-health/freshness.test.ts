@@ -79,17 +79,66 @@ describe('evaluateFreshness', () => {
     expect(r.ageMs).toBeNull();
   });
 
-  it('holds the previous verdict inside the hysteresis band', () => {
-    // 2 missed fires, threshold 3. An alert that flaps is an alert that is muted.
+  it('holds the previous verdict inside the grace', () => {
+    // The band is now HALF AN INTERVAL rather than a count of missed runs, so
+    // that alert latency scales with the schedule instead of punishing rare
+    // backups. An alert that flaps is still an alert that is muted, so the
+    // hold itself is unchanged — only what opens it.
+    //
+    // 30-min schedule: 12:30 is due and missed, grace runs to 12:45.
     const base = {
       lastSuccessAt: d('2026-09-15T12:00:00Z'),
       cronExpression: EVERY_30M,
-      now: d('2026-09-15T13:05:00Z'), // 12:30 + 13:00 missed
+      now: d('2026-09-15T12:40:00Z'), // 12:30 missed, 10 min late, grace is 15
     };
-    expect(evaluateFreshness(base).missedFires).toBe(2);
-    expect(evaluateFreshness(base).missedFires).toBeLessThan(DEFAULT_STALE_AFTER_FIRES);
+    expect(evaluateFreshness(base).missedFires).toBe(1);
     expect(evaluateFreshness({ ...base, previous: 'stale' }).verdict).toBe('stale');
     expect(evaluateFreshness({ ...base, previous: 'fresh' }).verdict).toBe('fresh');
+  });
+
+  it('goes stale half an interval late, without waiting for more misses', () => {
+    // 12:30 due and missed; at 12:46 it is past half of the 30-minute
+    // interval. The OLD rule held here and would not have called it stale
+    // until 13:30 — three whole periods.
+    const r = evaluateFreshness({
+      lastSuccessAt: d('2026-09-15T12:00:00Z'),
+      cronExpression: EVERY_30M,
+      now: d('2026-09-15T12:46:00Z'),
+      previous: 'fresh',
+    });
+    expect(r.missedFires).toBe(1);
+    expect(r.verdict).toBe('stale');
+  });
+
+  it('reports a daily backup the same MORNING, not 3 days or half a day later', () => {
+    // The outage this was built for: DEV went 3d 17h with every surface green.
+    // Three missed days is obviously too late; so is half a period, because on
+    // `0 3 * * *` the failure is knowable at 03:00 and a 12h grace sits on it
+    // until 15:00 — overnight that is most of the window to act before the
+    // next attempt. The grace is capped at an hour.
+    const base = {
+      lastSuccessAt: d('2026-09-14T03:00:30Z'),
+      cronExpression: '0 3 * * *',
+      previous: 'fresh' as const,
+    };
+    // 03:00 is due and missed. Still inside the 1h grace at 03:30.
+    expect(evaluateFreshness({ ...base, now: d('2026-09-15T03:30:00Z') }).verdict).toBe('fresh');
+    // Past it by 04:10 — reported ~25h after the last success, and a clear
+    // 23h before the next scheduled attempt.
+    expect(evaluateFreshness({ ...base, now: d('2026-09-15T04:10:00Z') }).verdict).toBe('stale');
+  });
+
+  it('keeps the grace proportional where the period is SHORT', () => {
+    // The cap must not flatten short schedules into the same 1h wait: half of
+    // a 30-minute interval is 15 minutes, well under the cap, so it still
+    // applies.
+    const base = {
+      lastSuccessAt: d('2026-09-15T12:00:00Z'),
+      cronExpression: EVERY_30M,
+      previous: 'fresh' as const,
+    };
+    expect(evaluateFreshness({ ...base, now: d('2026-09-15T12:40:00Z') }).verdict).toBe('fresh');
+    expect(evaluateFreshness({ ...base, now: d('2026-09-15T12:46:00Z') }).verdict).toBe('stale');
   });
 
   it('leaves the band as stale once the threshold is crossed', () => {
