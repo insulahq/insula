@@ -23,7 +23,7 @@ import { useMemo, useState } from 'react';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
 import { useNavigate } from 'react-router-dom';
-import { Mail, RotateCw, AlertTriangle, Loader2, RefreshCw } from 'lucide-react';
+import { Mail, RotateCw, AlertTriangle, Loader2, RefreshCw, Unlock } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
 import type {
@@ -32,7 +32,7 @@ import type {
 } from '@insula/api-contracts';
 import BackupClassPage from './BackupClassPage';
 import MailObjectBackupCard from '@/components/backups/MailObjectBackupCard';
-import { useMailBackups, useRestoreMailBackup } from '@/hooks/use-mail-backups';
+import { useMailBackups, useRestoreMailBackup, useUnlockMailRestic } from '@/hooks/use-mail-backups';
 import { useClusterNodes } from '@/hooks/use-cluster-nodes';
 import { useMailPlacement } from '@/hooks/use-mail-placement';
 import MailMigrationProgressModal from '@/components/MailMigrationProgressModal';
@@ -254,6 +254,9 @@ export default function MailBackupsPage() {
 
   const snapshots = backups.data?.data.snapshots ?? [];
   const repoReachable = backups.data?.data.repoReachable ?? false;
+  // null means the listing pod did not report locks (older image) — NOT zero.
+  const lockCount = backups.data?.data.lockCount ?? null;
+  const unlock = useUnlockMailRestic();
   const { sortedData: sortedSnapshots, sortKey, sortDirection, onSort } = useSortable(snapshots, 'time', 'desc');
   const th = { currentKey: sortKey, direction: sortDirection, onSort, className: '!py-2 !pr-3 !px-0 font-medium text-xs uppercase text-gray-500 dark:text-gray-400' };
 
@@ -297,6 +300,45 @@ export default function MailBackupsPage() {
               </header>
 
               <div className="px-4 py-3">
+                {lockCount !== null && lockCount > 0 && (
+                  <div className="mb-3 rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-700 dark:bg-amber-900/30 dark:text-amber-200">
+                    <div className="flex items-start gap-2">
+                      <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                      <div className="flex-1">
+                        <p className="font-medium">
+                          Repository is readable but LOCKED ({lockCount} lock{lockCount === 1 ? '' : 's'})
+                        </p>
+                        {/* The list above still renders: --no-lock reads a wedged
+                            repo fine. Writes are what stop. */}
+                        <p className="mt-0.5 text-xs">
+                          Snapshots and retention cannot write until the locks clear. A lock left
+                          behind by a killed pod is stale and never expires on its own.
+                        </p>
+                        {unlock.data && (
+                          <p className="mt-2 text-xs font-medium">{unlock.data.data.message}</p>
+                        )}
+                        {unlock.isError && (
+                          <p className="mt-2 text-xs font-medium text-red-700 dark:text-red-300">
+                            {(unlock.error as Error).message}
+                          </p>
+                        )}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => unlock.mutate()}
+                        disabled={unlock.isPending}
+                        className="inline-flex shrink-0 items-center gap-1 rounded border border-amber-400 bg-white px-2 py-1 text-xs font-medium text-amber-900 hover:bg-amber-100 disabled:opacity-50 dark:border-amber-600 dark:bg-gray-800 dark:text-amber-200 dark:hover:bg-gray-700"
+                      >
+                        {unlock.isPending ? (
+                          <Loader2 size={12} className="animate-spin" />
+                        ) : (
+                          <Unlock size={12} />
+                        )}
+                        {unlock.isPending ? 'Clearing…' : 'Clear stale locks'}
+                      </button>
+                    </div>
+                  </div>
+                )}
                 {backups.isLoading ? (
                   <p className="text-sm text-gray-500">Loading snapshots…</p>
                 ) : backups.isError ? (
