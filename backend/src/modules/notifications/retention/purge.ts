@@ -12,6 +12,8 @@
  *   - `notification_template_versions` (90d, keeping the newest 10 per
  *     template) — one archived body per operator edit; previously had no
  *     retention at all.
+ *   - `notification_object_mutes` (on expiry) — a mute the dispatcher will
+ *     never read again.
  *
  * The inbox table used to have NO age retention at all, on the reasoning
  * that its rows are "user-deletable". They are — one at a time, via
@@ -146,6 +148,7 @@ export interface NotificationRetentionResult {
   readonly notifications: number;
   readonly buckets: number;
   readonly templateVersions: number;
+  readonly expiredMutes: number;
 }
 
 interface RunOptions {
@@ -179,5 +182,9 @@ export async function runNotificationRetention(
     notifications: await count('notifications', () => purgeOldNotifications(db)),
     buckets: await count('rate-limit buckets', () => buckets(db)),
     templateVersions: await count('template versions', () => purgeOldTemplateVersions(db)),
+    expiredMutes: await count('expired mutes', async () => {
+      const { purgeExpiredMutes } = await import('../mutes/service.js');
+      return purgeExpiredMutes(db);
+    }),
   };
 }

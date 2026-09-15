@@ -2200,6 +2200,27 @@ export const userNotificationSettings = pgTable('user_notification_settings', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });
 
+/**
+ * Per-object notification mutes — "quiet about THIS one thing until Friday".
+ *
+ * Without this the only tool during a known incident was muting the whole
+ * category, which silences every other object it covers and is almost never
+ * turned back on. `mutedUntil` is NOT NULL on purpose: an indefinite mute is
+ * how a category gets silenced permanently by accident.
+ */
+export const notificationObjectMutes = pgTable('notification_object_mutes', {
+  id: varchar('id', { length: 36 }).primaryKey().$defaultFn(() => crypto.randomUUID()),
+  /** NULL = muted across every category that names this object. */
+  categoryId: varchar('category_id', { length: 64 }),
+  objectKey: varchar('object_key', { length: 255 }).notNull(),
+  mutedUntil: timestamp('muted_until', { withTimezone: true }).notNull(),
+  reason: text('reason'),
+  createdBy: varchar('created_by', { length: 36 }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('notification_object_mutes_lookup_idx').on(table.objectKey, table.categoryId, table.mutedUntil),
+]);
+
 export const notificationProviders = pgTable('notification_providers', {
   id: varchar('id', { length: 36 }).primaryKey().$defaultFn(() => crypto.randomUUID()),
   name: varchar('name', { length: 255 }).notNull(),

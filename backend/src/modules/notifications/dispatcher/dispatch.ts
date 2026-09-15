@@ -37,6 +37,7 @@ import { recordDegradedRender, clampDegradedVars } from './degraded.js';
 import { effectiveChannels, categoryMeta } from '../routing/effective-channels.js';
 import { platformName, tenantIdentity, userDisplayName, normaliseDateVariables } from './envelope.js';
 import { CLASS_POLICY } from '../routing/classes.js';
+import { isObjectMuted } from '../mutes/service.js';
 import { emitNtfyForEvent } from './ntfy.js';
 import { isCategoryAllowedForUser } from '../preferences/gate.js';
 import { getUserSettings } from '../preferences/service.js';
@@ -291,6 +292,19 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
     occurredAt: new Date().toISOString(),
     ...opts.variables,
   });
+
+  // Object mute: "quiet about THIS one thing until Friday". Checked before any
+  // channel work so a muted object costs one indexed lookup, not a fan-out.
+  // Mandatory classes are unmutable — createMute refuses them, and this is the
+  // second line of defence in case a row predates that rule.
+  const muteKey = typeof envelopeVars.objectLabel === 'string' ? envelopeVars.objectLabel : null;
+  if (
+    muteKey
+    && !(categoryMeta(category.id) && CLASS_POLICY[categoryMeta(category.id)!.cls].mandatory)
+    && await isObjectMuted(db, category.id, muteKey)
+  ) {
+    return { eventId, deliveryCount: 0, perChannelStatuses: [] };
+  }
 
   const routed = effectiveChannels({
     categoryId: category.id,
