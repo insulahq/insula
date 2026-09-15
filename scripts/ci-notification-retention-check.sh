@@ -36,8 +36,21 @@ MAX_DAYS=90
 # here without a purge fails the build — which is the point.
 TABLES="notifications notification_deliveries notification_rate_limit_buckets notification_template_versions"
 
+# Bounded elsewhere, on purpose — each is pruned by the pass that writes it,
+# where the dedupe semantics live. Listed here so "every notification-domain
+# table is bounded" stays a checkable claim rather than a belief.
+EXTERNALLY_BOUNDED="
+mailbox_quota_events|backend/src/modules/mail-stats/quota-notifications.ts|30 days
+email_quota_events|backend/src/modules/mail-events/thresholds.ts|QUOTA_EVENT_RETENTION_DAYS
+"
+
 fail=0
 err() { printf 'FAIL: %s\n' "$*" >&2; fail=1; }
+
+# snake_case table name -> the camelCase identifier drizzle uses for it.
+to_camel() {
+  echo "$1" | awk -F_ '{printf "%s", $1; for (i=2;i<=NF;i++) printf "%s%s", toupper(substr($i,1,1)), substr($i,2)}'
+}
 
 echo "── notification retention guard ─────────────────────────────────────"
 
@@ -99,6 +112,24 @@ grep -q "safeTick" "$SCHED" || err "scheduler no longer uses safeTick."
 if ! grep -qE 'safeTick\([^)]*\)[^;]*;\s*$|runOnce\(db\)' "$SCHED"; then
   err "scheduler does not appear to run once at startup."
 fi
+
+# ── 5. Tables bounded outside purge.ts still have a bound ──────────────
+while IFS='|' read -r tbl file marker; do
+  [ -n "$tbl" ] || continue
+  full="$REPO_ROOT/$file"
+  if [ ! -f "$full" ]; then
+    err "$tbl claims to be bounded by $file, which does not exist."
+  # Two spellings, both legitimate: raw `DELETE FROM <table>` and drizzle's
+  # `db.delete(<camelCaseTable>)`. Matching only the first reported a missing
+  # purge for email_quota_events, which has had one all along — an audit whose
+  # selector cannot match its subject reads exactly like a real finding.
+  elif { grep -q "DELETE FROM $tbl" "$full" || grep -q "delete($(to_camel "$tbl"))" "$full"; } \
+       && grep -q "$marker" "$full"; then
+    printf '    %-34s purged by %s\n' "$tbl" "$(basename "$file")"
+  else
+    err "$tbl has no purge in $file — it grows without a ceiling."
+  fi
+done <<< "$EXTERNALLY_BOUNDED"
 
 [ "$fail" -eq 0 ] || exit 1
 echo "ci-notification-retention: OK — every table bounded, ceiling ${MAX_DAYS}d, pass runs at startup."

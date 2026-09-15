@@ -180,13 +180,15 @@ export async function checkQuotaThresholds(
     RETURNING e.mailbox_id
   `);
 
-  // Bounded growth: the dedupe table keeps only what the dedupe logic reads
-  // (cleared_at IS NULL) plus a short audit tail. Anything older is noise.
+  // Bounded growth. The dedupe logic reads only `cleared_at IS NULL`, so a
+  // cleared row is pure audit tail — 30 days, not the 90-day domain ceiling,
+  // because that ceiling is a maximum and not a target. Open rows are bounded
+  // by (mailbox × threshold) and cascade away with their mailbox.
   try {
     await db.execute(sql`
       DELETE FROM mailbox_quota_events
        WHERE cleared_at IS NOT NULL
-         AND cleared_at < NOW() - INTERVAL '90 days'
+         AND cleared_at < NOW() - INTERVAL '30 days'
     `);
   } catch (err) {
     console.warn(
