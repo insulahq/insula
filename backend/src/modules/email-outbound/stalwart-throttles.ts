@@ -254,6 +254,30 @@ function throttleNeedsUpdate(
   );
 }
 
+/**
+ * `description` is the identity key we matched the live object BY, so it
+ * can never differ — and Stalwart rejects it in a patch outright:
+ *
+ *   notUpdated: { "<id>": { "type": "invalidPatch",
+ *     "description": "Cannot modify read-only property",
+ *     "properties": ["description"] } }
+ *
+ * Measured on DEV 2026-09-15 against v0.16.20. Because the reconciler
+ * spread the whole desired object into the patch, EVERY x:MtaQueueQuota
+ * update had always failed — a plan change that raised a tenant's daily
+ * limit left the backlog quota pinned at its original `messages` value
+ * forever. Creates were unaffected, which is why it stayed hidden: a new
+ * domain looked perfectly correct.
+ *
+ * (x:MtaOutboundThrottle happens to tolerate the resend, so throttles
+ * updated fine — the asymmetry is exactly what made this a one-sided,
+ * silent failure.)
+ */
+function patchWithoutIdentity<T extends { description: string }>(want: T): Record<string, unknown> {
+  const { description: _ignored, ...rest } = want;
+  return rest;
+}
+
 function quotaNeedsUpdate(
   existing: { enable: boolean; match: StalwartExpression; messages: number | null; size: number | null },
   desired: DesiredQueueQuota,
@@ -307,7 +331,7 @@ export async function reconcileStalwartSendLimits(
         tCreate[`c-${created}`] = { ...want };
         created += 1;
       } else if (throttleNeedsUpdate(live, want)) {
-        tUpdate[live.id] = { ...want };
+        tUpdate[live.id] = patchWithoutIdentity(want);
         updated += 1;
       }
     }
@@ -351,7 +375,7 @@ export async function reconcileStalwartSendLimits(
         qCreate[`c-${created}`] = { ...want };
         created += 1;
       } else if (quotaNeedsUpdate(live, want)) {
-        qUpdate[live.id] = { ...want };
+        qUpdate[live.id] = patchWithoutIdentity(want);
         updated += 1;
       }
     }

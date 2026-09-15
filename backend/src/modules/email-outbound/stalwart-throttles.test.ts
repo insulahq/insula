@@ -262,6 +262,48 @@ describe('reconcileStalwartSendLimits (diff + apply)', () => {
     expect(qSet).not.toHaveBeenCalled();
   });
 
+  it('never sends `description` in an update patch (Stalwart rejects it read-only)', async () => {
+    // Live on v0.16.20: x:MtaQueueQuota/set with `description` present
+    // returns notUpdated {"type":"invalidPatch","description":"Cannot
+    // modify read-only property","properties":["description"]}. Because
+    // the reconciler spread the whole desired object, EVERY quota update
+    // silently failed -- a raised daily limit left `messages` pinned at
+    // the original value forever, while creates looked perfectly fine.
+    get.mockResolvedValue([
+      {
+        id: 'h', enable: true,
+        description: `${DESCRIPTION_PREFIX}alpha.example.com:hourly`,
+        key: { senderDomain: true },
+        match: { match: {}, else: "sender_domain = 'alpha.example.com' && queue_name != 'local'" },
+        rate: { count: 1, period: 3_600_000 },   // drift -> forces an update
+      },
+    ]);
+    qGet.mockResolvedValue([
+      {
+        id: 'q', enable: true,
+        description: `${DESCRIPTION_PREFIX}alpha.example.com:backlog`,
+        key: { senderDomain: true },
+        match: { match: {}, else: "sender_domain = 'alpha.example.com' && queue_name != 'local'" },
+        messages: 1, size: null,                 // drift -> forces an update
+      },
+    ]);
+
+    await reconcileStalwartSendLimits(db, silentLogger);
+
+    const tPatch = Object.values(set.mock.calls[0][0].update as Record<string, Record<string, unknown>>);
+    const qPatch = Object.values(qSet.mock.calls[0][0].update as Record<string, Record<string, unknown>>);
+    expect(tPatch.length).toBeGreaterThan(0);
+    expect(qPatch.length).toBeGreaterThan(0);
+    for (const patch of [...tPatch, ...qPatch]) {
+      expect(patch).not.toHaveProperty('description');
+      // the fields we DO need must survive the strip
+      expect(patch).toHaveProperty('enable');
+      expect(patch).toHaveProperty('match');
+    }
+    // and the corrected values are the ones actually sent
+    expect((qPatch[0] as { messages: number }).messages).toBe(100);
+  });
+
   it('destroys stale platform-prefixed objects (domain removed)', async () => {
     get.mockResolvedValue([
       {
