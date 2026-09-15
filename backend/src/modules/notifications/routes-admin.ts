@@ -15,6 +15,8 @@
  *
  * All routes require panel='admin' and role super_admin OR admin.
  */
+import { createNotificationMuteSchema, deleteNotificationMuteSchema } from '@insula/api-contracts';
+import { parseBody } from '../../shared/validate-body.js';
 import type { FastifyInstance } from 'fastify';
 import { eq, and, desc, lt, gt } from 'drizzle-orm';
 import { authenticate, requirePanel, requireRole } from '../../middleware/auth.js';
@@ -292,14 +294,10 @@ export async function notificationAdminRoutes(app: FastifyInstance): Promise<voi
   });
 
   app.post('/admin/notifications/mutes', async (request, reply) => {
-    const body = request.body as {
-      categoryId?: string | null; objectKey?: string; days?: number; reason?: string;
-    };
-    if (!body?.objectKey || typeof body.days !== 'number') {
-      return reply.status(400).send({
-        error: { code: 'INVALID_INPUT', message: 'objectKey and days are required' },
-      });
-    }
+    // PARSED, not cast. A cast reads a misspelled field as undefined, skips
+    // whatever it controlled and returns 200 — and for a mute that means the
+    // operator believes they are quiet when nothing was muted at all.
+    const body = parseBody(createNotificationMuteSchema, request.body);
     const { createMute, MuteRejected } = await import('./mutes/service.js');
     try {
       await createMute(app.db, {
@@ -321,14 +319,14 @@ export async function notificationAdminRoutes(app: FastifyInstance): Promise<voi
   });
 
   app.delete('/admin/notifications/mutes', async (request, reply) => {
-    const q = request.query as { categoryId?: string; objectKey?: string };
-    if (!q?.objectKey) {
+    const q = deleteNotificationMuteSchema.safeParse(request.query);
+    if (!q.success) {
       return reply.status(400).send({
         error: { code: 'INVALID_INPUT', message: 'objectKey is required' },
       });
     }
     const { removeMute } = await import('./mutes/service.js');
-    await removeMute(app.db, q.categoryId ?? null, q.objectKey);
+    await removeMute(app.db, q.data.categoryId ?? null, q.data.objectKey);
     return reply.status(204).send();
   });
 
