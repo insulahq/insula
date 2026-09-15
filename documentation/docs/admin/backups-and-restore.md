@@ -139,6 +139,39 @@ warning that nothing is uploaded off-site.
 Backup pages refresh automatically when a backup, restore, or snapshot
 task finishes — no manual reload needed.
 
+### "Repository is readable but locked"
+
+restic takes a lock on the repository whenever it writes — during a
+snapshot, during retention cleanup, and while a repository is first
+created. If the pod holding that lock is killed part-way through (the
+node is drained, the process runs out of memory, someone deletes the
+job), the lock object is left behind. It does **not** expire on its own.
+
+A repository in that state still *reads* perfectly well, so the snapshot
+list keeps loading normally. What stops is writing: every following
+snapshot fails, and the newest entry in the list quietly stops advancing.
+
+When this happens the page shows an amber banner with a **Clear stale
+locks** button. Clearing is safe to press at any time:
+
+- It removes only locks whose owning process is gone. A snapshot that is
+  genuinely running right now keeps its lock and is never interrupted.
+- If a lock survives, the result says so and tells you to wait — that
+  lock belongs to a live backup, and there is deliberately no way to
+  force past it from the panel.
+
+You usually will not need the button. Scheduled snapshots now clear stale
+locks themselves before giving up, so a repository left locked by a
+killed pod recovers on its own at the next run. The button is for when
+you would rather not wait for it.
+
+!!! tip "Check the age, not just the list"
+    A repository can look healthy — reachable, snapshots listed — while
+    nothing new has been written for days. The useful question is how old
+    the *newest* snapshot is compared with the mail schedule.
+    `platform-ops dr preflight` answers it directly and warns when
+    snapshots have stopped landing.
+
 !!! note "Schedule toggles are authoritative"
     The per-class schedule cards on *Targets, Schedules & Retention*
     really gate the runs: disabling the **mail** schedule suspends the

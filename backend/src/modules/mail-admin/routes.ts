@@ -1684,6 +1684,38 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
+  // POST /admin/mail/backups/unlock — clear stale restic locks.
+  //
+  // A lock left behind by a killed pod never expires on its own, and until this
+  // existed the only way to clear one was kubectl plus a hand-built Job. DEV
+  // stayed wedged for 3 days 17 hours partly for want of this control.
+  // Registered BEFORE the :shortId route so 'unlock' is not read as a snapshot
+  // id.
+  app.post(
+    '/admin/mail/backups/unlock',
+    { preHandler: requireRole('super_admin') },
+    async (req: { user?: { sub?: string } }) => {
+      const { unlockMailResticRepo } = await import('./backups.js');
+      const { createK8sClients } = await import('../k8s-provisioner/k8s-client.js');
+      const cfg = app.config as Record<string, unknown>;
+      const k8s = createK8sClients(cfg.KUBECONFIG_PATH as string | undefined);
+      const userId = req.user?.sub ?? 'unknown';
+      app.log.warn({ userId }, 'mail-admin: operator-triggered restic unlock');
+      try {
+        const result = await unlockMailResticRepo({ core: k8s.core, batch: k8s.batch });
+        app.log.warn(
+          { userId, locksBefore: result.locksBefore, locksAfter: result.locksAfter, removed: result.removed },
+          'mail-admin: restic unlock completed',
+        );
+        return success(result);
+      } catch (err) {
+        if (err instanceof ApiError) throw err;
+        app.log.error({ err, userId }, 'mail-admin: restic unlock failed');
+        throw new ApiError('MAIL_BACKUP_UNLOCK_FAILED', 'Could not clear restic locks — see server logs', 500);
+      }
+    },
+  );
+
   app.post(
     '/admin/mail/backups/:shortId/restore',
     { preHandler: requireRole('super_admin') },
