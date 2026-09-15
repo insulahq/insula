@@ -817,26 +817,20 @@ export async function notifyAdminsMailDataLoss(
       .select({ id: users.id })
       .from(users)
       .where(inArray(users.roleName, ['super_admin', 'admin']));
-    for (const a of admins) {
-      await db
-        .insert(notifications)
-        .values({
-          id: randomUUID(),
-          userId: a.id,
-          type: 'error',
-          title: 'Mail failover: data loss on node-loss recovery',
-          message:
-            `Mail failed over from the DEAD node ${sourceNode} to the freshest available backup, ` +
-            `but that backup was incomplete: ${reason}. Mail is UP, but data created just before the ` +
-            `node was lost (within the backup RPO window) may be missing. Review /backups/mail and the ` +
-            `mail DR state.`,
-          resourceType: 'mail_migration',
-          resourceId: runId,
-        })
-        .catch(() => {
-          /* fire-and-forget per row */
-        });
-    }
+    // Dispatched, not inserted: a row per admin with no category reached no
+    // template, no email, no preference gate and no delivery audit — for an
+    // event that reports possible DATA LOSS.
+    const { notifyAdminOperationalEvent } = await import('../notifications/events.js');
+    await notifyAdminOperationalEvent(db, 'mail', {
+      subsystem: 'Mail failover',
+      objectLabel: `run ${runId} (from dead node ${sourceNode})`,
+      detail:
+        `Mail failed over from the DEAD node ${sourceNode} to the freshest available backup, `
+        + `but that backup was incomplete: ${reason}. Mail is UP, but data created just before the `
+        + `node was lost (within the backup RPO window) may be missing.`,
+      severityLabel: 'data loss',
+      recommendedAction: 'Review /backups/mail and the mail DR state.',
+    }, `mail-failover-loss:${runId}`).catch(() => undefined);
   } catch {
     /* fan-out failure is non-fatal — the degraded dr_state + log line are the fallback signals */
   }
@@ -864,26 +858,17 @@ export async function notifyAdminsMailCertNotServing(
       .select({ id: users.id })
       .from(users)
       .where(inArray(users.roleName, ['super_admin', 'admin']));
-    for (const a of admins) {
-      await db
-        .insert(notifications)
-        .values({
-          id: randomUUID(),
-          userId: a.id,
-          type: 'error',
-          title: 'Mail failover: TLS cert not serving',
-          message:
-            `After failover to ${node}, the mail TLS listener (:465) is still serving an invalid / ` +
-            `self-signed certificate (issuer=${issuer ?? 'unknown'}). Mail is UP, but TLS clients will ` +
-            `reject it. The ACME self-heal has been re-fired; if this persists, check HTTP-01 ` +
-            `reachability and the Let's Encrypt rate-limit under /settings/email-admin.`,
-          resourceType: 'mail_migration',
-          resourceId: runId,
-        })
-        .catch(() => {
-          /* fire-and-forget per row */
-        });
-    }
+    const { notifyAdminOperationalEvent } = await import('../notifications/events.js');
+    await notifyAdminOperationalEvent(db, 'mail', {
+      subsystem: 'Mail failover',
+      objectLabel: `${node} (:465)`,
+      detail:
+        `After failover to ${node}, the mail TLS listener (:465) is still serving an invalid / `
+        + `self-signed certificate (issuer=${issuer ?? 'unknown'}). Mail is UP, but TLS clients will `
+        + `reject it. The ACME self-heal has been re-fired.`,
+      severityLabel: 'TLS cert not serving',
+      recommendedAction: "If this persists, check HTTP-01 reachability and the Let's Encrypt rate-limit under /settings/email-admin.",
+    }, `mail-failover-tls:${runId}`).catch(() => undefined);
   } catch {
     /* fan-out failure is non-fatal — the run note + log line are the fallback signals */
   }
@@ -1825,27 +1810,17 @@ async function runMigrationStateMachine(
       err,
     );
     try {
-      const { users, notifications } = await import('../../db/schema.js');
-      const { inArray } = await import('drizzle-orm');
-      const adminRows = await db
-        .select({ id: users.id })
-        .from(users)
-        .where(inArray(users.roleName, ['super_admin', 'admin']));
-      for (const a of adminRows) {
-        await db.insert(notifications).values({
-          id: randomUUID(),
-          userId: a.id,
-          type: 'warning',
-          title: 'Mail master-password auto-rotation failed',
-          message:
-            `Mail migration to ${targetNode} succeeded, but the post-migration auto-rotate ` +
-            `of the Stalwart master password failed: ${errMsg.slice(0, 200)}. ` +
-            'Bulwark + Roundcube + tenant-bundle Jobs may be using a stale password. ' +
-            'Rotate manually via Admin → Email → "Rotate webmail master password".',
-          resourceType: 'mail_migration',
-          resourceId: runId,
-        }).catch(() => { /* fire-and-forget per-row */ });
-      }
+      const { notifyAdminOperationalEvent } = await import('../notifications/events.js');
+      await notifyAdminOperationalEvent(db, 'mail', {
+        subsystem: 'Mail master-password rotation',
+        objectLabel: `run ${runId} (node ${targetNode})`,
+        detail:
+          `Mail migration to ${targetNode} succeeded, but the post-migration auto-rotate `
+          + `of the Stalwart master password failed: ${errMsg.slice(0, 200)}. `
+          + 'Bulwark, Roundcube and tenant-bundle Jobs may be using a stale password.',
+        severityLabel: 'rotation failed',
+        recommendedAction: 'Rotate manually via Admin → Email → "Rotate webmail master password".',
+      }, `mail-rotate-failed:${runId}`).catch(() => undefined);
     } catch {
       // Fan-out failure is non-fatal — log line above is the
       // last-resort signal channel.
