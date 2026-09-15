@@ -19,10 +19,18 @@ export interface TenantIssue {
   readonly since: string | null;
 }
 
+/**
+ * NOTE the path: the tenants module is mounted at `/api/v1`, NOT `/api/v1/admin`
+ * — unlike `resource-metrics`, which is. Guessing the admin prefix here returned
+ * 404, `data` came back undefined, `issuesMap[tenant.id]` was undefined for
+ * every row, and the chips simply never rendered. A silently empty map looks
+ * exactly like a healthy fleet, which is the failure mode this whole feature
+ * exists to remove. Caught by the integration suite against DEV.
+ */
 export function useTenantIssues() {
   return useQuery({
     queryKey: ['tenant-issues'],
-    queryFn: () => apiFetch<{ data: Record<string, TenantIssue[]> }>('/api/v1/admin/tenants/issues'),
+    queryFn: () => apiFetch<{ data: Record<string, TenantIssue[]> }>('/api/v1/tenants/issues'),
     staleTime: 60_000,
   });
 }
