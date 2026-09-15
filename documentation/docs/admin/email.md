@@ -176,3 +176,22 @@ alerts admins on new items).
 To manage one tenant's mailboxes, open that tenant and use its **Email**
 tab (see [Tenants](tenants.md)). The cross-tenant **Tenants → Email
 Accounts** tab gives you every mailbox in one searchable list.
+
+### Mailbox size
+
+A mailbox quota may be set anywhere from **20 MB** to 100 GB. Leave it blank
+and the mailbox takes the tenant's effective maximum — their plan limit, or a
+per-tenant override if one is set. A value above that maximum is refused with
+`MAILBOX_QUOTA_EXCEEDS_LIMIT`; the range here is only an outer sanity bound.
+
+!!! note "Mailboxes are warned before they fill, not after"
+    At **80%, 90%, 99% and 100%** of quota the platform notifies the mailbox
+    **owner directly at the mailbox** — they usually have no platform login,
+    which is exactly why they were the ones who never used to hear — and the
+    **tenant admin** through the panel. 99% exists because at 100% the mail is
+    already bouncing, and a warning that arrives with the failure is not a
+    warning.
+
+    The operator is deliberately *not* told at 80/90/99. That is the tenant's
+    business. At 100% you get one aggregated notification naming every
+    affected mailbox rather than one per mailbox.

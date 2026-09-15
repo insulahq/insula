@@ -174,6 +174,49 @@ const perChannel = CHANNELS.map((ch) => {
   return { ch, covered: covered.size };
 });
 
+// ── Every category declares a usable audience ──────────────────────────────
+//
+// `audience` is what the channel derivation branches on. A category with an
+// audience outside the contract enum routes to nothing, or — worse — falls
+// through to the operator default and pushes tenant content at the operator.
+const AUD_SRC = readFileSync(process.env.CONTRACTS, "utf8");
+const am = AUD_SRC.match(/NOTIFICATION_AUDIENCE\s*=\s*\[([^\]]*)\]/);
+if (!am) {
+  console.error("FAIL: could not read NOTIFICATION_AUDIENCE from " + process.env.CONTRACTS);
+  process.exit(1);
+}
+const AUDIENCES = [...am[1].matchAll(/[\x27\x22]([a-z_]+)[\x27\x22]/g)].map((x) => x[1]);
+if (AUDIENCES.length === 0) {
+  console.error("FAIL: parsed an EMPTY audience list — the check below would pass vacuously.");
+  process.exit(1);
+}
+const badAudience = ALL_CATEGORIES
+  .filter((c) => !AUDIENCES.includes(c.audience))
+  .map((c) => c.id + " -> " + JSON.stringify(c.audience));
+
+// ── Tenant-facing templates must not leak platform internals ───────────────
+//
+// A tenant reading "node worker-3 is NotReady" learns about infrastructure
+// that is not theirs, and it tells them nothing they can act on. These names
+// are operator vocabulary; if one is genuinely needed in tenant copy, rename
+// the payload key to something the tenant owns.
+const INTERNAL_VARS = [
+  "nodeName", "namespace", "podName", "clusterName", "replicaSet",
+  "stalwartPrincipalId", "resourceUid", "uid", "pvcName", "jobName",
+];
+const leaks = [];
+const catAudience = new Map(ALL_CATEGORIES.map((c) => [c.id, c.audience]));
+for (const t of ALL_SEED_TEMPLATES) {
+  if (catAudience.get(t.categoryId) !== "tenant") continue;
+  const text = (t.bodyTemplate ?? "") + " " + (t.subjectTemplate ?? "");
+  const declared = (t.variablesSchema ?? []).map((v) => v.name);
+  for (const v of INTERNAL_VARS) {
+    if (new RegExp("\\{\\{\\{?\\s*" + v + "\\b").test(text) || declared.includes(v)) {
+      leaks.push(t.categoryId + "/" + t.channel + ": {{" + v + "}}");
+    }
+  }
+}
+
 console.log("  categories: " + ALL_CATEGORIES.length
   + " | channels: " + CHANNELS.join(", ")
   + " | seed rows: " + ALL_SEED_TEMPLATES.length);
@@ -194,6 +237,22 @@ if (dupes.length) {
   bad = 1;
   console.error("FAIL: duplicate seed rows (the last one silently wins at seed time):");
   for (const d of dupes) console.error("        " + d);
+}
+if (badAudience.length) {
+  bad = 1;
+  console.error("FAIL: category(ies) declare an audience outside the contract enum [" + AUDIENCES.join(", ") + "]:");
+  for (const a of badAudience) console.error("        " + a);
+  console.error("      Channel derivation branches on audience — an unknown value routes nowhere.");
+}
+if (leaks.length) {
+  bad = 1;
+  console.error("FAIL: tenant-facing template(s) reference platform-internal variables:");
+  for (const l of leaks) console.error("        " + l);
+  console.error("      A tenant cannot act on a node or pod name, and it is not their infrastructure.");
+}
+if (!bad) {
+  console.log("    audience     " + ALL_CATEGORIES.length + "/" + ALL_CATEGORIES.length + " declared from [" + AUDIENCES.join(", ") + "]");
+  console.log("    tenant copy  no platform-internal variables referenced");
 }
 process.exit(bad);
 ' > "$TMP_OUT" 2>&1 || fail=1
