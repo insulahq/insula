@@ -12,6 +12,7 @@ vi.mock('../notifications/events.js', () => ({
 import { countScheduledFires } from './freshness.js';
 import {
   formatAge,
+  isRunInFlight,
   oldEnoughToJudgeNever,
   checkMailTargetReachable,
   type WatchedSchedule,
@@ -27,6 +28,9 @@ const sched = (over: Partial<WatchedSchedule> = {}): WatchedSchedule => ({
   suspended: false,
   lastSuccessAt: null,
   createdAt: new Date('2026-09-01T00:00:00Z'),
+  timeZone: null,
+  activeRuns: 0,
+  lastScheduleAt: null,
   ...over,
 });
 
@@ -169,5 +173,30 @@ describe('schedules fire in their own timezone, not the cluster\'s assumption', 
       '0 3 * * *', new Date('2026-01-10T00:00:00Z'), new Date('2026-01-10T23:00:00Z'),
       undefined, 'Mars/Olympus_Mons',
     )).not.toThrow();
+  });
+});
+
+
+describe('a run in flight is not a missed run', () => {
+  const now = new Date('2026-09-15T12:00:00Z');
+  const DAY = 24 * 3_600_000;
+
+  it('treats an active, recently-scheduled run as in flight', () => {
+    // Otherwise a daily backup that simply takes a while to finish gets
+    // reported as stale while it is still running.
+    const s = sched({ activeRuns: 1, lastScheduleAt: new Date('2026-09-15T11:50:00Z') });
+    expect(isRunInFlight(s, now, DAY)).toBe(true);
+  });
+
+  it('does NOT hide a run that has been stuck longer than a full interval', () => {
+    // A Job wedged Pending forever stays active indefinitely. That is the one
+    // failure with no FAILED Job and no MISSING run — if "active" excused it
+    // unconditionally, it would never be reported by anything.
+    const s = sched({ activeRuns: 1, lastScheduleAt: new Date('2026-09-13T03:00:00Z') });
+    expect(isRunInFlight(s, now, DAY)).toBe(false);
+  });
+
+  it('is not in flight when nothing is active', () => {
+    expect(isRunInFlight(sched({ activeRuns: 0 }), now, DAY)).toBe(false);
   });
 });

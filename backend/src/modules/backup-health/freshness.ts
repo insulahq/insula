@@ -30,6 +30,28 @@ export const DEFAULT_STALE_AFTER_FIRES = 3;
  */
 export const MAX_SCAN_DAYS = 45;
 
+/**
+ * Ceiling on the proportional grace.
+ *
+ * Half an interval is the right SHAPE — it stops a half-hourly schedule
+ * flapping — but as an absolute it is far too generous at the long end: half a
+ * day of silence on a daily backup, half a week on a weekly one. The operator
+ * point that forced this: on `0 3 * * *` the failure is knowable at 03:00 and
+ * a half-interval grace sits on it until 15:00, which overnight is most of the
+ * window to fix it before the next attempt.
+ *
+ * The grace only has to absorb SCHEDULING lag now, not run duration — a run
+ * that is genuinely in progress is excluded by `status.active` in the sweep,
+ * and the observed durations on the watched CronJobs are seconds to minutes
+ * (6s, 58s, 3m30s). An hour is generous against that.
+ *
+ *   half-hourly  grace 15m  -> reported 45m after the last success
+ *   hourly       grace 30m  -> 1.5h
+ *   daily        grace  1h  -> 04:00, i.e. 25h (was 36h)
+ *   weekly       grace  1h  -> 7d 1h (was 10.5d)
+ */
+export const MAX_STALE_GRACE_MS = 60 * 60_000;
+
 const MINUTE_MS = 60_000;
 
 export interface FreshnessInput {
@@ -261,7 +283,9 @@ export function evaluateFreshness(input: FreshnessInput): FreshnessResult {
   // minute-either-side jitter the old fire-count band was guarding against,
   // and it scales itself: 15 minutes on a half-hourly schedule, 12 hours on a
   // daily one.
-  const graceMs = scan.intervalMs !== null ? scan.intervalMs / 2 : 0;
+  const graceMs = scan.intervalMs !== null
+    ? Math.min(scan.intervalMs / 2, MAX_STALE_GRACE_MS)
+    : 0;
   const lateBy = scan.firstFireAt !== null
     ? input.now.getTime() - scan.firstFireAt.getTime()
     : 0;
@@ -271,8 +295,8 @@ export function evaluateFreshness(input: FreshnessInput): FreshnessResult {
   // cannot be derived (a schedule with no second fire inside the scan window),
   // where there is no period to take half of.
   if (pastGrace || missedFires >= staleAfter) {
-    const graceNote = scan.intervalMs !== null
-      ? ` (more than half of the ${(scan.intervalMs / 60_000).toFixed(0)}-minute interval late)`
+    const graceNote = graceMs > 0
+      ? ` (more than ${(graceMs / 60_000).toFixed(0)} minutes past the run that was due)`
       : '';
     return {
       verdict: 'stale',
@@ -289,6 +313,6 @@ export function evaluateFreshness(input: FreshnessInput): FreshnessResult {
     missedFires,
     ageMs,
     detail: `${missedFires} scheduled run(s) missed since the last success ${hours}h ago `
-      + `(within the grace of half an interval; holding '${held}').`,
+      + `(within the ${(graceMs / 60_000).toFixed(0)}-minute grace; holding '${held}').`,
   };
 }
