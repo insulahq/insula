@@ -145,20 +145,19 @@ async function notifyUpgradeStuck(db: Database, state: PostflightState): Promise
     `Post-flight has failed ${state.consecutiveFailures} consecutive checks` +
     (failing.length > 0 ? ` — unresolved: ${failing.join(', ')}.` : '.') +
     ' Consider rolling back from Platform → Upgrades.';
-  const adminIds = await getAdminUserIds(db);
-  for (const uid of adminIds) {
-    await db.insert(notifications).values({
-      id: crypto.randomUUID(),
-      userId: uid,
-      type: 'warning',
-      title,
-      message,
-      resourceType: 'platform_upgrade',
-      resourceId: (state.pendingVersion ?? 'upgrade').slice(0, 64),
-    }).catch((err) => {
-      console.error('[upgrade-reconciler] notification insert failed:', (err as Error).message);
-    });
-  }
+  // Dispatched, not inserted. One categorised event replaces a row per admin
+  // written with no category — which reached no template, no email, no
+  // preference gate and no audit, for the signal that says roll the upgrade
+  // back.
+  const { notifyAdminOperationalEvent } = await import('../notifications/events.js');
+  await notifyAdminOperationalEvent(db, 'platform', {
+    subsystem: 'Platform upgrade',
+    objectLabel: state.pendingVersion ?? 'pending version',
+    detail: `${title} ${message}`.trim(),
+    severityLabel: 'not converging',
+    recommendedAction: 'Consider rolling back from Platform → Upgrades.',
+  }, `upgrade-stuck:${state.pendingVersion ?? 'unknown'}:${new Date().toISOString().slice(0, 13)}`)
+    .catch(() => { /* notification failure must not break the reconciler */ });
 }
 
 export function realUpgradeReconcilerDeps(db: Database, k8s: K8sClients): UpgradeReconcilerDeps {

@@ -1242,18 +1242,17 @@ async function emitAdminNotification(
   message: string,
   title: string,
 ): Promise<void> {
-  const adminRows = await db.select({ id: users.id }).from(users).where(inArray(users.roleName, ['super_admin', 'admin']));
-  for (const a of adminRows) {
-    await db.insert(notifications).values({
-      id: crypto.randomUUID(),
-      userId: a.id,
-      type: 'info',
-      title,
-      message,
-      resourceType: 'postgres_pitr',
-      resourceId: 'singleton',
-    }).catch(() => undefined);
-  }
+  // Dispatched, not inserted. One categorised event instead of a row per
+  // admin written with no category — which reached no template, no email, no
+  // preference gate and no delivery audit, for a stuck or finished PITR.
+  const { notifyAdminOperationalEvent } = await import('../notifications/events.js');
+  await notifyAdminOperationalEvent(db, 'database', {
+    subsystem: 'PITR restore',
+    objectLabel: title,
+    detail: message,
+    severityLabel: 'info',
+    recommendedAction: '',
+  }, `pitr:${new Date().toISOString().slice(0, 13)}`).catch(() => undefined);
 }
 
 /**
