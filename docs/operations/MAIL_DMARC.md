@@ -99,6 +99,18 @@ degrading.
 - Tenant deletion: report rows survive with `tenant_id = NULL` (platform
   reputation history outlives any one tenant).
 
+## Leftover `fbl@` mailbox (manual, optional)
+
+The retirement stops *provisioning* `fbl@` and prunes `fbl@*` from Stalwart's
+`inboundReportAddresses`, but it does **not** delete an `fbl@` mailbox that
+already exists. Deleting a mailbox destroys whatever it holds, and removing the
+platform row while the Stalwart principal survives just creates the inverse
+drift. It is now an ordinary mailbox with no special role — remove it through
+the normal **Email → Mailboxes** flow if you want it gone.
+
+On a cluster where it was never created (the common case — the intake was
+anchored to an apex that usually has no mail), there is nothing to clean up.
+
 ## Why the intake no longer depends on the apex
 
 The per-domain `dmarc@` loop used to sit inside an `if (apex) … else` branch
