@@ -773,7 +773,16 @@ log "Scenario 10: break-glass IngressRoute — Traefik-native shape"
 ORIG_SETTINGS=$(curl -sk --max-time 10 "${AUTH_H[@]}" "$ADMIN_HOST/api/v1/admin/oidc/settings")
 ORIG_PROTECT_ADMIN=$(echo "$ORIG_SETTINGS" | jq -r '.data.protectAdminViaProxy // false')
 ORIG_PROTECT_TENANT=$(echo "$ORIG_SETTINGS" | jq -r '.data.protectTenantViaProxy // false')
-ORIG_BG_PATH=$(echo "$ORIG_SETTINGS" | jq -r '.data.breakGlassPath // ""')
+# JSON value, not a shell string: break_glass_path accepts `string().min(1)` or
+# `null`, and REJECTS the empty string. `// ""` turned an unset path into "",
+# so on any cluster without a break-glass path the restore PUT below was
+# refused with INVALID_FIELD_VALUE — "Too small: expected string to have >=1
+# characters" — and `protect_admin_via_proxy: false` never applied WITH it.
+# That is the real cause of the 2026-09-14 leak; #564 only made it visible by
+# checking the PUT's result instead of discarding it. Proven against staging
+# 2026-09-15: "" is rejected, null is accepted, and staging's stored value is
+# null.
+ORIG_BG_PATH=$(echo "$ORIG_SETTINGS" | jq -c '.data.breakGlassPath // null')
 
 BG_TEST_PATH="e2e-bg-test-$(date +%s)"
 
@@ -808,7 +817,7 @@ restore_proxy_settings() {
     -d "$(jq -nc \
       --argjson pa "$ORIG_PROTECT_ADMIN" \
       --argjson pt "$ORIG_PROTECT_TENANT" \
-      --arg bgp "$ORIG_BG_PATH" \
+      --argjson bgp "$ORIG_BG_PATH" \
       '{protect_admin_via_proxy:$pa, protect_tenant_via_proxy:$pt, break_glass_path:$bgp}')" \
     "$ADMIN_HOST/api/v1/admin/oidc/settings" 2>/dev/null || echo '')
   local put_err
@@ -830,7 +839,11 @@ restore_proxy_settings() {
   # from being fine.
   local restore_wait="${BG_RECONCILE_WAIT:-45}"
   for _try in $(seq 1 $((restore_wait / 3))); do
-    code=$(curl -sk -o /dev/null -w "%{http_code}" --max-time 10 "${ADMIN_HOST}/" 2>/dev/null || echo "000")
+    # No `|| echo 000`: -w already emits 000 when curl fails, so the fallback
+    # CONCATENATED and the warning below printed "returned 000000". Default only
+    # when curl produced nothing at all.
+    code=$(curl -sk -o /dev/null -w "%{http_code}" --max-time 10 "${ADMIN_HOST}/" 2>/dev/null || true)
+    code=${code:-000}
     [[ "$code" == "200" ]] && break
     sleep 3
   done
