@@ -160,7 +160,7 @@ const TENANT_CATEGORIES: readonly CategoryDefinition[] = [
   {
     id: 'mailbox.quota_threshold',
     cls: 'action',
-    reportsOn: 'mail',
+    reportsOn: null,
     displayName: 'Mailbox nearing its storage quota',
     description: 'A mailbox crossed 80%, 90% or 99% of its storage quota. Sent to the tenant admin AND mailed directly to the mailbox owner, who has no platform account.',
     audience: 'tenant',
@@ -172,7 +172,7 @@ const TENANT_CATEGORIES: readonly CategoryDefinition[] = [
   {
     id: 'mailbox.quota_exceeded',
     cls: 'incident',
-    reportsOn: 'mail',
+    reportsOn: null,
     displayName: 'Mailbox storage quota full',
     description: 'A mailbox is at 100% of its storage quota and new mail to it is being rejected.',
     audience: 'tenant',
@@ -512,7 +512,7 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
   {
     id: 'tenant.email_quota_warning',
     cls: 'action',
-    reportsOn: 'mail',
+    reportsOn: null,
     displayName: 'Email sending quota at 80%',
     description: 'Your outbound email usage crossed 80% of the hourly or daily limit. '
       + 'Further messages may be deferred once the limit is reached.',
@@ -525,7 +525,7 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
   {
     id: 'tenant.email_quota_exceeded',
     cls: 'incident',
-    reportsOn: 'mail',
+    reportsOn: null,
     displayName: 'Email sending quota reached',
     description: 'Your outbound email usage reached the hourly or daily limit. '
       + 'Additional messages are deferred until the window rolls over.',
@@ -538,7 +538,7 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
   {
     id: 'admin.email_complaint_warning',
     cls: 'action',
-    reportsOn: 'mail',
+    reportsOn: null,
     displayName: 'Spam complaint rate elevated',
     description: 'A sender domain crossed the 0.1% 7-day complaint-rate threshold (FBL reports / '
       + 'sends). Throttle territory — investigate the sender. See Monitoring → Mail.',
@@ -551,7 +551,7 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
   {
     id: 'admin.email_complaint_critical',
     cls: 'incident',
-    reportsOn: 'mail',
+    reportsOn: null,
     displayName: 'Spam complaint rate critical',
     description: 'A sender domain crossed the 0.3% 7-day complaint-rate threshold. Mailbox '
       + 'providers will start blocking — suspend outbound for the tenant unless clearly false. '
@@ -566,7 +566,7 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
   {
     id: 'admin.email_abuse_warning',
     cls: 'action',
-    reportsOn: 'mail',
+    reportsOn: null,
     displayName: 'Outbound send-limit saturation',
     description: 'A tenant is generating an abnormal volume of rate-limited / quota-rejected '
       + 'outbound mail (>= the warning threshold in the last hour) — a runaway sender or early '
@@ -580,7 +580,7 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
   {
     id: 'admin.email_abuse_critical',
     cls: 'incident',
-    reportsOn: 'mail',
+    reportsOn: null,
     displayName: 'Outbound send-limit saturation (critical)',
     description: 'A tenant crossed the CRITICAL rate-limited / quota-rejected volume threshold in '
       + 'the last hour — almost certainly a compromised account or a broken loop hammering the send '
@@ -721,7 +721,7 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
   {
     id: 'admin.email_quota_exceeded',
     cls: 'incident',
-    reportsOn: 'mail',
+    reportsOn: null,
     displayName: 'Tenant saturated its sending limit',
     description: 'A tenant hit 100% of its hourly or daily sending limit. Visible to the operator because a saturated sender is the shape of both a compromised account and a platform-wide deliverability risk — previously only the tenant was told.',
     audience: 'admin',
@@ -745,7 +745,7 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
   {
     id: 'admin.mailbox_quota_fleet',
     cls: 'action',
-    reportsOn: 'mail',
+    reportsOn: null,
     displayName: 'Mailboxes over storage quota (fleet)',
     description: 'One aggregated notification naming every mailbox at 100% of quota, with its tenant and contact. Replaces the mail-mailbox-over-quota SLO rule, which read a global counter and could name nothing.',
     audience: 'admin',
