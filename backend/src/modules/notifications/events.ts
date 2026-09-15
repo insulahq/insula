@@ -436,6 +436,49 @@ export async function notifyAdminBackupTargetUnreachable(
   await dispatchSafe(db, 'admin.backup_target_unreachable', { kind: 'admin' }, payload, undefined, { dedupeKey });
 }
 
+export interface AdminBackupStalePayload {
+  /** namespace/name of the schedule that stopped producing backups. */
+  readonly backupName: string;
+  /** Consecutive SCHEDULED fires missed — not elapsed hours. */
+  readonly missedFires: string;
+  /** How long ago the last success was, already formatted (e.g. "92.4h"). */
+  readonly lastSuccessAge: string;
+  /** The cron the runs were expected on, so the count can be checked. */
+  readonly schedule: string;
+  readonly detail: string;
+}
+/**
+ * A schedule that WAS producing backups and has stopped. Dedupe belongs to the
+ * caller: the freshness sweep re-evaluates every tick and must not re-notify a
+ * condition the operator has already been told about.
+ */
+export async function notifyAdminBackupStale(
+  db: Database,
+  payload: AdminBackupStalePayload,
+  dedupeKey?: string,
+): Promise<void> {
+  await dispatchSafe(db, 'admin.backup_stale', { kind: 'admin' }, payload, undefined, { dedupeKey });
+}
+
+export interface AdminBackupNeverRunPayload {
+  readonly backupName: string;
+  readonly schedule: string;
+  /** How long the schedule has existed without ever succeeding. */
+  readonly configuredAge: string;
+  readonly detail: string;
+}
+/**
+ * A schedule that has NEVER succeeded. Separate from stale on purpose — see the
+ * category comment in categories/seed.ts.
+ */
+export async function notifyAdminBackupNeverRun(
+  db: Database,
+  payload: AdminBackupNeverRunPayload,
+  dedupeKey?: string,
+): Promise<void> {
+  await dispatchSafe(db, 'admin.backup_never_run', { kind: 'admin' }, payload, undefined, { dedupeKey });
+}
+
 export interface AdminWalArchiveFailingPayload {
   readonly clusterName: string;
   /** pg_wal as a % of the data volume (e.g. "62"). */

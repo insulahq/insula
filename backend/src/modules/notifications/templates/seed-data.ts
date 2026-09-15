@@ -1404,6 +1404,86 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     ],
   },
 
+  // ── Freshness: backups that STOPPED, and backups that never started ──
+  //
+  // Every variable below is `required: true` and appears unconditionally in the
+  // body. No {{#if}}: a Handlebars conditional whose variable is missing renders
+  // EMPTY, which would silently turn "3 runs missed" into a blank — the exact
+  // shape of silent loss these two categories exist to detect.
+  {
+    categoryId: 'admin.backup_stale',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: 'Backups have stopped: {{backupName}}',
+    bodyTemplate: emailMjml(
+      'Backups have stopped running',
+      '"{{backupName}}" has missed {{missedFires}} scheduled run(s). Its last successful '
+      + 'backup was {{lastSuccessAge}} ago, on schedule {{schedule}}. {{detail}}',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'backupName', type: 'string', required: true },
+      { name: 'missedFires', type: 'string', required: true },
+      { name: 'lastSuccessAge', type: 'string', required: true },
+      { name: 'schedule', type: 'string', required: true },
+      { name: 'detail', type: 'string', required: true },
+    ],
+  },
+  {
+    categoryId: 'admin.backup_stale',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: 'Backups have stopped: {{backupName}}',
+    bodyTemplate: '"{{backupName}}" has missed {{missedFires}} scheduled run(s) on {{schedule}}. '
+      + 'Last success {{lastSuccessAge}} ago. {{detail}}',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'backupName', type: 'string', required: true },
+      { name: 'missedFires', type: 'string', required: true },
+      { name: 'lastSuccessAge', type: 'string', required: true },
+      { name: 'schedule', type: 'string', required: true },
+      { name: 'detail', type: 'string', required: true },
+    ],
+  },
+  {
+    categoryId: 'admin.backup_never_run',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: 'Backup has never run: {{backupName}}',
+    bodyTemplate: emailMjml(
+      'A backup schedule has never succeeded',
+      '"{{backupName}}" has been scheduled on {{schedule}} for {{configuredAge}} and has '
+      + 'never recorded a successful run. This is setup rather than a regression — check the '
+      + 'destination, its credentials, and that the schedule is not suspended. {{detail}}',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'backupName', type: 'string', required: true },
+      { name: 'schedule', type: 'string', required: true },
+      { name: 'configuredAge', type: 'string', required: true },
+      { name: 'detail', type: 'string', required: true },
+    ],
+  },
+  {
+    categoryId: 'admin.backup_never_run',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: 'Backup has never run: {{backupName}}',
+    bodyTemplate: '"{{backupName}}" ({{schedule}}) has existed {{configuredAge}} and has never '
+      + 'succeeded. Setup problem, not a regression. {{detail}}',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'backupName', type: 'string', required: true },
+      { name: 'schedule', type: 'string', required: true },
+      { name: 'configuredAge', type: 'string', required: true },
+      { name: 'detail', type: 'string', required: true },
+    ],
+  },
+
   {
     categoryId: 'admin.backup_target_unreachable',
     channel: 'email',

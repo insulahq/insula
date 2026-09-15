@@ -354,6 +354,50 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
     rateLimitMax: 1,
   },
   {
+    // The failure that had NO detector: the CronJob fires, the Jobs fail, and
+    // nothing compares "when did a backup last succeed" against "when was one
+    // supposed to". Measured on DEV 2026-09-15: last successful mail snapshot
+    // four days earlier, 178 scheduled fires missed, every operator surface
+    // green. A failed Job is caught by the Job watcher; this catches the
+    // absence of runs, which is what silence actually looks like.
+    id: 'admin.backup_stale',
+    cls: 'incident',
+    reportsOn: 'storage',
+    displayName: 'Backups have stopped running',
+    description: 'A backup schedule has missed several consecutive runs — the repo was '
+      + 'receiving backups and is not any more. Counted in missed fires, not elapsed hours, '
+      + 'so a weekday-only schedule is not called stale over a weekend.',
+    audience: 'admin',
+    defaultSeverity: 'error',
+    defaultChannels: ALL_NOTIFICATION_CHANNELS,
+    isMandatory: false,
+    gdprBasis: 'legitimate_interest',
+    rateLimitWindowS: 43200,
+    rateLimitMax: 1,
+  },
+  {
+    // Deliberately NOT the same category as stale. A repo that has never
+    // produced a backup is unfinished setup; telling an operator it "went
+    // stale" sends them hunting a regression that never existed. Separate
+    // category rather than one template with {{#if}} branches, because a
+    // Handlebars conditional whose variable is missing renders EMPTY and
+    // silently drops the distinction this exists to preserve.
+    id: 'admin.backup_never_run',
+    cls: 'action',
+    reportsOn: 'storage',
+    displayName: 'Backup has never run',
+    description: 'A backup schedule exists but has never recorded a successful run. This is '
+      + 'a setup problem, not a regression — the destination, credentials or schedule have '
+      + 'most likely never worked.',
+    audience: 'admin',
+    defaultSeverity: 'warning',
+    defaultChannels: ALL_NOTIFICATION_CHANNELS,
+    isMandatory: false,
+    gdprBasis: 'legitimate_interest',
+    rateLimitWindowS: 86400,
+    rateLimitMax: 1,
+  },
+  {
     id: 'admin.node_down',
     cls: 'availability',
     reportsOn: 'platform',

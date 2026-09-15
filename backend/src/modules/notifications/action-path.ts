@@ -49,6 +49,8 @@ const STATIC_PATHS: Record<string, string> = {
   'admin.node_memory_event_critical': '/cluster/nodes',
   'admin.security_hardening_drift': '/security/posture',
   'admin.backup_failed': '/backups',
+  'admin.backup_stale': '/backups',
+  'admin.backup_never_run': '/backups',
   'admin.backup_target_unreachable': '/backups/targets',
   'admin.wal_archive_failing': '/backups',
   'admin.wal_archive_auto_disabled': '/backups',

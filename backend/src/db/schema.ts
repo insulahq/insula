@@ -3364,6 +3364,36 @@ export const backupTargetAssignments = pgTable('backup_target_assignments', {
 export type BackupTargetAssignment = typeof backupTargetAssignments.$inferSelect;
 export type NewBackupTargetAssignment = typeof backupTargetAssignments.$inferInsert;
 
+// ─── backup_freshness_state (migration 0121) ──────────────────────────
+//
+// One row per watched backup schedule. Two jobs:
+//
+//   1. `verdict` feeds back into evaluateFreshness() as `previous`, which is
+//      how the hysteresis band works — between one missed fire and the
+//      three-miss threshold the verdict HOLDS instead of flapping. Without
+//      persistence every tick starts from 'fresh' and the band does nothing.
+//   2. `notifiedVerdict` records what the operator was actually told, so a
+//      condition that is still true is not re-sent every five minutes.
+//
+// Bounded by construction: one row per watched CronJob, and the sweep deletes
+// rows whose UID it did not see this tick, so a deleted schedule does not leave
+// a row behind for the life of the cluster.
+export const backupFreshnessState = pgTable('backup_freshness_state', {
+  /** CronJob UID — stable across renames, unlike namespace/name. */
+  resourceUid: varchar('resource_uid', { length: 64 }).primaryKey(),
+  namespace: varchar('namespace', { length: 253 }).notNull(),
+  name: varchar('name', { length: 253 }).notNull(),
+  verdict: varchar('verdict', { length: 16 }).notNull(),
+  missedFires: integer('missed_fires').notNull().default(0),
+  lastSuccessAt: timestamp('last_success_at', { withTimezone: true }),
+  /** What the operator was last told. NULL = nothing sent yet. */
+  notifiedVerdict: varchar('notified_verdict', { length: 16 }),
+  evaluatedAt: timestamp('evaluated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type BackupFreshnessState = typeof backupFreshnessState.$inferSelect;
+export type NewBackupFreshnessState = typeof backupFreshnessState.$inferInsert;
+
 // ─── backup_schedules (Phase A.1 of UI consolidation, migration 0011) ──
 //
 // One row per subsystem. Tracks {enabled, cron, retention} so every

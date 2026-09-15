@@ -44,6 +44,7 @@ import {
   runResticBackup,
   type ResticComponent,
 } from './restic-driver.js';
+import { notifyResticFailure } from './restic-failure-notify.js';
 import { acquireGlobalSlot, ClusterGateError, type SlotHandle } from './cluster-concurrency.js';
 
 const ALLOWED_COMPONENTS = new Set(['files', 'mailboxes', 'config', 'secrets'] as const);
@@ -394,6 +395,16 @@ export async function backupsV2InternalUploadRoutes(app: FastifyInstance): Promi
           ? 'tenant-bundles restic-stream: aborted by tenant disconnect'
           : 'tenant-bundles restic-stream: restic backup failed',
       );
+      // A tenant disconnecting is not a backup failure — do not page anyone
+      // for it. A genuine restic failure here has no Job behind it, so the
+      // backup-health watcher cannot see it.
+      if (!aborted) {
+        await notifyResticFailure(app.db, {
+          operation: 'backup',
+          scope: `tenant ${job.tenantId} / ${component}`,
+          dedupeScope: `${job.tenantId}:${component}`,
+        }, err, app.log);
+      }
       if (aborted) {
         // 499 Client Closed Request — body is informational only since
         // the tenant is already gone. The orchestrator's component
