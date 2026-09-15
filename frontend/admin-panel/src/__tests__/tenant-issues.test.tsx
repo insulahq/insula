@@ -87,11 +87,9 @@ describe('where the banner sits on the tenant detail page', () => {
   // Asserting source order rather than layout keeps this independent of a
   // running cluster: the requirement is that it precedes the cards.
   it('renders above the Account Information card', async () => {
-    const { readFileSync } = await import('node:fs');
-    const { resolve } = await import('node:path');
-    // cwd is frontend/admin-panel under vitest; import.meta.url is not a file
-    // URL in the jsdom environment.
-    const src = readFileSync(resolve(process.cwd(), 'src/pages/TenantDetail.tsx'), 'utf8');
+    // Vite's ?raw rather than node:fs — this workspace typechecks without
+    // node types, and jsdom has no file-scheme import.meta.url.
+    const { default: src } = await import('../pages/TenantDetail.tsx?raw');
 
     const banner = src.indexOf('<TenantIssuesBanner');
     const accountCard = src.indexOf('Account Information');
