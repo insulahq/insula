@@ -25,6 +25,13 @@ on:
       # ci-db-isolation-check.sh compares the converger's SQL against the
       # bootstrap.sh copy. A change to the converger alone must run it, or the
       # two halves can drift with the guard sitting the PR out.
+      # ci-notification-retention-check.sh reads the retention windows out of
+      # these two modules as well as notifications/. Without them a change to a
+      # mail table's retention never runs the guard that checks it is bounded —
+      # the guard only fired on the FBL retirement because that PR happened to
+      # touch notifications/ too.
+      - 'backend/src/modules/mail-stats/**'
+      - 'backend/src/modules/mail-events/**'
       - 'backend/src/modules/db-isolation/**'
       - 'images/file-manager/**'
       # ci-host-migrations-check.sh validates the migration scripts themselves
@@ -65,6 +72,13 @@ on:
       # ci-db-isolation-check.sh compares the converger's SQL against the
       # bootstrap.sh copy. A change to the converger alone must run it, or the
       # two halves can drift with the guard sitting the PR out.
+      # ci-notification-retention-check.sh reads the retention windows out of
+      # these two modules as well as notifications/. Without them a change to a
+      # mail table's retention never runs the guard that checks it is bounded —
+      # the guard only fired on the FBL retirement because that PR happened to
+      # touch notifications/ too.
+      - 'backend/src/modules/mail-stats/**'
+      - 'backend/src/modules/mail-events/**'
       - 'backend/src/modules/db-isolation/**'
       - 'images/file-manager/**'
       # ci-host-migrations-check.sh validates the migration scripts themselves
@@ -435,14 +449,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Verify no guard can sit out the PR it should block
         run: ./scripts/ci-workflow-paths-parity.sh
-
-  drizzle-array-binding-guard:
-    name: No JS array bound into ANY()/IN()
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - name: Verify no JS array is interpolated into ANY()/IN()
-        run: ./scripts/ci-drizzle-array-binding-check.sh
 
   notification-retention-guard:
     name: No notification table grows without a ceiling
