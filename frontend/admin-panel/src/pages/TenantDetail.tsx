@@ -516,6 +516,17 @@ export default function TenantDetail() {
         </div>
       )}
 
+      {/* Every open condition for this tenant, with the object, the value and
+          how long it has been true. Derived from the same thresholds the
+          notifications fire from, so the banner and the message cannot
+          disagree — and it clears itself when the condition does.
+
+          ABOVE the cards, deliberately: it shipped below Resource Limits,
+          which on a real tenant page is roughly a full screen down. An
+          operator opening the page to find out what is wrong had to scroll
+          past everything that is fine to reach it. */}
+      <TenantIssuesBanner issues={tenantIssues} />
+
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm lg:col-span-2">
           <h2 className="mb-4 text-lg font-semibold text-gray-900 dark:text-gray-100">Account Information</h2>
@@ -595,12 +606,6 @@ export default function TenantDetail() {
       <ResourceLimitsCard key={tenant.planId ?? 'no-plan'} tenant={tenant} tenantId={id!} />
 
       <NamespaceIntegrityBanner tenantId={id!} />
-      {/* Every open condition for this tenant, with the object, the value and
-          how long it has been true. Derived from the same thresholds the
-          notifications fire from, so the banner and the message cannot
-          disagree — and it clears itself when the condition does. */}
-      <TenantIssuesBanner issues={tenantIssues} />
-
       <StorageLifecycleCard tenantId={id!} tenant={tenant} onManageSnapshots={() => setActiveTab('snapshots')} />
 
       <RetainedVolumesCard tenantId={id!} />

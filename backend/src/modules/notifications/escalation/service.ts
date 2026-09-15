@@ -119,10 +119,38 @@ export async function markEscalated(
     .where(inArray(notifications.id, [...ids]));
 }
 
-/** Human summary for the escalation body. */
+/**
+ * Human summary for the escalation body, GROUPED BY TITLE.
+ *
+ * The first real escalation on DEV listed 31 items, of which
+ * "[SLO WARNING] Ingress p95 latency" appeared six separate times — the escalation
+ * reproduced, inside itself, exactly the repetition it exists to cut through. An
+ * operator scanning that line learns less than from one line saying it happened
+ * six times and has been unread since August.
+ *
+ * Grouping also keeps the 2000-char cap from silently eating distinct entries:
+ * repeated titles were consuming the budget that unique ones needed.
+ */
 export function describeCandidates(candidates: readonly EscalationCandidate[]): string {
-  return candidates
-    .map((c) => `${c.title} (unread since ${c.createdAt.toISOString().slice(0, 10)})`)
+  const byTitle = new Map<string, { n: number; oldest: Date }>();
+  for (const c of candidates) {
+    const seen = byTitle.get(c.title);
+    if (seen) {
+      seen.n += 1;
+      if (c.createdAt < seen.oldest) seen.oldest = c.createdAt;
+    } else {
+      byTitle.set(c.title, { n: 1, oldest: c.createdAt });
+    }
+  }
+  // Most-repeated first: the loudest unhandled thing is the one to act on.
+  return [...byTitle.entries()]
+    .sort((a, b) => b[1].n - a[1].n)
+    .map(([title, { n, oldest }]) => {
+      const day = oldest.toISOString().slice(0, 10);
+      return n === 1
+        ? `${title} (unread since ${day})`
+        : `${title} x${n} (oldest unread since ${day})`;
+    })
     .join('; ')
     .slice(0, 2000);
 }
