@@ -15,7 +15,7 @@
 | [R1](#r1--plesk-migration-service) | Plesk migration service | **P1** | Shipped (PRs #70–#89) — E2E on staging; production cutover pending |
 | [R2](#r2--monitoring-stack-decision--slislo) | Monitoring stack decision + SLI/SLO | **P1** | Shipped (ADR-051, PRs #50–#63) — logs deferred |
 | [R3](#r3--load-testing-in-ci) | Load testing in CI | P3 | Not built — low value for the traffic profile (decision 2026-06-20) |
-| [R4](#r4--fbl-complaint-processing) | FBL complaint processing | **P1** (for production mail) | Shipped (PRs #64–#69) |
+| [R4](#r4--fbl-complaint-processing) | FBL complaint processing | — | **RETIRED 2026-09-15** |
 | [R5](#r5--dmarc-aggregate-report-ingestion) | DMARC aggregate-report ingestion | P2 | ✅ **SHIPPED 2026-09-13** — Stalwart parses the XML; platform ingests + surfaces + recommends. Also fixed a published `rua=` pointing at a mailbox that never existed |
 | [R6](#r6--rolling-sending-quota-enforcement) | Rolling sending-quota enforcement | P2 | Shipped (PRs #64–#69) |
 | [R7](#r7--ip-warm-up-pools-and-per-domain-relay) | IP warm-up, pools, per-domain relay | P3 | Not started |
@@ -135,14 +135,31 @@ real concurrent load.
 
 ## R4 — FBL complaint processing
 
-**Shipped 2026-06-12** (PRs #64–#69): feedback-loop ingestion via Stalwart
-webhooks + `x:ArfExternalReport` / `report.analysis` — a `fbl@<apex>` SYSTEM
-mailbox + JMAP poller writing `email_fbl_complaints` (per-domain complaint
-rates over the send counters), complaint-rate thresholds (warning/critical),
-and notify/auto enforcement (one-click or automatic throttle + outbound-mail
-suspension), all surfaced in the Monitoring → Mail tab. The `email_messages`
-per-message table stayed descoped. Auto-suspension closed loop proven live.
-Runbook: [MAIL_FBL.md](../operations/MAIL_FBL.md).
+**Shipped 2026-06-12 (PRs #64–#69). RETIRED 2026-09-15.**
+
+Measured on production before retiring: **zero** complaints ingested in the
+feature's entire life, and no `fbl@` mailbox had ever been created. The intake
+was anchored to the SYSTEM tenant's apex email domain; in the real deployment
+the apex has no email domain at all, so the provisioner logged "skipped" on
+every 5-minute tick since install. FBL additionally requires manual
+per-provider enrolment (Microsoft JMRP/SNDS, Yahoo CFL) with production IPs.
+Operator decision: retire rather than carry a feature that could not reach its
+own intake address.
+
+Removed: the ARF poller and `x:ArfExternalReport` client, the
+`email_fbl_complaints` / `email_complaint_events` tables, complaint-rate
+thresholds and their two notification categories, the `/admin/mail/complaints*`
+endpoints, the Monitoring → Mail complaints table, and the `auto` enforcement
+mode — which existed solely to act on complaint rates, so keeping it would have
+left a setting that promises automatic enforcement and does nothing. Migration
+`0119_retire_fbl.sql`.
+
+Kept: the send-quota and send-limit-saturation thresholds, which never depended
+on complaint data. If complaint ingestion is wanted later it should be anchored
+to a mail-enabled sending domain and gated behind explicit enrolment, not
+provisioned by default.
+
+Runbook (now DMARC-only): [MAIL_DMARC.md](../operations/MAIL_DMARC.md).
 
 ## R5 — DMARC aggregate-report ingestion
 
@@ -154,8 +171,8 @@ attachment, parses the RFC 7489 aggregate XML and stores a typed
 `x:DmarcExternalReport` registry object. Confirmed against a live server by
 delivering a real aggregate report and reading the object back; `x:DmarcReport`
 and `x:IncomingReport` return `unknownMethod` on the same server, so the type is
-the real one rather than a catch-all. R5 is therefore the same shape as R4's FBL
-path: poll → attribute → persist → destroy.
+the real one rather than a catch-all. R5 is the poll → attribute → persist →
+destroy shape (which R4's now-retired FBL path shared).
 
 ### The bug this found first
 

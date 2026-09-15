@@ -4,7 +4,7 @@
  * One read endpoint assembling everything the operator needs at a
  * glance: send totals, top senders, the live outbound queue, the
  * protection status (enforcement mode + report intake), and limit
- * trips. Complaint detail comes from /admin/mail/complaints(+summary).
+ * trips. DMARC detail comes from /admin/mail/dmarc.
  */
 
 import { sql, gte } from 'drizzle-orm';

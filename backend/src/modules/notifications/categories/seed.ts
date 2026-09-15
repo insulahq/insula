@@ -535,33 +535,6 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
     isMandatory: false,
     gdprBasis: 'contract',
   },
-  {
-    id: 'admin.email_complaint_warning',
-    cls: 'action',
-    reportsOn: null,
-    displayName: 'Spam complaint rate elevated',
-    description: 'A sender domain crossed the 0.1% 7-day complaint-rate threshold (FBL reports / '
-      + 'sends). Throttle territory — investigate the sender. See Monitoring → Mail.',
-    audience: 'admin',
-    defaultSeverity: 'warning',
-    defaultChannels: ALL_NOTIFICATION_CHANNELS,
-    isMandatory: false,
-    gdprBasis: 'legitimate_interest',
-  },
-  {
-    id: 'admin.email_complaint_critical',
-    cls: 'incident',
-    reportsOn: null,
-    displayName: 'Spam complaint rate critical',
-    description: 'A sender domain crossed the 0.3% 7-day complaint-rate threshold. Mailbox '
-      + 'providers will start blocking — suspend outbound for the tenant unless clearly false. '
-      + 'See Monitoring → Mail.',
-    audience: 'admin',
-    defaultSeverity: 'critical',
-    defaultChannels: ALL_NOTIFICATION_CHANNELS,
-    isMandatory: false,
-    gdprBasis: 'legitimate_interest',
-  },
   // ── Mail monitoring (2026-07): outbound send-limit saturation + blocklist ──
   {
     id: 'admin.email_abuse_warning',

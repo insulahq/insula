@@ -249,7 +249,9 @@ export async function getWebmailSettings(db: Database) {
   const mailServerHostnameStored = await getSetting(db, 'mail_server_hostname');
   const visibility = await getWebmailFeatureVisibility(db);
   const enforcementRaw = await getSetting(db, 'mail_enforcement_mode');
-  const mailEnforcementMode = enforcementRaw === 'off' || enforcementRaw === 'auto' ? enforcementRaw : 'notify';
+  // A stored 'auto' from before the FBL retirement reads as 'notify', which is
+  // what it would now do anyway. Migration 0119 rewrites the row as well.
+  const mailEnforcementMode = enforcementRaw === 'off' ? 'off' : 'notify';
   return {
     defaultWebmailUrl: defaultWebmailUrlStored ?? (await defaultWebmailUrl(db)),
     mailServerHostname: mailServerHostnameStored ?? (await defaultMailHostname(db)),
@@ -264,7 +266,7 @@ export async function updateWebmailSettings(
   input: {
     defaultWebmailUrl?: string;
     mailServerHostname?: string;
-    mailEnforcementMode?: 'off' | 'notify' | 'auto';
+    mailEnforcementMode?: 'off' | 'notify';
     defaultWebmailEngine?: WebmailEngine;
     webmailShowContacts?: boolean;
     webmailShowCalendar?: boolean;

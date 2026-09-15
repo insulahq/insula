@@ -926,28 +926,6 @@ export async function notifyTenantEmailQuotaExceeded(
   await dispatchSafe(db, 'tenant.email_quota_exceeded', { kind: 'tenant', tenantId }, payload, tenantId);
 }
 
-export interface AdminEmailComplaintPayload {
-  readonly domain: string;
-  readonly tenantLabel: string;
-  readonly ratePercent: string;
-  readonly complaints: string;
-  readonly sends: string;
-  readonly recommendedAction: string;
-  /** Filled when enforcement mode is `auto` and an action was applied. */
-  readonly actionTaken?: string;
-}
-/** FBL complaint-rate threshold crossings (evaluator owns dedupe). */
-export async function notifyAdminEmailComplaint(
-  db: Database,
-  level: 'warning' | 'critical',
-  payload: AdminEmailComplaintPayload,
-): Promise<void> {
-  const categoryId = level === 'critical'
-    ? 'admin.email_complaint_critical'
-    : 'admin.email_complaint_warning';
-  await dispatchSafe(db, categoryId, { kind: 'admin' }, payload);
-}
-
 // ── Mail monitoring (2026-07): send-limit saturation + blocklist ───────────
 
 export interface AdminEmailAbusePayload {
