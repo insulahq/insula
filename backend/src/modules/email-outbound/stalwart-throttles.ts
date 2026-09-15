@@ -97,6 +97,34 @@ function domainMatch(domain: string): StalwartExpression {
 }
 
 /**
+ * Same bucket, but NOT for mail that never leaves this server.
+ *
+ * Stalwart evaluates these throttles per delivery attempt, and a
+ * delivery to a mailbox on this same host runs in the `local` queue —
+ * so without this clause an OUTBOUND send limit also governs
+ * tenant-internal mail, the platform's own notification email, and
+ * DMARC report intake. Measured on DEV 2026-09-15, from Stalwart's log:
+ *
+ *   Rate limit exceeded (queue.rate-limit-exceeded)
+ *     queueName = "local"  from = "postmaster@<apex>"
+ *     id = "MtaOutboundThrottle with id <daily>"  limit = [100, 86400000ms]
+ *     nextRetry = <next midnight UTC>
+ *
+ * 82 local messages were parked that way. The failure is near-silent:
+ * the sender gets `250 … Message queued`, the mail sits up to a full
+ * window (the daily bucket retries at midnight UTC), and only bounces
+ * after `expires` — three days later.
+ *
+ * `queue_name` is the variable Stalwart exposes here; `is_local` and
+ * `queue` are both rejected at parse time (probed live, same day).
+ * Verified end-to-end: with this clause the identical message that was
+ * being rate-limited logged `delivery.completed` in 0ms.
+ */
+function outboundDomainMatch(domain: string): StalwartExpression {
+  return { match: {}, else: `sender_domain = '${domain}' && queue_name != 'local'` };
+}
+
+/**
  * Pure: rows -> desired registry objects, keyed by description.
  */
 export function buildDesiredSendLimitObjects(
@@ -130,7 +158,7 @@ export function buildDesiredSendLimitObjects(
       description: hourlyDesc,
       enable: true,
       key: { senderDomain: true },
-      match: domainMatch(row.domain),
+      match: outboundDomainMatch(row.domain),
       rate: { count: row.hourly, period: HOUR_MS },
     });
 
@@ -139,7 +167,7 @@ export function buildDesiredSendLimitObjects(
       description: dailyDesc,
       enable: true,
       key: { senderDomain: true },
-      match: domainMatch(row.domain),
+      match: outboundDomainMatch(row.domain),
       rate: { count: row.daily, period: DAY_MS },
     });
 
@@ -148,7 +176,7 @@ export function buildDesiredSendLimitObjects(
       description: backlogDesc,
       enable: true,
       key: { senderDomain: true },
-      match: domainMatch(row.domain),
+      match: outboundDomainMatch(row.domain),
       messages: row.daily,
       size: null,
     });

@@ -32,7 +32,9 @@ describe('buildDesiredSendLimitObjects', () => {
     expect(hourly).toBeDefined();
     expect(hourly?.rate).toEqual({ count: 80, period: 3_600_000 });
     expect(hourly?.key).toEqual({ senderDomain: true });
-    expect(hourly?.match.else).toBe("sender_domain = 'alpha.example.com'");
+    expect(hourly?.match.else).toBe(
+      "sender_domain = 'alpha.example.com' && queue_name != 'local'",
+    );
     expect(hourly?.match.match).toEqual({});
 
     const daily = throttles.get(`${DESCRIPTION_PREFIX}alpha.example.com:daily`);
@@ -42,6 +44,30 @@ describe('buildDesiredSendLimitObjects', () => {
     expect(backlog?.messages).toBe(400);
     expect(throttles.size).toBe(2);
     expect(quotas.size).toBe(1);
+  });
+
+  it('exempts the local queue from the send LIMITS but never from the block', () => {
+    // Stalwart applies these per delivery attempt, and a delivery to a
+    // mailbox on this same host runs in the `local` queue. Without the
+    // clause an OUTBOUND limit also throttles tenant-internal mail, the
+    // platform's own notification email and DMARC intake — measured on
+    // DEV 2026-09-15, 82 local messages parked behind the daily bucket
+    // with `250 … Message queued` returned to the sender.
+    const { throttles, quotas } = buildDesiredSendLimitObjects([active('alpha.example.com', 80, 400)]);
+    for (const suffix of ['hourly', 'daily'] as const) {
+      expect(throttles.get(`${DESCRIPTION_PREFIX}alpha.example.com:${suffix}`)?.match.else)
+        .toBe("sender_domain = 'alpha.example.com' && queue_name != 'local'");
+    }
+    expect(quotas.get(`${DESCRIPTION_PREFIX}alpha.example.com:backlog`)?.match.else)
+      .toBe("sender_domain = 'alpha.example.com' && queue_name != 'local'");
+
+    // The block quota is the SUSPENSION lever, not a rate limit: a
+    // suspended tenant must not send at all, internal mail included.
+    const { quotas: blockedQuotas } = buildDesiredSendLimitObjects([
+      { tenantId: 't1', domain: 'b.example.com', hourly: 0, daily: 0, blocked: true },
+    ]);
+    expect(blockedQuotas.get(`${DESCRIPTION_PREFIX}b.example.com:block`)?.match.else)
+      .toBe("sender_domain = 'b.example.com'");
   });
 
   it('renders a single 1-byte size block quota for suspended domains', () => {
@@ -196,14 +222,14 @@ describe('reconcileStalwartSendLimits (diff + apply)', () => {
         id: 'keep', enable: true,
         description: `${DESCRIPTION_PREFIX}alpha.example.com:hourly`,
         key: { senderDomain: true },
-        match: { match: {}, else: "sender_domain = 'alpha.example.com'" },
+        match: { match: {}, else: "sender_domain = 'alpha.example.com' && queue_name != 'local'" },
         rate: { count: 50, period: 3_600_000 },
       },
       {
         id: 'drift', enable: true,
         description: `${DESCRIPTION_PREFIX}alpha.example.com:daily`,
         key: { senderDomain: true },
-        match: { match: {}, else: "sender_domain = 'alpha.example.com'" },
+        match: { match: {}, else: "sender_domain = 'alpha.example.com' && queue_name != 'local'" },
         rate: { count: 999, period: 86_400_000 },
       },
       {
@@ -219,7 +245,7 @@ describe('reconcileStalwartSendLimits (diff + apply)', () => {
         id: 'q1', enable: true,
         description: `${DESCRIPTION_PREFIX}alpha.example.com:backlog`,
         key: { senderDomain: true },
-        match: { match: {}, else: "sender_domain = 'alpha.example.com'" },
+        match: { match: {}, else: "sender_domain = 'alpha.example.com' && queue_name != 'local'" },
         messages: 100, size: null,
       },
     ]);
@@ -242,7 +268,7 @@ describe('reconcileStalwartSendLimits (diff + apply)', () => {
         id: 'stale', enable: true,
         description: `${DESCRIPTION_PREFIX}gone.example.com:hourly`,
         key: { senderDomain: true },
-        match: { match: {}, else: "sender_domain = 'gone.example.com'" },
+        match: { match: {}, else: "sender_domain = 'gone.example.com' && queue_name != 'local'" },
         rate: { count: 50, period: 3_600_000 },
       },
     ]);
@@ -268,14 +294,14 @@ describe('reconcileStalwartSendLimits (diff + apply)', () => {
         id: 'h', enable: true,
         description: `${DESCRIPTION_PREFIX}alpha.example.com:hourly`,
         key: { senderDomain: true },
-        match: { match: {}, else: "sender_domain = 'alpha.example.com'" },
+        match: { match: {}, else: "sender_domain = 'alpha.example.com' && queue_name != 'local'" },
         rate: { count: 50, period: 3_600_000 },
       },
       {
         id: 'd', enable: true,
         description: `${DESCRIPTION_PREFIX}alpha.example.com:daily`,
         key: { senderDomain: true },
-        match: { match: {}, else: "sender_domain = 'alpha.example.com'" },
+        match: { match: {}, else: "sender_domain = 'alpha.example.com' && queue_name != 'local'" },
         rate: { count: 100, period: 86_400_000 },
       },
     ]);
@@ -284,7 +310,7 @@ describe('reconcileStalwartSendLimits (diff + apply)', () => {
         id: 'q', enable: true,
         description: `${DESCRIPTION_PREFIX}alpha.example.com:backlog`,
         key: { senderDomain: true },
-        match: { match: {}, else: "sender_domain = 'alpha.example.com'" },
+        match: { match: {}, else: "sender_domain = 'alpha.example.com' && queue_name != 'local'" },
         messages: 100, size: null,
       },
     ]);
