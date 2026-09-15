@@ -104,6 +104,46 @@ and one slow page load would page you.
     certificate until the domain verifies. See
     [Domains and DNS](../admin/domains-and-dns.md#ssltls-tab).
 
+## Dead pod records
+
+The **Pods** tab lists every pod on the cluster, including ones that have already
+finished. A completed or failed pod is kept as a *record* — its name, the node it
+ran on, why it stopped — after the workload itself is gone. That is deliberate:
+it is what you read when you want to know what happened.
+
+What surprises people is that Kubernetes never clears them. It only collects
+terminal pods once there are more than 12,500 of them, which on a cluster this
+size is never, so they accumulate: every node reboot leaves a batch and nothing
+takes them away again.
+
+They are cheap, but not free:
+
+- They use **no** CPU, memory, or scheduling capacity, and they do not count
+  against a tenant's quota. Nothing is starved by leaving them.
+- They **do** hold their container logs on the node until the record itself is
+  deleted. On one production cluster, 43 records from a single reboot were
+  holding about 100 MB.
+
+Two controls sit above the pod list:
+
+- **Prune Dead Pods** removes every completed and failed record now.
+- **Auto-prune after N days** removes them once they reach that age, checked a
+  few times a day. The default is 30 days, which keeps a month of history for
+  post-mortems. Set it to `0` to switch automatic pruning off and keep records
+  until you clear them yourself.
+
+Pruning never touches a running or pending pod, and it deliberately leaves alone
+any record belonging to a job that has not finished — a job counts its successful
+pods, so deleting one would make it repeat the work. When that happens the result
+message says so.
+
+!!! note "Not the same as the node-level clean-up"
+    The **Clean stale pod records on this node** action on the Node Health tab is
+    a narrower, node-scoped tool: it only removes *failed* and *evicted* pods, and
+    it refuses tenant and database pods entirely. Records left by a normal
+    shutdown are *completed*, not failed, and most of them live in tenant
+    namespaces — so that action will not clear them. Use the Pods tab for those.
+
 ## Node health and recovery actions
 
 The **Node Health** tab is the one to watch. A 5-minute reconciler tracks, per

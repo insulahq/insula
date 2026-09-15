@@ -127,6 +127,7 @@ import { migrationRoutes } from './modules/migration/routes.js';
 import { tenantRestoreRoutes } from './modules/backup-restore/tenant-routes.js';
 import { adminUserRoutes } from './modules/admin-users/routes.js';
 import { healthRoutes } from './modules/health/routes.js';
+import { podPruneRoutes } from './modules/pod-prune/routes.js';
 import { cnpgBackupHealthRoutes } from './modules/cnpg-backup-health/routes.js';
 import { cnpgBackupCatalogueRoutes } from './modules/cnpg-backup-catalogue/routes.js';
 import { cnpgBackupNowRoutes } from './modules/cnpg-backup-now/index.js';
@@ -690,6 +691,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(tenantRestoreRoutes, { prefix: '/api/v1' });
   await app.register(adminUserRoutes, { prefix: '/api/v1' });
   await app.register(healthRoutes, { prefix: '/api/v1' });
+  await app.register(podPruneRoutes, { prefix: '/api/v1' });
   await app.register(cnpgBackupHealthRoutes, { prefix: '/api/v1' });
   await app.register(cnpgBackupCatalogueRoutes, { prefix: '/api/v1' });
   await app.register(cnpgBackupNowRoutes, { prefix: '/api/v1' });
@@ -2105,6 +2107,21 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           batch: k8sForImapsync.batch,
         });
         app.addHook('onClose', () => backupHealthStop());
+
+        // Dead-pod sweep. Kubernetes garbage-collects terminal pods only past
+        // --terminated-pod-gc-threshold (default 12500, unset here), so the
+        // records accumulate monotonically: every node reboot adds a batch and
+        // none ever leave. They hold no CPU, memory or scheduling capacity, but
+        // they DO pin their container log directories on the node (~102 MB for
+        // 43 records on production 2026-09-15) and any scan that reads pods from
+        // a list sees a workload that is not running.
+        const { startPodPruneScheduler } = await import('./modules/pod-prune/scheduler.js');
+        const podPruneStop = startPodPruneScheduler({
+          db: app.db,
+          clients: () => ({ core: k8sForImapsync.core, batch: k8sForImapsync.batch }),
+          log: app.log,
+        });
+        app.addHook('onClose', () => podPruneStop());
 
         // Freshness sweep: the sibling watcher above sees FAILED Jobs. This
         // sees the absence of runs — a missed schedule leaves no Job behind,
