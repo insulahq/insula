@@ -82,6 +82,8 @@ const STATIC_PATHS: Record<string, string> = {
   'mailbox.quota_threshold': '/email',
   'mailbox.quota_exceeded': '/email',
   'admin.mailbox_quota_fleet': '/tenants',
+  // The storage settings page is where capacity is read and nodes are added.
+  'admin.cluster_storage_capacity': '/settings/storage',
   'admin.email_quota_exceeded': '/tenants',
   'admin.subscriptions_expiring': '/tenants',
   // The tenant lands on the page that shows the usage bars, not on a page

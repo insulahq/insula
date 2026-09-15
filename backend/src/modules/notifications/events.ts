@@ -758,6 +758,32 @@ export async function notifyMailboxQuotaThreshold(
   );
 }
 
+export interface AdminClusterCapacityPayload {
+  readonly level: string;
+  readonly clusterPct: string;
+  readonly clusterDetail: string;
+  readonly worstNode: string;
+  readonly recommendedAction: string;
+  readonly occurredAt: string;
+}
+/**
+ * Cluster storage capacity crossed a threshold.
+ *
+ * Moved off the raw-insert path 2026-09-15. It used to call
+ * `db.insert(notifications)` directly, which reaches no template, no email, no
+ * push, no preference gate and no delivery audit — and `category_id` is
+ * nullable, so the row could not even be listed in the admin Sources screen.
+ * The 80% warning and the 95% critical for every Longhorn node in the fleet
+ * were in-app only, forever.
+ */
+export async function notifyAdminClusterCapacity(
+  db: Database,
+  payload: AdminClusterCapacityPayload,
+  dedupeKey?: string,
+): Promise<void> {
+  await dispatchSafe(db, 'admin.cluster_storage_capacity', { kind: 'admin' }, payload, undefined, { dedupeKey });
+}
+
 export interface AdminMailboxQuotaFleetPayload {
   readonly mailboxCount: string;
   readonly tenantCount: string;
