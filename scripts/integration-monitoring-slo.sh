@@ -301,9 +301,23 @@ else
   OVERRIDE_SET=0
   il_ok "D3 override cleared"
 
-  il_wait_for 240 "D3 cnpg-down resolves" \
-    '"ruleId":"cnpg-down","state":"resolved"' '-' \
-    "curl -sk -H 'Authorization: Bearer $TOKEN' '$API_URL/api/v1/admin/monitoring/alerts' | jq -c '.data[] | {ruleId, state}'" \
+  # Poll the DELIVERY ROW, not the alerts list.
+  #
+  # This used to wait for '"ruleId":"cnpg-down","state":"resolved"' in
+  # /admin/monitoring/alerts. That list also carries PREVIOUSLY resolved
+  # cnpg-down alerts, so on any cluster that has run this suite before, the
+  # regex matches a HISTORICAL row and the wait returns "after 0s" without the
+  # override-clear having produced anything. The assertions below then query
+  # for a resolution notification that has not been emitted yet and report it
+  # ABSENT — a stale-state race that reads as a platform regression.
+  #
+  # Waiting on the delivery row removes the race: it is the artefact the
+  # assertions actually check, it is scoped to this test by sinceSeconds, and
+  # it cannot be pre-satisfied by an earlier run.
+  SINCE=$(( $(date +%s) - D_START_EPOCH + 60 ))
+  il_wait_for 240 "D3 resolved-notification delivery row appears" \
+    '"channel":"in_app"' '-' \
+    "curl -sk -H 'Authorization: Bearer $TOKEN' '$API_URL/api/v1/admin/notifications/deliveries?categoryId=admin.slo_alert_resolved&sinceSeconds=$(( SINCE + 240 ))' | jq -c '.data[] | {channel, status}'" \
     || true
 
   SINCE=$(( $(date +%s) - D_START_EPOCH + 60 ))

@@ -26,6 +26,7 @@ import { backupJobs, backupConfigurations } from '../../db/schema.js';
 import { decrypt } from '../oidc/crypto.js';
 import { S3BackupStore } from './s3-backup-store.js';
 import { SshBackupStore } from './ssh-backup-store.js';
+import { resolveShimFirstBackupStore } from './shim-backup-store.js';
 import type { BackupStore } from './bundle-store.js';
 import { finishByRef as finishTaskByRef } from '../tasks/service.js';
 import { toSafeText } from '@insula/api-contracts';
@@ -228,7 +229,34 @@ export function startRetentionScheduler(app: FastifyInstance, intervalMs = 5 * 6
   return setInterval(tick, intervalMs);
 }
 
+/**
+ * Shim-FIRST, then the direct cfg-based resolver — the same routing
+ * `backup-restore/shared.ts` uses, and for the same reason.
+ *
+ * Tenant bundles are WRITTEN through the backup-rclone-shim regardless of
+ * upstream (S3/SFTP/CIFS/NFS). Retention DELETES those same objects, so it has
+ * to read through the same path; resolving cfg-direct only ever worked for the
+ * two kinds that happen to have a concrete BackupStore class. On staging every
+ * sweep since the tenant class moved to CIFS logged
+ *
+ *   Unsupported storage type 'cifs' on target c59f7ba2-…
+ *   "tenant-backup retention: failed to delete expired bundle on remote —
+ *    leaving status untouched for next-tick retry"
+ *
+ * — i.e. expired bundles were never reclaimed and the sweep retried forever.
+ * This is the identical failure shim-first was introduced to fix on the restore
+ * side ("CIFS + NFS … blow up the restore cart with Store kind '<x>' not
+ * supported"); retention was simply never migrated with it.
+ */
 async function resolveStoreForTarget(app: FastifyInstance, targetConfigId: string): Promise<BackupStore> {
+  return resolveShimFirstBackupStore(
+    app, 'tenant',
+    () => resolveDirectStoreForTarget(app, targetConfigId),
+    'tenant-backup-retention',
+  );
+}
+
+async function resolveDirectStoreForTarget(app: FastifyInstance, targetConfigId: string): Promise<BackupStore> {
   const [cfg] = await app.db.select().from(backupConfigurations).where(eq(backupConfigurations.id, targetConfigId)).limit(1);
   if (!cfg) throw new Error(`Backup target ${targetConfigId} not found`);
   const configuredKey = (app.config as Record<string, unknown>).PLATFORM_ENCRYPTION_KEY as string | undefined
@@ -257,20 +285,28 @@ async function resolveStoreForTarget(app: FastifyInstance, targetConfigId: strin
     });
   }
   if (cfg.storageType === 'ssh') {
-    if (!cfg.sshHost || !cfg.sshUser || !cfg.sshKeyEncrypted || !cfg.sshPath) {
-      throw new Error(`SSH target ${targetConfigId} missing required fields`);
+    // Key OR password. Hetzner storageboxes authenticate by password, and the
+    // DB enforces that at least one is present — demanding the key rejected
+    // valid password-only targets with "missing required fields", which is what
+    // staging's staging-ssh-storagebox hit on every retention tick. Same
+    // condition as backup-restore/shared.ts.
+    if (!cfg.sshHost || !cfg.sshUser || !cfg.sshPath || (!cfg.sshKeyEncrypted && !cfg.sshPasswordEncrypted)) {
+      throw new Error(`SSH target ${targetConfigId} missing required fields (host, user, path, and a key or password)`);
     }
-    let privateKey = '';
+    let privateKey: string | undefined;
+    let password: string | undefined;
     try {
-      privateKey = decrypt(cfg.sshKeyEncrypted, encKey);
+      if (cfg.sshKeyEncrypted) privateKey = decrypt(cfg.sshKeyEncrypted, encKey);
+      if (cfg.sshPasswordEncrypted) password = decrypt(cfg.sshPasswordEncrypted, encKey);
     } catch {
-      throw new Error(`SSH key decryption failed for target ${targetConfigId}`);
+      throw new Error(`SSH credential decryption failed for target ${targetConfigId}`);
     }
     return new SshBackupStore({
       host: cfg.sshHost,
       port: cfg.sshPort ?? 22,
       user: cfg.sshUser,
       privateKey,
+      password,
       basePath: cfg.sshPath,
       logFn: (level, ctx, msg) => app.log[level](ctx, msg),
     });
