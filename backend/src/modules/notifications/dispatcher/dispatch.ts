@@ -38,6 +38,7 @@ import { effectiveChannels, categoryMeta } from '../routing/effective-channels.j
 import { platformName, tenantIdentity, userDisplayName, normaliseDateVariables } from './envelope.js';
 import { CLASS_POLICY } from '../routing/classes.js';
 import { isObjectMuted } from '../mutes/service.js';
+import { isDigestible, queueForDigest, type DigestMode } from '../digest/service.js';
 import { emitNtfyForEvent } from './ntfy.js';
 import { isCategoryAllowedForUser } from '../preferences/gate.js';
 import { getUserSettings } from '../preferences/service.js';
@@ -622,6 +623,28 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
           lastError: degradeNote,
         });
         statuses.push({ userId, channel, status: 'sent', notificationId });
+        continue;
+      }
+
+      // 3h-pre. Digest: hold this back instead of sending it now.
+      //
+      // `digest_mode` has been a stored, API-exposed, UI-rendered preference
+      // that NOTHING read — a user could select "daily" and keep receiving
+      // every email immediately. Only digestible classes qualify; Incident,
+      // Availability and Security are never delayed, because a digest IS a
+      // delay and those are the classes that cannot absorb one.
+      //
+      // The in-app row above is unaffected: batching a panel notification
+      // helps nobody, since the panel is already a list read on demand.
+      const digestMode = (userSettings.digestMode ?? 'immediate') as DigestMode;
+      if (isDigestible(category.id, digestMode)) {
+        await queueForDigest(db, {
+          userId,
+          categoryId: category.id,
+          subject: rendered.subject ?? category.displayName,
+          body: rendered.body,
+        });
+        statuses.push({ userId, channel, status: 'queued' });
         continue;
       }
 

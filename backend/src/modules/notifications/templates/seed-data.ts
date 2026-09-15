@@ -265,6 +265,39 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     ],
   },
 
+  // ── platform.digest ────────────────────────────────────────────────
+  {
+    categoryId: 'platform.digest',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: '{{itemCount}} notifications — {{summary}}',
+    bodyTemplate: emailMjml(
+      'Your notification digest',
+      'Hi {{userName}} — {{itemCount}} notification(s) since your last digest, as of {{occurredAt}}: {{items}}',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'itemCount', type: 'string', required: false },
+      { name: 'summary', type: 'string', required: false },
+      { name: 'items', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'platform.digest',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: '{{itemCount}} notifications',
+    bodyTemplate: '{{itemCount}} notification(s) as of {{occurredAt}}: {{items}}',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'itemCount', type: 'string', required: false },
+      { name: 'summary', type: 'string', required: false },
+      { name: 'items', type: 'string', required: false },
+    ],
+  },
+
   // ── Operational events ─────────────────────────────────────────────
   //
   // One category per subsystem, sharing an envelope-shaped template. These

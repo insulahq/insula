@@ -732,6 +732,28 @@ export async function notifyMailboxQuotaThreshold(
  * the author happened to interpolate it — and carried no category, so they
  * reached no template, no email, no preference gate and no delivery audit.
  */
+export interface DigestPayload {
+  readonly itemCount: string;
+  readonly summary: string;
+  readonly items: string;
+}
+/**
+ * The periodic digest itself.
+ *
+ * Emitted from the digest scheduler through the ORDINARY dispatch path, so it
+ * gets a template, a delivery row and a retry like anything else. A digest
+ * that bypassed the machinery would be a fourth delivery path with extra steps.
+ *
+ * Scope is `user`, not `tenant`: a digest is one person's batch.
+ */
+export async function notifyUserDigest(
+  db: Database,
+  userId: string,
+  payload: DigestPayload,
+): Promise<void> {
+  await dispatchSafe(db, 'platform.digest', { kind: 'user', userId }, payload);
+}
+
 export interface OperationalEventPayload {
   readonly subsystem: string;
   /** The specific thing: a node name, a domain, a volume, a job id. */
