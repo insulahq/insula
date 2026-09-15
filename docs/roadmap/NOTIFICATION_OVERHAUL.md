@@ -579,11 +579,25 @@ failure, and the tenant-issues endpoint answers.
 
 ## 6. Guards this work must leave behind
 
-1. `ci-notification-variable-contract.sh` — payload keys ↔ template variables, both directions.
-2. Boot self-test rendering every template against its declared schema.
-3. Extend `ci-notification-template-coverage.sh` to assert every category declares a
-   three-way audience and that tenant-facing templates reference no platform-internal variable.
-4. A test asserting the renderer is **not** in strict mode, with the `nextBillingAt` incident
-   named — so the "fix" of re-enabling strict mode cannot silently return.
-5. An integration scenario that fills a mailbox past 80/90/99/100 and asserts a real message
+All five are in place (2026-09-15).
+
+| # | guard | kind | runs |
+|---|---|---|---|
+| 1 | `ci-notification-variable-contract.sh` — payload keys ↔ template variables, both directions | CI guard | every PR |
+| 2 | `templates/render-all-seeds.test.ts` — every seeded template RENDERS, with a full payload and with an empty one | unit test | every PR |
+| 3 | `ci-notification-template-coverage.sh` — extended: every category declares an audience from the contract enum, and no tenant-facing template references a platform-internal variable | CI guard | every PR |
+| 4 | `templates/strict-mode-regression.test.ts` — pins the `subscription.renewed` / `nextBillingAt` incident so "just turn strict mode off" or "drop the fill step" cannot silently restore it | unit test | every PR |
+| 5 | `integration-mailbox-quota-notify-e2e.sh` — fills a real 20 MB mailbox with incompressible data and asserts the mailbox OWNER, the TENANT ADMIN and (at 100%) the OPERATOR are all told, then that it does not repeat | integration | when the suite is run against a cluster |
+
+Guard 2 was specified as a boot self-test. A unit test is strictly better
+placed: it fails on the PR that introduces the bad template rather than on the
+pod that boots with it, and costs nothing at runtime.
+
+Guard 5 is the only one CI cannot give you — every static check can pass while
+the chain delivers to nobody, which is exactly the state this feature shipped
+in. It needs a live cluster, so it runs with the integration suite rather than
+on a PR. The mailbox quota floor was lowered 50 MB → 20 MB to make it cheap
+(50 was a round number, not a constraint); the payload is base64 of
+`/dev/urandom` because Stalwart compresses at rest and repetitive filler never
+moves the threshold — a first attempt pushed 52 MB and the mailbox reported 14.
    arrives at the mailbox, the tenant contact, and the admin inbox.

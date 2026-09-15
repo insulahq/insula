@@ -227,6 +227,7 @@ PARALLEL=(
   # endpoint. Creates a disposable tenant + email domain, cleans up via
   # trap. ~1-2 min.
   "mailbox-quota:integration-mailbox-quota-e2e.sh"
+  "mailbox-quota-notify:integration-mailbox-quota-notify-e2e.sh"
   # Notification ROUTING: channel policy is derived (ambient stays in-app),
   # ntfy is barred for tenant audiences, the new mailbox-quota /
   # saturation / expiry categories are seeded, no delivery was dropped for a
