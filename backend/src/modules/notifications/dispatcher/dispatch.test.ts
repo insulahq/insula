@@ -182,7 +182,32 @@ describe('emitEvent', () => {
     expect(r.perChannelStatuses.every((s) => s.status === 'muted')).toBe(true);
   });
 
-  it('honours quiet hours for non-critical severity', async () => {
+  it('honours quiet hours for a category whose CLASS can wait', async () => {
+    // subscription.renewed is class=record: a receipt genuinely can wait until
+    // morning. (This test used to use tenant.suspended, which is class=security
+    // and now correctly passes through — see the next case.)
+    // The mocked category carries its own id, and the class lookup keys off
+    // THAT — not off the categoryId passed to emitEvent. Setting only the
+    // latter left both quiet-hours cases resolving to tenant.suspended.
+    getCategoryMock.mockResolvedValue({
+      ...baseCategory, id: 'subscription.renewed', isMandatory: false, defaultSeverity: 'info',
+    });
+    resolveRecipientsMock.mockResolvedValue(['u1']);
+    isAllowedMock.mockResolvedValue(true);
+    isInQuietHoursMock.mockReturnValue(true);
+    const r = await emitEvent(mockDb(), {
+      categoryId: 'subscription.renewed',
+      scope: { kind: 'tenant', tenantId: 't1' },
+      variables: {},
+      encryptionKey: 'KEY',
+    });
+    expect(r.perChannelStatuses.every((s) => s.status === 'muted')).toBe(true);
+  });
+
+  it('lets a warning-severity SECURITY category through quiet hours', async () => {
+    // The bug this fixes: the bypass was gated on severity alone, so
+    // tenant.suspended (severity=warning, class=security) was held until
+    // morning. A suspension notice that waits overnight is a support ticket.
     getCategoryMock.mockResolvedValue({ ...baseCategory, isMandatory: false, defaultSeverity: 'warning' });
     resolveRecipientsMock.mockResolvedValue(['u1']);
     isAllowedMock.mockResolvedValue(true);
@@ -193,7 +218,7 @@ describe('emitEvent', () => {
       variables: {},
       encryptionKey: 'KEY',
     });
-    expect(r.perChannelStatuses.every((s) => s.status === 'muted')).toBe(true);
+    expect(r.perChannelStatuses.some((s) => s.status === 'muted')).toBe(false);
   });
 
   it('critical severity bypasses quiet hours', async () => {

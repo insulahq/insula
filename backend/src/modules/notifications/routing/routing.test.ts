@@ -206,3 +206,28 @@ describe('every seeded category resolves to something sane', () => {
     }
   });
 });
+
+describe('quiet hours are a CLASS decision, not a severity one', () => {
+  // security.password_reset is severity=warning. Gating the bypass on severity
+  // alone let a password-reset link wait until morning, and an availability
+  // alert describe an outage the operator slept through. Severity says how
+  // loud; class says whether it can wait.
+  it('lets security, incident and availability through', () => {
+    for (const cls of ['security', 'incident', 'availability'] as const) {
+      expect(CLASS_POLICY[cls].bypassesQuietHours, `${cls} should bypass`).toBe(true);
+    }
+  });
+
+  it('holds ambient, record and action back', () => {
+    for (const cls of ['ambient', 'record', 'action'] as const) {
+      expect(CLASS_POLICY[cls].bypassesQuietHours, `${cls} should NOT bypass`).toBe(false);
+    }
+  });
+
+  it('bypasses for a warning-severity security category', async () => {
+    const { ALL_CATEGORIES } = await import('../categories/seed.js');
+    const reset = ALL_CATEGORIES.find((c) => c.id === 'security.password_reset')!;
+    expect(reset.defaultSeverity).not.toBe('critical'); // the trap
+    expect(CLASS_POLICY[reset.cls].bypassesQuietHours).toBe(true);
+  });
+});
