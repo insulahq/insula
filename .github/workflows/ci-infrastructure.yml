@@ -203,6 +203,14 @@ jobs:
       - name: Verify admin-only Ingresses have an auth gate
         run: ./scripts/ci-admin-auth-check.sh
 
+  backup-health-label-check:
+    name: Backup-health labels reach the Jobs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Verify watched CronJobs label their job template, not themselves
+        run: ./scripts/ci-backup-health-label-check.sh
+
   oauth2-proxy-args-check:
     name: OAuth2-Proxy args complete in every overlay
     runs-on: ubuntu-latest
