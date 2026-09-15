@@ -13,11 +13,9 @@
 import { eq, and, inArray } from 'drizzle-orm';
 import * as k8s from '@kubernetes/client-node';
 import { notifications } from '../../db/schema.js';
-import { notifyUsers } from '../notifications/service.js';
 import { notifyAdminBackupFailed } from '../notifications/events.js';
 import { resolveRecipients } from '../notifications/recipients.js';
 import { listHealthWatchedJobs, findNewFailures } from './service.js';
-import { severityToNotificationType } from './labels.js';
 import type { BackupJobMeta } from './service.js';
 import type { Database } from '../../db/index.js';
 import { safeTick } from '../../shared/safe-tick.js';
@@ -122,24 +120,19 @@ async function notifyForFailure(
     ? failure.failureReason.slice(0, 500)
     : 'Job entered Failed state without a status condition message.';
 
-  await notifyUsers(db, recipients, {
-    type: severityToNotificationType(failure.severity),
-    title: `Backup job failed: ${failure.displayName}`,
-    message:
-      `The backup job ${failure.namespace}/${failure.name} failed. ` +
-      `Category: ${failure.category}, severity: ${failure.severity}. ` +
-      `Reason: ${reason}`,
-    resourceType: RESOURCE_TYPE_BACKUP_JOB,
-    resourceId: failure.uid,
-  });
-
-  // Phase 6A: route through the new categorised dispatcher in
-  // addition to the legacy notifyUsers fanout. dispatchSafe never
-  // throws, so this is fire-and-forget. The legacy call above stays
-  // for back-compat with any non-categorised consumer (e.g. the bell
-  // dropdown reads from `notifications` directly).
+  // The legacy notifyUsers fan-out that used to sit here has been removed.
+  //
+  // It was kept "for back-compat with any non-categorised consumer (e.g. the
+  // bell dropdown reads from `notifications` directly)" — but the categorised
+  // dispatcher writes that same row through its in_app channel, so the two
+  // calls produced TWO inbox entries for one failed backup. The dispatcher
+  // path is a strict superset: same row, plus a template, an email leg, a
+  // preference gate, a rate limit and a delivery audit.
+  // Dedupe on the Job UID: the scheduler re-reads failed Jobs every tick, and
+  // without a key the same failure re-notifies until the Job is garbage
+  // collected.
   await notifyAdminBackupFailed(db, {
-    backupName: failure.displayName,
-    errorMessage: reason,
-  });
+    backupName: `${failure.namespace}/${failure.name} (${failure.displayName})`,
+    errorMessage: `Category: ${failure.category}, severity: ${failure.severity}. ${reason}`,
+  }, `backup-job-failed:${failure.uid}`);
 }

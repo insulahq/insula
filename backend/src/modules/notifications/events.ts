@@ -14,8 +14,6 @@
  * service) should only know about the *event*, not the presentation.
  */
 
-import { notifyUsers } from './service.js';
-import { getTenantNotificationRecipients } from './recipients.js';
 import { emitEvent } from './dispatcher/dispatch.js';
 import type { Database } from '../../db/index.js';
 import type { MailboxLimitSource } from '../mailboxes/limit.js';
@@ -72,19 +70,14 @@ export async function notifyTenantMailboxLimitReached(
   tenantId: string,
   payload: MailboxLimitPayload,
 ): Promise<void> {
-  const recipients = await getTenantNotificationRecipients(db, tenantId);
-  if (recipients.length === 0) return;
-
   const sourceText = payload.source === 'tenant_override' ? 'custom limit' : 'hosting plan';
-  await notifyUsers(db, recipients, {
-    type: 'error',
-    title: 'Mailbox limit reached',
-    message:
-      `You have used ${payload.current} of ${payload.limit} mailboxes allowed by your ${sourceText}. `
-      + 'New mailboxes cannot be created until you remove an existing one or upgrade your plan.',
-    resourceType: 'tenant',
-    resourceId: tenantId,
-  });
+  await dispatchSafe(db, 'tenant.mail_event', { kind: 'tenant', tenantId }, {
+    subsystem: 'Mailbox limit',
+    objectLabel: `${payload.current} of ${payload.limit} mailboxes`,
+    detail: `You have used ${payload.current} of ${payload.limit} mailboxes allowed by your ${sourceText}.`,
+    severityLabel: 'limit reached',
+    recommendedAction: 'Remove an existing mailbox or upgrade your plan.',
+  }, tenantId);
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -107,18 +100,13 @@ export async function notifyTenantDkimRotated(
   tenantId: string,
   payload: DkimRotatedPayload,
 ): Promise<void> {
-  const recipients = await getTenantNotificationRecipients(db, tenantId);
-  if (recipients.length === 0) return;
-
-  await notifyUsers(db, recipients, {
-    type: 'info',
-    title: 'DKIM key rotated',
-    message:
-      `A new DKIM signing key (selector "${payload.selector}") was automatically generated for `
-      + `${payload.domainName}. No action is required — the platform manages this for you.`,
-    resourceType: 'email_domain',
-    resourceId: payload.emailDomainId,
-  });
+  await dispatchSafe(db, 'tenant.mail_event', { kind: 'tenant', tenantId }, {
+    subsystem: 'DKIM key rotation',
+    objectLabel: payload.domainName,
+    detail: `A new DKIM signing key (selector "${payload.selector}") was automatically generated.`,
+    severityLabel: 'rotated',
+    recommendedAction: 'No action is required — the platform manages this for you.',
+  }, tenantId);
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -159,33 +147,13 @@ export async function notifyTenantImapsyncTerminal(
 ): Promise<void> {
   if (!isTerminal(payload.status)) return;
 
-  const recipients = await getTenantNotificationRecipients(db, tenantId);
-  if (recipients.length === 0) return;
-
-  const title = (() => {
-    switch (payload.status) {
-      case 'succeeded':
-      case 'completed':
-        return 'IMAPSync migration completed';
-      case 'failed':
-        return 'IMAPSync migration failed';
-      case 'cancelled':
-        return 'IMAPSync migration cancelled';
-    }
-  })();
-
-  const type: 'success' | 'error' | 'warning' = (() => {
-    switch (payload.status) {
-      case 'succeeded':
-      case 'completed':
-        return 'success';
-      case 'failed':
-        return 'error';
-      case 'cancelled':
-        return 'warning';
-    }
-  })();
-
+  // No recipient pre-check. Resolving recipients here and bailing when the
+  // list is empty is what made the old path invisible: the dispatcher owns
+  // scope resolution, records the event either way, and can reach audiences
+  // (like a mailbox owner) that have no user row to resolve at all.
+  // No hand-derived `title` or `type` any more: the template builds the
+  // subject and the category supplies the severity. Those two locals existed
+  // only because the legacy path had nowhere else to put them.
   const message = (() => {
     if (payload.status === 'succeeded' || payload.status === 'completed') {
       const count = payload.messagesTransferred ?? 0;
@@ -197,13 +165,15 @@ export async function notifyTenantImapsyncTerminal(
     return 'IMAPSync migration job was cancelled before it could finish.';
   })();
 
-  await notifyUsers(db, recipients, {
-    type,
-    title,
-    message,
-    resourceType: 'imapsync_job',
-    resourceId: payload.jobId,
-  });
+  await dispatchSafe(db, 'tenant.mail_event', { kind: 'tenant', tenantId }, {
+    subsystem: 'IMAPSync migration',
+    objectLabel: `job ${payload.jobId}`,
+    detail: message,
+    severityLabel: payload.status,
+    recommendedAction: payload.status === 'failed'
+      ? 'Review the job log in the tenant panel and re-run the migration.'
+      : '',
+  }, tenantId);
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -224,18 +194,13 @@ export async function notifyTenantEmailBootstrapped(
   tenantId: string,
   payload: EmailBootstrappedPayload,
 ): Promise<void> {
-  const recipients = await getTenantNotificationRecipients(db, tenantId);
-  if (recipients.length === 0) return;
-
-  await notifyUsers(db, recipients, {
-    type: 'success',
-    title: 'Email enabled for domain',
-    message:
-      `Email hosting is now active for ${payload.domainName}. You can create mailboxes and `
-      + 'configure DNS from the tenant panel Mail page.',
-    resourceType: 'email_domain',
-    resourceId: payload.emailDomainId,
-  });
+  await dispatchSafe(db, 'tenant.mail_event', { kind: 'tenant', tenantId }, {
+    subsystem: 'Email hosting',
+    objectLabel: payload.domainName,
+    detail: 'Email hosting is now active for this domain.',
+    severityLabel: 'enabled',
+    recommendedAction: 'Create mailboxes and configure DNS from the tenant panel Mail page.',
+  }, tenantId);
 }
 
 // ──────────────────────────────────────────────────────────────────
