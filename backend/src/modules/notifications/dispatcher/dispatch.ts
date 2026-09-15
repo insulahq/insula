@@ -34,8 +34,9 @@ import { getCategory } from '../categories/service.js';
 import { getActiveTemplate } from '../templates/service.js';
 import { renderForDelivery } from '../templates/render-for-delivery.js';
 import { recordDegradedRender, clampDegradedVars } from './degraded.js';
-import { effectiveChannels } from '../routing/effective-channels.js';
+import { effectiveChannels, categoryMeta } from '../routing/effective-channels.js';
 import { platformName, tenantIdentity, userDisplayName, normaliseDateVariables } from './envelope.js';
+import { CLASS_POLICY } from '../routing/classes.js';
 import { emitNtfyForEvent } from './ntfy.js';
 import { isCategoryAllowedForUser } from '../preferences/gate.js';
 import { getUserSettings } from '../preferences/service.js';
@@ -358,6 +359,16 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
     throw new Error('PLATFORM_ENCRYPTION_KEY is required for notification dispatch (hash salt)');
   }
   const isCritical = severityIsCritical(category);
+  // Quiet hours are bypassed by CLASS, not just by severity.
+  //
+  // `security.password_reset` is severity=warning and class=security: a reset
+  // link that waits until morning is useless, and an availability alert that
+  // waits until morning describes an outage the operator slept through.
+  // Severity says how loud; class says whether it can wait. Only class can
+  // answer this question.
+  const meta = categoryMeta(category.id);
+  const classBypassesQuietHours = meta ? CLASS_POLICY[meta.cls].bypassesQuietHours : false;
+  const bypassesQuietHours = isCritical || classBypassesQuietHours;
 
   // 3. For each recipient × channel pair.
   for (const userId of recipients) {
@@ -429,8 +440,8 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
         continue;
       }
 
-      // 3b. Quiet hours (critical bypasses).
-      if (!isCritical && isInQuietHours(userSettings)) {
+      // 3b. Quiet hours. Incident, Availability and Security pass through.
+      if (!bypassesQuietHours && isInQuietHours(userSettings)) {
         const contentHash = sha256(`${category.id}::quiet`, hashSalt);
         await writeDelivery(db, {
           notificationId: null,
