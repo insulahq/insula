@@ -22,6 +22,10 @@ on:
       # sat out every one of them, then failed on the release promote.
       - 'backend/src/modules/notifications/**'
       - 'backend/src/db/migrations/**'
+      # Subject of ci-route-auth-check: every route module, not just the
+      # handful of feature paths listed above. A guard whose workflow does not
+      # run on its own subject is not a guard.
+      - 'backend/src/modules/**/routes*.ts'
       # ci-db-isolation-check.sh compares the converger's SQL against the
       # bootstrap.sh copy. A change to the converger alone must run it, or the
       # two halves can drift with the guard sitting the PR out.
@@ -69,6 +73,10 @@ on:
       # entirely. scripts/ci-workflow-paths-parity.sh now keeps the two lists
       # identical.
       - 'backend/src/db/migrations/**'
+      # Mirror of the push filter: ci-workflow-paths-parity enforces that the
+      # two lists agree, so a PR touching only route files runs the same guards
+      # the merge will.
+      - 'backend/src/modules/**/routes*.ts'
       # ci-db-isolation-check.sh compares the converger's SQL against the
       # bootstrap.sh copy. A change to the converger alone must run it, or the
       # two halves can drift with the guard sitting the PR out.
@@ -223,6 +231,14 @@ jobs:
           yq --version
       - name: Verify admin-only Ingresses have an auth gate
         run: ./scripts/ci-admin-auth-check.sh
+
+  route-auth-check:
+    name: Route modules run authenticate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Verify requireRole is never used without authenticate
+        run: ./scripts/ci-route-auth-check.sh
 
   backup-health-label-check:
     name: Backup-health labels reach the Jobs
