@@ -49,6 +49,10 @@ DISPLAY = 'insula.host/backup-display-name'
 # these sets does not fail — parseCategory/parseSeverity silently coerce it to
 # 'custom'/'warning' — which is exactly why it is worth catching here.
 CATEGORIES = {'dr', 'tenant', 'audit', 'custom'}
+
+# Comment marker a Flux-disowned CronJob must carry, naming the reconciler
+# that converges its labels onto existing clusters.
+RECONCILER_MARKER = 'backup-health-labels-reconciled-by:'
 SEVERITIES = {'critical', 'warning', 'info'}
 
 problems = []
@@ -103,11 +107,28 @@ for path in sys.argv[1:]:
         if not jt_annots.get(DISPLAY):
             problems.append(f"{where}: missing {DISPLAY} annotation on the job template")
 
+        # A Flux-disowned CronJob never receives manifest edits on an EXISTING
+        # cluster — kustomize-controller reports "skipped" for it forever, so the
+        # labels above only ever reach a fresh install. Caught on DEV
+        # 2026-09-15: etcd-snap-via-shim's manifest carried the block while the
+        # live object's spec.jobTemplate.metadata was {}. Such a CronJob needs a
+        # reconciler that converges the labels, and the manifest must say which.
+        annots = (doc.get('metadata') or {}).get('annotations') or {}
+        if annots.get('kustomize.toolkit.fluxcd.io/reconcile') == 'disabled':
+            if RECONCILER_MARKER not in open(path).read():
+                problems.append(
+                    f"{where}: carries kustomize.toolkit.fluxcd.io/reconcile=disabled, so Flux "
+                    f"SKIPS it on every apply and these labels will never reach an existing "
+                    f"cluster. A reconciler must converge them; name it in this file with a "
+                    f"'{RECONCILER_MARKER}' comment."
+                )
+
 if problems:
     print("ci-backup-health-label-check FAILED\n")
     for p in problems:
         print(f"  ✗ {p}")
-    print("\n  Labels must live under spec.jobTemplate.metadata, not the CronJob's metadata.")
+    print("\n  Labels belong under spec.jobTemplate.metadata — and a Flux-disowned CronJob")
+    print("  additionally needs a reconciler, because Flux never re-applies it.")
     sys.exit(1)
 
 if checked == 0:
