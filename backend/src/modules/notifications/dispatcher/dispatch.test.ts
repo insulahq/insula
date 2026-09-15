@@ -42,7 +42,7 @@ vi.mock('../email-sender.js', () => ({ sendNotificationEmail: sendNotificationEm
 const enqueueDeliveryMock = vi.fn().mockResolvedValue('job-id');
 vi.mock('../queue/enqueue.js', () => ({ enqueueDelivery: enqueueDeliveryMock }));
 
-const { emitEvent } = await import('./dispatch.js');
+const { emitEvent, hasRecipient } = await import('./dispatch.js');
 
 type Db = Parameters<typeof emitEvent>[0];
 
@@ -405,5 +405,37 @@ describe('emitEvent', () => {
     });
     // Either sent or queued; explicitly NOT skipped:duplicate.
     expect(r.perChannelStatuses.some((s) => s.error === 'duplicate')).toBe(false);
+  });
+});
+
+describe('hasRecipient — the invariant that must NOT be a table CHECK', () => {
+  it('accepts a platform user', () => {
+    expect(hasRecipient({ userId: 'u1', channel: 'email' })).toBe(true);
+  });
+
+  it('accepts an account-less address (a mailbox owner)', () => {
+    expect(hasRecipient({ userId: null, recipientAddress: 'user@example.test', channel: 'email' })).toBe(true);
+  });
+
+  it('accepts ntfy with neither — it is a topic broadcast, not an addressed delivery', () => {
+    expect(hasRecipient({ userId: null, recipientAddress: null, channel: 'ntfy' })).toBe(true);
+  });
+
+  it('refuses a row with no recipient at all', () => {
+    expect(hasRecipient({ userId: null, recipientAddress: null, channel: 'email' })).toBe(false);
+  });
+
+  // Why this is enforced in code and not in the schema: user_id is
+  // ON DELETE SET NULL so the delivery audit row survives a GDPR erasure. A
+  // historical row therefore legitimately has neither identifier, and a table
+  // CHECK cannot distinguish that from a new row written with neither — it
+  // just aborts. Proved on DEV: the constraint failed against 164 of 458 rows,
+  // crash-looped the API, and left the migration half applied because the
+  // ADD COLUMN before it had already committed.
+  it('documents why an erased historical row is not a write-time violation', () => {
+    const historical = { userId: null, recipientAddress: null, channel: 'email' };
+    expect(hasRecipient(historical)).toBe(false); // would be refused if written TODAY
+    // ...but it is never written today; it BECAME this by erasure, long after
+    // the write. That asymmetry is exactly what a CHECK constraint cannot see.
   });
 });
