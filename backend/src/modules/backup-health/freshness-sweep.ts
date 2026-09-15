@@ -39,6 +39,7 @@ import { backupFreshnessState } from '../../db/schema.js';
 import {
   evaluateFreshness,
   countScheduledFires,
+  scanScheduledFires,
   DEFAULT_STALE_AFTER_FIRES,
   type FreshnessVerdict,
 } from './freshness.js';
@@ -64,6 +65,10 @@ export interface WatchedSchedule {
   readonly createdAt: Date | null;
   /** `spec.timeZone`. Kubernetes fires the schedule in THIS zone, not UTC. */
   readonly timeZone: string | null;
+  /** Runs currently in flight (`status.active`). A running run is not a missed one. */
+  readonly activeRuns: number;
+  /** When the controller last CREATED a run (`status.lastScheduleTime`). */
+  readonly lastScheduleAt: Date | null;
 }
 
 export interface FreshnessSweepResult {
@@ -71,6 +76,7 @@ export interface FreshnessSweepResult {
   readonly notified: number;
   readonly skippedSuspended: number;
   readonly skippedTooYoung: number;
+  readonly skippedInFlight: number;
   readonly pruned: number;
 }
 
@@ -104,6 +110,8 @@ export async function listWatchedSchedules(
       name,
       schedule: cj.spec?.schedule ?? null,
       timeZone: cj.spec?.timeZone ?? null,
+      activeRuns: (cj.status?.active ?? []).length,
+      lastScheduleAt: cj.status?.lastScheduleTime ? new Date(cj.status.lastScheduleTime) : null,
       suspended: cj.spec?.suspend === true,
       lastSuccessAt: last ? new Date(last) : null,
       createdAt: created ? new Date(created) : null,
@@ -134,6 +142,22 @@ export function oldEnoughToJudgeNever(
   return countScheduledFires(s.schedule, s.createdAt, now, undefined, s.timeZone) >= staleAfter;
 }
 
+/**
+ * Is a run happening right now?
+ *
+ * `status.active` alone is not enough: a Job wedged Pending forever (an
+ * unschedulable node, a missing PVC) stays active indefinitely, and treating
+ * that as "in progress" would mean the one failure mode with NO failed Job and
+ * NO missing run is never reported at all. So a run counts as in flight only
+ * while it is younger than one interval — past that the next run is already
+ * due and it is stuck, not working.
+ */
+export function isRunInFlight(s: WatchedSchedule, now: Date, intervalMs: number | null): boolean {
+  if (s.activeRuns <= 0) return false;
+  if (!s.lastScheduleAt || intervalMs === null) return true;
+  return now.getTime() - s.lastScheduleAt.getTime() < intervalMs;
+}
+
 export async function runFreshnessSweep(
   db: Database,
   batch: k8s.BatchV1Api,
@@ -145,7 +169,10 @@ export async function runFreshnessSweep(
     schedules = await listWatchedSchedules(batch);
   } catch (err) {
     log.warn('listWatchedSchedules failed', err);
-    return { evaluated: 0, notified: 0, skippedSuspended: 0, skippedTooYoung: 0, pruned: 0 };
+    return {
+      evaluated: 0, notified: 0, skippedSuspended: 0, skippedTooYoung: 0,
+      skippedInFlight: 0, pruned: 0,
+    };
   }
 
   const prior = new Map<string, { verdict: FreshnessVerdict; notifiedVerdict: string | null }>();
@@ -173,6 +200,7 @@ export async function runFreshnessSweep(
   let notified = 0;
   let skippedSuspended = 0;
   let skippedTooYoung = 0;
+  let skippedInFlight = 0;
 
   for (const s of schedules) {
     if (s.suspended) {
@@ -181,6 +209,18 @@ export async function runFreshnessSweep(
     }
 
     const previous = prior.get(s.uid);
+
+    // A run in progress is not a missed run. Leave the stored verdict alone
+    // rather than overwriting it with a guess — this tick simply has nothing
+    // to say about a schedule that is mid-flight.
+    const interval = s.schedule
+      ? scanScheduledFires(s.schedule, s.lastSuccessAt ?? s.createdAt ?? now, now, undefined, s.timeZone).intervalMs
+      : null;
+    if (isRunInFlight(s, now, interval)) {
+      skippedInFlight += 1;
+      continue;
+    }
+
     const result = evaluateFreshness({
       lastSuccessAt: s.lastSuccessAt,
       cronExpression: s.schedule,
@@ -301,7 +341,7 @@ export async function runFreshnessSweep(
     }
   }
 
-  return { evaluated, notified, skippedSuspended, skippedTooYoung, pruned };
+  return { evaluated, notified, skippedSuspended, skippedTooYoung, skippedInFlight, pruned };
 }
 
 /**
@@ -387,7 +427,8 @@ export function startFreshnessSweep(deps: {
     if (r.notified > 0 || r.pruned > 0) {
       log.info?.(
         `[backup-freshness] evaluated=${r.evaluated} notified=${r.notified} `
-        + `suspended=${r.skippedSuspended} tooYoung=${r.skippedTooYoung} pruned=${r.pruned}`,
+        + `suspended=${r.skippedSuspended} tooYoung=${r.skippedTooYoung} `
+        + `inFlight=${r.skippedInFlight} pruned=${r.pruned}`,
       );
     }
   }, log);

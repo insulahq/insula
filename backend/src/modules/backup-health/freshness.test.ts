@@ -110,18 +110,35 @@ describe('evaluateFreshness', () => {
     expect(r.verdict).toBe('stale');
   });
 
-  it('scales the grace to the schedule — a daily backup does not wait 3 days', () => {
-    // This is the shape of the outage the detector was built for: DEV went
-    // 3d 17h with every surface green. A daily schedule must not need three
-    // missed days to say so.
+  it('reports a daily backup the same MORNING, not 3 days or half a day later', () => {
+    // The outage this was built for: DEV went 3d 17h with every surface green.
+    // Three missed days is obviously too late; so is half a period, because on
+    // `0 3 * * *` the failure is knowable at 03:00 and a 12h grace sits on it
+    // until 15:00 — overnight that is most of the window to act before the
+    // next attempt. The grace is capped at an hour.
     const base = {
       lastSuccessAt: d('2026-09-14T03:00:30Z'),
       cronExpression: '0 3 * * *',
       previous: 'fresh' as const,
     };
-    // 03:00 the next day is due and missed; grace runs to 15:00.
-    expect(evaluateFreshness({ ...base, now: d('2026-09-15T09:00:00Z') }).verdict).toBe('fresh');
-    expect(evaluateFreshness({ ...base, now: d('2026-09-15T15:30:00Z') }).verdict).toBe('stale');
+    // 03:00 is due and missed. Still inside the 1h grace at 03:30.
+    expect(evaluateFreshness({ ...base, now: d('2026-09-15T03:30:00Z') }).verdict).toBe('fresh');
+    // Past it by 04:10 — reported ~25h after the last success, and a clear
+    // 23h before the next scheduled attempt.
+    expect(evaluateFreshness({ ...base, now: d('2026-09-15T04:10:00Z') }).verdict).toBe('stale');
+  });
+
+  it('keeps the grace proportional where the period is SHORT', () => {
+    // The cap must not flatten short schedules into the same 1h wait: half of
+    // a 30-minute interval is 15 minutes, well under the cap, so it still
+    // applies.
+    const base = {
+      lastSuccessAt: d('2026-09-15T12:00:00Z'),
+      cronExpression: EVERY_30M,
+      previous: 'fresh' as const,
+    };
+    expect(evaluateFreshness({ ...base, now: d('2026-09-15T12:40:00Z') }).verdict).toBe('fresh');
+    expect(evaluateFreshness({ ...base, now: d('2026-09-15T12:46:00Z') }).verdict).toBe('stale');
   });
 
   it('leaves the band as stale once the threshold is crossed', () => {
