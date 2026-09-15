@@ -223,6 +223,21 @@ if command -v kubectl >/dev/null 2>&1 && kubectl get ns platform >/dev/null 2>&1
   else
     fail "escalation fired $ESC_FIRED time(s) but marked 0 rows — it will re-fire forever"
   fi
+
+  # The inverse failure, which the count check above cannot see: rows marked
+  # escalated that NOBODY was told about. The dedupe key used to be
+  # `escalation:<date>`, so once a day's key was consumed every later batch was
+  # silently deduped while markEscalated marked it anyway — 45 unread actions
+  # marked "chased" with two deliveries to show for it, and permanently
+  # ineligible to escalate again. The key now carries a batch hash, so a bare
+  # date key is proof of the old behaviour.
+  ESC_BAREKEY="$(kubectl exec -n platform system-db-1 -c postgres -- psql -U postgres -d platform -At -c \
+    "SELECT count(*) FROM notification_deliveries WHERE category_id='admin.notification_escalated' AND dedupe_key ~ '^escalation:[0-9]{4}-[0-9]{2}-[0-9]{2}$'" 2>/dev/null || echo 0)"
+  if [[ "${ESC_BAREKEY:-0}" -eq 0 ]]; then
+    ok "every escalation dedupe key is batch-scoped, so no batch can be silently swallowed"
+  else
+    fail "$ESC_BAREKEY escalation delivery(ies) use a per-DAY dedupe key — later batches get marked without being sent"
+  fi
 else
   log "SKIP: kubectl/cluster unavailable — scheduler-tick assertions not run"
 fi
