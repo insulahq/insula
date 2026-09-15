@@ -6,12 +6,18 @@ import {
 } from '@insula/api-contracts';
 import { ApiError } from '../../shared/errors.js';
 import { success } from '../../shared/response.js';
-import { requireRole } from '../../middleware/auth.js';
+import { authenticate, requireRole } from '../../middleware/auth.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { prunePods } from './service.js';
 import { getAutoPruneDays, setAutoPruneDays } from './settings.js';
 
 export async function podPruneRoutes(app: FastifyInstance): Promise<void> {
+  // Populates req.user from the Bearer token. WITHOUT THIS, requireRole sees no
+  // user and refuses every request with 403 — the routes below are unreachable,
+  // and nothing in a unit test notices because the hooks are mocked there.
+  // Shipped exactly that way in #588 and caught only by driving DEV.
+  app.addHook('onRequest', authenticate);
+
   function clients() {
     const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
     try {
