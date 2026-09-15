@@ -1315,6 +1315,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       {
         const { reconcileStalwartSendLimits } = await import('./modules/email-outbound/stalwart-throttles.js');
         const { ensureMailEventsWebhook } = await import('./modules/mail-events/webhook-reconciler.js');
+        const { ensureStalwartStdoutTracer } = await import('./modules/mail-events/tracer-reconciler.js');
         const { ensureReportIntake } = await import('./modules/mail-events/report-intake-reconciler.js');
         const { pollDmarcReports } = await import('./modules/mail-events/dmarc.js');
         const { repairDmarcRuaRecords } = await import('./modules/mail-events/dmarc-rua-repair.js');
@@ -1330,6 +1331,12 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           });
           ensureMailEventsWebhook(mailK8s, app.log).catch((err) => {
             app.log.warn({ err }, 'mail-events webhook ensure failed');
+          });
+          // Without this the mail server logs NOWHERE (its default
+          // tracer targets a path the image does not have), which is
+          // what made a live delivery outage invisible for hours.
+          ensureStalwartStdoutTracer(app.log).catch((err) => {
+            app.log.warn({ err }, 'stalwart stdout tracer ensure failed');
           });
           ensureReportIntake(app.db, app.log).catch((err) => {
             app.log.warn({ err }, 'report intake ensure failed');

@@ -579,6 +579,50 @@ interface XListResponse<T> {
   readonly list?: readonly T[];
 }
 
+export interface StalwartTracerRow {
+  readonly id: string;
+  readonly enable: boolean;
+  /** Discriminator: "Stdout", "Log", "Journal", "OpenTelemetry", ... */
+  readonly '@type': string;
+  readonly level: string;
+  readonly path?: string | null;
+}
+
+export async function tracerGet(params: {
+  ids?: readonly string[] | null;
+  baseUrl?: string;
+  env?: NodeJS.ProcessEnv;
+} = {}): Promise<readonly StalwartTracerRow[]> {
+  const { ids, baseUrl, env } = params;
+  const res = await _xCall<XListResponse<StalwartTracerRow>>(
+    JMAP_STALWART,
+    'x:Tracer/get',
+    { ids: ids ?? null },
+    baseUrl, env,
+  );
+  return res.list ?? [];
+}
+
+export async function tracerSet(params: {
+  create?: Record<string, Record<string, unknown>>;
+  update?: Record<string, Record<string, unknown>>;
+  destroy?: readonly string[];
+  baseUrl?: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<JmapSetResponse<StalwartTracerRow>> {
+  const { create, update, destroy, baseUrl, env } = params;
+  return _xCall<JmapSetResponse<StalwartTracerRow>>(
+    JMAP_STALWART,
+    'x:Tracer/set',
+    {
+      ...(create ? { create } : {}),
+      ...(update ? { update } : {}),
+      ...(destroy ? { destroy } : {}),
+    },
+    baseUrl, env,
+  );
+}
+
 export async function mtaOutboundThrottleGet(params: {
   ids?: readonly string[] | null;
   baseUrl?: string;
