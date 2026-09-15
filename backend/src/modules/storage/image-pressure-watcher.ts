@@ -96,23 +96,14 @@ async function notifyAdmins(
   message: string,
 ): Promise<void> {
   try {
-    const adminRows = await db
-      .select({ id: users.id })
-      .from(users)
-      .where(inArray(users.roleName, ['super_admin', 'admin']));
-    for (const a of adminRows) {
-      await db.insert(notifications).values({
-        id: crypto.randomUUID(),
-        userId: a.id,
-        type: 'info',
-        title,
-        message,
-        resourceType: 'image_cache',
-        resourceId: null,
-      }).catch(() => {
-        // Non-fatal
-      });
-    }
+    const { notifyAdminOperationalEvent } = await import('../notifications/events.js');
+    await notifyAdminOperationalEvent(db, 'storage', {
+      subsystem: 'Image cache pressure',
+      objectLabel: 'container image cache',
+      detail: `${title} ${message}`.trim(),
+      severityLabel: 'info',
+      recommendedAction: 'Image GC will reclaim space; no action unless it recurs.',
+    }, `image-pressure:${new Date().toISOString().slice(0, 13)}`);
   } catch {
     // Non-fatal: notification failure must not disrupt the watcher
   }

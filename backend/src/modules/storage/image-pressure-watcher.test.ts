@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
+const notifyOperationalMock = vi.fn(async () => undefined);
+vi.mock('../notifications/events.js', () => ({
+  notifyAdminOperationalEvent: (...a: unknown[]) => notifyOperationalMock(...(a as [])),
+}));
+
 // ── Mocks ─────────────────────────────────────────────────────────────────────
 
 const mockGetSettings = vi.fn();
@@ -191,12 +196,15 @@ describe('image-pressure-watcher', () => {
     await vi.advanceTimersByTimeAsync(60_000 + 100);
     handle.stop();
 
-    // Notification insert should have been called
-    expect(mockDbInsert).toHaveBeenCalled();
-    const valuesArg = mockDbInsert.mock.results.at(-1)?.value.values.mock.calls[0][0];
-    expect(valuesArg?.type).toBe('info');
-    expect(valuesArg?.title).toMatch(/Auto-purged/);
-    expect(valuesArg?.message).toMatch(/Reclaimed/);
+    // Dispatched through the categorised path, not inserted as a raw row.
+    // The old assertion read the INSERT values directly, which is exactly the
+    // coupling that let this notification exist for months with no category,
+    // no template, no email and no delivery audit.
+    expect(notifyOperationalMock).toHaveBeenCalled();
+    const payload = notifyOperationalMock.mock.calls.at(-1)?.[2] as Record<string, string>;
+    expect(notifyOperationalMock.mock.calls.at(-1)?.[1]).toBe('storage');
+    expect(payload.detail).toMatch(/Auto-purged/);
+    expect(payload.detail).toMatch(/Reclaimed/);
   });
 
   it('handles listNode failure gracefully', async () => {

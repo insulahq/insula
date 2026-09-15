@@ -84,6 +84,15 @@ const STATIC_PATHS: Record<string, string> = {
   'admin.mailbox_quota_fleet': '/tenants',
   // The storage settings page is where capacity is read and nodes are added.
   'admin.cluster_storage_capacity': '/settings/storage',
+  // Operational events land on the surface that owns the subsystem.
+  'admin.storage_event': '/settings/storage',
+  'admin.node_event': '/cluster/nodes',
+  'admin.database_event': '/backups',
+  'admin.mail_event': '/email/operations',
+  'admin.platform_event': '/platform/updates',
+  'admin.tenant_integrity': '/tenants',
+  'tenant.domain_verification': '/domains',
+  'tenant.backup_event': '/backups',
   'admin.email_quota_exceeded': '/tenants',
   'admin.subscriptions_expiring': '/tenants',
   // The tenant lands on the page that shows the usage bars, not on a page

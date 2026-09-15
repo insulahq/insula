@@ -113,11 +113,26 @@ const interfaces = new Map();
 for (const m of EVENTS_SRC.matchAll(/export interface (\w+Payload)\s*\{([\s\S]*?)\n\}/g)) {
   interfaces.set(m[1], [...m[2].matchAll(/^\s*readonly\s+(\w+)\??:/gm)].map((f) => f[1]));
 }
+// Category-id lookup tables, e.g.
+//   const OPERATIONAL_CATEGORY = { storage: 'admin.storage_event', … } as const;
+// A helper that dispatches through one of these names no category literal in
+// its own body, so without this the guard reports every such category as
+// having no emitter — which is a false finding, not a real one.
+const CATEGORY_MAPS = new Map();
+for (const m of EVENTS_SRC.matchAll(/const (\w+) = \{([\s\S]*?)\} as const;/g)) {
+  const ids = [...m[2].matchAll(/[\x27\x22]([a-z_]+\.[a-z_]+)[\x27\x22]/g)].map((x) => x[1]);
+  if (ids.length) CATEGORY_MAPS.set(m[1], ids);
+}
+
 const supplied = new Map();
 for (const m of EVENTS_SRC.matchAll(/export async function (\w+)\(([\s\S]*?)\): Promise<void> \{([\s\S]*?)\n\}/g)) {
   const payloadType = (m[2].match(/payload:\s*(\w+Payload)/) || [])[1];
   const keys = payloadType ? (interfaces.get(payloadType) ?? []) : [];
-  for (const c of new Set([...m[3].matchAll(/[\x27\x22]([a-z_]+\.[a-z_]+)[\x27\x22]/g)].map((x) => x[1]))) {
+  const cats = [...m[3].matchAll(/[\x27\x22]([a-z_]+\.[a-z_]+)[\x27\x22]/g)].map((x) => x[1]);
+  for (const [mapName, ids] of CATEGORY_MAPS) {
+    if (m[3].includes(mapName)) cats.push(...ids);
+  }
+  for (const c of new Set(cats)) {
     supplied.set(c, new Set([...(supplied.get(c) ?? []), ...keys]));
   }
 }

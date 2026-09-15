@@ -397,19 +397,19 @@ export async function checkTenantNamespaceIntegrity(
     const message = errors.length > 0
       ? `Auto-repair partially failed. Repaired: ${repaired.join(', ') || 'none'}. Errors: ${errors.join('; ')}`
       : `Auto-repaired missing resources: ${repaired.join(', ')}`;
-    for (const a of adminRows) {
-      await db.insert(notifications).values({
-        id: crypto.randomUUID(),
-        userId: a.id,
-        type: errors.length > 0 ? 'error' : 'success',
-        title,
-        message,
-        resourceType: 'tenant',
-        resourceId: tenantId,
-      }).catch((err) => {
-        console.error('[namespace-integrity] notification write failed:', (err as Error).message);
-      });
-    }
+    // Dispatched, not inserted — one categorised event instead of a row per
+    // admin written with no category, which reached no email and no audit.
+    const { notifyAdminOperationalEvent } = await import('../notifications/events.js');
+    await notifyAdminOperationalEvent(db, 'integrity', {
+      subsystem: 'Namespace integrity',
+      objectLabel: tenant.name,
+      detail: message,
+      severityLabel: errors.length > 0 ? 'partially failed' : 'repaired',
+      recommendedAction: errors.length > 0
+        ? 'Inspect the tenant namespace; auto-repair could not finish.'
+        : '',
+    }, `ns-integrity:${tenantId}:${new Date().toISOString().slice(0, 10)}`)
+      .catch((err) => console.error('[namespace-integrity] notification dispatch failed:', (err as Error).message));
   }
 
   return {

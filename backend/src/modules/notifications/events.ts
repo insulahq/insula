@@ -758,6 +758,67 @@ export async function notifyMailboxQuotaThreshold(
   );
 }
 
+/**
+ * The shared shape for subsystem operational events.
+ *
+ * Identity-first on purpose: which subsystem, which object, what happened,
+ * when, and what to do. The ~20 raw `db.insert(notifications)` call sites this
+ * replaces built a title and a message by hand and named the object only when
+ * the author happened to interpolate it — and carried no category, so they
+ * reached no template, no email, no preference gate and no delivery audit.
+ */
+export interface OperationalEventPayload {
+  readonly subsystem: string;
+  /** The specific thing: a node name, a domain, a volume, a job id. */
+  readonly objectLabel: string;
+  /** One sentence of specifics, ending in a full stop. */
+  readonly detail: string;
+  readonly severityLabel: string;
+  /** What the reader should do. Empty string when genuinely nothing. */
+  readonly recommendedAction: string;
+}
+
+const OPERATIONAL_CATEGORY = {
+  storage: 'admin.storage_event',
+  node: 'admin.node_event',
+  database: 'admin.database_event',
+  mail: 'admin.mail_event',
+  platform: 'admin.platform_event',
+  integrity: 'admin.tenant_integrity',
+} as const;
+
+export type OperationalSubsystem = keyof typeof OPERATIONAL_CATEGORY;
+
+/** Operator-facing subsystem event. */
+export async function notifyAdminOperationalEvent(
+  db: Database,
+  subsystem: OperationalSubsystem,
+  payload: OperationalEventPayload,
+  dedupeKey?: string,
+): Promise<void> {
+  await dispatchSafe(db, OPERATIONAL_CATEGORY[subsystem], { kind: 'admin' }, payload, undefined, { dedupeKey });
+}
+
+/** Tenant-facing domain-verification state. */
+export async function notifyTenantDomainVerification(
+  db: Database,
+  tenantId: string,
+  payload: OperationalEventPayload,
+  dedupeKey?: string,
+): Promise<void> {
+  await dispatchSafe(db, 'tenant.domain_verification', { kind: 'tenant', tenantId }, payload, tenantId, { dedupeKey });
+}
+
+/** Tenant-facing backup/restore outcome. */
+export async function notifyTenantBackupEvent(
+  db: Database,
+  tenantId: string,
+  payload: OperationalEventPayload,
+  dedupeKey?: string,
+): Promise<void> {
+  await dispatchSafe(db, 'tenant.backup_event', { kind: 'tenant', tenantId }, payload, tenantId, { dedupeKey });
+}
+
 export interface AdminClusterCapacityPayload {
   readonly level: string;
   readonly clusterPct: string;
