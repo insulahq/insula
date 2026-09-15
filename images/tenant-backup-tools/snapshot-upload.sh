@@ -95,7 +95,14 @@ echo "=== snapshot-upload: initialising or checking restic repo ==="
 # Keep stderr, and only init when the error actually says the repo is absent.
 # restic >= 0.17 exits 10 for "repository does not exist"; the message match
 # keeps this working on older builds in the image.
-_probe_err="$(restic snapshots --quiet 2>&1 >/dev/null)"; _probe_rc=$?
+# The assignment MUST sit inside an `if`. This script runs under `set -e`, and a
+# bare `_x="$(cmd)"; rc=$?` aborts the moment the substitution fails — `rc=$?`
+# never runs, none of the branches below execute, and the pod dies with restic's
+# raw exit code and a single line of output. That is exactly what shipped in the
+# first cut of this fix and what DEV showed: one log line, exit 11, no reason.
+# The ORIGINAL `if ! restic …; then` was errexit-exempt because it was a
+# condition; moving it to an assignment silently dropped that protection.
+if _probe_err="$(restic snapshots --quiet 2>&1 >/dev/null)"; then _probe_rc=0; else _probe_rc=$?; fi
 if [ "$_probe_rc" -eq 0 ]; then
   echo "=== snapshot-upload: restic repo present ==="
 elif [ "$_probe_rc" -eq 10 ] \
