@@ -9,6 +9,7 @@ import { usePlatformStatus } from '@/hooks/use-dashboard';
 import { useAuditLogs, type AuditLogEntry } from '@/hooks/use-audit-logs';
 import { useHealth } from '@/hooks/use-health';
 import { usePods, type PodEntry } from '@/hooks/use-pods';
+import DeadPodPruneBar from '@/components/monitoring/DeadPodPruneBar';
 import { useMonitoringAlerts, firingAlerts, resolvedAlerts, type MonitoringAlert } from '@/hooks/use-monitoring-alerts';
 import { useCursorPagination } from '@/hooks/use-cursor-pagination';
 import { useSortable } from '@/hooks/use-sortable';
@@ -547,8 +548,14 @@ function PodsTab({
     );
   }
 
+  // Completed + failed are the records Kubernetes leaves behind; both are
+  // prunable, so the bar counts them together rather than per-classification.
+  const deadCount = (counts.completed ?? 0) + (counts.failed ?? 0);
+
   return (
     <div className="p-5 space-y-4" data-testid="pods-tab">
+      <DeadPodPruneBar deadCount={deadCount} />
+
       <div className="flex flex-wrap items-center gap-2">
         {(['all', 'running', 'pending', 'failed', 'orphaned', 'completed'] as const).map((f) => (
           <button
