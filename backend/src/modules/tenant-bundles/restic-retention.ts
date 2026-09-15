@@ -466,7 +466,7 @@ export async function runResticRetentionSweep(
 
       await runResticForget({
         target, passwordHex: deriveResticPassword(secretsKeyHex, tenantId),
-        repoUri, snapshotIds: candidates,
+        repoUri, snapshotIds: candidates, log: logger,
       });
       // Upsert, not update: most repos have no reclaim row yet on first sweep.
       await db.execute(sql`
@@ -538,7 +538,7 @@ export async function runResticRetentionSweep(
       try {
         await runResticPrune({
           target, passwordHex: deriveResticPassword(secretsKeyHex, tenantId), repoUri,
-          ...(maxRepackSize ? { maxRepackSize } : {}),
+          ...(maxRepackSize ? { maxRepackSize } : {}), log: logger,
         });
         await db.update(resticRepoReclaimState)
           .set({
