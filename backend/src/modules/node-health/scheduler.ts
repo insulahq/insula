@@ -367,27 +367,25 @@ async function fanoutNotification(
   const coveredByNodeDown = !entry.ready && entry.severity === 'critical';
 
   if (!coveredByNodeDown) {
-    for (const uid of adminUserIds) {
-      await db.insert(notifications).values({
-        id: crypto.randomUUID(),
-        userId: uid,
-        type,
-        // `severity` drives the bell's colour and every downstream filter, and
-        // this raw insert never set it — so it defaulted to `info` and a
-        // CRITICAL node transition arrived looking routine. The categorised
-        // dispatch path sets it from the category; this one has to do it
-        // itself.
-        severity: entry.severity === 'critical' ? 'critical'
-          : entry.severity === 'warning' ? 'warning'
-          : 'info',
-        title,
-        message,
-        resourceType: 'node_health',
-        resourceId: entry.name,
-      }).catch((err) => {
-        console.error('[node-health-monitor] notification insert failed:', (err as Error).message);
-      });
-    }
+    // Dispatched, not inserted.
+    //
+    // The raw insert this replaces had to set `severity` by hand because
+    // nothing else would — it had defaulted to `info`, so a CRITICAL node
+    // transition arrived in the bell looking routine. Going through the
+    // dispatcher removes that whole class of hand-maintained field: severity
+    // comes from the category, and so do the channels, the preference gate,
+    // the rate limit and the delivery audit.
+    const { notifyAdminOperationalEvent } = await import('../notifications/events.js');
+    await notifyAdminOperationalEvent(db, 'node', {
+      subsystem: 'Node health',
+      objectLabel: entry.name,
+      detail: `${title} ${message}`.trim(),
+      severityLabel: entry.severity,
+      recommendedAction: entry.severity === 'critical'
+        ? 'Check the node in Cluster → Nodes.'
+        : '',
+    }, `node-health:${entry.name}:${entry.severity}:${new Date().toISOString().slice(0, 13)}`)
+      .catch((err) => console.error('[node-health-monitor] notification dispatch failed:', (err as Error).message));
   }
 
   // Phase 6A: route critical node-down transitions through the

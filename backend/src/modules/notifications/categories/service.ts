@@ -11,6 +11,7 @@ import { and, eq, asc } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { notificationCategories, notificationProviders, auditLogs } from '../../../db/schema.js';
 import { ApiError } from '../../../shared/errors.js';
+import { resolveChannels } from '../routing/classes.js';
 import { ALL_CATEGORIES } from './seed.js';
 import type {
   NotificationCategoryResponse,
@@ -48,7 +49,24 @@ export async function seedCategoriesIfMissing(db: Database): Promise<number> {
         description: cat.description,
         audience: cat.audience,
         defaultSeverity: cat.defaultSeverity,
-        defaultChannels: cat.defaultChannels as string[],
+        // DERIVED, not the seed's all-channels list.
+        //
+        // Caught on the DEV database, not in review: migration 0112 rewrote
+        // default_channels for the 53 categories that existed when it was
+        // written, and the four categories added afterwards seeded themselves
+        // with every channel — so `mailbox.quota_exceeded` arrived on the
+        // operator's shared ntfy topic as a tenant-scoped event. The dispatcher
+        // filters that at delivery time, so nothing leaked, but the stored
+        // value was wrong and the admin UI showed push as enabled.
+        //
+        // Seeding through the same resolver the dispatcher uses means a new
+        // category can never reintroduce the all-channels default.
+        defaultChannels: resolveChannels({
+          cls: cat.cls,
+          audience: cat.audience === 'admin' ? 'platform_admin' : 'tenant_admin',
+          reportsOn: cat.reportsOn,
+          tenantScoped: cat.audience !== 'admin',
+        }).channels as string[],
         isMandatory: cat.isMandatory,
         gdprBasis: cat.gdprBasis,
         rateLimitWindowS: cat.rateLimitWindowS ?? null,

@@ -37,6 +37,14 @@ const COMMON_VARS: readonly NotificationTemplateVariable[] = [
   { name: 'userName', type: 'string', required: false },
   { name: 'tenantName', type: 'string', required: false },
   { name: 'platformName', type: 'string', required: false },
+  // The tenant's billing/technical contact PERSON, distinct from the
+  // organisation name. Populated centrally by the dispatcher from
+  // tenants.contact_name, which was filled in for every tenant and read by
+  // nothing until 2026-09-14.
+  { name: 'contactName', type: 'string', required: false },
+  // Seeded by the dispatcher from "now"; a caller with a more precise instant
+  // (when the threshold was actually crossed) overrides it.
+  { name: 'occurredAt', type: 'string', required: false },
 ];
 
 /**
@@ -56,6 +64,7 @@ const SLO_ALERT_VARS: readonly NotificationTemplateVariable[] = [
   { name: 'description', type: 'string', required: false },
   { name: 'value', type: 'string', required: false },
   { name: 'subject', type: 'string', required: false },
+  { name: 'severity', type: 'string', required: false },
 ];
 
 /**
@@ -94,7 +103,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: 'Password reset requested',
-    bodyTemplate: 'A password reset was requested for your account. If this was not you, contact support immediately.',
+    bodyTemplate: 'A password reset was requested for {{userName}} on {{occurredAt}}. If this was not you, contact support immediately.',
     bodyFormat: 'plaintext',
     variablesSchema: COMMON_VARS,
   },
@@ -117,7 +126,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: 'Password changed',
-    bodyTemplate: 'Your account password was updated.',
+    bodyTemplate: 'The password for {{userName}} was updated on {{occurredAt}}.',
     bodyFormat: 'plaintext',
     variablesSchema: COMMON_VARS,
   },
@@ -130,12 +139,13 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     subjectTemplate: 'Unusual sign-in to your account',
     bodyTemplate: emailMjml(
       'Unusual sign-in',
-      'A sign-in to {{userName}} was detected from {{newIp}}. If this was not you, change your password immediately.',
+      'A sign-in to {{userName}} was detected from {{newIp}} ({{userAgent}}). If this was not you, change your password immediately.',
     ),
     bodyFormat: 'mjml',
     variablesSchema: [
       ...COMMON_VARS,
       { name: 'newIp', type: 'string', required: true },
+      { name: 'userAgent', type: 'string', required: false },
     ],
   },
   {
@@ -143,11 +153,12 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: 'Unusual sign-in detected',
-    bodyTemplate: 'A sign-in from {{newIp}} was detected. If this was not you, change your password immediately.',
+    bodyTemplate: 'A sign-in from {{newIp}} ({{userAgent}}) was detected. If this was not you, change your password immediately.',
     bodyFormat: 'plaintext',
     variablesSchema: [
       ...COMMON_VARS,
       { name: 'newIp', type: 'string', required: true },
+      { name: 'userAgent', type: 'string', required: false },
     ],
   },
 
@@ -159,12 +170,13 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     subjectTemplate: 'Your subscription expires soon',
     bodyTemplate: emailMjml(
       'Subscription expiring soon',
-      'Your subscription for {{tenantName}} expires on {{expiresAt}}. Renew now to avoid service interruption.',
+      'Hi {{contactName}} — the subscription for {{tenantName}} expires in {{daysUntilExpiry}} days, on {{expiresAt}}. Renew now to avoid service interruption.',
     ),
     bodyFormat: 'mjml',
     variablesSchema: [
       ...COMMON_VARS,
       { name: 'expiresAt', type: 'string', required: true },
+      { name: 'daysUntilExpiry', type: 'string', required: false },
     ],
   },
   {
@@ -172,11 +184,714 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: 'Subscription expiring soon',
-    bodyTemplate: 'Your subscription expires on {{expiresAt}}. Renew to avoid service interruption.',
+    bodyTemplate: 'Your subscription for {{tenantName}} expires in {{daysUntilExpiry}} days, on {{expiresAt}}. Renew to avoid service interruption.',
     bodyFormat: 'plaintext',
     variablesSchema: [
       ...COMMON_VARS,
       { name: 'expiresAt', type: 'string', required: true },
+      { name: 'daysUntilExpiry', type: 'string', required: false },
+    ],
+  },
+
+  // ── admin.subscriptions_expiring ───────────────────────────────────
+  {
+    categoryId: 'admin.subscriptions_expiring',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: '{{tenantCount}} subscription(s) expire within {{horizonDays}} days',
+    bodyTemplate: emailMjml(
+      'Subscriptions expiring',
+      '{{tenantCount}} subscription(s) expire within the next {{horizonDays}} days, as of {{occurredAt}}: '
+      + '{{tenantList}}',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'tenantCount', type: 'string', required: false },
+      { name: 'horizonDays', type: 'string', required: false },
+      { name: 'tenantList', type: 'string', required: false },
+      { name: 'occurredAt', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'admin.subscriptions_expiring',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: '{{tenantCount}} subscription(s) expiring',
+    bodyTemplate: 'Within {{horizonDays}} days as of {{occurredAt}}: {{tenantList}}',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'tenantCount', type: 'string', required: false },
+      { name: 'horizonDays', type: 'string', required: false },
+      { name: 'tenantList', type: 'string', required: false },
+      { name: 'occurredAt', type: 'string', required: false },
+    ],
+  },
+
+  {
+    categoryId: 'tenant.mail_event',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: '{{subsystem}}: {{objectLabel}}',
+    bodyTemplate: emailMjml(
+      '{{subsystem}}',
+      '{{objectLabel}} on {{tenantName}} — {{severityLabel}}: {{detail}} As of {{occurredAt}}. {{recommendedAction}}',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'subsystem', type: 'string', required: false },
+      { name: 'objectLabel', type: 'string', required: false },
+      { name: 'detail', type: 'string', required: false },
+      { name: 'severityLabel', type: 'string', required: false },
+      { name: 'recommendedAction', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'tenant.mail_event',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: '{{subsystem}}: {{objectLabel}}',
+    bodyTemplate: '{{detail}} ({{objectLabel}}, {{severityLabel}}) as of {{occurredAt}}. {{recommendedAction}}',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'subsystem', type: 'string', required: false },
+      { name: 'objectLabel', type: 'string', required: false },
+      { name: 'detail', type: 'string', required: false },
+      { name: 'severityLabel', type: 'string', required: false },
+      { name: 'recommendedAction', type: 'string', required: false },
+    ],
+  },
+
+  // ── admin.notification_escalated ───────────────────────────────────
+  {
+    categoryId: 'admin.notification_escalated',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: '{{count}} notification(s) unread for over {{ageHours}}h',
+    bodyTemplate: emailMjml(
+      'Unacknowledged notifications',
+      '{{count}} action notification(s) have gone unread for more than {{ageHours}} hours, as of '
+      + '{{occurredAt}}: {{summary}}',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'count', type: 'string', required: false },
+      { name: 'ageHours', type: 'string', required: false },
+      { name: 'summary', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'admin.notification_escalated',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: '{{count}} unread for over {{ageHours}}h',
+    bodyTemplate: '{{count}} action notification(s) unread for more than {{ageHours}}h as of {{occurredAt}}: {{summary}}',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'count', type: 'string', required: false },
+      { name: 'ageHours', type: 'string', required: false },
+      { name: 'summary', type: 'string', required: false },
+    ],
+  },
+
+  // ── platform.digest ────────────────────────────────────────────────
+  {
+    categoryId: 'platform.digest',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: '{{itemCount}} notifications — {{summary}}',
+    bodyTemplate: emailMjml(
+      'Your notification digest',
+      'Hi {{userName}} — {{itemCount}} notification(s) since your last digest, as of {{occurredAt}}: {{items}}',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'itemCount', type: 'string', required: false },
+      { name: 'summary', type: 'string', required: false },
+      { name: 'items', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'platform.digest',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: '{{itemCount}} notifications',
+    bodyTemplate: '{{itemCount}} notification(s) as of {{occurredAt}}: {{items}}',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'itemCount', type: 'string', required: false },
+      { name: 'summary', type: 'string', required: false },
+      { name: 'items', type: 'string', required: false },
+    ],
+  },
+
+  // ── Operational events ─────────────────────────────────────────────
+  //
+  // One category per subsystem, sharing an envelope-shaped template. These
+  // replace ~20 call sites that wrote rows straight into the notifications
+  // table with a hand-built title and message and NO category — so they could
+  // never be emailed, pushed, muted, rate-limited or audited, and could not be
+  // listed in the admin Sources screen at all.
+  //
+  // The shared shape is deliberately identity-first: which subsystem, which
+  // object, what happened, when, and what to do. That is strictly more than
+  // the strings it replaces, which named the object only when the author
+  // happened to interpolate it.
+  {
+    categoryId: 'admin.storage_event',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: '{{subsystem}}: {{objectLabel}}',
+    bodyTemplate: emailMjml(
+      '{{subsystem}} — {{severityLabel}}',
+      '{{objectLabel}}: {{detail}} As of {{occurredAt}}. {{recommendedAction}}',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'subsystem', type: 'string', required: false },
+      { name: 'objectLabel', type: 'string', required: false },
+      { name: 'detail', type: 'string', required: false },
+      { name: 'severityLabel', type: 'string', required: false },
+      { name: 'recommendedAction', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'admin.storage_event',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: '{{subsystem}}: {{objectLabel}}',
+    bodyTemplate: '{{detail}} ({{objectLabel}}, {{severityLabel}}) as of {{occurredAt}}. {{recommendedAction}}',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'subsystem', type: 'string', required: false },
+      { name: 'objectLabel', type: 'string', required: false },
+      { name: 'detail', type: 'string', required: false },
+      { name: 'severityLabel', type: 'string', required: false },
+      { name: 'recommendedAction', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'admin.node_event',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: '{{subsystem}}: {{objectLabel}}',
+    bodyTemplate: emailMjml(
+      '{{subsystem}} — {{severityLabel}}',
+      '{{objectLabel}}: {{detail}} As of {{occurredAt}}. {{recommendedAction}}',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'subsystem', type: 'string', required: false },
+      { name: 'objectLabel', type: 'string', required: false },
+      { name: 'detail', type: 'string', required: false },
+      { name: 'severityLabel', type: 'string', required: false },
+      { name: 'recommendedAction', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'admin.node_event',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: '{{subsystem}}: {{objectLabel}}',
+    bodyTemplate: '{{detail}} ({{objectLabel}}, {{severityLabel}}) as of {{occurredAt}}. {{recommendedAction}}',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'subsystem', type: 'string', required: false },
+      { name: 'objectLabel', type: 'string', required: false },
+      { name: 'detail', type: 'string', required: false },
+      { name: 'severityLabel', type: 'string', required: false },
+      { name: 'recommendedAction', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'admin.database_event',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: '{{subsystem}}: {{objectLabel}}',
+    bodyTemplate: emailMjml(
+      '{{subsystem}} — {{severityLabel}}',
+      '{{objectLabel}}: {{detail}} As of {{occurredAt}}. {{recommendedAction}}',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'subsystem', type: 'string', required: false },
+      { name: 'objectLabel', type: 'string', required: false },
+      { name: 'detail', type: 'string', required: false },
+      { name: 'severityLabel', type: 'string', required: false },
+      { name: 'recommendedAction', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'admin.database_event',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: '{{subsystem}}: {{objectLabel}}',
+    bodyTemplate: '{{detail}} ({{objectLabel}}, {{severityLabel}}) as of {{occurredAt}}. {{recommendedAction}}',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'subsystem', type: 'string', required: false },
+      { name: 'objectLabel', type: 'string', required: false },
+      { name: 'detail', type: 'string', required: false },
+      { name: 'severityLabel', type: 'string', required: false },
+      { name: 'recommendedAction', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'admin.mail_event',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: '{{subsystem}}: {{objectLabel}}',
+    bodyTemplate: emailMjml(
+      '{{subsystem}} — {{severityLabel}}',
+      '{{objectLabel}}: {{detail}} As of {{occurredAt}}. {{recommendedAction}}',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'subsystem', type: 'string', required: false },
+      { name: 'objectLabel', type: 'string', required: false },
+      { name: 'detail', type: 'string', required: false },
+      { name: 'severityLabel', type: 'string', required: false },
+      { name: 'recommendedAction', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'admin.mail_event',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: '{{subsystem}}: {{objectLabel}}',
+    bodyTemplate: '{{detail}} ({{objectLabel}}, {{severityLabel}}) as of {{occurredAt}}. {{recommendedAction}}',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'subsystem', type: 'string', required: false },
+      { name: 'objectLabel', type: 'string', required: false },
+      { name: 'detail', type: 'string', required: false },
+      { name: 'severityLabel', type: 'string', required: false },
+      { name: 'recommendedAction', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'admin.platform_event',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: '{{subsystem}}: {{objectLabel}}',
+    bodyTemplate: emailMjml(
+      '{{subsystem}} — {{severityLabel}}',
+      '{{objectLabel}}: {{detail}} As of {{occurredAt}}. {{recommendedAction}}',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'subsystem', type: 'string', required: false },
+      { name: 'objectLabel', type: 'string', required: false },
+      { name: 'detail', type: 'string', required: false },
+      { name: 'severityLabel', type: 'string', required: false },
+      { name: 'recommendedAction', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'admin.platform_event',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: '{{subsystem}}: {{objectLabel}}',
+    bodyTemplate: '{{detail}} ({{objectLabel}}, {{severityLabel}}) as of {{occurredAt}}. {{recommendedAction}}',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'subsystem', type: 'string', required: false },
+      { name: 'objectLabel', type: 'string', required: false },
+      { name: 'detail', type: 'string', required: false },
+      { name: 'severityLabel', type: 'string', required: false },
+      { name: 'recommendedAction', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'admin.tenant_integrity',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: '{{subsystem}}: {{objectLabel}}',
+    bodyTemplate: emailMjml(
+      '{{subsystem}} — {{severityLabel}}',
+      '{{objectLabel}}: {{detail}} As of {{occurredAt}}. {{recommendedAction}}',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'subsystem', type: 'string', required: false },
+      { name: 'objectLabel', type: 'string', required: false },
+      { name: 'detail', type: 'string', required: false },
+      { name: 'severityLabel', type: 'string', required: false },
+      { name: 'recommendedAction', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'admin.tenant_integrity',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: '{{subsystem}}: {{objectLabel}}',
+    bodyTemplate: '{{detail}} ({{objectLabel}}, {{severityLabel}}) as of {{occurredAt}}. {{recommendedAction}}',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'subsystem', type: 'string', required: false },
+      { name: 'objectLabel', type: 'string', required: false },
+      { name: 'detail', type: 'string', required: false },
+      { name: 'severityLabel', type: 'string', required: false },
+      { name: 'recommendedAction', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'tenant.domain_verification',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: '{{subsystem}}: {{objectLabel}}',
+    bodyTemplate: emailMjml(
+      '{{subsystem}} — {{severityLabel}}',
+      '{{objectLabel}}: {{detail}} As of {{occurredAt}}. {{recommendedAction}}',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'subsystem', type: 'string', required: false },
+      { name: 'objectLabel', type: 'string', required: false },
+      { name: 'detail', type: 'string', required: false },
+      { name: 'severityLabel', type: 'string', required: false },
+      { name: 'recommendedAction', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'tenant.domain_verification',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: '{{subsystem}}: {{objectLabel}}',
+    bodyTemplate: '{{detail}} ({{objectLabel}}, {{severityLabel}}) as of {{occurredAt}}. {{recommendedAction}}',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'subsystem', type: 'string', required: false },
+      { name: 'objectLabel', type: 'string', required: false },
+      { name: 'detail', type: 'string', required: false },
+      { name: 'severityLabel', type: 'string', required: false },
+      { name: 'recommendedAction', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'tenant.backup_event',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: '{{subsystem}}: {{objectLabel}}',
+    bodyTemplate: emailMjml(
+      '{{subsystem}} — {{severityLabel}}',
+      '{{objectLabel}}: {{detail}} As of {{occurredAt}}. {{recommendedAction}}',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'subsystem', type: 'string', required: false },
+      { name: 'objectLabel', type: 'string', required: false },
+      { name: 'detail', type: 'string', required: false },
+      { name: 'severityLabel', type: 'string', required: false },
+      { name: 'recommendedAction', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'tenant.backup_event',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: '{{subsystem}}: {{objectLabel}}',
+    bodyTemplate: '{{detail}} ({{objectLabel}}, {{severityLabel}}) as of {{occurredAt}}. {{recommendedAction}}',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'subsystem', type: 'string', required: false },
+      { name: 'objectLabel', type: 'string', required: false },
+      { name: 'detail', type: 'string', required: false },
+      { name: 'severityLabel', type: 'string', required: false },
+      { name: 'recommendedAction', type: 'string', required: false },
+    ],
+  },
+
+  // ── admin.cluster_storage_capacity ─────────────────────────────────
+  {
+    categoryId: 'admin.cluster_storage_capacity',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: 'Cluster storage {{level}} — {{clusterPct}}% committed',
+    bodyTemplate: emailMjml(
+      'Cluster storage capacity',
+      '{{clusterDetail}} Worst node: {{worstNode}}. As of {{occurredAt}}. {{recommendedAction}}',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'level', type: 'string', required: false },
+      { name: 'clusterPct', type: 'string', required: false },
+      { name: 'clusterDetail', type: 'string', required: false },
+      { name: 'worstNode', type: 'string', required: false },
+      { name: 'recommendedAction', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'admin.cluster_storage_capacity',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: 'Cluster storage {{level}} — {{clusterPct}}%',
+    bodyTemplate: '{{clusterDetail}} Worst node: {{worstNode}}. As of {{occurredAt}}. {{recommendedAction}}',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'level', type: 'string', required: false },
+      { name: 'clusterPct', type: 'string', required: false },
+      { name: 'clusterDetail', type: 'string', required: false },
+      { name: 'worstNode', type: 'string', required: false },
+      { name: 'recommendedAction', type: 'string', required: false },
+    ],
+  },
+
+  // ── tenant.resource_saturation_* ───────────────────────────────────
+  {
+    categoryId: 'tenant.resource_saturation_warning',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: '{{resource}} for {{tenantName}} is {{usedPct}}% used',
+    bodyTemplate: emailMjml(
+      'Resource nearing its limit',
+      '{{tenantName}} has used {{used}}{{unit}} of its {{limit}}{{unit}} {{resource}} limit ({{usedPct}}%), '
+      + 'as of {{occurredAt}}. Free some up or upgrade the plan before it is refused.',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'resource', type: 'string', required: false },
+      { name: 'usedPct', type: 'string', required: false },
+      { name: 'used', type: 'string', required: false },
+      { name: 'limit', type: 'string', required: false },
+      { name: 'unit', type: 'string', required: false },
+      { name: 'occurredAt', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'tenant.resource_saturation_warning',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: '{{resource}} is {{usedPct}}% used',
+    bodyTemplate: '{{tenantName}}: {{resource}} at {{used}}{{unit}} of {{limit}}{{unit}} ({{usedPct}}%) as of {{occurredAt}}.',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'resource', type: 'string', required: false },
+      { name: 'usedPct', type: 'string', required: false },
+      { name: 'used', type: 'string', required: false },
+      { name: 'limit', type: 'string', required: false },
+      { name: 'unit', type: 'string', required: false },
+      { name: 'occurredAt', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'tenant.resource_saturation_critical',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: '{{resource}} limit reached for {{tenantName}}',
+    bodyTemplate: emailMjml(
+      'Resource limit reached',
+      '{{tenantName}} has reached its {{resource}} limit — {{used}}{{unit}} of {{limit}}{{unit}} ({{usedPct}}%) '
+      + 'as of {{occurredAt}}. Further use is being refused until space is freed or the plan is upgraded.',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'resource', type: 'string', required: false },
+      { name: 'usedPct', type: 'string', required: false },
+      { name: 'used', type: 'string', required: false },
+      { name: 'limit', type: 'string', required: false },
+      { name: 'unit', type: 'string', required: false },
+      { name: 'occurredAt', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'tenant.resource_saturation_critical',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: '{{resource}} limit reached',
+    bodyTemplate: '{{tenantName}}: {{resource}} at {{used}}{{unit}} of {{limit}}{{unit}} ({{usedPct}}%) as of {{occurredAt}} — further use is refused.',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'resource', type: 'string', required: false },
+      { name: 'usedPct', type: 'string', required: false },
+      { name: 'used', type: 'string', required: false },
+      { name: 'limit', type: 'string', required: false },
+      { name: 'unit', type: 'string', required: false },
+      { name: 'occurredAt', type: 'string', required: false },
+    ],
+  },
+  // ── admin.email_quota_exceeded ─────────────────────────────────────
+  {
+    categoryId: 'admin.email_quota_exceeded',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: '{{tenantLabel}} saturated its {{window}} sending limit',
+    bodyTemplate: emailMjml(
+      'Tenant sending limit saturated',
+      '{{tenantLabel}} sent {{used}} of {{limit}} messages ({{percent}}%) in the current {{window}} window, '
+      + 'as of {{occurredAt}}. A saturated sender is the shape of both a compromised account and a '
+      + 'deliverability risk to the whole platform.',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'tenantLabel', type: 'string', required: false },
+      { name: 'window', type: 'string', required: false },
+      { name: 'used', type: 'string', required: false },
+      { name: 'limit', type: 'string', required: false },
+      { name: 'percent', type: 'string', required: false },
+      { name: 'occurredAt', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'admin.email_quota_exceeded',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: '{{tenantLabel}} at its {{window}} sending limit',
+    bodyTemplate: '{{tenantLabel}}: {{used}}/{{limit}} messages ({{percent}}%) this {{window}} as of {{occurredAt}}.',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'tenantLabel', type: 'string', required: false },
+      { name: 'window', type: 'string', required: false },
+      { name: 'used', type: 'string', required: false },
+      { name: 'limit', type: 'string', required: false },
+      { name: 'percent', type: 'string', required: false },
+      { name: 'occurredAt', type: 'string', required: false },
+    ],
+  },
+
+  // ── mailbox.quota_threshold / _exceeded ────────────────────────────
+  //
+  // Answers which tenant, which mailbox, what and when — the four things the
+  // retired `mail-mailbox-over-quota` SLO alert could not say, because it read
+  // a single global counter with no subject labels.
+  {
+    categoryId: 'mailbox.quota_threshold',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: 'Mailbox {{mailboxAddress}} is {{percent}}% full',
+    bodyTemplate: emailMjml(
+      'Mailbox nearly full',
+      'Mailbox {{mailboxAddress}} on {{tenantName}} has used {{usedMb}} MB of its {{quotaMb}} MB quota '
+      + '({{percent}}%), as of {{occurredAt}}. Delete messages you no longer need, or increase the quota, '
+      + 'before new mail starts being rejected.',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'mailboxAddress', type: 'string', required: false },
+      { name: 'percent', type: 'string', required: false },
+      { name: 'usedMb', type: 'string', required: false },
+      { name: 'quotaMb', type: 'string', required: false },
+      { name: 'occurredAt', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'mailbox.quota_threshold',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: 'Mailbox {{mailboxAddress}} is {{percent}}% full',
+    bodyTemplate: '{{mailboxAddress}} on {{tenantName}} has used {{usedMb}} of {{quotaMb}} MB ({{percent}}%) as of {{occurredAt}}.',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'mailboxAddress', type: 'string', required: false },
+      { name: 'percent', type: 'string', required: false },
+      { name: 'usedMb', type: 'string', required: false },
+      { name: 'quotaMb', type: 'string', required: false },
+      { name: 'occurredAt', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'mailbox.quota_exceeded',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: 'Mailbox {{mailboxAddress}} is full — mail is being rejected',
+    bodyTemplate: emailMjml(
+      'Mailbox full',
+      'Mailbox {{mailboxAddress}} on {{tenantName}} has reached its {{quotaMb}} MB quota ({{usedMb}} MB used, {{percent}}%) '
+      + 'as of {{occurredAt}}. New mail addressed to it is being REJECTED. Delete messages or increase the '
+      + 'quota to start receiving again.',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'mailboxAddress', type: 'string', required: false },
+      { name: 'percent', type: 'string', required: false },
+      { name: 'usedMb', type: 'string', required: false },
+      { name: 'quotaMb', type: 'string', required: false },
+      { name: 'occurredAt', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'mailbox.quota_exceeded',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: 'Mailbox {{mailboxAddress}} is full',
+    bodyTemplate: '{{mailboxAddress}} on {{tenantName}} is at {{percent}}% of its {{quotaMb}} MB quota ({{usedMb}} MB) as of {{occurredAt}} — new mail is being rejected.',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'mailboxAddress', type: 'string', required: false },
+      { name: 'percent', type: 'string', required: false },
+      { name: 'usedMb', type: 'string', required: false },
+      { name: 'quotaMb', type: 'string', required: false },
+      { name: 'occurredAt', type: 'string', required: false },
+    ],
+  },
+  // ── admin.mailbox_quota_fleet ──────────────────────────────────────
+  {
+    categoryId: 'admin.mailbox_quota_fleet',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: '{{mailboxCount}} mailbox(es) over quota across {{tenantCount}} tenant(s)',
+    bodyTemplate: emailMjml(
+      'Mailboxes over storage quota',
+      '{{mailboxCount}} mailbox(es) across {{tenantCount}} tenant(s) are at 100% of quota as of '
+      + '{{occurredAt}} and are rejecting mail: {{mailboxList}}',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'mailboxCount', type: 'string', required: false },
+      { name: 'tenantCount', type: 'string', required: false },
+      { name: 'mailboxList', type: 'string', required: false },
+      { name: 'occurredAt', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'admin.mailbox_quota_fleet',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: '{{mailboxCount}} mailbox(es) over quota',
+    bodyTemplate: '{{mailboxCount}} mailbox(es) across {{tenantCount}} tenant(s) at 100% of quota as of {{occurredAt}}: {{mailboxList}}',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'mailboxCount', type: 'string', required: false },
+      { name: 'tenantCount', type: 'string', required: false },
+      { name: 'mailboxList', type: 'string', required: false },
+      { name: 'occurredAt', type: 'string', required: false },
     ],
   },
 
@@ -188,12 +903,12 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     subjectTemplate: 'Subscription renewed',
     bodyTemplate: emailMjml(
       'Subscription renewed',
-      'Your subscription for {{tenantName}} was renewed. The next billing cycle starts on {{nextBillingAt}}.',
+      'Hi {{contactName}} — the subscription for {{tenantName}} was renewed and now runs until {{newExpiresAt}}.',
     ),
     bodyFormat: 'mjml',
     variablesSchema: [
       ...COMMON_VARS,
-      { name: 'nextBillingAt', type: 'string', required: false },
+      { name: 'newExpiresAt', type: 'string', required: false },
     ],
   },
   {
@@ -201,11 +916,11 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: 'Subscription renewed',
-    bodyTemplate: 'Your subscription was renewed for another billing cycle.{{#if nextBillingAt}} Next billing: {{nextBillingAt}}.{{/if}}',
+    bodyTemplate: 'Your subscription for {{tenantName}} was renewed. It now runs until {{newExpiresAt}}.',
     bodyFormat: 'plaintext',
     variablesSchema: [
       ...COMMON_VARS,
-      { name: 'nextBillingAt', type: 'string', required: false },
+      { name: 'newExpiresAt', type: 'string', required: false },
     ],
   },
 
@@ -217,19 +932,27 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     subjectTemplate: 'Subscription changed',
     bodyTemplate: emailMjml(
       'Subscription changed',
-      'Your subscription for {{tenantName}} was modified. Review the new plan in the tenant panel.',
+      'Hi {{contactName}} — the subscription for {{tenantName}} changed from the {{oldPlanName}} plan to the {{newPlanName}} plan.',
     ),
     bodyFormat: 'mjml',
-    variablesSchema: COMMON_VARS,
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'oldPlanName', type: 'string', required: false },
+      { name: 'newPlanName', type: 'string', required: false },
+    ],
   },
   {
     categoryId: 'subscription.changed',
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: 'Subscription changed',
-    bodyTemplate: 'Your subscription was modified.',
+    bodyTemplate: '{{tenantName}}: plan changed from {{oldPlanName}} to {{newPlanName}}.',
     bodyFormat: 'plaintext',
-    variablesSchema: COMMON_VARS,
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'oldPlanName', type: 'string', required: false },
+      { name: 'newPlanName', type: 'string', required: false },
+    ],
   },
 
   // ── account.sub_account_added ──────────────────────────────────────
@@ -310,7 +1033,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: 'Account suspended',
-    bodyTemplate: 'Your account has been suspended. Contact support to restore access.',
+    bodyTemplate: '{{tenantName}} was suspended on {{occurredAt}}. Contact support to restore access.',
     bodyFormat: 'plaintext',
     variablesSchema: COMMON_VARS,
   },
@@ -333,7 +1056,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: 'Account restored',
-    bodyTemplate: 'Your account has been restored. All services are back online.',
+    bodyTemplate: '{{tenantName}} was restored on {{occurredAt}}. All services are back online.',
     bodyFormat: 'plaintext',
     variablesSchema: COMMON_VARS,
   },
@@ -356,7 +1079,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: 'Account archived',
-    bodyTemplate: 'Your account has been archived. Data is retained read-only.',
+    bodyTemplate: '{{tenantName}} was archived on {{occurredAt}}. Data is retained read-only.',
     bodyFormat: 'plaintext',
     variablesSchema: COMMON_VARS,
   },
@@ -379,7 +1102,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: 'Account deletion in progress',
-    bodyTemplate: 'Your account is being permanently deleted.',
+    bodyTemplate: '{{tenantName}} is being permanently deleted, effective {{occurredAt}}.',
     bodyFormat: 'plaintext',
     variablesSchema: COMMON_VARS,
   },
@@ -391,7 +1114,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     subjectTemplate: 'Email sending at {{percent}}% of your {{window}} limit',
     bodyTemplate: emailMjml(
       'Email usage at {{percent}}%',
-      'You have sent {{used}} of {{limit}} messages in the current {{window}} window. '
+      'You have sent {{used}} of {{limit}} messages ({{percent}}%) in the current {{window}} window. '
       + 'Messages beyond the limit are deferred until the window rolls over.',
     ),
     bodyFormat: 'mjml',
@@ -442,13 +1165,14 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: 'Email sending limit reached ({{window}})',
-    bodyTemplate: '{{used}} of {{limit}} messages sent — further messages are deferred this {{window}}.',
+    bodyTemplate: '{{used}} of {{limit}} messages sent ({{percent}}%) — further messages are deferred this {{window}}.',
     bodyFormat: 'plaintext',
     variablesSchema: [
       ...COMMON_VARS,
       { name: 'window', type: 'string', required: true },
       { name: 'used', type: 'string', required: true },
       { name: 'limit', type: 'string', required: true },
+      { name: 'percent', type: 'string', required: false },
     ],
   },
 
@@ -460,6 +1184,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     bodyTemplate: emailMjml(
       'Certificate could not be issued',
       'We could not obtain a TLS certificate for {{hostname}}: {{errorMessage}} ' +
+        'The current certificate expires {{expiresAt}}. ' +
         'Visitors will see a security warning until this is resolved. ' +
         'The most common cause is DNS for the domain not yet pointing at the platform.',
     ),
@@ -468,6 +1193,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
       ...COMMON_VARS,
       { name: 'hostname', type: 'string', required: true },
       { name: 'errorMessage', type: 'string', required: false },
+      { name: 'expiresAt', type: 'string', required: false },
     ],
   },
   {
@@ -475,12 +1201,14 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: 'Certificate failed for {{hostname}}',
-    bodyTemplate: 'TLS certificate for {{hostname}} could not be issued: {{errorMessage}}',
+    bodyTemplate: 'TLS certificate for {{hostname}} could not be issued: {{errorMessage}}'
+      + ' The current certificate expires {{expiresAt}}.',
     bodyFormat: 'plaintext',
     variablesSchema: [
       ...COMMON_VARS,
       { name: 'hostname', type: 'string', required: true },
       { name: 'errorMessage', type: 'string', required: false },
+      { name: 'expiresAt', type: 'string', required: false },
     ],
   },
   {
@@ -520,7 +1248,8 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     subjectTemplate: 'Using per-hostname certificates for {{hostname}}',
     bodyTemplate: emailMjml(
       'Wildcard certificate unavailable',
-      'The wildcard certificate for {{hostname}} could not be issued ({{errorMessage}}), so each hostname is being ' +
+      'The wildcard certificate for {{hostname}} could not be issued ({{errorMessage}}, current certificate expires ' +
+        '{{expiresAt}}), so each hostname is being ' +
         'secured with its own certificate instead. Your sites stay reachable over HTTPS; new subdomains just need ' +
         'their own certificate until the wildcard succeeds. We keep retrying it in the background.',
     ),
@@ -529,6 +1258,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
       ...COMMON_VARS,
       { name: 'hostname', type: 'string', required: true },
       { name: 'errorMessage', type: 'string', required: false },
+      { name: 'expiresAt', type: 'string', required: false },
     ],
   },
   {
@@ -537,12 +1267,14 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     locale: 'en',
     subjectTemplate: 'Wildcard unavailable for {{hostname}}',
     bodyTemplate:
-      'Using per-hostname certificates for {{hostname}} while the wildcard is retried: {{errorMessage}}',
+      'Using per-hostname certificates for {{hostname}} while the wildcard is retried: {{errorMessage}}'
+      + ' (current certificate expires {{expiresAt}})',
     bodyFormat: 'plaintext',
     variablesSchema: [
       ...COMMON_VARS,
       { name: 'hostname', type: 'string', required: true },
       { name: 'errorMessage', type: 'string', required: false },
+      { name: 'expiresAt', type: 'string', required: false },
     ],
   },
 ];
@@ -594,6 +1326,7 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
       ...COMMON_VARS,
       { name: 'certSubject', type: 'string', required: true },
       { name: 'expiresAt', type: 'string', required: true },
+      { name: 'daysUntilExpiry', type: 'string', required: false },
     ],
   },
   {
@@ -607,6 +1340,7 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
       ...COMMON_VARS,
       { name: 'certSubject', type: 'string', required: true },
       { name: 'expiresAt', type: 'string', required: true },
+      { name: 'daysUntilExpiry', type: 'string', required: false },
     ],
   },
 
@@ -857,7 +1591,8 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     bodyTemplate: emailMjml(
       'SLO alert firing: {{ruleName}}',
       '{{#if subject}}Affected: {{subject}}. {{/if}}{{description}}'
-      + '{{#if value}} Current value: {{value}}.{{/if}}',
+      + '{{#if value}} Current value: {{value}}.{{/if}}'
+      + ' (rule {{ruleId}}, severity {{severity}})',
     ),
     bodyFormat: 'mjml',
     variablesSchema: SLO_ALERT_VARS,
@@ -868,7 +1603,8 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     locale: 'en',
     subjectTemplate: '[SLO CRITICAL] {{ruleName}}{{#if subject}} — {{subject}}{{/if}}',
     bodyTemplate: '{{#if subject}}Affected: {{subject}}. {{/if}}{{description}}'
-      + '{{#if value}} Current value: {{value}}.{{/if}}',
+      + '{{#if value}} Current value: {{value}}.{{/if}}'
+      + ' (rule {{ruleId}}, severity {{severity}})',
     bodyFormat: 'plaintext',
     variablesSchema: SLO_ALERT_VARS,
   },
@@ -879,7 +1615,9 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     subjectTemplate: '[SLO RESOLVED] {{ruleName}}{{#if subject}} — {{subject}}{{/if}}',
     bodyTemplate: emailMjml(
       'SLO alert resolved: {{ruleName}}',
-      '{{ruleName}} recovered{{#if subject}} for {{subject}}{{/if}}. No further action required.',
+      '{{ruleName}} recovered{{#if subject}} for {{subject}}{{/if}}. '
+      + '{{description}}{{#if value}} Last value: {{value}}.{{/if}} '
+      + '(rule {{ruleId}}, severity {{severity}}). No further action required.',
     ),
     bodyFormat: 'mjml',
     variablesSchema: SLO_ALERT_VARS,
@@ -889,7 +1627,8 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: '[SLO RESOLVED] {{ruleName}}{{#if subject}} — {{subject}}{{/if}}',
-    bodyTemplate: '{{ruleName}} recovered{{#if subject}} for {{subject}}{{/if}}.',
+    bodyTemplate: '{{ruleName}} recovered{{#if subject}} for {{subject}}{{/if}}'
+      + ' (rule {{ruleId}}, severity {{severity}}).',
     bodyFormat: 'plaintext',
     variablesSchema: SLO_ALERT_VARS,
   },
@@ -901,7 +1640,8 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     bodyTemplate: emailMjml(
       'SLO alert firing: {{ruleName}}',
       '{{#if subject}}Affected: {{subject}}. {{/if}}{{description}}'
-      + '{{#if value}} Current value: {{value}}.{{/if}}',
+      + '{{#if value}} Current value: {{value}}.{{/if}}'
+      + ' (rule {{ruleId}}, severity {{severity}})',
     ),
     bodyFormat: 'mjml',
     variablesSchema: SLO_ALERT_VARS,
@@ -912,7 +1652,8 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     locale: 'en',
     subjectTemplate: '[SLO WARNING] {{ruleName}}{{#if subject}} — {{subject}}{{/if}}',
     bodyTemplate: '{{#if subject}}Affected: {{subject}}. {{/if}}{{description}}'
-      + '{{#if value}} Current value: {{value}}.{{/if}}',
+      + '{{#if value}} Current value: {{value}}.{{/if}}'
+      + ' (rule {{ruleId}}, severity {{severity}})',
     bodyFormat: 'plaintext',
     variablesSchema: SLO_ALERT_VARS,
   },
@@ -1384,7 +2125,8 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
         subjectTemplate: '[OOM] Tenant workload {{killSummary}}: {{tenantLabel}} ({{containerName}})',
         bodyTemplate: emailMjml(
           'Tenant workload {{killSummary}}: {{tenantLabel}}',
-          'Container {{containerName}} in pod {{podName}} (tenant {{tenantLabel}}) {{killDetail}}',
+          'Container {{containerName}} in pod {{podName}} (tenant {{tenantLabel}}) {{killDetail}} '
+          + 'The container has restarted {{restartCount}} time(s).',
         ),
         bodyFormat: 'mjml',
         variablesSchema: oomVars,
@@ -1394,7 +2136,8 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
         channel: 'in_app',
         locale: 'en',
         subjectTemplate: '[OOM] {{tenantLabel}}: {{containerName}} {{killSummary}}',
-        bodyTemplate: '{{tenantLabel}} — {{containerName}} in {{podName}} {{killDetail}}',
+        bodyTemplate: '{{tenantLabel}} — {{containerName}} in {{podName}} {{killDetail}}'
+          + ' ({{restartCount}} restart(s))',
         bodyFormat: 'plaintext',
         variablesSchema: oomVars,
       },
@@ -1431,36 +2174,6 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
   }),
 ];
 
-const LEGACY_TEMPLATES: readonly SeedTemplate[] = ['legacy.info', 'legacy.warning', 'legacy.error', 'legacy.success'].flatMap(
-  (categoryId): SeedTemplate[] => [
-    {
-      categoryId,
-      channel: 'email',
-      locale: 'en',
-      subjectTemplate: '{{title}}',
-      bodyTemplate: emailMjml('{{title}}', '{{message}}'),
-      bodyFormat: 'mjml',
-      variablesSchema: [
-        ...COMMON_VARS,
-        { name: 'title', type: 'string', required: true },
-        { name: 'message', type: 'string', required: true },
-      ],
-    },
-    {
-      categoryId,
-      channel: 'in_app',
-      locale: 'en',
-      subjectTemplate: '{{title}}',
-      bodyTemplate: '{{message}}',
-      bodyFormat: 'plaintext',
-      variablesSchema: [
-        ...COMMON_VARS,
-        { name: 'title', type: 'string', required: true },
-        { name: 'message', type: 'string', required: true },
-      ],
-    },
-  ],
-);
 
 /**
  * Rows written by hand, one per (category, channel) for the two channels
@@ -1470,7 +2183,6 @@ const LEGACY_TEMPLATES: readonly SeedTemplate[] = ['legacy.info', 'legacy.warnin
 const HAND_AUTHORED_TEMPLATES: readonly SeedTemplate[] = [
   ...TENANT_TEMPLATES,
   ...ADMIN_TEMPLATES,
-  ...LEGACY_TEMPLATES,
 ];
 
 /**

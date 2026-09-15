@@ -8,6 +8,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { runTick } from './scheduler.js';
 
+// These fan-outs are dispatched now, not written per-admin. The legacy mock
+// below stays only so the module graph resolves; the assertions read the
+// categorised call, which is what carries the template, the email leg and the
+// delivery audit the in-app-only path never had.
+const notifyBackupFailedMock = vi.fn(async () => undefined);
+const notifyOperationalMock = vi.fn(async () => undefined);
+vi.mock('../notifications/events.js', () => ({
+  notifyAdminBackupFailed: (...a: unknown[]) => notifyBackupFailedMock(...(a as [])),
+  notifyAdminOperationalEvent: (...a: unknown[]) => notifyOperationalMock(...(a as [])),
+}));
 vi.mock('../notifications/service.js', () => ({
   notifyUsers: vi.fn().mockResolvedValue(undefined),
 }));
@@ -84,6 +94,8 @@ const FAILING: ClusterBackupHealth = {
 describe('cnpg-backup-health scheduler runTick', () => {
   beforeEach(() => {
     notifyUsersMock.mockClear();
+    notifyBackupFailedMock.mockClear();
+    notifyOperationalMock.mockClear();
     resolveRecipientsMock.mockReset();
     readHealthMock.mockReset();
     NOOP_LOG.warn.mockClear();
@@ -96,7 +108,7 @@ describe('cnpg-backup-health scheduler runTick', () => {
 
     await runTick(mockDb([]), {} as never, NOOP_LOG);
 
-    expect(notifyUsersMock).not.toHaveBeenCalled();
+    expect(notifyBackupFailedMock).not.toHaveBeenCalled();
   });
 
   it('newly-failed Backup CR → one admin notification', async () => {
@@ -105,18 +117,18 @@ describe('cnpg-backup-health scheduler runTick', () => {
 
     await runTick(mockDb([]), {} as never, NOOP_LOG);
 
-    expect(resolveRecipientsMock).toHaveBeenCalledWith(expect.anything(), { kind: 'admin' });
-    expect(notifyUsersMock).toHaveBeenCalledOnce();
-    const [, userIds, payload] = notifyUsersMock.mock.calls[0]!;
-    expect(userIds).toEqual(['admin-1', 'admin-2']);
-    expect(payload.type).toBe('error');
-    expect(payload.resourceType).toBe('cnpg_backup_failure');
-    // dedup key = `<namespace>/<backup-name>`
-    expect(payload.resourceId).toBe('platform/system-db-daily-2');
-    // Title carries cluster identity
-    expect(payload.title).toContain('platform/system-db');
-    // Message includes the upstream error
-    expect(payload.message).toContain('no backup section');
+    // ONE categorised dispatch; recipient fan-out belongs to the dispatcher,
+    // which is what gives a failed DATABASE BACKUP a template, an email leg
+    // and a delivery audit it did not have on the in-app-only path.
+    expect(notifyBackupFailedMock).toHaveBeenCalledOnce();
+    const [, payload, dedupeKey] = notifyBackupFailedMock.mock.calls[0]! as unknown[];
+    const p = payload as Record<string, string>;
+    // Identity: which backup, on which cluster.
+    expect(p.backupName).toContain('platform/system-db-daily-2');
+    expect(p.backupName).toContain('platform/system-db');
+    expect(p.errorMessage).toContain('no backup section');
+    // dedupe key = `<namespace>/<backup-name>`
+    expect(dedupeKey).toBe('cnpg-backup-failed:platform/system-db-daily-2');
   });
 
   it('already-notified failure → dedup, no second notification', async () => {
@@ -124,7 +136,7 @@ describe('cnpg-backup-health scheduler runTick', () => {
     // Pre-load the dedup table so this Backup CR is already known
     await runTick(mockDb(['platform/system-db-daily-2']), {} as never, NOOP_LOG);
 
-    expect(notifyUsersMock).not.toHaveBeenCalled();
+    expect(notifyBackupFailedMock).not.toHaveBeenCalled();
     expect(resolveRecipientsMock).not.toHaveBeenCalled();
   });
 
@@ -145,11 +157,13 @@ describe('cnpg-backup-health scheduler runTick', () => {
 
     await runTick(mockDb([]), {} as never, NOOP_LOG);
 
-    expect(notifyUsersMock).toHaveBeenCalledTimes(2);
-    const ids = notifyUsersMock.mock.calls.map((c) => c[2].resourceId).sort();
-    expect(ids).toEqual([
-      'platform/postgres-aux-system-backup-3',
-      'platform/system-db-daily-2',
+    expect(notifyBackupFailedMock).toHaveBeenCalledTimes(2);
+    // Dedupe key carries the identity now; there is no resourceId column on
+    // the categorised payload because the category supplies the routing.
+    const keys = (notifyBackupFailedMock.mock.calls as unknown[][]).map((c) => c[2]).sort();
+    expect(keys).toEqual([
+      'cnpg-backup-failed:platform/postgres-aux-system-backup-3',
+      'cnpg-backup-failed:platform/system-db-daily-2',
     ]);
   });
 
@@ -159,7 +173,7 @@ describe('cnpg-backup-health scheduler runTick', () => {
     await runTick(mockDb([]), {} as never, NOOP_LOG);
 
     expect(NOOP_LOG.warn).toHaveBeenCalled();
-    expect(notifyUsersMock).not.toHaveBeenCalled();
+    expect(notifyBackupFailedMock).not.toHaveBeenCalled();
   });
 
   it('no admin recipients → log warning, do not throw', async () => {
@@ -169,6 +183,6 @@ describe('cnpg-backup-health scheduler runTick', () => {
     await runTick(mockDb([]), {} as never, NOOP_LOG);
 
     expect(NOOP_LOG.warn).toHaveBeenCalled();
-    expect(notifyUsersMock).not.toHaveBeenCalled();
+    expect(notifyBackupFailedMock).not.toHaveBeenCalled();
   });
 });

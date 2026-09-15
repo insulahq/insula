@@ -280,6 +280,58 @@ export async function notificationAdminRoutes(app: FastifyInstance): Promise<voi
   // ── Providers (Phase 3B) ────────────────────────────────────────
   // Dedicated transport endpoint catalogue — distinct from
   // smtp_relay_configs (which is tenant-side outbound mail).
+  /**
+   * Per-object mutes: "quiet about THIS one thing until Friday".
+   *
+   * The escape valve that stops an operator muting a whole category during a
+   * known incident and never turning it back on.
+   */
+  app.get('/admin/notifications/mutes', async () => {
+    const { listActiveMutes } = await import('./mutes/service.js');
+    return { data: await listActiveMutes(app.db) };
+  });
+
+  app.post('/admin/notifications/mutes', async (request, reply) => {
+    const body = request.body as {
+      categoryId?: string | null; objectKey?: string; days?: number; reason?: string;
+    };
+    if (!body?.objectKey || typeof body.days !== 'number') {
+      return reply.status(400).send({
+        error: { code: 'INVALID_INPUT', message: 'objectKey and days are required' },
+      });
+    }
+    const { createMute, MuteRejected } = await import('./mutes/service.js');
+    try {
+      await createMute(app.db, {
+        categoryId: body.categoryId ?? null,
+        objectKey: body.objectKey,
+        days: body.days,
+        reason: body.reason ?? null,
+        createdBy: (request.user as { sub?: string } | undefined)?.sub ?? null,
+      });
+    } catch (err) {
+      if (err instanceof MuteRejected) {
+        // A refusal with a reason, not a silent no-op: a mute that appears to
+        // work and does not is worse than being told no.
+        return reply.status(409).send({ error: { code: 'MUTE_REJECTED', message: err.message } });
+      }
+      throw err;
+    }
+    return reply.status(204).send();
+  });
+
+  app.delete('/admin/notifications/mutes', async (request, reply) => {
+    const q = request.query as { categoryId?: string; objectKey?: string };
+    if (!q?.objectKey) {
+      return reply.status(400).send({
+        error: { code: 'INVALID_INPUT', message: 'objectKey is required' },
+      });
+    }
+    const { removeMute } = await import('./mutes/service.js');
+    await removeMute(app.db, q.categoryId ?? null, q.objectKey);
+    return reply.status(204).send();
+  });
+
   app.get('/admin/notifications/providers', async () => {
     const rows = await providerService.listProviders(app.db);
     return success(rows);

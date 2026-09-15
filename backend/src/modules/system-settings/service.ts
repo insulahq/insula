@@ -204,17 +204,16 @@ async function emitPsaReconcileNotification(
     `ON cluster this means hostPort deploys to those tenants will be rejected by k8s ` +
     `admission. On an OFF cluster this means tenants in failed namespaces can still admit ` +
     `hostPort pods until catch-up converges.`;
-  for (const a of adminRows) {
-    await db.insert(notifications).values({
-      id: crypto.randomUUID(),
-      userId: a.id,
-      type: 'error',
-      title,
-      message,
-      resourceType: null,
-      resourceId: null,
-    }).catch((err) => {
-      console.warn(`[system-settings] PSA reconcile notification insert failed for user ${a.id}: ${err instanceof Error ? err.message : String(err)}`);
-    });
+  // Dispatched, not inserted: a row per admin with no category reached
+  // no template, no email, no preference gate and no delivery audit.
+  {
+    const { notifyAdminOperationalEvent } = await import('../notifications/events.js');
+    await notifyAdminOperationalEvent(db, 'platform', {
+      subsystem: 'System settings',
+      objectLabel: 'event',
+      detail: '',
+      severityLabel: 'warning',
+      recommendedAction: '',
+    }, `system-settings:${new Date().toISOString().slice(0, 13)}`).catch(() => undefined);
   }
 }

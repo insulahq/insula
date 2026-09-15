@@ -448,16 +448,16 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
                 app.log.warn({ err: e }, 'tenant-bundles: async failure → finishByRef failed');
               }
               try {
-                const { notifyUser } = await import('./../notifications/service.js');
-                await notifyUser(app.db, orchInput.triggeredByUserId, {
-                  type: 'error',
-                  title: 'Backup bundle failed',
-                  message: `Bundle ${reservedBundleId} (${orchInput.tenantId.slice(0, 8)}…) aborted: ${operatorMsg}`,
-                  resourceType: 'backup_bundle',
-                  resourceId: reservedBundleId,
-                });
+                const { notifyTenantBackupEvent } = await import('./../notifications/events.js');
+                await notifyTenantBackupEvent(app.db, orchInput.tenantId, {
+                  subsystem: 'Backup bundle',
+                  objectLabel: reservedBundleId,
+                  detail: `The bundle aborted: ${operatorMsg}`,
+                  severityLabel: 'failed',
+                  recommendedAction: 'Re-run the backup from the Backups page.',
+                }, `bundle-failed:${reservedBundleId}`);
               } catch (e) {
-                app.log.warn({ err: e }, 'tenant-bundles: async failure → notifyUser failed');
+                app.log.warn({ err: e }, 'tenant-bundles: async failure → notification dispatch failed');
               }
             }
           }

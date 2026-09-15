@@ -5,7 +5,7 @@
  *   1. Look up the category. Unknown → no-op (event silently dropped).
  *   2. Resolve recipients via `resolveRecipients`.
  *   3. If scope='tenant' + opts.suppressTenantNotification, skip tenant users.
- *   4. For each (recipient × channel) in category.defaultChannels:
+ *   4. For each (recipient × channel) in the DERIVED channel set:
  *        a. Preference gate. Disabled → write status='muted', skip.
  *        b. Quiet hours (severity < critical). Active → status='muted', skip.
  *        c. Rate limit. Exceeded → status='rate_limited', skip.
@@ -32,7 +32,13 @@ import {
 import { resolveRecipients, type RecipientScope } from '../recipients.js';
 import { getCategory } from '../categories/service.js';
 import { getActiveTemplate } from '../templates/service.js';
-import { renderTemplateAsync } from '../templates/renderer.js';
+import { renderForDelivery } from '../templates/render-for-delivery.js';
+import { recordDegradedRender, clampDegradedVars } from './degraded.js';
+import { effectiveChannels, categoryMeta } from '../routing/effective-channels.js';
+import { platformName, tenantIdentity, userDisplayName, normaliseDateVariables } from './envelope.js';
+import { CLASS_POLICY } from '../routing/classes.js';
+import { isObjectMuted } from '../mutes/service.js';
+import { isDigestible, queueForDigest, type DigestMode } from '../digest/service.js';
 import { emitNtfyForEvent } from './ntfy.js';
 import { isCategoryAllowedForUser } from '../preferences/gate.js';
 import { getUserSettings } from '../preferences/service.js';
@@ -56,6 +62,13 @@ export interface EmitEventOptions {
   readonly eventId?: string;
   /** Override locale for the template lookup (rare). */
   readonly localeOverride?: string;
+  /**
+   * Addresses for an audience with NO platform account — today, mailbox
+   * owners. They receive the email leg only, because
+   * channelsForAudience('mailbox_user') is ['email'] and there is no account
+   * for an in-app row to live in.
+   */
+  readonly externalRecipients?: readonly string[];
   /** Override encryption key (tests). Production reads PLATFORM_ENCRYPTION_KEY. */
   readonly encryptionKey?: string;
   /**
@@ -135,12 +148,32 @@ async function findDedupedNotification(
   return row != null;
 }
 
+/**
+ * A delivery must know who it is for.
+ *
+ * Enforced here rather than as a table CHECK: `user_id` is ON DELETE SET NULL
+ * so the audit row outlives a GDPR erasure, which means a HISTORICAL row
+ * legitimately has neither identifier. A constraint cannot tell those apart
+ * from a new row written with neither — it just aborts, as it did on DEV
+ * against 164 of 458 existing rows.
+ */
+export function hasRecipient(input: {
+  userId: string | null;
+  recipientAddress?: string | null;
+  channel: string;
+}): boolean {
+  // ntfy is a topic broadcast, not an addressed delivery.
+  if (input.channel === 'ntfy') return true;
+  return Boolean(input.userId) || Boolean(input.recipientAddress);
+}
+
 async function writeDelivery(
   db: Database,
   input: {
     notificationId: string | null;
     eventId: string;
-    userId: string;
+    userId: string | null;
+    recipientAddress?: string | null;
     tenantId: string | null;
     categoryId: string;
     channel: Channel;
@@ -151,6 +184,8 @@ async function writeDelivery(
     recipientHash: string | null;
     contentHash: string;
     lastError?: string;
+    degradedVars?: readonly string[];
+    fallbackUsed?: boolean;
     providerMessageId?: string;
     sentAt?: Date | null;
     eventVariables?: Record<string, unknown>;
@@ -159,11 +194,19 @@ async function writeDelivery(
 ): Promise<string> {
   const id = crypto.randomUUID();
   const now = new Date();
+  if (!hasRecipient(input)) {
+    // Refuse at the source. A row with no recipient is undeliverable, and
+    // writing it would make the delivery log claim something was attempted.
+    throw new Error(
+      `notification delivery for ${input.categoryId}/${input.channel} has neither userId nor recipientAddress`,
+    );
+  }
   await db.insert(notificationDeliveries).values({
     id,
     notificationId: input.notificationId,
     eventId: input.eventId,
     userId: input.userId,
+    recipientAddress: input.recipientAddress ?? null,
     tenantId: input.tenantId,
     categoryId: input.categoryId,
     channel: input.channel,
@@ -176,6 +219,12 @@ async function writeDelivery(
     attempt: input.status === 'sent' ? 1 : 0,
     maxAttempts: 6,
     lastError: input.lastError ?? null,
+    // NULL means "rendered cleanly". Only a genuine contract defect writes an
+    // array here, so the partial index stays small and the admin filter is
+    // exactly the set of thin messages.
+    degradedVars: input.degradedVars && input.degradedVars.length > 0
+      ? clampDegradedVars(input.degradedVars)
+      : null,
     providerMessageId: input.providerMessageId ?? null,
     sentAt: input.status === 'sent' ? now : null,
     eventVariables: input.eventVariables ?? null,
@@ -225,7 +274,53 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
   // independent of) recipient resolution, so suppressed-tenant or
   // recipient-less events still reach the operator feed. Never throws:
   // the per-user channels must not die on a broken ntfy server.
-  if (category.defaultChannels.includes('ntfy')) {
+  // Channels are DERIVED, not read. `default_channels` is the operator's
+  // override; the class, the audience and the subsystem being reported on
+  // still filter it. This is what stops tenant events reaching the shared
+  // operator push topic and what keeps an availability alert out of a panel
+  // that may be down.
+  // Identity, resolved once from the data rather than left to ~50 emitters to
+  // remember. A caller-supplied value still wins.
+  const brand = await platformName(db);
+  const identity = await tenantIdentity(db, opts.tenantId ?? null);
+  const envelopeVars = normaliseDateVariables({
+    tenantName: identity.tenantName,
+    contactName: identity.contactName,
+    // Every notification happened at a time, and the dispatcher is the one
+    // place that reliably knows it. A caller with a more precise instant (the
+    // moment a threshold was crossed, not the moment we got around to
+    // dispatching) still wins.
+    occurredAt: new Date().toISOString(),
+    ...opts.variables,
+  });
+
+  // Object mute: "quiet about THIS one thing until Friday". Checked before any
+  // channel work so a muted object costs one indexed lookup, not a fan-out.
+  // Mandatory classes are unmutable — createMute refuses them, and this is the
+  // second line of defence in case a row predates that rule.
+  const muteKey = typeof envelopeVars.objectLabel === 'string' ? envelopeVars.objectLabel : null;
+  if (
+    muteKey
+    && !(categoryMeta(category.id) && CLASS_POLICY[categoryMeta(category.id)!.cls].mandatory)
+    && await isObjectMuted(db, category.id, muteKey)
+  ) {
+    return { eventId, deliveryCount: 0, perChannelStatuses: [] };
+  }
+
+  const routed = effectiveChannels({
+    categoryId: category.id,
+    storedChannels: category.defaultChannels,
+    tenantId: opts.tenantId ?? null,
+  });
+  const routedChannels = routed.channels;
+  if (routed.excluded.length > 0 && process.env.NOTIFICATION_ROUTING_DEBUG === 'true') {
+    for (const ex of routed.excluded) {
+      // eslint-disable-next-line no-console
+      console.debug(`[notifications] ${category.id}: excluded ${ex.channel} — ${ex.reason}`);
+    }
+  }
+
+  if (routedChannels.includes('ntfy')) {
     const ntfySalt = opts.encryptionKey ?? process.env.PLATFORM_ENCRYPTION_KEY;
     if (ntfySalt) {
       try {
@@ -235,10 +330,12 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
           tenantId: opts.tenantId ?? null,
           variables: Object.fromEntries(
             Object.entries({
-              platformName: 'Hosting Platform',
+              platformName: brand,
               userName: 'operator',
               tenantName: null,
-              ...opts.variables,
+              contactName: null,
+              occurredAt: null,
+              ...envelopeVars,
             }).map(([k, v]) => [k, v === undefined ? null : v]),
           ),
           dedupeKey,
@@ -277,6 +374,16 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
     throw new Error('PLATFORM_ENCRYPTION_KEY is required for notification dispatch (hash salt)');
   }
   const isCritical = severityIsCritical(category);
+  // Quiet hours are bypassed by CLASS, not just by severity.
+  //
+  // `security.password_reset` is severity=warning and class=security: a reset
+  // link that waits until morning is useless, and an availability alert that
+  // waits until morning describes an outage the operator slept through.
+  // Severity says how loud; class says whether it can wait. Only class can
+  // answer this question.
+  const meta = categoryMeta(category.id);
+  const classBypassesQuietHours = meta ? CLASS_POLICY[meta.cls].bypassesQuietHours : false;
+  const bypassesQuietHours = isCritical || classBypassesQuietHours;
 
   // 3. For each recipient × channel pair.
   for (const userId of recipients) {
@@ -290,7 +397,7 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
     if (dedupeKey) {
       const existing = await findDedupedNotification(db, userId, dedupeKey);
       if (existing) {
-        for (const channel of category.defaultChannels) {
+        for (const channel of routedChannels) {
           statuses.push({ userId, channel, status: 'skipped', error: 'duplicate' });
         }
         continue;
@@ -312,14 +419,16 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
     const recipientEmail = await getUserEmail(db, userId);
     const renderVars: Record<string, unknown> = Object.fromEntries(
       Object.entries({
-        platformName: 'Hosting Platform',
-        userName: recipientEmail ? recipientEmail.split('@')[0] : userId,
+        platformName: brand,
+        userName: await userDisplayName(db, userId, recipientEmail ?? null),
         tenantName: null,
-        ...opts.variables,
+        contactName: null,
+        occurredAt: null,
+        ...envelopeVars,
       }).map(([k, v]) => [k, v === undefined ? null : v]),
     );
 
-    for (const channel of category.defaultChannels) {
+    for (const channel of routedChannels) {
       // ntfy is handled once per EVENT above (topic broadcast, no
       // per-user leg) — skip it here.
       if (channel === 'ntfy') continue;
@@ -346,8 +455,8 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
         continue;
       }
 
-      // 3b. Quiet hours (critical bypasses).
-      if (!isCritical && isInQuietHours(userSettings)) {
+      // 3b. Quiet hours. Incident, Availability and Security pass through.
+      if (!bypassesQuietHours && isInQuietHours(userSettings)) {
         const contentHash = sha256(`${category.id}::quiet`, hashSalt);
         await writeDelivery(db, {
           notificationId: null,
@@ -454,32 +563,25 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
         continue;
       }
 
-      // 3e. Render.
-      let rendered;
-      try {
-        rendered = await renderTemplateAsync(tpl, renderVars);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        const contentHash = sha256(`${category.id}::render-error`, hashSalt);
-        await writeDelivery(db, {
-          notificationId: null,
-          eventId,
-          userId,
-          tenantId: opts.tenantId ?? null,
-          categoryId: category.id,
-          channel,
-          templateId: tpl.id,
-          templateVersion: tpl.version,
-          locale,
-          status: 'skipped',
-          recipientHash: null,
-          contentHash,
-          dedupeKey: dedupeKey,
-          lastError: `render_failed: ${msg}`.slice(0, 1000),
-        });
-        statuses.push({ userId, channel, status: 'skipped', error: msg });
-        continue;
+      // 3e. Render. This CANNOT throw and CANNOT skip: a missing variable
+      // degrades the message (visible placeholder + degradedVars) and an
+      // unrenderable template falls back to the envelope. The previous
+      // behaviour — mark `skipped`, raise nothing, retry never — lost 16
+      // renewal emails to a single variable-name mismatch.
+      const rendered = await renderForDelivery(tpl, renderVars, {
+        fallbackTitle: category.displayName,
+      });
+      if (rendered.degradedVars.length > 0 || rendered.fallbackUsed) {
+        recordDegradedRender(category.id, channel, rendered.degradedVars, rendered.fallbackUsed);
       }
+      // A thin delivery is still a delivery. `lastError` explains WHY it is
+      // thin without demoting the row's status — the message went out, and
+      // the Delivery Log needs to say what was lost from it.
+      const degradeNote = rendered.fallbackUsed
+        ? `render_fallback: ${rendered.fallbackReason ?? 'template unrenderable'}`.slice(0, 1000)
+        : rendered.degradedVars.length > 0
+          ? `missing_vars: ${clampDegradedVars(rendered.degradedVars).join(', ')}`.slice(0, 1000)
+          : undefined;
 
       // 3g. Hash recipient + content. recipientEmail was resolved in 3c.
       const recipientHash = sha256(channel === 'email' ? (recipientEmail ?? userId) : userId, hashSalt);
@@ -517,8 +619,32 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
           recipientHash,
           contentHash,
           dedupeKey: dedupeKey,
+          degradedVars: rendered.degradedVars,
+          lastError: degradeNote,
         });
         statuses.push({ userId, channel, status: 'sent', notificationId });
+        continue;
+      }
+
+      // 3h-pre. Digest: hold this back instead of sending it now.
+      //
+      // `digest_mode` has been a stored, API-exposed, UI-rendered preference
+      // that NOTHING read — a user could select "daily" and keep receiving
+      // every email immediately. Only digestible classes qualify; Incident,
+      // Availability and Security are never delayed, because a digest IS a
+      // delay and those are the classes that cannot absorb one.
+      //
+      // The in-app row above is unaffected: batching a panel notification
+      // helps nobody, since the panel is already a list read on demand.
+      const digestMode = (userSettings.digestMode ?? 'immediate') as DigestMode;
+      if (isDigestible(category.id, digestMode)) {
+        await queueForDigest(db, {
+          userId,
+          categoryId: category.id,
+          subject: rendered.subject ?? category.displayName,
+          body: rendered.body,
+        });
+        statuses.push({ userId, channel, status: 'queued' });
         continue;
       }
 
@@ -541,6 +667,8 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
         recipientHash,
         contentHash,
         dedupeKey: dedupeKey,
+        degradedVars: rendered.degradedVars,
+        lastError: degradeNote,
         // Persist the MERGED variables (defaults + caller) — the queue
         // worker re-renders from this column at send time and must see
         // the exact context the dispatcher validated here.
@@ -557,6 +685,59 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
         const msg = err instanceof Error ? err.message : String(err);
         statuses.push({ userId, channel, status: 'queued', error: `enqueue_warn:${msg}` });
       }
+    }
+  }
+
+  // 5. External recipients — an audience with no platform account.
+  //
+  // Queued through the SAME delivery table and worker as everyone else, so
+  // provider resolution, credential decryption, retry, DLQ and the audit trail
+  // are reused rather than reimplemented. A fourth delivery path is what this
+  // overhaul removes, not something it adds.
+  const externalLocale = opts.localeOverride ?? 'en';
+  for (const address of opts.externalRecipients ?? []) {
+    const tpl = await getActiveTemplate(db, category.id, 'email', externalLocale);
+    if (!tpl) {
+      statuses.push({ userId: null, channel: 'email', status: 'skipped', error: 'template_not_found' });
+      continue;
+    }
+    const renderVars: Record<string, unknown> = Object.fromEntries(
+      Object.entries({
+        platformName: brand,
+        userName: address.split('@')[0],
+        tenantName: null,
+        contactName: null,
+        occurredAt: null,
+        ...envelopeVars,
+      }).map(([k, v]) => [k, v === undefined ? null : v]),
+    );
+    const rendered = await renderForDelivery(tpl, renderVars, { fallbackTitle: category.displayName });
+    if (rendered.degradedVars.length > 0 || rendered.fallbackUsed) {
+      recordDegradedRender(category.id, 'email', rendered.degradedVars, rendered.fallbackUsed);
+    }
+    const deliveryId = await writeDelivery(db, {
+      notificationId: null,
+      eventId,
+      userId: null,
+      recipientAddress: address,
+      tenantId: opts.tenantId ?? null,
+      categoryId: category.id,
+      channel: 'email',
+      templateId: tpl.id,
+      templateVersion: tpl.version,
+      locale: externalLocale,
+      status: 'queued',
+      recipientHash: sha256(address, hashSalt),
+      contentHash: sha256(`${rendered.subject ?? ''}::${rendered.body}`, hashSalt),
+      dedupeKey,
+      degradedVars: rendered.degradedVars,
+      eventVariables: renderVars,
+    });
+    try {
+      await enqueueDelivery(deliveryId);
+      statuses.push({ userId: null, channel: 'email', status: 'queued' });
+    } catch (err) {
+      statuses.push({ userId: null, channel: 'email', status: 'queued', error: `enqueue_warn:${err instanceof Error ? err.message : String(err)}` });
     }
   }
 

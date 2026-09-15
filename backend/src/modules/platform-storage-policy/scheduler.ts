@@ -137,22 +137,17 @@ export function startStoragePolicyAdvisor(db: Database, k8s: K8sClients): { stop
       await db.update(platformStoragePolicy)
         .set({ haRecommendationNotifiedAt: new Date() })
         .where(eq(platformStoragePolicy.id, 'singleton'));
-      const adminRows = await db.select({ id: users.id }).from(users).where(inArray(users.roleName, ['super_admin', 'admin']));
-      const message = `Cluster has ${state.readyServerCount} Ready servers — switch platform-storage tier to HA on the Storage Settings page. HA replicates system volumes to every server (4 servers = 4 replicas = 2-failure tolerance).`;
-      for (const a of adminRows) {
-        await db.insert(notifications).values({
-          id: crypto.randomUUID(),
-          userId: a.id,
-          type: 'warning',
-          title: 'Cluster reached HA size — recommend platform-storage HA',
-          message,
-          resourceType: 'platform_storage_policy',
-          resourceId: 'singleton',
-        }).catch((err) => {
-          console.error('[storage-policy-advisor] notification insert failed:', (err as Error).message);
-        });
-      }
-      console.log(`[storage-policy-advisor] notified ${adminRows.length} admin(s) — recommend HA at ${state.readyServerCount} servers`);
+      // Dispatched, not inserted: a row per admin with no category reached no
+      // template, no email, no preference gate and no delivery audit.
+      const { notifyAdminOperationalEvent } = await import('../notifications/events.js');
+      await notifyAdminOperationalEvent(db, 'storage', {
+        subsystem: 'Storage policy',
+        objectLabel: `${state.readyServerCount} Ready servers`,
+        detail: `Cluster has ${state.readyServerCount} Ready servers. HA replicates system volumes to every server (4 servers = 4 replicas = 2-failure tolerance).`,
+        severityLabel: 'HA recommended',
+        recommendedAction: 'Switch the platform-storage tier to HA on the Storage Settings page.',
+      }, `storage-ha-advice:${state.readyServerCount}`).catch(() => undefined);
+      console.log(`[storage-policy-advisor] recommended HA at ${state.readyServerCount} servers`);
     } catch (err) {
       console.error('[storage-policy-advisor] tick failed:', (err as Error).message);
     }

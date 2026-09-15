@@ -841,6 +841,13 @@ export const notifications = pgTable('notifications', {
   resourceId: varchar('resource_id', { length: 64 }),
   isRead: integer('is_read').notNull().default(0),
   readAt: timestamp('read_at'),
+  /**
+   * Set once, when an unread Action notification has been escalated. NULL is
+   * the normal state. Exists so escalation happens exactly once — re-escalating
+   * every tick is how an escalation becomes the noise it was meant to cut
+   * through.
+   */
+  escalatedAt: timestamp('escalated_at', { withTimezone: true }),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   // Migration 0037 — notification-system Phase 1 extension. Nullable
   // until every legacy caller threads a category through events.ts.
@@ -2114,6 +2121,18 @@ export const notificationDeliveries = pgTable('notification_deliveries', {
   // satisfies GDPR right-to-erasure when the higher-level erasure
   // path (eraseUserNotifications) hasn't fired yet.
   userId: varchar('user_id', { length: 36 }).references(() => users.id, { onDelete: 'set null' }),
+  /**
+   * Recipient for an audience with NO platform account — today, a mailbox
+   * owner.
+   *
+   * At WRITE time exactly one of userId / recipientAddress identifies the
+   * recipient (ntfy excepted — it is a topic broadcast). That is NOT a table
+   * CHECK: `userId` is ON DELETE SET NULL so the audit row survives a GDPR
+   * erasure, so a historical row legitimately has neither. A constraint here
+   * aborts on those rows and half-applies the migration (proved on DEV:
+   * 164 of 458 rows).
+   */
+  recipientAddress: varchar('recipient_address', { length: 320 }),
   tenantId: varchar('tenant_id', { length: 36 }).references(() => tenants.id, { onDelete: 'set null' }),
   categoryId: varchar('category_id', { length: 64 }).notNull().references(() => notificationCategories.id, { onDelete: 'restrict' }),
   channel: channelIdEnum('channel').notNull(),
@@ -2128,6 +2147,13 @@ export const notificationDeliveries = pgTable('notification_deliveries', {
   maxAttempts: integer('max_attempts').notNull().default(6),
   nextAttemptAt: timestamp('next_attempt_at', { withTimezone: true }),
   lastError: text('last_error'),
+  /**
+   * Template variables that were referenced but never supplied, filled with a
+   * visible placeholder so the delivery could still go out. NULL = healthy.
+   * A non-empty array is a payload<->template contract defect that reached
+   * production; the admin delivery log filters on it.
+   */
+  degradedVars: jsonb('degraded_vars').$type<string[] | null>(),
   providerMessageId: varchar('provider_message_id', { length: 255 }),
   queuedAt: timestamp('queued_at', { withTimezone: true }).notNull().defaultNow(),
   sentAt: timestamp('sent_at', { withTimezone: true }),
@@ -2180,6 +2206,46 @@ export const userNotificationSettings = pgTable('user_notification_settings', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });
+
+/**
+ * Per-object notification mutes — "quiet about THIS one thing until Friday".
+ *
+ * Without this the only tool during a known incident was muting the whole
+ * category, which silences every other object it covers and is almost never
+ * turned back on. `mutedUntil` is NOT NULL on purpose: an indefinite mute is
+ * how a category gets silenced permanently by accident.
+ */
+/**
+ * Items waiting to go out in a periodic digest.
+ *
+ * `user_notification_settings.digest_mode` was a stored, displayed, API-exposed
+ * preference that NOTHING read — a user could choose "daily" and keep getting
+ * every email immediately. This is the queue that makes it real.
+ */
+export const notificationDigestItems = pgTable('notification_digest_items', {
+  id: varchar('id', { length: 36 }).primaryKey().$defaultFn(() => crypto.randomUUID()),
+  userId: varchar('user_id', { length: 36 }).notNull(),
+  categoryId: varchar('category_id', { length: 64 }).notNull(),
+  subject: varchar('subject', { length: 500 }).notNull(),
+  body: text('body').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  sentAt: timestamp('sent_at', { withTimezone: true }),
+}, (table) => [
+  index('notification_digest_items_pending_idx').on(table.userId, table.createdAt),
+]);
+
+export const notificationObjectMutes = pgTable('notification_object_mutes', {
+  id: varchar('id', { length: 36 }).primaryKey().$defaultFn(() => crypto.randomUUID()),
+  /** NULL = muted across every category that names this object. */
+  categoryId: varchar('category_id', { length: 64 }),
+  objectKey: varchar('object_key', { length: 255 }).notNull(),
+  mutedUntil: timestamp('muted_until', { withTimezone: true }).notNull(),
+  reason: text('reason'),
+  createdBy: varchar('created_by', { length: 36 }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('notification_object_mutes_lookup_idx').on(table.objectKey, table.categoryId, table.mutedUntil),
+]);
 
 export const notificationProviders = pgTable('notification_providers', {
   id: varchar('id', { length: 36 }).primaryKey().$defaultFn(() => crypto.randomUUID()),

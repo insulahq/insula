@@ -12,6 +12,15 @@
  */
 
 import { describe, expect, it, vi } from 'vitest';
+
+// These fan-outs now DISPATCH through the categorised path instead of writing a
+// row per admin straight into the notifications table. The old assertions read
+// the INSERT values, which is exactly the coupling that let a data-loss alert
+// exist with no category, no template, no email and no delivery audit.
+const notifyOperationalMock = vi.fn(async () => undefined);
+vi.mock('../notifications/events.js', () => ({
+  notifyAdminOperationalEvent: (...a: unknown[]) => notifyOperationalMock(...(a as [])),
+}));
 import { notifyAdminsMailCertNotServing, waitForServedMailCert } from './migration.js';
 
 type AnyCore = Parameters<typeof waitForServedMailCert>[0];
@@ -110,18 +119,17 @@ describe('notifyAdminsMailCertNotServing (loud alert on a self-signed listener p
   }
 
   it('inserts an error-level notification for every admin, linked to the migration run', async () => {
-    const { db, inserted } = makeDb(['admin-1', 'admin-2']);
+    const { db } = makeDb(['admin-1', 'admin-2']);
     await notifyAdminsMailCertNotServing(db, 'run-42', 'staging3', 'CN=rcgen self signed cert');
-    expect(inserted).toHaveLength(2);
-    for (const n of inserted) {
-      expect(n.type).toBe('error');
-      expect(n.resourceType).toBe('mail_migration');
-      expect(n.resourceId).toBe('run-42');
-      expect(String(n.title).toLowerCase()).toContain('cert');
-      expect(String(n.message)).toContain('staging3');
-      expect(String(n.message)).toContain('rcgen self signed cert');
-    }
-    expect(new Set(inserted.map((n) => n.userId))).toEqual(new Set(['admin-1', 'admin-2']));
+
+    // ONE categorised event; the dispatcher owns recipient fan-out.
+    expect(notifyOperationalMock).toHaveBeenCalledTimes(1);
+    const [, subsystem, payload] = notifyOperationalMock.mock.calls[0] as unknown[];
+    expect(subsystem).toBe('mail');
+    const p = payload as Record<string, string>;
+    expect(p.severityLabel.toLowerCase()).toContain('cert');
+    expect(p.objectLabel).toContain('staging3');
+    expect(p.detail).toContain('rcgen self signed cert');
   });
 
   it('renders unknown issuer safely and is a no-op with no admins', async () => {

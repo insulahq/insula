@@ -181,20 +181,18 @@ async function main(): Promise<void> {
           // operator sees this in the UI without trawling Job logs.
           try {
             const { notifications, users } = await import('../db/schema.js');
-            const { inArray } = await import('drizzle-orm');
-            const cryptoMod = await import('node:crypto');
-            const admins = await db.select({ id: users.id }).from(users).where(inArray(users.roleName, ['super_admin', 'admin']));
-            for (const a of admins) {
-              await db.insert(notifications).values({
-                id: cryptoMod.randomUUID(),
-                userId: a.id,
-                type: 'warning',
-                title: 'Barman promote: side-by-side cluster cleanup failed',
-                message: `Source ${clusterNamespace}/${clusterName} was promoted successfully, but the side-by-side cluster ${restoredClusterName} could not be deleted: ${cleanupMsg}. Run manually: kubectl -n ${clusterNamespace} delete cluster ${restoredClusterName}`,
-                resourceType: 'postgres_barman_promote',
-                resourceId: restoredClusterName,
-              }).catch(() => undefined);
-            }
+            // Dispatched, not inserted: a row per admin with no category reached
+            // no template, no email, no preference gate and no delivery audit —
+            // for an event whose whole content is a command the operator has to
+            // run by hand.
+            const { notifyAdminOperationalEvent } = await import('../modules/notifications/events.js');
+            await notifyAdminOperationalEvent(db, 'database', {
+              subsystem: 'Barman promote',
+              objectLabel: restoredClusterName,
+              detail: `Source ${clusterNamespace}/${clusterName} was promoted successfully, but the side-by-side cluster ${restoredClusterName} could not be deleted: ${cleanupMsg}.`,
+              severityLabel: 'cleanup failed',
+              recommendedAction: `Run manually: kubectl -n ${clusterNamespace} delete cluster ${restoredClusterName}`,
+            }, `barman-cleanup:${restoredClusterName}`).catch(() => undefined);
           } catch { /* best-effort — never block exit 0 */ }
         }
       }

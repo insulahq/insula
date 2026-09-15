@@ -11,6 +11,15 @@
  */
 
 import { describe, expect, it, vi } from 'vitest';
+
+// These fan-outs now DISPATCH through the categorised path instead of writing a
+// row per admin straight into the notifications table. The old assertions read
+// the INSERT values, which is exactly the coupling that let a data-loss alert
+// exist with no category, no template, no email and no delivery audit.
+const notifyOperationalMock = vi.fn(async () => undefined);
+vi.mock('../notifications/events.js', () => ({
+  notifyAdminOperationalEvent: (...a: unknown[]) => notifyOperationalMock(...(a as [])),
+}));
 import { isNodeReadyForRollback, notifyAdminsMailDataLoss } from './migration.js';
 
 type AnyCore = Parameters<typeof isNodeReadyForRollback>[0];
@@ -62,24 +71,25 @@ describe('notifyAdminsMailDataLoss (loud alert on availability cutover)', () => 
   }
 
   it('inserts an error-level notification for every admin, linked to the migration run', async () => {
-    const { db, inserted } = makeDb(['admin-1', 'admin-2']);
+    const { db } = makeDb(['admin-1', 'admin-2']);
     await notifyAdminsMailDataLoss(db, 'run-xyz', 'staging1', '1 domain missing (ids: ce)');
-    expect(inserted).toHaveLength(2);
-    for (const n of inserted) {
-      expect(n.type).toBe('error');
-      expect(n.resourceType).toBe('mail_migration');
-      expect(n.resourceId).toBe('run-xyz');
-      expect(String(n.title).toLowerCase()).toContain('data loss');
-      expect(String(n.message)).toContain('staging1');
-      expect(String(n.message)).toContain('1 domain missing (ids: ce)');
-    }
-    expect(new Set(inserted.map((n) => n.userId))).toEqual(new Set(['admin-1', 'admin-2']));
+
+    // ONE categorised event, not one row per admin. Recipient fan-out is the
+    // dispatcher's job now, which is what gives this alert a template, an
+    // email leg, a preference gate and a delivery audit it never had.
+    expect(notifyOperationalMock).toHaveBeenCalledTimes(1);
+    const [, subsystem, payload] = notifyOperationalMock.mock.calls[0] as unknown[];
+    expect(subsystem).toBe('mail');
+    const p = payload as Record<string, string>;
+    expect(p.severityLabel.toLowerCase()).toContain('data loss');
+    expect(p.objectLabel).toContain('run-xyz');
+    expect(p.objectLabel).toContain('staging1');
+    expect(p.detail).toContain('1 domain missing (ids: ce)');
   });
 
   it('is a no-op fan-out (never throws) when there are no admins', async () => {
-    const { db, inserted } = makeDb([]);
+    const { db } = makeDb([]);
     await expect(notifyAdminsMailDataLoss(db, 'run-xyz', 'staging1', 'reason')).resolves.toBeUndefined();
-    expect(inserted).toHaveLength(0);
   });
 
   it('swallows a failing admin query (alert fan-out must never block the cutover)', async () => {

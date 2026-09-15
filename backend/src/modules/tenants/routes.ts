@@ -226,6 +226,52 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // GET /api/v1/tenants
+  /**
+   * Open issues across the fleet, indexed by tenant id.
+   *
+   * A separate endpoint rather than a field on the tenants list: the list is
+   * cursor-paginated and the tenants table wants to show a badge on EVERY row
+   * it renders, including after a filter change, without re-fetching tenants.
+   * One query per source over the whole fleet, not per tenant.
+   */
+  app.get('/tenants/issues', {
+    onRequest: [requireRole('super_admin', 'admin')],
+    schema: {
+      tags: ['Clients'],
+      summary: 'Open issues per tenant (mailbox quota, expiry, bandwidth cap)',
+      security: [{ bearerAuth: [] }],
+      response: {
+        200: {
+          type: 'object',
+          properties: {
+            data: {
+              type: 'object',
+              additionalProperties: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    tenantId: { type: 'string' },
+                    kind: { type: 'string' },
+                    severity: { type: 'string' },
+                    objectLabel: { type: 'string' },
+                    detail: { type: 'string' },
+                    actionPath: { type: 'string' },
+                    since: { type: ['string', 'null'] },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  }, async (_req, reply) => {
+    const { listTenantIssues } = await import('../tenant-issues/service.js');
+    const byTenant = await listTenantIssues(app.db);
+    return reply.send({ data: Object.fromEntries(byTenant) });
+  });
+
   app.get('/tenants', {
     onRequest: [requireRole('super_admin', 'admin')],
     schema: {
