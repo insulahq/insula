@@ -79,17 +79,49 @@ describe('evaluateFreshness', () => {
     expect(r.ageMs).toBeNull();
   });
 
-  it('holds the previous verdict inside the hysteresis band', () => {
-    // 2 missed fires, threshold 3. An alert that flaps is an alert that is muted.
+  it('holds the previous verdict inside the grace', () => {
+    // The band is now HALF AN INTERVAL rather than a count of missed runs, so
+    // that alert latency scales with the schedule instead of punishing rare
+    // backups. An alert that flaps is still an alert that is muted, so the
+    // hold itself is unchanged — only what opens it.
+    //
+    // 30-min schedule: 12:30 is due and missed, grace runs to 12:45.
     const base = {
       lastSuccessAt: d('2026-09-15T12:00:00Z'),
       cronExpression: EVERY_30M,
-      now: d('2026-09-15T13:05:00Z'), // 12:30 + 13:00 missed
+      now: d('2026-09-15T12:40:00Z'), // 12:30 missed, 10 min late, grace is 15
     };
-    expect(evaluateFreshness(base).missedFires).toBe(2);
-    expect(evaluateFreshness(base).missedFires).toBeLessThan(DEFAULT_STALE_AFTER_FIRES);
+    expect(evaluateFreshness(base).missedFires).toBe(1);
     expect(evaluateFreshness({ ...base, previous: 'stale' }).verdict).toBe('stale');
     expect(evaluateFreshness({ ...base, previous: 'fresh' }).verdict).toBe('fresh');
+  });
+
+  it('goes stale half an interval late, without waiting for more misses', () => {
+    // 12:30 due and missed; at 12:46 it is past half of the 30-minute
+    // interval. The OLD rule held here and would not have called it stale
+    // until 13:30 — three whole periods.
+    const r = evaluateFreshness({
+      lastSuccessAt: d('2026-09-15T12:00:00Z'),
+      cronExpression: EVERY_30M,
+      now: d('2026-09-15T12:46:00Z'),
+      previous: 'fresh',
+    });
+    expect(r.missedFires).toBe(1);
+    expect(r.verdict).toBe('stale');
+  });
+
+  it('scales the grace to the schedule — a daily backup does not wait 3 days', () => {
+    // This is the shape of the outage the detector was built for: DEV went
+    // 3d 17h with every surface green. A daily schedule must not need three
+    // missed days to say so.
+    const base = {
+      lastSuccessAt: d('2026-09-14T03:00:30Z'),
+      cronExpression: '0 3 * * *',
+      previous: 'fresh' as const,
+    };
+    // 03:00 the next day is due and missed; grace runs to 15:00.
+    expect(evaluateFreshness({ ...base, now: d('2026-09-15T09:00:00Z') }).verdict).toBe('fresh');
+    expect(evaluateFreshness({ ...base, now: d('2026-09-15T15:30:00Z') }).verdict).toBe('stale');
   });
 
   it('leaves the band as stale once the threshold is crossed', () => {
