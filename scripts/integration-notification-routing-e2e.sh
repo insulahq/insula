@@ -118,7 +118,7 @@ log "deliveries rendered with missing variables in this window: $DEGRADED"
 # ── 5. Tenant issues feed the badge and the banner ─────────────────────
 log "Checking the tenant-issues endpoint"
 HTTP="$(curl -sk -o "$TMP/issues.json" -w '%{http_code}' -H "Authorization: Bearer $TOKEN" \
-  "$ADMIN_HOST/api/v1/admin/tenants/issues")"
+  "$ADMIN_HOST/api/v1/tenants/issues")"
 if [[ "$HTTP" == "200" ]] && jq -e '.data' "$TMP/issues.json" >/dev/null 2>&1; then
   TCOUNT="$(jq '.data | length' "$TMP/issues.json")"
   ok "tenant-issues endpoint answered 200 ($TCOUNT tenant(s) with open issues)"
