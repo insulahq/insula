@@ -73,6 +73,10 @@ on:
       # entirely. scripts/ci-workflow-paths-parity.sh now keeps the two lists
       # identical.
       - 'backend/src/db/migrations/**'
+      # Mirror of the push filter: ci-workflow-paths-parity enforces that the
+      # two lists agree, so a PR touching only route files runs the same guards
+      # the merge will.
+      - 'backend/src/modules/**/routes*.ts'
       # ci-db-isolation-check.sh compares the converger's SQL against the
       # bootstrap.sh copy. A change to the converger alone must run it, or the
       # two halves can drift with the guard sitting the PR out.
