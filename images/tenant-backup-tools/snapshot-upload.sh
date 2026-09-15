@@ -102,7 +102,7 @@ echo "=== snapshot-upload: initialising or checking restic repo ==="
 # first cut of this fix and what DEV showed: one log line, exit 11, no reason.
 # The ORIGINAL `if ! restic …; then` was errexit-exempt because it was a
 # condition; moving it to an assignment silently dropped that protection.
-if _probe_err="$(restic snapshots --quiet 2>&1 >/dev/null)"; then _probe_rc=0; else _probe_rc=$?; fi
+if _probe_err="$(restic snapshots --quiet --no-lock 2>&1 >/dev/null)"; then _probe_rc=0; else _probe_rc=$?; fi
 if [ "$_probe_rc" -eq 0 ]; then
   echo "=== snapshot-upload: restic repo present ==="
 elif [ "$_probe_rc" -eq 10 ] \
@@ -117,6 +117,32 @@ elif [ "$_probe_rc" -eq 10 ] \
       echo "=== snapshot-upload: FATAL restic init failed: $_init_err ===" >&2
       exit 1
     fi
+  fi
+elif [ "$_probe_rc" -eq 11 ] || printf '%s' "$_probe_err" | grep -qiE 'unable to create lock|repository is already locked'; then
+  # rc=11 is "failed to lock repository". NOTHING in this platform ever cleared
+  # a restic lock, so one killed pod broke every subsequent snapshot until a
+  # human ran `restic unlock` — DEV sat in that state until 2026-09-15, and
+  # staging hit the identical thing on 2026-05-27 (see the --no-lock comment in
+  # mail-admin/backups.ts). Recover instead of failing forever.
+  #
+  # Plain `restic unlock` removes STALE locks only — it leaves a lock whose
+  # owning process is still alive — so this cannot trample a concurrent run.
+  # `--remove-all` would, and is deliberately NOT used. The CronJob is
+  # concurrencyPolicy=Forbid, so there is no sibling run to race anyway.
+  echo "=== snapshot-upload: repo is LOCKED (rc=$_probe_rc) — clearing stale locks ===" >&2
+  if _unlock_out="$(restic unlock 2>&1)"; then
+    echo "=== snapshot-upload: $_unlock_out ==="
+  else
+    echo "=== snapshot-upload: FATAL restic unlock failed: $_unlock_out ===" >&2
+    exit 1
+  fi
+  # Re-probe ONCE. A lock that survives an unlock is held by a live process, and
+  # retrying past that point would be the trampling this avoids.
+  if _probe_err="$(restic snapshots --quiet --no-lock 2>&1 >/dev/null)"; then
+    echo "=== snapshot-upload: repo readable after unlock ==="
+  else
+    echo "=== snapshot-upload: FATAL repo still unreadable after unlock: $_probe_err ===" >&2
+    exit 1
   fi
 else
   # Anything else is a REAL error about a repo we cannot read. Failing here with
@@ -211,9 +237,9 @@ restic forget $KEEP_ARGS \
 # ── Collect stats and report to platform API ─────────────────────────────────
 
 echo "=== snapshot-upload: collecting repo stats ==="
-STATS_JSON=$(restic stats --json --mode raw-data 2>/dev/null || echo '{}')
+STATS_JSON=$(restic stats --json --no-lock --mode raw-data 2>/dev/null || echo '{}')
 TOTAL_SIZE=$(printf '%s' "$STATS_JSON" | grep -o '"total_size":[0-9]*' | grep -o '[0-9]*' || echo '0')
-SNAP_COUNT=$(restic snapshots --json --tag stalwart-snapshot 2>/dev/null | grep -c '"time"' || echo '0')
+SNAP_COUNT=$(restic snapshots --json --no-lock --tag stalwart-snapshot 2>/dev/null | grep -c '"time"' || echo '0')
 
 echo "=== snapshot-upload: totalSizeBytes=$TOTAL_SIZE snapshotCount=$SNAP_COUNT ==="
 
