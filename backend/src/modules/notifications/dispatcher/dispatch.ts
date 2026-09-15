@@ -145,6 +145,25 @@ async function findDedupedNotification(
   return row != null;
 }
 
+/**
+ * A delivery must know who it is for.
+ *
+ * Enforced here rather than as a table CHECK: `user_id` is ON DELETE SET NULL
+ * so the audit row outlives a GDPR erasure, which means a HISTORICAL row
+ * legitimately has neither identifier. A constraint cannot tell those apart
+ * from a new row written with neither — it just aborts, as it did on DEV
+ * against 164 of 458 existing rows.
+ */
+export function hasRecipient(input: {
+  userId: string | null;
+  recipientAddress?: string | null;
+  channel: string;
+}): boolean {
+  // ntfy is a topic broadcast, not an addressed delivery.
+  if (input.channel === 'ntfy') return true;
+  return Boolean(input.userId) || Boolean(input.recipientAddress);
+}
+
 async function writeDelivery(
   db: Database,
   input: {
@@ -172,6 +191,13 @@ async function writeDelivery(
 ): Promise<string> {
   const id = crypto.randomUUID();
   const now = new Date();
+  if (!hasRecipient(input)) {
+    // Refuse at the source. A row with no recipient is undeliverable, and
+    // writing it would make the delivery log claim something was attempted.
+    throw new Error(
+      `notification delivery for ${input.categoryId}/${input.channel} has neither userId nor recipientAddress`,
+    );
+  }
   await db.insert(notificationDeliveries).values({
     id,
     notificationId: input.notificationId,

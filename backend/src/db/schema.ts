@@ -2116,9 +2116,14 @@ export const notificationDeliveries = pgTable('notification_deliveries', {
   userId: varchar('user_id', { length: 36 }).references(() => users.id, { onDelete: 'set null' }),
   /**
    * Recipient for an audience with NO platform account — today, a mailbox
-   * owner. Exactly one of userId / recipientAddress identifies the recipient
-   * (CHECK constraint, migration 0113); ntfy is the exception, being a topic
-   * broadcast rather than an addressed delivery.
+   * owner.
+   *
+   * At WRITE time exactly one of userId / recipientAddress identifies the
+   * recipient (ntfy excepted — it is a topic broadcast). That is NOT a table
+   * CHECK: `userId` is ON DELETE SET NULL so the audit row survives a GDPR
+   * erasure, so a historical row legitimately has neither. A constraint here
+   * aborts on those rows and half-applies the migration (proved on DEV:
+   * 164 of 458 rows).
    */
   recipientAddress: varchar('recipient_address', { length: 320 }),
   tenantId: varchar('tenant_id', { length: 36 }).references(() => tenants.id, { onDelete: 'set null' }),
