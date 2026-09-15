@@ -227,6 +227,12 @@ PARALLEL=(
   # endpoint. Creates a disposable tenant + email domain, cleans up via
   # trap. ~1-2 min.
   "mailbox-quota:integration-mailbox-quota-e2e.sh"
+  # Notification ROUTING: channel policy is derived (ambient stays in-app),
+  # ntfy is barred for tenant audiences, the new mailbox-quota /
+  # saturation / expiry categories are seeded, no delivery was dropped for a
+  # render failure, and the tenant-issues endpoint feeds the badge + banner.
+  # Read-only against the live API. ~10s.
+  "notification-routing:integration-notification-routing-e2e.sh"
   # Send-only accounts + per-mailbox forwarding: contract rejections,
   # normalization, send-only guards, and (kubectl-gated) live Sieve script
   # + real SMTP delivery through the forward/keep-copy/bounce matrix.
