@@ -1,6 +1,7 @@
 # Notification System Overhaul
 
-> **Status:** proposed · **Author:** platform · **Date:** 2026-09-14
+> **Status:** phases 1–7 IMPLEMENTED (branch `feat/notification-overhaul`, merged to `development`)
+> · **Author:** platform · **Date:** 2026-09-14, implementation 2026-09-15
 >
 > A plan to make platform notifications *useful*. Today a notification tells you that
 > something happened; it does not reliably tell you **to whom**, **about what**, **how bad**,
@@ -542,6 +543,25 @@ state the notifications fire from, so a banner and a notification can never disa
 | **Admin** → notification inbox | The one genuinely new surface. `/platform/notifications` is the *settings* screen; the only place an operator reads a notification is the bell dropdown, which renders title + message and nothing else |
 | **Admin** → delivery log | `degraded_vars` column, "needs data" filter, resend |
 | **Admin** → sources | Show bindings (audience × class), last fired, 30-day volume; flag the 37 that never fire |
+
+## 4a. Implementation status (2026-09-15)
+
+| phase | state | landed as |
+|---|---|---|
+| 1 — stop the silence | **done** | `render-for-delivery.ts` (never throws), `degraded_vars` (0111), `platform_notification_degraded_total`, envelope fallback, CI variable-contract guard, 90-day retention ceiling + guard |
+| 2 — bindings replace audience | **done** | `routing/classes.ts`, `routing/channel-spec.ts`, `effective-channels.ts`; migration 0112 rewrites `default_channels` for 46 of 53 categories |
+| 3 — mailbox quota chain | **done** | 80/90/99/100, tenant-admin + mailbox-owner recipients (`recipient_address`, 0113), aggregated operator view, SLO rule + gauge retired |
+| 4 — channel registry | **done** | channels declare audiences / addressing / outOfBand / dependsOn / richness; broadcast channels barred from tenant-scoped content |
+| 5 — close the gaps | **done** | tenant storage saturation, operator sending-limit visibility, expiry 35/28/21/14/7 + operator digest |
+| 6 — identity everywhere | **done** | `dispatcher/envelope.ts` — tenantName, contactName, real platformName, full userName, formatted `occurredAt`; all 15 contract defects fixed |
+| 7 — issues on tenant surfaces | **done** | `tenant-issues/service.ts`, `GET /admin/tenants/issues`, status-column chip, tenant-detail banner |
+| 8 — convenience | **open** | digests, aggregation, quiet hours, object mute, escalation |
+| 9 — retire the other paths | **partial** | `tasks.scheduled_failure` wired; cluster storage capacity moved off the raw-insert path. 14 raw-insert modules and 9 `notifyUser()` call sites remain |
+
+Integration coverage: `scripts/integration-notification-routing-e2e.sh` asserts the
+policy as it exists in the DATABASE — ambient categories stay in-app, no tenant category
+routes to ntfy, the new categories are seeded, no delivery was dropped for a render
+failure, and the tenant-issues endpoint answers.
 
 ## 5. Phasing
 
