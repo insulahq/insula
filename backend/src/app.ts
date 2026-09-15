@@ -146,7 +146,7 @@ import { loginPasswordRoutes } from './modules/login-passwords/routes.js';
 import { emailAliasRoutes } from './modules/email-aliases/routes.js';
 import { mailboxAliasRoutes } from './modules/mailbox-aliases/routes.js';
 import { smtpRelayRoutes, smtpRelayTenantRoutes } from './modules/smtp-relay/routes.js';
-import { mailEventsWebhookRoutes, mailUsageRoutes, mailComplaintRoutes } from './modules/mail-events/routes.js';
+import { mailEventsWebhookRoutes, mailUsageRoutes, mailReportRoutes } from './modules/mail-events/routes.js';
 import { pleskMigrationRoutes } from './modules/plesk-migration/routes.js';
 import { webmailSettingsRoutes } from './modules/webmail-settings/routes.js';
 import { platformUrlsRoutes } from './modules/platform-urls/routes.js';
@@ -709,7 +709,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   // JSON parser — keep it isolated in its own register call.
   await app.register(mailEventsWebhookRoutes, { prefix: '/api/v1' });
   await app.register(mailUsageRoutes, { prefix: '/api/v1' });
-  await app.register(mailComplaintRoutes, { prefix: '/api/v1' });
+  await app.register(mailReportRoutes, { prefix: '/api/v1' });
   await app.register(pleskMigrationRoutes, { prefix: '/api/v1' });
   await app.register(registerMailDriftRoutes, { prefix: '/api/v1' });
   // Phase 3.C.1: public autodiscover routes — no /api/v1 prefix.
@@ -1314,7 +1314,6 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         const { reconcileStalwartSendLimits } = await import('./modules/email-outbound/stalwart-throttles.js');
         const { ensureMailEventsWebhook } = await import('./modules/mail-events/webhook-reconciler.js');
         const { ensureReportIntake } = await import('./modules/mail-events/report-intake-reconciler.js');
-        const { pollFblComplaints } = await import('./modules/mail-events/fbl.js');
         const { pollDmarcReports } = await import('./modules/mail-events/dmarc.js');
         const { repairDmarcRuaRecords } = await import('./modules/mail-events/dmarc-rua-repair.js');
         const { evaluateMailThresholds } = await import('./modules/mail-events/thresholds.js');
@@ -1333,12 +1332,6 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           ensureReportIntake(app.db, app.log).catch((err) => {
             app.log.warn({ err }, 'report intake ensure failed');
           });
-          pollFblComplaints(app.db, app.log).catch((err) => {
-            app.log.warn({ err }, 'fbl poll failed');
-          });
-          // R5. Separate catch from the FBL poll on purpose: the two read
-          // different Stalwart registry objects, and one being unreachable
-          // must not stop the other from draining.
           pollDmarcReports(app.db, app.log).catch((err) => {
             app.log.warn({ err }, 'dmarc poll failed');
           });

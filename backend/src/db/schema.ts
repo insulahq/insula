@@ -415,7 +415,7 @@ export const tenants = pgTable('tenants', {
   emailSendRateLimitDaily: integer('email_send_rate_limit_daily'),
   // R6 PR 1 (mig 0057): outbound-mail suspension — narrower than
   // tenant suspension (receiving/webmail keep working). The manual
-  // admin lever behind complaint alerts; enforced as a Stalwart
+  // admin lever for a bad sender; enforced as a Stalwart
   // queue quota of 0 messages for the tenant's sender domains.
   emailOutboundSuspended: boolean('email_outbound_suspended').notNull().default(false),
   timezone: varchar('timezone', { length: 50 }),
@@ -1537,9 +1537,6 @@ export const resourceQuotas = pgTable('resource_quotas', {
 
 // ─── Email System ───
 
-// R4 PR 3 (mig 0059): FBL complaints — one row per parsed ARF report
-// from Stalwart's report-analysis store. Rates are computed on read
-// vs email_send_counters. Pruned at 90 days.
 // ── R1 PR 1: Plesk migration (mig 0061) ──────────────────────────────────
 export const pleskSources = pgTable('plesk_sources', {
   id: varchar('id', { length: 36 }).primaryKey(),
@@ -1608,29 +1605,6 @@ export const pleskMigrations = pgTable('plesk_migrations', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   index('plesk_migrations_source_idx').on(table.sourceId, table.createdAt),
-]);
-
-export const emailFblComplaints = pgTable('email_fbl_complaints', {
-  id: varchar('id', { length: 36 }).primaryKey(),
-  stalwartReportId: varchar('stalwart_report_id', { length: 64 }).notNull(),
-  tenantId: varchar('tenant_id', { length: 36 })
-    .references(() => tenants.id, { onDelete: 'set null' }),
-  domain: varchar('domain', { length: 255 }),
-  feedbackType: varchar('feedback_type', { length: 32 }).notNull(),
-  originalMailFrom: varchar('original_mail_from', { length: 320 }),
-  originalRcptTo: varchar('original_rcpt_to', { length: 320 }),
-  sourceIp: varchar('source_ip', { length: 64 }),
-  reportingMta: varchar('reporting_mta', { length: 255 }),
-  reporter: varchar('reporter', { length: 320 }),
-  incidents: integer('incidents').notNull().default(1),
-  receivedAt: timestamp('received_at', { withTimezone: true }).notNull(),
-  raw: jsonb('raw').$type<Record<string, unknown>>(),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-}, (table) => [
-  uniqueIndex('email_fbl_complaints_report_unique').on(table.stalwartReportId),
-  index('email_fbl_complaints_tenant_idx').on(table.tenantId, table.receivedAt),
-  index('email_fbl_complaints_domain_idx').on(table.domain, table.receivedAt),
-  index('email_fbl_complaints_received_idx').on(table.receivedAt),
 ]);
 
 // ROADMAP R5 (mig 0110): DMARC aggregate reports.
@@ -1705,14 +1679,6 @@ export const emailQuotaEvents = pgTable('email_quota_events', {
   firedAt: timestamp('fired_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   primaryKey({ columns: [table.tenantId, table.windowKind, table.threshold, table.windowStart] }),
-]);
-
-export const emailComplaintEvents = pgTable('email_complaint_events', {
-  domain: varchar('domain', { length: 255 }).notNull(),
-  level: varchar('level', { length: 16 }).notNull(),
-  firedAt: timestamp('fired_at', { withTimezone: true }).notNull().defaultNow(),
-}, (table) => [
-  primaryKey({ columns: [table.domain, table.level] }),
 ]);
 
 // R6 PR 2 (mig 0058): outbound send accounting — hourly buckets per
