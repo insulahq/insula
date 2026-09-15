@@ -6731,7 +6731,8 @@ while doing so.
   JMAP poller writing `email_fbl_complaints`, per-domain complaint-rate
   thresholds, and notify/auto enforcement (one-click or automatic throttle +
   outbound-mail suspension), surfaced in Monitoring → Mail. Runbook
-  [MAIL_FBL.md](docs/operations/MAIL_FBL.md).
+  [MAIL_DMARC.md](docs/operations/MAIL_DMARC.md) (renamed from MAIL_FBL.md when
+  FBL was retired, 2026-09-15).
 - **Rolling sending-quota enforcement (R6, PRs #64–#69).** Per-tenant plan-based
   hourly/daily send limits via the Stalwart JMAP registry
   (`x:MtaOutboundThrottle` + `x:MtaQueueQuota`, applied with `ReloadSettings`),
