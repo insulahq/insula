@@ -193,9 +193,9 @@ families:
   SLO alerts.
 - **Node memory events** — SystemOOM / evictions / OOM-kills, see
   [Memory events](#memory-events) above.
-- **Mail health** — outbound send-abuse saturation, spam-complaint rates,
-  mailbox quota, the mail IP appearing on a DNS blocklist, and certificate
-  expiry all reach you as notifications, not just as panel banners
+- **Mail health** — outbound send-abuse saturation, mailbox quota, the mail IP
+  appearing on a DNS blocklist, and certificate expiry all reach you as
+  notifications, not just as panel banners
   ([mail operations](mail-operations.md)).
 
 Each source can be enabled, disabled, and routed independently. Email is sent

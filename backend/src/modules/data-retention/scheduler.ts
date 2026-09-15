@@ -41,7 +41,6 @@ export const TABLE_LABELS: Readonly<Record<keyof DataRetentionResult, string>> =
   storageOperations: 'storage_operations',
   provisioningTasks: 'provisioning_tasks',
   emailSendCounters: 'email_send_counters',
-  fblComplaints: 'email_fbl_complaints',
   imageAuditRows: 'custom_deployment_image_audit',
   deploymentUpgrades: 'deployment_upgrades',
   storageApplyRuns: 'platform_storage_apply_runs',

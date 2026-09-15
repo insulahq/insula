@@ -59,8 +59,6 @@ const STATIC_PATHS: Record<string, string> = {
   'admin.mail_health_degraded': '/email/operations',
   'admin.email_abuse_warning': '/email/operations',
   'admin.email_abuse_critical': '/email/operations',
-  'admin.email_complaint_warning': '/email/operations',
-  'admin.email_complaint_critical': '/email/operations',
 
   // ---- tenant self-service (tenant-panel routes) ----
   'tenant.bandwidth_exceeded': '/resource-usage',

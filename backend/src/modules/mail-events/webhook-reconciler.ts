@@ -6,8 +6,7 @@
  *   - eventsPolicy "include" (the default is "exclude" — which would
  *     firehose every server event INCLUDING http.request-body frames
  *     that leak Authorization headers; never ship exclude mode)
- *   - the event set for send accounting + the incoming-report family
- *     (pre-subscribed for R4 so its PR needs no Stalwart restart)
+ *   - the event set for send accounting + the DMARC incoming-report event
  *   - an HMAC signatureKey derived from PLATFORM_INTERNAL_SECRET
  *   - lossy=false so batches survive restarts (discardAfter default 5m)
  *
@@ -41,11 +40,13 @@ export const SUBSCRIBED_EVENTS: readonly string[] = [
   'queue.authenticated-message-queued',
   'queue.rate-limit-exceeded',
   'queue.quota-exceeded',
-  // R4 pre-subscription (ingest ignores these until PR 3 consumes them)
-  'incoming-report.abuse-report',
-  'incoming-report.auth-failure-report',
-  'incoming-report.fraud-report',
-  'incoming-report.arf-parse-failed',
+  // Nudges the debounced DMARC poll (dmarc.ts:schedulePollSoon) so a report
+  // surfaces in seconds rather than on the 5-min tick.
+  //
+  // The ARF family — abuse-report, auth-failure-report, fraud-report,
+  // arf-parse-failed — was unsubscribed 2026-09-15 with the FBL retirement.
+  // Stalwart only loads webhook config at boot, so the reconciler rolls the
+  // pod once to drop them.
   'incoming-report.dmarc-report',
 ];
 
