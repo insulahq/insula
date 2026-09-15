@@ -83,6 +83,32 @@ describe('describeCandidates', () => {
     expect(s).toMatch(/unread since \d{4}-\d{2}-\d{2}/);
   });
 
+  it('collapses repeated titles into one counted line', () => {
+    // The first real escalation on DEV listed the SAME SLO warning six times.
+    // An escalation that repeats itself is the noise it exists to cut through.
+    const dup = Array.from({ length: 6 }, (_, i) => ({
+      ...row('mailbox.quota_threshold'),
+      id: `n${i}`,
+      title: 'Ingress p95 latency',
+      createdAt: new Date(Date.UTC(2026, 7, 9 + i)),
+    }));
+    const s = describeCandidates(dup as never);
+    expect(s).toContain('Ingress p95 latency x6');
+    // the OLDEST occurrence is the one quoted, not whichever came back first
+    expect(s).toContain('oldest unread since 2026-08-09');
+    expect(s.match(/Ingress p95 latency/g)).toHaveLength(1);
+  });
+
+  it('orders the most-repeated first', () => {
+    const mixed = [
+      { ...row('mailbox.quota_threshold'), id: 'a', title: 'Once' },
+      { ...row('mailbox.quota_threshold'), id: 'b', title: 'Twice' },
+      { ...row('mailbox.quota_threshold'), id: 'c', title: 'Twice' },
+    ];
+    expect(describeCandidates(mixed as never).indexOf('Twice'))
+      .toBeLessThan(describeCandidates(mixed as never).indexOf('Once'));
+  });
+
   it('caps the summary so one bad day cannot produce an unbounded body', () => {
     const many = Array.from({ length: 500 }, (_, i) => ({
       ...row('mailbox.quota_threshold'), id: `n${i}`, title: `Notification number ${i}`,
