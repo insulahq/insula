@@ -461,9 +461,21 @@ pass "promote finished after ~$((i*8))s"
 # Separate the two. NotFound is not evidence of failure, and the authoritative
 # outcome is the one the platform itself points at: the source cluster's health,
 # which this suite already asserts immediately below.
+# BUDGET, MEASURED — not guessed. On staging 2026-09-15 the promote Job reached
+# `succeeded=1` ~460s after it started, while platform-api had already reported
+# `inProgress=false` minutes earlier. The old 60s window could not see a terminal
+# state on a healthy run, which is why this failed with both counters empty after
+# every substantive assertion had passed.
+#
+# The premise in the comment above — that platform-api's flag flips and the Job
+# controller follows "a beat later" — is what was wrong. The gap is MINUTES: the
+# flag tracks when the pitr-job writes its result, and the job then runs
+# barman-promote cleanup (deleting the side-by-side cluster) before exiting.
+# ${PROMOTE_JOB_WAIT:-600}s covers the measured 460s with headroom.
+PROMOTE_JOB_WAIT="${PROMOTE_JOB_WAIT:-600}"
 JOB_FINAL=""
 JOB_GONE=0
-for _ in $(seq 1 30); do
+for _ in $(seq 1 $((PROMOTE_JOB_WAIT / 2))); do
   JOB_RAW=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS get job $PROMOTE_JOB -o jsonpath='succeeded={.status.succeeded}/failed={.status.failed}' 2>&1" || true)
   if printf '%s' "$JOB_RAW" | grep -qE 'NotFound|not found'; then
     JOB_GONE=1
@@ -483,7 +495,7 @@ elif printf '%s' "$JOB_FINAL" | grep -q "failed=[1-9]"; then
   ssh_cmd "k3s kubectl -n $CLUSTER_NS logs job/$PROMOTE_JOB --tail=40" || true
   exit 1
 elif ! printf '%s' "$JOB_FINAL" | grep -q "succeeded=1"; then
-  fail "promote Job status never became terminal after 60s: '$JOB_FINAL' (Job still exists)"
+  fail "promote Job status never became terminal after ${PROMOTE_JOB_WAIT}s: '$JOB_FINAL' (Job still exists, still active)"
   ssh_cmd "k3s kubectl -n $CLUSTER_NS logs job/$PROMOTE_JOB --tail=40" || true
   exit 1
 else
