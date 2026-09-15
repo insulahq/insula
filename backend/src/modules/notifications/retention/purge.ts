@@ -14,6 +14,8 @@
  *     retention at all.
  *   - `notification_object_mutes` (on expiry) — a mute the dispatcher will
  *     never read again.
+ *   - `notification_digest_items` (7d after sending) — the delivery row is the
+ *     durable audit; a sent item is history.
  *
  * The inbox table used to have NO age retention at all, on the reasoning
  * that its rows are "user-deletable". They are — one at a time, via
@@ -149,6 +151,7 @@ export interface NotificationRetentionResult {
   readonly buckets: number;
   readonly templateVersions: number;
   readonly expiredMutes: number;
+  readonly digestItems: number;
 }
 
 interface RunOptions {
@@ -185,6 +188,10 @@ export async function runNotificationRetention(
     expiredMutes: await count('expired mutes', async () => {
       const { purgeExpiredMutes } = await import('../mutes/service.js');
       return purgeExpiredMutes(db);
+    }),
+    digestItems: await count('sent digest items', async () => {
+      const { purgeSentDigestItems } = await import('../digest/service.js');
+      return purgeSentDigestItems(db);
     }),
   };
 }

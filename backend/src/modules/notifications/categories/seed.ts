@@ -919,6 +919,18 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
     gdprBasis: 'contract',
   },
   {
+    id: 'platform.digest',
+    cls: 'record',
+    reportsOn: null,
+    displayName: 'Notification digest',
+    description: 'The periodic summary a user receives when their digest_mode is hourly or daily. Never itself digestible — batching the batch is how a digest stops arriving.',
+    audience: 'tenant',
+    defaultSeverity: 'info',
+    defaultChannels: ALL_NOTIFICATION_CHANNELS,
+    isMandatory: false,
+    gdprBasis: 'contract',
+  },
+  {
     id: 'tenant.bandwidth_warning',
     cls: 'action',
     reportsOn: 'network',

@@ -2208,6 +2208,25 @@ export const userNotificationSettings = pgTable('user_notification_settings', {
  * turned back on. `mutedUntil` is NOT NULL on purpose: an indefinite mute is
  * how a category gets silenced permanently by accident.
  */
+/**
+ * Items waiting to go out in a periodic digest.
+ *
+ * `user_notification_settings.digest_mode` was a stored, displayed, API-exposed
+ * preference that NOTHING read — a user could choose "daily" and keep getting
+ * every email immediately. This is the queue that makes it real.
+ */
+export const notificationDigestItems = pgTable('notification_digest_items', {
+  id: varchar('id', { length: 36 }).primaryKey().$defaultFn(() => crypto.randomUUID()),
+  userId: varchar('user_id', { length: 36 }).notNull(),
+  categoryId: varchar('category_id', { length: 64 }).notNull(),
+  subject: varchar('subject', { length: 500 }).notNull(),
+  body: text('body').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  sentAt: timestamp('sent_at', { withTimezone: true }),
+}, (table) => [
+  index('notification_digest_items_pending_idx').on(table.userId, table.createdAt),
+]);
+
 export const notificationObjectMutes = pgTable('notification_object_mutes', {
   id: varchar('id', { length: 36 }).primaryKey().$defaultFn(() => crypto.randomUUID()),
   /** NULL = muted across every category that names this object. */
