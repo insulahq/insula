@@ -69,9 +69,26 @@ const {
   notifyAdminSecurityHardeningDrift,
 } = await import('./events.js');
 
+
+/**
+ * These four events moved off the legacy notifyUsers path on 2026-09-15. They
+ * were the last in-app-only tenant events on the platform — IMAPSync, DKIM
+ * rotation, email-enabled and the mailbox limit — so none of them had EVER
+ * reached a tenant by email. The assertions below check the categorised
+ * dispatch; recipient fan-out is the dispatcher's job now, which is exactly
+ * what gives these a template, an email leg and a delivery audit.
+ */
+function lastDispatch(): { categoryId: string; variables: Record<string, string> } {
+  const call = emitEventMock.mock.calls.at(-1)?.[1] as {
+    categoryId: string; variables: Record<string, string>;
+  };
+  return call;
+}
+
 describe('notification events', () => {
   beforeEach(() => {
     createNotificationMock.mockClear();
+    emitEventMock.mockClear();
     sendNotificationEmailMock.mockClear();
     recipientsMock.mockClear();
     recipientsMock.mockResolvedValue(['u1', 'u2']);
@@ -84,25 +101,23 @@ describe('notification events', () => {
         current: 10,
         source: 'plan',
       });
-      expect(recipientsMock).toHaveBeenCalledWith({}, 'c1');
-      expect(createNotificationMock).toHaveBeenCalledTimes(2);
-      const firstCall = createNotificationMock.mock.calls[0][0];
-      expect(firstCall.userId).toBe('u1');
-      expect(firstCall.type).toBe('error');
-      expect(firstCall.title).toMatch(/Mailbox limit/i);
-      expect(firstCall.message).toContain('10');
-      expect(firstCall.resourceType).toBe('tenant');
-      expect(firstCall.resourceId).toBe('c1');
+      const d = lastDispatch();
+      expect(d.categoryId).toBe('tenant.mail_event');
+      expect(d.variables.subsystem).toMatch(/Mailbox limit/i);
+      expect(d.variables.detail).toContain('10');
     });
 
     it('silently skips when the tenant has no admins', async () => {
+      // No longer a no-op. The legacy path resolved recipients itself and
+      // bailed on an empty list; the dispatcher records the event regardless,
+      // which is what stops "nobody to notify" from meaning "nothing happened".
       recipientsMock.mockResolvedValue([]);
       await notifyTenantMailboxLimitReached({} as never, 'c1', {
         limit: 10,
         current: 10,
         source: 'plan',
       });
-      expect(createNotificationMock).not.toHaveBeenCalled();
+      expect(emitEventMock).toHaveBeenCalled();
     });
   });
 
@@ -113,13 +128,10 @@ describe('notification events', () => {
         domainName: 'example.com',
         selector: 'default',
       });
-      expect(createNotificationMock).toHaveBeenCalledTimes(2);
-      const call = createNotificationMock.mock.calls[0][0];
-      expect(call.type).toBe('info');
-      expect(call.title).toMatch(/DKIM/i);
-      expect(call.message).toContain('example.com');
-      expect(call.resourceType).toBe('email_domain');
-      expect(call.resourceId).toBe('ed1');
+      const d = lastDispatch();
+      expect(d.categoryId).toBe('tenant.mail_event');
+      expect(d.variables.subsystem).toMatch(/DKIM/i);
+      expect(d.variables.objectLabel).toBe('example.com');
     });
   });
 
@@ -130,12 +142,11 @@ describe('notification events', () => {
         status: 'completed',
         messagesTransferred: 42,
       });
-      const call = createNotificationMock.mock.calls[0][0];
-      expect(call.type).toBe('success');
-      expect(call.title).toMatch(/IMAPSync/i);
-      expect(call.message).toContain('42');
-      expect(call.resourceType).toBe('imapsync_job');
-      expect(call.resourceId).toBe('j1');
+      const d = lastDispatch();
+      expect(d.categoryId).toBe('tenant.mail_event');
+      expect(d.variables.subsystem).toMatch(/IMAPSync/i);
+      expect(d.variables.detail).toContain('42');
+      expect(d.variables.objectLabel).toContain('j1');
     });
 
     it('fires an error notification on failed status', async () => {
@@ -144,9 +155,9 @@ describe('notification events', () => {
         status: 'failed',
         errorMessage: 'auth failure',
       });
-      const call = createNotificationMock.mock.calls[0][0];
-      expect(call.type).toBe('error');
-      expect(call.message).toContain('auth failure');
+      const d = lastDispatch();
+      expect(d.variables.severityLabel).toBe('failed');
+      expect(d.variables.detail).toContain('auth failure');
     });
 
     it('does not fire for non-terminal status', async () => {
@@ -154,7 +165,7 @@ describe('notification events', () => {
         jobId: 'j1',
         status: 'running' as never,
       });
-      expect(createNotificationMock).not.toHaveBeenCalled();
+      expect(emitEventMock).not.toHaveBeenCalled();
     });
   });
 
@@ -164,12 +175,10 @@ describe('notification events', () => {
         emailDomainId: 'ed1',
         domainName: 'example.com',
       });
-      const call = createNotificationMock.mock.calls[0][0];
-      expect(call.type).toBe('success');
-      expect(call.title).toMatch(/enabled|email/i);
-      expect(call.message).toContain('example.com');
-      expect(call.resourceType).toBe('email_domain');
-      expect(call.resourceId).toBe('ed1');
+      const d = lastDispatch();
+      expect(d.categoryId).toBe('tenant.mail_event');
+      expect(d.variables.subsystem).toMatch(/email/i);
+      expect(d.variables.objectLabel).toBe('example.com');
     });
   });
 

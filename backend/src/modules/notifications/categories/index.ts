@@ -1,6 +1,5 @@
 export {
   ALL_CATEGORIES,
-  legacyCategoryIdForType,
   type CategoryDefinition,
 } from './seed.js';
 export {

@@ -52,10 +52,10 @@ done
 # Keep this SHORT and justify every entry. An entry here is a promise that the
 # gap is intentional, not a place to silence the guard.
 #
-#   legacy.*  — the retiring `notifyUser()` path passes title/message at the
-#               call site rather than through a typed payload. Removed with
-#               the path itself (phase 9 of the overhaul).
-ALLOW_MISSING="legacy.info legacy.warning legacy.error legacy.success"
+# Empty on purpose. It used to exempt the legacy.* categories, which were
+# removed on 2026-09-15 along with the notifyUser path they belonged to. An
+# allowlist that outlives its subject is a silencer, not an exception.
+ALLOW_MISSING=""
 
 CATEGORIES="$CATEGORIES" TEMPLATES="$TEMPLATES" EVENTS="$EVENTS" \
 ALLOW_MISSING="$ALLOW_MISSING" \
@@ -127,7 +127,21 @@ for (const m of EVENTS_SRC.matchAll(/const (\w+) = \{([\s\S]*?)\} as const;/g)) 
 const supplied = new Map();
 for (const m of EVENTS_SRC.matchAll(/export async function (\w+)\(([\s\S]*?)\): Promise<void> \{([\s\S]*?)\n\}/g)) {
   const payloadType = (m[2].match(/payload:\s*(\w+Payload)/) || [])[1];
-  const keys = payloadType ? (interfaces.get(payloadType) ?? []) : [];
+  // What is SUPPLIED is what the dispatch call actually passes. When a helper
+  // maps its domain payload into a different shape inline — e.g. the four mail
+  // events that translate MailboxLimitPayload into the shared operational
+  // envelope — the declared parameter type is NOT what reaches the template,
+  // and trusting it reports both a phantom MISSING and a phantom UNUSED.
+  // NB: the scope argument is itself an object literal containing a comma,
+  // so a comma-delimited segment match walks straight past the payload. Anchor
+  // on the CLOSING brace of the scope argument instead.
+  const literal = m[3].match(/dispatchSafe\([\s\S]*?\},\s*\{([\s\S]*?)\n\s*\},/);
+  const literalKeys = literal
+    ? [...literal[1].matchAll(/^\s*(\w+):/gm)].map((x) => x[1])
+    : [];
+  const keys = literalKeys.length > 0
+    ? literalKeys
+    : (payloadType ? (interfaces.get(payloadType) ?? []) : []);
   const cats = [...m[3].matchAll(/[\x27\x22]([a-z_]+\.[a-z_]+)[\x27\x22]/g)].map((x) => x[1]);
   for (const [mapName, ids] of CATEGORY_MAPS) {
     if (m[3].includes(mapName)) cats.push(...ids);

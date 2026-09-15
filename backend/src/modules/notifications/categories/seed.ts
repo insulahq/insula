@@ -907,6 +907,18 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
     gdprBasis: 'contract',
   },
   {
+    id: 'tenant.mail_event',
+    cls: 'record',
+    reportsOn: null,
+    displayName: 'Mail account event',
+    description: 'IMAPSync migration outcomes, DKIM key rotation, email enabled for a domain, and the mailbox-plan limit. These were the last four events on the legacy notifyUser path — in-app only, so none of them had EVER reached a tenant by email.',
+    audience: 'tenant',
+    defaultSeverity: 'info',
+    defaultChannels: ALL_NOTIFICATION_CHANNELS,
+    isMandatory: false,
+    gdprBasis: 'contract',
+  },
+  {
     id: 'tenant.bandwidth_warning',
     cls: 'action',
     reportsOn: 'network',
@@ -942,54 +954,6 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
  * Mandatory=false + basis=legitimate_interest so opt-out works.
  */
 const LEGACY_CATEGORIES: readonly CategoryDefinition[] = [
-  {
-    id: 'legacy.info',
-    cls: 'ambient',
-    reportsOn: null,
-    displayName: 'General notification (info)',
-    description: 'Legacy fall-through for callers that did not declare a category.',
-    audience: 'tenant',
-    defaultSeverity: 'info',
-    defaultChannels: ALL_NOTIFICATION_CHANNELS,
-    isMandatory: false,
-    gdprBasis: 'legitimate_interest',
-  },
-  {
-    id: 'legacy.warning',
-    cls: 'action',
-    reportsOn: null,
-    displayName: 'General notification (warning)',
-    description: 'Legacy fall-through for callers that did not declare a category.',
-    audience: 'tenant',
-    defaultSeverity: 'warning',
-    defaultChannels: ALL_NOTIFICATION_CHANNELS,
-    isMandatory: false,
-    gdprBasis: 'legitimate_interest',
-  },
-  {
-    id: 'legacy.error',
-    cls: 'incident',
-    reportsOn: null,
-    displayName: 'General notification (error)',
-    description: 'Legacy fall-through for callers that did not declare a category.',
-    audience: 'tenant',
-    defaultSeverity: 'error',
-    defaultChannels: ALL_NOTIFICATION_CHANNELS,
-    isMandatory: false,
-    gdprBasis: 'legitimate_interest',
-  },
-  {
-    id: 'legacy.success',
-    cls: 'ambient',
-    reportsOn: null,
-    displayName: 'General notification (success)',
-    description: 'Legacy fall-through for callers that did not declare a category.',
-    audience: 'tenant',
-    defaultSeverity: 'info',
-    defaultChannels: ALL_NOTIFICATION_CHANNELS,
-    isMandatory: false,
-    gdprBasis: 'legitimate_interest',
-  },
 ];
 
 export const ALL_CATEGORIES: readonly CategoryDefinition[] = [
@@ -999,13 +963,3 @@ export const ALL_CATEGORIES: readonly CategoryDefinition[] = [
 ];
 
 /** Map notification `type` (legacy 4-value) to legacy category id. */
-export function legacyCategoryIdForType(
-  type: 'info' | 'warning' | 'error' | 'success',
-): string {
-  switch (type) {
-    case 'info': return 'legacy.info';
-    case 'warning': return 'legacy.warning';
-    case 'error': return 'legacy.error';
-    case 'success': return 'legacy.success';
-  }
-}

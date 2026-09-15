@@ -93,6 +93,7 @@ const STATIC_PATHS: Record<string, string> = {
   'admin.tenant_integrity': '/tenants',
   'tenant.domain_verification': '/domains',
   'tenant.backup_event': '/backups',
+  'tenant.mail_event': '/email',
   'admin.email_quota_exceeded': '/tenants',
   'admin.subscriptions_expiring': '/tenants',
   // The tenant lands on the page that shows the usage bars, not on a page

@@ -51,7 +51,7 @@ import {
 import type { Database } from '../../db/index.js';
 import { backupConfigurations, backupTargetAssignments } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
-import { createNotification } from '../notifications/service.js';
+import { notifyAdminOperationalEvent } from '../notifications/events.js';
 import * as tasks from '../tasks/service.js';
 import {
   formatDrainProgressText,
@@ -409,13 +409,12 @@ async function runShimAssignmentPipeline(
     });
     if (drainResult.phase === 'drain_timeout_forced') {
       const note = formatDrainTimeoutNotification(args.className, drainResult);
-      await createNotification(db, {
-        userId: args.userId,
-        type: 'warning',
-        title: note.title,
-        message: note.body,
-        resourceType: 'backup-rclone-shim',
-        resourceId: args.className,
+      await notifyAdminOperationalEvent(db, 'storage', {
+        subsystem: 'Backup shim',
+        objectLabel: note.title,
+        detail: note.body,
+        severityLabel: 'warning',
+        recommendedAction: '',
       });
     }
 
@@ -445,17 +444,12 @@ async function runShimAssignmentPipeline(
         detailsPatch: { reconcileError: safeMessage },
       });
       try {
-        await createNotification(db, {
-          userId: args.userId,
-          type: 'warning',
-          title: `Shim reconcile error (${args.className.toUpperCase()})`,
-          message:
-            `The DB binding was updated but the shim reconciler reported ` +
-            `STATE_ERROR: ${safeMessage}. ` +
-            `The 5-minute periodic reconciler will retry; verify upstream ` +
-            `connectivity on the target and check the shim status tab.`,
-          resourceType: 'backup-rclone-shim',
-          resourceId: args.className,
+        await notifyAdminOperationalEvent(db, 'storage', {
+          subsystem: 'Backup shim',
+          objectLabel: `Shim reconcile error (${args.className.toUpperCase()})`,
+          detail: `The DB binding was updated but the shim reconciler reported ` + `STATE_ERROR: ${safeMessage}. ` + `The 5-minute periodic reconciler will retry; verify upstream ` + `connectivity on the target and check the shim status tab.`,
+          severityLabel: 'warning',
+          recommendedAction: '',
         });
       } catch {
         /* Notification creation is best-effort. */
@@ -569,13 +563,12 @@ async function runShimAssignmentPipeline(
       /* tasks.finish itself failed — already logged; nothing more we can do. */
     }
     try {
-      await createNotification(db, {
-        userId: args.userId,
-        type: 'error',
-        title: `Shim ${args.className.toUpperCase()} apply failed`,
-        message: `Target switch for the ${args.className} backup class failed: ${message.slice(0, 300)}`,
-        resourceType: 'backup-rclone-shim',
-        resourceId: args.className,
+      await notifyAdminOperationalEvent(db, 'storage', {
+        subsystem: 'Backup shim',
+        objectLabel: `Shim ${args.className.toUpperCase()} apply failed`,
+        detail: `Target switch for the ${args.className} backup class failed: ${message.slice(0, 300)}`,
+        severityLabel: 'warning',
+        recommendedAction: '',
       });
     } catch {
       /* swallow */
@@ -842,13 +835,12 @@ async function runDrainNowPipeline(
         args.classes.length === 1 ? args.classes[0] : 'all',
         drainResult,
       );
-      await createNotification(db, {
-        userId: args.userId,
-        type: 'warning',
-        title: note.title,
-        message: note.body,
-        resourceType: 'backup-rclone-shim',
-        resourceId: scope,
+      await notifyAdminOperationalEvent(db, 'storage', {
+        subsystem: 'Backup shim',
+        objectLabel: note.title,
+        detail: note.body,
+        severityLabel: 'warning',
+        recommendedAction: '',
       });
     }
     await tasks.finish(db, taskId, {

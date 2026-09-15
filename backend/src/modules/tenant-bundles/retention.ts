@@ -28,7 +28,6 @@ import { S3BackupStore } from './s3-backup-store.js';
 import { SshBackupStore } from './ssh-backup-store.js';
 import type { BackupStore } from './bundle-store.js';
 import { finishByRef as finishTaskByRef } from '../tasks/service.js';
-import { notifyUser } from '../notifications/service.js';
 import { toSafeText } from '@insula/api-contracts';
 import { reapStaleInFlight } from './cluster-concurrency.js';
 
@@ -169,15 +168,18 @@ export async function runRetentionSweep(app: FastifyInstance): Promise<Retention
           error: stuckErr,
           clearImmediately: true,
         });
-        if (userId) {
-          await notifyUser(app.db, userId, {
-            type: 'error',
-            title: 'Backup bundle reaped (stuck)',
-            message: `Bundle ${bundleId} (${tenantId.slice(0, 8)}…) was stuck in 'running' past the ${STUCK_RUNNING_HOURS}h cutoff. ${stuckErr}`,
-            resourceType: 'backup_bundle',
-            resourceId: bundleId,
-          });
-        }
+        // Dispatched to the TENANT, not poked at one user id. The legacy call
+        // needed a userId to exist and wrote an in-app row only — no template,
+        // no email, no delivery audit — so a tenant whose backup was reaped
+        // learned nothing unless they opened the panel.
+        const { notifyTenantBackupEvent } = await import('../notifications/events.js');
+        await notifyTenantBackupEvent(app.db, tenantId, {
+          subsystem: 'Backup bundle',
+          objectLabel: bundleId,
+          detail: `The bundle was stuck in 'running' past the ${STUCK_RUNNING_HOURS}h cutoff and has been reaped. ${stuckErr}`,
+          severityLabel: 'reaped',
+          recommendedAction: 'Re-run the backup from the Backups page.',
+        }, `bundle-reaped:${bundleId}`);
       } catch (err) {
         app.log.warn({ err, bundleId }, 'tenant-backup retention: stuck-bundle UX cleanup failed');
       }

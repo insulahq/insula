@@ -12,7 +12,7 @@ import {
   deploymentUpgrades,
   platformSettings,
 } from '../../db/schema.js';
-import { notifyUser } from '../notifications/service.js';
+import { notifyAdminOperationalEvent } from '../notifications/events.js';
 import type { Database } from '../../db/index.js';
 
 // ─── Inline upgrade helpers (previously from application-upgrades/service) ───
@@ -214,14 +214,14 @@ export async function runEolScan(
 
             forcedUpgradesTriggered++;
 
-            // Notify about forced upgrade
-            await notifyUser(db, adminUserId, {
-              type: 'warning',
-              title: 'Forced Upgrade Triggered',
-              message: `Deployment '${deployment.name}' auto-upgraded from v${deployment.installedVersion} to v${target.version} (EOL passed + grace period expired)`,
-              resourceType: 'deployment',
-              resourceId: deployment.id,
-            });
+            // Dispatched, not fanned out by hand.
+            await notifyAdminOperationalEvent(db, 'platform', {
+              subsystem: 'End-of-life scanner',
+              objectLabel: deployment.name,
+              detail: `Auto-upgraded from v${deployment.installedVersion} to v${target.version} (EOL passed and the grace period expired).`,
+              severityLabel: 'forced upgrade',
+              recommendedAction: '',
+            }, `eol-forced:${deployment.id}:${target.version}`);
           } catch (err) {
             errors.push(`Failed to force-upgrade deployment '${deployment.name}': ${err instanceof Error ? err.message : String(err)}`);
           }
@@ -231,24 +231,26 @@ export async function runEolScan(
       } else if (isPastEol) {
         // EOL passed but still in grace period → warning
         const daysUntilForce = Math.ceil((eolDate.getTime() + settings.graceDays * 24 * 60 * 60 * 1000 - now.getTime()) / (24 * 60 * 60 * 1000));
-        await notifyUser(db, adminUserId, {
-          type: 'warning',
-          title: 'Version EOL - Grace Period',
-          message: `Deployment '${deployment.name}' is running EOL version v${version.version}. ${settings.autoUpgradeEnabled ? `Auto-upgrade in ${daysUntilForce} days.` : 'Manual upgrade required.'}`,
-          resourceType: 'deployment',
-          resourceId: deployment.id,
-        });
+        await notifyAdminOperationalEvent(db, 'platform', {
+          subsystem: 'End-of-life scanner',
+          objectLabel: deployment.name,
+          detail: `Running EOL version v${version.version}.`,
+          severityLabel: 'grace period',
+          recommendedAction: settings.autoUpgradeEnabled
+            ? `Auto-upgrade in ${daysUntilForce} days.`
+            : 'Manual upgrade required.',
+        }, `eol-grace:${deployment.id}:${version.version}`);
         warningsSent++;
       } else {
         // Approaching EOL → info notification
         const daysUntilEol = Math.ceil((eolDate.getTime() - now.getTime()) / (24 * 60 * 60 * 1000));
-        await notifyUser(db, adminUserId, {
-          type: 'info',
-          title: 'Version Approaching EOL',
-          message: `Deployment '${deployment.name}' is running v${version.version} which reaches EOL in ${daysUntilEol} days (${version.eolDate}).`,
-          resourceType: 'deployment',
-          resourceId: deployment.id,
-        });
+        await notifyAdminOperationalEvent(db, 'platform', {
+          subsystem: 'End-of-life scanner',
+          objectLabel: deployment.name,
+          detail: `Running v${version.version}, which reaches EOL in ${daysUntilEol} days (${version.eolDate}).`,
+          severityLabel: 'approaching EOL',
+          recommendedAction: 'Plan an upgrade before the EOL date.',
+        }, `eol-approaching:${deployment.id}:${version.version}`);
         warningsSent++;
       }
     }

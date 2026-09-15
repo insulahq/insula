@@ -28,7 +28,6 @@
 import { eq, and, inArray } from 'drizzle-orm';
 import * as k8s from '@kubernetes/client-node';
 import { notifications } from '../../db/schema.js';
-import { notifyUsers } from '../notifications/service.js';
 import { resolveRecipients } from '../notifications/recipients.js';
 import { readBackupHealth, type ClusterBackupHealth, type BackupRecord } from './service.js';
 import type { Database } from '../../db/index.js';
@@ -170,16 +169,16 @@ async function notifyForFailure(
     ? `Last successful backup ${formatAge(cluster.lastSuccessSecondsAgo)} ago.`
     : `No prior successful backup recorded.`;
 
-  await notifyUsers(db, recipients, {
-    type: 'error',
-    title: `Database backup failed: ${cluster.namespace}/${cluster.clusterName}`,
-    message:
-      `CNPG backup ${backup.namespace}/${backup.name} failed. ${reason} ${recoveryHint} ` +
-      `Inspect via /backups/system → Backups, or run ` +
-      `\`kubectl -n ${backup.namespace} get backup.postgresql.cnpg.io\`.`,
-    resourceType: RESOURCE_TYPE,
-    resourceId: `${backup.namespace}/${backup.name}`,
-  });
+  // Dispatched, not fanned out by hand. The legacy notifyUsers path this
+  // replaces wrote an in-app row and stopped there — no template, no email,
+  // no preference gate, no delivery audit — for a FAILED DATABASE BACKUP.
+  const { notifyAdminBackupFailed } = await import('../notifications/events.js');
+  await notifyAdminBackupFailed(db, {
+    backupName: `${backup.namespace}/${backup.name} (cluster ${cluster.namespace}/${cluster.clusterName})`,
+    errorMessage:
+      `${reason} ${recoveryHint} Inspect via /backups/system → Backups, or run `
+      + `\`kubectl -n ${backup.namespace} get backup.postgresql.cnpg.io\`.`,
+  }, `cnpg-backup-failed:${backup.namespace}/${backup.name}`);
 
   log.info?.(
     `notified admins about failed backup ${backup.namespace}/${backup.name} (cluster ${cluster.namespace}/${cluster.clusterName}, ${recipients.length} recipients)`,

@@ -229,6 +229,42 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     ],
   },
 
+  {
+    categoryId: 'tenant.mail_event',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: '{{subsystem}}: {{objectLabel}}',
+    bodyTemplate: emailMjml(
+      '{{subsystem}}',
+      '{{objectLabel}} on {{tenantName}} — {{severityLabel}}: {{detail}} As of {{occurredAt}}. {{recommendedAction}}',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'subsystem', type: 'string', required: false },
+      { name: 'objectLabel', type: 'string', required: false },
+      { name: 'detail', type: 'string', required: false },
+      { name: 'severityLabel', type: 'string', required: false },
+      { name: 'recommendedAction', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'tenant.mail_event',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: '{{subsystem}}: {{objectLabel}}',
+    bodyTemplate: '{{detail}} ({{objectLabel}}, {{severityLabel}}) as of {{occurredAt}}. {{recommendedAction}}',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'subsystem', type: 'string', required: false },
+      { name: 'objectLabel', type: 'string', required: false },
+      { name: 'detail', type: 'string', required: false },
+      { name: 'severityLabel', type: 'string', required: false },
+      { name: 'recommendedAction', type: 'string', required: false },
+    ],
+  },
+
   // ── Operational events ─────────────────────────────────────────────
   //
   // One category per subsystem, sharing an envelope-shaped template. These
@@ -2071,36 +2107,6 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
   }),
 ];
 
-const LEGACY_TEMPLATES: readonly SeedTemplate[] = ['legacy.info', 'legacy.warning', 'legacy.error', 'legacy.success'].flatMap(
-  (categoryId): SeedTemplate[] => [
-    {
-      categoryId,
-      channel: 'email',
-      locale: 'en',
-      subjectTemplate: '{{title}}',
-      bodyTemplate: emailMjml('{{title}}', '{{message}}'),
-      bodyFormat: 'mjml',
-      variablesSchema: [
-        ...COMMON_VARS,
-        { name: 'title', type: 'string', required: true },
-        { name: 'message', type: 'string', required: true },
-      ],
-    },
-    {
-      categoryId,
-      channel: 'in_app',
-      locale: 'en',
-      subjectTemplate: '{{title}}',
-      bodyTemplate: '{{message}}',
-      bodyFormat: 'plaintext',
-      variablesSchema: [
-        ...COMMON_VARS,
-        { name: 'title', type: 'string', required: true },
-        { name: 'message', type: 'string', required: true },
-      ],
-    },
-  ],
-);
 
 /**
  * Rows written by hand, one per (category, channel) for the two channels
@@ -2110,7 +2116,6 @@ const LEGACY_TEMPLATES: readonly SeedTemplate[] = ['legacy.info', 'legacy.warnin
 const HAND_AUTHORED_TEMPLATES: readonly SeedTemplate[] = [
   ...TENANT_TEMPLATES,
   ...ADMIN_TEMPLATES,
-  ...LEGACY_TEMPLATES,
 ];
 
 /**

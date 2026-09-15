@@ -735,8 +735,6 @@ export async function runBundle(
     const isDataExport = input.exportMode === 'data_export';
     if (!isDataExport) {
       try {
-        const { resolveRecipients } = await import('../notifications/recipients.js');
-        const { notifyUsers } = await import('../notifications/service.js');
         const niceSize = `${(totalSize / (1024 * 1024)).toFixed(1)} MiB captured`;
         // Strip operator-only `; logs: <pod-stderr>` suffix per
         // error string. The route-layer sanitizer at
@@ -761,21 +759,21 @@ export async function runBundle(
         // Filter out the triggering user (if tenant_admin) so they
         // don't get this notification AND the per-user one below.
         try {
-          const tenantRecipients = !shouldNotifyTenant(input.initiator) ? [] : (await resolveRecipients(
-            deps.db, { kind: 'tenant', tenantId: input.tenantId },
-          )).filter((uid) => uid !== input.triggeredByUserId);
-          if (tenantRecipients.length > 0) {
-            await notifyUsers(deps.db, tenantRecipients, {
-              type: failed ? 'error' : 'info',
-              title: failed
-                ? `${initiatorLabel} backup failed`
-                : `${initiatorLabel} backup completed`,
-              message: failed
-                ? `Your ${initiatorLabel.toLowerCase()} backup did not complete fully: ${errSlice}.`
-                : `Your ${initiatorLabel.toLowerCase()} backup completed (${niceSize}).`,
-              resourceType: 'backup_bundle',
-              resourceId: bundleId,
-            });
+          if (shouldNotifyTenant(input.initiator)) {
+            // Dispatched by SCOPE, not by a hand-filtered recipient list: the
+            // dispatcher resolves the tenant's admins and gives this a
+            // template, an email leg, a preference gate and a delivery audit
+            // that the legacy in-app-only fan-out never had.
+            const { notifyTenantBackupEvent } = await import('../notifications/events.js');
+            await notifyTenantBackupEvent(deps.db, input.tenantId, {
+              subsystem: `${initiatorLabel} backup`,
+              objectLabel: bundleId,
+              detail: failed
+                ? `The backup did not complete fully: ${errSlice}.`
+                : `The backup completed (${niceSize}).`,
+              severityLabel: failed ? 'failed' : 'completed',
+              recommendedAction: failed ? 'Re-run the backup from the Backups page.' : '',
+            }, `bundle-${failed ? 'failed' : 'done'}:${bundleId}`);
           }
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
@@ -786,17 +784,14 @@ export async function runBundle(
         // Same filter: don't double-notify a triggering admin user.
         if (shouldNotifyAdmins(input.initiator, failed)) {
           try {
-            const adminRecipients = (await resolveRecipients(deps.db, { kind: 'admin' }))
-              .filter((uid) => uid !== input.triggeredByUserId);
-            if (adminRecipients.length > 0) {
-              await notifyUsers(deps.db, adminRecipients, {
-                type: 'error',
-                title: `Tenant backup failed`,
-                message: `${initiatorLabel} bundle for tenant ${input.tenantId.slice(0, 8)}… did not complete: ${errSlice}.`,
-                resourceType: 'backup_bundle',
-                resourceId: bundleId,
-              });
-            }
+            const { notifyAdminOperationalEvent } = await import('../notifications/events.js');
+            await notifyAdminOperationalEvent(deps.db, 'database', {
+              subsystem: 'Tenant backup',
+              objectLabel: `${bundleId} (tenant ${input.tenantId})`,
+              detail: `${initiatorLabel} bundle did not complete: ${errSlice}.`,
+              severityLabel: 'failed',
+              recommendedAction: 'Inspect the bundle on the tenant\'s Backups tab.',
+            }, `tenant-bundle-failed:${bundleId}`);
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             console.warn(`[tenant-bundles] admin notification fan-out failed for ${bundleId}: ${msg}`);
@@ -834,14 +829,14 @@ export async function runBundle(
             return i >= 0 ? s.slice(0, i) : s;
           };
           const safeErrText = errors.map(stripLogs).join('; ').slice(0, 4096);
-          const { notifyUser } = await import('../notifications/service.js');
-          await notifyUser(deps.db, input.triggeredByUserId, {
-            type: 'error',
-            title: 'Backup bundle failed',
-            message: `Bundle ${bundleId} (${input.tenantId.slice(0, 8)}…) failed: ${safeErrText || 'unknown error'}`,
-            resourceType: 'backup_bundle',
-            resourceId: bundleId,
-          });
+          const { notifyTenantBackupEvent } = await import('../notifications/events.js');
+          await notifyTenantBackupEvent(deps.db, input.tenantId, {
+            subsystem: 'Backup bundle',
+            objectLabel: bundleId,
+            detail: `The bundle failed: ${safeErrText || 'unknown error'}`,
+            severityLabel: 'failed',
+            recommendedAction: 'Re-run the backup from the Backups page.',
+          }, `bundle-failed-trigger:${bundleId}`);
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           console.warn(`[tenant-bundles] notification publish failed for ${bundleId}: ${msg}`);
