@@ -25,7 +25,7 @@
  * Exactly once, enforced by `notifications.escalated_at`. An escalation that
  * repeats every tick is the noise it was built to cut through.
  */
-import { and, eq, isNull, lt, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, lt } from 'drizzle-orm';
 import { notifications } from '../../../db/schema.js';
 import { categoryMeta } from '../routing/effective-channels.js';
 import type { Database } from '../../../db/index.js';
@@ -106,7 +106,17 @@ export async function markEscalated(
   await db
     .update(notifications)
     .set({ escalatedAt: now })
-    .where(sql`id = ANY(${ids})`);
+    // inArray, NOT sql`id = ANY(${ids})`.
+    //
+    // Drizzle expands a JS array in a template literal into individual
+    // placeholders, so that produced `ANY(($2, $3, … $32))` — a row
+    // CONSTRUCTOR, which Postgres rejects. Caught on DEV, not in review or by
+    // a unit test: the mock DB accepted the call happily, the scheduler threw
+    // every tick, and `admin.notification_escalated` fired twice while
+    // escalated_at stayed NULL on every row. An escalation that cannot mark
+    // itself done re-fires forever, which is precisely the noise the
+    // escalated_at column exists to prevent.
+    .where(inArray(notifications.id, [...ids]));
 }
 
 /** Human summary for the escalation body. */
