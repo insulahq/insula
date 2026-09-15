@@ -80,9 +80,42 @@ fi
 # ── Initialize repo if it doesn't exist yet ──────────────────────────────────
 
 echo "=== snapshot-upload: initialising or checking restic repo ==="
-if ! restic snapshots --quiet > /dev/null 2>&1; then
-  echo "=== snapshot-upload: repo not found, running restic init ==="
-  restic init
+# DO NOT read "restic snapshots failed" as "the repo is absent".
+#
+# This was `if ! restic snapshots --quiet >/dev/null 2>&1; then restic init; fi`,
+# which treats EVERY failure as a missing repo AND discards the reason with
+# 2>/dev/null. A transient S3 error, a held lock, or a wrong password all became
+# "repo not found", and the init that followed then died on a repo that was
+# there all along. Observed on DEV 2026-09-15 — every mail snapshot failing:
+#
+#   === snapshot-upload: repo not found, running restic init ===
+#   Fatal: create key in repository at s3:.../mail/mail-snapshots/... failed:
+#          repository master key and config already initialized
+#
+# Keep stderr, and only init when the error actually says the repo is absent.
+# restic >= 0.17 exits 10 for "repository does not exist"; the message match
+# keeps this working on older builds in the image.
+_probe_err="$(restic snapshots --quiet 2>&1 >/dev/null)"; _probe_rc=$?
+if [ "$_probe_rc" -eq 0 ]; then
+  echo "=== snapshot-upload: restic repo present ==="
+elif [ "$_probe_rc" -eq 10 ] \
+  || printf '%s' "$_probe_err" | grep -qiE 'no repository config file|unable to open config file|repository does not exist'; then
+  echo "=== snapshot-upload: repo absent, running restic init ==="
+  # Tolerate a concurrent initialiser: two snapshot jobs racing on a brand-new
+  # repo would otherwise both init and the loser would fail the whole backup.
+  if ! _init_err="$(restic init 2>&1)"; then
+    if printf '%s' "$_init_err" | grep -qiE 'already initialized'; then
+      echo "=== snapshot-upload: repo was initialised concurrently — continuing ==="
+    else
+      echo "=== snapshot-upload: FATAL restic init failed: $_init_err ===" >&2
+      exit 1
+    fi
+  fi
+else
+  # Anything else is a REAL error about a repo we cannot read. Failing here with
+  # the actual message beats corrupting the run with a pointless init.
+  echo "=== snapshot-upload: FATAL cannot read restic repo (rc=$_probe_rc): $_probe_err ===" >&2
+  exit 1
 fi
 
 # ── Run restic backup ────────────────────────────────────────────────────────
