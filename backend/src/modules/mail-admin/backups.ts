@@ -191,6 +191,8 @@ export async function listMailBackups(deps: {
     return {
       snapshots: [],
       repoReachable: false,
+      // no mail BackupTarget assigned — setup, not an outage
+      unreachableCause: 'not_configured',
       reason:
         'No mail BackupTarget configured. Set one at /backups/mail → Targets, ' +
         'then snapshots will start showing up here within ~2 min.',
@@ -216,6 +218,8 @@ export async function listMailBackups(deps: {
       return {
         snapshots: [],
         repoReachable: false,
+        // restic Secret still being materialised; resolves in ~1 min
+        unreachableCause: 'provisioning',
         reason:
           'Backup credentials are still being provisioned for this target ' +
           '(usually completes within a minute of assigning it). Retry shortly.',
@@ -244,6 +248,8 @@ export async function listMailBackups(deps: {
       return {
         snapshots: [],
         repoReachable: false,
+        // shim DaemonSet restarting after a target (re)assignment
+        unreachableCause: 'provisioning',
         reason:
           'Backup gateway is restarting (a target change is being applied). ' +
           'Snapshots are unaffected; retry in about a minute.',
@@ -272,6 +278,8 @@ export async function listMailBackups(deps: {
     return {
       snapshots: [],
       repoReachable: false,
+      // the list Pod could not even be created
+      unreachableCause: 'unreachable',
       reason: `Failed to spawn list Pod: ${err instanceof Error ? err.message : String(err)}`,
       targetName,
       // We never reached the repo, so we never looked at its locks.
@@ -287,6 +295,7 @@ export async function listMailBackups(deps: {
     return {
       snapshots,
       repoReachable: true,
+      unreachableCause: null,
       // A locked repo reads fine and writes not at all. Say that here rather
       // than leave the operator to infer it from snapshots that stop arriving.
       reason: lockCount !== null && lockCount > 0
@@ -309,6 +318,8 @@ export async function listMailBackups(deps: {
       return {
         snapshots: [],
         repoReachable: false,
+        // repo not initialised yet — the first snapshot creates it
+        unreachableCause: 'provisioning',
         reason:
           'Backup repository not initialized yet — it is created by the first completed ' +
           'snapshot upload. Run a snapshot (or wait for the next scheduled one) and refresh.',
@@ -328,6 +339,8 @@ export async function listMailBackups(deps: {
     return {
       snapshots: [],
       repoReachable: false,
+      // the listing ran and did not come back
+      unreachableCause: timedOut ? 'timed_out' : 'unreachable',
       reason,
       targetName,
       // We never reached the repo, so we never looked at its locks.

@@ -2106,6 +2106,29 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         });
         app.addHook('onClose', () => backupHealthStop());
 
+        // Freshness sweep: the sibling watcher above sees FAILED Jobs. This
+        // sees the absence of runs — a missed schedule leaves no Job behind,
+        // so nothing that lists Jobs can ever detect it. Reads CronJob
+        // spec.schedule + status.lastSuccessfulTime, so it does not depend on
+        // the health-watch labels reaching the job template.
+        const { startFreshnessSweep } = await import('./modules/backup-health/freshness-sweep.js');
+        const freshnessStop = startFreshnessSweep({
+          db: app.db,
+          batch: k8sForImapsync.batch,
+          // Reachability is checked on the TICK, not in the request path:
+          // notifying from listMailBackups' route would tell an operator only
+          // when someone already had the page open.
+          listMailBackups: async () => {
+            const { listMailBackups } = await import('./modules/mail-admin/backups.js');
+            return listMailBackups({
+              db: app.db,
+              core: k8sForImapsync.core,
+              batch: k8sForImapsync.batch,
+            });
+          },
+        });
+        app.addHook('onClose', () => freshnessStop());
+
         // Restore-cart cleanup: sweeps `status='draft'` carts older than
         // 7 days every 15 min. Tab-close orphans accumulate forever
         // otherwise. Cascade FK on restore_items takes care of items.
