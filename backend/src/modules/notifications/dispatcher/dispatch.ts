@@ -35,6 +35,7 @@ import { getActiveTemplate } from '../templates/service.js';
 import { renderForDelivery } from '../templates/render-for-delivery.js';
 import { recordDegradedRender, clampDegradedVars } from './degraded.js';
 import { effectiveChannels } from '../routing/effective-channels.js';
+import { platformName, tenantIdentity, userDisplayName, normaliseDateVariables } from './envelope.js';
 import { emitNtfyForEvent } from './ntfy.js';
 import { isCategoryAllowedForUser } from '../preferences/gate.js';
 import { getUserSettings } from '../preferences/service.js';
@@ -249,6 +250,21 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
   // still filter it. This is what stops tenant events reaching the shared
   // operator push topic and what keeps an availability alert out of a panel
   // that may be down.
+  // Identity, resolved once from the data rather than left to ~50 emitters to
+  // remember. A caller-supplied value still wins.
+  const brand = await platformName(db);
+  const identity = await tenantIdentity(db, opts.tenantId ?? null);
+  const envelopeVars = normaliseDateVariables({
+    tenantName: identity.tenantName,
+    contactName: identity.contactName,
+    // Every notification happened at a time, and the dispatcher is the one
+    // place that reliably knows it. A caller with a more precise instant (the
+    // moment a threshold was crossed, not the moment we got around to
+    // dispatching) still wins.
+    occurredAt: new Date().toISOString(),
+    ...opts.variables,
+  });
+
   const routed = effectiveChannels({
     categoryId: category.id,
     storedChannels: category.defaultChannels,
@@ -272,10 +288,12 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
           tenantId: opts.tenantId ?? null,
           variables: Object.fromEntries(
             Object.entries({
-              platformName: 'Hosting Platform',
+              platformName: brand,
               userName: 'operator',
               tenantName: null,
-              ...opts.variables,
+              contactName: null,
+              occurredAt: null,
+              ...envelopeVars,
             }).map(([k, v]) => [k, v === undefined ? null : v]),
           ),
           dedupeKey,
@@ -349,10 +367,12 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
     const recipientEmail = await getUserEmail(db, userId);
     const renderVars: Record<string, unknown> = Object.fromEntries(
       Object.entries({
-        platformName: 'Hosting Platform',
-        userName: recipientEmail ? recipientEmail.split('@')[0] : userId,
+        platformName: brand,
+        userName: await userDisplayName(db, userId, recipientEmail ?? null),
         tenantName: null,
-        ...opts.variables,
+        contactName: null,
+        occurredAt: null,
+        ...envelopeVars,
       }).map(([k, v]) => [k, v === undefined ? null : v]),
     );
 
@@ -609,10 +629,12 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
     }
     const renderVars: Record<string, unknown> = Object.fromEntries(
       Object.entries({
-        platformName: 'Hosting Platform',
+        platformName: brand,
         userName: address.split('@')[0],
         tenantName: null,
-        ...opts.variables,
+        contactName: null,
+        occurredAt: null,
+        ...envelopeVars,
       }).map(([k, v]) => [k, v === undefined ? null : v]),
     );
     const rendered = await renderForDelivery(tpl, renderVars, { fallbackTitle: category.displayName });

@@ -85,7 +85,7 @@ if (!Array.isArray(ALL_SEED_TEMPLATES) || ALL_SEED_TEMPLATES.length === 0) {
 // that drops data.
 const REF_RE = /\{\{\{?\s*(?:#(?:if|unless)\s+)?([A-Za-z_][\w.]*)\s*\}?\}\}/g;
 const RESERVED = new Set(["else", "this"]);
-const DISPATCHER_PROVIDED = new Set(["platformName", "userName", "tenantName"]);
+const DISPATCHER_PROVIDED = new Set(["platformName", "userName", "tenantName", "contactName", "occurredAt"]);
 
 // STRUCTURAL keys are carried for routing/linking, never for rendering, so
 // "no template reads it" is the correct state rather than a defect. Keep this
