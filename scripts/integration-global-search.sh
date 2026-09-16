@@ -58,12 +58,29 @@ TMPDIR_GS="$(mktemp -d /tmp/integration-global-search.XXXXXX)"
 CREATED_TENANTS=()
 
 cleanup() {
-  # Tenants created here own a namespace and a PVC; leaving them behind
-  # burns cluster quota on every run.
+  # Tenants created here own a namespace and a PVC; leaving them behind burns
+  # cluster quota on every run.
+  #
+  # The delete is CONFIRMED, not fired and forgotten. A sibling harness
+  # reported "cleaned up 2 tenants" while all four it had created were still
+  # on the cluster — it was counting attempts, not outcomes. Deleting a
+  # provisioned tenant tears down a namespace and can take well over the
+  # default timeout, so each one is re-checked and retried once.
+  local t code still
   for t in "${CREATED_TENANTS[@]:-}"; do
     [[ -n "$t" ]] || continue
     curl -sk -X DELETE "$API_URL/api/v1/tenants/$t" \
-      -H "Authorization: Bearer $TOKEN" --max-time 30 >/dev/null 2>&1 || true
+      -H "Authorization: Bearer $TOKEN" --max-time 60 >/dev/null 2>&1 || true
+    code=$(curl -sk -o /dev/null -w '%{http_code}' "$API_URL/api/v1/tenants/$t" \
+      -H "Authorization: Bearer $TOKEN" --max-time 30 2>/dev/null || echo 000)
+    if [[ "$code" != "404" ]]; then
+      curl -sk -X DELETE "$API_URL/api/v1/tenants/$t" \
+        -H "Authorization: Bearer $TOKEN" --max-time 60 >/dev/null 2>&1 || true
+      still=$(curl -sk -o /dev/null -w '%{http_code}' "$API_URL/api/v1/tenants/$t" \
+        -H "Authorization: Bearer $TOKEN" --max-time 30 2>/dev/null || echo 000)
+      [[ "$still" == "404" ]] \
+        || echo "WARNING: tenant $t may still exist (GET returned $still) — check the estate" >&2
+    fi
   done
   rm -rf "$TMPDIR_GS"
 }
@@ -115,10 +132,29 @@ il_phase_end
 
 # ── Fixtures: two tenants, so "cannot see the other one" is testable ─────
 il_phase_begin "fixtures"
-PLAN_ID=$(api GET "/plans?limit=20" | jq -r '.data[0].id // empty')
+# Pick the plan with the most sub-user headroom, not data[0].
+#
+# Phase C needs a tenant_admin sub-user to hold a tenant-panel token, and a
+# tenant's own owner already consumes one slot — so the default Starter plan
+# (maxSubUsers=1) fails with SUB_USER_LIMIT before phase C can run at all.
+# Ordering by the limit keeps this working on any plan set rather than
+# depending on which plan happens to be listed first.
+PLANS=$(api GET "/plans?limit=50")
+PLAN_ID=$(jq -r '[.data[]] | sort_by(.maxSubUsers // 0) | reverse | .[0].id // empty' <<<"$PLANS")
+PLAN_SUBS=$(jq -r --arg id "$PLAN_ID" '.data[] | select(.id==$id) | .maxSubUsers // 0' <<<"$PLANS")
 [[ -n "$PLAN_ID" ]] || { echo "ERROR: no hosting plan to attach" >&2; exit 2; }
+if [[ "${PLAN_SUBS:-0}" -lt 2 ]]; then
+  il_info "best plan allows only ${PLAN_SUBS:-0} sub-user(s) — phase C may hit SUB_USER_LIMIT"
+fi
 
-make_tenant() { # make_tenant <suffix> -> id
+# NOTE: this writes the new id into NEW_TENANT_ID rather than echoing it.
+# An earlier form was called as `TENANT_A=$(make_tenant a)` — a COMMAND
+# SUBSTITUTION, which runs in a subshell, so `CREATED_TENANTS+=(...)` mutated
+# a copy that died with the subshell. The parent array stayed empty and the
+# cleanup trap deleted nothing: a failed run left two provisioned tenants
+# (namespace + PVC each) on the cluster with no sign anything had leaked.
+NEW_TENANT_ID=""
+make_tenant() { # make_tenant <suffix> -> sets NEW_TENANT_ID
   local suffix="$1" body resp id
   body=$(jq -nc --arg n "Search E2E ${NONCE} ${suffix}" \
     --arg e "search-${NONCE}-${suffix}@example.test" --arg p "$PLAN_ID" \
@@ -127,12 +163,32 @@ make_tenant() { # make_tenant <suffix> -> id
   id=$(jq -r '.data.id // empty' <<<"$resp")
   [[ -n "$id" ]] || { echo "ERROR: tenant create failed: $resp" >&2; exit 2; }
   CREATED_TENANTS+=("$id")
-  echo "$id"
+  NEW_TENANT_ID="$id"
 }
 
-TENANT_A=$(make_tenant a)
-TENANT_B=$(make_tenant b)
+# A tenant is created `pending` and REFUSES to configure domains until it has
+# been provisioned (409 TENANT_NOT_ACTIVE) — provisioning builds its namespace
+# and PVC, so it is a real wait, not a formality.
+provision_and_wait() { # provision_and_wait <tenant-id>
+  local id="$1" i status
+  api POST "/admin/tenants/$id/provision" "{}" >/dev/null 2>&1 || true
+  for i in $(seq 1 60); do
+    status=$(api GET "/tenants/$id" | jq -r '.data.status // empty')
+    [[ "$status" == "active" ]] && return 0
+    sleep 5
+  done
+  echo "ERROR: tenant $id never reached active (last status: ${status:-unknown})" >&2
+  return 1
+}
+
+make_tenant a; TENANT_A="$NEW_TENANT_ID"
+make_tenant b; TENANT_B="$NEW_TENANT_ID"
 il_ok "two tenants created (A=$TENANT_A B=$TENANT_B)"
+
+for t in "$TENANT_A" "$TENANT_B"; do
+  provision_and_wait "$t" || { echo "ERROR: provisioning failed" >&2; exit 2; }
+done
+il_ok "both tenants provisioned and active"
 
 DOMAIN_A="a-${NONCE}.example.test"
 DOMAIN_B="b-${NONCE}.example.test"
@@ -161,18 +217,33 @@ else
   il_fail "A2 domain $DOMAIN_A NOT found — groups: $(group_types "$RESP")"
 fi
 
+# A mailbox hangs off an ENABLED email domain, so this is a two-step chain.
+# Each step reports its own failure: "mailbox create failed" when the enable
+# was the thing that broke is a misleading skip reason, and a skip whose
+# stated cause is a guess is worse than no skip at all.
 MB_LOCAL="mb${NONCE}"
-MB_RESP=$(api POST "/tenants/$TENANT_A/mailboxes" \
-  "$(jq -nc --arg l "$MB_LOCAL" --arg d "$DOMAIN_A" \
-     '{local_part:$l, domain_name:$d, password:"Sup3rSecret!x9", quota_mb:100}')" 2>/dev/null || true)
-if jq -e '.data.id' <<<"$MB_RESP" >/dev/null 2>&1; then
-  if titles_in "$(search "$MB_LOCAL")" mailbox | grep -q "$MB_LOCAL"; then
-    il_ok "A3 mailbox found by local-part"
-  else
-    il_fail "A3 mailbox $MB_LOCAL NOT found"
-  fi
+DOMAIN_A_ID=$(api GET "/tenants/$TENANT_A/domains" \
+  | jq -r --arg d "$DOMAIN_A" '.data[] | select(.domainName==$d) | .id' | head -1)
+if [[ -z "$DOMAIN_A_ID" ]]; then
+  il_skip "A3 mailbox — could not resolve the domain id for $DOMAIN_A"
 else
-  il_skip "A3 mailbox (create failed — mail stack may be absent on this cluster)"
+  EN_RESP=$(api POST "/tenants/$TENANT_A/email/domains/$DOMAIN_A_ID/enable" "{}" 2>/dev/null || true)
+  EMAIL_DOMAIN_ID=$(jq -r '.data.id // .data.emailDomainId // empty' <<<"$EN_RESP")
+  if [[ -z "$EMAIL_DOMAIN_ID" ]]; then
+    il_skip "A3 mailbox — email-domain enable failed: $(jq -rc '.error.code // .' <<<"$EN_RESP" 2>/dev/null | head -c 120)"
+  else
+    MB_RESP=$(api POST "/tenants/$TENANT_A/email/domains/$EMAIL_DOMAIN_ID/mailboxes" \
+      "$(jq -nc --arg l "$MB_LOCAL" '{local_part:$l, quota_mb:20}')" 2>/dev/null || true)
+    if jq -e '.data.id' <<<"$MB_RESP" >/dev/null 2>&1; then
+      if titles_in "$(search "$MB_LOCAL")" mailbox | grep -q "$MB_LOCAL"; then
+        il_ok "A3 mailbox found by local-part"
+      else
+        il_fail "A3 mailbox $MB_LOCAL created but NOT found by search"
+      fi
+    else
+      il_skip "A3 mailbox — create failed: $(jq -rc '.error.code // .' <<<"$MB_RESP" 2>/dev/null | head -c 120)"
+    fi
+  fi
 fi
 
 # The estate searched with case-SENSITIVE `like` before this change, so an
@@ -191,14 +262,23 @@ S=$(search_status "z")
 [[ "$S" == "400" ]] && il_ok "B1 one-character term refused (400)" \
                     || il_fail "B1 one-character term returned $S, expected 400"
 
-# An unescaped `_` matches EVERY row. Bounded means the per-group cap, so a
-# sane response has at most a handful per group rather than the estate.
+# `_` is LIKE's single-character wildcard: unescaped, `__` matches every name
+# of two characters or more — i.e. the whole estate.
+#
+# Asserting only "the result is small" would ALSO pass if search were dead,
+# since zero is small. So this pairs the wildcard query with a CONTROL query
+# that must return something. Escaping is proven by the pair: the control
+# finds rows, the wildcard does not.
 UNDERSCORE=$(search "__")
 WIDEST=$(jq -r '[.data.groups[]?.items | length] | max // 0' <<<"$UNDERSCORE")
-if [[ "$WIDEST" -le 5 ]]; then
-  il_ok "B2 wildcard term stays bounded (largest group: $WIDEST)"
+CONTROL=$(search "$NONCE")
+CONTROL_ROWS=$(jq -r '[.data.groups[]?.items | length] | add // 0' <<<"$CONTROL")
+if [[ "$CONTROL_ROWS" -lt 1 ]]; then
+  il_fail "B2 control query returned nothing — cannot conclude anything about escaping"
+elif [[ "$WIDEST" -le 5 ]]; then
+  il_ok "B2 wildcard escaped (control found $CONTROL_ROWS rows; '__' largest group $WIDEST)"
 else
-  il_fail "B2 wildcard term returned $WIDEST rows in one group — %/_ escaping regressed"
+  il_fail "B2 '__' returned $WIDEST rows in one group — %/_ escaping regressed"
 fi
 
 LONG=$(printf 'a%.0s' $(seq 1 65))
@@ -209,12 +289,17 @@ il_phase_end
 
 # ── C. tenant scoping — the one that matters ─────────────────────────────
 il_phase_begin "C: tenant scoping"
+# The API refuses a caller-supplied password (INVALID_FIELD_VALUE) and hands
+# back `generatedPassword` exactly once, on create. There is no second chance
+# to read it, so it is captured here rather than re-fetched later.
 TU_EMAIL="tu-${NONCE}@example.test"
-TU_PASSWORD="Tenant!E2E-${NONCE}"
 TU_RESP=$(api POST "/tenants/$TENANT_A/users" \
-  "$(jq -nc --arg e "$TU_EMAIL" --arg p "$TU_PASSWORD" \
-     '{email:$e, full_name:"Search E2E Tenant User", role_name:"tenant_admin", password:$p}')")
-if ! jq -e '.data.id' <<<"$TU_RESP" >/dev/null 2>&1; then
+  "$(jq -nc --arg e "$TU_EMAIL" \
+     '{email:$e, full_name:"Search E2E Tenant User", role_name:"tenant_admin"}')")
+TU_PASSWORD=$(jq -r '.data.generatedPassword // empty' <<<"$TU_RESP")
+if [[ -z "$TU_PASSWORD" ]]; then
+  il_fail "C0 tenant user created but no generatedPassword returned: $(jq -rc '.error.code // .' <<<"$TU_RESP" | head -c 120)"
+elif ! jq -e '.data.id' <<<"$TU_RESP" >/dev/null 2>&1; then
   il_fail "C0 tenant user create failed: $TU_RESP"
 else
   TU_TOKEN=$(curl -sk -X POST "$API_URL/api/v1/auth/login" -H 'Content-Type: application/json' \
