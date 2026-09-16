@@ -1,6 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { runTick } from './scheduler.js';
 
+// These fan-outs are dispatched now, not written per-admin. The legacy mock
+// below stays only so the module graph resolves; the assertions read the
+// categorised call, which is what carries the template, the email leg and the
+// delivery audit the in-app-only path never had.
+const notifyBackupFailedMock = vi.fn(async () => undefined);
+const notifyOperationalMock = vi.fn(async () => undefined);
+vi.mock('../notifications/events.js', () => ({
+  notifyAdminBackupFailed: (...a: unknown[]) => notifyBackupFailedMock(...(a as [])),
+  notifyAdminOperationalEvent: (...a: unknown[]) => notifyOperationalMock(...(a as [])),
+}));
 vi.mock('../notifications/service.js', () => ({
   notifyUsers: vi.fn().mockResolvedValue(undefined),
 }));
@@ -67,6 +77,8 @@ const NOOP_LOG = { warn: vi.fn() };
 describe('runTick', () => {
   beforeEach(() => {
     notifyUsersMock.mockClear();
+    notifyBackupFailedMock.mockClear();
+    notifyOperationalMock.mockClear();
     resolveRecipientsMock.mockReset();
     listJobsMock.mockReset();
     NOOP_LOG.warn.mockClear();
@@ -81,12 +93,12 @@ describe('runTick', () => {
     expect(resolveRecipientsMock).toHaveBeenCalledWith(expect.anything(), {
       kind: 'admin',
     });
-    expect(notifyUsersMock).toHaveBeenCalledOnce();
-    const [, userIds, payload] = notifyUsersMock.mock.calls[0]!;
-    expect(userIds).toEqual(['admin-1']);
-    expect(payload.type).toBe('error');
-    expect(payload.resourceType).toBe('backup_job');
-    expect(payload.resourceId).toBe('uid-1');
+    // ONE categorised dispatch; the dispatcher owns recipient fan-out.
+    expect(notifyBackupFailedMock).toHaveBeenCalledOnce();
+    const [, payload] = notifyBackupFailedMock.mock.calls[0]! as unknown[];
+    const p = payload as Record<string, string>;
+    expect(p.backupName).toBeTruthy();
+    expect(p.errorMessage).toBeTruthy();
   });
 
   it('dispatches tenant_admin recipients for tenant-category failures (with tenant-id)', async () => {
@@ -99,23 +111,23 @@ describe('runTick', () => {
       kind: 'tenant',
       tenantId: 'tenant-abc',
     });
-    expect(notifyUsersMock).toHaveBeenCalledOnce();
+    expect(notifyBackupFailedMock).toHaveBeenCalledOnce();
   });
 
   it('skips already-notified UIDs (dedup via resourceId lookup)', async () => {
     listJobsMock.mockResolvedValue([FAILED_DR_JOB, FAILED_TENANT_JOB]);
     resolveRecipientsMock.mockResolvedValue(['someone']);
     await runTick(mockDb(['uid-1']), {} as never, NOOP_LOG);
-    expect(notifyUsersMock).toHaveBeenCalledTimes(1);
-    const [, , payload] = notifyUsersMock.mock.calls[0]!;
-    expect(payload.resourceId).toBe('uid-2');
+    expect(notifyBackupFailedMock).toHaveBeenCalledTimes(1);
+    const [, , dedupeKey] = notifyBackupFailedMock.mock.calls[0]! as unknown[];
+    expect(String(dedupeKey)).toContain('uid-2');
   });
 
   it('logs and skips when no recipients are resolvable (avoids ghost rows)', async () => {
     listJobsMock.mockResolvedValue([FAILED_DR_JOB]);
     resolveRecipientsMock.mockResolvedValue([]);
     await runTick(mockDb([]), {} as never, NOOP_LOG);
-    expect(notifyUsersMock).not.toHaveBeenCalled();
+    expect(notifyBackupFailedMock).not.toHaveBeenCalled();
     expect(NOOP_LOG.warn).toHaveBeenCalledOnce();
   });
 
@@ -124,14 +136,14 @@ describe('runTick', () => {
     listJobsMock.mockResolvedValue([{ ...FAILED_DR_JOB, failureReason: longReason }]);
     resolveRecipientsMock.mockResolvedValue(['admin']);
     await runTick(mockDb([]), {} as never, NOOP_LOG);
-    const [, , payload] = notifyUsersMock.mock.calls[0]!;
-    expect(payload.message).toContain('xxx');
-    expect(payload.message.length).toBeLessThan(700);
+    const [, payload] = notifyBackupFailedMock.mock.calls[0]! as unknown[];
+    expect((payload as Record<string, string>).errorMessage).toContain('xxx');
+    expect((payload as Record<string, string>).errorMessage.length).toBeLessThan(700);
   });
 
   it('returns silently when no jobs are returned', async () => {
     listJobsMock.mockResolvedValue([]);
     await runTick(mockDb([]), {} as never, NOOP_LOG);
-    expect(notifyUsersMock).not.toHaveBeenCalled();
+    expect(notifyBackupFailedMock).not.toHaveBeenCalled();
   });
 });

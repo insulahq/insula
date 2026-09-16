@@ -105,6 +105,8 @@ import { seedTemplatesIfMissing } from './modules/notifications/templates/seed-l
 import { ensureCommunityBlocklistDefault } from './modules/security-hardening/crowdsec.js';
 import { ensureAgentSimulationDefault } from './modules/security-hardening/crowdsec-scenarios.js';
 import { startNotificationRetention } from './modules/notifications/retention/scheduler.js';
+import { startDigestScheduler } from './modules/notifications/digest/scheduler.js';
+import { startEscalationScheduler } from './modules/notifications/escalation/scheduler.js';
 import { startEmailWorker } from './modules/notifications/queue/worker.js';
 import { startNtfyWorker } from './modules/notifications/queue/ntfy-worker.js';
 import { stopBoss } from './modules/notifications/queue/bootstrap.js';
@@ -125,6 +127,8 @@ import { migrationRoutes } from './modules/migration/routes.js';
 import { tenantRestoreRoutes } from './modules/backup-restore/tenant-routes.js';
 import { adminUserRoutes } from './modules/admin-users/routes.js';
 import { healthRoutes } from './modules/health/routes.js';
+import { podPruneRoutes } from './modules/pod-prune/routes.js';
+import { searchRoutes } from './modules/search/routes.js';
 import { cnpgBackupHealthRoutes } from './modules/cnpg-backup-health/routes.js';
 import { cnpgBackupCatalogueRoutes } from './modules/cnpg-backup-catalogue/routes.js';
 import { cnpgBackupNowRoutes } from './modules/cnpg-backup-now/index.js';
@@ -144,7 +148,7 @@ import { loginPasswordRoutes } from './modules/login-passwords/routes.js';
 import { emailAliasRoutes } from './modules/email-aliases/routes.js';
 import { mailboxAliasRoutes } from './modules/mailbox-aliases/routes.js';
 import { smtpRelayRoutes, smtpRelayTenantRoutes } from './modules/smtp-relay/routes.js';
-import { mailEventsWebhookRoutes, mailUsageRoutes, mailComplaintRoutes } from './modules/mail-events/routes.js';
+import { mailEventsWebhookRoutes, mailUsageRoutes, mailReportRoutes } from './modules/mail-events/routes.js';
 import { pleskMigrationRoutes } from './modules/plesk-migration/routes.js';
 import { webmailSettingsRoutes } from './modules/webmail-settings/routes.js';
 import { platformUrlsRoutes } from './modules/platform-urls/routes.js';
@@ -688,6 +692,8 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(tenantRestoreRoutes, { prefix: '/api/v1' });
   await app.register(adminUserRoutes, { prefix: '/api/v1' });
   await app.register(healthRoutes, { prefix: '/api/v1' });
+  await app.register(podPruneRoutes, { prefix: '/api/v1' });
+  await app.register(searchRoutes, { prefix: '/api/v1' });
   await app.register(cnpgBackupHealthRoutes, { prefix: '/api/v1' });
   await app.register(cnpgBackupCatalogueRoutes, { prefix: '/api/v1' });
   await app.register(cnpgBackupNowRoutes, { prefix: '/api/v1' });
@@ -707,7 +713,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   // JSON parser — keep it isolated in its own register call.
   await app.register(mailEventsWebhookRoutes, { prefix: '/api/v1' });
   await app.register(mailUsageRoutes, { prefix: '/api/v1' });
-  await app.register(mailComplaintRoutes, { prefix: '/api/v1' });
+  await app.register(mailReportRoutes, { prefix: '/api/v1' });
   await app.register(pleskMigrationRoutes, { prefix: '/api/v1' });
   await app.register(registerMailDriftRoutes, { prefix: '/api/v1' });
   // Phase 3.C.1: public autodiscover routes — no /api/v1 prefix.
@@ -1132,6 +1138,19 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       const notificationRetentionTimer = startNotificationRetention(app.db);
       app.addHook('onClose', () => clearInterval(notificationRetentionTimer));
 
+      // Digest flush. Ticks every 15 min — finer than the shortest digest
+      // window (hourly), because the window is measured from the oldest queued
+      // item and a coarser tick would add its own period on top of the delay
+      // the user actually chose.
+      const digestTimer = startDigestScheduler(app.db);
+      app.addHook('onClose', () => clearInterval(digestTimer));
+
+      // Escalation backstop: action notifications nobody has read. Hourly
+      // against a 48h deadline — a finer sweep would add load for no earlier
+      // signal.
+      const escalationTimer = startEscalationScheduler(app.db);
+      app.addHook('onClose', () => clearInterval(escalationTimer));
+
       // Phase 2: pg-boss email send worker. Best-effort start —
       // failures (no DATABASE_URL in unit tests, pg-boss schema lock
       // contention on cold start) leave email deliveries queued; a
@@ -1298,8 +1317,8 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       {
         const { reconcileStalwartSendLimits } = await import('./modules/email-outbound/stalwart-throttles.js');
         const { ensureMailEventsWebhook } = await import('./modules/mail-events/webhook-reconciler.js');
+        const { ensureStalwartStdoutTracer } = await import('./modules/mail-events/tracer-reconciler.js');
         const { ensureReportIntake } = await import('./modules/mail-events/report-intake-reconciler.js');
-        const { pollFblComplaints } = await import('./modules/mail-events/fbl.js');
         const { pollDmarcReports } = await import('./modules/mail-events/dmarc.js');
         const { repairDmarcRuaRecords } = await import('./modules/mail-events/dmarc-rua-repair.js');
         const { evaluateMailThresholds } = await import('./modules/mail-events/thresholds.js');
@@ -1315,15 +1334,15 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           ensureMailEventsWebhook(mailK8s, app.log).catch((err) => {
             app.log.warn({ err }, 'mail-events webhook ensure failed');
           });
+          // Without this the mail server logs NOWHERE (its default
+          // tracer targets a path the image does not have), which is
+          // what made a live delivery outage invisible for hours.
+          ensureStalwartStdoutTracer(app.log).catch((err) => {
+            app.log.warn({ err }, 'stalwart stdout tracer ensure failed');
+          });
           ensureReportIntake(app.db, app.log).catch((err) => {
             app.log.warn({ err }, 'report intake ensure failed');
           });
-          pollFblComplaints(app.db, app.log).catch((err) => {
-            app.log.warn({ err }, 'fbl poll failed');
-          });
-          // R5. Separate catch from the FBL poll on purpose: the two read
-          // different Stalwart registry objects, and one being unreachable
-          // must not stop the other from draining.
           pollDmarcReports(app.db, app.log).catch((err) => {
             app.log.warn({ err }, 'dmarc poll failed');
           });
@@ -2097,6 +2116,44 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           batch: k8sForImapsync.batch,
         });
         app.addHook('onClose', () => backupHealthStop());
+
+        // Dead-pod sweep. Kubernetes garbage-collects terminal pods only past
+        // --terminated-pod-gc-threshold (default 12500, unset here), so the
+        // records accumulate monotonically: every node reboot adds a batch and
+        // none ever leave. They hold no CPU, memory or scheduling capacity, but
+        // they DO pin their container log directories on the node (~102 MB for
+        // 43 records on production 2026-09-15) and any scan that reads pods from
+        // a list sees a workload that is not running.
+        const { startPodPruneScheduler } = await import('./modules/pod-prune/scheduler.js');
+        const podPruneStop = startPodPruneScheduler({
+          db: app.db,
+          clients: () => ({ core: k8sForImapsync.core, batch: k8sForImapsync.batch }),
+          log: app.log,
+        });
+        app.addHook('onClose', () => podPruneStop());
+
+        // Freshness sweep: the sibling watcher above sees FAILED Jobs. This
+        // sees the absence of runs — a missed schedule leaves no Job behind,
+        // so nothing that lists Jobs can ever detect it. Reads CronJob
+        // spec.schedule + status.lastSuccessfulTime, so it does not depend on
+        // the health-watch labels reaching the job template.
+        const { startFreshnessSweep } = await import('./modules/backup-health/freshness-sweep.js');
+        const freshnessStop = startFreshnessSweep({
+          db: app.db,
+          batch: k8sForImapsync.batch,
+          // Reachability is checked on the TICK, not in the request path:
+          // notifying from listMailBackups' route would tell an operator only
+          // when someone already had the page open.
+          listMailBackups: async () => {
+            const { listMailBackups } = await import('./modules/mail-admin/backups.js');
+            return listMailBackups({
+              db: app.db,
+              core: k8sForImapsync.core,
+              batch: k8sForImapsync.batch,
+            });
+          },
+        });
+        app.addHook('onClose', () => freshnessStop());
 
         // Restore-cart cleanup: sweeps `status='draft'` carts older than
         // 7 days every 15 min. Tab-close orphans accumulate forever

@@ -30,7 +30,11 @@ export const createMailboxSchema = z.object({
   // max mailbox size (plan limit / per-tenant override). A supplied value
   // must not exceed that max — the backend rejects with
   // MAILBOX_QUOTA_EXCEEDS_LIMIT. The absolute ceiling here is a sanity bound.
-  quota_mb: z.number().int().min(50).max(102400).optional(),
+  // Floor lowered 50 -> 20 (2026-09-15). 50 was a round number, not a
+  // constraint: a 20 MB mailbox is a legitimate small/alias box, and the
+  // old floor made the quota-threshold chain expensive to exercise —
+  // proving it end to end meant pushing 50 MB of incompressible mail.
+  quota_mb: z.number().int().min(20).max(102400).optional(),
   mailbox_type: mailboxTypeSchema.default('mailbox'),
   forwarding_addresses: forwardingAddressesSchema.optional(),
 }).superRefine((input, ctx) => {
@@ -53,7 +57,11 @@ export type CreateMailboxInput = z.infer<typeof createMailboxSchema>;
 // permission set and storage semantics — recreate instead.
 export const updateMailboxSchema = z.object({
   display_name: z.string().max(255).optional(),
-  quota_mb: z.number().int().min(50).max(102400).optional(),
+  // Floor lowered 50 -> 20 (2026-09-15). 50 was a round number, not a
+  // constraint: a 20 MB mailbox is a legitimate small/alias box, and the
+  // old floor made the quota-threshold chain expensive to exercise —
+  // proving it end to end meant pushing 50 MB of incompressible mail.
+  quota_mb: z.number().int().min(20).max(102400).optional(),
   status: z.enum(['active', 'disabled']).optional(),
   auto_reply: z.boolean().optional(),
   auto_reply_subject: z.string().max(255).optional(),

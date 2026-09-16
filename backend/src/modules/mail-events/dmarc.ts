@@ -330,3 +330,29 @@ export async function pollDmarcReports(
   logger.info({ fetched: reports.length, stored, sourcesStored, destroyed }, 'dmarc poll: aggregate reports ingested');
   return { skipped: false, fetched: reports.length, stored, sourcesStored, destroyed };
 }
+
+// ── Debounced immediate poll ───────────────────────────────────────────────
+// The webhook ingest calls this when an incoming-report.* event lands so a
+// report surfaces within seconds instead of waiting for the 5-min tick.
+//
+// Moved here from fbl.ts when FBL was retired (2026-09-15). It had always
+// driven BOTH pollers — an incoming-report.* event does not say which report
+// type arrived — so deleting it with the FBL module would have silently cost
+// DMARC its fast path and left only the 5-minute tick.
+
+let pollTimer: NodeJS.Timeout | null = null;
+
+export function schedulePollSoon(
+  db: Database,
+  logger: OutboundReconcileLogger,
+  delayMs = 5_000,
+): void {
+  if (pollTimer) return; // already scheduled
+  pollTimer = setTimeout(() => {
+    pollTimer = null;
+    pollDmarcReports(db, logger).catch((err) => {
+      logger.warn({ err }, 'dmarc poll (webhook-triggered) failed');
+    });
+  }, delayMs);
+  pollTimer.unref();
+}

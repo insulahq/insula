@@ -1,0 +1,304 @@
+#!/usr/bin/env bash
+# The mailbox-quota NOTIFICATION chain, proven by filling a real mailbox.
+#
+# Guard 5 of docs/roadmap/NOTIFICATION_OVERHAUL.md §6. This is the one the
+# other guards cannot give you: every static check can pass while the chain
+# delivers to nobody. It had never fired once in its life —
+# `mailbox_quota_events` held 0 rows platform-wide while four mailboxes sat at
+# or above 75%, because recipients were resolved through `mailbox_access`, a
+# table with no rows anywhere.
+#
+# What this asserts, in order of what actually matters:
+#   1. crossing 80/90 opens the dedupe events,
+#   2. the MAILBOX OWNER is addressed directly — they have no platform account,
+#      which is precisely why no user-id resolver ever reached them,
+#   3. the TENANT ADMIN is told through the normal user path,
+#   4. the message names the mailbox, the tenant, the value and the time,
+#   5. crossing 100 additionally produces the aggregated OPERATOR view,
+#   6. a second sweep does NOT re-notify a condition already reported.
+#
+# Why 20 MB and random bytes
+# --------------------------
+# Stalwart compresses at rest. A first attempt pushed 52 MB of repetitive
+# filler and the mailbox reported 14 MB used — the threshold never moved. The
+# payload here is base64 of /dev/urandom, which does not compress, so stored
+# size tracks sent size. 20 MB is the smallest quota the contract allows
+# (lowered from 50 for exactly this reason), which keeps the fill to seconds.
+#
+# USAGE: ADMIN_PASSWORD=<…> ADMIN_HOST=https://admin.<env>.example.test \
+#        ./scripts/integration-mailbox-quota-notify-e2e.sh
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib/integration-env.sh
+[[ -f "$SCRIPT_DIR/lib/integration-env.sh" ]] && source "$SCRIPT_DIR/lib/integration-env.sh" && load_integration_env
+
+ADMIN_HOST="${ADMIN_HOST:-https://admin.$(resolve_platform_apex)}"
+case "$ADMIN_HOST" in http://*|https://*) ;; *) ADMIN_HOST="https://$ADMIN_HOST" ;; esac
+ADMIN_EMAIL="${ADMIN_EMAIL:-admin@example.test}"
+ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
+[[ -n "$ADMIN_PASSWORD" ]] || { echo "ERROR: ADMIN_PASSWORD must be set" >&2; exit 2; }
+
+CYAN='\033[36m'; GREEN='\033[32m'; RED='\033[31m'; RESET='\033[0m'
+log()  { printf '%b[%s]%b %s\n' "$CYAN" "$(date +%H:%M:%S)" "$RESET" "$*"; }
+passed=0; failed=0
+ok()   { printf '  %b✓%b %s\n' "$GREEN" "$RESET" "$*"; passed=$((passed+1)); }
+fail() { printf '  %b✗%b %s\n' "$RED" "$RESET" "$*"; failed=$((failed+1)); }
+
+# Fill against a ROOMY quota, then tighten it. Two failure modes bracket the
+# naive approach, and only this avoids both:
+#
+#   coarse messages (4MB) — Stalwart refuses one that would cross the quota, so
+#     a 20MB box stalls at 17MB (85%) and 99/100 are unreachable. Sending more
+#     changes nothing; it stalls at the same figure.
+#   fine messages (1MB x26) — clears the quota boundary but trips
+#     `452 4.4.5 Rate limit exceeded`, and the burst is accepted at SMTP yet
+#     never DELIVERED. Six reconciler cycles later usage was still 0.
+#
+# So: fill to a comfortable level under a large quota, then lower the quota —
+# an ordinary operator action — which pushes the same bytes past 100%.
+FILL_QUOTA_MB=28
+FINAL_QUOTA_MB=20
+QUOTA_MB="$FILL_QUOTA_MB"
+LOCAL_PART="quota-notify-$(date +%s)"
+TMP="$(mktemp -d)"
+# Unique per run. A fixed name plus `kubectl delete --wait=false` is a race:
+# the previous pod is still Terminating when the next `kubectl run` fires, the
+# create fails AlreadyExists, and with that error suppressed the script simply
+# died at the next step with a four-line log. Measured 2026-09-15.
+FILLER_POD="quota-notify-filler-$$"
+trap 'rm -rf "$TMP"; kubectl delete pod "$FILLER_POD" -n mail --ignore-not-found --wait=false >/dev/null 2>&1 || true' EXIT INT TERM
+
+# Cluster access is required: the fill has to originate inside the cluster
+# (repeated SMTP from one external IP trips CrowdSec), and the assertions read
+# the platform database directly.
+if ! command -v kubectl >/dev/null 2>&1 || ! kubectl get ns platform >/dev/null 2>&1; then
+  log "SKIP: no cluster access — this suite fills a real mailbox and reads the platform DB"
+  exit 0
+fi
+PSQL() { kubectl exec -n platform system-db-1 -c postgres -- psql -U postgres -d platform -At "$@"; }
+
+# ── Make the reconciler cadence workable, then put it back ─────────────────
+#
+# `mailbox_usage_sync_interval_minutes` defaults to 15 and is deliberately
+# operator-tunable ("the user asked specifically that this NOT run too often").
+# A 15-minute cycle means this suite would need ~35 minutes to see usage AND
+# prove the no-repeat property. The first run of it waited 8 minutes against a
+# 15-minute cycle and reported a threshold failure that was purely its own
+# impatience — the mailbox had been created 7 seconds after a cycle completed.
+#
+# Tighten it for the duration and restore exactly what was there, including
+# restoring "unset" as unset rather than as an explicit 15.
+SYNC_KEY=mailbox_usage_sync_interval_minutes
+ORIG_INTERVAL="$(PSQL -c "SELECT setting_value FROM platform_settings WHERE setting_key='$SYNC_KEY';" | tr -d '[:space:]')"
+TEST_INTERVAL=2
+restore_interval() {
+  if [[ -n "${ORIG_INTERVAL:-}" ]]; then
+    PSQL -c "UPDATE platform_settings SET setting_value='$ORIG_INTERVAL' WHERE setting_key='$SYNC_KEY';" >/dev/null 2>&1 || true
+  else
+    PSQL -c "DELETE FROM platform_settings WHERE setting_key='$SYNC_KEY';" >/dev/null 2>&1 || true
+  fi
+}
+PSQL -c "INSERT INTO platform_settings (setting_key, setting_value) VALUES ('$SYNC_KEY','$TEST_INTERVAL')
+         ON CONFLICT (setting_key) DO UPDATE SET setting_value='$TEST_INTERVAL';" >/dev/null 2>&1
+log "usage reconciler interval ${ORIG_INTERVAL:-unset/15} -> ${TEST_INTERVAL} min for this run (restored on exit)"
+
+log "Authenticating against $ADMIN_HOST"
+TOKEN="$(curl -sk -X POST "$ADMIN_HOST/api/v1/auth/login" -H 'Content-Type: application/json' \
+  -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PASSWORD\"}" | jq -r '.data.token // empty')"
+[[ -n "$TOKEN" ]] || { fail "login failed"; exit 1; }
+
+# ── Find a mail-enabled domain to hang the probe mailbox off ────────────────
+read -r TENANT_ID EMAIL_DOMAIN_ID DOMAIN_NAME <<<"$(PSQL -F' ' -c "
+  SELECT ed.tenant_id, ed.id, d.domain_name
+    FROM email_domains ed JOIN domains d ON d.id = ed.domain_id
+   WHERE ed.enabled = 1 ORDER BY d.domain_name LIMIT 1;")"
+[[ -n "${EMAIL_DOMAIN_ID:-}" ]] || { log "SKIP: no enabled email domain on this cluster"; exit 0; }
+ADDRESS="$LOCAL_PART@$DOMAIN_NAME"
+log "probe mailbox $ADDRESS (quota ${QUOTA_MB}MB) on tenant $TENANT_ID"
+
+MBPW="Probe$(openssl rand -hex 10)Zz"
+CREATE="$(curl -sk -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"local_part\":\"$LOCAL_PART\",\"password\":\"$MBPW\",\"quota_mb\":$QUOTA_MB,\"display_name\":\"Quota notify probe\"}" \
+  "$ADMIN_HOST/api/v1/tenants/$TENANT_ID/email/domains/$EMAIL_DOMAIN_ID/mailboxes")"
+MAILBOX_ID="$(echo "$CREATE" | jq -r '.data.id // empty')"
+if [[ -n "$MAILBOX_ID" ]]; then
+  ok "created a ${QUOTA_MB}MB mailbox (the contract floor — 50 would need 50MB of fill)"
+else
+  fail "mailbox create failed: $(echo "$CREATE" | head -c 300)"; exit 1
+fi
+# EXIT alone is not enough. A run killed by a CI timeout or an impatient
+# operator takes SIGTERM, bash does not run a bare EXIT trap for it, and the
+# cluster is left with a tightened reconciler interval, a probe mailbox and a
+# filler pod. Measured: exactly that, after a 595s ssh timeout cut a run that
+# now legitimately needs ~21 minutes.
+cleanup_mailbox() {
+  curl -sk -o /dev/null -X DELETE -H "Authorization: Bearer $TOKEN" \
+    "$ADMIN_HOST/api/v1/tenants/$TENANT_ID/mailboxes/$MAILBOX_ID" || true
+  PSQL -c "DELETE FROM notifications WHERE title LIKE '%$LOCAL_PART%';" >/dev/null 2>&1 || true
+  PSQL -c "DELETE FROM notification_deliveries WHERE recipient_address = '$ADDRESS';" >/dev/null 2>&1 || true
+}
+trap 'restore_interval; cleanup_mailbox; rm -rf "$TMP"; kubectl delete pod "$FILLER_POD" -n mail --ignore-not-found --wait=false >/dev/null 2>&1 || true' EXIT INT TERM
+
+# ── Fill it with data that does NOT compress ───────────────────────────────
+cat > "$TMP/fill.py" <<PY
+import smtplib, os, base64, sys
+from email.message import EmailMessage
+HOST, PORT = "stalwart-mail.mail.svc.cluster.local", 25
+TO, FROM = sys.argv[1], sys.argv[2]
+N, MB = int(sys.argv[3]), 4
+sent = 0
+for i in range(N):
+    body = base64.b64encode(os.urandom(MB * 1024 * 1024 * 3 // 4)).decode()
+    m = EmailMessage()
+    m["Subject"] = f"quota fill {i+1}/{N}"
+    m["From"], m["To"] = FROM, TO
+    m.set_content(body)
+    try:
+        with smtplib.SMTP(HOST, PORT, timeout=180) as s:
+            s.send_message(m)
+        sent += 1
+    except Exception as e:
+        # A refusal once the mailbox is full is the EXPECTED end state, not a
+        # failure: Stalwart declines anything that would cross the quota.
+        print(f"refused at {i+1}: {type(e).__name__}: {str(e)[:80]}")
+        break
+print(f"SENT={sent}")
+PY
+if ! kubectl run "$FILLER_POD" -n mail --image=python:3.12-alpine --restart=Never \
+     --command -- sleep 900 >/dev/null; then
+  fail "could not create the filler pod — cannot fill the mailbox"
+  echo "RESULTS: $passed passed, $failed failed"; exit 1
+fi
+POD_READY=0
+for _ in $(seq 1 24); do
+  if [[ "$(kubectl get pod "$FILLER_POD" -n mail -o jsonpath='{.status.phase}' 2>/dev/null)" == "Running" ]]; then
+    POD_READY=1; break
+  fi
+  sleep 5
+done
+if [[ "$POD_READY" != "1" ]]; then
+  fail "filler pod never reached Running: $(kubectl get pod "$FILLER_POD" -n mail --no-headers 2>&1 | head -1)"
+  echo "RESULTS: $passed passed, $failed failed"; exit 1
+fi
+if ! kubectl cp "$TMP/fill.py" "mail/$FILLER_POD:/tmp/fill.py"; then
+  fail "could not copy the filler script into the pod"
+  echo "RESULTS: $passed passed, $failed failed"; exit 1
+fi
+# 26 x 1MB against a 20MB quota — granularity matters more than volume.
+#
+# At 4MB per message the mailbox could never reach 100%: Stalwart REFUSES a
+# message that would push it over quota, so four fit (16MB), the fifth landed
+# at ~17MB, and every 4MB message after that was refused for crossing 20MB.
+# Sending 28MB instead of 20MB changed nothing — it stalled at the same 17MB
+# and the 100% OPERATOR path stayed unreachable.
+#
+# 1MB units can top the mailbox up to its quota one step at a time. The
+# surplus is still free: once full, the remainder is simply refused.
+log "filling with incompressible 4MB messages (Stalwart compresses repetitive filler)"
+kubectl exec -n mail "$FILLER_POD" -- python3 /tmp/fill.py "$ADDRESS" "postmaster@$DOMAIN_NAME" 7 2>&1 | tail -2
+
+# ── Wait for the reconciler + threshold check ──────────────────────────────
+# Budget the OLD interval, not the new one.
+#
+# The scheduler re-reads this setting at the END of each cycle and schedules
+# the next one from the value it read THEN. So tightening it does not shorten
+# the cycle already pending — it only takes effect from the following one. A
+# run that starts just after a cycle boundary therefore waits the ORIGINAL
+# interval first. Measured: a cycle completed at 19:34:24, the run started at
+# 19:34:36, and the next cycle was due at 19:49 while the script gave up at
+# 19:43 and reported a threshold failure that was entirely its own arithmetic.
+#
+# Worst case = the remainder of the pending old cycle, then a tightened one to
+# see the usage, plus slack.
+ORIG_MINUTES="${ORIG_INTERVAL:-15}"
+WAIT_SECONDS=$(( ORIG_MINUTES * 60 + TEST_INTERVAL * 60 * 2 + 120 ))
+WAIT_TRIES=$(( WAIT_SECONDS / 20 ))
+log "waiting up to $(( WAIT_SECONDS / 60 )) min for the usage reconciler"
+log "  (a cycle scheduled under the previous ${ORIG_MINUTES}-min interval may still be pending;"
+log "   the ${TEST_INTERVAL}-min cadence only applies from the cycle after it)"
+CROSSED=0
+for _ in $(seq 1 "$WAIT_TRIES"); do
+  USED="$(PSQL -c "SELECT used_mb FROM mailboxes WHERE id='$MAILBOX_ID';" | tr -d '[:space:]')"
+  EV="$(PSQL -c "SELECT count(*) FROM mailbox_quota_events WHERE mailbox_id='$MAILBOX_ID';" | tr -d '[:space:]')"
+  [[ "${EV:-0}" -gt 0 ]] && { CROSSED=1; break; }
+  sleep 20
+done
+USED="$(PSQL -c "SELECT used_mb FROM mailboxes WHERE id='$MAILBOX_ID';" | tr -d '[:space:]')"
+if [[ "$CROSSED" == "1" ]]; then
+  ok "usage reached ${USED}MB/${QUOTA_MB}MB and opened quota event(s): $(PSQL -c "SELECT string_agg(threshold::text,',' ORDER BY threshold) FROM mailbox_quota_events WHERE mailbox_id='$MAILBOX_ID';")"
+else
+  fail "no quota event after filling to ${USED}MB/${QUOTA_MB}MB — the threshold chain did not fire"
+  echo "RESULTS: $passed passed, $failed failed"; exit 1
+fi
+
+# ── 1. the MAILBOX OWNER, addressed directly ───────────────────────────────
+OWNER="$(PSQL -c "SELECT count(*) FROM notification_deliveries
+  WHERE recipient_address = '$ADDRESS' AND user_id IS NULL;" | tr -d '[:space:]')"
+[[ "${OWNER:-0}" -gt 0 ]] \
+  && ok "the mailbox OWNER was addressed directly ($OWNER delivery row(s), no user id)" \
+  || fail "nothing addressed to $ADDRESS — the owner has no account, so a user-id resolver never reaches them"
+
+# ── 2. the TENANT ADMIN, through the user path ─────────────────────────────
+ADMIN_N="$(PSQL -c "SELECT count(*) FROM notification_deliveries d
+  WHERE d.category_id LIKE 'mailbox.quota%' AND d.user_id IS NOT NULL
+    AND d.queued_at > now() - interval '30 minutes';" | tr -d '[:space:]')"
+[[ "${ADMIN_N:-0}" -gt 0 ]] \
+  && ok "the TENANT ADMIN was notified ($ADMIN_N delivery row(s) resolved to a user)" \
+  || fail "no user-resolved delivery — the tenant admin was not told"
+
+# ── 3. the message answers which mailbox / which tenant / what / when ──────
+MSG="$(PSQL -F'~' -c "SELECT title || ' :: ' || message FROM notifications
+  WHERE category_id LIKE 'mailbox.quota%' AND message LIKE '%$LOCAL_PART%'
+  ORDER BY created_at DESC LIMIT 1;")"
+[[ -n "$MSG" ]] && log "message: $(echo "$MSG" | head -c 220)"
+echo "$MSG" | grep -q "$LOCAL_PART"            && ok "names the MAILBOX"  || fail "does not name the mailbox"
+echo "$MSG" | grep -Eq "[0-9]+ of [0-9]+ MB"   && ok "names the VALUE"    || fail "does not give used/quota"
+echo "$MSG" | grep -Eq "[0-9]{4}-[0-9]{2}-[0-9]{2}" && ok "names WHEN"    || fail "has no timestamp"
+
+# ── 4. at 100%, the operator gets ONE aggregated view ──────────────────────
+# ── Tighten the quota so the SAME bytes cross 100% ─────────────────────────
+log "lowering the quota ${FILL_QUOTA_MB}MB -> ${FINAL_QUOTA_MB}MB (${USED}MB stored) to cross 100%"
+PATCH="$(curl -sk -X PATCH -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"quota_mb\":$FINAL_QUOTA_MB}" \
+  "$ADMIN_HOST/api/v1/tenants/$TENANT_ID/mailboxes/$MAILBOX_ID")"
+if echo "$PATCH" | jq -e '.error' >/dev/null 2>&1; then
+  fail "could not lower the quota: $(echo "$PATCH" | head -c 200)"
+else
+  ok "quota lowered to ${FINAL_QUOTA_MB}MB — ${USED}MB is now over 100%"
+fi
+
+FLEET=0
+for _ in $(seq 1 $(( (TEST_INTERVAL * 60 * 3 + 120) / 20 )) ); do
+  FLEET="$(PSQL -c "SELECT count(*) FROM notification_deliveries
+    WHERE category_id='admin.mailbox_quota_fleet' AND queued_at > now() - interval '30 minutes';" | tr -d '[:space:]')"
+  [[ "${FLEET:-0}" -gt 0 ]] && break
+  sleep 20
+done
+OVER="$(PSQL -c "SELECT string_agg(threshold::text,',' ORDER BY threshold) FROM mailbox_quota_events WHERE mailbox_id='$MAILBOX_ID';" | tr -d '[:space:]')"
+[[ "$OVER" == *"100"* ]] \
+  && ok "crossing 100% opened the 100 threshold (events: $OVER)" \
+  || fail "quota lowered but the 100 threshold never opened (events: ${OVER:-none})"
+
+USED="$(PSQL -c "SELECT used_mb FROM mailboxes WHERE id='$MAILBOX_ID';" | tr -d '[:space:]')"
+PCT=$(( USED * 100 / FINAL_QUOTA_MB ))
+if [[ "${FLEET:-0}" -gt 0 ]]; then
+  ok "at ${PCT}% the OPERATOR got the aggregated fleet view ($FLEET delivery row(s))"
+else
+  # Not a pass. The aggregated operator view is one of the things this suite
+  # exists to assert, and a run that silently skips it reports more confidence
+  # than it earned.
+  fail "at ${PCT}% no admin.mailbox_quota_fleet delivery — the OPERATOR path did not fire"
+fi
+
+# ── 5. a condition already reported must not re-notify ─────────────────────
+BEFORE="$(PSQL -c "SELECT count(*) FROM notifications WHERE message LIKE '%$LOCAL_PART%';" | tr -d '[:space:]')"
+log "waiting one more reconciler cycle to prove it does not repeat"
+sleep $(( TEST_INTERVAL * 60 + 60 ))
+AFTER="$(PSQL -c "SELECT count(*) FROM notifications WHERE message LIKE '%$LOCAL_PART%';" | tr -d '[:space:]')"
+[[ "$BEFORE" == "$AFTER" ]] \
+  && ok "a still-true condition did NOT re-notify ($AFTER unchanged)" \
+  || fail "re-notified on the next cycle ($BEFORE -> $AFTER) — this is how an alert becomes noise"
+
+echo
+echo "RESULTS: $passed passed, $failed failed"
+[[ "$failed" -eq 0 ]]

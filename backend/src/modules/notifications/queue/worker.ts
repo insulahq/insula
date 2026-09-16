@@ -32,6 +32,8 @@ import { eq } from 'drizzle-orm';
 import nodemailer from 'nodemailer';
 import { notificationCategories, notificationDeliveries, users } from '../../../db/schema.js';
 import { renderTemplateAsync } from '../templates/renderer.js';
+import { renderForDelivery, type DeliveryRender } from '../templates/render-for-delivery.js';
+import { recordDegradedRender, clampDegradedVars } from '../dispatcher/degraded.js';
 import { getTemplate } from '../templates/service.js';
 import { getProviderForCategoryEmail } from '../providers/service.js';
 import { readStalwartMasterCredentials } from '../providers/stalwart-master-creds.js';
@@ -118,6 +120,7 @@ interface DeliveryRow {
   id: string;
   userId: string | null;
   categoryId: string;
+  recipientAddress: string | null;
   channel: 'in_app' | 'email';
   templateId: string | null;
   locale: string;
@@ -146,6 +149,7 @@ export async function processDelivery(
     id: notificationDeliveries.id,
     userId: notificationDeliveries.userId,
     categoryId: notificationDeliveries.categoryId,
+    recipientAddress: notificationDeliveries.recipientAddress,
     channel: notificationDeliveries.channel,
     templateId: notificationDeliveries.templateId,
     locale: notificationDeliveries.locale,
@@ -162,6 +166,7 @@ export async function processDelivery(
     id: raw.id,
     userId: raw.userId,
     categoryId: raw.categoryId,
+    recipientAddress: raw.recipientAddress,
     channel: raw.channel === 'email' ? 'email' : 'in_app',
     templateId: raw.templateId,
     locale: raw.locale,
@@ -200,20 +205,44 @@ export async function processDelivery(
     if (!tpl) {
       return await markFailedOrDlq(db, row.id, row.attempt + 1, 'template_not_found', opts);
     }
-    const render = opts.render ?? renderTemplateAsync;
-    const rendered = await render(tpl, row.eventVariables ?? {});
-
-    // 4. Look up recipient email.
-    if (!row.userId) {
-      return await markFailedOrDlq(db, row.id, row.attempt + 1, 'user_id_missing', opts);
+    // The worker re-renders at send time from `event_variables`. A render
+    // failure here used to burn all six retry attempts and then dead-letter —
+    // six guaranteed-identical failures, because a template/variable mismatch
+    // is deterministic. It now degrades once and sends.
+    const rendered = opts.render
+      ? await opts.render(tpl, row.eventVariables ?? {})
+      : await renderForDelivery(tpl, row.eventVariables ?? {}, { fallbackTitle: row.categoryId });
+    // `opts.render` is a test seam typed as the STRICT renderer, which returns
+    // no degradation info; the production path returns DeliveryRender. Narrow
+    // explicitly rather than with an `in` check, which widens to unknown.
+    const deliveryRender = rendered as Partial<DeliveryRender>;
+    const degradedVars: readonly string[] = deliveryRender.degradedVars ?? [];
+    const fallbackUsed = deliveryRender.fallbackUsed === true;
+    if (degradedVars.length > 0 || fallbackUsed) {
+      recordDegradedRender(row.categoryId, 'email', degradedVars, fallbackUsed);
     }
-    const [u] = await db.select({ email: users.email })
-      .from(users)
-      .where(eq(users.id, row.userId))
-      .limit(1);
-    if (!u?.email) {
+
+    // 4. Resolve the recipient address.
+    //
+    // Two kinds of recipient: a platform user (look up their address) and an
+    // audience with no account at all — a mailbox owner, addressed directly.
+    // The second is why the mailbox-quota warnings could never be delivered:
+    // every resolver in the system returned user ids and there was no user.
+    let recipientEmail: string | null = row.recipientAddress;
+    if (!recipientEmail) {
+      if (!row.userId) {
+        return await markFailedOrDlq(db, row.id, row.attempt + 1, 'user_id_missing', opts);
+      }
+      const [u] = await db.select({ email: users.email })
+        .from(users)
+        .where(eq(users.id, row.userId))
+        .limit(1);
+      recipientEmail = u?.email ?? null;
+    }
+    if (!recipientEmail) {
       return await markFailedOrDlq(db, row.id, row.attempt + 1, 'recipient_email_missing', opts);
     }
+    const u = { email: recipientEmail };
 
     // 5. Look up the notification provider for this category. Phase 5
     //    introduces a per-source override (notification_categories
@@ -290,9 +319,17 @@ export async function processDelivery(
       html: rendered.body,
     });
 
-    // 7. Success.
+    // 7. Success. A degraded send is still a success — but the row records
+    // what was missing, so the Delivery Log can separate "delivered whole"
+    // from "delivered thin" instead of showing one undifferentiated `sent`.
     await db.update(notificationDeliveries)
-      .set({ status: 'sent', sentAt: new Date(), attempt: row.attempt + 1 })
+      .set({
+        status: 'sent',
+        sentAt: new Date(),
+        attempt: row.attempt + 1,
+        ...(degradedVars.length > 0 ? { degradedVars: clampDegradedVars(degradedVars) } : {}),
+        ...(fallbackUsed ? { lastError: 'render_fallback: template unrenderable at send time' } : {}),
+      })
       .where(eq(notificationDeliveries.id, deliveryId));
     return { status: 'sent' };
   } catch (err) {

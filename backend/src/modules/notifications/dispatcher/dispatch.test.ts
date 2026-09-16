@@ -42,7 +42,7 @@ vi.mock('../email-sender.js', () => ({ sendNotificationEmail: sendNotificationEm
 const enqueueDeliveryMock = vi.fn().mockResolvedValue('job-id');
 vi.mock('../queue/enqueue.js', () => ({ enqueueDelivery: enqueueDeliveryMock }));
 
-const { emitEvent } = await import('./dispatch.js');
+const { emitEvent, hasRecipient } = await import('./dispatch.js');
 
 type Db = Parameters<typeof emitEvent>[0];
 
@@ -182,7 +182,32 @@ describe('emitEvent', () => {
     expect(r.perChannelStatuses.every((s) => s.status === 'muted')).toBe(true);
   });
 
-  it('honours quiet hours for non-critical severity', async () => {
+  it('honours quiet hours for a category whose CLASS can wait', async () => {
+    // subscription.renewed is class=record: a receipt genuinely can wait until
+    // morning. (This test used to use tenant.suspended, which is class=security
+    // and now correctly passes through — see the next case.)
+    // The mocked category carries its own id, and the class lookup keys off
+    // THAT — not off the categoryId passed to emitEvent. Setting only the
+    // latter left both quiet-hours cases resolving to tenant.suspended.
+    getCategoryMock.mockResolvedValue({
+      ...baseCategory, id: 'subscription.renewed', isMandatory: false, defaultSeverity: 'info',
+    });
+    resolveRecipientsMock.mockResolvedValue(['u1']);
+    isAllowedMock.mockResolvedValue(true);
+    isInQuietHoursMock.mockReturnValue(true);
+    const r = await emitEvent(mockDb(), {
+      categoryId: 'subscription.renewed',
+      scope: { kind: 'tenant', tenantId: 't1' },
+      variables: {},
+      encryptionKey: 'KEY',
+    });
+    expect(r.perChannelStatuses.every((s) => s.status === 'muted')).toBe(true);
+  });
+
+  it('lets a warning-severity SECURITY category through quiet hours', async () => {
+    // The bug this fixes: the bypass was gated on severity alone, so
+    // tenant.suspended (severity=warning, class=security) was held until
+    // morning. A suspension notice that waits overnight is a support ticket.
     getCategoryMock.mockResolvedValue({ ...baseCategory, isMandatory: false, defaultSeverity: 'warning' });
     resolveRecipientsMock.mockResolvedValue(['u1']);
     isAllowedMock.mockResolvedValue(true);
@@ -193,7 +218,7 @@ describe('emitEvent', () => {
       variables: {},
       encryptionKey: 'KEY',
     });
-    expect(r.perChannelStatuses.every((s) => s.status === 'muted')).toBe(true);
+    expect(r.perChannelStatuses.some((s) => s.status === 'muted')).toBe(false);
   });
 
   it('critical severity bypasses quiet hours', async () => {
@@ -296,12 +321,17 @@ describe('emitEvent', () => {
     ).rejects.toThrow(/PLATFORM_ENCRYPTION_KEY/);
   });
 
-  it('captures template render errors per-channel without aborting fan-out, persisting visible rows', async () => {
-    // Render failures are deterministic (same template + same vars),
-    // so they persist as status='skipped' (NOT 'failed' — the queue
-    // worker's retry scan picks up 'failed' rows and a retry can never
-    // succeed) with lastError for the Delivery Log. Before 2026-06-12
-    // these were status-array-only and completely invisible.
+  it('DELIVERS through the envelope fallback when the template cannot render', async () => {
+    // Behaviour change 2026-09-14. This used to persist status='skipped' and
+    // stop: a render failure is deterministic, so retrying could not help and
+    // dropping seemed like the honest outcome. It was not — `skipped` raises
+    // no alert and is not in the retry scan, so one variable-name mismatch
+    // silently cost `subscription.renewed` 16 emails and nobody found out
+    // until a customer complained.
+    //
+    // A notification system whose failure mode is silence has no failure mode.
+    // The message now goes out with whatever facts survived, and the row says
+    // what was lost.
     getCategoryMock.mockResolvedValue(baseCategory);
     resolveRecipientsMock.mockResolvedValue(['u1']);
     isAllowedMock.mockResolvedValue(true);
@@ -314,10 +344,16 @@ describe('emitEvent', () => {
       variables: {},
       encryptionKey: 'KEY',
     });
-    expect(r.perChannelStatuses.every((s) => s.status === 'skipped')).toBe(true);
+
+    // Nothing is skipped for a render failure any more.
+    expect(r.perChannelStatuses.some((s) => s.status === 'skipped')).toBe(false);
+
     const inserted = (db.insert as ReturnType<typeof vi.fn>)().values.mock.calls.map((c: unknown[]) => c[0]);
+    // The row survives as a real delivery...
+    expect(inserted.some((v: Record<string, unknown>) => v.status === 'sent' || v.status === 'queued')).toBe(true);
+    // ...and records WHY it is thin, so the Delivery Log can surface it.
     expect(inserted.some((v: Record<string, unknown>) =>
-      v.status === 'skipped' && String(v.lastError).startsWith('render_failed:'))).toBe(true);
+      String(v.lastError ?? '').startsWith('render_fallback:'))).toBe(true);
   });
 
   it('persists a skipped delivery row when no template exists', async () => {
@@ -394,5 +430,37 @@ describe('emitEvent', () => {
     });
     // Either sent or queued; explicitly NOT skipped:duplicate.
     expect(r.perChannelStatuses.some((s) => s.error === 'duplicate')).toBe(false);
+  });
+});
+
+describe('hasRecipient — the invariant that must NOT be a table CHECK', () => {
+  it('accepts a platform user', () => {
+    expect(hasRecipient({ userId: 'u1', channel: 'email' })).toBe(true);
+  });
+
+  it('accepts an account-less address (a mailbox owner)', () => {
+    expect(hasRecipient({ userId: null, recipientAddress: 'user@example.test', channel: 'email' })).toBe(true);
+  });
+
+  it('accepts ntfy with neither — it is a topic broadcast, not an addressed delivery', () => {
+    expect(hasRecipient({ userId: null, recipientAddress: null, channel: 'ntfy' })).toBe(true);
+  });
+
+  it('refuses a row with no recipient at all', () => {
+    expect(hasRecipient({ userId: null, recipientAddress: null, channel: 'email' })).toBe(false);
+  });
+
+  // Why this is enforced in code and not in the schema: user_id is
+  // ON DELETE SET NULL so the delivery audit row survives a GDPR erasure. A
+  // historical row therefore legitimately has neither identifier, and a table
+  // CHECK cannot distinguish that from a new row written with neither — it
+  // just aborts. Proved on DEV: the constraint failed against 164 of 458 rows,
+  // crash-looped the API, and left the migration half applied because the
+  // ADD COLUMN before it had already committed.
+  it('documents why an erased historical row is not a write-time violation', () => {
+    const historical = { userId: null, recipientAddress: null, channel: 'email' };
+    expect(hasRecipient(historical)).toBe(false); // would be refused if written TODAY
+    // ...but it is never written today; it BECAME this by erasure, long after
+    // the write. That asymmetry is exactly what a CHECK constraint cannot see.
   });
 });

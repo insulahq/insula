@@ -27,7 +27,7 @@ learn *where things live*, then drill in.
 After you log in you land on the **Dashboard**. The bar across the top of
 every page carries, from left to right:
 
-- A **search** box — currently disabled (labelled "coming soon").
+- A **search** box — see [Search](#search) below.
 - The **Task Center** chip — long-running operations (provisioning,
   archive, restore, upgrades) register here so you can watch them even
   after you navigate away.
@@ -40,6 +40,45 @@ Just under the sidebar title you'll see a small identity block: the
 **running version**, the build **branch**, and the **node** whose
 `platform-api` pod is serving your request. This is the fastest way to
 confirm which version is live.
+
+## Search
+
+The search box in the top bar finds two different kinds of thing at once,
+and shows them in one drop-down list.
+
+**Pages and tabs.** Type part of a page name and the matching destinations
+appear immediately. Tabs are searchable in their own right, which is the
+point — most of what you actually want is one level *below* a sidebar
+entry. Typing `waf` offers *WAF Events*, *Banned IPs*, *WAF Exclusions*
+and *WAF Settings* separately, and picking one lands you on that tab, not
+on the page's default view. You can also search by words that aren't in
+the page name: `modsecurity` finds WAF Events, `crowdsec` finds Banned
+IPs, `lets encrypt` finds Ingress & TLS.
+
+**Your records.** In the same list, below the pages, search matches live
+data: tenants, domains, applications, mailboxes, scheduled tasks, admin
+and tenant users, SFTP users, SSH keys, cluster nodes, catalog entries,
+hosting plans and remote storage targets. Picking one takes you to it —
+a mailbox opens its tenant on the Email tab, a domain opens its detail
+page.
+
+Matching is case-insensitive, so `acme` finds *Acme Ltd*.
+
+**Keyboard.** `Ctrl+K` (`⌘K` on a Mac) jumps to the box from anywhere.
+Arrow keys move through the results, `Enter` opens the highlighted one,
+and `Esc` clears the box — press it twice to close the list.
+
+!!! note "You only ever see what your role can reach"
+    Search never offers a page your role cannot open, and never returns a
+    record you could not already list. A `support` user searching `waf`
+    gets no WAF results at all, because those pages are `super_admin`-only.
+
+!!! tip "If the list says it couldn't search records"
+    Pages keep working even when the record half fails — the drop-down
+    tells you so explicitly rather than pretending nothing matched. An
+    empty list means nothing matched; a warning line means the lookup
+    itself failed and it is worth checking
+    [Monitoring](../operator/monitoring.md).
 
 ## The sidebar — your nine areas
 

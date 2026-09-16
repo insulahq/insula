@@ -36,7 +36,6 @@ import {
   storageOperations,
   provisioningTasks,
   emailSendCounters,
-  emailFblComplaints,
   deploymentUpgrades,
   platformStorageApplyRuns,
   drDrillRuns,
@@ -55,8 +54,6 @@ export const PROVISIONING_TASK_RETENTION_DAYS = 90;
 // Send-accounting buckets (R6 PR 2) — 35 days so rolling 30-day
 // complaint rates (R4) always have a full month of denominator.
 export const EMAIL_SEND_COUNTER_RETENTION_DAYS = 35;
-// FBL complaints (R4 PR 3) — 90 days covers any threshold review.
-export const FBL_COMPLAINT_RETENTION_DAYS = 90;
 /**
  * Image-audit history. NOT a plain age cutoff.
  *
@@ -117,7 +114,6 @@ export interface DataRetentionResult {
   readonly storageOperations: number;
   readonly provisioningTasks: number;
   readonly emailSendCounters: number;
-  readonly fblComplaints: number;
   /** Superseded image-audit rows. The newest per (deployment, image) is kept
    *  regardless of age — it is live state, not history. */
   readonly imageAuditRows: number;
@@ -190,14 +186,6 @@ export async function runDataRetention(db: Database): Promise<DataRetentionResul
       sql`${emailSendCounters.bucketStart} < NOW() - INTERVAL '${sql.raw(String(EMAIL_SEND_COUNTER_RETENTION_DAYS))} days'`,
     )
     .returning({ bucketStart: emailSendCounters.bucketStart });
-
-  // 6. email_fbl_complaints — complaint history (R4 PR 3).
-  const complaints = await db
-    .delete(emailFblComplaints)
-    .where(
-      sql`${emailFblComplaints.receivedAt} < NOW() - INTERVAL '${sql.raw(String(FBL_COMPLAINT_RETENTION_DAYS))} days'`,
-    )
-    .returning({ id: emailFblComplaints.id });
 
   // 7. custom_deployment_image_audit — one row per (deployment, digest), so a
   //    frequently-republished moving tag accumulates rows for the life of the
@@ -296,7 +284,6 @@ export async function runDataRetention(db: Database): Promise<DataRetentionResul
     storageOperations: storage.length,
     provisioningTasks: provisioning.length,
     emailSendCounters: sendCounters.length,
-    fblComplaints: complaints.length,
     imageAuditRows: (imageAudit as unknown as { rowCount?: number }).rowCount ?? 0,
     deploymentUpgrades: upgrades.length,
     storageApplyRuns: applyRuns.length,

@@ -1,136 +1,117 @@
 /**
- * Phase 3 T5.3 — mailbox quota threshold notifications.
+ * Mailbox storage-quota thresholds.
  *
- * Runs after each mail-stats reconciler cycle (every 15 min by
- * default). Walks all mailboxes whose used_mb crosses 80%, 90%,
- * or 100% of their quota and fires exactly one notification per
- * (mailbox, threshold) pair.
+ * Runs after each mail-stats reconciler cycle (~15 min). Walks every active
+ * mailbox and fires exactly one notification per (mailbox, threshold).
  *
- * Dedupe via mailbox_quota_events. The (mailbox_id, threshold)
- * primary key + ON CONFLICT DO NOTHING insert is the dedupe
- * mechanism — concurrent reconciler instances are safe because
- * exactly one INSERT will succeed.
+ * What was wrong before
+ * --------------------
+ * This module already did the hard parts — dedupe table, hysteresis, an
+ * ON CONFLICT claim that is safe across concurrent reconcilers — and notified
+ * NOBODY, for its entire life. It resolved recipients with a correlated
+ * aggregate over `mailbox_access`, a table with **zero rows platform-wide**, so
+ * every candidate hit the `skipped` branch and returned. Measured on production
+ * 2026-09-14: `mailbox_quota_events` had 0 rows, four mailboxes were at or above
+ * 75%, one was at 100% and bouncing mail, and 18 tenant_admin users were
+ * resolvable the whole time.
  *
- * Hysteresis: when usage drops below (threshold - 5)% the event
- * row is cleared, so a flapping mailbox doesn't re-fire on every
- * cycle.
+ * Its designated safety net — the `mail-mailbox-over-quota` SLO rule — read a
+ * single global counter with no subject labels, so the operator's only signal
+ * was "some mailbox, somewhere". That rule is retired; see
+ * notifyAdminMailboxQuotaFleet.
+ *
+ * Who gets told now
+ * -----------------
+ *   mailbox owner  — mailed DIRECTLY at the mailbox. They have no platform
+ *                    account, which is precisely why no user-id-based resolver
+ *                    could ever reach them.
+ *   tenant admin   — panel + email, addressed with the tenant's own name.
+ *   platform admin — nothing until 100%, then ONE aggregated notification
+ *                    naming every affected mailbox, tenant and contact.
+ *
+ * Thresholds are 80/90/99/100. 99 exists because at 100 the mail is already
+ * bouncing — a warning that arrives with the failure is not a warning.
  */
 
 import { sql } from 'drizzle-orm';
-import { notifyUser } from '../notifications/service.js';
-import { mailMailboxesOverQuota } from '../../shared/metrics.js';
+import {
+  notifyMailboxQuotaThreshold,
+  notifyAdminMailboxQuotaFleet,
+} from '../notifications/events.js';
 import type { Database } from '../../db/index.js';
 
-const THRESHOLDS = [80, 90, 100] as const;
-type Threshold = (typeof THRESHOLDS)[number];
+/**
+ * 99 is the last point at which the owner can still act. 100 is the incident.
+ */
+export const THRESHOLDS = [80, 90, 99, 100] as const;
+export type Threshold = (typeof THRESHOLDS)[number];
+
+/** Candidate floor — below (lowest threshold − 5) the hysteresis has nothing to do. */
+const CANDIDATE_FLOOR_PCT = 75;
+
+/** Usage must fall this far below a threshold before it can re-fire. */
+const HYSTERESIS_PCT = 5;
 
 interface MailboxRow extends Record<string, unknown> {
   mailbox_id: string;
   tenant_id: string;
+  tenant_name: string;
   full_address: string;
   quota_mb: number;
   used_mb: number;
-  recipient_user_ids: readonly string[];
 }
 
-interface ClearableRow extends Record<string, unknown> {
-  mailbox_id: string;
-  threshold: number;
-  used_mb: number;
-  quota_mb: number;
-}
-
-function thresholdsCrossed(usedMb: number, quotaMb: number): readonly Threshold[] {
+export function thresholdsCrossed(usedMb: number, quotaMb: number): readonly Threshold[] {
   if (quotaMb <= 0) return [];
   const pct = (usedMb / quotaMb) * 100;
-  const crossed: Threshold[] = [];
-  for (const t of THRESHOLDS) {
-    if (pct >= t) crossed.push(t);
-  }
-  return crossed;
+  return THRESHOLDS.filter((t) => pct >= t);
 }
 
-function buildMessage(address: string, threshold: Threshold, usedMb: number, quotaMb: number): string {
-  return `Mailbox ${address} has used ${usedMb} MB of its ${quotaMb} MB quota (${threshold}% or above). Please clear messages or request a quota increase.`;
-}
-
-function buildTitle(threshold: Threshold): string {
-  if (threshold === 100) return 'Mailbox quota: 100% full';
-  return `Mailbox quota: ${threshold}% reached`;
-}
-
-function notificationType(threshold: Threshold): 'warning' | 'error' {
-  return threshold === 100 ? 'error' : 'warning';
+export function percentOf(usedMb: number, quotaMb: number): number {
+  if (quotaMb <= 0) return 0;
+  return Math.floor((usedMb / quotaMb) * 100);
 }
 
 /**
- * Walk all mailboxes ≥ 75% of quota and fire notifications for any
- * newly-crossed thresholds. Returns counts for logging.
+ * Walk every mailbox at or above the candidate floor and fire notifications
+ * for newly-crossed thresholds. Returns counts for logging.
  */
 export async function checkQuotaThresholds(
   db: Database,
-): Promise<{ fired: number; cleared: number; skipped: number }> {
-  // Find candidate mailboxes (≥ 75 % so the 80 hysteresis works
-  // cleanly). Include the recipient user list via a correlated
-  // aggregate over mailbox_access.
+  now: Date = new Date(),
+): Promise<{ fired: number; cleared: number; overQuota: number }> {
   const candidates = await db.execute<MailboxRow>(sql`
     SELECT
-      m.id          AS mailbox_id,
-      m.tenant_id   AS tenant_id,
+      m.id           AS mailbox_id,
+      m.tenant_id    AS tenant_id,
+      t.name         AS tenant_name,
       m.full_address AS full_address,
-      m.quota_mb    AS quota_mb,
-      m.used_mb     AS used_mb,
-      COALESCE(
-        ARRAY(
-          SELECT ma.user_id
-            FROM mailbox_access ma
-           WHERE ma.mailbox_id = m.id
-        ),
-        ARRAY[]::varchar[]
-      ) AS recipient_user_ids
+      m.quota_mb     AS quota_mb,
+      m.used_mb      AS used_mb
     FROM mailboxes m
+    JOIN tenants t ON t.id = m.tenant_id
     WHERE m.status = 'active'
       AND m.quota_mb > 0
-      AND (m.used_mb::numeric / m.quota_mb::numeric) * 100 >= 75
+      AND (m.used_mb::numeric / m.quota_mb::numeric) * 100 >= ${CANDIDATE_FLOOR_PCT}
   `);
 
-  // Aggregate admin-visibility gauge: mailboxes at/over 100% of quota.
-  // Candidates already contain every active mailbox ≥75%, so the ≥100%
-  // subset is exact. Published even when a mailbox has no mailbox_access
-  // owner to notify — the `mail-mailbox-over-quota` rule is the operator's
-  // safety net for the "nobody to notify" case below.
-  const overQuota = (candidates.rows ?? []).filter(
-    (r) => r.quota_mb > 0 && (r.used_mb / r.quota_mb) * 100 >= 100,
-  ).length;
-  mailMailboxesOverQuota.set(overQuota);
-
+  const rows = candidates.rows ?? [];
+  const occurredAt = now.toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
   let fired = 0;
-  let skipped = 0;
 
-  for (const row of candidates.rows ?? []) {
-    if (!row.recipient_user_ids || row.recipient_user_ids.length === 0) {
-      // Nobody on the tenant side to notify. The over-quota gauge above
-      // still surfaces this mailbox to the operator via the
-      // mail-mailbox-over-quota alert rule (no silent drop).
-      skipped += 1;
-      continue;
-    }
+  // Collected for the operator's single aggregated notification. The operator
+  // is deliberately NOT told about 80/90/99 — that is the tenant's business
+  // until mail actually starts bouncing.
+  const overQuota: MailboxRow[] = [];
+
+  for (const row of rows) {
+    const pct = percentOf(row.used_mb, row.quota_mb);
+    if (pct >= 100) overQuota.push(row);
 
     for (const threshold of thresholdsCrossed(row.used_mb, row.quota_mb)) {
-      // Try to claim the (mailbox_id, threshold) row. The dedupe
-      // semantics are:
-      //
-      //   1. No existing row              → INSERT, return row, fire
-      //   2. Existing row, cleared_at NULL → conflict, RETURNING
-      //      gives nothing → skip (already firing this cycle)
-      //   3. Existing row, cleared_at NOT NULL (re-arm) → UPDATE
-      //      sets cleared_at back to NULL, bumps first_seen_at,
-      //      RETURNING gives the row → fire
-      //
-      // The WHERE clause on the DO UPDATE ensures only the re-arm
-      // case writes; the still-firing case stays no-op.
-      // RETURNING xmax = 0 lets us tell INSERT from UPDATE so we
-      // can fire on both. (Postgres-specific.)
+      // Claim the (mailbox, threshold) pair. Concurrent reconcilers are safe:
+      // exactly one INSERT wins. The DO UPDATE re-arms a previously cleared
+      // event; the WHERE keeps a still-firing one a no-op.
       const inserted = await db.execute<{ mailbox_id: string }>(sql`
         INSERT INTO mailbox_quota_events (mailbox_id, threshold)
         VALUES (${row.mailbox_id}, ${threshold})
@@ -141,38 +122,53 @@ export async function checkQuotaThresholds(
           WHERE mailbox_quota_events.cleared_at IS NOT NULL
         RETURNING mailbox_id
       `);
+      if ((inserted.rows ?? []).length === 0) continue;
 
-      if ((inserted.rows ?? []).length === 0) {
-        // Already firing this threshold (cleared_at IS NULL) — skip.
-        continue;
-      }
-
-      // Fan out to all recipients via notifyUser, which also fires
-      // an email through sendNotificationEmail when
-      // PLATFORM_ENCRYPTION_KEY is configured (see notifications/service.ts).
-      // notifyUser is already fire-and-forget and swallows errors,
-      // so one flaky SMTP send cannot starve the loop.
-      for (const userId of row.recipient_user_ids) {
-        await notifyUser(db, userId, {
-          type: notificationType(threshold),
-          title: buildTitle(threshold),
-          message: buildMessage(row.full_address, threshold, row.used_mb, row.quota_mb),
-          resourceType: 'mailbox',
-          resourceId: row.mailbox_id,
-        });
-        fired += 1;
-      }
+      // Two audiences from one call: the tenant admins by scope, and the
+      // mailbox owner by address because they have no account to resolve.
+      await notifyMailboxQuotaThreshold(
+        db,
+        row.tenant_id,
+        row.full_address,
+        {
+          mailboxAddress: row.full_address,
+          tenantName: row.tenant_name,
+          percent: String(pct),
+          usedMb: String(row.used_mb),
+          quotaMb: String(row.quota_mb),
+          occurredAt,
+        },
+        {
+          exceeded: threshold === 100,
+          dedupeKey: `mailbox-quota:${row.mailbox_id}:${threshold}`,
+        },
+      );
+      fired += 1;
     }
   }
 
-  // Clear (re-arm) events whose mailbox usage has dropped below
-  // (threshold - 5)% — hysteresis to prevent flapping.
-  //
-  // Two-step: first set cleared_at on the matching open events
-  // (preserves audit history of when the threshold was first hit
-  // and when it was cleared), then delete rows that have been
-  // cleared for more than 30 days so the table doesn't grow
-  // unbounded over the lifetime of the platform.
+  // ONE aggregated operator notification, naming everything. Deduped per UTC
+  // day so a sustained condition does not re-page, and skipped entirely when
+  // nothing is over quota.
+  if (overQuota.length > 0) {
+    const tenants = new Set(overQuota.map((r) => r.tenant_id));
+    const list = overQuota
+      .map((r) => `${r.full_address} (${r.tenant_name}, ${r.used_mb}/${r.quota_mb} MB)`)
+      .join('; ');
+    await notifyAdminMailboxQuotaFleet(
+      db,
+      {
+        mailboxCount: String(overQuota.length),
+        tenantCount: String(tenants.size),
+        mailboxList: list.slice(0, 2000),
+        occurredAt,
+      },
+      `mailbox-quota-fleet:${now.toISOString().slice(0, 10)}`,
+    );
+  }
+
+  // Hysteresis: re-arm an event once usage drops meaningfully below its
+  // threshold, so a mailbox hovering on the line does not re-fire every cycle.
   const clearResult = await db.execute<{ mailbox_id: string }>(sql`
     UPDATE mailbox_quota_events e
        SET cleared_at = NOW()
@@ -180,15 +176,14 @@ export async function checkQuotaThresholds(
      WHERE m.id = e.mailbox_id
        AND e.cleared_at IS NULL
        AND m.quota_mb > 0
-       AND (m.used_mb::numeric / m.quota_mb::numeric) * 100 < (e.threshold - 5)
+       AND (m.used_mb::numeric / m.quota_mb::numeric) * 100 < (e.threshold - ${HYSTERESIS_PCT})
     RETURNING e.mailbox_id
   `);
-  const cleared = (clearResult.rows ?? []).length;
 
-  // Garbage-collect rows that have been cleared for > 30 days.
-  // The dedupe logic only cares about NULL cleared_at, so old
-  // rows are pure noise. Wrapped in its own try so a GC failure
-  // doesn't break the main quota path.
+  // Bounded growth. The dedupe logic reads only `cleared_at IS NULL`, so a
+  // cleared row is pure audit tail — 30 days, not the 90-day domain ceiling,
+  // because that ceiling is a maximum and not a target. Open rows are bounded
+  // by (mailbox × threshold) and cascade away with their mailbox.
   try {
     await db.execute(sql`
       DELETE FROM mailbox_quota_events
@@ -202,5 +197,9 @@ export async function checkQuotaThresholds(
     );
   }
 
-  return { fired, cleared, skipped };
+  return {
+    fired,
+    cleared: (clearResult.rows ?? []).length,
+    overQuota: overQuota.length,
+  };
 }

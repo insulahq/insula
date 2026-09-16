@@ -69,6 +69,7 @@ import {
   ensureResticRepoInitialised,
   type BackupTarget,
 } from '../restic-driver.js';
+import { notifyResticFailure } from '../restic-failure-notify.js';
 import { resolvePlatformImage } from '../../../shared/platform-images.js';
 
 /**
@@ -359,7 +360,28 @@ export async function captureFilesComponent(
   // ── Init the repo BEFORE dispatching the Job ──────────────────────
   // `restic backup` against an uninitialised repo exits non-zero; init
   // up-front (idempotent — "already initialized" is treated as success).
-  await ensureResticRepoInitialised({ target, passwordHex, repoUri });
+  // Stale-lock recovery messages go to the bundle's own progress channel —
+  // that is the line an operator reads when a backup misbehaves.
+  const lockLog = {
+    warn: (msg: string): void => {
+      if (opts.onProgress) void opts.onProgress(msg);
+      else console.warn(msg);
+    },
+  };
+  try {
+    await ensureResticRepoInitialised({ target, passwordHex, repoUri, log: lockLog });
+  } catch (err) {
+    // Repo init runs in-process, before any Job exists — so a destination that
+    // cannot be initialised (bad credentials, unreachable bucket) fails here
+    // and the Job watcher never sees it. Report, then rethrow: the caller still
+    // owns the failure.
+    await notifyResticFailure(opts.db, {
+      operation: 'repo init',
+      scope: `tenant ${opts.tenantId} / files`,
+      dedupeScope: `${opts.tenantId}:files`,
+    }, err);
+    throw err;
+  }
 
   const pinToNode = await findNodeAttachingPvc(opts.k8s, opts.namespace, opts.pvcName);
   const jobName = `bk-files-${opts.backupId}`.slice(0, 63);

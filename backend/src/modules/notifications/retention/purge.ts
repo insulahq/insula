@@ -1,12 +1,21 @@
 /**
  * Notification retention.
  *
- * Two tables, two windows, one pass:
+ * Four tables, one pass. NOTHING in the notification domain may grow
+ * without a ceiling, and no window may exceed MAX_RETENTION_DAYS (90):
  *
  *   - `notification_deliveries` (30d) — the per-recipient delivery audit
  *     trail. High volume; one row per recipient per channel.
  *   - `notifications` (90d) — the in-app inbox rows admins and tenants
  *     read in the panel.
+ *   - `notification_rate_limit_buckets` (window_end < now) — counters.
+ *   - `notification_template_versions` (90d, keeping the newest 10 per
+ *     template) — one archived body per operator edit; previously had no
+ *     retention at all.
+ *   - `notification_object_mutes` (on expiry) — a mute the dispatcher will
+ *     never read again.
+ *   - `notification_digest_items` (7d after sending) — the delivery row is the
+ *     durable audit; a sent item is history.
  *
  * The inbox table used to have NO age retention at all, on the reasoning
  * that its rows are "user-deletable". They are — one at a time, via
@@ -31,7 +40,7 @@
  *
  * Scheduling lives in ./scheduler.ts — run once at startup, then every 6h.
  */
-import { lt } from 'drizzle-orm';
+import { lt, sql } from 'drizzle-orm';
 import { notifications, notificationDeliveries } from '../../../db/schema.js';
 import { purgeStaleBuckets } from '../rate-limit/service.js';
 import type { Database } from '../../../db/index.js';
@@ -45,6 +54,36 @@ export const DELIVERY_RETENTION_DAYS = 30;
  * delivery audit trail early.
  */
 export const NOTIFICATION_RETENTION_DAYS = 90;
+
+/**
+ * Archived template bodies, written once per operator edit.
+ *
+ * This table had NO retention of any kind. Every save of every template in
+ * the admin editor appended a row holding a full body, and nothing ever
+ * removed one — monotonic growth driven purely by how often an operator
+ * tunes wording.
+ *
+ * Age alone is the wrong rule here: a template edited twice in two years
+ * would lose the history that makes the diff useful. So the pass is
+ * age-bounded AND count-bounded — anything past the window is removed
+ * except the most recent {@link TEMPLATE_VERSION_KEEP_MIN} versions of each
+ * template, which always survive.
+ */
+export const TEMPLATE_VERSION_RETENTION_DAYS = 90;
+
+/** Always-kept most-recent versions per template, regardless of age. */
+export const TEMPLATE_VERSION_KEEP_MIN = 10;
+
+/**
+ * The ceiling every notification-domain table is held to.
+ *
+ * `scripts/ci-notification-retention-check.sh` asserts that every window
+ * exported from this module is >0 and <=90 days, and that each table named
+ * below is actually deleted from by a pass in this file. A table that grows
+ * without a bound is the failure this constant exists to make impossible to
+ * reintroduce quietly.
+ */
+export const MAX_RETENTION_DAYS = 90;
 
 function cutoffFor(retentionDays: number, now: Date): Date {
   return new Date(now.getTime() - retentionDays * 24 * 3600 * 1000);
@@ -76,10 +115,43 @@ export async function purgeOldNotifications(
   return result.length;
 }
 
+/**
+ * Delete archived template versions past the window, except the newest
+ * TEMPLATE_VERSION_KEEP_MIN of each template.
+ *
+ * Single statement: computing the keep-set in JS would mean reading every
+ * row of the table this exists to keep small.
+ */
+export async function purgeOldTemplateVersions(
+  db: Database,
+  retentionDays = TEMPLATE_VERSION_RETENTION_DAYS,
+  keepMin = TEMPLATE_VERSION_KEEP_MIN,
+): Promise<number> {
+  if (retentionDays <= 0) return 0;
+  const result = await db.execute<{ id: string }>(sql`
+    DELETE FROM notification_template_versions
+     WHERE id IN (
+       SELECT id FROM (
+         SELECT id,
+                archived_at,
+                ROW_NUMBER() OVER (PARTITION BY template_id ORDER BY version DESC) AS rn
+           FROM notification_template_versions
+       ) ranked
+       WHERE ranked.rn > ${keepMin}
+         AND ranked.archived_at < NOW() - (${retentionDays} * INTERVAL '1 day')
+     )
+    RETURNING id
+  `);
+  return (result.rows ?? []).length;
+}
+
 export interface NotificationRetentionResult {
   readonly deliveries: number;
   readonly notifications: number;
   readonly buckets: number;
+  readonly templateVersions: number;
+  readonly expiredMutes: number;
+  readonly digestItems: number;
 }
 
 interface RunOptions {
@@ -112,5 +184,14 @@ export async function runNotificationRetention(
     deliveries: await count('deliveries', () => purgeOldDeliveries(db)),
     notifications: await count('notifications', () => purgeOldNotifications(db)),
     buckets: await count('rate-limit buckets', () => buckets(db)),
+    templateVersions: await count('template versions', () => purgeOldTemplateVersions(db)),
+    expiredMutes: await count('expired mutes', async () => {
+      const { purgeExpiredMutes } = await import('../mutes/service.js');
+      return purgeExpiredMutes(db);
+    }),
+    digestItems: await count('sent digest items', async () => {
+      const { purgeSentDigestItems } = await import('../digest/service.js');
+      return purgeSentDigestItems(db);
+    }),
   };
 }

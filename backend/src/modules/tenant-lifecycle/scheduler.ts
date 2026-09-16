@@ -319,21 +319,20 @@ async function notifyHookPermanentFailure(
   const { getAdminRecipients } = await import('../notifications/recipients.js');
   const { createNotification } = await import('../notifications/service.js');
   const recipients = await getAdminRecipients(db, ['super_admin', 'admin']);
-  if (recipients.length === 0) return;
-
   const title = envelope?.title ?? `Lifecycle hook permanently failed: ${hookName}`;
   const detail = envelope?.detail
-    ?? `Hook '${hookName}' on a ${parent.transitionKind} transition failed every retry. Operator action required.`;
-  for (const userId of recipients) {
-    await createNotification(db, {
-      userId,
-      type: 'error',
-      title,
-      message: `${detail}\n\ntenant_id=${parent.tenantId} transition_id=${parent.id}`,
-      resourceType: 'lifecycle_hook_run',
-      resourceId: parent.id,
-    });
-  }
+    ?? `Hook '${hookName}' on a ${parent.transitionKind} transition failed every retry.`;
+
+  // Dispatched, not written per recipient. The recipient pre-check above is
+  // gone with it: "nobody to notify" was never a reason to record nothing.
+  const { notifyAdminOperationalEvent } = await import('../notifications/events.js');
+  await notifyAdminOperationalEvent(db, 'platform', {
+    subsystem: 'Tenant lifecycle hook',
+    objectLabel: `${hookName} (tenant ${parent.tenantId}, transition ${parent.id})`,
+    detail: `${title} ${detail}`,
+    severityLabel: 'permanently failed',
+    recommendedAction: 'Operator action required — inspect the hook run and re-drive the transition.',
+  }, `lifecycle-hook-failed:${parent.id}:${hookName}`);
 }
 
 /**

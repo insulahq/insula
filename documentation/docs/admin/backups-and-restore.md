@@ -139,6 +139,39 @@ warning that nothing is uploaded off-site.
 Backup pages refresh automatically when a backup, restore, or snapshot
 task finishes — no manual reload needed.
 
+### "Repository is readable but locked"
+
+restic takes a lock on the repository whenever it writes — during a
+snapshot, during retention cleanup, and while a repository is first
+created. If the pod holding that lock is killed part-way through (the
+node is drained, the process runs out of memory, someone deletes the
+job), the lock object is left behind. It does **not** expire on its own.
+
+A repository in that state still *reads* perfectly well, so the snapshot
+list keeps loading normally. What stops is writing: every following
+snapshot fails, and the newest entry in the list quietly stops advancing.
+
+When this happens the page shows an amber banner with a **Clear stale
+locks** button. Clearing is safe to press at any time:
+
+- It removes only locks whose owning process is gone. A snapshot that is
+  genuinely running right now keeps its lock and is never interrupted.
+- If a lock survives, the result says so and tells you to wait — that
+  lock belongs to a live backup, and there is deliberately no way to
+  force past it from the panel.
+
+You usually will not need the button. Scheduled snapshots now clear stale
+locks themselves before giving up, so a repository left locked by a
+killed pod recovers on its own at the next run. The button is for when
+you would rather not wait for it.
+
+!!! tip "Check the age, not just the list"
+    A repository can look healthy — reachable, snapshots listed — while
+    nothing new has been written for days. The useful question is how old
+    the *newest* snapshot is compared with the mail schedule.
+    `platform-ops dr preflight` answers it directly and warns when
+    snapshots have stopped landing.
+
 !!! note "Schedule toggles are authoritative"
     The per-class schedule cards on *Targets, Schedules & Retention*
     really gate the runs: disabling the **mail** schedule suspends the
@@ -146,6 +179,37 @@ task finishes — no manual reload needed.
     enabled. When a scheduled tenant wave fails for any tenant, an
     **admin notification** is raised — a silent night is a completed
     night.
+
+## What the platform tells you when a backup goes wrong
+
+Four separate things can go wrong with a backup, and they are reported
+separately because they need different actions.
+
+| You are told | When | What it means |
+|---|---|---|
+| **Backup failed** | a run executed and failed, within ~5 min | Something ran and returned an error. The message names the job and the reason. |
+| **Backups have stopped running** | a scheduled run did not happen | Nothing ran. There is no failed job to look at — this is the only signal you get. |
+| **Backup has never run** | a schedule has never once succeeded | Setup, not a regression: the destination, its credentials, or the schedule have most likely never worked. |
+| **Backup target unreachable** | the destination cannot be contacted | The repository itself is unreachable or timing out. |
+
+!!! note "Silence is measured against the schedule, not the clock"
+    *Backups have stopped* counts **missed scheduled runs**, not elapsed
+    hours. A weekday-only schedule is not called stale over a weekend, and
+    a half-hourly one is not given a day's grace just because a daily one
+    needs it. The schedule's own **timezone** is honoured — a job set to
+    run at 03:00 Berlin is judged at 03:00 Berlin.
+
+    You are told roughly an hour after a run was due and did not happen —
+    for a daily backup that is the same morning, leaving the day to fix it
+    before the next attempt. A run still **in progress** is never counted
+    as missed, and a schedule that is **suspended** is not reported at all:
+    it is off because someone turned it off.
+
+!!! note "\"Never run\" is deliberately not \"stopped\""
+    They are separate alerts because they send you to different places. A
+    backup that has stopped is a regression — something that worked no
+    longer does. A backup that has never run has never worked, and looking
+    for what changed will waste your time.
 
 ## Remote Storage Targets
 

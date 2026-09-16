@@ -41,10 +41,23 @@ export async function runBlocklistCheckOnce(
     return 0; // no kube client (local dev) — nothing to probe.
   }
 
+  // `.catch(() => [])` here would make an unreachable kube-API indistinguishable
+  // from a cluster with no server nodes, and the skip below would swallow both
+  // without a word. Keep the fire-and-forget contract, but say which happened.
+  let ipsUnreadable = false;
   const [hostname, serverNodeIps] = await Promise.all([
     resolveDefaultMailHost(db),
-    resolveServerNodeIps(k8s, db).catch(() => [] as string[]),
+    resolveServerNodeIps(k8s, db).catch((err: unknown) => {
+      ipsUnreadable = true;
+      log.warn(
+        '[mail-blocklist] could not resolve server node IPs; skipping this pass '
+        + '(this is NOT a statement that the cluster has none): '
+        + (err instanceof Error ? err.message : String(err)),
+      );
+      return [] as string[];
+    }),
   ]);
+  if (ipsUnreadable) return 0;
   if (!hostname || serverNodeIps.length === 0) return 0;
 
   const component = await probeDeliverability({ hostname, serverNodeIps });

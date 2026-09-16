@@ -123,18 +123,68 @@ export const mailOutboundQueueDepth = new Gauge({
 mailOutboundQueueDepth.set(-1);
 
 /**
- * Count of active mailboxes at or above 100% of their storage quota,
- * refreshed by the mailbox quota-threshold pass (mail-stats, ~15min).
- * Feeds the `mail-mailbox-over-quota` rule so an operator sees full
- * mailboxes in aggregate even when the tenant-side owner can't be
- * notified (no mailbox_access rows). Cardinality: a single global gauge,
- * never per-mailbox.
+ * The share of the outbound queue that the PLATFORM itself sent — envelope
+ * sender at a platform-owned address (postmaster@, noreply@, dmarc@ …).
+ *
+ * Why this exists as a separate series: any tenant can mail a non-existent
+ * recipient, and Stalwart holds those in the local queue through a 24h retry
+ * cycle. Alerting the platform admin on TOTAL depth therefore pages them for
+ * tenant behaviour they cannot act on — and `mail-queue-backlog` did exactly
+ * that, its own description admitting "delivery is stalled OR a tenant is
+ * flooding". Those two need different audiences and different thresholds.
+ *
+ * This series is the admin-actionable half: if the platform's own mail is
+ * backing up, delivery really is broken. Tenant-origin backlog stays visible
+ * in `platform_mail_outbound_queue_depth` for the Mail Operations page, but
+ * no longer drives the platform alert.
+ *
+ * -1 = unknown (probe failed or not attempted). NEVER 0 on failure — "could
+ * not look" must not read as "nothing queued".
  */
-export const mailMailboxesOverQuota = new Gauge({
-  name: 'platform_mail_mailboxes_over_quota',
-  help: 'Active mailboxes at or above 100% of their storage quota',
+export const mailPlatformOriginQueueDepth = new Gauge({
+  name: 'platform_mail_platform_origin_queue_depth',
+  help: 'Queued messages whose envelope sender is a platform-owned address (-1 = unknown/probe failed)',
   registers: [metricsRegistry],
 });
+mailPlatformOriginQueueDepth.set(-1);
+
+/**
+ * Age in hours of the OLDEST unresolved mail-drift item, or -1 when there are
+ * none / the probe failed.
+ *
+ * principals-sync already detects drift and the drift UI already repairs it —
+ * what neither does is escalate. On DEV a `fbl@` drift sat unresolved for
+ * three days while the mail health card stayed green and every message to that
+ * address bounced. Detection without escalation is a dashboard nobody opens.
+ *
+ * Age rather than count: one drift that nobody has looked at in three days is
+ * the problem, and a count cannot distinguish that from three that appeared a
+ * minute ago and are already being worked.
+ */
+export const mailDriftOldestUnresolvedHours = new Gauge({
+  name: 'platform_mail_drift_unresolved_age_hours',
+  help: 'Age in hours of the oldest unresolved mail-drift item (-1 = none or probe failed)',
+  registers: [metricsRegistry],
+});
+mailDriftOldestUnresolvedHours.set(-1);
+
+/**
+ * Notifications that went out with at least one referenced-but-unsupplied
+ * template variable, or that fell back to the envelope entirely.
+ *
+ * This is the alarm the platform did not have. A payload<->template contract
+ * defect used to surface only as a `skipped` delivery row with a `last_error`
+ * nobody queries; `subscription.renewed` dropped 16 emails that way and the
+ * first report came from a customer. Labelled by category + channel so the
+ * offending template is named, not just counted.
+ */
+export const notificationDegradedTotal = new Counter({
+  name: 'platform_notification_degraded_total',
+  help: 'Notifications rendered with missing variables or via the envelope fallback',
+  labelNames: ['category', 'channel', 'kind'] as const,
+  registers: [metricsRegistry],
+});
+
 
 /**
  * Count of Flux resources whose Ready condition is False, by kind.

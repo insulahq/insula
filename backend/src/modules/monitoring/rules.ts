@@ -552,15 +552,43 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
   },
   {
     id: 'mail-queue-backlog',
-    name: 'Outbound mail queue backlog',
-    description: 'Messages are piling up in Stalwart\'s outbound delivery queue (platform_mail_outbound_queue_depth) — delivery is stalled or a tenant is flooding.',
+    name: 'Platform mail queue backlog',
+    description: 'The platform\'s OWN outbound mail is piling up (platform_mail_platform_origin_queue_depth) — delivery is stalled. Tenant-sent mail is deliberately excluded: any tenant can mail a non-existent recipient, Stalwart holds those through a 24h retry cycle, and that is not something a platform admin can act on.',
     severity: 'warning',
-    // >= 0 filter drops the -1 "probe failed" sentinel so a down server
-    // (already covered by mail-server-down) can\'t double-fire here.
-    expr: 'max(platform_mail_outbound_queue_depth >= 0) > $T',
+    // Reads the PLATFORM-ORIGIN series, not total depth.
+    //
+    // Total depth conflated two different problems with two different
+    // audiences — the previous description said so itself ("delivery is
+    // stalled or a tenant is flooding") — so a tenant typo-ing recipients
+    // could page the operator. Total depth is still published for the Mail
+    // Operations page; it just no longer drives this alert.
+    //
+    // >= 0 filter drops the -1 "probe failed"/"origin unknown" sentinel so a
+    // down server (already covered by mail-server-down) cannot double-fire,
+    // and an unreadable queue is never mistaken for a quiet one.
+    expr: 'max(platform_mail_platform_origin_queue_depth >= 0) > $T',
     subjectLabels: [],
-    threshold: 500,
+    // 25, not 500: this counts only mail the platform sent, and the platform
+    // does not send in volume. A number that small would have been absurd
+    // against total depth and is the right order of magnitude here.
+    threshold: 25,
     forSeconds: 900,
+  },
+  {
+    id: 'mail-drift-unrepaired',
+    name: 'Mail drift left unrepaired',
+    description: 'A mail-drift item (a platform mailbox or domain row that Stalwart does not have) has gone unrepaired past the threshold in hours. Detection and the repair button already existed; nothing escalated, so a drift sat for three days on DEV while the mail health card stayed green and every message to that address bounced.',
+    severity: 'warning',
+    // >= 0 drops the -1 sentinel, which covers BOTH "no unresolved drift" and
+    // "could not read the table" — neither is a backlog, and a failed probe
+    // must not be read as a clean one.
+    expr: 'max(platform_mail_drift_unresolved_age_hours >= 0) > $T',
+    subjectLabels: [],
+    // 24h: long enough that the 5-minute self-heal and an operator's normal
+    // working day both get a chance first, short enough that three days is
+    // impossible.
+    threshold: 24,
+    forSeconds: 600,
   },
   {
     id: 'mail-cert-expiry',
@@ -585,16 +613,6 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
     subjectLabels: ['hostname'],
     threshold: 0,
     forSeconds: 1800,
-  },
-  {
-    id: 'mail-mailbox-over-quota',
-    name: 'Mailboxes over storage quota',
-    description: 'One or more active mailboxes are at 100% of their storage quota (platform_mail_mailboxes_over_quota) — new mail to them is being rejected by Stalwart.',
-    severity: 'warning',
-    expr: 'max(platform_mail_mailboxes_over_quota) > $T',
-    subjectLabels: [],
-    threshold: 0,
-    forSeconds: 900,
   },
 ];
 

@@ -147,17 +147,17 @@ export async function resourceQuotaRoutes(app: FastifyInstance): Promise<void> {
         if (gate.details.overByCpu > 0) overage.push(`CPU +${gate.details.overByCpu.toFixed(2)} cores`);
         if (gate.details.overByMemoryGi > 0) overage.push(`memory +${gate.details.overByMemoryGi.toFixed(2)} GiB`);
         const overageStr = overage.length > 0 ? overage.join(', ') : 'cluster headroom clamped';
-        for (const a of adminRows) {
-          await app.db.insert(notifications).values({
-            id: crypto.randomUUID(),
-            userId: a.id,
-            type: 'warning',
-            title: 'Tenant quota force-overrode cluster failover headroom',
-            message: `super_admin "${userSub}" used ?force=true on tenant ${tenantId} quota patch — ${overageStr} past safe headroom. Tenant total ${gate.details.projectedSumCpu.toFixed(2)} CPU / ${gate.details.projectedSumMemoryGi.toFixed(2)} GiB vs available ${gate.details.headroomCpu.toFixed(2)} CPU / ${gate.details.headroomMemoryGi.toFixed(2)} GiB. Cluster will NOT survive single-server loss until quotas come back inside headroom or a server is added.`,
-            resourceType: 'resource_quota',
-            resourceId: tenantId,
-          });
-        }
+        // Dispatched, not inserted: a row per admin with no category reached no
+        // template, no email, no preference gate and no delivery audit — for
+        // an event that says the cluster will not survive losing a server.
+        const { notifyAdminOperationalEvent } = await import('../notifications/events.js');
+        await notifyAdminOperationalEvent(app.db, 'platform', {
+          subsystem: 'Resource quota',
+          objectLabel: `tenant ${tenantId}`,
+          detail: `super_admin "${userSub}" used ?force=true on a quota patch — ${overageStr} past safe headroom. Tenant total ${gate.details.projectedSumCpu.toFixed(2)} CPU / ${gate.details.projectedSumMemoryGi.toFixed(2)} GiB vs available ${gate.details.headroomCpu.toFixed(2)} CPU / ${gate.details.headroomMemoryGi.toFixed(2)} GiB.`,
+          severityLabel: 'headroom overridden',
+          recommendedAction: 'The cluster will NOT survive single-server loss until quotas come back inside headroom or a server is added.',
+        }, `quota-force:${tenantId}:${new Date().toISOString().slice(0, 13)}`).catch(() => undefined);
       }
     }
 

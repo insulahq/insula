@@ -5,7 +5,8 @@
  * Replaces the old application-repos and workload-repos modules.
  */
 
-import { eq, and, like, sql, desc, asc, lt, gt, or } from 'drizzle-orm';
+import { eq, and, ilike, sql, desc, asc, lt, gt, or } from 'drizzle-orm';
+import { likePattern } from '../../shared/like-pattern.js';
 import { catalogRepositories, catalogEntries, catalogEntryVersions } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { join } from 'node:path';
@@ -952,7 +953,7 @@ export async function listCatalogEntries(
   if (search) {
     conditions.push(
       or(
-        like(catalogEntries.name, `%${search}%`),
+        ilike(catalogEntries.name, likePattern(search)),
         sql`${catalogEntries.tags}::jsonb @> to_jsonb(${search}::text)`,
       ),
     );

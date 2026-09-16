@@ -1242,18 +1242,17 @@ async function emitAdminNotification(
   message: string,
   title: string,
 ): Promise<void> {
-  const adminRows = await db.select({ id: users.id }).from(users).where(inArray(users.roleName, ['super_admin', 'admin']));
-  for (const a of adminRows) {
-    await db.insert(notifications).values({
-      id: crypto.randomUUID(),
-      userId: a.id,
-      type: 'info',
-      title,
-      message,
-      resourceType: 'postgres_pitr',
-      resourceId: 'singleton',
-    }).catch(() => undefined);
-  }
+  // Dispatched, not inserted. One categorised event instead of a row per
+  // admin written with no category — which reached no template, no email, no
+  // preference gate and no delivery audit, for a stuck or finished PITR.
+  const { notifyAdminOperationalEvent } = await import('../notifications/events.js');
+  await notifyAdminOperationalEvent(db, 'database', {
+    subsystem: 'PITR restore',
+    objectLabel: title,
+    detail: message,
+    severityLabel: 'info',
+    recommendedAction: '',
+  }, `pitr:${new Date().toISOString().slice(0, 13)}`).catch(() => undefined);
 }
 
 /**
@@ -2572,6 +2571,25 @@ export async function createPitrJob(
     { name: 'NODE_ENV', value: 'production' },
     { name: 'DATABASE_URL', valueFrom: { secretKeyRef: { name: 'platform-db-credentials', key: 'url' } } },
     { name: 'JWT_SECRET', valueFrom: { secretKeyRef: { name: 'platform-jwt-secret', key: 'secret' } } },
+    {
+      // Without this the pitr-job runs with a ZERO encryption key and cannot
+      // decrypt ANY stored credential. Observed on staging 2026-09-15 — the
+      // job's own first log line was:
+      //
+      //   [config] PLATFORM_ENCRYPTION_KEY is not set (PLATFORM_ENV=development).
+      //            Stored credentials use a zero key — DEV/TEST ONLY, never for real data.
+      //
+      // …on a staging cluster whose platform-api has the key wired. The Job
+      // simply never inherited it: its env carried NODE_ENV, DATABASE_URL,
+      // JWT_SECRET and the PITR_* vars, and nothing else.
+      //
+      // Same secretKeyRef the platform-api Deployment uses (kebab-case key in
+      // platform-secrets) and the same shape pg-dump-job-spawner.ts already
+      // uses for its Job. `optional` so a dev cluster without the key can still
+      // start the pod and fail with a clean error rather than a stuck pod.
+      name: 'PLATFORM_ENCRYPTION_KEY',
+      valueFrom: { secretKeyRef: { name: 'platform-secrets', key: 'platform-encryption-key', optional: true } },
+    },
     { name: 'PITR_CLUSTER_NAMESPACE', value: inputs.clusterNamespace },
     { name: 'PITR_CLUSTER_NAME', value: inputs.clusterName },
     { name: 'PITR_SNAPSHOT_NAME', value: inputs.snapshotName },

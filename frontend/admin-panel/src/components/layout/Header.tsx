@@ -1,19 +1,16 @@
 import { useState, useEffect, useRef, lazy, Suspense } from 'react';
 import { Link } from 'react-router-dom';
-import { Menu, Search, UserCircle, KeyRound, LogOut, Settings } from 'lucide-react';
+import { Menu, UserCircle, KeyRound, LogOut, Settings } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 import NotificationDropdown from '@/components/NotificationDropdown';
 import DarkModeToggle from '@/components/DarkModeToggle';
 import TaskCenterChip from '@/components/TaskCenterChip';
+import GlobalSearch from '@/components/search/GlobalSearch';
 
 // Lazy on purpose: the password inputs must not be part of the main bundle, or
 // password-manager extensions pick them up on every page load. The chunk is
 // only fetched when the operator opens the dialog.
 const ChangePasswordModal = lazy(() => import('@/components/ChangePasswordModal'));
-
-const PLACEHOLDER_TEXT = 'Search (coming soon)';
-const PLACEHOLDER_CLASS =
-  'w-full rounded-lg border border-gray-200 bg-gray-50 py-2 pl-9 pr-4 text-sm text-gray-400 select-none dark:border-gray-600 dark:bg-gray-700 dark:text-gray-500 opacity-70';
 
 interface HeaderProps {
   readonly onMenuClick: () => void;
@@ -62,26 +59,7 @@ export default function Header({ onMenuClick }: HeaderProps) {
         <Menu size={20} />
       </button>
 
-      <div className="relative flex-1 max-w-md">
-        <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 dark:text-gray-500" />
-        {/* NOT an <input> — see the tenant panel's Header for the full
-            reasoning. This box is a non-functional placeholder ("coming
-            soon"), and an always-present input on an origin with a saved
-            login is what makes password managers offer to fill on every
-            page. `disabled`, `autocomplete="off"` and the per-vendor
-            opt-outs all failed to stop it, because browsers' own built-in
-            managers honour none of them.
-
-            When search ships, make this a button that opens a dialog and
-            mount the real input inside the dialog. */}
-        <div
-          aria-hidden="true"
-          data-testid="global-search-placeholder"
-          className={PLACEHOLDER_CLASS}
-        >
-          {PLACEHOLDER_TEXT}
-        </div>
-      </div>
+      <GlobalSearch />
 
       <div className="ml-auto flex items-center gap-2">
         <TaskCenterChip />

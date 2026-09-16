@@ -66,21 +66,24 @@ export function startNodeHealthReconciler(db: Database, k8s: K8sClients): { stop
       }
 
       if (transitions.length > 0) {
-        const adminRows = await db.select({ id: users.id }).from(users).where(inArray(users.roleName, ['super_admin', 'admin']));
+        // Dispatched, not inserted. This wrote a row per admin straight into
+        // the notifications table with no category, so a node subsystem going
+        // unhealthy could never be emailed or pushed — and the panel is
+        // exactly what may be unreachable when it happens. The `node`
+        // subsystem maps to an Availability category, which never relies on
+        // in-app delivery.
+        const { notifyAdminOperationalEvent } = await import('../notifications/events.js');
         for (const t of transitions) {
-          for (const a of adminRows) {
-            await db.insert(notifications).values({
-              id: crypto.randomUUID(),
-              userId: a.id,
-              type: t.severity === 'success' ? 'success' : t.severity === 'error' ? 'error' : 'warning',
-              title: `Node subsystem health: ${t.node}`,
-              message: t.reason,
-              resourceType: 'cluster_node',
-              resourceId: t.node,
-            }).catch((err) => {
-              console.error('[node-health] notification write failed:', (err as Error).message);
-            });
-          }
+          await notifyAdminOperationalEvent(db, 'node', {
+            subsystem: 'Node subsystem health',
+            objectLabel: t.node,
+            detail: t.reason,
+            severityLabel: t.severity === 'success' ? 'recovered' : t.severity,
+            recommendedAction: t.severity === 'success'
+              ? ''
+              : 'Check the node in Cluster → Nodes; Calico or the Longhorn CSI may need attention.',
+          }, `node-subsystem:${t.node}:${t.severity}:${new Date().toISOString().slice(0, 13)}`)
+            .catch((err) => console.error('[node-health] notification dispatch failed:', (err as Error).message));
         }
       }
     } catch (err) {

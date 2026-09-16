@@ -21,9 +21,21 @@ on:
       # (category x channel) matrix was edited across four PRs and the guard
       # sat out every one of them, then failed on the release promote.
       - 'backend/src/modules/notifications/**'
+      - 'backend/src/db/migrations/**'
+      # Subject of ci-route-auth-check: every route module, not just the
+      # handful of feature paths listed above. A guard whose workflow does not
+      # run on its own subject is not a guard.
+      - 'backend/src/modules/**/routes*.ts'
       # ci-db-isolation-check.sh compares the converger's SQL against the
       # bootstrap.sh copy. A change to the converger alone must run it, or the
       # two halves can drift with the guard sitting the PR out.
+      # ci-notification-retention-check.sh reads the retention windows out of
+      # these two modules as well as notifications/. Without them a change to a
+      # mail table's retention never runs the guard that checks it is bounded —
+      # the guard only fired on the FBL retirement because that PR happened to
+      # touch notifications/ too.
+      - 'backend/src/modules/mail-stats/**'
+      - 'backend/src/modules/mail-events/**'
       - 'backend/src/modules/db-isolation/**'
       - 'images/file-manager/**'
       # ci-host-migrations-check.sh validates the migration scripts themselves
@@ -36,6 +48,15 @@ on:
       # A change to this workflow must be exercised BY this workflow.
       # Without it a broken (or, as here, a hanging) job could be edited and
       # merged without the fix ever running.
+      # Subject of ci-search-registry-check.sh: the two global-search
+      # registries, the route tables they must agree with, and the pages whose
+      # tab unions the ?tab= targets are checked against. All three are the
+      # guard's actual input — a registry that drifts from App.tsx produces a
+      # search box that navigates to Page Not Found, and nothing else in CI
+      # reads either file.
+      - 'frontend/*/src/search/**'
+      - 'frontend/*/src/App.tsx'
+      - 'frontend/*/src/pages/**'
       - '.github/workflows/ci-infrastructure.yml'
   pull_request:
     branches: [development, main]
@@ -54,9 +75,27 @@ on:
       # (category x channel) matrix was edited across four PRs and the guard
       # sat out every one of them, then failed on the release promote.
       - 'backend/src/modules/notifications/**'
+      # ci-migration-safety-check.sh gates DB migrations. This path was present
+      # on `push:` but MISSING here, so a migration-only PR never ran its own
+      # guard — it only ran after merge, which is too late to block anything.
+      # Demonstrated by PR #579 (migration + doc): Infrastructure CI sat it out
+      # entirely. scripts/ci-workflow-paths-parity.sh now keeps the two lists
+      # identical.
+      - 'backend/src/db/migrations/**'
+      # Mirror of the push filter: ci-workflow-paths-parity enforces that the
+      # two lists agree, so a PR touching only route files runs the same guards
+      # the merge will.
+      - 'backend/src/modules/**/routes*.ts'
       # ci-db-isolation-check.sh compares the converger's SQL against the
       # bootstrap.sh copy. A change to the converger alone must run it, or the
       # two halves can drift with the guard sitting the PR out.
+      # ci-notification-retention-check.sh reads the retention windows out of
+      # these two modules as well as notifications/. Without them a change to a
+      # mail table's retention never runs the guard that checks it is bounded —
+      # the guard only fired on the FBL retirement because that PR happened to
+      # touch notifications/ too.
+      - 'backend/src/modules/mail-stats/**'
+      - 'backend/src/modules/mail-events/**'
       - 'backend/src/modules/db-isolation/**'
       - 'images/file-manager/**'
       # ci-host-migrations-check.sh validates the migration scripts themselves
@@ -66,6 +105,15 @@ on:
       # not fire, and the defect was caught only because an EARLIER commit in
       # the same series had also touched scripts/.
       - 'platform/host-migrations/**'
+      # Subject of ci-search-registry-check.sh: the two global-search
+      # registries, the route tables they must agree with, and the pages whose
+      # tab unions the ?tab= targets are checked against. All three are the
+      # guard's actual input — a registry that drifts from App.tsx produces a
+      # search box that navigates to Page Not Found, and nothing else in CI
+      # reads either file.
+      - 'frontend/*/src/search/**'
+      - 'frontend/*/src/App.tsx'
+      - 'frontend/*/src/pages/**'
       - '.github/workflows/ci-infrastructure.yml'
 
 # Least privilege (2026-07-28 security review): these workflows only read the
@@ -201,6 +249,30 @@ jobs:
           yq --version
       - name: Verify admin-only Ingresses have an auth gate
         run: ./scripts/ci-admin-auth-check.sh
+
+  route-auth-check:
+    name: Route modules run authenticate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Verify requireRole is never used without authenticate
+        run: ./scripts/ci-route-auth-check.sh
+
+  search-registry-check:
+    name: Global-search registries match the routes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Verify every search entry resolves and every page is findable
+        run: ./scripts/ci-search-registry-check.sh
+
+  backup-health-label-check:
+    name: Backup-health labels reach the Jobs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Verify watched CronJobs label their job template, not themselves
+        run: ./scripts/ci-backup-health-label-check.sh
 
   oauth2-proxy-args-check:
     name: OAuth2-Proxy args complete in every overlay
@@ -397,6 +469,44 @@ jobs:
           node-version: 22
       - name: Verify the full (category × channel) template matrix
         run: ./scripts/ci-notification-template-coverage.sh
+
+  notification-variable-contract-guard:
+    name: Every template variable has an emitter, and every payload key a reader
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # Executes the real seed data through node's type-stripping loader for
+      # the same reason the coverage guard does: ~30% of template rows are
+      # generated by .flatMap() and a regex over the source undercounts them.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+      - name: Verify the payload <-> template variable contract both ways
+        run: ./scripts/ci-notification-variable-contract.sh
+
+  migration-safety-guard:
+    name: Migrations survive existing data and are replay-safe
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Verify no migration asserts anything about existing rows
+        run: ./scripts/ci-migration-safety-check.sh
+
+  workflow-paths-parity-guard:
+    name: push and pull_request path filters agree
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Verify no guard can sit out the PR it should block
+        run: ./scripts/ci-workflow-paths-parity.sh
+
+  notification-retention-guard:
+    name: No notification table grows without a ceiling
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Verify every notification table is purged within 90 days
+        run: ./scripts/ci-notification-retention-check.sh
 
   oom-classification-guard:
     name: Container OOM is classified through one shared helper

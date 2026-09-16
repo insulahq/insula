@@ -692,14 +692,17 @@ async function emitDriftNotification(
 
   for (const a of admins) {
     try {
-      await db.insert(notifications).values({
-        id: randomUUID(),
-        userId: a.id,
-        type: 'warning',
-        title,
-        message,
-        resourceType: 'mail_drift',
-      });
+      // Dispatched, not inserted: the raw row carried no category, so it
+      // reached no template, no email, no preference gate and no audit.
+      const { notifyAdminOperationalEvent } = await import('../notifications/events.js');
+      await notifyAdminOperationalEvent(db, 'mail', {
+        subsystem: 'Mail principal sync',
+        objectLabel: title,
+        detail: message,
+        severityLabel: 'warning',
+        recommendedAction: '',
+      }, `principals:${new Date().toISOString().slice(0, 13)}`)
+        .catch(() => { /* notification failure must not break the caller */ });
     } catch (err) {
       log.warn({ err, userId: a.id }, 'mail-drift: failed to write admin notification');
     }

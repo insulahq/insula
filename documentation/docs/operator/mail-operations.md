@@ -117,8 +117,6 @@ your inbox instead of waiting to be noticed on a dashboard:
 - **Outbound send-abuse** — a tenant saturating their sending limits fires
   warning/critical alerts (paired with the per-tenant sending-protection
   throttle).
-- **Spam-complaint rate** — feedback-loop complaints per domain, with
-  optional automatic throttling of the offender.
 - **Mailbox quota** — tenants are warned as mailboxes approach their size cap.
 - **DNS blocklist listing** — your sending IP appearing on a DNSBL alerts
   admins immediately, before customers notice bounces.

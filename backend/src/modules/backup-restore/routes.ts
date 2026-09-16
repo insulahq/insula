@@ -378,16 +378,17 @@ export async function backupRestoreRoutes(app: FastifyInstance): Promise<void> {
     // the operator triggered the cart and is already watching.
     if (finalStatus === 'failed' && firstFailureMsg) {
       try {
-        const { resolveRecipients } = await import('../notifications/recipients.js');
-        const { notifyUsers } = await import('../notifications/service.js');
-        const recipients = await resolveRecipients(app.db, { kind: 'admin' });
-        await notifyUsers(app.db, recipients, {
-          type: 'error',
-          title: 'Restore cart failed',
-          message: `Restore cart ${cartId} for tenant ${job.tenantId} stopped at a failed item. ${firstFailureMsg}. Re-invoke /execute to retry from the failed item, or roll back via the cart's pre-restore snapshot.`,
-          resourceType: 'restore-cart',
-          resourceId: cartId,
-        });
+        // Dispatched, not fanned out by hand: the legacy path wrote an in-app
+        // row and stopped — no template, no email, no delivery audit — for a
+        // restore that stopped part-way through.
+        const { notifyAdminOperationalEvent } = await import('../notifications/events.js');
+        await notifyAdminOperationalEvent(app.db, 'database', {
+          subsystem: 'Restore cart',
+          objectLabel: `${cartId} (tenant ${job.tenantId})`,
+          detail: `The restore stopped at a failed item. ${firstFailureMsg}.`,
+          severityLabel: 'failed',
+          recommendedAction: "Re-invoke /execute to retry from the failed item, or roll back via the cart's pre-restore snapshot.",
+        }, `restore-cart-failed:${cartId}`);
       } catch (notifyErr) {
         app.log.warn({ err: notifyErr, cartId }, 'tenant-backup-restore: failure-notification dispatch failed');
       }

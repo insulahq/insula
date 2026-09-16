@@ -25,6 +25,9 @@ vi.mock('../../db/schema.js', () => ({
   // Referenced by mailboxes/limit.ts
   hostingPlans: { id: 'id', maxMailboxes: 'max_mailboxes' },
   // Referenced by notifications/events.ts and other modules pulled in transitively
+  // (the digest + mute services are reached through dispatch.ts).
+  notificationDigestItems: { id: 'id', userId: 'user_id', categoryId: 'category_id', subject: 'subject', body: 'body', createdAt: 'created_at', sentAt: 'sent_at' },
+  notificationObjectMutes: { id: 'id', categoryId: 'category_id', objectKey: 'object_key', mutedUntil: 'muted_until' },
   cronJobs: { id: 'id', tenantId: 'tenant_id' },
   deployments: { id: 'id', tenantId: 'tenant_id' },
   emailAliases: { id: 'id', mailboxId: 'mailbox_id' },

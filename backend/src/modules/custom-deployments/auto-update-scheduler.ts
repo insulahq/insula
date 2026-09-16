@@ -199,6 +199,11 @@ async function rollBack(
       deploymentName: row.name,
       failedDigest,
       restoredDigest: previousDigest ?? 'none',
+      // The email template has always rendered this as its call to action and
+      // nothing ever supplied it, so the email leg could never render at all.
+      // Relative, like the other panel links — the recipient's panel origin is
+      // not knowable here.
+      panelUrl: `/applications/${row.id}`,
       // Dedupe per deployment per day: a tenant who ignores this does not need
       // it again in an hour, and the situation cannot recur automatically
       // anyway now that auto-update is off.

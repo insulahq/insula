@@ -30,8 +30,7 @@ import { ApiError } from '../../shared/errors.js';
 import { deriveMailWebhookKey, verifyWebhookSignature } from './hmac.js';
 import { ingestMailEvents, type StalwartWebhookEvent } from './ingest.js';
 import { getTenantMailUsage } from './usage.js';
-import { schedulePollSoon } from './fbl.js';
-import { listComplaints, complaintSummary } from './complaints.js';
+import { schedulePollSoon } from './dmarc.js';
 import { getMailOverview } from './overview.js';
 
 export async function mailEventsWebhookRoutes(app: FastifyInstance): Promise<void> {
@@ -96,34 +95,18 @@ const dmarcOverviewQuerySchema = z.object({
   windowDays: z.coerce.number().int().min(1).max(365).optional(),
 });
 
-const complaintQuerySchema = z.object({
-  tenantId: z.string().uuid().optional(),
-  domain: z.string().min(1).max(255).optional(),
-  limit: z.coerce.number().int().min(1).max(100).optional(),
-  cursor: z.string().max(2048).optional(),
-});
-
-export async function mailComplaintRoutes(app: FastifyInstance): Promise<void> {
+/**
+ * Mail overview + DMARC aggregate reports.
+ *
+ * Was `mailComplaintRoutes`; the two `/admin/mail/complaints*` endpoints went
+ * with the FBL retirement (2026-09-15) and the name would otherwise describe
+ * routes that no longer exist.
+ */
+export async function mailReportRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
-  // Complaint rows carry PII (original sender/recipient addresses,
-  // source IPs) — deliberately NOT exposed to billing/read_only roles.
+  // Report rows carry PII (reported source IPs, policy domains) —
+  // deliberately NOT exposed to billing/read_only roles.
   app.addHook('onRequest', requireRole('super_admin', 'admin', 'support'));
-
-  // GET /api/v1/admin/mail/complaints?tenantId=&domain=&limit=&cursor=
-  app.get('/admin/mail/complaints', async (request) => {
-    const parsed = complaintQuerySchema.safeParse(request.query ?? {});
-    if (!parsed.success) {
-      const first = parsed.error.issues[0];
-      throw new ApiError('INVALID_FIELD_VALUE', `Validation error: ${first.message} (${first.path.join('.')})`, 400, { field: first.path.join('.') });
-    }
-    return listComplaints(app.db, parsed.data);
-  });
-
-  // GET /api/v1/admin/mail/complaints/summary — per-domain 7d/30d
-  // complaint counts + send denominators + rates.
-  app.get('/admin/mail/complaints/summary', async () => {
-    return success(await complaintSummary(app.db));
-  });
 
   // GET /api/v1/admin/mail/overview — Monitoring -> Mail tab aggregate
   // (send totals, top senders, live queue, protection mode).

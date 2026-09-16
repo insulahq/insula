@@ -81,6 +81,7 @@ import {
   type BackupTarget,
   type ResticComponent,
 } from './restic-driver.js';
+import { notifyResticFailure } from './restic-failure-notify.js';
 import { resolveShimBackupTarget } from './resolve-backup-target.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
@@ -466,7 +467,7 @@ export async function runResticRetentionSweep(
 
       await runResticForget({
         target, passwordHex: deriveResticPassword(secretsKeyHex, tenantId),
-        repoUri, snapshotIds: candidates,
+        repoUri, snapshotIds: candidates, log: logger,
       });
       // Upsert, not update: most repos have no reclaim row yet on first sweep.
       await db.execute(sql`
@@ -512,6 +513,14 @@ export async function runResticRetentionSweep(
       const msg = err instanceof Error ? err.message : String(err);
       logger.error({ err: msg, tenantId, component }, 'restic retention: repo sweep failed');
       await note('error');
+      // This sweep runs INSIDE platform-api, so no Job exists for the
+      // backup-health watcher to find. Without this the failure lives and dies
+      // in the log line above.
+      await notifyResticFailure(db, {
+        operation: 'forget',
+        scope: `tenant ${tenantId} / ${component}`,
+        dedupeScope: `${tenantId}:${component}`,
+      }, err, logger);
       repos.push({ ...base, repoUri, skipped: null, error: msg.slice(0, 300) });
       errors++;
     }
@@ -538,7 +547,7 @@ export async function runResticRetentionSweep(
       try {
         await runResticPrune({
           target, passwordHex: deriveResticPassword(secretsKeyHex, tenantId), repoUri,
-          ...(maxRepackSize ? { maxRepackSize } : {}),
+          ...(maxRepackSize ? { maxRepackSize } : {}), log: logger,
         });
         await db.update(resticRepoReclaimState)
           .set({
@@ -568,6 +577,11 @@ export async function runResticRetentionSweep(
           ));
         errors++;
         logger.error({ err: msg, tenantId, component }, 'restic retention: prune failed — will retry next tick');
+        await notifyResticFailure(db, {
+          operation: 'prune',
+          scope: `tenant ${tenantId} / ${component}`,
+          dedupeScope: `${tenantId}:${component}`,
+        }, err, logger);
       }
     }
   }

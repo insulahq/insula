@@ -97,6 +97,34 @@ function domainMatch(domain: string): StalwartExpression {
 }
 
 /**
+ * Same bucket, but NOT for mail that never leaves this server.
+ *
+ * Stalwart evaluates these throttles per delivery attempt, and a
+ * delivery to a mailbox on this same host runs in the `local` queue —
+ * so without this clause an OUTBOUND send limit also governs
+ * tenant-internal mail, the platform's own notification email, and
+ * DMARC report intake. Measured on DEV 2026-09-15, from Stalwart's log:
+ *
+ *   Rate limit exceeded (queue.rate-limit-exceeded)
+ *     queueName = "local"  from = "postmaster@<apex>"
+ *     id = "MtaOutboundThrottle with id <daily>"  limit = [100, 86400000ms]
+ *     nextRetry = <next midnight UTC>
+ *
+ * 82 local messages were parked that way. The failure is near-silent:
+ * the sender gets `250 … Message queued`, the mail sits up to a full
+ * window (the daily bucket retries at midnight UTC), and only bounces
+ * after `expires` — three days later.
+ *
+ * `queue_name` is the variable Stalwart exposes here; `is_local` and
+ * `queue` are both rejected at parse time (probed live, same day).
+ * Verified end-to-end: with this clause the identical message that was
+ * being rate-limited logged `delivery.completed` in 0ms.
+ */
+function outboundDomainMatch(domain: string): StalwartExpression {
+  return { match: {}, else: `sender_domain = '${domain}' && queue_name != 'local'` };
+}
+
+/**
  * Pure: rows -> desired registry objects, keyed by description.
  */
 export function buildDesiredSendLimitObjects(
@@ -130,7 +158,7 @@ export function buildDesiredSendLimitObjects(
       description: hourlyDesc,
       enable: true,
       key: { senderDomain: true },
-      match: domainMatch(row.domain),
+      match: outboundDomainMatch(row.domain),
       rate: { count: row.hourly, period: HOUR_MS },
     });
 
@@ -139,7 +167,7 @@ export function buildDesiredSendLimitObjects(
       description: dailyDesc,
       enable: true,
       key: { senderDomain: true },
-      match: domainMatch(row.domain),
+      match: outboundDomainMatch(row.domain),
       rate: { count: row.daily, period: DAY_MS },
     });
 
@@ -148,7 +176,7 @@ export function buildDesiredSendLimitObjects(
       description: backlogDesc,
       enable: true,
       key: { senderDomain: true },
-      match: domainMatch(row.domain),
+      match: outboundDomainMatch(row.domain),
       messages: row.daily,
       size: null,
     });
@@ -226,6 +254,30 @@ function throttleNeedsUpdate(
   );
 }
 
+/**
+ * `description` is the identity key we matched the live object BY, so it
+ * can never differ — and Stalwart rejects it in a patch outright:
+ *
+ *   notUpdated: { "<id>": { "type": "invalidPatch",
+ *     "description": "Cannot modify read-only property",
+ *     "properties": ["description"] } }
+ *
+ * Measured on DEV 2026-09-15 against v0.16.20. Because the reconciler
+ * spread the whole desired object into the patch, EVERY x:MtaQueueQuota
+ * update had always failed — a plan change that raised a tenant's daily
+ * limit left the backlog quota pinned at its original `messages` value
+ * forever. Creates were unaffected, which is why it stayed hidden: a new
+ * domain looked perfectly correct.
+ *
+ * (x:MtaOutboundThrottle happens to tolerate the resend, so throttles
+ * updated fine — the asymmetry is exactly what made this a one-sided,
+ * silent failure.)
+ */
+function patchWithoutIdentity<T extends { description: string }>(want: T): Record<string, unknown> {
+  const { description: _ignored, ...rest } = want;
+  return rest;
+}
+
 function quotaNeedsUpdate(
   existing: { enable: boolean; match: StalwartExpression; messages: number | null; size: number | null },
   desired: DesiredQueueQuota,
@@ -279,7 +331,7 @@ export async function reconcileStalwartSendLimits(
         tCreate[`c-${created}`] = { ...want };
         created += 1;
       } else if (throttleNeedsUpdate(live, want)) {
-        tUpdate[live.id] = { ...want };
+        tUpdate[live.id] = patchWithoutIdentity(want);
         updated += 1;
       }
     }
@@ -323,7 +375,7 @@ export async function reconcileStalwartSendLimits(
         qCreate[`c-${created}`] = { ...want };
         created += 1;
       } else if (quotaNeedsUpdate(live, want)) {
-        qUpdate[live.id] = { ...want };
+        qUpdate[live.id] = patchWithoutIdentity(want);
         updated += 1;
       }
     }

@@ -15,6 +15,8 @@
  *
  * All routes require panel='admin' and role super_admin OR admin.
  */
+import { createNotificationMuteSchema, deleteNotificationMuteSchema } from '@insula/api-contracts';
+import { parseBody } from '../../shared/validate-body.js';
 import type { FastifyInstance } from 'fastify';
 import { eq, and, desc, lt, gt } from 'drizzle-orm';
 import { authenticate, requirePanel, requireRole } from '../../middleware/auth.js';
@@ -280,6 +282,54 @@ export async function notificationAdminRoutes(app: FastifyInstance): Promise<voi
   // ── Providers (Phase 3B) ────────────────────────────────────────
   // Dedicated transport endpoint catalogue — distinct from
   // smtp_relay_configs (which is tenant-side outbound mail).
+  /**
+   * Per-object mutes: "quiet about THIS one thing until Friday".
+   *
+   * The escape valve that stops an operator muting a whole category during a
+   * known incident and never turning it back on.
+   */
+  app.get('/admin/notifications/mutes', async () => {
+    const { listActiveMutes } = await import('./mutes/service.js');
+    return { data: await listActiveMutes(app.db) };
+  });
+
+  app.post('/admin/notifications/mutes', async (request, reply) => {
+    // PARSED, not cast. A cast reads a misspelled field as undefined, skips
+    // whatever it controlled and returns 200 — and for a mute that means the
+    // operator believes they are quiet when nothing was muted at all.
+    const body = parseBody(createNotificationMuteSchema, request.body);
+    const { createMute, MuteRejected } = await import('./mutes/service.js');
+    try {
+      await createMute(app.db, {
+        categoryId: body.categoryId ?? null,
+        objectKey: body.objectKey,
+        days: body.days,
+        reason: body.reason ?? null,
+        createdBy: (request.user as { sub?: string } | undefined)?.sub ?? null,
+      });
+    } catch (err) {
+      if (err instanceof MuteRejected) {
+        // A refusal with a reason, not a silent no-op: a mute that appears to
+        // work and does not is worse than being told no.
+        return reply.status(409).send({ error: { code: 'MUTE_REJECTED', message: err.message } });
+      }
+      throw err;
+    }
+    return reply.status(204).send();
+  });
+
+  app.delete('/admin/notifications/mutes', async (request, reply) => {
+    const q = deleteNotificationMuteSchema.safeParse(request.query);
+    if (!q.success) {
+      return reply.status(400).send({
+        error: { code: 'INVALID_INPUT', message: 'objectKey is required' },
+      });
+    }
+    const { removeMute } = await import('./mutes/service.js');
+    await removeMute(app.db, q.data.categoryId ?? null, q.data.objectKey);
+    return reply.status(204).send();
+  });
+
   app.get('/admin/notifications/providers', async () => {
     const rows = await providerService.listProviders(app.db);
     return success(rows);

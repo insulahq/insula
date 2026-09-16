@@ -35,8 +35,11 @@ suite         integration-node-terminal.sh
 suite         integration-postgres-pitr.sh              # default (snapshot-LSN) mode wired into integration-all + STAGING-validated. WITH_WAL=1 mode (folded 2026-07-02 from the retired snapshot-restore.sh) = recoveryTargetTime WAL-replay (marker-A survives/marker-B gone + slow-path forced); on-demand only, needs a barman-archiving cluster (staging), NOT DEV (empty spec.plugins). Also folds chip-persistence + plugin-sidecar-propagation assertions (run in both modes).
 suite         integration-tier-flip-e2e.sh
 suite         integration-monitoring-slo.sh
+suite         integration-global-search.sh              # GET /api/v1/search. The endpoint has NO requireRole gate by design, so the phases that matter are authorization: phase C provisions a SECOND tenant and asserts tenant A's token gets nothing back when it searches for tenant B's FULL hostname (a shared prefix would pass by accident); phase D asserts a read_only admin still finds tenants but receives no `user` group. Phases A4/B2 cover the two bugs fixed alongside the feature (case-sensitive `like`, unescaped LIKE wildcards). Fast (~1-2 min, no k8s waits); self-cleans the tenants it creates via trap. Self-skips 77 on a pre-feature build.
 suite         integration-system-snapshots.sh
 suite         integration-mailbox-quota-e2e.sh
+suite         integration-notification-routing-e2e.sh
+suite         integration-mailbox-quota-notify-e2e.sh  # fills a 20MB mailbox; asserts owner+tenant-admin+operator are told
 suite         integration-mailbox-forwarding-e2e.sh      # send-only + forwarding (Sieve) matrix
 suite         integration-email-aliases-e2e.sh           # mailing lists (MailingList fan-out) + catch-all + usedMb
 suite         integration-mailbox-aliases-e2e.sh         # per-mailbox aliases: receive + send-as + identity + disable/delete

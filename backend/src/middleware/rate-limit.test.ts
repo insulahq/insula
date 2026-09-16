@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import Fastify from 'fastify';
 import fastifyJwt from '@fastify/jwt';
 import { registerRateLimit } from './rate-limit.js';
+import { errorHandler } from './error-handler.js';
 
 describe('rate limiting', () => {
   let app: ReturnType<typeof Fastify>;
@@ -31,11 +32,19 @@ describe('rate limiting', () => {
   });
 
   it('should return 429 when limit exceeded', async () => {
-    // Use a tight limit app
+    // Use a tight limit app.
+    //
+    // `setErrorHandler` is not optional here even though this test is about
+    // the limiter: @fastify/rate-limit THROWS its error-response object, so
+    // the platform error handler is what turns it into the body a client
+    // reads. Without it this test asserted a shape that only Fastify's
+    // default handler ever produced — and passed for a year while real
+    // clients were receiving `BAD_REQUEST`. See rate-limit-envelope.test.ts.
     const tightApp = Fastify();
     await tightApp.register(fastifyJwt, { secret: 'test-secret-key-for-testing-only' });
     await registerRateLimit(tightApp, { max: 2, timeWindow: '1 minute' });
     tightApp.get('/limited', async () => ({ ok: true }));
+    tightApp.setErrorHandler(errorHandler);
     await tightApp.ready();
 
     await tightApp.inject({ method: 'GET', url: '/limited' });

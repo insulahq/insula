@@ -1,13 +1,16 @@
 import { useQuery } from '@tanstack/react-query';
-import { Mail, Loader2, AlertCircle, ShieldCheck, ShieldAlert, ShieldOff } from 'lucide-react';
+import { Mail, Loader2, AlertCircle, ShieldAlert, ShieldOff } from 'lucide-react';
 import { apiFetch } from '@/lib/api-client';
 import DmarcSection from './DmarcSection';
 import { Link } from 'react-router-dom';
-import type { MailOverviewResponse, ComplaintSummaryEntry } from '@insula/api-contracts';
+import type { MailOverviewResponse } from '@insula/api-contracts';
 
 /**
- * Monitoring → Mail (PR 5): send stats, top senders, complaints,
- * live outbound queue, and the sending-protection status.
+ * Monitoring → Mail: send stats, top senders, DMARC, live outbound queue,
+ * and the sending-protection status.
+ *
+ * The FBL complaints table was removed 2026-09-15 with the FBL retirement —
+ * it had never had a row to show.
  */
 
 function useMailOverview() {
@@ -15,14 +18,6 @@ function useMailOverview() {
     queryKey: ['mail-overview'],
     queryFn: () => apiFetch<{ data: MailOverviewResponse }>('/api/v1/admin/mail/overview'),
     refetchInterval: 60_000,
-  });
-}
-
-function useComplaintSummary() {
-  return useQuery({
-    queryKey: ['mail-complaint-summary'],
-    queryFn: () => apiFetch<{ data: ComplaintSummaryEntry[] }>('/api/v1/admin/mail/complaints/summary'),
-    refetchInterval: 120_000,
   });
 }
 
@@ -44,18 +39,13 @@ function StatCard({ label, value, accent }: {
   );
 }
 
-function ratePct(rate: number): string {
-  return `${(rate * 100).toFixed(2)}%`;
-}
 
 const TH_CLS = 'py-2 pr-4 text-left text-xs font-medium text-gray-500 dark:text-gray-400';
 const TD_CLS = 'py-2 pr-4 text-sm text-gray-700 dark:text-gray-300';
 
 export default function MailTab() {
   const overview = useMailOverview();
-  const complaints = useComplaintSummary();
   const data = overview.data?.data;
-  const summary = complaints.data?.data ?? [];
 
   if (overview.isLoading) {
     return (
@@ -75,12 +65,9 @@ export default function MailTab() {
     );
   }
 
-  const flagged = summary.filter((s) => s.complaints7d > 0);
-  const modeBadge = data.protection.mode === 'auto'
-    ? { icon: ShieldCheck, text: 'Automatic enforcement', cls: 'text-emerald-600 dark:text-emerald-400' }
-    : data.protection.mode === 'notify'
-      ? { icon: ShieldAlert, text: 'Notify only', cls: 'text-amber-600 dark:text-amber-400' }
-      : { icon: ShieldOff, text: 'Protection off', cls: 'text-red-600 dark:text-red-400' };
+  const modeBadge = data.protection.mode === 'notify'
+    ? { icon: ShieldAlert, text: 'Notify only', cls: 'text-amber-600 dark:text-amber-400' }
+    : { icon: ShieldOff, text: 'Protection off', cls: 'text-red-600 dark:text-red-400' };
   const ModeIcon = modeBadge.icon;
 
   return (
@@ -118,48 +105,6 @@ export default function MailTab() {
           value={data.totals.quotaRejected7d}
           accent={data.totals.quotaRejected7d > 0 ? 'red' : undefined}
         />
-      </div>
-
-      {/* Complaints */}
-      <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm">
-        <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-1">FBL complaints</h3>
-        <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
-          7-day complaint rate = complaints ÷ sends. &gt;0.1% is throttle territory, &gt;0.3% suspend territory.
-        </p>
-        {flagged.length === 0 ? (
-          <p className="text-sm text-gray-500 dark:text-gray-400">No complaints in the last 30 days.</p>
-        ) : (
-          <table className="w-full" data-testid="complaints-table">
-            <thead>
-              <tr className="border-b border-gray-100 dark:border-gray-700">
-                <th className={TH_CLS}>Domain</th>
-                <th className={TH_CLS}>Tenant</th>
-                <th className={TH_CLS}>7d rate</th>
-                <th className={TH_CLS}>7d (c/s)</th>
-                <th className={TH_CLS}>30d rate</th>
-                <th className={TH_CLS}>Last complaint</th>
-              </tr>
-            </thead>
-            <tbody>
-              {flagged.map((s) => {
-                const danger = s.complaintRate7d > 0.003;
-                const warn = !danger && s.complaintRate7d > 0.001;
-                return (
-                  <tr key={`${s.tenantId}|${s.domain}`} className="border-b border-gray-50 dark:border-gray-700/50">
-                    <td className={`${TD_CLS} font-medium text-gray-900 dark:text-gray-100`}>{s.domain ?? '—'}</td>
-                    <td className={TD_CLS}>{s.tenantName ?? s.tenantId ?? 'unattributed'}</td>
-                    <td className={`${TD_CLS} font-semibold ${danger ? 'text-red-600 dark:text-red-400' : warn ? 'text-amber-600 dark:text-amber-400' : ''}`}>
-                      {ratePct(s.complaintRate7d)}
-                    </td>
-                    <td className={TD_CLS}>{s.complaints7d}/{s.sent7d}</td>
-                    <td className={TD_CLS}>{ratePct(s.complaintRate30d)}</td>
-                    <td className={TD_CLS}>{s.lastComplaintAt ? new Date(s.lastComplaintAt).toLocaleString() : '—'}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        )}
       </div>
 
       {/* Top senders */}

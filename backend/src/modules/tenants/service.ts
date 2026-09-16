@@ -1,4 +1,5 @@
-import { eq, like, and, sql, desc, asc, lt, gt } from 'drizzle-orm';
+import { eq, ilike, and, sql, desc, asc, lt, gt } from 'drizzle-orm';
+import { likePattern } from '../../shared/like-pattern.js';
 import bcrypt from 'bcrypt';
 import { tenants, domains, deployments, cronJobs, users, hostingPlans, clusterNodes, regions } from '../../db/schema.js';
 import { tenantNotFound } from '../../shared/errors.js';
@@ -771,8 +772,7 @@ export async function listTenants(
 
   const conditions = [];
   if (search) {
-    const escaped = search.replace(/%/g, '\\%').replace(/_/g, '\\_');
-    conditions.push(like(tenants.name, `%${escaped}%`));
+    conditions.push(ilike(tenants.name, likePattern(search)));
   }
 
   if (cursor) {
