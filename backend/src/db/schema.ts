@@ -2900,6 +2900,12 @@ export const systemSettings = pgTable('system_settings', {
   // follow-up migration (expand/contract — see migration 0046's note).
   webmailUrl: varchar('webmail_url', { length: 500 }),
   apiRateLimit: integer('api_rate_limit').notNull().default(100),
+  // Migration 0124 — master notification kill switch, checked by the
+  // dispatcher on every event. The per-category `is_active` flag was the only
+  // stop available during the 2026-09-16 storm, and reaching it meant editing
+  // production rows by hand. Read UNCACHED at dispatch time so flipping it
+  // takes effect on the next event rather than after a cache TTL.
+  notificationsEnabled: boolean('notifications_enabled').notNull().default(true),
   // On-server tenant volume snapshots (Longhorn VolumeSnapshot, type=snap)
   // are short-term PVC recovery points — NOT off-site backups. They expire
   // after this many hours so they don't accumulate Longhorn space. Admin-

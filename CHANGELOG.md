@@ -12,6 +12,18 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **A master notification switch in Admin → Notifications.** One button that stops
+  every notification on every channel, and resumes them. It exists because on
+  2026-09-16 the only way to stop a storm was an operator running
+  `UPDATE notification_categories SET is_active = false` against the production
+  database — per category, during the incident, which assumes you know which
+  category is storming and have psql access at all. The dispatcher reads the
+  switch **uncached** on every event, so flipping it takes effect on the next
+  one rather than after a cache TTL. Disabling takes two clicks and the card
+  states plainly that security, backup and certificate alerts are suppressed
+  too; re-enabling takes one, because that is not the dangerous direction.
+
 ### Fixed
 - **A notification storm that mailed tenants every five minutes, forever, and
   then saturated the platform's own sending limit.** The `postmaster@`/`dmarc@`
