@@ -7,7 +7,6 @@ import { mailboxes, mailboxAccess, mailboxAliases, emailDomains, domains, users,
 import { inArray } from 'drizzle-orm';
 import { ApiError } from '../../shared/errors.js';
 import { getTenantMailboxLimit, getTenantMailboxCount, getTenantMailboxSizeLimit } from './limit.js';
-import { notifyTenantMailboxLimitReached } from '../notifications/events.js';
 import {
   getJmapSession,
   createMailbox as jmapCreateMailbox,
@@ -218,16 +217,11 @@ export async function createMailbox(
   const effective = await getTenantMailboxLimit(db, tenantId);
   const currentCount = await getTenantMailboxCount(db, tenantId);
   if (!platformManaged && currentCount >= effective.limit) {
-    // Fire-and-forget notification fan-out to all tenant_admin users.
-    // We do NOT await the email delivery; we only await the DB insert
-    // so the test path is deterministic. Any failure inside
-    // notifyTenantMailboxLimitReached is swallowed by notifyUser's
-    // try/catch so this cannot mask the original ApiError.
-    void notifyTenantMailboxLimitReached(db, tenantId, {
-      limit: effective.limit,
-      current: currentCount,
-      source: effective.source,
-    });
+    // No notification here, on purpose. This throw IS the notification: the
+    // caller sees the limit, the current count and the remediation, and the
+    // mailbox page already renders the used/quota bar. Mailing someone about
+    // the click they just watched fail is noise — see the note in
+    // notifications/events.ts where the emitter used to live.
     throw new ApiError(
       'CLIENT_MAILBOX_LIMIT_REACHED',
       `Mailbox limit (${effective.limit}) reached for this account`,
