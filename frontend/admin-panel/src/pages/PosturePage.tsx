@@ -113,6 +113,7 @@ import type {
   NetworkPolicyTemplateId,
 } from '@insula/api-contracts';
 import { buildHostnameRegexFromEventHost } from '@insula/api-contracts';
+import { useTabParam } from '@/hooks/use-tab-param';
 
 type TabId = 'overview' | 'ssh' | 'mesh' | 'firewall' | 'hardening' | 'k8s' | 'auth' | 'netpol' | 'events';
 
@@ -128,8 +129,10 @@ const TABS: ReadonlyArray<{ readonly id: TabId; readonly label: string }> = [
   { id: 'events', label: 'Security Events' },
 ];
 
+const POSTURE_TAB_IDS: readonly TabId[] = TABS.map((t) => t.id);
+
 export default function PosturePage() {
-  const [activeTab, setActiveTab] = useState<TabId>('overview');
+  const [activeTab, setActiveTab] = useTabParam<TabId>(POSTURE_TAB_IDS, 'overview');
   const { data, isLoading, isError, error, refetch, isFetching } = useSecurityHardeningSnapshot();
   const refresh = useRefreshSecurityHardening();
 

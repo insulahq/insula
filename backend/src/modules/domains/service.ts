@@ -1,4 +1,5 @@
-import { eq, and, like, desc, asc, lt, gt, sql, inArray } from 'drizzle-orm';
+import { eq, and, ilike, desc, asc, lt, gt, sql, inArray } from 'drizzle-orm';
+import { likePattern } from '../../shared/like-pattern.js';
 import { domains, dnsRecords, emailDomains, mailboxes, emailAliases, ingressRoutes, sslCertificates } from '../../db/schema.js';
 import { domainNotFound, duplicateEntry } from '../../shared/errors.js';
 import { ApiError } from '../../shared/errors.js';
@@ -491,7 +492,7 @@ export async function listAllDomains(
 
   const conditions = [];
   if (search) {
-    conditions.push(like(domains.domainName, `%${search}%`));
+    conditions.push(ilike(domains.domainName, likePattern(search)));
   }
 
   if (cursor) {
@@ -526,7 +527,7 @@ export async function listAllDomains(
 
   const countConditions = [];
   if (search) {
-    countConditions.push(like(domains.domainName, `%${search}%`));
+    countConditions.push(ilike(domains.domainName, likePattern(search)));
   }
   const countWhere = countConditions.length > 0 ? and(...countConditions) : undefined;
   const [countResult] = await db.select({ count: sql<number>`count(*)` }).from(domains).where(countWhere);
@@ -552,7 +553,7 @@ export async function listDomains(
 
   const conditions = [eq(domains.tenantId, tenantId)];
   if (search) {
-    conditions.push(like(domains.domainName, `%${search}%`));
+    conditions.push(ilike(domains.domainName, likePattern(search)));
   }
 
   if (cursor) {

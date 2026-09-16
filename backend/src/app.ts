@@ -128,6 +128,7 @@ import { tenantRestoreRoutes } from './modules/backup-restore/tenant-routes.js';
 import { adminUserRoutes } from './modules/admin-users/routes.js';
 import { healthRoutes } from './modules/health/routes.js';
 import { podPruneRoutes } from './modules/pod-prune/routes.js';
+import { searchRoutes } from './modules/search/routes.js';
 import { cnpgBackupHealthRoutes } from './modules/cnpg-backup-health/routes.js';
 import { cnpgBackupCatalogueRoutes } from './modules/cnpg-backup-catalogue/routes.js';
 import { cnpgBackupNowRoutes } from './modules/cnpg-backup-now/index.js';
@@ -692,6 +693,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(adminUserRoutes, { prefix: '/api/v1' });
   await app.register(healthRoutes, { prefix: '/api/v1' });
   await app.register(podPruneRoutes, { prefix: '/api/v1' });
+  await app.register(searchRoutes, { prefix: '/api/v1' });
   await app.register(cnpgBackupHealthRoutes, { prefix: '/api/v1' });
   await app.register(cnpgBackupCatalogueRoutes, { prefix: '/api/v1' });
   await app.register(cnpgBackupNowRoutes, { prefix: '/api/v1' });
