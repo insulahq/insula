@@ -168,7 +168,7 @@ import { zitiProvidersRoutes } from './modules/ziti-providers/routes.js';
 import { zrokProvidersRoutes } from './modules/zrok-providers/routes.js';
 import { deploymentNetworkAccessRoutes } from './modules/deployment-network-access/routes.js';
 import { sqliteRoutes } from './modules/sqlite/routes.js';
-import { startWebcronScheduler } from './modules/cron-jobs/scheduler.js';
+import { startCronScheduler } from './modules/cron-jobs/scheduler.js';
 import { startIdleCleanup } from './modules/file-manager/idle-cleanup.js';
 import { startMetricsScheduler } from './modules/metrics/metrics-scheduler.js';
 import { startMailStatsScheduler, stopMailStatsScheduler } from './modules/mail-stats/scheduler.js';
@@ -1045,8 +1045,14 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         app.addHook('onClose', () => clearInterval(sweepTimer));
       }
 
-      const webcronTimer = startWebcronScheduler(app.db);
-      app.addHook('onClose', () => clearInterval(webcronTimer));
+      // Tenant cron. Deployment-type jobs exec into the tenant's own pod, so
+      // the scheduler needs the kubeconfig the rest of the cluster callers use.
+      const cronTimer = startCronScheduler(app.db, {
+        kubeconfigPath:
+          ((app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined)
+          ?? process.env.KUBECONFIG,
+      });
+      app.addHook('onClose', () => clearInterval(cronTimer));
 
       // Prometheus exposition (ADR-051 phase 2): HTTP-histogram hook on
       // the main app + a bare node:http server on :9090 serving GET
