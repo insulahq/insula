@@ -70,10 +70,30 @@ If your account is ever **suspended** or a maintenance task is running, an
 **Account state** box appears at the top of the dashboard so you always know
 the current status.
 
-The bar across the **top** of every page has a search box, live
+The bar across the **top** of every page has a [search box](#search), live
 CPU/memory/storage chips, a bell for notifications, a light/dark theme toggle,
 and your **user menu** (top-right circle) for quick access to settings,
 changing your password, and signing out.
+
+### Search
+
+The search box finds both **pages** and **your own things**, in one list.
+
+Type part of a page name — `mail`, `backup`, `files` — and the matching
+sections appear straight away. You can also search for what something *does*
+rather than what it is called: `phpmyadmin` finds the SQL Manager, `ftp` finds
+SFTP Access, `spf` finds your email DNS settings.
+
+Below the pages, the same list matches your own records: domains, applications,
+mailboxes, scheduled tasks, users, SFTP accounts, SSH keys and private workers.
+Pick one to go straight to it.
+
+`Ctrl+K` (`⌘K` on a Mac) jumps to the box from anywhere. Arrow keys move through
+the results, `Enter` opens the highlighted one, and `Esc` clears the box.
+
+!!! note "You only ever see your own account"
+    Search only ever returns things that belong to your account. It cannot
+    show you another customer's domains, mailboxes or anything else.
 
 The **menu on the left** is how you move around. Here is what each item is for:
 
