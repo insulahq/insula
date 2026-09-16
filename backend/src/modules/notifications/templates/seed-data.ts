@@ -192,7 +192,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     subjectTemplate: 'Your subscription expires soon',
     bodyTemplate: emailMjml(
       'Subscription expiring soon',
-      'Hi {{contactName}} — the subscription for {{tenantName}} expires in {{daysUntilExpiry}} days, on {{expiresAt}}. Renew now to avoid service interruption.',
+      'The subscription for {{tenantName}} expires in {{daysUntilExpiry}} days, on {{expiresAt}}. Renew now to avoid service interruption.',
     ),
     bodyFormat: 'mjml',
     variablesSchema: [
@@ -329,7 +329,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     subjectTemplate: '{{itemCount}} notifications — {{summary}}',
     bodyTemplate: emailMjml(
       'Your notification digest',
-      'Hi {{userName}} — {{itemCount}} notification(s) since your last digest, as of {{occurredAt}}: {{items}}',
+      '{{itemCount}} notification(s) since your last digest, as of {{occurredAt}}: {{items}}',
     ),
     bodyFormat: 'mjml',
     variablesSchema: [
@@ -931,7 +931,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     subjectTemplate: 'Subscription renewed',
     bodyTemplate: emailMjml(
       'Subscription renewed',
-      'Hi {{contactName}} — the subscription for {{tenantName}} was renewed and now runs until {{newExpiresAt}}.',
+      'The subscription for {{tenantName}} was renewed and now runs until {{newExpiresAt}}.',
     ),
     bodyFormat: 'mjml',
     variablesSchema: [
@@ -960,7 +960,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     subjectTemplate: 'Subscription changed',
     bodyTemplate: emailMjml(
       'Subscription changed',
-      'Hi {{contactName}} — the subscription for {{tenantName}} changed from the {{oldPlanName}} plan to the {{newPlanName}} plan.',
+      'The subscription for {{tenantName}} changed from the {{oldPlanName}} plan to the {{newPlanName}} plan.',
     ),
     bodyFormat: 'mjml',
     variablesSchema: [
@@ -1734,7 +1734,7 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     subjectTemplate: '[SLO RESOLVED] {{ruleName}}{{#if subject}} — {{subject}}{{/if}}',
     bodyTemplate: emailMjml(
       'SLO alert resolved: {{ruleName}}',
-      '{{ruleName}} recovered{{#if subject}} for {{subject}}{{/if}}. '
+      '{{ruleName}} recovered{{#if subject}} for {{subject}}{{/if}} at {{occurredAt}}. '
       + '{{description}}{{#if value}} Last value: {{value}}.{{/if}} '
       + '(rule {{ruleId}}, severity {{severity}}). No further action required.',
     ),
@@ -1746,7 +1746,7 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: '[SLO RESOLVED] {{ruleName}}{{#if subject}} — {{subject}}{{/if}}',
-    bodyTemplate: '{{ruleName}} recovered{{#if subject}} for {{subject}}{{/if}}'
+    bodyTemplate: '{{ruleName}} recovered{{#if subject}} for {{subject}}{{/if}} at {{occurredAt}}'
       + ' (rule {{ruleId}}, severity {{severity}}).',
     bodyFormat: 'plaintext',
     variablesSchema: SLO_ALERT_VARS,

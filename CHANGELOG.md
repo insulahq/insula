@@ -58,6 +58,24 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   panel and the email cannot disagree about where a category points.
 
 ### Fixed
+- **Certificate failures no longer leak Kubernetes internals to tenants.** A
+  customer was sent, verbatim: *"Failed to wait for order resource
+  'success-com-na-wildcard-cert-1-1573661536' to become ready"* — cert-manager's
+  internal condition text, naming an object in a namespace they do not know
+  exists, telling them nothing they can act on. Tenant-facing certificate
+  notifications now translate the cause into what they can do about it (DNS not
+  pointing at the platform, a CAA record refusing issuance, rate limiting, or
+  simply "not finished yet, we keep retrying"), and an unrecognised message
+  falls back to an honest sentence rather than forwarding internals. The
+  operator's copy keeps the raw text, because that is the half that diagnoses
+  the failure.
+- **A resolved SLO alert says when it recovered.** It named the rule and the
+  subject but carried no timestamp, which makes correlating a recovery with
+  anything else guesswork.
+- **Emails no longer greet the reader twice.** Four templates opened with their
+  own "Hi {{contactName}} —", which became a second greeting once the shared
+  wrapper started adding one.
+
 - **"Notify tenant" on suspend / restore / archive / delete never worked.** The
   contract declared `suppressTenantNotification`, the admin panel sent it on
   every lifecycle action, and the `notify-tenant-on-transition` hook read
