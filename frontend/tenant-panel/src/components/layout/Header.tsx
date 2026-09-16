@@ -1,22 +1,19 @@
 import { useState, useEffect, useRef, lazy, Suspense } from 'react';
 import { Link } from 'react-router-dom';
-import { Menu, Search, UserCircle, KeyRound, LogOut, Settings, Cpu, HardDrive, MemoryStick } from 'lucide-react';
+import { Menu, UserCircle, KeyRound, LogOut, Settings, Cpu, HardDrive, MemoryStick } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 import { useResourceMetrics } from '@/hooks/use-resource-metrics';
 import NotificationDropdown from '@/components/NotificationDropdown';
 import DarkModeToggle from '@/components/DarkModeToggle';
 import ErrorBoundary from '@/components/ErrorBoundary';
 import TaskCenterChip from '@/components/TaskCenterChip';
+import GlobalSearch from '@/components/search/GlobalSearch';
 import ResourceMetricsModal, { formatCpuCompact, formatBytesCompact } from '@/components/ResourceMetricsModal';
 
 // Lazy on purpose: the password inputs must not be part of the main bundle, or
 // password-manager extensions pick them up on every page load. The chunk is
 // only fetched when the user opens the dialog.
 const ChangePasswordModal = lazy(() => import('@/components/ChangePasswordModal'));
-
-const PLACEHOLDER_TEXT = 'Search domains, databases…';
-const PLACEHOLDER_CLASS =
-  'w-full rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 py-2 pl-9 pr-4 text-sm text-gray-400 dark:text-gray-500 select-none';
 
 interface HeaderProps {
   readonly onMenuClick: () => void;
@@ -65,33 +62,7 @@ export default function Header({ onMenuClick }: HeaderProps) {
         <Menu size={20} />
       </button>
 
-      <div className="relative flex-1 max-w-md">
-        <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 dark:text-gray-500" />
-        {/* NOT an <input>. This search box is a non-functional placeholder —
-            no value, no onChange, no submit handler — and an always-present
-            input on an origin the user has saved a login for is what password
-            managers treat as a username field, so it nagged on every page.
-
-            Two earlier fixes tried to make the input invisible to managers:
-            first naming it, then per-vendor opt-outs (`data-1p-ignore` is
-            1Password only, `data-lpignore` LastPass only, `data-form-type`
-            Dashlane only). Both were reported as still broken, because the
-            browsers' OWN built-in managers honour none of those, nor
-            `autocomplete="off"`, nor `disabled`.
-
-            A non-functional control has no reason to be a form field at all.
-            Rendering a div removes the trigger for every manager, including
-            built-ins, with nothing to keep in sync. When search is actually
-            implemented, make it a button that opens a dialog and mount the
-            real input INSIDE that dialog — never persistently in the header. */}
-        <div
-          aria-hidden="true"
-          data-testid="global-search-placeholder"
-          className={PLACEHOLDER_CLASS}
-        >
-          {PLACEHOLDER_TEXT}
-        </div>
-      </div>
+      <GlobalSearch />
 
       <div className="ml-auto flex items-center gap-2">
         <ResourceUsageTags />

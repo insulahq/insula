@@ -48,6 +48,15 @@ on:
       # A change to this workflow must be exercised BY this workflow.
       # Without it a broken (or, as here, a hanging) job could be edited and
       # merged without the fix ever running.
+      # Subject of ci-search-registry-check.sh: the two global-search
+      # registries, the route tables they must agree with, and the pages whose
+      # tab unions the ?tab= targets are checked against. All three are the
+      # guard's actual input — a registry that drifts from App.tsx produces a
+      # search box that navigates to Page Not Found, and nothing else in CI
+      # reads either file.
+      - 'frontend/*/src/search/**'
+      - 'frontend/*/src/App.tsx'
+      - 'frontend/*/src/pages/**'
       - '.github/workflows/ci-infrastructure.yml'
   pull_request:
     branches: [development, main]
@@ -96,6 +105,15 @@ on:
       # not fire, and the defect was caught only because an EARLIER commit in
       # the same series had also touched scripts/.
       - 'platform/host-migrations/**'
+      # Subject of ci-search-registry-check.sh: the two global-search
+      # registries, the route tables they must agree with, and the pages whose
+      # tab unions the ?tab= targets are checked against. All three are the
+      # guard's actual input — a registry that drifts from App.tsx produces a
+      # search box that navigates to Page Not Found, and nothing else in CI
+      # reads either file.
+      - 'frontend/*/src/search/**'
+      - 'frontend/*/src/App.tsx'
+      - 'frontend/*/src/pages/**'
       - '.github/workflows/ci-infrastructure.yml'
 
 # Least privilege (2026-07-28 security review): these workflows only read the
@@ -239,6 +257,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Verify requireRole is never used without authenticate
         run: ./scripts/ci-route-auth-check.sh
+
+  search-registry-check:
+    name: Global-search registries match the routes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Verify every search entry resolves and every page is findable
+        run: ./scripts/ci-search-registry-check.sh
 
   backup-health-label-check:
     name: Backup-health labels reach the Jobs
