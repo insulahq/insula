@@ -116,3 +116,38 @@ describe('ensureSiteMounts — site directory creation', () => {
     expect(occurrences).toBe(1);
   });
 });
+
+describe('ensureSiteMounts — self-healing an existing pod', () => {
+  // Every multi-host pod created before the site-directory clauses existed has
+  // correct mounts and an init container that cannot create the folder. The
+  // mount comparison alone says "nothing to do", so those pods would stay
+  // broken until someone happened to add or remove a site. Observed on DEV:
+  // touching a route returned HTTP 200 and rewrote nothing.
+  it('rewrites a pod whose mounts are right but whose init command is old', async () => {
+    const f = fakeApps(OWN_STORAGE_CLAUSE, [
+      { name: 'tenant-storage', mountPath: '/var/www/sites/moodle-b', subPath: 'moodle-b' },
+      { name: 'multihost-sessions', mountPath: '/var/lib/php-sessions/moodle-b', subPath: 'moodle-b' },
+    ]);
+
+    const changed = await ensureSiteMounts(f.apps, input, rendered(['moodle-b']));
+
+    expect(changed).toBe(true);
+    expect(commandAfter(f.apps as never)).toContain('mkdir -p /data/moodle-b && chmod 777 /data/moodle-b');
+  });
+
+  it('still does nothing when the mounts AND the init command are already right', async () => {
+    const f = fakeApps(
+      `${OWN_STORAGE_CLAUSE} && mkdir -p /data/moodle-b && chmod 777 /data/moodle-b`
+      + ' && mkdir -p /var/lib/php-sessions/moodle-b && chmod 777 /var/lib/php-sessions/moodle-b',
+      [
+        { name: 'tenant-storage', mountPath: '/var/www/sites/moodle-b', subPath: 'moodle-b' },
+        { name: 'multihost-sessions', mountPath: '/var/lib/php-sessions/moodle-b', subPath: 'moodle-b' },
+      ],
+    );
+
+    const changed = await ensureSiteMounts(f.apps, input, rendered(['moodle-b']));
+
+    expect(changed).toBe(false);
+    expect(f.apps.apps.replaceNamespacedDeployment).not.toHaveBeenCalled();
+  });
+});
