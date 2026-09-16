@@ -143,9 +143,44 @@ export interface RunResticBackupArgs {
    * zombie restic alive long enough to OOMKill the platform-api pod.)
    */
   readonly abortSignal?: AbortSignal;
+  /**
+   * Optional logger for stale-lock recovery. Passed as an OBJECT, never a
+   * detached `log.warn` — pino's methods need their receiver.
+   */
+  readonly log?: { warn: (msg: string) => void };
 }
 
 const DEFAULT_BACKUP_TIMEOUT_MS = 60 * 60 * 1000;
+
+/**
+ * A restic invocation that exited non-zero, carrying the pieces a caller needs
+ * to CLASSIFY the failure rather than re-parse a formatted message.
+ *
+ * Why a class and not a formatted `new Error(...)`: stale-lock
+ * recovery has to distinguish "the repo is locked" from "the password is wrong"
+ * from "the endpoint is down", and unlocking the latter two would retry into the
+ * same failure having hidden the real cause a second time. Reconstructing an
+ * exit code out of a string is exactly the fragile parse this avoids.
+ */
+export class ResticCommandError extends Error {
+  readonly exitCode: number;
+  readonly stderr: string;
+  /**
+   * Set when a stale lock was found and cleared on the way out. The operation
+   * still failed — but the repo is no longer wedged, so the next scheduled run
+   * can succeed without a human. Surfaced so operator-facing logs can say that.
+   */
+  readonly lockCleared: boolean;
+
+  constructor(label: string, exitCode: number, stderr: string, lockCleared = false) {
+    super(`${label} exited ${exitCode}: ${stderr.trim()}`);
+    this.name = 'ResticCommandError';
+    this.exitCode = exitCode;
+    this.stderr = stderr;
+    this.lockCleared = lockCleared;
+  }
+}
+
 
 // ─── Password derivation ────────────────────────────────────────────────────
 
@@ -783,7 +818,18 @@ export async function runResticBackup(args: RunResticBackupArgs): Promise<Restic
         throw new Error('restic backup aborted (HTTP request cancelled)');
       }
       if (winner.code !== 0) {
-        throw new Error(`restic backup exited ${winner.code}: ${stderrBuf.trim() || stdoutBuf.trim()}`);
+        const failure = new ResticCommandError('restic backup', winner.code, stderrBuf.trim() || stdoutBuf.trim());
+        if (isResticLockError(failure.exitCode, failure.stderr)) {
+          await clearLockAndRethrow(
+            {
+              label: 'restic backup',
+              unlock: { target: args.target, repoUri, passwordHex: args.passwordHex },
+              log: args.log,
+            },
+            failure,
+          );
+        }
+        throw failure;
       }
     } finally {
       if (timeoutTimer) clearTimeout(timeoutTimer);
@@ -1170,6 +1216,175 @@ export async function runResticStats(args: RunResticStatsArgs): Promise<ResticSt
     if (sftpCleanup) await sftpCleanup();
     release();
   }
+}
+
+/** A restic failure that means "the repo is locked", not "the repo is broken". */
+export function isResticLockError(exitCode: number, stderr: string): boolean {
+  // restic >= 0.17 exits 11 for "failed to lock repository". Older builds in the
+  // image exit 1 with the message, so match both.
+  return exitCode === 11
+    || /unable to create lock|repository is already locked|repo already locked/i.test(stderr);
+}
+
+export interface RunResticUnlockArgs {
+  readonly target: BackupTarget;
+  readonly repoUri: string;
+  readonly passwordHex: string;
+  readonly semaphore?: { acquire: () => Promise<() => void> };
+}
+
+/**
+ * `restic unlock` — remove STALE locks from a repo.
+ *
+ * Why this exists: restic takes a lock for `backup`, `forget`, `prune`, `init`
+ * and (on a writable bucket) `restore`. If the pod running one of those dies —
+ * OOM, eviction, node drain, a Job deadline, an operator deleting it — the lock
+ * object survives in the repo, and NOTHING in this platform ever removed one.
+ * Every later write to that repo then fails with "unable to create lock",
+ * permanently, for that tenant or class.
+ *
+ * Observed twice: staging 2026-05-27 (mail LIST path, 3-hour stale lock) and
+ * DEV 2026-09-15, where mail snapshots were dead for 3 days 17 hours with every
+ * operator surface still reporting healthy. Both were patched in the mail image
+ * alone; this driver serves every tenant/bundle repo, so recovery belongs here
+ * too. A `bk-files` Job killed by OutOfcpu — which happened on staging the same
+ * day — leaves exactly this state on a tenant's files repo.
+ *
+ * Plain `unlock`, never `--remove-all`: it removes only locks whose owner is
+ * gone, so it cannot trample a run that is genuinely in flight. Callers should
+ * retry the operation ONCE after this returns; a lock that survives an unlock is
+ * held by a live process, and looping past that is the trampling this avoids.
+ */
+export async function runResticUnlock(args: RunResticUnlockArgs): Promise<void> {
+  const sem = args.semaphore ?? DEFAULT_SEM;
+  const release = await sem.acquire();
+  try {
+    await execResticUnlock(args);
+  } finally {
+    release();
+  }
+}
+
+/**
+ * `restic unlock` WITHOUT acquiring a concurrency slot.
+ *
+ * Recovery runs from inside an operation that already holds one. Re-acquiring
+ * there would deadlock: the semaphore caps in-flight restic at 4, so four
+ * concurrent forgets that each hit a stale lock would each wait for a slot none
+ * of them can release until the unlock they are waiting on completes. Callers
+ * that are NOT already inside a slot must use `runResticUnlock`, which takes one.
+ */
+async function execResticUnlock(args: RunResticUnlockArgs): Promise<void> {
+  let sftpCleanup: (() => Promise<void>) | null = null;
+  try {
+    const env = {
+      ...buildResticEnv(args.target),
+      RESTIC_PASSWORD: args.passwordHex,
+    };
+    const cliArgs: string[] = [];
+    if (args.target.kind === 'ssh') {
+      const prepared = await prepareSftpArgs(args.target);
+      sftpCleanup = prepared.cleanup;
+      cliArgs.push(...prepared.args);
+    }
+    cliArgs.push('--repo', args.repoUri);
+    cliArgs.push(...performanceOpts(args.target));
+    cliArgs.push('unlock');
+
+    const child = spawnRestic(cliArgs, env);
+    let stderrBuf = '';
+    child.stderr.on('data', (c: Buffer) => { stderrBuf += c.toString('utf8'); });
+    child.stdout.on('data', () => { /* drain */ });
+    const code = await new Promise<number>((resolve) => {
+      const finish = (c: number | null) => resolve(c ?? 0);
+      child.on('exit', finish);
+      child.on('close', finish);
+    });
+    if (code !== 0) {
+      throw new ResticCommandError('restic unlock', code, stderrBuf);
+    }
+  } finally {
+    if (sftpCleanup) await sftpCleanup();
+  }
+}
+
+export interface ResticLockRecovery {
+  /** Operation name for logs, e.g. 'restic forget'. */
+  readonly label: string;
+  /** Everything `restic unlock` needs to reach the same repo. */
+  readonly unlock: RunResticUnlockArgs;
+  readonly log?: { warn: (msg: string) => void };
+}
+
+/**
+ * Run a restic operation; if it fails because the repo is LOCKED, clear stale
+ * locks and try exactly once more.
+ *
+ * Exactly once, deliberately. Plain `unlock` removes only locks whose owner is
+ * gone, so a lock that survives it is held by a process that is still alive —
+ * looping past that point is precisely the trampling `--remove-all` would do.
+ * The second failure is reported as such rather than retried.
+ *
+ * Only for operations that are safe to repeat: forget, prune and init are
+ * idempotent. Backup is NOT — see `clearLockAndRethrow`.
+ */
+async function withStaleLockRetry<T>(
+  rec: ResticLockRecovery,
+  run: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await run();
+  } catch (err) {
+    if (!(err instanceof ResticCommandError) || !isResticLockError(err.exitCode, err.stderr)) {
+      throw err;
+    }
+    rec.log?.warn(`${rec.label}: repository is locked — clearing stale locks and retrying once`);
+    try {
+      await execResticUnlock(rec.unlock);
+    } catch (unlockErr) {
+      const detail = unlockErr instanceof Error ? unlockErr.message : String(unlockErr);
+      throw new Error(`${rec.label}: repository is locked and \`restic unlock\` failed: ${detail} (original: ${err.message})`);
+    }
+    try {
+      return await run();
+    } catch (retryErr) {
+      if (retryErr instanceof ResticCommandError && isResticLockError(retryErr.exitCode, retryErr.stderr)) {
+        throw new ResticCommandError(
+          `${rec.label} (lock survived unlock — held by a live process)`,
+          retryErr.exitCode,
+          retryErr.stderr,
+        );
+      }
+      throw retryErr;
+    }
+  }
+}
+
+/**
+ * Clear a stale lock left by a failure that CANNOT be retried in place, then
+ * rethrow with `lockCleared` set.
+ *
+ * `runResticBackup` streams a one-shot `Readable` — an HTTP request body from
+ * the tenant Job. Once restic has been handed that stream there is no second
+ * attempt to make: a retry would push an empty or truncated payload and record
+ * it as a successful backup, which is worse than the failure it papers over. So
+ * the driver does the durable half of the repair — the lock goes, so the NEXT
+ * scheduled run succeeds without a human — while this attempt still fails loudly.
+ */
+async function clearLockAndRethrow(
+  rec: ResticLockRecovery,
+  err: ResticCommandError,
+): Promise<never> {
+  rec.log?.warn(`${rec.label}: repository is locked — clearing stale locks (this attempt cannot be retried: stdin is a one-shot stream)`);
+  let cleared = false;
+  try {
+    await execResticUnlock(rec.unlock);
+    cleared = true;
+  } catch (unlockErr) {
+    const detail = unlockErr instanceof Error ? unlockErr.message : String(unlockErr);
+    rec.log?.warn(`${rec.label}: restic unlock failed: ${detail}`);
+  }
+  throw new ResticCommandError(rec.label, err.exitCode, err.stderr, cleared);
 }
 
 /**
@@ -1585,6 +1800,22 @@ export async function ensureResticRepoInitialised(args: {
   target: BackupTarget;
   passwordHex: string;
   repoUri: string;
+  log?: { warn: (msg: string) => void };
+}): Promise<void> {
+  return withStaleLockRetry(
+    {
+      label: 'restic init',
+      unlock: { target: args.target, repoUri: args.repoUri, passwordHex: args.passwordHex },
+      log: args.log,
+    },
+    () => execResticInit(args),
+  );
+}
+
+async function execResticInit(args: {
+  target: BackupTarget;
+  passwordHex: string;
+  repoUri: string;
 }): Promise<void> {
   const env = {
     ...buildResticEnv(args.target),
@@ -1629,7 +1860,7 @@ export async function ensureResticRepoInitialised(args: {
     if (combined.includes('already') && (combined.includes('exists') || combined.includes('initialized'))) {
       return;
     }
-    throw new Error(`restic init exited ${code}: ${stderrBuf.trim() || stdoutBuf.trim()}`);
+    throw new ResticCommandError('restic init', code, stderrBuf.trim() || stdoutBuf.trim());
   } finally {
     if (sftpCleanup) await sftpCleanup();
   }
@@ -1687,7 +1918,7 @@ async function runBoundedRestic(args: {
       throw new Error(`${args.label} timed out after ${Math.round(args.timeoutMs / 1000)}s`);
     }
     if (winner.code !== 0) {
-      throw new Error(`${args.label} exited ${winner.code}: ${stderrBuf.trim() || stdoutBuf.trim()}`);
+      throw new ResticCommandError(args.label, winner.code, stderrBuf.trim() || stdoutBuf.trim());
     }
     return stdoutBuf;
   } finally {
@@ -1704,6 +1935,11 @@ export interface RunResticForgetArgs {
   readonly snapshotIds: ReadonlyArray<string>;
   readonly semaphore?: ResticConcurrencySemaphore;
   readonly timeoutMs?: number;
+  /**
+   * Optional logger for stale-lock recovery. Passed as an OBJECT, never a
+   * detached `log.warn` — pino's methods need their receiver.
+   */
+  readonly log?: { warn: (msg: string) => void };
 }
 
 /**
@@ -1735,12 +1971,19 @@ export async function runResticForget(args: RunResticForgetArgs): Promise<void> 
     cliArgs.push('--repo', args.repoUri);
     cliArgs.push(...performanceOpts(args.target));
     cliArgs.push('forget', ...args.snapshotIds);
-    await runBoundedRestic({
-      label: 'restic forget',
-      cliArgs,
-      env,
-      timeoutMs: args.timeoutMs ?? DEFAULT_FORGET_TIMEOUT_MS,
-    });
+    await withStaleLockRetry(
+      {
+        label: 'restic forget',
+        unlock: { target: args.target, repoUri: args.repoUri, passwordHex: args.passwordHex },
+        log: args.log,
+      },
+      () => runBoundedRestic({
+        label: 'restic forget',
+        cliArgs,
+        env,
+        timeoutMs: args.timeoutMs ?? DEFAULT_FORGET_TIMEOUT_MS,
+      }),
+    );
   } finally {
     if (sftpCleanup) await sftpCleanup();
     release();
@@ -1759,6 +2002,11 @@ export interface RunResticPruneArgs {
   readonly maxRepackSize?: string;
   readonly semaphore?: ResticConcurrencySemaphore;
   readonly timeoutMs?: number;
+  /**
+   * Optional logger for stale-lock recovery. Passed as an OBJECT, never a
+   * detached `log.warn` — pino's methods need their receiver.
+   */
+  readonly log?: { warn: (msg: string) => void };
 }
 
 const MAX_REPACK_SIZE_RE = /^[0-9]{1,6}[KMGT]$/;
@@ -1786,12 +2034,19 @@ export async function runResticPrune(args: RunResticPruneArgs): Promise<void> {
     cliArgs.push(...performanceOpts(args.target));
     cliArgs.push('prune');
     if (args.maxRepackSize) cliArgs.push('--max-repack-size', args.maxRepackSize);
-    await runBoundedRestic({
-      label: 'restic prune',
-      cliArgs,
-      env,
-      timeoutMs: args.timeoutMs ?? DEFAULT_PRUNE_TIMEOUT_MS,
-    });
+    await withStaleLockRetry(
+      {
+        label: 'restic prune',
+        unlock: { target: args.target, repoUri: args.repoUri, passwordHex: args.passwordHex },
+        log: args.log,
+      },
+      () => runBoundedRestic({
+        label: 'restic prune',
+        cliArgs,
+        env,
+        timeoutMs: args.timeoutMs ?? DEFAULT_PRUNE_TIMEOUT_MS,
+      }),
+    );
   } finally {
     if (sftpCleanup) await sftpCleanup();
     release();

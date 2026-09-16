@@ -209,17 +209,24 @@ async function fanoutNotification(
     lines.push('Heads-up: new tenant provisioning + Apply HA scale-up will start failing soon. Plan to free space or add capacity.');
   }
   const message = lines.join(' ');
-  const type = severity === 'critical' ? 'error' : (severity === 'warning' ? 'warning' : 'info');
-  for (const a of adminRows) {
-    await db.insert(notifications).values({
-      id: crypto.randomUUID(),
-      userId: a.id,
-      type,
-      title,
-      message,
-      resourceType: 'cluster_capacity',
-      resourceId: 'singleton',
-    }).catch((err) => console.error('[capacity-reconciler] notification insert failed:', (err as Error).message));
-  }
-  console.log(`[capacity-reconciler] ${severity}: cluster=${snap.clusterCommitPct}% worst=${worst?.name ?? '(none)'}@${worst?.commitPct ?? 0}% — notified ${adminRows.length} admin(s)`);
+  // Dispatched, not inserted. This used to write straight into the
+  // `notifications` table, which reaches no template, no email, no push, no
+  // preference gate and no delivery audit — and `category_id` is nullable, so
+  // the row could not even be listed in the admin Sources screen. The 80%
+  // warning and the 95% critical were in-app only, forever: an operator found
+  // out the cluster was nearly full by happening to open a browser tab.
+  const { notifyAdminClusterCapacity } = await import('../notifications/events.js');
+  await notifyAdminClusterCapacity(db, {
+    level: severity,
+    clusterPct: String(snap.clusterCommitPct),
+    clusterDetail: message,
+    worstNode: worst ? `${worst.name} at ${worst.commitPct}%` : 'none',
+    recommendedAction: severity === 'critical'
+      ? 'Free space (unused tenants, orphan PVs, old snapshots) or add a server node.'
+      : severity === 'warning'
+        ? 'Plan to free space or add capacity before provisioning starts failing.'
+        : 'No action required.',
+    occurredAt: new Date().toISOString(),
+  }, `cluster-capacity:${severity}:${new Date().toISOString().slice(0, 13)}`);
+  console.log(`[capacity-reconciler] ${severity}: cluster=${snap.clusterCommitPct}% worst=${worst?.name ?? '(none)'}@${worst?.commitPct ?? 0}% — dispatched to admins`);
 }

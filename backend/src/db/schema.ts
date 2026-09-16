@@ -415,7 +415,7 @@ export const tenants = pgTable('tenants', {
   emailSendRateLimitDaily: integer('email_send_rate_limit_daily'),
   // R6 PR 1 (mig 0057): outbound-mail suspension — narrower than
   // tenant suspension (receiving/webmail keep working). The manual
-  // admin lever behind complaint alerts; enforced as a Stalwart
+  // admin lever for a bad sender; enforced as a Stalwart
   // queue quota of 0 messages for the tenant's sender domains.
   emailOutboundSuspended: boolean('email_outbound_suspended').notNull().default(false),
   timezone: varchar('timezone', { length: 50 }),
@@ -841,6 +841,13 @@ export const notifications = pgTable('notifications', {
   resourceId: varchar('resource_id', { length: 64 }),
   isRead: integer('is_read').notNull().default(0),
   readAt: timestamp('read_at'),
+  /**
+   * Set once, when an unread Action notification has been escalated. NULL is
+   * the normal state. Exists so escalation happens exactly once — re-escalating
+   * every tick is how an escalation becomes the noise it was meant to cut
+   * through.
+   */
+  escalatedAt: timestamp('escalated_at', { withTimezone: true }),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   // Migration 0037 — notification-system Phase 1 extension. Nullable
   // until every legacy caller threads a category through events.ts.
@@ -1530,9 +1537,6 @@ export const resourceQuotas = pgTable('resource_quotas', {
 
 // ─── Email System ───
 
-// R4 PR 3 (mig 0059): FBL complaints — one row per parsed ARF report
-// from Stalwart's report-analysis store. Rates are computed on read
-// vs email_send_counters. Pruned at 90 days.
 // ── R1 PR 1: Plesk migration (mig 0061) ──────────────────────────────────
 export const pleskSources = pgTable('plesk_sources', {
   id: varchar('id', { length: 36 }).primaryKey(),
@@ -1601,29 +1605,6 @@ export const pleskMigrations = pgTable('plesk_migrations', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   index('plesk_migrations_source_idx').on(table.sourceId, table.createdAt),
-]);
-
-export const emailFblComplaints = pgTable('email_fbl_complaints', {
-  id: varchar('id', { length: 36 }).primaryKey(),
-  stalwartReportId: varchar('stalwart_report_id', { length: 64 }).notNull(),
-  tenantId: varchar('tenant_id', { length: 36 })
-    .references(() => tenants.id, { onDelete: 'set null' }),
-  domain: varchar('domain', { length: 255 }),
-  feedbackType: varchar('feedback_type', { length: 32 }).notNull(),
-  originalMailFrom: varchar('original_mail_from', { length: 320 }),
-  originalRcptTo: varchar('original_rcpt_to', { length: 320 }),
-  sourceIp: varchar('source_ip', { length: 64 }),
-  reportingMta: varchar('reporting_mta', { length: 255 }),
-  reporter: varchar('reporter', { length: 320 }),
-  incidents: integer('incidents').notNull().default(1),
-  receivedAt: timestamp('received_at', { withTimezone: true }).notNull(),
-  raw: jsonb('raw').$type<Record<string, unknown>>(),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-}, (table) => [
-  uniqueIndex('email_fbl_complaints_report_unique').on(table.stalwartReportId),
-  index('email_fbl_complaints_tenant_idx').on(table.tenantId, table.receivedAt),
-  index('email_fbl_complaints_domain_idx').on(table.domain, table.receivedAt),
-  index('email_fbl_complaints_received_idx').on(table.receivedAt),
 ]);
 
 // ROADMAP R5 (mig 0110): DMARC aggregate reports.
@@ -1698,14 +1679,6 @@ export const emailQuotaEvents = pgTable('email_quota_events', {
   firedAt: timestamp('fired_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   primaryKey({ columns: [table.tenantId, table.windowKind, table.threshold, table.windowStart] }),
-]);
-
-export const emailComplaintEvents = pgTable('email_complaint_events', {
-  domain: varchar('domain', { length: 255 }).notNull(),
-  level: varchar('level', { length: 16 }).notNull(),
-  firedAt: timestamp('fired_at', { withTimezone: true }).notNull().defaultNow(),
-}, (table) => [
-  primaryKey({ columns: [table.domain, table.level] }),
 ]);
 
 // R6 PR 2 (mig 0058): outbound send accounting — hourly buckets per
@@ -2114,6 +2087,18 @@ export const notificationDeliveries = pgTable('notification_deliveries', {
   // satisfies GDPR right-to-erasure when the higher-level erasure
   // path (eraseUserNotifications) hasn't fired yet.
   userId: varchar('user_id', { length: 36 }).references(() => users.id, { onDelete: 'set null' }),
+  /**
+   * Recipient for an audience with NO platform account — today, a mailbox
+   * owner.
+   *
+   * At WRITE time exactly one of userId / recipientAddress identifies the
+   * recipient (ntfy excepted — it is a topic broadcast). That is NOT a table
+   * CHECK: `userId` is ON DELETE SET NULL so the audit row survives a GDPR
+   * erasure, so a historical row legitimately has neither. A constraint here
+   * aborts on those rows and half-applies the migration (proved on DEV:
+   * 164 of 458 rows).
+   */
+  recipientAddress: varchar('recipient_address', { length: 320 }),
   tenantId: varchar('tenant_id', { length: 36 }).references(() => tenants.id, { onDelete: 'set null' }),
   categoryId: varchar('category_id', { length: 64 }).notNull().references(() => notificationCategories.id, { onDelete: 'restrict' }),
   channel: channelIdEnum('channel').notNull(),
@@ -2128,6 +2113,13 @@ export const notificationDeliveries = pgTable('notification_deliveries', {
   maxAttempts: integer('max_attempts').notNull().default(6),
   nextAttemptAt: timestamp('next_attempt_at', { withTimezone: true }),
   lastError: text('last_error'),
+  /**
+   * Template variables that were referenced but never supplied, filled with a
+   * visible placeholder so the delivery could still go out. NULL = healthy.
+   * A non-empty array is a payload<->template contract defect that reached
+   * production; the admin delivery log filters on it.
+   */
+  degradedVars: jsonb('degraded_vars').$type<string[] | null>(),
   providerMessageId: varchar('provider_message_id', { length: 255 }),
   queuedAt: timestamp('queued_at', { withTimezone: true }).notNull().defaultNow(),
   sentAt: timestamp('sent_at', { withTimezone: true }),
@@ -2180,6 +2172,46 @@ export const userNotificationSettings = pgTable('user_notification_settings', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });
+
+/**
+ * Per-object notification mutes — "quiet about THIS one thing until Friday".
+ *
+ * Without this the only tool during a known incident was muting the whole
+ * category, which silences every other object it covers and is almost never
+ * turned back on. `mutedUntil` is NOT NULL on purpose: an indefinite mute is
+ * how a category gets silenced permanently by accident.
+ */
+/**
+ * Items waiting to go out in a periodic digest.
+ *
+ * `user_notification_settings.digest_mode` was a stored, displayed, API-exposed
+ * preference that NOTHING read — a user could choose "daily" and keep getting
+ * every email immediately. This is the queue that makes it real.
+ */
+export const notificationDigestItems = pgTable('notification_digest_items', {
+  id: varchar('id', { length: 36 }).primaryKey().$defaultFn(() => crypto.randomUUID()),
+  userId: varchar('user_id', { length: 36 }).notNull(),
+  categoryId: varchar('category_id', { length: 64 }).notNull(),
+  subject: varchar('subject', { length: 500 }).notNull(),
+  body: text('body').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  sentAt: timestamp('sent_at', { withTimezone: true }),
+}, (table) => [
+  index('notification_digest_items_pending_idx').on(table.userId, table.createdAt),
+]);
+
+export const notificationObjectMutes = pgTable('notification_object_mutes', {
+  id: varchar('id', { length: 36 }).primaryKey().$defaultFn(() => crypto.randomUUID()),
+  /** NULL = muted across every category that names this object. */
+  categoryId: varchar('category_id', { length: 64 }),
+  objectKey: varchar('object_key', { length: 255 }).notNull(),
+  mutedUntil: timestamp('muted_until', { withTimezone: true }).notNull(),
+  reason: text('reason'),
+  createdBy: varchar('created_by', { length: 36 }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('notification_object_mutes_lookup_idx').on(table.objectKey, table.categoryId, table.mutedUntil),
+]);
 
 export const notificationProviders = pgTable('notification_providers', {
   id: varchar('id', { length: 36 }).primaryKey().$defaultFn(() => crypto.randomUUID()),
@@ -3297,6 +3329,36 @@ export const backupTargetAssignments = pgTable('backup_target_assignments', {
 
 export type BackupTargetAssignment = typeof backupTargetAssignments.$inferSelect;
 export type NewBackupTargetAssignment = typeof backupTargetAssignments.$inferInsert;
+
+// ─── backup_freshness_state (migration 0121) ──────────────────────────
+//
+// One row per watched backup schedule. Two jobs:
+//
+//   1. `verdict` feeds back into evaluateFreshness() as `previous`, which is
+//      how the hysteresis band works — between one missed fire and the
+//      three-miss threshold the verdict HOLDS instead of flapping. Without
+//      persistence every tick starts from 'fresh' and the band does nothing.
+//   2. `notifiedVerdict` records what the operator was actually told, so a
+//      condition that is still true is not re-sent every five minutes.
+//
+// Bounded by construction: one row per watched CronJob, and the sweep deletes
+// rows whose UID it did not see this tick, so a deleted schedule does not leave
+// a row behind for the life of the cluster.
+export const backupFreshnessState = pgTable('backup_freshness_state', {
+  /** CronJob UID — stable across renames, unlike namespace/name. */
+  resourceUid: varchar('resource_uid', { length: 64 }).primaryKey(),
+  namespace: varchar('namespace', { length: 253 }).notNull(),
+  name: varchar('name', { length: 253 }).notNull(),
+  verdict: varchar('verdict', { length: 16 }).notNull(),
+  missedFires: integer('missed_fires').notNull().default(0),
+  lastSuccessAt: timestamp('last_success_at', { withTimezone: true }),
+  /** What the operator was last told. NULL = nothing sent yet. */
+  notifiedVerdict: varchar('notified_verdict', { length: 16 }),
+  evaluatedAt: timestamp('evaluated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type BackupFreshnessState = typeof backupFreshnessState.$inferSelect;
+export type NewBackupFreshnessState = typeof backupFreshnessState.$inferInsert;
 
 // ─── backup_schedules (Phase A.1 of UI consolidation, migration 0011) ──
 //

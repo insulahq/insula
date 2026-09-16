@@ -14,8 +14,6 @@
  * service) should only know about the *event*, not the presentation.
  */
 
-import { notifyUsers } from './service.js';
-import { getTenantNotificationRecipients } from './recipients.js';
 import { emitEvent } from './dispatcher/dispatch.js';
 import type { Database } from '../../db/index.js';
 import type { MailboxLimitSource } from '../mailboxes/limit.js';
@@ -36,7 +34,7 @@ async function dispatchSafe(
   scope: Parameters<typeof emitEvent>[1]['scope'],
   variables: object,
   tenantId?: string,
-  extraOpts?: { readonly dedupeKey?: string },
+  extraOpts?: { readonly dedupeKey?: string; readonly externalRecipients?: readonly string[] },
 ): Promise<void> {
   try {
     await emitEvent(db, {
@@ -45,6 +43,7 @@ async function dispatchSafe(
       variables: { ...variables } as Record<string, unknown>,
       tenantId,
       dedupeKey: extraOpts?.dedupeKey,
+      externalRecipients: extraOpts?.externalRecipients,
     });
   } catch {
     // Legacy contract: never throw from an event helper.
@@ -71,19 +70,14 @@ export async function notifyTenantMailboxLimitReached(
   tenantId: string,
   payload: MailboxLimitPayload,
 ): Promise<void> {
-  const recipients = await getTenantNotificationRecipients(db, tenantId);
-  if (recipients.length === 0) return;
-
   const sourceText = payload.source === 'tenant_override' ? 'custom limit' : 'hosting plan';
-  await notifyUsers(db, recipients, {
-    type: 'error',
-    title: 'Mailbox limit reached',
-    message:
-      `You have used ${payload.current} of ${payload.limit} mailboxes allowed by your ${sourceText}. `
-      + 'New mailboxes cannot be created until you remove an existing one or upgrade your plan.',
-    resourceType: 'tenant',
-    resourceId: tenantId,
-  });
+  await dispatchSafe(db, 'tenant.mail_event', { kind: 'tenant', tenantId }, {
+    subsystem: 'Mailbox limit',
+    objectLabel: `${payload.current} of ${payload.limit} mailboxes`,
+    detail: `You have used ${payload.current} of ${payload.limit} mailboxes allowed by your ${sourceText}.`,
+    severityLabel: 'limit reached',
+    recommendedAction: 'Remove an existing mailbox or upgrade your plan.',
+  }, tenantId);
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -106,18 +100,13 @@ export async function notifyTenantDkimRotated(
   tenantId: string,
   payload: DkimRotatedPayload,
 ): Promise<void> {
-  const recipients = await getTenantNotificationRecipients(db, tenantId);
-  if (recipients.length === 0) return;
-
-  await notifyUsers(db, recipients, {
-    type: 'info',
-    title: 'DKIM key rotated',
-    message:
-      `A new DKIM signing key (selector "${payload.selector}") was automatically generated for `
-      + `${payload.domainName}. No action is required — the platform manages this for you.`,
-    resourceType: 'email_domain',
-    resourceId: payload.emailDomainId,
-  });
+  await dispatchSafe(db, 'tenant.mail_event', { kind: 'tenant', tenantId }, {
+    subsystem: 'DKIM key rotation',
+    objectLabel: payload.domainName,
+    detail: `A new DKIM signing key (selector "${payload.selector}") was automatically generated.`,
+    severityLabel: 'rotated',
+    recommendedAction: 'No action is required — the platform manages this for you.',
+  }, tenantId);
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -158,33 +147,13 @@ export async function notifyTenantImapsyncTerminal(
 ): Promise<void> {
   if (!isTerminal(payload.status)) return;
 
-  const recipients = await getTenantNotificationRecipients(db, tenantId);
-  if (recipients.length === 0) return;
-
-  const title = (() => {
-    switch (payload.status) {
-      case 'succeeded':
-      case 'completed':
-        return 'IMAPSync migration completed';
-      case 'failed':
-        return 'IMAPSync migration failed';
-      case 'cancelled':
-        return 'IMAPSync migration cancelled';
-    }
-  })();
-
-  const type: 'success' | 'error' | 'warning' = (() => {
-    switch (payload.status) {
-      case 'succeeded':
-      case 'completed':
-        return 'success';
-      case 'failed':
-        return 'error';
-      case 'cancelled':
-        return 'warning';
-    }
-  })();
-
+  // No recipient pre-check. Resolving recipients here and bailing when the
+  // list is empty is what made the old path invisible: the dispatcher owns
+  // scope resolution, records the event either way, and can reach audiences
+  // (like a mailbox owner) that have no user row to resolve at all.
+  // No hand-derived `title` or `type` any more: the template builds the
+  // subject and the category supplies the severity. Those two locals existed
+  // only because the legacy path had nowhere else to put them.
   const message = (() => {
     if (payload.status === 'succeeded' || payload.status === 'completed') {
       const count = payload.messagesTransferred ?? 0;
@@ -196,13 +165,15 @@ export async function notifyTenantImapsyncTerminal(
     return 'IMAPSync migration job was cancelled before it could finish.';
   })();
 
-  await notifyUsers(db, recipients, {
-    type,
-    title,
-    message,
-    resourceType: 'imapsync_job',
-    resourceId: payload.jobId,
-  });
+  await dispatchSafe(db, 'tenant.mail_event', { kind: 'tenant', tenantId }, {
+    subsystem: 'IMAPSync migration',
+    objectLabel: `job ${payload.jobId}`,
+    detail: message,
+    severityLabel: payload.status,
+    recommendedAction: payload.status === 'failed'
+      ? 'Review the job log in the tenant panel and re-run the migration.'
+      : '',
+  }, tenantId);
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -223,18 +194,13 @@ export async function notifyTenantEmailBootstrapped(
   tenantId: string,
   payload: EmailBootstrappedPayload,
 ): Promise<void> {
-  const recipients = await getTenantNotificationRecipients(db, tenantId);
-  if (recipients.length === 0) return;
-
-  await notifyUsers(db, recipients, {
-    type: 'success',
-    title: 'Email enabled for domain',
-    message:
-      `Email hosting is now active for ${payload.domainName}. You can create mailboxes and `
-      + 'configure DNS from the tenant panel Mail page.',
-    resourceType: 'email_domain',
-    resourceId: payload.emailDomainId,
-  });
+  await dispatchSafe(db, 'tenant.mail_event', { kind: 'tenant', tenantId }, {
+    subsystem: 'Email hosting',
+    objectLabel: payload.domainName,
+    detail: 'Email hosting is now active for this domain.',
+    severityLabel: 'enabled',
+    recommendedAction: 'Create mailboxes and configure DNS from the tenant panel Mail page.',
+  }, tenantId);
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -359,6 +325,20 @@ export interface TenantCertificatePayload {
 }
 
 /**
+ * Success has no error to report.
+ *
+ * `tls.certificate_issued` used to reuse TenantCertificatePayload, which
+ * carries `errorMessage` — so the variable-contract guard correctly flagged a
+ * field collected for a category whose template can never render it. A shared
+ * interface across success and failure hides exactly that: the emitter looks
+ * like it supplies something meaningful and the reader never sees it.
+ */
+export interface TenantCertificateIssuedPayload {
+  readonly hostname: string;
+  readonly expiresAt?: string;
+}
+
+/**
  * TLS issuance failed for a tenant hostname.
  *
  * Both audiences get told: the tenant because their visitors are the
@@ -379,7 +359,7 @@ export async function notifyTenantCertificateFailed(
 export async function notifyTenantCertificateIssued(
   db: Database,
   tenantId: string,
-  payload: TenantCertificatePayload,
+  payload: TenantCertificateIssuedPayload,
   dedupeKey?: string,
 ): Promise<void> {
   await dispatchSafe(db, 'tls.certificate_issued', { kind: 'tenant', tenantId }, payload, tenantId, { dedupeKey });
@@ -454,6 +434,49 @@ export async function notifyAdminBackupTargetUnreachable(
   dedupeKey?: string,
 ): Promise<void> {
   await dispatchSafe(db, 'admin.backup_target_unreachable', { kind: 'admin' }, payload, undefined, { dedupeKey });
+}
+
+export interface AdminBackupStalePayload {
+  /** namespace/name of the schedule that stopped producing backups. */
+  readonly backupName: string;
+  /** Consecutive SCHEDULED fires missed — not elapsed hours. */
+  readonly missedFires: string;
+  /** How long ago the last success was, already formatted (e.g. "92.4h"). */
+  readonly lastSuccessAge: string;
+  /** The cron the runs were expected on, so the count can be checked. */
+  readonly schedule: string;
+  readonly detail: string;
+}
+/**
+ * A schedule that WAS producing backups and has stopped. Dedupe belongs to the
+ * caller: the freshness sweep re-evaluates every tick and must not re-notify a
+ * condition the operator has already been told about.
+ */
+export async function notifyAdminBackupStale(
+  db: Database,
+  payload: AdminBackupStalePayload,
+  dedupeKey?: string,
+): Promise<void> {
+  await dispatchSafe(db, 'admin.backup_stale', { kind: 'admin' }, payload, undefined, { dedupeKey });
+}
+
+export interface AdminBackupNeverRunPayload {
+  readonly backupName: string;
+  readonly schedule: string;
+  /** How long the schedule has existed without ever succeeding. */
+  readonly configuredAge: string;
+  readonly detail: string;
+}
+/**
+ * A schedule that has NEVER succeeded. Separate from stale on purpose — see the
+ * category comment in categories/seed.ts.
+ */
+export async function notifyAdminBackupNeverRun(
+  db: Database,
+  payload: AdminBackupNeverRunPayload,
+  dedupeKey?: string,
+): Promise<void> {
+  await dispatchSafe(db, 'admin.backup_never_run', { kind: 'admin' }, payload, undefined, { dedupeKey });
 }
 
 export interface AdminWalArchiveFailingPayload {
@@ -634,6 +657,295 @@ export async function notifyAdminSloAlertResolved(
 
 // ── R4/R6 PR 4: outbound-mail protection ───────────────────────────────────
 
+export interface AdminSubscriptionsExpiringPayload {
+  readonly tenantCount: string;
+  readonly horizonDays: string;
+  readonly tenantList: string;
+  readonly occurredAt: string;
+}
+/**
+ * Subscriptions approaching expiry, aggregated for the operator.
+ *
+ * The tenant-facing warning has existed since Phase 4; the operator, who has
+ * to chase the renewal, was never told at all. One notification per run rather
+ * than one per tenant per slot — the fleet view is a list, not a stream.
+ */
+export async function notifyAdminSubscriptionsExpiring(
+  db: Database,
+  payload: AdminSubscriptionsExpiringPayload,
+  dedupeKey?: string,
+): Promise<void> {
+  await dispatchSafe(db, 'admin.subscriptions_expiring', { kind: 'admin' }, payload, undefined, { dedupeKey });
+}
+
+export interface TenantResourceSaturationPayload {
+  readonly resource: string;
+  readonly usedPct: string;
+  readonly used: string;
+  readonly limit: string;
+  readonly unit: string;
+  readonly occurredAt: string;
+}
+/**
+ * A tenant resource crossed its warning or critical threshold.
+ *
+ * The operator has always been told (admin.tenant_resource_saturation_*). The
+ * TENANT — the only party who can delete files or upgrade the plan — was not,
+ * because the event was given exactly one audience when it was built. This is
+ * the other half.
+ */
+export async function notifyTenantResourceSaturation(
+  db: Database,
+  tenantId: string,
+  level: 'warning' | 'critical',
+  payload: TenantResourceSaturationPayload,
+  dedupeKey?: string,
+): Promise<void> {
+  const categoryId = level === 'critical'
+    ? 'tenant.resource_saturation_critical'
+    : 'tenant.resource_saturation_warning';
+  await dispatchSafe(db, categoryId, { kind: 'tenant', tenantId }, payload, tenantId, { dedupeKey });
+}
+
+export interface AdminEmailQuotaPayload {
+  readonly tenantLabel: string;
+  readonly window: string;
+  readonly used: string;
+  readonly limit: string;
+  readonly percent: string;
+  readonly occurredAt: string;
+}
+/**
+ * A tenant saturated its sending limit.
+ *
+ * The mirror image of the gap above: this event was built tenant-only, so the
+ * operator never learned that a tenant was hammering the limit — which is the
+ * shape of both a compromised account and a platform-wide deliverability risk.
+ */
+export async function notifyAdminEmailQuotaExceeded(
+  db: Database,
+  payload: AdminEmailQuotaPayload,
+  dedupeKey?: string,
+): Promise<void> {
+  await dispatchSafe(db, 'admin.email_quota_exceeded', { kind: 'admin' }, payload, undefined, { dedupeKey });
+}
+
+export interface MailboxQuotaPayload {
+  readonly mailboxAddress: string;
+  readonly tenantName: string;
+  readonly percent: string;
+  readonly usedMb: string;
+  readonly quotaMb: string;
+  readonly occurredAt: string;
+}
+
+/**
+ * A mailbox crossed a storage threshold.
+ *
+ * TWO audiences, which is the whole point. The tenant admin gets it in their
+ * panel and by email; the mailbox owner — who has NO platform account and is
+ * therefore invisible to every user-id-based resolver in the system — is
+ * mailed directly at the mailbox address. That second binding is why the old
+ * implementation notified nobody: it resolved recipients from `mailbox_access`,
+ * a table with zero rows platform-wide.
+ */
+export async function notifyMailboxQuotaThreshold(
+  db: Database,
+  tenantId: string,
+  mailboxAddress: string,
+  payload: MailboxQuotaPayload,
+  opts: { readonly exceeded: boolean; readonly dedupeKey?: string },
+): Promise<void> {
+  await dispatchSafe(
+    db,
+    opts.exceeded ? 'mailbox.quota_exceeded' : 'mailbox.quota_threshold',
+    { kind: 'tenant', tenantId },
+    payload,
+    tenantId,
+    { dedupeKey: opts.dedupeKey, externalRecipients: [mailboxAddress] },
+  );
+}
+
+/**
+ * The shared shape for subsystem operational events.
+ *
+ * Identity-first on purpose: which subsystem, which object, what happened,
+ * when, and what to do. The ~20 raw `db.insert(notifications)` call sites this
+ * replaces built a title and a message by hand and named the object only when
+ * the author happened to interpolate it — and carried no category, so they
+ * reached no template, no email, no preference gate and no delivery audit.
+ */
+export interface EscalationPayload {
+  readonly count: string;
+  readonly ageHours: string;
+  readonly summary: string;
+}
+/**
+ * Action notifications that went unread past the deadline.
+ *
+ * Escalates to the OPERATOR because they are the party who can act when the
+ * recipient has not. Fires once per notification — `notifications.escalated_at`
+ * enforces that, because an escalation that repeats every tick becomes the
+ * noise it was built to cut through.
+ */
+export async function notifyAdminEscalation(
+  db: Database,
+  payload: EscalationPayload,
+  dedupeKey?: string,
+): Promise<void> {
+  await dispatchSafe(db, 'admin.notification_escalated', { kind: 'admin' }, payload, undefined, { dedupeKey });
+}
+
+export interface DigestPayload {
+  readonly itemCount: string;
+  readonly summary: string;
+  readonly items: string;
+}
+/**
+ * The periodic digest itself.
+ *
+ * Emitted from the digest scheduler through the ORDINARY dispatch path, so it
+ * gets a template, a delivery row and a retry like anything else. A digest
+ * that bypassed the machinery would be a fourth delivery path with extra steps.
+ *
+ * Scope is `user`, not `tenant`: a digest is one person's batch.
+ */
+export async function notifyUserDigest(
+  db: Database,
+  userId: string,
+  payload: DigestPayload,
+): Promise<void> {
+  await dispatchSafe(db, 'platform.digest', { kind: 'user', userId }, payload);
+}
+
+export interface OperationalEventPayload {
+  readonly subsystem: string;
+  /** The specific thing: a node name, a domain, a volume, a job id. */
+  readonly objectLabel: string;
+  /** One sentence of specifics, ending in a full stop. */
+  readonly detail: string;
+  readonly severityLabel: string;
+  /** What the reader should do. Empty string when genuinely nothing. */
+  readonly recommendedAction: string;
+}
+
+const OPERATIONAL_CATEGORY = {
+  storage: 'admin.storage_event',
+  node: 'admin.node_event',
+  database: 'admin.database_event',
+  mail: 'admin.mail_event',
+  platform: 'admin.platform_event',
+  integrity: 'admin.tenant_integrity',
+} as const;
+
+export type OperationalSubsystem = keyof typeof OPERATIONAL_CATEGORY;
+
+/** Operator-facing subsystem event. */
+export async function notifyAdminOperationalEvent(
+  db: Database,
+  subsystem: OperationalSubsystem,
+  payload: OperationalEventPayload,
+  dedupeKey?: string,
+): Promise<void> {
+  await dispatchSafe(db, OPERATIONAL_CATEGORY[subsystem], { kind: 'admin' }, payload, undefined, { dedupeKey });
+}
+
+/** Tenant-facing domain-verification state. */
+export async function notifyTenantDomainVerification(
+  db: Database,
+  tenantId: string,
+  payload: OperationalEventPayload,
+  dedupeKey?: string,
+): Promise<void> {
+  await dispatchSafe(db, 'tenant.domain_verification', { kind: 'tenant', tenantId }, payload, tenantId, { dedupeKey });
+}
+
+/** Tenant-facing backup/restore outcome. */
+export async function notifyTenantBackupEvent(
+  db: Database,
+  tenantId: string,
+  payload: OperationalEventPayload,
+  dedupeKey?: string,
+): Promise<void> {
+  await dispatchSafe(db, 'tenant.backup_event', { kind: 'tenant', tenantId }, payload, tenantId, { dedupeKey });
+}
+
+export interface AdminClusterCapacityPayload {
+  readonly level: string;
+  readonly clusterPct: string;
+  readonly clusterDetail: string;
+  readonly worstNode: string;
+  readonly recommendedAction: string;
+  readonly occurredAt: string;
+}
+/**
+ * Cluster storage capacity crossed a threshold.
+ *
+ * Moved off the raw-insert path 2026-09-15. It used to call
+ * `db.insert(notifications)` directly, which reaches no template, no email, no
+ * push, no preference gate and no delivery audit — and `category_id` is
+ * nullable, so the row could not even be listed in the admin Sources screen.
+ * The 80% warning and the 95% critical for every Longhorn node in the fleet
+ * were in-app only, forever.
+ */
+export async function notifyAdminClusterCapacity(
+  db: Database,
+  payload: AdminClusterCapacityPayload,
+  dedupeKey?: string,
+): Promise<void> {
+  await dispatchSafe(db, 'admin.cluster_storage_capacity', { kind: 'admin' }, payload, undefined, { dedupeKey });
+}
+
+export interface AdminMailboxQuotaFleetPayload {
+  readonly mailboxCount: string;
+  readonly tenantCount: string;
+  /** Every affected mailbox with its tenant and contact, already formatted. */
+  readonly mailboxList: string;
+  readonly occurredAt: string;
+}
+/**
+ * The operator's view: ONE aggregated notification naming every mailbox at
+ * 100%, its tenant and its contact.
+ *
+ * Replaces the `mail-mailbox-over-quota` SLO rule, which alerted on
+ * `max(platform_mail_mailboxes_over_quota) > 0` — a single global counter with
+ * `subjectLabels: []`, structurally incapable of naming a mailbox, a tenant or
+ * a contact. A mailbox filling up is a tenant capacity event, not a platform
+ * service-level objective.
+ */
+export async function notifyAdminMailboxQuotaFleet(
+  db: Database,
+  payload: AdminMailboxQuotaFleetPayload,
+  dedupeKey?: string,
+): Promise<void> {
+  await dispatchSafe(db, 'admin.mailbox_quota_fleet', { kind: 'admin' }, payload, undefined, { dedupeKey });
+}
+
+export interface ScheduledTaskFailurePayload {
+  readonly taskName: string;
+  readonly errorMessage: string;
+}
+/**
+ * A tenant's scheduled task (web cron) run failed.
+ *
+ * `tasks.scheduled_failure` shipped with templates on all three channels and
+ * NO emitter anywhere — the cron scheduler recorded `lastRunStatus: 'failed'`
+ * with the response body and told nobody. A tenant's nightly job could fail
+ * every night indefinitely and the only trace was a column in the panel they
+ * had to think to open.
+ *
+ * Dedupe per (job, day): a job on a 5-minute schedule that is broken would
+ * otherwise send 288 notifications before breakfast.
+ */
+export async function notifyTenantScheduledTaskFailure(
+  db: Database,
+  tenantId: string,
+  payload: ScheduledTaskFailurePayload,
+  dedupeKey?: string,
+): Promise<void> {
+  await dispatchSafe(db, 'tasks.scheduled_failure', { kind: 'tenant', tenantId }, payload, tenantId, { dedupeKey });
+}
+
 export interface TenantEmailQuotaPayload {
   readonly window: 'hour' | 'day';
   readonly percent: string;
@@ -655,28 +967,6 @@ export async function notifyTenantEmailQuotaExceeded(
   payload: TenantEmailQuotaPayload,
 ): Promise<void> {
   await dispatchSafe(db, 'tenant.email_quota_exceeded', { kind: 'tenant', tenantId }, payload, tenantId);
-}
-
-export interface AdminEmailComplaintPayload {
-  readonly domain: string;
-  readonly tenantLabel: string;
-  readonly ratePercent: string;
-  readonly complaints: string;
-  readonly sends: string;
-  readonly recommendedAction: string;
-  /** Filled when enforcement mode is `auto` and an action was applied. */
-  readonly actionTaken?: string;
-}
-/** FBL complaint-rate threshold crossings (evaluator owns dedupe). */
-export async function notifyAdminEmailComplaint(
-  db: Database,
-  level: 'warning' | 'critical',
-  payload: AdminEmailComplaintPayload,
-): Promise<void> {
-  const categoryId = level === 'critical'
-    ? 'admin.email_complaint_critical'
-    : 'admin.email_complaint_warning';
-  await dispatchSafe(db, categoryId, { kind: 'admin' }, payload);
 }
 
 // ── Mail monitoring (2026-07): send-limit saturation + blocklist ───────────
@@ -732,6 +1022,15 @@ export interface CustomDeploymentRolledBackPayload {
   readonly failedDigest: string;
   /** Digest restored, or 'none' when there was nothing to restore. */
   readonly restoredDigest: string;
+  /**
+   * Deep link to the deployment in the tenant panel.
+   *
+   * The email template has always rendered `{{panelUrl}}` as its call to
+   * action and no caller ever supplied it, so under strict mode the bare
+   * reference threw and the EMAIL leg of this notification could never be
+   * delivered — a rolled-back deployment told the tenant nothing by mail.
+   */
+  readonly panelUrl?: string;
 }
 /**
  * An auto-update pulled a republished image that never became Ready, so the

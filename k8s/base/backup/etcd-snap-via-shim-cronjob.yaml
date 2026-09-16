@@ -73,6 +73,27 @@ spec:
   failedJobsHistoryLimit: 1
   startingDeadlineSeconds: 1800
   jobTemplate:
+    # The backup-health watcher selects JOBS, not CronJobs, and the CronJob
+    # controller copies ONLY spec.jobTemplate.metadata onto the Jobs it
+    # creates — labels on the CronJob's own metadata never reach them.
+    #
+    # backup-health-labels-reconciled-by: backup-rclone-shim/etcd-cronjob.ts
+    # This CronJob is seed-then-disown (see `reconcile: disabled` below), so
+    # THIS BLOCK ONLY REACHES A FRESH INSTALL — kustomize-controller reports
+    # "skipped" for a disowned object on every apply. On DEV 2026-09-15 the
+    # manifest carried it while the live object's spec.jobTemplate.metadata
+    # was {}. The reconciler converges the same labels onto existing
+    # clusters; keep the two in sync.
+    # Proven on DEV 2026-09-15: three labelled CronJobs firing normally,
+    # `kubectl get jobs -A -l insula.host/backup-health-watch=true` empty.
+    # Keep this block in sync with the CronJob-level labels above.
+    metadata:
+      labels:
+        insula.host/backup-health-watch: "true"
+        insula.host/backup-category: "dr"
+        insula.host/backup-severity: "critical"
+      annotations:
+        insula.host/backup-display-name: "etcd snapshot via shim"
     spec:
       backoffLimit: 2
       # TTL keeps completed Job + Pod state around for one hour so

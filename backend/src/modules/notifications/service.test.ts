@@ -1,12 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import {
-  createNotification,
-  listNotifications,
-  markAsRead,
-  getUnreadCount,
-  deleteNotification,
-  notifyUser,
-} from './service.js';
+import { createNotification, listNotifications, markAsRead, getUnreadCount, deleteNotification } from './service.js';
 import { ApiError } from '../../shared/errors.js';
 
 type Db = Parameters<typeof createNotification>[0];
@@ -216,30 +209,11 @@ describe('deleteNotification', () => {
   });
 });
 
-describe('notifyUser', () => {
-  it('should not throw on DB error (fire-and-forget)', async () => {
-    const insertValues = vi.fn().mockRejectedValue(new Error('DB connection lost'));
-    const insertFn = vi.fn().mockReturnValue({ values: insertValues });
+// notifyUser / notifyUsers were DELETED on 2026-09-15 along with the legacy
+// delivery path. They wrote a notifications row and reached no template, no
+// email, no preference gate and no delivery audit; every caller now dispatches
+// through a real category. Their test cases went with them rather than being
+// kept green against a function nothing calls.
+describe.skip('notifyUser (removed)', () => {
 
-    const db = { insert: insertFn } as unknown as Db;
-
-    // Should not throw
-    await expect(
-      notifyUser(db, 'u1', { type: 'info', title: 'Test', message: 'Hello' }),
-    ).resolves.toBeUndefined();
-  });
-
-  it('should create notification on success', async () => {
-    const notification = { id: 'n1', userId: 'u1', type: 'info', title: 'Test', message: 'Hello' };
-    const insertValues = vi.fn().mockResolvedValue(undefined);
-    const insertFn = vi.fn().mockReturnValue({ values: insertValues });
-    const whereFn = vi.fn().mockResolvedValue([notification]);
-    const fromFn = vi.fn().mockReturnValue({ where: whereFn });
-    const selectFn = vi.fn().mockReturnValue({ from: fromFn });
-
-    const db = { insert: insertFn, select: selectFn } as unknown as Db;
-
-    await notifyUser(db, 'u1', { type: 'info', title: 'Test', message: 'Hello' });
-    expect(insertFn).toHaveBeenCalled();
-  });
 });

@@ -2,6 +2,8 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Plus, Search, Loader2, Ban, PlayCircle, Trash2, LogIn } from 'lucide-react';
 import StatusBadge from '@/components/ui/StatusBadge';
+import TenantIssuesChip from '@/components/tenants/TenantIssuesChip';
+import { useTenantIssues } from '@/hooks/use-tenant-issues';
 import TenantHealthChip from '@/components/outage/TenantHealthChip';
 import PaginationBar from '@/components/ui/PaginationBar';
 import BulkActionBar, { SelectCheckbox } from '@/components/ui/BulkActionBar';
@@ -91,6 +93,9 @@ export default function TenantsListTab() {
   const tenantIds = tenants.map((c) => c.id);
   const { data: metricsData, isLoading: metricsLoading } = useAllTenantMetrics(tenantIds);
   const metricsMap: Record<string, ResourceMetrics | null> = metricsData?.data ?? {};
+  // One fleet-wide fetch; the badge renders on every row that has an issue.
+  const { data: issuesData } = useTenantIssues();
+  const issuesMap = issuesData?.data ?? {};
 
   const selection = useSelection<{ id: string }>(pagination.cursor);
   const bulkSuspend = useBulkSuspendTenants();
@@ -280,6 +285,11 @@ export default function TenantsListTab() {
                               tenant is actually impaired. Click for what broke
                               and how to recover it. */}
                           <TenantHealthChip tenantId={tenant.id} />
+                          {/* Open conditions the tenant or the operator can
+                              act on — quota, expiry, bandwidth cap. Derived
+                              from the same thresholds the notifications fire
+                              from, so the badge and the message agree. */}
+                          <TenantIssuesChip issues={issuesMap[tenant.id]} />
                         </div>
                       </td>
                       <MetricsCell metrics={metricsMap[tenant.id]} loading={metricsLoading} resource="cpu" tenantStatus={tenant.status} />

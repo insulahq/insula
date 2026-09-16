@@ -30,7 +30,7 @@ export default function MailSettingsTab() {
 
   const [mailServerHostname, setMailServerHostname] = useState('');
   const [stalwartAdminUrl, setStalwartAdminUrl] = useState('');
-  const [enforcementMode, setEnforcementMode] = useState<'off' | 'notify' | 'auto'>('notify');
+  const [enforcementMode, setEnforcementMode] = useState<'off' | 'notify'>('notify');
   const [saved, setSaved] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
@@ -153,22 +153,20 @@ export default function MailSettingsTab() {
         upstream admin.
       </p>
 
-      {/* R4 PR 4 — Sending Protection: the auto-enforcement control
-          surface. Thresholds: tenant quota warnings at 80%/100% of the
-          hourly/daily send limits; FBL complaint alerts at >0.1%
-          (warning) and >0.3% (critical) 7-day rates. */}
+      {/* Sending Protection. Thresholds: tenant quota warnings at 80%/100% of
+          the hourly/daily send limits, and operator alerts on send-limit
+          saturation. The 'auto' mode and the FBL complaint thresholds it acted
+          on were retired 2026-09-15. */}
       <fieldset className="rounded-lg border border-gray-200 dark:border-gray-700 p-4 space-y-3" data-testid="sending-protection-section">
         <legend className="px-1 text-sm font-semibold text-gray-900 dark:text-gray-100">Sending Protection</legend>
         <p className="text-xs text-gray-500 dark:text-gray-400">
           Governs the outbound-mail threshold evaluator: tenant quota warnings
-          (80% / 100% of send limits) and FBL spam-complaint alerts
-          (&gt;0.1% warning, &gt;0.3% critical 7-day rate). Complaint data
-          appears under Monitoring → Mail.
+          (80% / 100% of send limits) and operator alerts when a sender
+          saturates its limits. Send activity appears under Monitoring → Mail.
         </p>
         <div className="space-y-2">
           {([
             ['notify', 'Notify only (recommended)', 'Send notifications on threshold crossings; admins act manually via the tenant levers.'],
-            ['auto', 'Automatic enforcement', 'Notifications plus automatic action on complaint thresholds: warning halves the tenant\u2019s hourly limit, critical suspends outbound mail. Every action is audited and reversible.'],
             ['off', 'Off', 'No threshold evaluation at all. Stalwart still enforces the configured send limits.'],
           ] as const).map(([value, label, help]) => (
             <label key={value} className="flex items-start gap-2 cursor-pointer">

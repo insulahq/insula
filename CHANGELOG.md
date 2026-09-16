@@ -12,8 +12,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.9.20-rc.1] - 2026-09-14
-
 ### Added
 - **DMARC aggregate reports are now collected and shown.** Receivers like Gmail
   and Outlook send a daily report saying how much of your mail passed
@@ -75,6 +73,24 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   A cluster with nothing to test against is reported as *not verified* rather
   than as a pass.
 
+- **The search box in both panels works.** It was a disabled placeholder
+  labelled "coming soon". It now finds two things at once: **pages and tabs**,
+  and **your live records**. Tabs are searchable in their own right, which is
+  the point — most of what you actually want is one level *below* a sidebar
+  entry, so typing `waf` offers WAF Events, Banned IPs, Exclusions and Settings
+  separately and takes you to that tab rather than the page default. Words that
+  are not in the page name work too: `modsecurity` finds WAF Events, `phpmyadmin`
+  finds the tenant SQL Manager, `lets encrypt` finds Ingress & TLS. In the same
+  list, below the pages, it matches tenants, domains, applications, mailboxes,
+  scheduled tasks, users, SFTP users, SSH keys, nodes, catalog entries, plans
+  and storage targets. `Ctrl+K` / `⌘K` jumps to it from anywhere.
+- **Search never shows you something you could not already reach.** A page your
+  role cannot open is not offered, and a record you could not already list is
+  not returned — a `support` admin searching `waf` gets nothing, and a tenant
+  only ever sees their own account. When the record lookup fails, the drop-down
+  says so and keeps showing the page results, rather than reporting an outage as
+  "no matches".
+
 ### Changed
 - **A new email domain now starts at DMARC `p=none`, not `p=quarantine`.** The
   platform used to publish enforcement on day one, before it had seen a single
@@ -92,6 +108,55 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   last checkbox in a dense grid, is now a labelled row of its own.
 
 ### Fixed
+- **The platform now keeps a `postmaster@` mailbox, so bounces stop vanishing.**
+  Every message the platform sends is addressed from `postmaster@` — but the
+  mailbox was never created, so every bounce and delivery report sent back to
+  it was refused and queued. Those then expired and generated another
+  undeliverable report to the same address. It is created automatically for
+  each domain that has email enabled.
+- **A mail backlog caused by one customer no longer alerts the operator.** The
+  outbound-queue alert counted every queued message, including mail a customer
+  sent to an address that does not exist — which a hosting provider can neither
+  fix nor act on. It now counts only the platform's own mail, which is what a
+  stalled delivery pipeline actually looks like. The full queue is still shown
+  under **Email → Operations**.
+- **An unrepaired mail drift now raises an alert instead of waiting to be
+  noticed.** Drift between the platform's records and the mail server was
+  already detected and already repairable from **Email → Data Drift**, but
+  nothing said so — one sat unrepaired for three days while the mail health
+  card stayed green and every message to that address bounced.
+- **Being rate-limited no longer signs you out, and now says so.** Under a
+  burst of traffic the panel could bounce you to the sign-in page while your
+  session was still perfectly valid — the session check treated *any* failed
+  request as a bad token, so one throttled call, a brief 502, or a dropped
+  connection ended the session. Only a genuine authentication failure does
+  that now; everything else leaves you where you were and retries. The
+  throttling response itself also used to arrive labelled `BAD_REQUEST` with
+  a blank message; it now says `RATE_LIMIT_EXCEEDED` and tells you how many
+  seconds to wait.
+- **Mail between two mailboxes on the same server could be silently held for a
+  day.** The per-tenant *sending* limit is meant to cap what a tenant sends out
+  to the internet. It was also being applied to mail that never leaves the
+  server — one of your mailboxes writing to another, the platform's own
+  notification email, and the DMARC reports the platform sends itself. Once a
+  domain reached its daily figure, that internal mail stopped being delivered:
+  the sender was told it was accepted, the recipient never saw it, and it sat
+  until the daily count reset at midnight UTC. Nothing anywhere reported an
+  error. Internal delivery no longer counts against the sending limit. Suspended
+  tenants are unaffected — suspension still stops all their mail, internal
+  included.
+- **The mail server was not writing any logs at all.** Its default setting
+  pointed at a folder that does not exist inside the container, so nothing was
+  written there and nothing reached the normal place operators look. The mail
+  server had therefore never produced a single line of log since it was
+  installed, which is why the delivery problem above was so hard to see: every
+  other indicator said healthy. It now logs normally, on every cluster, without
+  needing an upgrade.
+- **Changing a tenant's daily sending allowance did not fully take effect.** The
+  limit itself updated, but the companion cap on how much mail may sit queued
+  for that tenant kept its original figure — permanently, because the update was
+  rejected every time it was attempted. New domains were never affected, only
+  changes to existing ones.
 - **Traffic detection could be killed first when a node ran short of memory,
   and nothing said so.** Every other host agent the platform runs — the security
   probe, the firewall reconciler, the host-config reconcilers, the SFTP gateway
@@ -6733,7 +6798,8 @@ while doing so.
   JMAP poller writing `email_fbl_complaints`, per-domain complaint-rate
   thresholds, and notify/auto enforcement (one-click or automatic throttle +
   outbound-mail suspension), surfaced in Monitoring → Mail. Runbook
-  [MAIL_FBL.md](docs/operations/MAIL_FBL.md).
+  [MAIL_DMARC.md](docs/operations/MAIL_DMARC.md) (renamed from MAIL_FBL.md when
+  FBL was retired, 2026-09-15).
 - **Rolling sending-quota enforcement (R6, PRs #64–#69).** Per-tenant plan-based
   hourly/daily send limits via the Stalwart JMAP registry
   (`x:MtaOutboundThrottle` + `x:MtaQueueQuota`, applied with `ReloadSettings`),

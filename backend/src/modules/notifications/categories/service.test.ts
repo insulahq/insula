@@ -23,22 +23,7 @@ function mockReturning(returnRows: unknown[]) {
   return vi.fn().mockResolvedValue(returnRows);
 }
 
-describe('legacyCategoryIdForType', () => {
-  it('maps each legacy type to its legacy category id', () => {
-    expect(legacyCategoryIdForType('info')).toBe('legacy.info');
-    expect(legacyCategoryIdForType('warning')).toBe('legacy.warning');
-    expect(legacyCategoryIdForType('error')).toBe('legacy.error');
-    expect(legacyCategoryIdForType('success')).toBe('legacy.success');
-  });
-});
-
 describe('ALL_CATEGORIES integrity', () => {
-  it('contains tenant + admin + legacy categories', () => {
-    const ids = new Set(ALL_CATEGORIES.map((c) => c.id));
-    expect(ids.has('security.password_reset')).toBe(true);
-    expect(ids.has('admin.cert_expiring')).toBe(true);
-    expect(ids.has('legacy.info')).toBe(true);
-  });
   it('every category has at least one default channel', () => {
     for (const c of ALL_CATEGORIES) {
       expect(c.defaultChannels.length).toBeGreaterThan(0);

@@ -53,6 +53,19 @@ jobs:
       - name: Verify no new route reads request.body without a Zod parse
         run: ./scripts/ci-route-body-validation-check.sh
 
+  drizzle-array-binding-guard:
+    name: No JS array bound into ANY()/IN()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # Lives HERE, not in Infrastructure CI: the guard greps ALL of
+      # backend/src, and Infrastructure CI triggers on only a handful of
+      # backend modules — so a new ANY(${array}) anywhere else would never be
+      # checked. Backend CI already runs on backend/**, which is the guard's
+      # actual subject.
+      - name: Verify no JS array is interpolated into ANY()/IN()
+        run: ./scripts/ci-drizzle-array-binding-check.sh
+
   dns-powerdns-live:
     name: DNS record types against a live PowerDNS
     runs-on: ubuntu-latest

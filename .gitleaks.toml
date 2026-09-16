@@ -30,6 +30,12 @@ regexes = [
   '''roundcube-local-dev-password''',
   '''0123456789abcdef''',                # the dummy 64-hex local-dev key
   '''whsec_[A-Za-z0-9]+''',              # webhook-secret placeholder in API docs
+  # Documented HKDF derivation vector in restic-driver.ts — an OUTPUT of the
+  # published test key 0123…cdef over a fixture tenant id, asserted in
+  # restic-driver.test.ts. It unlocks nothing: real repo passwords derive from
+  # the per-cluster secrets key. Latent since the vector was written, and
+  # surfaced the first time a PR touched that file — this scan is path-filtered.
+  '''3e161d93045adabc875c3004158fccfccdcd7c4c9159d13af1703d5df86e0fc4''',
   # rclone's well-known PUBLIC obscure key (shipped in rclone's own source).
   '''9c935b48730a554d6bfd7c63c886a92bd390198eb8128afbf4de162b8b95f638''',
   # Code field-reference, not a secret: the S3 secret is READ from an encrypted

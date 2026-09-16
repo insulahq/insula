@@ -74,7 +74,11 @@ if [ "$MODE" = "export" ]; then
   # snapshot in the repo to render the table; on a busy repo with
   # many archives this single liveness probe took >5 minutes against
   # the Hetzner S3 backend and starved the orchestrator's 15-min cap.
-  if ! restic cat config >/dev/null 2>&1; then
+  # --no-lock: a read-only existence probe must not take a lock. A killed pod
+  # otherwise leaves one behind and every later snapshot/forget fails with
+  # "unable to create lock" until a human intervenes (staging 2026-05-27,
+  # DEV 2026-09-15).
+  if ! restic cat config --no-lock >/dev/null 2>&1; then
     log "restic init"
     restic init || die "restic init failed"
   fi
@@ -94,7 +98,7 @@ if [ "$MODE" = "export" ]; then
   snap_id=$(printf '%s\n' "$backup_out" | sed -n 's/^snapshot \([0-9a-f]\{8\}\) saved$/\1/p' | tail -1)
   if [ -z "$snap_id" ]; then
     # Fall back to listing the latest archive-tagged snapshot.
-    snap_id=$(restic snapshots --tag mail-archive --json 2>/dev/null \
+    snap_id=$(restic snapshots --tag mail-archive --json --no-lock 2>/dev/null \
       | python3 -c 'import sys,json; r=json.load(sys.stdin); print(r[-1]["short_id"] if r else "")')
   fi
   log "restic snapshot id: ${snap_id:-<unknown>}"

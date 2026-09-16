@@ -52,6 +52,123 @@ const LIST_TIMEOUT_MS = 180_000;
 // List
 // ─────────────────────────────────────────────────────────────────────
 
+/**
+ * Separates the snapshot JSON from the lock listing in the list pod's stdout.
+ *
+ * Deliberately not a flag or a second pod: one pod, one round-trip, and the
+ * snapshot half stays byte-identical so the existing parser is unaffected.
+ */
+export const LOCK_SENTINEL = '###INSULA-RESTIC-LOCKS###';
+
+/** Section markers for the unlock Pod's three-part output. */
+export const UNLOCK_BEFORE_SENTINEL = '###INSULA-UNLOCK-BEFORE###';
+export const UNLOCK_OUTPUT_SENTINEL = '###INSULA-UNLOCK-OUTPUT###';
+export const UNLOCK_AFTER_SENTINEL = '###INSULA-UNLOCK-AFTER###';
+
+/**
+ * `restic unlock`, NEVER `--remove-all`.
+ *
+ * Plain unlock removes only locks whose owning process is gone, so it cannot
+ * trample a snapshot that is genuinely running. `--remove-all` can, and a button
+ * an operator reaches for when backups look stuck is the worst possible place to
+ * put it: the most likely reason a lock exists is that a backup is in flight.
+ *
+ * Counted before and after rather than trusting restic's own "successfully
+ * removed N locks" line, so a lock that SURVIVES is visible as such — that is
+ * the case where a live process holds it and the operator must not keep pulling
+ * the lever.
+ */
+const UNLOCK_COMMAND =
+  `restic list locks --no-cache --no-lock 2>/dev/null; `
+  + `printf '\n%s\n' '${UNLOCK_BEFORE_SENTINEL}'; `
+  + `restic unlock 2>&1; `
+  + `printf '\n%s\n' '${UNLOCK_OUTPUT_SENTINEL}'; `
+  + `printf '\n%s\n' '${UNLOCK_AFTER_SENTINEL}'; `
+  + `restic list locks --no-cache --no-lock 2>/dev/null`;
+
+const LIST_COMMAND =
+  'restic snapshots --json --no-cache --no-lock 2>/dev/null; '
+  + `printf '\n%s\n' '${LOCK_SENTINEL}'; `
+  + 'restic list locks --no-cache --no-lock 2>/dev/null';
+
+const UNLOCK_JOB_PREFIX = 'mail-backup-unlock-';
+const UNLOCK_TIMEOUT_MS = 120_000;
+
+const LOCK_ID_RE = /^[0-9a-f]{64}$/;
+
+function countLockIds(section: string): number {
+  return section.split('\n').filter((l) => LOCK_ID_RE.test(l.trim())).length;
+}
+
+export interface MailResticUnlockResult {
+  readonly locksBefore: number;
+  readonly locksAfter: number;
+  readonly removed: number;
+  /** restic's own stdout/stderr from the unlock, for the operator to read. */
+  readonly output: string;
+  readonly message: string;
+}
+
+/**
+ * Parse the unlock Pod's output. Exported so the three-section contract is
+ * pinned by tests rather than discovered in production.
+ */
+export function parseUnlockOutput(out: string): MailResticUnlockResult {
+  const bi = out.indexOf(UNLOCK_BEFORE_SENTINEL);
+  const oi = out.indexOf(UNLOCK_OUTPUT_SENTINEL);
+  const ai = out.indexOf(UNLOCK_AFTER_SENTINEL);
+  if (bi === -1 || oi === -1 || ai === -1) {
+    throw new ApiError(
+      'MAIL_BACKUP_UNLOCK_FAILED',
+      'Unlock Pod produced unrecognised output — check the tenant-backup-tools image version',
+      500,
+    );
+  }
+  const locksBefore = countLockIds(out.slice(0, bi));
+  const output = out.slice(bi + UNLOCK_BEFORE_SENTINEL.length, oi).trim();
+  const locksAfter = countLockIds(out.slice(ai + UNLOCK_AFTER_SENTINEL.length));
+  const removed = Math.max(0, locksBefore - locksAfter);
+
+  let message: string;
+  if (locksBefore === 0) {
+    message = 'The repository was not locked — nothing to clear.';
+  } else if (locksAfter === 0) {
+    message = `Cleared ${removed} stale lock(s). Snapshots and retention can write again.`;
+  } else {
+    // Plain unlock leaves locks whose owner is alive. Pulling the lever again
+    // will not help, and --remove-all would kill a running backup.
+    message = `Cleared ${removed} of ${locksBefore} lock(s); ${locksAfter} remain and are held by a `
+      + 'process that is still running. Wait for it to finish rather than forcing — a forced '
+      + 'removal here would corrupt a backup that is currently in flight.';
+  }
+  return { locksBefore, locksAfter, removed, output, message };
+}
+
+
+/**
+ * Split list-pod output into the snapshot JSON and a lock COUNT.
+ *
+ * Returns `lockCount: null` when the sentinel is absent — an older
+ * tenant-backup-tools image that does not emit the section. null is not zero:
+ * reporting "no locks" for "did not look" is the same class of lie this whole
+ * change exists to remove.
+ */
+export function splitLockSection(out: string): {
+  snapshotsRaw: string;
+  lockCount: number | null;
+} {
+  const idx = out.indexOf(LOCK_SENTINEL);
+  if (idx === -1) return { snapshotsRaw: out, lockCount: null };
+  const snapshotsRaw = out.slice(0, idx);
+  const lockLines = out
+    .slice(idx + LOCK_SENTINEL.length)
+    .split('\n')
+    // `restic list locks` prints one 64-hex lock id per line. Anything else is
+    // noise from the shell or restic, and must not inflate the count.
+    .filter((l) => /^[0-9a-f]{64}$/.test(l.trim()));
+  return { snapshotsRaw, lockCount: lockLines.length };
+}
+
 export async function listMailBackups(deps: {
   db: Database;
   core: CoreV1Api;
@@ -74,10 +191,13 @@ export async function listMailBackups(deps: {
     return {
       snapshots: [],
       repoReachable: false,
+      // no mail BackupTarget assigned — setup, not an outage
+      unreachableCause: 'not_configured',
       reason:
         'No mail BackupTarget configured. Set one at /backups/mail → Targets, ' +
         'then snapshots will start showing up here within ~2 min.',
       targetName: null,
+      lockCount: null,
     };
   }
 
@@ -98,10 +218,14 @@ export async function listMailBackups(deps: {
       return {
         snapshots: [],
         repoReachable: false,
+        // restic Secret still being materialised; resolves in ~1 min
+        unreachableCause: 'provisioning',
         reason:
           'Backup credentials are still being provisioned for this target ' +
           '(usually completes within a minute of assigning it). Retry shortly.',
         targetName,
+        // We never reached the repo, so we never looked at its locks.
+        lockCount: null,
       };
     }
     // Any other read error: fall through — the list Pod surfaces it.
@@ -124,10 +248,14 @@ export async function listMailBackups(deps: {
       return {
         snapshots: [],
         repoReachable: false,
+        // shim DaemonSet restarting after a target (re)assignment
+        unreachableCause: 'provisioning',
         reason:
           'Backup gateway is restarting (a target change is being applied). ' +
           'Snapshots are unaffected; retry in about a minute.',
         targetName,
+        // We never reached the repo, so we never looked at its locks.
+        lockCount: null,
       };
     }
   } catch {
@@ -150,20 +278,34 @@ export async function listMailBackups(deps: {
     return {
       snapshots: [],
       repoReachable: false,
+      // the list Pod could not even be created
+      unreachableCause: 'unreachable',
       reason: `Failed to spawn list Pod: ${err instanceof Error ? err.message : String(err)}`,
       targetName,
+      // We never reached the repo, so we never looked at its locks.
+      lockCount: null,
     };
   }
 
   // Poll for completion + read pod logs.
   try {
     const out = await waitForJobLogs(deps, jobName, LIST_TIMEOUT_MS);
-    const snapshots = parseResticSnapshotsJson(out);
+    const { snapshotsRaw, lockCount } = splitLockSection(out);
+    const snapshots = parseResticSnapshotsJson(snapshotsRaw);
     return {
       snapshots,
       repoReachable: true,
-      reason: null,
+      unreachableCause: null,
+      // A locked repo reads fine and writes not at all. Say that here rather
+      // than leave the operator to infer it from snapshots that stop arriving.
+      reason: lockCount !== null && lockCount > 0
+        ? `Repository is READABLE but LOCKED (${lockCount} lock${lockCount === 1 ? '' : 's'}). `
+          + 'Snapshots and retention cannot write until the locks clear. A lock left behind by a '
+          + 'killed pod is stale and never expires on its own — clear it from Backups → Mail, or '
+          + 'wait for the next scheduled run, which now clears stale locks itself.'
+        : null,
       targetName,
+      lockCount,
     };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -176,10 +318,14 @@ export async function listMailBackups(deps: {
       return {
         snapshots: [],
         repoReachable: false,
+        // repo not initialised yet — the first snapshot creates it
+        unreachableCause: 'provisioning',
         reason:
           'Backup repository not initialized yet — it is created by the first completed ' +
           'snapshot upload. Run a snapshot (or wait for the next scheduled one) and refresh.',
         targetName,
+        // We never reached the repo, so we never looked at its locks.
+        lockCount: null,
       };
     }
     const reason = timedOut
@@ -193,8 +339,12 @@ export async function listMailBackups(deps: {
     return {
       snapshots: [],
       repoReachable: false,
+      // the listing ran and did not come back
+      unreachableCause: timedOut ? 'timed_out' : 'unreachable',
       reason,
       targetName,
+      // We never reached the repo, so we never looked at its locks.
+      lockCount: null,
     };
   } finally {
     // Best-effort cleanup — the Job's ttlSecondsAfterFinished handles
@@ -211,7 +361,70 @@ export async function listMailBackups(deps: {
   }
 }
 
+/**
+ * Clear stale restic locks on the mail repo.
+ *
+ * Recovery used to mean kubectl plus a hand-built Job. DEV sat wedged for 3 days
+ * 17 hours partly because there was no way to do this from the product at all.
+ */
+export async function unlockMailResticRepo(deps: {
+  core: CoreV1Api;
+  batch: BatchV1Api;
+}): Promise<MailResticUnlockResult> {
+  const jobName = `${UNLOCK_JOB_PREFIX}${randomUUID().slice(0, 8)}`;
+  try {
+    await deps.batch.createNamespacedJob({
+      namespace: MAIL_NAMESPACE,
+      body: buildResticJob(jobName, 'mail-backup-unlock', UNLOCK_COMMAND) as unknown as object,
+    });
+  } catch (err) {
+    throw new ApiError(
+      'MAIL_BACKUP_UNLOCK_FAILED',
+      `Failed to spawn unlock Pod: ${err instanceof Error ? err.message : String(err)}`,
+      500,
+    );
+  }
+
+  try {
+    const out = await waitForJobLogs(deps, jobName, UNLOCK_TIMEOUT_MS);
+    return parseUnlockOutput(out);
+  } catch (err) {
+    if (err instanceof ApiError) throw err;
+    throw new ApiError(
+      'MAIL_BACKUP_UNLOCK_FAILED',
+      `Unlock did not complete: ${err instanceof Error ? err.message : String(err)}`,
+      500,
+    );
+  } finally {
+    try {
+      await deps.batch.deleteNamespacedJob({
+        namespace: MAIL_NAMESPACE,
+        name: jobName,
+        propagationPolicy: 'Background',
+      });
+    } catch {
+      // best-effort; ttlSecondsAfterFinished reaps it anyway
+    }
+  }
+}
+
 function buildListJob(name: string): Record<string, unknown> {
+  return buildResticJob(name, 'mail-backup-list', LIST_COMMAND);
+}
+
+/**
+ * One-shot Pod that runs a restic command against the mail repo.
+ *
+ * platform-api cannot read the repo credentials itself (encrypted at rest), so
+ * every restic operation goes through a Pod that mounts the Secret via envFrom
+ * and lets the CLI pick up RESTIC_REPOSITORY/RESTIC_PASSWORD. Shared by the
+ * listing and the unlock so they cannot drift in image, limits or Secret name.
+ */
+function buildResticJob(
+  name: string,
+  component: string,
+  command: string,
+): Record<string, unknown> {
   return {
     apiVersion: 'batch/v1',
     kind: 'Job',
@@ -219,7 +432,7 @@ function buildListJob(name: string): Record<string, unknown> {
       name,
       namespace: MAIL_NAMESPACE,
       labels: {
-        'app.kubernetes.io/component': 'mail-backup-list',
+        'app.kubernetes.io/component': component,
         'app.kubernetes.io/part-of': 'hosting-platform',
       },
     },
@@ -249,7 +462,14 @@ function buildListJob(name: string): Record<string, unknown> {
               // `restic forget` step until manually unlocked. Caught
               // 2026-05-27 on staging — list Pod from prior list call
               // left a 3-hour stale lock that broke every snapshot run.
-              command: ['sh', '-c', 'restic snapshots --json --no-cache --no-lock 2>/dev/null'],
+              //
+              // …which is also why the listing alone cannot be trusted as a
+              // health signal: --no-lock reads a fully WEDGED repo happily.
+              // So enumerate the locks in the same pod and report them. The
+              // sentinel keeps the snapshot JSON parseable on its own; a pod
+              // running an older image emits neither sentinel nor lock lines
+              // and lockCount stays null, which is not the same as zero.
+              command: ['sh', '-c', command],
               envFrom: [
                 {
                   secretRef: {

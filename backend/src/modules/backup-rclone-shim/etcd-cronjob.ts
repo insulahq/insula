@@ -24,6 +24,12 @@
  * STATE_ERROR. We don't want that to also halt the etcd toggle.
  */
 
+import {
+  LABEL_HEALTH_WATCH,
+  LABEL_CATEGORY,
+  LABEL_SEVERITY,
+  ANNOTATION_DISPLAY_NAME,
+} from '../backup-health/labels.js';
 import { eq, inArray } from 'drizzle-orm';
 import type * as k8s from '@kubernetes/client-node';
 import type { Logger } from 'pino';
@@ -60,6 +66,30 @@ export const FLUX_RECONCILE_ANNOTATION = 'kustomize.toolkit.fluxcd.io/reconcile'
 const FLUX_RECONCILE_ANNOTATION_POINTER =
   '/metadata/annotations/kustomize.toolkit.fluxcd.io~1reconcile';
 
+/**
+ * Backup-health discovery labels for the Jobs this CronJob creates.
+ *
+ * They cannot arrive from the manifest. This CronJob is seed-then-disown: once
+ * the reconciler stamps `kustomize.toolkit.fluxcd.io/reconcile: disabled` on the
+ * live object, Flux reports `skipped` for it forever, so editing
+ * k8s/base/backup/etcd-snap-via-shim-cronjob.yaml only ever reaches a FRESH
+ * install. Verified on DEV 2026-09-15: the manifest carried the block, the live
+ * object's `spec.jobTemplate.metadata` was `{}`, and kustomize-controller logged
+ * `"CronJob/platform/etcd-snap-via-shim":"skipped"`.
+ *
+ * They go on the JOB TEMPLATE, not the CronJob: the CronJob controller builds
+ * each Job's ObjectMeta from `spec.jobTemplate.metadata` only, and the
+ * backup-health watcher selects Jobs.
+ */
+const JOB_TEMPLATE_LABELS: Readonly<Record<string, string>> = {
+  [LABEL_HEALTH_WATCH]: 'true',
+  [LABEL_CATEGORY]: 'dr',
+  [LABEL_SEVERITY]: 'critical',
+};
+const JOB_TEMPLATE_ANNOTATIONS: Readonly<Record<string, string>> = {
+  [ANNOTATION_DISPLAY_NAME]: 'etcd snapshot via shim',
+};
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -84,6 +114,10 @@ interface CronJobView {
   spec?: {
     suspend?: boolean;
     jobTemplate?: {
+      metadata?: {
+        labels?: Record<string, string>;
+        annotations?: Record<string, string>;
+      };
       spec?: {
         template?: {
           spec?: {
@@ -92,6 +126,31 @@ interface CronJobView {
         };
       };
     };
+  };
+}
+
+/**
+ * Job-template metadata to write, or null when the live object already carries
+ * every desired key.
+ *
+ * Returning null on convergence preserves the reconciler's idempotence
+ * contract: a settled CronJob produces zero ops and therefore zero apiserver
+ * calls. Merging over the live values rather than replacing them means a label
+ * an operator added to the job template survives.
+ */
+export function desiredJobTemplateMetadata(live: CronJobView): {
+  labels: Record<string, string>;
+  annotations: Record<string, string>;
+} | null {
+  const liveLabels = live.spec?.jobTemplate?.metadata?.labels ?? {};
+  const liveAnnotations = live.spec?.jobTemplate?.metadata?.annotations ?? {};
+  const converged =
+    Object.entries(JOB_TEMPLATE_LABELS).every(([k, v]) => liveLabels[k] === v)
+    && Object.entries(JOB_TEMPLATE_ANNOTATIONS).every(([k, v]) => liveAnnotations[k] === v);
+  if (converged) return null;
+  return {
+    labels: { ...liveLabels, ...JOB_TEMPLATE_LABELS },
+    annotations: { ...liveAnnotations, ...JOB_TEMPLATE_ANNOTATIONS },
   };
 }
 
@@ -200,6 +259,18 @@ export async function reconcileEtcdCronJob(
   // backup-display-name annotation. Only stamped when not already disabled.
   if (live.metadata?.annotations?.[FLUX_RECONCILE_ANNOTATION] !== 'disabled') {
     ops.push({ op: 'add', path: FLUX_RECONCILE_ANNOTATION_POINTER, value: 'disabled' });
+  }
+  // Backup-health discovery labels on the JOB TEMPLATE. Disowning this CronJob
+  // from Flux also disowned it from the manifest that carries them, so the
+  // reconciler has to converge them itself or the Jobs stay invisible to the
+  // watcher forever.
+  const jtMeta = desiredJobTemplateMetadata(live);
+  if (jtMeta) {
+    // ONE `add` of the whole metadata object, merged over what is live:
+    // `add /spec/jobTemplate/metadata/labels` returns 422 on a CronJob whose
+    // `metadata` key is absent, and replacing the object wholesale would drop
+    // anything else already under it.
+    ops.push({ op: 'add', path: '/spec/jobTemplate/metadata', value: jtMeta });
   }
 
   if (ops.length === 0) {

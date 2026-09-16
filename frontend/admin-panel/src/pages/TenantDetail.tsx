@@ -6,6 +6,8 @@ import { ArrowLeft, Edit, Pause, Play, Square, Trash2, Loader2, CreditCard, Save
 import StatusBadge from '@/components/ui/StatusBadge';
 import EditTenantModal from '@/components/EditTenantModal';
 import NamespaceIntegrityBanner from '@/components/NamespaceIntegrityBanner';
+import TenantIssuesBanner from '@/components/tenants/TenantIssuesBanner';
+import { useTenantIssues } from '@/hooks/use-tenant-issues';
 import DeleteConfirmDialog from '@/components/DeleteConfirmDialog';
 import OperationProgressModal from '@/components/OperationProgressModal';
 import RetainedVolumesCard from '@/components/RetainedVolumesCard';
@@ -58,18 +60,23 @@ import {
 } from '@/hooks/use-storage-lifecycle';
 import { useTableSearch } from '@/hooks/use-table-search';
 import ErrorPanel from '@/components/ErrorPanel';
+import { useTabParam } from '@/hooks/use-tab-param';
 
 type TabKey = 'domains' | 'applications' | 'deployments' | 'files' | 'email' | 'backups' | 'snapshots' | 'users';
 
+const TENANT_DETAIL_TAB_IDS: readonly TabKey[] = ['domains', 'applications', 'deployments', 'files', 'email', 'backups', 'snapshots', 'users'];
+
 export default function TenantDetail() {
   const { id } = useParams<{ id: string }>();
+  const { data: issuesData } = useTenantIssues();
+  const tenantIssues = id ? issuesData?.data?.[id] : undefined;
   const navigate = useNavigate();
   const { data, isLoading, error } = useTenant(id);
   const tenant = data?.data;
 
   const [editOpen, setEditOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState<TabKey>('domains');
+  const [activeTab, setActiveTab] = useTabParam<TabKey>(TENANT_DETAIL_TAB_IDS, 'domains');
   // notifications-system Phase 1: per-action toggle that lets the
   // operator suppress the tenant-facing notification dispatched by the
   // lifecycle hook registry. Default ON — operator must opt out
@@ -512,6 +519,17 @@ export default function TenantDetail() {
         </div>
       )}
 
+      {/* Every open condition for this tenant, with the object, the value and
+          how long it has been true. Derived from the same thresholds the
+          notifications fire from, so the banner and the message cannot
+          disagree — and it clears itself when the condition does.
+
+          ABOVE the cards, deliberately: it shipped below Resource Limits,
+          which on a real tenant page is roughly a full screen down. An
+          operator opening the page to find out what is wrong had to scroll
+          past everything that is fine to reach it. */}
+      <TenantIssuesBanner issues={tenantIssues} />
+
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm lg:col-span-2">
           <h2 className="mb-4 text-lg font-semibold text-gray-900 dark:text-gray-100">Account Information</h2>
@@ -591,7 +609,6 @@ export default function TenantDetail() {
       <ResourceLimitsCard key={tenant.planId ?? 'no-plan'} tenant={tenant} tenantId={id!} />
 
       <NamespaceIntegrityBanner tenantId={id!} />
-
       <StorageLifecycleCard tenantId={id!} tenant={tenant} onManageSnapshots={() => setActiveTab('snapshots')} />
 
       <RetainedVolumesCard tenantId={id!} />

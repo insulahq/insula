@@ -115,18 +115,35 @@ export function extractOomEvents(
 
 const DEFAULT_LOOKBACK_MS = 90 * 60 * 1000; // 90 min > hourly tick (overlap-safe)
 
-/** List a namespace's pods and return recent OOM events. Never throws. */
+/**
+ * List a namespace's pods and return recent OOM events. Never throws.
+ *
+ * Never throwing is the right contract — this runs inside an hourly sweep
+ * over every tenant and one bad namespace must not stop the rest. But
+ * "never throws" used to also mean "never says anything": a kube-API
+ * failure returned `[]`, which the caller reads as "this tenant had no OOM
+ * kills". The caller wraps this in its own try/catch that logs "OOM scan
+ * failed", and that catch could never fire, so a persistent API problem
+ * silently stopped every OOM alert on the cluster.
+ *
+ * `onError` separates "looked, found none" from "could not look". It is
+ * optional so existing callers keep compiling, but metrics-scheduler.ts
+ * passes it — an empty array with no `onError` call is now a real
+ * statement about the namespace rather than the absence of one.
+ */
 export async function scanTenantOom(
   k8s: K8sClients,
   namespace: string,
   nowMs: number = Date.now(),
   lookbackMs: number = DEFAULT_LOOKBACK_MS,
+  onError?: (namespace: string, message: string) => void,
 ): Promise<OomEvent[]> {
   try {
     const podList = await k8s.core.listNamespacedPod({ namespace });
     const items = (podList as { items?: readonly PodItem[] }).items ?? [];
     return extractOomEvents(items, nowMs, lookbackMs);
-  } catch {
+  } catch (err) {
+    onError?.(namespace, err instanceof Error ? err.message : String(err));
     return [];
   }
 }

@@ -5,9 +5,9 @@ describe('SLO_RULES — mail monitoring additions', () => {
   const MAIL_RULES = [
     'mail-server-down',
     'mail-queue-backlog',
+    'mail-drift-unrepaired',
     'mail-cert-expiry',
     'mail-cert-self-signed',
-    'mail-mailbox-over-quota',
   ] as const;
 
   it('registers every new mail rule', () => {
@@ -30,10 +30,41 @@ describe('SLO_RULES — mail monitoring additions', () => {
 
   it('reads first-party mail gauges (no un-scraped Stalwart metric)', () => {
     expect(ruleById('mail-server-down')!.expr).toContain('platform_mail_server_up');
-    expect(ruleById('mail-queue-backlog')!.expr).toContain('platform_mail_outbound_queue_depth');
+    expect(ruleById('mail-queue-backlog')!.expr).toContain('platform_mail_platform_origin_queue_depth');
+    expect(ruleById('mail-drift-unrepaired')!.expr).toContain('platform_mail_drift_unresolved_age_hours');
     expect(ruleById('mail-cert-expiry')!.expr).toContain('platform_mail_tls_cert_expiry_seconds');
     expect(ruleById('mail-cert-self-signed')!.expr).toContain('platform_mail_tls_cert_self_signed');
-    expect(ruleById('mail-mailbox-over-quota')!.expr).toContain('platform_mail_mailboxes_over_quota');
+  });
+
+  it('never pages the platform admin for TENANT-sent mail', () => {
+    // The regression guard for the whole point of the origin split: any tenant
+    // can mail a non-existent recipient and Stalwart holds it through a 24h
+    // retry cycle. If this rule ever reads total depth again, that tenant
+    // behaviour pages an operator who cannot act on it.
+    const expr = ruleById('mail-queue-backlog')!.expr;
+    expect(expr).not.toContain('platform_mail_outbound_queue_depth');
+    // And the threshold must stay in the order of magnitude the platform's own
+    // mail actually reaches — 500 was sized for total estate traffic.
+    expect(ruleById('mail-queue-backlog')!.threshold).toBeLessThanOrEqual(50);
+  });
+
+  it('treats the -1 sentinel as "not a backlog" on every mail gauge rule', () => {
+    // -1 means "probe failed" or "nothing to report". A rule that omits the
+    // >= 0 filter reads an unreadable queue as a quiet one.
+    for (const id of ['mail-queue-backlog', 'mail-drift-unrepaired'] as const) {
+      expect(ruleById(id)!.expr, `${id} filters the -1 sentinel`).toContain('>= 0');
+    }
+  });
+
+  it('no longer carries a mailbox-quota rule', () => {
+    // Retired 2026-09-14. It alerted on max(platform_mail_mailboxes_over_quota)
+    // with subjectLabels: [] — a single GLOBAL COUNTER, structurally incapable
+    // of naming the mailbox, the tenant or the contact, delivered to the one
+    // audience that could act on it least directly. A mailbox filling up is a
+    // tenant capacity event, not a platform service-level objective; it is now
+    // `mailbox.quota_threshold` / `_exceeded` for the tenant and the mailbox
+    // owner, and `admin.mailbox_quota_fleet` (aggregated, named) for the operator.
+    expect(ruleById('mail-mailbox-over-quota')).toBeUndefined();
   });
 
   it('mail-server-down folds an absent series to healthy (no false-fire when mail absent)', () => {

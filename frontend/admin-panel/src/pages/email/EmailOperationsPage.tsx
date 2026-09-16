@@ -1,4 +1,3 @@
-import { useState } from 'react';
 import { Server, Network, Archive as ArchiveIcon, HardDrive } from 'lucide-react';
 import EmailPageHeader from '@/components/email/EmailPageHeader';
 import MailSectionCard from '@/components/MailSectionCard';
@@ -6,6 +5,7 @@ import MailDrCard from '@/components/MailDrCard';
 import MailPortExposureCard from '@/components/MailPortExposureCard';
 import MailArchiveCard from '@/components/MailArchiveCard';
 import MailNodeStorageCards from '@/components/email/MailNodeStorageCards';
+import { useTabParam } from '@/hooks/use-tab-param';
 
 type OpsTab = 'placement' | 'backups' | 'storage';
 
@@ -16,8 +16,10 @@ type OpsTab = 'placement' | 'backups' | 'storage';
  * standby data freshness), point-in-time archive via `stalwart -e`, and
  * the per-PVC storage view.
  */
+const EMAIL_OPS_TAB_IDS: readonly OpsTab[] = ['placement', 'backups', 'storage'];
+
 export default function EmailOperationsPage() {
-  const [tab, setTab] = useState<OpsTab>('placement');
+  const [tab, setTab] = useTabParam<OpsTab>(EMAIL_OPS_TAB_IDS, 'placement');
 
   return (
     <div className="space-y-6">

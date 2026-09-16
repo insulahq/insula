@@ -19,6 +19,7 @@ import {
 } from '@/hooks/use-application-upgrades';
 import { useBulkRestartDeployments } from '@/hooks/use-deployments';
 import StatusBadge from '@/components/ui/StatusBadge';
+import { useTabParam } from '@/hooks/use-tab-param';
 
 type Tab = 'catalog' | 'installed' | 'upgrades' | 'repos';
 
@@ -29,8 +30,10 @@ const TABS: readonly { readonly id: Tab; readonly label: string }[] = [
   { id: 'repos', label: 'Repositories' },
 ] as const;
 
+const APPLICATION_TAB_IDS: readonly Tab[] = TABS.map((t) => t.id);
+
 export default function Applications() {
-  const [activeTab, setActiveTab] = useState<Tab>('catalog');
+  const [activeTab, setActiveTab] = useTabParam<Tab>(APPLICATION_TAB_IDS, 'catalog');
 
   return (
     <div className="space-y-6">

@@ -1,10 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   computeQuotaCrossings,
-  complaintLevel,
   abuseLevel,
-  COMPLAINT_WARNING_RATE,
-  COMPLAINT_CRITICAL_RATE,
   ABUSE_WARN_DEFAULT,
   ABUSE_CRITICAL_DEFAULT,
 } from './thresholds.js';
@@ -37,17 +34,6 @@ describe('computeQuotaCrossings', () => {
 
   it('skips tenants with no resolvable limits', () => {
     expect(computeQuotaCrossings([{ tenantId: 'ghost', hourSent: 99, daySent: 99 }], limits)).toEqual([]);
-  });
-});
-
-describe('complaintLevel', () => {
-  it('maps the spec thresholds (0.1% warning, 0.3% critical, strict >)', () => {
-    expect(complaintLevel(0)).toBeNull();
-    expect(complaintLevel(COMPLAINT_WARNING_RATE)).toBeNull(); // exactly 0.1% does not fire
-    expect(complaintLevel(0.0011)).toBe('warning');
-    expect(complaintLevel(COMPLAINT_CRITICAL_RATE)).toBe('warning'); // exactly 0.3% stays warning
-    expect(complaintLevel(0.0031)).toBe('critical');
-    expect(complaintLevel(1)).toBe('critical');
   });
 });
 

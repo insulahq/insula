@@ -301,18 +301,16 @@ export async function platformStoragePolicyRoutes(app: FastifyInstance): Promise
         else if ('previousInstances' in f) lines.push(`  ✗ cluster ${f.namespace}/${f.name}: ${f.error}`);
         else lines.push(`  ✗ deploy ${f.namespace}/${f.name}: ${f.error}`);
       }
-      const adminRows = await app.db.select({ id: users.id }).from(users).where(inArray(users.roleName, ['super_admin', 'admin']));
-      for (const a of adminRows) {
-        await app.db.insert(notifications).values({
-          id: crypto.randomUUID(),
-          userId: a.id,
-          type: failed.length === 0 ? 'info' : (isInsufficientStorage ? 'error' : 'warning'),
-          title,
-          message: lines.join(' '),
-          resourceType: 'platform_storage_policy',
-          resourceId: 'singleton',
-        }).catch(() => undefined);
-      }
+      // Dispatched, not inserted: a row per admin with no category reached no
+      // template, no email, no preference gate and no delivery audit.
+      const { notifyAdminOperationalEvent } = await import('../notifications/events.js');
+      await notifyAdminOperationalEvent(app.db, 'storage', {
+        subsystem: 'Storage policy',
+        objectLabel: title,
+        detail: lines.join(' '),
+        severityLabel: failed.length === 0 ? 'applied' : (isInsufficientStorage ? 'insufficient storage' : 'partial'),
+        recommendedAction: failed.length === 0 ? '' : 'Review the failures above in Settings → Storage.',
+      }, `storage-policy:${new Date().toISOString().slice(0, 13)}`).catch(() => undefined);
     } catch (err) {
       app.log.warn({ err }, 'platform-storage-policy: notification fan-out failed');
     }
@@ -475,18 +473,14 @@ export async function platformStoragePolicyRoutes(app: FastifyInstance): Promise
 
     // 3. Sticky admin notification + audit
     try {
-      const adminRows = await app.db.select({ id: users.id }).from(users).where(inArray(users.roleName, ['super_admin', 'admin']));
-      for (const a of adminRows) {
-        await app.db.insert(notifications).values({
-          id: crypto.randomUUID(),
-          userId: a.id,
-          type: 'warning',
-          title: `Stuck namespace force-cleared: ${namespace}`,
-          message: `super_admin force-cleared a Terminating namespace stuck for ${Math.round(ageMs / 60_000)} min. Steps: ${opLog.join(' / ')}.`,
-          resourceType: 'stuck_deprovision',
-          resourceId: namespace,
-        }).catch(() => undefined);
-      }
+      const { notifyAdminOperationalEvent } = await import('../notifications/events.js');
+      await notifyAdminOperationalEvent(app.db, 'storage', {
+        subsystem: 'Stuck namespace force-cleared',
+        objectLabel: namespace,
+        detail: `super_admin force-cleared a Terminating namespace stuck for ${Math.round(ageMs / 60_000)} min. Steps: ${opLog.join(' / ')}.`,
+        severityLabel: 'force-cleared',
+        recommendedAction: '',
+      }, `stuck-ns:${namespace}:${new Date().toISOString().slice(0, 13)}`).catch(() => undefined);
     } catch { /* best effort */ }
 
     await app.db.insert(auditLogs).values({

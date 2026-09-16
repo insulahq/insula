@@ -1,5 +1,5 @@
 /**
- * Outbound-mail threshold evaluator (R4/R6 PR 4).
+ * Outbound-mail threshold evaluator.
  *
  * Runs on the 5-min mail tick. Two checks, both governed by the
  * `mail_enforcement_mode` platform setting (the admin control surface
@@ -8,21 +8,23 @@
  *   off    — evaluator disabled entirely.
  *   notify — (DEFAULT) notifications only; admins act via the existing
  *            levers (per-tenant limits / outbound suspension).
- *   auto   — notifications PLUS automatic actions on complaint
- *            thresholds: warning (>0.1% 7d) halves the tenant's
- *            effective hourly limit; critical (>0.3%) suspends
- *            outbound mail. Every action writes an audit_logs row.
  *
- * Quota usage (80%/100% of hour/day windows) always notifies the
- * TENANT in notify+auto modes — usage warnings are informational and
- * never trigger automatic actions (Stalwart already enforces the
- * limit itself).
+ * Quota usage (80%/100% of hour/day windows) notifies the TENANT; send-limit
+ * saturation notifies the OPERATOR. Neither takes automatic action — Stalwart
+ * already enforces the limit itself.
+ *
+ * ## `auto` was removed with FBL (2026-09-15)
+ *
+ * The mode existed solely to act on FBL complaint rates: `mode === 'auto'`
+ * appeared exactly once in this file, inside the complaint evaluator. With FBL
+ * retired it would have been a setting that promises automatic enforcement and
+ * silently does nothing — the stored-and-ignored class this codebase has spent
+ * real effort deleting. Existing `auto` values migrate to `notify`, which is
+ * what `auto` would now do anyway.
  *
  * Dedupe:
  *   - quota: PK insert on (tenant, window, threshold, window_start) —
  *     each calendar window fires each threshold at most once.
- *   - complaints: latest firing per (domain, level); re-fires after
- *     24h while still above threshold.
  */
 
 import { eq, gte, lt, sql, inArray } from 'drizzle-orm';
@@ -31,22 +33,17 @@ import {
   hostingPlans,
   emailSendCounters,
   emailQuotaEvents,
-  emailComplaintEvents,
   auditLogs,
   platformSettings,
 } from '../../db/schema.js';
 import { buildEffectiveSendLimits } from '../email-outbound/rate-limit.js';
-import { complaintSummary } from './complaints.js';
 import type { Database } from '../../db/index.js';
 import type { OutboundReconcileLogger } from '../email-outbound/service.js';
 import { randomUUID } from 'node:crypto';
 
-export type MailEnforcementMode = 'off' | 'notify' | 'auto';
+export type MailEnforcementMode = 'off' | 'notify';
 
 export const QUOTA_THRESHOLDS = [80, 100] as const;
-export const COMPLAINT_WARNING_RATE = 0.001; // 0.1% (7d)
-export const COMPLAINT_CRITICAL_RATE = 0.003; // 0.3% (7d)
-const COMPLAINT_REFIRE_MS = 24 * 3_600_000;
 const QUOTA_EVENT_RETENTION_DAYS = 7;
 /**
  * Send-limit-saturation admin alert (workstream A). Combined rate-limited
@@ -57,8 +54,6 @@ const QUOTA_EVENT_RETENTION_DAYS = 7;
  */
 export const ABUSE_WARN_DEFAULT = 50;
 export const ABUSE_CRITICAL_DEFAULT = 500;
-/** Auto-throttle floor — never halve below this. */
-const AUTO_THROTTLE_FLOOR = 1;
 
 export async function getMailEnforcementMode(db: Database): Promise<MailEnforcementMode> {
   const [row] = await db
@@ -66,7 +61,8 @@ export async function getMailEnforcementMode(db: Database): Promise<MailEnforcem
     .from(platformSettings)
     .where(eq(platformSettings.key, 'mail_enforcement_mode'));
   const v = row?.value;
-  return v === 'off' || v === 'auto' ? v : 'notify';
+  // 'auto' is retired; any stored value other than 'off' means notify.
+  return v === 'off' ? 'off' : 'notify';
 }
 
 // ── Quota usage ─────────────────────────────────────────────────────────────
@@ -190,6 +186,19 @@ async function evaluateQuotaUsage(db: Database, logger: OutboundReconcileLogger)
         };
         if (highestNew.threshold >= 100) {
           await notifyTenantEmailQuotaExceeded(db, highestNew.tenantId, payload);
+          // The operator too, at 100% only. A tenant saturating the sending
+          // limit is the shape of both a compromised account and a
+          // platform-wide deliverability risk — and until now this event had
+          // exactly one audience, so nobody on the platform side ever heard.
+          const { notifyAdminEmailQuotaExceeded } = await import('../notifications/events.js');
+          await notifyAdminEmailQuotaExceeded(db, {
+            tenantLabel: highestNew.tenantId,
+            window: highestNew.window,
+            used: payload.used,
+            limit: payload.limit,
+            percent: payload.percent,
+            occurredAt: new Date().toISOString().slice(0, 16).replace('T', ' ') + ' UTC',
+          }, `email-quota-admin:${highestNew.tenantId}:${highestNew.window}:${new Date().toISOString().slice(0, 10)}`);
         } else {
           await notifyTenantEmailQuotaWarning(db, highestNew.tenantId, payload);
         }
@@ -206,148 +215,6 @@ async function evaluateQuotaUsage(db: Database, logger: OutboundReconcileLogger)
   );
 
   return notified;
-}
-
-// ── Complaint rates ─────────────────────────────────────────────────────────
-
-export function complaintLevel(rate7d: number): 'critical' | 'warning' | null {
-  if (rate7d > COMPLAINT_CRITICAL_RATE) return 'critical';
-  if (rate7d > COMPLAINT_WARNING_RATE) return 'warning';
-  return null;
-}
-
-async function evaluateComplaints(
-  db: Database,
-  logger: OutboundReconcileLogger,
-  mode: MailEnforcementMode,
-): Promise<number> {
-  const summary = await complaintSummary(db);
-  let fired = 0;
-
-  for (const entry of summary) {
-    if (!entry.domain) continue;
-    const level = complaintLevel(entry.complaintRate7d);
-    if (!level) continue;
-
-    // Atomic test-and-set BEFORE any side effect: the upsert only
-    // applies when the prior firing is older than the refire window,
-    // and RETURNING tells us whether THIS replica won the slot. With
-    // 2-3 HA replicas evaluating concurrently, exactly one dispatches
-    // — no duplicate notifications, no double auto-actions. Trade-off:
-    // if dispatch fails after winning, the slot stays consumed for
-    // 24h — acceptable because the dispatcher persists failed
-    // delivery rows (the no-silent-loss contract) for diagnosis.
-    const won = await db.execute(sql`
-      INSERT INTO email_complaint_events (domain, level, fired_at)
-      VALUES (${entry.domain}, ${level}, NOW())
-      ON CONFLICT (domain, level) DO UPDATE SET fired_at = NOW()
-      WHERE email_complaint_events.fired_at < NOW() - INTERVAL '24 hours'
-      RETURNING domain
-    `);
-    const wonRows = (won as unknown as { rows?: unknown[] }).rows ?? (Array.isArray(won) ? won : []);
-    if (wonRows.length === 0) continue;
-
-    let actionTaken = '';
-    if (mode === 'auto' && entry.tenantId) {
-      actionTaken = await applyAutoAction(db, logger, entry.tenantId, entry.domain, level);
-    }
-
-    try {
-      const { notifyAdminEmailComplaint } = await import('../notifications/events.js');
-      await notifyAdminEmailComplaint(db, level, {
-        domain: entry.domain,
-        tenantLabel: entry.tenantName ?? entry.tenantId ?? 'unattributed',
-        ratePercent: (entry.complaintRate7d * 100).toFixed(2),
-        complaints: String(entry.complaints7d),
-        sends: String(entry.sent7d),
-        recommendedAction: level === 'critical'
-          ? 'suspend outbound mail for the tenant (TenantDetail → Outbound Mail)'
-          : 'halve the tenant’s hourly send limit and investigate the sender',
-        actionTaken: actionTaken || undefined,
-      });
-      fired += 1;
-    } catch (err) {
-      logger.error({ err, domain: entry.domain }, 'mail thresholds: complaint notification failed');
-    }
-  }
-
-  return fired;
-}
-
-/**
- * Automatic enforcement (mode=auto only). Returns a human-readable
- * description of what was done, for the notification + audit trail.
- */
-async function applyAutoAction(
-  db: Database,
-  logger: OutboundReconcileLogger,
-  tenantId: string,
-  domain: string,
-  level: 'warning' | 'critical',
-): Promise<string> {
-  try {
-    const [row] = await db
-      .select({
-        status: tenants.status,
-        planId: tenants.planId,
-        emailSendRateLimit: tenants.emailSendRateLimit,
-        emailSendRateLimitDaily: tenants.emailSendRateLimitDaily,
-        emailOutboundSuspended: tenants.emailOutboundSuspended,
-        planCode: hostingPlans.code,
-        planHourly: hostingPlans.emailHourlySendLimit,
-        planDaily: hostingPlans.emailDailySendLimit,
-      })
-      .from(tenants)
-      .leftJoin(hostingPlans, eq(tenants.planId, hostingPlans.id))
-      .where(eq(tenants.id, tenantId));
-    if (!row) return '';
-
-    let description = '';
-    if (level === 'critical') {
-      if (row.emailOutboundSuspended) return 'Outbound mail already suspended.';
-      await db.update(tenants)
-        .set({ emailOutboundSuspended: true })
-        .where(eq(tenants.id, tenantId));
-      description = 'AUTO-ENFORCED: outbound mail suspended for the tenant.';
-    } else {
-      // Non-ratcheting: the throttle target is HALF THE PLAN VALUE,
-      // not half the current effective limit — a 24h refire while the
-      // rate stays elevated is a no-op instead of 50 -> 25 -> 12 -> 1.
-      // Recovery (restoring the plan limit once the rate clears) is an
-      // admin decision, consistent with notify-first philosophy; the
-      // audit row + notification carry what was done.
-      const effective = buildEffectiveSendLimits(row);
-      const planBase = row.planHourly ?? effective.hourly.limit;
-      const target = Math.max(AUTO_THROTTLE_FLOOR, Math.floor(planBase / 2));
-      if (effective.hourly.limit <= target) {
-        return `Hourly limit already at or below the auto-throttle target (${target}).`;
-      }
-      await db.update(tenants)
-        .set({ emailSendRateLimit: target })
-        .where(eq(tenants.id, tenantId));
-      description = `AUTO-ENFORCED: hourly send limit reduced to ${target} (half the plan limit).`;
-    }
-
-    await db.insert(auditLogs).values({
-      id: randomUUID(),
-      tenantId,
-      actionType: 'mail.auto_enforcement',
-      resourceType: 'tenant_send_limits',
-      resourceId: tenantId,
-      actorId: 'system',
-      actorType: 'system',
-      changes: { level, domain, description },
-    });
-
-    const { reconcileStalwartSendLimits } = await import('../email-outbound/stalwart-throttles.js');
-    await reconcileStalwartSendLimits(db, logger);
-
-    logger.info({ tenantId, domain, level, description }, 'mail thresholds: auto action applied');
-    return description;
-  } catch (err) {
-    logger.error({ err, tenantId, domain }, 'mail thresholds: auto action failed');
-    return '';
-  }
 }
 
 // ── Send-limit saturation (abuse) ───────────────────────────────────────────
@@ -454,7 +321,6 @@ async function evaluateSendingAbuse(db: Database, logger: OutboundReconcileLogge
 export interface ThresholdEvaluationResult {
   readonly mode: MailEnforcementMode;
   readonly quotaNotifications: number;
-  readonly complaintNotifications: number;
   readonly abuseNotifications: number;
 }
 
@@ -464,15 +330,11 @@ export async function evaluateMailThresholds(
 ): Promise<ThresholdEvaluationResult> {
   const mode = await getMailEnforcementMode(db);
   if (mode === 'off') {
-    return { mode, quotaNotifications: 0, complaintNotifications: 0, abuseNotifications: 0 };
+    return { mode, quotaNotifications: 0, abuseNotifications: 0 };
   }
 
   const quotaNotifications = await evaluateQuotaUsage(db, logger).catch((err) => {
     logger.error({ err }, 'mail thresholds: quota evaluation failed');
-    return 0;
-  });
-  const complaintNotifications = await evaluateComplaints(db, logger, mode).catch((err) => {
-    logger.error({ err }, 'mail thresholds: complaint evaluation failed');
     return 0;
   });
   const abuseNotifications = await evaluateSendingAbuse(db, logger).catch((err) => {
@@ -480,8 +342,8 @@ export async function evaluateMailThresholds(
     return 0;
   });
 
-  if (quotaNotifications + complaintNotifications + abuseNotifications > 0) {
-    logger.info({ mode, quotaNotifications, complaintNotifications, abuseNotifications }, 'mail thresholds: evaluated');
+  if (quotaNotifications + abuseNotifications > 0) {
+    logger.info({ mode, quotaNotifications, abuseNotifications }, 'mail thresholds: evaluated');
   }
-  return { mode, quotaNotifications, complaintNotifications, abuseNotifications };
+  return { mode, quotaNotifications, abuseNotifications };
 }

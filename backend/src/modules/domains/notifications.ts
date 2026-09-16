@@ -111,18 +111,19 @@ export async function notifyDomainRegression(
     'Please check your DNS settings and click "Verify DNS" in the control panel once you have updated them.',
   ].join('\n');
 
-  await db.insert(notifications).values({
-    id: crypto.randomUUID(),
-    userId: recipientId,
-    type: 'warning',
-    title: `Domain verification failed: ${domain.domainName}`,
-    message,
-    resourceType: 'domain',
-    resourceId: domain.id,
-  });
-
-  // TODO: email dispatch (gated by system_settings.notify_dns_failures_via_email)
-  // When true AND tenant has contact email, send via the existing mail-submit path.
+  // Dispatched, not inserted. The TODO below used to read "email dispatch" —
+  // that is what the categorised path provides, along with the preference
+  // gate, the rate limit and the delivery audit. These rows carried
+  // category_id NULL on production, so they reached no template and no email
+  // and could not even be listed in the admin Sources screen.
+  const { notifyTenantDomainVerification } = await import('../notifications/events.js');
+  await notifyTenantDomainVerification(db, domain.tenantId, {
+    subsystem: 'Domain verification',
+    objectLabel: domain.domainName,
+    detail: message,
+    severityLabel: 'failed',
+    recommendedAction: 'Check your DNS settings, then click "Verify DNS" in the control panel.',
+  }, `domain-verify-failed:${domain.id}:${new Date().toISOString().slice(0, 10)}`);
 
   return { sent: true };
 }
@@ -166,17 +167,14 @@ export async function notifyDomainGraceUnverified(
     'Once updated, click "Verify DNS" in the control panel. DNS changes can take up to 24 hours to propagate.',
   ].join('\n');
 
-  await db.insert(notifications).values({
-    id: crypto.randomUUID(),
-    userId: recipientId,
-    type: 'warning',
-    title: `Domain not yet verified: ${domain.domainName}`,
-    message,
-    resourceType: 'domain',
-    resourceId: domain.id,
-  });
-
-  // TODO: email dispatch (gated by system_settings.notify_dns_failures_via_email)
+  const { notifyTenantDomainVerification } = await import('../notifications/events.js');
+  await notifyTenantDomainVerification(db, domain.tenantId, {
+    subsystem: 'Domain verification',
+    objectLabel: domain.domainName,
+    detail: message,
+    severityLabel: 'not yet verified',
+    recommendedAction: 'Point your DNS at the platform ingress address, then click "Verify DNS".',
+  }, `domain-unverified:${domain.id}:${new Date().toISOString().slice(0, 10)}`);
 
   return { sent: true };
 }

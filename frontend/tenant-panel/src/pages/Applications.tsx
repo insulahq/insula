@@ -20,6 +20,7 @@ import { getStatusColor } from '@/lib/status-colors';
 import type { CatalogEntry, Deployment } from '@/types/api';
 import { useResourceMetrics } from '@/hooks/use-resource-metrics';
 import { resourceBarColor, resourcePercent, resourceRatio, formatGiB } from '@/lib/resource-usage';
+import { useTabParam } from '@/hooks/use-tab-param';
 
 type Tab = 'catalog' | 'installed' | 'custom';
 
@@ -55,6 +56,8 @@ const TYPE_FILTER_MAP: Record<TypeFilter, string | null> = {
   Services: 'service',
 };
 
+const TENANT_APP_TAB_IDS: readonly Tab[] = TABS.map((t) => t.id);
+
 export default function Applications() {
   const { tenantId } = useTenantContext();
   const canManage = useCanManage();
@@ -73,7 +76,7 @@ export default function Applications() {
     [deploymentsForNames],
   );
 
-  const [activeTab, setActiveTab] = useState<Tab>('installed');
+  const [activeTab, setActiveTab] = useTabParam<Tab>(TENANT_APP_TAB_IDS, 'installed');
   // If the active tab is no longer visible (e.g. Custom Containers access was
   // revoked mid-session), fall back to Installed so the body isn't left blank.
   useEffect(() => {

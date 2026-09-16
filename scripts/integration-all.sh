@@ -227,6 +227,13 @@ PARALLEL=(
   # endpoint. Creates a disposable tenant + email domain, cleans up via
   # trap. ~1-2 min.
   "mailbox-quota:integration-mailbox-quota-e2e.sh"
+  "mailbox-quota-notify:integration-mailbox-quota-notify-e2e.sh"
+  # Notification ROUTING: channel policy is derived (ambient stays in-app),
+  # ntfy is barred for tenant audiences, the new mailbox-quota /
+  # saturation / expiry categories are seeded, no delivery was dropped for a
+  # render failure, and the tenant-issues endpoint feeds the badge + banner.
+  # Read-only against the live API. ~10s.
+  "notification-routing:integration-notification-routing-e2e.sh"
   # Send-only accounts + per-mailbox forwarding: contract rejections,
   # normalization, send-only guards, and (kubectl-gated) live Sieve script
   # + real SMTP delivery through the forward/keep-copy/bounce matrix.
@@ -289,6 +296,14 @@ PARALLEL=(
   # cnpg-down's forSeconds=300 → ~9-12 min wall; self-skips (77) on
   # overlays without k8s/base/monitoring (e.g. local DinD).
   "monitoring-slo:integration-monitoring-slo.sh"
+  # Global search (GET /api/v1/search). The endpoint carries NO requireRole
+  # gate by design — every authenticated user hits the same URL and the
+  # providers decide what comes back — so the phases that matter are the
+  # authorization ones: a tenant token must not see a second tenant's domain
+  # even when it searches for that hostname by name, and a read_only admin
+  # must not receive the user directory. Provisions two throwaway tenants +
+  # a domain each (self-cleans via trap); fast (~1-2 min, no k8s waits).
+  "global-search:integration-global-search.sh"
   # mTLS edge enforcement (ADR-054): provisions a throwaway tenant +
   # nginx-php deployment + domain (auto-route) + CA provider, binds mTLS,
   # then asserts via real curl that no-cert is handshake-rejected, a valid
@@ -563,6 +578,10 @@ declare -A SUITE_TIER=(
   [system-dr-drill]=slow [platform-domain-rename]=slow
   [tenant-bundles-restic]=external [dr-protocols]=external
   [bundle-coverage]=external [backups-ui]=external
+  # mailbox-quota-notify waits out a pending cycle scheduled under the
+  # cluster's ORIGINAL interval (15 min by default) before its own 2-min
+  # cadence applies, then two more cycles. Minutes, not seconds.
+  [mailbox-quota-notify]=slow
 )
 # Per-suite hard-timeout overrides (seconds). Set comfortably ABOVE the
 # expected max so the timeout catches HANGS, never a legitimately long run.
@@ -582,6 +601,10 @@ declare -A SUITE_TIMEOUT=(
   [firewall-blacklist]=600 [dr-protocols]=900
   [mail-dr-failover]=2400 [mail-dr-dataplane]=2400 [mail-mobility]=1800
   [platform-domain-rename]=1800 [system-dr-drill]=3000
+  # mailbox-quota-notify worst case ~34 min: pending old cycle (15) +
+  # 2 tightened cycles + fill + the no-repeat cycle. The 1800 default
+  # SIGKILLs a legitimate run just before its last assertion.
+  [mailbox-quota-notify]=2700
 )
 suite_tier_of()    { echo "${SUITE_TIER[$1]:-core}"; }
 suite_timeout_of() { echo "${SUITE_TIMEOUT[$1]:-$DEFAULT_SUITE_TIMEOUT}"; }

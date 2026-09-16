@@ -49,6 +49,8 @@ const STATIC_PATHS: Record<string, string> = {
   'admin.node_memory_event_critical': '/cluster/nodes',
   'admin.security_hardening_drift': '/security/posture',
   'admin.backup_failed': '/backups',
+  'admin.backup_stale': '/backups',
+  'admin.backup_never_run': '/backups',
   'admin.backup_target_unreachable': '/backups/targets',
   'admin.wal_archive_failing': '/backups',
   'admin.wal_archive_auto_disabled': '/backups',
@@ -59,8 +61,6 @@ const STATIC_PATHS: Record<string, string> = {
   'admin.mail_health_degraded': '/email/operations',
   'admin.email_abuse_warning': '/email/operations',
   'admin.email_abuse_critical': '/email/operations',
-  'admin.email_complaint_warning': '/email/operations',
-  'admin.email_complaint_critical': '/email/operations',
 
   // ---- tenant self-service (tenant-panel routes) ----
   'tenant.bandwidth_exceeded': '/resource-usage',
@@ -76,6 +76,32 @@ const STATIC_PATHS: Record<string, string> = {
   'subscription.renewed': '/settings',
   'subscription.expiry_warning': '/settings',
   'tasks.scheduled_failure': '/cron-jobs',
+  // Both mailbox-quota categories land on the tenant's own email page, where
+  // the mailbox list and its quota control already live — the issue belongs on
+  // the surface that fixes it, not on a page about the problem.
+  'mailbox.quota_threshold': '/email',
+  'mailbox.quota_exceeded': '/email',
+  'admin.mailbox_quota_fleet': '/tenants',
+  // The storage settings page is where capacity is read and nodes are added.
+  'admin.cluster_storage_capacity': '/settings/storage',
+  // Operational events land on the surface that owns the subsystem.
+  'admin.storage_event': '/settings/storage',
+  'admin.node_event': '/cluster/nodes',
+  'admin.database_event': '/backups',
+  'admin.mail_event': '/email/operations',
+  'admin.platform_event': '/platform/updates',
+  'admin.tenant_integrity': '/tenants',
+  'tenant.domain_verification': '/domains',
+  'tenant.backup_event': '/backups',
+  'tenant.mail_event': '/email',
+  'platform.digest': '/notifications',
+  'admin.notification_escalated': '/platform/notifications',
+  'admin.email_quota_exceeded': '/tenants',
+  'admin.subscriptions_expiring': '/tenants',
+  // The tenant lands on the page that shows the usage bars, not on a page
+  // about the concept of a limit.
+  'tenant.resource_saturation_warning': '/dashboard',
+  'tenant.resource_saturation_critical': '/dashboard',
   'tls.certificate_issued': '/domains',
   'tls.certificate_failed': '/domains',
   'tls.certificate_fallback': '/domains',

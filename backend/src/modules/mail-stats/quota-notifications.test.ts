@@ -1,228 +1,175 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// Mock the notifications module so we can assert which userIds
-// receive what without touching the real DB.
-vi.mock('../notifications/service.js', () => ({
-  notifyUser: vi.fn(async () => undefined),
-  createNotification: vi.fn(async (_db: unknown, input: Record<string, unknown>) => ({
-    id: `notif-${input.userId}-${input.title}`,
-  })),
+// Assert WHO gets told, which is the entire defect this module had: the old
+// implementation resolved recipients from `mailbox_access` — zero rows
+// platform-wide — so it notified nobody for its whole life.
+const thresholdMock = vi.fn(async () => undefined);
+const fleetMock = vi.fn(async () => undefined);
+vi.mock('../notifications/events.js', () => ({
+  notifyMailboxQuotaThreshold: (...a: unknown[]) => thresholdMock(...(a as [])),
+  notifyAdminMailboxQuotaFleet: (...a: unknown[]) => fleetMock(...(a as [])),
 }));
 
-// ─── Mock DB ────────────────────────────────────────────────────────────────
+import {
+  checkQuotaThresholds,
+  thresholdsCrossed,
+  percentOf,
+  THRESHOLDS,
+} from './quota-notifications.js';
 
-let executeResults: { rows: unknown[] }[];
-let executeCallIndex: number;
-let insertConflictCount: number;
-let updateClearedCount: number;
-
-function createMockDb() {
-  executeCallIndex = 0;
-  insertConflictCount = 0;
-  updateClearedCount = 0;
-
-  const executeFn = vi.fn().mockImplementation(async () => {
-    const result = executeResults[executeCallIndex] ?? { rows: [] };
-    executeCallIndex += 1;
-    return result;
+/**
+ * Mock DB: `execute` is called in a fixed order —
+ *   1. candidate SELECT
+ *   2..n. one INSERT … RETURNING per (mailbox, threshold) claim
+ *   then the hysteresis UPDATE and the GC DELETE.
+ * Claims return a row (fresh) unless the id is listed in `alreadyFiring`.
+ */
+function createMockDb(candidates: Record<string, unknown>[]) {
+  // Keyed off CALL ORDER, not the SQL text: a drizzle `sql` template is an
+  // object, and stringifying it to sniff for "INSERT" silently matched
+  // nothing — which read as "no threshold was ever claimed" and turned the
+  // assertions green-adjacent for the wrong reason.
+  //
+  //   call 1        candidate SELECT
+  //   calls 2..n    one INSERT … RETURNING per (mailbox, threshold) claim
+  //   then          the hysteresis UPDATE and the GC DELETE
+  let call = 0;
+  const execute = vi.fn().mockImplementation(async () => {
+    call += 1;
+    if (call === 1) return { rows: candidates };
+    return { rows: [{ mailbox_id: 'claimed' }] };
   });
-
-  // The insert path uses .insert(...).values(...).onConflictDoNothing().returning()
-  // The Drizzle v0.x mock chain: each step returns an object with the next.
-  const insertReturning = vi.fn().mockImplementation(async () => {
-    insertConflictCount += 1;
-    // Return [] when conflict (no row inserted), [row] when fresh insert.
-    // The test sets the response per-call via executeResults convention.
-    const result = executeResults[executeCallIndex] ?? { rows: [] };
-    executeCallIndex += 1;
-    return result.rows;
-  });
-  const insertOnConflict = vi.fn().mockReturnValue({ returning: insertReturning });
-  const insertValues = vi.fn().mockReturnValue({ onConflictDoNothing: insertOnConflict });
-  const insertFn = vi.fn().mockReturnValue({ values: insertValues });
-
-  // Update path for clearing
-  const updateWhere = vi.fn().mockImplementation(async () => {
-    updateClearedCount += 1;
-  });
-  const updateSet = vi.fn().mockReturnValue({ where: updateWhere });
-  const updateFn = vi.fn().mockReturnValue({ set: updateSet });
-
-  return {
-    execute: executeFn,
-    insert: insertFn,
-    update: updateFn,
-  } as unknown as ReturnType<typeof createMockDb>;
+  return { execute } as never;
 }
 
-const qn = await import('./quota-notifications.js');
-const notifications = await import('../notifications/service.js');
+function mailbox(over: Partial<Record<string, unknown>> = {}) {
+  return {
+    mailbox_id: 'mb-1',
+    tenant_id: 't-1',
+    tenant_name: 'Example Ltd',
+    full_address: 'user@example.test',
+    quota_mb: 1000,
+    used_mb: 800,
+    ...over,
+  };
+}
 
 beforeEach(() => {
-  executeResults = [];
-  executeCallIndex = 0;
-  insertConflictCount = 0;
-  updateClearedCount = 0;
-  vi.mocked(notifications.notifyUser).mockClear();
+  thresholdMock.mockClear();
+  fleetMock.mockClear();
 });
 
-describe('checkQuotaThresholds', () => {
-  it('fires a notification at 80% for the first time the threshold is hit', async () => {
-    // SQL #1: select mailboxes ≥ 75 % usage
-    executeResults = [
-      {
-        rows: [
-          {
-            mailbox_id: 'mb1',
-            tenant_id: 'c1',
-            full_address: 'alice@acme.com',
-            quota_mb: 100,
-            used_mb: 82, // 82 % → crosses 80
-            recipient_user_ids: ['user-alice'],
-          },
-        ],
-      },
-      // Insert returning — the row was newly inserted (one row returned)
-      {
-        rows: [{ mailbox_id: 'mb1', threshold: 80 }],
-      },
-    ];
-    const db = createMockDb();
-
-    const result = await qn.checkQuotaThresholds(db as never);
-
-    expect(result.fired).toBe(1);
-    expect(notifications.notifyUser).toHaveBeenCalledTimes(1);
-    // notifyUser(db, userId, opts) — opts is arg index 2
-    const notifyCall = vi.mocked(notifications.notifyUser).mock.calls[0];
-    expect(notifyCall[1]).toBe('user-alice');
-    const opts = notifyCall[2];
-    expect(opts.type).toBe('warning');
-    expect(opts.title).toContain('80');
-    expect(opts.message).toContain('alice@acme.com');
+describe('thresholdsCrossed', () => {
+  it('includes 99 — the last point at which the owner can still act', () => {
+    expect(THRESHOLDS).toEqual([80, 90, 99, 100]);
+    expect(thresholdsCrossed(995, 1000)).toEqual([80, 90, 99]);
   });
 
-  it('does NOT fire a notification when the threshold is already recorded (ON CONFLICT DO NOTHING)', async () => {
-    executeResults = [
-      {
-        rows: [
-          {
-            mailbox_id: 'mb1',
-            tenant_id: 'c1',
-            full_address: 'alice@acme.com',
-            quota_mb: 100,
-            used_mb: 85,
-            recipient_user_ids: ['user-alice'],
-          },
-        ],
-      },
-      // Insert returning — empty array means no row inserted (conflict)
-      { rows: [] },
-    ];
-    const db = createMockDb();
-
-    const result = await qn.checkQuotaThresholds(db as never);
-
-    expect(result.fired).toBe(0);
-    expect(notifications.notifyUser).not.toHaveBeenCalled();
+  it('returns every crossed threshold, not just the highest', () => {
+    expect(thresholdsCrossed(1000, 1000)).toEqual([80, 90, 99, 100]);
   });
 
-  it('fires SEPARATE notifications for 80, 90, and 100 thresholds when usage = 100%', async () => {
-    executeResults = [
-      {
-        rows: [
-          {
-            mailbox_id: 'mb1',
-            tenant_id: 'c1',
-            full_address: 'alice@acme.com',
-            quota_mb: 100,
-            used_mb: 100,
-            recipient_user_ids: ['user-alice'],
-          },
-        ],
-      },
-      { rows: [{ mailbox_id: 'mb1', threshold: 80 }] },
-      { rows: [{ mailbox_id: 'mb1', threshold: 90 }] },
-      { rows: [{ mailbox_id: 'mb1', threshold: 100 }] },
-    ];
-    const db = createMockDb();
-
-    const result = await qn.checkQuotaThresholds(db as never);
-
-    expect(result.fired).toBe(3);
-    expect(notifications.notifyUser).toHaveBeenCalledTimes(3);
-    const titles = vi.mocked(notifications.notifyUser).mock.calls.map(c => c[2].title);
-    expect(titles.some(t => String(t).includes('80'))).toBe(true);
-    expect(titles.some(t => String(t).includes('90'))).toBe(true);
-    expect(titles.some(t => String(t).includes('100'))).toBe(true);
+  it('returns nothing below the first threshold', () => {
+    expect(thresholdsCrossed(700, 1000)).toEqual([]);
   });
 
-  it('clears events when usage drops below threshold − 5 (hysteresis)', async () => {
-    // No mailboxes ≥ 75 % currently
-    executeResults = [
-      { rows: [] },
-      // Clear: select all open events with usage now below threshold-5
-      {
-        rows: [
-          { mailbox_id: 'mb1', threshold: 80, used_mb: 70, quota_mb: 100 },
-        ],
-      },
-    ];
-    const db = createMockDb();
+  it('treats a zero quota as unlimited rather than dividing by zero', () => {
+    expect(thresholdsCrossed(500, 0)).toEqual([]);
+    expect(percentOf(500, 0)).toBe(0);
+  });
+});
 
-    const result = await qn.checkQuotaThresholds(db as never);
+describe('checkQuotaThresholds — who actually gets told', () => {
+  it('notifies the TENANT and the MAILBOX OWNER, with no mailbox_access anywhere', async () => {
+    // The production state: mailbox_access is empty. That used to mean silence.
+    const db = createMockDb([mailbox()]);
+    const r = await checkQuotaThresholds(db);
 
-    expect(result.fired).toBe(0);
-    expect(result.cleared).toBe(1);
+    expect(r.fired).toBe(1);
+    expect(thresholdMock).toHaveBeenCalledTimes(1);
+    const [, tenantId, address, payload] = thresholdMock.mock.calls[0] as unknown[];
+    expect(tenantId).toBe('t-1');
+    expect(address).toBe('user@example.test');
+    expect(payload).toMatchObject({
+      mailboxAddress: 'user@example.test',
+      tenantName: 'Example Ltd',
+      percent: '80',
+      usedMb: '800',
+      quotaMb: '1000',
+    });
   });
 
-  it('notifies all users with mailbox_access for the same mailbox', async () => {
-    executeResults = [
-      {
-        rows: [
-          {
-            mailbox_id: 'mb1',
-            tenant_id: 'c1',
-            full_address: 'alice@acme.com',
-            quota_mb: 100,
-            used_mb: 85,
-            recipient_user_ids: ['user-alice', 'user-admin'],
-          },
-        ],
-      },
-      { rows: [{ mailbox_id: 'mb1', threshold: 80 }] },
-    ];
-    const db = createMockDb();
-
-    await qn.checkQuotaThresholds(db as never);
-
-    expect(notifications.notifyUser).toHaveBeenCalledTimes(2);
-    const userIds = vi.mocked(notifications.notifyUser).mock.calls.map(c => c[1]);
-    expect(userIds).toContain('user-alice');
-    expect(userIds).toContain('user-admin');
+  it('names the tenant and the mailbox in every payload', async () => {
+    // "Which tenant, which mailbox, what and when" — the four things the
+    // retired SLO alert could not say.
+    const db = createMockDb([mailbox()]);
+    await checkQuotaThresholds(db, new Date('2026-09-14T10:30:00Z'));
+    const payload = (thresholdMock.mock.calls[0] as unknown[])[3] as Record<string, string>;
+    expect(payload.occurredAt).toContain('2026-09-14');
+    expect(payload.tenantName).toBe('Example Ltd');
+    expect(payload.mailboxAddress).toBe('user@example.test');
   });
 
-  it('skips mailboxes with no recipients (no mailbox_access entries)', async () => {
-    executeResults = [
-      {
-        rows: [
-          {
-            mailbox_id: 'mb1',
-            tenant_id: 'c1',
-            full_address: 'alice@acme.com',
-            quota_mb: 100,
-            used_mb: 85,
-            recipient_user_ids: [],
-          },
-        ],
-      },
-    ];
-    const db = createMockDb();
+  it('fires each crossed threshold separately', async () => {
+    const db = createMockDb([mailbox({ used_mb: 1000 })]);
+    const r = await checkQuotaThresholds(db);
+    expect(r.fired).toBe(4); // 80, 90, 99, 100
+    const thresholds = (thresholdMock.mock.calls as unknown[][]).map(
+      (c) => (c[4] as { exceeded: boolean }).exceeded,
+    );
+    expect(thresholds.filter(Boolean).length).toBe(1); // only 100 is "exceeded"
+  });
 
-    const result = await qn.checkQuotaThresholds(db as never);
+  it('marks only 100% as exceeded, so 99 stays a warning', async () => {
+    const db = createMockDb([mailbox({ used_mb: 995 })]);
+    await checkQuotaThresholds(db);
+    for (const call of thresholdMock.mock.calls as unknown[][]) {
+      expect((call[4] as { exceeded: boolean }).exceeded).toBe(false);
+    }
+  });
+});
 
-    expect(result.fired).toBe(0);
-    expect(result.skipped).toBe(1);
-    expect(notifications.notifyUser).not.toHaveBeenCalled();
+describe('checkQuotaThresholds — the operator view', () => {
+  it('says NOTHING to the operator below 100%', async () => {
+    // Not the operator's business until mail actually bounces.
+    const db = createMockDb([mailbox({ used_mb: 995 })]);
+    const r = await checkQuotaThresholds(db);
+    expect(r.overQuota).toBe(0);
+    expect(fleetMock).not.toHaveBeenCalled();
+  });
+
+  it('sends ONE aggregated notification naming every affected mailbox', async () => {
+    const db = createMockDb([
+      mailbox({ mailbox_id: 'a', full_address: 'a@example.test', used_mb: 1000 }),
+      mailbox({ mailbox_id: 'b', full_address: 'b@example.test', used_mb: 1000, tenant_id: 't-2', tenant_name: 'Other Ltd' }),
+    ]);
+    const r = await checkQuotaThresholds(db);
+
+    expect(r.overQuota).toBe(2);
+    expect(fleetMock).toHaveBeenCalledTimes(1);
+    const payload = (fleetMock.mock.calls[0] as unknown[])[1] as Record<string, string>;
+    expect(payload.mailboxCount).toBe('2');
+    expect(payload.tenantCount).toBe('2');
+    // The whole point: the operator can see WHICH mailbox and WHICH tenant.
+    expect(payload.mailboxList).toContain('a@example.test');
+    expect(payload.mailboxList).toContain('Example Ltd');
+    expect(payload.mailboxList).toContain('b@example.test');
+    expect(payload.mailboxList).toContain('Other Ltd');
+  });
+
+  it('dedupes the fleet notification per UTC day', async () => {
+    const db = createMockDb([mailbox({ used_mb: 1000 })]);
+    await checkQuotaThresholds(db, new Date('2026-09-14T23:00:00Z'));
+    expect((fleetMock.mock.calls[0] as unknown[])[2]).toBe('mailbox-quota-fleet:2026-09-14');
+  });
+});
+
+describe('checkQuotaThresholds — no candidates', () => {
+  it('does nothing and tells nobody when every mailbox is healthy', async () => {
+    const db = createMockDb([]);
+    const r = await checkQuotaThresholds(db);
+    expect(r).toMatchObject({ fired: 0, overQuota: 0 });
+    expect(thresholdMock).not.toHaveBeenCalled();
+    expect(fleetMock).not.toHaveBeenCalled();
   });
 });
