@@ -3,6 +3,7 @@ import { notifications } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { getActiveChannels } from './channels/registry.js';
 import { notificationActionPath } from './action-path.js';
+import { linkPathsFor } from './action-links.js';
 import type { NotificationRecord } from './channels/types.js';
 import type { Database } from '../../db/index.js';
 
@@ -76,6 +77,16 @@ export async function listNotifications(
       categoryId: row.categoryId ?? null,
       resourceType: row.resourceType ?? null,
       resourceId: row.resourceId ?? null,
+    }),
+    // A notification can carry more than one useful destination — the tenant
+    // it is about AND the subsystem page that acts on it. Computed here for
+    // the same reason `actionPath` is: one registry, and historical rows get
+    // the links without a column to backfill.
+    links: linkPathsFor({
+      categoryId: row.categoryId ?? '',
+      resourceType: row.resourceType ?? null,
+      resourceId: row.resourceId ?? null,
+      tenantId: row.tenantId ?? null,
     }),
   }));
 }

@@ -92,6 +92,13 @@ export async function checkQuotaThresholds(
     JOIN tenants t ON t.id = m.tenant_id
     WHERE m.status = 'active'
       AND m.quota_mb > 0
+      -- Platform plumbing is not a tenant's problem. The dmarc@ and
+      -- postmaster@ intake mailboxes are 50 MB transit buffers that the
+      -- report-intake reconciler reaps at 40 MB, i.e. they sit ABOVE this
+      -- 75% floor by design. Without this filter, shrinking them turned
+      -- every reap cycle into a quota warning to the tenant and an
+      -- over-quota entry in the operator's fleet notification.
+      AND m.platform_managed = FALSE
       AND (m.used_mb::numeric / m.quota_mb::numeric) * 100 >= ${CANDIDATE_FLOOR_PCT}
   `);
 
@@ -108,10 +115,19 @@ export async function checkQuotaThresholds(
     const pct = percentOf(row.used_mb, row.quota_mb);
     if (pct >= 100) overQuota.push(row);
 
+    // Claim EVERY crossed threshold, but notify for the HIGHEST one only.
+    //
+    // A mailbox that jumps from 78% to 95% between two reconciler passes
+    // crosses 80 and 90 at once, and the loop used to send one notification
+    // per crossing — two emails two seconds apart, observed on production
+    // 2026-09-16 (mr.moringa@ got the 80 and the 90 back to back). The lower
+    // ones still have to be CLAIMED, or they would fire on the next pass as
+    // if they were new.
+    let highest: number | null = null;
     for (const threshold of thresholdsCrossed(row.used_mb, row.quota_mb)) {
-      // Claim the (mailbox, threshold) pair. Concurrent reconcilers are safe:
-      // exactly one INSERT wins. The DO UPDATE re-arms a previously cleared
-      // event; the WHERE keeps a still-firing one a no-op.
+      // Concurrent reconcilers are safe: exactly one INSERT wins. The DO
+      // UPDATE re-arms a previously cleared event; the WHERE keeps a
+      // still-firing one a no-op.
       const inserted = await db.execute<{ mailbox_id: string }>(sql`
         INSERT INTO mailbox_quota_events (mailbox_id, threshold)
         VALUES (${row.mailbox_id}, ${threshold})
@@ -123,6 +139,12 @@ export async function checkQuotaThresholds(
         RETURNING mailbox_id
       `);
       if ((inserted.rows ?? []).length === 0) continue;
+      if (highest === null || threshold > highest) highest = threshold;
+    }
+
+    {
+      const threshold = highest;
+      if (threshold === null) continue;
 
       // Two audiences from one call: the tenant admins by scope, and the
       // mailbox owner by address because they have no account to resolve.

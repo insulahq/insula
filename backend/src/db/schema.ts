@@ -1701,6 +1701,27 @@ export const emailSendCounters = pgTable('email_send_counters', {
   index('email_send_counters_bucket_idx').on(table.bucketStart),
 ]);
 
+/**
+ * Migration 0125 — per-sender outbound counters.
+ *
+ * `emailSendCounters` keeps (tenant, domain); the webhook knows the full
+ * envelope sender and `senderDomainOf()` discarded the mailbox. Without this,
+ * a sending-limit alert can name the tenant but not the account that sent —
+ * which is exactly the difference between an actionable alert and noise when a
+ * single mailbox is compromised.
+ */
+export const emailSenderCounters = pgTable('email_sender_counters', {
+  tenantId: varchar('tenant_id', { length: 36 })
+    .notNull()
+    .references(() => tenants.id, { onDelete: 'cascade' }),
+  sender: varchar('sender', { length: 320 }).notNull(),
+  bucketStart: timestamp('bucket_start', { withTimezone: true }).notNull(),
+  sentCount: integer('sent_count').notNull().default(0),
+}, (table) => [
+  primaryKey({ columns: [table.tenantId, table.sender, table.bucketStart] }),
+  index('email_sender_counters_bucket_idx').on(table.bucketStart),
+]);
+
 export const emailDomains = pgTable('email_domains', {
   id: varchar('id', { length: 36 }).primaryKey(),
   // Migration 0020 — FK + CASCADE from domains so email config is
@@ -1775,6 +1796,12 @@ export const mailboxes = pgTable('mailboxes', {
   usedMb: integer('used_mb').notNull().default(0),
   status: mailboxStatusEnum().notNull().default('active'),
   mailboxType: mailboxTypeEnum().notNull().default('mailbox'),
+  // Migration 0123 — platform plumbing (`dmarc@`, `postmaster@` created by
+  // the report-intake reconciler), not tenant mail. Excluded from the plan
+  // mailbox-count cap: these are created BY the platform, so counting them
+  // both charged the tenant for capacity they never asked for and made the
+  // reconciler collide with the cap on every 5-minute tick.
+  platformManaged: boolean('platform_managed').notNull().default(false),
   // Forwarding targets (Sieve `redirect` in Stalwart). NULL/[] = off.
   // `mailbox` type keeps a local copy (`redirect :copy`); `send_only`
   // forwards without storing. The platform DB is authoritative; the
@@ -2894,6 +2921,12 @@ export const systemSettings = pgTable('system_settings', {
   // follow-up migration (expand/contract — see migration 0046's note).
   webmailUrl: varchar('webmail_url', { length: 500 }),
   apiRateLimit: integer('api_rate_limit').notNull().default(100),
+  // Migration 0124 — master notification kill switch, checked by the
+  // dispatcher on every event. The per-category `is_active` flag was the only
+  // stop available during the 2026-09-16 storm, and reaching it meant editing
+  // production rows by hand. Read UNCACHED at dispatch time so flipping it
+  // takes effect on the next event rather than after a cache TTL.
+  notificationsEnabled: boolean('notifications_enabled').notNull().default(true),
   // On-server tenant volume snapshots (Longhorn VolumeSnapshot, type=snap)
   // are short-term PVC recovery points — NOT off-site backups. They expire
   // after this many hours so they don't accumulate Longhorn space. Admin-

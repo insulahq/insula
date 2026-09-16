@@ -94,6 +94,44 @@ describe('dispatcher.runTransition', () => {
     expect(fake.transitions[0]).toMatchObject({ transitionKind: 'active', state: 'completed' });
   });
 
+  it('passes the operator\'s notify choice to every hook', async () => {
+    // The chain this closes: the contract declared
+    // `suppressTenantNotification`, the panel sent it, and
+    // `notify-tenant-on-transition` read `ctx.suppressTenantNotification` —
+    // but HookCtx was built here WITHOUT it, so the admin panel's "Notify
+    // tenant" checkbox never suppressed a thing. The tenant was emailed
+    // "your account is being permanently deleted" either way.
+    const seen: Array<boolean | undefined> = [];
+    const h = hook({
+      name: 'sees-ctx',
+      order: 100,
+      run: async (ctx) => { seen.push(ctx.suppressTenantNotification); return { status: 'ok' }; },
+    });
+    await runTransition(fake.db as never, {} as never, {
+      tenantId: 'c1', namespace: 'ns', transition: 'deleted', toStatus: 'deleted',
+      suppressTenantNotification: true,
+      hooksOverride: [h],
+    });
+    expect(seen).toEqual([true]);
+  });
+
+  it('defaults the notify choice to NOT suppressed when the caller omits it', async () => {
+    // The positive control, and the safety default: an omitted flag must mean
+    // "tell them", or a caller that has not been updated silently stops
+    // notifying every tenant.
+    const seen: Array<boolean | undefined> = [];
+    const h = hook({
+      name: 'sees-ctx-default',
+      order: 100,
+      run: async (ctx) => { seen.push(ctx.suppressTenantNotification); return { status: 'ok' }; },
+    });
+    await runTransition(fake.db as never, {} as never, {
+      tenantId: 'c1', namespace: 'ns', transition: 'suspended', toStatus: 'suspended',
+      hooksOverride: [h],
+    });
+    expect(seen).toEqual([false]);
+  });
+
   it('runs hooks in topo order and marks completed on full success', async () => {
     const calls: string[] = [];
     const a = hook({ name: 'a', order: 100, run: async () => { calls.push('a'); return { status: 'ok' }; } });

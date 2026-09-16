@@ -84,10 +84,10 @@ export default function TenantDetail() {
   // `suppressTenantNotification` on every lifecycle action body
   // (suspend / archive / restore / delete).
   //
-  // TODO: extend `UpdateTenantInput` + the DELETE /tenants/:id body in
-  // packages/api-contracts/src/tenants.ts to include
-  // `suppressTenantNotification?: boolean`; the cast below should be
-  // dropped once the contract change lands.
+  // The contract carries `suppressTenantNotification` and the backend now
+  // READS it — until 2026-09-16 nothing in between did, so this checkbox sent
+  // its value all the way to a hook that checked a field nobody had set, and
+  // the tenant was emailed regardless.
   const [notifyTenant, setNotifyTenant] = useState(true);
 
   const domainsQuery = useDomains(id);
@@ -164,7 +164,7 @@ export default function TenantDetail() {
       // the PATCH body until `UpdateTenantInput` in api-contracts is
       // extended. Backend reads the field on every lifecycle PATCH.
       const res = await updateTenant.mutateAsync(
-        { status: 'suspended', suppressTenantNotification: !notifyTenant } as unknown as import('@insula/api-contracts').UpdateTenantInput,
+        { status: 'suspended', suppressTenantNotification: !notifyTenant },
       );
       const opId = res?.data?.storageArchiveOperationId
         ?? res?.data?.storageRestoreOperationId
@@ -225,7 +225,7 @@ export default function TenantDetail() {
         since: Date.now(),
       });
       const res = await updateTenant.mutateAsync(
-        { status: 'active', suppressTenantNotification: !notifyTenant } as unknown as import('@insula/api-contracts').UpdateTenantInput,
+        { status: 'active', suppressTenantNotification: !notifyTenant },
       );
       const opId = res?.data?.storageRestoreOperationId
         ?? res?.data?.storageArchiveOperationId
@@ -2298,10 +2298,15 @@ function SubscriptionCard({
   const [editing, setEditing] = useState(false);
   const [planId, setPlanId] = useState('');
   const [expiresAt, setExpiresAt] = useState('');
+  // Defaults to notifying: an operator changing someone's plan or renewal date
+  // should normally say so. Reset on every open so a previous silent edit
+  // cannot make the next one silent by accident.
+  const [notifyTenant, setNotifyTenant] = useState(true);
 
   const startEditing = () => {
     setPlanId(data?.plan?.id ?? '');
     setExpiresAt(data?.subscription_expires_at?.slice(0, 10) ?? '');
+    setNotifyTenant(true);
     setEditing(true);
   };
 
@@ -2311,6 +2316,7 @@ function SubscriptionCard({
       await updateSub.mutateAsync({
         plan_id: planId || undefined,
         subscription_expires_at: expiresAt ? new Date(expiresAt).toISOString() : undefined,
+        notify_tenant: notifyTenant,
       });
       setEditing(false);
     } catch { /* error via updateSub.error */ }
@@ -2398,6 +2404,22 @@ function SubscriptionCard({
               />
             </div>
           </div>
+          <label className="flex items-start gap-2.5 rounded-lg bg-gray-50 p-3 dark:bg-gray-700/40">
+            <input
+              type="checkbox"
+              checked={notifyTenant}
+              onChange={(e) => setNotifyTenant(e.target.checked)}
+              className="mt-0.5 h-4 w-4 rounded border-gray-300 text-brand-600 focus:ring-brand-500 dark:border-gray-600 dark:bg-gray-800"
+              data-testid="sub-notify-tenant"
+            />
+            <span className="text-sm text-gray-700 dark:text-gray-300">
+              Email the tenant about this change
+              <span className="mt-0.5 block text-xs text-gray-500 dark:text-gray-400">
+                Untick when the change does not concern them — correcting a
+                mistyped date, or recording a renewal already agreed by phone.
+              </span>
+            </span>
+          </label>
           {updateSub.error && (
             <p className="text-sm text-red-600 dark:text-red-400">
               {updateSub.error instanceof Error ? updateSub.error.message : 'Failed to update subscription'}

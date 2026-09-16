@@ -107,21 +107,49 @@ export default function NotificationDropdown() {
               notifications.map((item) => {
                 const Icon = typeIcons[item.type] ?? Info;
                 const color = typeColors[item.type] ?? 'text-gray-400';
+                // Secondary destinations render as their own controls. The row
+                // itself stays one button (the primary action), so these have
+                // to sit OUTSIDE it — a button nested in a button is invalid
+                // markup and the inner one stops working.
+                const secondary = (item.links ?? []).filter((l) => l.style !== 'primary');
                 return (
-                  <button
+                  <div
                     key={item.id}
-                    type="button"
-                    onClick={() => handleItemClick(item)}
-                    className={`flex w-full items-start gap-3 border-b border-gray-50 px-4 py-3 text-left last:border-b-0 hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-700/60 transition-colors ${!item.isRead ? 'bg-brand-50/30 dark:bg-brand-900/10' : ''}`}
-                    data-testid="notification-item"
+                    className={`border-b border-gray-50 last:border-b-0 dark:border-gray-700 ${!item.isRead ? 'bg-brand-50/30 dark:bg-brand-900/10' : ''}`}
                   >
-                    <Icon size={16} className={`mt-0.5 shrink-0 ${color}`} />
-                    <div className="min-w-0 flex-1">
-                      <p className="text-sm font-medium text-gray-800 dark:text-gray-200">{item.title}</p>
-                      <p className="text-xs text-gray-500 dark:text-gray-400">{item.message}</p>
-                      <p className="mt-0.5 text-xs text-gray-400">{formatRelativeTime(item.createdAt)}</p>
-                    </div>
-                  </button>
+                    <button
+                      type="button"
+                      onClick={() => handleItemClick(item)}
+                      className="flex w-full items-start gap-3 px-4 py-3 text-left transition-colors hover:bg-gray-50 dark:hover:bg-gray-700/60"
+                      data-testid="notification-item"
+                    >
+                      <Icon size={16} className={`mt-0.5 shrink-0 ${color}`} />
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-medium text-gray-800 dark:text-gray-200">{item.title}</p>
+                        <p className="text-xs text-gray-500 dark:text-gray-400">{item.message}</p>
+                        <p className="mt-0.5 text-xs text-gray-400">{formatRelativeTime(item.createdAt)}</p>
+                      </div>
+                    </button>
+                    {secondary.length > 0 && (
+                      <div className="flex flex-wrap gap-2 px-4 pb-2.5 pl-11">
+                        {secondary.map((link) => (
+                          <button
+                            key={link.path}
+                            type="button"
+                            data-testid="notification-secondary-link"
+                            onClick={() => {
+                              setOpen(false);
+                              if (!item.isRead) markRead.mutate([item.id]);
+                              navigate(link.path);
+                            }}
+                            className="rounded-md border border-gray-200 px-2 py-1 text-xs font-medium text-gray-600 transition-colors hover:border-brand-300 hover:text-brand-700 dark:border-gray-600 dark:text-gray-300 dark:hover:border-brand-600 dark:hover:text-brand-300"
+                          >
+                            {link.text}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 );
               })}
           </div>

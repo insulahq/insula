@@ -46,6 +46,18 @@ export interface CascadeCtx {
    * here so the chip can fold N children under one parent row.
    */
   readonly parentTaskId?: string | null;
+  /**
+   * When true, the `notify-tenant-on-transition` hook skips the tenant-facing
+   * notification for this transition — the admin panel's "Notify tenant"
+   * checkbox, unticked.
+   *
+   * It has to travel on the context because the decision is made per REQUEST
+   * and the hook that honours it runs several layers down. Until 2026-09-16 it
+   * did not travel at all: the contract declared the field, the UI sent it,
+   * the hook read `ctx.suppressTenantNotification` — and nothing in between
+   * ever set it, so unticking the box emailed the tenant anyway.
+   */
+  readonly suppressTenantNotification?: boolean;
 }
 
 /**
@@ -73,6 +85,7 @@ async function dispatchTransition(
       tenantId, namespace, transition, fromStatus, toStatus,
       triggeredByUserId: ctx.triggeredByUserId ?? null,
       parentTaskId: ctx.parentTaskId ?? null,
+      suppressTenantNotification: ctx.suppressTenantNotification === true,
     });
     return result.transitionId;
   } catch (err) {

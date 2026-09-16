@@ -17,9 +17,12 @@
  * Best-effort: per-tenant emit failures don't abort the batch.
  */
 import { and, between, eq, isNotNull } from 'drizzle-orm';
+import { mailLogger } from '../../shared/mail-logger.js';
 import { tenants } from '../../db/schema.js';
 import { notifyTenantSubscriptionExpiry } from '../notifications/events.js';
 import type { Database } from '../../db/index.js';
+
+const expiryLog = () => mailLogger().child({ module: 'subscriptions-expiry' });
 
 /** Windows in days. Order matters only for log readability. */
 /**
@@ -127,8 +130,20 @@ export async function runExpiryWarningPass(
         },
         `subscription-expiry-fleet:${new Date().toISOString().slice(0, 10)}`,
       );
-    } catch {
-      // Never let the operator digest break the tenant notifications.
+    } catch (err) {
+      // Never let the operator digest break the TENANT notifications — but
+      // never let it fail in silence either. This catch swallowed everything,
+      // and `admin.subscriptions_expiring` has produced zero delivery rows on
+      // production for its entire life while the tenant-side warnings beside
+      // it delivered fine. Whatever was wrong, nothing ever said so.
+      // The process-wide pino instance (its docblock states it is safe to
+       // import anywhere despite the mail-flavoured name). `runExpiryWarningPass`
+       // takes no logger, and threading one through just to report this would
+       // change the signature of a function four callers use.
+      expiryLog().error(
+        { err, tenantCount: expiring.length },
+        'subscription expiry: operator digest failed — tenants were notified, the operator was not',
+      );
     }
   }
 

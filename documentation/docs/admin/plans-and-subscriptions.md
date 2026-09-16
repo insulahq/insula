@@ -91,6 +91,13 @@ Changing the plan here is the subscription-level equivalent of changing
 limits; if you only want to bend one limit for one tenant, use the
 [per-tenant overrides](tenants.md) on the Resource Limits card instead.
 
+**Email the tenant about this change** is ticked by default — changing
+someone's plan or renewal date is normally something they should hear about.
+Untick it when the edit does not concern them: correcting a date you mistyped,
+or recording a renewal that was already agreed by phone. The choice applies
+only to the edit you are saving; the box is ticked again next time you open
+the form, so a silent edit cannot make the following one silent by accident.
+
 ## Expiry notifications
 
 Because billing is manual, the platform's safety net is **admin-facing
