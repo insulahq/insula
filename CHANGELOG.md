@@ -49,6 +49,26 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   panel and the email cannot disagree about where a category points.
 
 ### Fixed
+- **Mailbox quota alerts stop double-mailing the same person, and stop firing
+  once per crossed threshold.** Production sent one recipient the same warning
+  twice under an identical dedupe key — the tenant-admin leg resolves its
+  audience by user id and the mailbox-owner leg by address, and neither could
+  see the other's list, so whoever was both got two copies. Reconciled in the
+  dispatcher, the only place both lists exist. Separately, a mailbox that
+  jumps from 78% to 95% between two passes crosses three thresholds and used
+  to send three emails seconds apart; the lower crossings are still recorded
+  (or they would fire again next pass) but only the worst one is sent.
+- **The platform records who it emailed.** `recipient_address` was NULL on 177
+  of 184 email deliveries: the worker resolved the address from `users.email`
+  at send time and never wrote it back, so "who did we notify?" could only be
+  answered from the mail server's log. Folded into the update that already
+  runs, and never overwrites a row that carries its own address.
+- **The operator's subscription-expiry digest no longer fails in silence.** Its
+  call sat in a bare `catch {}` commented "never let the operator digest break
+  the tenant notifications" — so while the tenant-side warnings delivered, the
+  operator digest produced no delivery row at all and nothing ever said why.
+  It still cannot break the tenant path; it now reports when it fails.
+
 - **No notification can print a raw id again.** Production mailed
   "3fd54013-… saturated its hour sending limit" because the emitter passed a
   tenant id as the label and every layer below rendered it faithfully. The

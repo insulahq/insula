@@ -235,6 +235,42 @@ describe('emitEvent', () => {
     expect(vars.greeting).toBeNull();
   });
 
+  it('does not mail the same person twice when they are also the mailbox owner', async () => {
+    // Observed on production 2026-09-16: one recipient received the same
+    // mailbox-quota warning twice, seconds apart, under an IDENTICAL dedupe
+    // key — because the two legs resolve their audience independently (by user
+    // id, and by address) and neither could see the other's list.
+    getCategoryMock.mockResolvedValue(baseCategory);
+    resolveRecipientsMock.mockResolvedValue(['u1']);
+    getActiveTemplateMock.mockResolvedValue(baseTemplate);
+    const r = await emitEvent(mockDb({ userEmail: 'owner@example.test' }), {
+      categoryId: 'tenant.suspended',
+      scope: { kind: 'tenant', tenantId: 't1' },
+      variables: {},
+      encryptionKey: 'KEY',
+      externalRecipients: ['Owner@Example.TEST'],
+    });
+    // Case-insensitively the same address, so the external leg is skipped —
+    // and says so rather than vanishing.
+    expect(r.perChannelStatuses.some((st) => st.error === 'duplicate_recipient')).toBe(true);
+  });
+
+  it('still mails a mailbox owner who is NOT an account holder', async () => {
+    // The positive control: without it, the de-duplication above would pass
+    // just as well against a dispatcher that dropped every external recipient.
+    getCategoryMock.mockResolvedValue(baseCategory);
+    resolveRecipientsMock.mockResolvedValue(['u1']);
+    getActiveTemplateMock.mockResolvedValue(baseTemplate);
+    const r = await emitEvent(mockDb({ userEmail: 'admin@example.test' }), {
+      categoryId: 'tenant.suspended',
+      scope: { kind: 'tenant', tenantId: 't1' },
+      variables: {},
+      encryptionKey: 'KEY',
+      externalRecipients: ['bookings@example.test'],
+    });
+    expect(r.perChannelStatuses.some((st) => st.error === 'duplicate_recipient')).toBe(false);
+  });
+
   it('suppresses tenant recipients when flagged', async () => {
     getCategoryMock.mockResolvedValue(baseCategory);
     resolveRecipientsMock.mockResolvedValue(['u1', 'u2']);

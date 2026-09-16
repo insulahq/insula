@@ -836,7 +836,22 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
   // are reused rather than reimplemented. A fourth delivery path is what this
   // overhaul removes, not something it adds.
   const externalLocale = opts.localeOverride ?? 'en';
+  // A person who is both a tenant admin AND the mailbox owner would otherwise
+  // get two copies of the same notification, seconds apart — observed on
+  // production 2026-09-16, where one recipient received the same mailbox-quota
+  // warning twice under an identical dedupe key. The two legs resolve their
+  // audience independently (by user id, and by address), so the only place
+  // they can be reconciled is here, where both lists exist.
+  const alreadyMailed = new Set<string>();
+  for (const userId of recipients) {
+    const email = await getUserEmail(db, userId);
+    if (email) alreadyMailed.add(email.trim().toLowerCase());
+  }
   for (const address of externalRecipients) {
+    if (alreadyMailed.has(address.trim().toLowerCase())) {
+      statuses.push({ userId: null, channel: 'email', status: 'skipped', error: 'duplicate_recipient' });
+      continue;
+    }
     const tpl = await getActiveTemplate(db, category.id, 'email', externalLocale);
     if (!tpl) {
       statuses.push({ userId: null, channel: 'email', status: 'skipped', error: 'template_not_found' });
