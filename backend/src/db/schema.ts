@@ -1775,6 +1775,12 @@ export const mailboxes = pgTable('mailboxes', {
   usedMb: integer('used_mb').notNull().default(0),
   status: mailboxStatusEnum().notNull().default('active'),
   mailboxType: mailboxTypeEnum().notNull().default('mailbox'),
+  // Migration 0123 — platform plumbing (`dmarc@`, `postmaster@` created by
+  // the report-intake reconciler), not tenant mail. Excluded from the plan
+  // mailbox-count cap: these are created BY the platform, so counting them
+  // both charged the tenant for capacity they never asked for and made the
+  // reconciler collide with the cap on every 5-minute tick.
+  platformManaged: boolean('platform_managed').notNull().default(false),
   // Forwarding targets (Sieve `redirect` in Stalwart). NULL/[] = off.
   // `mailbox` type keeps a local copy (`redirect :copy`); `send_only`
   // forwards without storing. The platform DB is authoritative; the

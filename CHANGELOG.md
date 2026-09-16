@@ -12,6 +12,37 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **A notification storm that mailed tenants every five minutes, forever, and
+  then saturated the platform's own sending limit.** The `postmaster@`/`dmarc@`
+  report-intake reconciler created its mailboxes through the *tenant-facing*
+  create path, so for every tenant already at its plan mailbox cap the call was
+  rejected and each rejection emailed that tenant "you have used N of N
+  mailboxes — remove one or upgrade your plan" about a mailbox **the platform**
+  was creating for its own DMARC/DSN plumbing. The notice carried no dedupe key
+  and the reconciler retried on its 5-minute tick, so a standing condition
+  re-notified indefinitely; on one cluster that was 9 emails per tick, ~108 an
+  hour, which then blew the hourly sending limit of the domain the notification
+  sender belongs to and generated a second wave of quota-saturation alerts.
+  Intake mailboxes now take a platform path that is exempt from the tenant caps
+  and raises no tenant notification, and the mailbox-limit notice is deduped
+  per tenant per day.
+- **Platform plumbing no longer consumes a tenant's paid mailbox quota.**
+  `dmarc@` and `postmaster@` are created by the platform on the tenant's domain
+  and were counted against `max_mailboxes`, charging tenants for capacity they
+  never asked for (migration 0123 releases the existing rows).
+
+### Changed
+- **Intake mailboxes are 50 MB transit buffers, hidden from tenant panels, and
+  reaped when they fill.** Nothing reads either mailbox after ingest — the DMARC
+  poller destroys each report it consumes — so the previous 256/512 MB were
+  headroom for unbounded growth; one cluster had accumulated 385 undeliverable
+  DSNs. They are now capped at 50 MB, emptied by delete-and-recreate at 40 MB
+  (recreated in the same reconciler pass, so the address is never without a
+  mailbox), excluded from mailbox storage-quota alerts, and no longer listed in
+  the tenant panel, where they could not be edited or removed anyway. The
+  reconciler also corrects the size cap on mailboxes created before this change.
+
 ## [2026.9.20] - 2026-09-16
 
 ### Added

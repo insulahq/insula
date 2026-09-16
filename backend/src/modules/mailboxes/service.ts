@@ -164,12 +164,29 @@ function sendOnlyFieldError(field: string): ApiError {
   );
 }
 
+export interface CreateMailboxOptions {
+  /**
+   * Platform plumbing, not tenant mail: the `dmarc@`/`postmaster@` intake
+   * mailboxes `ensureReportIntake` creates on a tenant's own domain.
+   *
+   * Set by the reconciler ONLY. It exempts the create from the plan
+   * mailbox-count and mailbox-size caps and — critically — from the
+   * tenant-facing limit notification, because the tenant did not ask for
+   * this mailbox and must not be told to "remove one or upgrade your plan"
+   * to make room for the platform's own DMARC/DSN intake. Leaving it on the
+   * tenant path is what produced ~108 emails/hour on production.
+   */
+  readonly platformManaged?: boolean;
+}
+
 export async function createMailbox(
   db: Database,
   tenantId: string,
   emailDomainId: string,
   input: CreateMailboxInput,
+  opts: CreateMailboxOptions = {},
 ) {
+  const platformManaged = opts.platformManaged === true;
   // 0. Tenant must be active (provisioned) before mailboxes can be created.
   assertTenantActive(await getTenantById(db, tenantId), 'create mailboxes');
 
@@ -200,7 +217,7 @@ export async function createMailbox(
   //    override (tenants.max_mailboxes_override). See limit.ts.
   const effective = await getTenantMailboxLimit(db, tenantId);
   const currentCount = await getTenantMailboxCount(db, tenantId);
-  if (currentCount >= effective.limit) {
+  if (!platformManaged && currentCount >= effective.limit) {
     // Fire-and-forget notification fan-out to all tenant_admin users.
     // We do NOT await the email delivery; we only await the DB insert
     // so the test path is deterministic. Any failure inside
@@ -256,7 +273,7 @@ export async function createMailbox(
   let effectiveQuotaMb = 0;
   if (!isSendOnly) {
     const sizeLimit = await getTenantMailboxSizeLimit(db, tenantId);
-    if (input.quota_mb !== undefined && input.quota_mb > sizeLimit.limit) {
+    if (!platformManaged && input.quota_mb !== undefined && input.quota_mb > sizeLimit.limit) {
       throw new ApiError(
         'MAILBOX_QUOTA_EXCEEDS_LIMIT',
         `Requested mailbox size (${input.quota_mb} MB) exceeds the maximum allowed (${sizeLimit.limit} MB)`,
@@ -438,6 +455,7 @@ export async function createMailbox(
       forwardingAddresses: forwardingAddresses.length > 0 ? forwardingAddresses : null,
       status: 'active',
       stalwartPrincipalId,
+      platformManaged,
     });
   } catch (dbErr) {
     if (stalwartPrincipalId && accountId) {
@@ -518,14 +536,31 @@ export async function attachMailboxAliases<T extends { id: string }>(
   return rows.map((r) => ({ ...r, aliases: (byMailbox.get(r.id) ?? []).sort() }));
 }
 
+export interface ListMailboxesOptions {
+  /**
+   * Show platform-managed intake mailboxes (`dmarc@`, `postmaster@`).
+   *
+   * Operator surfaces pass true — they are real accounts on the tenant's
+   * domain and the operator owns them. Tenant panels must NOT: the tenant
+   * cannot edit, delete or read them, they do not count against the tenant's
+   * quota, and listing them only raises "what is this and why can't I remove
+   * it?". Defaults to hidden so a new caller is safe by default.
+   */
+  readonly includePlatformManaged?: boolean;
+}
+
 export async function listMailboxes(
   db: Database,
   tenantId: string,
   emailDomainId?: string,
+  opts: ListMailboxesOptions = {},
 ) {
   const conditions = [eq(mailboxes.tenantId, tenantId)];
   if (emailDomainId) {
     conditions.push(eq(mailboxes.emailDomainId, emailDomainId));
+  }
+  if (opts.includePlatformManaged !== true) {
+    conditions.push(eq(mailboxes.platformManaged, false));
   }
 
   const rows = await db

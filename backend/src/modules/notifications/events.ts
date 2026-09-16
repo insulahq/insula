@@ -71,13 +71,21 @@ export async function notifyTenantMailboxLimitReached(
   payload: MailboxLimitPayload,
 ): Promise<void> {
   const sourceText = payload.source === 'tenant_override' ? 'custom limit' : 'hosting plan';
+  // Being at the cap is a STANDING condition, not an event: it stays true
+  // until the tenant deletes a mailbox or upgrades. Without a dedupe key
+  // every rejected create re-notified, so a caller retrying on a timer
+  // mailed the tenant forever — 9 per tick, ~108/hour on production, which
+  // then saturated the sending limit of the notification sender's domain.
+  // One notice per tenant per day per distinct cap is the useful signal.
+  const day = new Date().toISOString().slice(0, 10);
+  const dedupeKey = `mailbox-limit:${tenantId}:${payload.limit}:${day}`;
   await dispatchSafe(db, 'tenant.mail_event', { kind: 'tenant', tenantId }, {
     subsystem: 'Mailbox limit',
     objectLabel: `${payload.current} of ${payload.limit} mailboxes`,
     detail: `You have used ${payload.current} of ${payload.limit} mailboxes allowed by your ${sourceText}.`,
     severityLabel: 'limit reached',
     recommendedAction: 'Remove an existing mailbox or upgrade your plan.',
-  }, tenantId);
+  }, tenantId, { dedupeKey });
 }
 
 // ──────────────────────────────────────────────────────────────────

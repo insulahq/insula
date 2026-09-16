@@ -92,6 +92,13 @@ export async function checkQuotaThresholds(
     JOIN tenants t ON t.id = m.tenant_id
     WHERE m.status = 'active'
       AND m.quota_mb > 0
+      -- Platform plumbing is not a tenant's problem. The dmarc@ and
+      -- postmaster@ intake mailboxes are 50 MB transit buffers that the
+      -- report-intake reconciler reaps at 40 MB, i.e. they sit ABOVE this
+      -- 75% floor by design. Without this filter, shrinking them turned
+      -- every reap cycle into a quota warning to the tenant and an
+      -- over-quota entry in the operator's fleet notification.
+      AND m.platform_managed = FALSE
       AND (m.used_mb::numeric / m.quota_mb::numeric) * 100 >= ${CANDIDATE_FLOOR_PCT}
   `);
 

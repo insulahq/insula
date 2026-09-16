@@ -40,7 +40,7 @@
  * disabled a per-tenant-domain feature that never depended on it.
  */
 
-import { eq, and } from 'drizzle-orm';
+import { eq, and, gte } from 'drizzle-orm';
 import { domains, emailDomains, mailboxes } from '../../db/schema.js';
 import {
   reportSettingsGet,
@@ -86,21 +86,35 @@ const REQUIRED_INTAKE_PATTERNS = [
  */
 const RETIRED_INTAKE_PATTERNS = ['fbl@*'] as const;
 
-/** Residual copies only — Stalwart stores the parsed report itself. */
-const DMARC_MAILBOX_QUOTA_MB = 256;
+/**
+ * Both intake mailboxes are transit buffers, not archives: the DMARC poller
+ * persists each report and destroys the object it consumed, and a DSN is only
+ * useful until someone has read it. Nothing on the platform reads either
+ * mailbox after ingest, so any storage they hold is pure growth.
+ *
+ * 50 MB each, and reaped below once they fill — an operator decision
+ * (2026-09-16) after production accumulated 385 undeliverable DSNs. The
+ * previous 256/512 MB were sized as if these were real mailboxes.
+ */
+const INTAKE_MAILBOX_QUOTA_MB = 50;
+const DMARC_MAILBOX_QUOTA_MB = INTAKE_MAILBOX_QUOTA_MB;
+const POSTMASTER_MAILBOX_QUOTA_MB = INTAKE_MAILBOX_QUOTA_MB;
 
 /**
- * DSNs and bounces are small but arrive for every undeliverable message, so
- * this needs more headroom than a report mailbox. Bounded so a bounce storm
- * cannot fill the volume.
+ * Reap at 80% rather than at 100%: at 100% Stalwart is already rejecting, so
+ * the reports and DSNs that would have told us something are the ones lost.
  */
-const POSTMASTER_MAILBOX_QUOTA_MB = 512;
+const INTAKE_REAP_AT_MB = Math.floor(INTAKE_MAILBOX_QUOTA_MB * 0.8);
 
 export interface ReportIntakeResult {
   readonly mailbox: 'exists' | 'created' | 'skipped' | 'failed';
   readonly settings: 'in-sync' | 'updated' | 'skipped';
   /** Every domain that now has a working `dmarc@` intake. */
   readonly dmarcAddresses: readonly string[];
+  /** Intake mailboxes emptied this pass by delete-and-recreate. */
+  readonly reaped: number;
+  /** Intake mailboxes whose size cap was corrected to the current value. */
+  readonly resized: number;
 }
 
 export async function ensureReportIntake(
@@ -147,6 +161,48 @@ export async function ensureReportIntake(
     .innerJoin(domains, eq(emailDomains.domainId, domains.id))
     .where(eq(emailDomains.enabled, 1));
 
+  // ── 1a. reap full intake mailboxes ──
+  //
+  // Delete-and-recreate rather than per-message expunge: the JMAP client has
+  // no Email/query or Email/set, and these mailboxes hold nothing anyone reads
+  // after ingest, so the cheap primitive is the right one. Ordering is what
+  // makes it safe — the create loop below runs in the SAME pass and puts the
+  // address back before this function returns, so there is no tick-long window
+  // where mail to `dmarc@`/`postmaster@` has nowhere to land.
+  //
+  // Only `platform_managed` rows are touched. A tenant who hand-made their own
+  // postmaster@ owns it, and it is neither reaped nor resized.
+  let reaped = 0;
+  let resized = 0;
+  const full = await db
+    .select({
+      id: mailboxes.id,
+      tenantId: mailboxes.tenantId,
+      fullAddress: mailboxes.fullAddress,
+      usedMb: mailboxes.usedMb,
+    })
+    .from(mailboxes)
+    .where(and(
+      eq(mailboxes.platformManaged, true),
+      gte(mailboxes.usedMb, INTAKE_REAP_AT_MB),
+    ));
+  for (const box of full) {
+    try {
+      const { deleteMailbox } = await import('../mailboxes/service.js');
+      await deleteMailbox(db, box.tenantId, box.id);
+      reaped += 1;
+      logger.info(
+        { address: box.fullAddress, usedMb: box.usedMb, reapAtMb: INTAKE_REAP_AT_MB },
+        'report intake: reaped full intake mailbox (recreated in this same pass)',
+      );
+    } catch (err) {
+      logger.error(
+        { err, address: box.fullAddress },
+        'report intake: reap of full intake mailbox failed (retries next tick)',
+      );
+    }
+  }
+
   for (const target of reportDomains) {
     for (const intake of INTAKES) {
       const address = `${intake.localPart}@${target.domainName.toLowerCase()}`;
@@ -154,6 +210,8 @@ export async function ensureReportIntake(
         .select({
           id: mailboxes.id,
           stalwartPrincipalId: mailboxes.stalwartPrincipalId,
+          quotaMb: mailboxes.quotaMb,
+          platformManaged: mailboxes.platformManaged,
         })
         .from(mailboxes)
         .where(and(
@@ -170,6 +228,22 @@ export async function ensureReportIntake(
         // not second-guess them, because deleting and recreating a mailbox on
         // the strength of one failed lookup would destroy a real mailbox the
         // moment Stalwart is briefly unreachable.
+        // Converge the size cap. The 19 rows that predate the 50 MB decision
+        // carry 256/512 MB, and a constant nothing re-asserts is a constant
+        // that only applies to installs made after it changed.
+        if (existing.platformManaged && existing.quotaMb !== intake.quotaMb) {
+          try {
+            const { updateMailbox } = await import('../mailboxes/service.js');
+            await updateMailbox(db, target.tenantId, existing.id, { quota_mb: intake.quotaMb });
+            resized += 1;
+            logger.info(
+              { address, from: existing.quotaMb, to: intake.quotaMb },
+              'report intake: corrected intake mailbox size cap',
+            );
+          } catch (err) {
+            logger.warn({ err, address }, 'report intake: size-cap correction failed (retries next tick)');
+          }
+        }
         if (intake.isRuaTarget) dmarcAddresses.push(address);
         states.push('exists');
         continue;
@@ -177,12 +251,18 @@ export async function ensureReportIntake(
 
       try {
         const { createMailbox } = await import('../mailboxes/service.js');
+        // `platformManaged` keeps this OFF the tenant path: no plan-cap
+        // rejection, no tenant-facing "remove a mailbox or upgrade your plan"
+        // notification for a mailbox the platform is creating for its own
+        // DMARC/DSN intake, and no consumption of the tenant's paid quota.
+        // Without it this call was rejected on every 5-minute tick for every
+        // capped tenant and emailed them about it each time.
         await createMailbox(db, target.tenantId, target.emailDomainId, {
           local_part: intake.localPart,
           display_name: intake.displayName,
           quota_mb: intake.quotaMb,
           mailbox_type: 'mailbox',
-        });
+        }, { platformManaged: true });
         if (intake.isRuaTarget) dmarcAddresses.push(address);
         states.push('created');
         logger.info({ address }, 'report intake: created intake mailbox');
@@ -247,5 +327,5 @@ export async function ensureReportIntake(
     logger.warn({ err }, 'report intake: Stalwart JMAP unreachable for ReportSettings, skipped');
   }
 
-  return { mailbox: mailboxState, settings: settingsState, dmarcAddresses };
+  return { mailbox: mailboxState, settings: settingsState, dmarcAddresses, reaped, resized };
 }
