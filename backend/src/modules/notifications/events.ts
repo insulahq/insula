@@ -703,6 +703,8 @@ export interface AdminEmailQuotaPayload {
   readonly limit: string;
   readonly percent: string;
   readonly occurredAt: string;
+  /** The accounts that actually sent — "a@x (48), b@x (5)". */
+  readonly topSenders: string;
 }
 /**
  * A tenant saturated its sending limit.
@@ -940,6 +942,8 @@ export interface TenantEmailQuotaPayload {
   readonly percent: string;
   readonly used: string;
   readonly limit: string;
+  /** Which of the tenant's own accounts sent — they need this to find it. */
+  readonly topSenders: string;
 }
 /** 80% crossing — the mail-events threshold evaluator owns dedupe. */
 export async function notifyTenantEmailQuotaWarning(

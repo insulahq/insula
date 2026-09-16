@@ -13,6 +13,38 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Added
+- **Notifications name the account that actually sent.** The Stalwart webhook
+  carries the full envelope sender and ingest kept only the part after the
+  `@`, so a sending-limit alert could say which tenant but never which
+  mailbox — useless when a tenant has ten mailboxes and one is compromised.
+  A new per-sender counter (migration 0125) means both the operator and the
+  tenant alert now list the sending accounts and their counts, with the
+  wording that makes it actionable: one unfamiliar address suggests a
+  compromise, one service address suggests a runaway integration, traffic
+  spread across real mailboxes suggests they have outgrown the limit.
+- **Every notification addresses the person by name.** The greeting is
+  emitted by the shared email wrapper rather than by each of 58 templates,
+  and is omitted for a mailbox-owner recipient — they have no platform
+  account, so the only available "name" is the local part and "Hi bookings,"
+  reads as a broken mail merge.
+
+### Fixed
+- **No notification can print a raw id again.** Production mailed
+  "3fd54013-… saturated its hour sending limit" because the emitter passed a
+  tenant id as the label and every layer below rendered it faithfully. The
+  dispatcher now resolves ids centrally — as a tenant, user, mailbox or
+  domain — before any template renders, checks the RENDERED text as a second
+  line of defence, and reports any id nothing could name. Fixed centrally
+  rather than in ~50 emitters, because a rule each caller must remember is a
+  rule half of them will not.
+- **A mailbox owner was dropped whenever their tenant had no admin user.** The
+  dispatcher returned early on an empty *user* recipient list, and that check
+  sat above the external-recipient loop — so the one audience that path exists
+  for (people with no platform account, e.g. mailbox-quota warnings) was
+  silently skipped in exactly the case it was built for.
+
+
+### Added
 - **A master notification switch in Admin → Notifications.** One button that stops
   every notification on every channel, and resumes them. It exists because on
   2026-09-16 the only way to stop a storm was an operator running

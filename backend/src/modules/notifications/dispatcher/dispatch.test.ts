@@ -202,6 +202,39 @@ describe('emitEvent', () => {
     expect(r.deliveryCount).toBeGreaterThan(0);
   });
 
+  it('greets a platform user by name', async () => {
+    getCategoryMock.mockResolvedValue(baseCategory);
+    resolveRecipientsMock.mockResolvedValue(['u1']);
+    getActiveTemplateMock.mockResolvedValue(baseTemplate);
+    await emitEvent(mockDb(), {
+      categoryId: 'tenant.suspended',
+      scope: { kind: 'tenant', tenantId: 't1' },
+      variables: {},
+      encryptionKey: 'KEY',
+    });
+    // The wrapper renders `{{#if greeting}}`, so the dispatcher must supply it
+    // — no template can be relied on to remember.
+    const vars = renderTemplateMock.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+    expect(vars).toHaveProperty('greeting');
+  });
+
+  it('does NOT greet a mailbox-owner recipient — there is no name to use', async () => {
+    getCategoryMock.mockResolvedValue(baseCategory);
+    resolveRecipientsMock.mockResolvedValue([]);
+    getActiveTemplateMock.mockResolvedValue(baseTemplate);
+    await emitEvent(mockDb(), {
+      categoryId: 'tenant.suspended',
+      scope: { kind: 'tenant', tenantId: 't1' },
+      variables: {},
+      encryptionKey: 'KEY',
+      externalRecipients: ['bookings@example.test'],
+    });
+    const vars = renderTemplateMock.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+    // Explicitly null, not absent: absent would make the strict renderer throw
+    // on `{{#if greeting}}`, which is how sixteen renewal emails once died.
+    expect(vars.greeting).toBeNull();
+  });
+
   it('suppresses tenant recipients when flagged', async () => {
     getCategoryMock.mockResolvedValue(baseCategory);
     resolveRecipientsMock.mockResolvedValue(['u1', 'u2']);

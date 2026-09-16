@@ -27,11 +27,12 @@
  *     each calendar window fires each threshold at most once.
  */
 
-import { eq, gte, lt, sql, inArray } from 'drizzle-orm';
+import { and, eq, gte, lt, sql, inArray } from 'drizzle-orm';
 import {
   tenants,
   hostingPlans,
   emailSendCounters,
+  emailSenderCounters,
   emailQuotaEvents,
   auditLogs,
   platformSettings,
@@ -109,6 +110,46 @@ export function computeQuotaCrossings(
   return crossings;
 }
 
+
+/**
+ * The accounts that actually sent, for the window that tripped.
+ *
+ * "Your tenant sent 53 of 50" tells an operator nothing they can act on when
+ * the tenant has ten mailboxes. "notifications@example.test (48),
+ * sales@example.test (5)" tells them whether this is a compromised account, a
+ * runaway integration, or normal business growth — which are three completely
+ * different responses.
+ */
+async function topSendersFor(
+  db: Database,
+  tenantId: string,
+  window: 'hour' | 'day',
+): Promise<string | null> {
+  const since = window === 'hour'
+    ? sql`date_trunc('hour', NOW())`
+    : sql`date_trunc('day', NOW())`;
+  try {
+    const rows = await db
+      .select({
+        sender: emailSenderCounters.sender,
+        sent: sql<number>`COALESCE(SUM(${emailSenderCounters.sentCount}), 0)`,
+      })
+      .from(emailSenderCounters)
+      .where(and(
+        eq(emailSenderCounters.tenantId, tenantId),
+        gte(emailSenderCounters.bucketStart, since),
+      ))
+      .groupBy(emailSenderCounters.sender)
+      .orderBy(sql`2 DESC`)
+      .limit(5);
+    if (rows.length === 0) return null;
+    return rows.map((r) => `${r.sender} (${r.sent})`).join(', ');
+  } catch {
+    // An attribution we cannot read must not stop the alert that needs it.
+    return null;
+  }
+}
+
 async function evaluateQuotaUsage(db: Database, logger: OutboundReconcileLogger): Promise<number> {
   const usage = (await db
     .select({
@@ -125,6 +166,7 @@ async function evaluateQuotaUsage(db: Database, logger: OutboundReconcileLogger)
   const limitRows = await db
     .select({
       id: tenants.id,
+      name: tenants.name,
       status: tenants.status,
       planId: tenants.planId,
       emailSendRateLimit: tenants.emailSendRateLimit,
@@ -140,6 +182,11 @@ async function evaluateQuotaUsage(db: Database, logger: OutboundReconcileLogger)
     const resolved = buildEffectiveSendLimits(r);
     return [r.id, { hourly: resolved.hourly.limit, daily: resolved.daily.limit }];
   }));
+  // The alert used to read "3fd54013-fc40-4e13-adaf-ed1b5dd39f28 saturated its
+  // hour sending limit" because this loop had the id and never asked for the
+  // name. The dispatcher now resolves ids as a backstop; passing the name is
+  // still the emitter's job.
+  const tenantNames = new Map(limitRows.map((r) => [r.id, r.name]));
 
   const crossings = computeQuotaCrossings(usage, limits);
   let notified = 0;
@@ -178,11 +225,13 @@ async function evaluateQuotaUsage(db: Database, logger: OutboundReconcileLogger)
     if (highestNew) {
       try {
         const { notifyTenantEmailQuotaWarning, notifyTenantEmailQuotaExceeded } = await import('../notifications/events.js');
+        const senders = await topSendersFor(db, highestNew.tenantId, highestNew.window);
         const payload = {
           window: highestNew.window,
           percent: String(Math.floor((highestNew.used / highestNew.limit) * 100)),
           used: String(highestNew.used),
           limit: String(highestNew.limit),
+          topSenders: senders ?? 'no per-sender attribution recorded yet',
         };
         if (highestNew.threshold >= 100) {
           await notifyTenantEmailQuotaExceeded(db, highestNew.tenantId, payload);
@@ -192,7 +241,8 @@ async function evaluateQuotaUsage(db: Database, logger: OutboundReconcileLogger)
           // exactly one audience, so nobody on the platform side ever heard.
           const { notifyAdminEmailQuotaExceeded } = await import('../notifications/events.js');
           await notifyAdminEmailQuotaExceeded(db, {
-            tenantLabel: highestNew.tenantId,
+            tenantLabel: tenantNames.get(highestNew.tenantId) ?? highestNew.tenantId,
+            topSenders: payload.topSenders,
             window: highestNew.window,
             used: payload.used,
             limit: payload.limit,

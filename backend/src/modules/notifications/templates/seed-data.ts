@@ -35,6 +35,9 @@ export interface SeedTemplate {
 
 const COMMON_VARS: readonly NotificationTemplateVariable[] = [
   { name: 'userName', type: 'string', required: false },
+  // Supplied by the dispatcher from the recipient's own name; null for a
+  // mailbox-owner recipient, which collapses the wrapper's `#if greeting`.
+  { name: 'greeting', type: 'string', required: false },
   { name: 'tenantName', type: 'string', required: false },
   { name: 'platformName', type: 'string', required: false },
   // The tenant's billing/technical contact PERSON, distinct from the
@@ -76,7 +79,14 @@ function emailMjml(headline: string, paragraph: string, ctaText?: string, ctaUrl
   const cta = ctaText && ctaUrl
     ? `<mj-button href="${ctaUrl}">${ctaText}</mj-button>`
     : '';
+  // The greeting is emitted by the WRAPPER, not by each template: the operator
+  // requirement is that every notification addresses the person, and 58
+  // templates each remembering to open with one is 58 chances to forget.
+  // `{{greeting}}` is null for a mailbox-owner recipient — they have no
+  // platform account and no name — and the `#if` collapses rather than
+  // rendering "Hi ,".
   return `<mjml><mj-body><mj-section><mj-column>
+{{#if greeting}}<mj-text font-size="14px" line-height="22px">{{greeting}}</mj-text>{{/if}}
 <mj-text font-size="20px" font-weight="600">${headline}</mj-text>
 <mj-text font-size="14px" line-height="22px">${paragraph}</mj-text>
 ${cta}
@@ -749,7 +759,11 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
       'Tenant sending limit saturated',
       '{{tenantLabel}} sent {{used}} of {{limit}} messages ({{percent}}%) in the current {{window}} window, '
       + 'as of {{occurredAt}}. A saturated sender is the shape of both a compromised account and a '
-      + 'deliverability risk to the whole platform.',
+      + 'deliverability risk to the whole platform.<br /><br />'
+      + '<strong>Sending accounts:</strong> {{topSenders}}<br /><br />'
+      + 'Which account is responsible decides the response: one unfamiliar address suggests a '
+      + 'compromise, a single service address suggests a runaway integration, and traffic spread '
+      + 'across the tenant\'s real mailboxes suggests they have simply outgrown the limit.',
     ),
     bodyFormat: 'mjml',
     variablesSchema: [
@@ -760,6 +774,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
       { name: 'limit', type: 'string', required: false },
       { name: 'percent', type: 'string', required: false },
       { name: 'occurredAt', type: 'string', required: false },
+      { name: 'topSenders', type: 'string', required: false },
     ],
   },
   {
@@ -767,7 +782,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: '{{tenantLabel}} at its {{window}} sending limit',
-    bodyTemplate: '{{tenantLabel}}: {{used}}/{{limit}} messages ({{percent}}%) this {{window}} as of {{occurredAt}}.',
+    bodyTemplate: '{{tenantLabel}}: {{used}}/{{limit}} messages ({{percent}}%) this {{window}} as of {{occurredAt}}. Sending accounts: {{topSenders}}.',
     bodyFormat: 'plaintext',
     variablesSchema: [
       ...COMMON_VARS,
@@ -777,6 +792,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
       { name: 'limit', type: 'string', required: false },
       { name: 'percent', type: 'string', required: false },
       { name: 'occurredAt', type: 'string', required: false },
+      { name: 'topSenders', type: 'string', required: false },
     ],
   },
 
@@ -1148,9 +1164,12 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     subjectTemplate: 'Email sending limit reached ({{window}})',
     bodyTemplate: emailMjml(
       'Sending limit reached',
-      'You have sent {{used}} of {{limit}} messages in the current {{window}} window. '
-      + 'Further messages are deferred until the window rolls over. Contact support if you '
-      + 'regularly need a higher limit.',
+      'Your account has sent {{used}} of {{limit}} messages in the current {{window}} window, '
+      + 'as of {{occurredAt}}. Further messages are deferred until the window rolls over.<br /><br />'
+      + '<strong>Sending accounts:</strong> {{topSenders}}<br /><br />'
+      + 'If an address here is not one you expect to be sending, change its password — that is '
+      + 'the usual sign of a compromised mailbox. If this is your normal volume, contact support '
+      + 'to raise the limit.',
     ),
     bodyFormat: 'mjml',
     variablesSchema: [
@@ -1158,6 +1177,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
       { name: 'window', type: 'string', required: true },
       { name: 'used', type: 'string', required: true },
       { name: 'limit', type: 'string', required: true },
+      { name: 'topSenders', type: 'string', required: false },
     ],
   },
   {
@@ -1165,7 +1185,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: 'Email sending limit reached ({{window}})',
-    bodyTemplate: '{{used}} of {{limit}} messages sent ({{percent}}%) — further messages are deferred this {{window}}.',
+    bodyTemplate: '{{used}} of {{limit}} messages sent ({{percent}}%) this {{window}} as of {{occurredAt}} — further messages are deferred. Sending accounts: {{topSenders}}.',
     bodyFormat: 'plaintext',
     variablesSchema: [
       ...COMMON_VARS,
@@ -1173,6 +1193,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
       { name: 'used', type: 'string', required: true },
       { name: 'limit', type: 'string', required: true },
       { name: 'percent', type: 'string', required: false },
+      { name: 'topSenders', type: 'string', required: false },
     ],
   },
 
