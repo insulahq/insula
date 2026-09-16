@@ -327,9 +327,22 @@ else
   [[ "$R_IN_APP" == "sent" ]] \
     && il_ok "D3 resolved in_app delivery row sent" \
     || il_fail "D3 resolved in_app delivery row status=$R_IN_APP (expected sent)"
-  [[ "$R_EMAIL" != "absent" ]] \
-    && il_ok "D3 resolved email delivery row present (status=$R_EMAIL)" \
-    || il_fail "D3 resolved email delivery row ABSENT"
+  # RESOLVED is AMBIENT — in-app only, and that is the point, not an omission.
+  #
+  # This used to assert an email row was PRESENT, mirroring D2's #57
+  # no-silent-loss contract for the critical alert. The notification overhaul
+  # reclassified `admin.slo_alert_resolved` as ambient (see
+  # notifications/routing/classes.ts): a resolution notice is not an alert and
+  # does not warrant an out-of-band channel. So the assertion outlived the
+  # contract it encoded and failed on staging rc.2 with 25/26 otherwise green.
+  #
+  # Inverted rather than deleted: an email row REAPPEARING here would mean the
+  # routing classification had silently regressed and operators were being
+  # mailed every time a problem fixed itself. D2 still holds the no-silent-loss
+  # line for the critical path, which is where it belongs.
+  [[ "$R_EMAIL" == "absent" ]] \
+    && il_ok "D3 resolved has no email row (ambient/in-app only, by design)" \
+    || il_fail "D3 resolved email delivery row PRESENT (status=$R_EMAIL) — ambient classification regressed"
   il_phase_end
 fi
 
