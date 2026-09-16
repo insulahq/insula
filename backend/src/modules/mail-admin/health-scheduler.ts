@@ -89,10 +89,22 @@ export async function runMailHealthCheckOnce(
   try {
     const { getWebmailSettings } = await import('../webmail-settings/service.js');
     mailHostname = (await getWebmailSettings(db)).mailServerHostname ?? null;
-  } catch {
-    mailHostname = null;
+  } catch (err) {
+    // "Could not read the setting" is NOT "mail is not set up".
+    //
+    // This catch used to set `mailHostname = null` and fall into the skip
+    // below, so a database blip disabled every mail-health alert on the
+    // cluster and said nothing — the check simply reported 0 and returned.
+    // The settings read failing is itself worth an operator's attention, and
+    // it must not be laundered into a confident claim about configuration.
+    log.warn(
+      '[mail-health] could not read mail settings; skipping this pass '
+      + '(this is NOT a statement that mail is unconfigured): '
+      + (err instanceof Error ? err.message : String(err)),
+    );
+    return 0;
   }
-  // No mail hostname configured → mail is not set up on this cluster. Alerting
+  // A genuinely absent hostname → mail is not set up on this cluster. Alerting
   // would be pure noise on every dev/staging install that never enabled mail.
   if (!mailHostname) return 0;
 
