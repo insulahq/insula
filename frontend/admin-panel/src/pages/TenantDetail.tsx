@@ -60,8 +60,11 @@ import {
 } from '@/hooks/use-storage-lifecycle';
 import { useTableSearch } from '@/hooks/use-table-search';
 import ErrorPanel from '@/components/ErrorPanel';
+import { useTabParam } from '@/hooks/use-tab-param';
 
 type TabKey = 'domains' | 'applications' | 'deployments' | 'files' | 'email' | 'backups' | 'snapshots' | 'users';
+
+const TENANT_DETAIL_TAB_IDS: readonly TabKey[] = ['domains', 'applications', 'deployments', 'files', 'email', 'backups', 'snapshots', 'users'];
 
 export default function TenantDetail() {
   const { id } = useParams<{ id: string }>();
@@ -73,7 +76,7 @@ export default function TenantDetail() {
 
   const [editOpen, setEditOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState<TabKey>('domains');
+  const [activeTab, setActiveTab] = useTabParam<TabKey>(TENANT_DETAIL_TAB_IDS, 'domains');
   // notifications-system Phase 1: per-action toggle that lets the
   // operator suppress the tenant-facing notification dispatched by the
   // lifecycle hook registry. Default ON — operator must opt out

@@ -1,4 +1,3 @@
-import { useState } from 'react';
 import { Server, Mail, Package, Settings, Shield } from 'lucide-react';
 import EmailPageHeader from '@/components/email/EmailPageHeader';
 import MailSectionCard from '@/components/MailSectionCard';
@@ -6,6 +5,7 @@ import MailSettingsTab from '@/components/mail-settings/MailSettingsTab';
 import WebmailSettingsTab from '@/components/mail-settings/WebmailSettingsTab';
 import MailboxBackupEngineSection from '@/components/mail-settings/MailboxBackupEngineSection';
 import StalwartAdminPanel from '@/components/StalwartAdminPanel';
+import { useTabParam } from '@/hooks/use-tab-param';
 
 type SettingsTab = 'mail' | 'webmail' | 'bundle-engine';
 
@@ -18,8 +18,10 @@ type SettingsTab = 'mail' | 'webmail' | 'bundle-engine';
  * the upstream Stalwart web-admin UI for everything the platform
  * doesn't surface natively (advanced filters, log inspection, etc).
  */
+const EMAIL_SETTINGS_TAB_IDS: readonly SettingsTab[] = ['mail', 'webmail', 'bundle-engine'];
+
 export default function EmailSettingsPage() {
-  const [tab, setTab] = useState<SettingsTab>('mail');
+  const [tab, setTab] = useTabParam<SettingsTab>(EMAIL_SETTINGS_TAB_IDS, 'mail');
 
   return (
     <div className="space-y-6">
