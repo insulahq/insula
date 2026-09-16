@@ -73,6 +73,24 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   A cluster with nothing to test against is reported as *not verified* rather
   than as a pass.
 
+- **The search box in both panels works.** It was a disabled placeholder
+  labelled "coming soon". It now finds two things at once: **pages and tabs**,
+  and **your live records**. Tabs are searchable in their own right, which is
+  the point — most of what you actually want is one level *below* a sidebar
+  entry, so typing `waf` offers WAF Events, Banned IPs, Exclusions and Settings
+  separately and takes you to that tab rather than the page default. Words that
+  are not in the page name work too: `modsecurity` finds WAF Events, `phpmyadmin`
+  finds the tenant SQL Manager, `lets encrypt` finds Ingress & TLS. In the same
+  list, below the pages, it matches tenants, domains, applications, mailboxes,
+  scheduled tasks, users, SFTP users, SSH keys, nodes, catalog entries, plans
+  and storage targets. `Ctrl+K` / `⌘K` jumps to it from anywhere.
+- **Search never shows you something you could not already reach.** A page your
+  role cannot open is not offered, and a record you could not already list is
+  not returned — a `support` admin searching `waf` gets nothing, and a tenant
+  only ever sees their own account. When the record lookup fails, the drop-down
+  says so and keeps showing the page results, rather than reporting an outage as
+  "no matches".
+
 ### Changed
 - **A new email domain now starts at DMARC `p=none`, not `p=quarantine`.** The
   platform used to publish enforcement on day one, before it had seen a single
