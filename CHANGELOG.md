@@ -40,6 +40,20 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   re-added to that path, not just the helper that was removed.
 
 ### Changed
+- **One report-intake mailbox per domain instead of two.** `dmarc@` is now an
+  ALIAS of `postmaster@` rather than a second account. Nothing justified the
+  split: both patterns are registered identically in Stalwart (so the old
+  claim that pointing `rua=` at postmaster@ would "mix report parsing with
+  bounces" was already false of the shipped config), neither mailbox stores
+  anything — 0 MB used across 19 of them on a live cluster, because
+  report-analysis intercepts before storage — and `postmaster@` is mandatory
+  per RFC 5321 §4.5.1 while `dmarc@` is a name this platform chose. An alias
+  was chosen over repointing every published `rua=` at postmaster@ because it
+  needs no DNS migration and no propagation window: the address is unchanged,
+  only what sits behind it. Existing empty platform-managed `dmarc@` mailboxes
+  are converged automatically; one that a tenant owns, or one that somehow
+  holds mail, is left alone and still reported as a valid `rua=` target.
+
 - **Two email subject lines name their subject.** "Backup failed" and
   "Scheduled task failed" now carry the backup and task name — an inbox shows
   the subject line, and one of forty identical ones is unactionable.
