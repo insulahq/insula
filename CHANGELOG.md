@@ -32,6 +32,16 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   and were counted against `max_mailboxes`, charging tenants for capacity they
   never asked for (migration 0123 releases the existing rows).
 
+### Removed
+- **"Mailbox limit reached" is no longer a notification.** It fired
+  synchronously from the tenant's own failed click: the create call already
+  rejects with the limit, the current count and the remediation, the panel
+  renders that error on the spot, and the mailbox page shows the used/quota
+  bar — so the notification restated by email a number the person was looking
+  at, about an action they had just watched fail. Operator decision
+  2026-09-16. A dispatcher-level test now fails for *any* notification
+  re-added to that path, not just the helper that was removed.
+
 ### Changed
 - **Intake mailboxes are 50 MB, hidden from tenant panels, and reaped if they
   ever fill.** `dmarc@` and `postmaster@` are RCPT landing pads: they exist so
