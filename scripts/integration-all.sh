@@ -296,6 +296,14 @@ PARALLEL=(
   # cnpg-down's forSeconds=300 → ~9-12 min wall; self-skips (77) on
   # overlays without k8s/base/monitoring (e.g. local DinD).
   "monitoring-slo:integration-monitoring-slo.sh"
+  # Global search (GET /api/v1/search). The endpoint carries NO requireRole
+  # gate by design — every authenticated user hits the same URL and the
+  # providers decide what comes back — so the phases that matter are the
+  # authorization ones: a tenant token must not see a second tenant's domain
+  # even when it searches for that hostname by name, and a read_only admin
+  # must not receive the user directory. Provisions two throwaway tenants +
+  # a domain each (self-cleans via trap); fast (~1-2 min, no k8s waits).
+  "global-search:integration-global-search.sh"
   # mTLS edge enforcement (ADR-054): provisions a throwaway tenant +
   # nginx-php deployment + domain (auto-route) + CA provider, binds mTLS,
   # then asserts via real curl that no-cert is handshake-rejected, a valid
