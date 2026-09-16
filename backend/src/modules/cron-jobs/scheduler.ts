@@ -1,127 +1,156 @@
-import { eq, and, sql } from 'drizzle-orm';
+/**
+ * Tenant cron scheduler.
+ *
+ * Polls every 30s, claims each due job atomically, runs it through
+ * `executeCronJob`, and records what happened. Both job types go through the
+ * same path — the `type = 'webcron'` filter this loop used to carry is why a
+ * deployment cron never fired.
+ */
+
+import { and, eq, isNull, lt, ne, or } from 'drizzle-orm';
 import { cronJobs } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
-import { guardedFetch } from '../../shared/ssrf-guard.js';
+import { executeCronJob, describeFailure, type ClusterTransport } from './executor.js';
+import { getNextRunTime } from './cron-expression.js';
 
-/**
- * Given a cron schedule string and the last run time, compute the next time
- * the job should fire. This is a simplified approach for MVP:
- *
- * - `* /N` minute fields produce an N-minute interval from last run
- * - All other patterns default to a 1-minute minimum interval from last run
- *
- * For production, replace with a proper cron parsing library (e.g. cron-parser).
- */
-export function getNextRunTime(schedule: string, lastRunAt: Date | null): Date {
-  const parts = schedule.split(/\s+/);
-  if (parts.length !== 5) return new Date(0);
+// The scheduling maths lives in cron-expression.ts now. Re-exported because
+// this module has been its public entry point since the beginning.
+export { getNextRunTime, NEVER, parseCron } from './cron-expression.js';
 
-  const [min] = parts;
-  const base = lastRunAt ?? new Date(0);
-
-  // If minute field is */N, interval is N minutes
-  if (min.startsWith('*/')) {
-    const interval = parseInt(min.slice(2), 10) || 1;
-    return new Date(base.getTime() + interval * 60_000);
-  }
-
-  // Default: minimum 1-minute interval from last run
-  return new Date(base.getTime() + 60_000);
+export interface CronSchedulerDeps {
+  readonly kubeconfigPath?: string;
+  /** Per-run ceiling for deployment commands. */
+  readonly timeoutMs?: number;
+  /** Injected in tests. */
+  readonly transport?: ClusterTransport;
+  readonly pollIntervalMs?: number;
 }
 
-export function startWebcronScheduler(db: Database): NodeJS.Timeout {
-  console.log('[webcron-scheduler] Starting...');
+const DEFAULT_POLL_MS = 30_000;
+
+/**
+ * How long a job may sit claimed before another tick may take it back.
+ *
+ * The claim is a `lastRunStatus = 'running'` marker, and nothing clears it if
+ * the API pod is killed mid-run — so without a staleness window one restart at
+ * the wrong moment wedges a job permanently, looking to the tenant like a cron
+ * that simply stopped. Generous enough not to double-run a long Moodle cron.
+ */
+const CLAIM_STALE_MS = 30 * 60_000;
+
+export function startCronScheduler(db: Database, deps: CronSchedulerDeps = {}): NodeJS.Timeout {
+  console.log('[cron-scheduler] Starting...');
 
   const pollInterval = setInterval(async () => {
     try {
       const now = new Date();
+      const staleBefore = new Date(now.getTime() - CLAIM_STALE_MS);
+
       const jobs = await db
         .select()
         .from(cronJobs)
-        .where(
-          and(
-            eq(cronJobs.type, 'webcron'),
-            eq(cronJobs.enabled, 1),
-          ),
-        );
+        .where(eq(cronJobs.enabled, 1));
 
       for (const job of jobs) {
-        const nextRun = getNextRunTime(job.schedule, job.lastRunAt);
+        const nextRun = getNextRunTime(job.schedule, job.lastRunAt, now);
         if (nextRun > now) continue;
-        if (job.lastRunStatus === 'running') continue;
 
-        // Atomic conditional update — only mark running if not already running (prevents TOCTOU race)
-        const [updated] = await db.update(cronJobs)
-          .set({ lastRunStatus: 'running' })
-          .where(and(eq(cronJobs.id, job.id), sql`${cronJobs.lastRunStatus} != 'running'`))
-          .returning({ id: cronJobs.id });
-        if (!updated) continue; // Another tick already claimed this job
+        if (!(await claimJob(db, job.id, staleBefore))) continue;
 
-        // Execute asynchronously
-        executeWebcron(db, job).catch(err => {
-          console.error(`[webcron-scheduler] Error executing ${job.name}:`, err);
+        void runAndRecord(db, job, deps).catch((err) => {
+          console.error(`[cron-scheduler] Error executing ${job.name}:`, err);
         });
       }
     } catch (err) {
-      console.error('[webcron-scheduler] Poll error:', err);
+      console.error('[cron-scheduler] Poll error:', err);
     }
-  }, 30_000); // Poll every 30 seconds
+  }, deps.pollIntervalMs ?? DEFAULT_POLL_MS);
 
   return pollInterval;
 }
 
-async function executeWebcron(db: Database, job: typeof cronJobs.$inferSelect): Promise<void> {
-  const startTime = Date.now();
-  let status: 'success' | 'failed' = 'success';
-  let responseCode: number | null = null;
-  let output: string | null = null;
+/**
+ * Take the job, or report that somebody else has it.
+ *
+ * Atomic (an UPDATE … WHERE … RETURNING), so two replicas polling the same
+ * second cannot both run the job.
+ *
+ * `last_run_status != 'running'` alone was NOT enough, and this is the bug that
+ * kept the whole feature asleep: a job that has never run carries NULL there,
+ * and in SQL `NULL != 'running'` evaluates to NULL, not true. The claim matched
+ * no row, the job was skipped, and it stayed skipped — so a freshly created
+ * cron job never ran on schedule until somebody pressed "Run now" by hand and
+ * gave the column a non-NULL value. The IS NULL arm is that fix.
+ *
+ * The staleness arm releases a claim orphaned by an API pod that died mid-run;
+ * without it one restart at the wrong moment wedges a job for good.
+ */
+export async function claimJob(db: Database, jobId: string, staleBefore: Date): Promise<boolean> {
+  const [claimed] = await db
+    .update(cronJobs)
+    .set({ lastRunStatus: 'running' })
+    .where(
+      and(
+        eq(cronJobs.id, jobId),
+        or(
+          isNull(cronJobs.lastRunStatus),
+          ne(cronJobs.lastRunStatus, 'running'),
+          lt(cronJobs.updatedAt, staleBefore),
+        ),
+      ),
+    )
+    .returning({ id: cronJobs.id });
+  return claimed !== undefined;
+}
 
-  try {
-    // SSRF guard (H-4): tenant-controlled URL fired from platform-api — refuse
-    // internal / metadata destinations at connect time (rebind-safe).
-    const res = await guardedFetch(job.url!, {
-      method: (job.httpMethod as string) ?? 'GET',
-      timeoutMs: 30_000,
-      maxBytes: 8 * 1024,
-      headers: { 'User-Agent': 'K8s-Hosting-Webcron/1.0' },
-    });
-    responseCode = res.status;
-    output = res.body.slice(0, 2000);
-    status = res.status >= 200 && res.status < 300 ? 'success' : 'failed';
-  } catch (err) {
-    status = 'failed';
-    output = err instanceof Error ? err.message : 'Request failed';
-  }
+/**
+ * Run one job, write the outcome, and tell the tenant when it failed.
+ *
+ * Exported so a manual "Run now" records exactly what a scheduled run records —
+ * the two used to be separate code paths, and the manual one reported success
+ * for a job type it never executed.
+ */
+export async function runAndRecord(
+  db: Database,
+  job: typeof cronJobs.$inferSelect,
+  deps: CronSchedulerDeps = {},
+  options: { readonly notify?: boolean } = {},
+): Promise<typeof cronJobs.$inferSelect | undefined> {
+  const result = await executeCronJob(db, job, {
+    kubeconfigPath: deps.kubeconfigPath,
+    timeoutMs: deps.timeoutMs,
+    transport: deps.transport,
+  });
 
-  const durationMs = Date.now() - startTime;
+  await db
+    .update(cronJobs)
+    .set({
+      lastRunAt: new Date(),
+      lastRunStatus: result.status,
+      lastRunDurationMs: result.durationMs,
+      lastRunResponseCode: result.responseCode,
+      lastRunOutput: result.output,
+    })
+    .where(eq(cronJobs.id, job.id));
 
-  await db.update(cronJobs).set({
-    lastRunAt: new Date(),
-    lastRunStatus: status,
-    lastRunDurationMs: durationMs,
-    lastRunResponseCode: responseCode,
-    lastRunOutput: output?.slice(0, 2000) ?? null,
-  }).where(eq(cronJobs.id, job.id));
-
-  // Tell the tenant. Until now this branch recorded the failure and notified
-  // nobody: `tasks.scheduled_failure` had templates on every channel and no
-  // emitter at all, so a nightly job could fail every night and the only
-  // evidence was a column in a panel the tenant had to think to open.
+  // Tell the tenant. Until the notification was added, a failed run recorded
+  // itself and notified nobody — a nightly job could fail every night and the
+  // only evidence was a column in a panel somebody had to think to open.
   //
-  // Dedupe per (job, UTC day) — a broken job on a 5-minute schedule would
+  // Dedupe per (job, UTC day): a broken job on a 5-minute schedule would
   // otherwise send 288 notifications before breakfast.
-  if (status === 'failed' && job.tenantId) {
-    const reason = responseCode !== null
-      ? `HTTP ${responseCode}${output ? `: ${output.slice(0, 200)}` : ''}`
-      : (output ?? 'Request failed').slice(0, 200);
+  if (options.notify !== false && result.status === 'failed' && job.tenantId) {
     const { notifyTenantScheduledTaskFailure } = await import('../notifications/events.js');
     await notifyTenantScheduledTaskFailure(
       db,
       job.tenantId,
-      { taskName: job.name, errorMessage: reason },
+      { taskName: job.name, errorMessage: describeFailure(result, job.type) },
       `scheduled-task-failure:${job.id}:${new Date().toISOString().slice(0, 10)}`,
     ).catch((err) => {
-      console.warn('[webcron-scheduler] failure notification failed:', err instanceof Error ? err.message : err);
+      console.warn('[cron-scheduler] failure notification failed:', err instanceof Error ? err.message : err);
     });
   }
+
+  const [updated] = await db.select().from(cronJobs).where(eq(cronJobs.id, job.id));
+  return updated;
 }

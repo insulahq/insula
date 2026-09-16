@@ -306,8 +306,10 @@ export default function CronJobs() {
                               {formatDuration(job.lastRunDurationMs) && (
                                 <span>{formatDuration(job.lastRunDurationMs)}</span>
                               )}
-                              {job.type === 'webcron' && job.lastRunResponseCode != null && (
-                                <span className="font-mono">{job.lastRunResponseCode}</span>
+                              {job.lastRunResponseCode != null && (
+                                <span className="font-mono">
+                                  {job.type === 'webcron' ? job.lastRunResponseCode : `exit ${job.lastRunResponseCode}`}
+                                </span>
                               )}
                             </div>
                           </>
