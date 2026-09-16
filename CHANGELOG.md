@@ -12,6 +12,64 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **A master notification switch in Admin → Notifications.** One button that stops
+  every notification on every channel, and resumes them. It exists because on
+  2026-09-16 the only way to stop a storm was an operator running
+  `UPDATE notification_categories SET is_active = false` against the production
+  database — per category, during the incident, which assumes you know which
+  category is storming and have psql access at all. The dispatcher reads the
+  switch **uncached** on every event, so flipping it takes effect on the next
+  one rather than after a cache TTL. Disabling takes two clicks and the card
+  states plainly that security, backup and certificate alerts are suppressed
+  too; re-enabling takes one, because that is not the dangerous direction.
+
+### Fixed
+- **A notification storm that mailed tenants every five minutes, forever, and
+  then saturated the platform's own sending limit.** The `postmaster@`/`dmarc@`
+  report-intake reconciler created its mailboxes through the *tenant-facing*
+  create path, so for every tenant already at its plan mailbox cap the call was
+  rejected and each rejection emailed that tenant "you have used N of N
+  mailboxes — remove one or upgrade your plan" about a mailbox **the platform**
+  was creating for its own DMARC/DSN plumbing. The notice carried no dedupe key
+  and the reconciler retried on its 5-minute tick, so a standing condition
+  re-notified indefinitely; on one cluster that was 9 emails per tick, ~108 an
+  hour, which then blew the hourly sending limit of the domain the notification
+  sender belongs to and generated a second wave of quota-saturation alerts.
+  Intake mailboxes now take a platform path that is exempt from the tenant caps
+  and raises no tenant notification, and the mailbox-limit notice is deduped
+  per tenant per day.
+- **Platform plumbing no longer consumes a tenant's paid mailbox quota.**
+  `dmarc@` and `postmaster@` are created by the platform on the tenant's domain
+  and were counted against `max_mailboxes`, charging tenants for capacity they
+  never asked for (migration 0123 releases the existing rows).
+
+### Removed
+- **"Mailbox limit reached" is no longer a notification.** It fired
+  synchronously from the tenant's own failed click: the create call already
+  rejects with the limit, the current count and the remediation, the panel
+  renders that error on the spot, and the mailbox page shows the used/quota
+  bar — so the notification restated by email a number the person was looking
+  at, about an action they had just watched fail. Operator decision
+  2026-09-16. A dispatcher-level test now fails for *any* notification
+  re-added to that path, not just the helper that was removed.
+
+### Changed
+- **Intake mailboxes are 50 MB, hidden from tenant panels, and reaped if they
+  ever fill.** `dmarc@` and `postmaster@` are RCPT landing pads: they exist so
+  SMTP does not answer 550, and Stalwart's report-analysis intercepts and parses
+  the mail before anything is stored — measured across 19 of these mailboxes,
+  every one holds 0 MB while reserving 7 GB of quota between them. The previous
+  256/512 MB reserved capacity for traffic that is never stored. They are now
+  capped at 50 MB, excluded from mailbox storage-quota alerts, and no longer
+  listed in the tenant panel, where they could not be edited or removed anyway.
+  The reconciler corrects the size cap on mailboxes created before this change.
+  The delete-and-recreate reap at 40 MB is a **safety net that should never
+  fire** given interception — not an active cleanup; if it does fire, something
+  upstream has stopped consuming. (The 385 undeliverable DSNs on one cluster
+  were stuck in the outbound *queue* because the address did not exist, not
+  accumulating inside a mailbox.)
+
 ## [2026.9.20] - 2026-09-16
 
 ### Added

@@ -22,6 +22,10 @@ export const updateSystemSettingsSchema = z.object({
   // CNAME-target role). PR-1 plumbing — apex consumers repoint in PR-2.
   platformDomain: z.string().max(255).optional().nullable(),
   apiRateLimit: z.number().int().min(1).max(10000).optional(),
+  // Master notification kill switch (migration 0124). False stops EVERY
+  // notification on every channel at the dispatcher. Exists so an operator can
+  // end a storm from the admin panel instead of editing production rows.
+  notificationsEnabled: z.boolean().optional(),
   // On-server tenant volume-snapshot retention (hours). 1h..720h (30d).
   snapshotExpiryHours: z.number().int().min(1).max(720).optional(),
   // Off-site backup-bundle retention (grace window) for a DELETED tenant, in

@@ -26,6 +26,7 @@ import TemplatesTable from '@/features/notifications/TemplatesTable';
 import DeliveryLogTable from '@/features/notifications/DeliveryLogTable';
 import ProvidersTable from '@/features/notifications/ProvidersTable';
 import ProviderCoverageBanner from '@/features/notifications/ProviderCoverageBanner';
+import MasterSwitchCard from '@/features/notifications/MasterSwitchCard';
 
 type TabId = 'categories' | 'providers' | 'templates' | 'deliveries';
 
@@ -66,6 +67,8 @@ export default function NotificationsPage() {
           outcomes for audit and triage.
         </p>
       </header>
+
+      <MasterSwitchCard />
 
       <ProviderCoverageBanner />
 

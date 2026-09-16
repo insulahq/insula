@@ -52,7 +52,6 @@ const emitEventMock = vi.fn().mockResolvedValue({ eventId: 'e1', deliveryCount: 
 vi.mock('./dispatcher/dispatch.js', () => ({ emitEvent: emitEventMock }));
 
 const {
-  notifyTenantMailboxLimitReached,
   notifyTenantDkimRotated,
   notifyTenantImapsyncTerminal,
   notifyTenantEmailBootstrapped,
@@ -92,33 +91,6 @@ describe('notification events', () => {
     sendNotificationEmailMock.mockClear();
     recipientsMock.mockClear();
     recipientsMock.mockResolvedValue(['u1', 'u2']);
-  });
-
-  describe('notifyTenantMailboxLimitReached', () => {
-    it('fans out to all tenant_admin users with an error-level notification', async () => {
-      await notifyTenantMailboxLimitReached({} as never, 'c1', {
-        limit: 10,
-        current: 10,
-        source: 'plan',
-      });
-      const d = lastDispatch();
-      expect(d.categoryId).toBe('tenant.mail_event');
-      expect(d.variables.subsystem).toMatch(/Mailbox limit/i);
-      expect(d.variables.detail).toContain('10');
-    });
-
-    it('silently skips when the tenant has no admins', async () => {
-      // No longer a no-op. The legacy path resolved recipients itself and
-      // bailed on an empty list; the dispatcher records the event regardless,
-      // which is what stops "nobody to notify" from meaning "nothing happened".
-      recipientsMock.mockResolvedValue([]);
-      await notifyTenantMailboxLimitReached({} as never, 'c1', {
-        limit: 10,
-        current: 10,
-        source: 'plan',
-      });
-      expect(emitEventMock).toHaveBeenCalled();
-    });
   });
 
   describe('notifyTenantDkimRotated', () => {

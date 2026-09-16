@@ -16,7 +16,6 @@
 
 import { emitEvent } from './dispatcher/dispatch.js';
 import type { Database } from '../../db/index.js';
-import type { MailboxLimitSource } from '../mailboxes/limit.js';
 
 /**
  * Phase 1 of the notification-system rewrite: every legacy event
@@ -51,34 +50,24 @@ async function dispatchSafe(
 }
 
 // ──────────────────────────────────────────────────────────────────
-// Mailbox limit reached
+// Mailbox limit reached — DELIBERATELY NOT A NOTIFICATION
 // ──────────────────────────────────────────────────────────────────
-
-export interface MailboxLimitPayload {
-  readonly limit: number;
-  readonly current: number;
-  readonly source: MailboxLimitSource;
-}
-
-/**
- * Fire when a tenant's create-mailbox call was rejected because the
- * plan (or per-tenant override) cap is full. Error level — it blocks
- * an action the tenant is actively trying to take.
- */
-export async function notifyTenantMailboxLimitReached(
-  db: Database,
-  tenantId: string,
-  payload: MailboxLimitPayload,
-): Promise<void> {
-  const sourceText = payload.source === 'tenant_override' ? 'custom limit' : 'hosting plan';
-  await dispatchSafe(db, 'tenant.mail_event', { kind: 'tenant', tenantId }, {
-    subsystem: 'Mailbox limit',
-    objectLabel: `${payload.current} of ${payload.limit} mailboxes`,
-    detail: `You have used ${payload.current} of ${payload.limit} mailboxes allowed by your ${sourceText}.`,
-    severityLabel: 'limit reached',
-    recommendedAction: 'Remove an existing mailbox or upgrade your plan.',
-  }, tenantId);
-}
+//
+// There was a `notifyTenantMailboxLimitReached` here. It is gone, and nothing
+// should replace it. Operator decision 2026-09-16.
+//
+// It fired synchronously from the tenant's OWN failed click: `createMailbox`
+// rejects with 409 CLIENT_MAILBOX_LIMIT_REACHED, carrying the limit, the
+// current count and the remediation, which the panel renders on the spot. The
+// mailbox page already shows the used/quota bar, and the tenant cannot create
+// another mailbox anyway. So the notification restated — by EMAIL — a number
+// the user was looking at, about an action they had just taken and already
+// seen fail.
+//
+// That is the general shape to avoid: a notification fired from a request path
+// about a rejection the caller can already see is noise by construction. It
+// also made the platform's own report-intake reconciler mail every capped
+// tenant every 5 minutes, because a retrying caller re-triggered it forever.
 
 // ──────────────────────────────────────────────────────────────────
 // DKIM key rotated

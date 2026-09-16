@@ -15,7 +15,7 @@
  * 10 mailboxes each hits the 25 cap at total=25, not per-domain.
  */
 
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { tenants, hostingPlans, mailboxes } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import type { Database } from '../../db/index.js';
@@ -45,10 +45,18 @@ export function computeTenantMailboxLimit(input: ComputeLimitInput): EffectiveMa
 }
 
 /**
- * Count mailboxes for a tenant across ALL their email domains.
+ * Count BILLABLE mailboxes for a tenant across ALL their email domains.
  * Uses a direct filter on mailboxes.tenant_id (denormalized into
  * the mailboxes table at creation time) so we avoid joining
  * through email_domains.
+ *
+ * Platform-managed rows (migration 0123 — the `dmarc@`/`postmaster@` intake
+ * mailboxes the report-intake reconciler owns) are excluded. They are created
+ * BY the platform on the tenant's domain, so counting them charged the tenant
+ * for capacity they never requested AND made the reconciler fight the cap: on
+ * production it was rejected 9 times every 5 minutes, and each rejection
+ * emailed the tenant "remove a mailbox or upgrade your plan" about an action
+ * no tenant had taken.
  */
 export async function getTenantMailboxCount(
   db: Database,
@@ -57,7 +65,10 @@ export async function getTenantMailboxCount(
   const [row] = await db
     .select({ count: sql<number>`count(*)` })
     .from(mailboxes)
-    .where(eq(mailboxes.tenantId, tenantId));
+    .where(and(
+      eq(mailboxes.tenantId, tenantId),
+      eq(mailboxes.platformManaged, false),
+    ));
   return Number(row?.count ?? 0);
 }
 

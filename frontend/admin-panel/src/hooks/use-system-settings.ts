@@ -12,6 +12,9 @@ export interface SystemSettings {
   readonly ingressBaseDomain: string | null;
   readonly webmailUrl: string | null;
   readonly apiRateLimit: number;
+  // Master notification kill switch (migration 0124). False stops EVERY
+  // notification on every channel at the dispatcher.
+  readonly notificationsEnabled: boolean;
   // On-server tenant volume-snapshot retention (hours). Admin-adjustable.
   readonly snapshotExpiryHours: number;
   // Off-site backup-bundle retention (grace window) for a DELETED tenant, in
