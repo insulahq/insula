@@ -59,6 +59,21 @@ import type { OutboundReconcileLogger } from '../email-outbound/service.js';
  */
 export const DMARC_LOCAL_PART = 'dmarc';
 
+/**
+ * `postmaster@` must be a REAL principal for the same reason `dmarc@` is, and
+ * it had been listed in REQUIRED_INTAKE_PATTERNS since this file was written
+ * while nothing ever created the account. Measured on DEV 2026-09-16:
+ *
+ *     550 5.5.0 Mailbox not found          <- RCPT TO postmaster@<apex>
+ *     385 messages queued to that address, retrying every 24h
+ *
+ * It is the envelope sender on platform-generated mail, so every DSN and
+ * bounce routed back to it is undeliverable — and those pile up until they
+ * expire, at which point the expiry generates another DSN to the same dead
+ * address. RFC 5321 §4.5.1 requires every mail-receiving domain to accept it.
+ */
+export const POSTMASTER_LOCAL_PART = 'postmaster';
+
 /** Patterns Stalwart must treat as report intake. */
 const REQUIRED_INTAKE_PATTERNS = [
   'postmaster@*',
@@ -74,6 +89,13 @@ const RETIRED_INTAKE_PATTERNS = ['fbl@*'] as const;
 /** Residual copies only — Stalwart stores the parsed report itself. */
 const DMARC_MAILBOX_QUOTA_MB = 256;
 
+/**
+ * DSNs and bounces are small but arrive for every undeliverable message, so
+ * this needs more headroom than a report mailbox. Bounded so a bounce storm
+ * cannot fill the volume.
+ */
+const POSTMASTER_MAILBOX_QUOTA_MB = 512;
+
 export interface ReportIntakeResult {
   readonly mailbox: 'exists' | 'created' | 'skipped' | 'failed';
   readonly settings: 'in-sync' | 'updated' | 'skipped';
@@ -86,10 +108,34 @@ export async function ensureReportIntake(
   logger: OutboundReconcileLogger,
   opts: { baseUrl?: string; env?: NodeJS.ProcessEnv } = {},
 ): Promise<ReportIntakeResult> {
-  // ── 1. one dmarc@ mailbox per enabled email domain ──
+  // ── 1. one dmarc@ AND one postmaster@ mailbox per enabled email domain ──
+  //
+  // Both are registered in REQUIRED_INTAKE_PATTERNS, and registering a pattern
+  // is not creating an account — the whole reason this reconciler exists.
   let mailboxState: ReportIntakeResult['mailbox'] = 'skipped';
   const dmarcAddresses: string[] = [];
   const states: ReportIntakeResult['mailbox'][] = [];
+
+  const INTAKES: ReadonlyArray<{
+    readonly localPart: string;
+    readonly displayName: string;
+    readonly quotaMb: number;
+    /** Only dmarc@ is reported back as a `rua=` target. */
+    readonly isRuaTarget: boolean;
+  }> = [
+    {
+      localPart: DMARC_LOCAL_PART,
+      displayName: 'DMARC aggregate report intake',
+      quotaMb: DMARC_MAILBOX_QUOTA_MB,
+      isRuaTarget: true,
+    },
+    {
+      localPart: POSTMASTER_LOCAL_PART,
+      displayName: 'Postmaster / DSN intake',
+      quotaMb: POSTMASTER_MAILBOX_QUOTA_MB,
+      isRuaTarget: false,
+    },
+  ];
 
   const reportDomains = await db
     .select({
@@ -102,47 +148,51 @@ export async function ensureReportIntake(
     .where(eq(emailDomains.enabled, 1));
 
   for (const target of reportDomains) {
-    const address = `${DMARC_LOCAL_PART}@${target.domainName.toLowerCase()}`;
-    const [existing] = await db
-      .select({
-        id: mailboxes.id,
-        stalwartPrincipalId: mailboxes.stalwartPrincipalId,
-      })
-      .from(mailboxes)
-      .where(and(
-        eq(mailboxes.emailDomainId, target.emailDomainId),
-        eq(mailboxes.localPart, DMARC_LOCAL_PART),
-      ))
-      .limit(1);
+    for (const intake of INTAKES) {
+      const address = `${intake.localPart}@${target.domainName.toLowerCase()}`;
+      const [existing] = await db
+        .select({
+          id: mailboxes.id,
+          stalwartPrincipalId: mailboxes.stalwartPrincipalId,
+        })
+        .from(mailboxes)
+        .where(and(
+          eq(mailboxes.emailDomainId, target.emailDomainId),
+          eq(mailboxes.localPart, intake.localPart),
+        ))
+        .limit(1);
 
-    if (existing) {
-      // A row is not a mailbox. `fbl@` on DEV carried a row AND a principal id
-      // for a principal Stalwart had lost, and this guard reported "exists"
-      // while every report bounced. principals-sync owns detection and the
-      // drift UI owns remediation — but say so here rather than claiming a
-      // working intake.
-      dmarcAddresses.push(address);
-      states.push('exists');
-      continue;
-    }
+      if (existing) {
+        // A row is not a mailbox. `fbl@` on DEV carried a row AND a principal
+        // id for a principal Stalwart had lost, and this guard reported
+        // "exists" while every report bounced. principals-sync owns detection
+        // and the drift UI owns remediation; this reconciler deliberately does
+        // not second-guess them, because deleting and recreating a mailbox on
+        // the strength of one failed lookup would destroy a real mailbox the
+        // moment Stalwart is briefly unreachable.
+        if (intake.isRuaTarget) dmarcAddresses.push(address);
+        states.push('exists');
+        continue;
+      }
 
-    try {
-      const { createMailbox } = await import('../mailboxes/service.js');
-      await createMailbox(db, target.tenantId, target.emailDomainId, {
-        local_part: DMARC_LOCAL_PART,
-        display_name: 'DMARC aggregate report intake',
-        quota_mb: DMARC_MAILBOX_QUOTA_MB,
-        mailbox_type: 'mailbox',
-      });
-      dmarcAddresses.push(address);
-      states.push('created');
-      logger.info({ address }, 'report intake: created DMARC report mailbox');
-    } catch (err) {
-      states.push('failed');
-      logger.error(
-        { err, domain: target.domainName },
-        'report intake: DMARC report mailbox creation failed (will retry)',
-      );
+      try {
+        const { createMailbox } = await import('../mailboxes/service.js');
+        await createMailbox(db, target.tenantId, target.emailDomainId, {
+          local_part: intake.localPart,
+          display_name: intake.displayName,
+          quota_mb: intake.quotaMb,
+          mailbox_type: 'mailbox',
+        });
+        if (intake.isRuaTarget) dmarcAddresses.push(address);
+        states.push('created');
+        logger.info({ address }, 'report intake: created intake mailbox');
+      } catch (err) {
+        states.push('failed');
+        logger.error(
+          { err, domain: target.domainName, localPart: intake.localPart },
+          'report intake: intake mailbox creation failed (will retry)',
+        );
+      }
     }
   }
 
