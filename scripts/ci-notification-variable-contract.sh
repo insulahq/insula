@@ -41,10 +41,16 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 CATEGORIES="$REPO_ROOT/backend/src/modules/notifications/categories/seed.ts"
 TEMPLATES="$REPO_ROOT/backend/src/modules/notifications/templates/seed-data.ts"
 EVENTS="$REPO_ROOT/backend/src/modules/notifications/events.ts"
+# Imported, not re-declared: this guard's whole premise is that CI and
+# runtime cannot disagree about what a template asks for, and a second copy
+# of the dispatcher-provided list is exactly how they disagreed — the guard
+# failed 20 categories over `greeting` the moment production started
+# supplying it.
+VARIABLES="$REPO_ROOT/backend/src/modules/notifications/templates/variables.ts"
 
 echo "── notification variable-contract guard ─────────────────────────────"
 
-for f in "$CATEGORIES" "$TEMPLATES" "$EVENTS"; do
+for f in "$CATEGORIES" "$TEMPLATES" "$EVENTS" "$VARIABLES"; do
   [ -f "$f" ] || { echo "FAIL: missing $f" >&2; exit 1; }
 done
 
@@ -57,7 +63,7 @@ done
 # allowlist that outlives its subject is a silencer, not an exception.
 ALLOW_MISSING=""
 
-CATEGORIES="$CATEGORIES" TEMPLATES="$TEMPLATES" EVENTS="$EVENTS" \
+CATEGORIES="$CATEGORIES" TEMPLATES="$TEMPLATES" EVENTS="$EVENTS" VARIABLES="$VARIABLES" \
 ALLOW_MISSING="$ALLOW_MISSING" \
 node --experimental-strip-types --no-warnings --input-type=module -e '
 import { readFileSync } from "node:fs";
@@ -65,6 +71,7 @@ import { readFileSync } from "node:fs";
 const tpls = await import(process.env.TEMPLATES);
 const cats = await import(process.env.CATEGORIES);
 const EVENTS_SRC = readFileSync(process.env.EVENTS, "utf8");
+const vars = await import(process.env.VARIABLES);
 const ALLOW_MISSING = new Set((process.env.ALLOW_MISSING ?? "").split(/\s+/).filter(Boolean));
 
 const ALL_CATEGORIES = cats.ALL_CATEGORIES;
@@ -85,7 +92,11 @@ if (!Array.isArray(ALL_SEED_TEMPLATES) || ALL_SEED_TEMPLATES.length === 0) {
 // that drops data.
 const REF_RE = /\{\{\{?\s*(?:#(?:if|unless)\s+)?([A-Za-z_][\w.]*)\s*\}?\}\}/g;
 const RESERVED = new Set(["else", "this"]);
-const DISPATCHER_PROVIDED = new Set(["platformName", "userName", "tenantName", "contactName", "occurredAt"]);
+const DISPATCHER_PROVIDED = vars.DISPATCHER_PROVIDED;
+if (!(DISPATCHER_PROVIDED instanceof Set) || DISPATCHER_PROVIDED.size === 0) {
+  console.error("FAIL: DISPATCHER_PROVIDED did not load from templates/variables.ts — the guard would report every dispatcher-supplied variable as missing.");
+  process.exit(1);
+}
 
 // STRUCTURAL keys are carried for routing/linking, never for rendering, so
 // "no template reads it" is the correct state rather than a defect. Keep this

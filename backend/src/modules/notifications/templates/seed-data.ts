@@ -1130,8 +1130,12 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     subjectTemplate: 'Email sending at {{percent}}% of your {{window}} limit',
     bodyTemplate: emailMjml(
       'Email usage at {{percent}}%',
-      'You have sent {{used}} of {{limit}} messages ({{percent}}%) in the current {{window}} window. '
-      + 'Messages beyond the limit are deferred until the window rolls over.',
+      'Your account has sent {{used}} of {{limit}} messages ({{percent}}%) in the current '
+      + '{{window}} window, as of {{occurredAt}}. Messages beyond the limit are deferred '
+      + 'until the window rolls over.<br /><br />'
+      + '<strong>Sending accounts:</strong> {{topSenders}}<br /><br />'
+      + 'This is the point at which an unexpected address is still worth checking — after the '
+      + 'limit is reached, mail is already being held.',
     ),
     bodyFormat: 'mjml',
     variablesSchema: [
@@ -1140,6 +1144,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
       { name: 'percent', type: 'string', required: true },
       { name: 'used', type: 'string', required: true },
       { name: 'limit', type: 'string', required: true },
+      { name: 'topSenders', type: 'string', required: false },
     ],
   },
   {
@@ -1147,7 +1152,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: 'Email sending at {{percent}}% of the {{window}} limit',
-    bodyTemplate: '{{used}} of {{limit}} messages sent this {{window}}.',
+    bodyTemplate: '{{used}} of {{limit}} messages sent this {{window}} as of {{occurredAt}}. Sending accounts: {{topSenders}}.',
     bodyFormat: 'plaintext',
     variablesSchema: [
       ...COMMON_VARS,
@@ -1155,6 +1160,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
       { name: 'percent', type: 'string', required: true },
       { name: 'used', type: 'string', required: true },
       { name: 'limit', type: 'string', required: true },
+      { name: 'topSenders', type: 'string', required: false },
     ],
   },
   {

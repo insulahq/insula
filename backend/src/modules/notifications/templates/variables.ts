@@ -45,6 +45,11 @@ export const DISPATCHER_PROVIDED: ReadonlySet<string> = new Set([
   'tenantName',
   'contactName',
   'occurredAt',
+  // Supplied per RECIPIENT, not per event: the greeting depends on who is
+  // being addressed, and is deliberately null for a mailbox owner. Listing it
+  // here stops the shared email wrapper's `{{#if greeting}}` from being
+  // reported as an emitter that forgot a variable.
+  'greeting',
 ]);
 
 /**
