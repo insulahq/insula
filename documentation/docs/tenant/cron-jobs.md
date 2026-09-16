@@ -34,7 +34,16 @@ enabled, and the result of the last run.
         - **Deployment** — which running app to run the command in (only running
           apps appear).
         - **Command** — the command line to execute (e.g.
-          `php artisan schedule:run`).
+          `php artisan schedule:run`, or `php /var/www/html/admin/cli/cron.php`
+          for Moodle). It runs inside the app's own container, as that
+          container's user, through a shell — so pipes, `&&` and redirects work
+          the same way they would in a terminal there.
+
+        !!! note "Apps that run more than one container"
+            Some applications bring their own database or cache alongside the
+            web container. When the platform cannot tell which of them the
+            command is meant for, it refuses to run rather than guess, and the
+            task reports that as the failure reason.
 
 4. Fill in the common fields:
     - **Name** — a label for you (e.g. `daily-backup`).
@@ -57,6 +66,12 @@ The schedule uses standard **cron** notation — five fields:
     If you're unsure, an online "crontab generator" can turn plain English into
     the five-field expression to paste here.
 
+!!! warning "Schedules are in UTC"
+    Times are interpreted in **UTC**, not your local time zone. If you are on
+    Central European Summer Time (UTC+2) and you ask for `0 3 * * *`, the task
+    runs at 5 a.m. where you are. Subtract your offset when you write the
+    schedule.
+
 ## Run, pause, and delete
 
 Each task row has quick actions:
@@ -73,13 +88,19 @@ The **Last Run** column shows how the most recent run went:
 
 - A status badge — **success**, **failed**, or **running**.
 - How long it took.
-- For webcron tasks, the HTTP response code returned by the URL.
+- The result code: for a **webcron** task the HTTP response code returned by
+  the URL, and for a **deployment** task the command's **exit code** (shown as
+  `exit 0`, `exit 1`, and so on). `exit 0` means the command finished
+  normally — anything else is a failure, and `exit 127` almost always means the
+  command or a program it calls was not found in the app's container.
 
 A task that has never run shows **Never**.
 
 !!! note "What you can see"
-    The panel shows the **status and timing of the most recent run** per task.
-    If a task keeps failing, check the target it points at — for a webcron,
+    The panel shows the **status, timing and output of the most recent run**
+    per task. For a deployment task the output is what the command printed
+    (the end of it, if it printed a lot — that is where an error usually is).
+    If a task keeps failing, check the target it points at: for a webcron,
     open the URL yourself; for a deployment task, check the app's **Logs** on
     the [Applications](deployments-and-applications.md) page.
 
