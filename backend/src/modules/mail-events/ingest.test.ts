@@ -83,3 +83,50 @@ describe('aggregateEvents', () => {
     expect(summary.counted).toBe(1);
   });
 });
+
+describe('per-sender attribution (migration 0125)', () => {
+  const T = new Map([['example.test', 't1']]);
+
+  it('keeps the full envelope sender, not just its domain', () => {
+    const { senderDeltas } = aggregateEvents([
+      { type: 'queue.authenticated-message-queued', createdAt: '2026-09-16T18:10:00Z', data: { from: 'notifications@example.test', to: ['a@b.test'], size: 10 } },
+      { type: 'queue.authenticated-message-queued', createdAt: '2026-09-16T18:20:00Z', data: { from: 'notifications@example.test', to: ['c@d.test'], size: 10 } },
+      { type: 'queue.authenticated-message-queued', createdAt: '2026-09-16T18:30:00Z', data: { from: 'sales@example.test', to: ['e@f.test'], size: 10 } },
+    ] as unknown as StalwartWebhookEvent[], T);
+
+    const byName = Object.fromEntries(senderDeltas.map((d) => [d.sender, d.sentCount]));
+    // This is the whole point: "which MAILBOX sent the 53 messages" was
+    // unanswerable because senderDomainOf() kept only the part after the '@'.
+    expect(byName).toEqual({ 'notifications@example.test': 2, 'sales@example.test': 1 });
+  });
+
+  it('lowercases and attributes to the right tenant + hour', () => {
+    const { senderDeltas } = aggregateEvents([
+      { type: 'queue.authenticated-message-queued', createdAt: '2026-09-16T18:10:00Z', data: { from: 'Sales@Example.TEST', to: ['a@b.test'] } },
+    ] as unknown as StalwartWebhookEvent[], T);
+
+    expect(senderDeltas).toHaveLength(1);
+    expect(senderDeltas[0]?.sender).toBe('sales@example.test');
+    expect(senderDeltas[0]?.tenantId).toBe('t1');
+    expect(senderDeltas[0]?.bucketStart.toISOString()).toBe('2026-09-16T18:00:00.000Z');
+  });
+
+  it('does not attribute a rejection to the account — that is the platform\'s verdict, not its traffic', () => {
+    const { deltas, senderDeltas } = aggregateEvents([
+      { type: 'queue.rate-limit-exceeded', createdAt: '2026-09-16T18:10:00Z', data: { from: 'sales@example.test' } },
+      { type: 'queue.quota-exceeded', createdAt: '2026-09-16T18:10:00Z', data: { from: 'sales@example.test' } },
+    ] as unknown as StalwartWebhookEvent[], T);
+
+    expect(senderDeltas).toEqual([]);
+    // The domain-level counters still record the rejections.
+    expect(deltas[0]?.rateLimitedCount).toBe(1);
+    expect(deltas[0]?.quotaRejectedCount).toBe(1);
+  });
+
+  it('ignores an unattributable sender rather than inventing one', () => {
+    const { senderDeltas } = aggregateEvents([
+      { type: 'queue.authenticated-message-queued', createdAt: '2026-09-16T18:10:00Z', data: { from: 'someone@unknown.test' } },
+    ] as unknown as StalwartWebhookEvent[], T);
+    expect(senderDeltas).toEqual([]);
+  });
+});

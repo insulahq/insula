@@ -40,8 +40,17 @@ import { getCategory } from '../categories/service.js';
 import { getActiveTemplate } from '../templates/service.js';
 import { renderForDelivery } from '../templates/render-for-delivery.js';
 import { recordDegradedRender, clampDegradedVars } from './degraded.js';
+import { resolveNotificationLinks, renderActionButtons, inlineLink } from '../action-links.js';
 import { effectiveChannels, categoryMeta } from '../routing/effective-channels.js';
-import { platformName, tenantIdentity, userDisplayName, normaliseDateVariables } from './envelope.js';
+import {
+  platformName,
+  tenantIdentity,
+  userDisplayName,
+  normaliseDateVariables,
+  resolveIdVariables,
+  greetingFor,
+  findIds,
+} from './envelope.js';
 import { CLASS_POLICY } from '../routing/classes.js';
 import { isObjectMuted } from '../mutes/service.js';
 import { isDigestible, queueForDigest, type DigestMode } from '../digest/service.js';
@@ -64,6 +73,17 @@ export interface EmitEventOptions {
   readonly scope: RecipientScope;
   readonly variables: Record<string, unknown>;
   readonly tenantId?: string | null;
+  /**
+   * What this event is ABOUT, when that is not simply the scope's tenant.
+   *
+   * Admin categories dispatch with `{kind:'admin'}` and no tenantId, so the
+   * notification row was stamped with no resource at all — which is why 0 of
+   * 118 SLO rows and 0 of 23 node-memory rows in production could deep-link,
+   * and every one of them landed the operator on a subsystem page instead of
+   * the thing that broke. An emitter that knows its subject passes it here.
+   */
+  readonly resourceType?: string | null;
+  readonly resourceId?: string | null;
   readonly suppressTenantNotification?: boolean;
   readonly eventId?: string;
   /** Override locale for the template lookup (rare). */
@@ -260,11 +280,39 @@ async function writeDelivery(
  */
 const SYSTEM_SETTINGS_ROW_ID = 'system';
 
+/** One child logger for this module; see the import note above. */
+const dispatchLog = () => mailLogger().child({ module: 'notifications-dispatch' });
+
 export const DEDUPE_KEY_MAX = 128;
 export function clampDedupeKey(key: string | undefined): string | undefined {
   if (key === undefined || key.length <= DEDUPE_KEY_MAX) return key;
   const hash = crypto.createHash('sha256').update(key).digest('hex').slice(0, 16);
   return `${key.slice(0, DEDUPE_KEY_MAX - hash.length - 1)}:${hash}`;
+}
+
+/**
+ * Last line of defence against an id reaching a reader.
+ *
+ * `resolveIdVariables` cleans the VARIABLES, but a template could inline an id
+ * of its own, and a caller could pass one inside a longer sentence that no
+ * lookup matched. This reads the RENDERED output — the actual text the person
+ * receives — which is the only place the guarantee can really be checked.
+ *
+ * It reports rather than blocks: a thin notification beats no notification,
+ * and a silenced alert is the failure mode this whole epic exists to remove.
+ */
+function warnOnRenderedIds(
+  categoryId: string,
+  channel: string,
+  subject: string | null,
+  body: string,
+): void {
+  const leaked = [...new Set([...findIds(subject ?? ''), ...findIds(body)])];
+  if (leaked.length === 0) return;
+  dispatchLog().warn(
+    { categoryId, channel, leakedIds: leaked },
+    'notification rendered with a raw id in the text a person reads',
+  );
 }
 
 export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<EmitResult> {
@@ -295,12 +343,18 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
   // platform ends up wondering why it never hears anything — the switch has to
   // be as visible in the logs as the storm it was thrown to stop.
   const [sysRow] = await db
-    .select({ notificationsEnabled: systemSettings.notificationsEnabled })
+    .select({
+      notificationsEnabled: systemSettings.notificationsEnabled,
+      // Same row, same read: the links below need a base URL, and a second
+      // query for it would be a second chance to be stale.
+      adminPanelUrl: systemSettings.adminPanelUrl,
+      tenantPanelUrl: systemSettings.tenantPanelUrl,
+    })
     .from(systemSettings)
     .where(eq(systemSettings.id, SYSTEM_SETTINGS_ROW_ID))
     .limit(1);
   if (sysRow && sysRow.notificationsEnabled === false) {
-    mailLogger().child({ module: 'notifications-dispatch' }).warn(
+    dispatchLog().warn(
       { categoryId: opts.categoryId, eventId },
       'notifications are globally DISABLED — event dropped without delivery',
     );
@@ -320,7 +374,7 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
   // remember. A caller-supplied value still wins.
   const brand = await platformName(db);
   const identity = await tenantIdentity(db, opts.tenantId ?? null);
-  const envelopeVars = normaliseDateVariables({
+  const rawEnvelopeVars = normaliseDateVariables({
     tenantName: identity.tenantName,
     contactName: identity.contactName,
     // Every notification happened at a time, and the dispatcher is the one
@@ -330,6 +384,42 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
     occurredAt: new Date().toISOString(),
     ...opts.variables,
   });
+
+  // No id ever reaches a reader. Done here, once, because an emitter that
+  // passes `tenantLabel: tenantId` is not a rare mistake — it is what
+  // `admin.email_quota_exceeded` shipped with, and every layer below rendered
+  // it faithfully all the way into the operator's inbox.
+  const idResolved = await resolveIdVariables(db, rawEnvelopeVars);
+
+  // Links, resolved once per event. `resourceType`/`resourceId` are what make
+  // a tenant-scoped admin alert deep-link to THAT tenant instead of the list.
+  const links = resolveNotificationLinks({
+    categoryId: opts.categoryId,
+    resourceType: opts.resourceType ?? (opts.tenantId ? 'tenant' : null),
+    resourceId: opts.resourceId ?? opts.tenantId ?? null,
+    tenantId: opts.tenantId ?? null,
+    adminBaseUrl: sysRow?.adminPanelUrl ?? null,
+    tenantBaseUrl: sysRow?.tenantPanelUrl ?? null,
+  });
+  const primary = links.find((l): boolean => l.style === 'primary') ?? links[0] ?? null;
+  const envelopeVars: Record<string, unknown> = {
+    ...idResolved.vars,
+    actionButtons: renderActionButtons(links),
+    actionUrl: primary?.url ?? null,
+    actionText: primary?.text ?? null,
+    // Inline form: the tenant's own name, linking to that tenant. Used with a
+    // triple-stash, which is why the label is escaped where it is built.
+    tenantLink: inlineLink(
+      typeof idResolved.vars.tenantName === 'string' ? idResolved.vars.tenantName : null,
+      primary?.url ?? null,
+    ),
+  };
+  if (idResolved.unresolved.length > 0) {
+    dispatchLog().warn(
+      { categoryId: opts.categoryId, unresolved: idResolved.unresolved },
+      'notification carried ids that no tenant, user, mailbox or domain could name',
+    );
+  }
 
   // Object mute: "quiet about THIS one thing until Friday". Checked before any
   // channel work so a muted object costs one indexed lookup, not a fan-out.
@@ -393,10 +483,19 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
   // path and are unaffected by this flag.
   const allRecipients = await resolveRecipients(db, opts.scope);
   let recipients = allRecipients;
+  // Suppression is about the TENANT, so it must also drop the mailbox-owner
+  // leg below — that person is the tenant's, and "do not inform the tenant"
+  // that still mails their mailbox owner is not suppression.
+  let externalRecipients: readonly string[] = opts.externalRecipients ?? [];
   if (opts.scope.kind === 'tenant' && opts.suppressTenantNotification) {
     recipients = [];
+    externalRecipients = [];
   }
-  if (recipients.length === 0) {
+  // Bail out only when there is nobody AT ALL. This used to return on an empty
+  // USER list, which skipped the external leg entirely — so a mailbox owner,
+  // the one audience that exists precisely because it has no platform account,
+  // was silently dropped for any tenant with no resolvable admin user.
+  if (recipients.length === 0 && externalRecipients.length === 0) {
     return { eventId, deliveryCount: 0, perChannelStatuses: [] };
   }
 
@@ -454,10 +553,14 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
     // notification_deliveries.event_variables and the queue worker's
     // re-render would then throw on the absent key.
     const recipientEmail = await getUserEmail(db, userId);
+    const recipientName = await userDisplayName(db, userId, recipientEmail ?? null);
     const renderVars: Record<string, unknown> = Object.fromEntries(
       Object.entries({
         platformName: brand,
-        userName: await userDisplayName(db, userId, recipientEmail ?? null),
+        userName: recipientName,
+        // Operator requirement: address the person. Null collapses the
+        // template's `{{#if greeting}}` block rather than rendering "Hi ,".
+        greeting: greetingFor(recipientName),
         tenantName: null,
         contactName: null,
         occurredAt: null,
@@ -611,6 +714,7 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
       if (rendered.degradedVars.length > 0 || rendered.fallbackUsed) {
         recordDegradedRender(category.id, channel, rendered.degradedVars, rendered.fallbackUsed);
       }
+      warnOnRenderedIds(category.id, channel, rendered.subject, rendered.body);
       // A thin delivery is still a delivery. `lastError` explains WHY it is
       // thin without demoting the row's status — the message went out, and
       // the Delivery Log needs to say what was lost from it.
@@ -633,8 +737,8 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
           type: severityToLegacyType(category.defaultSeverity),
           title: (rendered.subject ?? category.displayName).slice(0, 255),
           message: rendered.body.slice(0, 10_000),
-          resourceType: opts.tenantId ? 'tenant' : null,
-          resourceId: opts.tenantId ?? null,
+          resourceType: opts.resourceType ?? (opts.tenantId ? 'tenant' : null),
+          resourceId: opts.resourceId ?? opts.tenantId ?? null,
           categoryId: category.id,
           severity: category.defaultSeverity,
           eventId,
@@ -732,7 +836,22 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
   // are reused rather than reimplemented. A fourth delivery path is what this
   // overhaul removes, not something it adds.
   const externalLocale = opts.localeOverride ?? 'en';
-  for (const address of opts.externalRecipients ?? []) {
+  // A person who is both a tenant admin AND the mailbox owner would otherwise
+  // get two copies of the same notification, seconds apart — observed on
+  // production 2026-09-16, where one recipient received the same mailbox-quota
+  // warning twice under an identical dedupe key. The two legs resolve their
+  // audience independently (by user id, and by address), so the only place
+  // they can be reconciled is here, where both lists exist.
+  const alreadyMailed = new Set<string>();
+  for (const userId of recipients) {
+    const email = await getUserEmail(db, userId);
+    if (email) alreadyMailed.add(email.trim().toLowerCase());
+  }
+  for (const address of externalRecipients) {
+    if (alreadyMailed.has(address.trim().toLowerCase())) {
+      statuses.push({ userId: null, channel: 'email', status: 'skipped', error: 'duplicate_recipient' });
+      continue;
+    }
     const tpl = await getActiveTemplate(db, category.id, 'email', externalLocale);
     if (!tpl) {
       statuses.push({ userId: null, channel: 'email', status: 'skipped', error: 'template_not_found' });
@@ -742,6 +861,10 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
       Object.entries({
         platformName: brand,
         userName: address.split('@')[0],
+        // Deliberately absent: a mailbox owner has no platform account, so the
+        // only "name" available is the local part, and "Hi bookings," reads as
+        // a broken mail merge. The operator's exception, implemented.
+        greeting: null,
         tenantName: null,
         contactName: null,
         occurredAt: null,
@@ -752,6 +875,7 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
     if (rendered.degradedVars.length > 0 || rendered.fallbackUsed) {
       recordDegradedRender(category.id, 'email', rendered.degradedVars, rendered.fallbackUsed);
     }
+    warnOnRenderedIds(category.id, 'email', rendered.subject, rendered.body);
     const deliveryId = await writeDelivery(db, {
       notificationId: null,
       eventId,

@@ -33,7 +33,13 @@ async function dispatchSafe(
   scope: Parameters<typeof emitEvent>[1]['scope'],
   variables: object,
   tenantId?: string,
-  extraOpts?: { readonly dedupeKey?: string; readonly externalRecipients?: readonly string[] },
+  extraOpts?: {
+    readonly dedupeKey?: string;
+    readonly externalRecipients?: readonly string[];
+    /** What the event is ABOUT, when that differs from the scope. */
+    readonly resourceType?: string;
+    readonly resourceId?: string;
+  },
 ): Promise<void> {
   try {
     await emitEvent(db, {
@@ -43,6 +49,8 @@ async function dispatchSafe(
       tenantId,
       dedupeKey: extraOpts?.dedupeKey,
       externalRecipients: extraOpts?.externalRecipients,
+      resourceType: extraOpts?.resourceType,
+      resourceId: extraOpts?.resourceId,
     });
   } catch {
     // Legacy contract: never throw from an event helper.
@@ -292,20 +300,22 @@ export async function notifyTenantPasswordChanged(
   db: Database,
   userId: string,
 ): Promise<void> {
-  await dispatchSafe(db, 'security.password_changed', { kind: 'user', userId }, { userName: userId });
+  // No `userName` here on purpose. This passed `userName: userId` — a raw id
+  // as the display name, which would have rendered "Hi 3fd54013-…" had it ever
+  // been called. The dispatcher resolves the recipient's real name per
+  // recipient, which is the only place that knows who is being addressed.
+  await dispatchSafe(db, 'security.password_changed', { kind: 'user', userId }, {});
 }
 
-export interface SuspiciousActivityPayload {
-  readonly newIp: string;
-  readonly userAgent?: string;
-}
-export async function notifyTenantSuspiciousActivity(
-  db: Database,
-  userId: string,
-  payload: SuspiciousActivityPayload,
-): Promise<void> {
-  await dispatchSafe(db, 'security.suspicious_activity', { kind: 'user', userId }, payload);
-}
+// `notifyTenantSuspiciousActivity` and its payload lived here.
+//
+// Removed 2026-09-16 (operator decision). It had templates on every channel
+// and no caller, because nothing on the platform defines "suspicious".
+// Detecting it means choosing a security policy — is a new source IP
+// suspicious? a new user-agent? a new country? — and the wrong choice either
+// cries wolf at every coffee-shop login or stays silent through a real
+// takeover. A source that can never fire is worse than none, because it reads
+// as coverage.
 
 export interface TenantCertificatePayload {
   readonly hostname: string;
@@ -703,6 +713,8 @@ export interface AdminEmailQuotaPayload {
   readonly limit: string;
   readonly percent: string;
   readonly occurredAt: string;
+  /** The accounts that actually sent — "a@x (48), b@x (5)". */
+  readonly topSenders: string;
 }
 /**
  * A tenant saturated its sending limit.
@@ -715,8 +727,19 @@ export async function notifyAdminEmailQuotaExceeded(
   db: Database,
   payload: AdminEmailQuotaPayload,
   dedupeKey?: string,
+  /**
+   * The tenant this is ABOUT. Not the scope — the notification goes to
+   * operators — but the subject, so the row carries a resource and the links
+   * point at that tenant instead of the tenant LIST, which shows no sending
+   * limits at all. Production's copy of this alert linked to /tenants.
+   */
+  subjectTenantId?: string,
 ): Promise<void> {
-  await dispatchSafe(db, 'admin.email_quota_exceeded', { kind: 'admin' }, payload, undefined, { dedupeKey });
+  await dispatchSafe(db, 'admin.email_quota_exceeded', { kind: 'admin' }, payload, undefined, {
+    dedupeKey,
+    resourceType: subjectTenantId ? 'tenant' : undefined,
+    resourceId: subjectTenantId,
+  });
 }
 
 export interface MailboxQuotaPayload {
@@ -940,6 +963,8 @@ export interface TenantEmailQuotaPayload {
   readonly percent: string;
   readonly used: string;
   readonly limit: string;
+  /** Which of the tenant's own accounts sent — they need this to find it. */
+  readonly topSenders: string;
 }
 /** 80% crossing — the mail-events threshold evaluator owns dedupe. */
 export async function notifyTenantEmailQuotaWarning(

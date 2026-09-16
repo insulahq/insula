@@ -8,6 +8,15 @@ export const updateSubscriptionSchema = z.object({
   subscription_expires_at: z.string().datetime().optional(),
   status: tenantStatusEnum.optional(),
   notes: z.string().max(1000).optional(),
+  /**
+   * Whether the tenant is told about this change. Defaults to TRUE — an
+   * operator changing someone's plan or renewal date should normally say so.
+   *
+   * Set false for the cases where telling them is wrong or just noise: fixing
+   * a data-entry slip, back-dating a renewal that was agreed by phone, or
+   * bulk-correcting a batch. Operator requirement 2026-09-16.
+   */
+  notify_tenant: z.boolean().optional(),
 });
 
 // ─── Response Schemas ────────────────────────────────────────────────────────

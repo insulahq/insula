@@ -466,6 +466,23 @@ export async function authRoutes(app: FastifyInstance) {
     // expires within 30 min). The user gets a fresh refresh token in
     // the response so the active session continues uninterrupted.
     await revokeAllUserRefreshTokens(app.db, payload.sub, 'password_change');
+
+    // Tell the account holder their password changed.
+    //
+    // `security.password_changed` is marked MANDATORY, has templates on both
+    // channels, and had no caller anywhere — so the one notification whose
+    // entire purpose is to reach someone whose account may have just been
+    // taken over had never fired. Fire-and-forget: a notification failure must
+    // not turn a successful password change into a 5xx, which would leave the
+    // user believing it had not worked.
+    void (async () => {
+      try {
+        const { notifyTenantPasswordChanged } = await import('../notifications/events.js');
+        await notifyTenantPasswordChanged(app.db, payload.sub);
+      } catch (err) {
+        app.log.warn({ err, userId: payload.sub }, 'password-changed notification failed');
+      }
+    })();
     const issued = await issueRefreshToken(app.db, {
       userId: user.id,
       panel: (user.panel ?? 'admin') as 'admin' | 'tenant',

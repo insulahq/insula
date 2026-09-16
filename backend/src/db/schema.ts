@@ -1701,6 +1701,27 @@ export const emailSendCounters = pgTable('email_send_counters', {
   index('email_send_counters_bucket_idx').on(table.bucketStart),
 ]);
 
+/**
+ * Migration 0125 — per-sender outbound counters.
+ *
+ * `emailSendCounters` keeps (tenant, domain); the webhook knows the full
+ * envelope sender and `senderDomainOf()` discarded the mailbox. Without this,
+ * a sending-limit alert can name the tenant but not the account that sent —
+ * which is exactly the difference between an actionable alert and noise when a
+ * single mailbox is compromised.
+ */
+export const emailSenderCounters = pgTable('email_sender_counters', {
+  tenantId: varchar('tenant_id', { length: 36 })
+    .notNull()
+    .references(() => tenants.id, { onDelete: 'cascade' }),
+  sender: varchar('sender', { length: 320 }).notNull(),
+  bucketStart: timestamp('bucket_start', { withTimezone: true }).notNull(),
+  sentCount: integer('sent_count').notNull().default(0),
+}, (table) => [
+  primaryKey({ columns: [table.tenantId, table.sender, table.bucketStart] }),
+  index('email_sender_counters_bucket_idx').on(table.bucketStart),
+]);
+
 export const emailDomains = pgTable('email_domains', {
   id: varchar('id', { length: 36 }).primaryKey(),
   // Migration 0020 — FK + CASCADE from domains so email config is

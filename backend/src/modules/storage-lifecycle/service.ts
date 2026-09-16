@@ -1612,7 +1612,13 @@ export async function cancelStorageOperation(
 export async function suspendTenant(
   ctx: ServiceCtx,
   tenantId: string,
-  opts: { triggeredByUserId?: string | null } = {},
+  /**
+   * `suppressTenantNotification` carries the operator's "Notify tenant"
+   * choice down to the lifecycle hook that honours it. It has to be threaded
+   * explicitly: the hook reads it off the cascade context, and until
+   * 2026-09-16 nothing on this path set it, so the checkbox did nothing.
+   */
+  opts: { triggeredByUserId?: string | null; suppressTenantNotification?: boolean } = {},
 ): Promise<{ operationId: string }> {
   const tenant = await mustGetTenant(ctx.db, tenantId);
   await mustBeIdle(ctx.db, tenantId);
@@ -1642,7 +1648,12 @@ export async function suspendTenant(
     // gone by the time we pull the ingress rug.
     const { applySuspended } = await import('../tenant-lifecycle/cascades.js');
     await applySuspended(
-      { db: ctx.db, k8s: ctx.k8s, triggeredByUserId: opts.triggeredByUserId ?? null },
+      {
+        db: ctx.db,
+        k8s: ctx.k8s,
+        triggeredByUserId: opts.triggeredByUserId ?? null,
+        suppressTenantNotification: opts.suppressTenantNotification === true,
+      },
       tenantId,
       tenant.kubernetesNamespace,
     );
@@ -1673,7 +1684,13 @@ export async function suspendTenant(
 export async function resumeTenant(
   ctx: ServiceCtx,
   tenantId: string,
-  opts: { triggeredByUserId?: string | null } = {},
+  /**
+   * `suppressTenantNotification` carries the operator's "Notify tenant"
+   * choice down to the lifecycle hook that honours it. It has to be threaded
+   * explicitly: the hook reads it off the cascade context, and until
+   * 2026-09-16 nothing on this path set it, so the checkbox did nothing.
+   */
+  opts: { triggeredByUserId?: string | null; suppressTenantNotification?: boolean } = {},
 ): Promise<{ operationId: string }> {
   const tenant = await mustGetTenant(ctx.db, tenantId);
   await mustBeIdle(ctx.db, tenantId);
@@ -1709,7 +1726,12 @@ export async function resumeTenant(
     // mail, webcron, domains.
     const { applyActive } = await import('../tenant-lifecycle/cascades.js');
     await applyActive(
-      { db: ctx.db, k8s: ctx.k8s, triggeredByUserId: opts.triggeredByUserId ?? null },
+      {
+        db: ctx.db,
+        k8s: ctx.k8s,
+        triggeredByUserId: opts.triggeredByUserId ?? null,
+        suppressTenantNotification: opts.suppressTenantNotification === true,
+      },
       tenantId,
       tenant.kubernetesNamespace,
     );
