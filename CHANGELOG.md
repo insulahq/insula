@@ -33,15 +33,20 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   never asked for (migration 0123 releases the existing rows).
 
 ### Changed
-- **Intake mailboxes are 50 MB transit buffers, hidden from tenant panels, and
-  reaped when they fill.** Nothing reads either mailbox after ingest — the DMARC
-  poller destroys each report it consumes — so the previous 256/512 MB were
-  headroom for unbounded growth; one cluster had accumulated 385 undeliverable
-  DSNs. They are now capped at 50 MB, emptied by delete-and-recreate at 40 MB
-  (recreated in the same reconciler pass, so the address is never without a
-  mailbox), excluded from mailbox storage-quota alerts, and no longer listed in
-  the tenant panel, where they could not be edited or removed anyway. The
-  reconciler also corrects the size cap on mailboxes created before this change.
+- **Intake mailboxes are 50 MB, hidden from tenant panels, and reaped if they
+  ever fill.** `dmarc@` and `postmaster@` are RCPT landing pads: they exist so
+  SMTP does not answer 550, and Stalwart's report-analysis intercepts and parses
+  the mail before anything is stored — measured across 19 of these mailboxes,
+  every one holds 0 MB while reserving 7 GB of quota between them. The previous
+  256/512 MB reserved capacity for traffic that is never stored. They are now
+  capped at 50 MB, excluded from mailbox storage-quota alerts, and no longer
+  listed in the tenant panel, where they could not be edited or removed anyway.
+  The reconciler corrects the size cap on mailboxes created before this change.
+  The delete-and-recreate reap at 40 MB is a **safety net that should never
+  fire** given interception — not an active cleanup; if it does fire, something
+  upstream has stopped consuming. (The 385 undeliverable DSNs on one cluster
+  were stuck in the outbound *queue* because the address did not exist, not
+  accumulating inside a mailbox.)
 
 ## [2026.9.20] - 2026-09-16
 
