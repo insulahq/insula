@@ -46,7 +46,13 @@ EVENTS="$REPO_ROOT/backend/src/modules/notifications/events.ts"
 # of the dispatcher-provided list is exactly how they disagreed — the guard
 # failed 20 categories over `greeting` the moment production started
 # supplying it.
-VARIABLES="$REPO_ROOT/backend/src/modules/notifications/templates/variables.ts"
+#
+# Deliberately `envelope-vars.ts`, not `variables.ts`: the latter imports
+# lru-cache, and this guard loads TypeScript through node's type-stripping
+# loader with no node_modules, so importing it died with
+# ERR_MODULE_NOT_FOUND in CI while passing locally (where a worktree's
+# symlinked node_modules happened to resolve it).
+VARIABLES="$REPO_ROOT/backend/src/modules/notifications/templates/envelope-vars.ts"
 
 echo "── notification variable-contract guard ─────────────────────────────"
 
