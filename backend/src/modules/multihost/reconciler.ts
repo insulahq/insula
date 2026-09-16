@@ -36,6 +36,8 @@ import {
   MULTIHOST_SESSION_VOLUME,
   sessionDirInitCommands,
   isSessionDirCommand,
+  siteDirInitCommands,
+  isSiteDirCommandFor,
 } from '../deployments/k8s-deployer.js';
 import { renderSites, isMultihostFlavour, type MultihostCapability, type MultihostFlavour, type RenderResult, type SiteRoute } from './renderer.js';
 import type { MultihostMounts } from '../deployments/k8s-deployer.js';
@@ -432,7 +434,7 @@ export async function reconcileDeploymentSites(
  * folders, and rewriting a mount list it does not fully understand is how a
  * reconciler silently unmounts somebody's data.
  */
-async function ensureSiteMounts(
+export async function ensureSiteMounts(
   clients: MultihostClients,
   input: ReconcileDeploymentInput,
   rendered: RenderResult,
@@ -551,12 +553,20 @@ async function ensureSiteMounts(
   const initDirs = initContainers.find((c) => (c as { name?: string }).name === 'init-dirs') as
     { command?: string[]; volumeMounts?: Array<Record<string, unknown>> } | undefined;
   if (initDirs?.command && initDirs.command.length === 3) {
+    // Drop stale clauses so a re-run cannot accumulate them, then re-add
+    // exactly the ones this folder set needs. Site-directory clauses are
+    // matched against the folders this reconciler manages (the ones being
+    // removed as well as the ones being added) — never by shape, because the
+    // deployment's own storage-path clause looks identical and must survive.
+    const managed = [...new Set([...currentFolders, ...desired])] as string[];
     const existing = initDirs.command[2]
       .split(' && ')
-      // Drop stale session clauses so a re-run cannot accumulate them, then
-      // re-add exactly the ones this folder set needs.
-      .filter((part) => !isSessionDirCommand(part));
-    const rebuilt = [...existing, ...sessionDirInitCommands(desired)].filter((p) => p && p !== 'true');
+      .filter((part) => !isSessionDirCommand(part) && !isSiteDirCommandFor(part, managed));
+    const rebuilt = [
+      ...existing,
+      ...siteDirInitCommands(desired),
+      ...sessionDirInitCommands(desired),
+    ].filter((p) => p && p !== 'true');
     initDirs.command[2] = rebuilt.length > 0 ? rebuilt.join(' && ') : 'true';
     // …and it must have the volume mounted to write into it.
     const im = (initDirs as { volumeMounts?: Array<Record<string, unknown>> });
