@@ -13,6 +13,15 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Added
+- **Operator actions can decline to email the tenant.** The Subscription card
+  now carries an **Email the tenant about this change** checkbox, ticked by
+  default. Untick it for the edits that do not concern the customer —
+  correcting a mistyped date, recording a renewal already agreed by phone. The
+  flag is checked in one place rather than at each emitter, so a new
+  subscription event cannot be added that ignores the operator's choice, and
+  an absent flag still means "notify": a client predating the field must not
+  silently stop telling anyone.
+
 - **Notifications name the account that actually sent.** The Stalwart webhook
   carries the full envelope sender and ingest kept only the part after the
   `@`, so a sending-limit alert could say which tenant but never which

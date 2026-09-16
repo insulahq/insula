@@ -281,3 +281,40 @@ describe('updateSubscription', () => {
     expect(updateFn).not.toHaveBeenCalled();
   });
 });
+
+describe('do not inform the tenant', () => {
+  /** Same shape as the plan-change test above: tenant, oldPlan, newPlan, … */
+  function dbForPlanChange() {
+    const tenant = { id: 'c1', name: 'Example Ltd', planId: 'p1', subscriptionExpiresAt: null };
+    const results: unknown[] = [tenant, { id: 'p1', name: 'Basic' }, { id: 'p2', name: 'Pro' }, tenant, { id: 'p2', name: 'Pro' }];
+    let i = 0;
+    const whereFn = vi.fn().mockImplementation(() => Promise.resolve([results[i++]]));
+    const selectFn = vi.fn().mockReturnValue({ from: vi.fn().mockReturnValue({ where: whereFn }) });
+    const updateFn = vi.fn().mockReturnValue({ set: () => ({ where: () => Promise.resolve(undefined) }) });
+    return { select: selectFn, update: updateFn } as unknown as Parameters<typeof updateSubscription>[0];
+  }
+
+  it('sends nothing when the operator unticks it', async () => {
+    // Operator requirement 2026-09-16: correcting a mistyped renewal date
+    // should not mail the customer about it.
+    notifyChangedMock.mockClear();
+    notifyRenewedMock.mockClear();
+    await updateSubscription(dbForPlanChange(), 'c1', { plan_id: 'p2', notify_tenant: false });
+    expect(notifyChangedMock).not.toHaveBeenCalled();
+    expect(notifyRenewedMock).not.toHaveBeenCalled();
+  });
+
+  it('still notifies when the flag is ABSENT — an old client must not silence it', async () => {
+    // Positive control and compatibility guarantee in one: a client predating
+    // the field sends nothing, and "nothing" has to keep meaning "tell them".
+    notifyChangedMock.mockClear();
+    await updateSubscription(dbForPlanChange(), 'c1', { plan_id: 'p2' });
+    expect(notifyChangedMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('notifies when the operator explicitly leaves it ticked', async () => {
+    notifyChangedMock.mockClear();
+    await updateSubscription(dbForPlanChange(), 'c1', { plan_id: 'p2', notify_tenant: true });
+    expect(notifyChangedMock).toHaveBeenCalledTimes(1);
+  });
+});
