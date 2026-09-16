@@ -3,8 +3,8 @@ import { cronJobs, tenants } from '../../db/schema.js';
 import { getTenantById } from '../tenants/service.js';
 import { ApiError } from '../../shared/errors.js';
 import { encodeCursor, decodeCursor } from '../../shared/pagination.js';
-import { guardedFetch } from '../../shared/ssrf-guard.js';
 import type { Database } from '../../db/index.js';
+import { runAndRecord, type CronSchedulerDeps } from './scheduler.js';
 import type { CreateCronJobInput, UpdateCronJobInput } from './schema.js';
 import type { PaginationMeta } from '../../shared/response.js';
 
@@ -191,47 +191,24 @@ export async function updateCronJob(db: Database, tenantId: string, cronJobId: s
   return getCronJobById(db, tenantId, cronJobId);
 }
 
-export async function runCronJobNow(db: Database, tenantId: string, cronJobId: string) {
+export async function runCronJobNow(
+  db: Database,
+  tenantId: string,
+  cronJobId: string,
+  deps: CronSchedulerDeps = {},
+) {
   const job = await getCronJobById(db, tenantId, cronJobId);
 
-  const startTime = Date.now();
-  let status: 'success' | 'failed' = 'success';
-  let responseCode: number | null = null;
-  let output: string | null = null;
-
-  if (job.type === 'webcron' && job.url) {
-    try {
-      // SSRF guard (H-4): the URL is tenant-controlled and this runs from the
-      // broadly-connected platform-api pod, so refuse internal / metadata
-      // destinations at connect time (rebind-safe) instead of a bare fetch.
-      const res = await guardedFetch(job.url, {
-        method: (job.httpMethod as string) ?? 'GET',
-        timeoutMs: 30_000,
-        maxBytes: 8 * 1024,
-      });
-      responseCode = res.status;
-      output = res.body.slice(0, 2000);
-      status = res.status >= 200 && res.status < 300 ? 'success' : 'failed';
-    } catch (err) {
-      status = 'failed';
-      output = err instanceof Error ? err.message : 'Request failed';
-    }
-  } else if (job.type === 'deployment') {
-    // K8s execution -- placeholder for now
-    output = 'Deployment cron execution requires K8s cluster (not yet implemented)';
-  }
-
-  const durationMs = Date.now() - startTime;
-
-  await db.update(cronJobs).set({
-    lastRunAt: new Date(),
-    lastRunStatus: status,
-    lastRunDurationMs: durationMs,
-    lastRunResponseCode: responseCode,
-    lastRunOutput: output,
-  }).where(eq(cronJobs.id, cronJobId));
-
-  return getCronJobById(db, tenantId, cronJobId);
+  // One execution path for manual and scheduled runs. This used to be a second
+  // copy that handled webcron and, for a deployment job, wrote
+  // "not yet implemented" into the output while leaving the status at its
+  // initial 'success' — so the UI reported a green run of a command that had
+  // never been executed.
+  //
+  // Notifications stay off here: the operator pressing the button is looking at
+  // the result already, and a test run should not page the tenant.
+  const updated = await runAndRecord(db, job, deps, { notify: false });
+  return updated ?? getCronJobById(db, tenantId, cronJobId);
 }
 
 export async function deleteCronJob(db: Database, tenantId: string, cronJobId: string) {

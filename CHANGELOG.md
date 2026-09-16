@@ -13,6 +13,21 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Added
+- **Tenant cron jobs can finally run a command inside a deployment — and the
+  scheduler now honours the schedule it was given.** The `deployment` job type
+  has been in the API contract, the database enum and the tenant panel since the
+  module was written, and it never executed: the scheduler polled
+  `type = 'webcron'` only, and "Run now" hit a branch that wrote
+  "not yet implemented" into the output while leaving the status at its initial
+  `success`. A tenant could create "Moodle cron, `* * * * *`", watch it report
+  green, and have no cron at all. Deployment jobs now resolve the deployment's
+  running pod (refusing to guess when a multi-component deployment offers
+  several — running a tenant's command in whichever pod the API listed first is
+  how "Moodle cron" ends up executing inside MariaDB), exec the command through
+  `/bin/sh -c`, and record the real exit code, which the panel now shows. This
+  is what makes a traditional PHP application with a CLI cron — Moodle,
+  Nextcloud, Laravel — hostable on a plain runtime deployment.
+
 - **A master notification switch in Admin → Notifications.** One button that stops
   every notification on every channel, and resumes them. It exists because on
   2026-09-16 the only way to stop a storm was an operator running
@@ -114,6 +129,21 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   than an honest gap. Migration 0126 removes it from existing clusters.
 
 ### Fixed
+- **Every cron schedule that was not `*/N` in the minute field ran every
+  minute.** `getNextRunTime` parsed only a `*/N` minute and fell through to
+  "one minute after the last run" for everything else, so `0 3 * * *` — a
+  nightly job — fired 1440 times a day, and `*/15` drifted from the last run
+  instead of landing on the quarter hour. Schedules are now evaluated against
+  all five fields (ranges, lists, steps, and the POSIX rule that a restricted
+  day-of-month and day-of-week are OR-ed), in UTC, and an unparseable
+  expression leaves the job dormant rather than making it due on every poll.
+- **No cron job had ever fired on schedule without a manual run first.** The
+  scheduler claimed jobs with `last_run_status != 'running'`, and a job that has
+  never run carries NULL there — in SQL `NULL != 'running'` is NULL, not true,
+  so the claim matched no row and the job was skipped forever. Pressing "Run
+  now" once was what set the column and, by accident, unblocked the schedule.
+  The claim now takes NULL explicitly, and also releases a claim left behind by
+  an API pod that died mid-run, which used to wedge a job permanently.
 - **A notification storm that mailed tenants every five minutes, forever, and
   then saturated the platform's own sending limit.** The `postmaster@`/`dmarc@`
   report-intake reconciler created its mailboxes through the *tenant-facing*

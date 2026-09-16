@@ -1,68 +1,155 @@
-import { describe, it, expect } from 'vitest';
-import { getNextRunTime } from './scheduler.js';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { runAndRecord } from './scheduler.js';
+import type { CronJobRow } from './executor.js';
+import type { Database } from '../../db/index.js';
 
-describe('getNextRunTime', () => {
-  it('should return epoch when schedule has wrong number of fields', () => {
-    const result = getNextRunTime('bad schedule', null);
-    expect(result.getTime()).toBe(0);
+// The scheduling maths that used to live here now has its own suite in
+// cron-expression.test.ts. The tests that were in this file asserted the old
+// behaviour literally — "should default to 1 minute for specific minute
+// fields", "should be in the past when job has never run" — which is the bug
+// written down as a contract: it made `0 3 * * *` fire every minute and every
+// newly created job fire immediately. They were not carried over.
+
+const notifyTenantScheduledTaskFailure = vi.fn().mockResolvedValue(undefined);
+vi.mock('../notifications/events.js', () => ({
+  notifyTenantScheduledTaskFailure: (...args: unknown[]) =>
+    notifyTenantScheduledTaskFailure(...args),
+}));
+
+function makeJob(overrides: Partial<CronJobRow> = {}): CronJobRow {
+  return {
+    id: 'job-1',
+    tenantId: 'tenant-1',
+    name: 'Moodle cron',
+    type: 'deployment',
+    schedule: '* * * * *',
+    command: 'php admin/cli/cron.php',
+    url: null,
+    httpMethod: 'GET',
+    deploymentId: 'dep-1',
+    enabled: 1,
+    lastRunAt: null,
+    lastRunStatus: null,
+    lastRunDurationMs: null,
+    lastRunResponseCode: null,
+    lastRunOutput: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    ...overrides,
+  } as CronJobRow;
+}
+
+interface DbSpy {
+  readonly db: Database;
+  readonly updates: Record<string, unknown>[];
+}
+
+function mockDb(deploymentRows: unknown[], refreshedRow: unknown): DbSpy {
+  const updates: Record<string, unknown>[] = [];
+
+  // resolveDeployment(): select().from().innerJoin().leftJoin().where()
+  // runAndRecord():      select().from().where()
+  const from = vi.fn().mockReturnValue({
+    innerJoin: vi.fn().mockReturnValue({
+      leftJoin: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(deploymentRows) }),
+    }),
+    where: vi.fn().mockResolvedValue([refreshedRow]),
   });
 
-  it('should return epoch+1m when lastRunAt is null and schedule is standard', () => {
-    const result = getNextRunTime('0 * * * *', null);
-    // base = epoch (0), so next = 0 + 60_000
-    expect(result.getTime()).toBe(60_000);
+  const db = {
+    select: vi.fn().mockReturnValue({ from }),
+    update: vi.fn().mockReturnValue({
+      set: vi.fn().mockImplementation((values: Record<string, unknown>) => {
+        updates.push(values);
+        return { where: vi.fn().mockResolvedValue(undefined) };
+      }),
+    }),
+  } as unknown as Database;
+
+  return { db, updates };
+}
+
+const RUNNING_DEPLOYMENT = {
+  name: 'moodle-site',
+  status: 'running',
+  namespace: 'tenant-acme',
+  entryCode: 'apache-php-office',
+};
+
+beforeEach(() => {
+  notifyTenantScheduledTaskFailure.mockClear();
+});
+
+describe('runAndRecord', () => {
+  it('records a successful deployment run with its exit code', async () => {
+    const { db, updates } = mockDb([RUNNING_DEPLOYMENT], makeJob({ lastRunStatus: 'success' }));
+
+    await runAndRecord(db, makeJob(), {
+      transport: {
+        listPods: vi.fn().mockResolvedValue([
+          { name: 'moodle-site-x', phase: 'Running', component: 'apache-php-office', containers: ['apache-php-office'] },
+        ]),
+        exec: vi.fn().mockResolvedValue({ stdout: 'done', stderr: '', exitCode: 0 }),
+      },
+    });
+
+    expect(updates).toHaveLength(1);
+    expect(updates[0].lastRunStatus).toBe('success');
+    expect(updates[0].lastRunResponseCode).toBe(0);
+    expect(updates[0].lastRunOutput).toBe('done');
+    expect(updates[0].lastRunAt).toBeInstanceOf(Date);
+    expect(updates[0].lastRunDurationMs).toEqual(expect.any(Number));
   });
 
-  it('should parse */N minute interval', () => {
-    const lastRun = new Date('2026-04-01T12:00:00Z');
-    const result = getNextRunTime('*/5 * * * *', lastRun);
-    // 5 minutes after last run
-    expect(result.getTime()).toBe(lastRun.getTime() + 5 * 60_000);
+  it('records a failure and notifies the tenant', async () => {
+    const { db, updates } = mockDb([RUNNING_DEPLOYMENT], makeJob({ lastRunStatus: 'failed' }));
+
+    await runAndRecord(db, makeJob(), {
+      transport: {
+        listPods: vi.fn().mockResolvedValue([
+          { name: 'moodle-site-x', phase: 'Running', component: 'apache-php-office', containers: ['apache-php-office'] },
+        ]),
+        exec: vi.fn().mockResolvedValue({ stdout: '', stderr: 'cron.php not found', exitCode: 127 }),
+      },
+    });
+
+    expect(updates[0].lastRunStatus).toBe('failed');
+    expect(updates[0].lastRunResponseCode).toBe(127);
+    expect(notifyTenantScheduledTaskFailure).toHaveBeenCalledTimes(1);
+
+    const [, tenantId, payload, dedupeKey] = notifyTenantScheduledTaskFailure.mock.calls[0];
+    expect(tenantId).toBe('tenant-1');
+    expect(payload).toMatchObject({ taskName: 'Moodle cron' });
+    expect((payload as { errorMessage: string }).errorMessage).toContain('exit 127');
+    // Per (job, UTC day) — a broken job on a 5-minute schedule would otherwise
+    // send 288 notifications before breakfast.
+    expect(dedupeKey).toMatch(/^scheduled-task-failure:job-1:\d{4}-\d{2}-\d{2}$/);
   });
 
-  it('should parse */1 minute interval', () => {
-    const lastRun = new Date('2026-04-01T12:00:00Z');
-    const result = getNextRunTime('*/1 * * * *', lastRun);
-    expect(result.getTime()).toBe(lastRun.getTime() + 60_000);
+  it('does not notify on a manual run — the operator is looking at the result', async () => {
+    const { db } = mockDb([], makeJob({ lastRunStatus: 'failed' }));
+
+    await runAndRecord(db, makeJob(), {}, { notify: false });
+
+    expect(notifyTenantScheduledTaskFailure).not.toHaveBeenCalled();
   });
 
-  it('should parse */15 minute interval', () => {
-    const lastRun = new Date('2026-04-01T12:00:00Z');
-    const result = getNextRunTime('*/15 * * * *', lastRun);
-    expect(result.getTime()).toBe(lastRun.getTime() + 15 * 60_000);
+  it('records a failure rather than a success when the job could not run at all', async () => {
+    // The old manual-run path left status at its initial 'success' for a
+    // deployment job it never executed.
+    const { db, updates } = mockDb([], makeJob());
+
+    await runAndRecord(db, makeJob(), {}, { notify: false });
+
+    expect(updates[0].lastRunStatus).toBe('failed');
+    expect(String(updates[0].lastRunOutput)).toContain('no longer exists');
   });
 
-  it('should default to 1 minute for specific minute fields', () => {
-    const lastRun = new Date('2026-04-01T12:00:00Z');
-    const result = getNextRunTime('30 * * * *', lastRun);
-    // Not a */N pattern, so defaults to 1 minute
-    expect(result.getTime()).toBe(lastRun.getTime() + 60_000);
-  });
+  it('survives a notification failure instead of losing the run record', async () => {
+    notifyTenantScheduledTaskFailure.mockRejectedValueOnce(new Error('smtp down'));
+    const { db, updates } = mockDb([], makeJob());
 
-  it('should default to 1 minute for wildcard minute field', () => {
-    const lastRun = new Date('2026-04-01T12:00:00Z');
-    const result = getNextRunTime('* * * * *', lastRun);
-    expect(result.getTime()).toBe(lastRun.getTime() + 60_000);
-  });
-
-  it('should handle */0 gracefully (treat as */1)', () => {
-    const lastRun = new Date('2026-04-01T12:00:00Z');
-    // parseInt('0') = 0, which is falsy, so || 1 kicks in
-    const result = getNextRunTime('*/0 * * * *', lastRun);
-    expect(result.getTime()).toBe(lastRun.getTime() + 60_000);
-  });
-
-  it('should be in the past when job has never run', () => {
-    // lastRunAt = null => base = epoch => nextRun is epoch + interval
-    // which is always in the past, meaning the job is due to run
-    const now = new Date();
-    const result = getNextRunTime('*/5 * * * *', null);
-    expect(result.getTime()).toBeLessThan(now.getTime());
-  });
-
-  it('should be in the future when job just ran', () => {
-    const now = new Date();
-    const result = getNextRunTime('*/5 * * * *', now);
-    expect(result.getTime()).toBeGreaterThan(now.getTime());
+    await expect(runAndRecord(db, makeJob(), {})).resolves.toBeDefined();
+    expect(updates[0].lastRunStatus).toBe('failed');
   });
 });

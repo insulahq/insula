@@ -96,7 +96,12 @@ export async function cronJobRoutes(app: FastifyInstance): Promise<void> {
   // POST /api/v1/tenants/:id/cron-jobs/:cronJobId/run
   app.post('/tenants/:id/cron-jobs/:cronJobId/run', async (request) => {
     const { id, cronJobId } = request.params as { id: string; cronJobId: string };
-    const job = await service.runCronJobNow(app.db, id, cronJobId);
+    // A deployment cron execs into the tenant's pod, so the manual run needs
+    // the same cluster access the scheduler has.
+    const kubeconfigPath =
+      ((app.config as Record<string, unknown> | undefined)?.KUBECONFIG_PATH as string | undefined)
+      ?? process.env.KUBECONFIG;
+    const job = await service.runCronJobNow(app.db, id, cronJobId, { kubeconfigPath });
     return success(job);
   });
 

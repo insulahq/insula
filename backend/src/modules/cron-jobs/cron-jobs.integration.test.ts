@@ -3,6 +3,7 @@ import { isDbAvailable, runMigrations, cleanTables, closeTestDb, getTestDb } fro
 import { buildTestApp, generateToken } from '../../test-helpers/app.js';
 import { seedRegion, seedPlan, seedTenant } from '../../test-helpers/fixtures.js';
 import { cronJobs } from '../../db/schema.js';
+import { claimJob } from './scheduler.js';
 import { eq } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 
@@ -224,5 +225,126 @@ describe.skipIf(!dbAvailable)('Cron Jobs CRUD (integration)', () => {
       },
     });
     expect(res.statusCode).toBe(400);
+  });
+});
+
+describe.skipIf(!dbAvailable)('Cron job execution (integration)', () => {
+  let app: FastifyInstance;
+  let adminToken: string;
+  let tenantId: string;
+
+  beforeAll(async () => {
+    await runMigrations();
+    app = await buildTestApp();
+    adminToken = generateToken(app, { role: 'admin' });
+  });
+
+  afterAll(async () => {
+    await app.close();
+    await closeTestDb();
+  });
+
+  beforeEach(async () => {
+    await cleanTables();
+    const db = getTestDb();
+    const region = await seedRegion(db);
+    const plan = await seedPlan(db);
+    const tenant = await seedTenant(db, region.id, plan.id);
+    tenantId = tenant.id;
+  });
+
+  async function insertJob(overrides: Record<string, unknown> = {}) {
+    const db = getTestDb();
+    const id = crypto.randomUUID();
+    await db.insert(cronJobs).values({
+      id,
+      tenantId,
+      name: 'Moodle cron',
+      type: 'deployment',
+      schedule: '* * * * *',
+      command: 'php /var/www/html/admin/cli/cron.php',
+      deploymentId: crypto.randomUUID(),
+      enabled: 1,
+      ...overrides,
+    });
+    return id;
+  }
+
+  describe('claimJob', () => {
+    // Against real Postgres, because the bug being fixed IS a SQL semantics
+    // bug: the old predicate `last_run_status != 'running'` evaluates to NULL —
+    // not true — for a job that has never run, so the claim matched no row and
+    // a newly created cron job never fired on schedule. No mock reproduces
+    // that; only the database does.
+    const staleWindow = () => new Date(Date.now() - 30 * 60_000);
+
+    it('claims a job that has never run (last_run_status IS NULL)', async () => {
+      const id = await insertJob();
+      expect(await claimJob(getTestDb(), id, staleWindow())).toBe(true);
+
+      const [row] = await getTestDb().select().from(cronJobs).where(eq(cronJobs.id, id));
+      expect(row.lastRunStatus).toBe('running');
+    });
+
+    it('claims a job that finished earlier', async () => {
+      const id = await insertJob({ lastRunStatus: 'success' });
+      expect(await claimJob(getTestDb(), id, staleWindow())).toBe(true);
+    });
+
+    it('refuses a job another tick is already running', async () => {
+      const id = await insertJob({ lastRunStatus: 'running' });
+      expect(await claimJob(getTestDb(), id, staleWindow())).toBe(false);
+    });
+
+    it('reclaims a job whose claim was orphaned by a pod restart', async () => {
+      const id = await insertJob({ lastRunStatus: 'running' });
+      // Backdate the row past the staleness window — the shape left behind when
+      // the API pod dies between claiming and recording.
+      await getTestDb()
+        .update(cronJobs)
+        .set({ updatedAt: new Date(Date.now() - 2 * 60 * 60_000) })
+        .where(eq(cronJobs.id, id));
+
+      expect(await claimJob(getTestDb(), id, staleWindow())).toBe(true);
+    });
+  });
+
+  describe('POST /run', () => {
+    it('reports a deployment job that could not run as failed, not success', async () => {
+      // The regression: this path used to leave the status at its initial
+      // 'success' and write "not yet implemented" into the output, so a tenant
+      // saw a green run of a command that was never executed.
+      const id = await insertJob();
+
+      const res = await app.inject({
+        method: 'POST',
+        url: `/api/v1/tenants/${tenantId}/cron-jobs/${id}/run`,
+        headers: { authorization: `Bearer ${adminToken}` },
+      });
+
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.data.lastRunStatus).toBe('failed');
+      expect(body.data.lastRunOutput).toMatch(/no longer exists/);
+      expect(body.data.lastRunOutput).not.toMatch(/not yet implemented/);
+    });
+
+    it('records a webcron failure with its HTTP status', async () => {
+      const id = await insertJob({
+        type: 'webcron',
+        url: 'https://127.0.0.1:1/cron',
+        command: null,
+        deploymentId: null,
+      });
+
+      const res = await app.inject({
+        method: 'POST',
+        url: `/api/v1/tenants/${tenantId}/cron-jobs/${id}/run`,
+        headers: { authorization: `Bearer ${adminToken}` },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json().data.lastRunStatus).toBe('failed');
+    });
   });
 });
