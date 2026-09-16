@@ -13,6 +13,37 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Added
+- **CI now fails a notification that would not be worth reading.** A new guard
+  checks the four things the operator asked for on every category: it names its
+  SUBJECT (a tenant, mailbox, host, node, rule — not just its own category),
+  renders a TIMESTAMP on email, resolves at least one LINK, and prints NO raw
+  ids (neither a literal in a template nor an emitter handing an id to a
+  variable meant for a human label). Every arm was negative-tested: its first
+  run found 25 categories with no timestamp, and the subject arm's first draft
+  was VACUOUS — `greeting` counted as a subject and the shared wrapper renders
+  one on every template, so all 67 passed regardless of their bodies.
+
+### Removed
+- **`security.suspicious_activity` is retired** (operator decision). It had
+  templates on every channel and no caller, because nothing on the platform
+  defines "suspicious" — and choosing means choosing a security policy that
+  either cries wolf at every coffee-shop login or stays silent through a real
+  takeover. A source that can never fire reads as coverage, which is worse
+  than an honest gap. Migration 0126 removes it from existing clusters.
+- **"Mailbox limit reached" is no longer a notification.** It fired
+  synchronously from the tenant's own failed click: the create call already
+  rejects with the limit, the current count and the remediation, the panel
+  renders that error on the spot, and the mailbox page shows the used/quota
+  bar — so the notification restated by email a number the person was looking
+  at, about an action they had just watched fail. Operator decision
+  2026-09-16. A dispatcher-level test now fails for *any* notification
+  re-added to that path, not just the helper that was removed.
+
+### Changed
+- **Two email subject lines name their subject.** "Backup failed" and
+  "Scheduled task failed" now carry the backup and task name — an inbox shows
+  the subject line, and one of forty identical ones is unactionable.
+
 - **Operator actions can decline to email the tenant.** The Subscription card
   now carries an **Email the tenant about this change** checkbox, ticked by
   default. Untick it for the edits that do not concern the customer —
@@ -56,6 +87,20 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   as controls beside the row, and inline anchors (a tenant name that opens that
   tenant) are available to templates. One registry, rendered two ways, so the
   panel and the email cannot disagree about where a category points.
+- **Intake mailboxes are 50 MB, hidden from tenant panels, and reaped if they
+  ever fill.** `dmarc@` and `postmaster@` are RCPT landing pads: they exist so
+  SMTP does not answer 550, and Stalwart's report-analysis intercepts and parses
+  the mail before anything is stored — measured across 19 of these mailboxes,
+  every one holds 0 MB while reserving 7 GB of quota between them. The previous
+  256/512 MB reserved capacity for traffic that is never stored. They are now
+  capped at 50 MB, excluded from mailbox storage-quota alerts, and no longer
+  listed in the tenant panel, where they could not be edited or removed anyway.
+  The reconciler corrects the size cap on mailboxes created before this change.
+  The delete-and-recreate reap at 40 MB is a **safety net that should never
+  fire** given interception — not an active cleanup; if it does fire, something
+  upstream has stopped consuming. (The 385 undeliverable DSNs on one cluster
+  were stuck in the outbound *queue* because the address did not exist, not
+  accumulating inside a mailbox.)
 
 ### Fixed
 - **Two security notifications existed and had never fired.** A password being
@@ -161,32 +206,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   so the preview now seeds every dispatcher-supplied variable with a
   representative value. A variable the operator IS responsible for still
   errors, which is the point of a strict preview.
-
-### Removed
-- **"Mailbox limit reached" is no longer a notification.** It fired
-  synchronously from the tenant's own failed click: the create call already
-  rejects with the limit, the current count and the remediation, the panel
-  renders that error on the spot, and the mailbox page shows the used/quota
-  bar — so the notification restated by email a number the person was looking
-  at, about an action they had just watched fail. Operator decision
-  2026-09-16. A dispatcher-level test now fails for *any* notification
-  re-added to that path, not just the helper that was removed.
-
-### Changed
-- **Intake mailboxes are 50 MB, hidden from tenant panels, and reaped if they
-  ever fill.** `dmarc@` and `postmaster@` are RCPT landing pads: they exist so
-  SMTP does not answer 550, and Stalwart's report-analysis intercepts and parses
-  the mail before anything is stored — measured across 19 of these mailboxes,
-  every one holds 0 MB while reserving 7 GB of quota between them. The previous
-  256/512 MB reserved capacity for traffic that is never stored. They are now
-  capped at 50 MB, excluded from mailbox storage-quota alerts, and no longer
-  listed in the tenant panel, where they could not be edited or removed anyway.
-  The reconciler corrects the size cap on mailboxes created before this change.
-  The delete-and-recreate reap at 40 MB is a **safety net that should never
-  fire** given interception — not an active cleanup; if it does fire, something
-  upstream has stopped consuming. (The 385 undeliverable DSNs on one cluster
-  were stuck in the outbound *queue* because the address did not exist, not
-  accumulating inside a mailbox.)
 
 ## [2026.9.20] - 2026-09-16
 

@@ -307,17 +307,15 @@ export async function notifyTenantPasswordChanged(
   await dispatchSafe(db, 'security.password_changed', { kind: 'user', userId }, {});
 }
 
-export interface SuspiciousActivityPayload {
-  readonly newIp: string;
-  readonly userAgent?: string;
-}
-export async function notifyTenantSuspiciousActivity(
-  db: Database,
-  userId: string,
-  payload: SuspiciousActivityPayload,
-): Promise<void> {
-  await dispatchSafe(db, 'security.suspicious_activity', { kind: 'user', userId }, payload);
-}
+// `notifyTenantSuspiciousActivity` and its payload lived here.
+//
+// Removed 2026-09-16 (operator decision). It had templates on every channel
+// and no caller, because nothing on the platform defines "suspicious".
+// Detecting it means choosing a security policy — is a new source IP
+// suspicious? a new user-agent? a new country? — and the wrong choice either
+// cries wolf at every coffee-shop login or stays silent through a real
+// takeover. A source that can never fire is worse than none, because it reads
+// as coverage.
 
 export interface TenantCertificatePayload {
   readonly hostname: string;

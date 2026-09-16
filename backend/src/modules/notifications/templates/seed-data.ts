@@ -11,7 +11,7 @@
  *   {{userName}}     — recipient's full name (or email local part)
  *   {{tenantName}}   — tenant display name (for tenant-scoped events)
  *   {{platformName}} — the brand name (default "Hosting Platform")
- *   + category-specific (e.g. {{newIp}} for suspicious_activity)
+ *   + category-specific (e.g. {{mailboxAddress}} for a mailbox quota warning)
  *
  * NEVER include raw HTML in the seed bodies — Handlebars escape-by-default
  * neutralises var injection, but MJML compiles structured tags. Keep
@@ -102,6 +102,7 @@ function emailMjml(headline: string, paragraph: string, ctaText?: string, ctaUrl
 <mj-text font-size="20px" font-weight="600">${headline}</mj-text>
 <mj-text font-size="14px" line-height="22px">${paragraph}</mj-text>
 ${cta}
+{{#if occurredAt}}<mj-text font-size="12px" color="#999">Recorded at {{occurredAt}}.</mj-text>{{/if}}
 <mj-text font-size="12px" color="#999">This is an automated notification from {{platformName}}.</mj-text>
 </mj-column></mj-section></mj-body></mjml>`;
 }
@@ -154,36 +155,6 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
   },
 
   // ── security.suspicious_activity ───────────────────────────────────
-  {
-    categoryId: 'security.suspicious_activity',
-    channel: 'email',
-    locale: 'en',
-    subjectTemplate: 'Unusual sign-in to your account',
-    bodyTemplate: emailMjml(
-      'Unusual sign-in',
-      'A sign-in to {{userName}} was detected from {{newIp}} ({{userAgent}}). If this was not you, change your password immediately.',
-    ),
-    bodyFormat: 'mjml',
-    variablesSchema: [
-      ...COMMON_VARS,
-      { name: 'newIp', type: 'string', required: true },
-      { name: 'userAgent', type: 'string', required: false },
-    ],
-  },
-  {
-    categoryId: 'security.suspicious_activity',
-    channel: 'in_app',
-    locale: 'en',
-    subjectTemplate: 'Unusual sign-in detected',
-    bodyTemplate: 'A sign-in from {{newIp}} ({{userAgent}}) was detected. If this was not you, change your password immediately.',
-    bodyFormat: 'plaintext',
-    variablesSchema: [
-      ...COMMON_VARS,
-      { name: 'newIp', type: 'string', required: true },
-      { name: 'userAgent', type: 'string', required: false },
-    ],
-  },
-
   // ── subscription.expiry_warning ────────────────────────────────────
   {
     categoryId: 'subscription.expiry_warning',
@@ -1017,7 +988,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     categoryId: 'tasks.scheduled_failure',
     channel: 'email',
     locale: 'en',
-    subjectTemplate: 'Scheduled task failed',
+    subjectTemplate: 'Scheduled task failed: {{taskName}}',
     bodyTemplate: emailMjml(
       'Scheduled task failed',
       'The scheduled task "{{taskName}}" failed: {{errorMessage}}',
@@ -1033,7 +1004,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     categoryId: 'tasks.scheduled_failure',
     channel: 'in_app',
     locale: 'en',
-    subjectTemplate: 'Scheduled task failed',
+    subjectTemplate: 'Scheduled task failed: {{taskName}}',
     bodyTemplate: 'The scheduled task "{{taskName}}" failed.{{#if errorMessage}} {{errorMessage}}{{/if}}',
     bodyFormat: 'plaintext',
     variablesSchema: [
@@ -1417,7 +1388,7 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     categoryId: 'admin.backup_failed',
     channel: 'email',
     locale: 'en',
-    subjectTemplate: 'Backup failed',
+    subjectTemplate: 'Backup failed: {{backupName}}',
     bodyTemplate: emailMjml(
       'Backup failed',
       'Backup "{{backupName}}" failed: {{errorMessage}}',
@@ -1433,7 +1404,7 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     categoryId: 'admin.backup_failed',
     channel: 'in_app',
     locale: 'en',
-    subjectTemplate: 'Backup failed',
+    subjectTemplate: 'Backup failed: {{backupName}}',
     bodyTemplate: 'Backup "{{backupName}}" failed.{{#if errorMessage}} {{errorMessage}}{{/if}}',
     bodyFormat: 'plaintext',
     variablesSchema: [

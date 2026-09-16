@@ -113,7 +113,6 @@ const STATIC_PATHS: Record<string, string> = {
   // ---- delivered to either panel; path exists in both ----
   'security.password_changed': '/user-settings',
   'security.password_reset': '/user-settings',
-  'security.suspicious_activity': '/user-settings',
   'account.sub_account_added': '/users',
 };
 
