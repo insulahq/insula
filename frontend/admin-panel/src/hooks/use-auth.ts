@@ -62,9 +62,22 @@ export const useAuth = create<AuthState>((set) => ({
             localStorage.setItem('auth_user', JSON.stringify(freshUser));
             set({ user: freshUser });
           })
-          .catch(() => {
-            // Token invalid — clear and redirect (handled by api-client 401 handler)
-            // Guard: localStorage may not exist if test environment was torn down
+          .catch((err: unknown) => {
+            // ONLY a 401 is evidence that the token is bad.
+            //
+            // This used to clear the session for ANY rejection. initialize()
+            // runs on every ProtectedRoute mount — i.e. every navigation — so
+            // a single 429, 502, WAF block or dropped connection silently
+            // destroyed a perfectly valid session and bounced the operator to
+            // /login. Reproduced on DEV 2026-09-16: a burst of traffic tripped
+            // the per-user rate limit and the panel logged itself out while
+            // holding an unexpired token.
+            //
+            // For anything else the cached user stays put and the next
+            // navigation re-checks; api-client already handles the genuine
+            // 401 path (silent refresh, then the expired overlay).
+            const status = (err as { status?: number } | null)?.status;
+            if (status !== 401) return;
             try {
               localStorage.removeItem('auth_token');
               localStorage.removeItem('auth_user');

@@ -58,10 +58,18 @@ export const useAuth = create<AuthState>((set) => ({
             localStorage.setItem('auth_user', JSON.stringify(freshUser));
             set({ user: freshUser });
           })
-          .catch(() => {
-            localStorage.removeItem('auth_token');
-            localStorage.removeItem('auth_refresh_token');
-            localStorage.removeItem('auth_user');
+          .catch((err: unknown) => {
+            // ONLY a 401 is evidence that the token is bad. See the admin
+            // panel's copy for the full reasoning — this one was worse: it
+            // also dropped the REFRESH token, so a transient blip left no way
+            // back at all.
+            const status = (err as { status?: number } | null)?.status;
+            if (status !== 401) return;
+            try {
+              localStorage.removeItem('auth_token');
+              localStorage.removeItem('auth_refresh_token');
+              localStorage.removeItem('auth_user');
+            } catch { /* env torn down */ }
             set({ token: null, user: null, isAuthenticated: false, isLoading: false });
           });
       } catch {

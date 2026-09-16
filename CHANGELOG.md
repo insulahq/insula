@@ -108,6 +108,15 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   last checkbox in a dense grid, is now a labelled row of its own.
 
 ### Fixed
+- **Being rate-limited no longer signs you out, and now says so.** Under a
+  burst of traffic the panel could bounce you to the sign-in page while your
+  session was still perfectly valid — the session check treated *any* failed
+  request as a bad token, so one throttled call, a brief 502, or a dropped
+  connection ended the session. Only a genuine authentication failure does
+  that now; everything else leaves you where you were and retries. The
+  throttling response itself also used to arrive labelled `BAD_REQUEST` with
+  a blank message; it now says `RATE_LIMIT_EXCEEDED` and tells you how many
+  seconds to wait.
 - **Mail between two mailboxes on the same server could be silently held for a
   day.** The per-tenant *sending* limit is meant to cap what a tenant sends out
   to the internet. It was also being applied to mail that never leaves the
