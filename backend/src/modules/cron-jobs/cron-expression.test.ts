@@ -85,17 +85,27 @@ describe('getNextRunTime', () => {
       .toEqual(at('2026-09-16T12:20:00Z'));
   });
 
-  describe('a job that has never run', () => {
-    it('waits for its next scheduled minute instead of firing immediately', () => {
-      // The old implementation used the epoch as the base, so every new job was
-      // "due" the moment it was saved, whatever its schedule said.
-      const now = at('2026-09-16T12:00:00Z');
-      expect(getNextRunTime('0 3 * * *', null, now)).toEqual(at('2026-09-17T03:00:00Z'));
+  describe('a job that has never run is measured from its creation time', () => {
+    it('waits for its next scheduled slot instead of firing immediately', () => {
+      // The original implementation used the epoch as the base, so every new job
+      // was "due" the moment it was saved, whatever its schedule said.
+      const created = at('2026-09-16T12:00:00Z');
+      expect(getNextRunTime('0 3 * * *', created)).toEqual(at('2026-09-17T03:00:00Z'));
     });
 
-    it('still starts within a minute for * * * * *', () => {
-      const now = at('2026-09-16T12:00:30Z');
-      expect(getNextRunTime('* * * * *', null, now)).toEqual(at('2026-09-16T12:01:00Z'));
+    it('starts within a minute for * * * * *', () => {
+      const created = at('2026-09-16T12:00:30Z');
+      expect(getNextRunTime('* * * * *', created)).toEqual(at('2026-09-16T12:01:00Z'));
+    });
+
+    it('returns the same answer however many times it is asked', () => {
+      // The scheduler re-evaluates every 30 seconds. An answer computed from
+      // `now` moves with each call, which is how a never-run job stayed at
+      // "Never" on a real cluster — see isJobDue in scheduler.test.ts.
+      const created = at('2026-09-16T12:00:30Z');
+      const first = getNextRunTime('* * * * *', created, at('2026-09-16T12:00:40Z'));
+      const later = getNextRunTime('* * * * *', created, at('2026-09-16T12:09:00Z'));
+      expect(later).toEqual(first);
     });
   });
 
