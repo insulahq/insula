@@ -108,6 +108,23 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   last checkbox in a dense grid, is now a labelled row of its own.
 
 ### Fixed
+- **The platform now keeps a `postmaster@` mailbox, so bounces stop vanishing.**
+  Every message the platform sends is addressed from `postmaster@` — but the
+  mailbox was never created, so every bounce and delivery report sent back to
+  it was refused and queued. Those then expired and generated another
+  undeliverable report to the same address. It is created automatically for
+  each domain that has email enabled.
+- **A mail backlog caused by one customer no longer alerts the operator.** The
+  outbound-queue alert counted every queued message, including mail a customer
+  sent to an address that does not exist — which a hosting provider can neither
+  fix nor act on. It now counts only the platform's own mail, which is what a
+  stalled delivery pipeline actually looks like. The full queue is still shown
+  under **Email → Operations**.
+- **An unrepaired mail drift now raises an alert instead of waiting to be
+  noticed.** Drift between the platform's records and the mail server was
+  already detected and already repairable from **Email → Data Drift**, but
+  nothing said so — one sat unrepaired for three days while the mail health
+  card stayed green and every message to that address bounced.
 - **Being rate-limited no longer signs you out, and now says so.** Under a
   burst of traffic the panel could bounce you to the sign-in page while your
   session was still perfectly valid — the session check treated *any* failed
