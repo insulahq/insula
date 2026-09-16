@@ -28,7 +28,13 @@ import {
   users,
   notifications,
   notificationDeliveries,
+  systemSettings,
 } from '../../../db/schema.js';
+// Named for the mail modules, but its own docblock states it is safe to import
+// anywhere in backend/src — it is the process-wide pino instance. The
+// dispatcher had NO logger at all, which is why a globally muted notification
+// system would otherwise be invisible.
+import { mailLogger } from '../../../shared/mail-logger.js';
 import { resolveRecipients, type RecipientScope } from '../recipients.js';
 import { getCategory } from '../categories/service.js';
 import { getActiveTemplate } from '../templates/service.js';
@@ -246,6 +252,14 @@ async function writeDelivery(
  * a too-long key keeps a readable prefix plus a stable hash of the whole, so it
  * fits AND stays unique/deterministic (the same input dedupes against itself).
  */
+/**
+ * `system_settings` is a single row keyed by this literal — the same id
+ * `system-settings/service.ts` writes. Kept local rather than imported from
+ * that service because importing it would pull in its 5s settings cache, and
+ * bypassing that cache is the entire point of the kill-switch read below.
+ */
+const SYSTEM_SETTINGS_ROW_ID = 'system';
+
 export const DEDUPE_KEY_MAX = 128;
 export function clampDedupeKey(key: string | undefined): string | undefined {
   if (key === undefined || key.length <= DEDUPE_KEY_MAX) return key;
@@ -267,6 +281,29 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
     return { eventId, deliveryCount: 0, perChannelStatuses: [] };
   }
   if (!category.isActive) {
+    return { eventId, deliveryCount: 0, perChannelStatuses: [] };
+  }
+
+  // 1a. Master kill switch.
+  //
+  // Read straight from the row, NOT through system-settings `getSettings()`,
+  // which serves a 5s cache: an operator stopping a storm must see it stop on
+  // the next event, not "within five seconds, probably". A single-row read per
+  // event is cheap next to the recipient and template queries below.
+  //
+  // Logged at WARN with the category, because a silent global mute is how a
+  // platform ends up wondering why it never hears anything — the switch has to
+  // be as visible in the logs as the storm it was thrown to stop.
+  const [sysRow] = await db
+    .select({ notificationsEnabled: systemSettings.notificationsEnabled })
+    .from(systemSettings)
+    .where(eq(systemSettings.id, SYSTEM_SETTINGS_ROW_ID))
+    .limit(1);
+  if (sysRow && sysRow.notificationsEnabled === false) {
+    mailLogger().child({ module: 'notifications-dispatch' }).warn(
+      { categoryId: opts.categoryId, eventId },
+      'notifications are globally DISABLED — event dropped without delivery',
+    );
     return { eventId, deliveryCount: 0, perChannelStatuses: [] };
   }
 

@@ -142,7 +142,26 @@ itself is described in [Tenants](tenants.md).
 ## Notifications
 
 **Platform → Notifications** configures how and when the platform notifies
-*you*. The model is **Sources × Providers**, across four tabs:
+*you*. The model is **Sources × Providers**, across four tabs.
+
+!!! warning "Stop all notifications"
+
+    At the top of the page is a master switch: **Stop all notifications**.
+    It halts every notification on every channel — in-app, email and push —
+    and takes effect on the very next event rather than after a delay.
+
+    Use it when something is generating notification traffic you need to stop
+    now, and you do not yet know which source is responsible. Disabling takes
+    two clicks because it also silences security, backup and certificate
+    alerts: while it is off, nobody is being told anything. The page shows a
+    red banner for as long as that is true.
+
+    **Resume notifications** turns everything back on in one click. Nothing is
+    queued while the switch is off — events that occur during the pause are
+    dropped, not delivered late — so turn it back on as soon as the cause is
+    contained.
+
+The four tabs:
 
 - **Sources** — what triggers a notification (one entry per event type),
   with its default channels and rate limit. (Subscription-expiry reminders

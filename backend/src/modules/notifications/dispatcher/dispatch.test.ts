@@ -46,27 +46,41 @@ const { emitEvent, hasRecipient } = await import('./dispatch.js');
 
 type Db = Parameters<typeof emitEvent>[0];
 
-function mockDb(overrides: { userEmail?: string | null; dedupedExists?: boolean; dedupeChecked?: boolean } = {}): Db {
-  // The dispatcher issues `select` for two distinct shapes:
-  //   - dedupe check (only when opts.dedupeKey set, runs once per user)
-  //   - email lookup (per recipient × email channel)
-  // We track which has run via a closure flag. The default test cases
-  // don't use dedupeKey so the dedupe call never happens.
-  let dedupeCheckSeen = false;
-  const select = vi.fn().mockImplementation(() => ({
-    from: () => ({
-      where: () => ({
-        limit: () => {
-          if (overrides.dedupedExists !== undefined && !dedupeCheckSeen) {
-            dedupeCheckSeen = true;
-            return Promise.resolve(overrides.dedupedExists ? [{ id: 'existing-notif' }] : []);
-          }
-          if (overrides.userEmail === null) return Promise.resolve([]);
-          return Promise.resolve([{ email: overrides.userEmail ?? 'u1@example.com' }]);
-        },
+function mockDb(overrides: {
+  userEmail?: string | null;
+  dedupedExists?: boolean;
+  dedupeChecked?: boolean;
+  notificationsEnabled?: boolean;
+} = {}): Db {
+  // The dispatcher issues `select` for three distinct shapes, and this mock
+  // branches on the PROJECTION rather than on call order:
+  //   { notificationsEnabled } — the master kill switch
+  //   { id }                   — dedupe check (only when opts.dedupeKey is set)
+  //   { email }                — email lookup (per recipient × email channel)
+  //
+  // It used to key off a closure flag counting calls, which meant adding any
+  // query ahead of the dedupe check silently handed the dedupe its row — the
+  // kill-switch read did exactly that and turned a normal dispatch into a
+  // "duplicate". Order-independent branching is the only version that survives
+  // the next query being added.
+  const select = vi.fn().mockImplementation((proj?: Record<string, unknown>) => {
+    const keys = new Set(Object.keys(proj ?? {}));
+    const rows = (): Promise<unknown[]> => {
+      if (keys.has('notificationsEnabled')) {
+        return Promise.resolve([{ notificationsEnabled: overrides.notificationsEnabled ?? true }]);
+      }
+      if (keys.has('id')) {
+        return Promise.resolve(overrides.dedupedExists ? [{ id: 'existing-notif' }] : []);
+      }
+      if (overrides.userEmail === null) return Promise.resolve([]);
+      return Promise.resolve([{ email: overrides.userEmail ?? 'u1@example.com' }]);
+    };
+    return {
+      from: () => ({
+        where: () => ({ limit: rows, then: (res: (v: unknown) => unknown, rej?: (e: unknown) => unknown) => rows().then(res, rej) }),
       }),
-    }),
-  }));
+    };
+  });
   const insertValues = vi.fn().mockResolvedValue(undefined);
   const insert = vi.fn().mockReturnValue({ values: insertValues });
   const updateWhere = vi.fn().mockResolvedValue(undefined);
@@ -153,6 +167,39 @@ describe('emitEvent', () => {
       variables: {},
     });
     expect(r.deliveryCount).toBe(0);
+  });
+
+  it('delivers nothing at all when the master switch is OFF', async () => {
+    // The lever the operator lacked on 2026-09-16, when the only way to stop a
+    // storm was editing notification_categories over psql, per category.
+    getCategoryMock.mockResolvedValue(baseCategory);
+    resolveRecipientsMock.mockResolvedValue(['u1', 'u2']);
+    getActiveTemplateMock.mockResolvedValue(baseTemplate);
+    const r = await emitEvent(mockDb({ notificationsEnabled: false }), {
+      categoryId: 'tenant.suspended',
+      scope: { kind: 'tenant', tenantId: 't1' },
+      variables: {},
+    });
+    expect(r.deliveryCount).toBe(0);
+    expect(r.perChannelStatuses.length).toBe(0);
+    // Dropped BEFORE any channel work — no email, no queue job.
+    expect(sendNotificationEmailMock).not.toHaveBeenCalled();
+    expect(enqueueDeliveryMock).not.toHaveBeenCalled();
+  });
+
+  it('still delivers a MANDATORY category when the master switch is ON', async () => {
+    // The positive control. Without it, "delivered nothing" above would pass
+    // just as happily against a dispatcher that delivers nothing ever.
+    getCategoryMock.mockResolvedValue(baseCategory);
+    resolveRecipientsMock.mockResolvedValue(['u1']);
+    getActiveTemplateMock.mockResolvedValue(baseTemplate);
+    const r = await emitEvent(mockDb({ notificationsEnabled: true }), {
+      categoryId: 'tenant.suspended',
+      scope: { kind: 'tenant', tenantId: 't1' },
+      variables: {},
+      encryptionKey: 'KEY',
+    });
+    expect(r.deliveryCount).toBeGreaterThan(0);
   });
 
   it('suppresses tenant recipients when flagged', async () => {

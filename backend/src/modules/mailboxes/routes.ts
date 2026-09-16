@@ -177,7 +177,14 @@ export async function mailboxRoutes(app: FastifyInstance): Promise<void> {
       const query = request.query as Record<string, unknown>;
       const emailDomainId = typeof query.email_domain_id === 'string' ? query.email_domain_id : undefined;
 
-      const data = await service.listMailboxes(app.db, tenantId, emailDomainId);
+      // The route is shared by operator and tenant roles, so the audience —
+      // not the endpoint — decides whether platform plumbing is listed.
+      const role = (request.user as { role?: string } | undefined)?.role;
+      const isOperator = role === 'super_admin' || role === 'admin' || role === 'support';
+
+      const data = await service.listMailboxes(app.db, tenantId, emailDomainId, {
+        includePlatformManaged: isOperator,
+      });
       return success(data);
     });
 
