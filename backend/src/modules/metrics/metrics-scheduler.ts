@@ -93,7 +93,14 @@ export function startMetricsScheduler(db: Database): NodeJS.Timeout {
         // no time-series). Deduped per (tenant, pod, container, restartCount).
         if (tenant.namespace) {
           try {
-            const ooms = await scanTenantOom(k8s, tenant.namespace);
+            // The 5th arg is what makes the catch below reachable for the
+            // most likely failure: scanTenantOom never throws, so without a
+            // reporter a kube-API error arrived as an empty array and read
+            // as "no OOM kills".
+            const ooms = await scanTenantOom(
+              k8s, tenant.namespace, Date.now(), undefined,
+              (ns, message) => console.warn(`[metrics-scheduler] OOM scan failed for ${ns}: ${message}`),
+            );
             for (const o of ooms) {
               const { killSummary, killDetail } = describeOomEvent(o);
               await notifyAdminTenantOom(
