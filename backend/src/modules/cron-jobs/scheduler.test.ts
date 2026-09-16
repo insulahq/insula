@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { runAndRecord } from './scheduler.js';
+import { runAndRecord, isJobDue } from './scheduler.js';
 import type { CronJobRow } from './executor.js';
 import type { Database } from '../../db/index.js';
 
@@ -151,5 +151,60 @@ describe('runAndRecord', () => {
 
     await expect(runAndRecord(db, makeJob(), {})).resolves.toBeDefined();
     expect(updates[0].lastRunStatus).toBe('failed');
+  });
+});
+
+describe('isJobDue', () => {
+  // This suite exists because of a bug that unit tests could not see and a real
+  // cluster found in one minute: a `* * * * *` job created through the panel sat
+  // at "Never". The scheduler measured a never-run job from `now`, so "the next
+  // match after now" moved forward on every 30-second poll and the job was never
+  // due. Every test below that passes `created` is guarding that.
+  const created = new Date('2026-09-16T12:00:30Z');
+  const never = { schedule: '* * * * *', lastRunAt: null, createdAt: created };
+
+  it('is not due before its first slot', () => {
+    expect(isJobDue(never, new Date('2026-09-16T12:00:40Z'))).toBe(false);
+  });
+
+  it('becomes due at its first slot', () => {
+    expect(isJobDue(never, new Date('2026-09-16T12:01:00Z'))).toBe(true);
+  });
+
+  it('is STILL due minutes later — the regression', () => {
+    // The broken version answered "not due" here, and at every later poll,
+    // forever.
+    expect(isJobDue(never, new Date('2026-09-16T12:09:00Z'))).toBe(true);
+  });
+
+  it('fires at least once when polled every 30s for ten minutes', () => {
+    let due = 0;
+    for (let t = 0; t < 20; t++) {
+      const now = new Date(created.getTime() + t * 30_000);
+      if (isJobDue(never, now)) due++;
+    }
+    expect(due).toBeGreaterThan(0);
+  });
+
+  it('a nightly job created at lunchtime waits for the night', () => {
+    const nightly = { schedule: '0 3 * * *', lastRunAt: null, createdAt: new Date('2026-09-16T12:00:00Z') };
+    expect(isJobDue(nightly, new Date('2026-09-16T12:30:00Z'))).toBe(false);
+    expect(isJobDue(nightly, new Date('2026-09-16T23:59:00Z'))).toBe(false);
+    expect(isJobDue(nightly, new Date('2026-09-17T03:00:00Z'))).toBe(true);
+  });
+
+  it('after a run, the next slot is measured from that run', () => {
+    const ran = {
+      schedule: '*/15 * * * *',
+      lastRunAt: new Date('2026-09-16T12:15:00Z'),
+      createdAt: created,
+    };
+    expect(isJobDue(ran, new Date('2026-09-16T12:20:00Z'))).toBe(false);
+    expect(isJobDue(ran, new Date('2026-09-16T12:30:00Z'))).toBe(true);
+  });
+
+  it('an unparseable schedule is never due', () => {
+    const bad = { schedule: 'not a cron', lastRunAt: null, createdAt: created };
+    expect(isJobDue(bad, new Date('2027-01-01T00:00:00Z'))).toBe(false);
   });
 });

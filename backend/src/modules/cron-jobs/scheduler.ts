@@ -52,8 +52,7 @@ export function startCronScheduler(db: Database, deps: CronSchedulerDeps = {}): 
         .where(eq(cronJobs.enabled, 1));
 
       for (const job of jobs) {
-        const nextRun = getNextRunTime(job.schedule, job.lastRunAt, now);
-        if (nextRun > now) continue;
+        if (!isJobDue(job, now)) continue;
 
         if (!(await claimJob(db, job.id, staleBefore))) continue;
 
@@ -67,6 +66,23 @@ export function startCronScheduler(db: Database, deps: CronSchedulerDeps = {}): 
   }, deps.pollIntervalMs ?? DEFAULT_POLL_MS);
 
   return pollInterval;
+}
+
+/**
+ * Is this job due at `now`?
+ *
+ * A job that has never run is measured from when it was CREATED. Measuring
+ * from `now` — which is what passing a null base used to do — moves the target
+ * forward on every 30-second poll, so the job is never due and sits at "Never"
+ * for ever. That shipped, and a `* * * * *` Moodle cron on a real cluster is
+ * what found it: the unit tests each called the helper once with a fixed
+ * `now`, which is precisely the case where the bug is invisible.
+ */
+export function isJobDue(
+  job: { readonly schedule: string; readonly lastRunAt: Date | null; readonly createdAt: Date },
+  now: Date,
+): boolean {
+  return getNextRunTime(job.schedule, job.lastRunAt ?? job.createdAt, now) <= now;
 }
 
 /**

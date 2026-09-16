@@ -158,20 +158,27 @@ function nextMatch(fields: CronFields, base: Date): Date {
 }
 
 /**
- * When should this job next run?
+ * The next time this job should run, measured from `since` — the end of its
+ * last run, or the moment it was created if it has never run.
  *
- * `lastRunAt === null` means the job has never run: it starts from `now`, so a
- * nightly job created at lunchtime waits for tonight instead of firing the
- * moment it is saved. (The old implementation returned a time in 1970 here,
- * which is why every new job ran immediately.)
+ * `since` is required, and that is the whole point. It used to accept null and
+ * fall back to `now`, which looks reasonable and is fatal: the scheduler
+ * re-evaluates every 30 seconds, so "the next match after now" moved forward
+ * on every poll and a job that had never run could never become due. It was
+ * caught on a real cluster by a `* * * * *` Moodle cron that sat at
+ * "Never" — the unit tests passed because each of them called this once, with
+ * one fixed `now`, which is exactly the case that works.
+ *
+ * Pass a fixed point (`lastRunAt ?? createdAt`) and the answer stops moving.
  */
 export function getNextRunTime(
   schedule: string,
-  lastRunAt: Date | null,
+  since: Date,
   now: Date = new Date(),
 ): Date {
+  void now;
   const fields = parseCron(schedule);
   if (!fields) return NEVER;
 
-  return nextMatch(fields, lastRunAt ?? now);
+  return nextMatch(fields, since);
 }
