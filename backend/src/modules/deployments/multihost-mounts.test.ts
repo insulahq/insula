@@ -164,3 +164,43 @@ describe('buildMultihostMounts', () => {
     expect(minimalSiteFolders(['a', 'a', 'a'])).toEqual(['a']);
   });
 });
+
+describe('multi-host site directories', () => {
+  // A site's content mount is a subPath, and kubelet creates a missing subPath
+  // as root:root 0755 while these images run as www-data. Found on DEV
+  // installing a second Moodle beside the first: `mkdir
+  // /var/www/sites/moodle-b/www` → Permission denied. The session directories
+  // already had this clause; the site content directories did not.
+  it('creates each served site folder, writable, in the init container', async () => {
+    const { k8s, createDeployment } = fakeK8s();
+    await deployCatalogEntry(k8s, {
+      ...RUNTIME_INPUT,
+      multihost: {
+        configDir: '/etc/apache2/insula/sites.d',
+        sitesRoot: '/var/www/sites',
+        configMapName: 'site-vhosts',
+        siteFolders: ['shop', 'blog'],
+      },
+    });
+
+    const spec = podSpecOf(createDeployment);
+    const init = spec.initContainers.find((c: { name: string }) => c.name === 'init-dirs');
+    const cmd = init.command[2] as string;
+
+    expect(cmd).toContain('mkdir -p /data/shop && chmod 777 /data/shop');
+    expect(cmd).toContain('mkdir -p /data/blog && chmod 777 /data/blog');
+    // …and the deployment's own storage path is still created, as before.
+    expect(cmd).toContain('mkdir -p /data/runtime/apache-php/site');
+    // …and the session directories it already handled.
+    expect(cmd).toContain('/var/lib/php-sessions/shop');
+  });
+
+  it('adds no site-folder clauses when the deployment is not multi-host', async () => {
+    const { k8s, createDeployment } = fakeK8s();
+    await deployCatalogEntry(k8s, { ...RUNTIME_INPUT, multihost: null });
+
+    const spec = podSpecOf(createDeployment);
+    const init = spec.initContainers.find((c: { name: string }) => c.name === 'init-dirs');
+    expect(init.command[2]).toBe('mkdir -p /data/runtime/apache-php/site && chmod 777 /data/runtime/apache-php/site');
+  });
+});

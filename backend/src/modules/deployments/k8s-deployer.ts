@@ -933,6 +933,50 @@ export function sessionDirInitCommands(siteFolders: readonly string[]): string[]
   );
 }
 
+/**
+ * Shell clauses that create each multi-host SITE directory on the tenant PVC,
+ * writable by the runtime user.
+ *
+ * Same reason as the session directories above, one level out: a site's content
+ * mount is a `subPath` too, and kubelet creates a missing one as `root:root
+ * 0755`. The deployment's own storage path is covered by buildVolumeMountSpec,
+ * but a second site added to a multi-host pod is not — its folder arrives
+ * unwritable, and the tenant gets a site they cannot install into, upload to,
+ * or let their application write a cache into. Observed on DEV installing a
+ * second Moodle beside the first: `mkdir /var/www/sites/<site>/www` →
+ * Permission denied.
+ *
+ * Exported for the reconciler, which must emit the SAME clauses when it adds a
+ * site to a live pod — a pod that gains the mount without the mkdir is exactly
+ * the broken state described above.
+ */
+export function siteDirInitCommands(siteFolders: readonly string[]): string[] {
+  return minimalSiteFolders(siteFolders).map(
+    (f) => `mkdir -p /data/${f} && chmod 777 /data/${f}`,
+  );
+}
+
+/**
+ * Recognises a clause emitted by `siteDirInitCommands` FOR ONE OF `folders`.
+ *
+ * Deliberately not a shape match: `buildVolumeMountSpec` emits an identical
+ * clause for the deployment's own storage path, and a rewrite that dropped
+ * every clause of that shape would quietly stop re-creating the deployment's
+ * own data directory. The reconciler passes the folder set it is managing, so
+ * it can only ever remove its own clauses.
+ */
+export function isSiteDirCommandFor(part: string, folders: readonly string[]): boolean {
+  // The init command is ONE string joined by ' && ', and callers split it on
+  // that separator — which cuts each clause in half, because a clause contains
+  // an ' && ' of its own. So both halves have to be recognised. (Matching the
+  // whole clause silently matched nothing, and the rewrite then appended a
+  // duplicate on every route change.)
+  const trimmed = part.trim();
+  return folders.some(
+    (f) => trimmed === `mkdir -p /data/${f}` || trimmed === `chmod 777 /data/${f}`,
+  );
+}
+
 /** Recognises a clause emitted by `sessionDirInitCommands`, for rewrites. */
 export function isSessionDirCommand(part: string): boolean {
   return part.includes(`${MULTIHOST_SESSION_BASE}/`);
@@ -1099,19 +1143,26 @@ async function deployK8sDeployment(
   // before PHP writes to it — PHP will not create it — so it is created here,
   // where the folder list is already known.
   const sessionDirs = sessionDirInitCommands(multihost ? multihost.siteFolders : []);
+  // …and the site content directories themselves, for the same reason.
+  const siteDirs = siteDirInitCommands(multihost ? multihost.siteFolders : []);
   // The init container creates the session directories. kubelet creates a
   // missing subPath as root:root 0755 and these images run non-root, so a
   // mount without the matching mkdir gives the site a directory it cannot
   // write — PHP is pointed at it and every session write is denied silently.
   const sessionVolumeMount = { name: MULTIHOST_SESSION_VOLUME, mountPath: MULTIHOST_SESSION_BASE };
+  const extraInitClauses = [...siteDirs, ...sessionDirs];
   if (spec) {
-    if (sessionDirs.length > 0) {
+    if (extraInitClauses.length > 0) {
       const init = spec.initDirsContainer as { command?: string[]; volumeMounts?: Array<Record<string, unknown>> };
       if (init.command && init.command.length === 3) {
-        init.command[2] = `${init.command[2]} && ${sessionDirs.join(' && ')}`;
+        init.command[2] = `${init.command[2]} && ${extraInitClauses.join(' && ')}`;
       }
-      // It writes into the session volume, so it has to mount it.
-      init.volumeMounts = [...(init.volumeMounts ?? []), sessionVolumeMount];
+      // It writes into the session volume, so it has to mount it. The site
+      // directories live on the tenant PVC, which this container already
+      // mounts at /data.
+      if (sessionDirs.length > 0) {
+        init.volumeMounts = [...(init.volumeMounts ?? []), sessionVolumeMount];
+      }
     }
     initContainersList.push(spec.initDirsContainer);
   } else if (sessionDirs.length > 0) {
