@@ -549,6 +549,24 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
       { maxSubUsers },
     );
 
+    // Tell the tenant that someone gained access to their account.
+    //
+    // `account.sub_account_added` had templates on both channels and no caller
+    // anywhere, so a new user could be added to a tenant and the account
+    // holder was never told — the kind of change they most need to see if it
+    // was not them. Fire-and-forget: the account exists either way, and a
+    // notification failure must not turn a 201 into a 5xx.
+    void (async () => {
+      try {
+        const { notifyTenantSubAccountAdded } = await import('../notifications/events.js');
+        await notifyTenantSubAccountAdded(app.db, tenantId, {
+          subAccountEmail: parsed.data.email,
+        });
+      } catch (err) {
+        app.log.warn({ err, tenantId }, 'sub-account-added notification failed');
+      }
+    })();
+
     reply.status(201).send(success(created));
   });
 

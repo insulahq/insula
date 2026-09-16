@@ -300,7 +300,11 @@ export async function notifyTenantPasswordChanged(
   db: Database,
   userId: string,
 ): Promise<void> {
-  await dispatchSafe(db, 'security.password_changed', { kind: 'user', userId }, { userName: userId });
+  // No `userName` here on purpose. This passed `userName: userId` — a raw id
+  // as the display name, which would have rendered "Hi 3fd54013-…" had it ever
+  // been called. The dispatcher resolves the recipient's real name per
+  // recipient, which is the only place that knows who is being addressed.
+  await dispatchSafe(db, 'security.password_changed', { kind: 'user', userId }, {});
 }
 
 export interface SuspiciousActivityPayload {

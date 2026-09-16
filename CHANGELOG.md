@@ -58,6 +58,17 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   panel and the email cannot disagree about where a category points.
 
 ### Fixed
+- **Two security notifications existed and had never fired.** A password being
+  changed and someone being added to an account both had templates on every
+  channel, were marked mandatory or security-class — and no code anywhere
+  called either emitter. The two notices a person most needs if it was not them
+  were the two that never arrived. Both are now wired, fire-and-forget so a
+  notification failure cannot turn a successful password change into a 5xx (or
+  a created account into one), and a test guards the call sites so a refactor
+  that drops them fails loudly. The password-changed emitter also passed
+  `userName: userId` — a raw id as the display name — which would have rendered
+  "Hi 3fd54013-…" the first time it ran.
+
 - **Certificate failures no longer leak Kubernetes internals to tenants.** A
   customer was sent, verbatim: *"Failed to wait for order resource
   'success-com-na-wildcard-cert-1-1573661536' to become ready"* — cert-manager's
