@@ -80,14 +80,29 @@ export class ApiError extends Error {
 // All concurrent 401s coalesce onto a single in-flight refresh promise
 // so we don't issue N parallel /auth/refresh calls (which would also
 // trip the rotation reuse-detection heuristic on the backend).
-let refreshInFlight: Promise<boolean> | null = null;
+let refreshInFlight: Promise<RefreshOutcome> | null = null;
 
-async function attemptRefresh(): Promise<boolean> {
+/**
+ * Outcome of a refresh attempt. A boolean is not enough: "the server said
+ * no" and "the server could not answer" have opposite correct responses.
+ *
+ *   refreshed   — new tokens stored, retry the original request.
+ *   rejected    — the refresh token is genuinely no good. End the session.
+ *   unavailable — throttled (429), 5xx, or the request never completed.
+ *                 Says NOTHING about the token; keep the session and let
+ *                 the caller surface the original error.
+ *
+ * Returning false for `unavailable` is what logged operators out during a
+ * rate-limit burst on DEV (2026-09-16) while their refresh token was fine.
+ */
+type RefreshOutcome = 'refreshed' | 'rejected' | 'unavailable';
+
+async function attemptRefresh(): Promise<RefreshOutcome> {
   if (refreshInFlight) return refreshInFlight;
 
-  refreshInFlight = (async () => {
+  refreshInFlight = (async (): Promise<RefreshOutcome> => {
     const refreshToken = localStorage.getItem('auth_refresh_token');
-    if (!refreshToken) return false;
+    if (!refreshToken) return 'rejected';
 
     try {
       const res = await fetch(`${API_BASE}/api/v1/auth/refresh`, {
@@ -96,16 +111,22 @@ async function attemptRefresh(): Promise<boolean> {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ refreshToken }),
       });
-      if (!res.ok) return false;
+      if (!res.ok) {
+        // 401/403 = this token will never work again. Anything else —
+        // notably 429, since /auth/refresh shares the global rate-limit
+        // bucket — is transient and must not cost the user their session.
+        return (res.status === 401 || res.status === 403) ? 'rejected' : 'unavailable';
+      }
       const body = await res.json();
       const data = body?.data;
-      if (!data?.token || !data?.refreshToken) return false;
+      if (!data?.token || !data?.refreshToken) return 'rejected';
       localStorage.setItem('auth_token', data.token);
       localStorage.setItem('auth_refresh_token', data.refreshToken);
       if (data.user) localStorage.setItem('auth_user', JSON.stringify(data.user));
-      return true;
+      return 'refreshed';
     } catch {
-      return false;
+      // Never reached the server at all.
+      return 'unavailable';
     }
   })();
 
@@ -178,13 +199,18 @@ async function apiFetchWithRetry<T>(
       && !isAuthEndpoint
       && allowRetry
     ) {
-      const refreshed = await attemptRefresh();
-      if (refreshed) {
+      const outcome = await attemptRefresh();
+      if (outcome === 'refreshed') {
         // Retry once with the new access token.
         return apiFetchWithRetry<T>(path, options, false);
       }
-      // Refresh failed — fall through to the expired overlay.
-      showTokenExpiredAndRedirect();
+      if (outcome === 'rejected') {
+        // The refresh token is genuinely dead — this IS a session end.
+        showTokenExpiredAndRedirect();
+      }
+      // 'unavailable' — the server could not answer. Keep the session and let
+      // the original error reach the caller, so the UI can say "rate limited"
+      // or "service unavailable" instead of silently signing the user out.
     } else if (res.status === 401 && code === 'INVALID_TOKEN' && !isAuthEndpoint) {
       showTokenExpiredAndRedirect();
     }
