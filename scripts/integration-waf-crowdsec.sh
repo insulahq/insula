@@ -1740,8 +1740,23 @@ else
   l3_result=$(probe_https)
   l3_code=$(echo "$l3_result" | cut -d'|' -f1)
   l3_headers=$(echo "$l3_result" | cut -d'|' -f2 | base64 -d 2>/dev/null || true)
-  if [[ "$l3_code" == "301" ]] && echo "$l3_headers" | grep -qi 'harness-target.example.invalid'; then
-    ok "L3: custom_redirect_url — HTTPS 301 → harness-target.example.invalid"
+  # 302, not 301. Migration 0106 made the redirect status operator-selectable
+  # and set the default for NEW routes to 302 — deliberately, because a 301
+  # already sitting in browser and CDN caches is not something to change as a
+  # side effect. Existing rows were backfilled to the 301 they were serving;
+  # this suite creates a fresh route and PATCHes only `redirect_url`, so it
+  # gets the 302 default.
+  #
+  # The assertion kept expecting 301 and went unnoticed because this suite has
+  # been SKIPPING under the self-ban guard — so it was never run with WAF
+  # enforcement active. A skip is not a pass, and this is what it was hiding.
+  #
+  # Both codes are accepted as "redirected", but the code is reported so a
+  # silent flip between them still shows up in the log.
+  if [[ "$l3_code" == "302" ]] && echo "$l3_headers" | grep -qi 'harness-target.example.invalid'; then
+    ok "L3: custom_redirect_url — HTTPS 302 (0106 default for new routes) → harness-target.example.invalid"
+  elif [[ "$l3_code" == "301" ]] && echo "$l3_headers" | grep -qi 'harness-target.example.invalid'; then
+    ok "L3: custom_redirect_url — HTTPS 301 (route pinned to permanent) → harness-target.example.invalid"
   else
     fail "L3: custom redirect probe got code=$l3_code headers=$(echo "$l3_headers" | head -c 200)"
   fi
