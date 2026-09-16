@@ -40,6 +40,7 @@ import { getCategory } from '../categories/service.js';
 import { getActiveTemplate } from '../templates/service.js';
 import { renderForDelivery } from '../templates/render-for-delivery.js';
 import { recordDegradedRender, clampDegradedVars } from './degraded.js';
+import { resolveNotificationLinks, renderActionButtons, inlineLink } from '../action-links.js';
 import { effectiveChannels, categoryMeta } from '../routing/effective-channels.js';
 import {
   platformName,
@@ -72,6 +73,17 @@ export interface EmitEventOptions {
   readonly scope: RecipientScope;
   readonly variables: Record<string, unknown>;
   readonly tenantId?: string | null;
+  /**
+   * What this event is ABOUT, when that is not simply the scope's tenant.
+   *
+   * Admin categories dispatch with `{kind:'admin'}` and no tenantId, so the
+   * notification row was stamped with no resource at all — which is why 0 of
+   * 118 SLO rows and 0 of 23 node-memory rows in production could deep-link,
+   * and every one of them landed the operator on a subsystem page instead of
+   * the thing that broke. An emitter that knows its subject passes it here.
+   */
+  readonly resourceType?: string | null;
+  readonly resourceId?: string | null;
   readonly suppressTenantNotification?: boolean;
   readonly eventId?: string;
   /** Override locale for the template lookup (rare). */
@@ -331,7 +343,13 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
   // platform ends up wondering why it never hears anything — the switch has to
   // be as visible in the logs as the storm it was thrown to stop.
   const [sysRow] = await db
-    .select({ notificationsEnabled: systemSettings.notificationsEnabled })
+    .select({
+      notificationsEnabled: systemSettings.notificationsEnabled,
+      // Same row, same read: the links below need a base URL, and a second
+      // query for it would be a second chance to be stale.
+      adminPanelUrl: systemSettings.adminPanelUrl,
+      tenantPanelUrl: systemSettings.tenantPanelUrl,
+    })
     .from(systemSettings)
     .where(eq(systemSettings.id, SYSTEM_SETTINGS_ROW_ID))
     .limit(1);
@@ -372,7 +390,30 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
   // `admin.email_quota_exceeded` shipped with, and every layer below rendered
   // it faithfully all the way into the operator's inbox.
   const idResolved = await resolveIdVariables(db, rawEnvelopeVars);
-  const envelopeVars = idResolved.vars;
+
+  // Links, resolved once per event. `resourceType`/`resourceId` are what make
+  // a tenant-scoped admin alert deep-link to THAT tenant instead of the list.
+  const links = resolveNotificationLinks({
+    categoryId: opts.categoryId,
+    resourceType: opts.resourceType ?? (opts.tenantId ? 'tenant' : null),
+    resourceId: opts.resourceId ?? opts.tenantId ?? null,
+    tenantId: opts.tenantId ?? null,
+    adminBaseUrl: sysRow?.adminPanelUrl ?? null,
+    tenantBaseUrl: sysRow?.tenantPanelUrl ?? null,
+  });
+  const primary = links.find((l): boolean => l.style === 'primary') ?? links[0] ?? null;
+  const envelopeVars: Record<string, unknown> = {
+    ...idResolved.vars,
+    actionButtons: renderActionButtons(links),
+    actionUrl: primary?.url ?? null,
+    actionText: primary?.text ?? null,
+    // Inline form: the tenant's own name, linking to that tenant. Used with a
+    // triple-stash, which is why the label is escaped where it is built.
+    tenantLink: inlineLink(
+      typeof idResolved.vars.tenantName === 'string' ? idResolved.vars.tenantName : null,
+      primary?.url ?? null,
+    ),
+  };
   if (idResolved.unresolved.length > 0) {
     dispatchLog().warn(
       { categoryId: opts.categoryId, unresolved: idResolved.unresolved },
@@ -696,8 +737,8 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
           type: severityToLegacyType(category.defaultSeverity),
           title: (rendered.subject ?? category.displayName).slice(0, 255),
           message: rendered.body.slice(0, 10_000),
-          resourceType: opts.tenantId ? 'tenant' : null,
-          resourceId: opts.tenantId ?? null,
+          resourceType: opts.resourceType ?? (opts.tenantId ? 'tenant' : null),
+          resourceId: opts.resourceId ?? opts.tenantId ?? null,
           categoryId: category.id,
           severity: category.defaultSeverity,
           eventId,

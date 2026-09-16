@@ -248,7 +248,11 @@ async function evaluateQuotaUsage(db: Database, logger: OutboundReconcileLogger)
             limit: payload.limit,
             percent: payload.percent,
             occurredAt: new Date().toISOString().slice(0, 16).replace('T', ' ') + ' UTC',
-          }, `email-quota-admin:${highestNew.tenantId}:${highestNew.window}:${new Date().toISOString().slice(0, 10)}`);
+          },
+          `email-quota-admin:${highestNew.tenantId}:${highestNew.window}:${new Date().toISOString().slice(0, 10)}`,
+          // The subject, so the alert links to THIS tenant. /tenants (the list)
+          // shows no sending limits; the tenant's own page does.
+          highestNew.tenantId);
         } else {
           await notifyTenantEmailQuotaWarning(db, highestNew.tenantId, payload);
         }

@@ -27,6 +27,26 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   and is omitted for a mailbox-owner recipient — they have no platform
   account, so the only available "name" is the local part and "Hi bookings,"
   reads as a broken mail merge.
+- **A master notification switch in Admin → Notifications.** One button that stops
+  every notification on every channel, and resumes them. It exists because on
+  2026-09-16 the only way to stop a storm was an operator running
+  `UPDATE notification_categories SET is_active = false` against the production
+  database — per category, during the incident, which assumes you know which
+  category is storming and have psql access at all. The dispatcher reads the
+  switch **uncached** on every event, so flipping it takes effect on the next
+  one rather than after a cache TTL. Disabling takes two clicks and the card
+  states plainly that security, backup and certificate alerts are suppressed
+  too; re-enabling takes one, because that is not the dangerous direction.
+- **A notification can carry more than one link, and they go where the thing
+  is.** One "open the subsystem page" link is what landed an operator on a list
+  of every tenant for an alert about one of them. Each category now resolves a
+  primary destination plus the extra links a reader plausibly wants — a
+  saturated sender offers both that tenant's page and mail operations; a failed
+  backup offers the schedule and the target; a certificate failure offers DNS,
+  which is what actually breaks. Email renders them as buttons, the in-app feed
+  as controls beside the row, and inline anchors (a tenant name that opens that
+  tenant) are available to templates. One registry, rendered two ways, so the
+  panel and the email cannot disagree about where a category points.
 
 ### Fixed
 - **No notification can print a raw id again.** Production mailed
@@ -42,21 +62,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   sat above the external-recipient loop — so the one audience that path exists
   for (people with no platform account, e.g. mailbox-quota warnings) was
   silently skipped in exactly the case it was built for.
-
-
-### Added
-- **A master notification switch in Admin → Notifications.** One button that stops
-  every notification on every channel, and resumes them. It exists because on
-  2026-09-16 the only way to stop a storm was an operator running
-  `UPDATE notification_categories SET is_active = false` against the production
-  database — per category, during the incident, which assumes you know which
-  category is storming and have psql access at all. The dispatcher reads the
-  switch **uncached** on every event, so flipping it takes effect on the next
-  one rather than after a cache TTL. Disabling takes two clicks and the card
-  states plainly that security, backup and certificate alerts are suppressed
-  too; re-enabling takes one, because that is not the dangerous direction.
-
-### Fixed
 - **A notification storm that mailed tenants every five minutes, forever, and
   then saturated the platform's own sending limit.** The `postmaster@`/`dmarc@`
   report-intake reconciler created its mailboxes through the *tenant-facing*
@@ -75,6 +80,17 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   `dmarc@` and `postmaster@` are created by the platform on the tenant's domain
   and were counted against `max_mailboxes`, charging tenants for capacity they
   never asked for (migration 0123 releases the existing rows).
+- **`admin.email_quota_exceeded` deep-links to the tenant it is about.** It
+  pointed at `/tenants` — the list, which shows no sending limits at all, so
+  the click could not answer the alert. Admin categories can now declare what
+  they are ABOUT (`resourceType`/`resourceId`) independently of who they go to,
+  which is the mechanism the other tenant-scoped admin alerts need.
+- **Previewing an email template no longer throws.** The shared wrapper
+  references `{{greeting}}` and `{{{actionButtons}}}`, the preview renders in
+  strict mode, and no operator can be expected to know those variables exist —
+  so the preview now seeds every dispatcher-supplied variable with a
+  representative value. A variable the operator IS responsible for still
+  errors, which is the point of a strict preview.
 
 ### Removed
 - **"Mailbox limit reached" is no longer a notification.** It fired

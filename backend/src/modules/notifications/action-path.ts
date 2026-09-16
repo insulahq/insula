@@ -33,6 +33,11 @@ const TENANT_SCOPED_ADMIN = new Set<string>([
   'admin.tenant_resource_saturation_critical',
   'admin.tenant_pod_oom',
   'admin.custom_deployment_failed',
+  // Added 2026-09-16. It pointed at `/tenants` — the LIST, which shows no
+  // sending limits whatsoever, so the operator arrived at a page that could
+  // not tell them anything about the alert they had just clicked. The tenant's
+  // own page carries the limit.
+  'admin.email_quota_exceeded',
 ]);
 
 /** categoryId → static landing page (no per-resource deep link). */
@@ -96,7 +101,6 @@ const STATIC_PATHS: Record<string, string> = {
   'tenant.mail_event': '/email',
   'platform.digest': '/notifications',
   'admin.notification_escalated': '/platform/notifications',
-  'admin.email_quota_exceeded': '/tenants',
   'admin.subscriptions_expiring': '/tenants',
   // The tenant lands on the page that shows the usage bars, not on a page
   // about the concept of a limit.

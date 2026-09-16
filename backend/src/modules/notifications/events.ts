@@ -33,7 +33,13 @@ async function dispatchSafe(
   scope: Parameters<typeof emitEvent>[1]['scope'],
   variables: object,
   tenantId?: string,
-  extraOpts?: { readonly dedupeKey?: string; readonly externalRecipients?: readonly string[] },
+  extraOpts?: {
+    readonly dedupeKey?: string;
+    readonly externalRecipients?: readonly string[];
+    /** What the event is ABOUT, when that differs from the scope. */
+    readonly resourceType?: string;
+    readonly resourceId?: string;
+  },
 ): Promise<void> {
   try {
     await emitEvent(db, {
@@ -43,6 +49,8 @@ async function dispatchSafe(
       tenantId,
       dedupeKey: extraOpts?.dedupeKey,
       externalRecipients: extraOpts?.externalRecipients,
+      resourceType: extraOpts?.resourceType,
+      resourceId: extraOpts?.resourceId,
     });
   } catch {
     // Legacy contract: never throw from an event helper.
@@ -717,8 +725,19 @@ export async function notifyAdminEmailQuotaExceeded(
   db: Database,
   payload: AdminEmailQuotaPayload,
   dedupeKey?: string,
+  /**
+   * The tenant this is ABOUT. Not the scope — the notification goes to
+   * operators — but the subject, so the row carries a resource and the links
+   * point at that tenant instead of the tenant LIST, which shows no sending
+   * limits at all. Production's copy of this alert linked to /tenants.
+   */
+  subjectTenantId?: string,
 ): Promise<void> {
-  await dispatchSafe(db, 'admin.email_quota_exceeded', { kind: 'admin' }, payload, undefined, { dedupeKey });
+  await dispatchSafe(db, 'admin.email_quota_exceeded', { kind: 'admin' }, payload, undefined, {
+    dedupeKey,
+    resourceType: subjectTenantId ? 'tenant' : undefined,
+    resourceId: subjectTenantId,
+  });
 }
 
 export interface MailboxQuotaPayload {

@@ -38,6 +38,13 @@ const COMMON_VARS: readonly NotificationTemplateVariable[] = [
   // Supplied by the dispatcher from the recipient's own name; null for a
   // mailbox-owner recipient, which collapses the wrapper's `#if greeting`.
   { name: 'greeting', type: 'string', required: false },
+  // Links (action-links.ts), resolved per category and pre-rendered so no
+  // template has to know how to build a URL. `actionButtons` is emitted by the
+  // shared email wrapper, which is why every email template references it.
+  { name: 'actionButtons', type: 'string', required: false },
+  { name: 'actionUrl', type: 'string', required: false },
+  { name: 'actionText', type: 'string', required: false },
+  { name: 'tenantLink', type: 'string', required: false },
   { name: 'tenantName', type: 'string', required: false },
   { name: 'platformName', type: 'string', required: false },
   // The tenant's billing/technical contact PERSON, distinct from the
@@ -76,9 +83,14 @@ const SLO_ALERT_VARS: readonly NotificationTemplateVariable[] = [
  * branding layer; the seed templates are intentionally plain.
  */
 function emailMjml(headline: string, paragraph: string, ctaText?: string, ctaUrl?: string): string {
+  // A template that names its own call to action keeps it — "Review your
+  // account" beats a generic label. Everything else gets the per-category
+  // buttons the dispatcher resolves, pre-rendered as MJML so the strict
+  // renderer never sees loop-scoped variables. Never both: two button rows is
+  // the same as having no primary action.
   const cta = ctaText && ctaUrl
     ? `<mj-button href="${ctaUrl}">${ctaText}</mj-button>`
-    : '';
+    : '{{{actionButtons}}}';
   // The greeting is emitted by the WRAPPER, not by each template: the operator
   // requirement is that every notification addresses the person, and 58
   // templates each remembering to open with one is 58 chances to forget.
