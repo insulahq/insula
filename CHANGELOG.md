@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.9.20] - 2026-09-16
+
 ### Added
 - **DMARC aggregate reports are now collected and shown.** Receivers like Gmail
   and Outlook send a daily report saying how much of your mail passed
