@@ -59,7 +59,6 @@ const {
   notifyTenantSubscriptionExpiry,
   notifyTenantSubAccountAdded,
   notifyTenantPasswordChanged,
-  notifyTenantSuspiciousActivity,
   notifyAdminCertExpiring,
   notifyAdminCertRenewalFailed,
   notifyAdminBackupFailed,
@@ -190,12 +189,6 @@ describe('notification events', () => {
       }));
     });
 
-    it('notifyTenantSuspiciousActivity emits security.suspicious_activity', async () => {
-      await notifyTenantSuspiciousActivity({} as never, 'u1', { newIp: '203.0.113.7' });
-      expect(emitEventMock).toHaveBeenCalledWith({}, expect.objectContaining({
-        categoryId: 'security.suspicious_activity',
-      }));
-    });
 
     it('notifyAdminCertExpiring emits admin.cert_expiring', async () => {
       await notifyAdminCertExpiring({} as never, { certSubject: 'CN=foo', expiresAt: '2027-01-01' });

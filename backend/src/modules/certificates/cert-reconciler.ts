@@ -24,6 +24,7 @@
  */
 
 import { eq } from 'drizzle-orm';
+import { tenantSafeCertError } from './tenant-error.js';
 import crypto from 'crypto';
 import { certCoversHostname } from '@insula/api-contracts';
 import { domains, sslCertificates, tenants } from '../../db/schema.js';
@@ -129,10 +130,12 @@ async function recordCertificateState(
   const wasFailed = existing?.status === 'failed';
   if (failed && !wasFailed) {
     const dedupeKey = `cert-failed:${d.domainName}:${health.lastFailureAt?.toISOString() ?? now.toISOString()}`;
+    // The tenant gets a translation; the OPERATOR gets the raw cert-manager
+    // text, because that is the half that actually diagnoses the failure.
     await notifyTenantCertificateFailed(
       db,
       d.tenantId,
-      { hostname: d.domainName, errorMessage },
+      { hostname: d.domainName, errorMessage: tenantSafeCertError(errorMessage) },
       dedupeKey,
     );
     await notifyAdminCertIssuanceFailed(
@@ -147,7 +150,7 @@ async function recordCertificateState(
     await notifyTenantCertificateFallback(
       db,
       d.tenantId,
-      { hostname: d.domainName, errorMessage },
+      { hostname: d.domainName, errorMessage: tenantSafeCertError(errorMessage) },
       `cert-fallback:${d.domainName}:${health.lastFailureAt?.toISOString() ?? now.toISOString()}`,
     );
   }

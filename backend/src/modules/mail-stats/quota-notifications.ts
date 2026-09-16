@@ -115,10 +115,19 @@ export async function checkQuotaThresholds(
     const pct = percentOf(row.used_mb, row.quota_mb);
     if (pct >= 100) overQuota.push(row);
 
+    // Claim EVERY crossed threshold, but notify for the HIGHEST one only.
+    //
+    // A mailbox that jumps from 78% to 95% between two reconciler passes
+    // crosses 80 and 90 at once, and the loop used to send one notification
+    // per crossing — two emails two seconds apart, observed on production
+    // 2026-09-16 (mr.moringa@ got the 80 and the 90 back to back). The lower
+    // ones still have to be CLAIMED, or they would fire on the next pass as
+    // if they were new.
+    let highest: number | null = null;
     for (const threshold of thresholdsCrossed(row.used_mb, row.quota_mb)) {
-      // Claim the (mailbox, threshold) pair. Concurrent reconcilers are safe:
-      // exactly one INSERT wins. The DO UPDATE re-arms a previously cleared
-      // event; the WHERE keeps a still-firing one a no-op.
+      // Concurrent reconcilers are safe: exactly one INSERT wins. The DO
+      // UPDATE re-arms a previously cleared event; the WHERE keeps a
+      // still-firing one a no-op.
       const inserted = await db.execute<{ mailbox_id: string }>(sql`
         INSERT INTO mailbox_quota_events (mailbox_id, threshold)
         VALUES (${row.mailbox_id}, ${threshold})
@@ -130,6 +139,12 @@ export async function checkQuotaThresholds(
         RETURNING mailbox_id
       `);
       if ((inserted.rows ?? []).length === 0) continue;
+      if (highest === null || threshold > highest) highest = threshold;
+    }
+
+    {
+      const threshold = highest;
+      if (threshold === null) continue;
 
       // Two audiences from one call: the tenant admins by scope, and the
       // mailbox owner by address because they have no account to resolve.

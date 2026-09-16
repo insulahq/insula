@@ -15,6 +15,16 @@ interface NotificationEntry {
   /** In-app page to open when the notification is clicked (server-resolved
    *  from the category). Null for the legacy family with no landing page. */
   readonly actionPath: string | null;
+  /**
+   * Every destination this notification offers, primary first. More than one
+   * because a single "open the subsystem page" link is what landed an operator
+   * on a list of all tenants for an alert about one of them.
+   */
+  readonly links?: ReadonlyArray<{
+    readonly text: string;
+    readonly path: string;
+    readonly style: 'primary' | 'secondary';
+  }>;
 }
 
 interface NotificationsResponse {

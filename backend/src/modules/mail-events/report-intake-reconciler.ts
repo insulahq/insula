@@ -117,15 +117,111 @@ export interface ReportIntakeResult {
   readonly resized: number;
 }
 
+
+/**
+ * `dmarc@<domain>` as an ALIAS of the postmaster intake, not a second mailbox.
+ *
+ * Also converges installs that already have a `dmarc@` MAILBOX: it is deleted
+ * and replaced by the alias, but ONLY when it is platform-managed and holds
+ * nothing (measured: every one of them holds 0 MB, because report-analysis
+ * intercepts before storage). A tenant's own hand-made `dmarc@` is never
+ * touched.
+ *
+ * `rua=` targets keep working throughout — the address is unchanged, only what
+ * sits behind it. The address is pushed onto `dmarcAddresses` whenever it
+ * resolves, so the DNS repair downstream still sees a valid target.
+ *
+ * Worst case on failure is one tick (5 min) where `dmarc@` has neither mailbox
+ * nor alias and reports get a 550. Acceptable for an address that receives
+ * machine-generated reports which retry for days, and the next tick recreates
+ * it — but it is why the delete is gated on "empty and platform-managed"
+ * rather than attempted optimistically.
+ */
+async function ensureDmarcAlias(
+  db: Database,
+  logger: OutboundReconcileLogger,
+  target: { tenantId: string; emailDomainId: string; domainName: string },
+  postmasterMailboxId: string,
+  dmarcAddresses: string[],
+): Promise<void> {
+  const address = `${DMARC_LOCAL_PART}@${target.domainName.toLowerCase()}`;
+  try {
+    const [legacy] = await db
+      .select({
+        id: mailboxes.id,
+        usedMb: mailboxes.usedMb,
+        platformManaged: mailboxes.platformManaged,
+      })
+      .from(mailboxes)
+      .where(and(
+        eq(mailboxes.emailDomainId, target.emailDomainId),
+        eq(mailboxes.localPart, DMARC_LOCAL_PART),
+      ))
+      .limit(1);
+
+    if (legacy) {
+      if (!legacy.platformManaged) {
+        // Theirs. Leave it entirely alone and still report the address as a
+        // working rua= target, because it is one.
+        dmarcAddresses.push(address);
+        return;
+      }
+      if (legacy.usedMb > 0) {
+        // Should not happen (report-analysis intercepts before storage), so if
+        // it does, something upstream changed and deleting would lose mail.
+        logger.warn(
+          { address, usedMb: legacy.usedMb },
+          'report intake: dmarc@ mailbox holds mail — left as a mailbox rather than converged to an alias',
+        );
+        dmarcAddresses.push(address);
+        return;
+      }
+      const { deleteMailbox } = await import('../mailboxes/service.js');
+      await deleteMailbox(db, target.tenantId, legacy.id);
+      logger.info({ address }, 'report intake: removed the second intake mailbox, converging dmarc@ to an alias');
+    }
+
+    const { listMailboxAliases, createMailboxAlias } = await import('../mailbox-aliases/service.js');
+    const aliases = await listMailboxAliases(db, target.tenantId, { mailboxId: postmasterMailboxId });
+    const has = aliases.some((a) => a.localPart === DMARC_LOCAL_PART);
+    if (!has) {
+      await createMailboxAlias(db, target.tenantId, postmasterMailboxId, { local_part: DMARC_LOCAL_PART });
+      logger.info({ address }, 'report intake: created the dmarc@ alias');
+    }
+    dmarcAddresses.push(address);
+  } catch (err) {
+    // Never let the alias step break the intake mailbox that already exists.
+    logger.error({ err, address }, 'report intake: dmarc@ alias ensure failed (retries next tick)');
+  }
+}
+
 export async function ensureReportIntake(
   db: Database,
   logger: OutboundReconcileLogger,
   opts: { baseUrl?: string; env?: NodeJS.ProcessEnv } = {},
 ): Promise<ReportIntakeResult> {
-  // ── 1. one dmarc@ AND one postmaster@ mailbox per enabled email domain ──
+  // ── 1. ONE intake mailbox per enabled email domain, with dmarc@ as an alias ──
   //
-  // Both are registered in REQUIRED_INTAKE_PATTERNS, and registering a pattern
-  // is not creating an account — the whole reason this reconciler exists.
+  // There used to be two mailboxes. Operator question 2026-09-16: why? The
+  // honest answer was that nothing justified it —
+  //
+  //   * `postmaster@*` and `dmarc@*` are BOTH registered in
+  //     REQUIRED_INTAKE_PATTERNS, so Stalwart already treats them identically;
+  //     the old docblock claim that pointing `rua=` at postmaster@ would "mix
+  //     report parsing with bounces" was already false of the shipped config.
+  //   * Neither mailbox stores anything. Measured across 19 of them on a live
+  //     cluster: 0 MB used, 7 GB of quota reserved between them. Stalwart's
+  //     report-analysis intercepts and parses before storage, so both are RCPT
+  //     landing pads — they exist so SMTP does not answer 550.
+  //   * `postmaster@` is mandatory (RFC 5321 §4.5.1) and can never be dropped.
+  //     `dmarc@` is a name this platform chose.
+  //
+  // So: one mailbox (`postmaster@`), and `dmarc@` as an ALIAS on it. Chosen
+  // over rewriting every published `rua=` to postmaster@ because an alias
+  // needs no DNS migration and no propagation window — 10 live `_dmarc`
+  // records keep working untouched, RCPT still succeeds for both addresses,
+  // and the report pipeline is unchanged. Halves the per-domain footprint with
+  // nothing in flight.
   let mailboxState: ReportIntakeResult['mailbox'] = 'skipped';
   const dmarcAddresses: string[] = [];
   const states: ReportIntakeResult['mailbox'][] = [];
@@ -138,14 +234,8 @@ export async function ensureReportIntake(
     readonly isRuaTarget: boolean;
   }> = [
     {
-      localPart: DMARC_LOCAL_PART,
-      displayName: 'DMARC aggregate report intake',
-      quotaMb: DMARC_MAILBOX_QUOTA_MB,
-      isRuaTarget: true,
-    },
-    {
       localPart: POSTMASTER_LOCAL_PART,
-      displayName: 'Postmaster / DSN intake',
+      displayName: 'Postmaster / report + DSN intake',
       quotaMb: POSTMASTER_MAILBOX_QUOTA_MB,
       isRuaTarget: false,
     },
@@ -244,8 +334,8 @@ export async function ensureReportIntake(
             logger.warn({ err, address }, 'report intake: size-cap correction failed (retries next tick)');
           }
         }
-        if (intake.isRuaTarget) dmarcAddresses.push(address);
         states.push('exists');
+        await ensureDmarcAlias(db, logger, target, existing.id, dmarcAddresses);
         continue;
       }
 
@@ -257,15 +347,20 @@ export async function ensureReportIntake(
         // DMARC/DSN intake, and no consumption of the tenant's paid quota.
         // Without it this call was rejected on every 5-minute tick for every
         // capped tenant and emailed them about it each time.
-        await createMailbox(db, target.tenantId, target.emailDomainId, {
+        const createdMailbox = await createMailbox(db, target.tenantId, target.emailDomainId, {
           local_part: intake.localPart,
           display_name: intake.displayName,
           quota_mb: intake.quotaMb,
           mailbox_type: 'mailbox',
         }, { platformManaged: true });
-        if (intake.isRuaTarget) dmarcAddresses.push(address);
         states.push('created');
         logger.info({ address }, 'report intake: created intake mailbox');
+        // `createMailbox` returns the row, so the alias step uses that id
+        // rather than re-reading it — one query fewer, and no chance of
+        // reading back a row a concurrent pass has changed.
+        if (createdMailbox?.id) {
+          await ensureDmarcAlias(db, logger, target, createdMailbox.id, dmarcAddresses);
+        }
       } catch (err) {
         states.push('failed');
         logger.error(

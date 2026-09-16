@@ -22,7 +22,7 @@
  */
 
 import { sql, eq, inArray } from 'drizzle-orm';
-import { emailDomains, domains, emailSendCounters } from '../../db/schema.js';
+import { emailDomains, domains, emailSendCounters, emailSenderCounters } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 
 // Walk err.cause for the SQLSTATE code (Drizzle >=0.34 wraps pg errors).
@@ -53,6 +53,14 @@ export interface CounterDelta {
   quotaRejectedCount: number;
 }
 
+/** Migration 0125 — one row per (tenant, envelope sender, hour). */
+export interface SenderDelta {
+  tenantId: string;
+  sender: string;
+  bucketStart: Date;
+  sentCount: number;
+}
+
 export interface IngestSummary {
   readonly received: number;
   readonly counted: number;
@@ -68,6 +76,23 @@ function senderDomainOf(data: Record<string, unknown> | undefined): string | nul
   return from.slice(at + 1).toLowerCase();
 }
 
+/**
+ * The FULL envelope sender.
+ *
+ * `senderDomainOf` above answers "which domain", which is all the counters
+ * needed — and is why a sending-limit alert could never say which mailbox was
+ * responsible. Migration 0125 keeps this alongside it.
+ */
+function senderAddressOf(data: Record<string, unknown> | undefined): string | null {
+  const from = data?.from;
+  if (typeof from !== 'string') return null;
+  const at = from.lastIndexOf('@');
+  if (at < 1 || at === from.length - 1) return null;
+  // Bounded to the column width; an address longer than this is not one a
+  // person reads off an alert anyway.
+  return from.trim().toLowerCase().slice(0, 320);
+}
+
 function hourBucket(createdAt: string | undefined): Date {
   const t = createdAt ? new Date(createdAt) : new Date();
   const ms = Number.isFinite(t.getTime()) ? t.getTime() : Date.now();
@@ -81,8 +106,9 @@ function hourBucket(createdAt: string | undefined): Date {
 export function aggregateEvents(
   events: readonly StalwartWebhookEvent[],
   domainToTenant: ReadonlyMap<string, string>,
-): { deltas: CounterDelta[]; summary: IngestSummary } {
+): { deltas: CounterDelta[]; senderDeltas: SenderDelta[]; summary: IngestSummary } {
   const byKey = new Map<string, CounterDelta>();
+  const bySender = new Map<string, SenderDelta>();
   let counted = 0;
   let unattributed = 0;
   let ignored = 0;
@@ -124,6 +150,18 @@ export function aggregateEvents(
 
     if (type === 'queue.authenticated-message-queued') {
       delta.sentCount += 1;
+      // Only actual sends are attributed to a mailbox. A rate-limit or quota
+      // rejection is the platform's verdict, not the account's traffic.
+      const sender = senderAddressOf(ev.data);
+      if (sender) {
+        const sKey = `${tenantId}|${sender}|${bucketStart.toISOString()}`;
+        const sDelta = bySender.get(sKey);
+        if (sDelta) {
+          sDelta.sentCount += 1;
+        } else {
+          bySender.set(sKey, { tenantId, sender, bucketStart, sentCount: 1 });
+        }
+      }
       const to = ev.data?.to;
       delta.recipientCount += Array.isArray(to) ? to.length : 1;
       const size = ev.data?.size;
@@ -138,6 +176,7 @@ export function aggregateEvents(
 
   return {
     deltas: [...byKey.values()],
+    senderDeltas: [...bySender.values()],
     summary: { received: events.length, counted, unattributed, ignored },
   };
 }
@@ -202,7 +241,7 @@ export async function ingestMailEvents(
   )];
   const domainToTenant = wanted.length > 0 ? await resolveDomains(db, wanted) : new Map<string, string>();
 
-  const { deltas, summary } = aggregateEvents(events, domainToTenant);
+  const { deltas, senderDeltas, summary } = aggregateEvents(events, domainToTenant);
 
   for (const d of deltas) {
     try {
@@ -237,6 +276,36 @@ export async function ingestMailEvents(
         domainCache.delete(d.domain);
         continue;
       }
+      throw err;
+    }
+  }
+
+  // Per-sender rows (migration 0125). Deliberately AFTER the counters: those
+  // drive the limit arithmetic and must land even if this fails, because a
+  // missing attribution makes an alert vaguer while a missing counter makes
+  // the limit itself wrong.
+  for (const d of senderDeltas) {
+    try {
+      await db
+        .insert(emailSenderCounters)
+        .values({
+          tenantId: d.tenantId,
+          sender: d.sender,
+          bucketStart: d.bucketStart,
+          sentCount: d.sentCount,
+        })
+        .onConflictDoUpdate({
+          target: [
+            emailSenderCounters.tenantId,
+            emailSenderCounters.sender,
+            emailSenderCounters.bucketStart,
+          ],
+          set: { sentCount: sql`${emailSenderCounters.sentCount} + ${d.sentCount}` },
+        });
+    } catch (err) {
+      // Same FK race as above — a tenant deleted while its domain sat in the
+      // 60s cache. Never 500 the webhook over an attribution row.
+      if (pgCode(err) === '23503') continue;
       throw err;
     }
   }

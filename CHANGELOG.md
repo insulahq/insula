@@ -13,6 +13,74 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Added
+- **CI now fails a notification that would not be worth reading.** A new guard
+  checks the four things the operator asked for on every category: it names its
+  SUBJECT (a tenant, mailbox, host, node, rule — not just its own category),
+  renders a TIMESTAMP on email, resolves at least one LINK, and prints NO raw
+  ids (neither a literal in a template nor an emitter handing an id to a
+  variable meant for a human label). Every arm was negative-tested: its first
+  run found 25 categories with no timestamp, and the subject arm's first draft
+  was VACUOUS — `greeting` counted as a subject and the shared wrapper renders
+  one on every template, so all 67 passed regardless of their bodies.
+
+### Removed
+- **`security.suspicious_activity` is retired** (operator decision). It had
+  templates on every channel and no caller, because nothing on the platform
+  defines "suspicious" — and choosing means choosing a security policy that
+  either cries wolf at every coffee-shop login or stays silent through a real
+  takeover. A source that can never fire reads as coverage, which is worse
+  than an honest gap. Migration 0126 removes it from existing clusters.
+- **"Mailbox limit reached" is no longer a notification.** It fired
+  synchronously from the tenant's own failed click: the create call already
+  rejects with the limit, the current count and the remediation, the panel
+  renders that error on the spot, and the mailbox page shows the used/quota
+  bar — so the notification restated by email a number the person was looking
+  at, about an action they had just watched fail. Operator decision
+  2026-09-16. A dispatcher-level test now fails for *any* notification
+  re-added to that path, not just the helper that was removed.
+
+### Changed
+- **One report-intake mailbox per domain instead of two.** `dmarc@` is now an
+  ALIAS of `postmaster@` rather than a second account. Nothing justified the
+  split: both patterns are registered identically in Stalwart (so the old
+  claim that pointing `rua=` at postmaster@ would "mix report parsing with
+  bounces" was already false of the shipped config), neither mailbox stores
+  anything — 0 MB used across 19 of them on a live cluster, because
+  report-analysis intercepts before storage — and `postmaster@` is mandatory
+  per RFC 5321 §4.5.1 while `dmarc@` is a name this platform chose. An alias
+  was chosen over repointing every published `rua=` at postmaster@ because it
+  needs no DNS migration and no propagation window: the address is unchanged,
+  only what sits behind it. Existing empty platform-managed `dmarc@` mailboxes
+  are converged automatically; one that a tenant owns, or one that somehow
+  holds mail, is left alone and still reported as a valid `rua=` target.
+
+- **Two email subject lines name their subject.** "Backup failed" and
+  "Scheduled task failed" now carry the backup and task name — an inbox shows
+  the subject line, and one of forty identical ones is unactionable.
+
+- **Operator actions can decline to email the tenant.** The Subscription card
+  now carries an **Email the tenant about this change** checkbox, ticked by
+  default. Untick it for the edits that do not concern the customer —
+  correcting a mistyped date, recording a renewal already agreed by phone. The
+  flag is checked in one place rather than at each emitter, so a new
+  subscription event cannot be added that ignores the operator's choice, and
+  an absent flag still means "notify": a client predating the field must not
+  silently stop telling anyone.
+
+- **Notifications name the account that actually sent.** The Stalwart webhook
+  carries the full envelope sender and ingest kept only the part after the
+  `@`, so a sending-limit alert could say which tenant but never which
+  mailbox — useless when a tenant has ten mailboxes and one is compromised.
+  A new per-sender counter (migration 0125) means both the operator and the
+  tenant alert now list the sending accounts and their counts, with the
+  wording that makes it actionable: one unfamiliar address suggests a
+  compromise, one service address suggests a runaway integration, traffic
+  spread across real mailboxes suggests they have outgrown the limit.
+- **Every notification addresses the person by name.** The greeting is
+  emitted by the shared email wrapper rather than by each of 58 templates,
+  and is omitted for a mailbox-owner recipient — they have no platform
+  account, so the only available "name" is the local part and "Hi bookings,"
+  reads as a broken mail merge.
 - **A master notification switch in Admin → Notifications.** One button that stops
   every notification on every channel, and resumes them. It exists because on
   2026-09-16 the only way to stop a storm was an operator running
@@ -23,8 +91,106 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   one rather than after a cache TTL. Disabling takes two clicks and the card
   states plainly that security, backup and certificate alerts are suppressed
   too; re-enabling takes one, because that is not the dangerous direction.
+- **A notification can carry more than one link, and they go where the thing
+  is.** One "open the subsystem page" link is what landed an operator on a list
+  of every tenant for an alert about one of them. Each category now resolves a
+  primary destination plus the extra links a reader plausibly wants — a
+  saturated sender offers both that tenant's page and mail operations; a failed
+  backup offers the schedule and the target; a certificate failure offers DNS,
+  which is what actually breaks. Email renders them as buttons, the in-app feed
+  as controls beside the row, and inline anchors (a tenant name that opens that
+  tenant) are available to templates. One registry, rendered two ways, so the
+  panel and the email cannot disagree about where a category points.
+- **Intake mailboxes are 50 MB, hidden from tenant panels, and reaped if they
+  ever fill.** `dmarc@` and `postmaster@` are RCPT landing pads: they exist so
+  SMTP does not answer 550, and Stalwart's report-analysis intercepts and parses
+  the mail before anything is stored — measured across 19 of these mailboxes,
+  every one holds 0 MB while reserving 7 GB of quota between them. The previous
+  256/512 MB reserved capacity for traffic that is never stored. They are now
+  capped at 50 MB, excluded from mailbox storage-quota alerts, and no longer
+  listed in the tenant panel, where they could not be edited or removed anyway.
+  The reconciler corrects the size cap on mailboxes created before this change.
+  The delete-and-recreate reap at 40 MB is a **safety net that should never
+  fire** given interception — not an active cleanup; if it does fire, something
+  upstream has stopped consuming. (The 385 undeliverable DSNs on one cluster
+  were stuck in the outbound *queue* because the address did not exist, not
+  accumulating inside a mailbox.)
 
 ### Fixed
+- **Two security notifications existed and had never fired.** A password being
+  changed and someone being added to an account both had templates on every
+  channel, were marked mandatory or security-class — and no code anywhere
+  called either emitter. The two notices a person most needs if it was not them
+  were the two that never arrived. Both are now wired, fire-and-forget so a
+  notification failure cannot turn a successful password change into a 5xx (or
+  a created account into one), and a test guards the call sites so a refactor
+  that drops them fails loudly. The password-changed emitter also passed
+  `userName: userId` — a raw id as the display name — which would have rendered
+  "Hi 3fd54013-…" the first time it ran.
+
+- **Certificate failures no longer leak Kubernetes internals to tenants.** A
+  customer was sent, verbatim: *"Failed to wait for order resource
+  'success-com-na-wildcard-cert-1-1573661536' to become ready"* — cert-manager's
+  internal condition text, naming an object in a namespace they do not know
+  exists, telling them nothing they can act on. Tenant-facing certificate
+  notifications now translate the cause into what they can do about it (DNS not
+  pointing at the platform, a CAA record refusing issuance, rate limiting, or
+  simply "not finished yet, we keep retrying"), and an unrecognised message
+  falls back to an honest sentence rather than forwarding internals. The
+  operator's copy keeps the raw text, because that is the half that diagnoses
+  the failure.
+- **A resolved SLO alert says when it recovered.** It named the rule and the
+  subject but carried no timestamp, which makes correlating a recovery with
+  anything else guesswork.
+- **Emails no longer greet the reader twice.** Four templates opened with their
+  own "Hi {{contactName}} —", which became a second greeting once the shared
+  wrapper started adding one.
+
+- **"Notify tenant" on suspend / restore / archive / delete never worked.** The
+  contract declared `suppressTenantNotification`, the admin panel sent it on
+  every lifecycle action, and the `notify-tenant-on-transition` hook read
+  `ctx.suppressTenantNotification` — but nothing in between ever set it. The
+  hook context was assembled without the field, the PATCH route ignored the
+  body value, and the DELETE route dropped its query parameter on the floor.
+  An operator who unticked the box still had the customer emailed, including
+  "your account is being permanently deleted". Threaded end to end, with the
+  default on every layer being "notify" so an un-updated caller cannot silence
+  anything, and the panel's `as unknown as` casts (added when the contract
+  lacked the field) removed so a future mismatch is a compile error.
+
+- **Mailbox quota alerts stop double-mailing the same person, and stop firing
+  once per crossed threshold.** Production sent one recipient the same warning
+  twice under an identical dedupe key — the tenant-admin leg resolves its
+  audience by user id and the mailbox-owner leg by address, and neither could
+  see the other's list, so whoever was both got two copies. Reconciled in the
+  dispatcher, the only place both lists exist. Separately, a mailbox that
+  jumps from 78% to 95% between two passes crosses three thresholds and used
+  to send three emails seconds apart; the lower crossings are still recorded
+  (or they would fire again next pass) but only the worst one is sent.
+- **The platform records who it emailed.** `recipient_address` was NULL on 177
+  of 184 email deliveries: the worker resolved the address from `users.email`
+  at send time and never wrote it back, so "who did we notify?" could only be
+  answered from the mail server's log. Folded into the update that already
+  runs, and never overwrites a row that carries its own address.
+- **The operator's subscription-expiry digest no longer fails in silence.** Its
+  call sat in a bare `catch {}` commented "never let the operator digest break
+  the tenant notifications" — so while the tenant-side warnings delivered, the
+  operator digest produced no delivery row at all and nothing ever said why.
+  It still cannot break the tenant path; it now reports when it fails.
+
+- **No notification can print a raw id again.** Production mailed
+  "3fd54013-… saturated its hour sending limit" because the emitter passed a
+  tenant id as the label and every layer below rendered it faithfully. The
+  dispatcher now resolves ids centrally — as a tenant, user, mailbox or
+  domain — before any template renders, checks the RENDERED text as a second
+  line of defence, and reports any id nothing could name. Fixed centrally
+  rather than in ~50 emitters, because a rule each caller must remember is a
+  rule half of them will not.
+- **A mailbox owner was dropped whenever their tenant had no admin user.** The
+  dispatcher returned early on an empty *user* recipient list, and that check
+  sat above the external-recipient loop — so the one audience that path exists
+  for (people with no platform account, e.g. mailbox-quota warnings) was
+  silently skipped in exactly the case it was built for.
 - **A notification storm that mailed tenants every five minutes, forever, and
   then saturated the platform's own sending limit.** The `postmaster@`/`dmarc@`
   report-intake reconciler created its mailboxes through the *tenant-facing*
@@ -43,32 +209,17 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   `dmarc@` and `postmaster@` are created by the platform on the tenant's domain
   and were counted against `max_mailboxes`, charging tenants for capacity they
   never asked for (migration 0123 releases the existing rows).
-
-### Removed
-- **"Mailbox limit reached" is no longer a notification.** It fired
-  synchronously from the tenant's own failed click: the create call already
-  rejects with the limit, the current count and the remediation, the panel
-  renders that error on the spot, and the mailbox page shows the used/quota
-  bar — so the notification restated by email a number the person was looking
-  at, about an action they had just watched fail. Operator decision
-  2026-09-16. A dispatcher-level test now fails for *any* notification
-  re-added to that path, not just the helper that was removed.
-
-### Changed
-- **Intake mailboxes are 50 MB, hidden from tenant panels, and reaped if they
-  ever fill.** `dmarc@` and `postmaster@` are RCPT landing pads: they exist so
-  SMTP does not answer 550, and Stalwart's report-analysis intercepts and parses
-  the mail before anything is stored — measured across 19 of these mailboxes,
-  every one holds 0 MB while reserving 7 GB of quota between them. The previous
-  256/512 MB reserved capacity for traffic that is never stored. They are now
-  capped at 50 MB, excluded from mailbox storage-quota alerts, and no longer
-  listed in the tenant panel, where they could not be edited or removed anyway.
-  The reconciler corrects the size cap on mailboxes created before this change.
-  The delete-and-recreate reap at 40 MB is a **safety net that should never
-  fire** given interception — not an active cleanup; if it does fire, something
-  upstream has stopped consuming. (The 385 undeliverable DSNs on one cluster
-  were stuck in the outbound *queue* because the address did not exist, not
-  accumulating inside a mailbox.)
+- **`admin.email_quota_exceeded` deep-links to the tenant it is about.** It
+  pointed at `/tenants` — the list, which shows no sending limits at all, so
+  the click could not answer the alert. Admin categories can now declare what
+  they are ABOUT (`resourceType`/`resourceId`) independently of who they go to,
+  which is the mechanism the other tenant-scoped admin alerts need.
+- **Previewing an email template no longer throws.** The shared wrapper
+  references `{{greeting}}` and `{{{actionButtons}}}`, the preview renders in
+  strict mode, and no operator can be expected to know those variables exist —
+  so the preview now seeds every dispatcher-supplied variable with a
+  representative value. A variable the operator IS responsible for still
+  errors, which is the point of a strict preview.
 
 ## [2026.9.20] - 2026-09-16
 

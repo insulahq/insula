@@ -39,6 +39,12 @@ export interface DispatchOptions {
   readonly triggeredByUserId?: string | null;
   readonly detail?: Record<string, unknown> | null;
   /**
+   * Passed to every hook as `ctx.suppressTenantNotification`. Only
+   * `notify-tenant-on-transition` reads it, to skip the tenant-facing
+   * notification when the operator unticked "Notify tenant".
+   */
+  readonly suppressTenantNotification?: boolean;
+  /**
    * When true (test-only), the dispatcher returns immediately after
    * writing the parent row + pending hook_runs without actually running
    * the hooks. Useful for verifying registry shape without side-effects.
@@ -225,6 +231,11 @@ export async function runTransition(
         transitionId,
         transition: opts.transition,
         attempt,
+        // The missing link. `HookCtx` has declared this field and
+        // `notify-tenant-on-transition` has read it since the hook was
+        // written, but it was never populated here — so the admin panel's
+        // "Notify tenant" checkbox has never suppressed anything.
+        suppressTenantNotification: opts.suppressTenantNotification === true,
       };
       result = await hook.run(ctx);
     } catch (err) {

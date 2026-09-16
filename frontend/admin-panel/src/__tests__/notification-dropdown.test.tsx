@@ -7,7 +7,7 @@ import NotificationDropdown from '../components/NotificationDropdown';
 
 const mockNotifications = [
   { id: '1', userId: 'u1', type: 'info' as const, title: 'Tenant Created', message: 'New tenant Acme Corp', resourceType: 'tenant', resourceId: 'c1', isRead: 0, readAt: null, createdAt: new Date().toISOString(), actionPath: '/tenants/c1' },
-  { id: '2', userId: 'u1', type: 'warning' as const, title: 'Domain Update', message: 'Domain example.com updated', resourceType: 'domain', resourceId: 'd1', isRead: 0, readAt: null, createdAt: new Date(Date.now() - 3_600_000).toISOString(), actionPath: null },
+  { id: '2', userId: 'u1', type: 'warning' as const, title: 'Domain Update', message: 'Domain example.com updated', resourceType: 'domain', resourceId: 'd1', isRead: 0, readAt: null, createdAt: new Date(Date.now() - 3_600_000).toISOString(), actionPath: null, links: [{ text: 'Open in the panel', path: '/domains', style: 'primary' as const }, { text: 'Check your DNS records', path: '/dns', style: 'secondary' as const }] },
 ];
 
 const mockMarkReadMutate = vi.fn();
@@ -145,5 +145,50 @@ describe('Admin NotificationDropdown', () => {
     await user.click(screen.getByText('Domain Update'));
 
     expect(mockNavigate).toHaveBeenCalledWith('/platform/notifications');
+  });
+});
+
+describe('more than one destination per notification', () => {
+  it('renders a secondary link as its own control, outside the row button', async () => {
+    const user = userEvent.setup();
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter><NotificationDropdown /></MemoryRouter>
+      </QueryClientProvider>,
+    );
+    // Opening the bell first — the list only exists once open. userEvent, not
+    // a raw .click(): a bare DOM click does not flush the React state update,
+    // so the panel stays closed and the assertion fails on an empty tree.
+    await user.click(screen.getByTestId('notification-bell'));
+    const extras = screen.getAllByTestId('notification-secondary-link');
+    expect(extras).toHaveLength(1);
+    expect(extras[0]).toHaveTextContent('Check your DNS records');
+    // A button inside a button would render but never fire; assert it is not
+    // nested in the row control.
+    expect(extras[0]?.closest('[data-testid="notification-item"]')).toBeNull();
+  });
+
+  it('navigates to the secondary destination, not the primary one', async () => {
+    const user = userEvent.setup();
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter><NotificationDropdown /></MemoryRouter>
+      </QueryClientProvider>,
+    );
+    await user.click(screen.getByTestId('notification-bell'));
+    await user.click(screen.getByTestId('notification-secondary-link'));
+    expect(mockNavigate).toHaveBeenCalledWith('/dns');
+  });
+
+  it('shows no extra controls for a notification with a single destination', async () => {
+    const user = userEvent.setup();
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter><NotificationDropdown /></MemoryRouter>
+      </QueryClientProvider>,
+    );
+    await user.click(screen.getByTestId('notification-bell'));
+    // Item 1 has no `links` at all — the absence must not render an empty row.
+    expect(screen.getAllByTestId('notification-secondary-link')).toHaveLength(1);
   });
 });

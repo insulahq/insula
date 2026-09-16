@@ -24,6 +24,7 @@ import {
 } from '../../../db/schema.js';
 import { ApiError } from '../../../shared/errors.js';
 import { ALL_SEED_TEMPLATES } from './seed-data.js';
+import { PREVIEW_ENVELOPE_SAMPLE } from './variables.js';
 import { renderTemplateAsync, type RenderedTemplate } from './renderer.js';
 import type {
   NotificationTemplateResponse,
@@ -277,5 +278,14 @@ export async function previewTemplate(
   input: PreviewNotificationTemplateInput,
 ): Promise<RenderedTemplate> {
   const template = await getTemplate(db, id);
-  return renderTemplateAsync(template, input.variables);
+  // Seed the envelope variables the DISPATCHER supplies at send time, under
+  // whatever the operator typed. A preview renders in strict mode, and the
+  // shared email wrapper references `{{greeting}}` and `{{{actionButtons}}}` —
+  // variables no operator can be expected to know exist. Without this, opening
+  // the preview on any email template throws a render error that looks like a
+  // broken template.
+  return renderTemplateAsync(template, {
+    ...PREVIEW_ENVELOPE_SAMPLE,
+    ...input.variables,
+  });
 }

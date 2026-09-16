@@ -110,14 +110,32 @@ describe('checkQuotaThresholds — who actually gets told', () => {
     expect(payload.mailboxAddress).toBe('user@example.test');
   });
 
-  it('fires each crossed threshold separately', async () => {
+  it('sends ONE notification for the highest threshold, not one per crossing', async () => {
+    // This asserted `fired === 4` — one notification per crossed threshold.
+    // Operator decision 2026-09-16 after production sent the same mailbox's
+    // 80 and 90 warnings two seconds apart: a mailbox that jumps from 78% to
+    // 95% between two passes has crossed three lines, and the reader needs to
+    // be told once, at the worst of them. Inverted rather than deleted, so a
+    // regression back to per-crossing fan-out fails here.
     const db = createMockDb([mailbox({ used_mb: 1000 })]);
     const r = await checkQuotaThresholds(db);
-    expect(r.fired).toBe(4); // 80, 90, 99, 100
-    const thresholds = (thresholdMock.mock.calls as unknown[][]).map(
-      (c) => (c[4] as { exceeded: boolean }).exceeded,
-    );
-    expect(thresholds.filter(Boolean).length).toBe(1); // only 100 is "exceeded"
+    expect(r.fired).toBe(1);
+    expect(thresholdMock.mock.calls).toHaveLength(1);
+    // And it is the HIGHEST — 100, the one where mail is already bouncing.
+    expect((thresholdMock.mock.calls[0] as unknown[])[4]).toMatchObject({ exceeded: true });
+  });
+
+  it('still claims the lower thresholds it skipped, so they cannot re-fire', async () => {
+    // The lower crossings must be recorded even though they are not sent. If
+    // only the highest were claimed, the next pass would see 80 and 90 as new
+    // and mail them — turning one jump into a slow drip of stale warnings.
+    const db = createMockDb([mailbox({ used_mb: 1000 })]);
+    await checkQuotaThresholds(db);
+    // The mock counts CALLS rather than sniffing SQL text (see its note), so
+    // the claim count is read the same way: 1 candidate SELECT + one claim per
+    // crossed threshold (4) + the hysteresis UPDATE + the GC DELETE.
+    const calls = (db as unknown as { execute: { mock: { calls: unknown[] } } }).execute.mock.calls.length;
+    expect(calls).toBeGreaterThanOrEqual(1 + 4);
   });
 
   it('marks only 100% as exceeded, so 99 stays a warning', async () => {

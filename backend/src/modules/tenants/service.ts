@@ -823,7 +823,12 @@ export async function updateTenant(
   db: Database,
   id: string,
   input: UpdateTenantInput,
-  opts: { triggeredByUserId?: string | null; k8sTenants?: K8sClients } = {},
+  opts: {
+    triggeredByUserId?: string | null;
+    k8sTenants?: K8sClients;
+    /** The operator's "Notify tenant" checkbox, unticked. */
+    suppressTenantNotification?: boolean;
+  } = {},
 ) {
   const existing = await getTenantById(db, id); // throws if not found
 
@@ -1248,10 +1253,16 @@ export async function updateTenant(
       const platformNamespace = process.env.PLATFORM_NAMESPACE ?? 'platform';
       const ctx = { db, k8s, store, platformNamespace };
       if (input.status === 'suspended') {
-        const { operationId } = await suspendTenant(ctx, id, { triggeredByUserId: opts.triggeredByUserId ?? null });
+        const { operationId } = await suspendTenant(ctx, id, {
+          triggeredByUserId: opts.triggeredByUserId ?? null,
+          suppressTenantNotification: opts.suppressTenantNotification === true,
+        });
         storageOperationId = operationId;
       } else {
-        const { operationId } = await resumeTenant(ctx, id, { triggeredByUserId: opts.triggeredByUserId ?? null });
+        const { operationId } = await resumeTenant(ctx, id, {
+          triggeredByUserId: opts.triggeredByUserId ?? null,
+          suppressTenantNotification: opts.suppressTenantNotification === true,
+        });
         storageOperationId = operationId;
       }
     } catch (err) {
@@ -1396,6 +1407,8 @@ export async function deleteTenant(
   db: Database,
   id: string,
   k8sTenants?: K8sClients,
+  /** The operator's "Notify tenant" checkbox, unticked. */
+  opts: { suppressTenantNotification?: boolean } = {},
 ): Promise<{ transitionId: string | null }> {
   const tenant = await getTenantById(db, id);
 
@@ -1436,7 +1449,11 @@ export async function deleteTenant(
     // tenant row LAST — and now AFTER the snapshot purge above so the archives
     // are gone before the row (and its cascade-linked snapshot rows) disappear.
     const { applyDeleted } = await import('../tenant-lifecycle/cascades.js');
-    const transitionId = await applyDeleted({ db, k8s: k8sTenants }, id, tenant.kubernetesNamespace);
+    const transitionId = await applyDeleted(
+      { db, k8s: k8sTenants, suppressTenantNotification: opts.suppressTenantNotification === true },
+      id,
+      tenant.kubernetesNamespace,
+    );
     return { transitionId };
   }
 
