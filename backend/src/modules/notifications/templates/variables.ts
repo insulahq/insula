@@ -35,17 +35,14 @@ import type { NotificationTemplateResponse } from '@insula/api-contracts';
 export const MISSING_VALUE = '—';
 
 /**
- * Variables the dispatcher pre-seeds for every render (see
- * dispatcher/dispatch.ts). They are never "missing" from an emitter's
- * point of view, so they must not be reported as degraded.
+ * Re-exported from `envelope-vars.ts`, which has no imports so the CI
+ * variable-contract guard can load it without a node_modules tree.
  */
-export const DISPATCHER_PROVIDED: ReadonlySet<string> = new Set([
-  'platformName',
-  'userName',
-  'tenantName',
-  'contactName',
-  'occurredAt',
-]);
+export { DISPATCHER_PROVIDED, PREVIEW_ENVELOPE_SAMPLE } from './envelope-vars.js';
+// Also imported for use below — a re-export alone does not bind the name in
+// this module's scope.
+import { DISPATCHER_PROVIDED } from './envelope-vars.js';
+
 
 /**
  * Handlebars references, including block-helper subjects.

@@ -11,7 +11,7 @@
  *   {{userName}}     — recipient's full name (or email local part)
  *   {{tenantName}}   — tenant display name (for tenant-scoped events)
  *   {{platformName}} — the brand name (default "Hosting Platform")
- *   + category-specific (e.g. {{newIp}} for suspicious_activity)
+ *   + category-specific (e.g. {{mailboxAddress}} for a mailbox quota warning)
  *
  * NEVER include raw HTML in the seed bodies — Handlebars escape-by-default
  * neutralises var injection, but MJML compiles structured tags. Keep
@@ -35,6 +35,16 @@ export interface SeedTemplate {
 
 const COMMON_VARS: readonly NotificationTemplateVariable[] = [
   { name: 'userName', type: 'string', required: false },
+  // Supplied by the dispatcher from the recipient's own name; null for a
+  // mailbox-owner recipient, which collapses the wrapper's `#if greeting`.
+  { name: 'greeting', type: 'string', required: false },
+  // Links (action-links.ts), resolved per category and pre-rendered so no
+  // template has to know how to build a URL. `actionButtons` is emitted by the
+  // shared email wrapper, which is why every email template references it.
+  { name: 'actionButtons', type: 'string', required: false },
+  { name: 'actionUrl', type: 'string', required: false },
+  { name: 'actionText', type: 'string', required: false },
+  { name: 'tenantLink', type: 'string', required: false },
   { name: 'tenantName', type: 'string', required: false },
   { name: 'platformName', type: 'string', required: false },
   // The tenant's billing/technical contact PERSON, distinct from the
@@ -73,13 +83,26 @@ const SLO_ALERT_VARS: readonly NotificationTemplateVariable[] = [
  * branding layer; the seed templates are intentionally plain.
  */
 function emailMjml(headline: string, paragraph: string, ctaText?: string, ctaUrl?: string): string {
+  // A template that names its own call to action keeps it — "Review your
+  // account" beats a generic label. Everything else gets the per-category
+  // buttons the dispatcher resolves, pre-rendered as MJML so the strict
+  // renderer never sees loop-scoped variables. Never both: two button rows is
+  // the same as having no primary action.
   const cta = ctaText && ctaUrl
     ? `<mj-button href="${ctaUrl}">${ctaText}</mj-button>`
-    : '';
+    : '{{{actionButtons}}}';
+  // The greeting is emitted by the WRAPPER, not by each template: the operator
+  // requirement is that every notification addresses the person, and 58
+  // templates each remembering to open with one is 58 chances to forget.
+  // `{{greeting}}` is null for a mailbox-owner recipient — they have no
+  // platform account and no name — and the `#if` collapses rather than
+  // rendering "Hi ,".
   return `<mjml><mj-body><mj-section><mj-column>
+{{#if greeting}}<mj-text font-size="14px" line-height="22px">{{greeting}}</mj-text>{{/if}}
 <mj-text font-size="20px" font-weight="600">${headline}</mj-text>
 <mj-text font-size="14px" line-height="22px">${paragraph}</mj-text>
 ${cta}
+{{#if occurredAt}}<mj-text font-size="12px" color="#999">Recorded at {{occurredAt}}.</mj-text>{{/if}}
 <mj-text font-size="12px" color="#999">This is an automated notification from {{platformName}}.</mj-text>
 </mj-column></mj-section></mj-body></mjml>`;
 }
@@ -132,36 +155,6 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
   },
 
   // ── security.suspicious_activity ───────────────────────────────────
-  {
-    categoryId: 'security.suspicious_activity',
-    channel: 'email',
-    locale: 'en',
-    subjectTemplate: 'Unusual sign-in to your account',
-    bodyTemplate: emailMjml(
-      'Unusual sign-in',
-      'A sign-in to {{userName}} was detected from {{newIp}} ({{userAgent}}). If this was not you, change your password immediately.',
-    ),
-    bodyFormat: 'mjml',
-    variablesSchema: [
-      ...COMMON_VARS,
-      { name: 'newIp', type: 'string', required: true },
-      { name: 'userAgent', type: 'string', required: false },
-    ],
-  },
-  {
-    categoryId: 'security.suspicious_activity',
-    channel: 'in_app',
-    locale: 'en',
-    subjectTemplate: 'Unusual sign-in detected',
-    bodyTemplate: 'A sign-in from {{newIp}} ({{userAgent}}) was detected. If this was not you, change your password immediately.',
-    bodyFormat: 'plaintext',
-    variablesSchema: [
-      ...COMMON_VARS,
-      { name: 'newIp', type: 'string', required: true },
-      { name: 'userAgent', type: 'string', required: false },
-    ],
-  },
-
   // ── subscription.expiry_warning ────────────────────────────────────
   {
     categoryId: 'subscription.expiry_warning',
@@ -170,7 +163,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     subjectTemplate: 'Your subscription expires soon',
     bodyTemplate: emailMjml(
       'Subscription expiring soon',
-      'Hi {{contactName}} — the subscription for {{tenantName}} expires in {{daysUntilExpiry}} days, on {{expiresAt}}. Renew now to avoid service interruption.',
+      'The subscription for {{tenantName}} expires in {{daysUntilExpiry}} days, on {{expiresAt}}. Renew now to avoid service interruption.',
     ),
     bodyFormat: 'mjml',
     variablesSchema: [
@@ -307,7 +300,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     subjectTemplate: '{{itemCount}} notifications — {{summary}}',
     bodyTemplate: emailMjml(
       'Your notification digest',
-      'Hi {{userName}} — {{itemCount}} notification(s) since your last digest, as of {{occurredAt}}: {{items}}',
+      '{{itemCount}} notification(s) since your last digest, as of {{occurredAt}}: {{items}}',
     ),
     bodyFormat: 'mjml',
     variablesSchema: [
@@ -749,7 +742,11 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
       'Tenant sending limit saturated',
       '{{tenantLabel}} sent {{used}} of {{limit}} messages ({{percent}}%) in the current {{window}} window, '
       + 'as of {{occurredAt}}. A saturated sender is the shape of both a compromised account and a '
-      + 'deliverability risk to the whole platform.',
+      + 'deliverability risk to the whole platform.<br /><br />'
+      + '<strong>Sending accounts:</strong> {{topSenders}}<br /><br />'
+      + 'Which account is responsible decides the response: one unfamiliar address suggests a '
+      + 'compromise, a single service address suggests a runaway integration, and traffic spread '
+      + 'across the tenant\'s real mailboxes suggests they have simply outgrown the limit.',
     ),
     bodyFormat: 'mjml',
     variablesSchema: [
@@ -760,6 +757,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
       { name: 'limit', type: 'string', required: false },
       { name: 'percent', type: 'string', required: false },
       { name: 'occurredAt', type: 'string', required: false },
+      { name: 'topSenders', type: 'string', required: false },
     ],
   },
   {
@@ -767,7 +765,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: '{{tenantLabel}} at its {{window}} sending limit',
-    bodyTemplate: '{{tenantLabel}}: {{used}}/{{limit}} messages ({{percent}}%) this {{window}} as of {{occurredAt}}.',
+    bodyTemplate: '{{tenantLabel}}: {{used}}/{{limit}} messages ({{percent}}%) this {{window}} as of {{occurredAt}}. Sending accounts: {{topSenders}}.',
     bodyFormat: 'plaintext',
     variablesSchema: [
       ...COMMON_VARS,
@@ -777,6 +775,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
       { name: 'limit', type: 'string', required: false },
       { name: 'percent', type: 'string', required: false },
       { name: 'occurredAt', type: 'string', required: false },
+      { name: 'topSenders', type: 'string', required: false },
     ],
   },
 
@@ -903,7 +902,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     subjectTemplate: 'Subscription renewed',
     bodyTemplate: emailMjml(
       'Subscription renewed',
-      'Hi {{contactName}} — the subscription for {{tenantName}} was renewed and now runs until {{newExpiresAt}}.',
+      'The subscription for {{tenantName}} was renewed and now runs until {{newExpiresAt}}.',
     ),
     bodyFormat: 'mjml',
     variablesSchema: [
@@ -932,7 +931,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     subjectTemplate: 'Subscription changed',
     bodyTemplate: emailMjml(
       'Subscription changed',
-      'Hi {{contactName}} — the subscription for {{tenantName}} changed from the {{oldPlanName}} plan to the {{newPlanName}} plan.',
+      'The subscription for {{tenantName}} changed from the {{oldPlanName}} plan to the {{newPlanName}} plan.',
     ),
     bodyFormat: 'mjml',
     variablesSchema: [
@@ -989,7 +988,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     categoryId: 'tasks.scheduled_failure',
     channel: 'email',
     locale: 'en',
-    subjectTemplate: 'Scheduled task failed',
+    subjectTemplate: 'Scheduled task failed: {{taskName}}',
     bodyTemplate: emailMjml(
       'Scheduled task failed',
       'The scheduled task "{{taskName}}" failed: {{errorMessage}}',
@@ -1005,7 +1004,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     categoryId: 'tasks.scheduled_failure',
     channel: 'in_app',
     locale: 'en',
-    subjectTemplate: 'Scheduled task failed',
+    subjectTemplate: 'Scheduled task failed: {{taskName}}',
     bodyTemplate: 'The scheduled task "{{taskName}}" failed.{{#if errorMessage}} {{errorMessage}}{{/if}}',
     bodyFormat: 'plaintext',
     variablesSchema: [
@@ -1114,8 +1113,12 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     subjectTemplate: 'Email sending at {{percent}}% of your {{window}} limit',
     bodyTemplate: emailMjml(
       'Email usage at {{percent}}%',
-      'You have sent {{used}} of {{limit}} messages ({{percent}}%) in the current {{window}} window. '
-      + 'Messages beyond the limit are deferred until the window rolls over.',
+      'Your account has sent {{used}} of {{limit}} messages ({{percent}}%) in the current '
+      + '{{window}} window, as of {{occurredAt}}. Messages beyond the limit are deferred '
+      + 'until the window rolls over.<br /><br />'
+      + '<strong>Sending accounts:</strong> {{topSenders}}<br /><br />'
+      + 'This is the point at which an unexpected address is still worth checking — after the '
+      + 'limit is reached, mail is already being held.',
     ),
     bodyFormat: 'mjml',
     variablesSchema: [
@@ -1124,6 +1127,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
       { name: 'percent', type: 'string', required: true },
       { name: 'used', type: 'string', required: true },
       { name: 'limit', type: 'string', required: true },
+      { name: 'topSenders', type: 'string', required: false },
     ],
   },
   {
@@ -1131,7 +1135,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: 'Email sending at {{percent}}% of the {{window}} limit',
-    bodyTemplate: '{{used}} of {{limit}} messages sent this {{window}}.',
+    bodyTemplate: '{{used}} of {{limit}} messages sent this {{window}} as of {{occurredAt}}. Sending accounts: {{topSenders}}.',
     bodyFormat: 'plaintext',
     variablesSchema: [
       ...COMMON_VARS,
@@ -1139,6 +1143,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
       { name: 'percent', type: 'string', required: true },
       { name: 'used', type: 'string', required: true },
       { name: 'limit', type: 'string', required: true },
+      { name: 'topSenders', type: 'string', required: false },
     ],
   },
   {
@@ -1148,9 +1153,12 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     subjectTemplate: 'Email sending limit reached ({{window}})',
     bodyTemplate: emailMjml(
       'Sending limit reached',
-      'You have sent {{used}} of {{limit}} messages in the current {{window}} window. '
-      + 'Further messages are deferred until the window rolls over. Contact support if you '
-      + 'regularly need a higher limit.',
+      'Your account has sent {{used}} of {{limit}} messages in the current {{window}} window, '
+      + 'as of {{occurredAt}}. Further messages are deferred until the window rolls over.<br /><br />'
+      + '<strong>Sending accounts:</strong> {{topSenders}}<br /><br />'
+      + 'If an address here is not one you expect to be sending, change its password — that is '
+      + 'the usual sign of a compromised mailbox. If this is your normal volume, contact support '
+      + 'to raise the limit.',
     ),
     bodyFormat: 'mjml',
     variablesSchema: [
@@ -1158,6 +1166,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
       { name: 'window', type: 'string', required: true },
       { name: 'used', type: 'string', required: true },
       { name: 'limit', type: 'string', required: true },
+      { name: 'topSenders', type: 'string', required: false },
     ],
   },
   {
@@ -1165,7 +1174,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: 'Email sending limit reached ({{window}})',
-    bodyTemplate: '{{used}} of {{limit}} messages sent ({{percent}}%) — further messages are deferred this {{window}}.',
+    bodyTemplate: '{{used}} of {{limit}} messages sent ({{percent}}%) this {{window}} as of {{occurredAt}} — further messages are deferred. Sending accounts: {{topSenders}}.',
     bodyFormat: 'plaintext',
     variablesSchema: [
       ...COMMON_VARS,
@@ -1173,6 +1182,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
       { name: 'used', type: 'string', required: true },
       { name: 'limit', type: 'string', required: true },
       { name: 'percent', type: 'string', required: false },
+      { name: 'topSenders', type: 'string', required: false },
     ],
   },
 
@@ -1378,7 +1388,7 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     categoryId: 'admin.backup_failed',
     channel: 'email',
     locale: 'en',
-    subjectTemplate: 'Backup failed',
+    subjectTemplate: 'Backup failed: {{backupName}}',
     bodyTemplate: emailMjml(
       'Backup failed',
       'Backup "{{backupName}}" failed: {{errorMessage}}',
@@ -1394,7 +1404,7 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     categoryId: 'admin.backup_failed',
     channel: 'in_app',
     locale: 'en',
-    subjectTemplate: 'Backup failed',
+    subjectTemplate: 'Backup failed: {{backupName}}',
     bodyTemplate: 'Backup "{{backupName}}" failed.{{#if errorMessage}} {{errorMessage}}{{/if}}',
     bodyFormat: 'plaintext',
     variablesSchema: [
@@ -1695,7 +1705,7 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     subjectTemplate: '[SLO RESOLVED] {{ruleName}}{{#if subject}} — {{subject}}{{/if}}',
     bodyTemplate: emailMjml(
       'SLO alert resolved: {{ruleName}}',
-      '{{ruleName}} recovered{{#if subject}} for {{subject}}{{/if}}. '
+      '{{ruleName}} recovered{{#if subject}} for {{subject}}{{/if}} at {{occurredAt}}. '
       + '{{description}}{{#if value}} Last value: {{value}}.{{/if}} '
       + '(rule {{ruleId}}, severity {{severity}}). No further action required.',
     ),
@@ -1707,7 +1717,7 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: '[SLO RESOLVED] {{ruleName}}{{#if subject}} — {{subject}}{{/if}}',
-    bodyTemplate: '{{ruleName}} recovered{{#if subject}} for {{subject}}{{/if}}'
+    bodyTemplate: '{{ruleName}} recovered{{#if subject}} for {{subject}}{{/if}} at {{occurredAt}}'
       + ' (rule {{ruleId}}, severity {{severity}}).',
     bodyFormat: 'plaintext',
     variablesSchema: SLO_ALERT_VARS,

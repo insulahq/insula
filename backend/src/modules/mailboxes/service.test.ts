@@ -47,6 +47,14 @@ vi.mock('bcrypt', () => ({
 // Mock stalwart-jmap/client so createMailbox service tests don't need
 // a live Stalwart instance. By default JMAP session returns null (no
 // mail stack in unit tests) so the JMAP path is bypassed gracefully.
+const { emitEventMock } = vi.hoisted(() => ({ emitEventMock: vi.fn() }));
+vi.mock('../notifications/dispatcher/dispatch.js', () => ({
+  emitEvent: emitEventMock,
+  // dispatch.js also exports the delivery-row helper used elsewhere in the
+  // module graph; a bare mock would break unrelated imports.
+  recordDelivery: vi.fn(),
+}));
+
 vi.mock('../stalwart-jmap/client.js', () => ({
   getJmapSession: vi.fn().mockRejectedValue(new Error('no mail stack in unit tests')),
   createMailbox: vi.fn().mockResolvedValue({ id: 'sp-test-123', type: 'individual', name: 'test' }),
@@ -204,6 +212,29 @@ describe('createMailbox', () => {
       status: 409,
       details: { limit: 2, current: 2, source: 'plan' },
     });
+  });
+
+  it('does not notify anyone when the cap is hit — the 409 is the message', async () => {
+    // A `notifyTenantMailboxLimitReached` used to fire here, mailing every
+    // tenant_admin about the click the tenant had just watched fail. Removed
+    // 2026-09-16 (operator decision): the panel already shows the used/quota
+    // bar and renders this very error. The guard asserts at the DISPATCHER, so
+    // it fails for ANY re-added notification on this path, not just that one
+    // helper — which matters because the platform's own report-intake
+    // reconciler retried this call every 5 minutes and re-mailed forever.
+    const emailDomain = { id: 'ed1', tenantId: 'c1', domainId: 'd1' };
+    const domain = { domainName: 'example.com' };
+    const planRow = { planLimit: 2, override: null };
+    const countResult = { count: 2 };
+
+    selectResults = [[emailDomain], [domain], [planRow], [countResult]];
+    const db = createMockDb();
+
+    await expect(
+      createMailbox(db as never, 'c1', 'ed1', { local_part: 'test', quota_mb: 1024, mailbox_type: 'mailbox' }),
+    ).rejects.toMatchObject({ code: 'CLIENT_MAILBOX_LIMIT_REACHED' });
+
+    expect(emitEventMock).not.toHaveBeenCalled();
   });
 
   it('should prefer a positive per-tenant override over the plan limit', async () => {

@@ -244,6 +244,7 @@ export async function processDelivery(
     }
     const u = { email: recipientEmail };
 
+
     // 5. Look up the notification provider for this category. Phase 5
     //    introduces a per-source override (notification_categories
     //    .email_provider_id). If the override is set but disabled the
@@ -327,6 +328,15 @@ export async function processDelivery(
         status: 'sent',
         sentAt: new Date(),
         attempt: row.attempt + 1,
+        // Record WHO was mailed. The address is resolved above from
+        // `users.email` and was never written back, so 177 of 184 email
+        // deliveries on production carried `recipient_address = NULL` — the
+        // platform could not answer "who did we notify?" from its own data,
+        // and during an incident the only source was the mail server's log.
+        // Folded into this update rather than a second query, and only when
+        // the row has no address of its own, so an explicitly-addressed
+        // delivery (a mailbox owner) is never overwritten.
+        ...(row.recipientAddress ? {} : { recipientAddress: recipientEmail }),
         ...(degradedVars.length > 0 ? { degradedVars: clampDegradedVars(degradedVars) } : {}),
         ...(fallbackUsed ? { lastError: 'render_fallback: template unrenderable at send time' } : {}),
       })

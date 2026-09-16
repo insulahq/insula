@@ -217,11 +217,37 @@ describe('previewTemplate', () => {
     expect(r.body).toBe('Hello Alice');
   });
 
-  it('propagates TEMPLATE_RENDER_ERROR when required var missing', async () => {
+  it('propagates TEMPLATE_RENDER_ERROR when an OPERATOR-supplied var is missing', async () => {
+    // `userName` no longer qualifies: the preview pre-seeds every variable the
+    // DISPATCHER supplies (platformName, greeting, actionButtons, …), because
+    // the shared email wrapper references them and no operator can be expected
+    // to know they exist — without that, opening the preview on any email
+    // template threw what looked like a broken-template error. A variable the
+    // operator IS responsible for still errors, which is the point of strict
+    // preview: tell them before a customer finds out.
+    const row = { ...sampleRow, bodyTemplate: 'Rule {{ruleName}} fired' };
     const select = vi.fn().mockReturnValue({
-      from: () => ({ where: () => ({ limit: () => Promise.resolve([sampleRow]) }) }),
+      from: () => ({ where: () => ({ limit: () => Promise.resolve([row]) }) }),
     });
     const db = { select } as unknown as Db;
     await expect(previewTemplate(db, 'tpl-1', { variables: {} })).rejects.toThrow(ApiError);
+  });
+
+  it('renders an email template with no operator input at all', async () => {
+    // The regression this guards: the wrapper's `{{greeting}}` and
+    // `{{{actionButtons}}}` made every email preview throw.
+    const row = {
+      ...sampleRow,
+      channel: 'email' as const,
+      bodyFormat: 'plaintext',
+      bodyTemplate: '{{#if greeting}}{{greeting}}{{/if}} Something happened. {{{actionButtons}}}',
+    };
+    const select = vi.fn().mockReturnValue({
+      from: () => ({ where: () => ({ limit: () => Promise.resolve([row]) }) }),
+    });
+    const db = { select } as unknown as Db;
+    const r = await previewTemplate(db, 'tpl-1', { variables: {} });
+    expect(r.body).toContain('Something happened.');
+    expect(r.body).toContain('mj-button');
   });
 });

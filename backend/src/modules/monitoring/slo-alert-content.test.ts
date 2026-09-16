@@ -12,6 +12,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { ALL_SEED_TEMPLATES } from '../notifications/templates/seed-data.js';
+import { PREVIEW_ENVELOPE_SAMPLE } from '../notifications/templates/variables.js';
 import { renderTemplate, _resetRendererCacheForTests } from '../notifications/templates/renderer.js';
 import type { NotificationTemplateResponse } from '@insula/api-contracts';
 import { SLO_RULES, sloValueIsInformative, formatSloValue } from './rules.js';
@@ -53,6 +54,11 @@ function payloadFor(ruleId: string, rawValue: number, subject?: string) {
     description: rule.description,
     value: sloValueIsInformative(rule.unit) ? formatSloValue(rawValue, rule.unit) : undefined,
     subject,
+    // The dispatcher-supplied envelope, from the shared sample so this test
+    // cannot drift from what a real send provides. It renders through the
+    // STRICT renderer, so a variable the wrapper references and this omits is
+    // a throw, not a blank.
+    ...PREVIEW_ENVELOPE_SAMPLE,
     platformName: 'Insula',
     userName: 'operator',
     tenantName: null,

@@ -43,6 +43,17 @@ an app password) but has no inbox: nothing is stored, there is no webmail, and
 incoming mail is **bounced back to the sender** — unless you configure
 forwarding (below), in which case it is forwarded without keeping a copy.
 
+!!! note "Addresses the platform runs on your domain"
+
+    Mail standards require every domain that receives mail to accept
+    `postmaster@`, and DMARC reports need an address to arrive at. The
+    platform creates and maintains those itself on each of your domains.
+
+    They are **not listed here**, they do **not** count against your plan's
+    mailbox limit, and there is nothing for you to configure — they are
+    plumbing, not mailboxes. Mail you send to `postmaster@` on your own domain
+    still reaches the platform operator.
+
 **Manage a mailbox**
 
 Each row shows the address, a used/quota bar, and actions. Click a mailbox to

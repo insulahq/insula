@@ -81,7 +81,9 @@ export async function updateSubscription(db: Database, tenantId: string, input: 
   // Both fire if both changed (different templates / audiences). Fire
   // AFTER the UPDATE so the worker (re-renders from variables) sees
   // the new state when it dequeues the email.
-  await fireSubscriptionEvents(db, tenantId, tenant, updateValues);
+  // Default TRUE: an omitted flag must mean "tell them", or an older client
+  // that does not send the field would silently stop notifying anyone.
+  await fireSubscriptionEvents(db, tenantId, tenant, updateValues, input.notify_tenant !== false);
 
   return getSubscription(db, tenantId);
 }
@@ -98,7 +100,15 @@ async function fireSubscriptionEvents(
   tenantId: string,
   before: PreUpdateTenant,
   patch: Record<string, unknown>,
+  /**
+   * False when the operator ticked "do not inform the tenant".
+   *
+   * Checked here rather than at each emitter so a new subscription event
+   * cannot be added that ignores the operator's choice.
+   */
+  notifyTenant: boolean,
 ): Promise<void> {
+  if (!notifyTenant) return;
   const planChanged = typeof patch.planId === 'string' && patch.planId !== before.planId;
   const newExpiry = patch.subscriptionExpiresAt instanceof Date ? patch.subscriptionExpiresAt : null;
   const expiryAdvanced = newExpiry != null
