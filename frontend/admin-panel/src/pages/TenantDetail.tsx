@@ -84,10 +84,10 @@ export default function TenantDetail() {
   // `suppressTenantNotification` on every lifecycle action body
   // (suspend / archive / restore / delete).
   //
-  // TODO: extend `UpdateTenantInput` + the DELETE /tenants/:id body in
-  // packages/api-contracts/src/tenants.ts to include
-  // `suppressTenantNotification?: boolean`; the cast below should be
-  // dropped once the contract change lands.
+  // The contract carries `suppressTenantNotification` and the backend now
+  // READS it — until 2026-09-16 nothing in between did, so this checkbox sent
+  // its value all the way to a hook that checked a field nobody had set, and
+  // the tenant was emailed regardless.
   const [notifyTenant, setNotifyTenant] = useState(true);
 
   const domainsQuery = useDomains(id);
@@ -164,7 +164,7 @@ export default function TenantDetail() {
       // the PATCH body until `UpdateTenantInput` in api-contracts is
       // extended. Backend reads the field on every lifecycle PATCH.
       const res = await updateTenant.mutateAsync(
-        { status: 'suspended', suppressTenantNotification: !notifyTenant } as unknown as import('@insula/api-contracts').UpdateTenantInput,
+        { status: 'suspended', suppressTenantNotification: !notifyTenant },
       );
       const opId = res?.data?.storageArchiveOperationId
         ?? res?.data?.storageRestoreOperationId
@@ -225,7 +225,7 @@ export default function TenantDetail() {
         since: Date.now(),
       });
       const res = await updateTenant.mutateAsync(
-        { status: 'active', suppressTenantNotification: !notifyTenant } as unknown as import('@insula/api-contracts').UpdateTenantInput,
+        { status: 'active', suppressTenantNotification: !notifyTenant },
       );
       const opId = res?.data?.storageRestoreOperationId
         ?? res?.data?.storageArchiveOperationId

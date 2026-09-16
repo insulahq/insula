@@ -394,7 +394,13 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
 
     const userId = ((request.user as { id?: string; sub?: string } | undefined)?.id)
       ?? ((request.user as { sub?: string } | undefined)?.sub) ?? null;
-    const updated = await service.updateTenant(app.db, id, parsed.data, { triggeredByUserId: userId });
+    const updated = await service.updateTenant(app.db, id, parsed.data, {
+      triggeredByUserId: userId,
+      // The operator's "Notify tenant" checkbox. Declared in the contract and
+      // sent by the panel since the checkbox shipped, but never read here —
+      // so unticking it emailed the tenant anyway.
+      suppressTenantNotification: parsed.data.suppressTenantNotification === true,
+    });
     return success(updated);
   });
 
@@ -405,7 +411,15 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
     onRequest: [requireRole('super_admin', 'admin')],
   }, async (request) => {
     const { id } = request.params as { id: string };
-    const result = await service.deleteTenant(app.db, id, getK8s());
+    // The panel sends the choice as a QUERY parameter here, because DELETE
+    // carries no body in this API. It was dropped on the floor: the tenant was
+    // emailed "your account is being permanently deleted" even when the
+    // operator had unticked the box.
+    const query = request.query as Record<string, unknown>;
+    const suppress = query.suppressTenantNotification === 'true' || query.suppressTenantNotification === true;
+    const result = await service.deleteTenant(app.db, id, getK8s(), {
+      suppressTenantNotification: suppress,
+    });
     return success({ transitionId: result.transitionId });
   });
 

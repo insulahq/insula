@@ -58,6 +58,18 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   panel and the email cannot disagree about where a category points.
 
 ### Fixed
+- **"Notify tenant" on suspend / restore / archive / delete never worked.** The
+  contract declared `suppressTenantNotification`, the admin panel sent it on
+  every lifecycle action, and the `notify-tenant-on-transition` hook read
+  `ctx.suppressTenantNotification` — but nothing in between ever set it. The
+  hook context was assembled without the field, the PATCH route ignored the
+  body value, and the DELETE route dropped its query parameter on the floor.
+  An operator who unticked the box still had the customer emailed, including
+  "your account is being permanently deleted". Threaded end to end, with the
+  default on every layer being "notify" so an un-updated caller cannot silence
+  anything, and the panel's `as unknown as` casts (added when the contract
+  lacked the field) removed so a future mismatch is a compile error.
+
 - **Mailbox quota alerts stop double-mailing the same person, and stop firing
   once per crossed threshold.** Production sent one recipient the same warning
   twice under an identical dedupe key — the tenant-admin leg resolves its
