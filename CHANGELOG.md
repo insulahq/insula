@@ -131,6 +131,20 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   than an honest gap. Migration 0126 removes it from existing clusters.
 
 ### Fixed
+- **A database created for a tenant could not be used by Moodle — and by
+  anything else that checks its own charset the same way.** `CREATE DATABASE`
+  was issued bare, so the schema inherited the server default; on MariaDB 11.4
+  and later that is `utf8mb4_uca1400_ai_ci`, and
+  `SHOW COLLATION WHERE Collation='utf8mb4_uca1400_ai_ci' AND Charset='utf8mb4'`
+  returns nothing. That query is exactly how Moodle verifies a database is
+  Unicode, so its installer aborted with "unicode must be installed and
+  enabled" on a database the platform had just created and handed over. New
+  MySQL/MariaDB databases are now created `CHARACTER SET utf8mb4 COLLATE
+  utf8mb4_unicode_ci` — the collation those applications are written against,
+  present in every server version the catalog offers, and the one a tenant
+  migrating from cPanel or Plesk is carrying in their dump anyway. Existing
+  databases are untouched; an `ALTER DATABASE … COLLATE utf8mb4_unicode_ci`
+  fixes one in place.
 - **Every cron schedule that was not `*/N` in the minute field ran every
   minute.** `getNextRunTime` parsed only a `*/N` minute and fell through to
   "one minute after the last run" for everything else, so `0 3 * * *` — a
