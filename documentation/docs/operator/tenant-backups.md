@@ -10,7 +10,7 @@ tenant — written off-cluster to the target you assigned to the `tenant` class
 (see [Backup targets](backup-targets.md)).
 
 This page is the operator's view: scheduling, retention, reading bundle status,
-and handling failures. The actual *restore* work — the Plesk-style shopping-cart
+and handling failures. The actual *restore* work — the shopping-cart
 picker — is in the [Admin guide → Backups & restore](../admin/backups-and-restore.md).
 
 ## What a bundle contains

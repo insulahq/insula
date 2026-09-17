@@ -278,7 +278,7 @@ and the Task Center chip tracks progress. If the artifact turns out to be a
 
 ### The restore cart (granular tenant restore)
 
-For tenant **bundles**, restore is Plesk-style: a shopping cart where you
+For tenant **bundles**, restore works like a shopping cart: you
 pick exactly which pieces to bring back — specific config tables,
 deployments, domains, mailboxes, or files — add them to the cart, then
 execute. The admin cart additionally supports **rollback** if a restore

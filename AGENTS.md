@@ -7,10 +7,12 @@
 
 ## Project Overview
 
-Kubernetes-based web hosting platform replacing Plesk. Targets 50–100 tenants initially on
+Kubernetes-based multi-tenant web + mail hosting platform. Targets 50–100 tenants on
 self-managed k3s clusters (cloud VPS, lean monthly budget).
 
-**Status:** Core feature-complete; production cutover pending. Open follow-ups: `docs/roadmap/ROADMAP.md`.
+**Status: IN PRODUCTION.** Treat every change as reaching a live cluster with real tenants —
+production moves only when the operator pulls a signed release, but "not shipped yet" is no
+longer a safety net. Open follow-ups: `docs/roadmap/ROADMAP.md`.
 **Open source:** ships publicly under AGPL — design every decision through an OSS lens (see *No vendor lock-in*).
 
 ---
@@ -158,7 +160,7 @@ focused files (200–400 lines typical) over few large ones. Prefer new objects 
 | Frontend | React 18 + Vite + TypeScript + Tailwind CSS + shadcn/ui |
 | State | TanStack Query (server), Zustand (client) |
 | Testing | Vitest + React Testing Library + Playwright |
-| Auth | External Dex OIDC + JWT (Bearer tokens) |
+| Auth | JWT (Bearer tokens) + passkeys; any external OIDC provider (Dex = dev/staging test IdP only) |
 | CI/CD | GitHub Actions + Flux v2 |
 | Container Registry | GHCR |
 | K8s | k3s + Calico CNI + Traefik v3 (ADR-038) |
@@ -260,7 +262,18 @@ blog.example.test → A/AAAA → <ingress IP(s)>
 ### External dependencies (ADR-022 / ADR-025 / ADR-026)
 These are **separate projects** — this platform only consumes their APIs, with configurable
 endpoints in the admin panel. Do not add their deployment concerns here.
-- **DNS:** PowerDNS REST API · **VPN mesh:** NetBird · **IAM/Auth:** Dex OIDC
+- **DNS:** PowerDNS REST API · **VPN mesh:** NetBird (or any WireGuard-style underlay) ·
+  **IAM/Auth:** any external OIDC issuer.
+- **Backbone** (`github.com/insulahq/backbone`) is the sister project that deploys those three
+  — provider-agnostic Ansible over two geographically separated nodes: PowerDNS (native mode,
+  read-write on both), NetBird management/signal/relay, and **Zitadel** as the central IAM,
+  plus its own PostgreSQL HA / Traefik / Gatus / OpenZiti / restic layer. It is the reference
+  deployment, **not a requirement** — keep every integration endpoint-configurable.
+- **Dex is a TEST IdP, not the production answer.** `db/seed.ts` registers it only when
+  `NODE_ENV !== 'production'`, it ships in the `development`/`dind`/`staging` overlays only,
+  and CI guard `ci-no-dex-in-production.sh` fails a production overlay that includes it. Real
+  deployments point at an external issuer (Zitadel via Backbone, Keycloak, Authentik, …). Do
+  not write docs or code that treat Dex as the platform IdP.
 - **Catalog:** one unified catalog model of mixed entry types fed by one or more catalog
   repositories. The default **Official Catalog** (`github.com/insulahq/application-catalog`) is
   seeded active and removable and ships **primitives only** — runtimes, databases, services, static.
