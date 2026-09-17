@@ -168,7 +168,7 @@ import { zitiProvidersRoutes } from './modules/ziti-providers/routes.js';
 import { zrokProvidersRoutes } from './modules/zrok-providers/routes.js';
 import { deploymentNetworkAccessRoutes } from './modules/deployment-network-access/routes.js';
 import { sqliteRoutes } from './modules/sqlite/routes.js';
-import { startWebcronScheduler } from './modules/cron-jobs/scheduler.js';
+import { startCronScheduler } from './modules/cron-jobs/scheduler.js';
 import { startIdleCleanup } from './modules/file-manager/idle-cleanup.js';
 import { startMetricsScheduler } from './modules/metrics/metrics-scheduler.js';
 import { startMailStatsScheduler, stopMailStatsScheduler } from './modules/mail-stats/scheduler.js';
@@ -1045,8 +1045,14 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         app.addHook('onClose', () => clearInterval(sweepTimer));
       }
 
-      const webcronTimer = startWebcronScheduler(app.db);
-      app.addHook('onClose', () => clearInterval(webcronTimer));
+      // Tenant cron. Deployment-type jobs exec into the tenant's own pod, so
+      // the scheduler needs the kubeconfig the rest of the cluster callers use.
+      const cronTimer = startCronScheduler(app.db, {
+        kubeconfigPath:
+          ((app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined)
+          ?? process.env.KUBECONFIG,
+      });
+      app.addHook('onClose', () => clearInterval(cronTimer));
 
       // Prometheus exposition (ADR-051 phase 2): HTTP-histogram hook on
       // the main app + a bare node:http server on :9090 serving GET
@@ -1319,6 +1325,8 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         const { ensureMailEventsWebhook } = await import('./modules/mail-events/webhook-reconciler.js');
         const { ensureStalwartStdoutTracer } = await import('./modules/mail-events/tracer-reconciler.js');
         const { ensureReportIntake } = await import('./modules/mail-events/report-intake-reconciler.js');
+        const { ensureDmarcReportSender } = await import('./modules/mail-events/dmarc-report-sender.js');
+        const { ensurePlatformHostnameIntake } = await import('./modules/mail-events/platform-hostname-intake.js');
         const { pollDmarcReports } = await import('./modules/mail-events/dmarc.js');
         const { repairDmarcRuaRecords } = await import('./modules/mail-events/dmarc-rua-repair.js');
         const { evaluateMailThresholds } = await import('./modules/mail-events/thresholds.js');
@@ -1342,6 +1350,23 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           });
           ensureReportIntake(app.db, app.log).catch((err) => {
             app.log.warn({ err }, 'report intake ensure failed');
+          });
+          // `postmaster@` and `abuse@` on the platform's OWN mail hostname —
+          // the domain in every EHLO and in the TLS cert, which answered 550
+          // to both until 2026-09-17. Runs on the same tick as the per-domain
+          // intake above, so a fresh bootstrap converges as soon as the
+          // hostname's Stalwart domain exists.
+          ensurePlatformHostnameIntake(app.db, app.log).catch((err) => {
+            app.log.warn({ err }, 'platform hostname intake ensure failed');
+          });
+          // Outbound DMARC reporting stays OFF unless an operator has named a
+          // real local postmaster@ to send from. Reconciled every tick, not
+          // set once: the Stalwart singleton starts empty and empty means
+          // "use the built-in defaults", i.e. send from a hostname-derived
+          // address that has no mailbox — so a restore would silently
+          // reintroduce reports whose DSNs bounce.
+          ensureDmarcReportSender(app.db, app.log).catch((err) => {
+            app.log.warn({ err }, 'dmarc report sender ensure failed');
           });
           pollDmarcReports(app.db, app.log).catch((err) => {
             app.log.warn({ err }, 'dmarc poll failed');

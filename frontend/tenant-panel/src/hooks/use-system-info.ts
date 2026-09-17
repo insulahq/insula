@@ -10,6 +10,9 @@ export interface SystemInfo {
   readonly tenantPanelUrl: string | null;
   // ISO 4217 currency code used for any monetary amount display.
   readonly currency: string;
+  // Platform timezone (IANA). Scheduled tasks with no zone of their own are
+  // read on this clock.
+  readonly timezone?: string;
 }
 
 interface SystemInfoResponse {

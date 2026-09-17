@@ -40,8 +40,8 @@
  * disabled a per-tenant-domain feature that never depended on it.
  */
 
-import { eq, and, gte } from 'drizzle-orm';
-import { domains, emailDomains, mailboxes } from '../../db/schema.js';
+import { eq, and, gte, lt, or, isNull, sql } from 'drizzle-orm';
+import { domains, emailAliases, emailDomains, mailboxAliases, mailboxes } from '../../db/schema.js';
 import {
   reportSettingsGet,
   reportSettingsUpdate,
@@ -74,10 +74,32 @@ export const DMARC_LOCAL_PART = 'dmarc';
  */
 export const POSTMASTER_LOCAL_PART = 'postmaster';
 
+/**
+ * `abuse@` — the other address RFC 2142 makes mandatory for a mail-receiving
+ * domain, and the one a remote operator, a blocklist, or a mailbox provider's
+ * abuse desk reaches for when mail from a tenant's domain misbehaves. It was
+ * not created anywhere, so every one of those attempts got
+ * `550 5.1.2 Mailbox does not exist` — the platform looked unreachable exactly
+ * when somebody was trying to tell us about a problem.
+ *
+ * An ALIAS on the postmaster intake, not a mailbox: the two audiences overlap
+ * completely (the operator reading one reads the other) and a second mailbox
+ * would be a second thing to reap. Operator decision 2026-09-17.
+ */
+export const ABUSE_LOCAL_PART = 'abuse';
+
 /** Patterns Stalwart must treat as report intake. */
 const REQUIRED_INTAKE_PATTERNS = [
   'postmaster@*',
   `${DMARC_LOCAL_PART}@*`,
+  // `abuse@*` is deliberately NOT here. A pattern in this list hands the mail
+  // to Stalwart's report-analysis, which parses and CONSUMES it before storage
+  // — which is why the intake mailboxes measure 0 MB. That is right for
+  // machine-generated DMARC reports and wrong for abuse@, whose mail is
+  // frequently a human describing a problem. Registering it would have made
+  // every abuse complaint vanish while SMTP said 250: strictly worse than the
+  // 550 it replaced, and invisible. The alias alone is what makes RCPT
+  // succeed; delivery into the intake mailbox is the point.
 ] as const;
 
 /**
@@ -105,6 +127,18 @@ const POSTMASTER_MAILBOX_QUOTA_MB = INTAKE_MAILBOX_QUOTA_MB;
  * the reports and DSNs that would have told us something are the ones lost.
  */
 const INTAKE_REAP_AT_MB = Math.floor(INTAKE_MAILBOX_QUOTA_MB * 0.8);
+
+/**
+ * Empty an intake mailbox every 30 days regardless of size — operator decision
+ * 2026-09-16.
+ *
+ * The size trigger above never fires in practice: report-analysis intercepts
+ * and parses before storage, so these mailboxes measure 0 MB. A retention rule
+ * that cannot fire is not a retention rule. Anything that DOES land — a DSN
+ * Stalwart chose not to consume, a report it could not parse — would otherwise
+ * sit forever.
+ */
+const INTAKE_REAP_AFTER_DAYS = 30;
 
 export interface ReportIntakeResult {
   readonly mailbox: 'exists' | 'created' | 'skipped' | 'failed';
@@ -137,61 +171,137 @@ export interface ReportIntakeResult {
  * it — but it is why the delete is gated on "empty and platform-managed"
  * rather than attempted optimistically.
  */
-async function ensureDmarcAlias(
+interface IntakeAliasSpec {
+  readonly localPart: string;
+  /** Only `dmarc@` is reported back as a published `rua=` target. */
+  readonly isRuaTarget: boolean;
+  /**
+   * Whether a platform-managed EMPTY mailbox on this address may be deleted
+   * and replaced by the alias.
+   *
+   * True for `dmarc@` only, because that convergence is a migration the
+   * platform itself created and must undo. `abuse@` never had a
+   * platform-managed mailbox, so there is nothing of ours to converge — and
+   * deleting a mailbox on the strength of a name match is how you lose a
+   * tenant's real abuse desk.
+   */
+  readonly convergeLegacyPlatformMailbox: boolean;
+}
+
+/**
+ * The addresses that ride on the postmaster intake as aliases.
+ *
+ * Both are RFC 2142 obligations, neither needs its own mailbox, and both are
+ * read by the same person. Adding one here is all it takes for every
+ * email-enabled domain — existing and future — to answer it.
+ */
+const INTAKE_ALIASES: readonly IntakeAliasSpec[] = [
+  { localPart: DMARC_LOCAL_PART, isRuaTarget: true, convergeLegacyPlatformMailbox: true },
+  { localPart: ABUSE_LOCAL_PART, isRuaTarget: false, convergeLegacyPlatformMailbox: false },
+];
+
+/**
+ * Is this address already answered by something — a mailbox, a mailing list,
+ * or an alias on another mailbox?
+ *
+ * Checked BEFORE creating, rather than catching the 409 that
+ * `createMailboxAlias` would throw, because "already answered" is the success
+ * condition here, not an error. The goal is that SMTP does not say 550; who
+ * owns the address is the tenant's business.
+ */
+async function addressIsAnswered(db: Database, fullAddress: string): Promise<boolean> {
+  const [box] = await db
+    .select({ id: mailboxes.id })
+    .from(mailboxes)
+    .where(eq(mailboxes.fullAddress, fullAddress))
+    .limit(1);
+  if (box) return true;
+  const [list] = await db
+    .select({ id: emailAliases.id })
+    .from(emailAliases)
+    .where(eq(emailAliases.sourceAddress, fullAddress))
+    .limit(1);
+  if (list) return true;
+  const [alias] = await db
+    .select({ id: mailboxAliases.id })
+    .from(mailboxAliases)
+    .where(eq(mailboxAliases.fullAddress, fullAddress))
+    .limit(1);
+  return Boolean(alias);
+}
+
+async function ensureIntakeAlias(
   db: Database,
   logger: OutboundReconcileLogger,
   target: { tenantId: string; emailDomainId: string; domainName: string },
   postmasterMailboxId: string,
-  dmarcAddresses: string[],
+  spec: IntakeAliasSpec,
+  ruaAddresses: string[],
 ): Promise<void> {
-  const address = `${DMARC_LOCAL_PART}@${target.domainName.toLowerCase()}`;
+  const address = `${spec.localPart}@${target.domainName.toLowerCase()}`;
   try {
-    const [legacy] = await db
-      .select({
-        id: mailboxes.id,
-        usedMb: mailboxes.usedMb,
-        platformManaged: mailboxes.platformManaged,
-      })
-      .from(mailboxes)
-      .where(and(
-        eq(mailboxes.emailDomainId, target.emailDomainId),
-        eq(mailboxes.localPart, DMARC_LOCAL_PART),
-      ))
-      .limit(1);
+    if (spec.convergeLegacyPlatformMailbox) {
+      const [legacy] = await db
+        .select({
+          id: mailboxes.id,
+          usedMb: mailboxes.usedMb,
+          platformManaged: mailboxes.platformManaged,
+        })
+        .from(mailboxes)
+        .where(and(
+          eq(mailboxes.emailDomainId, target.emailDomainId),
+          eq(mailboxes.localPart, spec.localPart),
+        ))
+        .limit(1);
 
-    if (legacy) {
-      if (!legacy.platformManaged) {
-        // Theirs. Leave it entirely alone and still report the address as a
-        // working rua= target, because it is one.
-        dmarcAddresses.push(address);
-        return;
-      }
-      if (legacy.usedMb > 0) {
-        // Should not happen (report-analysis intercepts before storage), so if
-        // it does, something upstream changed and deleting would lose mail.
-        logger.warn(
-          { address, usedMb: legacy.usedMb },
-          'report intake: dmarc@ mailbox holds mail — left as a mailbox rather than converged to an alias',
+      if (legacy) {
+        if (!legacy.platformManaged) {
+          // Theirs. Leave it entirely alone and still report the address as a
+          // working rua= target, because it is one.
+          if (spec.isRuaTarget) ruaAddresses.push(address);
+          return;
+        }
+        if (legacy.usedMb > 0) {
+          // Should not happen (report-analysis intercepts before storage), so
+          // if it does, something upstream changed and deleting would lose mail.
+          logger.warn(
+            { address, usedMb: legacy.usedMb },
+            'report intake: intake mailbox holds mail — left as a mailbox rather than converged to an alias',
+          );
+          if (spec.isRuaTarget) ruaAddresses.push(address);
+          return;
+        }
+        const { deleteMailbox } = await import('../mailboxes/service.js');
+        await deleteMailbox(db, target.tenantId, legacy.id);
+        logger.info(
+          { address },
+          'report intake: removed the second intake mailbox, converging the address to an alias',
         );
-        dmarcAddresses.push(address);
-        return;
       }
-      const { deleteMailbox } = await import('../mailboxes/service.js');
-      await deleteMailbox(db, target.tenantId, legacy.id);
-      logger.info({ address }, 'report intake: removed the second intake mailbox, converging dmarc@ to an alias');
     }
 
     const { listMailboxAliases, createMailboxAlias } = await import('../mailbox-aliases/service.js');
     const aliases = await listMailboxAliases(db, target.tenantId, { mailboxId: postmasterMailboxId });
-    const has = aliases.some((a) => a.localPart === DMARC_LOCAL_PART);
-    if (!has) {
-      await createMailboxAlias(db, target.tenantId, postmasterMailboxId, { local_part: DMARC_LOCAL_PART });
-      logger.info({ address }, 'report intake: created the dmarc@ alias');
+    if (!aliases.some((a) => a.localPart === spec.localPart)) {
+      // Somebody else may already answer this address — the tenant's own
+      // `abuse@` mailbox, a mailing list, an alias on a different mailbox. That
+      // is a SUCCESS: the address does not 550, which is the whole point. Only
+      // claim it when it is free.
+      if (await addressIsAnswered(db, address)) {
+        logger.info(
+          { address },
+          'report intake: address already answered by a tenant-owned mailbox/alias — left alone',
+        );
+        if (spec.isRuaTarget) ruaAddresses.push(address);
+        return;
+      }
+      await createMailboxAlias(db, target.tenantId, postmasterMailboxId, { local_part: spec.localPart });
+      logger.info({ address }, 'report intake: created the intake alias');
     }
-    dmarcAddresses.push(address);
+    if (spec.isRuaTarget) ruaAddresses.push(address);
   } catch (err) {
     // Never let the alias step break the intake mailbox that already exists.
-    logger.error({ err, address }, 'report intake: dmarc@ alias ensure failed (retries next tick)');
+    logger.error({ err, address }, 'report intake: intake alias ensure failed (retries next tick)');
   }
 }
 
@@ -264,17 +374,25 @@ export async function ensureReportIntake(
   // postmaster@ owns it, and it is neither reaped nor resized.
   let reaped = 0;
   let resized = 0;
+  // Two triggers, one pass: FULL (the safety net) or DUE (the real schedule).
+  // A NULL `last_reaped_at` counts as due, but migration 0127 baselines every
+  // existing row to NOW() so a deploy does not reap all of them at once.
   const full = await db
     .select({
       id: mailboxes.id,
       tenantId: mailboxes.tenantId,
       fullAddress: mailboxes.fullAddress,
       usedMb: mailboxes.usedMb,
+      lastReapedAt: mailboxes.lastReapedAt,
     })
     .from(mailboxes)
     .where(and(
       eq(mailboxes.platformManaged, true),
-      gte(mailboxes.usedMb, INTAKE_REAP_AT_MB),
+      or(
+        gte(mailboxes.usedMb, INTAKE_REAP_AT_MB),
+        isNull(mailboxes.lastReapedAt),
+        lt(mailboxes.lastReapedAt, sql`NOW() - INTERVAL '${sql.raw(String(INTAKE_REAP_AFTER_DAYS))} days'`),
+      ),
     ));
   for (const box of full) {
     try {
@@ -282,8 +400,14 @@ export async function ensureReportIntake(
       await deleteMailbox(db, box.tenantId, box.id);
       reaped += 1;
       logger.info(
-        { address: box.fullAddress, usedMb: box.usedMb, reapAtMb: INTAKE_REAP_AT_MB },
-        'report intake: reaped full intake mailbox (recreated in this same pass)',
+        {
+          address: box.fullAddress,
+          usedMb: box.usedMb,
+          reapAtMb: INTAKE_REAP_AT_MB,
+          trigger: box.usedMb >= INTAKE_REAP_AT_MB ? 'full' : `age>${INTAKE_REAP_AFTER_DAYS}d`,
+          lastReapedAt: box.lastReapedAt?.toISOString() ?? null,
+        },
+        'report intake: emptied intake mailbox (recreated in this same pass)',
       );
     } catch (err) {
       logger.error(
@@ -335,7 +459,9 @@ export async function ensureReportIntake(
           }
         }
         states.push('exists');
-        await ensureDmarcAlias(db, logger, target, existing.id, dmarcAddresses);
+        for (const spec of INTAKE_ALIASES) {
+          await ensureIntakeAlias(db, logger, target, existing.id, spec, dmarcAddresses);
+        }
         continue;
       }
 
@@ -359,7 +485,9 @@ export async function ensureReportIntake(
         // rather than re-reading it — one query fewer, and no chance of
         // reading back a row a concurrent pass has changed.
         if (createdMailbox?.id) {
-          await ensureDmarcAlias(db, logger, target, createdMailbox.id, dmarcAddresses);
+          for (const spec of INTAKE_ALIASES) {
+            await ensureIntakeAlias(db, logger, target, createdMailbox.id, spec, dmarcAddresses);
+          }
         }
       } catch (err) {
         states.push('failed');
