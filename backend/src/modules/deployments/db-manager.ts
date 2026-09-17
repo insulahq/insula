@@ -378,10 +378,33 @@ async function mysqlListDatabases(
     .map((name) => ({ name }));
 }
 
+/**
+ * The collation new MySQL/MariaDB databases are created with.
+ *
+ * A bare `CREATE DATABASE` inherits the server default, and on MariaDB 11.4+
+ * that is `utf8mb4_uca1400_ai_ci` — a UCA-1400 collation that
+ * `SHOW COLLATION WHERE Collation='utf8mb4_uca1400_ai_ci' AND Charset='utf8mb4'`
+ * does NOT return. Applications that verify their database is Unicode by
+ * running exactly that query therefore conclude it is not: Moodle's installer
+ * aborts with "unicode must be installed and enabled" on a database the
+ * platform just created for it. Reproduced on DEV against mariadb:12.3 while
+ * installing Moodle 5.0.10.
+ *
+ * `utf8mb4_unicode_ci` is the collation those applications are written against,
+ * is present in every MySQL and MariaDB version the catalog offers, and is what
+ * a tenant importing a dump from cPanel/Plesk will be carrying anyway.
+ */
+export const APP_COMPATIBLE_MYSQL_COLLATION = 'utf8mb4_unicode_ci';
+
+export function mysqlCreateDatabaseSql(dbName: string): string {
+  return `CREATE DATABASE IF NOT EXISTS \`${dbName}\` `
+    + `CHARACTER SET utf8mb4 COLLATE ${APP_COMPATIBLE_MYSQL_COLLATION}`;
+}
+
 async function mysqlCreateDatabase(
   kp: string | undefined, ns: string, pod: string, cn: string, pw: string, dbName: string,
 ): Promise<void> {
-  await mysqlExec(kp, ns, pod, cn, pw, `CREATE DATABASE IF NOT EXISTS \`${dbName}\``);
+  await mysqlExec(kp, ns, pod, cn, pw, mysqlCreateDatabaseSql(dbName));
 }
 
 async function mysqlDropDatabase(
