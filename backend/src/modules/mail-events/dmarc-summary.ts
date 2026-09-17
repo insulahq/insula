@@ -184,7 +184,14 @@ export interface DmarcSourceSummary {
 export async function dmarcSourcesForDomain(
   db: Database,
   policyDomain: string,
-  opts: { windowDays?: number; limit?: number; now?: Date } = {},
+  /**
+   * `tenantId` scopes the rows to one tenant. Required for anything a TENANT
+   * can call: `policyDomain` arrives from the query string, so without it a
+   * tenant could name another tenant's domain and read their sources. This
+   * scope IS the isolation — a foreign domain yields an empty list — so every
+   * tenant-reachable caller must pass it.
+   */
+  opts: { windowDays?: number; limit?: number; now?: Date; tenantId?: string } = {},
 ): Promise<DmarcSourceSummary[]> {
   const windowDays = opts.windowDays ?? DMARC_WINDOW_DAYS;
   const now = opts.now ?? new Date();
@@ -207,6 +214,7 @@ export async function dmarcSourcesForDomain(
     .where(and(
       eq(emailDmarcSources.policyDomain, policyDomain.toLowerCase()),
       gte(emailDmarcSources.receivedAt, since),
+      ...(opts.tenantId ? [eq(emailDmarcSources.tenantId, opts.tenantId)] : []),
     ))
     .groupBy(emailDmarcSources.sourceIp, emailDmarcSources.policyDomain)
     .orderBy(desc(failExpr))

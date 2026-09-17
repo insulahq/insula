@@ -251,3 +251,46 @@ describe('converging an existing second intake mailbox into an alias', () => {
     expect(r.dmarcAddresses).toEqual([`${DMARC_LOCAL_PART}@example.test`]);
   });
 });
+
+describe('the 30-day reap', () => {
+  const ONE3 = [{ tenantId: 't1', emailDomainId: 'ed1', domainName: 'example.test' }];
+
+  it('empties a mailbox that is DUE by age even though it is empty', async () => {
+    // The size trigger fires at 40 MB and in practice never does:
+    // report-analysis intercepts before storage, so these mailboxes measure
+    // 0 MB. Operator decision 2026-09-16 — empty them every 30 days anyway,
+    // so a DSN Stalwart chose not to consume cannot sit forever.
+    const due = new Date(Date.now() - 31 * 86_400_000);
+    const db3 = makeDb({
+      domains: ONE3,
+      full: [{ id: 'mb-old', tenantId: 't1', fullAddress: 'postmaster@example.test', usedMb: 0, lastReapedAt: due }],
+    });
+    await ensureReportIntake(db3, logger);
+    expect(deleteMailbox).toHaveBeenCalledWith(db3, 't1', 'mb-old');
+  });
+
+  it('recreates it on the platform path, which stamps it and stops a reap loop', async () => {
+    // THE loop guard. Without a fresh `last_reaped_at` the recreate leaves it
+    // NULL, the next tick sees it as due, and the reconciler
+    // delete-and-recreates every five minutes forever — the same runaway shape
+    // as the notification storm, on mailboxes instead of email. The stamp is
+    // applied by createMailbox when platformManaged is set, so that flag
+    // reaching it is the property to hold.
+    const due = new Date(Date.now() - 31 * 86_400_000);
+    const db3 = makeDb({
+      domains: ONE3,
+      full: [{ id: 'mb-old', tenantId: 't1', fullAddress: 'postmaster@example.test', usedMb: 0, lastReapedAt: due }],
+    });
+    await ensureReportIntake(db3, logger);
+    expect(createMailbox).toHaveBeenCalled();
+    for (const call of createMailbox.mock.calls) {
+      expect(call[4]).toEqual({ platformManaged: true });
+    }
+  });
+
+  it('does nothing when the scan finds none due — the steady state', async () => {
+    const db3 = makeDb({ domains: ONE3, full: [] });
+    await ensureReportIntake(db3, logger);
+    expect(deleteMailbox).not.toHaveBeenCalled();
+  });
+});

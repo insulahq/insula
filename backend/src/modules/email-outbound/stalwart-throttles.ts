@@ -93,7 +93,14 @@ function domainMatch(domain: string): StalwartExpression {
   // Boolean expressions go in `else` (the match chain is empty and
   // falls through). The chain is a List<T> on the wire: an OBJECT
   // with integer-string keys — `[]` is rejected (live-E2E 2026-06-12).
-  return { match: {}, else: `sender_domain = '${domain}'` };
+  //
+  // `postmaster@` is exempt here too. This match backs the BLOCK quota for a
+  // suspended tenant, and postmaster@ is the PLATFORM's address on their
+  // domain — it carries DSNs and, once configured, outbound DMARC reports.
+  // Blocking it would mean one tenant's suspension silently stopping platform
+  // report traffic. A tenant cannot send as postmaster@ anyway: its primary
+  // credential is generate-and-forget (ADR-049) and nobody holds it.
+  return { match: {}, else: `sender_domain = '${domain}' && sender != 'postmaster@${domain}'` };
 }
 
 /**
@@ -121,7 +128,24 @@ function domainMatch(domain: string): StalwartExpression {
  * being rate-limited logged `delivery.completed` in 0ms.
  */
 function outboundDomainMatch(domain: string): StalwartExpression {
-  return { match: {}, else: `sender_domain = '${domain}' && queue_name != 'local'` };
+  // `postmaster@` is exempt, by operator decision 2026-09-16.
+  //
+  // It is a PLATFORM address that happens to live on a tenant's domain: it
+  // receives DSNs and reports, and once a DMARC report sender is configured it
+  // also SENDS outbound aggregate reports. Throttle buckets are keyed by
+  // sender DOMAIN, so without this clause the platform's own report traffic
+  // would be charged to that tenant's hourly/daily plan allowance — the exact
+  // shape of the 2026-09-16 storm, where platform mail consumed a customer's
+  // quota and then alarmed about it.
+  //
+  // `sender` is the variable Stalwart exposes here. Probed live on DEV
+  // 2026-09-16: `sender` is ACCEPTED; `sender_address` and `from` are both
+  // rejected at parse time ("Error parsing 'else' expression"), which would
+  // make the whole throttle write fail rather than degrade.
+  return {
+    match: {},
+    else: `sender_domain = '${domain}' && queue_name != 'local' && sender != 'postmaster@${domain}'`,
+  };
 }
 
 /**

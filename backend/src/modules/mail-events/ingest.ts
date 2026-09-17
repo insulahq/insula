@@ -68,6 +68,23 @@ export interface IngestSummary {
   readonly ignored: number;
 }
 
+/**
+ * Local parts the PLATFORM owns, on whatever domain they sit.
+ *
+ * Kept in step with the report-intake reconciler: these are created by the
+ * platform, excluded from the tenant's mailbox quota, exempt from the Stalwart
+ * send throttle, and — here — excluded from the tenant's send counters.
+ */
+const PLATFORM_LOCAL_PARTS: ReadonlySet<string> = new Set(['postmaster', 'dmarc']);
+
+function localPartOf(data: Record<string, unknown> | undefined): string | null {
+  const from = data?.from;
+  if (typeof from !== 'string') return null;
+  const at = from.lastIndexOf('@');
+  if (at < 1) return null;
+  return from.slice(0, at).trim().toLowerCase();
+}
+
 function senderDomainOf(data: Record<string, unknown> | undefined): string | null {
   const from = data?.from;
   if (typeof from !== 'string') return null;
@@ -149,6 +166,16 @@ export function aggregateEvents(
     }
 
     if (type === 'queue.authenticated-message-queued') {
+      // A platform address that happens to live on a tenant's domain must not
+      // consume that tenant's allowance. `postmaster@` receives DSNs and, once
+      // a DMARC report sender is configured, SENDS outbound aggregate reports.
+      // Counting those would charge a customer for the platform's own traffic
+      // and then alarm them about it — the 2026-09-16 storm in miniature. The
+      // Stalwart throttle exempts the same address, so the two stay in step.
+      if (PLATFORM_LOCAL_PARTS.has(localPartOf(ev.data) ?? '')) {
+        counted += 1;
+        continue;
+      }
       delta.sentCount += 1;
       // Only actual sends are attributed to a mailbox. A rate-limit or quota
       // rejection is the platform's verdict, not the account's traffic.

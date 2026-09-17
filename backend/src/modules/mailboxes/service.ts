@@ -450,6 +450,12 @@ export async function createMailbox(
       status: 'active',
       stalwartPrincipalId,
       platformManaged,
+      // A platform mailbox is empty the moment it is created, so it is not due
+      // for its 30-day reap. WITHOUT this the recreate half of a reap leaves
+      // `last_reaped_at` NULL, the next tick sees it as due again, and the
+      // reconciler delete-and-recreates it every five minutes forever — the
+      // same runaway shape as the 2026-09-16 notification storm.
+      ...(platformManaged ? { lastReapedAt: new Date() } : {}),
     });
   } catch (dbErr) {
     if (stalwartPrincipalId && accountId) {

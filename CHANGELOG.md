@@ -12,6 +12,52 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **Outbound DMARC reporting is now off until an operator picks an address that
+  can receive mail — and tenants can finally see their own DMARC results.**
+
+  Two halves of the same gap. On the sending side, Stalwart does not treat "no
+  sender configured" as "do not send": with `aggregateFromAddress` unset it
+  derives one from the server hostname, so a fresh install was already mailing
+  daily aggregate reports *from* a domain the platform does not necessarily
+  control and where no mailbox accepts replies — every DSN for those reports
+  bounced into nothing. Reporting is now **disabled by default, including on
+  bootstrap**, and is switched on by choosing a sender in
+  **Settings → Mail → Outbound DMARC Reporting**: a searchable dropdown of the
+  platform-maintained `postmaster@` address on every mail-enabled domain of
+  every active tenant (the SYSTEM tenant included), plus an explicit *Disable*
+  entry pinned above the search results. The address **is** the switch — a
+  separate enable flag is a second setting that can disagree with the first.
+  Only an address from that live list is accepted, server-side: a free-text
+  field would have moved the original defect behind a nicer widget. If the
+  chosen mailbox stops being eligible — its tenant is deleted, or the domain's
+  email is switched off — the next reconcile pass logs it, resets the stored
+  setting to disabled and disables reporting in Stalwart, rather than leaving a
+  configured-but-dead sender. Reports go out on a **daily** schedule.
+
+  On the receiving side, the platform has been ingesting per-tenant DMARC
+  aggregate reports for months and showing them to nobody but the operator —
+  the read model already accepted a tenant scope and nothing ever passed one.
+  So the domain owner, the only person who can fix an unaligned sender, could
+  not see that anything was wrong. The tenant panel's Email page gains an
+  **Authentication** tab: pass rate *with its denominator*, what the published
+  policy actually tells receivers to do (in words, not `p=quarantine`), and the
+  per-sender breakdown ordered worst-first. "No reports yet" is stated as
+  unknown, never drawn as 0% or 100%, and a failed request renders as a failure
+  — an error that renders as an empty table tells a domain owner "nobody is
+  sending as you", which is the one answer this screen must never invent.
+
+### Changed
+- **Platform `postmaster@` senders are exempt from tenant send limits, and their
+  inboxes are emptied every 30 days.** DMARC reports are outbound mail from a
+  tenant's domain, so without the exemption a busy domain's own reports would
+  consume the tenant's paid sending quota and then trip the saturation alerts
+  the operator spent last week making quiet. The reap loop previously only ran
+  on a full mailbox, so an intake address receiving a trickle of reports grew
+  without bound; it now also reaps anything untouched for 30 days. Existing
+  platform mailboxes are baselined at migration time so the first deploy after
+  this change does not reap all of them at once.
+
 ## [2026.9.21] - 2026-09-16
 
 ### Added

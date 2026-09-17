@@ -1802,6 +1802,11 @@ export const mailboxes = pgTable('mailboxes', {
   // both charged the tenant for capacity they never asked for and made the
   // reconciler collide with the cap on every 5-minute tick.
   platformManaged: boolean('platform_managed').notNull().default(false),
+  // Migration 0127 — when this platform intake mailbox was last emptied.
+  // Drives the 30-day age-based reap; the 40 MB size trigger is the safety
+  // net, and never fires in practice because report-analysis intercepts
+  // before storage.
+  lastReapedAt: timestamp('last_reaped_at', { withTimezone: true }),
   // Forwarding targets (Sieve `redirect` in Stalwart). NULL/[] = off.
   // `mailbox` type keeps a local copy (`redirect :copy`); `send_only`
   // forwards without storing. The platform DB is authoritative; the

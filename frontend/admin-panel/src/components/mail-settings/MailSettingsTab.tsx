@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { Save, Loader2, CheckCircle, Server, AlertTriangle, RotateCcw } from 'lucide-react';
 import { useWebmailSettings, useUpdateWebmailSettings } from '@/hooks/use-webmail-settings';
 import { usePlatformUrls, useUpdatePlatformUrls } from '@/hooks/use-platform-urls';
+import DmarcReportSenderSelect from './DmarcReportSenderSelect';
 
 const INPUT_CLASS =
   'w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 placeholder:text-gray-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
@@ -31,6 +32,10 @@ export default function MailSettingsTab() {
   const [mailServerHostname, setMailServerHostname] = useState('');
   const [stalwartAdminUrl, setStalwartAdminUrl] = useState('');
   const [enforcementMode, setEnforcementMode] = useState<'off' | 'notify'>('notify');
+  // `undefined` = the operator has not touched the control this session.
+  // Distinct from `null`, which IS a choice — "turn reporting off" — and must
+  // be savable. Collapsing the two would make disabling impossible.
+  const [dmarcSender, setDmarcSender] = useState<string | null | undefined>(undefined);
   const [saved, setSaved] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
@@ -38,6 +43,7 @@ export default function MailSettingsTab() {
     if (settings) {
       setMailServerHostname(settings.mailServerHostname ?? '');
       setEnforcementMode(settings.mailEnforcementMode ?? 'notify');
+      setDmarcSender(undefined);
     }
   }, [settings]);
 
@@ -54,6 +60,10 @@ export default function MailSettingsTab() {
     (stalwartUrl?.source === 'db' ? stalwartUrl.value : '') !== stalwartAdminUrl;
   const enforcementChanged =
     enforcementMode !== (settings?.mailEnforcementMode ?? 'notify');
+  const dmarcSenderChanged =
+    dmarcSender !== undefined && dmarcSender !== (settings?.dmarcReportSender ?? null);
+  const effectiveDmarcSender =
+    dmarcSender !== undefined ? dmarcSender : (settings?.dmarcReportSender ?? null);
 
   const handleSave = async (e: FormEvent) => {
     e.preventDefault();
@@ -77,6 +87,11 @@ export default function MailSettingsTab() {
     if (enforcementChanged) {
       tasks.push(
         updateWebmail.mutateAsync({ mailEnforcementMode: enforcementMode }),
+      );
+    }
+    if (dmarcSenderChanged) {
+      tasks.push(
+        updateWebmail.mutateAsync({ dmarcReportSender: dmarcSender ?? null }),
       );
     }
     if (stalwartUrlChanged) {
@@ -186,6 +201,30 @@ export default function MailSettingsTab() {
             </label>
           ))}
         </div>
+      </fieldset>
+
+      <fieldset
+        className="rounded-lg border border-gray-200 dark:border-gray-700 p-4 space-y-3"
+        data-testid="dmarc-reporting-section"
+      >
+        <legend className="px-1 text-sm font-semibold text-gray-900 dark:text-gray-100">
+          Outbound DMARC Reporting
+        </legend>
+        <p className="text-xs text-gray-500 dark:text-gray-400">
+          Sends daily DMARC aggregate reports to the domains whose mail this
+          server receives — the other half of the reports shown under
+          Monitoring → Mail. Reports need a return address that actually
+          accepts mail, so pick a <code className="font-mono">postmaster@</code>{' '}
+          on a domain this platform hosts. Off by default: the platform does
+          not necessarily control its own apex domain, and reporting from an
+          address nobody can reply to just generates bounces at the receiver.
+        </p>
+        <DmarcReportSenderSelect
+          options={settings?.dmarcReportSenderOptions ?? []}
+          value={effectiveDmarcSender}
+          onChange={setDmarcSender}
+          disabled={saving}
+        />
       </fieldset>
 
       <div>
