@@ -13,6 +13,16 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Fixed
+- **Starting a second mailbox migration no longer greets you with an error from
+  the first one.** Opening the migration form while another migration was
+  already running showed *"Cannot read properties of null (reading 'reset')"*,
+  even though every migration was in fact created and running normally. The
+  message belonged to the previous, successful submit: the form was tidied up
+  in the same step that reports failures, so a success was filed as an error,
+  and because that message is printed inside the form — which had just closed —
+  it stayed hidden until the form was opened for the next job. Nothing was ever
+  wrong with the migrations themselves. Fixed in both the tenant panel and the
+  admin panel, and opening the form now always starts from a clean slate.
 - **A mailbox migration told you it had finished without saying which mailbox.**
   The notification read *"IMAPSync migration: job (unnamed)"* — the name of an
   internal tool nobody outside the platform has heard of, and then nothing at
