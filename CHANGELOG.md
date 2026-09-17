@@ -12,9 +12,200 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+
+- **Scheduled tasks are read on a real clock, and you can choose which one.**
+  Schedules were evaluated in UTC with no way to say otherwise, so a tenant in
+  CEST asking for `0 3 * * *` got 05:00 local in summer and 04:00 in winter — a
+  nightly task that moved with the season and never ran when it said. A task now
+  follows the **platform timezone** by default and can pin its own from a
+  searchable list; the tenant panel shows which zone the default is, so "3 a.m."
+  is never ambiguous. Existing tasks are untouched: no zone means the platform's,
+  and a platform still set to UTC behaves exactly as before. Daylight saving is
+  handled deliberately rather than by accident — a task inside the hour the
+  clocks skip each spring is **passed over for that day** instead of running an
+  hour early, and one inside the hour repeated each autumn runs at the first
+  occurrence (and may run at the second, because those are two real moments and
+  dropping one would silently lose a run).
+
+- **The currency picker offers every ISO 4217 code, searchable.** It was a
+  15-entry dropdown with an inert "Custom" row, so a platform billing in MXN,
+  KES or PLN could see its own code listed as *Custom* and had no way to select
+  it — the API had accepted any 3-letter code all along. The list is the union
+  of what `Intl` offers and the active ISO 4217 codes, and searches by name as
+  well as code, so `rand` finds ZAR. Neither source is complete alone: `Intl`
+  gave 159 codes in Chromium and 162 in Node on the same day and omitted **VED**
+  in both, while ISO cannot know about a code added after a release ships — and
+  since the picker has no free-text entry, a code missing from it is one the
+  operator cannot choose at all. The familiar handful stays pinned at the top.
+
+- **Outbound DMARC reporting is now off until an operator picks an address that
+  can receive mail — and tenants can finally see their own DMARC results.**
+
+  Two halves of the same gap. On the sending side, Stalwart does not treat "no
+  sender configured" as "do not send": with `aggregateFromAddress` unset it
+  derives one from the server hostname, so a fresh install was already mailing
+  daily aggregate reports *from* a domain the platform does not necessarily
+  control and where no mailbox accepts replies — every DSN for those reports
+  bounced into nothing. Reporting is now **disabled by default, including on
+  bootstrap**, and is switched on by choosing a sender in
+  **Settings → Mail → Outbound DMARC Reporting**: a searchable dropdown of the
+  platform-maintained `postmaster@` address on every mail-enabled domain of
+  every active tenant (the SYSTEM tenant included), plus an explicit *Disable*
+  entry pinned above the search results. The address **is** the switch — a
+  separate enable flag is a second setting that can disagree with the first.
+  Only an address from that live list is accepted, server-side: a free-text
+  field would have moved the original defect behind a nicer widget. If the
+  chosen mailbox stops being eligible — its tenant is deleted, or the domain's
+  email is switched off — the next reconcile pass logs it, resets the stored
+  setting to disabled and disables reporting in Stalwart, rather than leaving a
+  configured-but-dead sender. Reports go out on a **daily** schedule.
+
+  Failure (forensic, `ruf=`) reports follow the same gate and stay **off in
+  both directions** — they are the same subsystem with the same broken default
+  sender, and a failure report forwards the headers of somebody's individual
+  message to whoever asked for it, which "send DMARC reports" does not imply.
+
+  On the receiving side, the platform has been ingesting per-tenant DMARC
+  aggregate reports for months and showing them to nobody but the operator —
+  the read model already accepted a tenant scope and nothing ever passed one.
+  So the domain owner, the only person who can fix an unaligned sender, could
+  not see that anything was wrong. The tenant panel's Email page gains an
+  **Authentication** tab: pass rate *with its denominator*, what the published
+  policy actually tells receivers to do (in words, not `p=quarantine`), and the
+  per-sender breakdown ordered worst-first. "No reports yet" is stated as
+  unknown, never drawn as 0% or 100%, and a failed request renders as a failure
+  — an error that renders as an empty table tells a domain owner "nobody is
+  sending as you", which is the one answer this screen must never invent.
+
+- **A per-task timeout for scheduled tasks.** One ceiling could not fit both
+  kinds of job: the executor waited 30 seconds for a webcron ping and 300 for a
+  command in a deployment, and neither is right for everyone. A Moodle site's
+  `admin/cli/cron.php` takes about three minutes on its own and longer when it
+  runs a course backup or rebuilds its search index — against a fixed 300s the
+  run was abandoned mid-flight and recorded as a failure while the process
+  carried on inside the pod. Tasks now take an optional **Timeout (seconds)**
+  (5 s to 1 h); leaving it blank keeps the previous per-type default, so every
+  existing task behaves exactly as before. The panel shows the value next to
+  the schedule, and the manual says plainly that the timeout is how long the
+  platform *waits* — a deployment command may keep running in the container
+  after it.
+
+
+- **`postmaster@` and `abuse@` now answer on every domain the platform owns.**
+  Both are mandatory under RFC 2142 and the platform answered neither on its own
+  identities. Re-probed on production with two controls on one SMTP connection:
+  `postmaster@` on a hosted domain returned `250`, a nonexistent address on the
+  same domain returned `550` (so the probe discriminates), and
+  `postmaster@mail.<apex>` returned `550 5.1.2 Mailbox does not exist` — the
+  domain in every EHLO and in the TLS certificate, which is the one a remote
+  postmaster or an abuse desk actually tries.
+
+  `abuse@` is now a default alias on every per-domain `postmaster@` intake,
+  alongside `dmarc@`; it is never created over an address something else already
+  answers, because a tenant may own a real abuse desk and shadowing it would be
+  worse than the 550. The mail hostname gets both names as forwarders to the
+  active admin roster rather than a mailbox — nothing to reap, and the mail
+  reaches a person. It refuses to create a forwarder with no recipients, which
+  would accept mail and silently drop it while telling the sender it was
+  delivered.
+
+- **Mail drift detection now covers mailbox aliases, in both directions** — an
+  alias the panel shows as working that Stalwart does not carry (so SMTP answers
+  550), and an address live on one of our mailboxes that no platform row claims.
+  Until now drift covered mailboxes and domains only, which is also why an empty
+  drift list was never evidence that aliases were healthy.
+
+- **Tenant cron jobs can finally run a command inside a deployment — and the
+  scheduler now honours the schedule it was given.** The `deployment` job type
+  has been in the API contract, the database enum and the tenant panel since the
+  module was written, and it never executed: the scheduler polled
+  `type = 'webcron'` only, and "Run now" hit a branch that wrote
+  "not yet implemented" into the output while leaving the status at its initial
+  `success`. A tenant could create "Moodle cron, `* * * * *`", watch it report
+  green, and have no cron at all. Deployment jobs now resolve the deployment's
+  running pod (refusing to guess when a multi-component deployment offers
+  several — running a tenant's command in whichever pod the API listed first is
+  how "Moodle cron" ends up executing inside MariaDB), exec the command through
+  `/bin/sh -c`, and record the real exit code, which the panel now shows. This
+  is what makes a traditional PHP application with a CLI cron — Moodle,
+  Nextcloud, Laravel — hostable on a plain runtime deployment.
+
+### Changed
+
+- **Platform `postmaster@` senders are exempt from tenant send limits, and their
+  inboxes are emptied every 30 days.** DMARC reports are outbound mail from a
+  tenant's domain, so without the exemption a busy domain's own reports would
+  consume the tenant's paid sending quota and then trip the saturation alerts
+  the operator spent last week making quiet. The reap loop previously only ran
+  on a full mailbox, so an intake address receiving a trickle of reports grew
+  without bound; it now also reaps anything untouched for 30 days. Existing
+  platform mailboxes are baselined at migration time so the first deploy after
+  this change does not reap all of them at once.
+
+### Fixed
+
+- **Drift items the database rejected were silently discarding the rest of the
+  scan.** `mail_drift_items.kind` carried a CHECK constraint listing four kinds
+  while the detector emitted five: `orphan-list` had been emitted since
+  2026-08-25 and never once stored. The inserts run in a loop with no per-row
+  guard, so the first rejected row aborted the whole persistence step — later
+  items were never written, and the sweep that marks vanished items resolved
+  never ran, leaving a drift list an operator could not clear. The constraint is
+  widened, each row is now guarded individually, and a row the database refuses
+  is reported instead of lost.
+
+- **A new domain's first route could 404 until somebody edited it.** Two
+  ingress reconciles can overlap — a domain create, a route create, a
+  certificate becoming ready and a settings change all trigger one, and nothing
+  serialises them. The older pass then reached the Middleware garbage collector
+  holding a keep-set from before the newer route existed and deleted the
+  Middleware the newer pass had just applied. Traefik drops the **entire
+  router** for a dangling middleware reference, so the tenant's brand-new
+  hostname answered a bare 404 with the IngressRoute, the Service, the pod and
+  the certificate all present and healthy — until any later edit reconciled it
+  again. Reproduced on DEV on two of three freshly created routes; the third
+  raced the other way and worked, which is what kept this hidden. The collector
+  now re-reads the database at the moment it decides what to delete, so a route
+  created while a reconcile was running is protected; a setting that was turned
+  off is still swept.
+
+- **A database created for a tenant could not be used by Moodle — and by
+  anything else that checks its own charset the same way.** `CREATE DATABASE`
+  was issued bare, so the schema inherited the server default; on MariaDB 11.4
+  and later that is `utf8mb4_uca1400_ai_ci`, and
+  `SHOW COLLATION WHERE Collation='utf8mb4_uca1400_ai_ci' AND Charset='utf8mb4'`
+  returns nothing. That query is exactly how Moodle verifies a database is
+  Unicode, so its installer aborted with "unicode must be installed and
+  enabled" on a database the platform had just created and handed over. New
+  MySQL/MariaDB databases are now created `CHARACTER SET utf8mb4 COLLATE
+  utf8mb4_unicode_ci` — the collation those applications are written against,
+  present in every server version the catalog offers, and the one a tenant
+  migrating from cPanel or Plesk is carrying in their dump anyway. Existing
+  databases are untouched; an `ALTER DATABASE … COLLATE utf8mb4_unicode_ci`
+  fixes one in place.
+
+- **Every cron schedule that was not `*/N` in the minute field ran every
+  minute.** `getNextRunTime` parsed only a `*/N` minute and fell through to
+  "one minute after the last run" for everything else, so `0 3 * * *` — a
+  nightly job — fired 1440 times a day, and `*/15` drifted from the last run
+  instead of landing on the quarter hour. Schedules are now evaluated against
+  all five fields (ranges, lists, steps, and the POSIX rule that a restricted
+  day-of-month and day-of-week are OR-ed), in UTC, and an unparseable
+  expression leaves the job dormant rather than making it due on every poll.
+
+- **No cron job had ever fired on schedule without a manual run first.** The
+  scheduler claimed jobs with `last_run_status != 'running'`, and a job that has
+  never run carries NULL there — in SQL `NULL != 'running'` is NULL, not true,
+  so the claim matched no row and the job was skipped forever. Pressing "Run
+  now" once was what set the column and, by accident, unblocked the schedule.
+  The claim now takes NULL explicitly, and also releases a claim left behind by
+  an API pod that died mid-run, which used to wedge a job permanently.
+
 ## [2026.9.21] - 2026-09-16
 
 ### Added
+
 - **A master notification switch in Admin → Notifications.** One button that stops
   every notification on every channel, and resumes them. It exists because on
   2026-09-16 the only way to stop a storm was an operator running

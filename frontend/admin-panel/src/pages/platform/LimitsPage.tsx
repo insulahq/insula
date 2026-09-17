@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
 import { Loader2, Save, CheckCircle, AlertCircle } from 'lucide-react';
 import { useSystemSettings, useUpdateSystemSettings } from '@/hooks/use-system-settings';
-import { COMMON_CURRENCIES, formatCurrency } from '@/lib/format-currency';
+import { formatCurrency } from '@/lib/format-currency';
+import CurrencySelect from '@/components/CurrencySelect';
 import TimezoneSelect from '@/components/TimezoneSelect';
 import { MIN_TRASH_RETENTION_DAYS, MAX_TRASH_RETENTION_DAYS, DEFAULT_TRASH_RETENTION_DAYS } from '@insula/api-contracts';
 
@@ -158,27 +159,10 @@ export default function LimitsPage() {
             <p className="text-xs text-gray-400 mt-1">Default timezone for new tenants. Tenants can override in their settings.</p>
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1" htmlFor="currency-select">
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
               Currency
             </label>
-            <select
-              id="currency-select"
-              value={COMMON_CURRENCIES.some((c) => c.code === currency) ? currency : '__custom__'}
-              onChange={(e) => {
-                if (e.target.value !== '__custom__') setCurrency(e.target.value);
-              }}
-              className={INPUT_CLASS}
-              data-testid="currency-select"
-            >
-              {COMMON_CURRENCIES.map((c) => (
-                <option key={c.code} value={c.code}>
-                  {c.label}
-                </option>
-              ))}
-              {!COMMON_CURRENCIES.some((c) => c.code === currency) && (
-                <option value="__custom__">{currency} — Custom</option>
-              )}
-            </select>
+            <CurrencySelect value={currency} onChange={setCurrency} />
             <p className="text-xs text-gray-400 mt-1">
               ISO 4217 code used for every monetary amount shown in both panels. Example: {formatCurrency(1234.5, currency)} per month.
             </p>

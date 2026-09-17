@@ -162,4 +162,67 @@ export async function mailUsageRoutes(app: FastifyInstance): Promise<void> {
     const { tenantId } = request.params as { tenantId: string };
     return success(await getTenantMailUsage(app.db, tenantId));
   });
+
+  // ── DMARC results, for the domain owner ──────────────────────────────────
+  //
+  // The platform has ingested per-tenant DMARC aggregate reports for months
+  // and showed them to NOBODY but the operator: the only endpoints were
+  // /admin/mail/dmarc and /admin/mail/dmarc/sources. `dmarcDomainSummaries`
+  // has accepted a `tenantId` all along and nothing ever passed one. So a
+  // domain owner could not see who was sending as their domain, or whether
+  // their own mail was passing — which is the entire point of DMARC for them.
+  app.get('/tenants/:tenantId/mail/dmarc', {
+    onRequest: [
+      authenticate,
+      requireRole('super_admin', 'admin', 'support', 'tenant_admin', 'tenant_user'),
+      requireTenantAccess(),
+    ],
+  }, async (request) => {
+    const { tenantId } = request.params as { tenantId: string };
+    const q = dmarcOverviewQuerySchema.safeParse(request.query ?? {});
+    const windowDays = q.success ? (q.data.windowDays ?? DMARC_WINDOW_DAYS) : DMARC_WINDOW_DAYS;
+    const domains = await dmarcDomainSummaries(app.db, { windowDays, tenantId });
+    const overview: DmarcOverview = {
+      windowDays,
+      domains,
+      intakeLocalPart: DMARC_LOCAL_PART,
+    };
+    return success(overview);
+  });
+
+  app.get('/tenants/:tenantId/mail/dmarc/sources', {
+    onRequest: [
+      authenticate,
+      requireRole('super_admin', 'admin', 'support', 'tenant_admin', 'tenant_user'),
+      requireTenantAccess(),
+    ],
+  }, async (request) => {
+    const { tenantId } = request.params as { tenantId: string };
+    const parsed = dmarcSourcesQuerySchema.safeParse(request.query ?? {});
+    if (!parsed.success) {
+      const first = parsed.error.issues[0];
+      throw new ApiError(
+        'INVALID_FIELD_VALUE',
+        `Validation error: ${first.message} (${first.path.join('.')})`,
+        400,
+        { field: first.path.join('.') },
+      );
+    }
+    // `domain` comes from the query string, so it is NOT trusted. Isolation
+    // comes from scoping the ROWS to this tenant: naming another tenant's
+    // domain returns an empty list, never their data. There is deliberately no
+    // separate ownership lookup — it would turn that empty result into a
+    // clearer 404, but it is not what makes this safe, and a comment claiming
+    // two locks where the code has one is how a reviewer stops looking.
+    const sources = await dmarcSourcesForDomain(app.db, parsed.data.domain, {
+      windowDays: parsed.data.windowDays,
+      limit: parsed.data.limit,
+      tenantId,
+    });
+    return success({
+      domain: parsed.data.domain,
+      windowDays: parsed.data.windowDays ?? DMARC_WINDOW_DAYS,
+      sources,
+    });
+  });
 }

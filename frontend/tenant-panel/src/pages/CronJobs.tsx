@@ -6,6 +6,8 @@ import { useCanManage } from '@/hooks/use-can-manage';
 import ReadOnlyNotice from '@/components/ReadOnlyNotice';
 import { useCronJobs, useCreateCronJob, useUpdateCronJob, useRunCronJob, useDeleteCronJob } from '@/hooks/use-cron-jobs';
 import { useDeployments } from '@/hooks/use-deployments';
+import { useSystemInfo } from '@/hooks/use-system-info';
+import TimezoneSelect from '@/components/TimezoneSelect';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
 
@@ -51,6 +53,10 @@ interface CronFormState {
   readonly httpMethod: 'GET' | 'POST' | 'PUT';
   readonly command: string;
   readonly deploymentId: string;
+  /** Blank keeps the per-type default (30s webcron, 300s deployment). */
+  readonly timeoutSeconds: string;
+  /** Blank follows the platform timezone. */
+  readonly timezone: string;
 }
 
 const INITIAL_FORM: CronFormState = {
@@ -61,6 +67,8 @@ const INITIAL_FORM: CronFormState = {
   httpMethod: 'GET',
   command: '',
   deploymentId: '',
+  timeoutSeconds: '',
+  timezone: '',
 };
 
 export default function CronJobs() {
@@ -72,6 +80,9 @@ export default function CronJobs() {
   const runJob = useRunCronJob(tenantId ?? undefined);
   const deleteJob = useDeleteCronJob(tenantId ?? undefined);
   const { data: deploymentsResponse } = useDeployments(tenantId ?? undefined);
+  // The zone a task with none of its own is read on — shown so "03:00" is never ambiguous.
+  const { data: systemInfo } = useSystemInfo();
+  const platformTimezone = systemInfo?.timezone;
 
   const deployments = (deploymentsResponse?.data ?? []).filter((d) => d.status === 'running');
 
@@ -97,6 +108,12 @@ export default function CronJobs() {
         ...(form.type === 'webcron'
           ? { url: form.url.trim(), http_method: form.httpMethod }
           : { command: form.command.trim(), deployment_id: form.deploymentId }),
+        // Blank means "use the default for this type" — send nothing, rather
+        // than a 0 the contract would reject.
+        ...(form.timeoutSeconds.trim() ? { timeout_seconds: Number(form.timeoutSeconds) } : {}),
+        // Blank means "follow the platform timezone" — send nothing rather
+        // than pinning today's platform value onto the job for ever.
+        ...(form.timezone.trim() ? { timezone: form.timezone.trim() } : {}),
         enabled: true,
       });
       setForm(INITIAL_FORM);
@@ -230,6 +247,44 @@ export default function CronJobs() {
               <label htmlFor="cj-schedule" className="block text-xs font-medium text-gray-700 dark:text-gray-300">Schedule (cron) *</label>
               <input id="cj-schedule" type="text" className={INPUT_CLASS + ' mt-1'} placeholder="*/15 * * * *" value={form.schedule} onChange={(e) => setForm({ ...form, schedule: e.target.value })} required data-testid="cron-schedule-input" />
             </div>
+            <div>
+              <label htmlFor="cj-timeout" className="block text-xs font-medium text-gray-700 dark:text-gray-300">
+                Timeout (seconds)
+              </label>
+              <input
+                id="cj-timeout"
+                type="number"
+                min={5}
+                max={3600}
+                className={INPUT_CLASS + ' mt-1'}
+                placeholder={form.type === 'webcron' ? '30 (default)' : '300 (default)'}
+                value={form.timeoutSeconds}
+                onChange={(e) => setForm({ ...form, timeoutSeconds: e.target.value })}
+                data-testid="cron-timeout-input"
+              />
+              <p className="mt-1 text-[11px] text-gray-500 dark:text-gray-400">
+                How long one run may take before it is given up on. Raise it for
+                jobs like a Moodle or Nextcloud cron that legitimately run for
+                minutes.
+              </p>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">
+                Timezone
+              </label>
+              <div className="mt-1">
+                <TimezoneSelect
+                  value={form.timezone}
+                  onChange={(tz) => setForm({ ...form, timezone: tz })}
+                  placeholder={platformTimezone ? `Platform default (${platformTimezone})` : 'Platform default'}
+                />
+              </div>
+              <p className="mt-1 text-[11px] text-gray-500 dark:text-gray-400">
+                The clock the schedule is read on. Leave it as the platform
+                default unless this task belongs to a different region.
+                {form.timezone ? '' : ' Changing the platform timezone moves this task with it.'}
+              </p>
+            </div>
             <div className="flex items-end">
               <button type="submit" disabled={createJob.isPending} className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50" data-testid="submit-cron-job">
                 {createJob.isPending && <Loader2 size={14} className="animate-spin" />}
@@ -290,7 +345,17 @@ export default function CronJobs() {
                     <td className="px-6 py-4">
                       <TypeBadge type={job.type} />
                     </td>
-                    <td className="px-6 py-4 font-mono text-gray-600 dark:text-gray-400">{job.schedule}</td>
+                    <td className="px-6 py-4 font-mono text-gray-600 dark:text-gray-400">
+                      {job.schedule}
+                      {job.timeoutSeconds != null && (
+                        <span className="ml-2 font-sans text-xs text-gray-400 dark:text-gray-500">
+                          timeout {job.timeoutSeconds}s
+                        </span>
+                      )}
+                      <span className="ml-2 font-sans text-xs text-gray-400 dark:text-gray-500">
+                        {job.timezone ?? platformTimezone ?? 'UTC'}
+                      </span>
+                    </td>
                     <td className="hidden px-6 py-4 text-gray-600 dark:text-gray-400 md:table-cell max-w-xs truncate">
                       <code className="text-xs">{formatTarget(job)}</code>
                     </td>
@@ -306,8 +371,10 @@ export default function CronJobs() {
                               {formatDuration(job.lastRunDurationMs) && (
                                 <span>{formatDuration(job.lastRunDurationMs)}</span>
                               )}
-                              {job.type === 'webcron' && job.lastRunResponseCode != null && (
-                                <span className="font-mono">{job.lastRunResponseCode}</span>
+                              {job.lastRunResponseCode != null && (
+                                <span className="font-mono">
+                                  {job.type === 'webcron' ? job.lastRunResponseCode : `exit ${job.lastRunResponseCode}`}
+                                </span>
                               )}
                             </div>
                           </>

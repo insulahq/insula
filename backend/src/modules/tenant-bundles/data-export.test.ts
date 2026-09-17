@@ -215,8 +215,14 @@ describe('streamEncryptedExport + decryptImportTarball', () => {
     for await (const c of stream as AsyncIterable<Buffer>) chunks.push(Buffer.from(c));
     const blob = Buffer.concat(chunks);
 
+    // Either refusal is correct, and which one you get is chance. AES-256-CBC
+    // decryption with the wrong key produces garbage whose final byte is a
+    // VALID pad length about 1 time in 256 — the unpad check then passes and
+    // the failure surfaces one layer later, as a corrupt tarball. Pinning only
+    // the first message made this test fail ~0.4% of runs; CI hit it on
+    // 2026-09-16. What matters is that the import is refused.
     await expect(decryptImportTarball({ cipherBlob: blob, passphrase: 'wrong-passphrase-67890' }))
-      .rejects.toThrow(/import-decrypt failed/);
+      .rejects.toThrow(/import-(decrypt|extract) failed/);
   });
 
   it('rejects a tarball that is not a Salted__ envelope', async () => {

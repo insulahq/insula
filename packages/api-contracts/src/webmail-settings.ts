@@ -70,6 +70,22 @@ export const updateWebmailSettingsSchema = z.object({
   webmailShowContacts: z.boolean().optional(),
   webmailShowCalendar: z.boolean().optional(),
   webmailShowFiles: z.boolean().optional(),
+  /**
+   * Outbound DMARC aggregate reporting: the `postmaster@` address reports are
+   * sent FROM, or `null` to stop sending them.
+   *
+   * There is no separate enable flag — the address IS the switch. Two settings
+   * could disagree with each other, and Stalwart's own default is the reason
+   * this exists: an unset sender does NOT mean off, it means "derive one from
+   * the server hostname", which on this platform is a domain nobody owns and
+   * no mailbox accepts, so every DSN for a report bounces.
+   *
+   * Only an eligible address is accepted (a platform-maintained postmaster@ on
+   * an email-enabled domain of an active tenant) — validated server-side
+   * against the live list, because a free-text field would just move the
+   * original bug behind a text box.
+   */
+  dmarcReportSender: z.string().email().max(320).nullable().optional(),
 });
 
 export type UpdateWebmailSettingsInput = z.infer<typeof updateWebmailSettingsSchema>;
@@ -92,6 +108,22 @@ export type UpdateWebmailSettingsInput = z.infer<typeof updateWebmailSettingsSch
 export type UpdateWebmailSettingsRequest = z.input<typeof updateWebmailSettingsSchema>;
 
 
+/**
+ * One selectable DMARC report sender.
+ *
+ * Carries the readable labels alongside the address because the dropdown must
+ * be searchable by tenant and domain, not only by the local part — every
+ * option's local part is the same word.
+ */
+export const dmarcReportSenderOptionSchema = z.object({
+  address: z.string(),
+  domainName: z.string(),
+  tenantName: z.string(),
+  isSystemTenant: z.boolean(),
+});
+
+export type DmarcReportSenderOption = z.infer<typeof dmarcReportSenderOptionSchema>;
+
 export const webmailSettingsResponseSchema = z.object({
   defaultWebmailUrl: z.string(),
   mailServerHostname: z.string().optional(),
@@ -103,6 +135,13 @@ export const webmailSettingsResponseSchema = z.object({
   webmailShowContacts: z.boolean(),
   webmailShowCalendar: z.boolean(),
   webmailShowFiles: z.boolean(),
+  /** The configured report sender, or null when reporting is off. */
+  dmarcReportSender: z.string().nullable(),
+  /**
+   * Every address the operator may choose right now. Sent with the settings so
+   * the panel cannot render a selection that is no longer selectable.
+   */
+  dmarcReportSenderOptions: z.array(dmarcReportSenderOptionSchema),
 });
 
 export type WebmailSettingsResponse = z.infer<typeof webmailSettingsResponseSchema>;

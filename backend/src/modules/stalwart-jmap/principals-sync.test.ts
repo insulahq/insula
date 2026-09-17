@@ -17,33 +17,45 @@ vi.mock('drizzle-orm', () => ({
   sql: vi.fn((_strings: TemplateStringsArray, ..._vals: unknown[]) => ({ _type: 'sql' })),
 }));
 
+// Each table carries a `__table` tag so the db fake can branch on WHICH table
+// was queried instead of on call order. The order-keyed version broke the
+// moment a query was added anywhere earlier in the pass — which is exactly
+// what happened when alias drift landed: every later index shifted by two and
+// ten unrelated tests failed.
 vi.mock('../../db/schema.js', () => ({
   mailboxes: {
+    __table: 'mailboxes',
     id: 'id', fullAddress: 'full_address', stalwartPrincipalId: 'stalwart_principal_id',
     tenantId: 'tenant_id',
   },
   emailDomains: {
+    __table: 'emailDomains',
     id: 'id', domainId: 'domain_id', stalwartDomainId: 'stalwart_domain_id',
     tenantId: 'tenant_id',
   },
-  domains: { id: 'id', domainName: 'domain_name' },
+  domains: { __table: 'domains', id: 'id', domainName: 'domain_name' },
+  mailboxAliases: {
+    __table: 'mailboxAliases',
+    id: 'id', fullAddress: 'full_address', enabled: 'enabled', mailboxId: 'mailbox_id',
+  },
   // 2026-05-27: drift-persistence + admin notification fan-out added to
   // the reconciler. Stub the new schema exports just enough for the
   // chained query builders to run; the mock DB (createMockDb) returns
   // empty arrays for the new query shapes, so no field is dereferenced.
   mailDriftItems: {
+    __table: 'mailDriftItems',
     id: 'id', kind: 'kind', expectedName: 'expected_name',
     expectedStalwartId: 'expected_stalwart_id', platformRowId: 'platform_row_id',
     firstDetectedAt: 'first_detected_at', lastSeenAt: 'last_seen_at',
     resolvedAt: 'resolved_at', resolvedVia: 'resolved_via', notes: 'notes',
   },
-  users: { id: 'id', roleName: 'role_name' },
+  users: { __table: 'users', id: 'id', roleName: 'role_name' },
   notifications: {
     id: 'id', userId: 'user_id', type: 'type', title: 'title',
     message: 'message', resourceType: 'resource_type',
   },
   // 2026-08-25: orphan-list detection reads email_aliases ownership.
-  emailAliases: { id: 'id', sourceAddress: 'source_address' },
+  emailAliases: { __table: 'emailAliases', id: 'id', sourceAddress: 'source_address' },
 }));
 
 // 2026-08-25: orphan-list check pulls listMailingLists; default = no lists.
@@ -130,6 +142,7 @@ const { createPrincipalsSyncScheduler } = await import('./principals-sync.js');
 function createMockDb(
   mailboxRows: Array<{ id: string; fullAddress: string; stalwartPrincipalId: string | null }> = [],
   emailDomainRows: Array<{ id: string; domainId: string; stalwartDomainId: string | null; domainName: string }> = [],
+  aliasRows: Array<{ id: string; fullAddress: string; enabled: number; mailboxId: string }> = [],
 ) {
   const updateWhere = vi.fn().mockResolvedValue(undefined);
   const updateSet = vi.fn().mockReturnValue({ where: updateWhere });
@@ -140,36 +153,27 @@ function createMockDb(
   const insertValues = vi.fn().mockResolvedValue(undefined);
   const insertFn = vi.fn().mockReturnValue({ values: insertValues });
 
-  let fromCallIndex = 0;
-
-  const fromFn = vi.fn().mockImplementation(() => {
-    const callIndex = fromCallIndex++;
-    if (callIndex === 0) {
-      // Call 0: db.select().from(mailboxes) — awaited directly
-      const p = Promise.resolve(mailboxRows) as unknown as Promise<typeof mailboxRows> & {
-        innerJoin: ReturnType<typeof vi.fn>;
-        where: ReturnType<typeof vi.fn>;
-      };
-      p.innerJoin = vi.fn();
-      p.where = vi.fn();
-      return p;
-    }
-    if (callIndex === 1) {
-      // Call 1: db.select().from(emailDomains).innerJoin(domains, ...)
-      return {
-        innerJoin: vi.fn().mockResolvedValue(emailDomainRows),
-      };
-    }
-    // Calls 2+: drift-persistence (active rows), admin-user fan-out, and
-    // the orphan-list ownership read (awaited directly, no .where()).
-    // Default to empty results so the sync pipeline completes cleanly.
-    // Tests that exercise drift state can override the mock.
-    const p = Promise.resolve([]) as unknown as Promise<unknown[]> & {
+  const fromFn = vi.fn().mockImplementation((table?: { __table?: string }) => {
+    const rows: readonly unknown[] =
+      table?.__table === 'mailboxes' ? mailboxRows
+        : table?.__table === 'emailDomains' ? emailDomainRows
+          : table?.__table === 'mailboxAliases' ? aliasRows
+            : [];
+    // Every shape the reconciler uses: awaited directly, `.where(...)`,
+    // `.where(...).limit(n)`, or `.innerJoin(...)`. Returning the SAME rows
+    // through each of them keeps the fake honest about what it was asked.
+    const p = Promise.resolve(rows) as unknown as Promise<readonly unknown[]> & {
       innerJoin: ReturnType<typeof vi.fn>;
       where: ReturnType<typeof vi.fn>;
     };
-    p.where = vi.fn().mockResolvedValue([]);
-    p.innerJoin = vi.fn().mockResolvedValue([]);
+    const whereResult = Promise.resolve(rows) as unknown as Promise<readonly unknown[]> & {
+      limit: ReturnType<typeof vi.fn>;
+    };
+    whereResult.limit = vi.fn().mockResolvedValue(rows);
+    p.where = vi.fn().mockReturnValue(whereResult);
+    p.innerJoin = vi.fn().mockResolvedValue(
+      table?.__table === 'emailDomains' ? emailDomainRows : rows,
+    );
     return p;
   });
 
@@ -292,6 +296,129 @@ describe('createPrincipalsSyncScheduler — runOnce', () => {
     expect(inserted[0].expectedName).toBe('ghost@example.com');
     expect(inserted[0].expectedStalwartId).toBe('ml-1');
     expect(inserted[0].platformRowId).toBe('orphan-list:ml-1');
+  });
+
+  // ── mailbox ALIAS drift, both directions (2026-09-17) ───────────────────
+  //
+  // Drift covered mailboxes and domains only, so an empty mail_drift_items
+  // was never evidence that aliases were healthy — it could not have said
+  // otherwise. Both directions matter for different reasons: one means an
+  // address the panel shows as working answers 550, the other means an
+  // address nobody declared is quietly delivering.
+  const inserts = (db: unknown, kind: string) =>
+    (db as { _insertValues: ReturnType<typeof vi.fn> })._insertValues.mock.calls
+      .map((c) => c[0] as Record<string, unknown>)
+      .filter((v) => v.kind === kind);
+
+  it('flags an enabled alias row Stalwart does not know as kind=alias', async () => {
+    mockGetJmapSession.mockResolvedValueOnce(makeSession());
+    // The mailbox itself IS in Stalwart; only the alias address is missing.
+    mockPrincipalGet.mockResolvedValueOnce(makePrincipalGetResponse([
+      { id: 'sp-1', type: 'individual', name: 'alice', emails: ['alice@example.com'] },
+    ]));
+
+    const db = createMockDb(
+      [{ id: 'mb-1', fullAddress: 'alice@example.com', stalwartPrincipalId: 'sp-1' }],
+      [],
+      [{ id: 'al-1', fullAddress: 'sales@example.com', enabled: 1, mailboxId: 'mb-1' }],
+    );
+    const result = await createPrincipalsSyncScheduler(db, { env: {} as NodeJS.ProcessEnv }).runOnce();
+
+    expect(result.errors).toHaveLength(0);
+    const flagged = inserts(db, 'alias');
+    expect(flagged).toHaveLength(1);
+    expect(flagged[0].expectedName).toBe('sales@example.com');
+    expect(flagged[0].platformRowId).toBe('al-1');
+    // No id to record — the address is ABSENT, which is the finding.
+    expect(flagged[0].expectedStalwartId).toBeNull();
+  });
+
+  it('does NOT flag an alias that Stalwart carries — the control', async () => {
+    mockGetJmapSession.mockResolvedValueOnce(makeSession());
+    mockPrincipalGet.mockResolvedValueOnce(makePrincipalGetResponse([
+      { id: 'sp-1', type: 'individual', name: 'alice', emails: ['alice@example.com', 'sales@example.com'] },
+    ]));
+
+    const db = createMockDb(
+      [{ id: 'mb-1', fullAddress: 'alice@example.com', stalwartPrincipalId: 'sp-1' }],
+      [],
+      [{ id: 'al-1', fullAddress: 'sales@example.com', enabled: 1, mailboxId: 'mb-1' }],
+    );
+    const result = await createPrincipalsSyncScheduler(db, { env: {} as NodeJS.ProcessEnv }).runOnce();
+
+    expect(inserts(db, 'alias')).toHaveLength(0);
+    expect(inserts(db, 'orphan-alias')).toHaveLength(0);
+    expect(result.errors).toHaveLength(0);
+  });
+
+  it('does not report an alias when the parent mailbox is the thing missing', async () => {
+    // One cause, one item. The mailbox is already reported as kind='mailbox';
+    // adding its aliases would multiply a single failure into N dismissals.
+    mockGetJmapSession.mockResolvedValueOnce(makeSession());
+    mockPrincipalGet.mockResolvedValueOnce(makePrincipalGetResponse([]));
+
+    const db = createMockDb(
+      [{ id: 'mb-1', fullAddress: 'alice@example.com', stalwartPrincipalId: 'sp-1' }],
+      [],
+      [{ id: 'al-1', fullAddress: 'sales@example.com', enabled: 1, mailboxId: 'mb-1' }],
+    );
+    await createPrincipalsSyncScheduler(db, { env: {} as NodeJS.ProcessEnv }).runOnce();
+
+    expect(inserts(db, 'mailbox')).toHaveLength(1);
+    expect(inserts(db, 'alias')).toHaveLength(0);
+  });
+
+  it('ignores a DISABLED alias row — it records intent, not a live address', async () => {
+    mockGetJmapSession.mockResolvedValueOnce(makeSession());
+    mockPrincipalGet.mockResolvedValueOnce(makePrincipalGetResponse([
+      { id: 'sp-1', type: 'individual', name: 'alice', emails: ['alice@example.com'] },
+    ]));
+
+    const db = createMockDb(
+      [{ id: 'mb-1', fullAddress: 'alice@example.com', stalwartPrincipalId: 'sp-1' }],
+      [],
+      [{ id: 'al-1', fullAddress: 'off@example.com', enabled: 0, mailboxId: 'mb-1' }],
+    );
+    await createPrincipalsSyncScheduler(db, { env: {} as NodeJS.ProcessEnv }).runOnce();
+
+    expect(inserts(db, 'alias')).toHaveLength(0);
+  });
+
+  it('flags an address live on OUR mailbox that no row claims as orphan-alias', async () => {
+    mockGetJmapSession.mockResolvedValueOnce(makeSession());
+    mockPrincipalGet.mockResolvedValueOnce(makePrincipalGetResponse([
+      { id: 'sp-1', type: 'individual', name: 'alice', emails: ['alice@example.com', 'sneaky@example.com'] },
+    ]));
+
+    const db = createMockDb(
+      [{ id: 'mb-1', fullAddress: 'alice@example.com', stalwartPrincipalId: 'sp-1' }],
+      [],
+      [],
+    );
+    const result = await createPrincipalsSyncScheduler(db, { env: {} as NodeJS.ProcessEnv }).runOnce();
+
+    expect(result.errors).toHaveLength(0);
+    const flagged = inserts(db, 'orphan-alias');
+    expect(flagged).toHaveLength(1);
+    expect(flagged[0].expectedName).toBe('sneaky@example.com');
+    expect(flagged[0].expectedStalwartId).toBe('sp-1');
+    expect(flagged[0].platformRowId).toBe('orphan-alias:sneaky@example.com');
+    // The mailbox's OWN address is claimed by its row and must not be flagged.
+    expect(flagged.some((f) => f.expectedName === 'alice@example.com')).toBe(false);
+  });
+
+  it('does not flag addresses on principals the platform does not own', async () => {
+    // An entirely out-of-band Stalwart account is a different problem; calling
+    // its primary address an orphan ALIAS would report it under the wrong name.
+    mockGetJmapSession.mockResolvedValueOnce(makeSession());
+    mockPrincipalGet.mockResolvedValueOnce(makePrincipalGetResponse([
+      { id: 'sp-unknown', type: 'individual', name: 'stranger', emails: ['stranger@example.com'] },
+    ]));
+
+    const db = createMockDb([], [], []);
+    await createPrincipalsSyncScheduler(db, { env: {} as NodeJS.ProcessEnv }).runOnce();
+
+    expect(inserts(db, 'orphan-alias')).toHaveLength(0);
   });
 
   it('does not flag the mail-hostname anchor or platform-known domains as orphans', async () => {

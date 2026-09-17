@@ -36,6 +36,8 @@ import {
   MULTIHOST_SESSION_VOLUME,
   sessionDirInitCommands,
   isSessionDirCommand,
+  siteDirInitCommands,
+  isSiteDirCommandFor,
 } from '../deployments/k8s-deployer.js';
 import { renderSites, isMultihostFlavour, type MultihostCapability, type MultihostFlavour, type RenderResult, type SiteRoute } from './renderer.js';
 import type { MultihostMounts } from '../deployments/k8s-deployer.js';
@@ -432,7 +434,7 @@ export async function reconcileDeploymentSites(
  * folders, and rewriting a mount list it does not fully understand is how a
  * reconciler silently unmounts somebody's data.
  */
-async function ensureSiteMounts(
+export async function ensureSiteMounts(
   clients: MultihostClients,
   input: ReconcileDeploymentInput,
   rendered: RenderResult,
@@ -497,7 +499,21 @@ async function ensureSiteMounts(
   // is the whole exposure this design removes.
   const hasVolumeRootMount = current.some((m) => isSiteMount(m) && !m.subPath);
 
+  // The init container has to be checked too, not just the mounts.
+  //
+  // A pod whose mounts are already right but whose init-dirs command predates
+  // the site-directory clauses would otherwise never gain them: this function
+  // returns early on "nothing to do", and the only other writer is a full
+  // redeploy. That is exactly the state every multi-host pod created before
+  // that fix is in — mounted, and unable to write its own site folder. Found
+  // on DEV: touching a route returned 200 and changed nothing.
+  const initCmd = (
+    (dep.spec?.template?.spec?.initContainers ?? []) as Array<{ name?: string; command?: string[] }>
+  ).find((c) => c.name === 'init-dirs')?.command?.[2] ?? '';
+  const initHasSiteDirs = desired.every((f) => initCmd.includes(`mkdir -p /data/${f}`));
+
   const same = !hasVolumeRootMount
+    && initHasSiteDirs
     && currentFolders.length === desired.length
     && currentFolders.every((f: string, i: number) => f === desired[i])
     && currentSessions.length === desired.length
@@ -551,12 +567,20 @@ async function ensureSiteMounts(
   const initDirs = initContainers.find((c) => (c as { name?: string }).name === 'init-dirs') as
     { command?: string[]; volumeMounts?: Array<Record<string, unknown>> } | undefined;
   if (initDirs?.command && initDirs.command.length === 3) {
+    // Drop stale clauses so a re-run cannot accumulate them, then re-add
+    // exactly the ones this folder set needs. Site-directory clauses are
+    // matched against the folders this reconciler manages (the ones being
+    // removed as well as the ones being added) — never by shape, because the
+    // deployment's own storage-path clause looks identical and must survive.
+    const managed = [...new Set([...currentFolders, ...desired])] as string[];
     const existing = initDirs.command[2]
       .split(' && ')
-      // Drop stale session clauses so a re-run cannot accumulate them, then
-      // re-add exactly the ones this folder set needs.
-      .filter((part) => !isSessionDirCommand(part));
-    const rebuilt = [...existing, ...sessionDirInitCommands(desired)].filter((p) => p && p !== 'true');
+      .filter((part) => !isSessionDirCommand(part) && !isSiteDirCommandFor(part, managed));
+    const rebuilt = [
+      ...existing,
+      ...siteDirInitCommands(desired),
+      ...sessionDirInitCommands(desired),
+    ].filter((p) => p && p !== 'true');
     initDirs.command[2] = rebuilt.length > 0 ? rebuilt.join(' && ') : 'true';
     // …and it must have the volume mounted to write into it.
     const im = (initDirs as { volumeMounts?: Array<Record<string, unknown>> });

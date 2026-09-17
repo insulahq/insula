@@ -22,7 +22,7 @@ vi.mock('../stalwart-jmap/client.js', () => ({
   reportSettingsGet, reportSettingsUpdate, actionReloadSettings,
 }));
 
-import { ensureReportIntake, POSTMASTER_LOCAL_PART, DMARC_LOCAL_PART } from './report-intake-reconciler.js';
+import { ensureReportIntake, POSTMASTER_LOCAL_PART, DMARC_LOCAL_PART, ABUSE_LOCAL_PART } from './report-intake-reconciler.js';
 import type { Database } from '../../db/index.js';
 
 /**
@@ -51,11 +51,18 @@ interface DomainRow { tenantId: string; emailDomainId: string; domainName: strin
  *   { id, tenantId, fullAddress, usedMb }              — the reap scan
  *   { id, stalwartPrincipalId, quotaMb, platformManaged } + .limit(1)
  *                                                      — per-mailbox existence
+ *   { id } alone                                       — "is this address
+ *                                                        already answered?"
+ *                                                        (mailbox / list / alias)
  *
  * The previous version keyed off call shape alone, so once the reap scan was
  * added it received the DOMAIN list as if those rows were mailboxes — the reap
  * loop then ran once per domain against a mock with no `deleteMailbox`, threw,
  * and was swallowed by the reconciler's own catch. Every test still passed.
+ *
+ * The bare `{ id }` case earns its own branch for the same reason: it fell
+ * through to the domain list, so every address looked occupied and the alias
+ * step silently did nothing.
  */
 function makeDb(opts: {
   domains?: readonly DomainRow[];
@@ -63,12 +70,21 @@ function makeDb(opts: {
   existing?: readonly unknown[];
   /** Rows the reap scan should find (platform-managed and at/over the cap). */
   full?: readonly unknown[];
+  /**
+   * Non-empty when the address being ensured is already answered by something
+   * the platform does not own — a tenant's own `abuse@` mailbox, a mailing
+   * list, an alias elsewhere. Drives the occupancy probe.
+   */
+  answered?: readonly unknown[];
 }): Database {
-  const { domains = [], existing = [], full = [] } = opts;
+  const { domains = [], existing = [], full = [], answered = [] } = opts;
   const resultFor = (proj: Record<string, unknown> | undefined): readonly unknown[] => {
     const keys = new Set(Object.keys(proj ?? {}));
     if (keys.has('usedMb')) return full;
     if (keys.has('platformManaged')) return existing;
+    // A projection of exactly `{ id }` is the occupancy probe. Checked before
+    // the domain fallback, or every address reads as taken.
+    if (keys.size === 1 && keys.has('id')) return answered;
     return domains;
   };
   const chainFor = (proj: Record<string, unknown> | undefined) => {
@@ -143,7 +159,32 @@ describe('report intake provisions postmaster@, not just the pattern', () => {
       { tenantId: 't2', emailDomainId: 'ed2', domainName: 'two.example.test' },
     ]), logger);
     expect(created()).toHaveLength(2);
-    expect(createMailboxAlias).toHaveBeenCalledTimes(2);
+    // 2 domains x 2 aliases. Was 2 when dmarc@ was the only alias; abuse@
+    // joined it 2026-09-17 (RFC 2142 makes both mandatory). Inverted rather
+    // than deleted: dropping back to 2 would mean a domain lost an alias.
+    expect(createMailboxAlias).toHaveBeenCalledTimes(4);
+  });
+
+  it('gives every domain an abuse@ alias on the same intake mailbox', async () => {
+    // RFC 2142 makes abuse@ mandatory alongside postmaster@, and nothing
+    // created it: a remote operator, a blocklist, or a provider's abuse desk
+    // trying to report a problem with a tenant's mail got 550. Operator
+    // decision 2026-09-17: an alias on the postmaster intake, not a mailbox —
+    // same reader, and a second mailbox is a second thing to reap.
+    await ensureReportIntake(db(ONE), logger);
+    const aliased = createMailboxAlias.mock.calls.map((c) => (c[3] as { local_part: string }).local_part);
+    expect(aliased).toContain(ABUSE_LOCAL_PART);
+    expect(aliased).toContain(DMARC_LOCAL_PART);
+    // On the SAME mailbox — one intake, several names.
+    const targets = new Set(createMailboxAlias.mock.calls.map((c) => c[2]));
+    expect(targets.size).toBe(1);
+  });
+
+  it('does not report abuse@ as a rua= target', async () => {
+    // Only dmarc@ belongs in a published `rua=`. Leaking abuse@ into that list
+    // would point receivers' aggregate reports at the abuse desk.
+    const r = await ensureReportIntake(db(ONE), logger);
+    expect(r.dmarcAddresses).toEqual([`${DMARC_LOCAL_PART}@example.test`]);
   });
 
   it('sizes the intake as a small transit buffer, not a mailbox', async () => {
@@ -203,6 +244,8 @@ describe('converging an existing second intake mailbox into an alias', () => {
         return legacy ? [legacy] : [];
       }
       if (keys.has('usedMb')) return []; // the reap scan
+      // "is this address already answered?" — nothing owns it in these cases.
+      if (keys.size === 1 && keys.has('id')) return [];
       if (keys.has('platformManaged')) {
         // the per-(domain, local_part) existence lookup: postmaster exists
         existenceCalls += 1;
@@ -222,6 +265,30 @@ describe('converging an existing second intake mailbox into an alias', () => {
     return { select: (proj?: Record<string, unknown>) => chainFor(proj), _existenceCalls: () => existenceCalls } as never;
   }
 
+  /** Postmaster intake exists; every OTHER address is already answered. */
+  function dbAnswered() {
+    const resultFor = (proj: Record<string, unknown> | undefined): readonly unknown[] => {
+      const keys = new Set(Object.keys(proj ?? {}));
+      if (keys.has('usedMb') && keys.has('platformManaged')) return [];
+      if (keys.has('usedMb')) return [];
+      if (keys.size === 1 && keys.has('id')) return [{ id: 'somebody-elses' }];
+      if (keys.has('platformManaged')) {
+        return [{ id: 'mb-postmaster', stalwartPrincipalId: 'p1', quotaMb: 50, platformManaged: true }];
+      }
+      return ONE2;
+    };
+    const chainFor = (proj?: Record<string, unknown>) => {
+      const rows = resultFor(proj);
+      const whereResult = {
+        limit: () => Promise.resolve(rows),
+        then: (res: (v: unknown) => unknown, rej?: (e: unknown) => unknown) => Promise.resolve(rows).then(res, rej),
+      };
+      const chain: Record<string, unknown> = { from: () => chain, innerJoin: () => chain, where: () => whereResult };
+      return chain;
+    };
+    return { select: (proj?: Record<string, unknown>) => chainFor(proj) } as never;
+  }
+
   it('deletes an EMPTY platform-managed dmarc@ mailbox and aliases it instead', async () => {
     const db2 = dbWithLegacyDmarc({ id: 'mb-dmarc', usedMb: 0, platformManaged: true });
     await ensureReportIntake(db2, logger);
@@ -237,9 +304,25 @@ describe('converging an existing second intake mailbox into an alias', () => {
     const db2 = dbWithLegacyDmarc({ id: 'mb-theirs', usedMb: 0, platformManaged: false });
     const r = await ensureReportIntake(db2, logger);
     expect(deleteMailbox).not.toHaveBeenCalled();
-    expect(createMailboxAlias).not.toHaveBeenCalled();
+    // Narrowed from "no alias at all" to "no dmarc@ alias": the assertion was
+    // a proxy for the real contract, and since abuse@ joined the intake list a
+    // blanket check would forbid the unrelated address from being created.
+    const aliased = createMailboxAlias.mock.calls.map((c) => (c[3] as { local_part: string }).local_part);
+    expect(aliased).not.toContain(DMARC_LOCAL_PART);
+    // One tenant-owned address must not block the other from being ensured.
+    expect(aliased).toContain(ABUSE_LOCAL_PART);
     // Still a valid rua= target, because it is one.
     expect(r.dmarcAddresses).toEqual([`${DMARC_LOCAL_PART}@example.test`]);
+  });
+
+  it('leaves an address alone when something already answers it', async () => {
+    // A tenant's own abuse@ mailbox, a mailing list, an alias elsewhere — all
+    // mean SMTP already says 250 for that address, which is the entire goal.
+    // Claiming it would either fail with a 409 on every tick or, worse,
+    // shadow a real abuse desk somebody reads.
+    const occupied = dbAnswered();
+    await ensureReportIntake(occupied, logger);
+    expect(createMailboxAlias).not.toHaveBeenCalled();
   });
 
   it('refuses to converge a dmarc@ mailbox that actually holds mail', async () => {
@@ -249,5 +332,48 @@ describe('converging an existing second intake mailbox into an alias', () => {
     const r = await ensureReportIntake(db2, logger);
     expect(deleteMailbox).not.toHaveBeenCalled();
     expect(r.dmarcAddresses).toEqual([`${DMARC_LOCAL_PART}@example.test`]);
+  });
+});
+
+describe('the 30-day reap', () => {
+  const ONE3 = [{ tenantId: 't1', emailDomainId: 'ed1', domainName: 'example.test' }];
+
+  it('empties a mailbox that is DUE by age even though it is empty', async () => {
+    // The size trigger fires at 40 MB and in practice never does:
+    // report-analysis intercepts before storage, so these mailboxes measure
+    // 0 MB. Operator decision 2026-09-16 — empty them every 30 days anyway,
+    // so a DSN Stalwart chose not to consume cannot sit forever.
+    const due = new Date(Date.now() - 31 * 86_400_000);
+    const db3 = makeDb({
+      domains: ONE3,
+      full: [{ id: 'mb-old', tenantId: 't1', fullAddress: 'postmaster@example.test', usedMb: 0, lastReapedAt: due }],
+    });
+    await ensureReportIntake(db3, logger);
+    expect(deleteMailbox).toHaveBeenCalledWith(db3, 't1', 'mb-old');
+  });
+
+  it('recreates it on the platform path, which stamps it and stops a reap loop', async () => {
+    // THE loop guard. Without a fresh `last_reaped_at` the recreate leaves it
+    // NULL, the next tick sees it as due, and the reconciler
+    // delete-and-recreates every five minutes forever — the same runaway shape
+    // as the notification storm, on mailboxes instead of email. The stamp is
+    // applied by createMailbox when platformManaged is set, so that flag
+    // reaching it is the property to hold.
+    const due = new Date(Date.now() - 31 * 86_400_000);
+    const db3 = makeDb({
+      domains: ONE3,
+      full: [{ id: 'mb-old', tenantId: 't1', fullAddress: 'postmaster@example.test', usedMb: 0, lastReapedAt: due }],
+    });
+    await ensureReportIntake(db3, logger);
+    expect(createMailbox).toHaveBeenCalled();
+    for (const call of createMailbox.mock.calls) {
+      expect(call[4]).toEqual({ platformManaged: true });
+    }
+  });
+
+  it('does nothing when the scan finds none due — the steady state', async () => {
+    const db3 = makeDb({ domains: ONE3, full: [] });
+    await ensureReportIntake(db3, logger);
+    expect(deleteMailbox).not.toHaveBeenCalled();
   });
 });
