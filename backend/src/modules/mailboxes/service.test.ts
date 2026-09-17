@@ -214,6 +214,54 @@ describe('createMailbox', () => {
     });
   });
 
+  it('stamps last_reaped_at on a platform mailbox, so the reaper cannot loop', async () => {
+    // The loop guard, asserted where it actually happens. The 30-day reap
+    // deletes and recreates these mailboxes; if the recreate left
+    // `last_reaped_at` NULL, the next 5-minute tick would see it as due again
+    // and reap it forever — the notification storm's shape, on mailboxes.
+    const emailDomain = { id: 'ed1', tenantId: 'c1', domainId: 'd1' };
+    const domain = { domainName: 'example.com' };
+    // Same 7-call select sequence as the happy-path create above; a short
+    // sequence makes the function throw BEFORE the insert, and the assertion
+    // then reads an empty mock and fails for the wrong reason.
+    selectResults = [
+      [emailDomain], [domain], [{ planLimit: 10, override: null }], [{ count: 0 }],
+      [], [{ planLimit: 5120, override: null }],
+      [{ id: 'mb-new', fullAddress: 'postmaster@example.com' }],
+    ];
+    const db = createMockDb();
+
+    await createMailbox(
+      db as never, 'c1', 'ed1',
+      { local_part: 'postmaster', quota_mb: 50, mailbox_type: 'mailbox' },
+      { platformManaged: true },
+    );
+
+    const inserted = (db as unknown as { _insertValues: ReturnType<typeof vi.fn> })._insertValues.mock.calls[0]?.[0];
+    expect(inserted?.platformManaged).toBe(true);
+    expect(inserted?.lastReapedAt).toBeInstanceOf(Date);
+  });
+
+  it('does NOT stamp last_reaped_at on a tenant mailbox — it is never reaped', async () => {
+    const emailDomain = { id: 'ed1', tenantId: 'c1', domainId: 'd1' };
+    const domain = { domainName: 'example.com' };
+    selectResults = [
+      [emailDomain], [domain], [{ planLimit: 10, override: null }], [{ count: 0 }],
+      [], [{ planLimit: 5120, override: null }],
+      [{ id: 'mb-new', fullAddress: 'sales@example.com' }],
+    ];
+    const db = createMockDb();
+
+    await createMailbox(
+      db as never, 'c1', 'ed1',
+      { local_part: 'sales', quota_mb: 1024, mailbox_type: 'mailbox' },
+    );
+
+    const inserted = (db as unknown as { _insertValues: ReturnType<typeof vi.fn> })._insertValues.mock.calls[0]?.[0];
+    expect(inserted?.platformManaged).toBe(false);
+    expect(inserted?.lastReapedAt).toBeUndefined();
+  });
+
   it('does not notify anyone when the cap is hit — the 409 is the message', async () => {
     // A `notifyTenantMailboxLimitReached` used to fire here, mailing every
     // tenant_admin about the click the tenant had just watched fail. Removed

@@ -146,6 +146,38 @@ more).
 The **DKIM keys** card lets you view the cryptographic keys that prove your mail
 is genuine (these are part of the DNS records above).
 
+## Authentication (who is sending as your domain)
+
+The **Authentication** tab answers a question you can't answer from your own
+outbox: does the rest of the world accept your mail as genuine, and is anybody
+else sending as you?
+
+Mail providers that receive mail claiming to be from your domain check it
+against your published SPF and DKIM records and send back daily summary
+reports. This tab shows what those reports say for the domain selected at the
+top of the page:
+
+- **Passing authentication** — the share of reported messages that passed,
+  always shown **with the number of messages it is based on**. "100% of 6
+  messages" is one quiet week, not proof; it is deliberately not rounded up
+  into a verdict.
+- **Failing senders** — how many distinct servers sent mail as your domain that
+  failed the check.
+- **Current policy** — what your published record tells receivers to do with
+  mail that fails: monitor only, quarantine, or reject. This record is
+  maintained for you; contact support if you want it changed.
+- **Who sent as &lt;your domain&gt;** — every sending server the receivers saw,
+  worst first. A server with failures is either one of yours that needs its SPF
+  or DKIM fixed (a newsletter tool or CRM sending on your behalf is the usual
+  culprit), or one that should not be sending as you at all.
+
+!!! info "An empty tab is not an all-clear"
+
+    If you see *no reports received for this domain yet*, that means nothing has
+    been reported — not that everything passes. Providers only report once they
+    have seen mail from your domain, and the first reports normally take 24–48
+    hours to arrive.
+
 ## Set up a mail client (phone / Outlook / Apple Mail)
 
 The simplest way to add your mailbox to a phone or desktop app:

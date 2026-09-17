@@ -1325,6 +1325,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         const { ensureMailEventsWebhook } = await import('./modules/mail-events/webhook-reconciler.js');
         const { ensureStalwartStdoutTracer } = await import('./modules/mail-events/tracer-reconciler.js');
         const { ensureReportIntake } = await import('./modules/mail-events/report-intake-reconciler.js');
+        const { ensureDmarcReportSender } = await import('./modules/mail-events/dmarc-report-sender.js');
         const { pollDmarcReports } = await import('./modules/mail-events/dmarc.js');
         const { repairDmarcRuaRecords } = await import('./modules/mail-events/dmarc-rua-repair.js');
         const { evaluateMailThresholds } = await import('./modules/mail-events/thresholds.js');
@@ -1348,6 +1349,15 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           });
           ensureReportIntake(app.db, app.log).catch((err) => {
             app.log.warn({ err }, 'report intake ensure failed');
+          });
+          // Outbound DMARC reporting stays OFF unless an operator has named a
+          // real local postmaster@ to send from. Reconciled every tick, not
+          // set once: the Stalwart singleton starts empty and empty means
+          // "use the built-in defaults", i.e. send from a hostname-derived
+          // address that has no mailbox — so a restore would silently
+          // reintroduce reports whose DSNs bounce.
+          ensureDmarcReportSender(app.db, app.log).catch((err) => {
+            app.log.warn({ err }, 'dmarc report sender ensure failed');
           });
           pollDmarcReports(app.db, app.log).catch((err) => {
             app.log.warn({ err }, 'dmarc poll failed');
