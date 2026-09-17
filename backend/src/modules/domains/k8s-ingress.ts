@@ -37,7 +37,7 @@ import {
 } from './redirect-sink.js';
 import { isRoutable, isRedirectOnly } from '../ingress-routes/route-targets.js';
 import type { RouteTargetFields } from '../ingress-routes/route-targets.js';
-import { buildAllRouteSpecs } from '../ingress-routes/annotation-sync.js';
+import { buildAllRouteSpecs, buildMiddlewaresForRoute } from '../ingress-routes/annotation-sync.js';
 import { reconcileTenantSites } from '../multihost/reconciler.js';
 import {
   buildIngressRoute,
@@ -220,7 +220,7 @@ export async function reconcileIngress(
 
   if (domainIds.length === 0) {
     await deleteIngressRoute(k8s.custom, namespace, ingressName);
-    await gcOrphanMiddlewares(k8s, namespace, new Set());
+    await gcOrphanMiddlewares(db, k8s, tenantId, namespace, new Set());
     await gcOrphanTlsSplits(k8s, namespace, new Set());
     return;
   }
@@ -291,7 +291,7 @@ export async function reconcileIngress(
 
   if (updatedRoutes.length === 0) {
     await deleteIngressRoute(k8s.custom, namespace, ingressName);
-    await gcOrphanMiddlewares(k8s, namespace, new Set());
+    await gcOrphanMiddlewares(db, k8s, tenantId, namespace, new Set());
     await gcOrphanTlsSplits(k8s, namespace, new Set());
     return;
   }
@@ -576,7 +576,7 @@ export async function reconcileIngress(
     // applied — otherwise it orphans on the cluster after the last
     // route is deleted.
     await deleteIngressRoute(k8s.custom, namespace, `${ingressName}-http`);
-    await gcOrphanMiddlewares(k8s, namespace, new Set());
+    await gcOrphanMiddlewares(db, k8s, tenantId, namespace, new Set());
     await gcOrphanMtls(k8s, namespace, new Set(), new Set());
     await gcOrphanTlsSplits(k8s, namespace, new Set());
     return;
@@ -773,7 +773,7 @@ export async function reconcileIngress(
   // produces. Limited to labels matching hosting-platform/route-id IN
   // (current route ids) — anything else (cluster-shared admin-auth
   // Middlewares, oauth2-proxy break-glass middleware, …) stays put.
-  await gcOrphanMiddlewares(k8s, namespace, expectedMiddlewareNames);
+  await gcOrphanMiddlewares(db, k8s, tenantId, namespace, expectedMiddlewareNames);
 
   // Multi-host site config. Hooked HERE rather than at each call site because
   // this function is the one place every route mutation already funnels
@@ -879,19 +879,61 @@ export function buildForceHttpsRoutes(
  * only touch CRDs we created. Best-effort — failure to clean up an
  * orphan does not abort the reconcile.
  */
+/**
+ * Which route-owned Middlewares SHOULD exist, read from the database at GC
+ * time rather than from the snapshot this pass started with.
+ *
+ * Two reconciles can overlap — a domain create, a route create, a certificate
+ * becoming ready and a settings PATCH all trigger one, and nothing serialises
+ * them. The older pass then reaches the GC holding a keep-set from before the
+ * newer route existed, and deletes the Middleware the newer pass just applied.
+ * The IngressRoute referencing it survives, and Traefik drops the ENTIRE router
+ * for a dangling middleware reference — so the tenant's brand-new hostname
+ * answers 404 with every other object present and healthy, until any later
+ * edit reconciles it again. Observed on DEV (issue #611) on two of three
+ * freshly created routes.
+ *
+ * Re-reading here closes that window: a route created while this pass was
+ * running is in the database by the time we decide what to delete.
+ */
+export async function currentRouteMiddlewareNames(
+  db: Database,
+  tenantId: string,
+  namespace: string,
+): Promise<Set<string>> {
+  const names = new Set<string>();
+  const tenantDomains = await db.select({ id: domains.id }).from(domains).where(eq(domains.tenantId, tenantId));
+  const domainIdSet = new Set(tenantDomains.map((d) => d.id));
+  if (domainIdSet.size === 0) return names;
+
+  const allRoutes = await db.select().from(ingressRoutes);
+  for (const route of allRoutes) {
+    if (!domainIdSet.has(route.domainId)) continue;
+    // Settings still decide: a route whose force-HTTPS (or HSTS, or rate
+    // limit) was turned OFF produces no name here, so its Middleware is still
+    // swept. This only protects Middlewares the current settings still want.
+    const built = buildMiddlewaresForRoute(route as never, route.id, namespace);
+    for (const mw of built.middlewares) names.add(mw.metadata.name);
+  }
+  return names;
+}
+
 async function gcOrphanMiddlewares(
+  db: Database,
   k8s: K8sClients,
+  tenantId: string,
   namespace: string,
   keepNames: ReadonlySet<string>,
 ): Promise<void> {
   try {
+    const fresh = await currentRouteMiddlewareNames(db, tenantId, namespace);
     const existing = await listMiddlewares(
       k8s.custom,
       namespace,
       'app.kubernetes.io/managed-by=platform-api',
     );
     for (const mw of existing) {
-      if (keepNames.has(mw.name)) continue;
+      if (keepNames.has(mw.name) || fresh.has(mw.name)) continue;
       // Don't sweep Middlewares we DON'T own — only orphans tied to a
       // route-id (the buildMiddlewaresForRoute / mTLS / OIDC builders
       // always stamp hosting-platform/route-id). suspend Middlewares
