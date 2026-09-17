@@ -13,6 +13,7 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Added
+
 - **Scheduled tasks are read on a real clock, and you can choose which one.**
   Schedules were evaluated in UTC with no way to say otherwise, so a tenant in
   CEST asking for `0 3 * * *` got 05:00 local in summer and 04:00 in winter — a
@@ -26,6 +27,7 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   hour early, and one inside the hour repeated each autumn runs at the first
   occurrence (and may run at the second, because those are two real moments and
   dropping one would silently lose a run).
+
 - **The currency picker offers every ISO 4217 code, searchable.** It was a
   15-entry dropdown with an inert "Custom" row, so a platform billing in MXN,
   KES or PLN could see its own code listed as *Custom* and had no way to select
@@ -75,6 +77,7 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   unknown, never drawn as 0% or 100%, and a failed request renders as a failure
   — an error that renders as an empty table tells a domain owner "nobody is
   sending as you", which is the one answer this screen must never invent.
+
 - **A per-task timeout for scheduled tasks.** One ceiling could not fit both
   kinds of job: the executor waited 30 seconds for a webcron ping and 300 for a
   command in a deployment, and neither is right for everyone. A Moodle site's
@@ -113,18 +116,23 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   Until now drift covered mailboxes and domains only, which is also why an empty
   drift list was never evidence that aliases were healthy.
 
-### Fixed
-- **Drift items the database rejected were silently discarding the rest of the
-  scan.** `mail_drift_items.kind` carried a CHECK constraint listing four kinds
-  while the detector emitted five: `orphan-list` had been emitted since
-  2026-08-25 and never once stored. The inserts run in a loop with no per-row
-  guard, so the first rejected row aborted the whole persistence step — later
-  items were never written, and the sweep that marks vanished items resolved
-  never ran, leaving a drift list an operator could not clear. The constraint is
-  widened, each row is now guarded individually, and a row the database refuses
-  is reported instead of lost.
+- **Tenant cron jobs can finally run a command inside a deployment — and the
+  scheduler now honours the schedule it was given.** The `deployment` job type
+  has been in the API contract, the database enum and the tenant panel since the
+  module was written, and it never executed: the scheduler polled
+  `type = 'webcron'` only, and "Run now" hit a branch that wrote
+  "not yet implemented" into the output while leaving the status at its initial
+  `success`. A tenant could create "Moodle cron, `* * * * *`", watch it report
+  green, and have no cron at all. Deployment jobs now resolve the deployment's
+  running pod (refusing to guess when a multi-component deployment offers
+  several — running a tenant's command in whichever pod the API listed first is
+  how "Moodle cron" ends up executing inside MariaDB), exec the command through
+  `/bin/sh -c`, and record the real exit code, which the panel now shows. This
+  is what makes a traditional PHP application with a CLI cron — Moodle,
+  Nextcloud, Laravel — hostable on a plain runtime deployment.
 
 ### Changed
+
 - **Platform `postmaster@` senders are exempt from tenant send limits, and their
   inboxes are emptied every 30 days.** DMARC reports are outbound mail from a
   tenant's domain, so without the exemption a busy domain's own reports would
@@ -136,6 +144,17 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   this change does not reap all of them at once.
 
 ### Fixed
+
+- **Drift items the database rejected were silently discarding the rest of the
+  scan.** `mail_drift_items.kind` carried a CHECK constraint listing four kinds
+  while the detector emitted five: `orphan-list` had been emitted since
+  2026-08-25 and never once stored. The inserts run in a loop with no per-row
+  guard, so the first rejected row aborted the whole persistence step — later
+  items were never written, and the sweep that marks vanished items resolved
+  never ran, leaving a drift list an operator could not clear. The constraint is
+  widened, each row is now guarded individually, and a row the database refuses
+  is reported instead of lost.
+
 - **A new domain's first route could 404 until somebody edited it.** Two
   ingress reconciles can overlap — a domain create, a route create, a
   certificate becoming ready and a settings change all trigger one, and nothing
@@ -151,24 +170,41 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   created while a reconcile was running is protected; a setting that was turned
   off is still swept.
 
+- **A database created for a tenant could not be used by Moodle — and by
+  anything else that checks its own charset the same way.** `CREATE DATABASE`
+  was issued bare, so the schema inherited the server default; on MariaDB 11.4
+  and later that is `utf8mb4_uca1400_ai_ci`, and
+  `SHOW COLLATION WHERE Collation='utf8mb4_uca1400_ai_ci' AND Charset='utf8mb4'`
+  returns nothing. That query is exactly how Moodle verifies a database is
+  Unicode, so its installer aborted with "unicode must be installed and
+  enabled" on a database the platform had just created and handed over. New
+  MySQL/MariaDB databases are now created `CHARACTER SET utf8mb4 COLLATE
+  utf8mb4_unicode_ci` — the collation those applications are written against,
+  present in every server version the catalog offers, and the one a tenant
+  migrating from cPanel or Plesk is carrying in their dump anyway. Existing
+  databases are untouched; an `ALTER DATABASE … COLLATE utf8mb4_unicode_ci`
+  fixes one in place.
+
+- **Every cron schedule that was not `*/N` in the minute field ran every
+  minute.** `getNextRunTime` parsed only a `*/N` minute and fell through to
+  "one minute after the last run" for everything else, so `0 3 * * *` — a
+  nightly job — fired 1440 times a day, and `*/15` drifted from the last run
+  instead of landing on the quarter hour. Schedules are now evaluated against
+  all five fields (ranges, lists, steps, and the POSIX rule that a restricted
+  day-of-month and day-of-week are OR-ed), in UTC, and an unparseable
+  expression leaves the job dormant rather than making it due on every poll.
+
+- **No cron job had ever fired on schedule without a manual run first.** The
+  scheduler claimed jobs with `last_run_status != 'running'`, and a job that has
+  never run carries NULL there — in SQL `NULL != 'running'` is NULL, not true,
+  so the claim matched no row and the job was skipped forever. Pressing "Run
+  now" once was what set the column and, by accident, unblocked the schedule.
+  The claim now takes NULL explicitly, and also releases a claim left behind by
+  an API pod that died mid-run, which used to wedge a job permanently.
+
 ## [2026.9.21] - 2026-09-16
 
 ### Added
-
-- **Tenant cron jobs can finally run a command inside a deployment — and the
-  scheduler now honours the schedule it was given.** The `deployment` job type
-  has been in the API contract, the database enum and the tenant panel since the
-  module was written, and it never executed: the scheduler polled
-  `type = 'webcron'` only, and "Run now" hit a branch that wrote
-  "not yet implemented" into the output while leaving the status at its initial
-  `success`. A tenant could create "Moodle cron, `* * * * *`", watch it report
-  green, and have no cron at all. Deployment jobs now resolve the deployment's
-  running pod (refusing to guess when a multi-component deployment offers
-  several — running a tenant's command in whichever pod the API listed first is
-  how "Moodle cron" ends up executing inside MariaDB), exec the command through
-  `/bin/sh -c`, and record the real exit code, which the panel now shows. This
-  is what makes a traditional PHP application with a CLI cron — Moodle,
-  Nextcloud, Laravel — hostable on a plain runtime deployment.
 
 - **A master notification switch in Admin → Notifications.** One button that stops
   every notification on every channel, and resumes them. It exists because on
@@ -271,35 +307,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   than an honest gap. Migration 0126 removes it from existing clusters.
 
 ### Fixed
-- **A database created for a tenant could not be used by Moodle — and by
-  anything else that checks its own charset the same way.** `CREATE DATABASE`
-  was issued bare, so the schema inherited the server default; on MariaDB 11.4
-  and later that is `utf8mb4_uca1400_ai_ci`, and
-  `SHOW COLLATION WHERE Collation='utf8mb4_uca1400_ai_ci' AND Charset='utf8mb4'`
-  returns nothing. That query is exactly how Moodle verifies a database is
-  Unicode, so its installer aborted with "unicode must be installed and
-  enabled" on a database the platform had just created and handed over. New
-  MySQL/MariaDB databases are now created `CHARACTER SET utf8mb4 COLLATE
-  utf8mb4_unicode_ci` — the collation those applications are written against,
-  present in every server version the catalog offers, and the one a tenant
-  migrating from cPanel or Plesk is carrying in their dump anyway. Existing
-  databases are untouched; an `ALTER DATABASE … COLLATE utf8mb4_unicode_ci`
-  fixes one in place.
-- **Every cron schedule that was not `*/N` in the minute field ran every
-  minute.** `getNextRunTime` parsed only a `*/N` minute and fell through to
-  "one minute after the last run" for everything else, so `0 3 * * *` — a
-  nightly job — fired 1440 times a day, and `*/15` drifted from the last run
-  instead of landing on the quarter hour. Schedules are now evaluated against
-  all five fields (ranges, lists, steps, and the POSIX rule that a restricted
-  day-of-month and day-of-week are OR-ed), in UTC, and an unparseable
-  expression leaves the job dormant rather than making it due on every poll.
-- **No cron job had ever fired on schedule without a manual run first.** The
-  scheduler claimed jobs with `last_run_status != 'running'`, and a job that has
-  never run carries NULL there — in SQL `NULL != 'running'` is NULL, not true,
-  so the claim matched no row and the job was skipped forever. Pressing "Run
-  now" once was what set the column and, by accident, unblocked the schedule.
-  The claim now takes NULL explicitly, and also releases a claim left behind by
-  an API pod that died mid-run, which used to wedge a job permanently.
 - **A notification storm that mailed tenants every five minutes, forever, and
   then saturated the platform's own sending limit.** The `postmaster@`/`dmarc@`
   report-intake reconciler created its mailboxes through the *tenant-facing*
