@@ -468,6 +468,14 @@ async function extractPlainTarGz(blob: Buffer): Promise<ImportEntry[]> {
     tarX.on('finish', () => resolve());
     tarX.on('error', reject);
   });
+  // A pipeline failure — a corrupt gzip header is the common one — rejects the
+  // `pipeline` await BEFORE `await collect` is ever reached, and `pipeline`
+  // destroys tarX with that same error, so `collect` rejects too with nobody
+  // listening: an unhandled rejection that reaches the process-level handler
+  // in the API. Attaching a no-op handler at creation marks it handled without
+  // swallowing it — `await collect` below still receives the rejection and
+  // reports it, and so does the wrapping catch.
+  void collect.catch(() => undefined);
 
   try {
     await pipeline(Readable.from(blob), gunzip, tarX);
@@ -656,6 +664,14 @@ export async function decryptImportTarball(args: {
     tarX.on('finish', () => resolve());
     tarX.on('error', reject);
   });
+  // A pipeline failure — a corrupt gzip header is the common one — rejects the
+  // `pipeline` await BEFORE `await collect` is ever reached, and `pipeline`
+  // destroys tarX with that same error, so `collect` rejects too with nobody
+  // listening: an unhandled rejection that reaches the process-level handler
+  // in the API. Attaching a no-op handler at creation marks it handled without
+  // swallowing it — `await collect` below still receives the rejection and
+  // reports it, and so does the wrapping catch.
+  void collect.catch(() => undefined);
 
   try {
     await pipeline(Readable.from(plaintext), gunzip, tarX);
