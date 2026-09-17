@@ -6,6 +6,8 @@ import { useCanManage } from '@/hooks/use-can-manage';
 import ReadOnlyNotice from '@/components/ReadOnlyNotice';
 import { useCronJobs, useCreateCronJob, useUpdateCronJob, useRunCronJob, useDeleteCronJob } from '@/hooks/use-cron-jobs';
 import { useDeployments } from '@/hooks/use-deployments';
+import { useSystemInfo } from '@/hooks/use-system-info';
+import TimezoneSelect from '@/components/TimezoneSelect';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
 
@@ -53,6 +55,8 @@ interface CronFormState {
   readonly deploymentId: string;
   /** Blank keeps the per-type default (30s webcron, 300s deployment). */
   readonly timeoutSeconds: string;
+  /** Blank follows the platform timezone. */
+  readonly timezone: string;
 }
 
 const INITIAL_FORM: CronFormState = {
@@ -64,6 +68,7 @@ const INITIAL_FORM: CronFormState = {
   command: '',
   deploymentId: '',
   timeoutSeconds: '',
+  timezone: '',
 };
 
 export default function CronJobs() {
@@ -75,6 +80,9 @@ export default function CronJobs() {
   const runJob = useRunCronJob(tenantId ?? undefined);
   const deleteJob = useDeleteCronJob(tenantId ?? undefined);
   const { data: deploymentsResponse } = useDeployments(tenantId ?? undefined);
+  // The zone a task with none of its own is read on — shown so "03:00" is never ambiguous.
+  const { data: systemInfo } = useSystemInfo();
+  const platformTimezone = systemInfo?.timezone;
 
   const deployments = (deploymentsResponse?.data ?? []).filter((d) => d.status === 'running');
 
@@ -103,6 +111,9 @@ export default function CronJobs() {
         // Blank means "use the default for this type" — send nothing, rather
         // than a 0 the contract would reject.
         ...(form.timeoutSeconds.trim() ? { timeout_seconds: Number(form.timeoutSeconds) } : {}),
+        // Blank means "follow the platform timezone" — send nothing rather
+        // than pinning today's platform value onto the job for ever.
+        ...(form.timezone.trim() ? { timezone: form.timezone.trim() } : {}),
         enabled: true,
       });
       setForm(INITIAL_FORM);
@@ -257,6 +268,23 @@ export default function CronJobs() {
                 minutes.
               </p>
             </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">
+                Timezone
+              </label>
+              <div className="mt-1">
+                <TimezoneSelect
+                  value={form.timezone}
+                  onChange={(tz) => setForm({ ...form, timezone: tz })}
+                  placeholder={platformTimezone ? `Platform default (${platformTimezone})` : 'Platform default'}
+                />
+              </div>
+              <p className="mt-1 text-[11px] text-gray-500 dark:text-gray-400">
+                The clock the schedule is read on. Leave it as the platform
+                default unless this task belongs to a different region.
+                {form.timezone ? '' : ' Changing the platform timezone moves this task with it.'}
+              </p>
+            </div>
             <div className="flex items-end">
               <button type="submit" disabled={createJob.isPending} className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50" data-testid="submit-cron-job">
                 {createJob.isPending && <Loader2 size={14} className="animate-spin" />}
@@ -324,6 +352,9 @@ export default function CronJobs() {
                           timeout {job.timeoutSeconds}s
                         </span>
                       )}
+                      <span className="ml-2 font-sans text-xs text-gray-400 dark:text-gray-500">
+                        {job.timezone ?? platformTimezone ?? 'UTC'}
+                      </span>
                     </td>
                     <td className="hidden px-6 py-4 text-gray-600 dark:text-gray-400 md:table-cell max-w-xs truncate">
                       <code className="text-xs">{formatTarget(job)}</code>

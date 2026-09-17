@@ -53,6 +53,25 @@ export function claimStaleBefore(
   return new Date(now.getTime() - (runTimeoutMs(job as never) + CLAIM_GRACE_MS));
 }
 
+/**
+ * The platform's configured timezone, or null when it cannot be read.
+ *
+ * Null rather than a thrown error on purpose: a settings read that fails must
+ * not stop every tenant's cron. The jobs fall back to UTC for that tick, which
+ * is what they did before timezones existed.
+ */
+async function getPlatformTimeZone(db: Database): Promise<string | null> {
+  try {
+    const { getSettings } = await import('../system-settings/service.js');
+    const settings = await getSettings(db);
+    return settings.timezone ?? null;
+  } catch (err) {
+    console.warn('[cron-scheduler] could not read the platform timezone; using UTC this tick:',
+      err instanceof Error ? err.message : err);
+    return null;
+  }
+}
+
 export function startCronScheduler(db: Database, deps: CronSchedulerDeps = {}): NodeJS.Timeout {
   console.log('[cron-scheduler] Starting...');
 
@@ -60,13 +79,17 @@ export function startCronScheduler(db: Database, deps: CronSchedulerDeps = {}): 
     try {
       const now = new Date();
 
+      // One settings read per tick, not per job. getSettings is itself cached,
+      // but a job list of any size would still hammer it.
+      const platformTimeZone = await getPlatformTimeZone(db);
+
       const jobs = await db
         .select()
         .from(cronJobs)
         .where(eq(cronJobs.enabled, 1));
 
       for (const job of jobs) {
-        if (!isJobDue(job, now)) continue;
+        if (!isJobDue(job, now, platformTimeZone)) continue;
 
         if (!(await claimJob(db, job.id, claimStaleBefore(job, now)))) continue;
 
@@ -83,6 +106,21 @@ export function startCronScheduler(db: Database, deps: CronSchedulerDeps = {}): 
 }
 
 /**
+ * The zone a job's schedule is read in.
+ *
+ * The job's own, else the platform's, else UTC. Resolved at evaluation time
+ * rather than stamped on the row at creation, so an operator who changes the
+ * platform timezone moves every job that was following it — and leaves alone
+ * the ones somebody pinned on purpose.
+ */
+export function resolveTimeZone(
+  job: { readonly timezone: string | null },
+  platformTimeZone: string | null | undefined,
+): string {
+  return job.timezone || platformTimeZone || 'UTC';
+}
+
+/**
  * Is this job due at `now`?
  *
  * A job that has never run is measured from when it was CREATED. Measuring
@@ -93,10 +131,17 @@ export function startCronScheduler(db: Database, deps: CronSchedulerDeps = {}): 
  * `now`, which is precisely the case where the bug is invisible.
  */
 export function isJobDue(
-  job: { readonly schedule: string; readonly lastRunAt: Date | null; readonly createdAt: Date },
+  job: {
+    readonly schedule: string;
+    readonly lastRunAt: Date | null;
+    readonly createdAt: Date;
+    readonly timezone?: string | null;
+  },
   now: Date,
+  platformTimeZone?: string | null,
 ): boolean {
-  return getNextRunTime(job.schedule, job.lastRunAt ?? job.createdAt, now) <= now;
+  const zone = resolveTimeZone({ timezone: job.timezone ?? null }, platformTimeZone);
+  return getNextRunTime(job.schedule, job.lastRunAt ?? job.createdAt, now, zone) <= now;
 }
 
 /**

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { getNextRunTime, parseCron, NEVER } from './cron-expression.js';
+import { getNextRunTime, parseCron, NEVER, isValidTimeZone } from './cron-expression.js';
 
 const at = (iso: string) => new Date(iso);
 
@@ -151,5 +151,78 @@ describe('parseCron', () => {
 
   it('returns null for an unparseable expression', () => {
     expect(parseCron('nonsense')).toBeNull();
+  });
+});
+
+describe('timezones', () => {
+  // Every expected instant below was derived independently with Intl before the
+  // implementation was asked anything — otherwise the test only asserts that
+  // the code agrees with itself.
+  //
+  //   03:00 Berlin  = 01:00 UTC in summer (CEST), 02:00 UTC in winter (CET)
+  //   09:00 Tokyo   = 00:00 UTC
+  //   2027-03-28    Berlin has no 02:00-02:59 (clocks jump 02:00 -> 03:00)
+  //   2026-10-25    Berlin has 02:30 twice (03:00 CEST -> 02:00 CET)
+
+  it("reads the expression on the zone's wall clock, not on UTC", () => {
+    expect(getNextRunTime('0 3 * * *', at('2026-07-01T12:00:00Z'), undefined, 'Europe/Berlin'))
+      .toEqual(at('2026-07-02T01:00:00Z'));
+  });
+
+  it('keeps the same wall time when the offset changes with the season', () => {
+    expect(getNextRunTime('0 3 * * *', at('2026-12-01T12:00:00Z'), undefined, 'Europe/Berlin'))
+      .toEqual(at('2026-12-02T02:00:00Z'));
+  });
+
+  it('works east of UTC', () => {
+    expect(getNextRunTime('0 9 * * *', at('2026-07-01T12:00:00Z'), undefined, 'Asia/Tokyo'))
+      .toEqual(at('2026-07-02T00:00:00Z'));
+  });
+
+  it('is unchanged for UTC, which is what every existing row means', () => {
+    expect(getNextRunTime('0 3 * * *', at('2026-07-01T12:00:00Z'), undefined, 'UTC'))
+      .toEqual(at('2026-07-02T03:00:00Z'));
+  });
+
+  it("uses the zone's weekday, not the UTC one", () => {
+    // 01:00 Monday in Auckland is still SUNDAY in UTC. A Monday-only job that
+    // matched on the UTC weekday would fire on the wrong local day.
+    const next = getNextRunTime('0 1 * * 1', at('2026-07-01T12:00:00Z'), undefined, 'Pacific/Auckland');
+    const local = new Intl.DateTimeFormat('en-GB', { timeZone: 'Pacific/Auckland', weekday: 'long', hour: '2-digit', hourCycle: 'h23' }).format(next);
+    expect(local).toMatch(/Monday/);
+    expect(next.getUTCDay()).toBe(0); // Sunday in UTC — the point of the test
+  });
+
+  describe('daylight saving', () => {
+    it('passes over a wall time that does not exist, instead of firing an hour early', () => {
+      // Berlin jumps 02:00 -> 03:00 on 2027-03-28, so 02:30 never happens that
+      // day. The job waits for the 29th rather than running at 03:30.
+      expect(getNextRunTime('30 2 * * *', at('2027-03-27T12:00:00Z'), undefined, 'Europe/Berlin'))
+        .toEqual(at('2027-03-29T00:30:00Z'));
+    });
+
+    it('fires at the first of a repeated wall time', () => {
+      // Berlin repeats 02:00-02:59 on 2026-10-25. The first 02:30 is 00:30 UTC.
+      expect(getNextRunTime('30 2 * * *', at('2026-10-24T12:00:00Z'), undefined, 'Europe/Berlin'))
+        .toEqual(at('2026-10-25T00:30:00Z'));
+    });
+
+    it('still advances after the repeated hour rather than sticking', () => {
+      const first = at('2026-10-25T00:30:00Z');
+      const next = getNextRunTime('30 2 * * *', first, undefined, 'Europe/Berlin');
+      expect(next.getTime()).toBeGreaterThan(first.getTime());
+    });
+  });
+
+  it('falls back to UTC for a zone the runtime does not know, rather than going dormant', () => {
+    // Dormant is the dangerous failure: a job that silently never runs.
+    expect(getNextRunTime('0 3 * * *', at('2026-07-01T12:00:00Z'), undefined, 'Mars/Olympus_Mons'))
+      .toEqual(at('2026-07-02T03:00:00Z'));
+  });
+
+  it('recognises real zones and rejects invented ones', () => {
+    expect(isValidTimeZone('Europe/Berlin')).toBe(true);
+    expect(isValidTimeZone('UTC')).toBe(true);
+    expect(isValidTimeZone('Mars/Olympus_Mons')).toBe(false);
   });
 });

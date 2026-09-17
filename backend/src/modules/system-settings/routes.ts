@@ -60,6 +60,10 @@ export async function systemSettingsRoutes(app: FastifyInstance): Promise<void> 
       // ISO 4217 currency code — public so the tenant-panel can format
       // plan prices without an authenticated round-trip to /admin/*.
       currency: settings.currency,
+      // The platform's timezone. Public for the same reason: a tenant
+      // scheduling a task needs to see which zone "platform default" is, and
+      // "03:00 — but in which zone?" is exactly the ambiguity this removes.
+      timezone: settings.timezone,
     });
   });
 

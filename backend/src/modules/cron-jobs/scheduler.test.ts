@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { runAndRecord, isJobDue, claimStaleBefore } from './scheduler.js';
+import { runAndRecord, isJobDue, claimStaleBefore, resolveTimeZone } from './scheduler.js';
 import type { CronJobRow } from './executor.js';
 import type { Database } from '../../db/index.js';
 
@@ -232,5 +232,56 @@ describe('claimStaleBefore', () => {
   it('never returns a cutoff in the future — that would re-claim a live run', () => {
     expect(claimStaleBefore({ type: 'deployment', timeoutSeconds: 5 }, now).getTime())
       .toBeLessThan(now.getTime());
+  });
+});
+
+describe('resolveTimeZone', () => {
+  // Resolved at evaluation time, never stamped on the row: an operator who
+  // changes the platform timezone should move every job that was following it,
+  // and leave alone the ones somebody pinned deliberately.
+  it('prefers the job\'s own zone', () => {
+    expect(resolveTimeZone({ timezone: 'Asia/Tokyo' }, 'Europe/Berlin')).toBe('Asia/Tokyo');
+  });
+
+  it('falls back to the platform zone', () => {
+    expect(resolveTimeZone({ timezone: null }, 'Europe/Berlin')).toBe('Europe/Berlin');
+  });
+
+  it('falls back to UTC when the platform has none', () => {
+    expect(resolveTimeZone({ timezone: null }, null)).toBe('UTC');
+    expect(resolveTimeZone({ timezone: null }, undefined)).toBe('UTC');
+  });
+
+  it('treats an empty string as unset rather than as a zone', () => {
+    expect(resolveTimeZone({ timezone: '' }, 'Europe/Berlin')).toBe('Europe/Berlin');
+  });
+});
+
+describe('isJobDue with a timezone', () => {
+  // 03:00 Berlin is 01:00 UTC in summer. A nightly job must be due then, and
+  // NOT at 03:00 UTC — which is 05:00 for the tenant, the complaint that
+  // started this.
+  const nightly = {
+    schedule: '0 3 * * *',
+    lastRunAt: new Date('2026-07-01T01:00:00Z'),
+    createdAt: new Date('2026-06-01T00:00:00Z'),
+    timezone: 'Europe/Berlin',
+  };
+
+  it('is due at the local hour, not the UTC one', () => {
+    expect(isJobDue(nightly, new Date('2026-07-02T00:59:00Z'))).toBe(false);
+    expect(isJobDue(nightly, new Date('2026-07-02T01:00:00Z'))).toBe(true);
+  });
+
+  it('follows the platform zone when the job has none', () => {
+    const job = { ...nightly, timezone: null };
+    expect(isJobDue(job, new Date('2026-07-02T00:59:00Z'), 'Europe/Berlin')).toBe(false);
+    expect(isJobDue(job, new Date('2026-07-02T01:00:00Z'), 'Europe/Berlin')).toBe(true);
+  });
+
+  it('keeps UTC behaviour for a job with no zone and no platform zone', () => {
+    const job = { ...nightly, timezone: null, lastRunAt: new Date('2026-07-01T03:00:00Z') };
+    expect(isJobDue(job, new Date('2026-07-02T02:59:00Z'))).toBe(false);
+    expect(isJobDue(job, new Date('2026-07-02T03:00:00Z'))).toBe(true);
   });
 });
