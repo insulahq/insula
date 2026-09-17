@@ -185,13 +185,21 @@ describe('notification events', () => {
       expect(lastDispatch().variables.outcomeLabel).toBe('was cancelled');
     });
 
-    it('omits the source label entirely when there is no source host', async () => {
-      // An empty string would render "(copying from )" — the `{{#if}}` in the
-      // template only guards an ABSENT key.
+    it('leaves the source label UNDEFINED, never an empty string', async () => {
+      // `{{#if sourceLabel}}` treats undefined and absent alike, so either is
+      // safe — but an empty STRING is not: it renders "(copying from )".
+      //
+      // The assertion used to require the key to be absent, which forced the
+      // payload to be built with a conditional spread. The variable-contract
+      // guard cannot see keys inside a spread and reported three variables as
+      // supplied by nobody, so the key is now written unconditionally and this
+      // checks the value instead. Same protection, one less way to fail CI.
       await notifyTenantImapsyncTerminal({} as never, 'c1', {
         jobId: 'j1', mailboxAddress: 'x@example.com', status: 'completed',
       });
-      expect('sourceLabel' in lastDispatch().variables).toBe(false);
+      const { sourceLabel } = lastDispatch().variables as { sourceLabel?: unknown };
+      expect(sourceLabel).toBeUndefined();
+      expect(sourceLabel).not.toBe('');
     });
 
     it('does not fire for non-terminal status', async () => {

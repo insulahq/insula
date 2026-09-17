@@ -195,11 +195,19 @@ export async function notifyTenantImapsyncTerminal(
     return 'It was stopped before it finished, so some mail may not have been copied.';
   })();
 
+  // Every key written as `name: value`, never shorthand and never a
+  // conditional spread. The variable-contract guard reads the payload keys out
+  // of this literal with `^\s*(\w+):` — shorthand (`detail,`) and a spread
+  // (`...(x ? { y } : {})`) are both invisible to it, so it reported three
+  // variables as supplied by nobody. `sourceLabel` is undefined rather than
+  // absent when there is no source host; the template guards it with
+  // `{{#if sourceLabel}}`, which treats undefined as absent, so nothing
+  // renders as "(copying from )".
   await dispatchSafe(db, 'tenant.mailbox_migration', { kind: 'tenant', tenantId }, {
     mailboxAddress: payload.mailboxAddress,
-    outcomeLabel,
-    detail,
-    ...(payload.sourceHost ? { sourceLabel: payload.sourceHost } : {}),
+    outcomeLabel: outcomeLabel,
+    detail: detail,
+    sourceLabel: payload.sourceHost,
     recommendedAction: payload.status === 'failed'
       ? 'You can start the migration again from the Email page once the problem is fixed.'
       : '',
