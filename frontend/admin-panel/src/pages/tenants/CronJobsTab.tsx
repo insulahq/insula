@@ -204,6 +204,11 @@ export default function CronJobsTab() {
                         <code className="rounded bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 text-xs text-gray-700 dark:text-gray-300">
                           {job.schedule}
                         </code>
+                        {job.timeoutSeconds != null && (
+                          <span className="ml-2 text-xs text-gray-400 dark:text-gray-500">
+                            timeout {job.timeoutSeconds}s
+                          </span>
+                        )}
                       </td>
                       <td className="hidden px-5 py-3.5 text-sm text-gray-600 dark:text-gray-400 md:table-cell max-w-xs truncate">
                         <code className="text-xs">{formatTarget(job)}</code>
@@ -244,8 +249,10 @@ export default function CronJobsTab() {
                               {formatDuration(job.lastRunDurationMs) && (
                                 <span>{formatDuration(job.lastRunDurationMs)}</span>
                               )}
-                              {job.type === 'webcron' && job.lastRunResponseCode != null && (
-                                <span className="font-mono">{job.lastRunResponseCode}</span>
+                              {job.lastRunResponseCode != null && (
+                                <span className="font-mono">
+                                  {job.type === 'webcron' ? job.lastRunResponseCode : `exit ${job.lastRunResponseCode}`}
+                                </span>
                               )}
                             </div>
                           </div>

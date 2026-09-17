@@ -6,6 +6,33 @@ const cronRegex = /^([0-9*,\-\/]+)\s+([0-9*,\-\/]+)\s+([0-9*,\-\/]+)\s+([0-9*,\-
 
 // ─── Input Schemas ───────────────────────────────────────────────────────────
 
+/**
+ * Per-job run ceiling, in seconds.
+ *
+ * One number cannot fit both job types: a webcron ping that takes 30 seconds is
+ * broken, while Moodle's `admin/cli/cron.php` legitimately took 182 s on a
+ * newly installed site — and a course backup or a search reindex takes longer
+ * still. Leaving this unset keeps the per-type default (see
+ * DEFAULT_CRON_TIMEOUT_SECONDS); setting it raises or lowers the ceiling for
+ * that one job.
+ *
+ * The 1-hour cap is the scheduler's, not the job's: a run holds its claim for
+ * its whole duration, and a ceiling beyond the claim's staleness window would
+ * let two runs of the same job overlap.
+ */
+export const CRON_TIMEOUT_MIN_SECONDS = 5;
+export const CRON_TIMEOUT_MAX_SECONDS = 3600;
+
+/** Applied when a job does not set its own. */
+export const DEFAULT_CRON_TIMEOUT_SECONDS = { webcron: 30, deployment: 300 } as const;
+
+const timeoutField = z
+  .number()
+  .int()
+  .min(CRON_TIMEOUT_MIN_SECONDS)
+  .max(CRON_TIMEOUT_MAX_SECONDS)
+  .optional();
+
 export const createCronJobSchema = z.object({
   name: z.string().min(1).max(255),
   type: z.enum(['webcron', 'deployment']),
@@ -17,6 +44,7 @@ export const createCronJobSchema = z.object({
   command: z.string().min(1).max(2000).optional(),
   deployment_id: z.string().uuid().optional(),
   // Common
+  timeout_seconds: timeoutField,
   enabled: z.boolean().default(true),
 }).refine(
   (data) => {
@@ -34,6 +62,7 @@ export const updateCronJobSchema = z.object({
   http_method: z.enum(['GET', 'POST', 'PUT']).optional(),
   command: z.string().min(1).max(2000).optional(),
   deployment_id: z.string().uuid().optional(),
+  timeout_seconds: timeoutField,
   enabled: z.boolean().optional(),
 });
 
@@ -46,6 +75,7 @@ export const cronJobResponseSchema = z.object({
   type: z.enum(['webcron', 'deployment']),
   schedule: z.string(),
   command: z.string().nullable(),
+  timeoutSeconds: z.number().int().nullable(),
   url: z.string().nullable(),
   httpMethod: z.string().nullable(),
   deploymentId: z.string().nullable(),

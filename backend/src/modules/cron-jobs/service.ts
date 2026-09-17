@@ -22,6 +22,7 @@ export async function createCronJob(db: Database, tenantId: string, input: Creat
     url: input.url ?? null,
     httpMethod: input.http_method ?? 'GET',
     deploymentId: input.deployment_id ?? null,
+    timeoutSeconds: input.timeout_seconds ?? null,
     enabled: input.enabled ? 1 : 0,
   });
 
@@ -74,6 +75,7 @@ export async function listAllCronJobs(
       url: cronJobs.url,
       httpMethod: cronJobs.httpMethod,
       deploymentId: cronJobs.deploymentId,
+      timeoutSeconds: cronJobs.timeoutSeconds,
       enabled: cronJobs.enabled,
       lastRunAt: cronJobs.lastRunAt,
       lastRunStatus: cronJobs.lastRunStatus,
@@ -182,6 +184,7 @@ export async function updateCronJob(db: Database, tenantId: string, cronJobId: s
   if (input.url !== undefined) updateValues.url = input.url;
   if (input.http_method !== undefined) updateValues.httpMethod = input.http_method;
   if (input.deployment_id !== undefined) updateValues.deploymentId = input.deployment_id;
+  if (input.timeout_seconds !== undefined) updateValues.timeoutSeconds = input.timeout_seconds;
   if (input.enabled !== undefined) updateValues.enabled = input.enabled ? 1 : 0;
 
   if (Object.keys(updateValues).length > 0) {

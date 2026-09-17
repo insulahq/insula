@@ -48,6 +48,13 @@ enabled, and the result of the last run.
 4. Fill in the common fields:
     - **Name** — a label for you (e.g. `daily-backup`).
     - **Schedule (cron)** — when it runs, in cron format (see below).
+    - **Timeout (seconds)** — optional. How long **one run** may take before
+      the platform gives up on it and records a failure. Leave it blank for the
+      default: **30 seconds** for a webcron, **300 seconds** for a deployment
+      command. Raise it for an application cron that legitimately runs for
+      minutes — a Moodle site's `admin/cli/cron.php` takes around three minutes
+      on its own, and longer when it runs a course backup or rebuilds its
+      search index. The most you can set is one hour.
 5. Click **Add**. New tasks start **enabled**.
 
 ### Writing the schedule
@@ -95,6 +102,13 @@ The **Last Run** column shows how the most recent run went:
   command or a program it calls was not found in the app's container.
 
 A task that has never run shows **Never**.
+
+!!! warning "A run that hits the timeout is not necessarily stopped"
+    The timeout is how long the platform **waits**. For a deployment task, the
+    command may carry on running inside your app's container after the wait
+    ends — the platform stops watching, it does not reach in and kill it. If a
+    task regularly times out, raise its timeout rather than leaving it to be
+    abandoned halfway through every run.
 
 !!! note "What you can see"
     The panel shows the **status, timing and output of the most recent run**
