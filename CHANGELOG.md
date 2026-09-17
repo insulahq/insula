@@ -29,10 +29,13 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 - **The currency picker offers every ISO 4217 code, searchable.** It was a
   15-entry dropdown with an inert "Custom" row, so a platform billing in MXN,
   KES or PLN could see its own code listed as *Custom* and had no way to select
-  it — the API had accepted any 3-letter code all along. The list now comes from
-  the runtime (300+ codes, no hardcoded table to go stale) and searches by name
-  as well as code, so `rand` finds ZAR. The familiar handful stays pinned at the
-  top.
+  it — the API had accepted any 3-letter code all along. The list is the union
+  of what `Intl` offers and the active ISO 4217 codes, and searches by name as
+  well as code, so `rand` finds ZAR. Neither source is complete alone: `Intl`
+  gave 159 codes in Chromium and 162 in Node on the same day and omitted **VED**
+  in both, while ISO cannot know about a code added after a release ships — and
+  since the picker has no free-text entry, a code missing from it is one the
+  operator cannot choose at all. The familiar handful stays pinned at the top.
 
 - **Outbound DMARC reporting is now off until an operator picks an address that
   can receive mail — and tenants can finally see their own DMARC results.**
