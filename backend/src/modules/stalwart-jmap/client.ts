@@ -915,6 +915,13 @@ export interface StalwartDmarcReportSettingsRow {
   readonly aggregateFromName?: StalwartExpression;
   readonly aggregateOrgName?: StalwartExpression;
   readonly aggregateDkimSignDomain?: StalwartExpression;
+  /**
+   * Failure (forensic, `ruf=`) reports. Same subsystem, same defaults
+   * (`[1, 1d]` from `'noreply-dmarc@' + system('domain')`), so it needs the
+   * same gate as the aggregate half — see dmarc-report-sender.ts.
+   */
+  readonly failureSendFrequency?: StalwartExpression;
+  readonly failureFromAddress?: StalwartExpression;
 }
 
 export async function dmarcReportSettingsGet(params: {

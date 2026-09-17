@@ -42,6 +42,8 @@ import {
 import type { Database } from '../../db/index.js';
 import type { OutboundReconcileLogger } from '../email-outbound/service.js';
 
+export type { OutboundReconcileLogger };
+
 /** platform_settings key holding the chosen sender, or the DISABLE sentinel. */
 export const DMARC_REPORT_SENDER_KEY = 'dmarc_report_sender';
 
@@ -56,6 +58,9 @@ export const DMARC_REPORT_SENDER_DISABLED = 'disabled';
 const SEND_FREQUENCY = 'daily';
 
 const expr = (value: string): StalwartExpression => ({ match: {}, else: `'${value}'` });
+
+/** Stalwart's own keyword for "do not send these at all". */
+const DISABLE = 'disable';
 
 export interface EligibleReportSender {
   readonly address: string;
@@ -191,6 +196,24 @@ export async function ensureDmarcReportSender(
     }
   }
 
+  // Both patches state EVERY field this platform has an opinion about, in both
+  // directions. Two reasons, and the first was found on DEV:
+  //
+  //  1. A single-field patch against a settings group Stalwart has never
+  //     written is ACCEPTED (`updated: {singleton: null}`, nothing in
+  //     `notUpdated`) and stores NOTHING. The disable-only patch therefore
+  //     logged success on a fresh install while leaving the group empty — and
+  //     an empty group means the built-in defaults are live, which is
+  //     `daily` from `noreply-dmarc@` + the server's own hostname domain.
+  //     The exact bug this whole module exists to prevent, reported as fixed.
+  //
+  //  2. Failure (forensic / `ruf=`) reports are the same subsystem with the
+  //     same defaults — `failureSendFrequency: [1, 1d]` from
+  //     `'noreply-dmarc@' + system('domain')`. Gating only the aggregate half
+  //     would have left the other half sending from an address nobody owns.
+  //     They stay OFF even when aggregate reporting is on: a failure report
+  //     forwards headers of somebody's individual message to whoever asked for
+  //     it, and turning that on is not implied by "send DMARC reports".
   const patch: Record<string, unknown> = desired
     ? {
       aggregateSendFrequency: expr(SEND_FREQUENCY),
@@ -199,8 +222,12 @@ export async function ensureDmarcReportSender(
       // is signed by the domain it claims to come from.
       aggregateOrgName: expr(desired.slice(desired.indexOf('@') + 1)),
       aggregateDkimSignDomain: expr(desired.slice(desired.indexOf('@') + 1)),
+      failureSendFrequency: expr(DISABLE),
     }
-    : { aggregateSendFrequency: expr('disable') };
+    : {
+      aggregateSendFrequency: expr(DISABLE),
+      failureSendFrequency: expr(DISABLE),
+    };
 
   // Skip the write when Stalwart already agrees. The singleton being EMPTY is
   // not agreement — empty means the built-in defaults are live, which is the
@@ -210,8 +237,22 @@ export async function ensureDmarcReportSender(
     const currentFreq = current?.aggregateSendFrequency?.else;
     const currentFrom = current?.aggregateFromAddress?.else;
     const wantFreq = (patch.aggregateSendFrequency as StalwartExpression).else;
-    const wantFrom = desired ? (patch.aggregateFromAddress as StalwartExpression).else : undefined;
-    if (current && currentFreq === wantFreq && currentFrom === wantFrom) {
+    // When disabling, the patch deliberately leaves `aggregateFromAddress`
+    // alone — `disable` already stops every send, and clearing the address
+    // would lose the operator's last choice. So the sender must NOT be part of
+    // the comparison in that direction: it still holds the old address, and
+    // demanding it match would make this never look in-sync and rewrite the
+    // same patch (plus a log line) on every 5-minute tick, forever.
+    // The failure half is part of the comparison in BOTH directions: it is
+    // always meant to be off, so leaving it out would let a live
+    // `failureSendFrequency` sit there looking in-sync.
+    const currentFailure = current?.failureSendFrequency?.else;
+    const wantFailure = (patch.failureSendFrequency as StalwartExpression).else;
+    const agrees = currentFailure === wantFailure && (desired
+      ? currentFreq === wantFreq
+        && currentFrom === (patch.aggregateFromAddress as StalwartExpression).else
+      : currentFreq === wantFreq);
+    if (current && agrees) {
       return { state: 'in-sync', sender: desired, reason };
     }
   } catch (err) {
