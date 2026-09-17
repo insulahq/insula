@@ -207,3 +207,66 @@ describe('EmailDriftPage', () => {
     });
   });
 });
+
+describe('EmailDriftPage — mailbox alias drift (2026-09-17)', () => {
+  const aliasItem = (over: Record<string, unknown> = {}) => ({
+    ...DRIFT_ITEM,
+    id: '22222222-2222-4222-8222-222222222222',
+    kind: 'alias' as const,
+    expectedName: 'sales@example.test',
+    expectedStalwartId: null,
+    platformRowId: 'alias-row-1',
+    notes: null,
+    ...over,
+  });
+
+  beforeEach(() => {
+    mockApiFetch.mockReset();
+  });
+
+  it('describes a missing alias as MISSING, not as unowned', async () => {
+    // The two directions mean opposite things and the wording is the only
+    // place the operator learns which one they are looking at.
+    mockDrift([aliasItem()]);
+    renderPage();
+    const row = await screen.findByText('sales@example.test');
+    expect(row).toBeTruthy();
+    expect(screen.getByText(/Mailbox alias missing/i)).toBeTruthy();
+    expect(screen.queryByText(/no platform owner/i)).toBeNull();
+  });
+
+  it('offers no destructive action for a missing alias — it self-heals', async () => {
+    // delete-orphan handles orphan-domain and orphan-list and 409s on anything
+    // else, and "Recreate empty" builds a mailbox. Both would be wrong here;
+    // the alias reconciler re-pushes the map on its own tick.
+    mockDrift([aliasItem()]);
+    renderPage();
+    await screen.findByText('sales@example.test');
+    expect(screen.getByTestId(/drift-self-heals-/)).toBeTruthy();
+    expect(screen.queryByTestId(/drift-delete-orphan-/)).toBeNull();
+    expect(screen.queryByTestId(/drift-recreate-/)).toBeNull();
+    // Dismiss stays available — an operator must always be able to clear it.
+    expect(screen.getByTestId(/drift-dismiss-/)).toBeTruthy();
+  });
+
+  it('describes an unclaimed address as unowned and offers the delete path', async () => {
+    mockDrift([aliasItem({
+      kind: 'orphan-alias' as const,
+      expectedName: 'sneaky@example.test',
+      expectedStalwartId: 'sp-1',
+      platformRowId: 'orphan-alias:sneaky@example.test',
+    })]);
+    renderPage();
+    await screen.findByText('sneaky@example.test');
+    expect(screen.getByText(/Unclaimed mailbox address — no platform owner/i)).toBeTruthy();
+    // Not deletable through this endpoint yet, so no button that would 409 —
+    // and NOT "Recreate empty" either, which builds a mailbox. This assertion
+    // was originally only about delete-orphan and passed while the row still
+    // offered the recreate buttons.
+    expect(screen.queryByTestId(/drift-delete-orphan-/)).toBeNull();
+    expect(screen.queryByTestId(/drift-recreate-/)).toBeNull();
+    expect(screen.queryByTestId(/drift-restore-snapshot-/)).toBeNull();
+    expect(screen.getByTestId(/drift-manual-only-/)).toBeTruthy();
+    expect(screen.getByTestId(/drift-dismiss-/)).toBeTruthy();
+  });
+});

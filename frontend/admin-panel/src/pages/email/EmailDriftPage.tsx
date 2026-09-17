@@ -149,11 +149,35 @@ function DriftRow({ item }: { readonly item: MailDriftItem }) {
   const rotateMaster = useRotateWebmailMasterPassword();
 
   const isMaster = item.kind === 'master-user';
-  const isOrphan = item.kind === 'orphan-domain' || item.kind === 'orphan-list';
+  // Two separate questions, previously answered by one flag:
+  //
+  //   isUnowned  — live in Stalwart, owned by nothing here. Drives the wording
+  //                ("no platform owner" vs "missing"); a kind left out of this
+  //                list is described backwards.
+  //   isDeletable — the delete-orphan endpoint actually handles it. It
+  //                dispatches orphan-list and orphan-domain and REFUSES
+  //                anything else (409), so offering the button for a kind it
+  //                does not handle is offering an error.
+  const isUnowned = item.kind === 'orphan-domain'
+    || item.kind === 'orphan-list'
+    || item.kind === 'orphan-alias';
+  const isDeletable = item.kind === 'orphan-domain' || item.kind === 'orphan-list';
+  // A missing alias needs no operator action: the mailbox-alias reconciler
+  // re-pushes the whole desired map on its own tick. Recreating a mailbox or
+  // restoring a snapshot — the two buttons the generic branch offers — would
+  // both be the wrong tool.
+  const selfHealing = item.kind === 'alias';
+  // An unclaimed address does NOT self-heal — it keeps delivering until
+  // somebody removes it — but the delete-orphan endpoint does not handle this
+  // kind yet, and the generic branch would offer "Recreate empty", which
+  // builds a mailbox. Say what to do instead of offering the wrong tool.
+  const manualOnly = item.kind === 'orphan-alias';
   const kindLabel = isMaster
     ? 'Webmail master user'
     : item.kind === 'orphan-domain' ? 'Orphaned Stalwart Domain'
     : item.kind === 'orphan-list' ? 'Orphaned mailing list'
+    : item.kind === 'orphan-alias' ? 'Unclaimed mailbox address'
+    : item.kind === 'alias' ? 'Mailbox alias'
     : item.kind === 'domain' ? 'Stalwart Domain' : 'Stalwart mailbox';
 
   return (
@@ -161,7 +185,7 @@ function DriftRow({ item }: { readonly item: MailDriftItem }) {
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <div className={`flex items-center gap-2 text-xs font-medium uppercase tracking-wider ${isMaster ? 'text-red-600 dark:text-red-400' : 'text-amber-600 dark:text-amber-400'}`}>
-            <AlertTriangle size={12} /> {kindLabel}{isOrphan ? ' — no platform owner' : ' missing'}{isMaster ? ' — webmail login broken' : ''}
+            <AlertTriangle size={12} /> {kindLabel}{isUnowned ? ' — no platform owner' : ' missing'}{isMaster ? ' — webmail login broken' : ''}
           </div>
           <div className="mt-1 font-mono text-sm text-gray-900 dark:text-gray-100">
             {item.expectedName}
@@ -175,7 +199,21 @@ function DriftRow({ item }: { readonly item: MailDriftItem }) {
           )}
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
-          {isOrphan ? (
+          {selfHealing ? (
+            <span
+              className="text-xs text-gray-500 dark:text-gray-400"
+              data-testid={`drift-self-heals-${item.id}`}
+            >
+              Re-pushed automatically on the next alias reconcile
+            </span>
+          ) : manualOnly ? (
+            <span
+              className="text-xs text-gray-500 dark:text-gray-400"
+              data-testid={`drift-manual-only-${item.id}`}
+            >
+              Verify the address, then remove it in the Stalwart admin UI
+            </span>
+          ) : isDeletable ? (
             <button
               type="button"
               onClick={() => setShowDeleteOrphan(true)}

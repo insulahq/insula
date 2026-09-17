@@ -25,7 +25,7 @@
 
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
-import { mailboxes, emailDomains, domains, mailDriftItems, users, notifications } from '../../db/schema.js';
+import { mailboxes, emailDomains, domains, mailDriftItems, users, notifications, mailboxAliases } from '../../db/schema.js';
 import {
   getJmapSession,
   principalGet,
@@ -223,9 +223,14 @@ async function syncPrincipals(params: {
   // they're no longer in drift, (c) detect NEW items for admin alert
   // fan-out. Each item: kind + platform_row_id is the natural key.
   const driftThisTick: Array<{
-    kind: 'mailbox' | 'domain' | 'master-user' | 'orphan-domain' | 'orphan-list';
+    kind: 'mailbox' | 'domain' | 'master-user' | 'orphan-domain' | 'orphan-list' | 'alias' | 'orphan-alias';
     expectedName: string;
-    expectedStalwartId: string;
+    /**
+     * Null for kind='alias': the address is ABSENT from Stalwart, which is the
+     * finding — there is no id to record. The column has always been nullable;
+     * this local type was narrower than the schema.
+     */
+    expectedStalwartId: string | null;
     platformRowId: string;
     notes?: string;
   }> = [];
@@ -480,6 +485,104 @@ async function syncPrincipals(params: {
     errors.push(`orphan-domain check failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 
+  // ── 4a-bis. Mailbox ALIASES, in both directions ─────────────────────────
+  //
+  // Drift covered mailboxes and domains and stopped there, so an alias could
+  // be live in Stalwart with no platform row, or promised by a platform row
+  // and absent from Stalwart, and NEITHER showed anywhere. That gap is also
+  // why an empty `mail_drift_items` was never evidence that aliases were
+  // healthy — it could not have said otherwise.
+  //
+  // `p.emails` already carries each principal's primary address AND its
+  // aliases (see the map build above), so both directions come out of data
+  // this tick already fetched — no extra JMAP round trip.
+  try {
+    // Deliberately its own read: `platformMailboxes` in section 3 lives inside
+    // that section's try, and sharing it would mean a failure there silently
+    // disables alias drift too.
+    const aliasMailboxes = await db
+      .select({
+        id: mailboxes.id,
+        fullAddress: mailboxes.fullAddress,
+        stalwartPrincipalId: mailboxes.stalwartPrincipalId,
+      })
+      .from(mailboxes);
+
+    const aliasRows = await db
+      .select({
+        id: mailboxAliases.id,
+        fullAddress: mailboxAliases.fullAddress,
+        enabled: mailboxAliases.enabled,
+        mailboxId: mailboxAliases.mailboxId,
+      })
+      .from(mailboxAliases);
+
+    // Direction 1: the platform promises an address Stalwart does not know.
+    //
+    // "Parent is live" means its address is in Stalwart RIGHT NOW, not that
+    // the row carries a principal id. A mailbox that was synced and has since
+    // vanished carries an id AND is missing — the first version of this check
+    // used the id and therefore reported both the mailbox and every one of its
+    // aliases for a single cause.
+    const liveMailboxIds = new Set(
+      aliasMailboxes
+        .filter((m) => stalwartMailboxByEmail.has(m.fullAddress.toLowerCase()))
+        .map((m) => m.id),
+    );
+    for (const a of aliasRows) {
+      if (a.enabled !== 1) continue; // a disabled row records intent, not a live address
+      if (!liveMailboxIds.has(a.mailboxId)) {
+        // The parent mailbox itself is not in Stalwart. That IS the drift, and
+        // it is already reported as kind='mailbox' — reporting the alias too
+        // would multiply one cause into N items an operator has to dismiss.
+        continue;
+      }
+      if (stalwartMailboxByEmail.has(a.fullAddress.toLowerCase())) continue;
+      driftThisTick.push({
+        kind: 'alias',
+        expectedName: a.fullAddress,
+        expectedStalwartId: null,
+        platformRowId: a.id,
+        notes:
+          'The platform has an enabled alias row for this address and its mailbox IS provisioned, but '
+          + 'Stalwart does not carry the address — so mail to it is refused 550 while the panel shows it '
+          + 'as working. Re-push it from the mailbox\'s alias list.',
+      });
+    }
+
+    // Direction 2: a live address on a mailbox we own that no row claims.
+    // Scoped to principals the platform owns on purpose: an address on a
+    // principal we know nothing about is a different problem, and inventing a
+    // kind for it here would report the same out-of-band account twice.
+    const ownedPrincipals = new Map(
+      aliasMailboxes
+        .filter((m): m is typeof m & { stalwartPrincipalId: string } => m.stalwartPrincipalId !== null)
+        .map((m) => [m.stalwartPrincipalId, m.fullAddress.toLowerCase()]),
+    );
+    const claimed = new Set<string>([
+      ...aliasMailboxes.map((m) => m.fullAddress.toLowerCase()),
+      ...aliasRows.map((a) => a.fullAddress.toLowerCase()),
+    ]);
+    for (const [email, principalId] of stalwartMailboxByEmail) {
+      if (!ownedPrincipals.has(principalId)) continue;
+      if (claimed.has(email)) continue;
+      driftThisTick.push({
+        kind: 'orphan-alias',
+        expectedName: email,
+        expectedStalwartId: principalId,
+        // Synthetic stable natural key — there IS no platform row.
+        platformRowId: `orphan-alias:${email}`,
+        notes:
+          'This address is live on a mailbox the platform owns, but no alias row claims it — mail sent '
+          + 'to it is being delivered to that mailbox with nothing in the panel saying so. Typical '
+          + 'sources: an out-of-band admin-console edit, or an alias delete whose platform row went '
+          + 'first and whose Stalwart push failed. Verify, then remove it from the drift UI.',
+      });
+    }
+  } catch (err) {
+    errors.push(`alias drift check failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
   // 4b. Inverse MailingList check (kind: 'orphan-list', 2026-08-25 drift
   // audit): a Stalwart MailingList with no email_aliases row is a LIVE
   // forwarder nobody owns — before this check it was only ever logged by
@@ -535,7 +638,15 @@ async function syncPrincipals(params: {
 
   // 5. Persist drift state + alert admins on NEW items.
   try {
-    const newItems = await reconcileDriftItems(db, driftThisTick);
+    const insertFailures: string[] = [];
+    const newItems = await reconcileDriftItems(db, driftThisTick, insertFailures);
+    if (insertFailures.length > 0) {
+      // Surfaced, not swallowed. A row the database refuses means the detector
+      // and the schema disagree about what a drift kind is — exactly the
+      // failure that hid orphan-list for three weeks.
+      errors.push(`drift rows rejected: ${insertFailures.join('; ')}`);
+      log.error({ insertFailures }, 'mail-drift: some drift rows could not be stored');
+    }
     if (newItems.length > 0) {
       await emitDriftNotification(db, newItems);
     }
@@ -568,9 +679,10 @@ async function syncPrincipals(params: {
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface DriftTickItem {
-  readonly kind: 'mailbox' | 'domain' | 'master-user' | 'orphan-domain' | 'orphan-list';
+  readonly kind: 'mailbox' | 'domain' | 'master-user' | 'orphan-domain' | 'orphan-list' | 'alias' | 'orphan-alias';
   readonly expectedName: string;
-  readonly expectedStalwartId: string;
+  /** Null when the thing is ABSENT from Stalwart (kind='alias'). */
+  readonly expectedStalwartId: string | null;
   readonly platformRowId: string;
   readonly notes?: string;
 }
@@ -591,6 +703,7 @@ interface DriftTickItem {
 async function reconcileDriftItems(
   db: Database,
   thisTick: ReadonlyArray<DriftTickItem>,
+  insertFailures: string[] = [],
 ): Promise<ReadonlyArray<DriftTickItem>> {
   // 1. Load currently-active rows from the table.
   const active = await db
@@ -621,15 +734,30 @@ async function reconcileDriftItems(
         ));
     } else {
       // Brand-new drift (or re-occurrence after resolved). Insert.
-      await db.insert(mailDriftItems).values({
-        id: randomUUID(),
-        kind: item.kind,
-        expectedName: item.expectedName,
-        expectedStalwartId: item.expectedStalwartId,
-        platformRowId: item.platformRowId,
-        notes: item.notes ?? null,
-      });
-      newItems.push(item);
+      //
+      // Per-item try/catch, because this loop used to be able to lose the
+      // whole tick: `kind='orphan-list'` was emitted from 2026-08-25 while the
+      // CHECK constraint still listed four kinds, so the first such item threw
+      // out of this function — later items were never written AND the resolve
+      // sweep below never ran, leaving a drift list an operator could not
+      // clear. Migration 0128 fixes that constraint; this makes the next
+      // mismatch cost one row instead of the pass. It is reported, never
+      // swallowed: a kind the database rejects is a bug, not a condition.
+      try {
+        await db.insert(mailDriftItems).values({
+          id: randomUUID(),
+          kind: item.kind,
+          expectedName: item.expectedName,
+          expectedStalwartId: item.expectedStalwartId,
+          platformRowId: item.platformRowId,
+          notes: item.notes ?? null,
+        });
+        newItems.push(item);
+      } catch (err) {
+        insertFailures.push(
+          `${item.kind}:${item.platformRowId} (${err instanceof Error ? err.message : String(err)})`,
+        );
+      }
     }
   }
 
