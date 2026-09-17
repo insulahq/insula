@@ -11,12 +11,18 @@
 > **Last Updated:** 2026-03-27
 > **Platform:** Self-managed Kubernetes on bare metal / VPS
 > **Orchestration:** Kubernetes + Docker
-> **Migration From:** Plesk-based manually configured servers
 >
-> **Note (ADR-022):** DNS (PowerDNS), VPN mesh (NetBird), and IAM (Dex/OIDC) are
-> **external services** provided by a separate infrastructure project. This platform
-> consumes their APIs (PowerDNS REST API, OIDC endpoint, NetBird mesh) and exposes
-> their connection settings as configurable options in the admin panel.
+> **Note (ADR-022):** authoritative DNS, the mesh VPN, and IAM/OIDC are **external
+> services** that live outside the cluster. This platform consumes their APIs
+> (PowerDNS REST API, an OIDC issuer, the mesh) and exposes their connection
+> settings as configurable options in the admin panel. The sister project
+> **[Backbone](https://github.com/insulahq/backbone)** is the reference deployment
+> of all three — PowerDNS, NetBird, and Zitadel as the IAM — and is optional: every
+> endpoint is configurable, so equivalents work.
+>
+> **Dex is not the platform IdP.** It ships only in the development, dind and
+> staging overlays as a test IdP for exercising OIDC flows; a CI guard
+> (`ci-no-dex-in-production.sh`) fails a production overlay that contains it.
 
 ---
 
@@ -124,64 +130,67 @@
 
 ### 1.1 Project Purpose
 
-This infrastructure replaces the current Plesk-based commercial web hosting platform with a
-modern, Kubernetes-orchestrated system. The business provides shared web hosting, WordPress
-hosting, email hosting, database hosting, DNS management, SSL/TLS certificates, and file
-access (SFTP) to commercial clients.
+A multi-tenant web + mail hosting platform: shared and dedicated website hosting,
+email, databases, DNS, TLS certificates, and file access (SFTP/web) for commercial
+clients, administered through an admin panel and delivered to customers through a
+tenant panel.
 
-The primary driver is **operational efficiency** — eliminating manual server configuration,
-reducing maintenance overhead, and enabling scalable, repeatable client provisioning through
-automation.
+The driver is **operational efficiency** — replacing manual, per-server
+configuration with declarative state the cluster reconciles toward, so client
+provisioning is automated, repeatable and auditable. The capability envelope has
+since grown past what a hosting panel does: per-tenant kernel isolation,
+point-in-time database recovery, rehearsed disaster recovery, cluster-to-cluster
+tenant migration, per-site WAF, SLO alerting, and signed releases verified on the
+node before upgrade.
 
-### 1.2 Current State (Plesk)
+### 1.2 What it replaced
 
-| Aspect              | Current State                                     |
-| ------------------- | ------------------------------------------------- |
-| Hosting panel       | Plesk                                             |
-| Server management   | Manual, per-server configuration                  |
-| Client isolation    | Plesk subscription-level (OS user separation)     |
-| Scaling             | Vertical (bigger servers) or manual server adds   |
-| Deployment          | FTP/SFTP file upload, Plesk Git integration       |
-| Monitoring          | Plesk built-in + ad-hoc                           |
-| Backup              | Plesk backup manager                              |
-| SSL                 | Plesk Let's Encrypt extension                     |
-| Email               | Plesk mail server (Postfix/Dovecot)               |
+A manually configured, panel-managed server fleet: per-server configuration by
+hand, subscription-level (OS-user) isolation, vertical scaling or manual server
+additions, and backup/SSL/mail each handled by a separate panel extension. The
+platform is now **in production**; that fleet is history, and this document
+describes the system that replaced it rather than the comparison that motivated
+it.
 
-### 1.3 Target State (Kubernetes)
+### 1.3 How it works now
 
-| Aspect              | Target State                                       |
+| Aspect              | Implementation                                     |
 | ------------------- | -------------------------------------------------- |
-| Hosting panel       | Custom management API + web UI                     |
-| Server management   | Declarative, automated via Kubernetes              |
-| Client isolation    | Namespace-per-tenant with resource quotas + network policies |
-| Workload model      | **Dedicated pods for all clients** — every client gets their own pod in a `client-{id}` namespace. NGINX+PHP-FPM default, Apache+PHP-FPM available per domain. See ADR-024. |
-| Container catalog   | Centrally managed, standardized images — admin controls lifecycle |
-| Scaling             | Horizontal (add nodes), auto-scaling workloads     |
-| Deployment          | SFTP, Git-based file sync, web file manager (no per-tenant builds) |
-| Monitoring          | Prometheus + Grafana + Loki                        |
-| Backup              | Velero + per-tenant DB/file backups                |
-| SSL                 | cert-manager + Let's Encrypt (fully automated)     |
-| Email               | Hybrid (self-hosted + external provider support); Roundcube webmail with OIDC + app passwords |
-| HA strategy         | **All HA features optional** — start minimal, upgrade as needed |
+| Hosting panel       | Management API (Fastify/TypeScript) + admin panel + tenant panel |
+| Server management   | Declarative, automated via Kubernetes + Flux GitOps |
+| Client isolation    | Namespace-per-tenant with resource quotas + NetworkPolicies (ADR-024) |
+| Workload model      | **A dedicated pod per client**, in its own namespace. Apache/NGINX + PHP-FPM, Node.js, Python and other runtimes per domain; bring-your-own container images (ADR-036) |
+| Container catalog   | Operator-registered catalog repositories; the seeded Official Catalog ships primitives only, app stacks are opt-in (ADR-026) |
+| Scaling             | Horizontal — add nodes; HA is a single reversible action |
+| Deployment          | SFTP/SCP/rsync gateway, Git-based file sync, web file manager |
+| Monitoring          | VictoriaMetrics single-node + platform SLO rules + notifications (ADR-051) |
+| Backup              | restic tenant bundles with a granular restore cart, CNPG point-in-time recovery, Longhorn snapshots, off-site S3/SFTP/SMB targets |
+| SSL                 | cert-manager + Let's Encrypt (fully automated); mail TLS via Traefik → Stalwart http-acme |
+| Email               | Self-hosted Stalwart (SMTP/IMAP/JMAP) with per-domain DKIM, DMARC/TLS report intake, Bulwark or Roundcube webmail, OIDC + app passwords |
+| HA strategy         | **Optional** — start single-node, scale Postgres/storage/stateless replicas when needed |
 
-### 1.4 Key Objectives
+### 1.4 Objectives, and where they landed
 
-- [ ] Eliminate manual server provisioning — all client onboarding automated
-- [ ] Namespace-per-tenant isolation with enforced resource quotas — every client gets a `client-{id}` namespace (ADR-024)
-- [ ] Centrally managed workload container catalog — admin controls all available runtime images
-- [ ] Clients select from pre-approved containers only (e.g., "NGINX PHP 8.4")
-- [ ] Admin can publish new container versions, deprecate old ones, and migrate clients
-- [ ] **Dedicated pod for every client** — full namespace isolation regardless of plan. NGINX+PHP-FPM default, Apache+PHP-FPM available per domain. See ADR-024.
-- [ ] **Database as premium add-on** — not included in base plans; provisioned on demand as a dedicated MariaDB StatefulSet per client (ADR-024)
-- [ ] Minimize server resource usage and infrastructure costs through resource overcommit, scale-to-zero, and image layer sharing
-- [ ] **All HA features optional** — start with minimal single-instance deployment, enable HA incrementally
-- [ ] Provide a self-service control panel comparable to Plesk functionality
-- [ ] Automated SSL/TLS certificate provisioning via Let's Encrypt
-- [ ] Hybrid email hosting (self-hosted option + external provider integration)
-- [ ] Three file management methods: SFTP, Git-based file sync, web file manager
-- [ ] Comprehensive security: fail2ban, optional WAF, OIDC authentication (Google/Apple)
-- [ ] Full observability stack for platform operations
-- [ ] Phased migration from Plesk with zero downtime for clients
+All of the following are implemented and in production use:
+
+- Client onboarding fully automated — no manual server provisioning.
+- Namespace-per-tenant isolation with enforced quotas (ADR-024).
+- Operator-controlled catalog repositories; clients deploy from approved entries,
+  with bring-your-own images as a separate, explicit path (ADR-036).
+- A dedicated pod per client regardless of plan.
+- Databases provisioned on demand per tenant (MariaDB or PostgreSQL).
+- Resource efficiency through overcommit and image-layer sharing; tenant
+  workloads are evicted before platform components by construction.
+- HA incrementally enabled rather than assumed.
+- A self-service control panel for both admins and tenants.
+- Automated TLS via Let's Encrypt.
+- Self-hosted email, with external-provider integration supported.
+- Three file-access methods: SFTP gateway, Git-based sync, web file manager.
+- Security in the request path: per-site WAF, automatic intrusion bans, managed
+  dual-stack node firewall, role-based access, passkeys and external OIDC.
+- Platform observability: metrics, SLO alerting, node health and memory-event
+  tracking, all surfaced in the panel.
+
 
 ### 1.5 Success Criteria
 
@@ -196,7 +205,6 @@ automation.
 | Max concurrent clients at launch| 50-100 clients    |
 | Max concurrent clients at scale | **300+ clients** (platform should grow to this) |
 | Resource cost per client        | Target: < $2-4/month platform cost (track & optimize) |
-| Plesk migration completion      | **No hard deadline** — complete when technically ready, business-driven |
 
 ### 1.6 Constraints & Assumptions
 
@@ -435,7 +443,7 @@ The platform maintains **two distinct catalogs** with different deployment mecha
 | **Workload Catalog** (Section 2) | Composable runtimes, databases, services — clients assemble their own stack | Platform-generated K8s manifests | `apache-php`, `nodejs`, `mariadb`, `redis-7` |
 | **Application Catalog** (this section) | Managed application stacks — one-click deploy, self-contained | Helm charts (`helm install`) | WordPress, Nextcloud, Jitsi, Gitea, Matomo, Moodle, Keycloak |
 
-**Key difference:** A workload is a generic runtime where clients upload and manage their own software (like cPanel/Plesk). An application is a **complete, pre-configured stack** — often multiple containers with its own database — deployed as a unit. A workload's database is shared and platform-managed; an application's database is bundled and chart-managed.
+**Key difference:** A workload is a generic runtime — the client uploads and manages their own software on top of it. An application is a **complete, pre-configured stack** — often multiple containers with its own database — deployed as a unit. A workload's database is shared and platform-managed; an application's database is bundled and chart-managed.
 
 > **Note:** WordPress was previously listed in the Workload Catalog as `wordpress-php84`. Per ADR-026,
 > it has been moved to the Application Catalog. Clients who want to manually install WordPress should

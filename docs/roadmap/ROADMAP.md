@@ -12,7 +12,7 @@
 
 | # | Item | Priority | Status |
 |---|------|----------|--------|
-| [R1](#r1--plesk-migration-service) | Plesk migration service | **P1** | Shipped (PRs #70–#89) — E2E on staging; production cutover pending |
+| [R1](#r1--plesk-migration-service) | Plesk migration service | **P1** | Shipped (PRs #70–#89) — acceptance met on staging |
 | [R2](#r2--monitoring-stack-decision--slislo) | Monitoring stack decision + SLI/SLO | **P1** | Shipped (ADR-051, PRs #50–#63) — logs deferred |
 | [R3](#r3--load-testing-in-ci) | Load testing in CI | P3 | Not built — low value for the traffic profile (decision 2026-06-20) |
 | [R4](#r4--fbl-complaint-processing) | FBL complaint processing | — | **RETIRED 2026-09-15** |
@@ -80,8 +80,10 @@ real Plesk Obsidian source.** An agentless `plesk-migration` module:
   tab visible in CNAME mode.
 
 Acceptance (one real subscription end-to-end: site serves, mail flows incl.
-unread state, DB intact, cron firing) is **met on staging**; the remaining gate
-is the production cutover. **Runbook:**
+unread state, DB intact, cron firing) is **met on staging**. The platform-level
+production cutover that used to gate this entry has happened; the importer is
+available to operators who need it and is no longer a headline capability.
+**Runbook:**
 [PLESK_MIGRATION.md](../operations/PLESK_MIGRATION.md). Cron extraction details:
 [CUSTOMER_CRON_JOBS.md](../features/CUSTOMER_CRON_JOBS.md).
 

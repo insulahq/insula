@@ -1,27 +1,49 @@
 # Insula
 
-A self-hostable, Kubernetes-native **web & mail hosting platform** — an open
-replacement for Plesk/cPanel. Multi-tenant websites, databases, mailboxes,
-DNS, backups and TLS, managed from an admin panel and a tenant panel, on
-self-managed **k3s** clusters (a single VPS to a small HA fleet).
+A self-hostable, Kubernetes-native **web & mail hosting platform**. One command
+turns a fresh Linux server into multi-tenant hosting — websites, databases,
+mailboxes, DNS, TLS, backups and monitoring — driven from an admin panel and a
+tenant panel, on self-managed **k3s** clusters that grow from a single VPS to an
+HA fleet.
 
-> **Status:** Phase 1 (MVP). Self-hostable today; first production cutover in
-> progress. License: **AGPL-3.0** (see [LICENSE](LICENSE)).
+> **Status:** In production. Signed CalVer releases; upgrades are pulled on the
+> operator's command, never pushed. License: **AGPL-3.0** (see [LICENSE](LICENSE)).
 
 ---
 
 ## What you get
 
-- **Multi-tenant hosting** — isolated namespace + workloads per tenant (PHP,
-  Node.js, static, and managed app stacks from an external catalog).
-- **Mail** — [Stalwart](https://stalw.art) SMTP/IMAP/JMAP with DKIM,
-  autodiscover, webmail (Bulwark or Roundcube), per-tenant mailboxes & backups.
-- **Databases** — per-tenant PostgreSQL/MariaDB with a web SQL manager,
-  import/export, and SFTP access.
-- **DNS, TLS, backups** — PowerDNS integration, cert-manager + Let's Encrypt,
-  and tenant/cluster backup with a Plesk-style restore cart.
-- **Operable** — admin + tenant React panels, GitOps via Flux, one-command
-  bootstrap, single-button HA scale-up, and a security/hardening dashboard.
+Everything a hosting panel does, on infrastructure that does considerably more:
+
+- **Multi-tenant hosting with real isolation** — a namespace, network policy,
+  resource quota and storage per tenant; PHP, Node.js, Python, Go, Java, .NET,
+  Ruby, Rust and Bun side by side — or any container image you bring — from the
+  curated catalog, an opt-in community app-stack catalog, or your own registry.
+- **Mail taken seriously** — [Stalwart](https://stalw.art) SMTP/IMAP/JMAP with
+  per-domain DKIM, DMARC/TLS report intake, autodiscover, webmail (Bulwark or
+  Roundcube), send-rate protection, deliverability probes (PTR, DNSBL) and
+  abuse alerting.
+- **Databases & files** — per-tenant PostgreSQL/MariaDB with a browser SQL
+  manager and import/export, a web file manager, and an SFTP/SCP/rsync gateway
+  with per-purpose credentials.
+- **Failure rehearsed, not assumed** — point-in-time database recovery,
+  off-site encrypted backups (S3/SFTP/SMB), a granular restore cart,
+  cold-start disaster recovery, and tenant migration between clusters — each
+  exercised against a live cluster by a destructive integration suite
+  (`scripts/integration-*.sh`), not just unit-tested.
+- **Security in the path, not on a dashboard** — per-site WAF (OWASP CRS),
+  automatic intrusion bans, free TLS, a managed dual-stack node firewall,
+  role-based access, passkeys, and a step-up-gated node terminal.
+- **Operations built in** — metrics, SLO alerting, per-tenant bandwidth
+  metering, memory-event tracking, node health with one-click recovery,
+  and a notification system that names what happened and links to the page
+  that fixes it.
+- **A growth path, not a migration day** — start on one small VPS; add nodes
+  and switch on high availability (Postgres, storage replicas, stateless
+  replicas, topology spread) with a single action.
+- **Verifiable supply chain** — signed releases verified on the node before
+  anything upgrades, GitOps via Flux, and no hidden control plane: the repo is
+  the platform.
 
 ## Architecture
 
@@ -48,16 +70,22 @@ flowchart TB
     end
 
     cluster -.consumes APIs.-> Ext
-    subgraph Ext["External services (separate projects · ADR-022)"]
-        DNS[PowerDNS]
-        Mesh[NetBird mesh]
-        OIDC[Dex OIDC]
+    subgraph Ext["Foundation services — outside the cluster (ADR-022)"]
+        DNS[Authoritative DNS<br/>PowerDNS REST API]
+        Mesh[Mesh VPN<br/>NetBird or equivalent]
+        OIDC[OIDC provider<br/>Zitadel · Keycloak · Authentik · …]
     end
 ```
 
 The backend API is **never exposed directly** — the panels reverse-proxy
-`/api/*` to it in-cluster. DNS, VPN mesh and IAM are consumed as external APIs,
-not bundled.
+`/api/*` to it in-cluster.
+
+DNS, mesh VPN and IAM live **outside** the cluster on purpose: authoritative DNS
+must survive the cluster it serves, the mesh is how you reach the cluster in the
+first place, and IAM is usually shared with other systems (ADR-022). Each is
+consumed over a configurable endpoint — set them in the admin panel and point
+them anywhere. See [Backbone](#companion-project-backbone) for a ready-made
+deployment of all three.
 
 ### Tech stack
 
@@ -68,9 +96,35 @@ not bundled.
 | Database | **PostgreSQL** (CloudNativePG-managed); in-memory cache (no Redis) |
 | Frontend | React 18 · Vite · Tailwind CSS · shadcn/ui · TanStack Query · Zustand |
 | Mail | Stalwart (SMTP/IMAP/JMAP) · Bulwark/Roundcube webmail |
-| Auth | JWT Bearer tokens · external Dex OIDC |
+| Auth | JWT Bearer tokens · passkeys · any external OIDC provider (Dex ships in dev/staging only, as a test IdP) |
 | TLS / secrets | cert-manager + Let's Encrypt · Sealed Secrets |
 | CI/CD | GitHub Actions · Flux v2 (3-branch GitOps) |
+
+## Companion project: Backbone
+
+Insula hosts the sites; **[Backbone](https://github.com/insulahq/backbone)** runs
+the foundation underneath it. It is provider-agnostic Ansible automation that
+deploys a redundant, self-healing pair of servers in two locations:
+
+| Backbone provides | Insula consumes it as |
+|---|---|
+| **PowerDNS** (authoritative, native mode, read-write on both nodes) | the DNS provider group behind every zone and record |
+| **NetBird** WireGuard mesh (management · signal · relay) | the admin access path to the cluster |
+| **Zitadel** central IAM (OIDC/OAuth2) | the OIDC issuer for panel login |
+
+Underneath those three it runs its own operational layer: PostgreSQL streaming
+replication with repmgr (~80 s automatic failover, split-brain prevention),
+Traefik with DNS-01 ACME, Gatus monitoring with multi-channel alerting, an
+OpenZiti zero-trust overlay, and encrypted restic backups off-site.
+
+The split is deliberate and the coupling is thin: DNS must not share fate with
+the cluster it serves, the mesh is what you use to reach that cluster, and IAM is
+usually shared with other systems (ADR-022).
+
+**Backbone is optional.** Every one of those three is reached over a
+configurable endpoint, so any authoritative DNS with a PowerDNS-compatible API,
+any WireGuard-style underlay, and any OIDC provider will do. Backbone is simply
+the deployment we run and test against.
 
 ## Quickstart
 
@@ -134,17 +188,24 @@ packages/api-contracts/   # Shared Zod schemas + types — the API single source
 backend/                  # Fastify management API (port 3000)
 frontend/admin-panel/     # React admin UI (port 5173)
 frontend/tenant-panel/    # React tenant UI (port 5174)
-k8s/{base,overlays}/      # Kustomize manifests (dev / staging / production)
-scripts/                  # bootstrap.sh, local.sh, CI guards, integration tests
+k8s/{base,overlays}/      # Kustomize manifests (development / staging / production)
+platform/                 # Signed-release material: host migrations, VERSION, cosign.pub
+scripts/                  # bootstrap.sh, local.sh, CI guards, integration harnesses
 docs/                     # Architecture, ADRs, operator runbooks
+documentation/            # User manual (MkDocs) → insulahq.github.io
 ```
 
-Each top-level package has its own `README.md`. Two external catalogs (ADR-026)
-supply tenant content: **workload runtimes** (apache-php, nginx-php, nodejs,
-MariaDB, …) come from an operator-registered workload catalog (Settings →
-Catalog Repos, no hardcoded default), and **managed app stacks** (WordPress,
-Nextcloud, …) come from the
-[application-catalog](https://github.com/insulahq/application-catalog) repo.
+Each top-level package has its own `README.md`.
+
+Tenant content comes from catalog repositories (ADR-026). The **Official
+Catalog** ([application-catalog](https://github.com/insulahq/application-catalog))
+is seeded on install and ships **primitives only** — runtimes (apache-php,
+nginx-php, nodejs, …), databases, services, static hosting — so that every image
+in a default install is one we build and harden. Self-contained **app stacks**
+(WordPress, Nextcloud, Gitea, …) live in the separate, **opt-in**
+[application-catalog-community](https://github.com/insulahq/application-catalog-community)
+repo, which an admin adds under *Applications → Repositories*. Bring-your-own
+container images are a third, non-catalog path (ADR-036).
 
 ## Documentation
 
@@ -155,6 +216,8 @@ Nextcloud, …) come from the
 | Management API spec | `docs/architecture/MANAGEMENT_API_SPEC.md` |
 | Fork & deploy | `docs/development/FORK-AND-DEPLOY.md` |
 | Architecture decisions | `docs/architecture/adr/` |
+| User manual (operator · admin · tenant) | [insulahq.github.io](https://insulahq.github.io/) (source in `documentation/`) |
+| Foundation services (DNS · mesh · IAM) | [insulahq/backbone](https://github.com/insulahq/backbone) |
 
 ## Contributing & security
 

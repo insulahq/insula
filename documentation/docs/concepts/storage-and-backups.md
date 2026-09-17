@@ -33,7 +33,7 @@ split into components:
 | `secrets` | The tenant's TLS secrets (encrypted) |
 
 Bundles are created on a schedule, by an admin on demand, or by the tenant
-themselves. Restores use a **Plesk-style cart**: you browse a bundle, add the
+themselves. Restores use a **restore cart**: you browse a bundle, add the
 exact items you want back (specific files, specific tables, specific mailboxes),
 and execute. Carts run item by item and resume from a failure rather than
 restarting. A pre-restore snapshot is taken before any file restore so you can
