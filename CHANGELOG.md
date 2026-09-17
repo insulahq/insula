@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.9.22] - 2026-09-17
+
 ### Added
 
 - **Scheduled tasks are read on a real clock, and you can choose which one.**
