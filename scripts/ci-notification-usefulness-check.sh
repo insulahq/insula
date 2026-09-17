@@ -233,6 +233,41 @@ for (const m of EVENTS_CODE.matchAll(/\b(\w*(?:Label|Name|Address|Subject))\s*:\
   }
 }
 
+// ── COPY: a description is read by an operator, not a reviewer ───────────
+//
+// Added 2026-09-17 after the operator asked why the notification settings page
+// showed "These were the last four events on the legacy notifyUser path —
+// in-app only, so none of them had EVER reached a tenant by email."
+//
+// `description` is UI copy: the admin Notifications page renders it under the
+// display name and searches it. Eleven of them carried the reasoning for
+// having BUILT the category instead — "Previously in-app only", a template
+// fragment, a date, a PR-era narrative. All true, none of it any help to
+// somebody deciding whether to mute a category.
+//
+// The arm bans the markers of that narrative, not prose in general: a date, a
+// PR reference, code or template syntax, an internal symbol, and the handful
+// of phrases that only ever introduce history. It says WHAT and WHEN, or it
+// does not belong in the field.
+const COPY_BANS = [
+  [/20\d\d-\d\d-\d\d|\b20\d\d-\d\d\b/, "a date — describe the notification, not when it changed"],
+  [/#\d{2,}/, "a PR or issue reference"],
+  [/\{\{|\}\}|`|\.ts\b|\(\)/, "code or template syntax"],
+  [/\bnotifyUser\b|\bdispatchSafe\b|\bemitEvent\b|\bcategory_id\b|\bcategoryId\b|notifications table/i,
+    "an internal symbol or table name"],
+  [/\bpreviously\b|\bused to\b|\blegacy\b|\bsplit out of\b|\bthese were\b|\bhad EVER\b/i,
+    "implementation history — say what it reports, not what it replaced"],
+];
+for (const c of ALL_CATEGORIES) {
+  const d = c.description ?? "";
+  for (const [re, why] of COPY_BANS) {
+    const hit = d.match(re);
+    if (hit) {
+      failures.push(`${c.id}: description contains ${why} (COPY) — ${JSON.stringify(hit[0])}`);
+    }
+  }
+}
+
 // ── EMITTER: a category nothing ever dispatches cannot notify anyone ─────
 //
 // Added 2026-09-17. The audit behind this epic found SIX categories with
@@ -365,5 +400,5 @@ the ones that matter.`);
   process.exit(1);
 }
 
-console.log(`OK: ${ALL_CATEGORIES.length} categories — each names a subject, carries a timestamp, resolves a destination, prints no ids, and has an emitter (${DORMANT.size} deliberately dormant).`);
+console.log(`OK: ${ALL_CATEGORIES.length} categories — each names a subject, carries a timestamp, resolves a destination, prints no ids, has an emitter, and describes itself to an operator rather than a reviewer (${DORMANT.size} deliberately dormant).`);
 '

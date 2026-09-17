@@ -489,7 +489,7 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
     cls: 'ambient',
     reportsOn: null,
     displayName: 'SLO alert resolved',
-    description: 'A previously-firing SLO monitoring rule has recovered.',
+    description: 'A monitoring rule that was firing has recovered — the condition it watches is back inside its threshold.',
     audience: 'admin',
     defaultSeverity: 'info',
     defaultChannels: ALL_NOTIFICATION_CHANNELS,
@@ -726,7 +726,7 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
     cls: 'incident',
     reportsOn: null,
     displayName: 'Tenant saturated its sending limit',
-    description: 'A tenant hit 100% of its hourly or daily sending limit. Visible to the operator because a saturated sender is the shape of both a compromised account and a platform-wide deliverability risk — previously only the tenant was told.',
+    description: 'A tenant has reached 100% of its hourly or daily sending limit. Worth operator attention as well as tenant attention: a sender that suddenly saturates its limit looks the same as a compromised account, and either way the sending reputation of the whole platform is exposed.',
     audience: 'admin',
     defaultSeverity: 'warning',
     defaultChannels: ALL_NOTIFICATION_CHANNELS,
@@ -738,7 +738,7 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
     cls: 'incident',
     reportsOn: 'storage',
     displayName: 'Cluster storage capacity',
-    description: 'Longhorn commit ratio crossed 80% (warning) or 95% (critical) cluster-wide or on any node. Previously written straight into the notifications table with NO category, so it could never be emailed, pushed, muted or audited — an operator learned the cluster was nearly full by happening to open the panel.',
+    description: 'Storage commitment has crossed 80% (warning) or 95% (critical), either cluster-wide or on a single node. Act before the critical threshold: once volumes cannot grow, tenant workloads begin failing writes.',
     audience: 'admin',
     defaultSeverity: 'critical',
     defaultChannels: ALL_NOTIFICATION_CHANNELS,
@@ -762,7 +762,7 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
     cls: 'action',
     reportsOn: 'storage',
     displayName: 'Storage subsystem event',
-    description: 'Longhorn capacity policy, image-cache pressure and other storage-subsystem events. Previously written straight into the notifications table with no category, so they could never be emailed, pushed, muted or audited.',
+    description: 'Storage-subsystem events that are not capacity thresholds — policy changes, image-cache pressure, and similar. Informational unless the text says otherwise.',
     audience: 'admin',
     defaultSeverity: 'warning',
     defaultChannels: ALL_NOTIFICATION_CHANNELS,
@@ -786,7 +786,7 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
     cls: 'incident',
     reportsOn: 'database',
     displayName: 'Database event',
-    description: 'PITR restores, barman promotions and CNPG backup health. Previously in-app only, so a stuck restore was invisible unless somebody opened the panel.',
+    description: 'Database operations worth watching: point-in-time restores, standby promotions, and backup health. A restore that stalls is reported here.',
     audience: 'admin',
     defaultSeverity: 'critical',
     defaultChannels: ALL_NOTIFICATION_CHANNELS,
@@ -822,7 +822,7 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
     cls: 'incident',
     reportsOn: null,
     displayName: 'Tenant namespace integrity',
-    description: 'A tenant namespace diverged from its declared state. Previously in-app only.',
+    description: 'The Kubernetes namespace for a tenant no longer matches what the platform declared for it — something outside the platform changed it, or a reconcile did not complete. The tenant detail page shows what differs.',
     audience: 'admin',
     defaultSeverity: 'critical',
     defaultChannels: ALL_NOTIFICATION_CHANNELS,
@@ -834,7 +834,7 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
     cls: 'action',
     reportsOn: null,
     displayName: 'Unacknowledged notifications escalated',
-    description: 'Action-class notifications that have gone unread past the deadline. The operator is the party who can act when the recipient has not — previously the platform could not tell "told and handled" from "told and ignored".',
+    description: 'A notification that asked someone to act has gone unread past its deadline. It escalates to the operator because the original recipient has not responded and somebody still needs to.',
     audience: 'admin',
     defaultSeverity: 'warning',
     defaultChannels: ALL_NOTIFICATION_CHANNELS,
@@ -902,7 +902,7 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
     cls: 'action',
     reportsOn: null,
     displayName: 'Domain verification',
-    description: 'A domain has not passed DNS verification. Previously written with NO category at all — the two rows on production carry category_id NULL, so they reached no template, no email and no audit.',
+    description: 'A domain has not passed DNS verification, so mail and certificates for it cannot be set up yet. The domain page lists the records that are still missing or wrong.',
     audience: 'tenant',
     defaultSeverity: 'warning',
     defaultChannels: ALL_NOTIFICATION_CHANNELS,
@@ -914,7 +914,7 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
     cls: 'record',
     reportsOn: null,
     displayName: 'Backup event',
-    description: 'Tenant bundle backup and restore outcomes. Previously on the legacy notifyUser path, which never reached email.',
+    description: 'Whether a backup or restore of tenant data finished, and what it contained. A partial result is reported as a failure, because a partial backup is not a backup.',
     audience: 'tenant',
     defaultSeverity: 'warning',
     defaultChannels: ALL_NOTIFICATION_CHANNELS,
@@ -926,7 +926,7 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
     cls: 'record',
     reportsOn: null,
     displayName: 'Mail account event',
-    description: 'IMAPSync migration outcomes, DKIM key rotation, email enabled for a domain, and the mailbox-plan limit. These were the last four events on the legacy notifyUser path — in-app only, so none of them had EVER reached a tenant by email.',
+    description: 'General mail events for a tenant: email being switched on for a domain, an automatic replacement of the key that signs their outgoing mail, and reaching the mailbox limit of their plan. Mailbox migrations have their own category.',
     audience: 'tenant',
     defaultSeverity: 'info',
     defaultChannels: ALL_NOTIFICATION_CHANNELS,
@@ -939,11 +939,8 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
     reportsOn: null,
     displayName: 'Mailbox migration',
     description:
-      'The outcome of migrating a mailbox in from another provider. Split out of the generic mail-event '
-      + 'bucket 2026-09-17: sharing that bucket meant sharing its template, `{{subsystem}}: {{objectLabel}}`, '
-      + 'which rendered "IMAPSync migration: job (unnamed)" — a tool name a tenant has never heard of, and '
-      + 'no mailbox. A migration is an action the tenant took on a specific mailbox, and deserves its own '
-      + 'wording and its own link.',
+      'Whether a mailbox migration from another provider finished, failed or was cancelled, which '
+      + 'mailbox it was, and how much mail moved.',
     audience: 'tenant',
     defaultSeverity: 'info',
     defaultChannels: ALL_NOTIFICATION_CHANNELS,
@@ -1000,6 +997,21 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
 const LEGACY_CATEGORIES: readonly CategoryDefinition[] = [
 ];
 
+/**
+ * A note on `description`.
+ *
+ * It is UI copy. The admin Notifications page renders it under the display
+ * name and searches it, so it is read by an operator deciding whether to
+ * enable, mute or route a category — not by a reviewer.
+ *
+ * It answers two questions and stops: WHAT will this tell me, and WHEN does it
+ * fire. Eleven of these once carried the reasoning for having built the
+ * category instead — "Previously in-app only", "These were the last four
+ * events on the legacy notifyUser path", a template fragment, a date. All of
+ * it true, none of it any use to the person reading the settings table, and
+ * the operator reported one as confusing. Reasoning worth keeping belongs in a
+ * comment here, or in the git history.
+ */
 export const ALL_CATEGORIES: readonly CategoryDefinition[] = [
   ...TENANT_CATEGORIES,
   ...ADMIN_CATEGORIES,
