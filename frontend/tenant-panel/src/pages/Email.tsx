@@ -605,16 +605,17 @@ function MailboxUsageBar({ tenantId }: { readonly tenantId: string }) {
   const pct = usage.limit > 0 ? (usage.current / usage.limit) * 100 : 0;
   const nearLimit = pct >= 80;
   const atLimit = pct >= 100;
-  const barColor = atLimit
-    ? 'bg-red-500'
-    : nearLimit
-      ? 'bg-amber-500'
-      : 'bg-brand-500';
-  const containerBorder = atLimit
-    ? 'border-red-200 dark:border-red-800'
-    : nearLimit
-      ? 'border-amber-200 dark:border-amber-800'
-      : 'border-gray-200 dark:border-gray-700';
+  // Always the default brand colour, including at and over the limit —
+  // operator decision 2026-09-17. Reaching a plan limit is an ordinary fact
+  // about a plan, not a fault: the tenant is not broken, and nothing is
+  // degraded. The sentence below already says what happened and what to do,
+  // which is the part that carries information; recolouring the meter red only
+  // makes a normal state look like an incident.
+  //
+  // The card border stays neutral for the same reason — a red frame around a
+  // blue meter reads as a rendering bug rather than a warning.
+  const barColor = 'bg-brand-500';
+  const containerBorder = 'border-gray-200 dark:border-gray-700';
   return (
     <div
       className={clsx(
@@ -2191,7 +2192,13 @@ function ImapSyncPanel({
   const onSubmit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setFormError(null);
-    const fd = new FormData(e.currentTarget);
+    // Captured NOW, not after the await. React invalidates `currentTarget`
+    // when the synchronous dispatch ends, so reading it later yields null —
+    // which is where "Cannot read properties of null (reading 'reset')" came
+    // from. The migration had already been created successfully at that point.
+    const form = e.currentTarget;
+    const fd = new FormData(form);
+    let created = false;
     try {
       await create.mutateAsync({
         mailbox_id: String(fd.get('mailbox_id') ?? ''),
@@ -2205,10 +2212,20 @@ function ImapSyncPanel({
           dryRun: fd.get('dry_run') === 'on',
         },
       });
-      setShowForm(false);
-      (e.currentTarget as HTMLFormElement).reset();
+      created = true;
     } catch (err) {
       setFormError(err instanceof Error ? err.message : 'Failed to start sync');
+    }
+    // Outside the try on purpose. Tidying the form up is not part of starting
+    // the migration, and when the reset threw from inside it the catch
+    // recorded an error against a migration that had SUCCEEDED. That error
+    // renders inside the form, which had just closed, so it stayed invisible
+    // until the operator opened the form for the NEXT job — where it read as
+    // a failure of that one. Hence the report "an error is shown, but
+    // everything works fine".
+    if (created) {
+      setShowForm(false);
+      form.reset();
     }
   };
 
@@ -2224,7 +2241,7 @@ function ImapSyncPanel({
         </div>
         <button
           type="button"
-          onClick={() => setShowForm(s => !s)}
+          onClick={() => { setFormError(null); setShowForm(s => !s); }}
           disabled={jobs.length >= 10}
           className="inline-flex items-center gap-1 rounded-md border border-gray-200 dark:border-gray-600 px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50"
           data-testid="imapsync-toggle-form"

@@ -95,7 +95,7 @@ vi.mock('../hooks/use-domains', () => ({
   })),
 }));
 
-import { useEmailDomains, useMailboxes, useUpdateMailbox, useEmailDomainDnsRecords } from '../hooks/use-email';
+import { useEmailDomains, useMailboxes, useUpdateMailbox, useEmailDomainDnsRecords, useMailboxUsage, useCreateImapSyncJob, useImapSyncJobs } from '../hooks/use-email';
 import { useDomains } from '../hooks/use-domains';
 
 const mockedUseEmailDomains = vi.mocked(useEmailDomains);
@@ -103,6 +103,9 @@ const mockedUseMailboxes = vi.mocked(useMailboxes);
 const mockedUseUpdateMailbox = vi.mocked(useUpdateMailbox);
 const mockedUseEmailDomainDnsRecords = vi.mocked(useEmailDomainDnsRecords);
 const mockedUseDomains = vi.mocked(useDomains);
+const mockedUseMailboxUsage = vi.mocked(useMailboxUsage);
+const mockedUseCreateImapSyncJob = vi.mocked(useCreateImapSyncJob);
+const mockedUseImapSyncJobs = vi.mocked(useImapSyncJobs);
 
 function createTestQueryClient() {
   return new QueryClient({
@@ -758,5 +761,151 @@ describe('Aliases tab (unified UX)', () => {
     const fireEvent = await openAliases();
     fireEvent.click(screen.getByTestId('delete-alias-al-1'));
     expect(screen.getByRole('button', { name: 'Confirm' })).toBeInTheDocument();
+  });
+});
+
+// ─── mailbox usage meter colour ───────────────────────────────────────────
+//
+// Operator decision 2026-09-17: the meter is ALWAYS the default brand colour,
+// including at and over the plan limit. Reaching a plan limit is an ordinary
+// fact about a plan, not a fault — nothing is broken and nothing is degraded.
+// The sentence under the bar already says what happened and what to do, which
+// is the part that carries information; a red meter made a normal state look
+// like an incident.
+//
+// Pinned because "always blue" is exactly the decision a later well-meaning
+// change re-introduces as a severity colour.
+describe('mailbox usage meter colour', () => {
+  const usageAt = (current: number, limit: number) => {
+    mockedUseMailboxUsage.mockReturnValue({
+      data: { data: { limit, current, remaining: Math.max(0, limit - current), source: 'plan' } },
+      isLoading: false,
+    } as never);
+  };
+
+  for (const [label, current, limit] of [
+    ['under the limit', 2, 10],
+    ['near the limit', 9, 10],
+    ['at the limit', 10, 10],
+    ['over the limit', 12, 10],
+  ] as const) {
+    it(`stays brand blue ${label}`, () => {
+      usageAt(current, limit);
+      renderWithProviders(<Email />);
+      const card = screen.getByTestId('mailbox-usage-bar');
+      const fill = card.querySelector('.transition-all');
+      expect(fill, 'the meter fill should render').not.toBeNull();
+      expect(fill?.className).toContain('bg-brand-500');
+      expect(fill?.className).not.toContain('bg-red-500');
+      expect(fill?.className).not.toContain('bg-amber-500');
+      // The frame too — a red border around a blue meter reads as a bug.
+      expect(card.className).not.toContain('border-red-200');
+      expect(card.className).not.toContain('border-amber-200');
+    });
+  }
+
+  it('still SAYS the limit is reached — only the colour changed', () => {
+    // The information was never the problem; the alarm colour was.
+    usageAt(10, 10);
+    renderWithProviders(<Email />);
+    expect(screen.getByText(/reached the mailbox limit/i)).toBeTruthy();
+  });
+});
+
+
+// ─── starting a migration ─────────────────────────────────────────────────
+//
+// Reported by the operator: starting a migration while another was already
+// active showed "Cannot read properties of null (reading 'reset')", yet every
+// job was created fine.
+//
+// Two faults stacked up. `e.currentTarget` was read AFTER an await — React
+// nulls it once the synchronous dispatch ends — so `.reset()` threw; and that
+// line sat inside the try that reports submit failures, so the catch recorded
+// an error for a migration that had SUCCEEDED. The message was invisible at
+// that moment (it renders inside the form, which had just closed) and then
+// greeted the operator when they reopened the form to add the next job.
+//
+// So the test has to reopen the form. Asserting only on the first submit
+// passes with the bug fully present — that is how it got shipped.
+describe('starting an IMAP migration', () => {
+  const openForm = async (user: ReturnType<typeof userEvent.setup>) => {
+    await user.click(screen.getByTestId('imapsync-toggle-form'));
+  };
+
+  const fillAndSubmit = async (user: ReturnType<typeof userEvent.setup>) => {
+    const form = screen.getByTestId('imapsync-submit').closest('form') as HTMLFormElement;
+    const set = (name: string, value: string) => {
+      const el = form.querySelector(`[name="${name}"]`) as HTMLInputElement | null;
+      if (el) el.value = value;
+    };
+    set('source_host', 'imap.oldhost.test');
+    set('source_username', 'old@oldhost.test');
+    set('source_password', 'secret');
+    await user.click(screen.getByTestId('imapsync-submit'));
+  };
+
+  const noErrorVisible = () => {
+    // The literal string the operator saw, plus the generic fallback.
+    expect(screen.queryByText(/Cannot read properties of null/i)).toBeNull();
+    expect(screen.queryByText(/Failed to start sync/i)).toBeNull();
+  };
+
+  it('leaves no error behind for the next migration', async () => {
+    const mutateAsync = vi.fn().mockResolvedValue({ data: { id: 'job-1' } });
+    mockedUseCreateImapSyncJob.mockReturnValue({ mutateAsync, isPending: false } as never);
+    mockedUseImapSyncJobs.mockReturnValue({ data: { data: [] }, isLoading: false } as never);
+
+    renderWithProviders(<Email />);
+    const user = userEvent.setup();
+
+    await openForm(user);
+    await fillAndSubmit(user);
+    expect(mutateAsync).toHaveBeenCalledTimes(1);
+    // The form closes on success, so nothing is visible either way here.
+    expect(screen.queryByTestId('imapsync-submit')).toBeNull();
+
+    // Reopening is where the stale error appeared.
+    await openForm(user);
+    expect(screen.getByTestId('imapsync-submit')).toBeTruthy();
+    noErrorVisible();
+  });
+
+  it('leaves no error behind when a migration is already active', async () => {
+    // The reported scenario verbatim: a job already running while the next is
+    // started.
+    const mutateAsync = vi.fn().mockResolvedValue({ data: { id: 'job-2' } });
+    mockedUseCreateImapSyncJob.mockReturnValue({ mutateAsync, isPending: false } as never);
+    mockedUseImapSyncJobs.mockReturnValue({
+      data: { data: [{ id: 'job-1', status: 'running', mailboxId: 'mb-1', sourceHost: 'a.test', createdAt: '2026-09-17T00:00:00Z' }] },
+      isLoading: false,
+    } as never);
+
+    renderWithProviders(<Email />);
+    const user = userEvent.setup();
+
+    await openForm(user);
+    await fillAndSubmit(user);
+    expect(mutateAsync).toHaveBeenCalledTimes(1);
+
+    await openForm(user);
+    noErrorVisible();
+  });
+
+  it('DOES still report a real failure', async () => {
+    // The control. Suppressing the error path entirely would satisfy both
+    // tests above while hiding genuine failures.
+    const mutateAsync = vi.fn().mockRejectedValue(new Error('source host refused the connection'));
+    mockedUseCreateImapSyncJob.mockReturnValue({ mutateAsync, isPending: false } as never);
+    mockedUseImapSyncJobs.mockReturnValue({ data: { data: [] }, isLoading: false } as never);
+
+    renderWithProviders(<Email />);
+    const user = userEvent.setup();
+
+    await openForm(user);
+    await fillAndSubmit(user);
+
+    // The form stays open on failure, so the message is where it belongs.
+    expect(await screen.findByText(/source host refused the connection/i)).toBeTruthy();
   });
 });

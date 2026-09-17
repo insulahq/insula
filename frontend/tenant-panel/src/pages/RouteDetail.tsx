@@ -818,7 +818,7 @@ function ProtectedDirsSection({ tenantId, routeId }: {
           </p>
           <button
             type="button"
-            onClick={() => setShowAddForm(!showAddForm)}
+            onClick={() => { setPathError(null); setShowAddForm(!showAddForm); }}
             className="shrink-0 inline-flex items-center gap-1 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-2.5 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-600"
             data-testid="add-protected-dir-button"
           >

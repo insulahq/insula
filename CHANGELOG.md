@@ -12,6 +12,51 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **Three platform alerts explained themselves to a reviewer instead of to
+  you.** One arriving on the test cluster read *"Detection and the repair
+  button already existed; nothing escalated, so a drift sat for three days on
+  DEV while the mail health card stayed green"* — the note of why the alert was
+  built, pasted into the alert itself. Another cited an internal issue number;
+  a third printed a shell command in backticks. All three now say what the
+  condition is and what to do about it, and the reasoning lives in the source
+  where it belongs. The CI guard that checks notification wording only read the
+  notification categories, which is how these got through — it now reads the
+  alert definitions too.
+- **Starting a second mailbox migration no longer greets you with an error from
+  the first one.** Opening the migration form while another migration was
+  already running showed *"Cannot read properties of null (reading 'reset')"*,
+  even though every migration was in fact created and running normally. The
+  message belonged to the previous, successful submit: the form was tidied up
+  in the same step that reports failures, so a success was filed as an error,
+  and because that message is printed inside the form — which had just closed —
+  it stayed hidden until the form was opened for the next job. Nothing was ever
+  wrong with the migrations themselves. Fixed in both the tenant panel and the
+  admin panel, and opening the form now always starts from a clean slate.
+- **A mailbox migration told you it had finished without saying which mailbox.**
+  The notification read *"IMAPSync migration: job (unnamed)"* — the name of an
+  internal tool nobody outside the platform has heard of, and then nothing at
+  all where the mailbox should have been. It now reads **"Mailbox migration of
+  sales@example.com finished"**, says how many messages were copied, mentions
+  the server they came from, and links to the page you started it on. Failures
+  say what went wrong in plain words instead of quoting an internal log line,
+  and a cancelled migration says that some mail may not have been copied.
+
+  The same pass rewrote the DKIM-rotation notice. "A new DKIM signing key
+  (selector "v1-rsa-20260917") was generated" is a sentence for whoever runs a
+  mail server; it now says the key that proves your mail is genuine was
+  replaced, that mail keeps flowing throughout, and that there is nothing for
+  you to do.
+
+### Changed
+- **The mailbox usage meter stays its normal colour at every level, including
+  when the plan limit is reached.** It used to turn amber at 80% and red at
+  100%, which made an ordinary fact about your plan look like a fault on a page
+  you visit to do routine work. The message underneath still tells you the
+  limit is reached and what to do about it. Sending-limit meters still turn red
+  when sending is actually blocked, because that is a live restriction rather
+  than a count.
+
 ## [2026.9.23] - 2026-09-17
 
 ### Fixed

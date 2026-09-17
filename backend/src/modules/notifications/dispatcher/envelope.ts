@@ -165,6 +165,16 @@ export function greetingFor(name: string | null | undefined): string | null {
 // identity does: a rule that each caller must remember is a rule that half of
 // them will not.
 
+/**
+ * What a label becomes when its id cannot be named.
+ *
+ * Exported because `dispatch.ts` checks rendered text for it: the substitution
+ * silently hid the defect it was meant to paper over (a tenant received
+ * "IMAPSync migration: job (unnamed)"), so the two must not be able to drift
+ * apart into a check that matches nothing.
+ */
+export const UNRESOLVED_NAME_PLACEHOLDER = '(unnamed)';
+
 const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
 
 /** Every distinct UUID appearing anywhere in a string. */
@@ -244,7 +254,7 @@ export async function resolveIdVariables(
   for (const [key, value] of Object.entries(out)) {
     if (typeof value !== 'string') continue;
     if (!UUID_RE.test(value)) continue;
-    out[key] = value.replace(UUID_RE, (id) => names.get(id) ?? '(unnamed)');
+    out[key] = value.replace(UUID_RE, (id) => names.get(id) ?? UNRESOLVED_NAME_PLACEHOLDER);
   }
   return { vars: out, unresolved };
 }

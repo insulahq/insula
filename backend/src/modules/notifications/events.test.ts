@@ -101,40 +101,110 @@ describe('notification events', () => {
       });
       const d = lastDispatch();
       expect(d.categoryId).toBe('tenant.mail_event');
-      expect(d.variables.subsystem).toMatch(/DKIM/i);
+      // Inverted with the IMAPSync pair: this asserted the subsystem said
+      // "DKIM", which is a term for whoever runs a mail server, not for the
+      // person who owns the domain.
+      expect(d.variables.subsystem).not.toMatch(/DKIM/i);
+      expect(d.variables.subsystem).toMatch(/signing key/i);
+      expect(d.variables.detail).not.toMatch(/selector/i);
       expect(d.variables.objectLabel).toBe('example.com');
     });
   });
 
   describe('notifyTenantImapsyncTerminal', () => {
-    it('fires a success notification on completed status', async () => {
+    // THESE TESTS USED TO ASSERT THE DEFECT. They required
+    // `subsystem` to match /IMAPSync/i and `objectLabel` to contain the job id
+    // — so the suite actively protected the notification an operator received
+    // on 2026-09-17: "IMAPSync migration: job (unnamed)". Both assertions are
+    // INVERTED below rather than deleted, because a regression to either is the
+    // thing to catch.
+    const BASE = { jobId: 'j1', mailboxAddress: 'sales@example.com', sourceHost: 'imap.oldhost.test' };
+
+    it('names the MAILBOX, never the job id', async () => {
       await notifyTenantImapsyncTerminal({} as never, 'c1', {
-        jobId: 'j1',
-        status: 'completed',
-        messagesTransferred: 42,
+        ...BASE, status: 'completed', messagesTransferred: 42,
       });
       const d = lastDispatch();
-      expect(d.categoryId).toBe('tenant.mail_event');
-      expect(d.variables.subsystem).toMatch(/IMAPSync/i);
-      expect(d.variables.detail).toContain('42');
-      expect(d.variables.objectLabel).toContain('j1');
+      expect(d.categoryId).toBe('tenant.mailbox_migration');
+      expect(d.variables.mailboxAddress).toBe('sales@example.com');
+      // The job id must not appear in ANY variable a person reads. It is not a
+      // name, and the dispatcher cannot resolve it into one — it is a JOB id,
+      // and the resolver only knows tenants, users, mailboxes and domains, so
+      // it becomes "(unnamed)".
+      for (const [key, value] of Object.entries(d.variables)) {
+        if (typeof value === 'string') {
+          expect(value, `variable ${key} leaks the job id`).not.toContain('j1');
+        }
+      }
+    });
+
+    it('uses no jargon a tenant has never heard', async () => {
+      await notifyTenantImapsyncTerminal({} as never, 'c1', { ...BASE, status: 'completed' });
+      const text = Object.values(lastDispatch().variables)
+        .filter((v): v is string => typeof v === 'string').join(' ');
+      // "IMAPSync" is the name of the tool the platform shells out to. A tenant
+      // migrating mail from an old host gains nothing from it.
+      expect(text).not.toMatch(/imapsync/i);
+      expect(text).not.toMatch(/\bIMAP\b/);
+      expect(text).not.toMatch(/kubernetes|k8s|\bpod\b/i);
+    });
+
+    it('says what happened, in words', async () => {
+      await notifyTenantImapsyncTerminal({} as never, 'c1', {
+        ...BASE, status: 'completed', messagesTransferred: 42,
+      });
+      expect(lastDispatch().variables.outcomeLabel).toBe('finished');
+      expect(lastDispatch().variables.detail).toContain('42');
+    });
+
+    it('counts one message as singular', async () => {
+      await notifyTenantImapsyncTerminal({} as never, 'c1', {
+        ...BASE, status: 'completed', messagesTransferred: 1,
+      });
+      expect(lastDispatch().variables.detail).toBe('1 message was copied across.');
     });
 
     it('fires an error notification on failed status', async () => {
       await notifyTenantImapsyncTerminal({} as never, 'c1', {
-        jobId: 'j1',
-        status: 'failed',
-        errorMessage: 'auth failure',
+        ...BASE, status: 'failed', errorMessage: 'auth failure',
       });
       const d = lastDispatch();
-      expect(d.variables.severityLabel).toBe('failed');
+      expect(d.variables.outcomeLabel).toBe('failed');
       expect(d.variables.detail).toContain('auth failure');
+      expect(d.variables.recommendedAction).toMatch(/Email page/);
+    });
+
+    it('points at the page when a failure has no usable error text', async () => {
+      await notifyTenantImapsyncTerminal({} as never, 'c1', { ...BASE, status: 'failed' });
+      expect(lastDispatch().variables.detail).toMatch(/Email page/);
+    });
+
+    it('carries the source host as context when present', async () => {
+      await notifyTenantImapsyncTerminal({} as never, 'c1', { ...BASE, status: 'cancelled' });
+      expect(lastDispatch().variables.sourceLabel).toBe('imap.oldhost.test');
+      expect(lastDispatch().variables.outcomeLabel).toBe('was cancelled');
+    });
+
+    it('leaves the source label UNDEFINED, never an empty string', async () => {
+      // `{{#if sourceLabel}}` treats undefined and absent alike, so either is
+      // safe — but an empty STRING is not: it renders "(copying from )".
+      //
+      // The assertion used to require the key to be absent, which forced the
+      // payload to be built with a conditional spread. The variable-contract
+      // guard cannot see keys inside a spread and reported three variables as
+      // supplied by nobody, so the key is now written unconditionally and this
+      // checks the value instead. Same protection, one less way to fail CI.
+      await notifyTenantImapsyncTerminal({} as never, 'c1', {
+        jobId: 'j1', mailboxAddress: 'x@example.com', status: 'completed',
+      });
+      const { sourceLabel } = lastDispatch().variables as { sourceLabel?: unknown };
+      expect(sourceLabel).toBeUndefined();
+      expect(sourceLabel).not.toBe('');
     });
 
     it('does not fire for non-terminal status', async () => {
       await notifyTenantImapsyncTerminal({} as never, 'c1', {
-        jobId: 'j1',
-        status: 'running' as never,
+        ...BASE, status: 'running' as never,
       });
       expect(emitEventMock).not.toHaveBeenCalled();
     });
