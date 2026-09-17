@@ -499,7 +499,21 @@ export async function ensureSiteMounts(
   // is the whole exposure this design removes.
   const hasVolumeRootMount = current.some((m) => isSiteMount(m) && !m.subPath);
 
+  // The init container has to be checked too, not just the mounts.
+  //
+  // A pod whose mounts are already right but whose init-dirs command predates
+  // the site-directory clauses would otherwise never gain them: this function
+  // returns early on "nothing to do", and the only other writer is a full
+  // redeploy. That is exactly the state every multi-host pod created before
+  // that fix is in — mounted, and unable to write its own site folder. Found
+  // on DEV: touching a route returned 200 and changed nothing.
+  const initCmd = (
+    (dep.spec?.template?.spec?.initContainers ?? []) as Array<{ name?: string; command?: string[] }>
+  ).find((c) => c.name === 'init-dirs')?.command?.[2] ?? '';
+  const initHasSiteDirs = desired.every((f) => initCmd.includes(`mkdir -p /data/${f}`));
+
   const same = !hasVolumeRootMount
+    && initHasSiteDirs
     && currentFolders.length === desired.length
     && currentFolders.every((f: string, i: number) => f === desired[i])
     && currentSessions.length === desired.length
