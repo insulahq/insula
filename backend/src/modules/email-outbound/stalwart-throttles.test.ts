@@ -33,7 +33,7 @@ describe('buildDesiredSendLimitObjects', () => {
     expect(hourly?.rate).toEqual({ count: 80, period: 3_600_000 });
     expect(hourly?.key).toEqual({ senderDomain: true });
     expect(hourly?.match.else).toBe(
-      "sender_domain = 'alpha.example.com' && queue_name != 'local'",
+      "sender_domain = 'alpha.example.com' && queue_name != 'local' && sender != 'postmaster@alpha.example.com'",
     );
     expect(hourly?.match.match).toEqual({});
 
@@ -56,10 +56,10 @@ describe('buildDesiredSendLimitObjects', () => {
     const { throttles, quotas } = buildDesiredSendLimitObjects([active('alpha.example.com', 80, 400)]);
     for (const suffix of ['hourly', 'daily'] as const) {
       expect(throttles.get(`${DESCRIPTION_PREFIX}alpha.example.com:${suffix}`)?.match.else)
-        .toBe("sender_domain = 'alpha.example.com' && queue_name != 'local'");
+        .toBe("sender_domain = 'alpha.example.com' && queue_name != 'local' && sender != 'postmaster@alpha.example.com'");
     }
     expect(quotas.get(`${DESCRIPTION_PREFIX}alpha.example.com:backlog`)?.match.else)
-      .toBe("sender_domain = 'alpha.example.com' && queue_name != 'local'");
+      .toBe("sender_domain = 'alpha.example.com' && queue_name != 'local' && sender != 'postmaster@alpha.example.com'");
 
     // The block quota is the SUSPENSION lever, not a rate limit: a
     // suspended tenant must not send at all, internal mail included.
@@ -67,7 +67,7 @@ describe('buildDesiredSendLimitObjects', () => {
       { tenantId: 't1', domain: 'b.example.com', hourly: 0, daily: 0, blocked: true },
     ]);
     expect(blockedQuotas.get(`${DESCRIPTION_PREFIX}b.example.com:block`)?.match.else)
-      .toBe("sender_domain = 'b.example.com'");
+      .toBe("sender_domain = 'b.example.com' && sender != 'postmaster@b.example.com'");
   });
 
   it('renders a single 1-byte size block quota for suspended domains', () => {
@@ -80,7 +80,7 @@ describe('buildDesiredSendLimitObjects', () => {
     // size quota instead; messages stays null.
     expect(block?.messages).toBeNull();
     expect(block?.size).toBe(1);
-    expect(block?.match.else).toBe("sender_domain = 'b.example.com'");
+    expect(block?.match.else).toBe("sender_domain = 'b.example.com' && sender != 'postmaster@b.example.com'");
     expect(quotas.size).toBe(1);
   });
 
@@ -222,14 +222,14 @@ describe('reconcileStalwartSendLimits (diff + apply)', () => {
         id: 'keep', enable: true,
         description: `${DESCRIPTION_PREFIX}alpha.example.com:hourly`,
         key: { senderDomain: true },
-        match: { match: {}, else: "sender_domain = 'alpha.example.com' && queue_name != 'local'" },
+        match: { match: {}, else: "sender_domain = 'alpha.example.com' && queue_name != 'local' && sender != 'postmaster@alpha.example.com'" },
         rate: { count: 50, period: 3_600_000 },
       },
       {
         id: 'drift', enable: true,
         description: `${DESCRIPTION_PREFIX}alpha.example.com:daily`,
         key: { senderDomain: true },
-        match: { match: {}, else: "sender_domain = 'alpha.example.com' && queue_name != 'local'" },
+        match: { match: {}, else: "sender_domain = 'alpha.example.com' && queue_name != 'local' && sender != 'postmaster@alpha.example.com'" },
         rate: { count: 999, period: 86_400_000 },
       },
       {
@@ -245,7 +245,7 @@ describe('reconcileStalwartSendLimits (diff + apply)', () => {
         id: 'q1', enable: true,
         description: `${DESCRIPTION_PREFIX}alpha.example.com:backlog`,
         key: { senderDomain: true },
-        match: { match: {}, else: "sender_domain = 'alpha.example.com' && queue_name != 'local'" },
+        match: { match: {}, else: "sender_domain = 'alpha.example.com' && queue_name != 'local' && sender != 'postmaster@alpha.example.com'" },
         messages: 100, size: null,
       },
     ]);
@@ -274,7 +274,7 @@ describe('reconcileStalwartSendLimits (diff + apply)', () => {
         id: 'h', enable: true,
         description: `${DESCRIPTION_PREFIX}alpha.example.com:hourly`,
         key: { senderDomain: true },
-        match: { match: {}, else: "sender_domain = 'alpha.example.com' && queue_name != 'local'" },
+        match: { match: {}, else: "sender_domain = 'alpha.example.com' && queue_name != 'local' && sender != 'postmaster@alpha.example.com'" },
         rate: { count: 1, period: 3_600_000 },   // drift -> forces an update
       },
     ]);
@@ -283,7 +283,7 @@ describe('reconcileStalwartSendLimits (diff + apply)', () => {
         id: 'q', enable: true,
         description: `${DESCRIPTION_PREFIX}alpha.example.com:backlog`,
         key: { senderDomain: true },
-        match: { match: {}, else: "sender_domain = 'alpha.example.com' && queue_name != 'local'" },
+        match: { match: {}, else: "sender_domain = 'alpha.example.com' && queue_name != 'local' && sender != 'postmaster@alpha.example.com'" },
         messages: 1, size: null,                 // drift -> forces an update
       },
     ]);
@@ -310,7 +310,7 @@ describe('reconcileStalwartSendLimits (diff + apply)', () => {
         id: 'stale', enable: true,
         description: `${DESCRIPTION_PREFIX}gone.example.com:hourly`,
         key: { senderDomain: true },
-        match: { match: {}, else: "sender_domain = 'gone.example.com' && queue_name != 'local'" },
+        match: { match: {}, else: "sender_domain = 'gone.example.com' && queue_name != 'local' && sender != 'postmaster@gone.example.com'" },
         rate: { count: 50, period: 3_600_000 },
       },
     ]);
@@ -336,14 +336,14 @@ describe('reconcileStalwartSendLimits (diff + apply)', () => {
         id: 'h', enable: true,
         description: `${DESCRIPTION_PREFIX}alpha.example.com:hourly`,
         key: { senderDomain: true },
-        match: { match: {}, else: "sender_domain = 'alpha.example.com' && queue_name != 'local'" },
+        match: { match: {}, else: "sender_domain = 'alpha.example.com' && queue_name != 'local' && sender != 'postmaster@alpha.example.com'" },
         rate: { count: 50, period: 3_600_000 },
       },
       {
         id: 'd', enable: true,
         description: `${DESCRIPTION_PREFIX}alpha.example.com:daily`,
         key: { senderDomain: true },
-        match: { match: {}, else: "sender_domain = 'alpha.example.com' && queue_name != 'local'" },
+        match: { match: {}, else: "sender_domain = 'alpha.example.com' && queue_name != 'local' && sender != 'postmaster@alpha.example.com'" },
         rate: { count: 100, period: 86_400_000 },
       },
     ]);
@@ -352,12 +352,59 @@ describe('reconcileStalwartSendLimits (diff + apply)', () => {
         id: 'q', enable: true,
         description: `${DESCRIPTION_PREFIX}alpha.example.com:backlog`,
         key: { senderDomain: true },
-        match: { match: {}, else: "sender_domain = 'alpha.example.com' && queue_name != 'local'" },
+        match: { match: {}, else: "sender_domain = 'alpha.example.com' && queue_name != 'local' && sender != 'postmaster@alpha.example.com'" },
         messages: 100, size: null,
       },
     ]);
     const res = await reconcileStalwartSendLimits(db, silentLogger);
     expect(res.created + res.updated + res.destroyed).toBe(0);
     expect(reload).not.toHaveBeenCalled();
+  });
+});
+
+describe('postmaster@ is never rate limited', () => {
+  const row = {
+    tenantId: 't1', domain: 'example.test', hourly: 50, daily: 100, blocked: false,
+  };
+
+  it('excludes postmaster@ from the hourly and daily throttle match', () => {
+    // Operator decision 2026-09-16. Throttle buckets are keyed by sender
+    // DOMAIN, so a platform address living on a tenant's domain would spend
+    // that tenant's allowance. postmaster@ carries DSNs and, once a DMARC
+    // report sender is configured, sends the outbound aggregate reports —
+    // the exact shape of the storm, where platform mail ate a customer's
+    // quota and then alarmed them about it.
+    const { throttles } = buildDesiredSendLimitObjects([row]);
+    const exprs = [...throttles.values()].map((t) => t.match.else);
+    expect(exprs.length).toBeGreaterThan(0);
+    for (const e of exprs) {
+      expect(e).toContain("sender != 'postmaster@example.test'");
+      // The local-queue exemption must survive alongside it: without that,
+      // an OUTBOUND limit also governs tenant-internal mail (82 local
+      // messages were parked that way on DEV 2026-09-15).
+      expect(e).toContain("queue_name != 'local'");
+    }
+  });
+
+  it('excludes postmaster@ from the BLOCK quota of a suspended tenant', () => {
+    // A tenant's suspension must not silently stop platform report traffic
+    // from their domain's postmaster@. They cannot send as it themselves —
+    // its primary credential is generate-and-forget (ADR-049).
+    const { quotas } = buildDesiredSendLimitObjects([{ ...row, blocked: true }]);
+    const exprs = [...quotas.values()].map((q) => q.match.else);
+    expect(exprs.length).toBeGreaterThan(0);
+    for (const e of exprs) expect(e).toContain("sender != 'postmaster@example.test'");
+  });
+
+  it('uses `sender`, the only variable Stalwart accepts here', () => {
+    // Probed live on DEV 2026-09-16: `sender` is ACCEPTED, while
+    // `sender_address` and `from` are rejected at parse time with
+    // "Error parsing 'else' expression" — which fails the whole throttle
+    // write rather than degrading, so the name matters.
+    const { throttles } = buildDesiredSendLimitObjects([row]);
+    const e = [...throttles.values()][0]?.match.else ?? '';
+    expect(e).toMatch(/\bsender\s*!=/);
+    expect(e).not.toMatch(/\bsender_address\b/);
+    expect(e).not.toMatch(/\bfrom\s*!=/);
   });
 });

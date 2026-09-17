@@ -62,6 +62,39 @@ sub-tabs, plus an embedded Stalwart admin panel.
 - **Backup Engine** — which engine captures per-tenant mailbox data for
   the [tenant restore cart](backups-and-restore.md).
 
+### Outbound DMARC reporting
+
+Providers that receive mail from your tenants' domains publish a `_dmarc`
+record asking for daily reports on what passed authentication. Insula can send
+those reports back — but **it does not do so until you choose an address to
+send them from**. That switch lives in the **Outbound DMARC Reporting** card on
+the Server sub-tab, and it is **off on a fresh install**.
+
+The dropdown lists the `postmaster@` address on every mail-enabled domain of
+every active tenant — including the SYSTEM tenant's own domain — and nothing
+else. These are the platform-maintained intake mailboxes; they are hidden from
+tenant panels, don't count against tenant quotas, and are emptied every 30
+days. Search matches the tenant name and the domain, not just the address.
+Pick **Disable DMARC reporting** to switch reporting back off.
+
+!!! note "Why the address is the switch"
+
+    There is no separate on/off toggle, because reporting can only work from an
+    address that actually accepts mail. A report sent from a domain you don't
+    control produces a bounce at every receiver and reaches nobody. Choosing
+    the address and turning reporting on are therefore the same decision.
+
+Two consequences worth knowing:
+
+- Reports are **outbound mail from a tenant's domain**, but a `postmaster@`
+  sender is **exempt from that tenant's sending limits** — a busy domain's own
+  reports never consume the quota the tenant paid for.
+- If the address you chose stops being available — its tenant is deleted, or
+  that domain's email is switched off — the platform **resets the setting to
+  disabled** on its next pass and stops sending, rather than leaving reports
+  queued behind a dead sender. The card then shows the old address marked
+  *no longer available*, so you know to pick another one.
+
 The collapsible **Stalwart admin UI** card embeds the upstream Stalwart
 web admin for everything the panel doesn't surface natively — advanced
 filters, log inspection, manual DKIM rotation.

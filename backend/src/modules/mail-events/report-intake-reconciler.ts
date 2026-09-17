@@ -40,7 +40,7 @@
  * disabled a per-tenant-domain feature that never depended on it.
  */
 
-import { eq, and, gte } from 'drizzle-orm';
+import { eq, and, gte, lt, or, isNull, sql } from 'drizzle-orm';
 import { domains, emailDomains, mailboxes } from '../../db/schema.js';
 import {
   reportSettingsGet,
@@ -105,6 +105,18 @@ const POSTMASTER_MAILBOX_QUOTA_MB = INTAKE_MAILBOX_QUOTA_MB;
  * the reports and DSNs that would have told us something are the ones lost.
  */
 const INTAKE_REAP_AT_MB = Math.floor(INTAKE_MAILBOX_QUOTA_MB * 0.8);
+
+/**
+ * Empty an intake mailbox every 30 days regardless of size — operator decision
+ * 2026-09-16.
+ *
+ * The size trigger above never fires in practice: report-analysis intercepts
+ * and parses before storage, so these mailboxes measure 0 MB. A retention rule
+ * that cannot fire is not a retention rule. Anything that DOES land — a DSN
+ * Stalwart chose not to consume, a report it could not parse — would otherwise
+ * sit forever.
+ */
+const INTAKE_REAP_AFTER_DAYS = 30;
 
 export interface ReportIntakeResult {
   readonly mailbox: 'exists' | 'created' | 'skipped' | 'failed';
@@ -264,17 +276,25 @@ export async function ensureReportIntake(
   // postmaster@ owns it, and it is neither reaped nor resized.
   let reaped = 0;
   let resized = 0;
+  // Two triggers, one pass: FULL (the safety net) or DUE (the real schedule).
+  // A NULL `last_reaped_at` counts as due, but migration 0127 baselines every
+  // existing row to NOW() so a deploy does not reap all of them at once.
   const full = await db
     .select({
       id: mailboxes.id,
       tenantId: mailboxes.tenantId,
       fullAddress: mailboxes.fullAddress,
       usedMb: mailboxes.usedMb,
+      lastReapedAt: mailboxes.lastReapedAt,
     })
     .from(mailboxes)
     .where(and(
       eq(mailboxes.platformManaged, true),
-      gte(mailboxes.usedMb, INTAKE_REAP_AT_MB),
+      or(
+        gte(mailboxes.usedMb, INTAKE_REAP_AT_MB),
+        isNull(mailboxes.lastReapedAt),
+        lt(mailboxes.lastReapedAt, sql`NOW() - INTERVAL '${sql.raw(String(INTAKE_REAP_AFTER_DAYS))} days'`),
+      ),
     ));
   for (const box of full) {
     try {
@@ -282,8 +302,14 @@ export async function ensureReportIntake(
       await deleteMailbox(db, box.tenantId, box.id);
       reaped += 1;
       logger.info(
-        { address: box.fullAddress, usedMb: box.usedMb, reapAtMb: INTAKE_REAP_AT_MB },
-        'report intake: reaped full intake mailbox (recreated in this same pass)',
+        {
+          address: box.fullAddress,
+          usedMb: box.usedMb,
+          reapAtMb: INTAKE_REAP_AT_MB,
+          trigger: box.usedMb >= INTAKE_REAP_AT_MB ? 'full' : `age>${INTAKE_REAP_AFTER_DAYS}d`,
+          lastReapedAt: box.lastReapedAt?.toISOString() ?? null,
+        },
+        'report intake: emptied intake mailbox (recreated in this same pass)',
       );
     } catch (err) {
       logger.error(

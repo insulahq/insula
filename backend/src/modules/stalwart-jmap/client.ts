@@ -890,6 +890,62 @@ export interface StalwartReportSettingsRow {
   readonly inboundReportForwarding?: boolean;
 }
 
+/**
+ * Outbound DMARC aggregate reporting.
+ *
+ * A SEPARATE singleton from `x:ReportSettings` (which governs INBOUND report
+ * intake). Read live on 2026-09-16: the object is addressable but its list is
+ * EMPTY on a fresh server, and empty does not mean off — Stalwart falls back
+ * to its built-in defaults, which are `aggregateSendFrequency: daily` and
+ * `aggregateFromAddress: 'noreply-dmarc@' + system('domain')`.
+ *
+ * That default is the whole problem: it derives a sender from the server's own
+ * hostname, which on this platform is not a domain the operator controls and
+ * has no mailbox, so every DSN for an outgoing report bounces. Reporting is
+ * therefore DISABLED unless an operator picks a real local postmaster@.
+ *
+ * Fields are Stalwart "expressions": `{ match: {}, else: "<value>" }`. String
+ * literals inside an expression need their own quotes — `"'daily'"` — which is
+ * why the helpers below build them rather than leaving it to callers.
+ */
+export interface StalwartDmarcReportSettingsRow {
+  readonly id: string;
+  readonly aggregateSendFrequency?: StalwartExpression;
+  readonly aggregateFromAddress?: StalwartExpression;
+  readonly aggregateFromName?: StalwartExpression;
+  readonly aggregateOrgName?: StalwartExpression;
+  readonly aggregateDkimSignDomain?: StalwartExpression;
+}
+
+export async function dmarcReportSettingsGet(params: {
+  baseUrl?: string;
+  env?: NodeJS.ProcessEnv;
+} = {}): Promise<StalwartDmarcReportSettingsRow | null> {
+  const { baseUrl, env } = params;
+  const res = await _xCall<{ list?: readonly StalwartDmarcReportSettingsRow[] }>(
+    JMAP_STALWART,
+    'x:DmarcReportSettings/get',
+    {},
+    baseUrl, env,
+  );
+  // An empty list is the UNWRITTEN state, not an error — see the note above.
+  return res.list?.[0] ?? null;
+}
+
+export async function dmarcReportSettingsUpdate(params: {
+  patch: Record<string, unknown>;
+  baseUrl?: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<JmapSetResponse<StalwartDmarcReportSettingsRow>> {
+  const { patch, baseUrl, env } = params;
+  return _xCall<JmapSetResponse<StalwartDmarcReportSettingsRow>>(
+    JMAP_STALWART,
+    'x:DmarcReportSettings/set',
+    { update: { singleton: patch } },
+    baseUrl, env,
+  );
+}
+
 export async function reportSettingsGet(params: {
   baseUrl?: string;
   env?: NodeJS.ProcessEnv;

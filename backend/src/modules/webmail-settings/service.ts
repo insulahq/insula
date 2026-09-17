@@ -18,6 +18,12 @@
  */
 
 import { eq, sql } from 'drizzle-orm';
+import { ApiError } from '../../shared/errors.js';
+import {
+  eligibleReportSenders,
+  DMARC_REPORT_SENDER_KEY,
+  DMARC_REPORT_SENDER_DISABLED,
+} from '../mail-events/dmarc-report-sender.js';
 import { platformSettings } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import { getPlatformApex } from '../system-settings/platform-domain.js';
@@ -249,6 +255,10 @@ export async function getWebmailSettings(db: Database) {
   const mailServerHostnameStored = await getSetting(db, 'mail_server_hostname');
   const visibility = await getWebmailFeatureVisibility(db);
   const enforcementRaw = await getSetting(db, 'mail_enforcement_mode');
+  // Outbound DMARC reporting. Absent or 'disabled' both mean off — there is no
+  // separate enable flag, because two settings can disagree and a control that
+  // disagrees with reality is the bug this whole area just spent a day on.
+  const dmarcReportSender = await getSetting(db, DMARC_REPORT_SENDER_KEY);
   // A stored 'auto' from before the FBL retirement reads as 'notify', which is
   // what it would now do anyway. Migration 0119 rewrites the row as well.
   const mailEnforcementMode = enforcementRaw === 'off' ? 'off' : 'notify';
@@ -256,6 +266,14 @@ export async function getWebmailSettings(db: Database) {
     defaultWebmailUrl: defaultWebmailUrlStored ?? (await defaultWebmailUrl(db)),
     mailServerHostname: mailServerHostnameStored ?? (await defaultMailHostname(db)),
     mailEnforcementMode,
+    dmarcReportSender: dmarcReportSender && dmarcReportSender !== DMARC_REPORT_SENDER_DISABLED
+      ? dmarcReportSender
+      : null,
+    // The dropdown's options ride along with the settings read rather than
+    // needing their own endpoint: the panel always needs both together, and a
+    // separate call is a second chance for the two to disagree about what is
+    // selectable.
+    dmarcReportSenderOptions: await eligibleReportSenders(db),
     defaultWebmailEngine: await getDefaultWebmailEngine(db),
     ...visibility,
   };
@@ -268,6 +286,8 @@ export async function updateWebmailSettings(
     mailServerHostname?: string;
     mailEnforcementMode?: 'off' | 'notify';
     defaultWebmailEngine?: WebmailEngine;
+    /** An eligible postmaster@ address, or null to stop sending reports. */
+    dmarcReportSender?: string | null;
     webmailShowContacts?: boolean;
     webmailShowCalendar?: boolean;
     webmailShowFiles?: boolean;
@@ -285,6 +305,27 @@ export async function updateWebmailSettings(
   // consumed by the mail-events threshold evaluator each 5-min tick.
   if (input.mailEnforcementMode !== undefined) {
     await setSetting(db, 'mail_enforcement_mode', input.mailEnforcementMode);
+  }
+  if (input.dmarcReportSender !== undefined) {
+    // Validated against the live eligible list, not just a format check: the
+    // point of the dropdown is that a chosen address definitely exists as a
+    // platform-maintained postmaster@ on an active tenant's enabled domain.
+    // A free-text address would move the original bug behind a text box.
+    if (input.dmarcReportSender === null) {
+      await setSetting(db, DMARC_REPORT_SENDER_KEY, DMARC_REPORT_SENDER_DISABLED);
+    } else {
+      const eligible = await eligibleReportSenders(db);
+      if (!eligible.some((e) => e.address === input.dmarcReportSender)) {
+        throw new ApiError(
+          'INVALID_FIELD_VALUE',
+          'dmarcReportSender must be a postmaster@ address on an email-enabled domain of an active tenant',
+          400,
+          { field: 'dmarcReportSender', value: input.dmarcReportSender },
+          'Pick an address from the dropdown, or choose "Disabled" to stop sending reports',
+        );
+      }
+      await setSetting(db, DMARC_REPORT_SENDER_KEY, input.dmarcReportSender);
+    }
   }
   if (input.defaultWebmailEngine !== undefined) {
     if (input.defaultWebmailEngine !== 'roundcube' && input.defaultWebmailEngine !== 'bulwark') {

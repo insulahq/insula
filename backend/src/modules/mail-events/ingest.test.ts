@@ -130,3 +130,40 @@ describe('per-sender attribution (migration 0125)', () => {
     expect(senderDeltas).toEqual([]);
   });
 });
+
+describe('platform addresses never consume a tenant allowance', () => {
+  const T = new Map([['example.test', 't1']]);
+
+  it('does not count postmaster@ sends against the tenant', () => {
+    // postmaster@ lives on the tenant's domain but belongs to the PLATFORM:
+    // it carries DSNs and, once a DMARC report sender is configured, sends the
+    // outbound aggregate reports. Counting those would charge a customer for
+    // platform traffic and then alarm them about it — the 2026-09-16 storm in
+    // miniature. The Stalwart throttle exempts the same address.
+    const { deltas, senderDeltas } = aggregateEvents([
+      { type: 'queue.authenticated-message-queued', createdAt: '2026-09-17T09:00:00Z', data: { from: 'postmaster@example.test', to: ['a@b.test'] } },
+      { type: 'queue.authenticated-message-queued', createdAt: '2026-09-17T09:00:00Z', data: { from: 'dmarc@example.test', to: ['c@d.test'] } },
+    ] as unknown as StalwartWebhookEvent[], T);
+
+    expect(deltas.every((d) => d.sentCount === 0)).toBe(true);
+    // And they are not attributed per-sender either — the alert would name the
+    // platform as the top sender on the tenant's own domain.
+    expect(senderDeltas).toEqual([]);
+  });
+
+  it('still counts a real tenant mailbox — the positive control', () => {
+    // Without this, "not counted" would pass just as well against an ingest
+    // that counts nothing at all.
+    const { deltas } = aggregateEvents([
+      { type: 'queue.authenticated-message-queued', createdAt: '2026-09-17T09:00:00Z', data: { from: 'sales@example.test', to: ['a@b.test'] } },
+    ] as unknown as StalwartWebhookEvent[], T);
+    expect(deltas[0]?.sentCount).toBe(1);
+  });
+
+  it('is case-insensitive about the local part', () => {
+    const { deltas } = aggregateEvents([
+      { type: 'queue.authenticated-message-queued', createdAt: '2026-09-17T09:00:00Z', data: { from: 'PostMaster@Example.TEST', to: ['a@b.test'] } },
+    ] as unknown as StalwartWebhookEvent[], T);
+    expect(deltas.every((d) => d.sentCount === 0)).toBe(true);
+  });
+});
