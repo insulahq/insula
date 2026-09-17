@@ -116,6 +116,41 @@ describe('outbound DMARC reporting is off unless a sender is named', () => {
     expect(dmarcReportSettingsUpdate).not.toHaveBeenCalled();
   });
 
+  it('stays in-sync when disabled even though Stalwart still holds the old sender', async () => {
+    // Disabling deliberately leaves `aggregateFromAddress` in place — `disable`
+    // already stops every send, and clearing it would throw away the
+    // operator's last choice. So the stale address must not count as
+    // disagreement: comparing it would make the 5-minute self-heal tick
+    // rewrite the same patch, and log it, forever.
+    dmarcReportSettingsGet.mockResolvedValue({
+      id: 'singleton',
+      aggregateSendFrequency: { match: {}, else: "'disable'" },
+      aggregateFromAddress: { match: {}, else: "'postmaster@previously-chosen.test'" },
+    });
+    const r = await ensureDmarcReportSender(mockDb({ setting: null }), logger);
+    expect(r.state).toBe('in-sync');
+    expect(dmarcReportSettingsUpdate).not.toHaveBeenCalled();
+  });
+
+  it('still writes when ENABLED and only the sender differs — the control', async () => {
+    // The mirror case: with a desired sender, the address IS part of the
+    // comparison, or a changed selection would never reach Stalwart.
+    dmarcReportSettingsGet.mockResolvedValue({
+      id: 'singleton',
+      aggregateSendFrequency: { match: {}, else: "'daily'" },
+      aggregateFromAddress: { match: {}, else: "'postmaster@stale.test'" },
+    });
+    const r = await ensureDmarcReportSender(
+      mockDb({
+        setting: 'postmaster@example.test',
+        eligible: [{ address: 'postmaster@example.test', domainName: 'example.test', tenantName: 'Example Ltd', isSystem: false }],
+      }),
+      logger,
+    );
+    expect(r.state).toBe('enabled');
+    expect(dmarcReportSettingsUpdate).toHaveBeenCalled();
+  });
+
   it('treats an EMPTY singleton as disagreement, not agreement', async () => {
     // The trap this whole module exists for: empty means the built-in
     // defaults are live (daily, hostname sender), which is exactly the state

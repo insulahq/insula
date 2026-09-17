@@ -210,8 +210,17 @@ export async function ensureDmarcReportSender(
     const currentFreq = current?.aggregateSendFrequency?.else;
     const currentFrom = current?.aggregateFromAddress?.else;
     const wantFreq = (patch.aggregateSendFrequency as StalwartExpression).else;
-    const wantFrom = desired ? (patch.aggregateFromAddress as StalwartExpression).else : undefined;
-    if (current && currentFreq === wantFreq && currentFrom === wantFrom) {
+    // When disabling, the patch deliberately leaves `aggregateFromAddress`
+    // alone — `disable` already stops every send, and clearing the address
+    // would lose the operator's last choice. So the sender must NOT be part of
+    // the comparison in that direction: it still holds the old address, and
+    // demanding it match would make this never look in-sync and rewrite the
+    // same patch (plus a log line) on every 5-minute tick, forever.
+    const agrees = desired
+      ? currentFreq === wantFreq
+        && currentFrom === (patch.aggregateFromAddress as StalwartExpression).else
+      : currentFreq === wantFreq;
+    if (current && agrees) {
       return { state: 'in-sync', sender: desired, reason };
     }
   } catch (err) {
