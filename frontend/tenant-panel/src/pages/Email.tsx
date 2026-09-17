@@ -2192,7 +2192,13 @@ function ImapSyncPanel({
   const onSubmit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setFormError(null);
-    const fd = new FormData(e.currentTarget);
+    // Captured NOW, not after the await. React invalidates `currentTarget`
+    // when the synchronous dispatch ends, so reading it later yields null —
+    // which is where "Cannot read properties of null (reading 'reset')" came
+    // from. The migration had already been created successfully at that point.
+    const form = e.currentTarget;
+    const fd = new FormData(form);
+    let created = false;
     try {
       await create.mutateAsync({
         mailbox_id: String(fd.get('mailbox_id') ?? ''),
@@ -2206,10 +2212,20 @@ function ImapSyncPanel({
           dryRun: fd.get('dry_run') === 'on',
         },
       });
-      setShowForm(false);
-      (e.currentTarget as HTMLFormElement).reset();
+      created = true;
     } catch (err) {
       setFormError(err instanceof Error ? err.message : 'Failed to start sync');
+    }
+    // Outside the try on purpose. Tidying the form up is not part of starting
+    // the migration, and when the reset threw from inside it the catch
+    // recorded an error against a migration that had SUCCEEDED. That error
+    // renders inside the form, which had just closed, so it stayed invisible
+    // until the operator opened the form for the NEXT job — where it read as
+    // a failure of that one. Hence the report "an error is shown, but
+    // everything works fine".
+    if (created) {
+      setShowForm(false);
+      form.reset();
     }
   };
 
@@ -2225,7 +2241,7 @@ function ImapSyncPanel({
         </div>
         <button
           type="button"
-          onClick={() => setShowForm(s => !s)}
+          onClick={() => { setFormError(null); setShowForm(s => !s); }}
           disabled={jobs.length >= 10}
           className="inline-flex items-center gap-1 rounded-md border border-gray-200 dark:border-gray-600 px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50"
           data-testid="imapsync-toggle-form"
