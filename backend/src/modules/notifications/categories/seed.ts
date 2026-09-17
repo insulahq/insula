@@ -934,6 +934,23 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
     gdprBasis: 'contract',
   },
   {
+    id: 'tenant.mailbox_migration',
+    cls: 'record',
+    reportsOn: null,
+    displayName: 'Mailbox migration',
+    description:
+      'The outcome of migrating a mailbox in from another provider. Split out of the generic mail-event '
+      + 'bucket 2026-09-17: sharing that bucket meant sharing its template, `{{subsystem}}: {{objectLabel}}`, '
+      + 'which rendered "IMAPSync migration: job (unnamed)" — a tool name a tenant has never heard of, and '
+      + 'no mailbox. A migration is an action the tenant took on a specific mailbox, and deserves its own '
+      + 'wording and its own link.',
+    audience: 'tenant',
+    defaultSeverity: 'info',
+    defaultChannels: ALL_NOTIFICATION_CHANNELS,
+    isMandatory: false,
+    gdprBasis: 'contract',
+  },
+  {
     id: 'platform.digest',
     cls: 'record',
     reportsOn: null,

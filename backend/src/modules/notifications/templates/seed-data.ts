@@ -258,6 +258,55 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     ],
   },
 
+  // ── tenant.mailbox_migration ───────────────────────────────────────
+  //
+  // Its own templates, not the generic `{{subsystem}}: {{objectLabel}}`
+  // bucket, so the subject can say the one thing a tenant wants to see:
+  // WHICH mailbox, and whether it worked. The old shared line rendered
+  // "IMAPSync migration: job (unnamed)".
+  //
+  // `mailboxAddress` is REQUIRED. A missing value must fail loudly at render
+  // rather than produce a subject with a hole in it — which is how the
+  // original defect stayed invisible.
+  {
+    categoryId: 'tenant.mailbox_migration',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: 'Mailbox migration of {{mailboxAddress}} {{outcomeLabel}}',
+    bodyTemplate: emailMjml(
+      'Mailbox migration of {{mailboxAddress}}',
+      'The migration {{outcomeLabel}}{{#if sourceLabel}} (copying from {{sourceLabel}}){{/if}}. {{detail}} '
+      + 'As of {{occurredAt}}. {{recommendedAction}}',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'mailboxAddress', type: 'string', required: true },
+      { name: 'outcomeLabel', type: 'string', required: true },
+      { name: 'detail', type: 'string', required: false },
+      { name: 'sourceLabel', type: 'string', required: false },
+      { name: 'recommendedAction', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'tenant.mailbox_migration',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: 'Mailbox migration of {{mailboxAddress}} {{outcomeLabel}}',
+    bodyTemplate:
+      'The migration {{outcomeLabel}}{{#if sourceLabel}} (copying from {{sourceLabel}}){{/if}}. {{detail}} '
+      + 'As of {{occurredAt}}. {{recommendedAction}}',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'mailboxAddress', type: 'string', required: true },
+      { name: 'outcomeLabel', type: 'string', required: true },
+      { name: 'detail', type: 'string', required: false },
+      { name: 'sourceLabel', type: 'string', required: false },
+      { name: 'recommendedAction', type: 'string', required: false },
+    ],
+  },
+
   // ── admin.notification_escalated ───────────────────────────────────
   {
     categoryId: 'admin.notification_escalated',

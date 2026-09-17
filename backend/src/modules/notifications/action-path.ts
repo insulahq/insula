@@ -99,6 +99,9 @@ const STATIC_PATHS: Record<string, string> = {
   'tenant.domain_verification': '/domains',
   'tenant.backup_event': '/backups',
   'tenant.mail_event': '/email',
+  // The migration panel lives on the tenant Email page. There is no
+  // per-mailbox deep link for it, so this is the closest honest target.
+  'tenant.mailbox_migration': '/email',
   'platform.digest': '/notifications',
   'admin.notification_escalated': '/platform/notifications',
   'admin.subscriptions_expiring': '/tenants',

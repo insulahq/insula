@@ -213,6 +213,26 @@ for (const m of EVENTS_CODE.matchAll(/\b(\w*(?:Label|Name|Address|Subject))\s*:\
   }
 }
 
+// The same arm, for labels built as TEMPLATE LITERALS. The matcher above only
+// sees a bare identifier, so it read straight past
+//
+//     objectLabel: `job ${payload.jobId}`
+//
+// which reached a tenant on 2026-09-17 as "IMAPSync migration: job (unnamed)"
+// — the dispatcher resolved the job id against tenants, users, mailboxes and
+// domains, matched none of them, and substituted its placeholder. The guard
+// existed, the arm existed, and the shape was simply outside what it could see.
+for (const m of EVENTS_CODE.matchAll(/\b(\w*(?:Label|Name|Address|Subject))\s*:\s*`([^`]*)`/g)) {
+  const [, key, literal] = m;
+  for (const interp of literal.matchAll(/\$\{([^}]*)\}/g)) {
+    if (/\b\w*[iI]d\b/.test(interp[1])) {
+      failures.push(
+        `events.ts: \`${key}\` is built from an id (\`${interp[1].trim()}\`) where a human label is expected (NO ID)`,
+      );
+    }
+  }
+}
+
 // ── EMITTER: a category nothing ever dispatches cannot notify anyone ─────
 //
 // Added 2026-09-17. The audit behind this epic found SIX categories with

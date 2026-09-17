@@ -50,6 +50,7 @@ import {
   resolveIdVariables,
   greetingFor,
   findIds,
+  UNRESOLVED_NAME_PLACEHOLDER,
 } from './envelope.js';
 import { CLASS_POLICY } from '../routing/classes.js';
 import { isObjectMuted } from '../mutes/service.js';
@@ -308,11 +309,31 @@ function warnOnRenderedIds(
   body: string,
 ): void {
   const leaked = [...new Set([...findIds(subject ?? ''), ...findIds(body)])];
-  if (leaked.length === 0) return;
-  dispatchLog().warn(
-    { categoryId, channel, leakedIds: leaked },
-    'notification rendered with a raw id in the text a person reads',
-  );
+  if (leaked.length > 0) {
+    dispatchLog().warn(
+      { categoryId, channel, leakedIds: leaked },
+      'notification rendered with a raw id in the text a person reads',
+    );
+  }
+
+  // The placeholder is worse than the id it replaces, and it was INVISIBLE to
+  // the check above. 2026-09-17: a tenant received "IMAPSync migration: job
+  // (unnamed)" because an emitter put a JOB id in a label, the resolver tried
+  // tenants/users/mailboxes/domains, matched none of them, and substituted the
+  // placeholder. No raw id survived, so nothing warned — a notification whose
+  // subject named nothing at all went out in silence.
+  //
+  // Error, not warn: a subject that identifies nothing is a defect in the
+  // emitter, not a condition of the world.
+  const text = `${subject ?? ''} ${body}`;
+  if (text.includes(UNRESOLVED_NAME_PLACEHOLDER)) {
+    dispatchLog().error(
+      { categoryId, channel, subject },
+      'notification rendered with an UNRESOLVABLE id — the reader is told nothing. '
+      + 'The emitter is passing an id of a kind the name resolver does not know; '
+      + 'pass the human label instead',
+    );
+  }
 }
 
 export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<EmitResult> {

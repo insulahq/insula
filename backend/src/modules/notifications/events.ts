@@ -98,11 +98,17 @@ export async function notifyTenantDkimRotated(
   payload: DkimRotatedPayload,
 ): Promise<void> {
   await dispatchSafe(db, 'tenant.mail_event', { kind: 'tenant', tenantId }, {
-    subsystem: 'DKIM key rotation',
+    // "DKIM" and "selector" are terms for whoever runs a mail server, not for
+    // the person who owns the domain. What the tenant needs to know is that
+    // the thing proving their mail is genuine was replaced, and that they do
+    // not have to do anything.
+    subsystem: 'Email signing key',
     objectLabel: payload.domainName,
-    detail: `A new DKIM signing key (selector "${payload.selector}") was automatically generated.`,
-    severityLabel: 'rotated',
-    recommendedAction: 'No action is required — the platform manages this for you.',
+    detail:
+      'The cryptographic key that proves mail from this domain is genuine was replaced automatically. '
+      + 'Mail keeps flowing throughout — receivers pick up the new key from DNS.',
+    severityLabel: 'replaced',
+    recommendedAction: 'Nothing to do — the platform manages this key for you.',
   }, tenantId);
 }
 
@@ -118,6 +124,19 @@ export type ImapsyncTerminalStatus = 'succeeded' | 'completed' | 'failed' | 'can
 
 export interface ImapsyncTerminalPayload {
   readonly jobId: string;
+  /**
+   * The mailbox being migrated INTO — the only thing a tenant needs to
+   * identify this notification, and the thing it did not carry.
+   *
+   * Required. The old payload had no mailbox at all, so the subject was built
+   * from the job id: `objectLabel: \`job ${jobId}\``. The dispatcher then
+   * resolved that id against tenants, users, mailboxes and domains, matched
+   * none of them (it is a JOB id), and substituted its placeholder — leaving
+   * the tenant with "IMAPSync migration: job (unnamed)".
+   */
+  readonly mailboxAddress: string;
+  /** Where the mail is being copied FROM, for context. */
+  readonly sourceHost?: string;
   readonly status: ImapsyncTerminalStatus;
   readonly messagesTransferred?: number;
   readonly errorMessage?: string;
@@ -151,24 +170,38 @@ export async function notifyTenantImapsyncTerminal(
   // No hand-derived `title` or `type` any more: the template builds the
   // subject and the category supplies the severity. Those two locals existed
   // only because the legacy path had nowhere else to put them.
-  const message = (() => {
-    if (payload.status === 'succeeded' || payload.status === 'completed') {
-      const count = payload.messagesTransferred ?? 0;
-      return `IMAPSync migration job finished successfully. ${count} message(s) transferred.`;
-    }
-    if (payload.status === 'failed') {
-      return `IMAPSync migration job failed. ${payload.errorMessage ?? 'See the job details in the tenant panel for the error log.'}`;
-    }
-    return 'IMAPSync migration job was cancelled before it could finish.';
+  // Plain language, on purpose. "IMAPSync" is the name of the tool the
+  // platform happens to shell out to; a tenant migrating their mail from an
+  // old host has never heard it and gains nothing from it. What they want is
+  // WHICH mailbox, whether it worked, and how much moved.
+  const outcomeLabel = (() => {
+    if (payload.status === 'succeeded' || payload.status === 'completed') return 'finished';
+    if (payload.status === 'failed') return 'failed';
+    return 'was cancelled';
   })();
 
-  await dispatchSafe(db, 'tenant.mail_event', { kind: 'tenant', tenantId }, {
-    subsystem: 'IMAPSync migration',
-    objectLabel: `job ${payload.jobId}`,
-    detail: message,
-    severityLabel: payload.status,
+  const detail = (() => {
+    if (payload.status === 'succeeded' || payload.status === 'completed') {
+      const count = payload.messagesTransferred ?? 0;
+      return count === 1
+        ? '1 message was copied across.'
+        : `${count} messages were copied across.`;
+    }
+    if (payload.status === 'failed') {
+      return payload.errorMessage
+        ? `The error was: ${payload.errorMessage}`
+        : 'Open the migration on your Email page to see what went wrong.';
+    }
+    return 'It was stopped before it finished, so some mail may not have been copied.';
+  })();
+
+  await dispatchSafe(db, 'tenant.mailbox_migration', { kind: 'tenant', tenantId }, {
+    mailboxAddress: payload.mailboxAddress,
+    outcomeLabel,
+    detail,
+    ...(payload.sourceHost ? { sourceLabel: payload.sourceHost } : {}),
     recommendedAction: payload.status === 'failed'
-      ? 'Review the job log in the tenant panel and re-run the migration.'
+      ? 'You can start the migration again from the Email page once the problem is fixed.'
       : '',
   }, tenantId);
 }
