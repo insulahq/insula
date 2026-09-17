@@ -1048,7 +1048,7 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
           <div>
             <button
               type="button"
-              onClick={() => setShowAddRoute(true)}
+              onClick={() => { setSubdomainError(null); setShowAddRoute(true); }}
               className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
               data-testid="add-route-button"
             >
@@ -1319,7 +1319,7 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
             <div className="flex justify-end">
               <button
                 type="button"
-                onClick={() => setShowAddRoute(true)}
+                onClick={() => { setSubdomainError(null); setShowAddRoute(true); }}
                 className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
                 data-testid="add-route-button"
               >

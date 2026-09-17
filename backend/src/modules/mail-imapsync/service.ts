@@ -552,10 +552,18 @@ export async function markCancelled(
   db: Database,
   jobId: string,
 ): Promise<void> {
-  // Look up tenantId first so we can notify after the DB write.
+  // Look up the tenant AND the mailbox being migrated, so the notification can
+  // name it. Selecting only `tenantId` is what left the cancel notice with
+  // nothing to identify itself by.
   const [row] = await db
-    .select({ tenantId: imapSyncJobs.tenantId })
+    .select({
+      tenantId: imapSyncJobs.tenantId,
+      sourceUsername: imapSyncJobs.sourceUsername,
+      sourceHost: imapSyncJobs.sourceHost,
+      mailboxAddress: mailboxes.fullAddress,
+    })
     .from(imapSyncJobs)
+    .leftJoin(mailboxes, eq(mailboxes.id, imapSyncJobs.mailboxId))
     .where(eq(imapSyncJobs.id, jobId));
 
   await db
@@ -569,6 +577,8 @@ export async function markCancelled(
   if (row?.tenantId) {
     void notifyTenantImapsyncTerminal(db, row.tenantId, {
       jobId,
+      mailboxAddress: row.mailboxAddress ?? row.sourceUsername,
+      sourceHost: row.sourceHost,
       status: 'cancelled',
     });
   }
@@ -835,9 +845,17 @@ export async function markFailed(
   jobId: string,
   errorMessage: string,
 ): Promise<void> {
+  // Same join as the cancel path: the notification has to be able to name the
+  // mailbox, and `tenantId` alone cannot.
   const [row] = await db
-    .select({ tenantId: imapSyncJobs.tenantId })
+    .select({
+      tenantId: imapSyncJobs.tenantId,
+      sourceUsername: imapSyncJobs.sourceUsername,
+      sourceHost: imapSyncJobs.sourceHost,
+      mailboxAddress: mailboxes.fullAddress,
+    })
     .from(imapSyncJobs)
+    .leftJoin(mailboxes, eq(mailboxes.id, imapSyncJobs.mailboxId))
     .where(eq(imapSyncJobs.id, jobId));
 
   await db
@@ -852,6 +870,8 @@ export async function markFailed(
   if (row?.tenantId) {
     void notifyTenantImapsyncTerminal(db, row.tenantId, {
       jobId,
+      mailboxAddress: row.mailboxAddress ?? row.sourceUsername,
+      sourceHost: row.sourceHost,
       status: 'failed',
       errorMessage,
     });

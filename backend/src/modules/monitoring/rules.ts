@@ -209,7 +209,7 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
   {
     id: 'crowdsec-lapi-down',
     name: 'CrowdSec LAPI is not running',
-    description: 'No CrowdSec LAPI container has been running for several minutes. The Traefik bouncer is configured never to block on an unreachable LAPI, so hosted sites keep serving — but IP reputation is FROZEN at its last known state: existing bans still apply, no new bans or community-blocklist updates arrive. Check `kubectl get pods -n crowdsec`; a CreateContainerConfigError means a referenced Secret or ConfigMap is missing.',
+    description: 'No CrowdSec LAPI container has been running for several minutes. The Traefik bouncer is configured never to block on an unreachable LAPI, so hosted sites keep serving — but IP reputation is FROZEN at its last known state: existing bans still apply, no new bans or community-blocklist updates arrive. Check the crowdsec namespace for a pod that is not running; a CreateContainerConfigError there means a Secret or ConfigMap it references is missing.',
     severity: 'critical',
     expr: 'absent(container_memory_working_set_bytes{namespace="crowdsec",container="crowdsec"}) > $T',
     subjectLabels: [],
@@ -517,7 +517,8 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
   {
     id: 'acme-order-rate',
     name: 'ACME renewal activity',
-    description: 'platform-api fired/forced ACME renewals in the last hour — the LE-order-storm canary (#43). Healthy steady state is ZERO.',
+    // The LE-order-storm canary (#43).
+    description: 'The platform requested or forced certificate renewals in the last hour. The healthy steady state is zero: a non-zero count means certificates are being re-ordered in a loop, which burns the rate limits at the certificate authority.',
     severity: 'warning',
     expr: 'sum by (result) (increase(platform_acme_renewals_total{result=~"fired|forced|error"}[1h])) > $T',
     subjectLabels: ['result'],
@@ -577,7 +578,12 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
   {
     id: 'mail-drift-unrepaired',
     name: 'Mail drift left unrepaired',
-    description: 'A mail-drift item (a platform mailbox or domain row that Stalwart does not have) has gone unrepaired past the threshold in hours. Detection and the repair button already existed; nothing escalated, so a drift sat for three days on DEV while the mail health card stayed green and every message to that address bounced.',
+    // Why this rule exists: detection and the repair button already existed,
+    // but nothing escalated — a drift once sat unrepaired for three days while
+    // the mail health card stayed green and every message to that address
+    // bounced. Keep that history HERE; the description below is read by an
+    // operator in a notification, not by a reviewer.
+    description: 'A mailbox or domain the platform has on record is missing from the mail server, and has stayed missing past the threshold (hours). Mail sent to that address bounces until it is repaired. Repair it under Email in the admin panel.',
     severity: 'warning',
     // >= 0 drops the -1 sentinel, which covers BOTH "no unresolved drift" and
     // "could not read the table" — neither is a backlog, and a failed probe

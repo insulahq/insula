@@ -53,14 +53,19 @@ CATEGORIES="$REPO_ROOT/backend/src/modules/notifications/categories/seed.ts"
 TEMPLATES="$REPO_ROOT/backend/src/modules/notifications/templates/seed-data.ts"
 ACTION_PATH="$REPO_ROOT/backend/src/modules/notifications/action-path.ts"
 EVENTS="$REPO_ROOT/backend/src/modules/notifications/events.ts"
+# SLO rule descriptions are rendered into the notification body verbatim, so
+# they are notification copy and answer to the same COPY arm. rules.ts imports
+# nothing, so loading it here adds no runtime dependency to the guard.
+SLO_RULES="$REPO_ROOT/backend/src/modules/monitoring/rules.ts"
 
 echo "── notification usefulness guard ────────────────────────────────────"
 
-for f in "$CATEGORIES" "$TEMPLATES" "$ACTION_PATH" "$EVENTS"; do
+for f in "$CATEGORIES" "$TEMPLATES" "$ACTION_PATH" "$EVENTS" "$SLO_RULES"; do
   [ -f "$f" ] || { echo "FAIL: missing $f" >&2; exit 1; }
 done
 
 CATEGORIES="$CATEGORIES" TEMPLATES="$TEMPLATES" ACTION_PATH="$ACTION_PATH" EVENTS="$EVENTS" \
+  SLO_RULES="$SLO_RULES" \
   BACKEND_SRC="$REPO_ROOT/backend/src" \
 node --experimental-strip-types --no-warnings --input-type=module -e '
 import { readFileSync, readdirSync } from "node:fs";
@@ -69,6 +74,7 @@ const cats = await import(process.env.CATEGORIES);
 const tpls = await import(process.env.TEMPLATES);
 const paths = await import(process.env.ACTION_PATH);
 const EVENTS_SRC = readFileSync(process.env.EVENTS, "utf8");
+const slo = await import(process.env.SLO_RULES);
 
 const ALL_CATEGORIES = cats.ALL_CATEGORIES;
 const ALL_SEED_TEMPLATES = tpls.ALL_SEED_TEMPLATES;
@@ -78,6 +84,10 @@ if (!Array.isArray(ALL_CATEGORIES) || ALL_CATEGORIES.length === 0) {
 }
 if (!Array.isArray(ALL_SEED_TEMPLATES) || ALL_SEED_TEMPLATES.length === 0) {
   console.error("FAIL: ALL_SEED_TEMPLATES is empty — a guard over nothing passes trivially.");
+  process.exit(1);
+}
+if (!Array.isArray(slo.SLO_RULES) || slo.SLO_RULES.length === 0) {
+  console.error("FAIL: SLO_RULES is empty — the COPY arm over the SLO rules would pass trivially.");
   process.exit(1);
 }
 if (typeof paths.notificationActionPath !== "function") {
@@ -213,6 +223,75 @@ for (const m of EVENTS_CODE.matchAll(/\b(\w*(?:Label|Name|Address|Subject))\s*:\
   }
 }
 
+// The same arm, for labels built as TEMPLATE LITERALS. The matcher above only
+// sees a bare identifier, so it read straight past
+//
+//     objectLabel: `job ${payload.jobId}`
+//
+// which reached a tenant on 2026-09-17 as "IMAPSync migration: job (unnamed)"
+// — the dispatcher resolved the job id against tenants, users, mailboxes and
+// domains, matched none of them, and substituted its placeholder. The guard
+// existed, the arm existed, and the shape was simply outside what it could see.
+for (const m of EVENTS_CODE.matchAll(/\b(\w*(?:Label|Name|Address|Subject))\s*:\s*`([^`]*)`/g)) {
+  const [, key, literal] = m;
+  for (const interp of literal.matchAll(/\$\{([^}]*)\}/g)) {
+    if (/\b\w*[iI]d\b/.test(interp[1])) {
+      failures.push(
+        `events.ts: \`${key}\` is built from an id (\`${interp[1].trim()}\`) where a human label is expected (NO ID)`,
+      );
+    }
+  }
+}
+
+// ── COPY: a description is read by an operator, not a reviewer ───────────
+//
+// Added 2026-09-17 after the operator asked why the notification settings page
+// showed "These were the last four events on the legacy notifyUser path —
+// in-app only, so none of them had EVER reached a tenant by email."
+//
+// `description` is UI copy: the admin Notifications page renders it under the
+// display name and searches it. Eleven of them carried the reasoning for
+// having BUILT the category instead — "Previously in-app only", a template
+// fragment, a date, a PR-era narrative. All true, none of it any help to
+// somebody deciding whether to mute a category.
+//
+// The arm bans the markers of that narrative, not prose in general: a date, a
+// PR reference, code or template syntax, an internal symbol, and the handful
+// of phrases that only ever introduce history. It says WHAT and WHEN, or it
+// does not belong in the field.
+const COPY_BANS = [
+  [/20\d\d-\d\d-\d\d|\b20\d\d-\d\d\b/, "a date — describe the notification, not when it changed"],
+  [/#\d{2,}/, "a PR or issue reference"],
+  [/\{\{|\}\}|`|\.ts\b|\(\)/, "code or template syntax"],
+  [/\bnotifyUser\b|\bdispatchSafe\b|\bemitEvent\b|\bcategory_id\b|\bcategoryId\b|notifications table/i,
+    "an internal symbol or table name"],
+  [/\bpreviously\b|\bused to\b|\blegacy\b|\bsplit out of\b|\bthese were\b|\bhad EVER\b|\balready existed\b/i,
+    "implementation history — say what it reports, not what it replaced"],
+  [/\bon DEV\b|\bon STAGING\b|\bon PRODUCTION\b/,
+    "the name of an environment — the reader is IN one"],
+  [/\bfor three days\b|\bsat for\b|\bfor a year\b|\bfor months\b/i,
+    "an incident anecdote — describe the condition, not the time it once went unnoticed"],
+];
+// Extended 2026-09-17: the first version of this arm read the notification
+// CATEGORIES only, and an SLO alert sailed straight past it — a live DEV
+// notification read "Detection and the repair button already existed; nothing
+// escalated, so a drift sat for three days on DEV while the mail health card
+// stayed green". An SLO description is pasted into the notification body, so
+// it is the same field by another name. Two more markers were added with it
+// (an environment name, an incident anecdote), both taken from that text.
+const COPY_SUBJECTS = [
+  ...ALL_CATEGORIES.map((c) => ({ label: c.id, description: c.description ?? "" })),
+  ...slo.SLO_RULES.map((r) => ({ label: `slo:${r.id}`, description: r.description ?? "" })),
+];
+for (const c of COPY_SUBJECTS) {
+  for (const [re, why] of COPY_BANS) {
+    const hit = c.description.match(re);
+    if (hit) {
+      failures.push(`${c.label}: description contains ${why} (COPY) — ${JSON.stringify(hit[0])}`);
+    }
+  }
+}
+
 // ── EMITTER: a category nothing ever dispatches cannot notify anyone ─────
 //
 // Added 2026-09-17. The audit behind this epic found SIX categories with
@@ -345,5 +424,6 @@ the ones that matter.`);
   process.exit(1);
 }
 
-console.log(`OK: ${ALL_CATEGORIES.length} categories — each names a subject, carries a timestamp, resolves a destination, prints no ids, and has an emitter (${DORMANT.size} deliberately dormant).`);
+console.log(`OK: ${ALL_CATEGORIES.length} categories — each names a subject, carries a timestamp, resolves a destination, prints no ids, has an emitter, and describes itself to an operator rather than a reviewer (${DORMANT.size} deliberately dormant).`);
+console.log(`OK: ${slo.SLO_RULES.length} SLO rule descriptions read as operator copy (their text is pasted into the notification body).`);
 '
