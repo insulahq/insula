@@ -12,6 +12,29 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **Switching outbound DMARC reporting off did not take effect on a cluster
+  that had never had those settings written.** The reconciler reported a
+  successful disable while Stalwart stored nothing, which left its built-in
+  defaults live — daily aggregate reports from `noreply-dmarc@` plus the mail
+  server's own hostname domain, an address with no mailbox, so every bounce for
+  a report went nowhere. That is the condition the switch was added to prevent,
+  and it survived one round of fixing because the earlier attempt assumed the
+  number of fields in the write was what mattered.
+
+  It is not the number of fields. Stalwart only creates the settings group when
+  the write includes an **address**, so a write of schedule fields alone is
+  accepted and discarded. Both directions now carry one: when reporting is off
+  the address is `postmaster@<your mail hostname>`, which is a real deliverable
+  address, so even a future mistake would send from somewhere an operator
+  reads. If the mail hostname cannot be resolved the platform now refuses to
+  write and says so, rather than reporting a disable that did not happen.
+
+  Found by verifying the previous release on staging. Anyone who upgraded to
+  2026.9.22 and expected reporting to be off should check
+  **Settings → Mail → Outbound DMARC Reporting** after taking this release; the
+  reconciler repairs the state on its next pass, within five minutes.
+
 ## [2026.9.22] - 2026-09-17
 
 ### Added
