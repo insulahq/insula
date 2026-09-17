@@ -13,6 +13,27 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Added
+- **Scheduled tasks are read on a real clock, and you can choose which one.**
+  Schedules were evaluated in UTC with no way to say otherwise, so a tenant in
+  CEST asking for `0 3 * * *` got 05:00 local in summer and 04:00 in winter — a
+  nightly task that moved with the season and never ran when it said. A task now
+  follows the **platform timezone** by default and can pin its own from a
+  searchable list; the tenant panel shows which zone the default is, so "3 a.m."
+  is never ambiguous. Existing tasks are untouched: no zone means the platform's,
+  and a platform still set to UTC behaves exactly as before. Daylight saving is
+  handled deliberately rather than by accident — a task inside the hour the
+  clocks skip each spring is **passed over for that day** instead of running an
+  hour early, and one inside the hour repeated each autumn runs at the first
+  occurrence (and may run at the second, because those are two real moments and
+  dropping one would silently lose a run).
+- **The currency picker offers every ISO 4217 code, searchable.** It was a
+  15-entry dropdown with an inert "Custom" row, so a platform billing in MXN,
+  KES or PLN could see its own code listed as *Custom* and had no way to select
+  it — the API had accepted any 3-letter code all along. The list now comes from
+  the runtime (300+ codes, no hardcoded table to go stale) and searches by name
+  as well as code, so `rand` finds ZAR. The familiar handful stays pinned at the
+  top.
+
 - **Outbound DMARC reporting is now off until an operator picks an address that
   can receive mail — and tenants can finally see their own DMARC results.**
 

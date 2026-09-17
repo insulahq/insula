@@ -48,6 +48,11 @@ enabled, and the result of the last run.
 4. Fill in the common fields:
     - **Name** — a label for you (e.g. `daily-backup`).
     - **Schedule (cron)** — when it runs, in cron format (see below).
+    - **Timezone** — optional. The clock the schedule is read on. Left alone it
+      follows the **platform timezone**, and the picker shows you which zone
+      that is; change the platform's and every task following it moves with it.
+      Set one here only when a task belongs to a different region — a school in
+      another country, say — and it stays pinned regardless of platform changes.
     - **Timeout (seconds)** — optional. How long **one run** may take before
       the platform gives up on it and records a failure. Leave it blank for the
       default: **30 seconds** for a webcron, **300 seconds** for a deployment
@@ -73,11 +78,21 @@ The schedule uses standard **cron** notation — five fields:
     If you're unsure, an online "crontab generator" can turn plain English into
     the five-field expression to paste here.
 
-!!! warning "Schedules are in UTC"
-    Times are interpreted in **UTC**, not your local time zone. If you are on
-    Central European Summer Time (UTC+2) and you ask for `0 3 * * *`, the task
-    runs at 5 a.m. where you are. Subtract your offset when you write the
-    schedule.
+!!! info "Which clock a schedule uses"
+    A schedule is read on the task's **timezone** — its own if you set one,
+    otherwise the platform's. `0 3 * * *` means 3 a.m. on that clock, and it
+    stays 3 a.m. on both sides of a daylight-saving change.
+
+    Daylight saving has two edges, and both are handled deliberately:
+
+    - **Spring forward.** The hour that the clocks skip does not exist, so a
+      task scheduled inside it is **passed over that day** rather than run an
+      hour early. A task at 2:30 a.m. in a zone that jumps 2 a.m. → 3 a.m.
+      simply does not run on that one night.
+    - **Autumn back.** The repeated hour happens twice, so a task scheduled
+      inside it runs at the **first** occurrence — and may run again at the
+      second, because those are genuinely two different moments and skipping
+      one would mean silently dropping a run.
 
 ## Run, pause, and delete
 
