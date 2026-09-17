@@ -22,7 +22,7 @@ const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() } as never;
  */
 function mockDb(opts: {
   setting?: string | null;
-  eligible?: { address: string; domainName: string; tenantName: string | null; isSystem: boolean }[];
+  eligible?: { address: string; domainName: string; tenantName: string; isSystem: boolean }[];
   onWrite?: (value: string) => void;
 }) {
   const select = vi.fn().mockImplementation((proj?: Record<string, unknown>) => {
@@ -139,7 +139,7 @@ describe('eligibleReportSenders', () => {
     const db = mockDb({
       eligible: [
         { address: 'postmaster@b.test', domainName: 'b.test', tenantName: 'B', isSystem: false },
-        { address: 'postmaster@a.test', domainName: 'a.test', tenantName: null, isSystem: true },
+        { address: 'postmaster@a.test', domainName: 'a.test', tenantName: 'SYSTEM', isSystem: true },
       ],
     });
     const list = await eligibleReportSenders(db);

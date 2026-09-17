@@ -60,7 +60,14 @@ const expr = (value: string): StalwartExpression => ({ match: {}, else: `'${valu
 export interface EligibleReportSender {
   readonly address: string;
   readonly domainName: string;
-  readonly tenantName: string | null;
+  /**
+   * `tenants.name` is NOT NULL, so this is a plain string. It was briefly typed
+   * nullable "just in case" — which made the dropdown's `tenantName
+   * .toLowerCase()` search a latent TypeError against a state the column
+   * cannot hold, and disagreed with the api-contract that declares it
+   * required.
+   */
+  readonly tenantName: string;
   readonly isSystemTenant: boolean;
 }
 
@@ -100,7 +107,7 @@ export async function eligibleReportSenders(db: Database): Promise<EligibleRepor
     .map((r) => ({
       address: r.address,
       domainName: r.domainName,
-      tenantName: r.tenantName ?? null,
+      tenantName: r.tenantName,
       isSystemTenant: r.isSystem === true,
     }))
     .sort((a, b) => a.address.localeCompare(b.address));
