@@ -34,6 +34,7 @@
  */
 import { and, eq } from 'drizzle-orm';
 import { mailboxes, emailDomains, domains, tenants, platformSettings } from '../../db/schema.js';
+import { POSTMASTER_LOCAL_PART } from './report-intake-reconciler.js';
 import {
   dmarcReportSettingsGet,
   dmarcReportSettingsUpdate,
@@ -199,13 +200,29 @@ export async function ensureDmarcReportSender(
   // Both patches state EVERY field this platform has an opinion about, in both
   // directions. Two reasons, and the first was found on DEV:
   //
-  //  1. A single-field patch against a settings group Stalwart has never
-  //     written is ACCEPTED (`updated: {singleton: null}`, nothing in
-  //     `notUpdated`) and stores NOTHING. The disable-only patch therefore
-  //     logged success on a fresh install while leaving the group empty — and
-  //     an empty group means the built-in defaults are live, which is
-  //     `daily` from `noreply-dmarc@` + the server's own hostname domain.
-  //     The exact bug this whole module exists to prevent, reported as fixed.
+  //  1. A patch of SCHEDULE fields alone against a settings group Stalwart has
+  //     never written is ACCEPTED (`updated: {singleton: null}`, nothing in
+  //     `notUpdated`) and stores NOTHING. An empty group means the built-in
+  //     defaults are live — `daily` from `noreply-dmarc@` + the server's own
+  //     hostname domain — so the disable logged success while leaving the exact
+  //     bug this module exists to prevent in place.
+  //
+  //     What materialises the group is an ADDRESS field, not a second field.
+  //     Measured on staging 2026-09-17, same connection, read back after each:
+  //
+  //       {aggregateSendFrequency, failureSendFrequency}   -> accepted, read NULL
+  //       {aggregateSendFrequency, aggregateFromAddress}   -> accepted, and now
+  //                                                           ALL THREE appear,
+  //                                                           including the
+  //                                                           failure value the
+  //                                                           first patch set
+  //
+  //     So both directions carry the address fields. The first fix for this
+  //     assumed the field COUNT mattered and shipped a two-schedule-field
+  //     patch; it passed on DEV only because an earlier diagnostic probe had
+  //     already created that group with an address in it. Verifying in an
+  //     environment your own probing prepared proves nothing about a fresh
+  //     install.
   //
   //  2. Failure (forensic / `ruf=`) reports are the same subsystem with the
   //     same defaults — `failureSendFrequency: [1, 1d]` from
@@ -214,8 +231,31 @@ export async function ensureDmarcReportSender(
   //     They stay OFF even when aggregate reporting is on: a failure report
   //     forwards headers of somebody's individual message to whoever asked for
   //     it, and turning that on is not implied by "send DMARC reports".
-  const patch: Record<string, unknown> = desired
-    ? {
+  // The disable patch needs an address to materialise the group, and the only
+  // address the platform always owns is postmaster@ on its own mail hostname.
+  // Without it a disable patch is accepted and stores nothing, so refusing
+  // here is better than reporting a disable that did not happen.
+  let hostname: string | null = null;
+  try {
+    const { getExplicitMailHostname } = await import('../mail-admin/stalwart-domain-reconciler.js');
+    hostname = (await getExplicitMailHostname(db))?.trim().replace(/\.+$/, '').toLowerCase() ?? null;
+  } catch (err) {
+    logger.warn({ err }, 'dmarc report sender: could not resolve the mail hostname');
+  }
+  if (!desired && !hostname) {
+    logger.error(
+      'dmarc report sender: no mail hostname — cannot write a disable that persists, leaving Stalwart '
+      + 'untouched rather than logging a disable that stored nothing',
+    );
+    return { state: 'skipped', sender: null, reason: 'no mail hostname for the disable patch' };
+  }
+
+  // Explicit branches rather than a ternary: the guard above proves `hostname`
+  // is non-null on the disable path, and TypeScript can only carry that
+  // narrowing through an `if`.
+  let patch: Record<string, unknown>;
+  if (desired) {
+    patch = {
       aggregateSendFrequency: expr(SEND_FREQUENCY),
       aggregateFromAddress: expr(desired),
       // Org name and DKIM signing follow the sender's own domain, so a report
@@ -223,11 +263,23 @@ export async function ensureDmarcReportSender(
       aggregateOrgName: expr(desired.slice(desired.indexOf('@') + 1)),
       aggregateDkimSignDomain: expr(desired.slice(desired.indexOf('@') + 1)),
       failureSendFrequency: expr(DISABLE),
-    }
-    : {
+    };
+  } else {
+    const host = hostname as string;
+    patch = {
       aggregateSendFrequency: expr(DISABLE),
       failureSendFrequency: expr(DISABLE),
+      // Present so the group is actually created (see above). The value is
+      // `postmaster@<mail hostname>`, which since 2026-09-17 is a real
+      // deliverable address forwarding to the admin roster — so in the worst
+      // case, where a future change lets sending happen while this says
+      // `disable`, reports come from somewhere a person reads instead of a
+      // black hole. Nothing sends while the schedule is `disable`.
+      aggregateFromAddress: expr(`${POSTMASTER_LOCAL_PART}@${host}`),
+      aggregateOrgName: expr(host),
+      aggregateDkimSignDomain: expr(host),
     };
+  }
 
   // Skip the write when Stalwart already agrees. The singleton being EMPTY is
   // not agreement — empty means the built-in defaults are live, which is the
