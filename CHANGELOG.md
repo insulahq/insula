@@ -86,6 +86,41 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   after it.
 
 
+- **`postmaster@` and `abuse@` now answer on every domain the platform owns.**
+  Both are mandatory under RFC 2142 and the platform answered neither on its own
+  identities. Re-probed on production with two controls on one SMTP connection:
+  `postmaster@` on a hosted domain returned `250`, a nonexistent address on the
+  same domain returned `550` (so the probe discriminates), and
+  `postmaster@mail.<apex>` returned `550 5.1.2 Mailbox does not exist` — the
+  domain in every EHLO and in the TLS certificate, which is the one a remote
+  postmaster or an abuse desk actually tries.
+
+  `abuse@` is now a default alias on every per-domain `postmaster@` intake,
+  alongside `dmarc@`; it is never created over an address something else already
+  answers, because a tenant may own a real abuse desk and shadowing it would be
+  worse than the 550. The mail hostname gets both names as forwarders to the
+  active admin roster rather than a mailbox — nothing to reap, and the mail
+  reaches a person. It refuses to create a forwarder with no recipients, which
+  would accept mail and silently drop it while telling the sender it was
+  delivered.
+
+- **Mail drift detection now covers mailbox aliases, in both directions** — an
+  alias the panel shows as working that Stalwart does not carry (so SMTP answers
+  550), and an address live on one of our mailboxes that no platform row claims.
+  Until now drift covered mailboxes and domains only, which is also why an empty
+  drift list was never evidence that aliases were healthy.
+
+### Fixed
+- **Drift items the database rejected were silently discarding the rest of the
+  scan.** `mail_drift_items.kind` carried a CHECK constraint listing four kinds
+  while the detector emitted five: `orphan-list` had been emitted since
+  2026-08-25 and never once stored. The inserts run in a loop with no per-row
+  guard, so the first rejected row aborted the whole persistence step — later
+  items were never written, and the sweep that marks vanished items resolved
+  never ran, leaving a drift list an operator could not clear. The constraint is
+  widened, each row is now guarded individually, and a row the database refuses
+  is reported instead of lost.
+
 ### Changed
 - **Platform `postmaster@` senders are exempt from tenant send limits, and their
   inboxes are emptied every 30 days.** DMARC reports are outbound mail from a
