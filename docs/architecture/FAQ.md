@@ -1,22 +1,33 @@
 # Frequently Asked Questions (FAQ)
 
+> **What this file is.** Design-era Q&A kept for the reasoning it records,
+> including the original cost and business projections. Corrected 2026-09-17,
+> because several answers had gone from optimistic to false (the platform is
+> AGPL, not proprietary; it is built and in production, not a design document;
+> metrics are VictoriaMetrics, not Prometheus/Loki/Grafana).
+>
+> For answers written to be *read by users*, see the
+> [user manual FAQ](https://insulahq.github.io/faq/)
+> (source: `documentation/docs/faq.md`). For current architecture, start at
+> `PLATFORM_ARCHITECTURE.md` and the ADR index.
+
 ## General Platform Questions
 
 ### Q: What is this platform?
 
-**A:** A modern, Kubernetes-based web hosting platform designed to replace legacy cPanel/Plesk systems. It provides shared hosting, dedicated hosting, email, DNS, SSL certificates, and application deployment with 99.5% uptime SLA.
+**A:** A Kubernetes-based multi-tenant web + mail hosting platform: isolated tenant workloads (any runtime), a full SMTP/IMAP/JMAP mail server, per-tenant databases, DNS, TLS, backups with point-in-time recovery, a per-site WAF, and SLO alerting — administered from an admin panel and a tenant panel. Uptime is whatever your own infrastructure and operations deliver; the platform ships the SLO rules and alerting to measure it, not a promise.
 
 ### Q: Who is this platform for?
 
 **A:** Hosting companies, managed service providers, or enterprises wanting to build their own web hosting platform. The MVP serves 50-100 clients on minimal infrastructure (~$35-60/month), scaling to 300+ clients with HA.
 
-### Q: What makes this different from cPanel/Plesk?
+### Q: What makes this different from a traditional hosting panel?
 
-**A:** Modern cloud-native architecture (Kubernetes), declarative infrastructure (GitOps), containerized workloads, lower operational overhead, no licensing costs, open-source components, horizontal scalability.
+**A:** Kernel-enforced isolation per tenant (namespace, NetworkPolicy, quota, storage) instead of shared-everything accounts; declarative state that the cluster reconciles toward; any runtime as a first-class citizen rather than PHP with extras bolted on; a growth path from one node to HA without a migration day; point-in-time recovery and rehearsed disaster recovery; signed releases verified on the node before upgrade; and no per-server or per-account licence fees.
 
 ### Q: Is this open source?
 
-**A:** No. The management API and panels are proprietary, but all underlying infrastructure components are open source (k3s, Kubernetes, Prometheus, Loki, etc.). No expensive licenses required.
+**A:** Yes — **AGPL-3.0**, management API and both panels included, at [github.com/insulahq/insula](https://github.com/insulahq/insula). (This answer read "No … proprietary" until 2026-09-17, which was wrong.) The AGPL network-use clause applies: run a modified version as a network service and you must offer its source to that service's users.
 
 ---
 
@@ -208,13 +219,13 @@ Takes ~5-10 seconds per client.
 
 ### Q: What happens if something breaks?
 
-**A:** Multiple layers of monitoring:
-1. **Prometheus** collects metrics every 15 seconds
-2. **Alertmanager** detects anomalies, sends alerts
-3. **Loki** aggregates logs from all pods
-4. **Grafana** dashboards show real-time status
+**A:** Layers, all in-platform (ADR-051 — one VictoriaMetrics pod replaced the Prometheus/Alertmanager/Grafana/Loki stack this answer used to describe, on memory grounds):
+1. **VictoriaMetrics** (single node) scrapes and stores metrics and serves MetricsQL + VMUI.
+2. **SLO rules** in the platform evaluate those series and raise warning/critical alerts.
+3. **The notification system** delivers them by email, in-app and ntfy, each naming the subject and linking to the page that acts on it.
+4. **Node health, memory events and eviction tracking** surface in the admin panel with one-click recovery actions.
 
-Alerts go to admin (email + SMS, PagerDuty in Phase 2).
+Pod logs are read through the platform and the Kubernetes API rather than a log-aggregation stack.
 
 ### Q: Can clients see their metrics?
 
@@ -235,7 +246,7 @@ Alerts go to admin (email + SMS, PagerDuty in Phase 2).
 
 ### Q: Can I export metrics for billing?
 
-**A:** Yes. Metrics available via Prometheus API. Can generate invoices based on storage used, bandwidth, etc.
+**A:** Yes. VictoriaMetrics serves a Prometheus-compatible query API, and per-tenant bandwidth metering and storage usage are exposed by the management API — enough to drive invoicing.
 
 ---
 
@@ -333,35 +344,29 @@ Recommend: HA at 100-150 clients (revenue ~$800-1200/mo).
 
 ### Q: Where do I start?
 
-**A:** See **QUICKSTART.md** for navigation by role:
-- **Architects:** PLATFORM_ARCHITECTURE.md
-- **DevOps/SRE:** INFRASTRUCTURE_SIZING.md, DEPLOYMENT_PROCESS.md, DISASTER_RECOVERY.md
-- **Developers:** TECH_STACK_SUMMARY.md, TENANT_PANEL_FEATURES.md
-- **Product Managers:** HOSTING_PLANS.md, APPLICATION_CATALOG.md
+**A:** Installing or running it — the [user manual](https://insulahq.github.io/). Working on the code — `README.md`, then `AGENTS.md` for the repo contract. Going deeper by role:
+- **Architects:** `PLATFORM_ARCHITECTURE.md`, the ADR index
+- **Operators / SRE:** `docs/operations/` runbooks, the manual's operator guide
+- **Developers:** `docs/development/`, `TECH_STACK_SUMMARY.md`
+(There is no `QUICKSTART.md`; this answer pointed at one for a long time.)
 
 ### Q: What's the roadmap?
 
-**A:** See **PLATFORM_ARCHITECTURE.md** → Phase 1/2/3 breakdown.
-- **Phase 1 (MVP):** Core hosting, email, backups, monitoring
-- **Phase 2 (Scale):** HA, GDPR, multi-cloud, advanced apps
-- **Phase 3 (Enterprise):** SOC 2, HIPAA, multi-region, custom integrations
+**A:** Open follow-ups live in `docs/roadmap/ROADMAP.md`, the single register for planned-but-unbuilt work. The Phase 1/2/3 framing this answer used to describe is historical: the core is built and in production, and multi-region/geographic sharding was explicitly descoped.
 
 ### Q: How long to build this?
 
-**A:** Rough estimate:
-- **MVP (Phase 1):** 4-6 months (one experienced engineer)
-- **Phase 2:** 6-8 months (scale features, GDPR, HA)
-- **Phase 3:** Ongoing (enterprise features, compliance, integrations)
+**A:** Historical question — it is built and in production. What remains is the open-follow-ups register in `docs/roadmap/ROADMAP.md`, not a build plan.
 
 ### Q: Can I fork this and build my own?
 
-**A:** This is documentation + design. You'll need to implement the management API and panels. Use the QUICKSTART + architecture docs as a guide. Reuse open-source components (k3s, Flux, etc.).
+**A:** Yes, and there is nothing left to implement first — the management API and both panels are in this repo under AGPL-3.0. Local dev and PR CI work on a fork unmodified; to deploy a fork to a real cluster, repoint the image org once (`scripts/preflight-image-org.sh`). See `docs/development/FORK-AND-DEPLOY.md`. The AGPL applies to what you ship.
 
 ---
 
 ## Related Documentation
 
-- **QUICKSTART.md**: Navigation entry point
+- **README.md**: Repository entry point · **[user manual](https://insulahq.github.io/)**: running and using the platform
 - **PLATFORM_ARCHITECTURE.md**: Detailed explanations
 - **TECH_STACK_SUMMARY.md**: Technology decisions
 - **TERMINOLOGY.md**: Glossary of terms

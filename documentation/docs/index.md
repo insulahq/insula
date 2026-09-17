@@ -8,10 +8,11 @@ server, backups, and two polished control panels — for **zero license fees,
 forever**. One command installs the whole stack on a fresh VPS; everything
 after that happens in a browser.
 
-If you run Plesk, cPanel, or Virtualmin today: Insula plays the same role,
-rebuilt on the infrastructure the rest of the industry moved to years ago —
-and it will import your Plesk subscriptions, sites, databases, mailboxes, and
-cron jobs for you.
+It does the job a hosting control panel does, on infrastructure that does
+considerably more: every customer in a kernel-enforced sandbox of their own,
+any runtime side by side, a mail server built for deliverability rather than
+box-ticking, point-in-time database recovery, per-site WAF, and a single
+action that turns one server into a highly available cluster.
 
 <div class="grid cards" markdown>
 
@@ -39,7 +40,7 @@ cron jobs for you.
 
 ## Why Insula over the alternatives
 
-**Against the legacy panels (Plesk, cPanel, DirectAdmin):**
+**Against traditional hosting panels:**
 
 - **No per-server, per-account license treadmill.** Insula is AGPL-licensed
   open source. Your costs are your servers — that's it.
@@ -51,10 +52,10 @@ cron jobs for you.
 - **Modern runtimes as first-class citizens.** PHP next to Node.js, Python,
   Go, Java, .NET, or any container image — not a PHP panel with extras bolted
   on. Switch a site's runtime version without moving files.
-- **A migration path, not a leap.** The built-in importer connects to your
-  existing Plesk server over SSH and moves subscriptions — sites, databases,
-  mailboxes (unread flags included), DNS, cron jobs — tenant by tenant, on
-  your schedule.
+- **Operations that would be separate products elsewhere.** SLO alerting,
+  per-tenant bandwidth metering with soft caps, memory-event tracking, node
+  health with one-click recovery, a dependency/CVE watch, and off-site
+  encrypted backups — in the platform, not bolted alongside it.
 
 **Against DIY Kubernetes or single-user PaaS tools:**
 
@@ -63,8 +64,8 @@ cron jobs for you.
   deploy-tools built for one team simply don't have.
 - **Mail is included and taken seriously.** A full SMTP/IMAP/JMAP server with
   per-domain DKIM, webmail, autodiscover, deliverability probes (PTR, DNSBL),
-  send-rate protection, and abuse alerts. This is the feature every "modern
-  Plesk alternative" skips because it's hard.
+  send-rate protection, and abuse alerts. This is the part most modern hosting
+  stacks skip, because running mail properly is hard.
 - **Kubernetes without the Kubernetes job.** Every node runs
   [k3s](https://k3s.io) under the hood, but Insula installs it, upgrades it,
   watches it, and translates it into hosting language. `kubectl` is there
@@ -74,9 +75,9 @@ cron jobs for you.
 
 - **Failure is rehearsed.** Point-in-time database recovery, off-site
   encrypted backups (S3/SFTP/SMB), a granular restore cart, cold-start
-  disaster recovery, and cluster-to-cluster tenant migration — all exercised
-  by a destructive integration suite against a live cluster before every
-  release.
+  disaster recovery, and cluster-to-cluster tenant migration — each exercised
+  by a destructive integration suite against a live cluster, not just
+  unit-tested.
 - **Under pressure, customers' pods yield before the platform does.** Nodes
   run swap-less with reserved headroom, tenant workloads are evicted first by
   construction, and every OOM or eviction lands in the panel and in your
@@ -99,6 +100,24 @@ cron jobs for you.
 | **Security** | Per-site WAF (OWASP rules), automatic intrusion bans, free TLS certificates, a managed node firewall, role-based access, passkeys. |
 | **Monitoring** | Built-in metrics, SLO alerts, node health with one-click recovery actions, memory-event tracking, and per-tenant bandwidth metering with soft caps — no separate monitoring stack to run. |
 | **Growth path** | Start on one ~€10/month VPS; add nodes and switch on high availability later with a single action — no migration day. |
+
+## The foundation underneath: Backbone
+
+Insula runs the hosting. Three things it depends on deliberately live *outside*
+the cluster: **authoritative DNS** (which must keep answering when the cluster
+it serves is down), the **mesh VPN** you use to reach the cluster, and the
+**OIDC provider** behind panel logins.
+
+[**Backbone**](https://github.com/insulahq/backbone) is the companion project
+that deploys all three — provider-agnostic Ansible that builds a redundant,
+self-healing pair of servers in two locations: PowerDNS, a NetBird WireGuard
+mesh, and Zitadel for identity, on top of replicated PostgreSQL with automatic
+failover, its own monitoring, and encrypted off-site backups.
+
+It is optional. Every one of those integrations is an endpoint you configure in
+the admin panel, so any authoritative DNS with a PowerDNS-compatible API, any
+WireGuard-style underlay, and any OIDC provider will do just as well. Backbone
+is simply the deployment Insula is developed and tested against.
 
 ## The three hats
 

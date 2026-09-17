@@ -4,9 +4,9 @@
 # can be swapped post-alpha (https://zensical.org/compatibility/).
 site_name: Insula
 site_description: >-
-  Insula is an open-source Kubernetes web-hosting platform — a modern Plesk
-  replacement with tenant isolation, integrated mail, backups, and one-command
-  installs on your own servers.
+  Insula is an open-source Kubernetes hosting platform — kernel-enforced tenant
+  isolation, a full mail server, point-in-time recovery and off-site backups,
+  per-site WAF, and one-command installs on your own servers.
 site_url: https://insulahq.github.io/
 repo_url: https://github.com/insulahq/insula
 repo_name: insulahq/insula
