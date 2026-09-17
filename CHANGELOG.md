@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.9.23] - 2026-09-17
+
 ### Fixed
 - **Switching outbound DMARC reporting off did not take effect on a cluster
   that had never had those settings written.** The reconciler reported a
