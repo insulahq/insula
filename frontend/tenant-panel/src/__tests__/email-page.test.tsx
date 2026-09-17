@@ -95,7 +95,7 @@ vi.mock('../hooks/use-domains', () => ({
   })),
 }));
 
-import { useEmailDomains, useMailboxes, useUpdateMailbox, useEmailDomainDnsRecords } from '../hooks/use-email';
+import { useEmailDomains, useMailboxes, useUpdateMailbox, useEmailDomainDnsRecords, useMailboxUsage } from '../hooks/use-email';
 import { useDomains } from '../hooks/use-domains';
 
 const mockedUseEmailDomains = vi.mocked(useEmailDomains);
@@ -103,6 +103,7 @@ const mockedUseMailboxes = vi.mocked(useMailboxes);
 const mockedUseUpdateMailbox = vi.mocked(useUpdateMailbox);
 const mockedUseEmailDomainDnsRecords = vi.mocked(useEmailDomainDnsRecords);
 const mockedUseDomains = vi.mocked(useDomains);
+const mockedUseMailboxUsage = vi.mocked(useMailboxUsage);
 
 function createTestQueryClient() {
   return new QueryClient({
@@ -758,5 +759,53 @@ describe('Aliases tab (unified UX)', () => {
     const fireEvent = await openAliases();
     fireEvent.click(screen.getByTestId('delete-alias-al-1'));
     expect(screen.getByRole('button', { name: 'Confirm' })).toBeInTheDocument();
+  });
+});
+
+// ─── mailbox usage meter colour ───────────────────────────────────────────
+//
+// Operator decision 2026-09-17: the meter is ALWAYS the default brand colour,
+// including at and over the plan limit. Reaching a plan limit is an ordinary
+// fact about a plan, not a fault — nothing is broken and nothing is degraded.
+// The sentence under the bar already says what happened and what to do, which
+// is the part that carries information; a red meter made a normal state look
+// like an incident.
+//
+// Pinned because "always blue" is exactly the decision a later well-meaning
+// change re-introduces as a severity colour.
+describe('mailbox usage meter colour', () => {
+  const usageAt = (current: number, limit: number) => {
+    mockedUseMailboxUsage.mockReturnValue({
+      data: { data: { limit, current, remaining: Math.max(0, limit - current), source: 'plan' } },
+      isLoading: false,
+    } as never);
+  };
+
+  for (const [label, current, limit] of [
+    ['under the limit', 2, 10],
+    ['near the limit', 9, 10],
+    ['at the limit', 10, 10],
+    ['over the limit', 12, 10],
+  ] as const) {
+    it(`stays brand blue ${label}`, () => {
+      usageAt(current, limit);
+      renderWithProviders(<Email />);
+      const card = screen.getByTestId('mailbox-usage-bar');
+      const fill = card.querySelector('.transition-all');
+      expect(fill, 'the meter fill should render').not.toBeNull();
+      expect(fill?.className).toContain('bg-brand-500');
+      expect(fill?.className).not.toContain('bg-red-500');
+      expect(fill?.className).not.toContain('bg-amber-500');
+      // The frame too — a red border around a blue meter reads as a bug.
+      expect(card.className).not.toContain('border-red-200');
+      expect(card.className).not.toContain('border-amber-200');
+    });
+  }
+
+  it('still SAYS the limit is reached — only the colour changed', () => {
+    // The information was never the problem; the alarm colour was.
+    usageAt(10, 10);
+    renderWithProviders(<Email />);
+    expect(screen.getByText(/reached the mailbox limit/i)).toBeTruthy();
   });
 });

@@ -605,16 +605,17 @@ function MailboxUsageBar({ tenantId }: { readonly tenantId: string }) {
   const pct = usage.limit > 0 ? (usage.current / usage.limit) * 100 : 0;
   const nearLimit = pct >= 80;
   const atLimit = pct >= 100;
-  const barColor = atLimit
-    ? 'bg-red-500'
-    : nearLimit
-      ? 'bg-amber-500'
-      : 'bg-brand-500';
-  const containerBorder = atLimit
-    ? 'border-red-200 dark:border-red-800'
-    : nearLimit
-      ? 'border-amber-200 dark:border-amber-800'
-      : 'border-gray-200 dark:border-gray-700';
+  // Always the default brand colour, including at and over the limit —
+  // operator decision 2026-09-17. Reaching a plan limit is an ordinary fact
+  // about a plan, not a fault: the tenant is not broken, and nothing is
+  // degraded. The sentence below already says what happened and what to do,
+  // which is the part that carries information; recolouring the meter red only
+  // makes a normal state look like an incident.
+  //
+  // The card border stays neutral for the same reason — a red frame around a
+  // blue meter reads as a rendering bug rather than a warning.
+  const barColor = 'bg-brand-500';
+  const containerBorder = 'border-gray-200 dark:border-gray-700';
   return (
     <div
       className={clsx(
