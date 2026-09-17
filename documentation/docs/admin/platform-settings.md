@@ -86,8 +86,10 @@ that was following it, and leaves pinned ones alone.
 
 **Currency** is the ISO 4217 code every monetary amount is shown in, in both
 panels. Search by code or by name: typing `rand` finds ZAR. The list is every
-code the platform runtime knows, not a shortlist — if you bill in MXN, KES or
-PLN, pick it here and prices display in it everywhere.
+active ISO 4217 code, not a shortlist — if you bill in MXN, KES, PLN or VED,
+pick it here and prices display in it everywhere. Codes ISO has since retired
+stay selectable too, so a platform that set one years ago can still see and
+keep its own currency.
 
 ### File-manager recycle bin
 
