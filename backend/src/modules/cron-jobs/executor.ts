@@ -20,6 +20,11 @@ import { Exec, KubeConfig } from '@kubernetes/client-node';
 import { Writable } from 'node:stream';
 import { and, eq } from 'drizzle-orm';
 import { catalogEntries, cronJobs, deployments, tenants } from '../../db/schema.js';
+import {
+  CRON_TIMEOUT_MAX_SECONDS,
+  CRON_TIMEOUT_MIN_SECONDS,
+  DEFAULT_CRON_TIMEOUT_SECONDS,
+} from '@insula/api-contracts';
 import { guardedFetch } from '../../shared/ssrf-guard.js';
 import type { Database } from '../../db/index.js';
 
@@ -73,11 +78,32 @@ export interface CronExecutorDeps {
 const MAX_OUTPUT_CHARS = 2000;
 
 /**
- * A command gets longer than a webcron ping and is far more likely to matter:
- * Moodle's cron can spend minutes on a backup. Five minutes is the ceiling for
- * ONE run — the scheduler will start the next one on its own schedule.
+ * How long ONE run may take, in milliseconds.
+ *
+ * Per job when it says so, per type otherwise. The two defaults are far apart
+ * on purpose: a webcron ping that needs 30 seconds is broken, while Moodle's
+ * `admin/cli/cron.php` took 182 s on a freshly installed site (measured on DEV)
+ * and a course backup or search reindex takes longer still. A job that needs
+ * more says so — the old hard-coded ceiling abandoned the run mid-flight and
+ * recorded a failure while the process carried on inside the pod.
  */
-const DEFAULT_EXEC_TIMEOUT_MS = 5 * 60_000;
+export function runTimeoutMs(
+  job: Pick<CronJobRow, 'type' | 'timeoutSeconds'>,
+  override?: number,
+): number {
+  if (override !== undefined) return override;
+  if (job.timeoutSeconds != null) {
+    const clamped = Math.min(
+      Math.max(job.timeoutSeconds, CRON_TIMEOUT_MIN_SECONDS),
+      CRON_TIMEOUT_MAX_SECONDS,
+    );
+    return clamped * 1000;
+  }
+  const byType = job.type === 'deployment'
+    ? DEFAULT_CRON_TIMEOUT_SECONDS.deployment
+    : DEFAULT_CRON_TIMEOUT_SECONDS.webcron;
+  return byType * 1000;
+}
 
 function clip(text: string): string | null {
   const trimmed = text.trim();
@@ -288,7 +314,7 @@ async function runDeploymentJob(
   }
 
   const transport = deps.transport ?? k8sTransport(deps.kubeconfigPath);
-  const timeoutMs = deps.timeoutMs ?? DEFAULT_EXEC_TIMEOUT_MS;
+  const timeoutMs = runTimeoutMs(job, deps.timeoutMs);
 
   let pods: readonly PodSummary[];
   try {
@@ -349,7 +375,7 @@ async function runWebcronJob(
     // are refused at connect time (rebind-safe).
     const res = await fetchUrl(job.url, {
       method: (job.httpMethod as string) ?? 'GET',
-      timeoutMs: 30_000,
+      timeoutMs: runTimeoutMs(job, deps.timeoutMs),
       maxBytes: 8 * 1024,
       headers: { 'User-Agent': 'K8s-Hosting-Webcron/1.0' },
     });

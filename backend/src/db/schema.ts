@@ -1005,6 +1005,8 @@ export const cronJobs = pgTable('cron_jobs', {
   url: varchar('url', { length: 2000 }),
   httpMethod: httpMethodEnum().default('GET'),
   deploymentId: varchar('deployment_id', { length: 36 }),
+  /** Per-job run ceiling in seconds; NULL keeps the per-type default. */
+  timeoutSeconds: integer('timeout_seconds'),
   enabled: integer('enabled').notNull().default(1),
   lastRunAt: timestamp('last_run_at'),
   lastRunStatus: lastRunStatusEnum(),

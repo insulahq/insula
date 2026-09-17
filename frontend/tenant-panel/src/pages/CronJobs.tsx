@@ -51,6 +51,8 @@ interface CronFormState {
   readonly httpMethod: 'GET' | 'POST' | 'PUT';
   readonly command: string;
   readonly deploymentId: string;
+  /** Blank keeps the per-type default (30s webcron, 300s deployment). */
+  readonly timeoutSeconds: string;
 }
 
 const INITIAL_FORM: CronFormState = {
@@ -61,6 +63,7 @@ const INITIAL_FORM: CronFormState = {
   httpMethod: 'GET',
   command: '',
   deploymentId: '',
+  timeoutSeconds: '',
 };
 
 export default function CronJobs() {
@@ -97,6 +100,9 @@ export default function CronJobs() {
         ...(form.type === 'webcron'
           ? { url: form.url.trim(), http_method: form.httpMethod }
           : { command: form.command.trim(), deployment_id: form.deploymentId }),
+        // Blank means "use the default for this type" — send nothing, rather
+        // than a 0 the contract would reject.
+        ...(form.timeoutSeconds.trim() ? { timeout_seconds: Number(form.timeoutSeconds) } : {}),
         enabled: true,
       });
       setForm(INITIAL_FORM);
@@ -230,6 +236,27 @@ export default function CronJobs() {
               <label htmlFor="cj-schedule" className="block text-xs font-medium text-gray-700 dark:text-gray-300">Schedule (cron) *</label>
               <input id="cj-schedule" type="text" className={INPUT_CLASS + ' mt-1'} placeholder="*/15 * * * *" value={form.schedule} onChange={(e) => setForm({ ...form, schedule: e.target.value })} required data-testid="cron-schedule-input" />
             </div>
+            <div>
+              <label htmlFor="cj-timeout" className="block text-xs font-medium text-gray-700 dark:text-gray-300">
+                Timeout (seconds)
+              </label>
+              <input
+                id="cj-timeout"
+                type="number"
+                min={5}
+                max={3600}
+                className={INPUT_CLASS + ' mt-1'}
+                placeholder={form.type === 'webcron' ? '30 (default)' : '300 (default)'}
+                value={form.timeoutSeconds}
+                onChange={(e) => setForm({ ...form, timeoutSeconds: e.target.value })}
+                data-testid="cron-timeout-input"
+              />
+              <p className="mt-1 text-[11px] text-gray-500 dark:text-gray-400">
+                How long one run may take before it is given up on. Raise it for
+                jobs like a Moodle or Nextcloud cron that legitimately run for
+                minutes.
+              </p>
+            </div>
             <div className="flex items-end">
               <button type="submit" disabled={createJob.isPending} className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50" data-testid="submit-cron-job">
                 {createJob.isPending && <Loader2 size={14} className="animate-spin" />}
@@ -290,7 +317,14 @@ export default function CronJobs() {
                     <td className="px-6 py-4">
                       <TypeBadge type={job.type} />
                     </td>
-                    <td className="px-6 py-4 font-mono text-gray-600 dark:text-gray-400">{job.schedule}</td>
+                    <td className="px-6 py-4 font-mono text-gray-600 dark:text-gray-400">
+                      {job.schedule}
+                      {job.timeoutSeconds != null && (
+                        <span className="ml-2 font-sans text-xs text-gray-400 dark:text-gray-500">
+                          timeout {job.timeoutSeconds}s
+                        </span>
+                      )}
+                    </td>
                     <td className="hidden px-6 py-4 text-gray-600 dark:text-gray-400 md:table-cell max-w-xs truncate">
                       <code className="text-xs">{formatTarget(job)}</code>
                     </td>

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   executeCronJob,
+  runTimeoutMs,
   selectPod,
   selectContainer,
   describeFailure,
@@ -298,5 +299,75 @@ describe('describeFailure', () => {
   it('names the HTTP status for a webcron job', () => {
     expect(describeFailure({ status: 'failed', responseCode: 503, output: null, durationMs: 1 }, 'webcron'))
       .toBe('HTTP 503');
+  });
+});
+
+describe('runTimeoutMs', () => {
+  // One ceiling cannot fit both types. A webcron ping that needs 30 s is
+  // broken; Moodle's admin/cli/cron.php took 182 s on a freshly installed site
+  // (measured on DEV), and a course backup or search reindex takes longer —
+  // against the old hard-coded 300 s the run was abandoned mid-flight and
+  // recorded as a failure while the process carried on inside the pod.
+  it('defaults to 30s for a webcron job', () => {
+    expect(runTimeoutMs({ type: 'webcron', timeoutSeconds: null })).toBe(30_000);
+  });
+
+  it('defaults to 300s for a deployment job', () => {
+    expect(runTimeoutMs({ type: 'deployment', timeoutSeconds: null })).toBe(300_000);
+  });
+
+  it('uses the job value when set — this is the whole point', () => {
+    expect(runTimeoutMs({ type: 'deployment', timeoutSeconds: 900 })).toBe(900_000);
+    expect(runTimeoutMs({ type: 'webcron', timeoutSeconds: 120 })).toBe(120_000);
+  });
+
+  it('clamps to the contract bounds rather than trusting a stored value', () => {
+    // A row written before the bounds existed, or by a future caller, must not
+    // be able to pin a worker for a day or spin at 0.
+    expect(runTimeoutMs({ type: 'deployment', timeoutSeconds: 99_999 })).toBe(3_600_000);
+    expect(runTimeoutMs({ type: 'deployment', timeoutSeconds: 1 })).toBe(5_000);
+  });
+
+  it('lets an explicit override win, for tests and callers that know better', () => {
+    expect(runTimeoutMs({ type: 'deployment', timeoutSeconds: 900 }, 42)).toBe(42);
+  });
+});
+
+describe('the configured timeout reaches both execution paths', () => {
+  it('is passed to the pod exec for a deployment job', async () => {
+    const t = transport();
+    await executeCronJob(mockDb([RUNNING_DEPLOYMENT]), makeJob({ timeoutSeconds: 900 }), { transport: t });
+
+    expect(t.exec).toHaveBeenCalledWith(
+      expect.any(String), expect.any(String), expect.any(String), expect.any(Array), 900_000,
+    );
+  });
+
+  it('is passed to the HTTP request for a webcron job', async () => {
+    const fetchUrl = vi.fn().mockResolvedValue({ status: 200, body: 'ok' });
+    await executeCronJob(
+      mockDb([]),
+      makeJob({ type: 'webcron', url: 'https://example.test/cron.php', command: null, timeoutSeconds: 120 }),
+      { fetchUrl: fetchUrl as never },
+    );
+
+    expect(fetchUrl).toHaveBeenCalledWith(
+      'https://example.test/cron.php',
+      expect.objectContaining({ timeoutMs: 120_000 }),
+    );
+  });
+
+  it('still applies the per-type default when the job sets none', async () => {
+    const fetchUrl = vi.fn().mockResolvedValue({ status: 200, body: 'ok' });
+    await executeCronJob(
+      mockDb([]),
+      makeJob({ type: 'webcron', url: 'https://example.test/cron.php', command: null, timeoutSeconds: null }),
+      { fetchUrl: fetchUrl as never },
+    );
+
+    expect(fetchUrl).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ timeoutMs: 30_000 }),
+    );
   });
 });

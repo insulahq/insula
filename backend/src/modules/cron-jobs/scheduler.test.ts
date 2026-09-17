@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { runAndRecord, isJobDue } from './scheduler.js';
+import { runAndRecord, isJobDue, claimStaleBefore } from './scheduler.js';
 import type { CronJobRow } from './executor.js';
 import type { Database } from '../../db/index.js';
 
@@ -206,5 +206,31 @@ describe('isJobDue', () => {
   it('an unparseable schedule is never due', () => {
     const bad = { schedule: 'not a cron', lastRunAt: null, createdAt: created };
     expect(isJobDue(bad, new Date('2027-01-01T00:00:00Z'))).toBe(false);
+  });
+});
+
+describe('claimStaleBefore', () => {
+  // A fixed 30-minute window was safe while every run was capped at 5 minutes.
+  // With a configurable ceiling of up to an hour it is not: a legitimate
+  // 45-minute run would be re-claimed and executed a second time while the
+  // first was still going. The window follows the job's own ceiling instead.
+  const now = new Date('2026-09-17T12:00:00Z');
+
+  it('waits longer than a long job can legitimately run', () => {
+    const job = { type: 'deployment', timeoutSeconds: 2700 }; // 45 minutes
+    const cutoff = claimStaleBefore(job, now);
+    const ageWhenReclaimed = now.getTime() - cutoff.getTime();
+    expect(ageWhenReclaimed).toBeGreaterThan(2700 * 1000);
+  });
+
+  it('is tighter for a short job, so an orphan is recovered sooner', () => {
+    const quick = claimStaleBefore({ type: 'webcron', timeoutSeconds: null }, now);
+    const slow = claimStaleBefore({ type: 'deployment', timeoutSeconds: 3600 }, now);
+    expect(quick.getTime()).toBeGreaterThan(slow.getTime());
+  });
+
+  it('never returns a cutoff in the future — that would re-claim a live run', () => {
+    expect(claimStaleBefore({ type: 'deployment', timeoutSeconds: 5 }, now).getTime())
+      .toBeLessThan(now.getTime());
   });
 });

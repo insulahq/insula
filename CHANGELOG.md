@@ -46,6 +46,19 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   unknown, never drawn as 0% or 100%, and a failed request renders as a failure
   — an error that renders as an empty table tells a domain owner "nobody is
   sending as you", which is the one answer this screen must never invent.
+- **A per-task timeout for scheduled tasks.** One ceiling could not fit both
+  kinds of job: the executor waited 30 seconds for a webcron ping and 300 for a
+  command in a deployment, and neither is right for everyone. A Moodle site's
+  `admin/cli/cron.php` takes about three minutes on its own and longer when it
+  runs a course backup or rebuilds its search index — against a fixed 300s the
+  run was abandoned mid-flight and recorded as a failure while the process
+  carried on inside the pod. Tasks now take an optional **Timeout (seconds)**
+  (5 s to 1 h); leaving it blank keeps the previous per-type default, so every
+  existing task behaves exactly as before. The panel shows the value next to
+  the schedule, and the manual says plainly that the timeout is how long the
+  platform *waits* — a deployment command may keep running in the container
+  after it.
+
 
 ### Changed
 - **Platform `postmaster@` senders are exempt from tenant send limits, and their
@@ -58,9 +71,26 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   platform mailboxes are baselined at migration time so the first deploy after
   this change does not reap all of them at once.
 
+### Fixed
+- **A new domain's first route could 404 until somebody edited it.** Two
+  ingress reconciles can overlap — a domain create, a route create, a
+  certificate becoming ready and a settings change all trigger one, and nothing
+  serialises them. The older pass then reached the Middleware garbage collector
+  holding a keep-set from before the newer route existed and deleted the
+  Middleware the newer pass had just applied. Traefik drops the **entire
+  router** for a dangling middleware reference, so the tenant's brand-new
+  hostname answered a bare 404 with the IngressRoute, the Service, the pod and
+  the certificate all present and healthy — until any later edit reconciled it
+  again. Reproduced on DEV on two of three freshly created routes; the third
+  raced the other way and worked, which is what kept this hidden. The collector
+  now re-reads the database at the moment it decides what to delete, so a route
+  created while a reconcile was running is protected; a setting that was turned
+  off is still swept.
+
 ## [2026.9.21] - 2026-09-16
 
 ### Added
+
 - **Tenant cron jobs can finally run a command inside a deployment — and the
   scheduler now honours the schedule it was given.** The `deployment` job type
   has been in the API contract, the database enum and the tenant panel since the
