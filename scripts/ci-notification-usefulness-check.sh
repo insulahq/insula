@@ -53,14 +53,19 @@ CATEGORIES="$REPO_ROOT/backend/src/modules/notifications/categories/seed.ts"
 TEMPLATES="$REPO_ROOT/backend/src/modules/notifications/templates/seed-data.ts"
 ACTION_PATH="$REPO_ROOT/backend/src/modules/notifications/action-path.ts"
 EVENTS="$REPO_ROOT/backend/src/modules/notifications/events.ts"
+# SLO rule descriptions are rendered into the notification body verbatim, so
+# they are notification copy and answer to the same COPY arm. rules.ts imports
+# nothing, so loading it here adds no runtime dependency to the guard.
+SLO_RULES="$REPO_ROOT/backend/src/modules/monitoring/rules.ts"
 
 echo "── notification usefulness guard ────────────────────────────────────"
 
-for f in "$CATEGORIES" "$TEMPLATES" "$ACTION_PATH" "$EVENTS"; do
+for f in "$CATEGORIES" "$TEMPLATES" "$ACTION_PATH" "$EVENTS" "$SLO_RULES"; do
   [ -f "$f" ] || { echo "FAIL: missing $f" >&2; exit 1; }
 done
 
 CATEGORIES="$CATEGORIES" TEMPLATES="$TEMPLATES" ACTION_PATH="$ACTION_PATH" EVENTS="$EVENTS" \
+  SLO_RULES="$SLO_RULES" \
   BACKEND_SRC="$REPO_ROOT/backend/src" \
 node --experimental-strip-types --no-warnings --input-type=module -e '
 import { readFileSync, readdirSync } from "node:fs";
@@ -69,6 +74,7 @@ const cats = await import(process.env.CATEGORIES);
 const tpls = await import(process.env.TEMPLATES);
 const paths = await import(process.env.ACTION_PATH);
 const EVENTS_SRC = readFileSync(process.env.EVENTS, "utf8");
+const slo = await import(process.env.SLO_RULES);
 
 const ALL_CATEGORIES = cats.ALL_CATEGORIES;
 const ALL_SEED_TEMPLATES = tpls.ALL_SEED_TEMPLATES;
@@ -78,6 +84,10 @@ if (!Array.isArray(ALL_CATEGORIES) || ALL_CATEGORIES.length === 0) {
 }
 if (!Array.isArray(ALL_SEED_TEMPLATES) || ALL_SEED_TEMPLATES.length === 0) {
   console.error("FAIL: ALL_SEED_TEMPLATES is empty — a guard over nothing passes trivially.");
+  process.exit(1);
+}
+if (!Array.isArray(slo.SLO_RULES) || slo.SLO_RULES.length === 0) {
+  console.error("FAIL: SLO_RULES is empty — the COPY arm over the SLO rules would pass trivially.");
   process.exit(1);
 }
 if (typeof paths.notificationActionPath !== "function") {
@@ -255,15 +265,29 @@ const COPY_BANS = [
   [/\{\{|\}\}|`|\.ts\b|\(\)/, "code or template syntax"],
   [/\bnotifyUser\b|\bdispatchSafe\b|\bemitEvent\b|\bcategory_id\b|\bcategoryId\b|notifications table/i,
     "an internal symbol or table name"],
-  [/\bpreviously\b|\bused to\b|\blegacy\b|\bsplit out of\b|\bthese were\b|\bhad EVER\b/i,
+  [/\bpreviously\b|\bused to\b|\blegacy\b|\bsplit out of\b|\bthese were\b|\bhad EVER\b|\balready existed\b/i,
     "implementation history — say what it reports, not what it replaced"],
+  [/\bon DEV\b|\bon STAGING\b|\bon PRODUCTION\b/,
+    "the name of an environment — the reader is IN one"],
+  [/\bfor three days\b|\bsat for\b|\bfor a year\b|\bfor months\b/i,
+    "an incident anecdote — describe the condition, not the time it once went unnoticed"],
 ];
-for (const c of ALL_CATEGORIES) {
-  const d = c.description ?? "";
+// Extended 2026-09-17: the first version of this arm read the notification
+// CATEGORIES only, and an SLO alert sailed straight past it — a live DEV
+// notification read "Detection and the repair button already existed; nothing
+// escalated, so a drift sat for three days on DEV while the mail health card
+// stayed green". An SLO description is pasted into the notification body, so
+// it is the same field by another name. Two more markers were added with it
+// (an environment name, an incident anecdote), both taken from that text.
+const COPY_SUBJECTS = [
+  ...ALL_CATEGORIES.map((c) => ({ label: c.id, description: c.description ?? "" })),
+  ...slo.SLO_RULES.map((r) => ({ label: `slo:${r.id}`, description: r.description ?? "" })),
+];
+for (const c of COPY_SUBJECTS) {
   for (const [re, why] of COPY_BANS) {
-    const hit = d.match(re);
+    const hit = c.description.match(re);
     if (hit) {
-      failures.push(`${c.id}: description contains ${why} (COPY) — ${JSON.stringify(hit[0])}`);
+      failures.push(`${c.label}: description contains ${why} (COPY) — ${JSON.stringify(hit[0])}`);
     }
   }
 }
@@ -401,4 +425,5 @@ the ones that matter.`);
 }
 
 console.log(`OK: ${ALL_CATEGORIES.length} categories — each names a subject, carries a timestamp, resolves a destination, prints no ids, has an emitter, and describes itself to an operator rather than a reviewer (${DORMANT.size} deliberately dormant).`);
+console.log(`OK: ${slo.SLO_RULES.length} SLO rule descriptions read as operator copy (their text is pasted into the notification body).`);
 '

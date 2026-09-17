@@ -13,6 +13,16 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Fixed
+- **Three platform alerts explained themselves to a reviewer instead of to
+  you.** One arriving on the test cluster read *"Detection and the repair
+  button already existed; nothing escalated, so a drift sat for three days on
+  DEV while the mail health card stayed green"* — the note of why the alert was
+  built, pasted into the alert itself. Another cited an internal issue number;
+  a third printed a shell command in backticks. All three now say what the
+  condition is and what to do about it, and the reasoning lives in the source
+  where it belongs. The CI guard that checks notification wording only read the
+  notification categories, which is how these got through — it now reads the
+  alert definitions too.
 - **Starting a second mailbox migration no longer greets you with an error from
   the first one.** Opening the migration form while another migration was
   already running showed *"Cannot read properties of null (reading 'reset')"*,
