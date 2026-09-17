@@ -26,6 +26,33 @@ export const CRON_TIMEOUT_MAX_SECONDS = 3600;
 /** Applied when a job does not set its own. */
 export const DEFAULT_CRON_TIMEOUT_SECONDS = { webcron: 30, deployment: 300 } as const;
 
+/**
+ * IANA timezone the schedule is read in, e.g. `Europe/Berlin`.
+ *
+ * Optional: leaving it unset means "the platform's timezone", so an operator
+ * who sets the platform to Europe/Berlin does not have to repeat themselves on
+ * every job. Stored per job rather than resolved at write time, so changing the
+ * platform timezone moves the jobs that follow it and leaves alone the ones
+ * that were pinned deliberately.
+ *
+ * Validated against the runtime rather than a hardcoded list: `Intl` throws for
+ * a zone it does not know, and its list is the one the scheduler will evaluate
+ * against. A baked-in list would drift every time the tz database changes.
+ */
+const timezoneField = z
+  .string()
+  .min(1)
+  .max(64)
+  .refine((tz) => {
+    try {
+      new Intl.DateTimeFormat('en-US', { timeZone: tz });
+      return true;
+    } catch {
+      return false;
+    }
+  }, 'Unknown timezone — use an IANA name such as Europe/Berlin or UTC')
+  .optional();
+
 const timeoutField = z
   .number()
   .int()
@@ -45,6 +72,7 @@ export const createCronJobSchema = z.object({
   deployment_id: z.string().uuid().optional(),
   // Common
   timeout_seconds: timeoutField,
+  timezone: timezoneField,
   enabled: z.boolean().default(true),
 }).refine(
   (data) => {
@@ -63,6 +91,7 @@ export const updateCronJobSchema = z.object({
   command: z.string().min(1).max(2000).optional(),
   deployment_id: z.string().uuid().optional(),
   timeout_seconds: timeoutField,
+  timezone: timezoneField,
   enabled: z.boolean().optional(),
 });
 
@@ -76,6 +105,7 @@ export const cronJobResponseSchema = z.object({
   schedule: z.string(),
   command: z.string().nullable(),
   timeoutSeconds: z.number().int().nullable(),
+  timezone: z.string().nullable(),
   url: z.string().nullable(),
   httpMethod: z.string().nullable(),
   deploymentId: z.string().nullable(),

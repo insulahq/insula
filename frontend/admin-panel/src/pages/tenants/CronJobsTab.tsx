@@ -209,6 +209,11 @@ export default function CronJobsTab() {
                             timeout {job.timeoutSeconds}s
                           </span>
                         )}
+                        {job.timezone && (
+                          <span className="ml-2 text-xs text-gray-400 dark:text-gray-500">
+                            {job.timezone}
+                          </span>
+                        )}
                       </td>
                       <td className="hidden px-5 py-3.5 text-sm text-gray-600 dark:text-gray-400 md:table-cell max-w-xs truncate">
                         <code className="text-xs">{formatTarget(job)}</code>

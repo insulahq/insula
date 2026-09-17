@@ -1007,6 +1007,8 @@ export const cronJobs = pgTable('cron_jobs', {
   deploymentId: varchar('deployment_id', { length: 36 }),
   /** Per-job run ceiling in seconds; NULL keeps the per-type default. */
   timeoutSeconds: integer('timeout_seconds'),
+  /** IANA zone the schedule is read in; NULL follows the platform timezone. */
+  timezone: varchar('timezone', { length: 64 }),
   enabled: integer('enabled').notNull().default(1),
   lastRunAt: timestamp('last_run_at'),
   lastRunStatus: lastRunStatusEnum(),
