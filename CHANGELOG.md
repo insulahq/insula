@@ -12,6 +12,31 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **A mailbox migration told you it had finished without saying which mailbox.**
+  The notification read *"IMAPSync migration: job (unnamed)"* — the name of an
+  internal tool nobody outside the platform has heard of, and then nothing at
+  all where the mailbox should have been. It now reads **"Mailbox migration of
+  sales@example.com finished"**, says how many messages were copied, mentions
+  the server they came from, and links to the page you started it on. Failures
+  say what went wrong in plain words instead of quoting an internal log line,
+  and a cancelled migration says that some mail may not have been copied.
+
+  The same pass rewrote the DKIM-rotation notice. "A new DKIM signing key
+  (selector "v1-rsa-20260917") was generated" is a sentence for whoever runs a
+  mail server; it now says the key that proves your mail is genuine was
+  replaced, that mail keeps flowing throughout, and that there is nothing for
+  you to do.
+
+### Changed
+- **The mailbox usage meter stays its normal colour at every level, including
+  when the plan limit is reached.** It used to turn amber at 80% and red at
+  100%, which made an ordinary fact about your plan look like a fault on a page
+  you visit to do routine work. The message underneath still tells you the
+  limit is reached and what to do about it. Sending-limit meters still turn red
+  when sending is actually blocked, because that is a live restriction rather
+  than a count.
+
 ## [2026.9.23] - 2026-09-17
 
 ### Fixed
