@@ -31,7 +31,16 @@ import { z } from 'zod';
 // row — a live forwarding address the platform does not manage. Same
 // detect-and-surface-only stance; remediation is operator-confirmed
 // deletion. (mail_drift_items.kind is varchar(16) — keep names short.)
-export const mailDriftKindSchema = z.enum(['domain', 'mailbox', 'master-user', 'orphan-domain', 'orphan-list']);
+// 'alias' / 'orphan-alias' (2026-09-17): mailbox ALIASES in both directions.
+// Until now drift covered mailboxes and domains only, so an alias could be
+// live in Stalwart with no platform row, or promised by a platform row and
+// missing from Stalwart, and neither showed anywhere. Note that 'orphan-list'
+// had been emitted since 2026-08-25 but never stored: the DB CHECK constraint
+// did not list it, and the failing insert aborted the whole persistence step
+// (see migration 0128).
+export const mailDriftKindSchema = z.enum([
+  'domain', 'mailbox', 'master-user', 'orphan-domain', 'orphan-list', 'alias', 'orphan-alias',
+]);
 export type MailDriftKind = z.infer<typeof mailDriftKindSchema>;
 
 export const mailDriftResolutionSchema = z.enum(['recreated', 'restored', 'dismissed', 'reappeared', 'deleted']);

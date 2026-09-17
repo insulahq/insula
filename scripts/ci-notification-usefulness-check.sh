@@ -61,8 +61,9 @@ for f in "$CATEGORIES" "$TEMPLATES" "$ACTION_PATH" "$EVENTS"; do
 done
 
 CATEGORIES="$CATEGORIES" TEMPLATES="$TEMPLATES" ACTION_PATH="$ACTION_PATH" EVENTS="$EVENTS" \
+  BACKEND_SRC="$REPO_ROOT/backend/src" \
 node --experimental-strip-types --no-warnings --input-type=module -e '
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 
 const cats = await import(process.env.CATEGORIES);
 const tpls = await import(process.env.TEMPLATES);
@@ -212,6 +213,127 @@ for (const m of EVENTS_CODE.matchAll(/\b(\w*(?:Label|Name|Address|Subject))\s*:\
   }
 }
 
+// ── EMITTER: a category nothing ever dispatches cannot notify anyone ─────
+//
+// Added 2026-09-17. The audit behind this epic found SIX categories with
+// complete templates, valid variables and no caller at all — they satisfied
+// every other arm of this guard while being incapable of firing. A category
+// with no emitter is not a notification; it is a plan.
+//
+// The FIRST draft of this arm searched events.ts for the id and got two
+// answers wrong in opposite directions, which is worth recording because both
+// are easy to repeat:
+//
+//   * `admin.security_hardening_drift` read as WIRED. events.ts is where the
+//     `notifyAdminSecurityHardeningDrift` function is DEFINED, so the id is
+//     right there in the file — while nothing anywhere calls the function.
+//     Presence at the definition proves nothing about whether it ever runs.
+//   * `tenant.suspended` read as DORMANT. It is dispatched from
+//     lifecycle-hooks/notify-on-transition.ts via a transition→id map, which a
+//     search scoped to events.ts cannot see.
+//
+// So: build the emitter functions from events.ts, then ask the REST of the
+// backend whether anything calls them or dispatches the id directly. The
+// metadata files are excluded because listing a category is not emitting it.
+const METADATA_SUFFIXES = [
+  "notifications/events.ts",
+  "notifications/categories/seed.ts",
+  "notifications/templates/seed-data.ts",
+  "notifications/action-path.ts",
+];
+const backendSrc = process.env.BACKEND_SRC;
+const files = readdirSync(backendSrc, { recursive: true, encoding: "utf8" })
+  .filter((f) => f.endsWith(".ts") && !f.includes(".test.") && !f.includes("__tests__"))
+  .map((f) => `${backendSrc}/${f}`.replace(/\\/g, "/"));
+
+const stripComments = (src) => src
+  .replace(/\/\*[\s\S]*?\*\//g, "")
+  .replace(/(^|[^:])\/\/.*$/gm, "$1");
+
+// Patterns for ids that are ASSEMBLED — `admin.slo_alert_${severity}` never
+// appears literally. A stricter test would report live notifications as
+// dormant, which is how a guard teaches people to ignore it.
+const idPattern = (lit) =>
+  new RegExp("^" + lit.replace(/[.*+?^$()|[\]\\]/g, "\\$&").replace(/\$\{[^}]*\}/g, "[\\w-]+") + "$");
+
+// 1. Which category ids does each notify* function in events.ts dispatch?
+//
+// Three shapes, all present in the file: a literal, a template, and a
+// PARAMETER-KEYED MAP (`dispatchSafe(db, OPERATIONAL_CATEGORY[subsystem], …)`).
+// The ids in that map live outside the function body, so the six generic
+// subsystem buckets read as dormant until this resolver existed — while 19
+// files call the function that dispatches them.
+const src = stripComments(EVENTS_SRC);
+const constMaps = new Map();
+for (const m of src.matchAll(/const (\w+) = \{([^}]*)\}\s*as const;/g)) {
+  const ids = [];
+  for (const q of m[2].matchAll(/["\x27]([a-z_]+\.[a-z_0-9]+)["\x27]/g)) ids.push(q[1]);
+  if (ids.length > 0) constMaps.set(m[1], ids);
+}
+
+const fnIds = new Map();
+{
+  const fnRe = /export async function (notify\w+)\s*\(([\s\S]*?)\n\}/g;
+  for (const m of src.matchAll(fnRe)) {
+    const [, fnName, body] = m;
+    const ids = [];
+    for (const q of body.matchAll(/["\x27]([a-z_]+\.[a-z_0-9]+)["\x27]/g)) ids.push(q[1]);
+    for (const t of body.matchAll(/`([a-z_]+\.[^`]*\$\{[^`]*)`/g)) ids.push(t[1]);
+    for (const ref of body.matchAll(/dispatchSafe\(\s*\w+\s*,\s*(\w+)\s*\[/g)) {
+      for (const id of constMaps.get(ref[1]) ?? []) ids.push(id);
+    }
+    fnIds.set(fnName, ids);
+  }
+}
+
+// 2. What does the rest of the backend actually call or dispatch?
+const wiredIds = new Set();
+const wiredPatterns = [];
+for (const file of files) {
+  if (METADATA_SUFFIXES.some((suffix) => file.endsWith(suffix))) continue;
+  let code;
+  try { code = stripComments(readFileSync(file, "utf8")); } catch { continue; }
+  for (const [fnName, ids] of fnIds) {
+    // Name reference, NOT `name(`: several emitters are injected as ports
+    // (`notifyDisabled: notifyAdminWalArchiveAutoDisabled`) and are never
+    // written with parentheses at the call site. Nobody imports a notify
+    // function in order not to use it.
+    if (!new RegExp(`\\b${fnName}\\b`).test(code)) continue;
+    for (const id of ids) {
+      if (id.includes("${")) wiredPatterns.push(idPattern(id)); else wiredIds.add(id);
+    }
+  }
+  for (const q of code.matchAll(/["\x27]([a-z_]+\.[a-z_0-9]+)["\x27]/g)) wiredIds.add(q[1]);
+  for (const t of code.matchAll(/`([a-z_]+\.[^`]*\$\{[^`]*)`/g)) wiredPatterns.push(idPattern(t[1]));
+}
+const isWired = (id) => wiredIds.has(id) || wiredPatterns.some((re) => re.test(id));
+
+// Categories that deliberately have no emitter, each with the feature it
+// waits on. An entry here is a promise that the gap is intentional and
+// reviewed — NOT a place to silence the arm. Operator decision 2026-09-17:
+// keep both rather than delete them, because both describe things the
+// platform plausibly will do.
+const DORMANT = new Map([
+  ["security.password_reset",
+    "no self-service password-reset flow exists in the API; the only reset is the break-glass CLI"],
+  ["admin.security_hardening_drift",
+    "nothing defines what hardening drift IS — the snapshot is a point-in-time read with no stored baseline"],
+]);
+
+for (const c of ALL_CATEGORIES) {
+  const wired = isWired(c.id);
+  if (!wired && !DORMANT.has(c.id)) {
+    failures.push(`${c.id}: nothing dispatches this category (EMITTER) — it cannot fire`);
+  }
+  if (wired && DORMANT.has(c.id)) {
+    // The tripwire half: the feature arrived, so the record must stop calling
+    // it dormant. Failing here is the guard doing its job.
+    failures.push(
+      `${c.id}: listed as DORMANT but something now dispatches it (EMITTER) — remove it from DORMANT`,
+    );
+  }
+}
+
 if (failures.length > 0) {
   console.error(`FAIL: ${failures.length} notification(s) would not be worth reading:\n`);
   for (const f of failures.sort()) console.error("  " + f);
@@ -223,5 +345,5 @@ the ones that matter.`);
   process.exit(1);
 }
 
-console.log(`OK: ${ALL_CATEGORIES.length} categories — each names a subject, carries a timestamp, resolves a destination, and prints no ids.`);
+console.log(`OK: ${ALL_CATEGORIES.length} categories — each names a subject, carries a timestamp, resolves a destination, prints no ids, and has an emitter (${DORMANT.size} deliberately dormant).`);
 '
