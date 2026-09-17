@@ -110,10 +110,61 @@ describe('outbound DMARC reporting is off unless a sender is named', () => {
     dmarcReportSettingsGet.mockResolvedValue({
       id: 'singleton',
       aggregateSendFrequency: { match: {}, else: "'disable'" },
+      failureSendFrequency: { match: {}, else: "'disable'" },
     });
     const r = await ensureDmarcReportSender(mockDb({ setting: null }), logger);
     expect(r.state).toBe('in-sync');
     expect(dmarcReportSettingsUpdate).not.toHaveBeenCalled();
+  });
+
+  it('writes MORE than one field when disabling — a one-field patch stores nothing', async () => {
+    // Found on DEV, not by a test: a single-field patch against a settings
+    // group Stalwart has never written is accepted (`updated: {singleton:
+    // null}`, empty `notUpdated`) and persists NOTHING. So the disable-only
+    // patch logged success on a fresh install and left the group empty — and
+    // an empty group means the built-in defaults are live, which is daily
+    // reporting from an address with no mailbox. Exactly the bug this module
+    // exists to prevent, reported as fixed.
+    await ensureDmarcReportSender(mockDb({ setting: null }), logger);
+    const patch = dmarcReportSettingsUpdate.mock.calls[0][0].patch;
+    expect(Object.keys(patch).length).toBeGreaterThan(1);
+    expect(patch.aggregateSendFrequency.else).toBe("'disable'");
+  });
+
+  it('disables FAILURE reports too, in both directions', async () => {
+    // Failure (`ruf=`) reports are the same subsystem with the same broken
+    // default sender, so gating only the aggregate half would leave the other
+    // half mailing from an address nobody owns. They stay off even when
+    // aggregate reporting is ON: a failure report forwards somebody's
+    // individual message headers to whoever asked, which "send DMARC reports"
+    // does not imply.
+    await ensureDmarcReportSender(mockDb({ setting: null }), logger);
+    expect(dmarcReportSettingsUpdate.mock.calls[0][0].patch.failureSendFrequency.else).toBe("'disable'");
+
+    dmarcReportSettingsUpdate.mockClear();
+    await ensureDmarcReportSender(
+      mockDb({
+        setting: 'postmaster@example.test',
+        eligible: [{ address: 'postmaster@example.test', domainName: 'example.test', tenantName: 'Example Ltd', isSystem: false }],
+      }),
+      logger,
+    );
+    const onPatch = dmarcReportSettingsUpdate.mock.calls[0][0].patch;
+    expect(onPatch.aggregateSendFrequency.else).toBe("'daily'");
+    expect(onPatch.failureSendFrequency.else).toBe("'disable'");
+  });
+
+  it('rewrites when only the failure half has drifted back on', async () => {
+    // Without the failure field in the comparison, a live `failureSendFrequency`
+    // would sit next to a correctly-disabled aggregate half and read as in-sync.
+    dmarcReportSettingsGet.mockResolvedValue({
+      id: 'singleton',
+      aggregateSendFrequency: { match: {}, else: "'disable'" },
+      failureSendFrequency: { match: {}, else: '[1, 1d]' },
+    });
+    const r = await ensureDmarcReportSender(mockDb({ setting: null }), logger);
+    expect(r.state).toBe('disabled');
+    expect(dmarcReportSettingsUpdate).toHaveBeenCalled();
   });
 
   it('stays in-sync when disabled even though Stalwart still holds the old sender', async () => {
@@ -126,6 +177,7 @@ describe('outbound DMARC reporting is off unless a sender is named', () => {
       id: 'singleton',
       aggregateSendFrequency: { match: {}, else: "'disable'" },
       aggregateFromAddress: { match: {}, else: "'postmaster@previously-chosen.test'" },
+      failureSendFrequency: { match: {}, else: "'disable'" },
     });
     const r = await ensureDmarcReportSender(mockDb({ setting: null }), logger);
     expect(r.state).toBe('in-sync');
@@ -139,6 +191,7 @@ describe('outbound DMARC reporting is off unless a sender is named', () => {
       id: 'singleton',
       aggregateSendFrequency: { match: {}, else: "'daily'" },
       aggregateFromAddress: { match: {}, else: "'postmaster@stale.test'" },
+      failureSendFrequency: { match: {}, else: "'disable'" },
     });
     const r = await ensureDmarcReportSender(
       mockDb({

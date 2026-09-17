@@ -156,7 +156,7 @@ export async function webmailSettingsRoutes(app: FastifyInstance): Promise<void>
           );
         }
       }
-      return updateWebmailSettings(app.db, parsed.data);
+      return updateWebmailSettings(app.db, parsed.data, request.log);
     });
 
     if (stalwartUpdate) {
