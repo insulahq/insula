@@ -6,6 +6,12 @@ const { dmarcReportSettingsGet, dmarcReportSettingsUpdate } = vi.hoisted(() => (
 }));
 vi.mock('../stalwart-jmap/client.js', () => ({ dmarcReportSettingsGet, dmarcReportSettingsUpdate }));
 
+// The disable patch needs an address to materialise the settings group, and the
+// only address the platform always owns is postmaster@ on its own mail
+// hostname — so the reconciler resolves it before writing.
+const { getExplicitMailHostname } = vi.hoisted(() => ({ getExplicitMailHostname: vi.fn() }));
+vi.mock('../mail-admin/stalwart-domain-reconciler.js', () => ({ getExplicitMailHostname }));
+
 const {
   ensureDmarcReportSender,
   eligibleReportSenders,
@@ -48,6 +54,7 @@ function mockDb(opts: {
 beforeEach(() => {
   dmarcReportSettingsGet.mockReset().mockResolvedValue(null);
   dmarcReportSettingsUpdate.mockReset().mockResolvedValue({});
+  getExplicitMailHostname.mockReset().mockResolvedValue('mail.example.test');
 });
 
 describe('outbound DMARC reporting is off unless a sender is named', () => {
@@ -60,7 +67,17 @@ describe('outbound DMARC reporting is off unless a sender is named', () => {
     expect(r.sender).toBeNull();
     const patch = dmarcReportSettingsUpdate.mock.calls[0]?.[0]?.patch;
     expect(patch.aggregateSendFrequency).toEqual({ match: {}, else: "'disable'" });
-    expect(patch.aggregateFromAddress).toBeUndefined();
+    // INVERTED 2026-09-17. This asserted `aggregateFromAddress` was UNDEFINED
+    // on the disable path, reasoning that the operator's last choice should not
+    // be clobbered. That assumption is what made the defect possible: without
+    // an address field Stalwart accepts the patch and stores NOTHING, leaving
+    // its own defaults (daily, from `noreply-dmarc@` + the hostname domain)
+    // live while the reconciler logs a successful disable.
+    //
+    // Nothing is lost by writing it: the operator's choice lives in
+    // `platform_settings.dmarc_report_sender`, and Stalwart's copy is derived
+    // from it. Re-enabling rewrites the address from the setting.
+    expect(patch.aggregateFromAddress).toEqual({ match: {}, else: "'postmaster@mail.example.test'" });
   });
 
   it('disables when the operator explicitly chose Disabled', async () => {
@@ -117,18 +134,34 @@ describe('outbound DMARC reporting is off unless a sender is named', () => {
     expect(dmarcReportSettingsUpdate).not.toHaveBeenCalled();
   });
 
-  it('writes MORE than one field when disabling — a one-field patch stores nothing', async () => {
-    // Found on DEV, not by a test: a single-field patch against a settings
-    // group Stalwart has never written is accepted (`updated: {singleton:
-    // null}`, empty `notUpdated`) and persists NOTHING. So the disable-only
-    // patch logged success on a fresh install and left the group empty — and
-    // an empty group means the built-in defaults are live, which is daily
-    // reporting from an address with no mailbox. Exactly the bug this module
-    // exists to prevent, reported as fixed.
+  it('carries an ADDRESS field when disabling — schedule fields alone store nothing', async () => {
+    // Measured on staging 2026-09-17, one connection, read back after each:
+    //
+    //   {aggregateSendFrequency, failureSendFrequency}  -> accepted, read NULL
+    //   {aggregateSendFrequency, aggregateFromAddress}  -> accepted, and now
+    //                                                      ALL THREE appear
+    //
+    // So what materialises a never-written settings group is an address, not a
+    // second field. The previous fix assumed the field COUNT mattered and
+    // shipped two schedule fields; it passed on DEV only because an earlier
+    // diagnostic probe had already created that group with an address in it.
     await ensureDmarcReportSender(mockDb({ setting: null }), logger);
     const patch = dmarcReportSettingsUpdate.mock.calls[0][0].patch;
-    expect(Object.keys(patch).length).toBeGreaterThan(1);
+    expect(patch.aggregateFromAddress).toBeDefined();
+    expect(patch.aggregateFromAddress.else).toBe("'postmaster@mail.example.test'");
     expect(patch.aggregateSendFrequency.else).toBe("'disable'");
+  });
+
+  it('refuses to write a disable it cannot persist when there is no hostname', async () => {
+    // Without an address the patch is accepted and stores nothing, so the
+    // reconciler would log a disable that never happened — which is how this
+    // defect survived a release. Refusing loudly is the honest failure.
+    getExplicitMailHostname.mockResolvedValue(null);
+    const r = await ensureDmarcReportSender(mockDb({ setting: null }), logger);
+    expect(r.state).toBe('skipped');
+    expect(r.reason).toBe('no mail hostname for the disable patch');
+    expect(dmarcReportSettingsUpdate).not.toHaveBeenCalled();
+    expect(logger.error).toHaveBeenCalled();
   });
 
   it('disables FAILURE reports too, in both directions', async () => {
