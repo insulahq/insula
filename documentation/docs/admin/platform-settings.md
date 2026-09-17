@@ -75,6 +75,20 @@ budget are displayed in everywhere else), plus three retention windows:
 | **Deleted-Tenant Backup Retention** | Grace window before a deleted tenant's off-site bundles are reaped (1–3650 days). |
 | **File Manager Recycle Bin** | How long a tenant's deleted files are recoverable (1–365 days, default 14). |
 
+### Timezone and currency
+
+Both pickers are searchable and complete.
+
+**Timezone** is the platform's clock. It is the default for new tenants, and it
+is the clock a tenant's [scheduled task](../tenant/cron-jobs.md) is read on
+unless that task pins a zone of its own — so changing it here moves every task
+that was following it, and leaves pinned ones alone.
+
+**Currency** is the ISO 4217 code every monetary amount is shown in, in both
+panels. Search by code or by name: typing `rand` finds ZAR. The list is every
+code the platform runtime knows, not a shortlist — if you bill in MXN, KES or
+PLN, pick it here and prices display in it everywhere.
+
 ### File-manager recycle bin
 
 Files a tenant deletes in the file manager move to a recycle bin on **that
