@@ -1,16 +1,21 @@
 import { useState, useMemo } from 'react';
 import { Search } from 'lucide-react';
 import { COMMON_CURRENCIES } from '@/lib/format-currency';
+import { ISO_4217_ACTIVE } from '@/lib/iso-4217';
 
 /**
- * Every ISO 4217 code the runtime knows, searchable.
+ * Every active ISO 4217 code, searchable.
  *
  * The picker used to be a 15-entry `<select>` of the currencies somebody
  * thought were likely, with an inert `__custom__` row for anything else — so a
  * platform billing in, say, MXN or KES could see its own currency listed as
- * "Custom" and could not select it at all from the UI. `Intl.supportedValuesOf`
- * returns the full set (300+), and `Intl.DisplayNames` gives each one a name,
- * so the list needs no maintenance as codes come and go.
+ * "Custom" and could not select it at all from the UI.
+ *
+ * The list is the union of `Intl.supportedValuesOf('currency')` and the active
+ * ISO 4217 codes, because neither alone is complete: the runtime omits real
+ * currencies (VED) and varies by engine, while the static list cannot know
+ * about a code ISO adds after this ships. `Intl.DisplayNames` names whichever
+ * ones it recognises. See `lib/iso-4217.ts`.
  *
  * The familiar handful stays pinned at the top: a complete list is only an
  * improvement if the common case is still one click.
@@ -32,18 +37,21 @@ function buildCurrencyGroups(): Record<string, Array<{ code: string; label: stri
     display = undefined;
   }
 
-  const all: string[] = (() => {
+  const fromRuntime: string[] = (() => {
     try {
       // Node 18+ and all modern browsers (Chrome 99+, Safari 15.4+, Firefox 106+).
       const fn = (Intl as unknown as { supportedValuesOf?: (kind: string) => string[] }).supportedValuesOf;
-      if (typeof fn === 'function') return fn('currency').slice().sort();
+      if (typeof fn === 'function') return fn('currency');
     } catch {
-      // Fall through to the pinned set.
+      // A runtime without it still gets the full ISO list below.
     }
-    // Defensive fallback if the runtime lacks Intl.supportedValuesOf: at
-    // minimum guarantee the common set so the UI never renders empty.
-    return COMMON_CURRENCIES.map((c) => c.code);
+    return [];
   })();
+
+  // Union, so the picker is complete on every engine and never drops a code
+  // the runtime knows about but ISO has since retired (an operator may still
+  // have it saved).
+  const all = [...new Set([...fromRuntime, ...ISO_4217_ACTIVE])].sort();
 
   const common = COMMON_CURRENCIES.map((c) => ({ code: c.code, label: c.label }));
   const commonCodes = new Set(common.map((c) => c.code));
