@@ -32,6 +32,14 @@
 -- Idempotent: DROP IF EXISTS then re-add. No data migration — every existing
 -- row holds a previously-valid value and stays valid.
 
+-- NOT VALID on purpose. A plain ADD CONSTRAINT … CHECK re-validates every
+-- existing row, and migration 0113 did exactly that and aborted against 164 of
+-- 458 rows, crash-looping the API. The argument that it "cannot fail here"
+-- because this constraint only WIDENS the allowed set (0032 ⊂ 0053 ⊂ 0055 ⊂
+-- this one, so every stored value stays valid) is almost certainly the argument
+-- 0113 was written with too. NOT VALID skips the scan of historical rows and
+-- still enforces the check on every INSERT and UPDATE — which is the only thing
+-- this constraint is for. Nothing reads old rows expecting them to satisfy it.
 ALTER TABLE mail_drift_items DROP CONSTRAINT IF EXISTS mail_drift_kind_check;
 ALTER TABLE mail_drift_items ADD CONSTRAINT mail_drift_kind_check
   CHECK (kind IN (
@@ -42,4 +50,4 @@ ALTER TABLE mail_drift_items ADD CONSTRAINT mail_drift_kind_check
     'orphan-list',
     'alias',
     'orphan-alias'
-  ));
+  )) NOT VALID;
