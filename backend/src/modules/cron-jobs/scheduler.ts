@@ -10,7 +10,7 @@
 import { and, eq, isNull, lt, ne, or } from 'drizzle-orm';
 import { cronJobs } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
-import { executeCronJob, describeFailure, type ClusterTransport } from './executor.js';
+import { executeCronJob, describeFailure, runTimeoutMs, type ClusterTransport } from './executor.js';
 import { getNextRunTime } from './cron-expression.js';
 
 // The scheduling maths lives in cron-expression.ts now. Re-exported because
@@ -29,14 +29,29 @@ export interface CronSchedulerDeps {
 const DEFAULT_POLL_MS = 30_000;
 
 /**
- * How long a job may sit claimed before another tick may take it back.
+ * Grace added to a job's own run ceiling before its claim counts as orphaned.
  *
  * The claim is a `lastRunStatus = 'running'` marker, and nothing clears it if
  * the API pod is killed mid-run — so without a staleness window one restart at
  * the wrong moment wedges a job permanently, looking to the tenant like a cron
- * that simply stopped. Generous enough not to double-run a long Moodle cron.
+ * that simply stopped.
+ *
+ * The window is measured from the job's OWN timeout rather than one number for
+ * everything. A fixed 30 minutes was safe while every run was capped at 5, but
+ * a job may now be configured up to an hour: with a fixed window, a legitimate
+ * 45-minute run would be re-claimed and executed a second time WHILE THE FIRST
+ * IS STILL RUNNING. Deriving it from the ceiling keeps "still running" and
+ * "abandoned" from ever overlapping.
  */
-const CLAIM_STALE_MS = 30 * 60_000;
+const CLAIM_GRACE_MS = 5 * 60_000;
+
+/** A claim older than the job's own ceiling plus grace is an orphan. */
+export function claimStaleBefore(
+  job: { readonly type: string; readonly timeoutSeconds: number | null },
+  now: Date,
+): Date {
+  return new Date(now.getTime() - (runTimeoutMs(job as never) + CLAIM_GRACE_MS));
+}
 
 export function startCronScheduler(db: Database, deps: CronSchedulerDeps = {}): NodeJS.Timeout {
   console.log('[cron-scheduler] Starting...');
@@ -44,7 +59,6 @@ export function startCronScheduler(db: Database, deps: CronSchedulerDeps = {}): 
   const pollInterval = setInterval(async () => {
     try {
       const now = new Date();
-      const staleBefore = new Date(now.getTime() - CLAIM_STALE_MS);
 
       const jobs = await db
         .select()
@@ -54,7 +68,7 @@ export function startCronScheduler(db: Database, deps: CronSchedulerDeps = {}): 
       for (const job of jobs) {
         if (!isJobDue(job, now)) continue;
 
-        if (!(await claimJob(db, job.id, staleBefore))) continue;
+        if (!(await claimJob(db, job.id, claimStaleBefore(job, now)))) continue;
 
         void runAndRecord(db, job, deps).catch((err) => {
           console.error(`[cron-scheduler] Error executing ${job.name}:`, err);
