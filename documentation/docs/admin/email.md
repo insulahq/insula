@@ -62,6 +62,32 @@ sub-tabs, plus an embedded Stalwart admin panel.
 - **Backup Engine** — which engine captures per-tenant mailbox data for
   the [tenant restore cart](backups-and-restore.md).
 
+### postmaster@ and abuse@
+
+Both names are mandatory for any mail-receiving domain (RFC 2142), and both are
+maintained for you — there is nothing to configure.
+
+- **On every mail-enabled tenant domain**, `postmaster@` is a platform-managed
+  intake mailbox, and `abuse@` and `dmarc@` are aliases on it. They are hidden
+  from tenant panels, do not count against tenant quotas, are capped at 50 MB
+  and are emptied every 30 days.
+- **On the platform mail hostname** (the name in your SMTP banner, the TLS
+  certificate and every EHLO), `postmaster@` and `abuse@` forward to your
+  active admin users instead of a mailbox — there is nothing to reap, and a
+  report from a remote operator reaches a person.
+
+!!! note "If a tenant already owns the address"
+
+    A tenant may have their own real `abuse@` mailbox. The platform never
+    claims an address something else already answers: the goal is that SMTP
+    does not refuse it, and shadowing a live abuse desk with a forwarder would
+    quietly redirect their mail.
+
+The platform apex itself is **not** covered. Mail to `postmaster@<apex>` is
+refused, because the apex is not registered as a mail domain — making it one
+means publishing MX and DKIM records for it and running a general-purpose
+inbox. Ask if you want that; it is a deliberate omission, not an oversight.
+
 ### Outbound DMARC reporting
 
 Providers that receive mail from your tenants' domains publish a `_dmarc`
