@@ -496,6 +496,25 @@ async function syncPrincipals(params: {
         .select({ sourceAddress: emailAliases.sourceAddress })
         .from(emailAliases);
       const owned = new Set(aliasRows.map((r) => r.sourceAddress.toLowerCase()));
+      // The platform declares two lists of its own — `postmaster@` and
+      // `abuse@` on the mail hostname (RFC 2142, see platform-hostname-intake).
+      // They have no `email_aliases` row BY DESIGN, because those rows are
+      // keyed by email_domain_id and the mail hostname is a reserved platform
+      // hostname, never a tenant email domain. Without this they would be
+      // reported as orphan drift on every scan and an operator would
+      // eventually delete the thing that stops the 550s.
+      try {
+        const { getExplicitMailHostname } = await import('../mail-admin/stalwart-domain-reconciler.js');
+        const { platformHostnameAddresses } = await import('../mail-events/platform-hostname-intake.js');
+        const hostname = await getExplicitMailHostname(db);
+        if (hostname) {
+          for (const a of platformHostnameAddresses(hostname)) owned.add(a);
+        }
+      } catch {
+        // Resolving the hostname is best-effort. Failing it means the two
+        // platform lists surface as drift for one scan — visible and
+        // harmless — rather than the scan itself failing.
+      }
       for (const l of lists) {
         if (owned.has(l.emailAddress)) continue;
         driftThisTick.push({

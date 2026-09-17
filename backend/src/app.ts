@@ -1326,6 +1326,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         const { ensureStalwartStdoutTracer } = await import('./modules/mail-events/tracer-reconciler.js');
         const { ensureReportIntake } = await import('./modules/mail-events/report-intake-reconciler.js');
         const { ensureDmarcReportSender } = await import('./modules/mail-events/dmarc-report-sender.js');
+        const { ensurePlatformHostnameIntake } = await import('./modules/mail-events/platform-hostname-intake.js');
         const { pollDmarcReports } = await import('./modules/mail-events/dmarc.js');
         const { repairDmarcRuaRecords } = await import('./modules/mail-events/dmarc-rua-repair.js');
         const { evaluateMailThresholds } = await import('./modules/mail-events/thresholds.js');
@@ -1349,6 +1350,14 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           });
           ensureReportIntake(app.db, app.log).catch((err) => {
             app.log.warn({ err }, 'report intake ensure failed');
+          });
+          // `postmaster@` and `abuse@` on the platform's OWN mail hostname —
+          // the domain in every EHLO and in the TLS cert, which answered 550
+          // to both until 2026-09-17. Runs on the same tick as the per-domain
+          // intake above, so a fresh bootstrap converges as soon as the
+          // hostname's Stalwart domain exists.
+          ensurePlatformHostnameIntake(app.db, app.log).catch((err) => {
+            app.log.warn({ err }, 'platform hostname intake ensure failed');
           });
           // Outbound DMARC reporting stays OFF unless an operator has named a
           // real local postmaster@ to send from. Reconciled every tick, not
