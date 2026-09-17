@@ -35,6 +35,11 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   setting to disabled and disables reporting in Stalwart, rather than leaving a
   configured-but-dead sender. Reports go out on a **daily** schedule.
 
+  Failure (forensic, `ruf=`) reports follow the same gate and stay **off in
+  both directions** — they are the same subsystem with the same broken default
+  sender, and a failure report forwards the headers of somebody's individual
+  message to whoever asked for it, which "send DMARC reports" does not imply.
+
   On the receiving side, the platform has been ingesting per-tenant DMARC
   aggregate reports for months and showing them to nobody but the operator —
   the read model already accepted a tenant scope and nothing ever passed one.
