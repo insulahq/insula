@@ -779,6 +779,110 @@ export async function arfExternalReportDestroy(params: {
   );
 }
 
+// ── TLS-RPT reports (x:TlsExternalReport/*) ────────────────────────────────
+//
+// RFC 8460. These arrive because every mail-enabled domain publishes
+// `_smtp._tls.<domain> TXT "v=TLSRPTv1; rua=mailto:postmaster@<domain>"`, so a
+// receiver that failed — or succeeded — to negotiate TLS to OUR MX reports it
+// back daily. The subject is inbound delivery TO us, not our outbound mail.
+//
+// SHAPE, taken from Stalwart's own registry structs rather than RFC 8460:
+//
+//   `policies` and `failureDetails` are `List<T>`, which serialises as an
+//   object keyed by DECIMAL-STRING INDEX (`{"0": …, "1": …}`) — the same trap
+//   as the DMARC `records` below. `.map()` over one yields nothing and reports
+//   a clean zero.
+//
+//   `to`, `mxHosts` and `policyStrings` are `Map<String>`, which serialises as
+//   an object keyed BY VALUE (`{"mx.example.test": true}`).
+//
+// Both are objects; which key means what differs. Read with Object.keys() /
+// Object.values() accordingly.
+
+export interface StalwartTlsFailureDetails {
+  readonly resultType?: string;
+  readonly sendingMtaIp?: string | null;
+  readonly receivingMxHostname?: string | null;
+  readonly receivingMxHelo?: string | null;
+  readonly receivingIp?: string | null;
+  readonly failedSessionCount?: number;
+  readonly additionalInformation?: string | null;
+  readonly failureReasonCode?: string | null;
+}
+
+export interface StalwartTlsReportPolicy {
+  readonly policyType?: string;
+  readonly policyStrings?: Record<string, boolean>;
+  readonly policyDomain?: string;
+  readonly mxHosts?: Record<string, boolean>;
+  readonly totalSuccessfulSessions?: number;
+  readonly totalFailedSessions?: number;
+  /** Index-keyed object, NOT an array. */
+  readonly failureDetails?: Record<string, StalwartTlsFailureDetails>;
+}
+
+export interface StalwartTlsReportRow {
+  readonly id: string;
+  readonly from?: string;
+  readonly subject?: string;
+  readonly to?: Record<string, boolean>;
+  readonly receivedAt?: string;
+  readonly expiresAt?: string;
+  readonly report?: {
+    readonly organizationName?: string | null;
+    readonly contactInfo?: string | null;
+    readonly reportId?: string;
+    readonly dateRangeStart?: string;
+    readonly dateRangeEnd?: string;
+    /** Index-keyed object, NOT an array. */
+    readonly policies?: Record<string, StalwartTlsReportPolicy>;
+  };
+}
+
+interface XTlsGetResponse {
+  readonly list?: readonly StalwartTlsReportRow[];
+}
+
+/**
+ * List + fetch stored TLS-RPT reports.
+ *
+ * Capped at 200 per poll, as for the other two report types: a backlog drains
+ * across ticks instead of producing one unbounded fetch + insert loop.
+ */
+export async function tlsExternalReportList(params: {
+  baseUrl?: string;
+  env?: NodeJS.ProcessEnv;
+} = {}): Promise<readonly StalwartTlsReportRow[]> {
+  const { baseUrl, env } = params;
+  const auth = adminBasicAuth(env);
+  const req: JmapRequest = {
+    using: [JMAP_CORE, JMAP_STALWART],
+    methodCalls: [
+      ['x:TlsExternalReport/query', { limit: 200 }, 'q'],
+      ['x:TlsExternalReport/get', {
+        '#ids': { resultOf: 'q', name: 'x:TlsExternalReport/query', path: '/ids' },
+      }, 'g'],
+    ],
+  };
+  const res = await jmapPost(baseUrl ?? STALWART_MGMT_URL, auth, req);
+  const get = extractResponse<XTlsGetResponse>(res, 'x:TlsExternalReport/get', 'g');
+  return get.list ?? [];
+}
+
+export async function tlsExternalReportDestroy(params: {
+  ids: readonly string[];
+  baseUrl?: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<JmapSetResponse<{ id: string }>> {
+  const { ids, baseUrl, env } = params;
+  return _xCall<JmapSetResponse<{ id: string }>>(
+    JMAP_STALWART,
+    'x:TlsExternalReport/set',
+    { destroy: ids },
+    baseUrl, env,
+  );
+}
+
 // ── DMARC aggregate reports (x:DmarcExternalReport/*) ───────────────────────
 //
 // Stalwart's report-analysis does the whole RFC 7489 job for us: it intercepts

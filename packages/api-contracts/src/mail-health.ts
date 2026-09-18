@@ -403,3 +403,60 @@ export const abuseReportsQuerySchema = z.object({
   feedbackType: abuseFeedbackTypeSchema.optional(),
 });
 export type AbuseReportsQuery = z.infer<typeof abuseReportsQuerySchema>;
+
+// ── TLS-RPT reports (RFC 8460) ─────────────────────────────────────────────
+//
+// About INBOUND delivery to this platform's MX: a receiver reports whether it
+// could negotiate TLS to us. A failure is ours to fix, not the sender's.
+
+export const tlsFailureSchema = z.object({
+  resultType: z.string(),
+  failedSessionCount: z.number().int().nonnegative(),
+  receivingMxHostname: z.string().nullable(),
+  sendingMtaIp: z.string().nullable(),
+  failureReasonCode: z.string().nullable(),
+  additionalInformation: z.string().nullable(),
+});
+export type TlsFailure = z.infer<typeof tlsFailureSchema>;
+
+export const tlsReportSchema = z.object({
+  id: z.string(),
+  policyDomain: z.string().nullable(),
+  tenantId: z.string().nullable(),
+  tenantName: z.string().nullable(),
+  /** The receiving operator that sent the report. */
+  orgName: z.string().nullable(),
+  contactInfo: z.string().nullable(),
+  reportId: z.string().nullable(),
+  dateRangeStart: z.string().nullable(),
+  dateRangeEnd: z.string().nullable(),
+  successfulSessions: z.number().int().nonnegative(),
+  failedSessions: z.number().int().nonnegative(),
+  failures: z.array(tlsFailureSchema).default([]),
+  receivedAt: z.string(),
+});
+export type TlsReport = z.infer<typeof tlsReportSchema>;
+
+export const tlsReportsOverviewSchema = z.object({
+  windowDays: z.number().int().positive(),
+  reports: z.array(tlsReportSchema).default([]),
+  total: z.number().int().nonnegative(),
+  /** Sessions across the whole window, so a failure count has a denominator. */
+  totalSuccessfulSessions: z.number().int().nonnegative(),
+  totalFailedSessions: z.number().int().nonnegative(),
+  /**
+   * Null when there were no sessions at all — NOT 1. "100% success of nothing"
+   * is the same lie the DMARC pass rate is careful not to tell.
+   */
+  successRate: z.number().min(0).max(1).nullable(),
+  intakeLocalPart: z.string(),
+});
+export type TlsReportsOverview = z.infer<typeof tlsReportsOverviewSchema>;
+
+export const tlsReportsQuerySchema = z.object({
+  windowDays: z.coerce.number().int().min(1).max(365).optional(),
+  limit: z.coerce.number().int().min(1).max(200).optional(),
+  /** Only reports that recorded at least one failed session. */
+  failingOnly: z.coerce.boolean().optional(),
+});
+export type TlsReportsQuery = z.infer<typeof tlsReportsQuerySchema>;

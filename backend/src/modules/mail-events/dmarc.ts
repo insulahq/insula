@@ -365,6 +365,11 @@ export function schedulePollSoon(
       .catch((err) => {
         logger.warn({ err }, 'abuse report poll (webhook-triggered) failed');
       });
+    import('./tls-reports.js')
+      .then(({ pollTlsReports }) => pollTlsReports(db, logger))
+      .catch((err) => {
+        logger.warn({ err }, 'tls report poll (webhook-triggered) failed');
+      });
   }, delayMs);
   pollTimer.unref();
 }

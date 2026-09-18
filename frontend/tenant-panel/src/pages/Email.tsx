@@ -71,10 +71,11 @@ const DmarcTab = lazy(() => import('@/components/email/DmarcTab'));
 // Same reasoning as DmarcTab: its own queries, and the tab an operator hopes
 // never to need.
 const AbuseTab = lazy(() => import('@/components/email/AbuseTab'));
+const TlsTab = lazy(() => import('@/components/email/TlsTab'));
 
 const INPUT_CLASS = 'w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
 
-type Tab = 'mailboxes' | 'aliases' | 'settings' | 'dmarc' | 'abuse';
+type Tab = 'mailboxes' | 'aliases' | 'settings' | 'dmarc' | 'abuse' | 'tls';
 
 export default function Email() {
   const { tenantId } = useTenantContext();
@@ -200,6 +201,7 @@ export default function Email() {
               { key: 'settings' as Tab, label: 'Settings & DNS' },
               { key: 'dmarc' as Tab, label: 'Authentication' },
               { key: 'abuse' as Tab, label: 'Abuse Reports' },
+              { key: 'tls' as Tab, label: 'Delivery Security' },
             ].map(t => (
               <button key={t.key} type="button" onClick={() => setTab(t.key)}
                 className={clsx('border-b-2 px-4 py-2.5 text-sm font-medium', tab === t.key ? 'border-brand-500 text-brand-600' : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200')}
@@ -238,6 +240,11 @@ export default function Email() {
           {tab === 'abuse' && (
             <Suspense fallback={<div className="flex justify-center py-12"><Loader2 size={24} className="animate-spin text-brand-500" /></div>}>
               <AbuseTab tenantId={tenantId!} />
+            </Suspense>
+          )}
+          {tab === 'tls' && (
+            <Suspense fallback={<div className="flex justify-center py-12"><Loader2 size={24} className="animate-spin text-brand-500" /></div>}>
+              <TlsTab tenantId={tenantId!} />
             </Suspense>
           )}
         </>
