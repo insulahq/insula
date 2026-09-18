@@ -80,6 +80,33 @@ function statusCodeOf(err: unknown): number | undefined {
 }
 
 /**
+ * The cadence a read-only target is ACTUALLY running, from the live object.
+ *
+ * Returns null when it cannot be read — the row is then left alone rather than
+ * overwritten with a guess.
+ */
+async function readLiveCron(
+  clients: CadenceClients,
+  target: CadenceTarget,
+  log: Pick<Logger, 'info' | 'warn' | 'error'>,
+): Promise<string | null> {
+  try {
+    const obj = (await clients.custom.getNamespacedCustomObject({
+      group: 'longhorn.io',
+      version: 'v1beta2',
+      namespace: target.namespace,
+      plural: 'recurringjobs',
+      name: target.name,
+    })) as { spec?: { cron?: string } };
+    return obj.spec?.cron ?? null;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log.warn({ err: msg, name: target.name }, 'cadence: could not read the live cadence; leaving the row as it is');
+    return null;
+  }
+}
+
+/**
  * Converge one target. Never throws: a single broken target must not stop the
  * others from being reconciled, and the caller logs the outcome.
  */
@@ -101,8 +128,28 @@ export async function reconcileCadenceTarget(
   const desiredCron = (row.cronExpression ?? target.manifestDefault).trim();
 
   if (target.mechanism === 'read-only') {
-    // Nothing to converge. The card renders the manifest value and says so.
-    return { ...base, state: 'STATE_READ_ONLY', desiredCron, desiredSuspend: !row.enabled };
+    // Nothing to converge ONTO the object — but the row must not show a value
+    // the cluster is not using. The seeded default for longhorn_recurring is
+    // '0 */6 * * *' while its manifest runs '5 * * * *', so without this the
+    // card shipped a wrong cadence on every cluster, and an operator reading
+    // it would plan around a schedule that does not exist.
+    //
+    // The row therefore MIRRORS the live object: read the cron, write it back
+    // if it drifted. Writes to the object itself are neither attempted nor
+    // permitted (platform-api holds read-only RBAC here).
+    const liveCron = await readLiveCron(clients, target, log);
+    if (liveCron && liveCron !== row.cronExpression) {
+      await db
+        .update(backupSchedules)
+        .set({ cronExpression: liveCron, updatedAt: new Date() })
+        .where(eq(backupSchedules.subsystem, target.subsystem));
+      log.info(
+        { subsystem: target.subsystem, cron: liveCron },
+        'cadence: mirrored the live cadence into the schedule row (read-only target)',
+      );
+      return { ...base, state: 'STATE_READ_ONLY', desiredCron: liveCron, desiredSuspend: !row.enabled, patched: true };
+    }
+    return { ...base, state: 'STATE_READ_ONLY', desiredCron: liveCron ?? desiredCron, desiredSuspend: !row.enabled };
   }
 
   if (target.mechanism === 'cnpg-backup') {

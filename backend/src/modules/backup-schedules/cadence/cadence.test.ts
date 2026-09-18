@@ -284,17 +284,62 @@ describe('the Postgres base backup', () => {
 });
 
 describe('a schedule the platform cannot honour', () => {
-  it('is reported read-only rather than silently ignored', async () => {
-    // Longhorn's RecurringJob is Flux-managed, has no suspend field, and
-    // platform-api holds no RBAC for it. Offering an edit would look like it
-    // worked and be reverted within the minute.
+  /** A db that also records what the reconciler writes back to the row. */
+  const mirrorDb = (row: { enabled: boolean; cronExpression: string | null }) => {
+    const writes: Array<Record<string, unknown>> = [];
+    const db = {
+      select: () => ({
+        from: () => ({
+          where: () => Promise.resolve([row]),
+          innerJoin: () => ({ where: () => ({ orderBy: () => ({ limit: () => Promise.resolve([{ enabled: 1 }]) }) }) }),
+        }),
+      }),
+      update: () => ({ set: (v: Record<string, unknown>) => { writes.push(v); return { where: () => Promise.resolve() }; } }),
+    } as never;
+    return { db, writes };
+  };
+  const longhornClients = (liveCron: string | null) => ({
+    batch: { readNamespacedCronJob: vi.fn(), patchNamespacedCronJob: vi.fn() },
+    custom: {
+      getNamespacedCustomObject: vi.fn(async () => (liveCron === null
+        ? Promise.reject(new Error('forbidden'))
+        : { spec: { cron: liveCron } })),
+      patchNamespacedCustomObject: vi.fn(),
+    },
+  } as unknown as CadenceClients);
+
+  it('never writes to an object it does not own', async () => {
+    // Longhorn's RecurringJob is Flux-managed and platform-api holds read-only
+    // RBAC. Offering an edit would look like it worked and be reverted within
+    // the minute.
     const target = targetFor('longhorn_recurring')!;
-    const { clients, patch } = cronJobClients({ schedule: '5 * * * *', suspend: false });
-    const out = await reconcileCadenceTarget(
-      dbWith({ enabled: true, cronExpression: '*/5 * * * *' }), clients, target, log,
-    );
+    const clients = longhornClients('5 * * * *');
+    const { db } = mirrorDb({ enabled: true, cronExpression: '5 * * * *' });
+    const out = await reconcileCadenceTarget(db, clients, target, log);
     expect(out.state).toBe('STATE_READ_ONLY');
-    expect(patch).not.toHaveBeenCalled();
+    expect((clients.custom.patchNamespacedCustomObject as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
+  });
+
+  it('mirrors the LIVE cadence into the row, so the card cannot show a fiction', async () => {
+    // Found on DEV: the card displayed '*/3 * * * *' while Longhorn ran
+    // '5 * * * *'. Worse, migration 0011 seeds '0 */6 * * *' — which differs
+    // from the manifest on EVERY cluster, so the card shipped a wrong cadence
+    // by default and an operator would plan around a schedule that does not
+    // exist.
+    const target = targetFor('longhorn_recurring')!;
+    const { db, writes } = mirrorDb({ enabled: true, cronExpression: '0 */6 * * *' });
+    const out = await reconcileCadenceTarget(db, longhornClients('5 * * * *'), target, log);
+    expect(out.desiredCron).toBe('5 * * * *');
+    expect(writes[0]?.cronExpression).toBe('5 * * * *');
+  });
+
+  it('leaves the row alone when the live cadence cannot be read', async () => {
+    // Overwriting with a guess would be worse than a stale value.
+    const target = targetFor('longhorn_recurring')!;
+    const { db, writes } = mirrorDb({ enabled: true, cronExpression: '0 */6 * * *' });
+    const out = await reconcileCadenceTarget(db, longhornClients(null), target, log);
+    expect(writes).toHaveLength(0);
+    expect(out.state).toBe('STATE_READ_ONLY');
   });
 });
 
@@ -399,6 +444,22 @@ describe('the target table', () => {
     expect(new Set(subsystems).size).toBe(subsystems.length);
     for (const s of ['etcd_snapshot', 'secrets_bundle', 'cluster_state', 'system_pitr', 'longhorn_recurring']) {
       expect(subsystems, `${s} has no cadence target`).toContain(s);
+    }
+  });
+});
+
+describe('the API contract for a schedule the platform cannot apply', () => {
+  it('marks longhorn_recurring read-only in the target table', () => {
+    // The route refuses cron/enabled changes for any target whose mechanism is
+    // read-only. That refusal is driven entirely off this field, so the field
+    // IS the contract: flipping it to a writable mechanism without wiring an
+    // executor would silently re-open the "saved but inert" hole.
+    //
+    // Verified against DEV 2026-09-18: before the guard the API answered 200
+    // and stored '*/3 * * * *' while the live RecurringJob stayed '5 * * * *'.
+    expect(targetFor('longhorn_recurring')?.mechanism).toBe('read-only');
+    for (const s of ['etcd_snapshot', 'secrets_bundle', 'cluster_state', 'system_pitr']) {
+      expect(targetFor(s)?.mechanism, `${s} must be controllable`).not.toBe('read-only');
     }
   });
 });
