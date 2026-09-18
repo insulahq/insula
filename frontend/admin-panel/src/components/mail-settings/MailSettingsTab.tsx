@@ -20,7 +20,7 @@ type MailEnforcementMode = 'notify' | 'off';
  * early and anything else notifies. Enforcement of the send limits themselves
  * happens in Stalwart, unconditionally, and is not governed by this control.
  *
- * A third `auto` mode existed until 2026-09-15. It acted solely on FBL
+ * A third `auto` mode existed once. It acted solely on FBL
  * complaint rates, and when FBL was retired it became a setting that promised
  * automatic action and silently did nothing — so it was deleted rather than
  * left in the dropdown. Adding an enforcing mode back means first deciding and
