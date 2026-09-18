@@ -1945,6 +1945,31 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           );
         }
 
+        // DR cadence reconciler — makes the backup_schedules rows for the
+        // etcd snapshot upload, the secrets bundle, the cluster-state dump
+        // and the Postgres base backup actually drive their objects. Before
+        // this the System Backups page rendered no schedule cards at all and
+        // two of the rows it could edit (system_pitr, longhorn_recurring)
+        // drove nothing whatsoever. Non-blocking: a cadence failure must
+        // never keep the API from starting.
+        try {
+          const { startCadenceScheduler } = await import(
+            './modules/backup-schedules/cadence/scheduler.js'
+          );
+          const cadenceHandle = startCadenceScheduler({
+            db: app.db,
+            clients: {
+              batch: k8sForImapsync.batch as never,
+              custom: k8sForImapsync.custom as never,
+            },
+            log: app.log,
+          });
+          app.decorate('cadenceScheduler', cadenceHandle);
+          app.addHook('onClose', () => cadenceHandle.stop());
+        } catch (err) {
+          app.log.warn({ err }, 'cadence: scheduler start failed (non-blocking)');
+        }
+
         // stalwart-snapshot CronJob reconciler. Flips spec.suspend false
         // ONLY when a mail-class backup target is bound (no pointless
         // restic churn without a target), and SSA-asserts spec.schedule

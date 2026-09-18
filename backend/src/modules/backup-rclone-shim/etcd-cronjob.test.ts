@@ -129,31 +129,39 @@ function silentLog() {
 }
 
 describe('reconcileEtcdCronJob', () => {
-  it('SYSTEM bound + live suspend=true → patches to suspend=false', async () => {
+  // Ownership note (2026-09-18): /spec/suspend on this CronJob moved to the
+  // cadence reconciler, which has to be able to suspend it when an operator
+  // disables the etcd_snapshot schedule. Two writers with different rules
+  // flipped the field against each other every tick. This reconciler still
+  // owns the upload prefix and the Flux-disown stamp — nothing else writes
+  // those — and it still REPORTS the desired suspend state so the API surface
+  // is unchanged.
+  it('SYSTEM bound → reports unsuspended but no longer writes /spec/suspend', async () => {
     const db = fakeDb([{ enabled: 1 }]);
     const batch = fakeBatch({ live: true });
     const r = await reconcileEtcdCronJob(db, { batch } as never, silentLog());
 
     expect(r.state).toBe('STATE_OK');
     expect(r.suspended).toBe(false);
-    expect(r.patched).toBe(true);
-    expect(batch.patchNamespacedCronJob).toHaveBeenCalledTimes(1);
-    const body = (batch.patchNamespacedCronJob.mock.calls[0][0] as { body: unknown }).body;
-    expect(body).toEqual([
-      { op: 'replace', path: '/spec/suspend', value: false },
-    ]);
+    const paths = batch.patchNamespacedCronJob.mock.calls.flatMap(
+      (c) => ((c[0] as { body: Array<{ path: string }> }).body ?? []).map((o) => o.path),
+    );
+    expect(paths).not.toContain('/spec/suspend');
   });
 
-  it('SYSTEM unbound + live suspend=false → patches to suspend=true', async () => {
+  it('SYSTEM unbound → reports suspended; the cadence reconciler does the writing', async () => {
+    // The cadence reconciler gates on the SAME binding predicate, so an
+    // unbound cluster still ends up suspended — from one writer instead of two.
     const db = fakeDb([]);
     const batch = fakeBatch({ live: false });
     const r = await reconcileEtcdCronJob(db, { batch } as never, silentLog());
 
     expect(r.state).toBe('STATE_NO_SYSTEM_TARGET');
     expect(r.suspended).toBe(true);
-    expect(r.patched).toBe(true);
-    const body = (batch.patchNamespacedCronJob.mock.calls[0][0] as { body: unknown }).body;
-    expect((body as Array<{ value: boolean }>)[0].value).toBe(true);
+    const paths = batch.patchNamespacedCronJob.mock.calls.flatMap(
+      (c) => ((c[0] as { body: Array<{ path: string }> }).body ?? []).map((o) => o.path),
+    );
+    expect(paths).not.toContain('/spec/suspend');
   });
 
   it('idempotent: live already matches desired → no patch', async () => {
@@ -206,8 +214,10 @@ describe('reconcileEtcdCronJob', () => {
   });
 
   it('STATE_ERROR on patch failure', async () => {
-    const db = fakeDb([{ enabled: 1 }]);
-    const batch = fakeBatch({ live: true, patchFail: new Error('apiserver down') });
+    // Driven off PREFIX drift: suspend is no longer written by this
+    // reconciler, so a suspend-only difference produces no patch to fail.
+    const db = fakeDb([{ enabled: 1 }], 'cid-err');
+    const batch = fakeBatch({ live: false, prefixEnv: 'etcd', patchFail: new Error('apiserver down') });
     const r = await reconcileEtcdCronJob(db, { batch } as never, silentLog());
 
     expect(r.state).toBe('STATE_ERROR');
@@ -219,10 +229,10 @@ describe('reconcileEtcdCronJob', () => {
     const batch = fakeBatch({ live: false });
     const r = await reconcileEtcdCronJob(db, { batch } as never, silentLog());
 
+    // Still reported as "would be suspended"; the write belongs to the cadence
+    // reconciler, which reaches the same answer from the same predicate.
     expect(r.state).toBe('STATE_NO_SYSTEM_TARGET');
-    expect(r.patched).toBe(true);
-    const body = (batch.patchNamespacedCronJob.mock.calls[0][0] as { body: unknown }).body;
-    expect((body as Array<{ value: boolean }>)[0].value).toBe(true);
+    expect(r.suspended).toBe(true);
   });
 
   it('namespaces SHIM_PREFIX to etcd/<cluster_id> when the live prefix is the legacy seed', async () => {
@@ -255,23 +265,22 @@ describe('reconcileEtcdCronJob', () => {
 
     expect(r.patched).toBe(true);
     const body = (batch.patchNamespacedCronJob.mock.calls[0][0] as { body: unknown }).body;
+    // Suspend is the cadence reconciler's to write; only the prefix is ours.
     expect(body).toEqual([
-      { op: 'replace', path: '/spec/suspend', value: false },
       { op: 'replace', path: SHIM_PREFIX_PATH, value: 'etcd/cid-9' },
     ]);
   });
 
-  it('suspend-only patch is unchanged when the CronJob carries no SHIM_PREFIX env (Flux race)', async () => {
-    // A CronJob read before its env is populated → no prefix op, suspend still fires.
+  it('writes nothing when the only difference is suspend (Flux race, no prefix env)', async () => {
+    // A CronJob read before its env is populated → no prefix op. Suspend used
+    // to be patched here; it is now the cadence reconciler's field, so this
+    // reconcile has genuinely nothing to do rather than half a patch.
     const db = fakeDb([{ enabled: 1 }], 'cid-7');
     const batch = fakeBatch({ live: true }); // no prefixEnv → no jobTemplate
     const r = await reconcileEtcdCronJob(db, { batch } as never, silentLog());
 
-    expect(r.patched).toBe(true);
-    const body = (batch.patchNamespacedCronJob.mock.calls[0][0] as { body: unknown }).body;
-    expect(body).toEqual([
-      { op: 'replace', path: '/spec/suspend', value: false },
-    ]);
+    expect(r.patched).toBe(false);
+    expect(batch.patchNamespacedCronJob).not.toHaveBeenCalled();
   });
 
   it('re-stamps the Flux reconcile:disabled annotation when the live CronJob lacks it', async () => {
@@ -297,7 +306,6 @@ describe('reconcileEtcdCronJob', () => {
     expect(r.patched).toBe(true);
     const body = (batch.patchNamespacedCronJob.mock.calls[0][0] as { body: unknown }).body;
     expect(body).toEqual([
-      { op: 'replace', path: '/spec/suspend', value: false },
       { op: 'replace', path: SHIM_PREFIX_PATH, value: 'etcd/cid-1' },
       { op: 'add', path: RECONCILE_ANNO_PATH, value: 'disabled' },
     ]);

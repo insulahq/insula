@@ -14,7 +14,7 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Loader2, AlertTriangle, Save, Power, PowerOff } from 'lucide-react';
+import { Loader2, AlertTriangle, Save, Power, PowerOff, Info } from 'lucide-react';
 import { apiFetch } from '@/lib/api-client';
 import { validateCronExpression, type BackupScheduleRow } from '@insula/api-contracts';
 
@@ -42,12 +42,29 @@ function validateRetentionCount(s: string): string | null {
 }
 
 interface Props {
-  readonly subsystem: 'mail' | 'tenant_bundle' | 'system_pitr' | 'longhorn_recurring';
+  readonly subsystem: 'mail' | 'tenant_bundle' | 'system_pitr' | 'longhorn_recurring'
+    | 'etcd_snapshot' | 'secrets_bundle' | 'cluster_state';
+  /**
+   * Renders the cadence but no edit control. Used for schedules whose timing
+   * is compiled into a Flux-managed manifest the platform does not own —
+   * offering an edit there would look like it worked and be reverted within
+   * the minute.
+   */
+  readonly readOnly?: boolean;
+  /** Shown under the title when `readOnly` — why it cannot be changed here. */
+  readonly readOnlyReason?: string;
+  /**
+   * Hide the retention inputs. Retention for the DR artefacts is enforced
+   * inside the job scripts, not from `backup_schedules`, so rendering the
+   * fields would accept a value, persist it, and change nothing — the exact
+   * "saved but inert" trap these cards exist to remove.
+   */
+  readonly hideRetention?: boolean;
   readonly title: string;
   readonly description: string;
 }
 
-export default function ScheduleCard({ subsystem, title, description }: Props) {
+export default function ScheduleCard({ subsystem, title, description, readOnly, readOnlyReason, hideRetention }: Props) {
   const qc = useQueryClient();
   const { data, isLoading, error } = useQuery({
     queryKey: ['admin', 'backups', 'schedules', subsystem],
@@ -129,7 +146,8 @@ export default function ScheduleCard({ subsystem, title, description }: Props) {
         <button
           type="button"
           onClick={() => mutation.mutate({ enabled: !row.enabled })}
-          disabled={mutation.isPending || (!row.enabled && !row.gateSatisfied)}
+          disabled={readOnly || mutation.isPending || (!row.enabled && !row.gateSatisfied)}
+          title={readOnly ? readOnlyReason : undefined}
           data-testid={`schedule-toggle-${subsystem}`}
           className={[
             'inline-flex items-center gap-2 rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors',
@@ -158,6 +176,21 @@ export default function ScheduleCard({ subsystem, title, description }: Props) {
         </div>
       )}
 
+      {readOnly && (
+        <div
+          className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/40 px-3 py-2 text-sm text-gray-600 dark:text-gray-300"
+          data-testid={`schedule-readonly-${subsystem}`}
+        >
+          <div className="flex items-start gap-2">
+            <Info size={14} className="mt-0.5 shrink-0" />
+            <div>
+              <span className="font-medium">Shown for reference — not editable here.</span>{' '}
+              {readOnlyReason}
+            </div>
+          </div>
+        </div>
+      )}
+
       {mutation.isError && (
         <div className="rounded-lg border border-rose-200 dark:border-rose-700 bg-rose-50 dark:bg-rose-900/20 px-3 py-2 text-sm text-rose-700 dark:text-rose-300">
           {mutation.error instanceof Error ? mutation.error.message : 'Schedule update failed'}
@@ -175,6 +208,8 @@ export default function ScheduleCard({ subsystem, title, description }: Props) {
             placeholder="0 2 * * *"
             data-testid={`schedule-cron-${subsystem}`}
             aria-invalid={!!cronError}
+            readOnly={readOnly}
+            disabled={readOnly}
             className={`mt-1 w-full rounded-md border bg-white dark:bg-gray-800 px-2 py-1.5 font-mono text-sm text-gray-900 dark:text-gray-100 ${
               cronError
                 ? 'border-rose-400 dark:border-rose-600 focus:ring-rose-300'
@@ -189,6 +224,8 @@ export default function ScheduleCard({ subsystem, title, description }: Props) {
             <p className="mt-1 text-xs text-gray-500">5 fields: min hour day-of-month month day-of-week</p>
           )}
         </div>
+      {!hideRetention && (
+        <>
         <div>
           <label className="text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400" htmlFor={`retdays-${subsystem}`}>Retention (days)</label>
           <input
@@ -199,6 +236,7 @@ export default function ScheduleCard({ subsystem, title, description }: Props) {
             value={retentionDaysDraft}
             onChange={(e) => setRetentionDaysDraft(e.target.value)}
             data-testid={`schedule-retention-days-${subsystem}`}
+            disabled={readOnly}
             aria-invalid={!!retentionDaysError}
             className={`mt-1 w-full rounded-md border bg-white dark:bg-gray-800 px-2 py-1.5 text-sm text-gray-900 dark:text-gray-100 ${
               retentionDaysError
@@ -222,6 +260,7 @@ export default function ScheduleCard({ subsystem, title, description }: Props) {
             value={retentionCountDraft}
             onChange={(e) => setRetentionCountDraft(e.target.value)}
             data-testid={`schedule-retention-count-${subsystem}`}
+            disabled={readOnly}
             aria-invalid={!!retentionCountError}
             className={`mt-1 w-full rounded-md border bg-white dark:bg-gray-800 px-2 py-1.5 text-sm text-gray-900 dark:text-gray-100 ${
               retentionCountError
@@ -235,6 +274,8 @@ export default function ScheduleCard({ subsystem, title, description }: Props) {
             </p>
           )}
         </div>
+        </>
+      )}
       </div>
 
       {combinedError && (
@@ -243,7 +284,7 @@ export default function ScheduleCard({ subsystem, title, description }: Props) {
         </div>
       )}
 
-      {dirty && (
+      {dirty && !readOnly && (
         <div className="flex justify-end">
           <button
             type="button"

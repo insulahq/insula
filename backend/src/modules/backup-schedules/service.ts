@@ -42,6 +42,13 @@ const GATE_MAP: Record<string, string | null> = {
   tenant_bundle: 'tenant',
   system_pitr: 'system',
   longhorn_recurring: null,
+  // All three upload through the shim to whatever the SYSTEM class is bound
+  // to, so enabling them before that binding exists would schedule work that
+  // can only fail. Note `gatedClassFor` treats an UNLISTED subsystem as
+  // ungated, so omitting one here silently removes its gate.
+  etcd_snapshot: 'system',
+  secrets_bundle: 'system',
+  cluster_state: 'system',
 };
 
 function gatedClassFor(subsystem: string): string | null {

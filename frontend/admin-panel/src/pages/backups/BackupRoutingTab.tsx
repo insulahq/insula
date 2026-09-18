@@ -62,7 +62,13 @@ const CLASS_COPY: Record<BackupShimClass, { what: string }> = {
 // Subsystem labels for the schedules section. Lifted from the legacy
 // per-page hard-codings so each ScheduleCard renders with a meaningful
 // title + description.
-const SCHEDULE_META: Record<string, { title: string; description: string }> = {
+const SCHEDULE_META: Record<string, {
+  title: string;
+  description: string;
+  readOnly?: boolean;
+  readOnlyReason?: string;
+  hideRetention?: boolean;
+}> = {
   mail: {
     title: 'Mail snapshot schedule',
     description: 'Restic backup of /var/lib/stalwart/data — runs as a CronJob in the mail namespace.',
@@ -78,6 +84,36 @@ const SCHEDULE_META: Record<string, { title: string; description: string }> = {
   longhorn_recurring: {
     title: 'Longhorn recurring snapshots',
     description: 'Block-snapshot every PVC with the recurring-job label.',
+    // The cadence is compiled into a Flux-managed RecurringJob the platform
+    // neither owns nor has permission to patch, so this card shows the value
+    // and does not pretend to change it.
+    readOnly: true,
+    readOnlyReason:
+      'Set by the cluster manifest. Changing it here would be reverted within a minute, '
+      + 'so the control is not offered.',
+    hideRetention: true,
+  },
+  etcd_snapshot: {
+    title: 'etcd snapshot upload',
+    description:
+      'How often the cluster-database snapshots k3s has written to disk are collected and '
+      + 'uploaded to the bound system target. (k3s writes those snapshots on its own schedule, '
+      + 'every 12 hours.)',
+    // Retention for this job is the "keep the newest 24 objects" rule inside
+    // the upload script, not a value from backup_schedules.
+    hideRetention: true,
+  },
+  secrets_bundle: {
+    title: 'Secrets bundle',
+    description:
+      'Age-encrypted copy of the cluster secrets — the bundle you need to rebuild this platform '
+      + 'somewhere else.',
+    hideRetention: true,
+  },
+  cluster_state: {
+    title: 'Cluster state dump',
+    description: 'Platform-wide inventory of Kubernetes objects, for rebuilding after a total loss.',
+    hideRetention: true,
   },
 };
 
@@ -229,14 +265,17 @@ export default function BackupRoutingTab({ shimClass, scheduleSubsystems }: Prop
               title: subsystem,
               description: `Schedule for ${subsystem}.`,
             };
-            // ScheduleCard's prop union narrows subsystem to its 4
-            // known values; cast preserves the runtime contract.
+            // ScheduleCard's prop union narrows subsystem to its known
+            // values; cast preserves the runtime contract.
             return (
               <ScheduleCard
                 key={subsystem}
                 subsystem={subsystem as Parameters<typeof ScheduleCard>[0]['subsystem']}
                 title={meta.title}
                 description={meta.description}
+                readOnly={meta.readOnly}
+                readOnlyReason={meta.readOnlyReason}
+                hideRetention={meta.hideRetention}
               />
             );
           })}
