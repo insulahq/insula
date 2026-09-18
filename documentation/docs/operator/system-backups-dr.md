@@ -78,6 +78,12 @@ at the system level, so their timing is visible and changeable in one place:
 Each card also has an on/off switch. Turning a schedule off stops that backup
 until you turn it back on — the platform will not quietly keep running it.
 
+!!! info "Times are on the platform's clock"
+    A schedule you enter here is read in the platform time zone (**Platform
+    Settings → General**), the same clock tenant cron jobs use. The platform
+    records that zone on the jobs themselves, so changing the server's time
+    zone later cannot silently move your backups.
+
 The platform database is **not** in that list: its cadence, retention and
 archive timeout are set together on its own card (above), where the panel can
 warn you if retention is too short for the cadence you picked — one place to

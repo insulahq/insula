@@ -107,6 +107,28 @@ async function readLiveCron(
 }
 
 /**
+ * The platform's configured clock, or null when it cannot be read.
+ *
+ * Null rather than a guess: writing the WRONG zone onto a CronJob would move
+ * every backup it schedules, which is worse than leaving the field absent and
+ * keeping today's behaviour.
+ */
+async function resolvePlatformTimeZone(
+  db: Database,
+  log: Pick<Logger, 'info' | 'warn' | 'error'>,
+): Promise<string | null> {
+  try {
+    const { getSettings } = await import('../../system-settings/service.js');
+    const tz = (await getSettings(db)).timezone?.trim();
+    return tz && tz.length > 0 ? tz : null;
+  } catch (err) {
+    log.warn({ err: err instanceof Error ? err.message : String(err) },
+      'cadence: could not read the platform timezone; leaving spec.timeZone alone');
+    return null;
+  }
+}
+
+/**
  * Converge one target. Never throws: a single broken target must not stop the
  * others from being reconciled, and the caller logs the outcome.
  */
@@ -196,12 +218,12 @@ export async function reconcileCadenceTarget(
   // upload, or held back because the platform fires it instead.
   const desiredSuspend = !active || cadenceDiffers;
 
-  let live: { spec?: { schedule?: string; suspend?: boolean } };
+  let live: { spec?: { schedule?: string; suspend?: boolean; timeZone?: string } };
   try {
     live = (await clients.batch.readNamespacedCronJob({
       name: target.name,
       namespace: target.namespace,
-    })) as { spec?: { schedule?: string; suspend?: boolean } };
+    })) as { spec?: { schedule?: string; suspend?: boolean; timeZone?: string } };
   } catch (err) {
     if (statusCodeOf(err) === 404) {
       log.warn({ cronjob: target.name }, 'cadence: CronJob not installed yet; skipping');
@@ -212,10 +234,27 @@ export async function reconcileCadenceTarget(
     return { ...base, state: 'STATE_ERROR', desiredCron, desiredSuspend, platformFired, errorMessage: msg };
   }
 
-  const ops: Array<{ op: 'replace'; path: string; value: unknown }> = [];
+  const ops: Array<{ op: 'replace' | 'add'; path: string; value: unknown }> = [];
   // Default to `true`: a missing suspend field must never read as "running".
   if ((live.spec?.suspend ?? true) !== desiredSuspend) {
     ops.push({ op: 'replace', path: '/spec/suspend', value: desiredSuspend });
+  }
+
+  // Declare the zone the schedule is meant to be read in.
+  //
+  // A CronJob with no `spec.timeZone` is interpreted in the
+  // kube-controller-manager's OWN zone — the host's. That works until the host
+  // zone changes or the control plane moves, at which point every backup
+  // silently shifts and nothing says so. It also gave the freshness monitor
+  // nothing to read, so it assumed UTC and reported two healthy production
+  // backups stale every day.
+  //
+  // This is patched rather than put in the manifest deliberately: a field the
+  // manifest does not set is a field Flux does not own, so there is no
+  // tug-of-war — unlike `spec.schedule`, which Flux reverts within the minute.
+  const platformZone = await resolvePlatformTimeZone(db, log);
+  if (platformZone && live.spec?.timeZone !== platformZone) {
+    ops.push({ op: 'add', path: '/spec/timeZone', value: platformZone });
   }
   if (!fluxOwnsSchedule && (live.spec?.schedule ?? '') !== desiredCron) {
     ops.push({ op: 'replace', path: '/spec/schedule', value: desiredCron });
