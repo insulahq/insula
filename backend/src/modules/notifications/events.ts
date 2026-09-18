@@ -444,12 +444,81 @@ export interface AdminCertRenewalFailedPayload {
   readonly certSubject: string;
   readonly errorMessage?: string;
 }
+/**
+ * `dedupeKey` is REQUIRED here, unlike most notifiers.
+ *
+ * It used to be optional, and the one caller omitted it while the
+ * `cert_expiring` call fifteen lines above it passed one. A 21-second
+ * Kubernetes API blackout on production then produced 29 of these in a single
+ * second — one per domain. An optional parameter is exactly what made the
+ * omission invisible in review, so the type now refuses it.
+ */
 export async function notifyAdminCertRenewalFailed(
   db: Database,
   payload: AdminCertRenewalFailedPayload,
-  dedupeKey?: string,
+  dedupeKey: string,
 ): Promise<void> {
   await dispatchSafe(db, 'admin.cert_renewal_failed', { kind: 'admin' }, payload, undefined, { dedupeKey });
+}
+
+export interface AdminCertCheckUnavailablePayload {
+  /** Plain-English name of what could not be reached. */
+  readonly dependency: string;
+  /** How many certificates were left unchecked. */
+  readonly uncheckedCount: string;
+  readonly detail: string;
+  readonly recommendedAction: string;
+}
+/**
+ * The platform could not CHECK its certificates — not a verdict on any one of
+ * them. Raised once per outage, never per subject, and only once the failure
+ * has survived a retry (the reconciler runs every 60 seconds, so a single blip
+ * is over before an operator could read about it).
+ */
+export async function notifyAdminCertCheckUnavailable(
+  db: Database,
+  payload: AdminCertCheckUnavailablePayload,
+  dedupeKey: string,
+): Promise<void> {
+  await dispatchSafe(db, 'admin.cert_check_unavailable', { kind: 'admin' }, payload, undefined, { dedupeKey });
+}
+
+export interface AdminCertCheckResumedPayload {
+  readonly dependency: string;
+  /** How long checks were interrupted, already humanised. */
+  readonly outageLabel: string;
+  readonly certificateSummary: string;
+}
+/** Closes an `admin.cert_check_unavailable` warning. */
+export async function notifyAdminCertCheckResumed(
+  db: Database,
+  payload: AdminCertCheckResumedPayload,
+  dedupeKey: string,
+): Promise<void> {
+  await dispatchSafe(db, 'admin.cert_check_resumed', { kind: 'admin' }, payload, undefined, { dedupeKey });
+}
+
+export interface AdminCertRecoveredPayload {
+  readonly certSubject: string;
+  readonly expiresAt: string;
+  /** What it was doing before it recovered, in the operator's words. */
+  readonly previousState: string;
+}
+/**
+ * The closing half of a failure that was already reported.
+ *
+ * Two real wildcard issuance failures were each reported twice, the retry
+ * succeeded, and nobody was told — so the newest word an operator had on
+ * those domains stayed "failed" for weeks after they were fine. A failure
+ * notification without a recovery notification teaches operators that alarms
+ * mean nothing.
+ */
+export async function notifyAdminCertRecovered(
+  db: Database,
+  payload: AdminCertRecoveredPayload,
+  dedupeKey: string,
+): Promise<void> {
+  await dispatchSafe(db, 'admin.cert_recovered', { kind: 'admin' }, payload, undefined, { dedupeKey });
 }
 
 export interface AdminBackupFailedPayload {

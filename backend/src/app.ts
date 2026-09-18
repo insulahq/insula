@@ -2489,7 +2489,14 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           if (result.synced > 0) {
             app.log.info(`Certificate reconciler: synced ${result.synced}/${result.checked}`);
           }
-          if (result.errors.length > 0) {
+          if (result.unreachable) {
+            // Distinct from per-domain errors on purpose: this is one outage,
+            // and the count is what was left UNKNOWN rather than what failed.
+            app.log.warn(
+              { reason: result.unreachable.reason, unchecked: result.unreachable.unchecked },
+              'Certificate reconciler: Kubernetes API unreachable — sweep abandoned, certificate status unknown',
+            );
+          } else if (result.errors.length > 0) {
             app.log.warn({ errors: result.errors }, 'Certificate reconciler had errors');
           }
         } catch (err) {

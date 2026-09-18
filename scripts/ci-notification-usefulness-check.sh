@@ -105,6 +105,12 @@ const SUBJECT_VARS = new Set([
   // Added after the first real run of this arm named these as gaps: each IS a
   // subject, under a name the first draft of this list did not know.
   "backupName", "taskName", "summary",
+  // `dependency` names what the platform could not reach ("the Kubernetes
+  // API"). Added 2026-09-18 with admin.cert_check_unavailable/_resumed, where
+  // the subject is deliberately NOT a certificate: the whole point of those
+  // two is that the platform could not read any certificate, so naming one
+  // would be the false claim they exist to replace.
+  "dependency",
 ]);
 // NOT in that list, deliberately: `userName`, `contactName` and `greeting`.
 // They name the RECIPIENT, not the subject, and the shared email wrapper

@@ -268,8 +268,22 @@ describe('notification events', () => {
       }));
     });
 
+    it('notifyAdminCertRenewalFailed forwards its dedupe key', async () => {
+      // The defect this guards: the key was optional, the single caller left it
+      // out, and one shared outage produced one notification per domain. A
+      // required parameter that is then dropped on the floor would read as
+      // fixed while behaving identically.
+      await notifyAdminCertRenewalFailed({} as never, { certSubject: 'CN=x' }, 'cert-failed:x:2026-09-18');
+      expect(emitEventMock).toHaveBeenCalledWith({}, expect.objectContaining({
+        categoryId: 'admin.cert_renewal_failed',
+        dedupeKey: 'cert-failed:x:2026-09-18',
+      }));
+    });
+
     it('admin helpers emit their respective categories', async () => {
-      await notifyAdminCertRenewalFailed({} as never, { certSubject: 'CN=x' });
+      // dedupeKey is required on this one — a caller that omits it is what
+      // turned a 21-second API outage into 29 notifications on production.
+      await notifyAdminCertRenewalFailed({} as never, { certSubject: 'CN=x' }, 'cert-failed:x:2026-09-18');
       await notifyAdminBackupFailed({} as never, { backupName: 'b1' });
       await notifyAdminBackupTargetUnreachable({} as never, { targetName: 'ovh' });
       await notifyAdminNodeDown({} as never, { nodeName: 'staging1' });
