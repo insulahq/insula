@@ -402,3 +402,19 @@ describe('the target table', () => {
     }
   });
 });
+
+describe('the API contract for a schedule the platform cannot apply', () => {
+  it('marks longhorn_recurring read-only in the target table', () => {
+    // The route refuses cron/enabled changes for any target whose mechanism is
+    // read-only. That refusal is driven entirely off this field, so the field
+    // IS the contract: flipping it to a writable mechanism without wiring an
+    // executor would silently re-open the "saved but inert" hole.
+    //
+    // Verified against DEV 2026-09-18: before the guard the API answered 200
+    // and stored '*/3 * * * *' while the live RecurringJob stayed '5 * * * *'.
+    expect(targetFor('longhorn_recurring')?.mechanism).toBe('read-only');
+    for (const s of ['etcd_snapshot', 'secrets_bundle', 'cluster_state', 'system_pitr']) {
+      expect(targetFor(s)?.mechanism, `${s} must be controllable`).not.toBe('read-only');
+    }
+  });
+});

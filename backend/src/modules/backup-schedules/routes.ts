@@ -72,6 +72,27 @@ export async function backupSchedulesRoutes(app: FastifyInstance): Promise<void>
     if (!parsed.success) {
       throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0].message, 400);
     }
+
+    // Refuse a change the platform cannot carry out.
+    //
+    // `longhorn_recurring` is timed by a Flux-managed RecurringJob that the
+    // platform neither owns nor holds RBAC for. Before this guard the API
+    // accepted a new cron, answered 200, and stored it — while the live object
+    // kept its manifest value. That is precisely the "saved value that does
+    // nothing" this whole surface exists to remove, and the admin UI hiding
+    // the control is not enough: the API is the contract.
+    const cadence = targetFor(subsystem);
+    if (cadence?.mechanism === 'read-only') {
+      const attempted = parsed.data.cronExpression !== undefined || parsed.data.enabled !== undefined;
+      if (attempted) {
+        throw new ApiError(
+          'SCHEDULE_NOT_CONTROLLABLE',
+          `The ${cadence.label} schedule is set by the cluster manifest and cannot be changed here — `
+          + 'the platform does not own that object, so any value stored would not be applied.',
+          409,
+        );
+      }
+    }
     const row = await service.updateSchedule(app.db, subsystem, parsed.data, actorIdOf(request));
 
     // 2026-05-27: for mail subsystem, propagate retention to the actual
