@@ -13,12 +13,18 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Fixed
+- **The backup time you chose for the platform database is now the one used.**
+  Its own card has always offered a "base backup cadence", and the value was
+  saved — but a background job re-applied the built-in 03:00 schedule within
+  minutes, every time, so the database carried on backing up at 03:00 whatever
+  you picked. It now keeps your choice, and still falls back to 03:00 if you
+  have not chosen one.
 - **The platform database briefly had two places to set its backup time.** A
   schedule card was added for it alongside the other system backups, but that
   database already has its own card where cadence, retention and archive
-  timeout are set together and checked against each other. Two fields writing
-  the same thing meant whichever was saved last won, and the other silently
-  reverted it. The duplicate is gone; the original card is unchanged.
+  timeout are set together. Two fields writing the same thing meant whichever
+  was saved last won. The duplicate is gone; the original card is unchanged —
+  and, per the entry above, now actually takes effect.
 - **The Longhorn snapshot schedule showed a time it was not running.** The card
   displayed a stored value that nothing applied — and the default it was
   seeded with differs from the one the cluster actually uses, so it has been
