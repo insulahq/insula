@@ -1,6 +1,6 @@
 # Webmail feature-visibility CSS overrides.
 #
-# 2026-05-18: this ConfigMap carries the CSS that hides the Contacts /
+# this ConfigMap carries the CSS that hides the Contacts /
 # Calendar / Files nav entries in the webmail UIs. The data keys are
 # stubs here — platform-api's `webmail-feature-css` reconciler is the
 # authoritative writer:

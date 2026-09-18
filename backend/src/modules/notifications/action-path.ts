@@ -33,7 +33,7 @@ const TENANT_SCOPED_ADMIN = new Set<string>([
   'admin.tenant_resource_saturation_critical',
   'admin.tenant_pod_oom',
   'admin.custom_deployment_failed',
-  // Added 2026-09-16. It pointed at `/tenants` — the LIST, which shows no
+  // . It pointed at `/tenants` — the LIST, which shows no
   // sending limits whatsoever, so the operator arrived at a page that could
   // not tell them anything about the alert they had just clicked. The tenant's
   // own page carries the limit.
@@ -62,6 +62,9 @@ const STATIC_PATHS: Record<string, string> = {
   'admin.cert_expiring': '/cluster/ingress-tls',
   'admin.cert_issuance_failed': '/cluster/ingress-tls',
   'admin.cert_renewal_failed': '/cluster/ingress-tls',
+  'admin.cert_check_unavailable': '/cluster/ingress-tls',
+  'admin.cert_check_resumed': '/cluster/ingress-tls',
+  'admin.cert_recovered': '/cluster/ingress-tls',
   'admin.mail_blocklisted': '/email/operations',
   'admin.mail_health_degraded': '/email/operations',
   'admin.email_abuse_warning': '/email/operations',
@@ -99,6 +102,9 @@ const STATIC_PATHS: Record<string, string> = {
   'tenant.domain_verification': '/domains',
   'tenant.backup_event': '/backups',
   'tenant.mail_event': '/email',
+  // The migration panel lives on the tenant Email page. There is no
+  // per-mailbox deep link for it, so this is the closest honest target.
+  'tenant.mailbox_migration': '/email',
   'platform.digest': '/notifications',
   'admin.notification_escalated': '/platform/notifications',
   'admin.subscriptions_expiring': '/tenants',

@@ -110,7 +110,7 @@ export async function getDefaultProviderRow(
  *      fall through to the default here: disabling a provider is the
  *      only tool an operator has to stop traffic through a compromised
  *      or quarantined endpoint, and silently rerouting subverts that
- *      intent (security review 2026-05-29 MEDIUM-2).
+ * intent.
  *
  * Returns null when both override-required and default-fallback paths
  * have no candidate. Callers (queue/worker.ts) translate null into a

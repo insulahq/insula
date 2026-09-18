@@ -27,7 +27,7 @@
  * names would mean guessing, and guessing wrong turns a normal roll-over into a
  * phantom gap (or hides a real one).
  *
- * Verified against the production archive 2026-09-12: 5389 segments,
+ * Verified against the production archive: 5389 segments,
  * 000000010000000D00000057 → 000000010000002200000063, span 5389, zero gaps.
  */
 

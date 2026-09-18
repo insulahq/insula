@@ -121,7 +121,7 @@ export interface MailResticShimClients {
 
 export interface MailResticShimResult {
   // STATE_LEGACY_TAKING_OVER removed in Phase 2 legacy purge
-  // (2026-05-22); the deferral branch no longer exists because the
+  // the deferral branch no longer exists because the
   // legacy `system_mail` row can no longer exist (CHECK constraint).
   readonly state:
     | 'STATE_OK'
@@ -143,7 +143,7 @@ export interface MailResticShimResult {
  * have always referenced it with `optional: true` — but NOTHING ever
  * created it, so every stats report silently skipped and the mail
  * backups page showed 0 snapshots / 0 B forever while the repo filled
- * up fine (live incident 2026-08-24). Owned here because this
+ * up fine. Owned here because this
  * reconciler already runs in the mail namespace on a 5-minute tick
  * and inline on target assignment.
  */
@@ -212,7 +212,7 @@ export async function reconcileMailResticShim(
     );
   }
 
-  // 1. Determine class binding. Phase 2 legacy purge (2026-05-22)
+  // 1. Determine class binding. Phase 2 legacy purge
   // narrowed `backup_target_assignments.backup_class` to the three
   // shim classes (CHECK constraint enforces it), so the legacy
   // `system_mail` row can no longer exist. The conditional fork

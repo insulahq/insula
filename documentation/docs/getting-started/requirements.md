@@ -108,6 +108,22 @@ sudo dnf install -y curl ca-certificates openssl
   live at `admin.<domain>`, `tenant.<domain>`, and `api.<domain>`.
 - An **email address** for Let's Encrypt registration.
 
+!!! info "Authoritative DNS lives outside the cluster"
+    Editable DNS records are all you need to install. To offer your tenants
+    hosted DNS — where the panel creates and edits their zones for them — the
+    platform talks to an authoritative DNS server that runs **outside** this
+    cluster, on purpose: DNS must keep answering when the cluster it serves is
+    down. Configure it later under *Platform Settings → DNS Providers*
+    ([admin guide](../admin/domains-and-dns.md#dns-provider-groups-operator-setup)).
+
+    The same applies to the mesh VPN you use to reach the cluster and to the
+    OIDC provider behind panel logins. If you would rather not assemble those
+    three yourself, the companion project
+    [**Backbone**](https://github.com/insulahq/backbone) deploys them as a
+    redundant pair of servers — PowerDNS, a NetBird mesh, and Zitadel for
+    identity. It is a convenience, not a requirement: each is reached over an
+    endpoint you configure, so any equivalent works.
+
 ### Ports
 
 | Port(s) | Purpose |

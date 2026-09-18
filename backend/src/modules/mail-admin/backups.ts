@@ -42,7 +42,7 @@ const MAIL_NAMESPACE = 'mail';
 const LIST_JOB_PREFIX = 'mail-backup-list-';
 const LIST_JOB_TTL_SECONDS = 60;
 // CIFS-backed restic repos can take 60-330s to LIST when the upstream
-// is under load (caught 2026-05-27 on staging — a single list went
+// is under load (on staging — a single list went
 // from 20s to 5+ min with `unexpected EOF` retries between runs).
 // 180s covers the typical slow case; a truly broken target fails much
 // faster (DNS resolution / TCP reject inside <5s).
@@ -460,7 +460,7 @@ function buildResticJob(
               // Without it, a killed/OOMed listing Pod leaves a stale lock
               // on the repo that blocks the snapshot CronJob's
               // `restic forget` step until manually unlocked. Caught
-              // 2026-05-27 on staging — list Pod from prior list call
+              // on staging — list Pod from prior list call
               // left a 3-hour stale lock that broke every snapshot run.
               //
               // …which is also why the listing alone cannot be trusted as a
@@ -618,7 +618,7 @@ function sleep(ms: number): Promise<void> {
  * /admin/mail/migrate/:runId for progress in the same modal the
  * placement-page Move action uses.
  *
- * NOTE 2026-05-27: this is the BACKEND surface only. The state-machine
+ * NOTE: this is the BACKEND surface only. The state-machine
  * integration that ACTUALLY reads restoreSnapshotId in the restore-state
  * init container is not yet wired (init container always restores
  * `latest`). For the first iteration, this endpoint triggers a migration

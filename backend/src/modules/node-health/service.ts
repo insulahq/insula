@@ -25,7 +25,7 @@ export const EVICTION_WARNING_THRESHOLD = 3;
 /**
  * Number of evictions/hour at which we flip directly to `critical`
  * (skip `warning`). Indicates a runaway loop — exactly the pattern
- * the 2026-05-08 worker incident exhibited (Longhorn pods evicted
+ * the worker incident exhibited (Longhorn pods evicted
  * every ~8 minutes for 10 days).
  */
 export const EVICTION_CRITICAL_THRESHOLD = 10;
@@ -78,7 +78,7 @@ export interface ClusterBaseline {
  *
  * Algorithm: a driver is "expected" when it's present on STRICTLY
  * MORE THAN half of the nodes. With 3-of-4 nodes carrying
- * `driver.longhorn.io` and 1 missing it (the 2026-05-08 worker
+ * `driver.longhorn.io` and 1 missing it (the worker
  * incident), this returns ['driver.longhorn.io'] → the missing
  * worker shows up as missing → severity=critical.
  *

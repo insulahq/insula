@@ -98,7 +98,7 @@ export const AUTO_BAN_SCENARIO_PREFIX = 'admin-panel:autoban-scheduler:';
 // 100 years — effectively permanent. CrowdSec stores decisions with
 // an absolute `until` timestamp, so there is no "never expires" sentinel
 // flag; the longest practical duration is the safety story. Verified
-// against cscli on 2026-05-26: `--duration 876000h` parses cleanly,
+// against cscli: `--duration 876000h` parses cleanly,
 // rounds to `875999h59m57s`, and Go's time.Duration int64 has plenty of
 // headroom (max ~292 years). Exported so the admin route response can
 // echo back the same value the cscli call used (instead of the old
@@ -512,7 +512,7 @@ export const CAPI_DISABLE_KEY = 'DISABLE_ONLINE_API';
 /**
  * The image's /docker_start.sh honours DISABLE_ONLINE_API by running
  * `conf_set 'del(.api.server.online_client)'` — verified in the running image
- * on 2026-09-06. That removes registration, signal sharing AND the community
+ * . That removes registration, signal sharing AND the community
  * blocklist pull in one switch, which is exactly the scope of this setting.
  */
 export async function getCommunityBlocklistEnabled(
@@ -549,7 +549,7 @@ export async function getCommunityBlocklistEnabled(
  * capi-config.yaml carries `kustomize.toolkit.fluxcd.io/reconcile: disabled` so
  * Flux cannot revert an operator's toggle. That annotation makes Flux skip the
  * object during apply ENTIRELY — not merely skip reverting it — so Flux
- * inventories the ConfigMap and never creates it. Verified on DEV 2026-09-06:
+ * inventories the ConfigMap and never creates it. Verified on DEV:
  * `status.inventory` listed `crowdsec_crowdsec-capi-config__ConfigMap` while
  * `kubectl get cm` returned NotFound.
  *
@@ -568,7 +568,7 @@ export async function getCommunityBlocklistEnabled(
  * /docker_start.sh reads DISABLE_ONLINE_API ONCE, at startup, so changing the
  * ConfigMap changes nothing in the running process. Stakater Reloader is
  * annotated on the Deployment and handles UPDATES, but it did not fire on
- * CREATION — verified on DEV 2026-09-06: the ConfigMap was created, the pod
+ * CREATION — verified on DEV: the ConfigMap was created, the pod
  * stayed 21 minutes old, `DISABLE_ONLINE_API` was empty inside the container
  * and `cscli capi status` still reported "Pulling community blocklist is
  * enabled". A security setting must not depend on a third-party controller
@@ -763,7 +763,7 @@ export async function ensureCommunityBlocklistDefault(
   // The purge runs `cscli` via `kubectl exec` INTO the LAPI pod. Rolling first
   // deletes that pod, so the exec lands in a container that is shutting down:
   //   "OCI runtime exec failed: cannot exec in a stopped container"
-  // Observed on DEV 2026-09-07 — the roll succeeded, the purge failed, and
+  // Observed on DEV — the roll succeeded, the purge failed, and
   // 18,770 community decisions stayed enforced.
   //
   // Dropping what the feed already loaded matters because disabling only stops
@@ -851,7 +851,7 @@ export async function addBan(
  * F2 — Static (effectively-permanent) operator ban. Same code path as
  * addBan but with the static prefix + 100-year duration. The list
  * endpoint flags these with staticByOperator=true. Bumped from 1-year
- * to 100-year on 2026-05-26 so operators no longer have to re-add
+ * to 100-year so operators no longer have to re-add
  * known-bad IPs annually; CrowdSec has no "never expires" flag, so a
  * very-long duration is the only available expression of "permanent".
  */

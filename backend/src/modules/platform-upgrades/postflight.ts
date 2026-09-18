@@ -126,7 +126,7 @@ export function evaluatePostflight(facts: PostflightFacts): PostflightResult {
   //       Both gates are 'fail' (which reads as *reconciling*, not *broken* —
   //       see the phase note below) rather than 'warn', because a cluster
   //       running new code against an unconverged base is exactly the state
-  //       that must not clear `pending_update_version`. On 2026-08-19 all four
+  // that must not clear `pending_update_version`. all four
   //       gates above passed on three clusters whose platform-migration
   //       registry had halted at 0008, so the upgrade reported healthy while
   //       the wildcard ClusterIssuer it needed had never been created.

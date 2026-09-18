@@ -9,7 +9,7 @@ import DegradedServiceHelp from './DegradedServiceHelp';
 /**
  * "A node is down" — on every admin page.
  *
- * The 2026-09-11 drill found the outage was only visible on the Cluster Nodes
+ * The drill found the outage was only visible on the Cluster Nodes
  * page; the dashboard an operator actually lands on rendered "Platform:
  * Healthy — 4 / 4 services healthy" throughout. This banner is mounted in the
  * layout so no page can hide an outage.
@@ -26,7 +26,7 @@ export default function NodeOutageBanner() {
   // A failed cluster read must say so rather than render nothing, which
   // would be indistinguishable from a healthy cluster.
   //
-  // It must also be READABLE. The 2026-09-12 quorum-loss drill put this in
+  // It must also be READABLE. The quorum-loss drill put this in
   // front of the operator:
   //
   //   Cluster health unknown. longhorn replicas: fetch failed; nodes:

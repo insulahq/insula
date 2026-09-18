@@ -651,7 +651,7 @@ function MigrateDnsModal({ domainId, currentGroupId, groups, migrateDns, onClose
 
 // ─── Managed Webmail Row (read-only) ────────────────────────────────────────
 //
-// 2026-05-18: surfaces the platform-managed `webmail.<domain>` Ingress
+// surfaces the platform-managed `webmail.<domain>` Ingress
 // on the Routing tab as a non-editable row. Only renders when the
 // matching email_domains row has `webmailEnabled === 1`. The route
 // itself is created by toggling per-domain webmail on the Email tab —
@@ -1048,7 +1048,7 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
           <div>
             <button
               type="button"
-              onClick={() => setShowAddRoute(true)}
+              onClick={() => { setSubdomainError(null); setShowAddRoute(true); }}
               className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
               data-testid="add-route-button"
             >
@@ -1319,7 +1319,7 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
             <div className="flex justify-end">
               <button
                 type="button"
-                onClick={() => setShowAddRoute(true)}
+                onClick={() => { setSubdomainError(null); setShowAddRoute(true); }}
                 className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
                 data-testid="add-route-button"
               >

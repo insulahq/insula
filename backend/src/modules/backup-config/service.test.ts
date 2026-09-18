@@ -399,7 +399,7 @@ describe('testDraft', () => {
   });
 });
 
-// activateBackupConfig retired 2026-08-26 — suite removed.
+// activateBackupConfig retired — suite removed.
 describe('getActiveBackupConfig', () => {
   it('returns a discriminated SSH variant for an active SSH row', async () => {
     const row = { ...SSH_ROW, active: true };

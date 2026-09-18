@@ -2,7 +2,7 @@
  * DKIM signature cleanup for the email-domain DISABLE flow.
  *
  * Destroying a domain principal alone strands its DkimSignature rows
- * as registry orphans (observed during the 2026-06-07 DKIM E2E:
+ * as registry orphans (observed during the DKIM E2E:
  * deleted test domains left their RSA + rotation signatures behind),
  * so the disable flow destroys them FIRST via this module.
  *

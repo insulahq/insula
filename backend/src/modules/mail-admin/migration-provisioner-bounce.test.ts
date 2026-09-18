@@ -1,6 +1,6 @@
 /**
  * Unit tests for the failback provisioner-bounce fix (TRUE failback root cause,
- * found on the rc.7 destructive run 2026-07-04).
+ * found on the rc.7 destructive run).
  *
  * When the failover target's k3s restarts, the single-replica local-path
  * provisioner goes stale toward that node and its helper-pod-create times out,

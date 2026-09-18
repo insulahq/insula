@@ -44,7 +44,7 @@ spec:
             matchLabels:
               app.kubernetes.io/name: crowdsec-agent
         # RULE (kept after the crowdsec-retention CronJob was removed
-        # 2026-09-11): anything that talks to the LAPI must be listed here, and
+        # ): anything that talks to the LAPI must be listed here, and
         # the symptom of forgetting is never an error, only silence. That
         # omission would have bitten three times in one change — the
         # placeholder pages, the agent, and the retention job.
@@ -65,7 +65,7 @@ spec:
     # Postgres, when the LAPI is configured for it (R35).
     #
     # WITHOUT THIS RULE THE MIGRATION SILENTLY FAILS. Verified on DEV
-    # 2026-09-07: DNS for system-db-rw.platform.svc resolves fine (10.43.65.96)
+    # DNS for system-db-rw.platform.svc resolves fine (10.43.65.96)
     # and the TCP connect to :5432 HANGS until timeout. A LAPI pointed at
     # Postgres would therefore start, fail to reach its database, and the
     # symptom would be a CrowdSec that looks configured and does nothing —

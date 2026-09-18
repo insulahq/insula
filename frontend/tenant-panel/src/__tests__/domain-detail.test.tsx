@@ -113,7 +113,7 @@ describe('Tenant DomainDetail page', () => {
     await waitFor(() => expect(screen.getByTestId('domain-not-found')).toBeInTheDocument());
   });
 
-  // 2026-05-18: read-only managed-webmail row on the Routing tab.
+  // read-only managed-webmail row on the Routing tab.
   // Renders only when the email_domain row for this domain has
   // webmailEnabled === 1; otherwise hidden.
   it('renders the managed-webmail row on the Routing tab when per-domain webmail is enabled', async () => {

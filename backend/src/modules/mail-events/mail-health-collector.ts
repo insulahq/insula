@@ -1,5 +1,5 @@
 /**
- * Mail-server health metrics collector (mail monitoring, 2026-07).
+ * Mail-server health metrics collector.
  *
  * Publishes two FIRST-PARTY gauges on the platform-api :9090 /metrics
  * surface (already scraped by vmsingle — so no Stalwart scrape job or

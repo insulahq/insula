@@ -177,7 +177,7 @@ describe('Files Page', () => {
       expect(screen.getByText('Retry')).toBeInTheDocument();
     });
 
-    // REGRESSION (production, 2026-09-02): a bulk move exhausted the 100/min
+    // REGRESSION: a bulk move exhausted the 100/min
     // rate limit, /files/status answered 429, and this page rendered
     // "Starting File Manager" — indistinguishable from a killed pod. The pod
     // was in fact running the whole time with zero restarts. A FAILED status

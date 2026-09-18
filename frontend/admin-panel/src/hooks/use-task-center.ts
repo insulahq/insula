@@ -83,7 +83,7 @@ export function useRefreshTaskCenter() {
   }, [qc]);
 }
 
-// ─── Completion → query refresh (2026-08-24) ────────────────────────────────
+// ─── Completion → query refresh ────────────────────────────────
 //
 // Operator complaint: manual backup runs for system, tenant and mail
 // completed in the task center but the pages kept showing the OLD list

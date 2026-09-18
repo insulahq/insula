@@ -1,7 +1,7 @@
 /**
  * Unit tests for `recreateDriftItemEmpty` — mailbox kind.
  *
- * Regression for the 2026-05-29 bug where the drift recreate path
+ * Regression for the bug where the drift recreate path
  * called the legacy `createMailbox` shim with `name: fullAddress`
  * (e.g. "jane@xx.staging.example.test"). Stalwart 0.16 validates
  * `name` as a local-part token and rejected the create with:

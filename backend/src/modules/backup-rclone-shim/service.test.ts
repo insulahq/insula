@@ -252,7 +252,7 @@ describe('loadShimAssignments', () => {
     expect(outPwd.assignments[0].target.sshKey).toBeNull();
   });
 
-  // NFS dropped 2026-05-25 — see ADR-043 postscript. The NFS
+  // NFS dropped — see ADR-043 postscript. The NFS
   // load-and-decode test that used to live here is removed; the
   // schema no longer accepts the value.
 

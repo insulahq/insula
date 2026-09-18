@@ -85,7 +85,7 @@ data:
     # MUST AUTH before issuing SENTINEL commands. Without this, any
     # pod in a NetworkPolicy-allowed namespace could call SENTINEL
     # FAILOVER, SENTINEL SET, or SENTINEL REMOVE and cripple the
-    # cache layer (S1 hardening, 2026-05-07 security review).
+    # cache layer(S1 hardening, security review).
     protected-mode yes
     requirepass __REDIS_PASSWORD__
     # sentinel sentinel-pass: shared secret for inter-sentinel

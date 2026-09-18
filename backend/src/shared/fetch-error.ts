@@ -9,7 +9,7 @@
  *
  * That is not an academic concern: an operator adding a self-hosted DNS
  * server got `Cannot connect to DNS server: fetch failed` for three
- * different mistakes in a row with no way to tell them apart (2026-08-03).
+ * different mistakes in a row with no way to tell them apart.
  * Each of these maps to a completely different fix, so we name the fix.
  *
  * Verified against the live cluster — the three codes below were reproduced

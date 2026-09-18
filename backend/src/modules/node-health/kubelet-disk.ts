@@ -1,5 +1,5 @@
 /**
- * Phase 1b — host root-disk usage for node-health (resource monitoring, 2026-07).
+ * Phase 1b — host root-disk usage for node-health.
  *
  * node-health/scheduler.ts previously hard-coded `diskUsedPct: null`, leaving
  * the already-written 75/90 % thresholds (service.ts) as dead code — only the

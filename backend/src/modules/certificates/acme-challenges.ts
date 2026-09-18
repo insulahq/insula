@@ -15,7 +15,7 @@
  * Nothing recovered from that on its own. Deleting and recreating the
  * Certificate — which is exactly what the Request Certificate button does —
  * produced a fresh Order whose challenges inherited the same blocked slot, so
- * the button ran, reported success, and changed nothing. Proven on 2026-09-07
+ * the button ran, reported success, and changed nothing. Proven
  * against the Let's Encrypt STAGING issuer: a certificate for a DIFFERENT name
  * in the same zone issued in ~75s through the same webhook and nameservers,
  * while three separate orders for the wedged name never started at all.

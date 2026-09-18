@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 2026-05-24 — CI invariants for the pg_dump scope shrink.
+# — CI invariants for the pg_dump scope shrink.
 #
 # pg_dump is intentionally a super_admin-only on-demand tool now
 # (cross-PG-major-version migrations). Regressions to avoid:

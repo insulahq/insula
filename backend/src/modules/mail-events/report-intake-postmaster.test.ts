@@ -31,7 +31,7 @@ import type { Database } from '../../db/index.js';
  * The reconciler has listed `postmaster@*` in REQUIRED_INTAKE_PATTERNS since it
  * was written, and its own docblock records that this is not sufficient —
  * Stalwart refuses an unregistered report address at RCPT. Nothing created the
- * account. Measured on DEV 2026-09-16:
+ * account. Measured on DEV:
  *
  *     550 5.5.0 Mailbox not found    <- RCPT TO postmaster@<apex>
  *     385 messages queued to it, retrying every 24h
@@ -116,10 +116,29 @@ beforeEach(() => {
   updateMailbox.mockReset().mockResolvedValue(undefined);
   listMailboxAliases.mockReset().mockResolvedValue([]);
   createMailboxAlias.mockReset().mockResolvedValue(undefined);
-  reportSettingsGet.mockReset().mockResolvedValue({ inboundReportAddresses: {} });
-  reportSettingsUpdate.mockReset().mockResolvedValue({});
+  // A Stalwart that actually PERSISTS, so a write that lands is
+  // distinguishable from one it accepted and discarded. The old fake returned
+  // a fixed object no matter what was written, under which a reconciler that
+  // stored nothing still passed — see stalwart-jmap/settings-group.ts.
+  reportSettings = { inboundReportAddresses: {}, inboundReportForwarding: true };
+  lastReportPatch = null;
+  reportPrimed = false;
+  reportSettingsGet.mockReset().mockImplementation(async () => reportSettings);
+  reportSettingsUpdate.mockReset().mockImplementation(async (args: { patch: Record<string, unknown> }) => {
+    const serialised = JSON.stringify(args.patch);
+    if (serialised === lastReportPatch) return {};        // deduped: a no-op
+    lastReportPatch = serialised;
+    if (reportSettings) reportSettings = { ...reportSettings, ...args.patch };
+    else if (!reportPrimed) reportPrimed = true;          // cold: primes, stores nothing
+    else reportSettings = { ...args.patch };
+    return {};
+  });
   actionReloadSettings.mockReset().mockResolvedValue(undefined);
 });
+
+let reportSettings: Record<string, unknown> | null = null;
+let reportPrimed = false;
+let lastReportPatch: string | null = null;
 
 const created = () =>
   createMailbox.mock.calls.map((c) => (c[3] as { local_part: string }).local_part);
@@ -133,7 +152,7 @@ describe('report intake provisions postmaster@, not just the pattern', () => {
   });
 
   it('creates ONE mailbox per domain — dmarc@ is an alias, not a second account', async () => {
-    // Operator question 2026-09-16: why two mailboxes? Nothing justified it.
+    // Operator question: why two mailboxes? Nothing justified it.
     // Both patterns are registered identically in Stalwart, neither mailbox
     // stores anything (0 MB used across 19 of them on a live cluster, because
     // report-analysis intercepts before storage), and postmaster@ is mandatory
@@ -160,7 +179,7 @@ describe('report intake provisions postmaster@, not just the pattern', () => {
     ]), logger);
     expect(created()).toHaveLength(2);
     // 2 domains x 2 aliases. Was 2 when dmarc@ was the only alias; abuse@
-    // joined it 2026-09-17 (RFC 2142 makes both mandatory). Inverted rather
+    // joined it (RFC 2142 makes both mandatory). Inverted rather
     // than deleted: dropping back to 2 would mean a domain lost an alias.
     expect(createMailboxAlias).toHaveBeenCalledTimes(4);
   });
@@ -169,7 +188,7 @@ describe('report intake provisions postmaster@, not just the pattern', () => {
     // RFC 2142 makes abuse@ mandatory alongside postmaster@, and nothing
     // created it: a remote operator, a blocklist, or a provider's abuse desk
     // trying to report a problem with a tenant's mail got 550. Operator
-    // decision 2026-09-17: an alias on the postmaster intake, not a mailbox —
+    // decision: an alias on the postmaster intake, not a mailbox —
     // same reader, and a second mailbox is a second thing to reap.
     await ensureReportIntake(db(ONE), logger);
     const aliased = createMailboxAlias.mock.calls.map((c) => (c[3] as { local_part: string }).local_part);
@@ -189,7 +208,7 @@ describe('report intake provisions postmaster@, not just the pattern', () => {
 
   it('sizes the intake as a small transit buffer, not a mailbox', async () => {
     // This asserted `postmaster > dmarc`, on the theory that a DSN box needs
-    // headroom. Operator decision 2026-09-16 replaced that: nothing reads it
+    // headroom. Operator decision replaced that: nothing reads it
     // after ingest, so headroom is just unbounded growth. Inverted rather than
     // deleted — a size creeping back up here means the decision was undone.
     await ensureReportIntake(db(ONE), logger);
@@ -223,6 +242,53 @@ describe('report intake provisions postmaster@, not just the pattern', () => {
     const patch = reportSettingsUpdate.mock.calls[0]?.[0] as
       { patch: { inboundReportAddresses: Record<string, boolean> } } | undefined;
     expect(patch?.patch.inboundReportAddresses).toHaveProperty('postmaster@*', true);
+  });
+
+  it('registers abuse@* so ARF complaints are actually PARSED', async () => {
+    // Without this pattern Stalwart never hands mail at `abuse@` to its ARF
+    // parser, so no `x:ArfExternalReport` is created and the abuse-report
+    // pipeline sees nothing — from the address RFC 2142 designates and that
+    // abuse desks and blocklist operators actually use. It is safe only
+    // because abuse-reports.ts now consumes the resulting events: consume
+    // first, intercept second, never the reverse.
+    await ensureReportIntake(db(ONE), logger);
+    // The LAST write is the commit; on a cold group the first is a primer.
+    const calls = reportSettingsUpdate.mock.calls;
+    const patch = (calls[calls.length - 1][0] as
+      { patch: { inboundReportAddresses: Record<string, boolean> } }).patch;
+    expect(patch.inboundReportAddresses).toHaveProperty(`${ABUSE_LOCAL_PART}@*`, true);
+  });
+
+  it('turns report FORWARDING off so analysed reports stop reaching a human', async () => {
+    // Stalwart shipped this `true`, so every DMARC aggregate and TLS-RPT report
+    // it already parses was ALSO delivered to the intake mailbox — which on the
+    // mail hostname fans out to the admin roster. Tenants read their DMARC
+    // results in the panel; nothing reads the forwarded copy.
+    await ensureReportIntake(db(ONE), logger);
+    expect(reportSettings?.inboundReportForwarding).toBe(false);
+  });
+
+  it('rewrites forwarding back to off if it drifts on', async () => {
+    reportSettings = { inboundReportAddresses: { 'postmaster@*': true, 'dmarc@*': true }, inboundReportForwarding: true };
+    await ensureReportIntake(db(ONE), logger);
+    expect(reportSettings?.inboundReportForwarding).toBe(false);
+  });
+
+  it('PRIMES a cold ReportSettings group, then commits', async () => {
+    // Cold: the first /set primes the singleton and stores nothing, so the
+    // commit must be preceded by a differently-shaped primer or the group
+    // stays unwritten and Stalwart's built-in defaults stay live.
+    reportSettings = null;
+    await ensureReportIntake(db(ONE), logger);
+    expect(reportSettingsUpdate).toHaveBeenCalledTimes(2);
+    const [primer, commit] = reportSettingsUpdate.mock.calls
+      .map((c) => (c[0] as { patch: Record<string, unknown> }).patch);
+    expect(Object.keys(primer)).toEqual(['inboundReportForwarding']);
+    expect(JSON.stringify(primer)).not.toBe(JSON.stringify(commit));
+    expect(reportSettings).not.toBeNull();
+    expect((reportSettings as Record<string, unknown>).inboundReportForwarding).toBe(false);
+    expect((reportSettings as { inboundReportAddresses: Record<string, boolean> })
+      .inboundReportAddresses).toHaveProperty('postmaster@*', true);
   });
 
   it('does not recreate a mailbox that already has a row', async () => {
@@ -341,7 +407,7 @@ describe('the 30-day reap', () => {
   it('empties a mailbox that is DUE by age even though it is empty', async () => {
     // The size trigger fires at 40 MB and in practice never does:
     // report-analysis intercepts before storage, so these mailboxes measure
-    // 0 MB. Operator decision 2026-09-16 — empty them every 30 days anyway,
+    // 0 MB. Operator decision — empty them every 30 days anyway,
     // so a DSN Stalwart chose not to consume cannot sit forever.
     const due = new Date(Date.now() - 31 * 86_400_000);
     const db3 = makeDb({

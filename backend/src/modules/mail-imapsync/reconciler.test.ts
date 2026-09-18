@@ -1,5 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+// The tenant notification is the whole reason this reconciler joins
+// `mailboxes`. Mocked so a test can assert the mailbox ADDRESS reaches it:
+// before the payload carried only a job id, and the tenant was told
+// "IMAPSync migration: job (unnamed)". A passing query proves nothing about
+// whether the value arrives.
+const { notifyTenantImapsyncTerminal } = vi.hoisted(() => ({
+  notifyTenantImapsyncTerminal: vi.fn(),
+}));
+vi.mock('../notifications/events.js', () => ({ notifyTenantImapsyncTerminal }));
+
 // ─── Mock DB ────────────────────────────────────────────────────────────────
 
 let selectResults: unknown[][];
@@ -17,7 +27,14 @@ function createMockDb() {
     selectCallIndex += 1;
     return Promise.resolve(result);
   });
-  const fromFn = vi.fn().mockReturnValue({ where: whereFn });
+  // `.leftJoin(...)` returns the same chain: the reconciler joins `mailboxes`
+  // so the tenant notification can name the mailbox being migrated instead of
+  // a job id. Without this the fake threw "leftJoin is not a function" and all
+  // nine tests failed on the query, not on anything they were testing.
+  const chain: Record<string, unknown> = { where: whereFn };
+  chain.leftJoin = vi.fn().mockReturnValue(chain);
+  chain.innerJoin = vi.fn().mockReturnValue(chain);
+  const fromFn = vi.fn().mockReturnValue(chain);
   const selectFn = vi.fn().mockReturnValue({ from: fromFn });
 
   const updateWhere = vi.fn().mockResolvedValue(undefined);
@@ -95,6 +112,7 @@ beforeEach(() => {
   mockPodLog = '';
   deletedJobs = [];
   deletedSecrets = [];
+  notifyTenantImapsyncTerminal.mockReset();
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -108,6 +126,10 @@ describe('reconcileImapSyncJobs', () => {
           k8sJobName: 'imapsync-job-1',
           k8sNamespace: 'mail',
           status: 'running',
+          // Supplied by the leftJoin on `mailboxes`.
+          mailboxAddress: 'sales@example.com',
+          sourceUsername: 'old@legacy.test',
+          sourceHost: 'imap.legacy.test',
         },
       ],
     ];
@@ -128,6 +150,62 @@ describe('reconcileImapSyncJobs', () => {
     // Should have triggered cleanup of Job + Secret
     expect(deletedJobs).toContain('imapsync-job-1');
     expect(deletedSecrets).toContain('imapsync-job-1');
+  });
+
+  it('tells the tenant WHICH mailbox was migrated, never the job id', async () => {
+    // The point of the leftJoin. Before this the payload carried `jobId` only,
+    // and the tenant read "IMAPSync migration: job (unnamed)" — the dispatcher
+    // cannot resolve a JOB id into a name, so it substituted a placeholder.
+    selectResults = [
+      [
+        {
+          id: 'job-1',
+          k8sJobName: 'imapsync-job-1',
+          k8sNamespace: 'mail',
+          status: 'running',
+          mailboxAddress: 'sales@example.com',
+          sourceUsername: 'old@legacy.test',
+          sourceHost: 'imap.legacy.test',
+        },
+      ],
+    ];
+    mockJobStatus = { succeeded: 1 };
+    mockPodList = { items: [{ metadata: { name: 'imapsync-job-1-xyz' } }] };
+    mockPodLog = 'transferred 7 messages\nDone.\n';
+
+    await reconciler.reconcileImapSyncJobs(createMockDb() as never, createMockK8s() as never);
+
+    expect(notifyTenantImapsyncTerminal).toHaveBeenCalledTimes(1);
+    const payload = notifyTenantImapsyncTerminal.mock.calls[0][2];
+    expect(payload.mailboxAddress).toBe('sales@example.com');
+    expect(payload.sourceHost).toBe('imap.legacy.test');
+  });
+
+  it('falls back to the source account when the mailbox row is gone', async () => {
+    // A mailbox deleted mid-migration makes the leftJoin yield null. The
+    // notification must still name something a tenant recognises — never an id.
+    selectResults = [
+      [
+        {
+          id: 'job-1',
+          k8sJobName: 'imapsync-job-1',
+          k8sNamespace: 'mail',
+          status: 'running',
+          mailboxAddress: null,
+          sourceUsername: 'old@legacy.test',
+          sourceHost: 'imap.legacy.test',
+        },
+      ],
+    ];
+    mockJobStatus = { succeeded: 1 };
+    mockPodList = { items: [{ metadata: { name: 'imapsync-job-1-xyz' } }] };
+    mockPodLog = 'Done.\n';
+
+    await reconciler.reconcileImapSyncJobs(createMockDb() as never, createMockK8s() as never);
+
+    const payload = notifyTenantImapsyncTerminal.mock.calls[0][2];
+    expect(payload.mailboxAddress).toBe('old@legacy.test');
+    expect(payload.mailboxAddress).not.toContain('job-1');
   });
 
   it('marks a Job that has failed as failed with the captured error log', async () => {

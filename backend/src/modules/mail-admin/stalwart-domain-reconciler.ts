@@ -21,7 +21,7 @@
  *     is verified, not by this reconciler. Earlier versions of this
  *     module created a Domain for the apex-stripped form of the
  *     mail hostname — that was wrong and surfaced as an orphan row
- *     on staging 2026-05-26. Operators may need to clean up old
+ * on staging. Operators may need to clean up old
  *     orphan entries via the upstream Stalwart admin UI.
  *   - `AcmeRenewal` task — per-Domain, fired by the tenant flow
  *     when the domain's certificateManagement is set Automatic.
@@ -69,7 +69,7 @@ import { getPlatformApex } from '../system-settings/platform-domain.js';
  *      platform-as-mail-server install — what every Plesk-style
  *      deployment uses)
  *
- * The pre-2026-05-27 implementation read ONLY platform_settings and
+ * The pre- implementation read ONLY platform_settings and
  * returned null when unset. That misfired: bootstrap.sh's
  * configure_stalwart_full hard-codes STALWART_HOSTNAME in the
  * configure-pod Secret but does NOT write the platform_settings row,
@@ -158,7 +158,7 @@ const DEFAULT_ACME_DIRECTORY = 'https://acme-v02.api.letsencrypt.org/directory';
  * mail-TLS assertion on that tier untestable.
  *
  * Anything but the default ALSO needs Stalwart to trust that CA. Its ACME client
- * reads the system trust store (proven 2026-08-06 by masking `/etc/ssl/certs`:
+ * reads the system trust store (proven by masking `/etc/ssl/certs`:
  * the failure changed from an LE application response to `error sending
  * request`), but a CA has to be present in the WHOLE `/etc/ssl/certs` directory —
  * replacing only `ca-certificates.crt` is not enough, the hashed `*.0` entries
@@ -263,7 +263,7 @@ const MTA_AUTH_REQUIRE_EXPR = `local_port != 25 && local_port != ${SMTP_PROXY_MX
  *
  * This list is the SOLE creator of these listeners — a fresh install and
  * a self-heal pass both go through `ensureRequiredListeners`, so they
- * produce the same shape by construction. (Until 2026-08 bootstrap.sh
+ * produce the same shape by construction. (bootstrap.sh
  * carried duplicate jq snippets that had to be kept in sync by hand;
  * they are gone, so do not re-add a second definition here or there.)
  *
@@ -443,7 +443,7 @@ export async function runStalwartDomainReconcilerTick(
 
   // 1. Resolve mail hostname — EXPLICIT operator-set value only.
   //
-  //    Earlier (2026-05-26 morning) this routed through
+  // Earlier this routed through
   //    webmail-settings.getMailServerHostname which has a fallback
   //    chain ending in `mail.<ingress_base_domain>`. That misfired on
   //    staging: `ingress_base_domain` is the platform's apex
@@ -525,7 +525,7 @@ export async function runStalwartDomainReconcilerTick(
   //    only runs once at install. If Stalwart loses its data (storage
   //    migration, mobility move, accidental DB wipe) the cert anchor
   //    vanishes and there's no path back without re-bootstrap. Caught
-  //    on staging.example.test 2026-05-27 — reconciler had been a
+  // on staging.example.test — reconciler had been a
   //    no-op for weeks because the cert-anchor Domain was missing.
   //
   //    Auto-creation is safe: a Stalwart Domain entry with no mailboxes
@@ -658,7 +658,7 @@ export async function runStalwartDomainReconcilerTick(
 
   // 8. Fire AcmeRenewal — ONLY when actually needed.
   //
-  //    2026-06-11 FIX (LE rate-limit storm): the old comment claimed the
+  // FIX (LE rate-limit storm): the old comment claimed the
   //    fire was "Stalwart-side idempotent on cert freshness". It is NOT:
   //    upstream `acme_renew` → `AcmeRequestBuilder::renew()` (v0.16.x,
   //    crates/common/src/network/acme/{renew,order}.rs) places a REAL
@@ -667,7 +667,7 @@ export async function runStalwartDomainReconcilerTick(
   //    twice per tick (step 8 + the step-9 force), times N api replicas,
   //    meant every cluster issued duplicate LE certs until it tripped
   //    LE's duplicate-certificate limit (5/week per exact SAN set) and
-  //    then sat rate-limited — observed live on staging 2026-06-11
+  // then sat rate-limited — observed live on staging
   //    ("too many certificates (5) already issued for this exact set of
   //    identifiers in the last 168h"), with 41 queued AcmeRenewal retry
   //    tasks set to re-burn the window the moment it slid open.
@@ -1237,7 +1237,7 @@ async function maybeForceFreshAcmeOrder(args: ForceArgs): Promise<boolean> {
     return false;
   }
 
-  // 2026-06-11 FIX (LE rate-limit storm): a pending/retrying AcmeRenewal
+  // FIX (LE rate-limit storm): a pending/retrying AcmeRenewal
   // task means an order attempt is ALREADY queued inside Stalwart —
   // forcing another only stacks duplicate LE orders (each task execution
   // is a real new-order upstream; see step-8 comment). The reassert in
@@ -1454,7 +1454,7 @@ export async function defaultServedCertProbe(
  * Resolve the AcmeProvider hash ID for `letsencrypt`, creating it if
  * absent.
  *
- * **Schema gotchas verified against staging 2026-05-26** (mirrors
+ * **Schema gotchas verified against staging ** (mirrors
  * scripts/bootstrap.sh:5682-5701 which is the canonical working
  * pattern):
  *

@@ -11,7 +11,7 @@
  * NOBODY, for its entire life. It resolved recipients with a correlated
  * aggregate over `mailbox_access`, a table with **zero rows platform-wide**, so
  * every candidate hit the `skipped` branch and returned. Measured on production
- * 2026-09-14: `mailbox_quota_events` had 0 rows, four mailboxes were at or above
+ * `mailbox_quota_events` had 0 rows, four mailboxes were at or above
  * 75%, one was at 100% and bouncing mail, and 18 tenant_admin users were
  * resolvable the whole time.
  *
@@ -120,7 +120,7 @@ export async function checkQuotaThresholds(
     // A mailbox that jumps from 78% to 95% between two reconciler passes
     // crosses 80 and 90 at once, and the loop used to send one notification
     // per crossing — two emails two seconds apart, observed on production
-    // 2026-09-16 (mr.moringa@ got the 80 and the 90 back to back). The lower
+    // (mr.moringa@ got the 80 and the 90 back to back). The lower
     // ones still have to be CLAIMED, or they would fire on the next pass as
     // if they were new.
     let highest: number | null = null;

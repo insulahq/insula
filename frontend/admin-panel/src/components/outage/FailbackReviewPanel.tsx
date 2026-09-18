@@ -10,7 +10,7 @@ import FailbackRepinDialog from './FailbackRepinDialog';
 /**
  * "This node is back — these tenants are still somewhere else."
  *
- * The 2026-09-11 drill covered the outage thoroughly and the RETURN not at
+ * The drill covered the outage thoroughly and the RETURN not at
  * all. When a node came back, the placement changes made while it was down
  * simply became permanent: HA-tier tenants stayed unpinned, local-tier
  * tenants stayed on whichever node the operator moved them to, and nothing

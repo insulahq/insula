@@ -8,7 +8,7 @@
 # .d.ts and .js disagree (partial emit, a build that refreshed types but not one
 # output file) typechecks clean, usually bundles clean, and fails only in a
 # browser. That is exactly how `dnsRecordFieldsFor is not a function` reached a
-# developer on 2026-08-20 while CI stayed green.
+# developer while CI stayed green.
 #
 # This imports dist/index.js for real and checks a list of load-bearing runtime
 # symbols — the value-exports consumers call. Types are NOT checked here; tsc

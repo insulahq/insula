@@ -3,7 +3,7 @@
  * the send-only permission profile.
  *
  * This is the platform's ONE inbound-shaping mechanism per mailbox
- * (verified live against Stalwart v0.16.16, 2026-08-24):
+ * (verified live against Stalwart v0.16.16):
  *
  *   mailbox   + forwarding → `redirect :copy` per target — forwards AND
  *                            keeps the local copy (implicit keep intact).
@@ -78,7 +78,7 @@ export interface MailRulesState {
   /** Suspended mailbox (tenant suspension or per-mailbox disable):
    *  the script becomes ereject-only — ALL inbound is refused with a
    *  bounce, forwarding/auto-reply are ignored (operator decision
-   *  2026-08-26: suspension disables incoming AND outgoing mail). */
+   * suspension disables incoming AND outgoing mail). */
   readonly suspended?: boolean;
 }
 
@@ -157,7 +157,7 @@ export function buildMailRulesScript(state: MailRulesState): string | null {
     // other control characters to spaces — a raw newline inside the
     // quoted string is a Sieve grammar violation (breaking the whole
     // script, forwarding included) and a header-injection vector into
-    // the composed reply's Subject: (review 2026-08-24).
+    // the composed reply's Subject:
     // eslint-disable-next-line no-control-regex
     const subject = autoReply.subject?.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim();
     const subjectArg = subject ? `:subject ${sieveQuote(subject)} ` : '';
@@ -239,7 +239,7 @@ export async function applyMailRules(params: MailRulesState & {
     // argument is `onSuccessDeactivateScript: true` (verified against
     // v0.16.16 source, crates/jmap-proto/src/object/sieve.rs — an
     // `onSuccessActivateScript: null` parses to Option::None = no-op,
-    // which left the script ACTIVE; caught live 2026-08-24).
+    // which left the script ACTIVE; caught live).
     await rawStalwartCall<SieveScriptSetResponse>({
       using: [JMAP_SIEVE],
       method: 'SieveScript/set',
@@ -321,7 +321,7 @@ export async function applyMailRules(params: MailRulesState & {
  * (mailboxType, suspended). One composer for every path — Stalwart
  * stores the LAST permissions patch verbatim ("Merge" merges with
  * role-inherited permissions at evaluation time, NOT with previous
- * patches; probed live 2026-08-26), so incremental patches from
+ * patches; probed live), so incremental patches from
  * different features clobber each other. Exported pure for unit tests.
  *
  * Names are Stalwart v0.16 registry camelCase (NOT the kebab-case of the

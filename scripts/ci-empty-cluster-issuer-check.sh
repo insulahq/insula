@@ -19,7 +19,7 @@ set -euo pipefail
 # MALFORMED `${...` patterns but not unresolved-variable patterns,
 # since unresolved vars are valid envsubst input.
 #
-# Discovered empirically on 2026-05-07 (pre-Traefik) when
+# Discovered empirically (pre-Traefik) when
 # webmail.staging ended up serving the controller's fake cert. The
 # same gotcha applies to the Traefik default cert in v3.7 — if the
 # Secret cert-manager would create never materialises, Traefik's

@@ -9,7 +9,7 @@
  * space — and every later tick then found nothing, because almost no new
  * random UUID sorts above it.
  *
- * Observed on production 2026-09-05: watermark `ffd20474…` (~99.93rd
+ * Observed on production: watermark `ffd20474…` (~99.93rd
  * percentile of the UUID space), 502 rows in `waf_logs`, **0** of them
  * visible to the scheduler, **0** rows ever written to
  * `crowdsec_autoban_runs` — while a scanner with 18 qualifying events
@@ -168,7 +168,7 @@ describe('batch query', () => {
     expect(save, 'watermark was never saved').toBeTruthy();
     const cursor = save!.params.find((p) => typeof p === 'string' && p.includes('|')) as string;
     expect(cursor).toBeTruthy();
-    // Rows arrive ordered by created_at, so the last is the 2026-09-05
+    // Rows arrive ordered by created_at, so the last is the
     // event — even though its UUID sorts below the other row's.
     // The cursor carries the EXACT Postgres text form, microseconds intact —
     // not a JS Date, whose millisecond resolution truncated `.188583` to

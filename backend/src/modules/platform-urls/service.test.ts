@@ -48,7 +48,7 @@ const { getPlatformUrls, updatePlatformUrls, computeDefaults } = await import('.
 describe('computeDefaults', () => {
   it('derives standard defaults from an apex (longhorn = admin-host path)', () => {
     expect(computeDefaults('staging.example.test')).toEqual({
-      // 2026-06-12: path route on the admin host — no longhorn subdomain.
+      // path route on the admin host — no longhorn subdomain.
       longhornUrl: '/longhorn/',
       // Stalwart 0.16's web UI lives at /admin/, not at root — root 404s.
       stalwartAdminUrl: 'https://stalwart.staging.example.test/admin/',

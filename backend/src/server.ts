@@ -41,7 +41,7 @@ process.on('SIGTERM', shutdown);
  * failing, that default is backwards: the process dies exactly when operators
  * need it.
  *
- * Measured on staging 2026-09-11. Killing the node holding the Postgres primary
+ * Measured on staging. Killing the node holding the Postgres primary
  * produced ~3 minutes of 502 — and every outage surface the platform has (the
  * node-down banner, affected-tenants modal, recovery wizard) is served BY this
  * API, so the operator was blind for precisely the first three minutes of the
@@ -65,7 +65,7 @@ process.on('SIGTERM', shutdown);
  *
  * `uncaughtException` stays fatal. A synchronous throw that escaped every frame
  * can leave module state inconsistent, and a restart is the honest response —
- * but it is logged first, because the 2026-09-11 crash was diagnosable only
+ * but it is logged first, because the crash was diagnosable only
  * from `kubectl logs --previous`.
  */
 process.on('unhandledRejection', (reason: unknown) => {

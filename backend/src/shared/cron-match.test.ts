@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { cronMatchesMinute, minuteStamp } from './cron-match.js';
 
-// 2026-06-11 is a Thursday (UTC).
+// is a Thursday (UTC).
 const at = (h: number, m: number, day = 11, month = 6) =>
   new Date(Date.UTC(2026, month - 1, day, h, m, 30)); // :30s — must be ignored
 
@@ -42,7 +42,7 @@ describe('cronMatchesMinute', () => {
   });
 
   it('POSIX OR rule when both DOM and DOW are restricted', () => {
-    // 2026-06-11 is Thursday(4) and the 11th. DOM=11 OR DOW=Monday(1):
+    // is Thursday(4) and the 11th. DOM=11 OR DOW=Monday(1):
     expect(cronMatchesMinute('0 0 11 * 1', at(0, 0, 11))).toBe(true);   // DOM hits
     expect(cronMatchesMinute('0 0 12 * 4', at(0, 0, 11))).toBe(true);   // DOW hits
     expect(cronMatchesMinute('0 0 12 * 1', at(0, 0, 11))).toBe(false);  // neither

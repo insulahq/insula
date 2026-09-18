@@ -231,7 +231,7 @@ describe('file-manager routes', () => {
   });
 
   it('POST …/files/start asks for the pod to actually RUN (initialReplicas=1)', async () => {
-    // Regression, measured on DEV 2026-08-31. This route relied on the
+    // Regression, measured on DEV. This route relied on the
     // ensureFileManagerRunning default of 0, so when a spec mismatch (an image
     // bump) sent it down the delete-and-recreate path, the Deployment came
     // back at ZERO replicas — the scale-to-1 branch is an `else if` and never
@@ -370,7 +370,7 @@ describe('file-manager routes', () => {
   // These exist because the panel used to loop the single-path endpoint per
   // selected file. A production move of ~120 files fired 62 requests in two
   // seconds, tripped the 100/min rate limit, and reported a partly-succeeded
-  // move as one "Too many requests" error (2026-09-02).
+  // move as one "Too many requests" error.
 
   describe('bulk operations', () => {
     /** Parse the NDJSON payload of a streamed bulk response. */

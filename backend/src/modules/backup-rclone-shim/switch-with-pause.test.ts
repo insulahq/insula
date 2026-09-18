@@ -1,5 +1,5 @@
 /**
- * Unit tests for switch-with-pause.ts (Phase 5 — 2026-05-24).
+ * Unit tests for switch-with-pause.ts.
  *
  * Covers previewSwitchEffects exhaustively (pure DB-layer logic). The
  * full switchTargetWithPause path cascades into applyShimAssignmentChange

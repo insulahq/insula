@@ -53,7 +53,7 @@ export class LocalHostPathBackupStore implements BackupStore {
 
   /**
    * Test-only store. Production paths use S3 / SSH; backups never
-   * sit on cluster disk (see ADR-032 amendment 2026-05-02). Unit
+   * sit on cluster disk. Unit
    * tests pass an `mkdtemp(...)` path so the same code exercises
    * the BackupStore contract without needing a real bucket or
    * remote host.

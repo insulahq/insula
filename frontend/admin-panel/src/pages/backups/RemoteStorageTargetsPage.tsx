@@ -1,7 +1,7 @@
 /**
  * `/backups/targets` — Remote Storage Targets CRUD.
  *
- * Phase 4 (2026-05-22) extracted from the legacy 1052-LOC
+ * Phase 4 extracted from the legacy 1052-LOC
  * `pages/BackupSettings.tsx` monolith. Embedded sections that
  * didn't belong on a Targets page have moved:
  *
@@ -15,7 +15,7 @@
  * targets list with per-row test/edit/delete/speedtest actions,
  * and the per-target "Used by classes" pill (sourced from R-X shim
  * assignments — Phase 2 legacy purge). The legacy Longhorn
- * "target-activate" path was retired 2026-08 — the 3-class shim
+ * "target-activate" path was retired — the 3-class shim
  * assignments are the only backup routing.
  */
 
@@ -42,7 +42,7 @@ type StorageType = 'ssh' | 's3' | 'cifs';
 
 export default function RemoteStorageTargetsPage() {
   const { data: response, isLoading } = useBackupConfigs();
-  // Phase 2 legacy purge (2026-05-22): the per-target "Used by classes"
+  // Phase 2 legacy purge: the per-target "Used by classes"
   // pill now reads from the R-X shim assignments (system/tenant/mail)
   // instead of the legacy snapshot-classes summary endpoint. Phase 4
   // replaces this BackupSettings monolith with a dedicated Targets

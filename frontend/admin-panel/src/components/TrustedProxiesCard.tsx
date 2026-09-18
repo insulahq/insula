@@ -192,7 +192,7 @@ export default function TrustedProxiesCard() {
       {!showAdd && (
         <button
           type="button"
-          onClick={() => setShowAdd(true)}
+          onClick={() => { setFormError(null); setShowAdd(true); }}
           className="inline-flex items-center gap-1.5 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700"
           data-testid="add-trusted-proxy-button"
         >

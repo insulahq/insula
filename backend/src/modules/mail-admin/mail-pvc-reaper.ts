@@ -7,7 +7,7 @@
  * target node. The old PVC's directory then sits on the source node's disk
  * forever.
  *
- * Measured on staging 2026-09-11 after a day of drills: six orphaned
+ * Measured on staging after a day of drills: six orphaned
  * `pvc-*_mail_mail-stack-data` directories across three nodes alongside the
  * single live one. Nothing reaped them — the `mail-standby-janitor` DaemonSet
  * only scans for `mail-stack-standby.deelected-*`, and `orphaned-volumes`

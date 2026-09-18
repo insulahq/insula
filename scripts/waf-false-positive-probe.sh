@@ -7,7 +7,7 @@
 # ---------------
 # A WAF false positive is invisible from the inside. The request never reaches
 # the platform API, so nothing is logged application-side, no error is raised,
-# and — until 2026-08-30 — the panel rendered nothing at all. The only signal
+# and — — the panel rendered nothing at all. The only signal
 # was a tenant reporting that "moving certain files fails without error".
 #
 # Two rules had already been excluded for exactly this class (9000100 for
@@ -123,7 +123,7 @@ probe "create WAF exclusion"  POST "/api/v1/admin/security/waf-rule-exclusions" 
   '{"ruleId":"930130","target":"ARGS","uriPattern":"^/api/v1/tenants/[^/]+/files/","note":"probe — union select 1,2,3 from users where .htaccess"}'
 
 echo "── the platform's OWN catalog defaults must deploy ──"
-# Reported 2026-08-31: "WHY IS A STANDARD DEPLOY OF A PHP APPLICATION
+# Reported: "WHY IS A STANDARD DEPLOY OF A PHP APPLICATION
 # TRIGGERING THE WAF?" — because the Official Catalog's apache-php entry ships
 # PHP_ERROR_LOG=/dev/stderr by default, and 930120 matches /dev/std* against
 # lfi-os-files.data. Every default PHP deploy 403'd at the API. Measured on
@@ -147,7 +147,7 @@ envprobe "PID-1 idiom (&& exec)"       '{"CONTAINER_COMMAND":"php migrate --forc
 envprobe "cron schedule + command"     '{"CRON_COMMAND":"/usr/local/bin/php /var/www/html/cron.php"}'
 
 echo "── app terminal + cron commands must NEVER be blocked ──"
-# Operator requirement 2026-08-31: "app terminal commands as well as cron jobs
+# Operator requirement: "app terminal commands as well as cron jobs
 # will never be blocked by WAF". A cron command and a terminal command ARE
 # shell code, so every 932xxx (RCE) match on them is a false positive by
 # construction. Three real gaps this covers, all measured that day:
@@ -174,7 +174,7 @@ probe "app terminal upgrade" GET \
   "/api/v1/tenants/$TENANT/deployments/00000000-0000-0000-0000-000000000000/terminal?cmd=%2Fbin%2Fsh%20-c%20exec%20php-fpm"
 
 echo "── an exclusion must actually UNBLOCK (create → verify → delete) ──"
-# THE test this suite was missing. Until 2026-08-31 the panel's default and
+# THE test this suite was missing. the panel's default and
 # recommended scope was `args_names_only`, which removes the ARGS_NAMES target
 # only. For any rule matching argument VALUES that removes nothing — so an
 # operator could whitelist a rule, see the row saved, watch the ConfigMap

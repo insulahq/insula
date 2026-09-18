@@ -4,7 +4,7 @@
  * Operators could see "3 backups, 6 GB" for the platform database and nothing
  * at all about the write-ahead log — which on an active database is a
  * comparable share of the storage bill and is the part that makes a
- * point-in-time restore possible (operator request 2026-09-11). These pin the
+ * point-in-time restore possible. These pin the
  * fold that produces the summary, against the shapes S3 actually returns.
  */
 

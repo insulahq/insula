@@ -53,7 +53,7 @@ export interface RotateWebmailMasterOptions {
   /**
    * Stalwart Domain that holds the master principal. Defaults to the
    * fixed `MASTER_SENTINEL_DOMAIN` (`local.host`) — decoupled from the
-   * platform mail domain (2026-06-25) so a mail-domain rename never
+   * platform mail domain so a mail-domain rename never
    * strands the master. Callers normally omit this; it's still accepted
    * (lower-cased) for tests / forced migration of a legacy install.
    *
@@ -106,7 +106,7 @@ export async function rotateWebmailMasterPassword(
     // Admin role REQUIRED for IMAP master-auth impersonation. Without
     // this the master Account exists with `roles:User` and Stalwart
     // refuses `tenant@domain%master` IMAP LOGINs with "connection
-    // closed by server" — verified on staging 2026-05-28 after a
+    // closed by server" — verified on staging after a
     // role-less auto-reseed broke every tenant bundle's mailbox
     // capture. Matches `roles:{@type:'Admin'}` shape from bootstrap.sh
     // provision_stalwart_master_user.

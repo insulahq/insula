@@ -41,7 +41,7 @@ metadata:
     # ensures restore-state on next pod start picks up new credentials.
     configmap.reloader.stakater.com/reload: "stalwart-config,mail-stack-rsyncd-config"
     secret.reloader.stakater.com/reload: "stalwart-admin-creds,stalwart-snapshot-restic-repo"
-    # Field-ownership note (Phase 1 streamline, 2026-05-15):
+    # Field-ownership note:
     #
     # Three fields on this Deployment are mutated at runtime by
     # platform-api and are intentionally NOT declared in this manifest:
@@ -58,7 +58,7 @@ metadata:
     # Because none of these are in the manifest, Flux's non-force SSA
     # reconcile never includes them in its apply body — no conflict, no
     # revert. The `kustomize.toolkit.fluxcd.io/ssa: merge` annotation
-    # that used to live here was REMOVED on 2026-05-15: testing showed
+    # that used to live here was REMOVED: testing showed
     # the annotation's actual effect is "force-conflicts=true regardless
     # of Kustomization.spec.force", which IS the opposite of its name.
 spec:
@@ -75,7 +75,7 @@ spec:
     rollingUpdate:
       maxSurge: 0
       maxUnavailable: 1
-  # stalwart-rocksdb-ha (2026-05-12): replicas pinned to 1 because
+  # stalwart-rocksdb-ha: replicas pinned to 1 because
   # the RocksDB DataStore lives on a local-path PVC (ReadWriteOnce,
   # node-local). Multiple replicas would leave additional pods Pending
   # with Multi-Attach errors. DR is handled via snapshot+restore
@@ -110,7 +110,7 @@ spec:
       # is bound directly by the local Stalwart process — no kube-proxy
       # DNAT round-trip across nodes (which can't work for hostPort anyway).
       #
-      # DoNotSchedule (changed from ScheduleAnyway 2026-05-07): the
+      # DoNotSchedule: the
       # hostPort binding makes ScheduleAnyway strictly worse here. With
       # ScheduleAnyway + replicas=3 on a 2-node cluster, K8s places two
       # pods on one node — the second pod's hostPort=25/etc bind
@@ -130,13 +130,13 @@ spec:
       securityContext:
         runAsNonRoot: false  # Stalwart 0.16 binds port 25 — needs root or CAP_NET_BIND_SERVICE
       initContainers:
-        # protect-from-silent-data-loss (2026-05-28): refuse to start
+        # protect-from-silent-data-loss: refuse to start
         # Stalwart with an empty PVC when the platform DB still
         # references Stalwart-side principal IDs. Without this guard,
         # a fresh-PVC + allow-restore=false combination silently boots
         # Stalwart with NO accounts → tenant Domains, mailboxes, DKIM
         # keys all orphaned with no warning. This has happened TWICE in
-        # dev (2026-05-25 + 2026-05-28).
+        # dev.
         #
         # The guard queries platform-api's
         # /internal/mail/stalwart-data-expectation endpoint (anonymous
@@ -163,7 +163,7 @@ spec:
                 echo "protect-from-silent-data-loss: override annotation set — bypassing guard"
                 exit 0
               fi
-              # 2026-05-29 fix: the volumeMount uses subPath=stalwart so
+              # fix: the volumeMount uses subPath=stalwart so
               # /var/lib/stalwart/data IS the RocksDB DataStore directory
               # (not the consolidated PVC root which also hosts bulwark/).
               # The canonical "RocksDB exists" sentinel is the CURRENT
@@ -228,7 +228,7 @@ spec:
           volumeMounts:
             - name: stalwart-data
               mountPath: /var/lib/stalwart/data
-              # 2026-05-29 fix: subPath:stalwart matches the main container
+              # fix: subPath:stalwart matches the main container
               # and restore-state init. Without subPath, this container
               # sees the consolidated PVC root (bulwark/+stalwart/) and
               # the entry-count heuristic mis-fires on every healthy
@@ -260,9 +260,9 @@ spec:
         #     (or accept data loss by clearing the allow-restore
         #     annotation manually) before Stalwart should start.
         #
-        # 2026-05-27 (post-staging-tenant-domain-loss investigation):
+        # (post-staging-tenant-domain-loss investigation):
         #   The original "ALWAYS exit 0" policy was the root cause of the
-        #   2026-05-25 19:23 silent data-loss on staging. Single-attempt
+        # 19:23 silent data-loss on staging. Single-attempt
         #   `restic restore` with no preflight + always-exit-0 meant any
         #   transient network blip during a failover wiped tenant data
         #   while the migration state machine happily marked state=done.
@@ -284,7 +284,7 @@ spec:
               SENTINEL=/var/lib/stalwart/data/CURRENT
               APPLIED_MARKER=/var/lib/stalwart/data/.restore-applied-at
               ALLOW_RESTORE=$$(cat /podinfo/allow-restore 2>/dev/null || echo "false")
-              # Diagnostic dump (2026-05-27): the downwardAPI propagation
+              # Diagnostic dump: the downwardAPI propagation
               # has bitten us a few times — print what we actually see in
               # /podinfo so post-mortems don't require pod-still-alive logs.
               echo "restore-state DIAG: /podinfo contents:"
@@ -294,7 +294,7 @@ spec:
               echo "restore-state DIAG: PVC initial inventory:"
               ls /var/lib/stalwart/data 2>&1 | head -5
               echo "  ... ($$(ls /var/lib/stalwart/data 2>/dev/null | wc -l) entries)"
-              # Per-snapshot restore (2026-05-27): the annotation may persist
+              # Per-snapshot restore: the annotation may persist
               # on the pod template across many pod restarts. Make this
               # idempotent by recording the LAST applied snapshot id in a
               # sentinel inside the data dir. Restart sequence:
@@ -327,7 +327,7 @@ spec:
                 echo "restore-state: DataStore exists — skipping restore"
                 exit 0
               fi
-              # A4 (2026-05-25): FAST PATH — if the standby DaemonSet
+              # A4: FAST PATH — if the standby DaemonSet
               # (A3) has pre-staged data on this node's hostPath, copy
               # from there instead of paying the restic-restore network
               # latency. Standby data is at most 5 min stale (DaemonSet
@@ -367,7 +367,7 @@ spec:
               # BusyBox and GNU coreutils — no `date -d` parsing.
               STANDBY_MAX_AGE_SECONDS=$${FAST_PATH_MAX_AGE_SECONDS:-1800}
               standby_age_ok=true
-              # Per-snapshot restore (2026-05-27): if the operator chose
+              # Per-snapshot restore: if the operator chose
               # a specific snapshot via /backups/mail, FAST PATH MUST be
               # skipped — standby data is the LIVE state, which is the
               # opposite of what the operator asked for. Detect the
@@ -388,14 +388,14 @@ spec:
                   echo "restore-state: standby marker is $${age}s old (limit $${STANDBY_MAX_AGE_SECONDS}s) — rejecting FAST PATH, falling through to restic"
                   standby_age_ok=false
                 fi
-                # FRESHNESS-VS-SNAPSHOT GUARD (2026-07-03): a recent standby
+                # FRESHNESS-VS-SNAPSHOT GUARD: a recent standby
                 # marker only means the last rsync FINISHED recently — the copied
                 # data can still predate the latest restic snapshot (a message
                 # delivered AFTER the last rsync but captured in a snapshot is
                 # absent from the standby copy). The age gate alone would then
                 # prefer standby data up to STANDBY_MAX_AGE_SECONDS (30 min) stale
                 # over a FRESHER snapshot, LOSING snapshot-captured mail on
-                # failover (the dataplane D-assertion; observed 2026-07-03). So:
+                # failover(the dataplane D-assertion; observed). So:
                 # if the latest snapshot is NEWER than the standby marker, reject
                 # the FAST PATH and restore that snapshot via restic instead.
                 # Best-effort — an unreadable repo leaves the verdict unchanged
@@ -445,7 +445,7 @@ spec:
                 echo "$$(date -Iseconds) reason=allow-restore-not-set" > /var/lib/stalwart/data/.fresh-started-at
                 exit 0
               fi
-              # Per-snapshot restore (2026-05-27): if the operator triggered
+              # Per-snapshot restore: if the operator triggered
               # a point-in-time restore from /backups/mail, the annotation
               # mail.platform/restore-snapshot-id holds the chosen restic
               # id. Otherwise use `latest` (the default failover path).
@@ -473,7 +473,7 @@ spec:
               # a clear error on DNS/auth/network/permission issues.
               # Without this, a misconfigured backup-target Secret manifests
               # as a confusing "restic restore failed" minutes later —
-              # caught on staging 2026-05-25 19:23 (single-attempt restic
+              # caught on staging 19:23 (single-attempt restic
               # restore timed out, no diagnostic context).
               echo "restore-state: probing backup target reachability..."
               if ! restic snapshots --latest 1 --quiet 2>&1; then
@@ -481,7 +481,7 @@ spec:
                 exit 1
               fi
 
-              # EMPTY-SNAPSHOT WALK-BACK (2026-07-04): resolve the ordered list of
+              # EMPTY-SNAPSHOT WALK-BACK: resolve the ordered list of
               # candidate snapshots to try. For `latest` we build a NEWEST→OLDEST
               # list (capped at 10) so a POISONED empty snapshot — a 0-byte
               # snapshot captured during a DR PVC-swap window; `latest` points at
@@ -533,7 +533,7 @@ spec:
                   continue
                 fi
                 # Raw RocksDB backup: restic restores to /restore-tmp<original-path>.
-                # A2.5 (2026-05-25): the snapshot CronJob backs up /var/lib/mail-stack/
+                # A2.5: the snapshot CronJob backs up /var/lib/mail-stack/
                 # (consolidated), so files land at /restore-tmp/var/lib/mail-stack/stalwart/.
                 # Legacy snapshots (pre-A2.5) backed up /var/lib/stalwart/data — fall back
                 # to that path for the retention window until all retained snapshots are new.
@@ -585,7 +585,7 @@ spec:
             - name: pod-annotations
               mountPath: /podinfo
               readOnly: true
-            # A4 (2026-05-25): mount the standby DaemonSet's hostPath
+            # A4: mount the standby DaemonSet's hostPath
             # so the FAST PATH in restore-state can read pre-staged
             # data. The hostPath dir only exists on standby-labelled
             # nodes; the init container's `if [ -d ... ]` guard makes
@@ -602,7 +602,7 @@ spec:
           # The upstream image ENTRYPOINT passes --config /etc/stalwart/config.json.
           # The ConfigMap is mounted directly at /etc/stalwart so Stalwart
           # picks up the fully-resolved config without any initContainer.
-          # Mail ports — NO hostPort here. Phase 7 streamline (2026-05-14)
+          # Mail ports — NO hostPort here. Phase 7 streamline
           # moved hostPort to a runtime-managed concern owned by
           # `platform-api.port-exposure`:
           #
@@ -652,7 +652,7 @@ spec:
               containerPort: 8080
               protocol: TCP
             # HTTP listener for ACME HTTP-01 challenge responses
-            # (2026-05-06 TLS-bootstrap rewrite). Cluster-internal —
+            # . Cluster-internal —
             # no hostPort, no externalIPs. Traffic flows: LE →
             # Traefik `web` entrypoint :80 → ingress-acme.yaml
             # IngressRoute (path-prefix /.well-known/acme-challenge/*)
@@ -688,11 +688,11 @@ spec:
               memory: 256Mi
             limits:
               cpu: 1000m
-              # 512Mi OOM-killed Stalwart during the 2026-06-05 20GB ingest
+              # 512Mi OOM-killed Stalwart during the 20GB ingest
               # stress test (loaded RSS runs 600-850MB at 15GiB of mail).
               # Headroom per the stress report; see ADR-046 watch-items.
               #
-              # Raised 1536Mi -> 1800Mi (2026-09-08) after a production OOM
+              # Raised 1536Mi -> 1800Mi after a production OOM
               # kill. The kill was anon-rss, i.e. genuine heap growth rather
               # than reclaimable page cache, so the ceiling was the binding
               # constraint and not a bookkeeping artifact.
@@ -725,7 +725,7 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 5
             failureThreshold: 3
-        # A5 (2026-05-25): rsyncd sidecar that serves the consolidated
+        # A5: rsyncd sidecar that serves the consolidated
         # mail-stack PVC read-only over the cluster network. Consumed
         # by the mail-stack-standby-replicate DaemonSet on standby
         # nodes for intra-cluster data replication WITHOUT requiring
@@ -767,7 +767,7 @@ spec:
             # rsyncd.conf). readOnlyRootFilesystem:true rejects writes
             # to the container rootfs, so /tmp needs its own emptyDir
             # otherwise rsyncd crashes with EROFS on startup
-            # (code-review MUST-FIX, 2026-05-25).
+            # .
             - name: rsyncd-tmp
               mountPath: /tmp
           securityContext:
@@ -790,12 +790,12 @@ spec:
             name: stalwart-config
         - name: stalwart-data
           persistentVolumeClaim:
-            # A2.5 (2026-05-25): consolidated PVC. Stalwart subtree at
+            # A2.5: consolidated PVC. Stalwart subtree at
             # subPath=stalwart on the volumeMounts above. Legacy PVC
             # stalwart-rocksdb-data is kept in the cluster for 48-72h
             # safety period.
             claimName: mail-stack-data
-        # A5 (2026-05-25): rsyncd config for the sidecar above.
+        # A5: rsyncd config for the sidecar above.
         - name: rsyncd-config
           configMap:
             name: mail-stack-rsyncd-config
@@ -804,7 +804,7 @@ spec:
         - name: rsyncd-tmp
           emptyDir:
             sizeLimit: 10Mi
-        # A4 (2026-05-25): hostPath into the standby DaemonSet's
+        # A4: hostPath into the standby DaemonSet's
         # pre-staged data dir. The restore-state init container uses
         # this as a FAST PATH on failover; the main container does
         # NOT mount it (data has already been copied into the PVC by
@@ -820,7 +820,7 @@ spec:
               - path: allow-restore
                 fieldRef:
                   fieldPath: metadata.annotations['mail.platform/allow-restore']
-              # Per-snapshot restore (2026-05-27): when set by the
+              # Per-snapshot restore: when set by the
               # /backups/mail per-snapshot restore flow, the restore-state
               # init container reads this and runs `restic restore <id>`
               # instead of the default `restic restore latest`. Stamped

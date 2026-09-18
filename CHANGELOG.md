@@ -12,6 +12,218 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **You now hear about it when somebody reports your mail as abuse.** Mail
+  providers and abuse desks send a complaint when a message from one of your
+  addresses is reported as spam, fraud or malware. Those complaints were
+  arriving and being thrown away. Each one is now kept and raises one
+  notification to the platform admins, and both panels list them: admins under
+  **Monitoring → Mail → Abuse reports** for the whole estate with the tenant
+  each complaint belongs to, tenants under **Email → Abuse Reports** for their
+  own addresses — who complained, about which address, and what to fix. A
+  complaint naming a domain the platform does not host is kept too rather than
+  dropped, because that is usually somebody spoofing one of your domains.
+
+  Reports are listed individually, not counted: one complaint *is* the event,
+  and a per-domain total would hide which message it was about. If the list
+  cannot be loaded it says so instead of showing an empty table.
+- **Mail servers' TLS reports are now collected and shown.** Receiving servers
+  send a daily summary of whether mail to your domains was delivered over an
+  encrypted connection. Those summaries are now ingested and surfaced beside
+  the DMARC and abuse reports in both panels, so a domain whose encrypted
+  delivery starts failing is visible rather than silent.
+- **The System Backups page can finally control when system backups run.** It
+  previously showed no schedule controls at all: the timing of the etcd
+  snapshot upload, the encrypted secrets bundle and the cluster-state dump was
+  compiled into cluster manifests, where an operator could not reach it. Worse,
+  two schedules the page *did* let you edit — the Postgres base backup and the
+  Longhorn snapshot cadence — were connected to nothing, so changing them
+  appeared to work and changed nothing at all.
+
+  Each of the five now behaves the way it reads. The etcd upload and the
+  Postgres base backup take your time directly. The secrets bundle and
+  cluster-state dump do too — and because their timing is owned by the cluster
+  manifest, the platform quietly takes over running them the moment you pick a
+  different time, so your choice is what actually happens. The Longhorn
+  snapshot cadence is the one exception: it is set by the cluster manifest and
+  cannot be changed from here, so it is now shown read-only with that stated,
+  rather than offering an edit that would be undone a minute later.
+
+  Seeding these schedules changes nothing about when your backups run today —
+  every one starts at the value its manifest already used.
+- **Certificates now tell you when they recover.** Two real wildcard failures
+  on 2026-09-01 were each reported twice; the retry succeeded quietly, so the
+  most recent thing an operator had been told about those domains was
+  "failed" — seventeen days after they were fine. A certificate that comes back
+  now closes its own alarm, for the admin and for the tenant, saying what it
+  had been doing and how long the new certificate is good for. The same
+  applies when certificate checks resume after an outage.
+
+### Changed
+- **Sending Protection is one dropdown instead of a list of radio buttons.** The
+  help text now follows the option you have selected rather than printing every
+  option's explanation at once. The same two modes are offered and the setting
+  behaves exactly as before.
+- **Incident detail no longer lives in the public source tree.** Code comments
+  in this repository had accumulated over two thousand dated notes, many of
+  them recounting specific incidents: when a component last ran out of memory
+  and how often, how many gigabytes a volume was carrying, which recovery
+  depended on which setting. Useful to whoever maintains it, and rather more
+  than a public repository needs to say about what breaks and when.
+
+  Those comments now state the constraint without the incident — the reason a
+  setting must not be changed, minus the story of the day it was. The history
+  itself is kept privately, and a new check keeps dates from creeping back into
+  comments. Nothing about how the platform behaves changed; this is source
+  commentary only.
+- **The mailbox usage meter stays its normal colour at every level, including
+  when the plan limit is reached.** It used to turn amber at 80% and red at
+  100%, which made an ordinary fact about your plan look like a fault on a page
+  you visit to do routine work. The message underneath still tells you the
+  limit is reached and what to do about it. Sending-limit meters still turn red
+  when sending is actually blocked, because that is a live restriction rather
+  than a count.
+
+### Fixed
+- **DMARC reporting said "disabled" while the mail server carried on sending
+  47 reports a day.** Turning DMARC reporting off, or setting a report address,
+  appeared to save and changed nothing at all on the mail server, which kept
+  using its own built-in defaults: aggregate reports went out from
+  `postmaster@` under the server's raw hostname, and the delivery failures they
+  produced landed in the admin roster's inbox. The platform's own log said
+  `DISABLED` throughout.
+
+  The cause was in how the mail server accepts settings: the very first write
+  to a never-configured section is only a primer and stores nothing, and an
+  identical repeat of a write is ignored — so a reconciler re-sending the same
+  settings every five minutes could never make them stick. The platform now
+  primes the section and then writes it in full, **reads it back**, and reports
+  the attempt as skipped with both values logged if what it reads is not what
+  it wrote, instead of claiming a success it did not achieve.
+- **Tenant volumes were being snapshotted every hour, invisibly.** Every tenant
+  PVC was enrolled in a Longhorn housekeeping group that quietly gained an
+  hourly snapshot job after the nightly Longhorn backup jobs were removed, so
+  each tenant volume carried a rolling set of snapshots that appeared in
+  neither panel and that nothing cleaned up: they are raw Longhorn objects with
+  no snapshot record and no expiry, so the 48-hour tenant-snapshot reaper could
+  not see them, and once the schedule stopped covering a volume its own
+  retention stopped trimming it too. Hourly snapshots are now scoped to the
+  platform database alone — which keeps its six-hour rollback chain — and the
+  snapshots already taken on tenant volumes are removed automatically after the
+  upgrade, a few volumes at a time so the cleanup cannot itself become a disk
+  I/O spike. A volume that is currently idle and detached clears its share the
+  next time it is attached — Longhorn cannot reclaim space on a volume nothing
+  has mounted. Snapshots a tenant takes from the Snapshots page are untouched
+  and still expire on their own schedule; tenant volumes keep the nightly
+  filesystem trim that frees deleted-file space.
+- **Two working backups were reported as stopped, and that silenced the real
+  alarm.** The nightly secrets-bundle and cluster-state backups run at 03:15
+  and 03:00 on the platform's clock, but the monitor that decides whether a
+  backup is overdue was reading those times as UTC. On a cluster whose clock is
+  not UTC it therefore looked for runs that had already happened two hours
+  earlier, found nothing, and marked both as stale every day — one of them sent
+  a "Backups have stopped" notification for a backup that had never missed a
+  run. Because the platform remembers what it has already told you, the
+  incorrect verdict then stuck, so a genuine stoppage would have raised
+  nothing at all.
+
+  The monitor now reads schedules on the platform's clock, and the platform's
+  own backup jobs record which clock they are on, so this cannot drift again if
+  the server's time zone changes.
+- **The backup time you chose for the platform database is now the one used.**
+  Its own card has always offered a "base backup cadence", and the value was
+  saved — but a background job re-applied the built-in 03:00 schedule within
+  minutes, every time, so the database carried on backing up at 03:00 whatever
+  you picked. It now keeps your choice, and still falls back to 03:00 if you
+  have not chosen one.
+- **The platform database briefly had two places to set its backup time.** A
+  schedule card was added for it alongside the other system backups, but that
+  database already has its own card where cadence, retention and archive
+  timeout are set together. Two fields writing the same thing meant whichever
+  was saved last won. The duplicate is gone; the original card is unchanged —
+  and, per the entry above, now actually takes effect.
+- **The Longhorn snapshot schedule showed a time it was not running.** The card
+  displayed a stored value that nothing applied — and the default it was
+  seeded with differs from the one the cluster actually uses, so it has been
+  showing the wrong cadence everywhere since it appeared. It now shows the
+  schedule Longhorn is really on. Asking the API to change it is refused
+  outright rather than saved and quietly ignored.
+- **Every off-site etcd snapshot was stored without a checksum.** The backup job
+  records a small sidecar next to each snapshot so you can tell a good copy from
+  a truncated one before trusting it in a restore. On production all 24 stored
+  snapshots carried an empty checksum, and had since the job was written — it
+  exited successfully every time, so nothing ever reported it.
+
+  The cause was an escaping rule that applies to most manifests but not this
+  one. Inline shell in this repo is written `$$VAR` because Flux collapses it;
+  this particular job is deliberately excluded from Flux, and the part of
+  Kubernetes that then handles it leaves `$( … )` expressions untouched — so
+  inside those expressions the shell saw `$$` and substituted its own process
+  id. The checksum line and the "N uploaded" counter were the two casualties,
+  which is why the job's log also read `done ( uploaded)` with no number.
+
+  The snapshots themselves were always uploaded correctly and are intact; only
+  the checksum recorded beside them was missing. New snapshots carry a real
+  checksum, verified against the source file. Existing clusters are repaired
+  automatically — the fix reaches them through the reconciler, because a job in
+  this state does not pick up manifest changes on its own. A CI guard now
+  rejects the pattern anywhere it could recur.
+- **A 21-second cluster hiccup no longer arrives as 29 "certificate renewal
+  failed" alarms.** In the early hours of 2026-09-18 the production cluster's
+  Kubernetes API was briefly unreachable. Nothing was wrong with any
+  certificate — all 33 were valid with 53 days or more to run — but the
+  platform could not *read* them, and it reported that as a renewal failure for
+  every domain it had not managed to check: 29 notifications in a single
+  second, each naming a different site.
+
+  Three things were wrong and all three are fixed. The code that reports
+  failures only ever reads certificate status, so it can now say "I could not
+  check" but never "renewal failed". An unreachable dependency is reported
+  once, for the outage, with a count of what was left unchecked — not once per
+  certificate. And the alarm waits for the fault to survive one retry, so a
+  blip that is over within the minute stays quiet; if it does not clear, you
+  are told what could not be reached and that certificates keep serving
+  meanwhile.
+
+  A genuine renewal failure is now reported as one. Previously every failure —
+  first issuance or renewal of a working certificate — was filed under
+  issuance, which is why the renewal alarm was left to be raised by code that
+  could not detect a renewal at all.
+- **Three platform alerts explained themselves to a reviewer instead of to
+  you.** One arriving on the test cluster read *"Detection and the repair
+  button already existed; nothing escalated, so a drift sat for three days on
+  DEV while the mail health card stayed green"* — the note of why the alert was
+  built, pasted into the alert itself. Another cited an internal issue number;
+  a third printed a shell command in backticks. All three now say what the
+  condition is and what to do about it, and the reasoning lives in the source
+  where it belongs. The CI guard that checks notification wording only read the
+  notification categories, which is how these got through — it now reads the
+  alert definitions too.
+- **Starting a second mailbox migration no longer greets you with an error from
+  the first one.** Opening the migration form while another migration was
+  already running showed *"Cannot read properties of null (reading 'reset')"*,
+  even though every migration was in fact created and running normally. The
+  message belonged to the previous, successful submit: the form was tidied up
+  in the same step that reports failures, so a success was filed as an error,
+  and because that message is printed inside the form — which had just closed —
+  it stayed hidden until the form was opened for the next job. Nothing was ever
+  wrong with the migrations themselves. Fixed in both the tenant panel and the
+  admin panel, and opening the form now always starts from a clean slate.
+- **A mailbox migration told you it had finished without saying which mailbox.**
+  The notification read *"IMAPSync migration: job (unnamed)"* — the name of an
+  internal tool nobody outside the platform has heard of, and then nothing at
+  all where the mailbox should have been. It now reads **"Mailbox migration of
+  sales@example.com finished"**, says how many messages were copied, mentions
+  the server they came from, and links to the page you started it on. Failures
+  say what went wrong in plain words instead of quoting an internal log line,
+  and a cancelled migration says that some mail may not have been copied.
+
+  The same pass rewrote the DKIM-rotation notice. "A new DKIM signing key
+  (selector "v1-rsa-20260917") was generated" is a sentence for whoever runs a
+  mail server; it now says the key that proves your mail is genuine was
+  replaced, that mail keeps flowing throughout, and that there is nothing for
+  you to do.
+
 ## [2026.9.23] - 2026-09-17
 
 ### Fixed

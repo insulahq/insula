@@ -54,7 +54,7 @@ TEST_BAN_IP="${TEST_BAN_IP:-198.51.100.42}"
 # of TEST-NET. Every address in this suite used to be IPv4, so nothing exercised
 # the v6 half of the stack even on dual-stack clusters: not the scraper's
 # source-IP extraction, not LAPI's acceptance of a v6 decision, and not the
-# `ip6 saddr` nft rules the dual-stack work added. Verified by hand 2026-08-08
+# `ip6 saddr` nft rules the dual-stack work added. Verified by hand
 # (a real v6 client's CRS hits landed in waf_logs with the v6 source, and a v6
 # ban was enforced and reversed) — this pins that behaviour.
 TEST_BAN_IP6="${TEST_BAN_IP6:-2001:db8::42}"
@@ -159,7 +159,7 @@ api_login() {
   if [[ -z "$ADMIN_PASSWORD" ]]; then
     # Fallback path: generate JWT inside platform-api pod (lets the
     # harness run in CI without password access — same trick the
-    # 2026-05-19 Banned-IPs E2E used).
+    # Banned-IPs E2E used).
     #
     # Refuse to mint a super_admin token against a production host
     # unless explicitly opted-in: an accidental harness run against
@@ -425,7 +425,7 @@ fi
 # the Traefik DS args) rolling it concurrently, or a Flux reconcile. Retry the
 # status fetch until coverage is stable (== Running pods) or ~60s elapse; only
 # a persistent mismatch is a real enforcement gap. (Root cause of the
-# 2026-06-25 "3/4" flake: trusted-proxies ran in the same parallel batch.)
+# "3/4" flake: trusted-proxies ran in the same parallel batch.)
 cov_traefik=""
 for _cov_try in $(seq 1 12); do
   cov_traefik=$(printf '%s' "$status" | python3 -c "import sys,json; d=json.load(sys.stdin)['data']['coverage']; print(f\"{d['traefikPodsCovered']}/{d['traefikPodsTotal']}\")" 2>/dev/null)
@@ -530,7 +530,7 @@ done
 # POLL (up to ~120s) for the scraper to capture THIS probe's events, keyed on
 # the probe's X-Forwarded-Host. The scraper runs on a ~30s cycle, so the old
 # fixed 40s wait + a 2-min sliding-window delta raced the cycle AND aged older
-# rows out of the window → flaky "0 new rows" (observed 2026-06-25 even on an
+# rows out of the window → flaky "0 new rows" (even on an
 # idle cluster). Matching the probe's own hostname counts only our events and
 # removes the timing race; it also subsumes the X-Forwarded-Host extraction
 # check (a matched hostname row proves extraction works).
@@ -588,7 +588,7 @@ real_ip6_count=$(kubectl_run "exec -n platform system-db-1 -c postgres -- psql -
 # best-effort probe (`… || true`, output discarded, fired at one modsec pod IP).
 # This half was introduced as a hard `fail` while the v4 half was a `warn`, so
 # the identical mechanism gated the suite on one family and not the other: the
-# 2026-08-09 run reported "a v6 attacker would be unattributable" on a cluster
+# run reported "a v6 attacker would be unattributable" on a cluster
 # whose WAF pipeline was verified healthy end to end minutes later — an external
 # CRS-tripping request was blocked, logged by modsec, and landed in waf_logs
 # within ~30s with the correct source_ip, hostname, rule_ids and URI.
@@ -712,7 +712,7 @@ else
       # as the node, portmap MASQUERADEs the client source to the node's own
       # address (so the reply routes back through the node). The bouncer then
       # evaluates the NODE's IP, never the client's — proven on a 4-node VM
-      # cluster 2026-08-06: probing four nodes yielded four different derived
+      # cluster: probing four nodes yielded four different derived
       # client IPs, each tracking the probed node (10.98.x.71 → 10.98.x.71,
       # 10.98.x.34 → 10.98.x.34, …) and never the harness address.
       #
@@ -974,7 +974,7 @@ else
 fi
 
 # Static blocklist — add (effectively permanent: 100y duration).
-# Was '8760h' (1 year) until 2026-05-26 when STATIC_BAN_DURATION
+# Was '8760h' (1 year) when STATIC_BAN_DURATION
 # bumped to '876000h' so operators don't have to re-add known-bad
 # IPs annually. Asserting on the new value here AND on the success
 # message so we don't silently regress to the old duration.
@@ -1148,7 +1148,7 @@ fi
 # before patching, so a busy cluster can take longer than the old ~30s
 # budget — the reconciler IS working (proven in the same run: the
 # Deployment annotation hash DID update in H5, and H13's post-delete
-# empty-body assertion passes). 2026-06-11: ~44s was STILL too tight at
+# empty-body assertion passes).: ~44s was STILL too tight at
 # the tail of a full serial pass (modsec-crs rollout settle takes
 # minutes on a churned single node; same-run H13 passed again, proving
 # slow-not-broken) — widened to ~3 min. The loop exits on first match,
@@ -1179,7 +1179,7 @@ fi
 # backend/src/modules/waf-rule-exclusions/reconciler.ts
 # (WAF_EXCLUSION_HASH_ANNOTATION). It was renamed from the old
 # `platform.example.test/...` domain during the insulahq rebrand
-# (2026-05-29) but this assertion was missed, so it kept reading an
+# but this assertion was missed, so it kept reading an
 # annotation key that no longer exists → always-empty → guaranteed fail.
 h_annotation=$(kubectl_run "get deployment -n traefik modsec-crs -o jsonpath='{.spec.template.metadata.annotations.insula\\.host/waf-exclusion-hash}'" 2>&1)
 if [[ -n "$h_annotation" && "$h_annotation" =~ ^[a-f0-9]{64}$ ]]; then
@@ -1231,7 +1231,7 @@ fi
 # Earlier versions of this phase created an extra row here and never
 # captured its ID — H11's delete only removed h_id, leaving the orphan
 # behind and breaking H12's "row gone" assertion on every run. Fixed
-# 2026-05-26: re-enable instead of creating a second row.
+# re-enable instead of creating a second row.
 if [[ -n "${h_id:-}" ]]; then
   api_internal PATCH "/admin/security/waf-rule-exclusions/$h_id" '{"disabled":false}' >/dev/null
 fi
@@ -1547,7 +1547,7 @@ except Exception:
   fi
 fi
 
-# ─── Phase L — Per-route config matrix (audit 2026-05-28 follow-up) ──
+# ─── Phase L — Per-route config matrix ──
 #
 # E2E coverage for the 5 customer-facing route-config Middlewares that
 # had ZERO E2E coverage prior to this commit:
@@ -1974,7 +1974,7 @@ phase "Phase 6 — log-processing agent (scenarios actually loaded + simulated)"
 
 # WHY THIS PHASE EXISTS
 #
-# On 2026-09-05 the simulation exclusion read `crowdsecurity/http-crawl-non-statics`
+# the simulation exclusion read `crowdsecurity/http-crawl-non-statics`
 # while the hub scenario is `crowdsecurity/http-crawl-non_statics` — an
 # UNDERSCORE. cscli does not validate exclusion names: it accepted the wrong one
 # silently and `cscli simulation status` echoed it straight back, so the config

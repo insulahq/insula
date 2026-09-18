@@ -1,5 +1,5 @@
 /**
- * Unit tests for the 3-mode port-exposure helpers (2026-05-28).
+ * Unit tests for the 3-mode port-exposure helpers.
  *
  * Three pure-ish helpers under test:
  *   validateModeSwitch(target, settings)        → error string | null
@@ -159,7 +159,7 @@ describe('resolveDataPlaneNodes', () => {
   });
 });
 
-// ─── resolveHaproxyNodes (NEW 2026-05-28 hairpin fix) ────────────────
+// ─── resolveHaproxyNodes ────────────────
 //
 // resolveHaproxyNodes returns the set of nodes that should run a haproxy
 // DS pod. Excludes the active node in ALL haproxy-using modes because
@@ -186,7 +186,7 @@ describe('resolveHaproxyNodes (excludes active to prevent hostPort conflict + ha
   });
 
   it('returns [] on a single-node cluster for EVERY mode (single-server → Stalwart hostPort, no haproxy)', () => {
-    // Regression 2026-05-29: on a fresh single-node bootstrap activeNode is
+    // Regression: on a fresh single-node bootstrap activeNode is
     // not yet recorded, so the active-node exclusion is a no-op and the sole
     // node would get a haproxy DS that fights Stalwart's always-on hostPort.
     const oneNode = [node('testing', { 'insula.host/node-role': 'server' })];
@@ -243,7 +243,7 @@ describe('resolveHaproxyNodes (excludes active to prevent hostPort conflict + ha
   });
 });
 
-// ─── resolveExternalIpNodes (2026-06-29: externalIPs eliminated) ─────
+// ─── resolveExternalIpNodes ─────
 //
 // resolveExternalIpNodes now returns [] in EVERY mode. The Service
 // externalIP DNAT was actively HARMFUL on multi-node clusters: kube-proxy's

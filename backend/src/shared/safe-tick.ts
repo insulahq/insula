@@ -2,7 +2,7 @@
  * safeTick — run a scheduler tick as fire-and-forget WITHOUT letting a rejection
  * kill the process.
  *
- * The bug this exists to prevent, observed on DEV 2026-08-09:
+ * The bug this exists to prevent, observed on DEV:
  *
  *     Error: Connection terminated due to connection timeout
  *       at loadAlreadyNotifiedKeys (modules/cnpg-backup-health/scheduler.js:94)
@@ -22,7 +22,7 @@
  *
  * Consequence beyond the crash: schedulers own in-process work. When the process
  * dies mid-flight, rows that only that process would have finalised are left
- * behind — the 2026-08-09 crash is why a completed PITR's task chip was never
+ * behind — the crash is why a completed PITR's task chip was never
  * written (`chip.status=''`), failing a suite for a restore that had in fact
  * succeeded.
  *
@@ -58,7 +58,7 @@ export function safeTick(
   // That throw happens on the FAILURE path — the one place this helper exists
   // to make safe — so it is invisible until a real outage, and then it kills
   // the process it was written to protect. Exactly the crash seen on staging
-  // during a Postgres-primary failover on 2026-09-11.
+  // during a Postgres-primary failover.
   const warn = log
     ? (msg: string, err?: unknown) => log.warn(msg, err)
     // eslint-disable-next-line no-console

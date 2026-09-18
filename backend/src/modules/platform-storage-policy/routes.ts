@@ -138,7 +138,7 @@ export async function platformStoragePolicyRoutes(app: FastifyInstance): Promise
   //
   // Drives the future provisioning gate that prevents an operator from
   // over-packing servers to the point where a single-server loss leaves
-  // tenant pods Pending on the survivors. Per the 2026-05-11 architecture
+  // tenant pods Pending on the survivors. Per the architecture
   // intent — see failover-headroom.ts.
   app.get('/admin/cluster-failover-headroom', {
     schema: {

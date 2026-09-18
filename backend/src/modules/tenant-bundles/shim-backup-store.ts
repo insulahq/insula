@@ -1,7 +1,7 @@
 /**
  * Shim-backed BackupStore factory.
  *
- * B9 (2026-05-22): tenant bundle writes go through the R-X20 backup-
+ * B9: tenant bundle writes go through the R-X20 backup-
  * rclone-shim's local S3 endpoint, regardless of the upstream protocol
  * (S3/SFTP/CIFS/NFS). The shim handles transport; this module just
  * configures an S3BackupStore with the shim's ClusterIP + HKDF-derived
@@ -69,7 +69,7 @@ export async function resolveShimBackupStore(
  * call site that needs a BackupStore for a tenant/system/mail
  * artefact.
  *
- * B9 (2026-05-22) shipped the shim as the universal mediator for
+ * B9 shipped the shim as the universal mediator for
  * tenant-bundle uploads. The restore side then has to MATCH that
  * routing: a bundle written through the shim is reachable through
  * the shim's local S3 endpoint regardless of the upstream protocol

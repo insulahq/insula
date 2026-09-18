@@ -30,7 +30,7 @@ SURFACE_FILE_MARKERS=(
   "backend/src/modules/tenants/bulk.ts|createBulkParentTask"
   # storage ops
   "backend/src/modules/storage-lifecycle/service.ts|mirrorOpToTaskTracker"
-  # Phase 2 surfaces (2026-05-03):
+  # Phase 2 surfaces:
   # system-backup runs (admin secrets bundle export)
   "backend/src/modules/system-backup/service.ts|mirrorRunToTaskTracker"
   # tenant bundle creation (per-client backup)
@@ -47,7 +47,7 @@ SURFACE_FILE_MARKERS=(
   "backend/src/modules/domains/routes.ts|tracked"
   # Mail admin password rotation (Stalwart JMAP)
   "backend/src/modules/mail-admin/routes.ts|tasks/service.js"
-  # Phase 4 surface (2026-05-08):
+  # Phase 4 surface:
   # Client provisioning + decommission (provisioning_tasks → tasks chip)
   "backend/src/modules/k8s-provisioner/service.ts|mirrorProvisioningToTaskTracker"
 )

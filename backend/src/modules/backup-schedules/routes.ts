@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { authenticate, requireRole } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
+import { targetFor } from './cadence/targets.js';
 import {
   updateBackupScheduleSchema,
   backupScheduleSubsystemEnum,
@@ -71,9 +72,30 @@ export async function backupSchedulesRoutes(app: FastifyInstance): Promise<void>
     if (!parsed.success) {
       throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0].message, 400);
     }
+
+    // Refuse a change the platform cannot carry out.
+    //
+    // `longhorn_recurring` is timed by a Flux-managed RecurringJob that the
+    // platform neither owns nor holds RBAC for. Before this guard the API
+    // accepted a new cron, answered 200, and stored it — while the live object
+    // kept its manifest value. That is precisely the "saved value that does
+    // nothing" this whole surface exists to remove, and the admin UI hiding
+    // the control is not enough: the API is the contract.
+    const cadence = targetFor(subsystem);
+    if (cadence?.mechanism === 'read-only') {
+      const attempted = parsed.data.cronExpression !== undefined || parsed.data.enabled !== undefined;
+      if (attempted) {
+        throw new ApiError(
+          'SCHEDULE_NOT_CONTROLLABLE',
+          `The ${cadence.label} schedule is set by the cluster manifest and cannot be changed here — `
+          + 'the platform does not own that object, so any value stored would not be applied.',
+          409,
+        );
+      }
+    }
     const row = await service.updateSchedule(app.db, subsystem, parsed.data, actorIdOf(request));
 
-    // 2026-05-27: for mail subsystem, propagate retention to the actual
+    // for mail subsystem, propagate retention to the actual
     // restic forget command via the stalwart-snapshot CronJob env. Pre-fix
     // operator-set retention in this DB row had ZERO effect — snapshot-
     // upload.sh hardcoded --keep-last 48. Inline patch ensures the change
@@ -96,6 +118,31 @@ export async function backupSchedulesRoutes(app: FastifyInstance): Promise<void>
           { err, subsystem },
           'backup-schedules: mail retention DB write succeeded but K8s CronJob patch failed — retention in DB but NOT yet applied to next snapshot. Re-run the update OR wait for platform-api startup reconciler to catch up.',
         );
+      }
+    }
+
+    // Apply the new cadence to the live object NOW rather than leaving the
+    // operator to wonder for up to five minutes whether anything happened.
+    // The same reconcile runs on a timer, so this is an accelerator, not the
+    // mechanism — a failure here is logged and the tick picks it up.
+    if (targetFor(subsystem)) {
+      const handle = (app as unknown as {
+        cadenceScheduler?: { reconcileNow: () => Promise<readonly { subsystem: string; state: string; platformFired: boolean }[]> };
+      }).cadenceScheduler;
+      if (handle) {
+        try {
+          const outcomes = await handle.reconcileNow();
+          const mine = outcomes.find((o) => o.subsystem === subsystem);
+          app.log.info(
+            { subsystem, state: mine?.state, platformFired: mine?.platformFired },
+            'backup-schedules: cadence reconciled after edit',
+          );
+        } catch (err) {
+          app.log.warn(
+            { err, subsystem },
+            'backup-schedules: saved, but the immediate cadence reconcile failed — the 5-minute tick will retry',
+          );
+        }
       }
     }
 

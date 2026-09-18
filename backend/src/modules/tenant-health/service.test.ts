@@ -1,5 +1,5 @@
 /**
- * The tenant degradation matrix from the 2026-09-11 node-outage drill.
+ * The tenant degradation matrix from the node-outage drill.
  *
  * Each case here is one row of docs/architecture/NODE_OUTAGE_RESILIENCE.md §2.2.
  * They are unit tests because reproducing them live means killing nodes.
@@ -223,7 +223,7 @@ describe('fleet view', () => {
 });
 
 /**
- * Dead DNS records are an accepted state (operator decision, 2026-09-11: the
+ * Dead DNS records are an accepted state (operator decision: the
  * platform does not own DNS). Accepted, but not invisible — the outage payload
  * has to carry enough for the UI to name the manual action, because the drill
  * found this stated only in a tooltip on a page the operator had no reason to
@@ -271,7 +271,7 @@ describe('down-node ingress reachability', () => {
  *
  * When a node dies, Longhorn immediately schedules a fresh replica on a
  * survivor and starts rebuilding into it. That object is on a live node while
- * holding nothing. Observed on staging 2026-09-11: a one-replica local-tier
+ * holding nothing. Observed on staging: a one-replica local-tier
  * volume whose only replica died was reported as *"running on reduced
  * redundancy while Longhorn rebuilds — no action required, this resolves
  * itself"*. It could never resolve itself; the only source was the dead node,
@@ -328,7 +328,7 @@ describe('an empty rebuild target is not a surviving copy', () => {
 /**
  * "0 tenants affected" can be true and badly incomplete.
  *
- * The 2026-09-11 worker drill: the lost node held no tenant workloads, so the
+ * The worker drill: the lost node held no tenant workloads, so the
  * banner reported no impact — correctly — while the backup plugin's Service had
  * zero ready endpoints and backups were unavailable for the whole outage.
  *
@@ -385,7 +385,7 @@ describe('platform services with no ready endpoint', () => {
 });
 
 /**
- * Production 2026-09-13: three tenants rendered a red "Down" chip on a cluster
+ * Production: three tenants rendered a red "Down" chip on a cluster
  * whose single node was Ready and whose sites were serving normally.
  *
  * Two independent causes, both of which made a fact about STORAGE BOOKKEEPING

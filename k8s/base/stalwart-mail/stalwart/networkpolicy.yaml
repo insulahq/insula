@@ -78,7 +78,7 @@ spec:
     # this pod:80, where Stalwart's `http-acme` NetworkListener
     # responds with the LE token.
     #
-    # Traefik migration 2026-05-15: ns `ingress-nginx` → `traefik`,
+    # Traefik migration: ns `ingress-nginx` → `traefik`,
     # pod label `app.kubernetes.io/name=ingress-nginx` →
     # `app.kubernetes.io/name=traefik`. The ipBlock fallback to the
     # full pod CIDR (10.42.0.0/16) is retained — Traefik uses hostPort
@@ -153,7 +153,7 @@ spec:
     #   - the snapshot-upload script during recovery flows
     # The shim's own NetworkPolicy (in platform namespace) allows
     # ingress from same-namespace by default; this egress completes
-    # the cross-namespace path. Caught 2026-05-27 — recovery flow
+    # the cross-namespace path. — recovery flow
     # init container timed out reading from the shim's ClusterIP
     # because mail-namespace egress was restricted to 25/465/587/443/80.
     - to:
@@ -167,7 +167,7 @@ spec:
         - protocol: TCP
           port: 9000
 
-    # 2026-05-28: the protect-from-silent-data-loss init container
+    # the protect-from-silent-data-loss init container
     # queries platform-api's /internal/mail/stalwart-data-expectation
     # endpoint to decide whether refusing-to-fresh-start is the right
     # call. Without this egress rule, the init container's curl would

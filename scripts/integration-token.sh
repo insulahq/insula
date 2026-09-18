@@ -56,10 +56,10 @@ _itoken_mint() {
 # api_curl: a drop-in for `curl` that transparently retries the two TRANSIENT
 # control-plane failures the full ALL run hits, so neither fails a suite:
 #   1. the GLOBAL API rate limiter (HTTP 429 / @fastify/rate-limit) — the
-#      parallel batch's request burst trips it on creates (observed 2026-06-25);
+# parallel batch's request burst trips it on creates;
 #   2. a brief control-plane BLIP — empty body, connection refused (000), or 5xx
 #      — the platform is momentarily unavailable during system-db maintenance /
-#      a platform-api roll (root-caused 2026-06-26: a CNPG snapshot-recovery
+# a platform-api roll (root-caused: a CNPG snapshot-recovery
 #      recreates system-db + rolls the API). The parallel suites were dying on
 #      empty bodies (JSONDecodeError) from these windows.
 # Both are LEGITIMATE platform behaviour, so back off + retry (up to ~105s total)

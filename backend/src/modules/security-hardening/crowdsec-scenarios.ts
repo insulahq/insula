@@ -31,7 +31,7 @@
  * It carries `kustomize.toolkit.fluxcd.io/reconcile: disabled` so Flux cannot
  * revert an operator's toggle — and that annotation makes Flux skip the object
  * during apply ENTIRELY, so Flux inventories it and never creates it (verified
- * on DEV 2026-09-06 for crowdsec-capi-config). Same division of labour as that
+ * on DEV for crowdsec-capi-config). Same division of labour as that
  * switch and the webmail feature flags: the manifest declares the mount, the
  * backend creates and owns the content.
  *
@@ -67,7 +67,7 @@ const AGENT_DAEMONSET_NAME = 'crowdsec-agent';
  * these names: an exclusion naming a scenario that does not exist is accepted
  * silently and `cscli simulation status` echoes it back, so the config LOOKS
  * correct while the real scenario runs live and bans. That exact bug shipped on
- * DEV 2026-09-05, which is why `setScenarioSimulation` rejects any name the
+ * DEV, which is why `setScenarioSimulation` rejects any name the
  * agent does not report.
  *
  * Why this one: the bouncer sits on the shared `websecure` entrypoint, so a
@@ -404,7 +404,7 @@ async function readAcquisitionSources(
  * The name is validated against what the agent REPORTS, not against a regex.
  * cscli accepts an exclusion naming a scenario that does not exist and echoes
  * it straight back, so a typo produces a config that looks correct while the
- * real scenario keeps banning — exactly what shipped on DEV 2026-09-05 with a
+ * real scenario keeps banning — exactly what shipped on DEV with a
  * hyphen in place of the underscore in `http-crawl-non_statics`.
  */
 export async function setScenarioSimulation(

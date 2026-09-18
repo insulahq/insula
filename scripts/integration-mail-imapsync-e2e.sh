@@ -6,7 +6,7 @@
 #
 # Mailbox migration (IMAPSync) shipped broken on every real cluster and no
 # existing check could see it. Two independent defects, both found only by
-# driving the feature for real on 2026-09-01:
+# driving the feature for real:
 #
 #   1. platform-api read Stalwart's master password from
 #      `process.env.STALWART_MASTER_SECRET`, a variable set in exactly one

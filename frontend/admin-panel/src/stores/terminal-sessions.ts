@@ -568,7 +568,7 @@ export const useTerminalSessions = create<TerminalSessionsState>((rawSet, get) =
     // new one. Without this, every reconnect accumulates an additional
     // listener that fires per keystroke (the old ones target closed
     // WebSockets, so they no-op via the readyState guard — but they
-    // still run and waste cycles). Review finding (2026-05-20).
+    // still run and waste cycles). Review finding.
     const prior = sessionRefs.get(sessionId);
     if (prior?.onDataDisposable) {
       try { prior.onDataDisposable.dispose(); } catch { /* ignore */ }

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { stripHostnamePin } from './service.js';
 
 /**
- * Regression (2026-08-10, multi-node VM run): a drain re-pinned workloads by
+ * Regression: a drain re-pinned workloads by
  * patching `nodeSelector` only, while buildDrainImpact counts a workload as
  * pinned via nodeSelector OR nodeAffinity. A nodeAffinity-pinned workload was
  * therefore never released: pods moved, volumes moved, tenants.node_name

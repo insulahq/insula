@@ -169,7 +169,7 @@ describe('k8s-ingress reconciler', () => {
   });
 });
 
-// ── groupRoutesByCertSecret (per-secret IngressRoute split, 2026-08-24) ─────
+// ── groupRoutesByCertSecret ─────
 //
 // Traefik only serves certificates some IngressRoute references; grouping
 // routes by their host's cert secret is what guarantees every issued

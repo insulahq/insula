@@ -1,5 +1,5 @@
 /**
- * PITR Job watchdog — Phase 4 (2026-05-23) follow-up.
+ * PITR Job watchdog — Phase 4 follow-up.
  *
  * Symptom this fixes: when the PITR Job's pod creation is rejected
  * (most commonly ResourceQuota `FailedCreate` during a platform-api
@@ -113,7 +113,7 @@ export interface PitrWatchdogDeps {
       readonly listNamespacedEvent: (
         a: { namespace: string; fieldSelector?: string },
       ) => Promise<{ items?: ReadonlyArray<JobEvent> }>;
-      // Released-PV reaper helpers (Task #103 2026-05-23).
+      // Released-PV reaper helpers.
       readonly listPersistentVolume?: () => Promise<{ items?: ReadonlyArray<ReleasedPv> }>;
       readonly deletePersistentVolume?: (
         a: { name: string },
@@ -254,7 +254,7 @@ export async function reconcilePitrJobsOnce(
     // PITR Job's lock can be cleared by the watchdog sweep for an
     // older Job that happens to fire at the same time, causing the
     // fresh pitr-job to fail-fast with "PITR_LOCK_HELD=true but no
-    // persisted lock" (live regression caught on staging sc1b 2026-05-23).
+    // persisted lock"(live regression caught on staging sc1b).
     // releasePitrLock checks persistedLock.snapshot vs expectedSnapshot
     // and bails the lock-clear if they differ.
     try {
@@ -281,7 +281,7 @@ export async function reconcilePitrJobsOnce(
   return stuck;
 }
 
-// Default reaper threshold (Task #103 2026-05-23): Released PVs must be
+// Default reaper threshold: Released PVs must be
 // at least 60 min old before reaping. CNPG-managed PVCs go through a
 // rapid Released→Deleted cycle when the operator triggers a normal
 // scale-down; the 60min window protects those legitimate transients.
@@ -299,7 +299,7 @@ interface ReapedPvReport {
 /**
  * Reap orphan Released PVs whose underlying PVC is gone.
  *
- * Why this exists (Task #103 2026-05-23): CNPG-managed Cluster PVCs use
+ * Why this exists: CNPG-managed Cluster PVCs use
  * `reclaimPolicy: Retain` so that a deleted Cluster CR doesn't wipe
  * recoverable data. Every PITR cycle deletes the source Cluster (which
  * deletes its PVCs), leaving the underlying PVs in `Released` state.

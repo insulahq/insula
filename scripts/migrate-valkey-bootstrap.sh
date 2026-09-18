@@ -177,7 +177,7 @@ echo "  kubectl -n mail rollout restart deploy stalwart-mail"
 WIRE
 )
 
-  # S3 hardening (2026-05-07 security review): mount secrets as a
+  # S3 hardening: mount secrets as a
   # tmpfs Secret volume rather than passing them through `--env`.
   # `--env` writes the cleartext secret into the Pod spec, which:
   #   1. lives in etcd until the pod is deleted (default GC ~2h);
@@ -206,7 +206,7 @@ WIRE
 
   # alpine pinned by digest to defend against a registry-substitution
   # MitM. Bump the digest when the upstream image is rebuilt for a
-  # CVE we care about. (alpine:3.20.3 amd64 digest as of 2026-05.)
+  # CVE we care about.(alpine:3.20.3 amd64 digest as of.)
   alpine_image="alpine:3.20.3@sha256:beefdbd8a1da6d2915566fde36db9db0b524eb737fc57cd1367effd16dc0d06d"
 
   # Strategic-merge override: only the volumes + the named container's

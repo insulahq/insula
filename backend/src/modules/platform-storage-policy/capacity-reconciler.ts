@@ -19,7 +19,7 @@
  * Longhorn / CNPG / Deployments to match policy). The advisor
  * REACTS to drift; this reconciler WARNS the operator before drift
  * becomes "scaling silently fails because precheck couldn't fit a
- * 10 GiB replica" (the postgres-2 case observed 2026-05-04).
+ * 10 GiB replica"(the postgres-2 case observed).
  */
 
 import { eq, inArray } from 'drizzle-orm';

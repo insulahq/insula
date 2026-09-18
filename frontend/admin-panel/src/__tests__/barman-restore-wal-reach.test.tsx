@@ -54,7 +54,7 @@ const INTACT = {
   truncated: false, readError: null, queryDurationMs: 900,
 };
 
-/** A hole: the chain only reaches 2026-09-05. */
+/** A hole: the chain only reaches. */
 const BROKEN = {
   ...INTACT,
   gaps: [{ afterSegment: '000000010000001500000002', beforeSegment: '000000010000001500000009', missingCount: 6, timeline: 1 }],

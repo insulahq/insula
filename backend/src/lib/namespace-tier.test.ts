@@ -3,7 +3,7 @@ import { isTenantNamespace, isSystemNamespace, TENANT_NAMESPACE_PREFIX } from '.
 
 describe('namespace-tier', () => {
   it('classifies every platform namespace on production as SYSTEM', () => {
-    // The real list from the production cluster, 2026-08-31. The alerting
+    // The real list from the production cluster. The alerting
     // path's old allowlist named only the first nine, so every namespace
     // after them was reported to admins as a *tenant* — which is how an
     // operator was paged that tenant "traefik" was over its memory limit.

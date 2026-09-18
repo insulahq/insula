@@ -52,7 +52,7 @@ export interface CascadeCtx {
    * checkbox, unticked.
    *
    * It has to travel on the context because the decision is made per REQUEST
-   * and the hook that honours it runs several layers down. Until 2026-09-16 it
+   * and the hook that honours it runs several layers down. it
    * did not travel at all: the contract declared the field, the UI sent it,
    * the hook read `ctx.suppressTenantNotification` — and nothing in between
    * ever set it, so unticking the box emailed the tenant anyway.

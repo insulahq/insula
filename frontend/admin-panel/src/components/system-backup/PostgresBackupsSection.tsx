@@ -2,7 +2,7 @@
  * Platform-database offsite backups — ONE card, ONE switch, three settings.
  *
  * Replaces the two-toggle "WAL Streaming" + "Scheduled Base Backups" layout
- * (2026-09-11, operator request). That layout modelled WAL archiving and base
+ * . That layout modelled WAL archiving and base
  * backups as independent features an operator could mix and match. They are
  * not: a base backup is only restorable together with the WAL written while it
  * ran, and the barman-cloud plugin that ships one ships the other. Offering a
@@ -448,7 +448,7 @@ function StatusGrid({ cluster }: { readonly cluster: WalArchiveCluster }) {
 
   // Partial knowledge beats none. Measuring the log means listing every segment
   // through the storage gateway, and some targets cannot do that in any
-  // reasonable time (DEV 2026-09-12: rclone itself could not list the prefix in
+  // reasonable time (DEV: rclone itself could not list the prefix in
   // 25s). When that happens we still know the base copies exactly, so we show
   // that and say what is missing instead of throwing the whole cell away.
   // "Not counted yet" and "could not be counted" are different statements and

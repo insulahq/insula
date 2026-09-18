@@ -54,7 +54,7 @@ const log = mailLogger().child({ module: 'email-dkim-normalize' });
 // domain principal create returns — Ed25519 keygen is effectively
 // instant but RSA-2048 keygen takes longer, so a listing taken right
 // after the create can show only the Ed25519 row (observed live on
-// testing 2026-06-07: the auto v1-rsa row landed AFTER normalization
+// testing: the auto v1-rsa row landed AFTER normalization
 // had already swept and created dkim-1). Callers that just created
 // the principal pass expectAutoPair=true and we poll until both auto
 // rows are visible before planning the sweep.

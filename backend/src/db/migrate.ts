@@ -31,7 +31,7 @@ function findPgCode(e: unknown): string | undefined {
 
 // Track applied migrations in a dedicated table so we don't re-run the
 // entire history on every restart. Pre-existing clusters (where the
-// schema was applied in 2026-04 before this tracker existed) bootstrap
+// schema was applied before this tracker existed) bootstrap
 // by detecting the well-known `users` table and back-populating every
 // migration file as already-applied. This is intentionally permissive
 // — once the tracker exists, we trust it.

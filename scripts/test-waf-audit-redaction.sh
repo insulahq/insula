@@ -7,7 +7,7 @@
 #   `platform_session` / `platform_refresh` cookies in cleartext to the
 #   modsec-crs pod's stdout — node logs, and anything shipping them. A WAF block
 #   is exactly the moment an admin's live credentials are most likely captured.
-#   (Found 2026-08-03 while debugging a 403.)
+# (Found while debugging a 403.)
 #
 #   Neither obvious fix works: libmodsecurity 3.0.16 REJECTS
 #   `sanitiseRequestHeader` at config-parse time and crash-loops the WAF, and

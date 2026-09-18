@@ -204,7 +204,7 @@ const logger = { warn: () => {}, info: () => {} };
 
 // All NetworkListeners the reconciler requires present: 3 base
 // (http-acme/submission/imap) + 7 dedicated PROXY-protocol listeners (6 added
-// 2026-06-29, pop3s-proxy added when POP3S was wired up). A "fully configured"
+// pop3s-proxy added when POP3S was wired up). A "fully configured"
 // fixture must list all of them, otherwise ensureRequiredListeners creates the
 // missing `-proxy` ones and flips noOp.
 const ALL_REQUIRED_LISTENERS = [
@@ -220,7 +220,7 @@ beforeEach(() => {
 
 describe('mail-admin stalwart-domain-reconciler', () => {
   it('no-ops when BOTH mail_server_hostname AND ingress_base_domain are unset', async () => {
-    // Pre-2026-05-27: this test only checked mail_server_hostname.
+    // Pre-: this test only checked mail_server_hostname.
     // The fix made the reconciler use the same resolution chain as the
     // admin UI (mail.<ingress_base_domain> fallback) — so the no-op
     // path now only fires when neither source is available.
@@ -277,7 +277,7 @@ describe('mail-admin stalwart-domain-reconciler', () => {
     const { transport, calls } = buildJmapMock({
       // Apex tenant Domain exists but NOT the mail-hostname cert anchor.
       // This is exactly the state we caught on staging.example.test
-      // on 2026-05-27 — the reconciler had been a no-op for weeks.
+      // — the reconciler had been a no-op for weeks.
       domains: [{ id: 'd1', name: 'example.net' }],
     });
     const result = await runStalwartDomainReconcilerTick({
@@ -633,7 +633,7 @@ describe('mail-admin stalwart-domain-reconciler — served-cert self-heal', () =
     // The force's second half fires AcmeRenewal via the PROVEN x:Task/set
     // primitive (fireAcmeRenewal). Exactly ONCE: step-8 skipped (stored
     // cert ⇒ Stalwart-scheduled renewals), so the force is the only fire.
-    // (Pre-2026-06-11 this fired TWICE per tick — the unconditional
+    // (Pre- this fired TWICE per tick — the unconditional
     // step-8 + the force — which, multiplied by replicas and ticks,
     // tripped LE's duplicate-certificate limit. See step-8 comment.)
     const renew = calls.filter((c) => c.method === 'x:Task/set');
@@ -792,7 +792,7 @@ describe('mail-admin stalwart-domain-reconciler — served-cert self-heal', () =
   });
 
   it('(f) self-signed but an AcmeRenewal task already pending ⇒ defer, no duplicate order', async () => {
-    // The 2026-06-11 storm shape: Stalwart already has a queued/retrying
+    // The storm shape: Stalwart already has a queued/retrying
     // AcmeRenewal (e.g. rate-limited, due later). Forcing another order
     // only stacks duplicate LE orders — the self-heal must defer.
     const { transport, calls } = fullyConfigured({

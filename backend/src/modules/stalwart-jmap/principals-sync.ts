@@ -108,7 +108,7 @@ export function createPrincipalsSyncScheduler(
       if (timer !== null) return;
       // Random initial-jitter (0..intervalMs) so N platform-api replicas
       // don't all run their sync cycle in lockstep. Code-review
-      // MEDIUM-2 fix (2026-05-03): without this, 3 replicas all hit
+      // MEDIUM-2 fix: without this, 3 replicas all hit
       // Stalwart at the same minute every 5 minutes — 3× JMAP load
       // peaks. Jittering smooths it across the 5-minute window.
       const initialDelay = Math.floor(Math.random() * intervalMs);
@@ -583,12 +583,12 @@ async function syncPrincipals(params: {
     errors.push(`alias drift check failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 
-  // 4b. Inverse MailingList check (kind: 'orphan-list', 2026-08-25 drift
+  // 4b. Inverse MailingList check (kind: 'orphan-list', drift
   // audit): a Stalwart MailingList with no email_aliases row is a LIVE
   // forwarder nobody owns — before this check it was only ever logged by
   // the alias reconcile, invisible to the drift UI. Typical sources: an
   // out-of-band admin-console creation, or alias rows deleted while the
-  // Stalwart destroy failed (pre-2026-08-25 archive hook). DETECT +
+  // Stalwart destroy failed. DETECT +
   // SURFACE ONLY — remediation is operator-confirmed from the drift UI.
   try {
     const { listMailingLists } = await import('./mailing-lists.js');
@@ -673,7 +673,7 @@ async function syncPrincipals(params: {
 //
 // The platform_db / Stalwart drift surface is the operator's safety net
 // against silent data-loss caused by failed mail-stack failovers (the
-// 2026-05-25 staging incident — see migration 0032 header). Pre-2026-05-27
+// staging incident — see migration 0032 header). Pre-
 // the sync logged warnings; post-fix it persists drift to mail_drift_items
 // and notifies admins so the issue surfaces in the UI, not just logs.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -736,7 +736,7 @@ async function reconcileDriftItems(
       // Brand-new drift (or re-occurrence after resolved). Insert.
       //
       // Per-item try/catch, because this loop used to be able to lose the
-      // whole tick: `kind='orphan-list'` was emitted from 2026-08-25 while the
+      // whole tick: `kind='orphan-list'` was emitted while the
       // CHECK constraint still listed four kinds, so the first such item threw
       // out of this function — later items were never written AND the resolve
       // sweep below never ran, leaving a drift list an operator could not

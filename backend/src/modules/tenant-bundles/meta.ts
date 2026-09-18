@@ -42,7 +42,7 @@ export function serializeMeta(meta: BackupMetaV1): Buffer {
  * stable code on schemaVersion mismatch or shape violations so the
  * store layer can surface a structured OperatorError envelope.
  *
- * Legacy v1 bundles (captured before the schema bump on 2026-05-08)
+ * Legacy v1 bundles(captured before the schema bump on)
  * are accepted on READ paths — the missing v2-only fields (`tenant`,
  * `domainsSummary`, `deploymentsSummary`) are filled with safe
  * defaults so verify / export / restore-cart continue to work for

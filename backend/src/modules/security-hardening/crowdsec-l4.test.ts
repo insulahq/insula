@@ -36,7 +36,7 @@ describe('getOperatorIp', () => {
     expect(getOperatorIp({ headers: { 'x-real-ip': '   ' } })).toBeNull();
   });
 
-  // ─── X-Forwarded-For fallback (added 2026-05-20) ───────────────
+  // ─── X-Forwarded-For fallback ───────────────
   it('falls back to X-Forwarded-For leftmost when X-Real-IP missing', () => {
     expect(getOperatorIp({ headers: { 'x-forwarded-for': '203.0.113.5' } })).toBe('203.0.113.5');
   });
@@ -94,7 +94,7 @@ describe('getOperatorIpWithSource — diagnostic surface', () => {
 
   it('reports req-ip source when only req.ip available', () => {
     // This is the "Traefik isn't forwarding XFF" failure mode the
-    // operator hit on 2026-05-20: req.ip resolved to a Traefik pod
+    // operator hit: req.ip resolved to a Traefik pod
     // IP because XFF was never set. UI uses the `req-ip` source +
     // an in-cluster-CIDR check to surface a "your real IP isn't
     // being forwarded" warning.

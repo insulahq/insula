@@ -47,7 +47,7 @@ export const PLATFORM_API_MANAGER = 'platform-api';
 export type PvcRole =
   | 'system-db'
   | 'tenant-storage';
-// 'mail-db' was a PvcRole pre-2026-05-12 when Stalwart ran on a CNPG
+// 'mail-db' was a PvcRole pre- when Stalwart ran on a CNPG
 // PostgreSQL cluster. Stalwart migrated to RocksDB on a local-path
 // PVC and the mail-db role was retired alongside the CNPG cluster.
 

@@ -210,7 +210,7 @@ function LonghornIframeModal({ url, onClose }: { url: string; onClose: () => voi
           title="Longhorn Dashboard"
           className="flex-1 w-full border-0 bg-white"
           // Longhorn's SPA is the cookie-gated /longhorn/ path route on
-          // the SAME origin as the admin panel (2026-06-12 — was a
+          // the SAME origin as the admin panel (— was a
           // longhorn.<apex> subdomain), so the platform_session cookie
           // rides along as a plain same-origin request; no cross-
           // subdomain cookie-Domain gymnastics needed anymore.

@@ -6,7 +6,7 @@
 # against 2 the platform had made itself: bans decided elsewhere, on evidence
 # the operator cannot inspect or appeal, enforced on every hosted site. It also
 # caught at least one legitimate service — MXToolbox reported HTTP 403 on every
-# site on 2026-09-06 while ordinary visitors and PageSpeed were unaffected,
+# site while ordinary visitors and PageSpeed were unaffected,
 # which is exactly the shape of a scanner sitting in someone else's blocklist.
 #
 # That is a reasonable trade to make deliberately, and a bad one to inherit
@@ -21,13 +21,13 @@
 #   fi
 #
 # Deleting online_client removes registration, signal sharing AND the community
-# blocklist pull together — verified in the running image 2026-09-06.
+# blocklist pull together — verified in the running image.
 #
 # WHO CREATES IT
 #
 # NOT Flux. `reconcile: disabled` makes the kustomize-controller skip this
 # object during apply ENTIRELY — not merely skip reverting it — so Flux
-# inventories the ConfigMap and never creates it (verified on DEV 2026-09-06:
+# inventories the ConfigMap and never creates it (verified on DEV:
 # status.inventory listed it while `kubectl get cm` returned NotFound). The
 # platform-api creates it at boot with the default below, via
 # ensureCommunityBlocklistDefault(). This file is the declaration of intent and

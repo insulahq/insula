@@ -7,7 +7,7 @@
 # `notification_template_versions` archived a full template body on every
 # operator edit and had NO retention of any kind — monotonic growth driven
 # purely by how often somebody tuned wording. Before that, the `notifications`
-# inbox table had none either: measured on staging 2026-09-10, 2685 rows going
+# inbox table had none either: measured on staging, 2685 rows going
 # back to the first migration, 2619 of them older than 30 days, never reaped.
 #
 # Both were "obviously fine" at review time. The failure mode is always the

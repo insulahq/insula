@@ -4,7 +4,7 @@
 #
 # Why this exists
 # ---------------
-# 2026-09-15: Backend CI went red on one commit and stayed red for three more
+# Backend CI went red on one commit and stayed red for three more
 # pushes and roughly eight hours. The cause was a single guard violation
 # (a route casting `request.body` instead of parsing it). It went unnoticed
 # because "CI is green" was inferred from the per-job notifications that
@@ -90,7 +90,7 @@ echo
 # ── api-contracts ───────────────────────────────────────────────────────
 # Built FIRST and unconditionally: the backend typecheck resolves against its
 # compiled dist, and a stale dist produces phantom errors that mask real ones
-# (measured 2026-09-15: 100 phantom errors hiding 4 genuine).
+# (measured: 100 phantom errors hiding 4 genuine).
 echo "api-contracts"
 run "build (tsc --build --force)" \
   node_modules/.bin/tsc --build --force packages/api-contracts

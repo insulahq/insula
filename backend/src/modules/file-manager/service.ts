@@ -289,7 +289,7 @@ interface ProxyResult {
  */
 /**
  * The per-tenant derived secret every file-manager request carries
- * (`X-Platform-Internal`). The sidecar's auth gate (2026-07-27) rejects any
+ * (`X-Platform-Internal`). The sidecar's auth gate rejects any
  * request without it. Derived per-namespace (F5) so the global master never
  * lands in a tenant-namespace pod.
  *

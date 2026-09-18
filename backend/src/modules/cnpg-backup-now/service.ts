@@ -142,7 +142,7 @@ export async function createBackupNow(
     // orchestrator). Useful for `kubectl get backups -l ...`.
     'insula.host/on-demand': 'true',
   };
-  // Phase 7c (2026-05-24) — description goes in an ANNOTATION not a
+  // Phase 7c — description goes in an ANNOTATION not a
   // label. Annotations have no charset/length restrictions so operators
   // can use natural language ("before tenant import: acme"). Labels
   // would have rejected spaces + colons.

@@ -26,7 +26,7 @@ resources:
   - plugin-barman-cloud-v0.13.0.yaml
 
 # HA shape for the plugin Deployment. See patch-barman-cloud-ha.yaml for the
-# full rationale (2026-09-11 drill: a single-replica plugin wedged all CNPG
+# full rationale (drill: a single-replica plugin wedged all CNPG
 # reconciliation and took the platform DB + management API down with it).
 #
 # The `remove` op on spec.replicas must run as a JSON6902 patch — a

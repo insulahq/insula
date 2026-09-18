@@ -171,7 +171,7 @@ boot_node() {
             "$RUN" "$VMTEST_VCPU" "$VMTEST_RAM_MB" "$mac"
   # 75×4s = 5 min: a fresh cloud image's first boot (kernel + cloud-init network bring-up)
   # can take minutes on a loaded VM host before it DHCPs a lease; 2 min occasionally lost the
-  # race (VM tier 2026-07-11: "no lease for …s1" at first-boot). Only costs time on a slow boot.
+  # race(VM tier: "no lease for …s1" at first-boot). Only costs time on a slow boot.
   for _ in $(seq 1 75); do ip=$(vm_ip "$host" "$RUN"); [[ -n "$ip" ]] && break; sleep 4; done
   [[ -n "$ip" ]] || { echo "no lease for $host after 5 min" >&2; return 1; }
   echo "$ip"
@@ -221,7 +221,7 @@ bootstrap_node() {
   # ssh ceiling 360s (was 180): the WORKER spawns LAST, onto a host already running the
   # 3-server HA cluster (k3s + Longhorn + platform pods), so its first boot + cloud-init
   # ssh-host-key generation runs much slower than the servers' and overran 180s (VM tier
-  # 2026-07-12: bootstrap rc=0 but "no ssh on <w1> after 180s"). wait_ssh returns as soon
+  # bootstrap rc=0 but "no ssh on <w1> after 180s"). wait_ssh returns as soon
   # as ssh answers, so a higher ceiling only helps slow nodes and never delays fast ones.
   wait_ssh "$ip" 360; wait_cloudinit "$ip" 600   # cloud-init on a fresh cloud image is slow (apt update + pkgs)
   assert_guest_os_version "$ip" "${NODE_OS[$host]}"

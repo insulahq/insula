@@ -326,7 +326,7 @@ export interface TenantPvcPlacementRow {
   robustness: string | null;
   replicaNodes: string[];
 
-  // ── Storage health surface (added 2026-04-28) ──
+  // ── Storage health surface ──
   /** Subset of Volume.status.conditions[] that the operator should
    *  care about. Each entry is a condition type with status==="True"
    *  — i.e. the abnormal/active state. Healthy steady-state volumes
@@ -363,7 +363,7 @@ export interface TenantPvcPlacementRow {
  * API blip yields an empty replicas list rather than failing the
  * whole request — the UI shows "—" in that case.
  *
- * Performance phases (2026-04-30, ~3-6s -> <1s on first load, <50ms cached):
+ * Performance phases(~3-6s -> <1s on first load, <50ms cached):
  *   1. All independent LISTs run via Promise.all (was sequential).
  *   2. Kubelet stats hit :10250 directly (was via apiserver-proxy).
  *   3. KubeConfig + HTTPS Agent are lifted to module-level singletons.

@@ -166,7 +166,7 @@ const STALWART_MGMT_URL =
 
 const JMAP_CORE = 'urn:ietf:params:jmap:core';
 const JMAP_PRINCIPALS = 'urn:ietf:params:jmap:principals';
-// Cut 3 follow-up (2026-05-04): Stalwart 0.16 implements its OWN
+// Cut 3 follow-up: Stalwart 0.16 implements its OWN
 // extension namespace for principal management — `x:Account/*` for
 // individual mailboxes / admin users and `x:Domain/*` for mail domains.
 // Standard JMAP `Principal/*` (RFC 8620) is NOT implemented; calls
@@ -189,7 +189,7 @@ function adminBasicAuth(env: NodeJS.ProcessEnv = process.env): string {
   //      picks up the new password without a pod restart.
   //   2. STALWART_ADMIN_PASSWORD / STALWART_ADMIN_SECRET_PLAIN /
   //      ADMIN_SECRET_PLAIN env vars (legacy, dev-mode only).
-  // Cut 3 follow-up (2026-05-04): the file-based path was missing here
+  // Cut 3 follow-up: the file-based path was missing here
   // even though the doc-comment promised it. Symptom: the staging
   // /admin/mail/rotate-admin-password 500'd with "STALWART_ADMIN_PASSWORD
   // not configured" because only the env-var fallback was implemented.
@@ -304,7 +304,7 @@ async function jmapPost(
     );
   }
 
-  // Code-review L1 fix (2026-05-04): guard the network boundary.
+  // Code-review L1 fix: guard the network boundary.
   // A 200 response from a reverse-proxy error page (Cloudflare, nginx
   // landing page, etc.) would JSON.parse fine but lack the expected
   // shape — extractResponse would then throw a confusing TypeError on
@@ -406,7 +406,7 @@ export async function verifyMasterJmapAuth(
 
 // ── Stalwart x:Account / x:Domain primitives ────────────────────────────────
 //
-// Cut 3 follow-up (2026-05-04): Stalwart 0.16 implements its own JMAP
+// Cut 3 follow-up: Stalwart 0.16 implements its own JMAP
 // extension namespace for principal management — `x:Account/*` for
 // individual users (mailboxes, admins) and `x:Domain/*` for mail
 // domains. RFC 8620 standard `Principal/*` is NOT implemented; calls
@@ -541,7 +541,7 @@ export async function dkimSignatureSet(params: {
 //   - x:MtaQueueQuota        — caps queued backlog; messages=0 rejects
 //                              every submission (the suspension lever)
 // Registry objects are account-agnostic: no accountId argument needed
-// (verified live on v0.16.5, 2026-06-12 spike).
+// (verified live on v0.16.5, spike).
 
 /**
  * Boolean match expression: `{match: {}, else: "<condition>"}`.
@@ -699,15 +699,196 @@ export async function mtaQueueQuotaSet(params: {
 // inboundReportAddresses and stores them as typed registry objects (default
 // retention 30d). The platform polls them and destroys what it consumes.
 //
-// The ARF/FBL half (x:ArfExternalReport) was removed 2026-09-15 with the FBL
-// retirement — see report-intake-reconciler.ts for why.
+// The ARF half (x:ArfExternalReport) is below. It was removed with the FBL
+// retirement and restored for abuse-report ingestion: FBL was about a
+// complaint RATE and needed per-provider enrolment to yield anything, while an
+// abuse report is an incident that arrives unsolicited.
+
+// ── ARF abuse reports (x:ArfExternalReport/*) ───────────────────────────────
+//
+// RFC 5965. Stalwart parses the `message/feedback-report` part and stores a
+// typed object, so the platform never handles the MIME.
+//
+// `to`, `reportedDomains` and `authenticationResults` are OBJECTS KEYED BY
+// VALUE (`{"example.test": true}`), not arrays — the same shape trap as the
+// DMARC records below. Read them with Object.keys(), never .map().
+
+export interface StalwartArfReportRow {
+  readonly id: string;
+  readonly from?: string;
+  readonly subject?: string;
+  readonly to?: Record<string, boolean>;
+  readonly receivedAt?: string;
+  readonly expiresAt?: string;
+  readonly report?: {
+    readonly feedbackType?: string;
+    readonly arrivalDate?: string | null;
+    readonly incidents?: number;
+    readonly originalMailFrom?: string | null;
+    readonly originalRcptTo?: string | null;
+    readonly reportedDomains?: Record<string, boolean>;
+    readonly reportingMta?: string | null;
+    readonly sourceIp?: string | null;
+    readonly userAgent?: string | null;
+    readonly authenticationResults?: Record<string, boolean>;
+  };
+}
+
+interface XArfGetResponse {
+  readonly list?: readonly StalwartArfReportRow[];
+}
+
+/**
+ * List + fetch stored ARF reports (query/get with a back-reference).
+ *
+ * Capped at 200 per poll so a backlog drains across ticks instead of producing
+ * one unbounded fetch + insert loop.
+ */
+export async function arfExternalReportList(params: {
+  baseUrl?: string;
+  env?: NodeJS.ProcessEnv;
+} = {}): Promise<readonly StalwartArfReportRow[]> {
+  const { baseUrl, env } = params;
+  const auth = adminBasicAuth(env);
+  const req: JmapRequest = {
+    using: [JMAP_CORE, JMAP_STALWART],
+    methodCalls: [
+      ['x:ArfExternalReport/query', { limit: 200 }, 'q'],
+      ['x:ArfExternalReport/get', {
+        '#ids': { resultOf: 'q', name: 'x:ArfExternalReport/query', path: '/ids' },
+      }, 'g'],
+    ],
+  };
+  const res = await jmapPost(baseUrl ?? STALWART_MGMT_URL, auth, req);
+  const get = extractResponse<XArfGetResponse>(res, 'x:ArfExternalReport/get', 'g');
+  return get.list ?? [];
+}
+
+/** Destroy reports the platform has committed, so the next poll does not refetch them. */
+export async function arfExternalReportDestroy(params: {
+  ids: readonly string[];
+  baseUrl?: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<JmapSetResponse<{ id: string }>> {
+  const { ids, baseUrl, env } = params;
+  return _xCall<JmapSetResponse<{ id: string }>>(
+    JMAP_STALWART,
+    'x:ArfExternalReport/set',
+    { destroy: ids },
+    baseUrl, env,
+  );
+}
+
+// ── TLS-RPT reports (x:TlsExternalReport/*) ────────────────────────────────
+//
+// RFC 8460. These arrive because every mail-enabled domain publishes
+// `_smtp._tls.<domain> TXT "v=TLSRPTv1; rua=mailto:postmaster@<domain>"`, so a
+// receiver that failed — or succeeded — to negotiate TLS to OUR MX reports it
+// back daily. The subject is inbound delivery TO us, not our outbound mail.
+//
+// SHAPE, taken from Stalwart's own registry structs rather than RFC 8460:
+//
+//   `policies` and `failureDetails` are `List<T>`, which serialises as an
+//   object keyed by DECIMAL-STRING INDEX (`{"0": …, "1": …}`) — the same trap
+//   as the DMARC `records` below. `.map()` over one yields nothing and reports
+//   a clean zero.
+//
+//   `to`, `mxHosts` and `policyStrings` are `Map<String>`, which serialises as
+//   an object keyed BY VALUE (`{"mx.example.test": true}`).
+//
+// Both are objects; which key means what differs. Read with Object.keys() /
+// Object.values() accordingly.
+
+export interface StalwartTlsFailureDetails {
+  readonly resultType?: string;
+  readonly sendingMtaIp?: string | null;
+  readonly receivingMxHostname?: string | null;
+  readonly receivingMxHelo?: string | null;
+  readonly receivingIp?: string | null;
+  readonly failedSessionCount?: number;
+  readonly additionalInformation?: string | null;
+  readonly failureReasonCode?: string | null;
+}
+
+export interface StalwartTlsReportPolicy {
+  readonly policyType?: string;
+  readonly policyStrings?: Record<string, boolean>;
+  readonly policyDomain?: string;
+  readonly mxHosts?: Record<string, boolean>;
+  readonly totalSuccessfulSessions?: number;
+  readonly totalFailedSessions?: number;
+  /** Index-keyed object, NOT an array. */
+  readonly failureDetails?: Record<string, StalwartTlsFailureDetails>;
+}
+
+export interface StalwartTlsReportRow {
+  readonly id: string;
+  readonly from?: string;
+  readonly subject?: string;
+  readonly to?: Record<string, boolean>;
+  readonly receivedAt?: string;
+  readonly expiresAt?: string;
+  readonly report?: {
+    readonly organizationName?: string | null;
+    readonly contactInfo?: string | null;
+    readonly reportId?: string;
+    readonly dateRangeStart?: string;
+    readonly dateRangeEnd?: string;
+    /** Index-keyed object, NOT an array. */
+    readonly policies?: Record<string, StalwartTlsReportPolicy>;
+  };
+}
+
+interface XTlsGetResponse {
+  readonly list?: readonly StalwartTlsReportRow[];
+}
+
+/**
+ * List + fetch stored TLS-RPT reports.
+ *
+ * Capped at 200 per poll, as for the other two report types: a backlog drains
+ * across ticks instead of producing one unbounded fetch + insert loop.
+ */
+export async function tlsExternalReportList(params: {
+  baseUrl?: string;
+  env?: NodeJS.ProcessEnv;
+} = {}): Promise<readonly StalwartTlsReportRow[]> {
+  const { baseUrl, env } = params;
+  const auth = adminBasicAuth(env);
+  const req: JmapRequest = {
+    using: [JMAP_CORE, JMAP_STALWART],
+    methodCalls: [
+      ['x:TlsExternalReport/query', { limit: 200 }, 'q'],
+      ['x:TlsExternalReport/get', {
+        '#ids': { resultOf: 'q', name: 'x:TlsExternalReport/query', path: '/ids' },
+      }, 'g'],
+    ],
+  };
+  const res = await jmapPost(baseUrl ?? STALWART_MGMT_URL, auth, req);
+  const get = extractResponse<XTlsGetResponse>(res, 'x:TlsExternalReport/get', 'g');
+  return get.list ?? [];
+}
+
+export async function tlsExternalReportDestroy(params: {
+  ids: readonly string[];
+  baseUrl?: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<JmapSetResponse<{ id: string }>> {
+  const { ids, baseUrl, env } = params;
+  return _xCall<JmapSetResponse<{ id: string }>>(
+    JMAP_STALWART,
+    'x:TlsExternalReport/set',
+    { destroy: ids },
+    baseUrl, env,
+  );
+}
 
 // ── DMARC aggregate reports (x:DmarcExternalReport/*) ───────────────────────
 //
 // Stalwart's report-analysis does the whole RFC 7489 job for us: it intercepts
 // mail to the configured report addresses, un-gzips the attachment, parses the
 // aggregate XML, and stores a typed registry object. The platform never sees
-// the XML. Confirmed against a live server on 2026-09-13 by delivering a real
+// the XML. Confirmed against a live server by delivering a real
 // aggregate report and reading the object back — `x:DmarcReport` and
 // `x:IncomingReport` return `unknownMethod` on the same server, so the types
 // below are the real ones rather than a catch-all responding to anything.
@@ -894,7 +1075,7 @@ export interface StalwartReportSettingsRow {
  * Outbound DMARC aggregate reporting.
  *
  * A SEPARATE singleton from `x:ReportSettings` (which governs INBOUND report
- * intake). Read live on 2026-09-16: the object is addressable but its list is
+ * intake). Read live: the object is addressable but its list is
  * EMPTY on a fresh server, and empty does not mean off — Stalwart falls back
  * to its built-in defaults, which are `aggregateSendFrequency: daily` and
  * `aggregateFromAddress: 'noreply-dmarc@' + system('domain')`.
@@ -922,6 +1103,19 @@ export interface StalwartDmarcReportSettingsRow {
    */
   readonly failureSendFrequency?: StalwartExpression;
   readonly failureFromAddress?: StalwartExpression;
+  /**
+   * The remaining fields of the group. They carry Stalwart's own defaults and
+   * the platform has no opinion about their values — but a `/set update`
+   * against a never-written singleton only persists when the patch states
+   * EVERY field, so they are written all the same. See
+   * `DMARC_SETTINGS_FIELDS` in mail-events/dmarc-report-sender.ts.
+   */
+  readonly aggregateSubject?: StalwartExpression;
+  readonly aggregateContactInfo?: StalwartExpression;
+  readonly aggregateMaxReportSize?: StalwartExpression;
+  readonly failureFromName?: StalwartExpression;
+  readonly failureDkimSignDomain?: StalwartExpression;
+  readonly failureSubject?: StalwartExpression;
 }
 
 export async function dmarcReportSettingsGet(params: {
@@ -1052,7 +1246,7 @@ export async function queuedMessageCount(params: {
 // Stalwart loads most registry config (MTA throttles/quotas, report
 // settings, webhooks) at boot only; `x:Action/set` with
 // {"@type":"ReloadSettings"} re-reads it into the live server and
-// cluster-broadcasts the reload — proven live on v0.16.5 (2026-06-12):
+// cluster-broadcasts the reload — proven live on v0.16.5:
 // a throttle rate change applied immediately after the action, with
 // no pod restart.
 
@@ -1832,7 +2026,7 @@ export async function findDomainByName(params: {
   env?: NodeJS.ProcessEnv;
 }): Promise<StalwartPrincipal | null> {
   const { accountId, domainName, baseUrl, env } = params;
-  // Cut 3 follow-up (2026-05-04): Stalwart 0.16's x:Domain/query does
+  // Cut 3 follow-up: Stalwart 0.16's x:Domain/query does
   // not support a `name` filter — it silently returns `ids: []` for
   // any filter shape we tried, while x:Domain/get with `ids: null`
   // returns the full list correctly. Use list-and-filter until
@@ -1865,7 +2059,7 @@ export async function findMailboxByEmail(params: {
   env?: NodeJS.ProcessEnv;
 }): Promise<StalwartPrincipal | null> {
   const { accountId, email, baseUrl, env } = params;
-  // Cut 3 follow-up (2026-05-04): Stalwart 0.16's x:Account/query
+  // Cut 3 follow-up: Stalwart 0.16's x:Account/query
   // doesn't accept a working `email` / `name` filter (silently returns
   // ids: []). List-and-filter via x:Account/get with ids: null until
   // a working filter shape is documented.

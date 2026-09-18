@@ -626,7 +626,7 @@ phase5_cleanup() {
   # waits are SEQUENTIAL and NON-FATAL, so their budgets ADD UP: at the old 600s
   # each they could burn 1200s of pure waiting and blow the suite's own 1200s hard
   # timeout in a full run — turning a feature that PASSED phases 1–4 into a
-  # spurious rc=124 TIMEOUT (the 2026-07-18 full-run failure). Keep the observation
+  # spurious rc=124 TIMEOUT. Keep the observation
   # window short (120s each; override PRIVATE_WORKER_REAP_WAIT); an overrun is
   # logged as load noise, never a failure.
   local reap_deadline="${PRIVATE_WORKER_REAP_WAIT:-120}"

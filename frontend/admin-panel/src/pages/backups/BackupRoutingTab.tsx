@@ -2,7 +2,7 @@
  * `<BackupRoutingTab>` — the "Targets, Schedules & Retention" tab of every
  * backup-class page (system / mail / tenants).
  *
- * Phase 3 (2026-05-22) consolidates three previously-scattered
+ * Phase 3 consolidates three previously-scattered
  * surfaces into one tab per class:
  *
  *   1. Targets   — which Remote Storage Target the class binds to.
@@ -43,7 +43,7 @@ interface Props {
 
 /**
  * One sentence per class saying WHAT lands at the target. Operators asked for
- * this on all three pages (2026-09-11): the binding panel showed a target name
+ * this on all three pages: the binding panel showed a target name
  * and a drain timeout without ever saying what was being stored, or why an
  * unbound class is dangerous.
  */
@@ -62,15 +62,21 @@ const CLASS_COPY: Record<BackupShimClass, { what: string }> = {
 // Subsystem labels for the schedules section. Lifted from the legacy
 // per-page hard-codings so each ScheduleCard renders with a meaningful
 // title + description.
-const SCHEDULE_META: Record<string, { title: string; description: string }> = {
+const SCHEDULE_META: Record<string, {
+  title: string;
+  description: string;
+  readOnly?: boolean;
+  readOnlyReason?: string;
+  hideRetention?: boolean;
+}> = {
   mail: {
     title: 'Mail snapshot schedule',
     description: 'Restic backup of /var/lib/stalwart/data — runs as a CronJob in the mail namespace.',
   },
-  system_pitr: {
-    title: 'Postgres PITR base backups',
-    description: 'Daily base backup of the platform postgres. WAL archiving runs continuously when enabled.',
-  },
+  // No `system_pitr` entry: the Postgres base backup is configured on the
+  // Backups tab, where cadence, retention and archive timeout are set and
+  // validated together. Re-adding it here would put a second cadence field on
+  // a second tab writing the same ScheduledBackup.
   tenant_bundle: {
     title: 'Tenant bundle schedule',
     description: 'Nightly Plesk-style bundles: files + mailboxes + config per tenant.',
@@ -78,6 +84,36 @@ const SCHEDULE_META: Record<string, { title: string; description: string }> = {
   longhorn_recurring: {
     title: 'Longhorn recurring snapshots',
     description: 'Block-snapshot every PVC with the recurring-job label.',
+    // The cadence is compiled into a Flux-managed RecurringJob the platform
+    // neither owns nor has permission to patch, so this card shows the value
+    // and does not pretend to change it.
+    readOnly: true,
+    readOnlyReason:
+      'Set by the cluster manifest. Changing it here would be reverted within a minute, '
+      + 'so the control is not offered.',
+    hideRetention: true,
+  },
+  etcd_snapshot: {
+    title: 'etcd snapshot upload',
+    description:
+      'How often the cluster-database snapshots k3s has written to disk are collected and '
+      + 'uploaded to the bound system target. (k3s writes those snapshots on its own schedule, '
+      + 'every 12 hours.)',
+    // Retention for this job is the "keep the newest 24 objects" rule inside
+    // the upload script, not a value from backup_schedules.
+    hideRetention: true,
+  },
+  secrets_bundle: {
+    title: 'Secrets bundle',
+    description:
+      'Age-encrypted copy of the cluster secrets — the bundle you need to rebuild this platform '
+      + 'somewhere else.',
+    hideRetention: true,
+  },
+  cluster_state: {
+    title: 'Cluster state dump',
+    description: 'Platform-wide inventory of Kubernetes objects, for rebuilding after a total loss.',
+    hideRetention: true,
   },
 };
 
@@ -90,7 +126,7 @@ export default function BackupRoutingTab({ shimClass, scheduleSubsystems }: Prop
   const row = assignments.find((a) => a.className === shimClass);
   const bound = !!row?.targetId;
 
-  // Phase 5 (2026-05-24): pre-switch confirm modal state. Set when
+  // Phase 5: pre-switch confirm modal state. Set when
   // the operator picks a new target OR clicks unbind. When set,
   // render PreSwitchConfirmModal which loads the preview + waits for
   // operator Confirm. `targetId: null` is the unbind case — modal
@@ -170,7 +206,7 @@ export default function BackupRoutingTab({ shimClass, scheduleSubsystems }: Prop
                 });
               }}
               onUnbind={() => {
-                // Phase 5 (2026-05-24): route unbind through the same
+                // Phase 5: route unbind through the same
                 // pre-switch modal as switch — operator sees the full
                 // list of schedules + WAL that pause as part of the
                 // unbind. Modal copy adapts to the null-target case.
@@ -229,14 +265,17 @@ export default function BackupRoutingTab({ shimClass, scheduleSubsystems }: Prop
               title: subsystem,
               description: `Schedule for ${subsystem}.`,
             };
-            // ScheduleCard's prop union narrows subsystem to its 4
-            // known values; cast preserves the runtime contract.
+            // ScheduleCard's prop union narrows subsystem to its known
+            // values; cast preserves the runtime contract.
             return (
               <ScheduleCard
                 key={subsystem}
                 subsystem={subsystem as Parameters<typeof ScheduleCard>[0]['subsystem']}
                 title={meta.title}
                 description={meta.description}
+                readOnly={meta.readOnly}
+                readOnlyReason={meta.readOnlyReason}
+                hideRetention={meta.hideRetention}
               />
             );
           })}

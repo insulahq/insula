@@ -91,7 +91,7 @@ spec:
       # WAF + CrowdSec, matching platform-ingress. This host is publicly
       # resolvable with a Let's Encrypt certificate (therefore listed in
       # Certificate Transparency and discoverable by scanners), and until
-      # 2026-09-05 it carried a rate limit only — no ModSecurity, no CrowdSec.
+      # it carried a rate limit only — no ModSecurity, no CrowdSec.
       # A banned IP could still reach it.
       #
       # Safe for the tunnel feature: real tunnel traffic never matches this

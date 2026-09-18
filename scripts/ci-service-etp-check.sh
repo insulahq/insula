@@ -8,7 +8,7 @@
 # policy kube-proxy SNATs every external client to the node's own address
 # BEFORE Traefik sees it — CrowdSec, the WAF, the panels' real_ip chain and
 # every tenant workload then see the node IP instead of the client. Measured
-# 2026-08-09: waf-crowdsec 57 pass / 1 fail became 57 / 0 once the policy was
+# waf-crowdsec 57 pass / 1 fail became 57 / 0 once the policy was
 # set to `Local`.
 #
 # The two fields are only JOINTLY VALID. The apiserver accepts
@@ -20,7 +20,7 @@
 #     and externalIPs is still empty — fails the install outright:
 #         Error: Service "traefik" is invalid: spec.externalTrafficPolicy:
 #         Invalid value: "Local": may only be set for externally-accessible services
-#     Caught on a fresh --dual-stack bootstrap 2026-08-09. Nothing else catches
+# Caught on a fresh --dual-stack bootstrap. Nothing else catches
 #     it: no unit test, no lint and no live-cluster patch reproduces a FRESH
 #     install, so the failure is invisible until someone provisions a new node.
 #

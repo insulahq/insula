@@ -107,7 +107,7 @@ async function crashloopingPods(k8s: K8sClients): Promise<number> {
  * database handle (tests, the offline CLI path) degrade to the deployment-only
  * gates rather than failing — but an UNREADABLE registry is reported as such,
  * never as "converged", because a fail-open here is exactly what let a halted
- * registry ride three tiers on 2026-08-19.
+ * registry ride three tiers.
  */
 async function migrationFacts(db: Database | null): Promise<PostflightMigrationFacts> {
   if (!db) return {};

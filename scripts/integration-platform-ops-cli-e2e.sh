@@ -197,7 +197,7 @@ echo "$LL" | grep -qE 'snapshot|none found|in /var/lib' \
 # its first scheduled etcd snapshot yet, and the suite hard-failed with
 # "etcd --local --dry-run did not resolve:" (empty output) for a CLI that was
 # behaving correctly — there was simply nothing to resolve. Caught on the
-# fresh-cluster full run 2026-08-07, where --list reported 0 snapshot lines
+# fresh-cluster full run, where --list reported 0 snapshot lines
 # immediately before this.
 if [[ "${SNAP_COUNT:-0}" -eq 0 ]]; then
   skip "etcd --local --dry-run --latest — no local etcd snapshot exists yet on this cluster (k3s takes them on a schedule); nothing for --latest to resolve"

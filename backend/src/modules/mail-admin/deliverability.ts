@@ -80,7 +80,7 @@ const BLOCKLISTS: ReadonlyArray<{
    * looks up any IP). Operators click these URLs to verify in cases
    * where the DNS probe was refused / skipped.
    *
-   * Pre-2026-05-27 these were generic homepage URLs (e.g. `check.spamhaus.org/`)
+   * Pre- these were generic homepage URLs (e.g. `check.spamhaus.org/`)
    * which forced operators to manually re-type their IP into a search
    * form — and made it look like the probe was showing the WRONG IP.
    */
@@ -997,7 +997,7 @@ export function extractEhloHostname(ehloLine: string | null): string | null {
  * that run a local recursive resolver (the right answer for high-
  * volume blocklist queries that get throttled on public resolvers).
  *
- * 2026-05-27: caught when a freshly-bootstrapped staging cluster
+ * caught when a freshly-bootstrapped staging cluster
  * with correctly-configured Hetzner PTRs (all 3 server IPs → mail.<apex>)
  * still reported "PTR returns staging2 instead of mail.staging…" —
  * coredns's automatic Node-name records were shadowing the real lookup.
@@ -1010,7 +1010,7 @@ function externalDnsServers(): string[] {
   // In `host` mode this returns null and we keep the explicit external
   // resolver below. Mail must NOT be routed through CoreDNS: that is what
   // made a correctly configured staging cluster report the wrong PTR on
-  // 2026-05-27 (CoreDNS node-name records shadowed the real lookup), which
+  // (CoreDNS node-name records shadowed the real lookup), which
   // is the bug this function was written to avoid.
   const configured = getCachedCustomServers();
   if (configured && configured.length > 0) return configured;

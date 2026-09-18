@@ -7,8 +7,8 @@
  * exists" is answered by `lastSnapshotAt`, which nothing ever compares to the
  * schedule that was supposed to produce the next one.
  *
- * So the state that actually hurt — DEV, 2026-09-15: last successful mail
- * snapshot 2026-09-11T19:31, 178 scheduled fires missed, every operator surface
+ * So the state that actually hurt — DEV: last successful mail
+ * snapshot -11T19:31, 178 scheduled fires missed, every operator surface
  * green — had no detector at all. This is that detector.
  *
  * Counting MISSED FIRES rather than elapsed time is deliberate. A repo on
@@ -70,8 +70,45 @@ export interface FreshnessInput {
    * alert that gets muted.
    */
   readonly previous?: FreshnessVerdict;
-  /** CronJob `spec.timeZone`. Null/absent = UTC, which is the k8s default. */
+  /**
+   * CronJob `spec.timeZone`.
+   *
+   * Null/absent does NOT mean UTC. Kubernetes interprets a schedule with no
+   * `spec.timeZone` in the **kube-controller-manager's own** time zone, which
+   * on a k3s node is the host's. This comment used to claim UTC, and that one
+   * wrong word produced a standing false alarm wherever the host clock is not
+   * UTC: a nightly job fires at 03:15 local, the evaluator expected 03:15 UTC,
+   * saw nothing there, and reported healthy backups as stale every day.
+   *
+   * Worse than the noise: once notified, the verdict latches, so a REAL
+   * stoppage afterwards raises nothing.
+   *
+   * Callers pass the platform time zone when the field is absent — see
+   * `resolveScheduleZone`.
+   */
   readonly timeZone?: string | null;
+}
+
+/**
+ * The zone a CronJob's schedule is actually interpreted in.
+ *
+ * Preference order, and why:
+ *   1. `spec.timeZone` — explicit, and what Kubernetes will honour.
+ *   2. The platform time zone — what the operator set for the cluster's clock,
+ *      and what tenant cron jobs already follow. On a normal install it equals
+ *      the host zone, which is what the controller uses for an undeclared
+ *      schedule, so it is the closest available truth.
+ *   3. UTC — only when the platform zone cannot be read.
+ */
+export function resolveScheduleZone(
+  specTimeZone: string | null | undefined,
+  platformTimeZone: string | null | undefined,
+): string {
+  const declared = specTimeZone?.trim();
+  if (declared) return declared;
+  const platform = platformTimeZone?.trim();
+  if (platform) return platform;
+  return 'UTC';
 }
 
 export interface FreshnessResult {

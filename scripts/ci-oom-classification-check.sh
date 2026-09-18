@@ -4,7 +4,7 @@
 #
 # WHY: `terminated.reason === 'OOMKilled'` is the obvious test and it is WRONG.
 # The kubelet reported the production vmsingle pod's cgroup OOM kill as
-# `{exitCode: 137, reason: "Error"}` (2026-08-30) — a sweep for reason ==
+# `{exitCode: 137, reason: "Error"}` — a sweep for reason ==
 # "OOMKilled" across every namespace returned zero results while that pod was
 # being OOM-killed every ~2 days. Four modules classified terminations and
 # handled this inconsistently: two matched only the reason (and so reported
@@ -86,7 +86,7 @@ fi
 # 5) Every INFERRING call site must also apply the node-shutdown guard.
 #    A graceful node shutdown SIGKILLs whatever is still alive at the end of the
 #    grace period; those containers exit 137 and are indistinguishable from a
-#    cgroup OOM by exit code alone. On production 2026-09-11 that reported five
+# cgroup OOM by exit code alone. On production that reported five
 #    reboot corpses as OOMs — three of them to admins as "<tenant>: apache-php
 #    OOM-killed" — while the kernel logged no cgroup OOM for that boot at all.
 #
@@ -97,7 +97,7 @@ fi
 #    The WORKLOAD-STATUS scans (deployment reconcilers, the post-import health
 #    check, the log viewer's pod picker) read whole pod LISTS, so they need the
 #    broader isReplacedPodRecord() — a Failed/Succeeded pod object is a record
-#    the controller already replaced, not the workload. Production 2026-09-11:
+# the controller already replaced, not the workload. Production:
 #    three tenants' 1/1-READY deployments were shown as FAILED "Workload ran out
 #    of memory" because one reboot corpse per namespace still carried exit 137.
 for f in \
@@ -144,7 +144,7 @@ done
 #    A failed liveness/startup probe SIGKILLs the container -- exit 137, pod
 #    stays Running, container restarts -- so NONE of the pod-level shutdown
 #    markers apply and isExpectedSigkill() correctly does not fire. Found by a
-#    real DEV reboot 2026-09-11: two crowdsec containers slow to answer /health
+# real DEV reboot: two crowdsec containers slow to answer /health
 #    after a cold boot were reported as a CRITICAL node memory event while the
 #    kernel logged zero cgroup OOMs. The kubelet names the cause in a Killing
 #    event; an inference must not overrule it.

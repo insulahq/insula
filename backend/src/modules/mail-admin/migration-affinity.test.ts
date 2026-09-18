@@ -71,7 +71,7 @@ describe('applyDeploymentAffinity (mail-stack co-location)', () => {
     // not the Deployment object (metadata.annotations). The restore-state init container reads
     // /podinfo via downwardAPI which mounts pod.metadata.annotations (inherited from template).
     //
-    // 2026-05-28: both annotations (`allow-restore`, `restore-snapshot-id`) are ALWAYS set in
+    // both annotations (`allow-restore`, `restore-snapshot-id`) are ALWAYS set in
     // the patch — null when absent — so a regular migration explicitly clears any stale
     // restore-snapshot-id left over from a prior operator-initiated per-snapshot restore
     // (strategic-merge-patch interprets null as "delete this key"). Bulwark only ever gets

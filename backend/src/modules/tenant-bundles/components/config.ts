@@ -9,7 +9,7 @@
  *
  *   {
  *     "schemaVersion": 1,
- *     "exportedAt": "2026-05-01T10:00:00Z",
+ * "exportedAt": "-01T10:00:00Z",
  *     "tenantId": "...",
  *     "tables": {
  *       "tenants":      [ {...} ],
@@ -173,7 +173,7 @@ export async function buildConfigDump(
 
 /**
  * Per-table SELECT helper. Most tables have a direct `tenant_id`
- * column. Two exceptions audited 2026-05-02 against the live schema:
+ * column. Two exceptions audited against the live schema:
  *
  *   - users: tenant_id (a tenant owns 1..N users; sub-users included)
  *   - ingress_auth_configs: NO tenant_id column. Joined through
@@ -227,7 +227,7 @@ async function selectTenantRows(
     }
     case 'ingressAuthConfigs': {
       // ingress_auth_configs has no direct tenant_id — chain through
-      // ingress_routes → domains → tenant. Audited 2026-05-02.
+      // ingress_routes → domains → tenant. Audited.
       const r = await rawDb.execute(sql`
         SELECT iac.* FROM ingress_auth_configs iac
         JOIN ingress_routes ir ON ir.id = iac.ingress_route_id

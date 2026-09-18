@@ -10,7 +10,7 @@
  * Layout:
  *   - Cluster section (5 existing probes, terse rows reusing the
  *     same shape as the banner for visual continuity)
- *   - Deliverability section (new in 2026-05-17): grouped by
+ * - Deliverability section: grouped by
  *     sub-probe with expected/actual/remediation cards
  *
  * The deliverability section degrades gracefully: if the backend

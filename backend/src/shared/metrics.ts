@@ -75,7 +75,7 @@ export const mailTlsCertSelfSigned = new Gauge({
 
 /**
  * Pending/retrying AcmeRenewal tasks observed in Stalwart's queue —
- * the 2026-06-11 storm accumulated 97 of these. Refreshed by the
+ * the storm accumulated 97 of these. Refreshed by the
  * reconciler tick (the same x:Task/query the dedup gate performs).
  */
 export const stalwartAcmeTaskQueueDepth = new Gauge({
@@ -198,7 +198,7 @@ export const notificationDegradedTotal = new Counter({
  * controller_runtime_reconcile_errors_total counts only UNHANDLED
  * reconciler errors — Flux records real build/apply failures in status
  * conditions and requeues, so that counter stays 0 through genuine
- * failures (proven live on staging 2026-06-12: an 82-retry
+ * failures (proven live on staging: an 82-retry
  * path-not-found Kustomization moved it by exactly 0).
  *
  * -1 = listing that kind failed (clamped to 0 by the alert expression
@@ -221,7 +221,7 @@ export const fluxUnreadyResources = new Gauge({
  * that it then told nobody. A halted registry emitted one `warn` line into a
  * pod log: no alert, no admin surface, no smoke assertion.
  *
- * The cost of that silence, 2026-08-19: migration 0009 (create the wildcard
+ * The cost of that silence: migration 0009 (create the wildcard
  * DNS-01 ClusterIssuers, ADR-058) 403'd because platform-api's ClusterRole had
  * no `create` on clusterissuers. It failed on DEV, then on STAGING, then on
  * production — every tier faithfully rolled out a broken migration and none of
@@ -255,7 +255,7 @@ export const platformMigrationsPending = new Gauge({
  *
  * 1 = a router matched · 0 = Traefik served its unrouted 404 · -1 = probe failed.
  *
- * Exists because the 2026-08-20 outage was invisible to every other signal:
+ * Exists because the outage was invisible to every other signal:
  * Traefik dropped the routers whose middleware came from a plugin it had
  * failed to download, and pods/certs/Flux all stayed green while both panels
  * 404'd. Refreshed every 60s by modules/monitoring/ingress-router-collector.ts.

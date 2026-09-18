@@ -1,4 +1,4 @@
-# A5 (2026-05-25): intra-cluster mail-stack data publisher.
+# A5: intra-cluster mail-stack data publisher.
 #
 # Pairs with the rsyncd sidecar on the stalwart-mail Pod (see deployment.yaml).
 # Standby nodes pull from this Service to populate their

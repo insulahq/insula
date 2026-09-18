@@ -22,7 +22,7 @@ import { useCanManageCerts } from '@/hooks/use-can-manage-certs';
  *                grounds that a browser button invites casual exposure of key
  *                material — but minting a token to fetch a file once is
  *                disproportionate, so the button exists (operator decision
- *                2026-09-03) with the warning kept.
+ * ) with the warning kept.
  *   the tokens   the real use case. Let's Encrypt renews every 90 days, so an
  *                external web server or deploy pipeline needs to pick the
  *                renewed certificate up unattended. Tokens keep working when

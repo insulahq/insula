@@ -131,7 +131,7 @@ export async function reconcileAllMailboxAliases(db: Database): Promise<MailboxA
     stats.mailboxesChecked += 1;
 
     // A disabled/suspended mailbox forces every entry off on the server
-    // (operator decision 2026-08-26); the rows keep the intent. Identity
+    // the rows keep the intent. Identity
     // convergence below stays keyed to the ROW intent — identities are
     // inert while the account cannot authenticate, and keeping them
     // makes reactivation a pure map flip.

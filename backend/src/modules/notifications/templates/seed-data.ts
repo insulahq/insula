@@ -50,7 +50,7 @@ const COMMON_VARS: readonly NotificationTemplateVariable[] = [
   // The tenant's billing/technical contact PERSON, distinct from the
   // organisation name. Populated centrally by the dispatcher from
   // tenants.contact_name, which was filled in for every tenant and read by
-  // nothing until 2026-09-14.
+  // nothing.
   { name: 'contactName', type: 'string', required: false },
   // Seeded by the dispatcher from "now"; a caller with a more precise instant
   // (when the threshold was actually crossed) overrides it.
@@ -254,6 +254,170 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
       { name: 'objectLabel', type: 'string', required: false },
       { name: 'detail', type: 'string', required: false },
       { name: 'severityLabel', type: 'string', required: false },
+      { name: 'recommendedAction', type: 'string', required: false },
+    ],
+  },
+
+  // ── tenant.mailbox_migration ───────────────────────────────────────
+  //
+  // Its own templates, not the generic `{{subsystem}}: {{objectLabel}}`
+  // bucket, so the subject can say the one thing a tenant wants to see:
+  // WHICH mailbox, and whether it worked. The old shared line rendered
+  // "IMAPSync migration: job (unnamed)".
+  //
+  // `mailboxAddress` is REQUIRED. A missing value must fail loudly at render
+  // rather than produce a subject with a hole in it — which is how the
+  // original defect stayed invisible.
+  // ── certificate checks / recovery ───────────────────────────────────────
+  //
+  // Wording rules learned from a burst of false "Cert renewal failed" alarms:
+  // say what the platform could not DO, never what it believes about a
+  // certificate it failed to read; name the dependency; and give the count of
+  // what is unknown rather than implying a per-domain verdict.
+  {
+    categoryId: 'admin.cert_check_unavailable',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: 'Certificate checks are not running',
+    bodyTemplate: emailMjml(
+      'Certificate checks are not running',
+      'The platform could not reach {{dependency}}, so it cannot currently tell whether TLS '
+      + 'certificates are renewing. {{uncheckedCount}} certificate(s) were left unchecked as of '
+      + '{{occurredAt}}. Existing certificates keep serving traffic while this lasts — nothing '
+      + 'expires because of it. {{detail}} {{recommendedAction}}',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'dependency', type: 'string', required: true },
+      { name: 'uncheckedCount', type: 'string', required: true },
+      { name: 'detail', type: 'string', required: false },
+      { name: 'recommendedAction', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'admin.cert_check_unavailable',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: 'Certificate checks are not running',
+    bodyTemplate:
+      'Could not reach {{dependency}}, so certificate renewal status is unknown. '
+      + '{{uncheckedCount}} certificate(s) unchecked as of {{occurredAt}}. Existing certificates '
+      + 'keep serving. {{detail}} {{recommendedAction}}',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'dependency', type: 'string', required: true },
+      { name: 'uncheckedCount', type: 'string', required: true },
+      { name: 'detail', type: 'string', required: false },
+      { name: 'recommendedAction', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'admin.cert_check_resumed',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: 'Certificate checks are running again',
+    bodyTemplate: emailMjml(
+      'Certificate checks are running again',
+      'The platform can reach {{dependency}} again and has resumed checking TLS certificate '
+      + 'status. Checks were interrupted for {{outageLabel}}, ending {{occurredAt}}. '
+      + '{{certificateSummary}}',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'dependency', type: 'string', required: true },
+      { name: 'outageLabel', type: 'string', required: true },
+      { name: 'certificateSummary', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'admin.cert_check_resumed',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: 'Certificate checks are running again',
+    bodyTemplate:
+      'Reached {{dependency}} again; certificate status checks resumed after {{outageLabel}}, '
+      + 'ending {{occurredAt}}. {{certificateSummary}}',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'dependency', type: 'string', required: true },
+      { name: 'outageLabel', type: 'string', required: true },
+      { name: 'certificateSummary', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'admin.cert_recovered',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: 'Certificate for {{certSubject}} is valid again',
+    bodyTemplate: emailMjml(
+      'Certificate for {{certSubject}} is valid again',
+      'The certificate for {{certSubject}} was {{previousState}} and has now been issued '
+      + 'successfully. It is valid until {{expiresAt}}, as of {{occurredAt}}. No action is '
+      + 'needed — this closes the earlier failure notice.',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'certSubject', type: 'string', required: true },
+      { name: 'expiresAt', type: 'string', required: true },
+      { name: 'previousState', type: 'string', required: true },
+    ],
+  },
+  {
+    categoryId: 'admin.cert_recovered',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: 'Certificate for {{certSubject}} is valid again',
+    bodyTemplate:
+      '{{certSubject}} was {{previousState}} and has now been issued. Valid until {{expiresAt}}, '
+      + 'as of {{occurredAt}}. This closes the earlier failure notice.',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'certSubject', type: 'string', required: true },
+      { name: 'expiresAt', type: 'string', required: true },
+      { name: 'previousState', type: 'string', required: true },
+    ],
+  },
+  {
+    categoryId: 'tenant.mailbox_migration',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: 'Mailbox migration of {{mailboxAddress}} {{outcomeLabel}}',
+    bodyTemplate: emailMjml(
+      'Mailbox migration of {{mailboxAddress}}',
+      'The migration {{outcomeLabel}}{{#if sourceLabel}} (copying from {{sourceLabel}}){{/if}}. {{detail}} '
+      + 'As of {{occurredAt}}. {{recommendedAction}}',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'mailboxAddress', type: 'string', required: true },
+      { name: 'outcomeLabel', type: 'string', required: true },
+      { name: 'detail', type: 'string', required: false },
+      { name: 'sourceLabel', type: 'string', required: false },
+      { name: 'recommendedAction', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'tenant.mailbox_migration',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: 'Mailbox migration of {{mailboxAddress}} {{outcomeLabel}}',
+    bodyTemplate:
+      'The migration {{outcomeLabel}}{{#if sourceLabel}} (copying from {{sourceLabel}}){{/if}}. {{detail}} '
+      + 'As of {{occurredAt}}. {{recommendedAction}}',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'mailboxAddress', type: 'string', required: true },
+      { name: 'outcomeLabel', type: 'string', required: true },
+      { name: 'detail', type: 'string', required: false },
+      { name: 'sourceLabel', type: 'string', required: false },
       { name: 'recommendedAction', type: 'string', required: false },
     ],
   },
@@ -2018,7 +2182,7 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     ];
   }),
 
-  // ── Node reboot lifecycle (operator request 2026-09-11) ──
+  // ── Node reboot lifecycle ──
   ...((): SeedTemplate[] => {
     const rebootVars: readonly NotificationTemplateVariable[] = [
       ...COMMON_VARS,

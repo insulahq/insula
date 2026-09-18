@@ -100,7 +100,7 @@ describe('advanceStreak', () => {
 
 describe('convergence gates — an upgrade is not done when its images are', () => {
   /**
-   * 2026-08-19: version-converged, cnpg-healthy, deployments-available and
+   * version-converged, cnpg-healthy, deployments-available and
    * no-crashloops ALL passed on three clusters whose platform-migration
    * registry had halted at 0008. The upgrade reported healthy while the
    * wildcard ClusterIssuer it needed had never been created.

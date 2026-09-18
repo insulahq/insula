@@ -76,7 +76,7 @@ function releaseRefreshSlot(): void {
  * /admin/impersonate/:tenantId` mints a 1-hour access token and no refresh
  * token at all, so there is nothing to rotate and this hook returns early.
  * Making impersonation renewable is a security-model change the operator
- * decided against (2026-09-02) — an impersonation link stays good for an hour
+ * decided against — an impersonation link stays good for an hour
  * and no longer.
  */
 export function useTokenRefresh() {

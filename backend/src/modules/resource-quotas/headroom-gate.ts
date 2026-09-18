@@ -9,7 +9,7 @@
  * baseline minus one server's worth (reserved for single-node-loss
  * survivability).
  *
- * The gate exists to make the user's 2026-05-11 invariant enforceable
+ * The gate exists to make the user's invariant enforceable
  * rather than merely visible: "an operator cannot accidentally
  * overschedule past the point where a single-server loss leaves
  * rescheduling impossible."
@@ -76,7 +76,7 @@ interface QuotaRow {
 /**
  * Sum all tenant quota limits in a single query. Treats NULLs as the
  * application default (2 CPU / 4 GiB / 50 GiB) — review-flagged on
- * 2026-05-11 as a potential foot-gun if an operator interprets NULL
+ * as a potential foot-gun if an operator interprets NULL
  * as "unlimited". The codebase contract (per
  * resource-quotas/service.ts DEFAULT_CPU_LIMIT etc.) is that NULL
  * means "use the plan/application default", NOT unlimited; the gate

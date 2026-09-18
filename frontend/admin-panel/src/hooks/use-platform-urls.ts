@@ -52,7 +52,7 @@ export function useUpdatePlatformUrls() {
  * the query resolves (e.g. the StorageSettings iframe button). Prefers
  * the DB-resolved value, falls back to the runtime-config window global,
  * then to the platform default `/longhorn/` — the cookie-gated path
- * route every cluster ships on the admin host (2026-06-12; replaced
+ * route every cluster ships on the admin host (; replaced
  * the longhorn.<apex> subdomain).
  */
 export function resolveLonghornUrl(data: PlatformUrlsResponse | undefined): string {

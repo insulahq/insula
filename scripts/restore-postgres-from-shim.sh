@@ -8,7 +8,7 @@
 # Two modes:
 #   --latest   — newest base backup + replay WALs to the latest LSN
 #   --pitr <T> — base backup + replay WALs up to timestamp T
-#                (RFC3339, e.g. "2026-05-20T10:00:00Z")
+#
 #
 # Pre-flight:
 #   * SYSTEM target bound (POST /admin/backup-rclone-shim/assignments/system)
@@ -21,7 +21,7 @@
 #
 # Usage:
 #   ./scripts/restore-postgres-from-shim.sh --latest
-#   ./scripts/restore-postgres-from-shim.sh --pitr 2026-05-20T10:00:00Z
+# ./scripts/restore-postgres-from-shim.sh --pitr -20T10:00:00Z
 #   ./scripts/restore-postgres-from-shim.sh --dry-run --latest
 #   ./scripts/restore-postgres-from-shim.sh --latest --source-cluster system-db
 #

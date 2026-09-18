@@ -1,7 +1,7 @@
 /**
  * Tenant health / cluster outage impact routes.
  *
- * One endpoint serves both operator surfaces added after the 2026-09-11
+ * One endpoint serves both operator surfaces added after the
  * drill — the global outage banner (needs the node list + a count) and the
  * affected-tenants modal (needs the per-tenant findings) — so opening the
  * modal costs no extra cluster read.

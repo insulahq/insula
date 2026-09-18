@@ -1,5 +1,5 @@
 /**
- * PitrProgressModal — Phase 4b (2026-05-22) live progress view for the
+ * PitrProgressModal — Phase 4b live progress view for the
  * CNPG snapshot PITR flow. Renders a step-by-step timeline + a running
  * clock for the currently-in-flight long step.
  *

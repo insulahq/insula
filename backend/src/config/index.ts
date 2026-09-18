@@ -93,7 +93,7 @@ const ENCRYPTION_KEY_RE = /^[0-9a-fA-F]{64}$/;
 /**
  * Fail CLOSED on a missing or malformed encryption key.
  *
- * WHY (2026-07-28 security review): `PLATFORM_ENCRYPTION_KEY` is optional and
+ * WHY: `PLATFORM_ENCRYPTION_KEY` is optional and
  * ~40 call sites fall back to `'0'.repeat(64)` — an all-zero, publicly known
  * AES key. Previously an unset key in production only printed a CRITICAL line
  * and then carried on, silently "encrypting" DNS-provider credentials, OIDC

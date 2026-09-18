@@ -63,7 +63,7 @@ interface RoutesDeps {
    *  return is two cheap wrapper objects — no network I/O. Injected so
    *  tests can stub. */
   readonly buildK8sClients: () => { core: k8s.CoreV1Api; apps: k8s.AppsV1Api };
-  /** Phase 5 (2026-05-24): the switch-with-pause route needs `custom`
+  /** Phase 5: the switch-with-pause route needs `custom`
    *  too (cascades into disableWalArchive which manipulates CNPG CRs).
    *  Default factory uses the in-cluster kubeconfig; tests can inject
    *  a stub. Optional so existing deps construction in app.ts doesn't
@@ -132,7 +132,7 @@ export async function backupRcloneShimRoutes(
     return { data: validated, taskId: result.taskId };
   });
 
-  // ─── Switch preview (Phase 5 — 2026-05-24) ──────────────────────
+  // ─── Switch preview ──────────────────────
   // GET /admin/backup-rclone-shim/switch-preview/:className?targetId=...
   //
   // Returns what WOULD happen if the operator switched the target
@@ -164,7 +164,7 @@ export async function backupRcloneShimRoutes(
     };
   });
 
-  // ─── Switch with pause (Phase 5 — 2026-05-24) ───────────────────
+  // ─── Switch with pause ───────────────────
   // POST /admin/backup-rclone-shim/switch-with-pause/:className
   //
   // Same effect as the PUT assignment endpoint but additionally

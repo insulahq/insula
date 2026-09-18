@@ -382,7 +382,7 @@ export function isAnyNameInUse(allNames: readonly string[], inUseSet: ReadonlySe
   // the canonical form regardless of whether the caller/pod spec used
   // the short ref (`nginx:latest`, `serversideup/php:tag`) or the long
   // canonical (`docker.io/library/nginx:latest`,
-  // `docker.io/serversideup/php:tag`). 2026-05-17 reaper bug fix: the
+  // `docker.io/serversideup/php:tag`). reaper bug fix: the
   // previous logic only normalised `docker.io/library/` and missed
   // `docker.io/<user>/` Docker Hub refs (e.g. catalog
   // `serversideup/php:tag` vs node `docker.io/serversideup/php:tag`),

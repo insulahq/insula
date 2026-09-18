@@ -54,7 +54,7 @@ metadata:
     # .spec.template.metadata.labels, and Job spec.template is immutable
     # — Flux dry-run-fails on every subsequent reconcile regardless of
     # SSA mode. ssa:merge alone was insufficient (caught on testing
-    # .example.test 2026-05-08; whole platform Kustomization stuck
+    # .example.test; whole platform Kustomization stuck
     # Ready=False). The Job is suspended at create time and unsuspended
     # once by bootstrap.sh after the plan is rendered; no further
     # reconciliation needed. The reconcile:disabled annotation only

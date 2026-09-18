@@ -4,7 +4,7 @@
 # Memory is the design constraint: requests 128Mi / limit 384Mi, held
 # by THREE budgets that must be read together, because the first one
 # alone does not add up (it OOM-killed this pod every ~2 days until
-# 2026-08-30, and once more on 2026-09-03 — see MEASURED 2026-09-03
+# and once more — see
 # below):
 #   -memory.allowedBytes  VM's own caches, allocated OUTSIDE the Go heap
 #   GOGC / GOMEMLIMIT     the Go runtime, which allowedBytes cannot see
@@ -21,9 +21,9 @@
 # disk fills (queries keep working, scrape-target alerts surface it)
 # instead of crash-looping.
 #
-# ─── MEASURED 2026-09-03, after the 08-30 three-budget fix ───────────
+# ───, after the 08-30 three-budget fix ───────────
 # The fix reduced the OOM cadence (~2 days → ~4) but did not end it: one
-# more kill at 05:03 on 2026-09-03. Live numbers from the running pod:
+# more kill at 05:03. Live numbers from the running pod:
 #   vm_cache_size_bytes total        105.8 MiB   (was ~126)
 #     ...of which storage/tsid 32 + metricIDs 31.2 + metricName 31.2
 #        = 94.4 MiB is fastcache's hard 32-MiB-per-cache FLOOR
@@ -35,7 +35,7 @@
 # So steady state leaves ~59 MiB of headroom and any transient crosses it.
 #
 # The limit was deliberately NOT raised — the platform's whole footprint is
-# the budget, and this pod is ~10% of it (operator decision 2026-09-03).
+# the budget, and this pod is ~10% of it.
 # Acting on this file's own guidance ("the lever is storing LESS —
 # retention, or a harder series cut"), and with retention held at 30d by
 # the same decision, the change is a series cut in scrape-config.yaml:
@@ -52,7 +52,7 @@
 # Version pin: latest stable OSS release (golden rule). The original
 # ADR-051 intent was the v1.136.x LTS line, but VictoriaMetrics ships
 # LTS images for ENTERPRISE only — the OSS image has just the rolling
-# line (discovered live 2026-06-12: v1.136.11 = ImagePullBackOff, only
+# line (discovered live: v1.136.11 = ImagePullBackOff, only
 # -enterprise tags exist). Bumps flow through the ADR-050 component
 # watch. Registry entry: security/components.yaml `victoria-metrics`
 # (pin_check enforces this file matches).
@@ -105,7 +105,7 @@ spec:
             # Re-read the scrape config every minute — without this VM
             # NEVER reloads it (default configCheckInterval=0), so
             # ConfigMap-delivered job changes only land on pod restart
-            # (caught live 2026-06-12: the platform-api job sat unloaded
+            # (caught live: the platform-api job sat unloaded
             # after the PR #52 rollout).
             - -promscrape.configCheckInterval=1m
             - -storageDataPath=/storage
@@ -143,7 +143,7 @@ spec:
             # Re-measure vm_cache_size_bytes against vm_cache_entries before
             # trusting any prediction about this value, including this one.
             - -memory.allowedBytes=64MiB
-            # 4 → 2 (2026-09-03). The -memory.allowedBytes note above records
+            # 4 → 2. The -memory.allowedBytes note above records
             # that the failure mode is "a single cache-warming query could OOM
             # the pod outright"; this is the flag that bounds how many of those
             # can be in flight at once. The consumers are the admin panel's
@@ -173,7 +173,7 @@ spec:
             - -inmemoryDataFlushInterval=10m
           env:
             # Go's default GOGC=100 lets the heap double before collecting.
-            # Measured in production 2026-08-30: live heap ~89 MiB but
+            # Measured in production: live heap ~89 MiB but
             # go_memstats_heap_sys 234 MiB with only 66 MiB released back —
             # ~168 MiB RESIDENT to service an 89 MiB working set. That
             # headroom is what pushed RSS to 348 MiB against a 384 MiB

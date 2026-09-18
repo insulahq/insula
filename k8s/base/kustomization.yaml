@@ -174,7 +174,7 @@ resources:
   # wires it directly via k8s/overlays/dind/stalwart-mail/.
   # - stalwart-mail/
 
-# ── platform-critical eviction protection (operator decision 2026-07-25) ──
+# ── platform-critical eviction protection ──
 # Every base Deployment/StatefulSet/CronJob gets priorityClassName
 # platform-critical so kubelet memory eviction always takes tenant pods
 # (tenant-default, priority 0) first. DaemonSets are deliberately NOT

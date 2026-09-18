@@ -2,7 +2,7 @@
  * Stalwart account-level aliases + send-as identities — the mail-server
  * side of per-mailbox aliases.
  *
- * Verified live against Stalwart v0.16.16 (2026-08-25):
+ * Verified live against Stalwart v0.16.16:
  *   - x:Account `aliases` is an id-keyed MAP of
  *     `{ enabled, name (local part), domainId, description }`. A whole-map
  *     update REPLACES the set atomically; an entry colliding with any

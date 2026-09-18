@@ -1,7 +1,7 @@
 # Coraza WAF Middlewares — DOCUMENTED DEAD CODE (do NOT include in
 # kustomization).
 #
-# 2026-05-14 smoke test established that no working in-process Coraza
+# smoke test established that no working in-process Coraza
 # plugin exists for Traefik today:
 #   * Yaegi-interpreted vendored plugin (hatsat32/coraza-traefik) fails
 #     to load — Coraza imports `unsafe` which Yaegi does not implement.

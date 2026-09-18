@@ -1,6 +1,6 @@
 /**
  * Unit tests for the target-node-readiness gate (failback root cause refined on
- * the 2026-07-04 destructive runs).
+ * the destructive runs).
  *
  * A failback fires while the target is still recovering from its k3s restart —
  * NotReady + node.kubernetes.io/{not-ready,unreachable} taints — which blocks

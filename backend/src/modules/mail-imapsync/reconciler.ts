@@ -10,8 +10,8 @@
  * but scoped to BatchV1 jobs in the `mail` namespace.
  */
 
-import { eq, inArray } from 'drizzle-orm';
-import { imapSyncJobs } from '../../db/schema.js';
+import { eq, inArray, getTableColumns } from 'drizzle-orm';
+import { imapSyncJobs, mailboxes } from '../../db/schema.js';
 import { notifyTenantImapsyncTerminal } from '../notifications/events.js';
 import { parseImapsyncProgress, parseImapsyncSummary } from './progress-parser.js';
 import type { Database } from '../../db/index.js';
@@ -199,9 +199,18 @@ export async function reconcileImapSyncJobs(
   k8s: K8sClients,
   logger: ReconcilerLogger = noopLogger,
 ): Promise<{ reconciled: number; finished: number }> {
+  // The job row carries `mailboxId`, not the address — and the address is the
+  // only thing that makes the tenant notification mean anything. Joined here
+  // rather than looked up per job: one query, and no chance of an N+1 appearing
+  // later. Spreading the table's own columns keeps every `row.<field>` below
+  // working unchanged.
+  //
+  // LEFT join on purpose: a mailbox deleted mid-migration must not make the
+  // job vanish from reconciliation — it still has a K8s Job to clean up.
   const active = await db
-    .select()
+    .select({ ...getTableColumns(imapSyncJobs), mailboxAddress: mailboxes.fullAddress })
     .from(imapSyncJobs)
+    .leftJoin(mailboxes, eq(mailboxes.id, imapSyncJobs.mailboxId))
     .where(inArray(imapSyncJobs.status, ['pending', 'running']));
 
   let reconciled = 0;
@@ -238,7 +247,13 @@ export async function reconcileImapSyncJobs(
         // Phase 3 round-2: notify tenant on terminal success.
         void notifyTenantImapsyncTerminal(db, row.tenantId, {
           jobId: row.id,
+          // Falls back to the source account when the destination mailbox has
+          // been deleted mid-migration: still a name the tenant recognises,
+          // which is the whole point. Never an id.
+          mailboxAddress: row.mailboxAddress ?? row.sourceUsername,
+          sourceHost: row.sourceHost,
           status: 'succeeded',
+          messagesTransferred: row.messagesTransferred ?? undefined,
         });
         continue;
       }
@@ -264,8 +279,14 @@ export async function reconcileImapSyncJobs(
         // Phase 3 round-2: notify tenant on terminal failure.
         void notifyTenantImapsyncTerminal(db, row.tenantId, {
           jobId: row.id,
+          mailboxAddress: row.mailboxAddress ?? row.sourceUsername,
+          sourceHost: row.sourceHost,
           status: 'failed',
-          errorMessage: 'imapsync job failed — see the job log tail in the tenant panel.',
+          // Deliberately no errorMessage: the only thing available here is the
+          // placeholder written to the DB row above ("imapsync job failed — see
+          // logTail"), which would have reached the tenant as "The error was:
+          // imapsync job failed — see logTail". The emitter has a plain-English
+          // fallback that points at the page instead.
         });
         continue;
       }
@@ -378,8 +399,13 @@ export async function reconcileImapSyncJobs(
         // Phase 3 round-2: notify tenant on terminal failure (disappeared).
         void notifyTenantImapsyncTerminal(db, row.tenantId, {
           jobId: row.id,
+          mailboxAddress: row.mailboxAddress ?? row.sourceUsername,
+          sourceHost: row.sourceHost,
           status: 'failed',
-          errorMessage: `Kubernetes Job '${row.k8sJobName}' disappeared before reconciler could observe completion.`,
+          // The old text named a Kubernetes Job. A tenant cannot act on that
+          // and should not have to read it; the operator gets it in the log
+          // line above, which is where it belongs.
+          errorMessage: 'The migration stopped unexpectedly before it could report a result.',
         });
         continue;
       }

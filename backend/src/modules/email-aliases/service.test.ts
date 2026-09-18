@@ -172,7 +172,7 @@ describe('deleteAlias', () => {
   });
 });
 
-// ── Stalwart-backed aliases (R28, 2026-08-24) ───────────────────────────────
+// ── Stalwart-backed aliases ───────────────────────────────
 
 vi.mock('../stalwart-jmap/client.js', () => ({
   getCachedPrincipalsAccountId: vi.fn().mockResolvedValue('acct-1'),

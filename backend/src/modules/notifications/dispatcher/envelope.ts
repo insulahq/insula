@@ -102,7 +102,7 @@ export async function userDisplayName(
 /**
  * Format an instant for a human.
  *
- * Production has been mailing customers `2026-09-21T00:00:00.000Z`. A raw ISO
+ * Production has been mailing customers `-21T00:00:00.000Z`. A raw ISO
  * string in a sentence is a leaked implementation detail, not a date.
  */
 export function formatOccurredAt(value: unknown): string | null {
@@ -134,7 +134,7 @@ export function normaliseDateVariables(vars: Record<string, unknown>): Record<st
 
 // ── Greeting ──────────────────────────────────────────────────────────────
 //
-// Operator requirement 2026-09-16: every notification opens by addressing the
+// Operator requirement: every notification opens by addressing the
 // person, EXCEPT when the recipient is only a mailbox owner — they have no
 // platform account, so the platform knows no name to use and "Hi bookings"
 // (the local part) is worse than no greeting at all.
@@ -156,7 +156,7 @@ export function greetingFor(name: string | null | undefined): string | null {
 
 // ── Never print an id ─────────────────────────────────────────────────────
 //
-// Operator requirement 2026-09-16, after production mailed
+// Operator requirement, after production mailed
 // "3fd54013-fc40-4e13-adaf-ed1b5dd39f28 saturated its hour sending limit".
 // The emitter had passed `tenantLabel: tenantId` and every layer below
 // faithfully rendered it.
@@ -164,6 +164,16 @@ export function greetingFor(name: string | null | undefined): string | null {
 // Resolution happens HERE rather than in the ~50 emitters, for the same reason
 // identity does: a rule that each caller must remember is a rule that half of
 // them will not.
+
+/**
+ * What a label becomes when its id cannot be named.
+ *
+ * Exported because `dispatch.ts` checks rendered text for it: the substitution
+ * silently hid the defect it was meant to paper over (a tenant received
+ * "IMAPSync migration: job (unnamed)"), so the two must not be able to drift
+ * apart into a check that matches nothing.
+ */
+export const UNRESOLVED_NAME_PLACEHOLDER = '(unnamed)';
 
 const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
 
@@ -244,7 +254,7 @@ export async function resolveIdVariables(
   for (const [key, value] of Object.entries(out)) {
     if (typeof value !== 'string') continue;
     if (!UUID_RE.test(value)) continue;
-    out[key] = value.replace(UUID_RE, (id) => names.get(id) ?? '(unnamed)');
+    out[key] = value.replace(UUID_RE, (id) => names.get(id) ?? UNRESOLVED_NAME_PLACEHOLDER);
   }
   return { vars: out, unresolved };
 }

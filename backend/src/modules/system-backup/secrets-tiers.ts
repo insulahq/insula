@@ -42,7 +42,7 @@ export const TIER_1_PLATFORM_NAMESPACES: ReadonlySet<string> = new Set([
  * This used to test `/^client-.+$/`, a convention the platform no longer mints
  * — `tenants/service.ts:generateNamespace()` has produced `tenant-<slug>-<hex>`
  * for a long time, and production has ZERO `client-*` namespaces and zero
- * tenant rows outside `tenant-*` (checked 2026-08-31). So every real tenant
+ * tenant rows outside `tenant-*`. So every real tenant
  * Secret was being labelled `unclassified` instead of `tier-2-tenant`.
  *
  * Behaviourally this was harmless — both tiers are bundled and both are applied
