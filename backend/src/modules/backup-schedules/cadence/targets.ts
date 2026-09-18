@@ -78,15 +78,21 @@ export const CADENCE_TARGETS: readonly CadenceTarget[] = [
     manifestDefault: '0 3 * * *',
     label: 'cluster state dump',
   },
-  {
-    subsystem: 'system_pitr',
-    mechanism: 'cnpg-backup',
-    namespace: 'platform',
-    name: 'system-db-scheduled-backup',
-    // CNPG cron carries a leading seconds field.
-    manifestDefault: '0 0 3 * * *',
-    label: 'Postgres base backup',
-  },
+  // `system_pitr` is deliberately ABSENT.
+  //
+  // The Postgres base backup already has a purpose-built control — the
+  // Postgres card on the Backups tab — which writes the ScheduledBackup
+  // through `enableWalArchive` together with the retention policy and the WAL
+  // archive timeout, validates them against each other, and records them in
+  // `system_wal_archive_state`. Driving the same object from
+  // `backup_schedules.system_pitr` as well would give an operator two cadence
+  // fields, on two tabs, backed by two tables, writing one object: whichever
+  // wrote last would win, and this reconciler's 5-minute tick would quietly
+  // revert anything set on the Postgres card.
+  //
+  // The `system_pitr` ROW still exists (migration 0011, used by
+  // switch-with-pause). It simply is not a cadence target, and the System
+  // Backups page does not render a card for it.
   {
     subsystem: 'longhorn_recurring',
     mechanism: 'read-only',

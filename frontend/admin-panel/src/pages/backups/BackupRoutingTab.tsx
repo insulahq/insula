@@ -73,10 +73,10 @@ const SCHEDULE_META: Record<string, {
     title: 'Mail snapshot schedule',
     description: 'Restic backup of /var/lib/stalwart/data — runs as a CronJob in the mail namespace.',
   },
-  system_pitr: {
-    title: 'Postgres PITR base backups',
-    description: 'Daily base backup of the platform postgres. WAL archiving runs continuously when enabled.',
-  },
+  // No `system_pitr` entry: the Postgres base backup is configured on the
+  // Backups tab, where cadence, retention and archive timeout are set and
+  // validated together. Re-adding it here would put a second cadence field on
+  // a second tab writing the same ScheduledBackup.
   tenant_bundle: {
     title: 'Tenant bundle schedule',
     description: 'Nightly Plesk-style bundles: files + mailboxes + config per tenant.',

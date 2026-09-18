@@ -243,40 +243,22 @@ describe('a disabled schedule that was moved off its default', () => {
   });
 });
 
-describe('the Postgres base backup', () => {
-  it('converts the operator 5-field cron to CNPG six-field form', async () => {
-    const target = targetFor('system_pitr')!;
-    const patchCustom = vi.fn(async () => ({}));
-    const clients = {
-      batch: { readNamespacedCronJob: vi.fn(), patchNamespacedCronJob: vi.fn() },
-      custom: {
-        getNamespacedCustomObject: vi.fn(async () => ({ spec: { schedule: '0 0 3 * * *' } })),
-        patchNamespacedCustomObject: patchCustom,
-      },
-    } as unknown as CadenceClients;
-    const out = await reconcileCadenceTarget(
-      dbWith({ enabled: true, cronExpression: '45 2 * * *' }), clients, target, log,
-    );
-    expect(out.state).toBe('STATE_OK');
-    const body = (patchCustom.mock.calls[0][0] as { body: { spec: { schedule: string } } }).body;
-    expect(body.spec.schedule).toBe('0 45 2 * * *');
+describe('the Postgres base backup is deliberately NOT a cadence target', () => {
+  it('has no cadence target, so this reconciler never writes its ScheduledBackup', () => {
+    // It already has a purpose-built control: the Postgres card on the Backups
+    // tab sets cadence + retention + archive timeout together, validates them
+    // against each other, and writes the ScheduledBackup through
+    // enableWalArchive. Driving the same object from here as well would mean
+    // two cadence fields on two tabs backed by two tables, and this
+    // reconciler's 5-minute tick silently reverting whatever the Postgres card
+    // set.
+    expect(targetFor('system_pitr')).toBeUndefined();
+    expect(CADENCE_TARGETS.some((t) => t.name === 'system-db-scheduled-backup')).toBe(false);
   });
 
-  it('refuses to write a malformed cron rather than wedging on a webhook rejection', async () => {
-    const target = targetFor('system_pitr')!;
-    const patchCustom = vi.fn();
-    const clients = {
-      batch: { readNamespacedCronJob: vi.fn(), patchNamespacedCronJob: vi.fn() },
-      custom: { getNamespacedCustomObject: vi.fn(), patchNamespacedCustomObject: patchCustom },
-    } as unknown as CadenceClients;
-    const out = await reconcileCadenceTarget(
-      dbWith({ enabled: true, cronExpression: 'every tuesday' }), clients, target, log,
-    );
-    expect(out.state).toBe('STATE_INVALID_CRON');
-    expect(patchCustom).not.toHaveBeenCalled();
-  });
-
-  it('round-trips the cron form', () => {
+  it('still converts cron forms, for whoever writes a CNPG schedule', () => {
+    // The helpers stay: CNPG schedules carry a leading seconds field, and the
+    // conversion is the kind of thing a future writer will need.
     expect(toCnpgCron('45 2 * * *')).toBe('0 45 2 * * *');
     expect(fromCnpgCron('0 45 2 * * *')).toBe('45 2 * * *');
     expect(toCnpgCron('nonsense')).toBeNull();
@@ -442,7 +424,7 @@ describe('the target table', () => {
   it('covers every subsystem the UI offers, with no duplicates', () => {
     const subsystems = CADENCE_TARGETS.map((t) => t.subsystem);
     expect(new Set(subsystems).size).toBe(subsystems.length);
-    for (const s of ['etcd_snapshot', 'secrets_bundle', 'cluster_state', 'system_pitr', 'longhorn_recurring']) {
+    for (const s of ['etcd_snapshot', 'secrets_bundle', 'cluster_state', 'longhorn_recurring']) {
       expect(subsystems, `${s} has no cadence target`).toContain(s);
     }
   });

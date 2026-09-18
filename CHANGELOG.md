@@ -13,6 +13,12 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Fixed
+- **The platform database briefly had two places to set its backup time.** A
+  schedule card was added for it alongside the other system backups, but that
+  database already has its own card where cadence, retention and archive
+  timeout are set together and checked against each other. Two fields writing
+  the same thing meant whichever was saved last won, and the other silently
+  reverted it. The duplicate is gone; the original card is unchanged.
 - **The Longhorn snapshot schedule showed a time it was not running.** The card
   displayed a stored value that nothing applied — and the default it was
   seeded with differs from the one the cluster actually uses, so it has been

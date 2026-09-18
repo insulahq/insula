@@ -48,7 +48,12 @@ export default function SystemBackupsPage() {
         // cards at all: the cadence of every system artefact lived only in
         // manifests. Order is the order an operator thinks about them —
         // database first, then the three DR artefacts.
-        scheduleSubsystems={['system_pitr', 'etcd_snapshot', 'secrets_bundle', 'cluster_state', 'longhorn_recurring']}
+        // `system_pitr` is NOT here: the Postgres base backup has its own card
+        // on the Backups tab, which sets cadence, retention and archive
+        // timeout together and validates them against each other. A second
+        // cadence field on this tab would write the same ScheduledBackup from
+        // a different stored value.
+        scheduleSubsystems={['etcd_snapshot', 'secrets_bundle', 'cluster_state', 'longhorn_recurring']}
         snapshotsTab={
           <div className="space-y-3">
             <p className="text-xs text-gray-500 dark:text-gray-400">
