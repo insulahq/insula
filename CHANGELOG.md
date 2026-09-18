@@ -43,6 +43,20 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   has mounted. Snapshots a tenant takes from the Snapshots page are untouched
   and still expire on their own schedule; tenant volumes keep the nightly
   filesystem trim that frees deleted-file space.
+- **Two working backups were reported as stopped, and that silenced the real
+  alarm.** The nightly secrets-bundle and cluster-state backups run at 03:15
+  and 03:00 on the platform's clock, but the monitor that decides whether a
+  backup is overdue was reading those times as UTC. On a cluster whose clock is
+  not UTC it therefore looked for runs that had already happened two hours
+  earlier, found nothing, and marked both as stale every day — one of them sent
+  a "Backups have stopped" notification for a backup that had never missed a
+  run. Because the platform remembers what it has already told you, the
+  incorrect verdict then stuck, so a genuine stoppage would have raised
+  nothing at all.
+
+  The monitor now reads schedules on the platform's clock, and the platform's
+  own backup jobs record which clock they are on, so this cannot drift again if
+  the server's time zone changes.
 - **The backup time you chose for the platform database is now the one used.**
   Its own card has always offered a "base backup cadence", and the value was
   saved — but a background job re-applied the built-in 03:00 schedule within
