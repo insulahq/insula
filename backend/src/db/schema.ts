@@ -1650,6 +1650,71 @@ export const emailDmarcReports = pgTable('email_dmarc_reports', {
   index('email_dmarc_reports_received_idx').on(table.receivedAt),
 ]);
 
+/**
+ * ARF (RFC 5965) abuse reports about mail from a tenant domain.
+ *
+ * One row per report Stalwart parsed and the poller consumed. Distinct from
+ * the retired `email_fbl_complaints`: that one existed to compute a complaint
+ * RATE from provider feedback loops and needed per-provider enrolment to
+ * produce any rows; this is the incident itself, which arrives unsolicited and
+ * is worth reading one at a time.
+ */
+export const emailAbuseReports = pgTable('email_abuse_reports', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  stalwartReportId: varchar('stalwart_report_id', { length: 64 }).notNull(),
+  tenantId: varchar('tenant_id', { length: 36 })
+    .references(() => tenants.id, { onDelete: 'set null' }),
+  domain: varchar('domain', { length: 255 }),
+  feedbackType: varchar('feedback_type', { length: 32 }).notNull(),
+  originalMailFrom: varchar('original_mail_from', { length: 320 }),
+  originalRcptTo: varchar('original_rcpt_to', { length: 320 }),
+  sourceIp: varchar('source_ip', { length: 64 }),
+  reportingMta: varchar('reporting_mta', { length: 255 }),
+  reporter: varchar('reporter', { length: 320 }),
+  subject: text('subject'),
+  incidents: integer('incidents').notNull().default(1),
+  receivedAt: timestamp('received_at', { withTimezone: true }).notNull(),
+  /** Set once the admin roster has been told, so a restart cannot re-announce. */
+  notifiedAt: timestamp('notified_at', { withTimezone: true }),
+  raw: jsonb('raw').$type<Record<string, unknown>>(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('email_abuse_reports_report_unique').on(table.stalwartReportId),
+  index('email_abuse_reports_tenant_idx').on(table.tenantId, table.receivedAt),
+  index('email_abuse_reports_domain_idx').on(table.domain, table.receivedAt),
+  index('email_abuse_reports_received_idx').on(table.receivedAt),
+]);
+
+/**
+ * TLS-RPT (RFC 8460) reports about inbound delivery to this platform's MX.
+ *
+ * One row per report. The per-policy / per-failure breakdown lives in
+ * `failures` rather than a child table — see the migration for why.
+ */
+export const emailTlsReports = pgTable('email_tls_reports', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  stalwartReportId: varchar('stalwart_report_id', { length: 64 }).notNull(),
+  tenantId: varchar('tenant_id', { length: 36 })
+    .references(() => tenants.id, { onDelete: 'set null' }),
+  policyDomain: varchar('policy_domain', { length: 255 }),
+  orgName: varchar('org_name', { length: 255 }),
+  contactInfo: varchar('contact_info', { length: 320 }),
+  reportId: varchar('report_id', { length: 255 }),
+  dateRangeStart: timestamp('date_range_start', { withTimezone: true }),
+  dateRangeEnd: timestamp('date_range_end', { withTimezone: true }),
+  successfulSessions: integer('successful_sessions').notNull().default(0),
+  failedSessions: integer('failed_sessions').notNull().default(0),
+  failures: jsonb('failures').$type<Array<Record<string, unknown>>>(),
+  receivedAt: timestamp('received_at', { withTimezone: true }).notNull(),
+  raw: jsonb('raw').$type<Record<string, unknown>>(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('email_tls_reports_report_unique').on(table.stalwartReportId),
+  index('email_tls_reports_tenant_idx').on(table.tenantId, table.receivedAt),
+  index('email_tls_reports_domain_idx').on(table.policyDomain, table.receivedAt),
+  index('email_tls_reports_received_idx').on(table.receivedAt),
+]);
+
 export const emailDmarcSources = pgTable('email_dmarc_sources', {
   id: varchar('id', { length: 36 }).primaryKey(),
   reportId: varchar('report_id', { length: 36 })

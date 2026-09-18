@@ -178,6 +178,51 @@ top of the page:
     have seen mail from your domain, and the first reports normally take 24–48
     hours to arrive.
 
+## Abuse Reports (complaints about your mail)
+
+When somebody who received a message from one of your addresses marks it as
+spam or abuse, their mail provider can send back a machine-readable complaint.
+The **Abuse Reports** tab lists the ones received for your domain.
+
+Each row shows which of your addresses sent the message, who complained, and
+how many incidents the report covers. Expand a row for the recipient, the
+sending IP and the subject.
+
+Treat these as something to fix at the source — an unwanted newsletter, a
+compromised mailbox, a form that mails strangers. Repeated complaints damage
+your domain's reputation and eventually get your mail blocked or sent to spam
+folders by default.
+
+!!! info "An empty tab is the normal state"
+
+    Reports only arrive when a recipient actively complains, and only from
+    providers that send them. Seeing none is good news, not a sign that
+    anything is broken.
+
+## Delivery Security (can others reach you over TLS)
+
+The **Delivery Security** tab answers the opposite question to Authentication:
+not "is my outgoing mail trusted", but "can other providers deliver *to* me
+securely". Both matter, and neither substitutes for the other — a domain can
+pass every authentication check while presenting an expired certificate to
+everyone trying to reach it.
+
+Providers that send you mail report daily on whether the connection could be
+encrypted:
+
+- **Encrypted connections** and **Failed** — always shown together, because a
+  failure count means nothing without the number of connections it came from.
+- **Success rate** — shown as *no data* when nothing has been reported, never
+  as 100%.
+- Expand a report for the specific problem (an expired certificate, a server
+  that would not start TLS) and which of your mail servers it affected.
+
+!!! note "Failures here are ours to fix"
+
+    Your mail server, its certificate and its MX records are managed for you.
+    If failures persist, contact support and quote the report — there is
+    nothing to change in your own DNS.
+
 ## Set up a mail client (phone / Outlook / Apple Mail)
 
 The simplest way to add your mailbox to a phone or desktop app:
