@@ -80,8 +80,13 @@ until you turn it back on — the platform will not quietly keep running it.
 
 The platform database is **not** in that list: its cadence, retention and
 archive timeout are set together on its own card (above), where the panel can
-warn you if retention is too short for the cadence you picked. There is one
-place to set it, not two.
+warn you if retention is too short for the cadence you picked — one place to
+set it, not two.
+
+!!! note "If you have never turned offsite backups on"
+    Until you do, the database is backed up nightly at **03:00 UTC** using the
+    platform default. Once you set a cadence on that card it is used instead,
+    and it stays set.
 
 !!! note "Changing a time takes effect immediately"
     Two of these — the secrets bundle and the cluster-state dump — normally run
