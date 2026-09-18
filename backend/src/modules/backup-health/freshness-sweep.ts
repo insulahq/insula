@@ -40,6 +40,7 @@ import {
   evaluateFreshness,
   countScheduledFires,
   scanScheduledFires,
+  resolveScheduleZone,
   DEFAULT_STALE_AFTER_FIRES,
   type FreshnessVerdict,
 } from './freshness.js';
@@ -137,9 +138,12 @@ export function oldEnoughToJudgeNever(
   s: WatchedSchedule,
   now: Date,
   staleAfter = DEFAULT_STALE_AFTER_FIRES,
+  /** Same fallback as the verdict path — see resolveScheduleZone. */
+  platformTimeZone: string | null = null,
 ): boolean {
   if (!s.schedule || !s.createdAt) return false;
-  return countScheduledFires(s.schedule, s.createdAt, now, undefined, s.timeZone) >= staleAfter;
+  const zone = resolveScheduleZone(s.timeZone, platformTimeZone);
+  return countScheduledFires(s.schedule, s.createdAt, now, undefined, zone) >= staleAfter;
 }
 
 /**
@@ -164,6 +168,19 @@ export async function runFreshnessSweep(
   log: Logger,
   now: Date = new Date(),
 ): Promise<FreshnessSweepResult> {
+  // The clock an undeclared CronJob schedule is interpreted in. Read once per
+  // sweep: it is a settings lookup, and every schedule in this pass wants the
+  // same answer.
+  let platformTimeZone: string | null = null;
+  try {
+    const { getSettings } = await import('../system-settings/service.js');
+    platformTimeZone = (await getSettings(db)).timezone ?? null;
+  } catch (err) {
+    // Fall through to UTC rather than skipping the sweep: a settings read that
+    // fails must not stop backup-freshness monitoring altogether.
+    log.warn('freshness: could not read the platform timezone; assuming UTC this tick', err);
+  }
+
   let schedules: readonly WatchedSchedule[];
   try {
     schedules = await listWatchedSchedules(batch);
@@ -213,8 +230,11 @@ export async function runFreshnessSweep(
     // A run in progress is not a missed run. Leave the stored verdict alone
     // rather than overwriting it with a guess — this tick simply has nothing
     // to say about a schedule that is mid-flight.
+    // Resolve the zone ONCE, here, so the in-flight interval and the verdict
+    // below cannot disagree about when this schedule fires.
+    const zone = resolveScheduleZone(s.timeZone, platformTimeZone);
     const interval = s.schedule
-      ? scanScheduledFires(s.schedule, s.lastSuccessAt ?? s.createdAt ?? now, now, undefined, s.timeZone).intervalMs
+      ? scanScheduledFires(s.schedule, s.lastSuccessAt ?? s.createdAt ?? now, now, undefined, zone).intervalMs
       : null;
     if (isRunInFlight(s, now, interval)) {
       skippedInFlight += 1;
@@ -226,15 +246,16 @@ export async function runFreshnessSweep(
       cronExpression: s.schedule,
       now,
       previous: previous?.verdict,
-      // Per-CronJob, not per-cluster-assumption: a schedule that fires in
-      // Europe/Berlin must be counted in Europe/Berlin or every daily job
-      // looks like it missed a run for an hour or two every day.
-      timeZone: s.timeZone,
+      // Per-CronJob where declared, else the platform clock. An undeclared
+      // schedule is interpreted by Kubernetes in the controller's own zone —
+      // NOT UTC — and assuming UTC is what made two healthy production
+      // backups report stale every day.
+      timeZone: zone,
     });
     evaluated += 1;
 
     let verdict = result.verdict;
-    if (verdict === 'never' && !oldEnoughToJudgeNever(s, now)) {
+    if (verdict === 'never' && !oldEnoughToJudgeNever(s, now, undefined, platformTimeZone)) {
       // Too new to have run yet. Record it as unknown rather than fresh: it is
       // not healthy, it is unjudged, and calling it healthy is the false green
       // this work exists to remove.
