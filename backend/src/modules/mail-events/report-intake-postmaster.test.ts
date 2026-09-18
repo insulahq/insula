@@ -225,6 +225,19 @@ describe('report intake provisions postmaster@, not just the pattern', () => {
     expect(patch?.patch.inboundReportAddresses).toHaveProperty('postmaster@*', true);
   });
 
+  it('registers abuse@* so ARF complaints are actually PARSED', async () => {
+    // Without this pattern Stalwart never hands mail at `abuse@` to its ARF
+    // parser, so no `x:ArfExternalReport` is created and the abuse-report
+    // pipeline sees nothing — from the address RFC 2142 designates and that
+    // abuse desks and blocklist operators actually use. It is safe only
+    // because abuse-reports.ts now consumes the resulting events: consume
+    // first, intercept second, never the reverse.
+    await ensureReportIntake(db(ONE), logger);
+    const patch = reportSettingsUpdate.mock.calls[0]?.[0] as
+      { patch: { inboundReportAddresses: Record<string, boolean> } } | undefined;
+    expect(patch?.patch.inboundReportAddresses).toHaveProperty(`${ABUSE_LOCAL_PART}@*`, true);
+  });
+
   it('does not recreate a mailbox that already has a row', async () => {
     await ensureReportIntake(makeDb(ONE, [{ id: 'existing', stalwartPrincipalId: 'p1' }]), logger);
     expect(createMailbox).not.toHaveBeenCalled();

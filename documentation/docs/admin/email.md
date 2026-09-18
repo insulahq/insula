@@ -224,7 +224,14 @@ what it has consumed. Three kinds are ingested, and each has a surface.
 
 Reports are **not** forwarded to a mailbox as well — the platform stores them
 and shows them here instead, so `postmaster@` does not fill with machine mail
-nobody reads. Ordinary mail to `postmaster@` and `abuse@` is unaffected.
+nobody reads. Ordinary mail to `postmaster@` and `abuse@` is unaffected: only
+messages recognised as reports are intercepted, so a person writing prose to
+your abuse desk still lands in the intake mailbox as before.
+
+`postmaster@`, `dmarc@` **and `abuse@`** are all registered as report-intake
+addresses. `abuse@` is the one RFC 2142 designates and the one abuse desks and
+blocklist operators actually send machine-readable complaints to, so leaving it
+unregistered meant the complaints most worth having were the ones never parsed.
 
 ### Abuse reports raise a notification
 

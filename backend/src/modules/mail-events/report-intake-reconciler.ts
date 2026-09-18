@@ -92,14 +92,31 @@ export const ABUSE_LOCAL_PART = 'abuse';
 const REQUIRED_INTAKE_PATTERNS = [
   'postmaster@*',
   `${DMARC_LOCAL_PART}@*`,
-  // `abuse@*` is deliberately NOT here. A pattern in this list hands the mail
-  // to Stalwart's report-analysis, which parses and CONSUMES it before storage
-  // — which is why the intake mailboxes measure 0 MB. That is right for
-  // machine-generated DMARC reports and wrong for abuse@, whose mail is
-  // frequently a human describing a problem. Registering it would have made
-  // every abuse complaint vanish while SMTP said 250: strictly worse than the
-  // 550 it replaced, and invisible. The alias alone is what makes RCPT
-  // succeed; delivery into the intake mailbox is the point.
+  // `abuse@*` IS here, and was deliberately absent before abuse-report
+  // ingestion existed. Both halves of that reversal matter:
+  //
+  //   Why it was excluded: a pattern in this list hands the mail to Stalwart's
+  //   report-analysis, which parses an ARF report and consumes it rather than
+  //   delivering it. With nothing on the platform consuming the resulting
+  //   `incoming-report.abuse-report` event, registering `abuse@*` would have
+  //   made every machine-readable complaint vanish while SMTP said 250 —
+  //   strictly worse than the 550 it replaced, and invisible.
+  //
+  //   Why it is included now: `abuse-reports.ts` polls those objects, files
+  //   them, notifies the admin roster and shows them in both panels. Consume
+  //   first, intercept second — in that order, never the reverse.
+  //
+  // Leaving it out had its own cost, which is what this fixes: `abuse@` is the
+  // address RFC 2142 designates and the one abuse desks and blocklist
+  // operators actually send ARF to, so the complaints most worth having were
+  // the ones never parsed.
+  //
+  // Non-report mail to an intake address is NOT swallowed — it is delivered
+  // normally. Measured on production before this change: `postmaster@` already
+  // matched `postmaster@*`, and a remote DSN (not a report) was still queued
+  // and delivered to the admin roster. So prose to `abuse@` keeps reaching the
+  // intake mailbox exactly as it does today.
+  `${ABUSE_LOCAL_PART}@*`,
 ] as const;
 
 /**

@@ -60,6 +60,9 @@ export const SUBSCRIBED_EVENTS: readonly string[] = [
   'incoming-report.abuse-report',
   'incoming-report.fraud-report',
   'incoming-report.virus-report',
+  // `other-report` is ARF Stalwart could not classify. The poller stores those
+  // as `other` rather than dropping them, so the event belongs here too.
+  'incoming-report.other-report',
   'incoming-report.arf-parse-failed',
   // TLS-RPT. `with-warnings` is a separate event, so subscribing only the
   // clean one would mean the reports that actually recorded a failure are the
