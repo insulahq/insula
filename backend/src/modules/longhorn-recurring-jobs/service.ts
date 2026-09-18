@@ -276,20 +276,11 @@ export async function reconcileLonghornRecurringJobs(deps: ReconcileDeps): Promi
       'longhorn-recurring-jobs: more volumes to purge, deferred to a later tick to keep snapshot coalescing off the disk',
     );
   }
-  // Neither of these is an error or something to retry, and they have
-  // DIFFERENT causes — reported separately so the log names the real one.
-  if (plan.pendingDetached > 0) {
-    log.info(
-      { snapshots: plan.pendingDetached },
-      'longhorn-recurring-jobs: snapshots marked for deletion are waiting for their volume to attach before Longhorn can purge them',
-    );
-  }
-  if (plan.pendingHeadParent > 0) {
-    log.info(
-      { snapshots: plan.pendingHeadParent },
-      'longhorn-recurring-jobs: snapshots marked for deletion are the live head\'s parent, which Longhorn cannot fold; they clear on the volume\'s next snapshot, and the nightly filesystem trim reclaims their blocks meanwhile',
-    );
-  }
+  // The two pending counts are returned, not logged here. Neither is an error
+  // or something to retry, and on a cluster with a long-detached volume both
+  // stay the same indefinitely — logging them every tick would repeat one
+  // unchanging fact four times an hour forever. The scheduler logs them when
+  // they CHANGE, which is the only moment they tell the operator anything.
 
   return {
     labelled,
