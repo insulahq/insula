@@ -78,6 +78,11 @@ at the system level, so their timing is visible and changeable in one place:
 Each card also has an on/off switch. Turning a schedule off stops that backup
 until you turn it back on — the platform will not quietly keep running it.
 
+The platform database is **not** in that list: its cadence, retention and
+archive timeout are set together on its own card (above), where the panel can
+warn you if retention is too short for the cadence you picked. There is one
+place to set it, not two.
+
 !!! note "Changing a time takes effect immediately"
     Two of these — the secrets bundle and the cluster-state dump — normally run
     on a timing the cluster manifest sets. As soon as you choose a different
