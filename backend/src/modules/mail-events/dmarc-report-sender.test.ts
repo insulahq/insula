@@ -54,30 +54,51 @@ function mockDb(opts: {
 }
 
 /**
- * A fake that can tell a write that LANDED from one Stalwart swallowed.
+ * A fake Stalwart that reproduces the behaviour measured on a fresh,
+ * bootstrapped v0.16.20 (2026-09-18, throwaway cluster):
  *
- *   partial patch, singleton never written  -> accepted, stores NOTHING
- *   COMPLETE patch, singleton never written -> persists
- *   any patch, singleton already written    -> persists
+ *   COLD  (singleton never written)
+ *     - the FIRST /set primes the group and stores NOTHING
+ *     - the next COMPLETE /set persists
+ *     - an IDENTICAL repeat is deduped, so it is not "the next write" —
+ *       this is why production, rewriting the same patch every 5 minutes,
+ *       stayed cold for weeks while logging a successful disable
+ *   WARM  (singleton exists)
+ *     - a single complete /set lands, in both directions
  *
- * The middle line is the fake's assumption, not a measured fact — production
- * proves only that a PARTIAL patch does not persist. What matters is the first
- * and third lines plus the read-back: the previous fake returned a fixed object
- * regardless of what was written, so a reconciler that wrote nothing at all
- * still passed. That is why two "fixes" for this shipped broken.
+ * The fake before this one returned a fixed object regardless of what was
+ * written, so a reconciler that wrote nothing at all still passed its tests.
+ * That is how two "fixes" for this shipped broken.
  */
 let stalwart: Record<string, unknown> | null = null;
+let primed = false;
+let lastPatch: string | null = null;
 function seedStalwart(row: Record<string, unknown>): void {
   stalwart = row;
 }
 
+/** The patch that COMMITS — on a cold group a 1-field primer is sent first. */
+function committedPatch(): Record<string, { match: unknown; else: string }> {
+  const calls = dmarcReportSettingsUpdate.mock.calls;
+  return calls[calls.length - 1][0].patch;
+}
+
 beforeEach(() => {
   stalwart = null;
+  primed = false;
+  lastPatch = null;
   dmarcReportSettingsGet.mockReset().mockImplementation(async () => stalwart);
   dmarcReportSettingsUpdate.mockReset().mockImplementation(async (args: { patch: Record<string, unknown> }) => {
+    const serialised = JSON.stringify(args.patch);
+    if (serialised === lastPatch) return {};          // deduped: a no-op
+    lastPatch = serialised;
     const complete = Object.keys(args.patch).length === DMARC_SETTINGS_FIELDS.length;
-    if (stalwart || complete) {
-      stalwart = { id: 'singleton', ...(stalwart ?? {}), ...args.patch };
+    if (stalwart) {
+      if (complete) stalwart = { ...stalwart, ...args.patch };
+    } else if (!primed) {
+      primed = true;                                   // cold: primes, stores nothing
+    } else if (complete) {
+      stalwart = { id: 'singleton', ...args.patch };
     }
     return {};
   });
@@ -92,7 +113,7 @@ describe('outbound DMARC reporting is off unless a sender is named', () => {
     const r = await ensureDmarcReportSender(mockDb({ setting: null }), logger);
     expect(r.state).toBe('disabled');
     expect(r.sender).toBeNull();
-    const patch = dmarcReportSettingsUpdate.mock.calls[0]?.[0]?.patch;
+    const patch = committedPatch();
     expect(patch.aggregateSendFrequency).toEqual({ match: {}, else: "'disable'" });
     // INVERTED 2026-09-17. This asserted `aggregateFromAddress` was UNDEFINED
     // on the disable path, reasoning that the operator's last choice should not
@@ -110,8 +131,7 @@ describe('outbound DMARC reporting is off unless a sender is named', () => {
   it('disables when the operator explicitly chose Disabled', async () => {
     const r = await ensureDmarcReportSender(mockDb({ setting: DMARC_REPORT_SENDER_DISABLED }), logger);
     expect(r.state).toBe('disabled');
-    expect(dmarcReportSettingsUpdate.mock.calls[0]?.[0]?.patch.aggregateSendFrequency)
-      .toEqual({ match: {}, else: "'disable'" });
+    expect(committedPatch().aggregateSendFrequency).toEqual({ match: {}, else: "'disable'" });
   });
 
   it('enables DAILY from a configured postmaster address', async () => {
@@ -122,7 +142,7 @@ describe('outbound DMARC reporting is off unless a sender is named', () => {
     const r = await ensureDmarcReportSender(db, logger);
     expect(r.state).toBe('enabled');
     expect(r.sender).toBe('postmaster@example.test');
-    const patch = dmarcReportSettingsUpdate.mock.calls[0]?.[0]?.patch;
+    const patch = committedPatch();
     expect(patch.aggregateSendFrequency).toEqual({ match: {}, else: "'daily'" });
     expect(patch.aggregateFromAddress).toEqual({ match: {}, else: "'postmaster@example.test'" });
     // Org name and DKIM signing follow the sender's own domain, so the report
@@ -146,8 +166,7 @@ describe('outbound DMARC reporting is off unless a sender is named', () => {
     expect(r.state).toBe('disabled');
     expect(r.reason).toMatch(/no longer an active postmaster address/);
     expect(written).toBe(DMARC_REPORT_SENDER_DISABLED);
-    expect(dmarcReportSettingsUpdate.mock.calls[0]?.[0]?.patch.aggregateSendFrequency)
-      .toEqual({ match: {}, else: "'disable'" });
+    expect(committedPatch().aggregateSendFrequency).toEqual({ match: {}, else: "'disable'" });
   });
 
   it('skips the write when Stalwart already agrees', async () => {
@@ -169,7 +188,7 @@ describe('outbound DMARC reporting is off unless a sender is named', () => {
     // the read-back assertion below is what actually catches the failure.
     const db = mockDb({ setting: null });
     await ensureDmarcReportSender(db, logger);
-    const patch = dmarcReportSettingsUpdate.mock.calls[0][0].patch;
+    const patch = committedPatch();
     expect(new Set(Object.keys(patch))).toEqual(new Set(DMARC_SETTINGS_FIELDS));
   });
 
@@ -179,8 +198,45 @@ describe('outbound DMARC reporting is off unless a sender is named', () => {
       eligible: [{ address: 'postmaster@example.test', domainName: 'example.test', tenantName: 'T', isSystem: false }],
     });
     await ensureDmarcReportSender(db, logger);
-    const patch = dmarcReportSettingsUpdate.mock.calls[0][0].patch;
+    const patch = committedPatch();
     expect(new Set(Object.keys(patch))).toEqual(new Set(DMARC_SETTINGS_FIELDS));
+  });
+
+  it('PRIMES a cold group, then commits — one write is never enough', async () => {
+    // Cold: the first /set primes the singleton and stores nothing, so the
+    // reconciler sends a deliberately different 1-field primer before the real
+    // patch. Without it the group stays empty and Stalwart's defaults stay live.
+    const r = await ensureDmarcReportSender(mockDb({ setting: null }), logger);
+    expect(r.state).toBe('disabled');
+    expect(dmarcReportSettingsUpdate).toHaveBeenCalledTimes(2);
+    const [primer, commit] = dmarcReportSettingsUpdate.mock.calls.map((c: [{ patch: object }]) => c[0].patch);
+    expect(Object.keys(primer)).toEqual(['aggregateSendFrequency']);
+    expect(new Set(Object.keys(commit))).toEqual(new Set(DMARC_SETTINGS_FIELDS));
+    // The primer must differ in shape or Stalwart dedupes it against the commit.
+    expect(JSON.stringify(primer)).not.toBe(JSON.stringify(commit));
+  });
+
+  it('does NOT prime a warm group — a single complete write lands', async () => {
+    seedStalwart({
+      id: 'singleton',
+      aggregateSendFrequency: { match: {}, else: "'daily'" },
+      failureSendFrequency: { match: {}, else: '[1, 1d]' },
+    });
+    const r = await ensureDmarcReportSender(mockDb({ setting: null }), logger);
+    expect(r.state).toBe('disabled');
+    expect(dmarcReportSettingsUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  it('converges on a cold group instead of looping forever', async () => {
+    // Production's failure mode: the same patch every 5 minutes, deduped by
+    // Stalwart, so the group never materialised and the reconciler logged a
+    // successful disable for weeks. Two ticks must reach a real disable.
+    const first = await ensureDmarcReportSender(mockDb({ setting: null }), logger);
+    expect(first.state).toBe('disabled');
+    const second = await ensureDmarcReportSender(mockDb({ setting: null }), logger);
+    expect(second.state).toBe('in-sync');
+    expect(stalwart).not.toBeNull();
+    expect((stalwart as Record<string, { else: string }>).aggregateSendFrequency.else).toBe("'disable'");
   });
 
   it('reports FAILURE when Stalwart accepts the write and stores nothing', async () => {
@@ -211,7 +267,7 @@ describe('outbound DMARC reporting is off unless a sender is named', () => {
     // shipped two schedule fields; it passed on DEV only because an earlier
     // diagnostic probe had already created that group with an address in it.
     await ensureDmarcReportSender(mockDb({ setting: null }), logger);
-    const patch = dmarcReportSettingsUpdate.mock.calls[0][0].patch;
+    const patch = committedPatch();
     expect(patch.aggregateFromAddress).toBeDefined();
     expect(patch.aggregateFromAddress.else).toBe("'postmaster@mail.example.test'");
     expect(patch.aggregateSendFrequency.else).toBe("'disable'");
@@ -237,7 +293,7 @@ describe('outbound DMARC reporting is off unless a sender is named', () => {
     // individual message headers to whoever asked, which "send DMARC reports"
     // does not imply.
     await ensureDmarcReportSender(mockDb({ setting: null }), logger);
-    expect(dmarcReportSettingsUpdate.mock.calls[0][0].patch.failureSendFrequency.else).toBe("'disable'");
+    expect(committedPatch().failureSendFrequency.else).toBe("'disable'");
 
     dmarcReportSettingsUpdate.mockClear();
     await ensureDmarcReportSender(
@@ -247,7 +303,7 @@ describe('outbound DMARC reporting is off unless a sender is named', () => {
       }),
       logger,
     );
-    const onPatch = dmarcReportSettingsUpdate.mock.calls[0][0].patch;
+    const onPatch = committedPatch();
     expect(onPatch.aggregateSendFrequency.else).toBe("'daily'");
     expect(onPatch.failureSendFrequency.else).toBe("'disable'");
   });

@@ -71,36 +71,32 @@ const rawExpr = (value: string): StalwartExpression => ({ match: {}, else: value
 const DISABLE = 'disable';
 
 /**
- * EVERY field of `x:DmarcReportSettings`, so the patch is never partial.
+ * EVERY field of `x:DmarcReportSettings`, so the commit patch is never partial.
  *
- * WHAT IS PROVEN, and what is not. Two previous fixes shipped a confident
- * mechanism that turned out to be wrong, so this comment states only what was
- * actually measured.
+ * Measured on a FRESH, bootstrapped Stalwart v0.16.20 (2026-09-18, throwaway
+ * cluster, using this client's exact call shape):
  *
- * Measured ON PRODUCTION (Stalwart v0.16.20, 2026-09-18): the singleton reads
- * `list: []` while this reconciler logs a successful disable every 5 minutes.
- * An empty group means Stalwart's built-in defaults are LIVE — 47 aggregate
- * reports went out in 24h from `postmaster@` + `system('hostname')`, and their
- * DSNs bounce to the admin roster. Re-running the reconciler's own patch by
- * hand reproduced it exactly: `{updated: {singleton: null}}`, empty
- * `notUpdated`, and the group still empty afterwards.
+ *     complete patch x4, identical   -> accepted every time, NEVER stored
+ *     1-field primer, then complete  -> primer stores nothing, COMPLETE LANDS
+ *     warm group, single complete    -> lands immediately, both directions
  *
- * NOT proven: which write materialises the group from empty. On a throwaway
- * v0.16.20 instance neither a complete 13-field `update` nor a `create`
- * persisted (polled 90s), and on that instance NO settings group — not even
- * `SystemSettings` — ever read back, so it was not a faithful reproduction of
- * production and its results are not evidence either way. The singleton also
- * cannot be created or destroyed (`destroy` -> "Singletons cannot be created
- * or destroyed"), so an environment whose group already exists — DEV, staging
- * — cannot reproduce the bug at all. That is precisely how "the field COUNT
- * matters" (#612) and "an ADDRESS field materialises the group" (#621) were
- * each validated against a prepared environment and shipped broken.
+ * Two rules, and both are needed:
  *
- * So this change does NOT claim to make the disable stick. Writing the full
- * group is the strictly-safer shape; the post-write verification below is the
- * part that matters, because it makes the failure LOUD instead of a success
- * message over a live default. If a future Stalwart adds a field, the same
- * verification catches that too.
+ *  1. The first `/set` against a never-written singleton PRIMES it and stores
+ *     nothing. The next one persists — and it must state every field, since a
+ *     partial commit leaves the group unwritten.
+ *  2. Stalwart DEDUPES an identical repeat, so re-sending the same patch is not
+ *     "the next write". That is exactly why production never converged: the
+ *     reconciler sent the same patch every 5 minutes for weeks, each one
+ *     deduped, the group never materialised, and Stalwart's built-in defaults
+ *     stayed live — 47 aggregate reports a day — while the log said DISABLED.
+ *
+ * The singleton also cannot be created or destroyed (`destroy` returns
+ * "Singletons cannot be created or destroyed"), so an environment whose group
+ * already exists — DEV, staging — CANNOT reproduce any of this. That is how
+ * "the field COUNT matters" (#612) and "an ADDRESS field materialises the
+ * group" (#621) were each validated against a warm environment and shipped
+ * broken. Reproducing it needs a cluster bootstrapped from empty.
  */
 export const DMARC_SETTINGS_FIELDS = [
   'aggregateSendFrequency',
@@ -379,8 +375,11 @@ export async function ensureDmarcReportSender(
   // Skip the write when Stalwart already agrees. The singleton being EMPTY is
   // not agreement — empty means the built-in defaults are live, which is the
   // state this function exists to overwrite.
+  // Hoisted: the write below needs to know whether the group was COLD.
+  let cold = false;
   try {
     const current = await dmarcReportSettingsGet(opts);
+    cold = current === null || current === undefined;
     const currentFreq = current?.aggregateSendFrequency?.else;
     const currentFrom = current?.aggregateFromAddress?.else;
     const wantFreq = (patch.aggregateSendFrequency as StalwartExpression).else;
@@ -407,6 +406,27 @@ export async function ensureDmarcReportSender(
   }
 
   try {
+    // COLD START — measured on a fresh, bootstrapped Stalwart v0.16.20
+    // (2026-09-18, throwaway cluster, platform's exact call shape):
+    //
+    //   complete patch x4, identical  -> accepted every time, never stored
+    //   1-field primer, then complete -> primer stores nothing, COMPLETE LANDS
+    //   warm group, single complete   -> lands immediately, both directions
+    //
+    // The first `/set` against a never-written singleton primes it and stores
+    // nothing; the NEXT complete one persists. Identical repeats are deduped,
+    // so they do not count as the second write — which is exactly why writing
+    // the same patch every 5 minutes never converged on production. It stayed
+    // cold for weeks while logging a successful disable.
+    //
+    // The primer is deliberately a DIFFERENT shape (one field vs thirteen) so
+    // it cannot be deduped against the commit that follows it.
+    if (cold) {
+      await dmarcReportSettingsUpdate({
+        patch: { aggregateSendFrequency: patch.aggregateSendFrequency },
+        ...opts,
+      });
+    }
     const res = await dmarcReportSettingsUpdate({ patch, ...opts });
     if (res.notUpdated && Object.keys(res.notUpdated).length > 0) {
       logger.error({ notUpdated: res.notUpdated }, 'dmarc report sender: Stalwart rejected the update');
