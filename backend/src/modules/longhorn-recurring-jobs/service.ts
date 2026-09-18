@@ -63,6 +63,10 @@ export interface ReconcileResult {
    * so nothing calls the cluster converged while they are outstanding.
    */
   readonly pendingPurge: number;
+  /** Of those, held by a detached volume. */
+  readonly pendingDetached: number;
+  /** Of those, held because they are the live head's parent. */
+  readonly pendingHeadParent: number;
   /** Set when the tick declined to act, with the reason. */
   readonly abortedReason?: string;
 }
@@ -96,18 +100,24 @@ export async function listRecurringJobs(k8s: K8sClients): Promise<RecurringJobRe
 
 interface LiveVolume {
   readonly metadata?: { readonly name?: string; readonly labels?: Record<string, string> };
+  readonly status?: { readonly state?: string };
 }
 
 export async function listVolumes(k8s: K8sClients): Promise<VolumeRef[]> {
   const items = await listLonghorn<LiveVolume>(k8s, 'volumes');
   return items
     .filter((v): v is LiveVolume & { metadata: { name: string } } => Boolean(v.metadata?.name))
-    .map((v) => ({ name: v.metadata.name, labels: v.metadata.labels ?? {} }));
+    .map((v) => ({
+      name: v.metadata.name,
+      labels: v.metadata.labels ?? {},
+      attached: v.status?.state === 'attached',
+    }));
 }
 
 interface LiveSnapshot {
   readonly metadata?: { readonly name?: string; readonly deletionTimestamp?: string };
   readonly spec?: { readonly volume?: string; readonly labels?: Record<string, string> };
+  readonly status?: { readonly children?: Record<string, boolean> };
 }
 
 export async function listSnapshots(k8s: K8sClients): Promise<SnapshotRef[]> {
@@ -121,6 +131,7 @@ export async function listSnapshots(k8s: K8sClients): Promise<SnapshotRef[]> {
       // Kept in the list rather than filtered out: the planner counts these so
       // the tick can distinguish "done" from "waiting on a detached volume".
       terminating: Boolean(s.metadata?.deletionTimestamp),
+      headAdjacent: Boolean(s.status?.children?.['volume-head']),
     }));
 }
 
@@ -179,7 +190,8 @@ export interface ReconcileDeps {
 export async function reconcileLonghornRecurringJobs(deps: ReconcileDeps): Promise<ReconcileResult> {
   const { k8s, log } = deps;
   const empty = {
-    labelled: [], deletedSnapshots: 0, purgedVolumes: [], deferredVolumes: 0, pendingPurge: 0,
+    labelled: [], deletedSnapshots: 0, purgedVolumes: [], deferredVolumes: 0,
+    pendingPurge: 0, pendingDetached: 0, pendingHeadParent: 0,
   };
 
   let protectedVolumes: string[];
@@ -264,12 +276,18 @@ export async function reconcileLonghornRecurringJobs(deps: ReconcileDeps): Promi
       'longhorn-recurring-jobs: more volumes to purge, deferred to a later tick to keep snapshot coalescing off the disk',
     );
   }
-  if (plan.pendingPurge > 0) {
-    // Not an error and not something to retry: Longhorn cannot purge a
-    // detached volume. The objects clear themselves when it next attaches.
+  // Neither of these is an error or something to retry, and they have
+  // DIFFERENT causes — reported separately so the log names the real one.
+  if (plan.pendingDetached > 0) {
     log.info(
-      { pendingPurge: plan.pendingPurge, volumes: plan.pendingPurgeVolumes.length },
-      'longhorn-recurring-jobs: snapshots already marked for deletion are waiting for their volume to attach before Longhorn can purge them',
+      { snapshots: plan.pendingDetached },
+      'longhorn-recurring-jobs: snapshots marked for deletion are waiting for their volume to attach before Longhorn can purge them',
+    );
+  }
+  if (plan.pendingHeadParent > 0) {
+    log.info(
+      { snapshots: plan.pendingHeadParent },
+      'longhorn-recurring-jobs: snapshots marked for deletion are the live head\'s parent, which Longhorn cannot fold; they clear on the volume\'s next snapshot, and the nightly filesystem trim reclaims their blocks meanwhile',
     );
   }
 
@@ -279,5 +297,7 @@ export async function reconcileLonghornRecurringJobs(deps: ReconcileDeps): Promi
     purgedVolumes: purged,
     deferredVolumes: plan.deferredVolumes,
     pendingPurge: plan.pendingPurge,
+    pendingDetached: plan.pendingDetached,
+    pendingHeadParent: plan.pendingHeadParent,
   };
 }
