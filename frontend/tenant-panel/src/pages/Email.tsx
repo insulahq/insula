@@ -606,7 +606,7 @@ function MailboxUsageBar({ tenantId }: { readonly tenantId: string }) {
   const nearLimit = pct >= 80;
   const atLimit = pct >= 100;
   // Always the default brand colour, including at and over the limit —
-  // operator decision 2026-09-17. Reaching a plan limit is an ordinary fact
+  // operator decision. Reaching a plan limit is an ordinary fact
   // about a plan, not a fault: the tenant is not broken, and nothing is
   // degraded. The sentence below already says what happened and what to do,
   // which is the part that carries information; recolouring the meter red only
@@ -708,7 +708,7 @@ function MailboxesTab({
     } catch { /* error shown */ }
   };
 
-  // 2026-05-18: WEBMAIL button shows a spinner while the SSO round-trip
+  // WEBMAIL button shows a spinner while the SSO round-trip
   // is in flight + auto-clears once the new tab opens, OR after a 5s
   // safety timeout if the popup blocker (or browser quirks) prevents
   // `window.open` from returning a tracked reference. Tracked per
@@ -875,7 +875,7 @@ function MailboxesTab({
                         type="button"
                         onClick={() => handleOpenWebmail(mb.id)}
                         disabled={openingWebmailFor === mb.id}
-                        // 2026-05-18: WEBMAIL button is now green (was
+                        // WEBMAIL button is now green (was
                         // brand-blue) — emphasises the primary action
                         // on the row. Spinner replaces the icon during
                         // the SSO round-trip; cleared on tab-open or
@@ -1490,7 +1490,7 @@ function EditAliasModal({
     const changed = desired.length !== current.length || desired.some((d, i) => d !== current[i]);
     // A cleared field while DISABLING keeps the stored destinations —
     // the contract requires ≥1 destination, and disable-with-clear is a
-    // legitimate one-step action (review 2026-08-24).
+    // legitimate one-step action.
     if (changed && desired.length > 0) input.destination_addresses = desired;
     if (enabled !== (alias.enabled === 1)) input.enabled = enabled;
     if (Object.keys(input).length === 0) { onClose(); return; }

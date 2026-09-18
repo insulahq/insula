@@ -212,7 +212,7 @@ UNIT
   # HOURLY, not daily. The converge is what applies a release's host-migrations,
   # and a migration that fails (or is blocked behind a failure) is retried only
   # on the next tick — at daily+1h jitter that is up to ~25 hours of a cluster
-  # sitting on an unapplied migration, which is how the 2026-08-05 staging
+  # sitting on an unapplied migration, which is how the staging
   # failure went unnoticed. The run is idempotent and costs ~1s when there is
   # nothing pending, so an hourly tick is cheap insurance. The jitter is kept
   # (spread across a 15-min window) so a big cluster does not stampede the API.
@@ -300,13 +300,13 @@ phase_platform_ops() {
   # `insula bootstrap` (ADR-055) the operator has already put the signed binary
   # at /usr/local/bin/insula before bootstrap runs, so this check matches on the
   # very first install and the timers were never laid down. Its bootstrap log
-  # (2026-08-13) shows the single line that decided it:
+  # shows the single line that decided it:
   #   "platform-ops: already at 2026.8.3 — skipping (cosign anchor ensured above)."
   # Consequences, both silent: the CLI never self-upgraded (still 2026.8.3 two
   # weeks and 17 releases later), and platform-ops-host-config.timer never
   # existed, so NO host-migration ever ran — an empty
   # /var/lib/insula/host-migrations ledger, and e.g. the traefik
-  # wait-for-plugin-registry fix for the 2026-08-20 outage never applied.
+  # wait-for-plugin-registry fix for the outage never applied.
   #
   # platform_ops_install_timer rewrites the units and re-runs `systemctl enable
   # --now`, both idempotent, so doing this on every pass is free and self-heals

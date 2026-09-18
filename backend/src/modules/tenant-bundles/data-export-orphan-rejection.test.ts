@@ -11,7 +11,7 @@
  * In the API process that reaches the process-level `unhandledRejection`
  * handler, from nothing worse than a user uploading a damaged bundle.
  *
- * CI hit this on 2026-09-17 as "Error: incorrect header check" attributed to
+ * CI hit this as "Error: incorrect header check" attributed to
  * a test file that merely happened to be running at the time — every test
  * passed and the run still failed. It reproduces only when the wrong-passphrase
  * decrypt lands on a valid pad length (~1 in 256), which is why it stayed

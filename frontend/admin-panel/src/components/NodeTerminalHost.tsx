@@ -12,7 +12,7 @@ import { BackgroundTerminalsDock } from './BackgroundTerminalsDock';
 // navigation — while they were already signed in.
 //
 // Conditional rendering does NOT help: the markup ships regardless of whether
-// it is ever in the DOM. Same lesson as ChangePasswordModal (2026-08-04).
+// it is ever in the DOM. Same lesson as ChangePasswordModal.
 // Guarded by scripts/ci-no-password-fields-in-entry-chunk.sh.
 //
 // These are named exports, hence the `.then(m => ({ default: m.X }))` shape.

@@ -82,7 +82,7 @@ export type BackupTarget =
       readonly hostPath: string;
     }
   | {
-      // B9 (2026-05-22): bundle writes always go through the R-X20
+      // B9: bundle writes always go through the R-X20
       // shim's local S3 endpoint, regardless of the underlying upstream
       // protocol (S3/SFTP/CIFS/NFS). Live bench on staging measured the
       // shim path at 15.9 MiB/s vs restic native S3 at 10.4 MiB/s — the
@@ -139,7 +139,7 @@ export interface RunResticBackupArgs {
    * release pod resources when the tenant Job's PUT connection drops
    * — otherwise the spawn loiters waiting on stdin forever, holding
    * a semaphore slot + ~200 MiB of RSS per failed attempt.
-   * (Staging 2026-05-11: 5 stuck "running" backup_jobs each leaving a
+   * (Staging: 5 stuck "running" backup_jobs each leaving a
    * zombie restic alive long enough to OOMKill the platform-api pod.)
    */
   readonly abortSignal?: AbortSignal;
@@ -664,7 +664,7 @@ export async function runResticBackup(args: RunResticBackupArgs): Promise<Restic
     // MiB RSS get released immediately. Without this, the spawn loiters
     // on stdin forever (the pipeline source is dead but the child has
     // no way to learn that) and accumulating zombies eventually OOM-kill
-    // the pod. Staging 2026-05-11 showed 5 stuck "running" backup_jobs,
+    // the pod. Staging showed 5 stuck "running" backup_jobs,
     // each leaving one such zombie.
     //
     // The source stream (args.stdin) is also destroyed — otherwise the
@@ -699,7 +699,7 @@ export async function runResticBackup(args: RunResticBackupArgs): Promise<Restic
     // The previous data-event listener didn't respect child.stdin's
     // returned-false from write() — chunks piled up in the writable
     // buffer faster than restic could consume them, growing memory
-    // until pod OOM-killed (exit 137 on staging 2026-05-10).
+    // until pod OOM-killed(exit 137 on staging).
     //
     // node:stream/promises pipeline() handles backpressure end-to-end:
     // the source pauses when the destination signals it's full,
@@ -945,7 +945,7 @@ export async function runResticRestore(args: RunResticRestoreArgs): Promise<void
     // (set in performanceOpts() above). For SFTP: bounded by the single
     // SSH channel restic opens. There is NO `--workers` flag on
     // `restic restore` in 0.18.x — the previous perf commit added one
-    // mistakenly (caught 2026-05-11 against the staging restore pod:
+    // mistakenly (against the staging restore pod:
     // `unknown flag: --workers`). Pack-file processing parallelism is
     // implicit inside restic.
     for (const inc of args.includes ?? []) {
@@ -1243,8 +1243,8 @@ export interface RunResticUnlockArgs {
  * Every later write to that repo then fails with "unable to create lock",
  * permanently, for that tenant or class.
  *
- * Observed twice: staging 2026-05-27 (mail LIST path, 3-hour stale lock) and
- * DEV 2026-09-15, where mail snapshots were dead for 3 days 17 hours with every
+ * Observed twice: staging (mail LIST path, 3-hour stale lock) and
+ * DEV, where mail snapshots were dead for 3 days 17 hours with every
  * operator surface still reporting healthy. Both were patched in the mail image
  * alone; this driver serves every tenant/bundle repo, so recovery belongs here
  * too. A `bk-files` Job killed by OutOfcpu — which happened on staging the same

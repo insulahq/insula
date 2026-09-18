@@ -2,7 +2,7 @@
 # integration-db-dumps-e2e.sh
 #
 # Multi-engine tenant-bundle DATABASE logical-dump capture + restore E2E.
-# Verifies the 2026-07-07 DB-dump hardening on a REAL cluster:
+# Verifies the DB-dump hardening on a REAL cluster:
 #   - MariaDB (SQL, hot --single-transaction dump) + MongoDB (--archive) +
 #     SQLite (file discovered on the PVC + sqlite3 .dump) all captured in ONE
 #     whole-client bundle.
@@ -32,7 +32,7 @@ set -uo pipefail
 : "${ADMIN_HOST:?}" ; : "${ADMIN_EMAIL:=admin@${PLATFORM_DOMAIN:?}}"
 
 # A cluster with no backup target bound to this class cannot run the suite.
-# Report SKIPPED instead of a wall of red assertions (2026-08-04: twelve
+# Report SKIPPED instead of a wall of red assertions (: twelve
 # suites went red on a fresh cluster purely because nothing was bound).
 require_backup_class_or_skip tenant
 : "${SSH_HOST:?}" "${PLATFORM_DOMAIN:?}"
@@ -71,7 +71,7 @@ fi
 # and ignores any other target, so the suite would exercise a store that never
 # receives the data and could pass while the real path is broken.
 #
-# Observed on DEV 2026-08-09 — the bound target was not the active one:
+# Observed on DEV — the bound target was not the active one:
 #   c7d5b8b4  active=False  <- bound to system+tenant+mail  (the real target)
 #   ca4bfbef  active=True   <- bound to nothing
 # The old selector chose ca4bfbef, and when no config carried active=true it

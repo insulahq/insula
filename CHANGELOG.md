@@ -12,6 +12,20 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Changed
+- **Incident detail no longer lives in the public source tree.** Code comments
+  in this repository had accumulated over two thousand dated notes, many of
+  them recounting specific incidents: when a component last ran out of memory
+  and how often, how many gigabytes a volume was carrying, which recovery
+  depended on which setting. Useful to whoever maintains it, and rather more
+  than a public repository needs to say about what breaks and when.
+
+  Those comments now state the constraint without the incident — the reason a
+  setting must not be changed, minus the story of the day it was. The history
+  itself is kept privately, and a new check keeps dates from creeping back into
+  comments. Nothing about how the platform behaves changed; this is source
+  commentary only.
+
 ### Fixed
 - **The backup time you chose for the platform database is now the one used.**
   Its own card has always offered a "base backup cadence", and the value was

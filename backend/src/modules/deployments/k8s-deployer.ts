@@ -904,7 +904,7 @@ export function minimalSiteFolders(folders: readonly string[]): string[] {
  * Sessions were briefly written to the PVC, which isolated them correctly but
  * put login state on the tenant's storage: counted against their quota, swept
  * into their backups, and visible in the file manager. Operator decision
- * (2026-09-08): keep session storage ephemeral, as it was when it lived in
+ * keep session storage ephemeral, as it was when it lived in
  * /tmp, and keep the per-site separation that /tmp did not provide.
  *
  * The trade is real and accepted: an emptyDir dies with the pod, and adding a
@@ -1711,7 +1711,7 @@ async function getK8sDeploymentStatus(
   // for as long as the kubelet's terminated-pod GC lets them (default: 12500
   // pods, i.e. effectively forever). They are not this workload; reading their
   // container statuses is what reported three healthy 1/1 production tenants as
-  // "Workload ran out of memory" on 2026-09-11 (their corpses exited 137 at a
+  // "Workload ran out of memory" (their corpses exited 137 at a
   // node shutdown). Filter once, up front, so neither the failure scan NOR the
   // host-node column can pick one up.
   const livePods = podList.filter((p) => !isReplacedPodRecord({

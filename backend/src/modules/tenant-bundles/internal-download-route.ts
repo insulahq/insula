@@ -221,7 +221,7 @@ function guessContentType(name: string): string {
  * the activation gate applies to NEW bundle creates, not reads of
  * existing bundles.
  *
- * B9 routing parity (2026-05-23): tenant bundles WRITE through the
+ * B9 routing parity: tenant bundles WRITE through the
  * backup-rclone-shim regardless of upstream protocol. Restore READS
  * must therefore also try the shim first — otherwise CIFS + NFS
  * targets fail with `Backup store kind 'cifs' is not supported`.

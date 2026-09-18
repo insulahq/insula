@@ -157,7 +157,7 @@ export async function waitForStalwartReplicaCount(
      * Optional cancel predicate. Polled between API reads — if it
      * returns true, the wait throws a generic ApiError tagged with
      * MAIL_MIGRATION_CANCELLED so the orchestrator can detect cancel
-     * and bail without burning the full timeout. Wired up 2026-05-28
+     * and bail without burning the full timeout. Wired up
      * after Phase E of the mobility E2E found that an operator's
      * cancel during scale-up was ignored for the full 10-min budget.
      */
@@ -166,7 +166,7 @@ export async function waitForStalwartReplicaCount(
 ): Promise<void> {
   const timeoutSeconds = opts.timeoutSeconds ?? 90;
   const pollIntervalMs = opts.pollIntervalMs ?? 3_000;
-  // A4 (2026-05-25): callers can pass `deploymentName` to wait for any
+  // A4: callers can pass `deploymentName` to wait for any
   // mail-stack Deployment (stalwart-mail OR bulwark). Default preserves
   // historical Stalwart-only behaviour for callers that haven't been
   // updated.

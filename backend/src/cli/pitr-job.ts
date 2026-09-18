@@ -143,7 +143,7 @@ async function main(): Promise<void> {
       process.exit(0);
     }, 30_000);
 
-    // Phase 3.1 (2026-05-23): when invoked from barman-restore promote,
+    // Phase 3.1: when invoked from barman-restore promote,
     // delete the side-by-side restored cluster after the PITR completes
     // successfully. Best-effort — failure here is non-fatal (source is
     // already swapped); surface as admin notification + exit 0 so the
@@ -154,7 +154,7 @@ async function main(): Promise<void> {
         // Misconfiguration: BARMAN_PROMOTE_MODE=true but the
         // restored-cluster env var is missing. createPitrJob always
         // sets both — this branch shouldn't fire — but log loudly
-        // instead of silently skipping (review M-5 2026-05-23).
+        // instead of silently skipping.
         console.warn(JSON.stringify({
           msg: 'pitr-job: BARMAN_PROMOTE_MODE=true but BARMAN_PROMOTE_RESTORED_CLUSTER env is missing — skipping cleanup',
         }));
@@ -202,20 +202,20 @@ async function main(): Promise<void> {
     // didn't do this, so chips stayed in `running` forever. Phase 3.1
     // closes that loop for both PITR and barman-promote.
     //
-    // 2026-05-23 follow-up A: persist the FULL step timeline + final
+    // follow-up A: persist the FULL step timeline + final
     // outcome into tasks.details so the PitrProgressModal can render
     // the historical timeline when re-opened from the chip AFTER the
     // PersistedLock has been cleared (which is the moment promote
     // completes). Without this, clicking the green chip post-success
     // showed an empty modal — exactly what the operator reported.
     //
-    // 2026-08-05 follow-up C: RETRY the write. finalizeByRef made the chip
+    // follow-up C: RETRY the write. finalizeByRef made the chip
     // survive a self-cluster PITR, but it was still a SINGLE attempt against
     // exactly the transient this codebase already documents: right after the
     // cutover rebuilds system-db, the orchestrator's own DB connection can
     // fail while CNPG re-syncs the platform user's credentials ("the cluster
     // IS up, data IS correct, but the auth-credential reconciler hasn't caught
-    // up yet" — postgres-restore/service.ts, caught on staging 2026-05-23).
+    // up yet" — postgres-restore/service.ts, caught on staging).
     // One attempt into that window and the chip is silently lost again — the
     // operator ends a successful DR operation with no record of it, the same
     // user-visible symptom the upsert fix was meant to end.
@@ -229,7 +229,7 @@ async function main(): Promise<void> {
     // Bounded and still non-fatal: the DB is expected back within seconds, and
     // a missing chip must never fail a DR operation that already succeeded.
     //
-    // 2026-05-23 follow-up B: use finalizeByRef (INSERT-or-UPDATE)
+    // follow-up B: use finalizeByRef (INSERT-or-UPDATE)
     // instead of finishByRef (UPDATE-only). When a PITR rebuilds the
     // SAME cluster that holds the chip table (system-db restoring
     // system-db), the cutover replaces the live DB with a snapshot
@@ -237,7 +237,7 @@ async function main(): Promise<void> {
     // rows and the chip is LOST forever. finalizeByRef does an upsert
     // with all the metadata needed to recreate the row, so the chip
     // survives self-cluster PITR. Live regression caught on staging
-    // 2026-05-23: after a system-db PITR completed, the chip simply
+    // after a system-db PITR completed, the chip simply
     // didn't exist in the post-cutover tasks table.
     if (jobNameForChip && actorUserId) {
       await withDbRetry('chip finalize', async () => {

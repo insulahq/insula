@@ -5,7 +5,7 @@
 #
 # Why this guard exists
 # ---------------------
-# 2026-09-02, production. A tenant moved ~120 files between two folders. The
+# production. A tenant moved ~120 files between two folders. The
 # "Move To" dialog did this:
 #
 #     const promises = moveTarget.paths.map(sourcePath =>
@@ -260,7 +260,7 @@ fi
 #   argument count"]
 #
 # That refusal happens at the EDGE — a bare nginx 400, no error envelope, the
-# API never sees it. Measured on a live cluster (2026-09-02): 900 paths pass,
+# API never sees it. Measured on a live cluster: 900 paths pass,
 # 1000 are refused. Raising the cap back to 1000 would make the documented
 # maximum unreachable, so the guard pins it.
 CONTRACTS="$REPO_ROOT/packages/api-contracts/src/files.ts"

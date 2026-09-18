@@ -2,7 +2,7 @@
 # ci-namespace-classification-check.sh — "is this namespace a tenant's?" has
 # exactly ONE answer, in backend/src/lib/namespace-tier.ts.
 #
-# WHY: 2026-08-31 an admin was paged that tenant "traefik" had a container
+# WHY: an admin was paged that tenant "traefik" had a container
 # OOM-killed and was advised to raise that tenant's plan. `traefik` is a
 # platform namespace; no such tenant exists. The alerting path enumerated the
 # SYSTEM namespaces and treated everything else as a tenant — which fails OPEN.

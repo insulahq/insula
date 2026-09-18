@@ -14,7 +14,7 @@
  * was returned, and `last_error` stayed empty because nothing had failed.
  * Nothing was attempted.
  *
- * Observed in production 2026-09-02: an operator reduced a custom deployment
+ * Observed in production: an operator reduced a custom deployment
  * from 4 CPU to 1 and stopped it. The row said `cpu_request=1, status=stopped`;
  * the Pod was still Running and holding all 4 cores, which pinned the tenant's
  * `requests.cpu` quota at its 4-core ceiling and left a sibling catalog

@@ -1,5 +1,5 @@
 /**
- * Per-tenant resource-saturation admin alerting (resource monitoring, 2026-07).
+ * Per-tenant resource-saturation admin alerting.
  *
  * Low-footprint by design (the operator's cardinality choice): this evaluates
  * per-tenant CPU/memory/storage usage-vs-limit and fires ADMIN notifications —

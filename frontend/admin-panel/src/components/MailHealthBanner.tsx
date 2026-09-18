@@ -26,7 +26,7 @@ import type {
  *   - Expanded: per-component table (pod | jmap | rocksdb | cert | tcp)
  *     with status, key facts, and any error message.
  *
- * 2026-05-14 streamline: this banner is the top section of the
+ * streamline: this banner is the top section of the
  * EmailManagement page. Future phases collapse the other ad-hoc tiles
  * (placement, port-exposure) into drill-downs reachable from this
  * banner.
@@ -67,7 +67,7 @@ export default function MailHealthBanner() {
   }
 
   const r = data.data;
-  // 2026-05-28 UX: the card is now compact + click-anywhere. The whole
+  // UX: the card is now compact + click-anywhere. The whole
   // card opens the details modal. The Re-check button is a sibling
   // outside the click-zone so it doesn't double-trigger. No more
   // expand/collapse disclosure — operators wanted one path to detail.

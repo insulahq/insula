@@ -2,7 +2,7 @@
  * Shared helpers for backup-restore routes.
  *
  * Both admin (`/api/v1/admin/restores/*`) and tenant
- * (`/api/v1/tenants/:tenantId/restore-carts/*`, added 2026-05-28)
+ *
  * route surfaces use the same cart machinery, executors, and bundle
  * read paths. The tenant surface adds policy filtering on top.
  *

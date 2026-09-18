@@ -3,7 +3,7 @@
  *
  * Each subsystem (mail, tenant_bundle, system_pitr, longhorn_recurring)
  * gates `enabled=true` on having at least one target assigned to the
- * subsystem's backup_class. Phase 2 legacy purge (2026-05-22) re-mapped
+ * subsystem's backup_class. Phase 2 legacy purge re-mapped
  * the gate from the per-subsystem legacy class names to the three
  * R-X shim classes:
  *

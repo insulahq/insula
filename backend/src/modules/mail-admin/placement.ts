@@ -508,7 +508,7 @@ export async function ensureMailStackPlacementApplied(
   const core = kc.makeApiClient(k8s.CoreV1Api);
   const batch = kc.makeApiClient(k8s.BatchV1Api);
 
-  // 2026-05-28 primaryNode self-heal: a freshly-bootstrapped cluster
+  // primaryNode self-heal: a freshly-bootstrapped cluster
   // has mail_primary_node = NULL (no operator has run the placement
   // wizard yet). The UX flow now requires primary to be set so we
   // backfill from the most-authoritative source available:
@@ -599,19 +599,19 @@ export async function ensureMailStackPlacementApplied(
   // recreated, which is wrong.
   await applyDeploymentAffinity(apps, activeNode, /* allowRestore */ false);
 
-  // A3 (2026-05-25): label secondary/tertiary nodes for the
+  // A3: label secondary/tertiary nodes for the
   // mail-stack-standby-replicate CronJob nodeSelector. Idempotent.
   // Always invoked (even when no standby nodes are configured) so the
   // label gets REMOVED from previously-elected nodes when the operator
   // downgrades from HA back to single-node.
   //
-  // 2026-05-28 follow-up: also spawn a one-shot cleanup Job on any
+  // follow-up: also spawn a one-shot cleanup Job on any
   // node that LOST the label this tick — the DaemonSet pod will be
   // evicted but `/var/lib/mail-stack-standby/` would otherwise stay on
   // disk indefinitely. The cleanup Job renames to
   // `.deelected-<ts>/` and the janitor CronJob deletes after 48h.
   //
-  // 2026-09-11: derive the set as "configured candidates MINUS the node the
+  // derive the set as "configured candidates MINUS the node the
   // stack is currently running on", instead of labelling secondary+tertiary
   // literally, and add the PRIMARY as a candidate.
   //
@@ -640,7 +640,7 @@ export async function ensureMailStackPlacementApplied(
  * "Every configured placement candidate except wherever the stack is running
  * right now." Pure so the rule can be tested without a cluster.
  *
- * Replaced a literal secondary+tertiary list on 2026-09-11. That version put
+ * Replaced a literal secondary+tertiary list. That version put
  * a standby replicator on the ACTIVE node (rsyncing from its own pod) while
  * leaving the PRIMARY — the failback target — with no fresh data at all, so
  * every failback took the slow restic path.
@@ -657,7 +657,7 @@ export function deriveStandbyNodes(input: {
 }
 
 /**
- * A3 (2026-05-25): ensure exactly the supplied set of nodes carries
+ * A3: ensure exactly the supplied set of nodes carries
  * the `insula.host/mail-standby=true` label. Other
  * nodes get the label removed (cleanup if a previous secondary was
  * de-elected, or HA disabled entirely). Idempotent.
@@ -707,7 +707,7 @@ async function reconcileMailStandbyLabel(
       continue;
     }
 
-    // 2026-05-28: on label REMOVAL, schedule the one-shot cleanup Job
+    // on label REMOVAL, schedule the one-shot cleanup Job
     // that renames /var/lib/mail-stack-standby → .deelected-<ts>/ on
     // the de-elected node. The janitor CronJob deletes any
     // .deelected-* dirs older than 48h, giving operators a recovery

@@ -11,7 +11,7 @@
 # a value set on the Middleware is silently dropped by Traefik. Traefik runs as a
 # DaemonSet fronting the whole cluster with limits.memory=512Mi.
 #
-# Measured on a live cluster 2026-08-30: ONE unauthenticated 600 MB POST to
+# Measured on a live cluster: ONE unauthenticated 600 MB POST to
 # /api/v1/auth/login OOM-killed Traefik in ~3 seconds
 # (lastState.terminated.reason=OOMKilled, exitCode 137), taking every site on the
 # platform offline. With `waf-body-limit` chained in front, the same request is

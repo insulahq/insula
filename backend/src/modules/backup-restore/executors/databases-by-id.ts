@@ -316,7 +316,7 @@ export async function restoreDatabasesForDeployments<Ctx>(
     // `.sql` with a mongo context) throws UNSUPPORTED_ENGINE. Only restore
     // dumps whose file type matches THIS deployment's engine; the rest belong
     // to sibling deployments and are restored under their own target. (Caught
-    // by the multi-engine E2E on DEV 2026-07-07.)
+    // by the multi-engine E2E on DEV.)
     const depIsMongo = /mongo/i.test(dep.catalogRuntime ?? dep.catalogCode ?? '');
 
     for (const p of bundleDumps) {

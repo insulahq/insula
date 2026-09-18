@@ -4,7 +4,7 @@ import { collectTenantMetrics } from './resource-metrics.js';
 /**
  * Reserved memory must ignore pod records the controller has already replaced.
  *
- * Production 2026-09-15, tenant PHOENIX: the panel reported 3.594Gi of a 4Gi
+ * Production, tenant PHOENIX: the panel reported 3.594Gi of a 4Gi
  * plan "reserved by deployments" while the workload held 2.172Gi. The gap was
  * three Succeeded pods left by ONE graceful node shutdown — exit 0, reason
  * Completed, so nothing about them looked like an error. Kubernetes' own
@@ -27,7 +27,7 @@ function pod(name: string, phase: string, memory: string, opts: { system?: boole
   };
 }
 
-/** The real PHOENIX namespace on 2026-09-15. */
+/** The real PHOENIX namespace. */
 const PHOENIX_PODS = [
   pod('sitewright-5487c5b7b7-v6vs9', 'Running', '1Gi'),
   pod('sitewright-6bfbdcc456-9kkd7', 'Succeeded', '1Gi'),      // corpse

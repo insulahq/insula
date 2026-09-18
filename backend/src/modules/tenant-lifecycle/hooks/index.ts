@@ -68,7 +68,7 @@ export function registerAllLifecycleHooks(): void {
   // tenant suspend/restore so tenant workloads stop consuming resources.
   registerCustomDeploymentsScaleHook();
 
-  // ADR-039 Phase 8 (retired 2026-05-17): hook is now a no-op since
+  // ADR-039 Phase 8: hook is now a no-op since
   // the bulwark-impersonator sidecar that owned the cleanup endpoint
   // was removed when Bulwark's upstream /api/auth/impersonate
   // shipped. Orphan settings files are inert; see

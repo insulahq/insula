@@ -96,7 +96,7 @@ interface FakeRow {
   enabled: number;
 }
 
-// Phase 6 (2026-05-24): the reconciler now also queries
+// Phase 6: the reconciler now also queries
 // systemWalArchiveState (in walArchiveOwnsCluster). The fake DB needs
 // to return DIFFERENT rows for that table than for the loadSystemTarget
 // query — otherwise the existing tests' target-binding row gets
@@ -227,8 +227,8 @@ describe('reconcilePostgresObjectStore — happy path', () => {
     });
   });
 
-  // Phase 6 (2026-05-24) dual-reconciler ownership guard.
-  // Phase 8 (2026-05-25) extended: defer ObjectStore + ScheduledBackup
+  // Phase 6 dual-reconciler ownership guard.
+  // Phase 8 extended: defer ObjectStore + ScheduledBackup
   // too — wal-archive owns ALL three CRs (ObjectStore + ScheduledBackup
   // + Cluster.spec.plugins). Only the shim creds Secret stays managed
   // by postgres-objectstore (identical content regardless of who writes).

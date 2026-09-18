@@ -18,7 +18,7 @@
  * for a currency to bill in will never meet them, since they sort in by code
  * and carry their own names.
  *
- * Source: ISO 4217 published list, current 2026-09.
+ * Source: ISO 4217 published list, current.
  */
 export const ISO_4217_ACTIVE: readonly string[] = [
   'AED', 'AFN', 'ALL', 'AMD', 'ANG', 'AOA', 'ARS', 'AUD', 'AWG', 'AZN',

@@ -68,7 +68,7 @@ export function usePutShimAssignment() {
       // families (mail snapshot target card, cnpg health, backup configs,
       // system-backup views) — without these the operator had to reload
       // the page to see a just-assigned target (operator report
-      // 2026-08-24). The background pipeline finishes seconds later; the
+      // ). The background pipeline finishes seconds later; the
       // task-completion refresher re-invalidates then for final state.
       qc.invalidateQueries({ queryKey: ['mail', 'snapshot'] });
       qc.invalidateQueries({ queryKey: ['mail', 'backups'] });

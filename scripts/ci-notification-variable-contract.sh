@@ -65,7 +65,7 @@ done
 # gap is intentional, not a place to silence the guard.
 #
 # Empty on purpose. It used to exempt the legacy.* categories, which were
-# removed on 2026-09-15 along with the notifyUser path they belonged to. An
+# removed along with the notifyUser path they belonged to. An
 # allowlist that outlives its subject is a silencer, not an exception.
 ALLOW_MISSING=""
 

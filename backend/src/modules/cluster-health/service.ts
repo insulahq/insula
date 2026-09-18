@@ -107,7 +107,7 @@ export interface NodeSubsystemReport {
  * Per-node networking + storage health. Surfaces the case where a
  * worker joined the cluster but the CNI / CSI plugins never reached
  * Ready — exactly the failure mode that hit the admin worker on
- * 2026-04-24 (Calico BIRD socket + Longhorn CSI plugin
+ * (Calico BIRD socket + Longhorn CSI plugin
  * CrashLoopBackOff because of cross-subnet network plumbing).
  */
 export async function collectNodeSubsystemHealth(k8s: K8sClients): Promise<NodeSubsystemReport[]> {
@@ -121,7 +121,7 @@ export async function collectNodeSubsystemHealth(k8s: K8sClients): Promise<NodeS
   // CSINode resources tell us which CSI drivers are registered on each node.
   // CSINode lives in storage.k8s.io/v1 — a built-in API, NOT a CRD — so the
   // CustomObjects tenant returns empty lists for it. Use the typed
-  // StorageV1Api directly. (Bug fix 2026-04-25: customObjects path silently
+  // StorageV1Api directly. (Bug fix: customObjects path silently
   // reported every node as "csiDriverRegistered: false" even on healthy
   // nodes, scaring operators on the Cluster Nodes page.)
   let csiNodes: V1CSINode[] = [];

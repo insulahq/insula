@@ -3,7 +3,7 @@ import { indexedValues, mapDmarcReport } from './dmarc.js';
 import type { StalwartDmarcReportRow } from '../stalwart-jmap/client.js';
 
 /**
- * Captured verbatim from a LIVE Stalwart on 2026-09-13 by delivering a real
+ * Captured verbatim from a LIVE Stalwart by delivering a real
  * RFC 7489 aggregate report and reading the stored object back.
  *
  * Kept as a literal rather than hand-written from the RFC because two details

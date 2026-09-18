@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
  * Regression guard: WORKER nodes must be able to read the cluster's pinned
  * version.
  *
- * The bug (found 2026-08-11 rolling an RC onto staging): `readRunningVersion`
+ * The bug(found rolling an RC onto staging): `readRunningVersion`
  * hardcoded `/etc/rancher/k3s/k3s.yaml`, which k3s AGENTS do not have. It then
  * fell through to in-cluster config, which needs a projected ServiceAccount
  * token that a host process has no mount for — so the read always threw on a

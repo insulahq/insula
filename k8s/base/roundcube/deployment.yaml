@@ -8,7 +8,7 @@ metadata:
     app.kubernetes.io/part-of: hosting-platform
     app.kubernetes.io/component: webmail
   annotations:
-    # 2026-05-18: Flux SSA merge mode lets platform-api stamp
+    # Flux SSA merge mode lets platform-api stamp
     # spec.template.metadata.annotations[insula.host/feature-css-hash]
     # (set by webmail-feature-css reconciler) without Flux reverting
     # it on the next sync. Without this annotation Flux would
@@ -17,7 +17,7 @@ metadata:
     # the same arrangement Bulwark already has.
     kustomize.toolkit.fluxcd.io/ssa: Merge
 spec:
-  # Cut 3 (2026-05-04): replicas removed from manifest — owned by the
+  # Cut 3: replicas removed from manifest — owned by the
   # platform-storage-policy reconciler. Apply HA scales Roundcube to
   # readyServerCount (capped at MAX_HA_REPLICAS). Fresh clusters land
   # at k8s default = 1 until the policy fires.
@@ -41,7 +41,7 @@ spec:
     spec:
       # Spread replicas across server-role nodes so a node failure
       # leaves at least one Roundcube pod scheduled. DoNotSchedule
-      # (changed from ScheduleAnyway 2026-05-07): keeps placement
+      # keeps placement
       # strictly one-per-node so a node-failure window doesn't leave
       # 2 pods on one surviving node + 0 on another. Single-node /
       # under-populated clusters still come up cleanly because Apply
@@ -57,7 +57,7 @@ spec:
       terminationGracePeriodSeconds: 30
       containers:
         # ── php-fpm: Roundcube application (fpm-alpine, 0 base CVEs) ──
-        # Phase 4 (2026-06-20): migrated off the official apache image
+        # Phase 4: migrated off the official apache image
         # (Debian base = 700+ HIGH/CRITICAL base-OS CVEs) to fpm-alpine
         # (0 CVE) served by the nginx:alpine sidecar below. php-fpm listens
         # on 127.0.0.1:9000; nginx serves the static webroot + proxies *.php.
@@ -109,7 +109,7 @@ spec:
                 cp -f /branding-src/branding.css /var/www/html/public_html/branding/branding.css
                 cp -f /branding-src/logo.svg /var/www/html/public_html/branding/logo.svg
                 cp -f /branding-src/platform_branding.php /var/www/html/plugins/platform_branding/platform_branding.php
-                # 2026-05-18: webmail feature-visibility CSS. The
+                # webmail feature-visibility CSS. The
                 # roundcube-overrides.css key in the
                 # webmail-feature-overrides ConfigMap is filled by
                 # platform-api's reconciler based on platform_settings
@@ -241,7 +241,7 @@ spec:
               mountPath: /var/roundcube/config/branding.inc.php
               subPath: branding.inc.php
               readOnly: true
-            # 2026-05-18: webmail feature-visibility CSS, written by
+            # webmail feature-visibility CSS, written by
             # platform-api's webmail-feature-css reconciler. Appended
             # to /var/www/html/public_html/branding/branding.css by
             # the wrapper script so the platform_branding plugin's
@@ -252,7 +252,7 @@ spec:
           resources:
             requests:
               cpu: "50m"
-              # 2026-05-07: dropped from 128Mi → 64Mi after staging
+              # dropped from 128Mi → 64Mi after staging
               # measurement showed idle pods at 36-39Mi resident.
               # Roundcube is sessionless (Phase 3.A.5 moved sessions
               # to Postgres) so memory scales with concurrent active
@@ -391,7 +391,7 @@ spec:
             items:
               - key: branding.inc.php
                 path: branding.inc.php
-        # 2026-05-18: webmail feature-visibility CSS overrides.
+        # webmail feature-visibility CSS overrides.
         # Reconciled by platform-api (see ADR-039 +
         # backend/src/modules/webmail-feature-css/). Empty default
         # ships unchanged upstream UI.

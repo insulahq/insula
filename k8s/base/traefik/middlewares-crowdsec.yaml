@@ -42,7 +42,7 @@ spec:
       # registers, pulls decisions, and looks healthy in `cscli bouncers
       # list` — but it doesn't actually block anything. (This is the
       # last and most insidious of the four pre-existing bugs uncovered
-      # by the 2026-05-19 Banned-IPs work; the others were the wrong
+      # by the Banned-IPs work; the others were the wrong
       # config-field name, outdated plugin version, and live-mode default.)
       enabled: true
       # CrowdSec LAPI URL inside the cluster — split into three fields
@@ -93,7 +93,7 @@ spec:
       #   Crowdsec before blocking traffic (set -1 to never block)"
       #
       # So at 3, with updateIntervalSeconds 60, a LAPI unreachable for three
-      # minutes blocked EVERYTHING with HTTP 403. On 2026-09-05 the LAPI failed
+      # minutes blocked EVERYTHING with HTTP 403. the LAPI failed
       # to start after an upgrade and every hosted website went down — while the
       # block below described the design as fail-open. The stated posture was
       # never the implemented one.
@@ -118,7 +118,7 @@ spec:
       #   * CrowdSec runs as a single replica with Recreate strategy, so a
       #     node drain or pod restart leaves a brief window in which no NEW
       #     decisions are learned. The reason is SQLite single-writer, and
-      #     that is accurate — a 2026-09-06 revision of this comment claimed
+      # that is accurate — a revision of this comment claimed
       #     the LAPI runs storage_type=postgres and was WRONG. Read off the
       #     running pod: db_config.type=sqlite, DB_TYPE unset, crowdsec.db a
       #     live 8MB file. The RWO `crowdsec-data` PVC is a second, weaker

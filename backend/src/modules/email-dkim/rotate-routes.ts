@@ -44,7 +44,7 @@ export async function emailDkimRotateRoutes(app: FastifyInstance): Promise<void>
       onRequest: [
         authenticate,
         requireRole('super_admin', 'admin', 'tenant_admin', 'support'),
-        // 2026-07-28: replaces a hand-rolled `userRole === 'tenant_admin'
+        // replaces a hand-rolled `userRole === 'tenant_admin'
         // && userTenantId !== tenantId` check in the handler. The shared
         // middleware is equivalent for tenant_admin AND additionally
         // fails closed on a tenant-panel token with no tenantId claim.

@@ -211,7 +211,7 @@ describe('reconcileWebmailCertificates', () => {
 
 // ─── reconcilePerTenantWebmailEngineRouting ───────────────────────
 //
-// 2026-05-18: verify the per-tenant Ingress reconciler flips the
+// verify the per-tenant Ingress reconciler flips the
 // ExternalName Service to the active engine when the label has
 // drifted, and is a cheap no-op when the label already matches.
 

@@ -38,7 +38,7 @@ const FROM_FOLDER_REGEX = /^From\s+Folder\s+\[([^\]]+)\]/gm;
 
 // ─── The format the shipped imapsync actually emits ──────────────────────
 //
-// Measured against a real 120-message run on the DEV cluster (2026-09-08):
+// Measured against a real 120-message run on the DEV cluster:
 // the image emits NO `+ Copying msg N/M` line whatsoever. Every pattern
 // above matched nothing, messages_total stayed NULL for the entire run,
 // and the tenant-panel progress bar — which renders only when total is a
@@ -159,7 +159,7 @@ export function parseImapsyncProgress(log: string): ImapsyncProgress {
 //
 // imapsync ends every run with a `++++ Statistics` block. That block is the
 // authoritative result and is what this reads. Sample from a real 2.319 run
-// (DinD, 2026-09-02):
+//
 //
 //   ++++ Statistics
 //   Transfer time                           : 0.2 sec

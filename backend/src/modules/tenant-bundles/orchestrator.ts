@@ -559,7 +559,7 @@ export async function runBundle(
         // similar credential errors are NOT drift — they indicate
         // a broken master-user secret which is a real backup-system
         // failure and must surface to operators (security review
-        // 2026-05-28 HIGH finding).
+        // HIGH finding).
         const isStalwartDrift =
           /no such user|principal not found|principal id is required|not a valid principal/i.test(msg);
         if (isStalwartDrift) {
@@ -715,7 +715,7 @@ export async function runBundle(
   //     (DEFAULT_ADMIN_ROLES = super_admin + admin) so platform
   //     staff can notice degraded tenant-bundle health.
   //
-  // Sanitization (security review 2026-05-28 HIGH):
+  // Sanitization:
   //   `errors[]` entries are raw orchestrator errors that may contain
   //   the `; logs: …` suffix appended by mailboxes.ts:waitForJob —
   //   raw pod stderr that can include credential challenges and the
@@ -1162,7 +1162,7 @@ async function recordResticSnapshotForFiles(args: {
   const targetConfigId = input.targetConfigId ?? null;
   let target: BackupTarget | null = null;
 
-  // B9 (2026-05-22): writes ALWAYS go through the R-X20 shim,
+  // B9: writes ALWAYS go through the R-X20 shim,
   // regardless of the underlying backup_configurations row's
   // storage_type. The shim handles S3/SFTP/CIFS/NFS uniformly and
   // outperforms restic's native S3 client by ~35% (live bench on

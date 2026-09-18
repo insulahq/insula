@@ -16,7 +16,7 @@ async function freshClient() {
 /**
  * A transient API failure must not end the operator's session.
  *
- * Observed on DEV 2026-09-16: a burst of traffic tripped the 100 req/min
+ * Observed on DEV: a burst of traffic tripped the 100 req/min
  * per-user rate limit, and the panel bounced to the sign-in page holding a
  * perfectly valid, unexpired token. Two independent code paths did it:
  *

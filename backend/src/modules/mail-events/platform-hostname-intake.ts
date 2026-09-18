@@ -1,7 +1,7 @@
 /**
  * `postmaster@` and `abuse@` on the platform's OWN mail hostname.
  *
- * Measured on production 2026-09-17 with a two-control SMTP probe:
+ * Measured on production with a two-control SMTP probe:
  *
  *     postmaster@<a hosted domain>  -> 250 2.1.5 OK                    (control)
  *     no-such-mailbox@<same domain> -> 550 5.1.2 Mailbox does not exist (control)

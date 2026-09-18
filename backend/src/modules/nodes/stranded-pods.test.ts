@@ -2,7 +2,7 @@
  * Re-pinning a tenant off a dead node has to remove the pods stranded there,
  * and must NOT do that to a live one.
  *
- * The bug this guards (measured on staging, 2026-09-11): tenant workloads use
+ * The bug this guards: tenant workloads use
  * `strategy: Recreate` — correct, because their volume is RWO and two pods
  * cannot mount it at once. Recreate waits for every old pod to be FULLY GONE
  * before creating a new one, and a pod on a dead node never gets there: only

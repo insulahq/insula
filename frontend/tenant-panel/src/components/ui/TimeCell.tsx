@@ -4,7 +4,7 @@
  * Backup/snapshot tables show "Created" as a relative age; tenants get
  * the absolute instant without leaving the page via the native `title`
  * tooltip — same treatment as the admin panel's backup tables
- * (operator request 2026-08-26). No tooltip library exists in this panel.
+ * . No tooltip library exists in this panel.
  */
 
 export function formatRelativeAge(iso: string | null | undefined): string {

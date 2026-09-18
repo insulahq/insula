@@ -5,9 +5,9 @@ kind: Kustomization
 #
 # mail-db/ (CNPG PostgreSQL cluster) has been removed. Stalwart now
 # uses an embedded RocksDB DataStore on the consolidated local-path PVC
-# (mail-stack-data, A2.5 2026-05-25 — Stalwart subtree at subPath=
+# (mail-stack-data, A2.5 — Stalwart subtree at subPath=
 # stalwart). See stalwart/pvc-mail-stack.yaml. The legacy single-purpose
-# stalwart-rocksdb-data PVC was removed 2026-06-12: its 48-72h
+# stalwart-rocksdb-data PVC was removed: its 48-72h
 # post-consolidation safety window is long past, and on every FRESH
 # cluster it just sat Pending (WaitForFirstConsumer) forever, spamming
 # the event log — observed on both staging and testing rebuilds.
@@ -20,7 +20,7 @@ kind: Kustomization
 # patched at runtime — that arrangement caused a months-long
 # ownership war (PRs #43–#45) and was retired.
 #
-# 2026-05-15 Phase 1 streamline: migration/ subdirectory removed. The
+# Phase 1 streamline: migration/ subdirectory removed. The
 # pre-streamline rsync data path used a Job that needed an SSH
 # known-hosts ConfigMap in migration/. The new snapshot+restore
 # migration (backend/src/modules/mail-admin/migration.ts) reuses the

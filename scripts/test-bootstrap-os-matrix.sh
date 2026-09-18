@@ -35,7 +35,7 @@ TIER_OK=(
 )
 
 # Rejected — bootstrap.sh::check_os MUST abort with a clear error.
-# amazonlinux:2 is rejected because AL2 EOLs 2026-06-30 and check_os
+# amazonlinux:2 is rejected because AL2 EOLs and check_os
 # requires VERSION_ID=2023.
 TIER_REJECT=(
   "ubuntu:20.04"
@@ -147,16 +147,16 @@ echo
 echo "════════════════════════════════════════════════"
 echo "  reconciler image: no userspace nft binary (regression guard)"
 echo "════════════════════════════════════════════════"
-# Contract (effective 2026-05-09 after the libnftnl rewrite):
+# Contract(effective after the libnftnl rewrite):
 # the firewall-reconciler image MUST NOT contain any userspace
 # `nft` binary. The Go reconciler talks netlink directly via
 # github.com/google/nftables — no fork+exec, no nft serialisation,
 # no version skew with the host. Reintroducing `nft` in the image
 # would also reintroduce the failure class observed twice in 24h:
 #
-#   2026-05-08: container nft 1.0.9 segfaulted reading host nft 1.1.3
+# container nft 1.0.9 segfaulted reading host nft 1.1.3
 #               kernel attrs (read-direction skew).
-#   2026-05-09: container nft 1.1.6 wrote attrs that host nft 1.1.3
+# container nft 1.1.6 wrote attrs that host nft 1.1.3
 #               could not parse → host nft segfaulted on every list,
 #               broke ssh on the staging cluster.
 #

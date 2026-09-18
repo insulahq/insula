@@ -16,7 +16,7 @@
  * those entries represent legitimate rate-limit decisions and should
  * remain enforced.
  *
- * **2026-05-15 streamline**: this module previously spawned an Alpine
+ * ** streamline**: this module previously spawned an Alpine
  * Pod that downloaded `stalwart-cli` (with sha256-pin), then invoked
  * `stalwart-cli query BlockedIp` + `stalwart-cli delete BlockedIp`.
  * Stalwart 0.16 deprecated stalwart-cli; the upstream image dropped

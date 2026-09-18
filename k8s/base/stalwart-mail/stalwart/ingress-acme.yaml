@@ -3,7 +3,7 @@
 # URL: http://mail.${DOMAIN}/.well-known/acme-challenge/<token>
 # Backend: stalwart-mail-acme.mail.svc.cluster.local:80 (http-acme port)
 #
-# 2026-05-17: backend Service renamed `stalwart-mail` → `stalwart-mail-acme`
+# backend Service renamed `stalwart-mail` → `stalwart-mail-acme`
 # (split). See k8s/base/stalwart-mail/stalwart/service.yaml header for why.
 #
 # Why this exists:

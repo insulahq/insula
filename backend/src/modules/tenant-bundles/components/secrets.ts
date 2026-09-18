@@ -23,7 +23,7 @@
  *
  *   {
  *     "schemaVersion": 1,
- *     "exportedAt": "2026-05-01T10:00:00Z",
+ * "exportedAt": "-01T10:00:00Z",
  *     "namespace": "tenant-abc",
  *     "secrets": [
  *       { "name": "wordpress-tls", "type": "kubernetes.io/tls",

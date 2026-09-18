@@ -11,7 +11,7 @@ set -euo pipefail
 # ConfigMap (i.e. bash locals, pod-env vars) get replaced with empty
 # strings, silently breaking the inline shell script.
 #
-# Real bug this prevents: 2026-05-10 job-gc CronJob's
+# Real bug this prevents: job-gc CronJob's
 # `${JOB_GC_DRY_RUN:-false}` got stripped to empty, the
 # `[ "$DRY" = "true" ]` check failed, and live deletes ran during what
 # should have been a preview. Plus 7 other CronJobs across k8s/base/

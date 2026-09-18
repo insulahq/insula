@@ -1,5 +1,5 @@
 /**
- * `mailboxes` component capture (Phase 2 rewrite, 2026-05-11, ADR-047).
+ * `mailboxes` component capture(Phase 2 rewrite,, ADR-047).
  *
  * Replaces the mbsync-based capture path with a JMAP-driven flow. Per
  * tenant tenant:
@@ -155,7 +155,7 @@ const MAIL_NAMESPACE_DEFAULT = 'mail';
 const JMAP_ENDPOINT_DEFAULT = 'http://stalwart-mgmt.mail.svc.cluster.local:8080';
 const IMAP_HOST_DEFAULT = 'stalwart-mail.mail.svc.cluster.local';
 const IMAP_PORT_DEFAULT = 993;
-// MASTER_USER_DEFAULT intentionally removed 2026-05-23 — see
+// MASTER_USER_DEFAULT intentionally removed — see
 // CaptureMailboxesComponentOpts.stalwartMasterUser doc + the
 // readStalwartMasterUser helper. The orchestrator is now the single
 // source-of-truth for the master FQDN.
@@ -169,7 +169,7 @@ const STDIN_FILENAME = 'maildir.tar';
 
 export async function listTenantMailboxAddresses(db: Database, tenantId: string): Promise<string[]> {
   // `mailboxes.full_address` (camelCase = `fullAddress` per Drizzle
-  // convention) is the canonical address column. Audited 2026-05-05.
+  // convention) is the canonical address column. Audited.
   // Send-only accounts are excluded: they have no mail store to capture,
   // and the per-address JMAP capture treats an auth/enumeration failure
   // as fatal for the WHOLE tenant bundle — one no-reply@ would fail every
@@ -425,7 +425,7 @@ export function buildMailboxesComponentJobSpec(input: {
             // nodes cache by tag. Without Always, a cached older
             // image (e.g. pre-Phase 2, no jmap-sync.py) silently runs
             // and the Job fails with `jmap-sync.py: not found`
-            // (caught 2026-05-11 mid-deploy). Image is small (<120 MiB)
+            // . Image is small (<120 MiB)
             // so the pull cost is minor.
             imagePullPolicy: 'Always',
             command: ['sh', '-c', script],
@@ -439,7 +439,7 @@ export function buildMailboxesComponentJobSpec(input: {
             volumeMounts: [
               { name: 'scratch', mountPath: '/tmp' },
               { name: 'upload-token', mountPath: '/var/run/upload-token', readOnly: true },
-              // jmap-state mount removed 2026-05-22 — both engines are
+              // jmap-state mount removed — both engines are
               // COMPLETE-only now, no per-mailbox state tokens to read.
               // stateSecretName param retained for orchestrator-side
               // backward compat but no longer mounted.
@@ -554,7 +554,7 @@ export async function captureMailboxesComponent(
   const engine: MailboxBackupEngine =
     opts.engineOverride ?? (await getMailboxBackupEngine(opts.db));
 
-  // 2026-05-22: tenant bundles are COMPLETE only — neither engine reads
+  // tenant bundles are COMPLETE only — neither engine reads
   // prior state. loadPriorStates() is dead code kept for one cycle; the
   // perAddress.stateIn field is always null.
   const perAddress = addresses.map((address) => ({
@@ -632,7 +632,7 @@ export async function captureMailboxesComponent(
     }
 
     await createUploadTokenSecret(opts.k8s, mailNamespace, tokenSecretName, archiveToken);
-    // 2026-05-22: state Secret no longer created — both engines are
+    // state Secret no longer created — both engines are
     // COMPLETE-only. createStateSecret() is dead code kept for one
     // cycle; the stateSecretName param is retained on the Job spec
     // builder for backward compat but no longer mounted.

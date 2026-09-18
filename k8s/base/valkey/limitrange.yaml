@@ -4,7 +4,7 @@
 # because only this kustomization creates the redis-system namespace —
 # a LimitRange referencing a namespace outside its own render makes the
 # apply fail for any consumer that doesn't also include valkey (the
-# local dev overlay doesn't; observed 2026-06-07: cold `local.sh up`
+# local dev overlay doesn't; cold `local.sh up`
 # aborted before migrations + seed).
 apiVersion: v1
 kind: LimitRange

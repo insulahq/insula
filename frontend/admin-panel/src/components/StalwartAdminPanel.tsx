@@ -51,7 +51,7 @@ export default function StalwartAdminPanel() {
     username: string;
     password: string;
   } | null>(null);
-  // 2026-05-06 (Phase 2A.C): captured from the rotation response so the UI
+  // (Phase 2A.C): captured from the rotation response so the UI
   // can show "N pods recycled" or "recycle failed" without operators having
   // to grep platform-api logs. null when the last rotation didn't recycle
   // (webmail-master path) OR no rotation has happened in this session yet.
@@ -575,7 +575,7 @@ interface RecycleResultBannerProps {
 }
 
 /**
- * 2026-05-06 (Phase 2A.C): visible outcome of the post-rotation pod-
+ * (Phase 2A.C): visible outcome of the post-rotation pod-
  * recycle step. Green when all pods deleted cleanly; amber when at
  * least one pod failed to delete (likely RBAC). Without this, an RBAC
  * regression on pods/delete would silently leave drift in place

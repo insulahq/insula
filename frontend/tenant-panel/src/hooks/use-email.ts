@@ -490,7 +490,7 @@ export function useRotateDkimKey(tenantId: string, domainId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: () =>
-      // 2026-05-06: M13/M12 retired the platform-side DKIM key store;
+      // M13/M12 retired the platform-side DKIM key store;
       // rotation now uses Stalwart's DkimSignature object via the
       // platform-api endpoint at /tenants/:tenantId/email-domains/
       // :domainId/dkim/rotate. Old /email/domains/... path is gone.
@@ -521,7 +521,7 @@ export function useActivateDkimKey(tenantId: string, domainId: string) {
   });
 }
 
-// mail-submit (PHP sendmail-compat credentials) removed 2026-07-27 — see CHANGELOG.
+// mail-submit (PHP sendmail-compat credentials) removed — see CHANGELOG.
 
 // ─── Phase 3 T2.1 — IMAPSync job runner ───────────────────────────
 

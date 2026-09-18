@@ -224,7 +224,7 @@ export async function waitForQuiesced(
   // remaining pods. The names are surfaced in the timeout error so
   // operators can see WHICH workload didn't drain — the original
   // "1 pod(s) still running" was useless when triaging the
-  // 2026-05-18 staging shrink failure.
+  // staging shrink failure.
   type RemainingPod = { name: string; phase: string; owner: string | null };
   // Only a pod that MOUNTS the tenant PVC can hold its RWO lock and block the
   // snapshot/detach. The earlier label filter excluded the file-manager

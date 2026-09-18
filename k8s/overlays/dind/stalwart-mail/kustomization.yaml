@@ -12,7 +12,7 @@
 #   1. stalwart-mail Service: LoadBalancer → NodePort (DinD has no LB)
 #   2. Ingress: local-ca-issuer + ${DOMAIN} = insula.host
 #
-# NetworkPolicies are kept AS-IS from the base (2026-06-07). The old
+# NetworkPolicies are kept AS-IS from the base. The old
 # "NetworkPolicy deleted — DinD k3s has no NetworkPolicy enforcer"
 # patch rested on a wrong assumption: k3s ships kube-router's netpol
 # controller, which DOES enforce (and REJECTs instead of Calico's
@@ -23,7 +23,7 @@
 # and every JMAP provisioning call failed. The base policy already
 # allows mail ports + :8080 from anywhere, so dev needs no exception.
 #
-# 2026-05-13 (Phase 5 of mail-arch re-audit): removed the stale mail-db
+# (Phase 5 of mail-arch re-audit): removed the stale mail-db
 # CNPG Cluster patch — Stalwart 0.16 uses embedded RocksDB; there is no
 # CNPG cluster to patch.
 #
@@ -37,8 +37,8 @@ resources:
   # mail-secrets — the MAIL stack's shared Secret, holding (among other
   # things) STALWART_MASTER_PASSWORD.
   #
-  # Moved here from overlays/dind/roundcube/ on 2026-09-01. It was named
-  # `roundcube-secrets` until 2026-05-22 and the rename to `mail-secrets`
+  # Moved here from overlays/dind/roundcube/. It was named
+  # `roundcube-secrets` and the rename to `mail-secrets`
   # never moved the dind manifest, so the mail master password stayed
   # coupled to the WEBMAIL overlay: `local.sh mail-up` alone left the mail
   # namespace with no master password, and only `webmail-up` created it.
@@ -109,12 +109,12 @@ patches:
       name: stalwart-mail
 
   # NOTE: the NetworkPolicy delete-patch that lived here was removed on
-  # 2026-06-07 — see the header comment. k3s DOES enforce NetworkPolicy
+  # — see the header comment. k3s DOES enforce NetworkPolicy
   # (kube-router), and deleting only the main policy while the newer
   # allow-* policies stayed broke platform-api → stalwart-mgmt.
 
   # NOTE: the mail-db CNPG Cluster patch that lived here was deleted on
-  # 2026-05-13 — Stalwart 0.16 uses embedded RocksDB on the
+  # — Stalwart 0.16 uses embedded RocksDB on the
   # `stalwart-rocksdb-data` local-path PVC. There is no CNPG cluster.
 
   # IngressRoute + Certificate: dev host + local-CA cert. The base

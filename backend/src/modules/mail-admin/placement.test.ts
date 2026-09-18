@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 /**
- * placement.ts unit tests — covers the 2026-05-14 streamline self-heal:
+ * placement.ts unit tests — covers the streamline self-heal:
  * `getMailPlacement` reads the live Stalwart pod's nodeName and
  * lazily updates `system_settings.mailActiveNode` if it differs from
  * the stored value. Catches the drift the streamline E2E harness G4
@@ -167,7 +167,7 @@ describe('mail-admin/placement.getMailPlacement self-heal', () => {
   });
 });
 
-// ─── primaryNode startup self-heal (2026-05-28) ─────────────────────
+// ─── primaryNode startup self-heal ─────────────────────
 //
 // ensureMailStackPlacementApplied is called once at platform-api boot.
 // If `mail_primary_node IS NULL` (fresh bootstrap, or DB row scrubbed)
@@ -317,7 +317,7 @@ describe('mail-admin/placement.ensureMailStackPlacementApplied primary self-heal
     expect(primaryWrite).toBeUndefined();
   });
 
-  // First/sole cluster server self-assigns primary (2026-05-31).
+  // First/sole cluster server self-assigns primary.
   // On a fresh single-server bootstrap there is no Stalwart pod and no
   // mail_active_node yet — but the FIRST server must still become the
   // mail primary automatically. When EXACTLY ONE Ready server-role node
@@ -372,7 +372,7 @@ describe('mail-admin/placement.ensureMailStackPlacementApplied primary self-heal
   });
 });
 
-// ─── updateMailPlacement node-count gate (2026-05-31) ────────────────
+// ─── updateMailPlacement node-count gate ────────────────
 //
 // Secondary placement requires >=2 Ready candidate nodes ("2 active
 // nodes required"); tertiary requires >=3 ("3 active nodes required").

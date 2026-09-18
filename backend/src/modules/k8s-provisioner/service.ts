@@ -292,7 +292,7 @@ const TENANT_NAMESPACE_LABELS_BASE = {
  * that broader trust. `warn` and `audit` stay at `restricted` so kubectl
  * + audit log keep highlighting drift even when enforce is loosened.
  *
- * 2026-05-17: this was static `baseline` before. The firewall integration
+ * this was static `baseline` before. The firewall integration
  * test surfaced the broken contract — platform-api accepted the deploy
  * (allow_host_ports_* on), but k8s admission rejected the Pod because
  * PSA enforce=baseline still forbade `hostPort`. Now the enforce level
@@ -475,7 +475,7 @@ function isQuotaScopeImmutable(err: unknown): boolean {
  * default-deny+allowlist). Delegates to tenant-network-policies.ts, which
  * owns the policy shape + a create-OR-replace apply so a changed body
  * converges on existing tenants. See that module for the isolation model
- * and why the old pod-CIDR ipBlock was removed (2026-07-27).
+ * and why the old pod-CIDR ipBlock was removed.
  */
 export async function applyNetworkPolicy(
   k8s: K8sClients,

@@ -4,7 +4,7 @@
 #
 # Why this guard exists
 # ---------------------
-# On 2026-09-16 an operator upgraded production and received, among others:
+# an operator upgraded production and received, among others:
 #
 #   "Email sending limit reached (hour)"     — which mailbox? no link.
 #   "3fd54013-fc40-4e13-adaf-ed1b5dd39f28 sent 53 of 50 messages"

@@ -1,4 +1,4 @@
-# Cut 3 (2026-05-04): production overlay for Stalwart 0.16.
+# Cut 3: production overlay for Stalwart 0.16.
 #
 # Production cutover from v015 to v016 follows the same path staging
 # took (scripts/cutover-stalwart-v015-to-v016.sh). When operator is

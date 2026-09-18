@@ -6,7 +6,7 @@
  * starts with `admin-panel:`. Every automatic ban therefore came back
  * `manualByOperator: true` and rendered in this table as **manual** — the
  * table claimed a human had clicked something nobody clicked. Observed on
- * DEV 2026-09-05 with scenario
+ * DEV with scenario
  * `admin-panel:autoban-scheduler:auto-ban:rules 920450,930120 count 6`.
  */
 

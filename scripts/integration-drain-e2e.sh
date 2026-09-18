@@ -131,7 +131,7 @@ trap cleanup EXIT
 # ALWAYS source the shared helper for its functions (api_curl, get_admin_token).
 # The ALL run pre-sets INTEGRATION_TOKEN, so the old `-z`-gated source SKIPPED it
 # and left api_curl undefined → api() emitted nothing → JSONDecodeError (the
-# 2026-06-26 "parallel cascade" was this self-inflicted regression). Sourcing only
+# "parallel cascade" was this self-inflicted regression). Sourcing only
 # defines functions (no side effects); mint a token only when none is pre-set.
 if [[ -f "$(dirname "${BASH_SOURCE[0]}")/integration-token.sh" ]]; then
   # shellcheck source=integration-token.sh
@@ -187,7 +187,7 @@ if [[ -z "$WORKER_NODE" || "${TENANT_NODE_COUNT:-0}" -lt 2 ]]; then
 
   # Even on a single-node cluster, drain-impact + drain endpoints MUST
   # exist and refuse to cordon the lone node. Single-node was silent-
-  # passing before 2026-05-16 per operator audit — no assertion = no
+  # passing before per operator audit — no assertion = no
   # signal. Probe:
   #   1. GET /admin/nodes → ≥1 node returned (API works)
   #   2. Pick any node (control-plane or worker) and call drain-impact
@@ -236,7 +236,7 @@ except: print('PARSE_FAIL')
   # because the only role=worker was left CORDONED by a prior run (so WORKER_NODE
   # came up empty) — but other tenant-capable nodes still exist, so draining
   # LONE_NODE is CORRECTLY allowed (2xx) and asserting 4xx is a false failure
-  # (observed 2026-06-25: drained `worker` → 200 with 3 server nodes remaining).
+  # (observed: drained `worker` → 200 with 3 server nodes remaining).
   # Count OTHER tenant-capable, uncordoned, non-drained nodes; if any exist, the
   # guard is not applicable here — skip cleanly instead of bricking the assertion.
   OTHER_CAPABLE=$(echo "$NODES_JSON" | LONE="$LONE_NODE" python3 -c "
@@ -448,7 +448,7 @@ DRAIN_REPIN_W=$(echo "$DRAIN_RESP" | python3 -c "import json,sys;print(json.load
 DRAIN_REPIN_P=$(echo "$DRAIN_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['rePinnedPvcs'])" 2>/dev/null)
 # Empty parse must FAIL, not vacuously pass: bash [[ "" -ge "" ]] is
 # TRUE (both sides coerce to 0), which silently masked a response-field
-# rename on 2026-06-11. Default unparsed values to -1 so the numeric
+# rename. Default unparsed values to -1 so the numeric
 # assertions below go red instead.
 DRAIN_EVICTED=${DRAIN_EVICTED:--1}
 DRAIN_REPIN_C=${DRAIN_REPIN_C:--1}

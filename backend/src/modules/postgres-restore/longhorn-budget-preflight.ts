@@ -15,7 +15,7 @@
  * recovery volume fails Longhorn's "insufficient storage" precheck,
  * the snapshot-recovery pod sticks at Init/FailedAttachVolume, and the
  * orchestration stalls mid-cutover WITH SYSTEM-DB DOWN (reproduced
- * twice on testing, 2026-06-10/11).
+ * twice on testing, /11).
  *
  * This preflight reproduces the same arithmetic BEFORE anything
  * destructive happens and fails fast with an actionable error naming

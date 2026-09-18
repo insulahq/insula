@@ -158,7 +158,7 @@ def covered(repo):
     # 1. multi-segment repos MUST be declared explicitly in a component's `repos:`
     #    list — no prose/substring matching (that created a silent coverage hole:
     #    an org/repo string in a notes:/watch.repo: field would falsely "cover" an
-    #    untracked image). See ADR-050 review 2026-06-08.
+    # untracked image). See ADR-050 review.
     if repo in declared_repos:
         return True
     # 2. single-segment library images (nginx/busybox/alpine) — word-boundary token
@@ -224,7 +224,7 @@ for i, e in enumerate(entries):
             except Exception:
                 warn(f"{eid}: unparseable discovered '{disc}'")
         if (days is not None and overdue) and not e.get("mitigation"):
-            # ENFORCING since 2026-06-08 (the seeded backlog was cleared the same
+            # ENFORCING (the seeded backlog was cleared the same
             # day — PRs #251/#253). An open KEV/critical past its tier SLA with no
             # mitigation now fails CI. To unblock: ship the fix, add a `mitigation:`,
             # or re-triage the entry (not_affected/accepted with review_by).

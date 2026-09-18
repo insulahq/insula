@@ -93,7 +93,7 @@ let refreshInFlight: Promise<RefreshOutcome> | null = null;
  *                 the caller surface the original error.
  *
  * Returning false for `unavailable` is what logged operators out during a
- * rate-limit burst on DEV (2026-09-16) while their refresh token was fine.
+ * rate-limit burst on DEV while their refresh token was fine.
  */
 type RefreshOutcome = 'refreshed' | 'rejected' | 'unavailable';
 

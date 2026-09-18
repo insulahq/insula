@@ -17,7 +17,7 @@ import { useAdminSubUsers } from '@/hooks/use-sub-users';
 import { useTenant, useDeleteTenant, useUpdateTenant } from '@/hooks/use-tenants';
 import { useDomains, useRefreshRouteDns } from '@/hooks/use-domains';
 import { useTenantBundles } from '@/hooks/use-tenant-bundles';
-// BackupScheduleEditor removed 2026-05-28 — tenants no longer have
+// BackupScheduleEditor removed — tenants no longer have
 // per-tenant schedules. The platform-global `backup_schedules.tenant_bundle`
 // runs daily for all eligible tenants. To control which tenants get
 // included, use Settings → Backups → Schedules + the per-plan flag.
@@ -85,7 +85,7 @@ export default function TenantDetail() {
   // (suspend / archive / restore / delete).
   //
   // The contract carries `suppressTenantNotification` and the backend now
-  // READS it — until 2026-09-16 nothing in between did, so this checkbox sent
+  // READS it — nothing in between did, so this checkbox sent
   // its value all the way to a hook that checked a field nobody had set, and
   // the tenant was emailed regardless.
   const [notifyTenant, setNotifyTenant] = useState(true);
@@ -1616,7 +1616,7 @@ function DeploymentsTab({ data, isLoading, error, tenantId }: TabContentProps<De
  * the cross-tenant Backups page pre-filtered to this tenant, where each
  * bundle row has its own Restore… action. Closes "nowhere shows that
  * multiple backups exist for this tenant" (operator report #3,
- * 2026-08-26) — the legacy table below only knows the retired
+ * ) — the legacy table below only knows the retired
  * per-resource `backups` rows.
  */
 function TenantBundlesSummary({ tenantId }: { readonly tenantId: string }) {

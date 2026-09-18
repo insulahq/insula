@@ -8,7 +8,7 @@
 # in-Pod shell expands at run time (`accessKey=$S3_ACCESS_KEY`), NEVER as
 # a literal read out of JS process memory.
 #
-# HISTORY (2026-07-28): this guard used to target one file,
+# HISTORY: this guard used to target one file,
 # backend/src/modules/mail-admin/blob-store.ts, which was FULLY RETIRED in
 # #205 (895e1226, ADR-046 follow-up). With its target gone the guard threw
 # "target file not found" and exited 1 — a guard that can only fail is

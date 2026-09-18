@@ -18,7 +18,7 @@
  * Why not edit the freshly-bootstrapped cluster directly:
  *   - CNPG webhook rejects edits to `spec.bootstrap` post-init (filed as
  *     task #80 in memory). Side-by-side + promote is the proven path
- *     verified end-to-end on staging 2026-05-23 (Phase 3.1 promote).
+ * verified end-to-end on staging (Phase 3.1 promote).
  *   - The freshly-bootstrapped cluster's Cluster CR is owned by Flux
  *     from `k8s/base/database.yaml`. Deleting + recreating with
  *     bootstrap.recovery would race with Flux's next reconcile (60s)

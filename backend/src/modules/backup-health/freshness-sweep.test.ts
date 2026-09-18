@@ -53,7 +53,7 @@ describe('oldEnoughToJudgeNever', () => {
   });
 
   it('judges one that has had its chances', () => {
-    // Created 2026-09-01, daily at 03:00 → 14 fires by the 15th.
+    // Created, daily at 03:00 → 14 fires by the 15th.
     expect(oldEnoughToJudgeNever(sched(), now)).toBe(true);
   });
 

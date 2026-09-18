@@ -59,7 +59,7 @@ function fakeDeps(over: Partial<Deps> = {}, drOver: Partial<Deps['dr']> = {}): {
 
 // ── parseDrArgs ──────────────────────────────────────────────────────────────
 /**
- * Regression (2026-08-11): `insula dr restore --help` answered
+ * Regression: `insula dr restore --help` answered
  *
  *     dr restore: unknown argument '--help'      (exit 2)
  *

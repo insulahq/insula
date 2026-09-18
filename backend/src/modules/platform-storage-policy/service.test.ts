@@ -232,7 +232,7 @@ describe('readClusterState — CNPG-managed PVC inclusion', () => {
     // local tier + 3 servers: the ONE postgres instance's PVC is replicated
     // for DURABILITY — that volume holds the only copy of the platform DB,
     // so 1 replica means a disk/node loss costs a restore from backup.
-    // Capped at MAX_LOCAL_CNPG_REPLICAS=2 (lowered from 3 on 2026-07-29:
+    // Capped at MAX_LOCAL_CNPG_REPLICAS=2 (lowered from 3:
     // the original "a local replica on every server avoids a cross-node
     // re-attach stall" rationale was disproven — cross-node re-attach
     // measures ~6-7s and the rolls converge regardless).

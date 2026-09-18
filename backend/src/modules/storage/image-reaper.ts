@@ -16,7 +16,7 @@
  *   image_reap_log table (migration 0064) so operators can audit what was
  *   removed and why.
  *
- * Durability + multi-replica (2026-08-04):
+ * Durability + multi-replica:
  *   scheduleReap persists the pending reap to `pending_image_reaps` and ALSO
  *   arms an in-process timer. The row is the source of truth; the timer only
  *   keeps the common case prompt. Previously the grace period lived in the
@@ -69,7 +69,7 @@ export function scheduleReap(db: Database, k8s: K8sClients, input: ReapInput): v
   // DURABILITY: persist the intent FIRST. A setTimeout lives only in this
   // process, so a restart inside the grace window used to drop the reap
   // silently — no image_reap_log row, no retry, nothing to find afterwards.
-  // (DEV cluster, 2026-08-04: delete at 13:43:44 armed a timer for 13:48:44,
+  // (DEV cluster: delete at 13:43:44 armed a timer for 13:48:44,
   // Flux rolled platform-api, replacement pod up at 13:49:28, reap never ran.)
   // The row is the source of truth; the timer below is only a latency
   // optimisation so the common case still fires promptly.
@@ -212,7 +212,7 @@ export async function reapImageNow(
         // `crictl rmi --prune` pass once nothing referenced it. Under a
         // parallel run, where another tenant still referenced it, --prune
         // could not sweep either and the image simply stayed.
-        // Observed 2026-08-06: cause="no such image
+        // cause="no such image
         // docker.io/serversideup/php:8.4-fpm-nginx-alpine" for an image the
         // node held as php@sha256:f0dfc… .
         const refs = [...new Set(names.map((n) => canonicalImageRef(n)))];

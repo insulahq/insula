@@ -4,7 +4,7 @@
  *
  * `tunnels.<apex>` is publicly resolvable with a Let's Encrypt certificate —
  * therefore listed in Certificate Transparency and trivially discoverable by
- * scanners — and until 2026-09-05 its IngressRoute carried a rate limit only:
+ * scanners — and its IngressRoute carried a rate limit only:
  * no ModSecurity, no CrowdSec. A banned IP could still reach it.
  *
  * The manifest fix alone is not enough. The anchor carries

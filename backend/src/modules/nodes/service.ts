@@ -23,7 +23,7 @@ import { isSystemNamespace } from '../../lib/namespace-tier.js';
 // The warning this comment used to carry ("Anything missing here gets shown to
 // the operator as a tenant pod") was correct and came true elsewhere — the
 // node-health alerting path had its own 9-entry copy of this list and paged an
-// admin about `tenant "traefik"` on 2026-08-31. Even this longer list was
+// admin about `tenant "traefik"`. Even this longer list was
 // missing crowdsec, redis-system, system-upgrade, hosting and plesk-migration,
 // which is why the classification is now a prefix rule that cannot drift.
 export const SYSTEM_NAMESPACES = Object.freeze([
@@ -1157,7 +1157,7 @@ export function makeLonghornHostTagEnsurer(k8s: K8sClients): (target: string) =>
 /**
  * Move one tenant's placement: Longhorn volumes, workloads, and the DB row.
  *
- * Extracted from drainNode 2026-09-11 so the node-outage auto-repin path can
+ * Extracted from drainNode so the node-outage auto-repin path can
  * reuse it instead of growing a second, drifting implementation. Behaviour is
  * unchanged — including the ordering, which matters: the DB row is written
  * LAST so it never advertises a pin the cluster refused.
@@ -1249,7 +1249,7 @@ export async function repinTenantPlacement(
       // patch above — and buildDrainImpact counts BOTH forms (detectNodePin),
       // so the drain would report success while the impact preview kept
       // listing the node as occupied forever. Measured on the multi-node VM
-      // run 2026-08-10: pods moved, volumes moved, tenants.node_name cleared,
+      // run: pods moved, volumes moved, tenants.node_name cleared,
       // nodeSelector cleared — and drain-impact still returned
       // "Σ workloads=4 / pinnedTenants=3" for an empty node, which is exactly
       // the counter the delete gate reads. The node became undeletable.
@@ -1297,7 +1297,7 @@ export async function repinTenantPlacement(
   //      can confirm the container stopped, so the pod object sits in
   //      `Terminating` forever and the Deployment waits behind it forever.
   //
-  //      Measured on staging 2026-09-11: a re-pin patched the Deployment, the
+  // Measured on staging: a re-pin patched the Deployment, the
   //      Longhorn volume and the platform DB — all three succeeded — and the
   //      tenant stayed down with `0/1` and no replacement ReplicaSet. Force-
   //      deleting the stranded pod produced a new ReplicaSet on the target node
@@ -1656,7 +1656,7 @@ export async function deleteNode(
 
   // 4) Reap the residue a node deletion leaves behind.
   //
-  // Both of these were observed on staging after the 2026-09-11 decommission
+  // Both of these were observed on staging after the decommission
   // drill. Neither breaks anything immediately, which is exactly why they sit
   // there unnoticed until they confuse someone mid-incident.
   //

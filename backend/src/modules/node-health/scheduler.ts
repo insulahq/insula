@@ -1,7 +1,7 @@
 /**
  * Node-health reconciler — 5-min tick.
  *
- * Closes the three monitoring gaps surfaced by the 2026-05-08 worker
+ * Closes the three monitoring gaps surfaced by the worker
  * incident (Calico Felix crash-looped, evicted Longhorn pods, worker
  * silently lost driver.longhorn.io for 10 days):
  *
@@ -110,7 +110,7 @@ export async function reconcileNodeHealth(
     } as Parameters<typeof k8s.core.listEventForAllNamespaces>[0])
       .catch(() => ({ items: [] as RawEvent[] })) as Promise<{ items?: ReadonlyArray<RawEvent> }>,
     // Kernel OOM kills surface as kubelet-posted SystemOOM events on the
-    // NODE object (operator decision 2026-07-25: must be visible + alerted).
+    // NODE object(operator decision: must be visible + alerted).
     k8s.core.listEventForAllNamespaces({
       fieldSelector: 'reason=SystemOOM',
     } as Parameters<typeof k8s.core.listEventForAllNamespaces>[0])
@@ -147,7 +147,7 @@ export async function reconcileNodeHealth(
   // ── 3. Build NodeFacts for each node ────────────────────────────
   // Phase 1b: read root-fs fill % per node from kubelet /stats/summary so the
   // 75/90 % thresholds (service.ts) fire BEFORE the kernel raises DiskPressure
-  // (~88% in the 2026-05-08 incident). Best-effort: a node absent from the map
+  // (~88% in the incident). Best-effort: a node absent from the map
   // stays diskUsedPct:null ("unknown"), never a false alert. ~250 ms/node over a
   // 5-min tick, so the roundtrip cost is immaterial.
   const nodeNames = (nodeList.items ?? [])
@@ -194,7 +194,7 @@ export async function reconcileNodeHealth(
   const prevRows = await db.select().from(nodeHealthState);
   const prevByName = new Map(prevRows.map((r) => [r.nodeName, r]));
 
-  // ── 5a. Node reboot lifecycle (operator request 2026-09-11) ────
+  // ── 5a. Node reboot lifecycle ────
   // Computed from prevRows BEFORE the upsert loop overwrites them, and applied
   // into that same upsert so bootId/rebootAnnounced advance atomically with the
   // rest of the row. Notifications are dispatched after the writes so a
@@ -327,7 +327,7 @@ export async function reconcileNodeHealth(
   // ── 7. Reap node-reboot debris ─────────────────────────────────
   // Nothing in Kubernetes removes these (terminated-pod-gc-threshold defaults
   // to 12500), so they pile up across reboots — 822 from one reboot in
-  // tigera-operator on 2026-09-03, still 20 per reboot after the priority-class
+  // tigera-operator, still 20 per reboot after the priority-class
   // fix. They are also pod objects carrying exit-137 container statuses, which
   // is what made the OOM detectors report reboot corpses as tenant OOM kills.
   // Runs AFTER recordMemoryEvents so a kill is recorded before its record goes.
@@ -362,7 +362,7 @@ async function fanoutNotification(
   // A NotReady node is already reported by the categorised `admin.node_down`
   // dispatch below, which carries a better title and an action path. Emitting
   // the raw row as well produced TWO notifications for one event during the
-  // 2026-09-11 drill — "Node down" (critical) and "Node X flagged CRITICAL"
+  // drill — "Node down" (critical) and "Node X flagged CRITICAL"
   // (info) — landing seconds apart in an inbox with 880 unread items.
   const coveredByNodeDown = !entry.ready && entry.severity === 'critical';
 

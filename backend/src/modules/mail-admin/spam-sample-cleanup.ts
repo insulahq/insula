@@ -13,7 +13,7 @@
  * up to 180 days — invisibly, because the mailbox is gone and the account
  * quota reads 0 B.
  *
- * Measured on Stalwart v0.16.16 (2026-08-04 spike, 2 GiB corpus):
+ * Measured on Stalwart v0.16.16(spike, 2 GiB corpus):
  *   - samples present  → blob purge reports `expires 0    / total 4221`, 0 bytes freed
  *   - samples destroyed → blob purge reports `expires 4200 / total 21`, and the
  *     next CF[t] compaction dropped the store from 2,142,844 KB to 11,156 KB.

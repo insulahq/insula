@@ -250,5 +250,5 @@ describe('backup-config routes', () => {
     expect(res.statusCode).toBe(403);
   });
 
-  // Activate/deactivate routes retired 2026-08-26 — tests removed with them.
+  // Activate/deactivate routes retired — tests removed with them.
 });

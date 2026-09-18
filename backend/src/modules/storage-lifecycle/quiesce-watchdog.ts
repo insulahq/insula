@@ -4,7 +4,7 @@
  * The quiesce→act→unquiesce orchestrators recover their own failures
  * (catch-path unquiesce, persisted-snapshot fallback), but two shapes
  * still stranded tenants DOWN with no automatic path back up
- * (operator report #7, 2026-08-26):
+ *
  *
  *   1. platform-api restarted mid-op — orchestration is fire-and-forget
  *      in-process, so the op row stays in a non-terminal state forever

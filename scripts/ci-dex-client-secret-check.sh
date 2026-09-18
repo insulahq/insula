@@ -14,7 +14,7 @@
 #
 # which oauth2-proxy reports to the visitor as a 500 on /oauth2/callback. That
 # shipped and went unnoticed until someone drove a full browser sign-in
-# (2026-09-05).
+# .
 #
 # The supported way to keep a client secret out of a ConfigMap is `secretEnv:`,
 # which names an environment variable (dex storage.Client.SecretEnv). A literal

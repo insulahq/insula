@@ -6,7 +6,7 @@
  * opens a wizard that walks the operator through three steps, then
  * fires the restore as a fire-and-forget task. The page closes the
  * modal in <1s; progress is tracked by the task-center chip — the
- * same UX pattern shipped for shim target-switch 2026-05-21.
+ * same UX pattern shipped for shim target-switch.
  *
  * The wizard is artifact-shape-agnostic: callers pass an `artifact`
  * descriptor with everything needed to render the steps + an
@@ -460,7 +460,7 @@ function Step3({
           : 'Side-by-side restore creates a new resource — your current data is untouched.',
     },
   ];
-  // Operator-facing "what to expect" panel (Task #101 2026-05-23).
+  // Operator-facing "what to expect" panel.
   // Snapshot restores via this wizard ALWAYS use the no-WAL-target
   // fast-path. The orchestrator skips the temp-cluster steps + boots
   // the source directly from the snapshot LSN. Real timings captured

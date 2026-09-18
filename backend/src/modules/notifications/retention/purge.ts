@@ -20,7 +20,7 @@
  * The inbox table used to have NO age retention at all, on the reasoning
  * that its rows are "user-deletable". They are — one at a time, via
  * `DELETE /notifications/:id`; there is no bulk delete in either panel and
- * nobody prunes an inbox by hand. Measured on staging 2026-09-10: 2685
+ * nobody prunes an inbox by hand. Measured on staging: 2685
  * rows going back to the day the cluster was first migrated, 2619 of them
  * older than 30 days, none ever reaped. That is monotonic growth with no
  * ceiling, so the window below now applies to both tables.

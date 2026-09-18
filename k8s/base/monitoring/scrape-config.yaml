@@ -39,7 +39,7 @@ data:
             regex: 'flag'
             action: drop
           # vmsingle's self-scrape was the largest job in the TSDB after Flux
-          # (1366 series on production 2026-09-03), and its histograms are the
+          # (1366 series on production), and its histograms are the
           # bulk of it: vm_promscrape_push_data_duration_seconds_bucket 96,
           # vm_rows_read_per_query_bucket 53, vmselect_request_duration_seconds_bucket
           # 51, vm_rows_scanned_per_query_bucket 50, vm_rows_per_insert_bucket 44,
@@ -65,7 +65,7 @@ data:
       # the regex deliberately, never wholesale.
       # (This used to claim cadvisor was the ONLY job that scales with tenant
       # count. It is not — traefik_service_* is per backend service and grew
-      # to 115 bucket series at 6 tenants before it was dropped, 2026-09-03.
+      # to 115 bucket series at 6 tenants before it was dropped.
       # Any new job that carries a per-workload label belongs on that list.)
       - job_name: kubelet-cadvisor
         scheme: https
@@ -83,7 +83,7 @@ data:
           # metering (namespace-labelled; the backend sums per namespace via
           # increase(), which absorbs counter resets + pod churn). Bounded
           # extra cardinality (~pods×interfaces); everything else stays dropped.
-          # container_oom_events_total: kernel OOM detection (2026-07-25) —
+          # container_oom_events_total: kernel OOM detection —
           # sourced from cgroup memory.events, so it works even where the
           # kubelet's kmsg oomparser is broken ("/dev/kmsg: broken pipe",
           # observed live on DEV: kernel OOM kills produced NO SystemOOM
@@ -107,7 +107,7 @@ data:
             target_label: node
         metric_relabel_configs:
           # Swap is OFF on every supported node (k3s requires it disabled;
-          # verified `Swap: 0` on the production cluster 2026-08-30), so
+          # verified `Swap: 0` on the production cluster), so
           # these 1073 series are a constant zero per container and pod.
           # If swap support is ever enabled, delete this rule — the
           # metrics are genuinely useful then.
@@ -166,10 +166,10 @@ data:
           # with tenant workloads exactly like cadvisor does — the header
           # comment above calling cadvisor "the only job whose series count
           # grows with tenant count" was wrong. The _bucket family alone was
-          # 115 series on production at 6 tenants (2026-09-03), the single
+          # 115 series on production at 6 tenants, the single
           # largest metric name in this job.
           #
-          # It is no longer dropped WHOLESALE (2026-09-12). The
+          # It is no longer dropped WHOLESALE. The
           # `platform-latency-slow-share` SLO rule needs per-service buckets to
           # separate the platform's own surfaces from tenant websites — scoring
           # a tenant's slow app as a platform SLO breach is what made the old
@@ -281,7 +281,7 @@ data:
             regex: 'workqueue_.*|rest_client_.*'
             action: drop
           # The four Flux controllers were the single largest job in the TSDB
-          # (1226 series on production 2026-09-03) and most of it is Go runtime
+          # (1226 series on production) and most of it is Go runtime
           # internals: go_gc_heap_allocs_by_size_bytes_bucket and its _frees
           # twin are 48 series EACH per controller, plus five go_sched_pauses_*
           # families at 32 each. None of it is queried.
@@ -349,7 +349,7 @@ data:
           - source_labels: [__meta_kubernetes_pod_name]
             target_label: pod
         metric_relabel_configs:
-          # 570 series on production 2026-09-03 — 72% of everything this job
+          # 570 series on production — 72% of everything this job
           # produces, and the largest single metric name in the whole TSDB.
           # It is one series per (route × method × status × le) and grows with
           # the API surface, not with load. Nothing reads it: there is no

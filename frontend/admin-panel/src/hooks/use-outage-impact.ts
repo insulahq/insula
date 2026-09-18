@@ -18,7 +18,7 @@ interface OutageImpactEnvelope {
  *
  * Polled from the global layout, so every admin page can surface an outage
  * the moment it is detected rather than only the Cluster Nodes page. Added
- * after the 2026-09-11 drill, where the dashboard showed "Platform: Healthy"
+ * after the drill, where the dashboard showed "Platform: Healthy"
  * throughout a real node outage.
  *
  * 20 s: the backend caches for 15 s, so this is roughly one cluster read per

@@ -4,7 +4,7 @@
  * The admin restore cart (super_admin / admin) can restore anything
  * in a bundle. Tenants now get their own restore cart via the
  * tenant panel (Phase 1 of the tenant-bundles tenant-side work,
- * 2026-05-28), but the platform's invariants demand that some
+ * ), but the platform's invariants demand that some
  * fields and tables stay operator-only — billing, plan/quota,
  * platform config, infra. This module is the single source of
  * truth for what a tenant-cart can touch.
@@ -31,7 +31,7 @@ export interface TenantRestorePolicy {
 }
 
 /**
- * Default policy as of 2026-05-28. Order of additions matters less
+ * Default policy. Order of additions matters less
  * than completeness: the gate is "tenant can restore EVERYTHING by
  * default, except entries listed here". When in doubt, deny — a
  * follow-up PR can widen.
@@ -95,7 +95,7 @@ export const DEFAULT_TENANT_RESTORE_POLICY: TenantRestorePolicy = {
       // scripts/ci-tenant-restore-policy-check.sh catches typos.
       'max_sub_users_override',
       'max_mailboxes_override',
-      // 2026-07-28: added when ci-tenant-restore-policy-check.sh was finally
+      // added when ci-tenant-restore-policy-check.sh was finally
       // wired into CI and flagged them. Same class as the limit-overrides
       // above — operator-set caps a tenant must NOT be able to reset by
       // restoring an old backup of their own row:

@@ -25,7 +25,7 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
     // backs a tenant up. This used to count the `backups` table, which the
     // retired per-resource backup API was the only writer of: it held zero
     // rows on every cluster, so this metric reported 0 backups on a platform
-    // holding hundreds of bundles. Retired with that table 2026-09-11.
+    // holding hundreds of bundles. Retired with that table.
     const [backupStats] = await app.db
       .select({ total_backups: sql<number>`count(*)` })
       .from(backupJobs);

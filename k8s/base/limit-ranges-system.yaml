@@ -92,7 +92,7 @@ spec:
         cpu: 10m
         memory: 32Mi
 ---
-# Phase 3b (2026-05-09): close gap found during empty-cluster resource audit.
+# Phase 3b: close gap found during empty-cluster resource audit.
 # These namespaces had pods running with NO memory request, hiding ~1 GB of
 # real usage from the scheduler. Defaults are intentionally tiny — same QoS
 # flip rationale as above.
@@ -168,7 +168,7 @@ spec:
         cpu: 10m
         memory: 32Mi
 # NOTE: the redis-system LimitRange moved to k8s/base/valkey/limitrange.yaml
-# (2026-06-07). Only the valkey component creates the redis-system namespace,
+# . Only the valkey component creates the redis-system namespace,
 # and the dev overlay does not include valkey — keeping the LimitRange here
 # made every local `kubectl apply` fail with `namespaces "redis-system" not
 # found`, aborting cold-start before migrations + seed ran.

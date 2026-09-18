@@ -38,7 +38,7 @@ describe('detectBootTransitions', () => {
   it('computes downtime from the last observation to the Ready transition', () => {
     const out = detectBootTransitions([facts()], prev(), NOW);
     const t = out[0];
-    // 12:25:44 last seen -> 12:32:34 Ready = 6m50s, the real 2026-08-27 figure.
+    // 12:25:44 last seen -> 12:32:34 Ready = 6m50s, the real figure.
     expect(t.kind).toBe('startup-complete');
     if (t.kind !== 'startup-complete') throw new Error('unreachable');
     expect(t.downtimeMs).toBe(410_000);

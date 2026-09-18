@@ -81,7 +81,7 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
 
   // ── Legacy path redirects (one cycle) ────────────────────────────
   // The bundle endpoints used to live under /admin/backups/bundles*
-  // before the 2026-05-06 rename to /admin/tenant-bundles*. Keep
+  // before the rename to /admin/tenant-bundles*. Keep
   // 308-permanent redirects on the old paths for one release cycle so
   // a panel deployed before the backend rolls doesn't 404 — TanStack
   // Query follows redirects transparently. Remove this block after
@@ -273,7 +273,7 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
         'targetConfigId is required: bundles must be written to an active off-site backup target (S3 or SSH).',
         400);
     }
-    // B9 (2026-05-22): bundle writes always go through the R-X20 shim
+    // B9: bundle writes always go through the R-X20 shim
     // (live staging bench measured ~35% faster than restic native S3,
     // PLUS the shim supports CIFS/NFS upstreams natively while
     // tenant-bundles' direct S3/SSH stores do not). The cfg row is
@@ -392,7 +392,7 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
       //     We catch here and force the row into `failed` so the
       //     polling modal stops spinning forever and the operator sees
       //     a real error. Without this the row stays at `running`
-      //     indefinitely (caught E2E 2026-05-07: 32-min hang).
+      // indefinitely(caught E2E: 32-min hang).
       let reservedBundleId: string | null = null;
       const reserved = new Promise<string>((resolve) => {
         runBundle(orchDeps, {
@@ -552,7 +552,7 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     // `tar.gz`. ANY non-empty value too short raises 400 — must
     // happen BEFORE we call streamEncryptedExport, otherwise the
     // function throws a plain Error which the framework returns as
-    // 500. Caught by typescript-reviewer 2026-05-08.
+    // 500. Caught by typescript-reviewer.
     if (passphrase !== undefined && passphrase !== null && passphrase !== '') {
       if (typeof passphrase !== 'string' || passphrase.length < 1) {
         throw new ApiError('VALIDATION_ERROR', 'passphrase must be a non-empty string (or omit it for an unencrypted tar.gz)', 400);
@@ -1683,7 +1683,7 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
 
   // Per-tenant schedule admin endpoints (/admin/backup-schedules,
   // /admin/tenants/:tenantId/backup-schedule[/run-now]) were retired
-  // 2026-05-28 with the tenant_backup_schedules table drop (migration
+  // with the tenant_backup_schedules table drop (migration
   // 0034). Use /admin/backups/schedules/tenant_bundle to manage the
   // platform-global schedule that drives ALL tenant bundles.
 }
@@ -1712,7 +1712,7 @@ async function resolveStore(
   // B9 shim-first: cifs goes through the rclone-shim (the shim
   // mediates ALL upstream protocols). Falls back to the direct cfg
   // resolver below when BACKUP_TARGET_KEY isn't bootstrapped.
-  // (NFS was dropped 2026-05-25; see ADR-043 postscript.)
+  // (NFS was dropped; see ADR-043 postscript.)
   return resolveShimFirstBackupStore(
     app, 'tenant',
     () => resolveDirectStore(app, cfg),

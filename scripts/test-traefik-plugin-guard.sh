@@ -12,7 +12,7 @@
 #   and 404 on admin.<apex> / tenant.<apex>, and NOTHING self-heals: plugins are
 #   only installed at process start.
 #
-#   Hit on a fresh install 2026-08-04 — one transient timeout fetching the
+# Hit on a fresh install — one transient timeout fetching the
 #   crowdsec plugin cost the operator the entire admin panel, and bootstrap's
 #   own verify_install blamed TLS because the probe just saw a 404.
 #

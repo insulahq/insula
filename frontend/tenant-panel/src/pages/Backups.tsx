@@ -317,7 +317,7 @@ export default function Backups() {
   );
 }
 
-// ScheduleEditor was removed 2026-05-28. Per platform policy, tenants
+// ScheduleEditor was removed. Per platform policy, tenants
 // can no longer set their own backup schedule — scheduled bundles
 // are driven by a single platform-global cron. Operators inclusion-
 // gate per-plan via `hosting_plans.include_in_scheduled_bundles`.

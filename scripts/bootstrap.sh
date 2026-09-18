@@ -32,7 +32,7 @@ if [[ -n "$REMOTE_HOST" ]]; then
   #
   # ServerAliveInterval keeps the tail-SSH alive during long quiet
   # phases (e.g. waiting on slow Stalwart rollout). Phase-1 design
-  # observed 2026-05-14: bootstrap silently waits ~5 min for a
+  # bootstrap silently waits ~5 min for a
   # Deployment rollout; without keepalives, the SSH session times
   # out, the remote shell gets SIGHUP, bootstrap.sh dies mid-run.
   SSH_OPTS=(
@@ -53,7 +53,7 @@ if [[ -n "$REMOTE_HOST" ]]; then
   # `scp -r lib host:/tmp/lib` NESTS into /tmp/lib/lib/ when /tmp/lib already
   # exists, so the remote bootstrap then fails with "phase library missing at
   # /tmp/lib/bootstrap-phases.sh". Removing them first guarantees scp recreates
-  # them at the expected paths. (Observed on a clean re-bootstrap 2026-06-10.)
+  # them at the expected paths.(Observed on a clean re-bootstrap.)
   ssh "${SSH_OPTS[@]}" "${SSH_USER}@${REMOTE_HOST}" 'rm -rf /tmp/lib /tmp/platform' || true
 
   # Also copy the lib/ sibling dir so resources the script reads at
@@ -63,7 +63,7 @@ if [[ -n "$REMOTE_HOST" ]]; then
   #   "WARN: secrets-denylist.jq not found at /tmp/lib/secrets-denylist.jq"
   # and silently skips bundle creation — meaning the operator has no
   # rescue artifact if the cluster gets bricked before they enable
-  # backups. Caught on testing.example.test 2026-05-21.
+  # backups. Caught on testing.example.test.
   local_script_dir="$(cd "$(dirname "$0")" && pwd)"
   if [[ -d "${local_script_dir}/lib" ]]; then
     echo "Copying scripts/lib/ to $REMOTE_HOST..."
@@ -125,7 +125,7 @@ if [[ -n "$REMOTE_HOST" ]]; then
   # so `$!` is the launcher-bash PID (the parent of bootstrap.sh).
   # Using `setsid` here would fork a new session leader and exit
   # immediately, making $! refer to a defunct PID — Phase 2's
-  # `kill -0` would always fail (caught in code review 2026-05-14).
+  # `kill -0` would always fail(caught in code review).
   ssh "${SSH_OPTS[@]}" "${SSH_USER}@${REMOTE_HOST}" "
     set -euo pipefail
     mkdir -p ${REMOTE_RUNDIR}
@@ -276,7 +276,7 @@ PLATFORM_ENV="production"
 PLATFORM_DOMAIN=""
 # Fixed sentinel Domain that holds the Stalwart webmail master principal
 # (`master@local.host`). DECOUPLED from PLATFORM_DOMAIN/mail.<apex> on
-# purpose (2026-06-25): the master is used only for IMAP/JMAP master-auth
+# purpose: the master is used only for IMAP/JMAP master-auth
 # impersonation, never for mail routing or DNS/MX, so pinning it to a fixed
 # Domain means a mail-domain rename never strands it. `.host` is a real
 # gTLD — verified Stalwart 0.16 accepts it for auth (it rejects only the
@@ -297,7 +297,7 @@ CALICO_VERSION="v3.32.1"
 # against 10.43.0.1:443 until Calico's natOutgoing POSTROUTING chain
 # is fully active and starts SNAT'ing pod traffic. Existing clusters
 # work because Calico SNAT settled before any pod tried; observed on
-# fresh testing host 2026-04-30. Keep in sync with install_k3s_server's
+# fresh testing host. Keep in sync with install_k3s_server's
 # cluster_cidr_arg.
 POD_CIDR_V4="10.42.0.0/16"
 
@@ -420,7 +420,7 @@ ALLOW_SOURCE_LIST_V6=()
 #                  --pre-enroll-peer 10.1.0.2
 PRE_ENROLL_PEERS_V4=()
 PRE_ENROLL_PEERS_V6=()
-# Two DISTINCT roles, deliberately split (regression fix 2026-05-31):
+# Two DISTINCT roles, deliberately split:
 #   CLUSTER_NETWORK_CIDR{,_V6} - FIREWALL mesh-whitelist only (mirrored
 #     into ALLOW_SOURCE_LIST_V*). Auto-detected from wt0/tailscale0 when
 #     unset; safe - it only widens the trust set, never changes how k3s
@@ -432,7 +432,7 @@ PRE_ENROLL_PEERS_V6=()
 # Previously a single var drove both, and the firewall mesh auto-detect
 # SILENTLY also flipped on node-ip pinning - so merely having NetBird up
 # at bootstrap pinned the control plane to the mesh with no flag passed
-# (broke staging 2026-05-31: node InternalIPs became mesh 100.120.x
+# (broke staging: node InternalIPs became mesh 100.120.x
 # while DNS had public IPs -> mail/cert integration failures). Default
 # is now SET mode with a PUBLIC node-ip; mesh is firewall-whitelisted
 # but node-ip pinning requires the explicit flag.
@@ -467,23 +467,23 @@ CALICO_MTU=""
 DRY_RUN=false
 
 # ─── Pinned component versions ────────────────────────────────────────────────
-# Updated 2026-04-21. When bumping, verify:
+# Updated. When bumping, verify:
 #   1. Longhorn compatibility matrix covers the chosen k3s/k8s version
 #   2. All Helm chart versions are published at their respective repos
 #   3. Run `kubectl kustomize` on all overlays + redeploy staging before prod
 # Latest-stable checks done against GitHub releases for each project.
 LONGHORN_VERSION="v1.12.0"               # 2026-07; V1 engine only (no V2/SPDK) so the v1.12 V2-backing-image removal is a no-op here
 # Flux CLI + controllers (flux install deploys controller versions
-# matching the CLI). Pinned 2026-06-12 — the GitOps engine was the
+# matching the CLI). Pinned — the GitOps engine was the
 # LAST unpinned core component: every bootstrap silently took whatever
 # fluxcd.io/install.sh shipped that day, so two nodes bootstrapped a
 # week apart could run different reconciler behaviour (R15 lesson —
 # unpinned drift is how the ssa-policy surprise class happens).
-# Latest stable at pin time: v2.8.8 (2026-05-20).
+# Latest stable at pin time: v2.8.8.
 FLUX_VERSION="2.9.2"
 TRAEFIK_CHART_VERSION="41.0.2"           # app v3.7.6; verify: helm search repo traefik/traefik
 
-# ─── Remote installer script integrity (2026-07-28 security review) ──────────
+# ─── Remote installer script integrity ──────────
 # k3s, Helm and Flux are installed by piping an upstream shell script into a
 # root shell. Before this, all three were fetched unpinned and unverified —
 # and the Helm one came from the `main` BRANCH, a mutable ref. A compromise of
@@ -506,12 +506,12 @@ TRAEFIK_CHART_VERSION="41.0.2"           # app v3.7.6; verify: helm search repo 
 # NOT an infra version pin: nothing here changes which k3s/helm/flux VERSION
 # gets installed, so ci-migration-coverage.sh does not require a matching
 # host-migration (existing nodes already have these tools installed).
-# Refreshed 2026-08-04. Provenance verified before bumping, not assumed:
+# Refreshed. Provenance verified before bumping, not assumed:
 #   * the OLD pin d264d4d4… is byte-identical to k3s-io/k3s install.sh at the
 #     commit immediately BEFORE 2d0f82fa, so nothing had drifted underneath us;
 #   * the NEW pin ed01f89f… is byte-identical to both https://get.k3s.io and
 #     raw.githubusercontent.com/k3s-io/k3s/master/install.sh;
-#   * the only diff is upstream commit 2d0f82fa (2026-08-04) "change sles to use
+# * the only diff is upstream commit 2d0f82fa "change sles to use
 #     slemicro rpms instead of microos" — SUSE/SLE-Micro RPM repo selection,
 #     which touches no OS in our support matrix (Debian/Ubuntu, RHEL family).
 # NOTE: get.k3s.io serves MASTER's install.sh, so this pin breaks every fresh
@@ -596,7 +596,7 @@ fetch_verified_script() {
 # every panel + tenant IngressRoute (the `crowdsec@traefik` Middleware
 # in k8s/base/traefik/middlewares-crowdsec.yaml).
 CROWDSEC_PLUGIN_MODULE="github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin"
-# v1.6.0 (2026-04-27): slog logging + appsec content-length bypass fix.
+# v1.6.0: slog logging + appsec content-length bypass fix.
 # Upgrading from v1.4.4 — same Config struct shape so the Middleware spec
 # in k8s/base/traefik/middlewares-crowdsec.yaml needs no further changes.
 CROWDSEC_PLUGIN_VERSION="v1.6.0"
@@ -605,7 +605,7 @@ CROWDSEC_PLUGIN_VERSION="v1.6.0"
 # Deployment in k8s/base/modsecurity-crs/ for OWASP CRS verdict.
 MODSECURITY_PLUGIN_MODULE="github.com/madebymode/traefik-modsecurity-plugin"
 MODSECURITY_PLUGIN_VERSION="v1.6.0"
-# Coraza in-process WAF — DEAD CODE. The 2026-05-14 smoke test
+# Coraza in-process WAF — DEAD CODE. The smoke test
 # established neither the Yaegi vendored path nor the WASM build is
 # usable today (see docker/traefik-plugin-coraza/README.md). Empty
 # strings here skip the helm flag emission. When upstream stabilises,
@@ -1379,7 +1379,7 @@ parse_args() {
   # vanilla bootstrap produces a server that accepts tenant pods —
   # matching what the admin UI promises.
   #
-  # Historical note: prior to 2026-05-16, this block hardcoded
+  # Historical note: prior to, this block hardcoded
   # HOST_CLIENT_WORKLOADS=false for the server role, which
   # contradicted both the column default and the Setting toggle.
   # The stamped label then prevented k8s-sync from ever applying the
@@ -1589,7 +1589,7 @@ check_os() {
       OS_FAMILY=rhel
       ;;
     amzn)
-      # Amazon Linux 2023 (AL2023) only — AL2 reaches EOL on 2026-06-30
+      # Amazon Linux 2023 (AL2023) only — AL2 reaches EOL
       # and doesn't ship modern enough kernels for Calico WireGuard
       # without manual backports. AL2023's VERSION_ID is "2023".
       if [[ "${VERSION_ID:-}" != "2023" ]]; then
@@ -1655,7 +1655,7 @@ configure_node_logging_caps() {
   #
   # Three sources of unbounded growth, three caps:
   #
-  #   1. core dumps. The 2026-05-08 worker incident: Calico Felix
+  # 1. core dumps. The worker incident: Calico Felix
   #      crash-looped for 10 days; kernel default core_pattern=core
   #      wrote ~5000 × 5.7MB core files into the calico-node container's
   #      writable layer until the worker hit DiskPressure. Fix:
@@ -1738,7 +1738,7 @@ EOF
 }
 
 configure_memory_protection() {
-  # Node memory-pressure protection (2026-07-25, operator decision):
+  # Node memory-pressure protection:
   #
   #   1. NO swap, ever. Etcd + CNPG Postgres + Longhorn share every
   #      node; paging turns a fast, alertable pod OOM-kill into
@@ -1780,7 +1780,7 @@ configure_memory_protection() {
   # re-bootstrap therefore hit a stale "memory-protection" marker and skipped,
   # leaving the node with NO kubelet eviction thresholds and NO system-reserved
   # headroom — exactly the protection that keeps the kernel OOM killer away from
-  # k3s and postgres. Observed on a node re-bootstrapped 2026-08-08: marker dated
+  # k3s and postgres. Observed on a node re-bootstrapped: marker dated
   # four days earlier, /etc/rancher/k3s/config.yaml.d absent entirely.
   # destroy-cluster.sh now clears the markers too; this is the belt to those
   # braces, and self-heals a node wiped by any other means.
@@ -1878,7 +1878,7 @@ configure_graceful_shutdown() {
   # process while every container keeps running, then tears down iscsid and
   # the network underneath them. Longhorn's iSCSI sessions cannot log out,
   # the kernel force-offlines the devices, and the filesystem on top is
-  # ripped away mid-write. Measured on the production node 2026-08-27:
+  # ripped away mid-write. Measured on the production node:
   #
   #   12:18:27 iscsid: session 3 in invalid state for logout. Try again later
   #   12:18:38 sd 4:0:0:1: [sdc] Medium Error / Unrecovered read error
@@ -2015,7 +2015,7 @@ configure_node_net_tuning() {
   # Raise the kernel UDP receive limits so VXLAN, WireGuard, and any
   # tenant UDP workload don't hit rcvbuf overflow under gigabit bursts.
   #
-  # Symptom this prevents (observed 2026-05-10 on staging1): UDP @1 Gbps
+  # Symptom this prevents: UDP @1 Gbps
   # ingress dropped 15% packets even though the host was idle. Root
   # cause was rmem_max=212992 (kernel default ≈ 256 KB) clamping
   # iperf3 / Calico VXLAN / NetBird socket buffers far below the BDP.
@@ -2218,7 +2218,7 @@ install_packages_apt() {
   # tar is needed by Helm's get-helm-3 installer (extracts the binary
   # archive). Debian/Ubuntu cloud images include it by default; RHEL
   # minimal images do not — caught on Rocky 10.1 fresh install
-  # 2026-05-01 ("Could not find tar. It is required to extract the
+  # ("Could not find tar. It is required to extract the
   # helm binary archive."). Pin it explicitly on both families so
   # the helm install step never depends on a base-image quirk.
   apt-get install -y -qq \
@@ -2248,7 +2248,7 @@ install_packages_apt() {
   # table", so calico-node never leaves 0/1 Ready and NetworkPolicy stops being
   # programmed. Tenant isolation depends on that policy, so this is a security
   # regression, not a cosmetic one. Diagnosed on a fresh single-node install
-  # 2026-08-03.
+  # .
   #
   # Installing the binary makes NetBird pick its iptables backend, whose rules
   # are iptables-nft-compatible and which Felix can therefore read.
@@ -2324,7 +2324,7 @@ install_packages_dnf() {
   # conntrack revision 0 not supported, missing kernel module" → it programs zero
   # KUBE-SVC rules → the API service ClusterIP (10.43.0.1:443) is unreachable →
   # a joining node's calico install-cni can't mint its ServiceAccount token and
-  # the node never goes Ready (validated 2026-07-19 on centos-stream-10). Install
+  # the node never goes Ready. Install
   # the running-kernel package and load the module BEFORE k3s starts (Phase 2).
   # Harmless no-op where already present (el9). Best-effort so a variant without
   # the exact package (e.g. amzn2023, handled separately) never aborts bootstrap.
@@ -2744,7 +2744,7 @@ ${calico_wg_rule}
 #
 # That deadlocks, because the component that fills the set --
 # images/firewall-reconciler -- is a DaemonSet that runs INSIDE the cluster
-# this node can no longer join. Measured on staging 2026-09-12: a rebooted
+# this node can no longer join. Measured on staging: a rebooted
 # server sat NotReady for 19 minutes, unaffected by the hourly host-config
 # converger (which does not touch these sets), and rejoined 21 seconds after
 # the members were restored by hand.
@@ -3012,7 +3012,7 @@ seed_cluster_pending_peer_crs() {
   # firewall-reconciler reads ClusterPendingPeer.spec.ip and converges
   # the IPs into cluster_peers_v{4,6} on every node.
   #
-  # Why this exists (Bug #1 fix, 2026-05-18):
+  # Why this exists:
   #   seed_firewall_sets() above adds the --pre-enroll-peer entries
   #   directly to nft. That works for the brief window before the
   #   firewall-reconciler DaemonSet starts. Once the reconciler is
@@ -3108,7 +3108,7 @@ EOF
 
 # Unattended OS security updates.
 #
-# WHY THIS EXISTS AT ALL: until 2026-09-11 nothing here installed or configured
+# WHY THIS EXISTS AT ALL: nothing here installed or configured
 # unattended-upgrades / dnf-automatic. Debian's stock apt-daily.timer and
 # apt-daily-upgrade.timer ARE enabled out of the box, so `systemctl list-timers`
 # showed a daily "apt upgrade" job firing successfully — but apt.systemd.daily
@@ -3252,7 +3252,7 @@ pin_system_components_to_servers() {
   # spread constraint so the replicas land one-per-host (with maxSkew=1
   # ScheduleAnyway as the soft constraint — degrades gracefully when
   # only 1 server exists). Without this, the scheduler keeps placing
-  # replicas on whichever server got Ready first; on the 2026-04-25
+  # replicas on whichever server got Ready first; on the
   # 4-node staging cluster that put all CoreDNS/oauth2-proxy/dex/
   # admin/client/postgres/redis pods on staging, leaving staging at
   # ~52% RAM while staging2/3 sat near idle.
@@ -3316,7 +3316,7 @@ pin_system_components_to_servers() {
     || true
   done
 
-  # 2026-05-08 efficiency audit: bump under-provisioned memory requests
+  # efficiency audit: bump under-provisioned memory requests
   # to 128Mi on system daemons whose default install values don't reflect
   # actual usage. This is scheduler-accuracy correction — actual memory
   # use is unchanged, but the scheduler will now refuse to over-pack a
@@ -3336,15 +3336,15 @@ pin_system_components_to_servers() {
 
   # Flux controllers — manifests ship without resource requests, every
   # pod schedules with 0 requests until k8s OOMs. 128Mi covers steady-
-  # state observation 2026-05-08: 90-110 Mi resident across all four.
+  # state observation: 90-110 Mi resident across all four.
   bump_request_memory flux-system source-controller manager 50m 128Mi
   bump_request_memory flux-system kustomize-controller manager 50m 128Mi
   bump_request_memory flux-system helm-controller manager 50m 128Mi
   bump_request_memory flux-system notification-controller manager 50m 128Mi
-  # 2026-05-09: image-reflector-controller + image-automation-controller
+  # image-reflector-controller + image-automation-controller
   # removed from the platform — replaced by the in-CI tag-pin step in
   # .github/workflows/build-deploy.yml. Saves ~333 Mi RAM per cluster
-  # and removes the long-lived PAT auth surface that broke 2026-05-04.
+  # and removes the long-lived PAT auth surface that broke.
   # No bump_request_memory entries needed; the deployments don't exist.
 
   # Tigera operator — sole calico-operator pod, ships with no requests.
@@ -3358,7 +3358,7 @@ pin_system_components_to_servers() {
   # back onto the draining node — the operator tolerates every taint by design
   # — and kubelet rejects it with "Pod was rejected as the node is shutting
   # down". The loop then repeats for the rest of the drain: 822 Failed pod
-  # objects from ONE production reboot, ~9/second (2026-09-03).
+  # objects from ONE production reboot, ~9/second.
   #
   # system-cluster-critical is what the rest of the Calico stack in
   # calico-system already carries; it moves the operator to the LAST drain
@@ -3508,7 +3508,7 @@ apply_longhorn_node_tag() {
   # available for service longhorn-admission-webhook") and tags=[]
   # on the Node CR — every system-tier PVC then sticks Pending with
   # "specified node tag system does not exist". Caught on the
-  # 2026-05-08 testing.example.test bootstrap (51s gap between
+  # testing.example.test bootstrap (51s gap between
   # tag patch attempt and webhook becoming ready).
   log "  waiting for longhorn-admission-webhook endpoints (max 5 min)..."
   i=0
@@ -3529,7 +3529,7 @@ apply_longhorn_node_tag() {
   # optimistic-concurrency conflict ("the object has been modified") and crash-loops a
   # few times before it wins the write and registers — SELF-HEALING, but it can take
   # 5-8 min on a loaded VM host. Wait 10 min rather than fail an otherwise-fine join.
-  # (Observed 2026-07-11 on the VM tier's HA join; the node registered after 5 restarts.)
+  # (Observed on the VM tier's HA join; the node registered after 5 restarts.)
   i=0
   while ! kubectl get node.longhorn.io -n longhorn-system "$node_name" >/dev/null 2>&1; do
     i=$((i + 2))
@@ -3596,7 +3596,7 @@ install_k3s() {
     # which previously made the comparison below fall through and
     # re-run the installer with potentially-changed --node-ip /
     # --advertise-address flags on existing clusters (broke staging1
-    # etcd membership 2026-05-08 — auto-detect picked NetBird wt0 IP
+    # etcd membership — auto-detect picked NetBird wt0 IP
     # while existing etcd state expected the public IP).
     installed="$(k3s --version | awk 'NR==1 {print $3}')"
     log "k3s already installed: ${installed}"
@@ -3894,18 +3894,18 @@ select_cluster_issuer() {
   # IMPORTANT: this function is captured via $(select_cluster_issuer ...),
   # so its STDOUT must be ONLY the issuer name (or empty on caller-side
   # failure). Diagnostic `log` calls MUST go to stderr, otherwise the
-  # caller's $() expansion collects "[2026-05-17 12:45:57] select_cluster_issuer:
+  # caller's $ expansion collects " select_cluster_issuer:
   # DNS check PASSED ...\nletsencrypt-prod-http01" as a multi-line string,
   # which then poisons both the platform-cluster-config ConfigMap and the
   # envsubst pipeline (the YAML render becomes "name: \n…" → kubectl apply
   # fails with "did not find expected key"). Caught on testing.example.test
-  # 2026-05-17 fresh bootstrap.
+  # fresh bootstrap.
   local domain="$1" env="$2"
   # 0. --acme-server: the custom ACME issuer signs EVERYTHING (its whole point is a private
   #    apex real LE can't validate). Prefer the ACME_SERVER var, but ALSO detect the
   #    acme-custom-http01 ClusterIssuer directly: ACME_SERVER has been observed EMPTY in the
   #    platform-apply phase even though the cert-manager phase of the SAME run created the
-  #    issuer (VM tier 2026-07-12: platform-config rendered issuer=local-ca-issuer AND the
+  # issuer (VM tier: platform-config rendered issuer=local-ca-issuer AND the
   #    reconciler cert-issuer override was skipped, so platform-ingress stuck on LE → rc=60
   #    at the smoke gate). The ClusterIssuer is a persistent cluster resource created in
   #    install_cert_manager (before every select_cluster_issuer call site), so its existence
@@ -3932,7 +3932,7 @@ select_cluster_issuer() {
   # `letsencrypt-prod-http01`: the literal won, the certs issued, and the bogus
   # value sat unused in platform-cluster-config. Once platform-config started
   # honouring ${CLUSTER_ISSUER_NAME} the mismatch became load-bearing — caught
-  # on a fresh --env dev bootstrap of testing.<apex> 2026-08-08, where all 6
+  # on a fresh --env dev bootstrap of testing.<apex>, where all 6
   # platform Certificates sat Ready=False against a missing issuer.
   #
   # Same existence-probe idiom as the acme-custom-http01 check above. A dev
@@ -4439,7 +4439,7 @@ install_k3s_worker() {
   # agent` with no flags, and kubelet then auto-detects (picks public
   # eth0 + IPv6). We bake --node-ip / --node-external-ip into the
   # ExecStart via INSTALL_K3S_EXEC, which install.sh translates into
-  # the systemd unit's command line. (Tested 2026-04-25 — env-var alone
+  # the systemd unit's command line. (Tested — env-var alone
   # left INTERNAL-IP=public on the Node object.)
   # Pin --node-ip explicitly (see install_k3s_server for rationale).
   #
@@ -4541,7 +4541,7 @@ install_k3s_worker() {
 #
 # When the operator passes --calico-mtu N, that wins and we just
 # echo N (validated upstream in parse_args / install_calico). When
-# unset, the walk FOLLOWS THE NODE-IP UNDERLAY DECISION (2026-06-11
+# unset, the walk FOLLOWS THE NODE-IP UNDERLAY DECISION (
 # fix — found on the staging rebuild):
 #   * --cluster-network-cidr set (NODEIP_PIN_CIDR non-empty) → pod
 #     traffic rides the mesh/private underlay, so walk the mesh
@@ -4624,7 +4624,7 @@ detect_calico_mtu() {
 # ─── Cached, retried manifest fetch ──────────────────────────────────────────
 #
 # `kubectl apply -f <url>` inside a swallowed `|| true` is how two separate
-# install steps failed invisibly on 2026-08-17: raw.githubusercontent.com
+# install steps failed invisibly: raw.githubusercontent.com
 # answered 429 (a per-egress-IP rate limit) and the installer reported the
 # downstream symptom minutes later — "Calico CRDs never registered", then
 # "no matches for kind VolumeSnapshotClass". Neither message names the cause.
@@ -4671,7 +4671,7 @@ install_calico() {
   # self-recover. `apply --server-side` (idempotent, sidesteps the client-side size limit on
   # Calico's later CRDs), wait generously for the CRDs, and if they're still missing midway
   # RESTART the operator once to kick a hung startup. (VM tier centos-stream-10 first-server
-  # bootstrap 2026-07-11: operator stalled → CRDs never registered → "no matches for kind
+  # bootstrap: operator stalled → CRDs never registered → "no matches for kind
   # Installation".)
   local calico_url="https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests/tigera-operator.yaml"
   local calico_manifest="/var/lib/insula/cache/tigera-operator-${CALICO_VERSION}.yaml"
@@ -4680,7 +4680,7 @@ install_calico() {
   # Fetch to a FILE first, with retries, instead of letting kubectl pull the
   # URL inside a swallowed `|| true`.
   #
-  # WHY (2026-08-17, VM tier): raw.githubusercontent.com answered 429 Too Many
+  # WHY: raw.githubusercontent.com answered 429 Too Many
   # Requests — a per-egress-IP rate limit, nothing to do with this cluster.
   # `kubectl apply -f <url> >/dev/null 2>&1 || true` discarded that, so nothing
   # was created and the install reported "Calico CRDs never registered" FIVE
@@ -4720,7 +4720,7 @@ install_calico() {
   [[ "$calico_ok" == "true" ]] || \
     error "Calico CRDs (installations/apiservers.operator.tigera.io) never registered after 5 min + an operator restart."
 
-  # Calico networking config (M14, 2026-04-26):
+  # Calico networking config:
   #   * encapsulation: VXLAN — Calico's pod-network packet format. Stays
   #     even though we now ALSO encrypt with Calico-managed WireGuard;
   #     pod packets ride VXLAN (interoperable with all CNI tooling) inside
@@ -4788,7 +4788,7 @@ install_calico() {
     # both public-only and mesh-private nodes without needing
     # separate code paths or per-node Installation overrides.
     #
-    # Earlier (until 2026-05-09) we used 'skipInterface' to exclude
+    # Earlier we used 'skipInterface' to exclude
     # known VPN tunnel names. That worked for pure-public clusters
     # but actively broke mesh-private nodes — Calico would skip wt0
     # and pick the public NIC for its tunnel endpoint, even after
@@ -4836,7 +4836,7 @@ install_calico() {
   # at boot the node still carries network-unavailable:NoSchedule — a taint
   # only a healthy calico-node clears, while calico-node refuses to start
   # without a ready Typha ("Typha discovery enabled but discovery failed").
-  # Observed on the DEV cluster 2026-08-27: every workload sat Pending until
+  # Observed on the DEV cluster: every workload sat Pending until
   # the taint was removed by hand. Multi-node clusters hide it because typha
   # schedules elsewhere.
   #
@@ -4885,7 +4885,7 @@ EOF
     -n calico-system --timeout=180s 2>/dev/null \
     || warn "Calico pods not ready yet — they may need more time."
 
-  # 2026-04-25 issue: Felix sometimes does not install the cross-node
+  # issue: Felix sometimes does not install the cross-node
   # /26 routes via vxlan.calico after the initial Installation apply,
   # leaving cluster-internal Service traffic broken until the DaemonSet
   # is rolled. Empirically, a single rollout-restart of calico-node DS
@@ -4927,13 +4927,13 @@ EOF
   # an unrelated XDP program is already attached to lo (e.g. NetBird's
   # nb_xdp_prog in xdpgeneric mode), Felix otherwise enters a tight retry
   # loop trying to replace/wipe it — observed burning ~700-900m CPU per
-  # node on the staging cluster (2026-04-27).
+  # node on the staging cluster.
   #
   # Apply with retry: even after `api-resources` lists the CRD, the
   # apiserver's RESTMapper cache may stay stale for 30-60s, so a single
   # kubectl apply often fails with "no matches for kind FelixConfiguration".
   # Retry up to 5 minutes total before giving up. Caught fresh-install
-  # on Ubuntu 24.04 testing host 2026-04-30.
+  # on Ubuntu 24.04 testing host.
   local _felix_yaml='apiVersion: projectcalico.org/v3
 kind: FelixConfiguration
 metadata:
@@ -5022,7 +5022,7 @@ HELM_TRANSIENT_ERROR_RE='failed to fetch|failed to download|connection refused|c
 # so a GitHub 5xx surfaces as
 #   Error: failed to fetch .../longhorn-1.12.0.tgz : 500 Internal Server Error
 # and, under `set -euo pipefail`, aborted the whole bootstrap after ~20 minutes
-# of successful work. Reported by an operator 2026-08-03; the same URL served
+# of successful work. Reported by an operator; the same URL served
 # 200 minutes later, so the run only ever needed to ask twice.
 #
 # The retry is deliberately narrow: it fires ONLY when helm's stderr matches
@@ -5168,7 +5168,7 @@ install_traefik() {
   # forever and the roll never advances past the first node. maxSurge=0 +
   # maxUnavailable=1 deletes-then-recreates one pod at a time, which is the
   # only correct strategy when the pods own a fixed host port. (Observed on
-  # staging 2026-06-01: a chart-default roll wedged for 22h with one Pending
+  # staging: a chart-default roll wedged for 22h with one Pending
   # surge pod.)
   #
   # HTTP→HTTPS redirect is handled at the EntryPoint level (permanent=true),
@@ -5218,7 +5218,7 @@ install_traefik() {
   #   Error: Service "traefik" is invalid: spec.externalTrafficPolicy:
   #   Invalid value: "Local": may only be set for externally-accessible services
   #
-  # — which is exactly what a fresh --dual-stack bootstrap hit on 2026-08-09,
+  # which is exactly what a fresh --dual-stack bootstrap hit,
   # after the policy was added here on the strength of a LIVE-cluster patch that
   # had set BOTH fields at once. The two fields are only jointly valid, so the
   # reconciler owns both and patches them in a SINGLE patch every 5 min
@@ -5261,7 +5261,7 @@ install_traefik() {
   # platform-ingress, so admin.<apex> and tenant.<apex> return a bare 404 while
   # pods look Ready and certs look valid. On a node REBOOT the network is
   # routinely not up yet when Traefik starts, which is exactly how production
-  # went down on 2026-08-20.
+  # went down.
   #
   # A persisted plugin cache does NOT help: measured against traefik v3.7.6
   # with both archives already in /plugins-storage and no network, Traefik
@@ -5288,7 +5288,7 @@ install_traefik() {
 #
 # It is also the only per-request record the platform keeps. Without it there
 # is no source IP, path or user-agent for any request anywhere: tracing who
-# was hitting a broken route on 2026-09-05 was impossible for exactly this
+# was hitting a broken route was impossible for exactly this
 # reason.
 #
 # `keepingRequestHeaders` is deliberately narrow — User-Agent is needed by the
@@ -5299,7 +5299,7 @@ accessLog:
   # Written to a host FILE, not stdout, and deliberately so.
   #
   # The kubelet wraps every stdout line in the CRI envelope
-  # (`<rfc3339> stdout F <payload>`, verified on a live node 2026-09-05), and
+  # (`<rfc3339> stdout F <payload>`, verified on a live node), and
   # the crowdsecurity/traefik parser expects bare JSON. Tailing /var/log/pods
   # would hand it prefixed lines, every parse would fail, and the agent would
   # sit there Ready and detecting nothing — the exact failure this feature is
@@ -5333,7 +5333,7 @@ metrics:
     # objective in. A p95 landing anywhere in that gap is reported as a linear
     # interpolation across it, so the Monitoring → SLOs page showed numbers
     # like "615ms" that were arithmetic, not measurement (production,
-    # 2026-09-12: 36 of 39 requests ≤0.3s and 39 ≤1.2s produced exactly that).
+    # 36 of 39 requests ≤0.3s and 39 ≤1.2s produced exactly that).
     #
     # This set is a strict SUPERSET of the default. Keeping 0.3 and 1.2 means
     # every existing query and SLO rule evaluates identically on a cluster
@@ -5357,7 +5357,7 @@ volumes:
     type: hostPath
 deployment:
   initContainers:
-    # The mount alone is NOT enough, verified on a live node 2026-09-05.
+    # The mount alone is NOT enough, verified on a live node.
     #
     # The kubelet creates a hostPath directory as root:root 0755, and Traefik
     # runs as uid 65532 with a read-only rootfs. It therefore cannot create
@@ -5493,13 +5493,13 @@ TRAEFIKVALUES
 }
 
 # CNI portmap chain self-test (Calico+CNI portmap race mitigation,
-# 2026-05-15): occasionally the local node's `nat CNI-HOSTPORT-DNAT`
+# ): occasionally the local node's `nat CNI-HOSTPORT-DNAT`
 # chain is missing the rule for the Traefik DS pod's :80/:443 hostPort
 # binding — Calico Felix's dataplane refresh can win the install race
 # over CNI portmap, leaving external :80/:443 traffic on that node
 # Connection-refused even though the pod is Running. Detected on
-# staging.example.test 2026-05-15 and on testing.example.test
-# 2026-05-16 — once after install_traefik (fresh cluster) and a second
+# staging.example.test and on testing.example.test
+# — once after install_traefik (fresh cluster) and a second
 # time after Flux reconciled with image-pin updates that rolled the
 # Traefik DaemonSet pod.
 #
@@ -5529,7 +5529,7 @@ TRAEFIKVALUES
 # plugins are only installed at process start, so it stays broken until someone
 # restarts the pod.
 #
-# Seen on a fresh install 2026-08-04: a single transient timeout fetching the
+# Seen on a fresh install: a single transient timeout fetching the
 # crowdsec plugin left the operator with no admin panel, and bootstrap's own
 # verify_install blamed TLS ("cert-manager has NOT issued a real cert yet")
 # because the panel probe simply 404'd.
@@ -5556,7 +5556,7 @@ ensure_traefik_plugins_loaded() {
   # a no-op on exactly the run it exists for: Helm's --wait returns as soon as
   # the pod is Ready, so post-install fires while Traefik has not yet written
   # its "Loading plugins…" line. Observed on the fresh DEV bootstrap
-  # 2026-08-08 — "no Traefik logs yet — skipping (attempt 1)" at 12:50:33,
+  # — "no Traefik logs yet — skipping (attempt 1)" at 12:50:33,
   # and the plugin subsystem then died at 12:57:39, seven minutes later,
   # unnoticed. Poll for the startup marker instead; only give up (and pass)
   # if Traefik never logs at all, which is a different failure that the
@@ -5623,7 +5623,7 @@ _hostport_open() {
 # outside, while the pod is Running, Ready and listening. Recreating the pod
 # makes CNI re-run ADD and install the chain.
 #
-# Measured on a fresh dual-stack install 2026-08-09: CNI-HOSTPORT-DNAT carried
+# Measured on a fresh dual-stack install: CNI-HOSTPORT-DNAT carried
 # jumps for the mail ports and 80/443 but NONE for 23022, so SFTP was dead
 # cluster-wide from first boot. Only Traefik had a self-heal; the SFTP gateway
 # published a hostPort with no such protection. Recreating its pod added
@@ -5884,7 +5884,7 @@ spec:
     solvers:
     - http01:
         ingress:
-          # Traefik migration 2026-05-15: cert-manager's HTTP-01 solver
+          # Traefik migration: cert-manager's HTTP-01 solver
           # spawns a short-lived legacy Ingress (networking.k8s.io/v1
           # API kind, not IngressRoute) to expose the /.well-known/acme-
           # challenge/ path during the ACME flow. Traefik with the
@@ -5907,7 +5907,7 @@ spec:
           # (single-server installs, or any cluster where workers don't
           # accept system Pods), the solver lacks the required
           # toleration and stays Pending — every Order hangs forever.
-          # Caught on testing.example.test 2026-05-01.
+          # Caught on testing.example.test.
           podTemplate:
             spec:
               # Quota exemption: cert-manager creates the solver Pod in
@@ -5922,7 +5922,7 @@ spec:
               # excluded by the quota scopeSelector — same pattern as
               # file-manager / snapshot / restore Pods. Mirrors
               # k8s/base/cert-manager/clusterissuer-letsencrypt-http01.yaml.
-              # Caught on the testing cluster 2026-06-10 HTTPS scenario.
+              # Caught on the testing cluster HTTPS scenario.
               priorityClassName: platform-tenant-overhead
               tolerations:
                 - key: insula.host/server-only
@@ -5943,7 +5943,7 @@ spec:
     solvers:
     - http01:
         ingress:
-          # Traefik migration 2026-05-15: cert-manager's HTTP-01 solver
+          # Traefik migration: cert-manager's HTTP-01 solver
           # spawns a short-lived legacy Ingress (networking.k8s.io/v1
           # API kind, not IngressRoute) to expose the /.well-known/acme-
           # challenge/ path during the ACME flow. Traefik with the
@@ -5966,7 +5966,7 @@ spec:
           # (single-server installs, or any cluster where workers don't
           # accept system Pods), the solver lacks the required
           # toleration and stays Pending — every Order hangs forever.
-          # Caught on testing.example.test 2026-05-01.
+          # Caught on testing.example.test.
           podTemplate:
             spec:
               # Quota exemption: cert-manager creates the solver Pod in
@@ -5981,7 +5981,7 @@ spec:
               # excluded by the quota scopeSelector — same pattern as
               # file-manager / snapshot / restore Pods. Mirrors
               # k8s/base/cert-manager/clusterissuer-letsencrypt-http01.yaml.
-              # Caught on the testing cluster 2026-06-10 HTTPS scenario.
+              # Caught on the testing cluster HTTPS scenario.
               priorityClassName: platform-tenant-overhead
               tolerations:
                 - key: insula.host/server-only
@@ -6099,7 +6099,7 @@ install_sealed_secrets() {
   fi
 
   log "Installing Sealed Secrets..."
-  # Repo migrated bitnami-labs -> bitnami org (2026-06-15); the old GitHub Pages URL
+  # Repo migrated bitnami-labs -> bitnami org; the old GitHub Pages URL
   # 404s (Pages URLs don't redirect). --force-update is REQUIRED: a re-bootstrap of a
   # host that had a pre-migration install keeps the stale `sealed-secrets` repo pointing
   # at the dead bitnami-labs URL, and a plain `helm repo add` refuses to overwrite an
@@ -6243,7 +6243,7 @@ install_longhorn() {
   # Skipping the auto-discovery by passing the path explicitly is safe
   # on every distro because k3s ALWAYS uses /var/lib/kubelet (see
   # install_k3s_server — no --kubelet-arg=root-dir override). Surfaced
-  # on Rocky 10.1 fresh install 2026-05-01.
+  # on Rocky 10.1 fresh install.
   helm_cmd upgrade --install longhorn longhorn/longhorn \
     --namespace longhorn-system \
     --create-namespace \
@@ -6429,7 +6429,7 @@ install_cnpg() {
   log "CloudNative-PG operator at chart ${CNPG_CHART_VERSION}."
 }
 
-# install_monitoring() removed 2026-06-12 (ADR-051). The metrics stack
+# install_monitoring removed (ADR-051). The metrics stack
 # is now Flux-managed: k8s/base/monitoring/ ships a single VictoriaMetrics
 # vmsingle pod (scrape + TSDB + query + VMUI, ~128Mi) included by the
 # development/production overlays — no helm step, nothing to do here.
@@ -6449,12 +6449,12 @@ install_flux() {
   fi
 
   log "Installing Flux v2..."
-  # 2026-05-09: dropped --components-extra=image-reflector-controller,
+  # dropped --components-extra=image-reflector-controller,
   # image-automation-controller. Replaced by the in-CI tag-pin step in
   # .github/workflows/build-deploy.yml which uses the workflow's
   # ephemeral GITHUB_TOKEN to commit newTag bumps directly. Saves
   # ~333 Mi RAM per cluster and removes the PAT-rotation failure mode
-  # that took out staging image promotion 2026-05-04 → 2026-05-09.
+  # that took out staging image promotion →.
   flux install --kubeconfig="$KUBECONFIG" --timeout=300s
 
   # Determine which git ref Flux should watch (ADR-053).
@@ -6555,7 +6555,7 @@ Cut it first (scripts/cut-release.sh) or pass an existing tag via --release-tag.
   # Keep BACKTICKS and $( ) out of it — including inside YAML '#' comments.
   # Prose backticks in the comments below used to run as commands during every
   # install, printing "op:: command not found", "kustomize: command not found"
-  # etc. to the operator's console (reported 2026-08-03). Use 'single quotes'
+  # etc. to the operator's console. Use 'single quotes'
   # for inline code in this block; \${DOMAIN} is escaped for the same reason.
   # Guard: scripts/ci-heredoc-expansion-check.sh.
   cat <<KUSTYAML | kctl apply -f -
@@ -6584,7 +6584,7 @@ spec:
         name: platform-cluster-config
         optional: false
   patches:
-    # NOTE (2026-06-10): the former 'op: remove /spec/instances' patch on the
+    # NOTE: the former 'op: remove /spec/instances' patch on the
     # system-db Cluster was DELETED. k8s/base/database.yaml intentionally OMITS
     # spec.instances (CNPG defaults 1; Apply HA patches it imperatively and the
     # 'ssa: merge' annotation already keeps Flux off fields absent from the
@@ -6592,9 +6592,9 @@ spec:
     # field that isn't there FAILS the whole 'kustomize build', which silently
     # broke Flux reconcile on every fresh cluster ("error in remove for path:
     # '/spec/instances': Unable to remove nonexistent key"). The patch became
-    # fatal on 2026-06-05 when its target was corrected from the stale
+    # fatal when its target was corrected from the stale
     # 'postgres' name to 'system-db' (which exists, but has no instances field).
-    # 2026-05-29: strip spec.schedule from Flux's view of the
+    # strip spec.schedule from Flux's view of the
     # stalwart-snapshot CronJob so Flux never tries to apply it. The
     # field is operator-owned via the /backups/mail?tab=routing UI which
     # calls applyMailSnapshotRetention → applyPatch(force:true) with the
@@ -6627,7 +6627,7 @@ spec:
         version: v1
         kind: CronJob
         name: stalwart-snapshot
-    # 2026-08-26: same strip for the shim-bridged DR CronJobs —
+    # same strip for the shim-bridged DR CronJobs —
     # their /spec/suspend is owned by platform-api's dr-cronjobs bridge
     # (unsuspended when the SYSTEM class is bound). Without the strip,
     # Flux re-suspends them on every sync and the bridge fights it
@@ -6638,7 +6638,7 @@ spec:
     # minutes when no SYSTEM target is bound — hours before their
     # nightly schedules could fire. Existing clusters get this patch
     # via host-migration 2026.8.18/0001.
-    # 2026-09-03: platform-backup-audit dropped from this list with the
+    # platform-backup-audit dropped from this list with the
     # CronJob itself. Host-migration 2026.9.5/0001 removes the orphaned
     # patch entry from already-bootstrapped clusters; 2026.8.18/0001 was
     # edited in place to stop re-adding it (it is a converger, re-run on
@@ -6881,7 +6881,7 @@ generate_platform_secrets() {
   # versions of this code skipped the whole secret if it existed,
   # leaving stale env-prefixed hostnames in place when an operator
   # re-bootstrapped after a domain change. Caught on the
-  # testing cluster 2026-05-01 (oauth2-proxy crashlooped because the secret
+  # testing cluster (oauth2-proxy crashlooped because the secret
   # still pointed at dex.staging.testing.example.test).
   local oidc_client_secret="" cookie_secret=""
   if kctl get secret -n platform oauth2-proxy-config &>/dev/null 2>&1; then
@@ -6907,7 +6907,7 @@ generate_platform_secrets() {
   # redirect_url is deliberately left EMPTY for every environment.
   #
   # oauth2-proxy accepts exactly one --redirect-url. Pinning it to the admin
-  # host (what this did until 2026-09-05) meant a visitor to the TENANT panel
+  # host(what this did until) meant a visitor to the TENANT panel
   # was sent to the IdP with `redirect_uri=https://admin.<apex>/oauth2/callback`
   # and came back on the admin host holding a cookie for a host they were never
   # trying to reach — so `protectTenantViaProxy` could not work at all.
@@ -7016,12 +7016,12 @@ generate_platform_secrets() {
 STALWART_ADMIN_USER=admin
 STALWART_ADMIN_PASSWORD=${stalwart_admin_pw}
 # Stalwart 0.16 IMAP master-auth requires the FQDN form (verified
-# empirically 2026-05-07: short 'master' returns AUTHENTICATIONFAILED).
-# 2026-05-16: also CONFIRMED that Stalwart 0.16 blocks the .local TLD
+# empirically: short 'master' returns AUTHENTICATIONFAILED).
+# also CONFIRMED that Stalwart 0.16 blocks the.local TLD
 # entirely on auth ('AUTHENTICATIONFAILED master.local' even with
 # correct password + Admin role) — anchor the master Account under a
 # real TLD instead.
-# 2026-06-25 (final): DECOUPLED the master from the mail domain entirely.
+# (final): DECOUPLED the master from the mail domain entirely.
 # It now lives on the FIXED sentinel '${STALWART_MASTER_DOMAIN}' (real
 # gTLD, Stalwart-accepted) so a mail-domain rename can never strand it
 # (the old master@mail.<apex> was left dangling on rename + the Secret was
@@ -7155,7 +7155,7 @@ STALWART016_EOF
   # Webmail is always deployed alongside Stalwart on staging+production,
   # so its operator-bootstrap state lives next to Stalwart's.
   #
-  # Renamed 2026-05-22 from `roundcube-secrets` → `mail-secrets` because
+  # Renamed from `roundcube-secrets` → `mail-secrets` because
   # the Secret is consumed by far more than Roundcube: every component
   # that does Stalwart master-proxy auth (platform-api, tenant-bundle
   # mailbox Jobs, mail-imapsync, the migration scripts) reads
@@ -7164,7 +7164,7 @@ STALWART016_EOF
   # splitting them out would force a Roundcube pod-restart on every
   # master-password rotation, which is undesirable.
   #
-  # NOTE: no upgrade migration here. The pre-2026-05-22 servers (testing
+  # NOTE: no upgrade migration here. The pre- servers (testing
   # + staging) are patched imperatively at rename time:
   #   kubectl -n mail get secret roundcube-secrets -o json \
   #     | jq '.metadata = {name:"mail-secrets",namespace:"mail",labels:(.metadata.labels//{})}' \
@@ -7234,7 +7234,7 @@ RCEOF
 
   # ADR-039 Phase 8 — Bulwark webmail secrets.
   #
-  # 2026-05-28: Stalwart master credentials are NO LONGER mirrored
+  # Stalwart master credentials are NO LONGER mirrored
   # into bulwark-secrets. Bulwark's Deployment env reads
   # STALWART_MASTER_USER + STALWART_MASTER_PASSWORD directly from
   # `mail-secrets` (same Secret Roundcube + tenant-bundle Jobs use)
@@ -7295,7 +7295,7 @@ BWEOF
       log "Migrating bulwark-secrets: adding BULWARK_JWT_AUTH_SECRET (upstream impersonation route)."
       local mig_jwt
       mig_jwt="$(openssl rand -hex 32)"
-      # 2026-05-28: STALWART_MASTER_USER/PASSWORD are NO LONGER mirrored
+      # STALWART_MASTER_USER/PASSWORD are NO LONGER mirrored
       # here. Deployment env reads them directly from mail-secrets.
       local mig_patch
       mig_patch=$(cat <<PATCH
@@ -7316,7 +7316,7 @@ PATCH
     fi
   fi
 
-  # 2026-05-28: dead-key cleanup on existing clusters. Remove the
+  # dead-key cleanup on existing clusters. Remove the
   # legacy BULWARK_STALWART_MASTER_USER/PASSWORD keys from
   # bulwark-secrets so the drift surface is gone (Bulwark now reads
   # those values from mail-secrets directly).
@@ -7462,7 +7462,7 @@ create_platform_configmap() {
   # CERT_ISSUER_* env (optional). Key on ACME_SERVER OR the acme-custom-http01 ClusterIssuer's
   # existence — ACME_SERVER has been seen EMPTY here despite the issuer being created earlier
   # this run, which silently skipped this patch and left every reconciler cert on LE (VM tier
-  # 2026-07-12: platform-ingress/dex/webmail stuck on LE → smoke gate rc=60). The issuer is
+  # platform-ingress/dex/webmail stuck on LE → smoke gate rc=60). The issuer is
   # created in install_cert_manager, before this function, so its existence is reliable here.
   if [[ -n "${ACME_SERVER:-}" ]] || kctl get clusterissuer acme-custom-http01 >/dev/null 2>&1; then
     kctl patch configmap platform-config -n platform --type merge -p \
@@ -7659,7 +7659,7 @@ bundle_bootstrap_secrets() {
   # unsafe: when yq is absent the `|| echo '[]'` consumer exits before
   # draining stdin, SIGPIPE'ing kubectl — which under `set -o pipefail`
   # surfaces as rc=141 and aborts the whole bootstrap before the bundle is
-  # ever written (observed 2026-05-29). install_yq normally prevents this;
+  # ever written. install_yq normally prevents this;
   # this structure is defense-in-depth if the download fell back.
   local skip_at_restore_json='[]'
   local _allowlist_yaml
@@ -7811,13 +7811,13 @@ wait_for_admission_webhooks() {
 
 # ─── Roundcube webmail PG database+role provisioning ────────────────────────
 #
-# Cut 3 (2026-05-04): create the `roundcube` database + role on the platform
+# Cut 3: create the `roundcube` database + role on the platform
 # CNPG cluster. Idempotent — uses DO blocks that skip if the role/db exist.
 # Roundcube reads its DB credentials from the `mail-secrets` Secret
 # (created by generate_platform_secrets). This function reads the same
 # password and runs ALTER ROLE so re-runs converge.
 #
-# 2026-05-16: an in-platform-api reconciler
+# an in-platform-api reconciler
 # (`modules/roundcube-db-reconciler/`) takes over runtime convergence —
 # it reads the Secret + ALTER ROLEs the live password on a 5-min tick.
 # Bootstrap still calls this function for the initial provision so a
@@ -7835,7 +7835,7 @@ create_roundcube_db() {
     return 0
   fi
 
-  # CNPG cluster was renamed postgres → system-db (2026-05-07 PG18 migration);
+  # CNPG cluster was renamed postgres → system-db;
   # prior versions of this function timed out waiting for cluster/postgres,
   # silently returning 0 and leaving Roundcube unable to connect.
   log "  Waiting for platform system-db Cluster (up to 300s)..."
@@ -7958,7 +7958,7 @@ DBISOSQL
 
 # ─── Stalwart master-user (impersonation) provisioning ──────────────────────
 #
-# Cut 3 (2026-05-04): Stalwart 0.16 master-auth is implemented as an Account
+# Cut 3: Stalwart 0.16 master-auth is implemented as an Account
 # with the built-in `Admin` role (which includes the `impersonate` permission).
 # Roundcube's jwt_auth plugin uses the IMAP `<target>%<master>` syntax with
 # the master account's password to authenticate as any mailbox.
@@ -8011,12 +8011,12 @@ provision_stalwart_master_user() {
   # Stalwart Domain to anchor the master Account in.
   #
   # History:
-  #   2026-05-16: changed from the synthetic `master.local` to the
+  # changed from the synthetic `master.local` to the
   #               platform base domain (PLATFORM_DOMAIN) because
   #               Stalwart 0.16 hard-blocks the .local TLD on auth.
-  #   2026-05-28: moved to mail.PLATFORM_DOMAIN (same Domain Stalwart
+  # moved to mail.PLATFORM_DOMAIN (same Domain Stalwart
   #               serves mail for; avoided tenant collisions).
-  #   2026-06-25: DECOUPLED — moved to the FIXED sentinel
+  # DECOUPLED — moved to the FIXED sentinel
   #               STALWART_MASTER_DOMAIN ('local.host'). The master is
   #               used ONLY for master-auth impersonation, never mail
   #               routing/DNS, so anchoring it to the mail domain was the
@@ -8094,7 +8094,7 @@ spec:
       }
 
       # Step 1: ensure the master domain exists (PLATFORM_DOMAIN,
-      # injected via the params_secret). 2026-05-16: was master.local
+      # injected via the params_secret).: was master.local
       # but Stalwart 0.16 hard-rejects auth from .local accounts.
       DOM_RESP=\$(jmap_call "\$(jq -n --arg a "\$ACCT" \
         '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],
@@ -8310,7 +8310,7 @@ spec:
           # mirror is unreachable). Retry up to 6 times before giving up
           # so a one-off DNS hiccup doesn't strand Stalwart with no
           # listeners on 587/143/80. Caught on testing.example.test
-          # fresh-bootstrap 2026-05-17.
+          # fresh-bootstrap.
           for _try in 1 2 3 4 5 6; do
             if apk add -q --no-cache curl jq 2>&1; then break; fi
             echo "apk add attempt \${_try}/6 failed — retrying in 10s" >&2
@@ -8328,7 +8328,7 @@ spec:
           # configure pod may start before a Stalwart rolling restart
           # finishes (no endpoints yet) or DNS hasn't propagated.
           # Without the retry, a single bad probe fails the entire
-          # configure step (observed 2026-05-14 retest).
+          # configure step.
           SESSION=""
           for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do
             if SESSION=\$(curl -sf -u "\${AUTH}" --max-time 5 "\${MGMT}/jmap/session" 2>/dev/null); then
@@ -8450,7 +8450,7 @@ spec:
           # Email/FileNode/SieveScript hard links), so at the upstream default a
           # deleted mailbox keeps its bytes on the mail PVC for SIX MONTHS —
           # invisibly, because the quota reads 0 B. Proven on v0.16.16
-          # (2026-08-04): 2 GiB expunged + account destroyed freed nothing until
+          # 2 GiB expunged + account destroyed freed nothing until
           # the samples went, then dropped to 11 MB in one compaction.
           #
           # Why 30 d and not lower: 'retrain' rebuilds from a FRESH trainer and
@@ -8749,7 +8749,7 @@ spec:
           # admin credentials) never ran and the marker never printed. A block
           # documented "ADVISORY / NON-FATAL" was silently skipping real
           # configuration and reporting the whole configure step as failed on a
-          # cluster that was fine — observed on the DEV box 2026-08-09. Anything
+          # cluster that was fine — observed on the DEV box. Anything
           # whose failure is tolerable must come after everything whose failure
           # is not.
           #
@@ -8881,7 +8881,7 @@ POD_YAML
 
 # Order the mail TLS certificate — AFTER the listener roll above.
 #
-# THE BUG THIS FIXES (found on a live fresh install, 2026-08-12): the configure
+# THE BUG THIS FIXES(found on a live fresh install): the configure
 # pod fires the AcmeRenewal task as its step 5c, and that pod runs BEFORE the
 # Deployment roll that binds the newly-created listeners. `http-acme` on :80 is
 # one of those listeners — it is what answers Let's Encrypt's HTTP-01 challenge
@@ -8972,7 +8972,7 @@ ACME_POD
 }
 
 # Print why the Stalwart admin probe failed, instead of telling the operator to
-# "inspect pod state manually" and leaving them at a dead end (2026-08-03: an
+# "inspect pod state manually" and leaving them at a dead end (: an
 # operator hit 000×100 with nothing further to go on).
 #
 # $1 = the HTTP code the probe saw. 000 is the interesting one: it means the
@@ -9045,7 +9045,7 @@ bootstrap_stalwart_v016() {
   fi
 
   local stalwart_hostname="mail.${PLATFORM_DOMAIN}"
-  # 2026-05-26: Stalwart Domain = mail HOSTNAME (not apex). Pre-2026-05-26
+  # Stalwart Domain = mail HOSTNAME (not apex). Pre-
   # bootstrap used the platform apex as the Domain name and added the
   # mail-hostname as a SAN — this polluted Stalwart with an "email
   # domain" entry for the platform apex (where nobody actually receives
@@ -9073,7 +9073,7 @@ bootstrap_stalwart_v016() {
   # mail pod reschedules across the host-port rolling-update gap, or its admin
   # listener comes up a few seconds late. A single 000 previously fell through to
   # the `*)` case below and made bootstrap "refuse to bootstrap" + exit 1
-  # (observed on the ADR-053 staging rebuild, 2026-06-22 — a bootstrap re-run
+  # (observed on the ADR-053 staging rebuild, — a bootstrap re-run
   # then succeeded once Stalwart settled). Up to 50×6s = 5 min before giving up:
   # writing the stalwart-webadmin secret triggers a SECOND (Reloader) roll AFTER
   # the rollout-status wait above, and on constrained/slow hardware that roll can
@@ -9082,12 +9082,12 @@ bootstrap_stalwart_v016() {
   # 100×6s = 10 min: on constrained VMs the secret write can trigger TWO back-to-back
   # Reloader rolls of the heavy mail singleton, and 2 rolls + settle outlast 5 min — the
   # admin-creds Secret is already valid, the live endpoint is just mid-roll. (VM tier
-  # 2026-07-11: stalwart-mail restarted 2× and only stabilised after ~6 min; 50×6s gave up
+  # stalwart-mail restarted 2× and only stabilised after ~6 min; 50×6s gave up
   # too early → 000 → "refusing to bootstrap".)
   # NB curl prints the http_code (000 on a failed connection) AND can EXIT non-zero (28 on
   # --max-time). The old `$(... || echo "000")` APPENDED a second "000" on that non-zero exit
   # → admin_code="000\n000", so the `!= 000` guard saw a non-000 value and BROKE on attempt 1,
-  # never riding out the Reloader roll (VM tier 2026-07-11: probe reported "000000"). Use
+  # never riding out the Reloader roll(VM tier: probe reported "000000"). Use
   # assign-then-|| (replaces, not appends) and normalise to the last 3 digits.
   for probe_attempt in $(seq 1 100); do
     admin_code=$(kctl exec -n platform "$probe_pod" -- \
@@ -9271,7 +9271,7 @@ apply_platform_manifests() {
   # CR), so applying before they're ready triggers
   # "no endpoints available for service longhorn-admission-webhook"
   # and aborts under set -e. Caught fresh-install on the
-  # testing cluster 2026-04-30 — same race on staging during initial
+  # testing cluster — same race on staging during initial
   # bootstrap (worked there only because operator re-ran bootstrap
   # after Longhorn settled).
   wait_for_admission_webhooks
@@ -9283,7 +9283,7 @@ apply_platform_manifests() {
   else
     # Not running from a repo checkout → ensure a FRESH /opt/insula. Do NOT
     # blindly reuse an existing checkout: a stale one from a prior bootstrap
-    # can be missing newer overlays (observed 2026-06-10 — an old /opt/insula
+    # can be missing newer overlays (— an old /opt/insula
     # lacked k8s/overlays/development/kustomization.yaml → "Overlay development
     # not found").
     #
@@ -9293,7 +9293,7 @@ apply_platform_manifests() {
     # stale system-db storage size) while Flux tracked the `development` branch,
     # so CNPG rejected the shrink and the platform Kustomization deadlocked
     # Ready=False ("can't shrink existing storage from 20Gi to 2Gi") — observed
-    # on the 2026-07-08 DEV re-bootstrap. dev → the `development` branch;
+    # on the DEV re-bootstrap. dev → the `development` branch;
     # staging/production converge via Flux tag pinning, where origin HEAD is an
     # acceptable imperative seed (overlays match the release lineage).
     local apply_ref="HEAD"
@@ -9348,7 +9348,7 @@ apply_platform_manifests() {
   # system-db patch, but Flux's staging overlay wants the 2Gi base → CNPG
   # rejects the shrink → the platform Kustomization deadlocks Ready=False
   # ("can't shrink existing storage from 20Gi to 2Gi"). Observed on the first
-  # ADR-053 staging re-bootstrap, 2026-06-22.
+  # ADR-053 staging re-bootstrap.
   local overlay_env="$PLATFORM_ENV"
   if [[ "$PLATFORM_ENV" == "dev" ]]; then
     overlay_env="development"
@@ -9377,7 +9377,7 @@ expected k8s/overlays/${overlay_env}/ to exist (dev | development | production).
   # the CM silently, breaking every Ingress that uses ${DOMAIN} envsubst
   # (admin.${DOMAIN}, tenant.${DOMAIN}, dex.${DOMAIN}, …) and 502'ing
   # the admin panel until the CM was patched back manually. Observed
-  # on staging1 2026-05-08.
+  # on staging1.
   local existing_domain="" existing_env=""
   if kctl get cm -n flux-system platform-cluster-config >/dev/null 2>&1; then
     existing_domain=$(kctl get cm -n flux-system platform-cluster-config -o jsonpath='{.data.DOMAIN}' 2>/dev/null || echo "")
@@ -9437,7 +9437,7 @@ swaps cert issuers + retention policies). Pass --force-domain-change if intentio
     --from-literal=STALWART_EXTERNAL_IP="${stalwart_external_ip}" \
     --dry-run=client -o yaml | kctl apply -f -
 
-  # 2026-05-20: seed platform_settings.k3s_{pod,svc}_cidr with the
+  # seed platform_settings.k3s_{pod,svc}_cidr with the
   # values bootstrap actually passed to k3s. The cluster-trusted-
   # proxies reconciler reads these and inserts matching bootstrap-
   # source rows into cluster_trusted_proxy_ranges, so the operator
@@ -9501,7 +9501,7 @@ swaps cert issuers + retention policies). Pass --force-domain-change if intentio
   # a variable here = the literal `${VAR}` reaches the apiserver and the
   # apply fails ("Invalid value: \"${STALWART_EXTERNAL_IP}\": must be a
   # valid IP address") — caught fresh-install on testing.example.test
-  # 2026-05-17 after the staging stalwart-mail overlay started using
+  # after the staging stalwart-mail overlay started using
   # ${STALWART_EXTERNAL_IP} (commit 8a1ab700).
   # Retry the apply on transient races. Two known flake classes:
   #
@@ -9520,7 +9520,7 @@ swaps cert issuers + retention policies). Pass --force-domain-change if intentio
   #      its discovery cache before kubectl tries to apply the CR.
   #      Surfaces as "no matches for kind … ensure CRDs are installed
   #      first". Caught fresh-install on testing.example.test
-  #      2026-05-27 — the second bootstrap pass succeeds because the
+  # — the second bootstrap pass succeeds because the
   #      CRD is already registered, so a retry is the minimal fix
   #      (no need to split into a CRD pre-pass).
   #
@@ -9548,7 +9548,7 @@ swaps cert issuers + retention policies). Pass --force-domain-change if intentio
     # request" class shows up when the (single, still-warming) k3s apiserver can't serve
     # its discovery/openapi document under load — kubectl's client-side validation then
     # fails the whole apply. It clears within seconds, so it belongs with the other
-    # transients (observed on the VM tier's constrained first-server bootstrap 2026-07-11).
+    # transients(observed on the VM tier's constrained first-server bootstrap).
     if ! echo "$apply_err" | grep -qE 'failed calling webhook|no endpoints available for service|no matches for kind|ensure CRDs are installed first|failed to download openapi|the server is currently unable to handle the request|the server could not find the requested resource|etcdserver: request timed out|connection refused'; then
       echo "$apply_err" >&2
       error "kubectl apply -k failed with non-retriable error"
@@ -9860,12 +9860,12 @@ verify_install() {
   # (more time for races to happen). If Flux rolled the pod and CNI
   # portmap didn't re-install the chain, all the curl probes below
   # will fail with Connection-refused even though every pod is Running.
-  # Caught on testing.example.test 2026-05-16 — manual operator
+  # Caught on testing.example.test — manual operator
   # recycle of the Traefik pod restored access; this call automates it.
   ensure_traefik_cni_portmap "verify-install"
 
   # Traefik is NOT the only workload publishing a hostPort, and it was the only
-  # one with a self-heal. On the fresh dual-stack install of 2026-08-09
+  # one with a self-heal. On the fresh dual-stack install
   # CNI-HOSTPORT-DNAT carried jumps for 80/443 and the mail ports but NONE for
   # 23022: the sftp-gateway pod was Running, Ready and listening, the firewall
   # allowed the port, and every external connection was REFUSED — SFTP dead
@@ -9880,7 +9880,7 @@ verify_install() {
   # replacement pod re-downloads its plugins. That second download lands while
   # Calico's control plane (typha / apiserver / kube-controllers) is still
   # converging, so it is the one that actually times out — measured on the DEV
-  # bootstrap 2026-08-08, where "Loading plugins…" at 12:57:29 failed at
+  # bootstrap, where "Loading plugins…" at 12:57:29 failed at
   # 12:57:39 with calico-typha going Ready at 12:57:38 and calico-apiserver at
   # 12:57:43. Only the post-install call existed, and it had already run (and
   # skipped) at 12:50:33, so nothing remediated it: the install finished
@@ -9970,7 +9970,7 @@ verify_install() {
   esac
 
   # 4. Tenant panel reachability — same Ingress class, separate Service.
-  # 2026-05-16 audit: only admin was being checked; a broken tenant
+  # audit: only admin was being checked; a broken tenant
   # panel slipped through bootstrap.
   local tenant_host="tenant.${PLATFORM_DOMAIN}"
   log "  Probing https://${tenant_host}/ ..."
@@ -10058,7 +10058,7 @@ print_summary() {
   # credentials for it. They were written ~700 lines earlier, during secret
   # generation, and had long scrolled away by the time this summary appeared —
   # so the completion screen told you where to log in and not how. Reported by
-  # an operator walking a real install (2026-08-03).
+  # an operator walking a real install.
   #
   # Path is the BRANDED root (ADR-055). /etc/platform is a compatibility symlink
   # to /etc/insula, so both resolve, but the docs say /etc/insula and the two
@@ -10370,7 +10370,7 @@ run_preflight() {
 # packages. A worker with no converge timer keeps whatever host state it was
 # bootstrapped with, forever, while the control plane moves on.
 #
-# Observed on staging 2026-08-11: three servers on 2026.8.3-rc.8 with
+# Observed on staging: three servers on 2026.8.3-rc.8 with
 # 0003-pod-cidr-dns-firewall applied and 2 nft rules; the worker still on
 # 2026.8.2, migration never applied, 0 nft rules — and nothing reported it,
 # because a timer that was never installed emits no failures.
@@ -10482,7 +10482,7 @@ main() {
     # is a single-CR step rather than a multi-phase upgrade when the
     # time comes.
     install_cnpg
-    # CRITICAL ORDERING (Cut 3 staging-cutover lesson, 2026-05-04):
+    # CRITICAL ORDERING(Cut 3 staging-cutover lesson):
     # generate_platform_secrets MUST run BEFORE install_flux. Flux's
     # Kustomization starts reconciling within seconds of creation; if
     # it applies v016 manifests before stalwart-admin-creds exists, the
@@ -10520,7 +10520,7 @@ main() {
     # atomic flush+add wipes the bootstrap-time-only nft seed on first
     # tick and operator NetBird/workstation access disappears.
     seed_cluster_trusted_range_crs
-    # Sister seed for --pre-enroll-peer entries (Bug #1 fix, 2026-05-18).
+    # Sister seed for --pre-enroll-peer entries.
     # Same rationale: nft entries seeded in Phase 1 get reaped by the
     # firewall-reconciler unless backed by a Node or ClusterPendingPeer
     # CR. Joining bootstraps would then hit a dropped :6443 because
@@ -10545,19 +10545,19 @@ main() {
     # rollout, then returns 1 on the auth probe when stalwart-mail isn't
     # Ready from the joiner's vantage — which, under set -euo pipefail,
     # aborts the otherwise-successful join with exit=1 even though the
-    # node joined fine (observed on the 2026-05-31 staging multi-node
+    # node joined fine (observed on the staging multi-node
     # rebootstrap: staging2/staging3 BOOTSTRAP_EXIT=1). Skip on joiners.
     if [[ -z "$K3S_SERVER_IP" ]]; then
       bootstrap_stalwart_v016
     else
       log "  Skipping Stalwart bootstrap on join-server (first server owns it)."
     fi
-    # Cut 3 (2026-05-04): Roundcube webmail PG database+role provisioning.
+    # Cut 3: Roundcube webmail PG database+role provisioning.
     # Runs after Stalwart bootstrap so platform CNPG is up + Roundcube
     # secrets exist. Idempotent — DO BLOCK skips if role/db already exist.
     create_roundcube_db
     harden_database_connect_acls
-    # Cut 3 (2026-05-04): Stalwart master user (Roundcube SSO impersonator).
+    # Cut 3: Stalwart master user (Roundcube SSO impersonator).
     # Runs after bootstrap_stalwart_v016 (so Stalwart is up + the recovery
     # admin can authenticate to the cli). Idempotent — re-runs only update
     # credentials/roles to converge after rotation.

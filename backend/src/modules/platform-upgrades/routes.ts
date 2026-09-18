@@ -116,7 +116,7 @@ export async function platformUpgradeRoutes(app: FastifyInstance): Promise<void>
   // The sibling endpoint below does this for HOST migrations, for exactly the
   // reason in its comment ("the only way to find out was to SSH to a node").
   // The platform registry never got the same treatment, and it bit identically
-  // on 2026-08-19: migration 0009 403'd, the registry HALTED, and DEV, STAGING
+  // migration 0009 403'd, the registry HALTED, and DEV, STAGING
   // and production all ran for days with an unconverged base. The only trace
   // was one warn line in a pod log; `insula migrations list` over SSH was the
   // only query surface. It surfaced as a wildcard certificate stuck "Issuing"

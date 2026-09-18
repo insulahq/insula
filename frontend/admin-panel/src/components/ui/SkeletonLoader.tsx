@@ -1,6 +1,6 @@
 /**
  * SkeletonLoader — two stacked pulsing placeholders for loading
- * states. Extracted from PosturePage on 2026-05-21 so shared
+ * states. Extracted from PosturePage so shared
  * components don't import from page modules.
  */
 export function SkeletonLoader() {

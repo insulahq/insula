@@ -73,7 +73,7 @@ export async function systemBackupPgDumpRoutes(app: FastifyInstance): Promise<vo
     if (!target) {
       throw new ApiError('SYSTEM_BACKUP_TARGET_NOT_FOUND', 'backup target not found', 404);
     }
-    // 2026-05-24: filter on `enabled` (operational on/off) instead of
+    // filter on `enabled` (operational on/off) instead of
     // `active` (legacy at-most-one-active flag used only by the old
     // Longhorn reconciler). The new Remote Storage Targets flow never
     // sets `active`, so the previous check 400'd every super_admin
@@ -588,7 +588,7 @@ export async function systemBackupPgDumpRoutes(app: FastifyInstance): Promise<vo
     return reply.send(proc.stdout);
   });
 
-  // Schedule routes removed 2026-05-24. Scheduled pg_dump was a duplicate
+  // Schedule routes removed. Scheduled pg_dump was a duplicate
   // pathway alongside barman-cloud — barman now owns day-to-day backups
   // (PITR-capable). pg_dump survives as a super_admin-only on-demand tool
   // for cross-PG-major-version migrations (POST above).

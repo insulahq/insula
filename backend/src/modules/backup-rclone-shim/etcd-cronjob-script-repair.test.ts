@@ -1,7 +1,7 @@
 /**
  * The upload script must not write empty checksums.
  *
- * Production, 2026-09-18: every etcd snapshot in off-site storage (24 of 24)
+ * Production: every etcd snapshot in off-site storage (24 of 24)
  * carried `"sha256":""` in its sidecar, so none of them could be verified
  * before a restore. Reproduced on DEV — the job's own stderr said:
  *

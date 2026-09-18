@@ -64,7 +64,7 @@ TMP="$(mktemp -d)"
 # Unique per run. A fixed name plus `kubectl delete --wait=false` is a race:
 # the previous pod is still Terminating when the next `kubectl run` fires, the
 # create fails AlreadyExists, and with that error suppressed the script simply
-# died at the next step with a four-line log. Measured 2026-09-15.
+# died at the next step with a four-line log..
 FILLER_POD="quota-notify-filler-$$"
 trap 'rm -rf "$TMP"; kubectl delete pod "$FILLER_POD" -n mail --ignore-not-found --wait=false >/dev/null 2>&1 || true' EXIT INT TERM
 

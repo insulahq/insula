@@ -41,7 +41,7 @@ spec:
       # with a comment claiming larger bodies skip inspection. They do
       # not: `maxBodySize` is not a field of the plugin's Config struct,
       # so Traefik drops the unknown key and the plugin never reads it.
-      # Verified 2026-08-30 by reading modsecurity.go off a running
+      # by reading modsecurity.go off a running
       # Traefik pod — the single source file has no such field, and
       # ServeHTTP does an unbounded `io.ReadAll(req.Body)` before
       # forwarding the buffered copy to the sidecar (which then spools it

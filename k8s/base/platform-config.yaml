@@ -28,7 +28,7 @@ data:
   # A `:=` default therefore survives bootstrap as the literal string
   # "${CLUSTER_ISSUER_NAME:=letsencrypt-prod-http01}", which lands in
   # issuerRef.name and silently breaks any Certificate applied on that path —
-  # observed on a fresh install 2026-08-07: stalwart-webadmin never issued and
+  # observed on a fresh install: stalwart-webadmin never issued and
   # Bulwark's JMAP passthrough 500'd. Both engines handle the bare form, and
   # bootstrap always exports the variable, so the bare form is the safe one.
   #

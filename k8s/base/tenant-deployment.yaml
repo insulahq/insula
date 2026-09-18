@@ -16,7 +16,7 @@ spec:
       labels:
         app: tenant-panel
     spec:
-      # 2026-05-11: DoNotSchedule for strict one-per-server placement.
+      # DoNotSchedule for strict one-per-server placement.
       # In HA mode every server runs a tenant-panel pod, so node loss =
       # lose 1 of N; survivors already serve, no rescheduling needed.
       # Failover headroom (see backend/src/modules/platform-storage-policy/
@@ -41,7 +41,7 @@ spec:
               cpu: 50m
               memory: 32Mi
             limits:
-              # No CPU limit — high-priority platform pod (2026-06-24).
+              # No CPU limit — high-priority platform pod.
               memory: 128Mi
           livenessProbe:
             httpGet:

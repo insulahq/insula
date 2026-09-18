@@ -62,7 +62,7 @@ async function dispatchSafe(
 // ──────────────────────────────────────────────────────────────────
 //
 // There was a `notifyTenantMailboxLimitReached` here. It is gone, and nothing
-// should replace it. Operator decision 2026-09-16.
+// should replace it. Operator decision.
 //
 // It fired synchronously from the tenant's OWN failed click: `createMailbox`
 // rejects with 409 CLIENT_MAILBOX_LIMIT_REACHED, carrying the limit, the
@@ -350,7 +350,7 @@ export async function notifyTenantPasswordChanged(
 
 // `notifyTenantSuspiciousActivity` and its payload lived here.
 //
-// Removed 2026-09-16 (operator decision). It had templates on every channel
+// Removed (operator decision). It had templates on every channel
 // and no caller, because nothing on the platform defines "suspicious".
 // Detecting it means choosing a security policy — is a new source IP
 // suspicious? a new user-agent? a new country? — and the wrong choice either
@@ -620,7 +620,7 @@ export interface AdminNodeMemoryEventPayload {
   readonly summary: string;
 }
 /**
- * Node memory events (operator decision 2026-07-25): SystemOOM / evictions
+ * Node memory events: SystemOOM / evictions
  * touching SYSTEM workloads dispatch critical; tenant-only evictions
  * dispatch warning. Caller supplies an hour-scoped dedupeKey so a
  * sustained incident notifies at most once per node/class/hour (the
@@ -934,7 +934,7 @@ export interface AdminClusterCapacityPayload {
 /**
  * Cluster storage capacity crossed a threshold.
  *
- * Moved off the raw-insert path 2026-09-15. It used to call
+ * Moved off the raw-insert path. It used to call
  * `db.insert(notifications)` directly, which reaches no template, no email, no
  * push, no preference gate and no delivery audit — and `category_id` is
  * nullable, so the row could not even be listed in the admin Sources screen.
@@ -1024,7 +1024,7 @@ export async function notifyTenantEmailQuotaExceeded(
   await dispatchSafe(db, 'tenant.email_quota_exceeded', { kind: 'tenant', tenantId }, payload, tenantId);
 }
 
-// ── Mail monitoring (2026-07): send-limit saturation + blocklist ───────────
+// ── Mail monitoring: send-limit saturation + blocklist ───────────
 
 export interface AdminEmailAbusePayload {
   readonly tenantLabel: string;
@@ -1143,7 +1143,7 @@ export async function notifyAdminMailHealthDegraded(
   await dispatchSafe(db, 'admin.mail_health_degraded', { kind: 'admin' }, payload, undefined, { dedupeKey });
 }
 
-// ── Resource monitoring (2026-07): per-tenant CPU/memory/storage saturation ─
+// ── Resource monitoring: per-tenant CPU/memory/storage saturation ─
 
 export interface AdminTenantSaturationPayload {
   readonly tenantLabel: string;

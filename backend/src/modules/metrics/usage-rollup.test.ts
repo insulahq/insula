@@ -19,7 +19,7 @@ describe('reapCutoffs', () => {
   const { hourlyCutoff, dailyCutoff } = reapCutoffs(now);
 
   it('day-aligns the hourly cutoff (only complete days past 30d are folded)', () => {
-    // 30 days before 2026-07-22T00:00Z = 2026-06-22T00:00Z
+    // 30 days before -22T00:00Z = -22T00:00Z
     expect(hourlyCutoff.toISOString()).toBe('2026-06-22T00:00:00.000Z');
   });
 

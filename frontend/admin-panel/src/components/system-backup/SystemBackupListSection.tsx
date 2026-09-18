@@ -1,5 +1,5 @@
 /**
- * SystemBackupListSection — Phase 3 (2026-05-24).
+ * SystemBackupListSection — Phase 3.
  *
  * Previously inline-disclosure inside CnpgBackupHealthCard. Lifted to
  * a page-level sibling so the backup list is always visible (operator
@@ -238,7 +238,7 @@ function BackupTable({
 }
 
 /**
- * Phase 7b (2026-05-24) — operator-friendly description rendering.
+ * Phase 7b — operator-friendly description rendering.
  *
  * Priority order:
  *   1. Operator-supplied description (CR label) → render as-is.
@@ -275,7 +275,7 @@ function describeBackup(b: {
   } else if (b.backupId.includes('-daily-') || b.backupId.includes('-scheduled-')) {
     label = 'Scheduled Backup';
   } else if (/^\d{8}T\d{6}$/.test(b.backupId)) {
-    // Phase 8 (2026-05-25) — pure barman timestamp (YYYYMMDDTHHMMSS).
+    // Phase 8 — pure barman timestamp (YYYYMMDDTHHMMSS).
     // The CR that would have told us the kind has been GC'd by CNPG
     // (CRs don't survive past a few days under default settings).
     // Best-effort label: scheduled backups are by far the most common

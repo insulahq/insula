@@ -67,7 +67,7 @@ export async function backupsOverviewRoutes(app: FastifyInstance): Promise<void>
     }));
   });
 
-  // B2 (2026-05-22): cross-tenant flat-aggregate list of tenant
+  // B2: cross-tenant flat-aggregate list of tenant
   // snapshots, one row per `storage_snapshots` entry joined to its
   // tenant. Drives the `/backups/tenants` Snapshots tab.
   app.get('/admin/backups/tenants/snapshots', {

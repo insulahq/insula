@@ -6,7 +6,7 @@
 # Without it, k3s.service's `KillMode=process` plus ordering only
 # `After=network-online.target` lets systemd stop k3s while containers keep
 # running and then tear down iscsid underneath them — which on production
-# 2026-08-27 aborted the ext4 journal on the CNPG system-db Longhorn volume
+# aborted the ext4 journal on the CNPG system-db Longhorn volume
 # while Postgres was writing to it, and stalled shutdown for 3m28s.
 #
 # The configuration is unusually easy to break by looking correct, so each

@@ -49,11 +49,11 @@ import {
 // Names are version-agnostic so future PG-major bumps don't require
 // code/UI updates — dump+restore into the same-named cluster.
 //
-// 2026-05-24: mail-db removed. Stalwart migrated to RocksDB; the
+// mail-db removed. Stalwart migrated to RocksDB; the
 // mail-namespace CNPG cluster no longer exists. The previously
 // rendered card was a phantom that always reported "not found".
 //
-// Cluster name history (cleaned up 2026-05-07):
+// Cluster name history:
 //   platform: postgres → postgres-18 → system-db
 const KNOWN_CLUSTERS = [
   { clusterNamespace: 'platform', clusterName: 'system-db' },
@@ -131,7 +131,7 @@ export async function systemBackupWalArchiveRoutes(app: FastifyInstance): Promis
       // its presence, not `isWALArchiver` (see
       // backup-rclone-shim/postgres-objectstore.ts). Scheduled base backups
       // attach the same entry, which is why production was archiving WAL every
-      // five minutes on 2026-09-11 with WAL streaming never enabled.
+      // five minutes with WAL streaming never enabled.
       const crHasBackup = Boolean(
         cr?.spec?.plugins?.some((p) => p.name === BARMAN_PLUGIN_NAME),
       );
@@ -370,7 +370,7 @@ export async function systemBackupWalArchiveRoutes(app: FastifyInstance): Promis
   });
 
   // The per-feature toggles (streaming/enable, streaming/disable,
-  // schedule/enable, schedule/disable) were REMOVED 2026-09-11. They modelled
+  // schedule/enable, schedule/disable) were REMOVED. They modelled
   // WAL archiving and base backups as independently switchable, which the
   // storage layer does not support: the barman-cloud plugin entry ships both,
   // so "disable streaming" left archiving running and the UI had to explain

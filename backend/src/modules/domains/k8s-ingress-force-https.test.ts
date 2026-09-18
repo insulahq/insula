@@ -85,7 +85,7 @@ describe('buildForceHttpsRoutes', () => {
       // assert toHaveLength(1) — codifying the very bug it now guards
       // against: the bare host had NO :80 router, so http://example.com
       // was Traefik's unrouted 404 while the other three legs worked
-      // (seen live on production, 2026-08-21).
+      // (seen live on production).
       { ...baseRoute, id: 'eeeeeeee-5555-5555-5555-555555555555', hostname: 'example.com', wwwRedirect: 'add-www', forceHttps: 1 },
     ];
     const out = buildForceHttpsRoutes(routes, resolveBackend, 'ns-x');

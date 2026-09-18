@@ -80,7 +80,7 @@ beforeEach(() => {
 
 describe('reconcileDrCronJobs', () => {
   it('system class bound → writes shim-shaped backup-credentials and leaves suspend to the cadence reconciler', async () => {
-    // Ownership changed 2026-09-18. This bridge used to unsuspend the bridged
+    // Ownership changed. This bridge used to unsuspend the bridged
     // CronJobs whenever the SYSTEM class was bound; now the cadence reconciler
     // owns /spec/suspend for any job that has a schedule row, because it must
     // be able to SUSPEND one whose operator cadence differs from the manifest

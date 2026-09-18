@@ -651,7 +651,7 @@ function MigrateDnsModal({ domainId, currentGroupId, groups, migrateDns, onClose
 
 // ─── Managed Webmail Row (read-only) ────────────────────────────────────────
 //
-// 2026-05-18: surfaces the platform-managed `webmail.<domain>` Ingress
+// surfaces the platform-managed `webmail.<domain>` Ingress
 // on the Routing tab as a non-editable row. Only renders when the
 // matching email_domains row has `webmailEnabled === 1`. The route
 // itself is created by toggling per-domain webmail on the Email tab —

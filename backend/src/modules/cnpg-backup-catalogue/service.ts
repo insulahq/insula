@@ -2,7 +2,7 @@
  * cnpg-backup-catalogue — LIST barman-cloud backups directly from object
  * storage via the backup-rclone-shim, independent of the CNPG operator.
  *
- * Why exist (Phase 2 — 2026-05-22): CnpgBackupHealthCard reads CNPG Backup
+ * Why exist: CnpgBackupHealthCard reads CNPG Backup
  * CRs from the cluster API. If the CNPG operator is dead or wedged, the
  * Backup CR list is stale or missing. But the backup PAYLOAD lives in the
  * upstream object store and is reachable through the shim regardless of
@@ -10,7 +10,7 @@
  * actually there" answer when the cluster's projection of reality has
  * diverged from the storage layer.
  *
- * Architecture (verified live, 2026-05-22 on staging):
+ * Architecture(verified live, on staging):
  *   - ObjectStore CR carries `spec.configuration.destinationPath`
  *     (e.g. `s3://system/postgres`). The shim handles the actual
  *     upstream protocol — S3 / CIFS / NFS / SFTP — but exposes a
@@ -72,13 +72,13 @@ export interface CatalogueBackup {
   /** Empty string when backup.info parsed cleanly; otherwise the reason. */
   readonly parseError: string | null;
   /**
-   * Phase 7b (2026-05-24): operator-supplied description from the
+   * Phase 7b: operator-supplied description from the
    * matching Backup CR's `insula.host/description`
    * label. Null when label absent.
    */
   description?: string | null;
   /**
-   * Phase 7b (2026-05-24): derived from the matching CR's labels.
+   * Phase 7b: derived from the matching CR's labels.
    * Null when the CR was already pruned.
    */
   kind?: 'scheduled' | 'on-demand' | 'pre-restore' | 'unknown' | null;
@@ -224,7 +224,7 @@ export function parseBackupInfo(text: string): {
 }
 
 function normalizeIso(t: string): string {
-  // Barman writes `2026-05-22 03:00:01.199315+00:00`. Convert to ISO.
+  // Barman writes ` 03:00:01.199315+00:00`. Convert to ISO.
   // For unparseable input, return the original `t` verbatim (don't leak
   // the internal space→T substitution into the operator's UI).
   const cleaned = t.replace(' ', 'T');
@@ -518,11 +518,11 @@ export async function listBackupsFromObjectStore(
     // YYYYMMDDTHHMMSS format).
     backups.sort((a, b) => (a.backupId < b.backupId ? 1 : -1));
 
-    // Phase 7b (2026-05-24) — enrich each barman entry with the matching
+    // Phase 7b — enrich each barman entry with the matching
     // CNPG Backup CR's labels + annotations. Surfaces operator description
     // and explicit kind so the frontend doesn't guess from backup ID.
     //
-    // Two corrections from the typescript-reviewer round (2026-05-24):
+    // Two corrections from the typescript-reviewer round:
     //
     //   1. Join key was wrong. CR `metadata.name` (e.g. `on-demand-...`)
     //      ≠ barman backup ID (e.g. `20260524T111857`). Verified on
@@ -541,7 +541,7 @@ export async function listBackupsFromObjectStore(
     // pre-Phase-7c-fix backups so the catalogue stays consistent.
     let crByBackupId: Map<string, { kind: 'scheduled' | 'on-demand' | 'pre-restore' | 'unknown'; description: string | null }>
       = new Map();
-    // 2026-05-24 verified on staging: CNPG does NOT auto-label Backup
+    // verified on staging: CNPG does NOT auto-label Backup
     // CRs with `cnpg.io/cluster` — the cluster name only appears in
     // `spec.cluster.name`. So we LIST all Backup CRs in the namespace
     // (no labelSelector) and filter client-side by spec.cluster.name

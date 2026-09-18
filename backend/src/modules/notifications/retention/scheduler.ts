@@ -7,7 +7,7 @@
  * The startup run is the whole point. This pass used to be a bare
  * `setInterval(…, 24h)` registered in app.ts with no immediate call, so it
  * only ever fired on a process that stayed up a full day. Measured
- * 2026-09-10: the DEV cluster re-pins images on every push to
+ * the DEV cluster re-pins images on every push to
  * `development` and rolls platform-api with it — eleven ReplicaSets in the
  * preceding 20 hours, longest gap 9h28m — so the tick was skipped
  * indefinitely there while staging, which only rolls on a release, was

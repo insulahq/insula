@@ -44,7 +44,7 @@ export interface StorageInventory {
    * is misleading because Longhorn reserves the FULL volume size as
    * `scheduledBytes` when a replica is created, regardless of how
    * much data is actually in it. The 5 GB-allocated vs 220 GB-scheduled
-   * discrepancy on 2026-05-04 staging was exactly this confusion.
+   * discrepancy staging was exactly this confusion.
    *
    * Each field is a sum across all schedulable disks on every Longhorn
    * node (workers AND servers — UI may further split by node-role).

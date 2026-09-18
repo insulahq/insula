@@ -10,7 +10,7 @@ const STORAGE_KEY = ['mail', 'pvc', 'storage'] as const;
 
 /**
  * Read live Stalwart RocksDB PVC state. Read-only since the
- * 2026-05-14 streamline removed the resize endpoint — mail is
+ * streamline removed the resize endpoint — mail is
  * local-path only and local-path does not enforce/quota
  * `requests.storage`, so resize was never a meaningful operation
  * post-migration anyway.

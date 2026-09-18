@@ -572,7 +572,7 @@ describe('Email connection guide', () => {
   });
 });
 
-// ── Send-only accounts + forwarding (2026-08) ───────────────────────────────
+// ── Send-only accounts + forwarding ───────────────────────────────
 
 describe('Send-only accounts + forwarding', () => {
   const sendOnlyMailbox = {
@@ -685,7 +685,7 @@ describe('Send-only accounts + forwarding', () => {
   });
 });
 
-// ── Aliases tab — unified edit UX (R28, 2026-08-24) ────────────────────────
+// ── Aliases tab — unified edit UX ────────────────────────
 
 import { useEmailAliases, useUpdateEmailAlias } from '../hooks/use-email';
 const mockedUseEmailAliases = vi.mocked(useEmailAliases);
@@ -766,7 +766,7 @@ describe('Aliases tab (unified UX)', () => {
 
 // ─── mailbox usage meter colour ───────────────────────────────────────────
 //
-// Operator decision 2026-09-17: the meter is ALWAYS the default brand colour,
+// Operator decision: the meter is ALWAYS the default brand colour,
 // including at and over the plan limit. Reaching a plan limit is an ordinary
 // fact about a plan, not a fault — nothing is broken and nothing is degraded.
 // The sentence under the bar already says what happened and what to do, which

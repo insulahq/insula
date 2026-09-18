@@ -80,11 +80,11 @@ spec:
     # backup-health-labels-reconciled-by: backup-rclone-shim/etcd-cronjob.ts
     # This CronJob is seed-then-disown (see `reconcile: disabled` below), so
     # THIS BLOCK ONLY REACHES A FRESH INSTALL — kustomize-controller reports
-    # "skipped" for a disowned object on every apply. On DEV 2026-09-15 the
+    # "skipped" for a disowned object on every apply. On DEV the
     # manifest carried it while the live object's spec.jobTemplate.metadata
     # was {}. The reconciler converges the same labels onto existing
     # clusters; keep the two in sync.
-    # Proven on DEV 2026-09-15: three labelled CronJobs firing normally,
+    # Proven on DEV: three labelled CronJobs firing normally,
     # `kubectl get jobs -A -l insula.host/backup-health-watch=true` empty.
     # Keep this block in sync with the CronJob-level labels above.
     metadata:
@@ -214,7 +214,7 @@ spec:
                     # node) so operators can pick the right snapshot
                     # to restore from without listing object content.
                     # Same `$$`-inside-$( ) trap as COUNT above. Until
-                    # 2026-09-18 this silently produced an EMPTY sha256 on
+                    # this silently produced an EMPTY sha256 on
                     # every uploaded snapshot (24 of 24 on production), so no
                     # stored snapshot could be verified before a restore.
                     f="$$name"; SHA=$(sha256sum "$f" | cut -d ' ' -f 1)

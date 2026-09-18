@@ -1,5 +1,5 @@
 /**
- * SQLite pre-capture logical dump (ADR-048 Primitive 3, extended 2026-07-07).
+ * SQLite pre-capture logical dump(ADR-048 Primitive 3, extended).
  *
  * Unlike MariaDB/MySQL/PostgreSQL/MongoDB, SQLite is NOT a catalog "database"
  * deployment — it is a file inside a tenant's application PVC (a PHP app's

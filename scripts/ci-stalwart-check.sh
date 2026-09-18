@@ -9,7 +9,7 @@
 #      that includes the stalwart-mail base.
 #      (Ensures Reloader is wired to trigger cert + DB-credential restarts.)
 #
-# Cut 3 (2026-05-04): updated from the v015 StatefulSet to the v016
+# Cut 3: updated from the v015 StatefulSet to the v016
 # Deployment. Also fixed SC2259 — the previous version piped `$built`
 # into `python3 - <<HEREDOC`, but the heredoc redirection won over the
 # pipe and python read an empty stdin, so the check silently always
@@ -20,7 +20,7 @@
 
 set -euo pipefail
 
-# 2026-07-28: `dev` → `dind` (the local-dev overlay was renamed; the guard
+# `dev` → `dind` (the local-dev overlay was renamed; the guard
 # silently skipped it via its missing-path skip, so it was only ever checking
 # development+production). Matches the kustomize-build CI job.
 OVERLAYS=(dind development production)

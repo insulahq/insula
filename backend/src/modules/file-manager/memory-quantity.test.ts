@@ -1,7 +1,7 @@
 /**
  * The FM drift check compares memory limits NUMERICALLY. A string compare is
  * what made an operator's emergency raise impossible to keep (production
- * 2026-09-06), so the parser it depends on is worth pinning directly.
+ * ), so the parser it depends on is worth pinning directly.
  */
 import { describe, it, expect } from 'vitest';
 import { parseMemoryToBytes, FM_MEMORY_LIMIT, FM_MEMORY_REQUEST } from './k8s-lifecycle.js';

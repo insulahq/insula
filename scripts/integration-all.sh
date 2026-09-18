@@ -136,7 +136,7 @@ reset_admin_password() {
 # parallel groups (~midway through a full run) to stay well within
 # that window. Sub-scripts that get a 401 fall back to fresh login
 # (their existing curl path is the else-branch of the cache check).
-# 2026-06-24 (#130): delegate to the shared, cache-backed, 429-resilient token
+# (#130): delegate to the shared, cache-backed, 429-resilient token
 # helper so the whole run reuses ONE token (re-minted only when it nears
 # expiry, with backoff on rate-limit). Sub-suites source the SAME helper and
 # read the SAME cache file, so neither the long ALL run nor rapid single-suite
@@ -192,7 +192,7 @@ fi
 #               recreates the platform/postgres CR — must be the last
 #               thing the cluster sees.
 #
-# 2026-05-17 baseline: a full serial run was ~45 min on staging.
+# baseline: a full serial run was ~45 min on staging.
 # Switching the PARALLEL bucket to background+wait drops typical
 # wall time by ~50% (most parallel suites are 4-8 min apiece and
 # converge close to the slowest one's wall time).
@@ -203,13 +203,13 @@ SERIAL_PRE=(
   # trusted-proxies MUTATES the shared Traefik DaemonSet args (adds + removes a
   # test CIDR), which rolls ALL Traefik pods. It MUST run serially (alone) so it
   # never churns the DS while a sibling suite measures it — waf-crowdsec's
-  # transient "DS coverage 3/4" failure (2026-06-25) was exactly this
+  # transient "DS coverage 3/4" failure was exactly this
   # concurrency (a Traefik pod caught mid-roll → numberReady N-1/N). ~30s.
   "trusted-proxies:integration-cluster-trusted-proxies.sh"
   # webmail-feature-toggle PATCHes the GLOBAL webmail_show_* settings; the
   # feature-css annotation change rolls BOTH webmail Deployments → must run
   # serially (never alongside a suite that reads a Ready bulwark pod). Restores
-  # defaults on completion. Validated on DEV 2026-06-30. ~30s.
+  # defaults on completion. Validated on DEV. ~30s.
   "webmail-feature-toggle:integration-webmail-feature-toggle.sh"
   # Mailbox-backup engine selector (api-smoke): PATCH + GET round-trip of the
   # GLOBAL mailbox_backup_engine setting (imap/jmap). Serial because it mutates
@@ -251,7 +251,7 @@ PARALLEL=(
   "passkey:integration-passkey-e2e.sh"
   # Tenant SFTP reachability at the ADVERTISED files.<apex>:23022 — provisions
   # its own probe tenant, then connects from OFF-cluster and round-trips a file.
-  # Deliberately does NOT port-forward: the pre-2026-07-15 bugs (LoadBalancer
+  # Deliberately does NOT port-forward: the pre- bugs (LoadBalancer
   # stuck <pending> with servicelb disabled, no firewall accept, dev hostname
   # advertised) all lived in exactly the layers a port-forward skips, which is
   # why the port-forwarding sftp-gateway-e2e suite never caught them. Self-skips
@@ -318,12 +318,12 @@ PARALLEL=(
   # pod-admission by the quota (not a sync 4xx). Disposable tenant, trap cleanup.
   # Uses SSH kubectl (SSH_HOST from integration.env). Staging-validated 10/10. ~2 min.
   "burstable-qos:integration-burstable-qos.sh"
-  # Resource-monitoring / monthly-bandwidth E2E (2026-07): plan bandwidth setting
+  # Resource-monitoring / monthly-bandwidth E2E: plan bandwidth setting
   # + override, node-cpu SLO rules, bandwidth/saturation notification categories,
   # and the cap-enforcement redirect Middleware (inject on cap, remove on uncap)
   # on a disposable tenant's live IngressRoute. Self-provisions + trap cleanup.
   "bandwidth:integration-bandwidth-e2e.sh"
-  # File-manager recycle bin (2026-08-31): a delete MOVES the file (gone from the
+  # File-manager recycle bin: a delete MOVES the file (gone from the
   # listing, present in the bin, bytes still charged to the tenant), restore
   # returns the original content to the original path recreating parents, a
   # restore onto an occupied path 409s and neither alongside nor replace
@@ -331,7 +331,7 @@ PARALLEL=(
   # rm/rename/copy/write, and purge frees the space. Uses an existing
   # provisioned tenant; every artefact it creates is purged at the end.
   "file-trash:integration-file-trash.sh"
-  # Node memory protection (2026-07-25, ships v2026.7.2): kubelet eviction
+  # Node memory protection: kubelet eviction
   # headroom (allocatable gap + drop-in + swap-off + doctor), tenant-first
   # PriorityClasses, SystemOOM-event → reconciler → API → notification
   # pipeline (dedupe asserted), and the cgroup-OOM metric path via a
@@ -360,7 +360,7 @@ PARALLEL=(
   # new runId → audit rows → postgres-restore route smoke. Read-mostly (exports a
   # bundle). The age-decrypt content check is external-tier and soft-skips when
   # AGE_KEY isn't the operator recipient (bundle bytes already proven in step 5).
-  # Staging-validated 2026-07-01. ~10s.
+  # Staging-validated. ~10s.
   "system-backup:integration-system-backup.sh"
   # Multi-engine tenant-bundle DB logical-dump capture + restore: provisions a
   # probe tenant with add-on MariaDB + MongoDB (+ a SQLite file on the PVC),
@@ -370,7 +370,7 @@ PARALLEL=(
   # Self-skips (77) when no offsite BackupStore is assigned to the 'tenant'
   # class. slow tier (two DB deploys + capture + restore).
   "db-dumps:integration-db-dumps-e2e.sh"
-  # ─── Previously-manual suites, now wired (2026-07-16) ───────────────
+  # ─── Previously-manual suites, now wired ───────────────
   # All self-provision a disposable probe tenant and self-clean via trap, so
   # they're PARALLEL-safe (destructive only to their OWN tenant). They need an
   # offsite BackupStore assigned to the relevant shim class (present on staging)
@@ -378,7 +378,7 @@ PARALLEL=(
   # skip (77) when a precondition (BackupStore, add-on plan, image) is absent.
   #
   # DR restore family — capture→simulate-loss→recover from the offsite bundle.
-  # Restore uses the backup-rclone-shim; the 2026-07-16 --dir-cache-time fix is
+  # Restore uses the backup-rclone-shim; the --dir-cache-time fix is
   # required for SFTP/CIFS stores (else restore 404s on a durable snapshot).
   "dr-tenant-restore:integration-dr-tenant-restore-e2e.sh"
   "dr-database-restore:integration-dr-database-restore-e2e.sh"
@@ -389,7 +389,7 @@ PARALLEL=(
   # Custom deployments (ADR-036) + private worker — provision workloads.
   # NB: custom-deployments-phase2 is in SERIAL_POST, NOT here — it toggles the
   # GLOBAL customDeploymentsEnabled kill-switch, which 403s phase1's concurrent
-  # creates with CUSTOM_DEPLOYMENTS_DISABLED (observed 2026-07-22 isolation run).
+  # creates with CUSTOM_DEPLOYMENTS_DISABLED.
   # The two MUST NOT run in parallel.
   "custom-deployments:integration-custom-deployments.sh"
   "private-worker:integration-private-worker.sh"
@@ -412,7 +412,7 @@ SERIAL_POST=(
   # waf-crowdsec BANS the shared harness outbound IP (Phase 4, ~3 min) to verify
   # ban enforcement from the banned vantage, then unbans + waits for cache flush.
   # While that ban is live, EVERY sibling suite authenticating from the same
-  # harness IP gets collateral 403s — proven 2026-07-16 (dr-drill-shim B1
+  # harness IP gets collateral 403s — proven (dr-drill-shim B1
   # "create target HTTP 403", node-terminal K1, db-dumps/system-backup/
   # webmail-platform login 403). So it CANNOT run in the parallel batch; it runs
   # here, isolated, and before the destructive postgres-pitr so it sees a healthy
@@ -430,7 +430,7 @@ SERIAL_POST=(
   #     (customDeploymentsEnabled=false et al.) — GLOBAL system-settings toggles
   #     restored via EXIT trap. Serial + isolated from the parallel batch's
   #     custom-deployments (phase1), whose concurrent creates the kill-switch
-  #     would otherwise 403 (CUSTOM_DEPLOYMENTS_DISABLED, 2026-07-22).
+  # would otherwise 403.
   "custom-deployments-phase2:integration-custom-deployments-phase2.sh"
   #   dr-protocols: offline etcd break-glass READ path over S3/SFTP/CIFS
   #     (never restores etcd). Non-destructive; self-skips without node creds.
@@ -440,7 +440,7 @@ SERIAL_POST=(
   "postgres-pitr:integration-postgres-pitr.sh"
 )
 
-# 2026-05-17: lifecycle (integration-lifecycle-e2e.sh) and system-
+# lifecycle (integration-lifecycle-e2e.sh) and system-
 # snapshots (integration-system-snapshots.sh) suites exercise the
 # storage-lifecycle snapshot Job, which uses LocalHostPathStore's
 # inline `hostPath` volume — rejected by PodSecurity baseline on tenant
@@ -458,7 +458,7 @@ fi
 # Disruptive + must run serially, NEVER alongside the happy-path WAF suite:
 #   • wal-archive-failure binds a DEAD backup target → CNPG restarts the primary
 #     (platform-api flaps) → asserts the admin.wal_archive_failing alert fires and
-#     the circuit-breaker stays untripped (the 2026-06-02 runaway guardrail).
+# the circuit-breaker stays untripped.
 #   • waf-failure briefly scales crowdsec + modsec-crs to 0 → asserts the API
 #     reports the outage (502 / modsecPodFound=false) instead of silently passing.
 # Prepended to SERIAL_POST so they run on a healthy cluster, before the terminal
@@ -471,7 +471,7 @@ if [[ "${INTEGRATION_INCLUDE_FAILURE_SUITES:-}" == "1" ]]; then
   )
 fi
 # Staging-destabilizing global mutators — run BY DEFAULT as part of the canonical
-# full run (2026-07-18, operator decision). Opt OUT with
+# full run. Opt OUT with
 # INTEGRATION_INCLUDE_DISRUPTIVE=0 for a lighter sweep that leaves shared globals
 # untouched. They run LAST (prepended to SERIAL_POST, before the terminal
 # postgres-pitr) and every one self-restores, BUT a mid-run failure degrades the
@@ -569,7 +569,7 @@ declare -A SUITE_TIER=(
   [staging-all]=slow [postgres-pitr]=slow [system-snapshots]=slow
   [waf-failure]=slow [wal-archive-failure]=slow [db-dumps]=slow
   [backup-rclone-shim]=external [dr-drill-shim]=external
-  # 2026-07-16 newly-wired manual suites
+  # newly-wired manual suites
   [dr-tenant-restore]=slow [dr-database-restore]=slow [dr-recover-all]=slow
   [migration]=slow [postgres-barman-restore]=slow [custom-deployments]=slow
   [custom-deployments-phase2]=slow [private-worker]=slow [mailbox-aux]=slow
@@ -590,7 +590,7 @@ declare -A SUITE_TIMEOUT=(
   # monitoring-slo's alert leg legitimately waits out cnpg-down's
   # forSeconds=300 twice (fire + resolve) plus evaluator ticks.
   [monitoring-slo]=1500
-  # 2026-07-16 newly-wired manual suites (above expected max → catch HANGs)
+  # newly-wired manual suites (above expected max → catch HANGs)
   [dr-tenant-restore]=1800 [dr-database-restore]=1800 [dr-recover-all]=1800
   [migration]=1800 [postgres-barman-restore]=2400 [custom-deployments]=1500
   [custom-deployments-phase2]=1500 [private-worker]=1200 [mailbox-aux]=1200
@@ -609,7 +609,7 @@ declare -A SUITE_TIMEOUT=(
 suite_tier_of()    { echo "${SUITE_TIER[$1]:-core}"; }
 suite_timeout_of() { echo "${SUITE_TIMEOUT[$1]:-$DEFAULT_SUITE_TIMEOUT}"; }
 
-# ─── isolation contract (2026-07-24) ─────────────────────────────────
+# ─── isolation contract ─────────────────────────────────
 # A suite is `exclusive` when it MUTATES cluster-wide GLOBAL state (a platform
 # setting that reconciles across every tenant/node) or DESTROYS shared substrate
 # (system-db). Its blast radius is the WHOLE cluster, not its own tenant, so it
@@ -685,7 +685,7 @@ declare -A SUITE_RC=()      # name → exit code
 # suite that errors mid-flight and leaves protect_admin_via_proxy=true
 # or otherwise mutates global state was previously silent — the
 # remaining suites would all 401 with no signal, and the operator
-# learned about it only when manually checking. 2026-05-16 operator
+# learned about it only when manually checking. operator
 # audit: "Not even the admin panel is reachable, how could this be
 # missed?"
 ADMIN_HOST_FOR_PROBE="${ADMIN_HOST:-https://admin.$(resolve_platform_apex)}"
@@ -695,7 +695,7 @@ ADMIN_HOST_FOR_PROBE="${ADMIN_HOST:-https://admin.$(resolve_platform_apex)}"
 # This used to curl "${ADMIN_HOST}/" and accept 200. That path never reaches
 # platform-api: the panel's nginx serves it off local disk
 # (`location / { try_files $uri $uri/ /index.html; }`), so it answers 200 while
-# the API is stone dead. Measured on DEV 2026-08-08 by deleting the
+# the API is stone dead. Measured on DEV by deleting the
 # platform-api pod:
 #
 #     GET /                 -> 200   200   200   200   200   (every poll)
@@ -739,7 +739,7 @@ assert_admin_reachable() {
 # BLOCKING pre-suite gate. `assert_admin_reachable` runs AFTER a suite and only
 # warns; nothing ever stopped the NEXT suite from starting into a dead API.
 #
-# Root-caused 2026-08-08 (DEV full run, migration-cifs):
+# Root-caused (DEV full run, migration-cifs):
 #   postgres-barman-restore's promote step DELETES and recreates the CNPG
 #   `system-db` cluster. The job reports its own downtime — "downtimeMs":108150
 #   — and deliberately leaves platform-api running ("platform-api left running
@@ -785,7 +785,7 @@ wait_admin_ready() {
 #   77  → suite intentionally skipped (precondition not met on this
 #         cluster shape — e.g. HA-tier flip on single-node). Distinct
 #         from a pass so the operator sees "this was not tested" rather
-#         than "this works." Was silent-passing as 0 prior to 2026-05-16
+# than "this works." Was silent-passing as 0 prior to
 #         and the user correctly called that out as a false positive.
 #   *   → real failure
 SKIP_RC=77
@@ -811,14 +811,14 @@ run_serial_group() {
     # itself an API call, so a dead API turns into "token refresh failed
     # (continuing with prior token)" and the run limps on with a stale bearer.
     wait_admin_ready "$name" || true
-    # #130 + 2026-07-09: FORCE a fresh, full-TTL token before EACH suite.
+    # #130 +: FORCE a fresh, full-TTL token before EACH suite.
     # Must be force_mint, NOT mint_token: mint_token is cache-backed
     # (get_admin_token) and reuses the shared token while it's merely >120s from
     # expiry — so before a LONG suite it can hand back a near-dead token (as
     # little as ~2 min of life). staging-all runs ~12 min on a SINGLE token
     # (integration-staging.sh sets TOKEN once, never re-logs-in), so a near-dead
     # token expires mid-suite → early scenarios pass, `mail`/`hostname`/late ones
-    # 401 with INVALID_TOKEN (root-caused 2026-07-09: the rc.18 staging-all
+    # 401 with INVALID_TOKEN (root-caused: the rc.18 staging-all
     # failure; only reproduces via the shared cache, never standalone). force_mint
     # ignores the cache → every suite starts with the full 30-min TTL. ~20 logins
     # across a full run is not a storm and force_mint has its own 429 backoff.
@@ -979,7 +979,7 @@ classify_rc() {
   fi
 }
 
-# ─── Serial retry pass (2026-07-23) ──────────────────────────────────
+# ─── Serial retry pass ──────────────────────────────────
 # The canonical mechanism behind "passes standalone, fails in the full run" is
 # resource CONTENTION during the parallel phase — object-store saturation (the
 # barman WAL archiver falls behind), API/scheduler pressure (provisioning poll
@@ -997,7 +997,7 @@ retry_failed_serially() {
   # than SUITE_RC hash order, so the destructive SERIAL_POST suites retry LAST.
   # postgres-pitr/barman-restore RECREATE system-db (a ~2-3min primary restart);
   # retrying one BEFORE a sibling 502s that sibling's retry as collateral while
-  # the platform DB is down (observed 2026-07-23: barman-restore's retry cutover
+  # the platform DB is down (: barman-restore's retry cutover
   # → custom-deployments retry PUT /upgrade-tag → 502). Destructive-last avoids it.
   local -a to_retry=() ; local name rc e
   for e in "${SERIAL_PRE[@]:-}" "${PARALLEL[@]:-}" "${SERIAL_POST[@]:-}"; do
@@ -1037,7 +1037,7 @@ retry_failed_serially() {
       flaky_suites+=("$name")
       # "Flaky under parallel load" is a DIAGNOSIS, and it is the wrong one when
       # the API was down during the batch — those suites were killed, not raced.
-      # 2026-08-09: platform-api crashed mid-batch (unhandled pg-boss 'error' on a
+      # platform-api crashed mid-batch (unhandled pg-boss 'error' on a
       # DB restart) and six suites were reported as load-flakes. The runner had
       # already recorded the reachability break and could have said so, which
       # would have pointed straight at the crash instead of at phantom
@@ -1046,7 +1046,7 @@ retry_failed_serially() {
       # concurrently. Under INTEGRATION_PARALLEL=0 nothing ran alongside this
       # suite, so "under parallel load" is not a weaker diagnosis — it is a
       # false one, and it sends the reader looking for a race that cannot
-      # exist. Seen 2026-08-09: a SERIAL run reported two suites as load-flakes
+      # exist. Seen: a SERIAL run reported two suites as load-flakes
       # when one had been fixed and the other's cluster state remediated
       # between the two attempts.
       local _why
@@ -1107,7 +1107,7 @@ emit_report_json() {
     "${#reachability_breaks[@]}" "${#global_state_leaks[@]}"
 }
 
-# ─── Host-config converger preflight (2026-07-09) ─────────────────────
+# ─── Host-config converger preflight ─────────────────────
 # Drive the platform-ops host-config converger on the control plane BEFORE any
 # suite, so the cluster is at the DEPLOYED release's host state — most importantly
 # the host-migrations (chart bumps etc.) that Flux does NOT apply (they reach a
@@ -1175,7 +1175,7 @@ converge_host_config() {
 }
 converge_host_config
 
-# ─── Cluster-state baseline gate (2026-07-10) ────────────────────────
+# ─── Cluster-state baseline gate ────────────────────────
 # The suites share ONE long-lived cluster — and staging/production behave the
 # SAME way: Flux rolls new images in place, nothing is wiped between runs. So a
 # scenario that mutates shared state and fails to restore it poisons later
@@ -1183,10 +1183,10 @@ converge_host_config
 # standalone, fails in the full run" — NOT randomness, NOT infra flake.
 #
 # This gate asserts the canonical baseline BEFORE the first suite. Per the
-# operator decision (2026-07-10): report any drift LOUDLY (so drift arriving
+# operator decision: report any drift LOUDLY (so drift arriving
 # from a NON-test source — a genuine upgrade bug — is never silently masked),
 # then self-heal reversible config so the run proceeds. Bypass: INTEGRATION_SKIP_BASELINE=1.
-# ─── Global-state leak gate (2026-07-24) ─────────────────────────────
+# ─── Global-state leak gate ─────────────────────────────
 # The #1 mechanism behind "passes standalone, fails in the full run" is a suite
 # that mutates a CLUSTER-WIDE global and fails to restore it — the leak then
 # fails a DIFFERENT, innocent suite minutes later. This gate snapshots the
@@ -1390,7 +1390,7 @@ assert_baseline_state() {
     && warn "baseline gate: ${BASELINE_DRIFT_FOUND} drift item(s) found+healed — a prior run leaked state (see above)" \
     || pass "baseline gate: cluster is at canonical baseline (no drift)"
 }
-# ─── Self-ban guard (2026-09-13) ──────────────────────────────────
+# ─── Self-ban guard ──────────────────────────────────
 #
 # A full run hammers admin endpoints hard enough to trip the platform's OWN
 # traffic detection. Observed on DEV: partway through `trusted-proxies`,
@@ -1419,7 +1419,7 @@ crowdsec_pod() {
 }
 
 # The allowlist is NOT free: CrowdSec allowlisting an IP also suppresses WAF
-# (AppSec) enforcement for it. Proven on DEV 2026-09-13 — the same payloads from
+# (AppSec) enforcement for it. Proven on DEV — the same payloads from
 # the same runner returned 401 while allowlisted and 403 once the entry was
 # removed. So the WAF suites cannot observe a block while the guard is on, and
 # they skip rather than report a false failure (see skip_if_runner_allowlisted).
@@ -1479,7 +1479,7 @@ if [[ "$RUN_SMOKE" == 1 ]]; then
   # rollout was still in flight hit nginx's 502 page and died before any suite
   # executed, reporting a red platform.
   #
-  # Observed on DEV 2026-09-13, immediately after a deploy:
+  # Observed on DEV, immediately after a deploy:
   #     ✓ GET /sftp-users (list) (HTTP 200)
   #     jq: parse error: Invalid numeric literal at line 1, column 7
   #     ✗ smoke gate FAILED (rc=5)
@@ -1487,7 +1487,7 @@ if [[ "$RUN_SMOKE" == 1 ]]; then
   #
   # That `jq` line is the signature wait_admin_ready was written for — see its
   # docblock, which names it exactly. The fix was applied to suites, groups and
-  # the retry pass in 2026-08, and the gate ahead of all three was missed.
+  # the retry pass, and the gate ahead of all three was missed.
   wait_admin_ready "smoke-gate" || true
   log "Smoke gate: scripts/smoke-test.sh (abort on red; --no-smoke to skip)"
   # Arm the mail DELIVERY gate. Without MAIL_E2E_USER/PASS smoke-test can only
@@ -1520,7 +1520,7 @@ fi
 # the primary → platform-api flaps with it (docker-entrypoint.sh says it outright:
 # "every backup-target enable/disable" restarts the API). If that flap is still
 # settling when the parallel batch launches, the API returns empty bodies that
-# fail the parallel suites as COLLATERAL — root-caused 2026-06-26: 6-9 suites died
+# fail the parallel suites as COLLATERAL — root-caused: 6-9 suites died
 # on JSONDecodeError (empty body) with INVALID_TOKEN=0, no 429s; capping
 # concurrency made it WORSE (it's a control-plane event, not load). Gate on a
 # DB-BACKED endpoint (healthz is SHALLOW — returns 200 even while postgres is
@@ -1529,7 +1529,7 @@ fi
 # down. A system-db (CNPG) outage surfaces only as generic "control plane not
 # stable" / "login rate-limited", so a platform-DB brick used to get mis-filed as
 # a harness flake (that is how the CNPG single-instance primary-roll wedge hid for
-# so long — 2026-07-20). Prints the CNPG cluster phase + platform-api readiness.
+# so long —). Prints the CNPG cluster phase + platform-api readiness.
 # Returns 1 (and a loud banner) when system-db is NOT healthy; 0 otherwise (incl.
 # when $KUBECTL can't reach the cluster — never let diagnostics abort the run).
 report_system_db_health() {
@@ -1589,7 +1589,7 @@ fi
 # during which suites CANNOT be re-tokened one-by-one (they run at once). A
 # plain mint_token here reuses the cache while it's >120s from expiry, so the
 # parallel group would inherit a near-dead token and die mid-flight (the
-# INVALID_TOKEN cascade observed 2026-06-25). force_mint guarantees a full TTL.
+# INVALID_TOKEN cascade). force_mint guarantees a full TTL.
 log "Force-minting a fresh INTEGRATION_TOKEN before the parallel group"
 INTEGRATION_TOKEN="$(force_mint)"
 [[ -n "$INTEGRATION_TOKEN" ]] || { report_system_db_health || true; fail "mid-run re-login failed — aborting (check system-db health above; a wedged platform DB fails login, it is not necessarily rate-limiting)"; exit 1; }
@@ -1691,7 +1691,7 @@ yes y | ADMIN_PASSWORD="$ADMIN_PASSWORD" "$SCRIPT_DIR/integration-cleanup.sh" 2>
 # test-pattern PV survived the per-suite traps AND the cleanup pass
 # above. The cleanup pass uses the lifecycle API, which fails when
 # system-db is down (the chicken-and-egg scenario observed on
-# testing.example.test 2026-05-17). This guard talks directly to
+# testing.example.test). This guard talks directly to
 # the apiserver so it catches that case. CI_LEAK_GUARD=0 disables.
 log "Leak guard (assert no test-tenant namespaces, Released test-PVs, or orphaned Longhorn volume CRs survived)"
 leak_rc=0

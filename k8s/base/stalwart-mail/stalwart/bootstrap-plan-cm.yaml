@@ -12,7 +12,7 @@
 # All other configuration (admin credentials, DKIM, Jmap limits, listeners,
 # AllowedIp) is applied post-restart by bootstrap.sh configure_stalwart_full().
 #
-# TLS bootstrap (2026-05-06): Stalwart manages its own TLS cert via
+# TLS bootstrap: Stalwart manages its own TLS cert via
 # Let's Encrypt HTTP-01. Bootstrap.requestTlsCertificate=true triggers
 # the ACME flow; AcmeProvider declares the LE prod directory + Http01
 # challenge type; AllowedIp rows whitelist the cluster pod/service
@@ -22,7 +22,7 @@
 # cluster-internal, Ingress routes mail.${DOMAIN}/.well-known/
 # acme-challenge/* to it.
 #
-# Coordinator (2026-05-07): Coordinator row points Stalwart at the
+# Coordinator: Coordinator row points Stalwart at the
 # platform-wide Valkey StatefulSet in redis-system. The URL uses the
 # headless service form `valkey-0.valkey-headless...` so failover can
 # be handled by the Sentinel-aware client; redis-rs (Stalwart's
@@ -34,7 +34,7 @@
 # AND mirrored into stalwart-admin-creds at install time (so the
 # bootstrap-plan substitution stays in one Secret).
 #
-# Post-bootstrap configuration note (2026-05-12):
+# Post-bootstrap configuration note:
 # SystemSettings (defaultHostname + defaultDomainId), Jmap upload limits,
 # DkimSignature, AcmeProvider, AllowedIp, NetworkListeners, and admin
 # credentials are ALL applied by bootstrap.sh configure_stalwart_full()

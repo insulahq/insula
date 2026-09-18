@@ -269,7 +269,7 @@ describe('buildMailboxesComponentJobSpec — engine=imap', () => {
     const template = (spec.spec as { template: { spec: { containers: Array<{ command: string[]; volumeMounts: Array<{ name: string }> }> } } }).template.spec;
     expect(template.containers[0]!.command[2]).toContain('jmap-sync.py');
     expect(template.containers[0]!.command[2]).not.toContain('imap-sync.py');
-    // 2026-05-22: state mount removed from JMAP path too (COMPLETE-only).
+    // state mount removed from JMAP path too (COMPLETE-only).
     const mountNames = template.containers[0]!.volumeMounts.map((m) => m.name);
     expect(mountNames).not.toContain('jmap-state');
     // --state-in / --state-out args no longer passed.

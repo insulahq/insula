@@ -133,7 +133,7 @@ export function resolveBackupTarget(
  * Resolve a "write through the R-X shim" target. Used by ALL new bundle
  * writes regardless of the upstream backup_configurations.storage_type —
  * because the shim universally handles S3/SFTP/CIFS/NFS, and the live
- * staging bench (2026-05-22) showed the shim path is ~35% faster than
+ * staging bench showed the shim path is ~35% faster than
  * restic native S3 for the same Hetzner Object Storage upstream.
  *
  * The function reads the BACKUP_TARGET_KEY Secret from the in-cluster

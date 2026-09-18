@@ -59,7 +59,7 @@ api() {
 # ALWAYS source the shared helper for its functions (api_curl, get_admin_token).
 # The ALL run pre-sets INTEGRATION_TOKEN, so the old `-z`-gated source SKIPPED it
 # and left api_curl undefined → api() emitted nothing → JSONDecodeError (the
-# 2026-06-26 "parallel cascade" was this self-inflicted regression). Sourcing only
+# "parallel cascade" was this self-inflicted regression). Sourcing only
 # defines functions (no side effects); mint a token only when none is pre-set.
 if [[ -f "$(dirname "${BASH_SOURCE[0]}")/integration-token.sh" ]]; then
   # shellcheck source=integration-token.sh
@@ -108,7 +108,7 @@ if [[ "${TENANT_NODE_COUNT:-0}" -lt 3 ]]; then
   # assert the API returns HA_REQUIRES_MULTI_NODE / 4xx (NOT a silent
   # success), then clean up. This converts "no HA available, skip" into
   # an actually meaningful assertion — single-node failure was silent
-  # before 2026-05-16 per operator audit.
+  # before per operator audit.
   STAMP=$(date +%s)
   COMPANY="Single-Node Guard $STAMP"
   RESP=$(api POST "/tenants" "{\"name\":\"$COMPANY\",\"primary_email\":\"sn-guard-$STAMP@example.test\",\"plan_id\":\"$PLAN_ID\",\"region_id\":\"$REGION_ID\",\"storage_tier\":\"local\"}")
@@ -220,7 +220,7 @@ USED_OK=$(echo "$PLACEMENT" | python3 -c "import json,sys;d=json.load(sys.stdin)
 [[ "$HAS_ALLOC_FIELD" == "Y" ]] && ok "storage-placement.allocatedBytes field present" || fail "allocatedBytes field missing"
 [[ "$USED_OK" == "Y" ]] && ok "usedBytes is filesystem-level (not block-allocation overhead)" || fail "usedBytes looks like Longhorn allocation not kubelet — body: $(echo "$PLACEMENT" | head -c 400)"
 
-# ─── XFS migration assertions (2026-04-28) ───────────────────────────
+# ─── XFS migration assertions ───────────────────────────
 # longhorn-tenant SC was switched to fsType=xfs. Fresh tenants should
 # now report fsType=xfs in the placement endpoint AND a much smaller
 # empty-volume allocatedBytes (~40 MiB vs ~228 MiB on ext4).

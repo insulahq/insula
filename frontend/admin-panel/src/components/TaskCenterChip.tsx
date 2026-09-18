@@ -114,7 +114,7 @@ export default function TaskCenterChip() {
       // win on key collision — useful for modals that want a
       // different taskId surface name.
       //
-      // 2026-05-23 follow-up: also pass `taskStatus` + `taskDetails`
+      // follow-up: also pass `taskStatus` + `taskDetails`
       // so terminal-state modals can render historical data from
       // `details` (e.g. PitrProgressModal needs the steps[] array
       // captured at finalize time, since the PersistedLock that drove
@@ -280,7 +280,7 @@ function TaskRowItem({ task, onSelect }: { task: TaskRow; onSelect: (t: TaskRow)
 
   // Time info: running tasks show "started <ts> · running for <elapsed>"
   // with a 1Hz live counter; terminal tasks show "ran <duration> ·
-  // finished <ts>". Operator requested 2026-05-23.
+  // finished <ts>". Operator requested.
   const isRunning = task.status === 'running' || task.status === 'queued';
   const nowSec = useNowSecond();
   const timeInfo = useMemo(() => {

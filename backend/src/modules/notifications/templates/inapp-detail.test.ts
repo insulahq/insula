@@ -4,7 +4,7 @@ import { renderForDelivery } from './render-for-delivery.js';
 import { renderTemplate } from './renderer.js';
 
 /**
- * Regression guard for the in-app notification audit (2026-08-23): several
+ * Regression guard for the in-app notification audit: several
  * in-app templates dropped the diagnostic detail (errorMessage / driftSummary /
  * reason) that their email counterpart included, so the dropdown showed
  * "X failed" with no reason. Each now appends the detail via {{#if optional}}.

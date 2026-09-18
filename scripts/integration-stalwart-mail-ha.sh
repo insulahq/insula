@@ -91,7 +91,7 @@
 #         (Phase 1 streamline invariant — catches per-run-naming regression)
 #     I5. ssa:merge annotation NOT active on Stalwart Deployment
 #         (the annotation has the opposite effect of its name — verified
-#         on 2026-05-15, see migration.ts header comment)
+# see migration.ts header comment)
 #
 #   Phase J — Stalwart cert acquisition (--cert-acquisition, ~10 sec)
 #     Live TLS handshake on mail.<host>:465. Verifies Phase 5 streamline:
@@ -423,7 +423,7 @@ print(next((x.get('challengeType','') for x in r), ''))" 2>/dev/null || echo '')
   fi
 
   # A3. Ingress (or IngressRoute) routes /.well-known/acme-challenge.
-  # The platform migrated from ingress-nginx to Traefik on 2026-05-14, so
+  # The platform migrated from ingress-nginx to Traefik, so
   # we check both resource kinds and pass if either has the ACME path.
   local ing_paths route_match
   ing_paths="$(kctl -n "$STALWART_NS" get ingress stalwart-mail-acme \
@@ -715,7 +715,7 @@ print(' '.join(sorted(ips)))" 2>/dev/null || echo '')"
     return
   fi
 
-  # **Phase 11 streamline (Bug F fix, 2026-05-15): per-listener trust.**
+  # **Phase 11 streamline: per-listener trust.**
   # Global `SystemSettings.proxyTrustedNetworks` is now empty `{}`. Each
   # MAIL listener (smtp/imap/manageSieve/pop3) carries the full trust list
   # via `overrideProxyTrustedNetworks` (cluster CIDRs + server node IPs).
@@ -816,7 +816,7 @@ print(' '.join(canon(e.get('address','')) for e in r))" 2>/dev/null || echo '')"
   fi
 
   # B4. haproxy DaemonSet lifecycle matches port-exposure mode.
-  # 2026-05-14 streamline (Phase 7): the haproxy DS lifecycle moved
+  # streamline (Phase 7): the haproxy DS lifecycle moved
   # from Flux into platform-api. In thisNodeOnly mode the DS object
   # does NOT exist (deleted by platform-api on mode flip). In
   # allServerNodes mode the DS exists, scheduled on every server-role
@@ -1409,7 +1409,7 @@ phase_f_archive_downtime() {
 }
 
 # ── Phase H — health-truth (/admin/mail/health vs live state) ──────────
-# Streamline 2026-05-14: catches the "banner says green but reality is
+# Streamline: catches the "banner says green but reality is
 # broken" class of bug that motivated the Phase 3a/3b probe rewrite. The
 # banner is supposed to AGREE with what kubectl/openssl/nc tell us
 # directly. When it doesn't, either the probe is lying (Phase-3 bug) or
@@ -1655,11 +1655,11 @@ except Exception:
 #   - mode=thisNodeOnly   → DS does NOT exist (platform-api deleted it
 #     on the flip-back; Flux must not re-create it).
 #
-# 2026-05-14 streamline: haproxy DS lifecycle is now wholly owned by
+# streamline: haproxy DS lifecycle is now wholly owned by
 # platform-api (k8s/base/stalwart-mail/haproxy/daemonset.yaml was
 # deleted; spec moved to haproxy-builder.ts).
 #
-# 2026-05-15 Phase 1 streamline: extended this phase to ALSO verify the
+# Phase 1 streamline: extended this phase to ALSO verify the
 # Stalwart Deployment's `template.spec.volumes[stalwart-data]` keeps the
 # stable PVC name (`stalwart-rocksdb-data`). Pre-streamline the migration
 # pipeline renamed the volume claim to a per-run name and Flux reverted
@@ -1667,7 +1667,7 @@ except Exception:
 # migrations; if a future regression flips back to per-run naming, this
 # check catches the drift on the next Flux reconcile cycle.
 #
-# 2026-05-15 Phase 6 wait extended from 60s to 5 min: Flux's default
+# Phase 6 wait extended from 60s to 5 min: Flux's default
 # reconcile interval is 5 min (Kustomization.spec.interval) — the old
 # 60s wait did NOT span a full reconcile cycle, so a regression where
 # Flux's reconcile reverted state at minute 4 would pass at minute 1.
@@ -1758,7 +1758,7 @@ phase_i_flux_ownership() {
   fi
 
   # I5. The ssa:merge annotation must NOT be active on the Deployment.
-  # Live testing on 2026-05-15 proved the annotation's actual effect
+  # Live testing proved the annotation's actual effect
   # is "force-conflicts=true regardless of Kustomization.spec.force" —
   # which is the opposite of what its name implies. CI guard
   # ci-mail-arch-regressions.sh check 5 enforces this at build time;

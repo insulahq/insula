@@ -2,7 +2,7 @@
  * Login passwords (a.k.a. app passwords) for a mailbox — stateless,
  * backed entirely by Stalwart "AppPassword" registry objects over JMAP.
  *
- * Design (spike-verified 2026-06-07):
+ * Design:
  *   - accountId for x:AppPassword/* IS the mailbox's own
  *     stalwart_principal_id (the credential's owner), NOT the
  *     principals-management account. Admin Basic-auth (handled by the

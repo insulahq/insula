@@ -49,7 +49,7 @@ function makeDeps(overrides: Partial<RotateJmapDeps> = {}): RotateJmapDeps {
     findAdminPrincipalId: vi.fn().mockResolvedValue('principal-admin-1'),
     updateAdminPassword: vi.fn().mockResolvedValue(undefined),
     updateAdminRoles: vi.fn().mockResolvedValue(undefined),
-    // Defaults for the auto-reseed deps (FIX 3, 2026-05-28). Tests
+    // Defaults for the auto-reseed deps. Tests
     // that exercise the reseed path override these; existing tests
     // never reach them because findAdminPrincipalId returns a real id.
     resolveOrCreateDomain: vi.fn().mockResolvedValue('domain-default'),
@@ -166,7 +166,7 @@ describe('rotateAdminPasswordViaJmapImpl', () => {
   });
 
   it('falls through to Secret-only rotation when admin principal not found', async () => {
-    // Cut 3 follow-up (2026-05-04): Stalwart 0.16 supports a recovery-
+    // Cut 3 follow-up: Stalwart 0.16 supports a recovery-
     // admin path where no x:Account row exists in the DB. Rotation now
     // skips the JMAP-update step cleanly in that case and patches the
     // Secret only — Reloader rolls the Stalwart pod which picks up the
@@ -264,7 +264,7 @@ describe('rotateAdminPasswordViaJmapImpl', () => {
   });
 
   it('recyclePodsBeforeVerify=true calls recyclePods between Secret patch and verify', async () => {
-    // 2026-05-06 hardening: drift between mounted-Secret view and pod-env
+    // hardening: drift between mounted-Secret view and pod-env
     // view causes verify failures. Eliminating that drift requires the
     // pods to be recycled AFTER the Secret patch and BEFORE the verify
     // probes them. This test asserts the call ordering.
@@ -296,7 +296,7 @@ describe('rotateAdminPasswordViaJmapImpl', () => {
     expect(patchIdx).toBeGreaterThanOrEqual(0);
     expect(recycleIdx).toBeGreaterThan(patchIdx);
     expect(verifyIdx).toBeGreaterThan(recycleIdx);
-    // 2026-05-06 (Phase 2A.C): the response carries the recycle outcome.
+    // (Phase 2A.C): the response carries the recycle outcome.
     expect(result.recycleResult).toEqual({ deletedCount: 3, errors: [] });
   });
 

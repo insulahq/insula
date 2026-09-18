@@ -1,4 +1,4 @@
-# Cut 3 (2026-05-04): production IngressRoute for Roundcube webmail at
+# Cut 3: production IngressRoute for Roundcube webmail at
 # https://webmail.${DOMAIN}.
 #
 # Same shape as the staging overlay's webmail-ingress.yaml. Auth: NO

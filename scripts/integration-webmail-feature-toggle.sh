@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # integration-webmail-feature-toggle.sh — E2E for the webmail
-# feature-visibility CSS reconciler (2026-05-18).
+# feature-visibility CSS reconciler.
 #
 # Exercises the full chain:
 #
@@ -86,7 +86,7 @@ cm_data_key() {
   # in this function turns the caller's `\.` into `\\.` and jsonpath then matches
   # nothing, so every assertion reads "key missing" against a correct ConfigMap.
   #
-  # That double-escape shipped briefly on 2026-08-08 and measured as a FIX only
+  # That double-escape shipped briefly and measured as a FIX only
   # because the ad-hoc `ssh … kubectl "$@"` wrapper in use at the time dropped one
   # backslash on the remote shell's re-parse, collapsing it back to one level.
   # scripts/lib/kubectl-remote.sh quotes each argument with printf %q and does
@@ -164,7 +164,7 @@ wait_for_hash_change() {
 # which is normal on a freshly bootstrapped cluster where Flux applies workloads
 # progressively, and is why the old 45s default produced
 #   FAIL roundcube Deployment carries feature-css-hash annotation
-# on the 2026-08-10 multi-node run while bulwark (present at an earlier tick)
+# on the multi-node run while bulwark (present at an earlier tick)
 # passed in the same window. The suite was measuring tick phase, not the
 # reconciler. Same class as the mail-TLS cert assertion: a budget shorter than
 # the convergence period is a coin flip, and a previous round already tried to
