@@ -1,31 +1,48 @@
-# Longhorn RecurringJobs — LOCAL snapshot + fstrim schedule for any volume
-# opted into the `default` job group.
+# Longhorn RecurringJobs — local housekeeping. TWO groups, on purpose:
 #
-# READ THIS BEFORE CALLING THE GROUP LABEL A "BACKUP" SETTING: it is not one,
-# and has not been. Membership of the `default` group buys a
-# volume exactly two things — an hourly in-volume snapshot (retain 6) and a
-# daily filesystem trim. Both are local to this cluster and neither survives
-# losing the node. Off-cluster protection is the tenant-bundle / system / mail
-# 3-class shim pipeline, which is driven by backup target ASSIGNMENTS in the
-# admin panel and knows nothing about this label.
+#   `default`         every volume. Daily filesystem trim only.
+#   `system-critical` the platform database. Hourly in-volume snapshot as well.
 #
-# A volume opts in by either:
-#   (a) carrying label `recurring-job-group.longhorn.io/default: enabled`
+# NEITHER GROUP IS A BACKUP SETTING. Both tasks are local to this cluster and
+# neither survives losing the node. Off-cluster protection is the
+# tenant-bundle / system / mail 3-class shim pipeline, driven by backup target
+# ASSIGNMENTS in the admin panel, which knows nothing about these labels. The
+# daily/weekly Longhorn BACKUP jobs that used to live here were removed by
+# operator decision: they depended on a Longhorn BackupTarget nobody
+# configures under the shim model, so they failed every night while their pods
+# reported Complete. Flux prunes them from existing clusters.
+#
+# Why `hourly-snap` is scoped to `system-critical` rather than `default`:
+# tenant volumes were getting an automatic snapshot every hour, and those
+# snapshots were invisible and unreapable. A snapshot the tenant panel shows is
+# a CSI VolumeSnapshot with a `tenant_volume_snapshots` row and an expiry, swept
+# by the tenant-snapshot reaper after `system_settings.snapshot_expiry_hours`
+# (48h by default). A RecurringJob snapshot is a bare `Snapshot.longhorn.io`
+# object with neither, so no panel lists it and no reaper can remove it — and
+# once a job stops selecting a volume, its `retain` stops pruning that volume
+# too, so the chain would sit there forever. Tenant snapshots are
+# tenant-initiated, by decision; the platform database keeps its hourly chain.
+#
+# A volume joins a group by either:
+#   (a) carrying label `recurring-job-group.longhorn.io/<group>: enabled`
 #       (direct, per-PVC), OR
 #   (b) being provisioned by a StorageClass whose parameters include
 #       `recurringJobSelector` listing this group (cluster-wide, applies
-#       to every future volume). For staging we rely on (a) + a one-time
-#       labelling pass on existing PVCs, since the default longhorn
-#       StorageClass was already created by the Longhorn installer and
-#       modifying its parameters post-hoc is awkward.
+#       to every future volume).
+# We rely on (a): the default longhorn StorageClass is created by the Longhorn
+# installer and editing its parameters post-hoc is awkward.
 #
-# Local-only housekeeping: hourly snapshots (short in-volume rollback
-# chain) + daily fstrim. The daily/weekly Longhorn BACKUP jobs were
-# removed (operator decision): off-cluster protection is the
-# tenant-bundle/system/mail 3-class shim pipeline, and the volume-level
-# backup jobs — dependent on a Longhorn BackupTarget nobody configures
-# under the shim model — failed every night while their pods reported
-# Complete. Flux prunes the two RecurringJobs from existing clusters.
+# TWO SHARP EDGES in (a), both load-bearing here:
+#   * A volume carrying NO recurring-job label of either kind is IMPLICITLY in
+#     `default`. That implicit membership is how tenant volumes were swept into
+#     every job `default` held.
+#   * Longhorn copies a PVC's membership labels onto the Volume CR when the
+#     volume is PROVISIONED and never again — verified against v1.12.0 by
+#     labelling a live PVC and watching the Volume CR stay unchanged. So the
+#     `system-critical` label the CNPG cluster's `inheritedMetadata` puts on its
+#     PVCs reaches NEW volumes only. The backend's longhorn-recurring-jobs
+#     reconciler writes it onto the existing Volume CR, and sweeps the snapshots
+#     a membership change left behind.
 ---
 apiVersion: longhorn.io/v1beta2
 kind: RecurringJob
@@ -38,16 +55,17 @@ spec:
   # Top of the hour + 5 minutes, out of the way of the other jobs.
   cron: "5 * * * *"
   task: snapshot
-  # 6 hourly snapshots kept — last six hours of in-volume rollback. A
-  # shorter chain dramatically speeds up Longhorn replica rebuilds.
-  # Anything older than six hours must come from the shim pipeline's
-  # off-cluster bundles, NOT from here. These snapshots earn their keep
-  # regardless: the tenant-database datadir recovery was only
-  # possible because an hourly snapshot existed to fall back on.
+  # 6 hourly snapshots kept — last six hours of in-volume rollback for the
+  # platform database. A shorter chain dramatically speeds up Longhorn replica
+  # rebuilds. Anything older than six hours must come from the shim pipeline's
+  # off-cluster bundles, NOT from here.
   retain: 6
   concurrency: 2
   groups:
-    - default
+    # `system-critical`, NOT `default`: this job is for the platform database
+    # only. Membership comes from the CNPG cluster's inheritedMetadata, so
+    # every instance PVC (system-db-1/2/3 under HA) joins automatically.
+    - system-critical
 ---
 apiVersion: longhorn.io/v1beta2
 kind: RecurringJob
@@ -61,15 +79,14 @@ spec:
   # and a bundle upload never contend for the same volume. (It used to be
   # timed against a 02:00 Longhorn backup job; that job is gone.)
   #
-  # Why this job exists: deleted-file blocks are
-  # never returned to Longhorn without an explicit trim — the staging
-  # system-db volume carried 10.8 GB of incident-era WAL blocks through
-  # every snapshot rotation for days (12.7 GB actualSize for an 18 MB
-  # database). FITRIM from inside the workload pod is not possible
-  # (needs CAP_SYS_ADMIN, which platform pods rightly drop) — Longhorn's
+  # Why this job exists: deleted-file blocks are never returned to Longhorn
+  # without an explicit trim, so a volume keeps carrying dead blocks through
+  # every snapshot rotation — enough of them to dwarf the live database.
+  # FITRIM from inside the workload pod is not possible (it needs
+  # CAP_SYS_ADMIN, which platform pods rightly drop), so Longhorn's
   # filesystem-trim task runs through the engine instead. Pairs with the
-  # removeSnapshotsDuringFilesystemTrim default setting (bootstrap.sh)
-  # so trimmed blocks are also released from the snapshot chain.
+  # removeSnapshotsDuringFilesystemTrim default setting (bootstrap.sh) so
+  # trimmed blocks are also released from the snapshot chain.
   cron: "30 1 * * *"
   task: filesystem-trim
   # retain is meaningless for filesystem-trim (nothing is created);
