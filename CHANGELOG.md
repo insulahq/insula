@@ -12,6 +12,27 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **The System Backups page can finally control when system backups run.** It
+  previously showed no schedule controls at all: the timing of the etcd
+  snapshot upload, the encrypted secrets bundle and the cluster-state dump was
+  compiled into cluster manifests, where an operator could not reach it. Worse,
+  two schedules the page *did* let you edit — the Postgres base backup and the
+  Longhorn snapshot cadence — were connected to nothing, so changing them
+  appeared to work and changed nothing at all.
+
+  Each of the five now behaves the way it reads. The etcd upload and the
+  Postgres base backup take your time directly. The secrets bundle and
+  cluster-state dump do too — and because their timing is owned by the cluster
+  manifest, the platform quietly takes over running them the moment you pick a
+  different time, so your choice is what actually happens. The Longhorn
+  snapshot cadence is the one exception: it is set by the cluster manifest and
+  cannot be changed from here, so it is now shown read-only with that stated,
+  rather than offering an edit that would be undone a minute later.
+
+  Seeding these schedules changes nothing about when your backups run today —
+  every one starts at the value its manifest already used.
+
 ### Fixed
 - **Every off-site etcd snapshot was stored without a checksum.** The backup job
   records a small sidecar next to each snapshot so you can tell a good copy from

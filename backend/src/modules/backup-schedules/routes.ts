@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { authenticate, requireRole } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
+import { targetFor } from './cadence/targets.js';
 import {
   updateBackupScheduleSchema,
   backupScheduleSubsystemEnum,
@@ -96,6 +97,31 @@ export async function backupSchedulesRoutes(app: FastifyInstance): Promise<void>
           { err, subsystem },
           'backup-schedules: mail retention DB write succeeded but K8s CronJob patch failed — retention in DB but NOT yet applied to next snapshot. Re-run the update OR wait for platform-api startup reconciler to catch up.',
         );
+      }
+    }
+
+    // Apply the new cadence to the live object NOW rather than leaving the
+    // operator to wonder for up to five minutes whether anything happened.
+    // The same reconcile runs on a timer, so this is an accelerator, not the
+    // mechanism — a failure here is logged and the tick picks it up.
+    if (targetFor(subsystem)) {
+      const handle = (app as unknown as {
+        cadenceScheduler?: { reconcileNow: () => Promise<readonly { subsystem: string; state: string; platformFired: boolean }[]> };
+      }).cadenceScheduler;
+      if (handle) {
+        try {
+          const outcomes = await handle.reconcileNow();
+          const mine = outcomes.find((o) => o.subsystem === subsystem);
+          app.log.info(
+            { subsystem, state: mine?.state, platformFired: mine?.platformFired },
+            'backup-schedules: cadence reconciled after edit',
+          );
+        } catch (err) {
+          app.log.warn(
+            { err, subsystem },
+            'backup-schedules: saved, but the immediate cadence reconcile failed — the 5-minute tick will retry',
+          );
+        }
       }
     }
 
