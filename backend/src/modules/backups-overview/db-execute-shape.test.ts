@@ -1,5 +1,5 @@
 /**
- * Regression for 2026-06-15: `loadTenantsOverview` cast its `db.execute()`
+ * Regression for: `loadTenantsOverview` cast its `db.execute`
  * result `as unknown as Array<…>` and then called `.map` on it. But
  * drizzle-orm/node-postgres `db.execute()` returns a pg QueryResult whose
  * rows live under `.rows` — the result is NOT a bare array. `rows.map` threw

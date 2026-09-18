@@ -3,7 +3,7 @@
  *
  * Separate from the 5-minute node-health reconciler on purpose: that cadence
  * is tuned for expensive signals (CSI drivers, eviction windows, kubelet disk
- * stats), and during the 2026-09-11 drill it meant a dead node went unnoticed
+ * stats), and during the drill it meant a dead node went unnoticed
  * for 4m20s. Recovering a stranded HA-tier tenant should not wait on that.
  *
  * Idempotent by construction — candidates are recomputed from live cluster

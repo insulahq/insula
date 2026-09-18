@@ -276,6 +276,14 @@ Each server row has a **Test** action to confirm connectivity before you
 rely on it. A group's row summarizes how many primary and secondary
 servers it holds.
 
+!!! tip "Don't have authoritative nameservers yet?"
+    The companion project [**Backbone**](https://github.com/insulahq/backbone)
+    deploys a redundant PowerDNS pair (native mode, read-write on both nodes,
+    with automatic failover) across two geographically separated servers, along
+    with the mesh VPN and identity provider the platform can also consume. Add
+    it here as a PowerDNS provider group once it is up. Any other
+    PowerDNS-compatible or BIND9 setup works exactly the same way.
+
 ## Upstream DNS (which resolver the platform uses)
 
 Also on **Platform Settings → DNS Providers**. This controls the resolver the

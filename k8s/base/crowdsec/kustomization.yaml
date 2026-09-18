@@ -30,6 +30,6 @@ resources:
 # The LAPI alert table is bounded by `db_config.flush` (max_age 7d /
 # max_items 5000), set explicitly by the seed-config init container in
 # deployment.yaml. It used to be a `crowdsec-retention` CronJob; that was
-# removed 2026-09-11 after it was found never to have succeeded once in 29
+# removed after it was found never to have succeeded once in 29
 # days on production — it called `cscli alerts delete --older-than`, a flag
 # that does not exist in v1.7.8.

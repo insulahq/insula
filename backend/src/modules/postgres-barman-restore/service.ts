@@ -1,5 +1,5 @@
 /**
- * postgres-barman-restore (Phase 3 — 2026-05-22).
+ * postgres-barman-restore.
  *
  * "Oops I deleted a row last Tuesday at 14:30" recovery via barman-cloud
  * backups. Distinct from postgres-restore which promotes from a Longhorn
@@ -71,7 +71,7 @@ const LONGHORN_NS = 'longhorn-system';
 
 const BARMAN_PLUGIN_NAME = 'barman-cloud.cloudnative-pg.io';
 
-/** Match the planner's RFC drift discovery from 2026-05-20:
+/** Match the planner's RFC drift discovery:
  *  parameter is `barmanObjectName` not `objectStoreName`. */
 const PARAM_OBJECT_NAME = 'barmanObjectName';
 
@@ -327,7 +327,7 @@ export async function createBarmanRestore(
     }
   }
   // Instances default = source's instance count (HA-state-aware).
-  // Operator's request 2026-05-22: auto-default to source's HA state
+  // Operator's request: auto-default to source's HA state
   // instead of always 1. Single-instance source → 1 replica restore;
   // HA-3 source → 3-replica restore so the operator can promote-and-go
   // without a separate scale-up step. Explicit `instances` in the
@@ -448,14 +448,14 @@ export async function createBarmanRestore(
       // barman-cloud plugin that ALREADY knows how to read the
       // ObjectStore. The plugin name + parameter shape mirrors the
       // pluginConfiguration on the source's Backup CRs (verified live
-      // on staging 2026-05-22 — see staging Backup CRs for system-db).
+      // on staging — see staging Backup CRs for system-db).
       //
       // serverName MUST be set to the SOURCE cluster's name. Barman-
       // cloud namespaces archives by `<destinationPath>/<serverName>/...`
       // and the plugin defaults serverName to the NEW cluster's name —
       // which doesn't have any backups, so the plugin returns "no target
       // backup found" and the restore fails immediately (caught live on
-      // staging 2026-05-22 with sysdb-restored-e2e attempt #1). Forcing
+      // staging with sysdb-restored-e2e attempt #1). Forcing
       // serverName=source resolves the lookup against the actual archive.
       externalClusters: [
         {
@@ -474,7 +474,7 @@ export async function createBarmanRestore(
           },
         },
       ],
-      // Pod-scheduling inheritance (H2 fix 2026-05-22): without these the
+      // Pod-scheduling inheritance: without these the
       // restored cluster's pod hits the platform-server taint and stays
       // Pending forever. Inherit from source so the restored cluster has
       // the same node-affinity contract.
@@ -494,7 +494,7 @@ export async function createBarmanRestore(
     },
   };
 
-  // PITR WAL-gap mitigation 2026-05-23: trigger a fresh barman backup
+  // PITR WAL-gap mitigation: trigger a fresh barman backup
   // BEFORE the restored cluster CR is applied. This closes the WAL gap
   // to seconds so CNPG's recovery-pod bootstrap timeout (~2 min) doesn't
   // fire before WAL replay completes. Best-effort — if the backup fails
@@ -666,7 +666,7 @@ export async function deleteBarmanRestore(
   return { deleted: true };
 }
 
-// ─── Phase 3.1 (2026-05-23) — PROMOTE ──────────────────────────────────────
+// ─── Phase 3.1 — PROMOTE ──────────────────────────────────────
 //
 // Destructive cutover: swap a side-by-side restored cluster's data into
 // the SOURCE cluster's name + role. Key design: reuse the existing
@@ -920,7 +920,7 @@ export async function promoteRestoredCluster(
   // window (~5-60s) a clear "(taking snapshot ...)" message instead of
   // an opaque pending-<timestamp>. The Job's own writePersistedLock
   // overwrites this with the real snapshot name once orchestration
-  // begins (review MEDIUM 2026-05-23).
+  // begins.
   try {
     await acquirePitrLockOrThrow(deps.db, {
       clusterNamespace: inputs.namespace,

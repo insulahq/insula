@@ -8,7 +8,7 @@
 #   fails partway and the explicit DELETE never runs. Each leaves a
 #   PVC + Longhorn replicas committed against the system-node storage
 #   budget. Three orphan namespaces accumulated to ~150 GiB of
-#   storageScheduled on staging (observed 2026-05-04), enough to
+# storageScheduled on staging, enough to
 #   block postgres-2 from creating its replica with "insufficient
 #   storage" precheck failures.
 #
@@ -72,7 +72,7 @@ items = d.get('data', []) or []
 # every suite whose middle token wasn't "Test" — "PVC Test L …", "Drain HA …",
 # "Drain LOCAL …", "Firewall E2E …", "Grow E2E …", "Tier Flip E2E …",
 # "MboxQuota E2E …", "cd-cmp-…" — which is exactly how 9 stale tenants
-# accumulated (2026-06-22..25) and tripped the runner's leak guard. Match EITHER
+# accumulated and tripped the runner's leak guard. Match EITHER
 # signature; NEVER the SYSTEM tenant (isSystem) or a tenant off the test domain.
 EMAIL_TEST = re.compile(r'@(?:[a-z0-9-]+\.)*example\.test$', re.I)
 NAME_TEST = re.compile(

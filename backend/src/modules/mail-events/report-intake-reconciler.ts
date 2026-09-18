@@ -19,7 +19,7 @@
  * before delivery, so what lands in the mailbox is a residual copy, bounded by
  * the mailbox quota.
  *
- * ## FBL was retired 2026-09-15
+ * ## FBL was retired
  *
  * `fbl@<apex>` intake and ARF complaint ingestion are gone. Measured on
  * production: **zero** complaints ingested in the feature's entire life, and no
@@ -46,7 +46,9 @@ import {
   reportSettingsGet,
   reportSettingsUpdate,
   actionReloadSettings,
+  type StalwartReportSettingsRow,
 } from '../stalwart-jmap/client.js';
+import { commitSettingsGroup } from '../stalwart-jmap/settings-group.js';
 import type { Database } from '../../db/index.js';
 import type { OutboundReconcileLogger } from '../email-outbound/service.js';
 
@@ -54,7 +56,7 @@ import type { OutboundReconcileLogger } from '../email-outbound/service.js';
  * DMARC `rua=` addresses point here. It must be a REAL principal: Stalwart does
  * not bypass RCPT validation for report addresses, so an unregistered address
  * answers `550 5.1.2 Mailbox does not exist` and the report is never parsed.
- * Re-confirmed on a live server 2026-09-13 — `postmaster@<apex>`, which is in
+ * Re-confirmed on a live server — `postmaster@<apex>`, which is in
  * the pattern list but has no account, is refused at RCPT.
  */
 export const DMARC_LOCAL_PART = 'dmarc';
@@ -62,7 +64,7 @@ export const DMARC_LOCAL_PART = 'dmarc';
 /**
  * `postmaster@` must be a REAL principal for the same reason `dmarc@` is, and
  * it had been listed in REQUIRED_INTAKE_PATTERNS since this file was written
- * while nothing ever created the account. Measured on DEV 2026-09-16:
+ * while nothing ever created the account. Measured on DEV:
  *
  *     550 5.5.0 Mailbox not found          <- RCPT TO postmaster@<apex>
  *     385 messages queued to that address, retrying every 24h
@@ -84,7 +86,7 @@ export const POSTMASTER_LOCAL_PART = 'postmaster';
  *
  * An ALIAS on the postmaster intake, not a mailbox: the two audiences overlap
  * completely (the operator reading one reads the other) and a second mailbox
- * would be a second thing to reap. Operator decision 2026-09-17.
+ * would be a second thing to reap. Operator decision.
  */
 export const ABUSE_LOCAL_PART = 'abuse';
 
@@ -92,14 +94,31 @@ export const ABUSE_LOCAL_PART = 'abuse';
 const REQUIRED_INTAKE_PATTERNS = [
   'postmaster@*',
   `${DMARC_LOCAL_PART}@*`,
-  // `abuse@*` is deliberately NOT here. A pattern in this list hands the mail
-  // to Stalwart's report-analysis, which parses and CONSUMES it before storage
-  // — which is why the intake mailboxes measure 0 MB. That is right for
-  // machine-generated DMARC reports and wrong for abuse@, whose mail is
-  // frequently a human describing a problem. Registering it would have made
-  // every abuse complaint vanish while SMTP said 250: strictly worse than the
-  // 550 it replaced, and invisible. The alias alone is what makes RCPT
-  // succeed; delivery into the intake mailbox is the point.
+  // `abuse@*` IS here, and was deliberately absent before abuse-report
+  // ingestion existed. Both halves of that reversal matter:
+  //
+  //   Why it was excluded: a pattern in this list hands the mail to Stalwart's
+  //   report-analysis, which parses an ARF report and consumes it rather than
+  //   delivering it. With nothing on the platform consuming the resulting
+  //   `incoming-report.abuse-report` event, registering `abuse@*` would have
+  //   made every machine-readable complaint vanish while SMTP said 250 —
+  //   strictly worse than the 550 it replaced, and invisible.
+  //
+  //   Why it is included now: `abuse-reports.ts` polls those objects, files
+  //   them, notifies the admin roster and shows them in both panels. Consume
+  //   first, intercept second — in that order, never the reverse.
+  //
+  // Leaving it out had its own cost, which is what this fixes: `abuse@` is the
+  // address RFC 2142 designates and the one abuse desks and blocklist
+  // operators actually send ARF to, so the complaints most worth having were
+  // the ones never parsed.
+  //
+  // Non-report mail to an intake address is NOT swallowed — it is delivered
+  // normally. Measured on production before this change: `postmaster@` already
+  // matched `postmaster@*`, and a remote DSN (not a report) was still queued
+  // and delivered to the admin roster. So prose to `abuse@` keeps reaching the
+  // intake mailbox exactly as it does today.
+  `${ABUSE_LOCAL_PART}@*`,
 ] as const;
 
 /**
@@ -109,13 +128,51 @@ const REQUIRED_INTAKE_PATTERNS = [
 const RETIRED_INTAKE_PATTERNS = ['fbl@*'] as const;
 
 /**
+ * Do NOT forward analysed reports to a human.
+ *
+ * `inboundReportForwarding` decides whether Stalwart, having parsed an
+ * incoming report that matched one of the patterns above, ALSO delivers a copy
+ * to the recipient. It shipped `true`, so every DMARC aggregate and TLS-RPT
+ * report the platform already ingests was additionally dropped into a mailbox
+ * — and on the mail hostname that mailbox is a list fanning out to the admin
+ * roster. Operators got machine mail they cannot act on and that the platform
+ * has already stored.
+ *
+ * Tenants read their own DMARC results at Tenant → Email → Authentication;
+ * nothing on the platform reads the forwarded copy. Turning this off keeps the
+ * ingestion and stops the copies.
+ *
+ * Scope, checked against Stalwart's docs before relying on it: the flag
+ * applies ONLY to messages recognised as reports at the intake patterns. It
+ * does not touch DSNs, bounces, or ordinary mail — so `postmaster@` and
+ * `abuse@` keep receiving everything a human is actually meant to see, and
+ * they keep ACCEPTING mail (a 550 here is what left 385 undeliverable DSNs
+ * queued and retrying every 24h — see POSTMASTER_LOCAL_PART above).
+ */
+const REPORT_FORWARDING = false;
+
+/**
+ * The rest of the `x:ReportSettings` group, at Stalwart's own defaults.
+ *
+ * Stated verbatim because a commit against a never-written group only persists
+ * when it names EVERY field — see stalwart-jmap/settings-group.ts. Read off a
+ * live warm instance rather than guessed; writing them changes nothing an
+ * operator can observe.
+ */
+const REPORT_SETTINGS_DEFAULTS = {
+  outboundReportDomain: null,
+  outboundReportSubmitter: { match: {}, else: "system('hostname')" },
+  inboundReportMaxSize: 26214400,
+} as const;
+
+/**
  * Both intake mailboxes are transit buffers, not archives: the DMARC poller
  * persists each report and destroys the object it consumed, and a DSN is only
  * useful until someone has read it. Nothing on the platform reads either
  * mailbox after ingest, so any storage they hold is pure growth.
  *
  * 50 MB each, and reaped below once they fill — an operator decision
- * (2026-09-16) after production accumulated 385 undeliverable DSNs. The
+ * after production accumulated 385 undeliverable DSNs. The
  * previous 256/512 MB were sized as if these were real mailboxes.
  */
 const INTAKE_MAILBOX_QUOTA_MB = 50;
@@ -130,7 +187,7 @@ const INTAKE_REAP_AT_MB = Math.floor(INTAKE_MAILBOX_QUOTA_MB * 0.8);
 
 /**
  * Empty an intake mailbox every 30 days regardless of size — operator decision
- * 2026-09-16.
+ * .
  *
  * The size trigger above never fires in practice: report-analysis intercepts
  * and parses before storage, so these mailboxes measure 0 MB. A retention rule
@@ -312,7 +369,7 @@ export async function ensureReportIntake(
 ): Promise<ReportIntakeResult> {
   // ── 1. ONE intake mailbox per enabled email domain, with dmarc@ as an alias ──
   //
-  // There used to be two mailboxes. Operator question 2026-09-16: why? The
+  // There used to be two mailboxes. Operator question: why? The
   // honest answer was that nothing justified it —
   //
   //   * `postmaster@*` and `dmarc@*` are BOTH registered in
@@ -510,7 +567,7 @@ export async function ensureReportIntake(
         : 'exists';
   }
 
-  // ── 2. ReportSettings intake patterns ──
+  // ── 2. ReportSettings: intake patterns + report forwarding ──
   let settingsState: ReportIntakeResult['settings'] = 'skipped';
   try {
     const current = await reportSettingsGet(opts);
@@ -528,20 +585,49 @@ export async function ensureReportIntake(
         changed = true;
       }
     }
+    if (current?.inboundReportForwarding !== REPORT_FORWARDING) changed = true;
+    // A group that has never been written is NOT in sync: empty means
+    // Stalwart's built-in defaults are live, which is the state to overwrite.
+    if (!current) changed = true;
 
     if (!changed) {
       settingsState = 'in-sync';
     } else {
-      const res = await reportSettingsUpdate({ patch: { inboundReportAddresses: addresses }, ...opts });
-      if (res.notUpdated && Object.keys(res.notUpdated).length > 0) {
-        logger.error({ failures: res.notUpdated }, 'report intake: ReportSettings update failed');
+      const outcome = await commitSettingsGroup<StalwartReportSettingsRow>({
+        read: () => reportSettingsGet(opts),
+        write: (patch) => reportSettingsUpdate({ patch, ...opts }),
+        patch: {
+          ...REPORT_SETTINGS_DEFAULTS,
+          inboundReportAddresses: addresses,
+          inboundReportForwarding: REPORT_FORWARDING,
+        },
+        // One field against a five-field commit, so Stalwart cannot dedupe the
+        // primer against the commit that follows it.
+        primer: { inboundReportForwarding: REPORT_FORWARDING },
+        verify: (row) => row.inboundReportForwarding === REPORT_FORWARDING
+          && REQUIRED_INTAKE_PATTERNS.every((pattern) => row.inboundReportAddresses?.[pattern] === true)
+          && RETIRED_INTAKE_PATTERNS.every((pattern) => !(pattern in (row.inboundReportAddresses ?? {}))),
+        current,
+      });
+
+      if (outcome.state !== 'committed') {
+        logger.error(
+          { reason: outcome.reason, wasCold: outcome.wasCold },
+          'report intake: ReportSettings did NOT land — Stalwart accepted the write and kept its own '
+          + 'state, so report intake is not in the intended state',
+        );
       } else {
         // Report-analysis config is boot-loaded; the reload action
         // re-reads it live (same mechanism as the MTA throttles).
         await actionReloadSettings(opts);
         settingsState = 'updated';
         logger.info(
-          { patterns: REQUIRED_INTAKE_PATTERNS, removed: RETIRED_INTAKE_PATTERNS },
+          {
+            patterns: REQUIRED_INTAKE_PATTERNS,
+            removed: RETIRED_INTAKE_PATTERNS,
+            forwarding: REPORT_FORWARDING,
+            wasCold: outcome.wasCold,
+          },
           'report intake: ReportSettings updated + reloaded',
         );
       }

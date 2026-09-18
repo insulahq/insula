@@ -9,7 +9,7 @@
  * Operator-typed catalog entries usually drop the registry prefix —
  *   `nginx:latest`, `serversideup/php:tag`, `ghcr.io/foo/bar:v1`.
  * Comparing the two forms with raw string equality misses every
- * Docker Hub user image, which was the 2026-05-17 reaper bug: the
+ * Docker Hub user image, which was the reaper bug: the
  * reaper's node-presence check rejected `docker.io/serversideup/php:tag`
  * because it didn't equal the catalog's `serversideup/php:tag`, so
  * the reaper logged a no-op "success" and the image stayed on the

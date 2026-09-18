@@ -207,7 +207,7 @@ describe('enableEmailForDomain', () => {
     expect(result).toBeDefined(); // returns the row; stalwartDomainId stays null
   });
 
-  // 2026-05-18: per-tenant webmail.<clientdomain> now defaults OFF.
+  // per-tenant webmail.<clientdomain> now defaults OFF.
   // Verify the insert + DNS provisioning both honour the flag in
   // both directions (omitted → 0, explicit true → 1).
   it('defaults webmailEnabled=0 when webmail_enabled omitted from input', async () => {

@@ -2,7 +2,7 @@ import { render, screen } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import ResourceRequirementCheck from '../components/ResourceRequirementCheck';
 
-// Production report, 2026-09-08: a tenant saw
+// Production report: a tenant saw
 //   "CPU: 0.10 cores available (0.10 cores required) — Insufficient"
 // and the Deploy button stayed disabled (DeployWorkloadModal gates on
 // `!resourcesFit`). The panel asserted there was exactly enough and refused

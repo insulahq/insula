@@ -2,7 +2,7 @@
 //
 // One entry point for every subsystem that needs to know "where does
 // a snapshot of class X go right now?". After the Phase 2 legacy purge
-// (2026-05-22) the routing table only stores rows for the three R-X
+// the routing table only stores rows for the three R-X
 // shim classes (system / tenant / mail). Callers still pass the
 // `SnapshotClass` enum values (tenant_snapshot, tenant_bundle,
 // system_backup, system_mail) because those remain the category labels

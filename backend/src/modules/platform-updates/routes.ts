@@ -63,7 +63,7 @@ export async function platformUpdateRoutes(app: FastifyInstance): Promise<void> 
   // staleTime on the query, repeated clicks did not even reach the network — so
   // after a release was published the operator could click "Check for updates"
   // indefinitely and still be told they were up to date, until the CronJob's
-  // next hourly tick. Reported 2026-08-03, ~90 seconds after v2026.8.2 was
+  // next hourly tick. Reported, ~90 seconds after v2026.8.2 was
   // published: the 23:42 poll ran before the release existed and the next was
   // an hour out.
   //
@@ -216,7 +216,7 @@ export async function platformUpdateRoutes(app: FastifyInstance): Promise<void> 
 
   // NOTE: the old push-model `POST /admin/platform/update` (service.triggerUpdate
   // + the platform-update-checker CronJob → `flux reconcile`) was removed
-  // 2026-07-28. It never re-pinned the tag, so it was a no-op on the production
+  // . It never re-pinned the tag, so it was a no-op on the production
   // pull model (tag-pinned GitRepository). The real upgrade path is
   // `POST /admin/platform/upgrade` (ADR-045 re-pin) in platform-upgrades/routes.ts.
 }

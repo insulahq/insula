@@ -4,7 +4,7 @@ import { useSystemSettings, useUpdateSystemSettings } from '@/hooks/use-system-s
 
 /**
  * Cluster-level node defaults card. Renders at the bottom of the
- * /settings/system page (moved 2026-05-21 Wave 2 from the retired
+ * /settings/system page (moved Wave 2 from the retired
  * "Cluster Settings" tab on Nodes & Storage).
  *
  * Exposes:

@@ -30,7 +30,7 @@ const CLUSTER_PLURAL = 'clusters';
 
 /**
  * Namespaces this module looks at. The only system CNPG cluster is
- * platform/system-db; pre-2026-05-12 we also watched mail/mail-db
+ * platform/system-db; pre- we also watched mail/mail-db
  * but Stalwart migrated to RocksDB and that cluster was deleted.
  * Extend if a future cluster ships a third CNPG database.
  */
@@ -82,7 +82,7 @@ export interface ClusterBackupHealth {
    *  surfaces what's actually in the object store. Null when CNPG sees its
    *  own backups (normal happy path). */
   readonly objectStoreBackupCount?: number | null;
-  /** Phase 4 (2026-05-22) — current cluster instance count (HA replica
+  /** Phase 4 — current cluster instance count (HA replica
    *  count). Lets the barman-restore wizard auto-default a side-by-side
    *  restore to the source's HA state instead of always 1. */
   readonly instances?: number | null;

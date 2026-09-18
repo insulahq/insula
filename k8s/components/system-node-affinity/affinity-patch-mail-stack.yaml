@@ -8,7 +8,7 @@
 # RocksDB DataStore. If we restricted Bulwark to server-role (as the
 # shared affinity-patch.yaml does) but allowed Stalwart on workers,
 # a worker migration would leave Bulwark stuck in Pending forever and
-# the migration state machine stuck in scaling-up (caught 2026-05-28
+# the migration state machine stuck in scaling-up (
 # by Phase C of the mobility E2E).
 #
 # Allowing both `server` and `worker` roles in the affinity means

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# End-to-end test for PER-MAILBOX ALIASES (receive + send-as; 2026-08-25).
+# End-to-end test for PER-MAILBOX ALIASES.
 #
 # Management-API assertions (deterministic, all environments):
 #   1. Create alias info@ on a mailbox → 201, enabled=1.
@@ -17,7 +17,7 @@
 #      (what Bulwark's From selector consumes).
 #   9. Disable → RCPT rejected AND send-as rejected; re-enable → both work.
 #  10. Delete → RCPT rejected; identity gone.
-#  11. Tenant SUSPENSION = full mail shutdown (2026-08-26): primary
+# 11. Tenant SUSPENSION = full mail shutdown: primary
 #      inbound ereject-bounced (nothing stored), alias RCPT 550,
 #      authentication refused (no submission).
 #  12. Reactivation restores primary delivery, alias delivery, send-as.
@@ -219,7 +219,7 @@ if [[ -n "$STALWART_POD" && -n "${SW_ADMIN_PW:-}" && -n "${PARENT_PW:-}" && "$PA
   IDS=$(identity_emails)
   [[ "$IDS" != *"info@$TEST_DOMAIN"* ]] && ok "identity removed" || fail "identity lingers ($IDS)"
 
-  # ── T11: tenant suspension = FULL mail shutdown (2026-08-26) ──────────
+  # ── T11: tenant suspension = FULL mail shutdown ──────────
   # Inbound to the PRIMARY is accepted at SMTP then ereject-bounced (the
   # sender gets a DSN) — assert nothing lands in the store. The alias is
   # rejected at RCPT, and the account cannot authenticate to submit.

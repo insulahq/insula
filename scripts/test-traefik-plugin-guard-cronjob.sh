@@ -4,7 +4,7 @@
 #
 # The install-time detector (ensure_traefik_plugins_loaded in bootstrap.sh) has
 # its own harness, scripts/test-traefik-plugin-guard.sh. This one covers the
-# RUNTIME guard — the gap that let a reboot 404 both panels on 2026-08-20 with
+# RUNTIME guard — the gap that let a reboot 404 both panels with
 # the install-time detector never running.
 #
 # It extracts the real script out of the manifest (so the test cannot drift from

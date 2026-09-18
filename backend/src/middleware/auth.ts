@@ -56,7 +56,7 @@ export const PLATFORM_SESSION_COOKIE = 'platform_session';
  * as the access token, so `jwt.verify()` alone does NOT distinguish them —
  * the `step` claim is the only differentiator.
  *
- * SECURITY (2026-07-28): this check previously lived only in
+ * SECURITY: this check previously lived only in
  * passkey-routes.ts and step-up-routes.ts. Every other consumer —
  * `authenticate()` and the four `request.jwtVerify()` handlers in
  * authRoutes — accepted a pre-auth token as a session token. Because

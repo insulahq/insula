@@ -1,6 +1,6 @@
 /**
  * useDebouncedValue — returns `value` delayed by `delayMs`. Hook
- * lives here (extracted from PosturePage on 2026-05-21) so multiple
+ * lives here(extracted from PosturePage on) so multiple
  * consumers can import from a `hooks/` path rather than a `pages/`
  * path. The cross-layer import from `components/security/web-defense-
  * tabs.tsx` was an inverted dependency that's now resolved.

@@ -1,4 +1,4 @@
-# Production Roundcube overlay — aligned with staging 2026-05-07.
+# Production Roundcube overlay — aligned with staging.
 #
 # Webmail is always deployed alongside Stalwart on staging and
 # production — operator-bootstrapped Secret `mail-secrets` plus a

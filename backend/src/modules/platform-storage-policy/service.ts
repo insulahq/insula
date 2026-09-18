@@ -17,7 +17,7 @@ import { MERGE_PATCH } from '../../shared/k8s-patch.js';
 // NOTE: Postgres is owned by CNPG (Cluster/postgres in k8s/base/database.yaml),
 // not a StatefulSet. CNPG's `instances` field is set by CNPG_INSTANCES_FOR
 // below. The legacy `data-postgres-0` prefix entry was retired with the
-// orphan StatefulSet (Phase 4 cleanup, 2026-04-27).
+// orphan StatefulSet.
 //
 // CNPG-managed PVCs (`<cluster>-<n>`, e.g. postgres-1) are now ALSO
 // included in the volumes list returned from readClusterState — they
@@ -34,12 +34,12 @@ import { MERGE_PATCH } from '../../shared/k8s-patch.js';
 export const PLATFORM_STATEFULSETS: ReadonlyArray<{ namespace: string; pvcPrefix: string }> = [
   { namespace: 'mail', pvcPrefix: 'data-stalwart-mail' },    // data-stalwart-mail-0
   // crowdsec-data is a Deployment PVC, not a StatefulSet PVC, but the
-  // prefix-match enumeration below is identical. Added 2026-06-05: it
+  // prefix-match enumeration below is identical.: it
   // was invisible to the policy, so a single-node install kept its
   // creation-time numberOfReplicas=3 → volume permanently `degraded`
   // (observed on testing; staging's 3-node copy was healthy by luck).
   { namespace: 'crowdsec', pvcPrefix: 'crowdsec-data' },
-  // vmsingle's metrics TSDB (also a Deployment PVC). Added 2026-06-12
+  // vmsingle's metrics TSDB (also a Deployment PVC).
   // so the HA tier replicates it like the other system volumes — on a
   // node loss the Deployment reschedules AND the data follows. Write
   // amplification is kept negligible by vmsingle's 10-min
@@ -48,7 +48,7 @@ export const PLATFORM_STATEFULSETS: ReadonlyArray<{ namespace: string; pvcPrefix
 ];
 
 // HA tier replicates a system volume to one server up to MAX_HA_REPLICAS.
-// Lowered from 5 to 3 on 2026-05-11: rationale per the user's
+// Lowered from 5 to 3: rationale per the user's
 // architectural intent — "in HA mode all servers should replicate all
 // essential services for ease of maintenance, so an operator knows
 // that all server nodes have almost the same state". 3 replicas
@@ -62,12 +62,12 @@ export const PLATFORM_STATEFULSETS: ReadonlyArray<{ namespace: string; pvcPrefix
 const MAX_HA_REPLICAS = 3;
 
 // Local tier: how many Longhorn replicas the SINGLE CNPG instance's PVC gets.
-// Lowered 3 → 2 on 2026-07-29 after the original justification was DISPROVEN.
+// Lowered 3 → 2 after the original justification was DISPROVEN.
 //
-// The 2026-07-20 rationale was that a rolled single-instance primary landing on
+// The rationale was that a rolled single-instance primary landing on
 // a server without a local replica pays a cross-node re-attach slow enough to
 // exceed CNPG's recreate window, so the roll never converges. Re-measured on
-// 2026-07-29 on two clusters (a cloud one and a deliberately slow nested-KVM
+// on two clusters (a cloud one and a deliberately slow nested-KVM
 // one): a genuine cross-node RWO re-attach completes in ~6-7 SECONDS, and the
 // operator leaves a replacement pod alone for at least 36s of init. Five
 // consecutive primary rolls, including one forced onto a server holding no
@@ -100,11 +100,11 @@ const STATELESS_DEPLOYMENTS: ReadonlyArray<{ namespace: string; name: string }> 
   { namespace: 'platform', name: 'platform-api' },
   { namespace: 'platform', name: 'oauth2-proxy' },
   { namespace: 'platform', name: 'dex' },
-  // Cut 3 (2026-05-04): mail data-plane services follow the same
+  // Cut 3: mail data-plane services follow the same
   // HA scaling policy as the platform stateless tier.
   // NOTE: stalwart-mail was removed from this list when the DataStore
   // was migrated from CNPG-Postgres to RocksDB on local-path PVC
-  // (stalwart-rocksdb-ha branch, 2026-05-12). RocksDB is node-pinned
+  // . RocksDB is node-pinned
   // (ReadWriteOnce), so stalwart-mail is permanently 1 replica — DR is
   // handled via rsync migration + auto-failover, not multi-replica HA.
   // Roundcube is stateless (sessions in system-db Postgres).
@@ -152,7 +152,7 @@ export const LEADER_ELECT_DEPLOYMENTS: ReadonlyArray<{ namespace: string; name: 
   { namespace: 'kube-system', name: 'snapshot-controller' },
   { namespace: 'cnpg-system', name: 'cnpg-cloudnative-pg' },
   // barman-cloud is the CNPG backup plugin. It was missing from this list
-  // until the 2026-09-11 node-outage drill showed why that matters: the
+  // until the node-outage drill showed why that matters: the
   // CNPG operator refuses to reconcile a Cluster whose plugin it cannot
   // reach ("Reconciler error … while getting plugin connection"), so it
   // never promotes a new primary. Killing the single plugin pod's node
@@ -184,12 +184,12 @@ export function leaderElectReplicasForSystemTier(
 // replication from primary, no manual data migration needed.
 //
 // Cluster names track the role-based naming scheme (no version baggage).
-// Cluster name history (cleaned up 2026-05-07):
+// Cluster name history:
 //   platform: postgres → postgres-18 → system-db
 // Future PG-major bumps follow the dump+restore-into-same-named-cluster
 // pattern (or transient-then-rename), so this list stays version-stable.
 //
-// 2026-05-12: the mail-namespace cluster (formerly mail-pg → mail-db)
+// the mail-namespace cluster (formerly mail-pg → mail-db)
 // was deleted when Stalwart migrated its DataStore to RocksDB on a
 // local-path PVC. No PostgreSQL cluster lives in the mail namespace.
 const CNPG_CLUSTERS: ReadonlyArray<{ namespace: string; name: string }> = [
@@ -270,7 +270,7 @@ const HA_SERVER_THRESHOLD = 3;
 // comment around line 642 for the full rationale. The convention is
 // DoNotSchedule on every active-active Deployment in HA, enforcing
 // strict one-per-server placement so an operator can rely on every
-// server holding the same system pods (2026-05-11 architectural
+// server holding the same system pods (architectural
 // invariant: "all servers same state for ease of maintenance").
 
 export type LonghornVolume = {
@@ -479,7 +479,7 @@ export async function readClusterState(
   //               node loss would otherwise mean restoring from a backup
   //               bundle. See MAX_LOCAL_CNPG_REPLICAS for why this is 2 (and
   //               why the original "avoid a cross-node re-attach stall"
-  //               rationale was retired on 2026-07-29 — it was measured wrong).
+  // rationale was retired — it was measured wrong).
   //               No pinning, so drain/relocation still work. On a
   //               single-server install min(1,2)=1 (can't do more).
   const cnpgDesiredReplicas = policy.systemTier === 'local'
@@ -783,7 +783,7 @@ async function patchStatelessDeployments(
   // topologySpread lives in .spec.template.spec.topologySpreadConstraints
   // — that IS managed by Flux SSA. We don't patch it imperatively
   // (would get reverted). Operators who want HA topology spread set it
-  // in the manifest (DoNotSchedule per the 2026-05-11 convention).
+  // in the manifest(DoNotSchedule per the convention).
   return patchDeploymentsToReplicaCount(k8s, STATELESS_DEPLOYMENTS, desired);
 }
 

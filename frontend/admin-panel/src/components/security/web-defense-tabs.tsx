@@ -1,5 +1,5 @@
 /**
- * Web Defense — extracted from SecurityHardeningSettings (2026-05-21).
+ * Web Defense — extracted from SecurityHardeningSettings.
  *
  * All CrowdSec + WAF tab components live here so the Security Hub's
  * Web Defense page can render them as its own tab tree, separate
@@ -12,7 +12,7 @@
  *   - WafExclusionsTab — per-route CRS rule exclusions + IP Allowlist
  *   - WafSettingsTab   — CrowdSec status, Console, auto-ban, L4 toggle
  *
- * History note (2026-05-26): on the previous page layout the L4
+ * History note: on the previous page layout the L4
  * banner sat above the tabs as a top-of-page card. It moved into
  * WafSettingsTab so operators only see one canonical L4 surface.
  *

@@ -1,6 +1,6 @@
 /**
  * Default SLO rule pack (ADR-051 phase 3), derived from
- * docs/roadmap/SLI_SLO_DEFINITION.md and the 2026-06-11 incident set.
+ * docs/roadmap/SLI_SLO_DEFINITION.md and the incident set.
  *
  * The pack ships IN CODE so every release carries its alerting; the
  * operator can tweak thresholds / disable rules via
@@ -163,7 +163,7 @@ export function subjectKey(
 // window and deliberately low — high enough to skip a genuinely idle cluster,
 // low enough that a real outage during quiet hours still fires.
 export const SLO_RULES: ReadonlyArray<SloRule> = [
-  // ── Node memory / kernel OOM (operator decision 2026-07-25) ─────────────
+  // ── Node memory / kernel OOM ─────────────
   // Sourced from cadvisor's container_oom_events_total (cgroup
   // memory.events) — deliberately NOT from kubelet SystemOOM events, whose
   // kmsg oomparser was observed permanently broken on a live node
@@ -199,7 +199,7 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
   // reputation from the outside. This rule is the thing that makes it visible.
   //
   // Signal: cadvisor, because kube-state-metrics is not deployed. Verified
-  // against live data on 2026-09-05 — `absent()` returns empty while the
+  // against live data — `absent` returns empty while the
   // container is running and 1 when it is not, so the rule is falsifiable in
   // both directions rather than merely plausible.
   //
@@ -209,7 +209,7 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
   {
     id: 'crowdsec-lapi-down',
     name: 'CrowdSec LAPI is not running',
-    description: 'No CrowdSec LAPI container has been running for several minutes. The Traefik bouncer is configured never to block on an unreachable LAPI, so hosted sites keep serving — but IP reputation is FROZEN at its last known state: existing bans still apply, no new bans or community-blocklist updates arrive. Check `kubectl get pods -n crowdsec`; a CreateContainerConfigError means a referenced Secret or ConfigMap is missing.',
+    description: 'No CrowdSec LAPI container has been running for several minutes. The Traefik bouncer is configured never to block on an unreachable LAPI, so hosted sites keep serving — but IP reputation is FROZEN at its last known state: existing bans still apply, no new bans or community-blocklist updates arrive. Check the crowdsec namespace for a pod that is not running; a CreateContainerConfigError there means a Secret or ConfigMap it references is missing.',
     severity: 'critical',
     expr: 'absent(container_memory_working_set_bytes{namespace="crowdsec",container="crowdsec"}) > $T',
     subjectLabels: [],
@@ -227,7 +227,7 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
     // Minimum-volume floor. This is a pure RATIO, so on a near-idle cluster a
     // single failure can clear any burn-rate threshold (1 of 5 = 20%).
     //
-    // Sizing, honestly: the production incident on 2026-09-05 was 8 failures
+    // Sizing, honestly: the production incident was 8 failures
     // out of 27 requests, so this floor would NOT have suppressed it — nor
     // should it, those were real 504s. What silenced that alert is repairing
     // the route behind them (the tunnel anchor could not reach its backend at
@@ -257,7 +257,7 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
     unit: 'ratio',
   },
   // ── Platform-surface latency ────────────────────────────────────────────
-  // REPLACES `api-latency-p95` (retired 2026-09-12; migration 0109 drops its
+  // REPLACES `api-latency-p95` (retired; migration 0109 drops its
   // override + alert_state rows). That rule was a p95 over the whole
   // `websecure` entrypoint against a 0.5s threshold, and it was wrong three
   // ways at once. Production fired it 23 times in 21 days, every one of them
@@ -286,7 +286,7 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
   // availability burn-rate rules — over platform-owned services only.
   //
   // Why not a percentile scoped to platform services: measured on production
-  // 2026-09-12, the platform's own surfaces see a MEDIAN OF 6 REQUESTS PER 30
+  // the platform's own surfaces see a MEDIAN OF 6 REQUESTS PER 30
   // MINUTES (p25 = 1). No percentile is meaningful on 6 samples, and a floor
   // large enough to make one meaningful would leave the SLO blind most of the
   // day. A count of slow requests is well-defined at any volume; the ratio
@@ -307,7 +307,7 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
     // Both sides of every comparison come from the SAME metric family
     // (`_bucket`, le="1.2" vs le="+Inf"), never `_count` vs `_bucket`.
     //
-    // Mixing them is wrong and was measured wrong on DEV 2026-09-12: with the
+    // Mixing them is wrong and was measured wrong on DEV: with the
     // per-service `_bucket` series freshly created by the scrape-config change
     // while `_count` had months of history, `sum(rate(_bucket{le="1.2"}[30m]))`
     // came out LARGER than `sum(rate(_count[30m]))` — rate() extrapolates a
@@ -440,7 +440,7 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
     forSeconds: 600,
     unit: 'seconds',
   },
-  // ── Platform-migration registry (added after the 2026-08-19 incident) ──
+  // ── Platform-migration registry(added after the incident) ──
   // The registry halts on the first failing migration so nothing runs on a
   // broken base — correct, and previously silent. Migration 0009 403'd on
   // DEV, then STAGING, then production, and every tier rolled it out without
@@ -494,7 +494,7 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
     // Platform-side gauge, NOT controller_runtime_reconcile_errors_total:
     // Flux handles build/apply failures via status conditions + requeue
     // (never a returned reconciler error), so that counter stays 0 through
-    // real failures — proven live on staging 2026-06-12 with an 82-retry
+    // real failures — proven live on staging with an 82-retry
     // failing Kustomization — and v2.1+ exposes no per-resource failure
     // metric. max by (kind) dedupes the per-replica export; clamp_min
     // folds the -1 "probe failed" sentinel to 0 so a collector outage
@@ -517,7 +517,8 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
   {
     id: 'acme-order-rate',
     name: 'ACME renewal activity',
-    description: 'platform-api fired/forced ACME renewals in the last hour — the LE-order-storm canary (#43). Healthy steady state is ZERO.',
+    // The LE-order-storm canary (#43).
+    description: 'The platform requested or forced certificate renewals in the last hour. The healthy steady state is zero: a non-zero count means certificates are being re-ordered in a loop, which burns the rate limits at the certificate authority.',
     severity: 'warning',
     expr: 'sum by (result) (increase(platform_acme_renewals_total{result=~"fired|forced|error"}[1h])) > $T',
     subjectLabels: ['result'],
@@ -577,7 +578,12 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
   {
     id: 'mail-drift-unrepaired',
     name: 'Mail drift left unrepaired',
-    description: 'A mail-drift item (a platform mailbox or domain row that Stalwart does not have) has gone unrepaired past the threshold in hours. Detection and the repair button already existed; nothing escalated, so a drift sat for three days on DEV while the mail health card stayed green and every message to that address bounced.',
+    // Why this rule exists: detection and the repair button already existed,
+    // but nothing escalated — a drift once sat unrepaired for three days while
+    // the mail health card stayed green and every message to that address
+    // bounced. Keep that history HERE; the description below is read by an
+    // operator in a notification, not by a reviewer.
+    description: 'A mailbox or domain the platform has on record is missing from the mail server, and has stayed missing past the threshold (hours). Mail sent to that address bounces until it is repaired. Repair it under Email in the admin panel.',
     severity: 'warning',
     // >= 0 drops the -1 sentinel, which covers BOTH "no unresolved drift" and
     // "could not read the table" — neither is a backlog, and a failed probe

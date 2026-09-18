@@ -240,7 +240,7 @@ fake_helm "" "replicas: 3"
 run_helm 0 0; expect "values-heredoc body change → FAIL" 1 $?
 
 echo "== a --set hidden behind a pre-block VARIABLE is still fingerprinted =="
-# Real bypass found by review 2026-08-20: bootstrap assigned
+# Real bypass found by review: bootstrap assigned
 #   dual_stack_svc_args="--set service.ipFamilyPolicy=PreferDualStack"
 # BEFORE the helm call and referenced it as a bare ${dual_stack_svc_args}, so
 # neither line carried literal --set text inside the block. A block-scoped scan
@@ -270,7 +270,7 @@ FWSHAPE_BOOTSTRAP="$D/varhelm.sh" FWSHAPE_BASELINE="$D/varbase" FWSHAPE_REQUIRED
 expect "changing a variable-assigned --set → FAIL" 1 $?
 
 echo "== --set on the helm_cmd line itself must not drop -f/--version =="
-# Rule-ordering regression found by review 2026-08-20: when a line matched both
+# Rule-ordering regression found by review: when a line matched both
 # the file-wide --set rule and the helm_cmd rule, the --set rule printed and
 # `next`ed before inblk was set, so every continuation of that block vanished
 # from the fingerprint while the release name still appeared — so the

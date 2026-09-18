@@ -9,7 +9,7 @@ import {
 
 describe('formatOccurredAt', () => {
   it('turns a raw ISO instant into something a customer can read', () => {
-    // Production has been mailing customers `2026-09-21T00:00:00.000Z`.
+    // Production has been mailing customers `-21T00:00:00.000Z`.
     expect(formatOccurredAt('2026-09-21T00:00:00.000Z')).toBe('2026-09-21 00:00 UTC');
   });
 

@@ -302,7 +302,7 @@ rm -rf "$DORM" "$EMPTY3" "$NOBIN"
 #      host-migrations. bootstrap.sh called the install phase only on the server
 #      branch, so workers came up with no `insula`, therefore no host-config
 #      converge timer, therefore no migrations — for the whole life of a release.
-#      Observed on staging 2026-08-11: three servers on 2026.8.3-rc.8 with
+# Observed on staging: three servers on 2026.8.3-rc.8 with
 #      0003-pod-cidr-dns-firewall applied + 2 nft rules; the worker still on
 #      2026.8.2 with the migration unapplied and 0 rules.
 #

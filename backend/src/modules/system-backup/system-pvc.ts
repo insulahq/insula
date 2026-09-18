@@ -21,7 +21,7 @@ import {
 } from '@insula/api-contracts';
 
 const SYSTEM_NAMESPACE = 'platform';
-// Cluster renamed 2026-05-07 from `postgres` → `system-db`. CNPG-managed
+// Cluster renamed from `postgres` → `system-db`. CNPG-managed
 // PVCs follow the cluster-name pattern `<cluster>-<index>`. Single
 // instance currently → `system-db-1`. HA mode (3 instances) creates
 // system-db-2 + system-db-3; v1 of this surface targets the index-1

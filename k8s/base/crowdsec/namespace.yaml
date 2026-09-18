@@ -10,7 +10,7 @@ metadata:
     #
     # The parenthetical this comment used to carry — "(we don't run the
     # log-acquisition modules)" — was load-bearing and is no longer true of the
-    # platform as a whole: the log-processing agent added 2026-09-05 DOES do
+    # platform as a whole: the log-processing agent DOES do
     # acquisition and needs a hostPath, which `baseline` forbids. Rather than
     # relax this namespace and take the LAPI's posture down with it, the agent
     # lives in platform-system alongside the other host-reading DaemonSets

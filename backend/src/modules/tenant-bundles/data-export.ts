@@ -468,6 +468,14 @@ async function extractPlainTarGz(blob: Buffer): Promise<ImportEntry[]> {
     tarX.on('finish', () => resolve());
     tarX.on('error', reject);
   });
+  // A pipeline failure — a corrupt gzip header is the common one — rejects the
+  // `pipeline` await BEFORE `await collect` is ever reached, and `pipeline`
+  // destroys tarX with that same error, so `collect` rejects too with nobody
+  // listening: an unhandled rejection that reaches the process-level handler
+  // in the API. Attaching a no-op handler at creation marks it handled without
+  // swallowing it — `await collect` below still receives the rejection and
+  // reports it, and so does the wrapping catch.
+  void collect.catch(() => undefined);
 
   try {
     await pipeline(Readable.from(blob), gunzip, tarX);
@@ -578,7 +586,7 @@ export async function decryptImportTarball(args: {
   readonly passphrase: string;
 }): Promise<ReadonlyArray<ImportEntry>> {
   const { cipherBlob, passphrase } = args;
-  // No min-length floor since 2026-05-08 (matches the export side).
+  // No min-length floor (matches the export side).
   // Empty passphrase is still invalid — there's no plaintext path
   // through the decrypt branch.
   if (!passphrase) {
@@ -656,6 +664,14 @@ export async function decryptImportTarball(args: {
     tarX.on('finish', () => resolve());
     tarX.on('error', reject);
   });
+  // A pipeline failure — a corrupt gzip header is the common one — rejects the
+  // `pipeline` await BEFORE `await collect` is ever reached, and `pipeline`
+  // destroys tarX with that same error, so `collect` rejects too with nobody
+  // listening: an unhandled rejection that reaches the process-level handler
+  // in the API. Attaching a no-op handler at creation marks it handled without
+  // swallowing it — `await collect` below still receives the rejection and
+  // reports it, and so does the wrapping catch.
+  void collect.catch(() => undefined);
 
   try {
     await pipeline(Readable.from(plaintext), gunzip, tarX);
@@ -676,7 +692,7 @@ export async function decryptImportTarball(args: {
 //     S3 GetObject (Readable) → archiver.append(stream, { name, store: true })
 //   archiver.finalize() → reply
 //
-// **Why no password option on the ZIP path** (revisited 2026-05-08
+// **Why no password option on the ZIP path** (revisited
 // after a 524 MB E2E ran the platform-api pod OOM):
 //
 //   The only practical Node ZIP-encryption library
@@ -721,7 +737,7 @@ export interface StreamZipExportArgs {
 export async function streamZipExport(args: StreamZipExportArgs): Promise<Readable> {
   const { store, handle, components } = args;
 
-  // archiver changed its public shape in v8 (2026-07-28 dependency bump,
+  // archiver changed its public shape in v8 (dependency bump,
   // 5.3.2 → 8.0.0 to drop the vulnerable readdir-glob → minimatch →
   // brace-expansion chain, GHSA-mh99-v99m-4gvg):
   //   - v5/v6/v7: CommonJS, `module.exports = archiver`, called as a

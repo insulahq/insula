@@ -12,7 +12,7 @@ import { getSettings } from '../../system-settings/service.js';
 /**
  * tenant-bundles-bundle-cleanup hook.
  *
- * POLICY (2026-07-16): deleting a tenant RETAINS its off-site backup bundles —
+ * POLICY: deleting a tenant RETAINS its off-site backup bundles —
  * they are a deleted tenant's ONLY recovery path (the DR recover-tenant flow and
  * cross-cluster migration import both read them back from the off-site store).
  * The `retention.ts` reaper deletes each bundle once its `expires_at` passes

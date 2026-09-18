@@ -55,7 +55,7 @@ describe('buildTenantNetworkPolicies', () => {
       podSelector: { matchLabels: { app: 'sftp-gateway' } },
     });
 
-    // Defense-in-depth: it must NOT smuggle a broad ipBlock (the 2026-07 hole).
+    // Defense-in-depth: it must NOT smuggle a broad ipBlock.
     expect(JSON.stringify(spec)).not.toContain('ipBlock');
   });
 
@@ -107,7 +107,7 @@ describe('buildTenantNetworkPolicies', () => {
       namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'platform' } },
       podSelector: { matchLabels: { app: 'platform-api' } },
     });
-    // App-preview (2026-08-24): the port allowlist (was :8111 file-manager
+    // App-preview: the port allowlist (was:8111 file-manager
     // only) is gone — the preview proxy reaches arbitrary workload Service
     // ports, and platform-api holds cluster-admin credentials anyway, so
     // the port pin added no boundary. The PEER selector staying pinned to

@@ -176,7 +176,7 @@ import { startApexDriftScheduler } from './modules/dns-apex-drift/scheduler.js';
 import { startIngressNodeScheduler } from './modules/ingress-nodes/reconciler.js';
 import { startStorageLifecycleScheduler } from './modules/storage-lifecycle/scheduler.js';
 import { startRetentionScheduler } from './modules/tenant-bundles/retention.js';
-// startBackupScheduleTick (legacy per-tenant scheduler) retired 2026-05-28;
+// startBackupScheduleTick (legacy per-tenant scheduler) retired;
 // see app.ts inline note where the wiring was removed.
 // M12: DKIM rotation scheduler removed — Stalwart 0.16 manages DKIM natively
 import { createPrincipalsSyncScheduler } from './modules/stalwart-jmap/principals-sync.js';
@@ -322,7 +322,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
     // static tenant only allows "https://admin.../callback" →
     // "Unregistered redirect_uri." Surfaced by integration-oidc-dex.sh.
     //
-    // 2026-07-28 hardening: this was `true`, i.e. "trust EVERY hop", which
+    // hardening: this was `true`, i.e. "trust EVERY hop", which
     // makes proxy-addr return the left-most X-Forwarded-For entry — the
     // one furthest from us and the one a client could have written. That
     // value feeds request.ip, which keys the unauthenticated login rate
@@ -331,7 +331,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
     // It is NOT currently exploitable: Traefik fronts every route with
     // `forwardedHeaders.trustedIPs=127.0.0.1/32`, so it strips any
     // client-supplied X-Forwarded-For / X-Real-IP / Forwarded header and
-    // re-stamps its own. Verified against staging 2026-07-28: five spoof
+    // re-stamps its own. Verified against staging: five spoof
     // variants (single XFF, doubled XFF, XFF chain, X-Real-IP, RFC7239
     // Forwarded) all still audited the true client IP.
     //
@@ -343,7 +343,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
     //
     // The list below is the platform's app-level trusted-proxy set — the
     // same RFC1918 super-set the panel nginx templates use for
-    // `set_real_ip_from` (operator decision 2026-07-19; the pod CIDR
+    // `set_real_ip_from` (operator decision; the pod CIDR
     // 10.42.0.0/16 sits inside 10.0.0.0/8). proxy-addr walks the chain
     // right-to-left and stops at the first address NOT in this list, so a
     // public IP a client prepends is ignored rather than adopted.
@@ -702,7 +702,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(emailDomainRoutes, { prefix: '/api/v1' });
   await app.register(emailDkimStatusRoutes, { prefix: '/api/v1' }); // M12: read-only DKIM status via Stalwart JMAP
   await app.register(emailDkimRotateRoutes, { prefix: '/api/v1' }); // 2026-05-06: manual DKIM rotation endpoint
-  // mail-submit (PHP sendmail-compat credential provisioning) removed 2026-07-27:
+  // mail-submit (PHP sendmail-compat credential provisioning) removed:
   // obsolete + never production-tested. Tenant apps that need to send mail
   // configure an external SMTP relay (or mail.<apex> with manual credentials)
   // directly in the application. See CHANGELOG.
@@ -1001,7 +1001,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         }
       })();
 
-      // Periodic mail-convergence sweep (2026-08-25 drift audit): the
+      // Periodic mail-convergence sweep: the
       // DB→Stalwart reconciles used to run at boot only, so drift
       // introduced at runtime (restores, out-of-band edits, transient
       // push failures after the DB write) persisted until the next
@@ -1086,7 +1086,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       }
 
       // Ingress-router probe (feeds the ingress-router-down rule). Asks the
-      // only question that matched the 2026-08-20 outage: does a request for
+      // only question that matched the outage: does a request for
       // the panel hostname still match a router? Every other signal was green.
       {
         const { startIngressRouterCollector } = await import('./modules/monitoring/ingress-router-collector.js');
@@ -1169,7 +1169,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       // blip at startup (e.g. a CNPG failover/restart under load) would hang
       // this hook past Fastify's 60s onReady timeout, exit(1), and crash-loop
       // the WHOLE API, turning a few-second DB blip into a multi-minute
-      // outage (observed 2026-06-26 during a full integration run). Register
+      // outage(observed during a full integration run). Register
       // the close hook synchronously, then fire-and-forget the start (mirrors
       // the quota reconciler above, which is detached for the same reason).
       // Deliveries stay queued until pg-boss connects; the re-enqueue scan
@@ -1222,7 +1222,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
 
       const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
 
-      // PITR Job watchdog (Phase 4 2026-05-23): catch PITR Jobs whose
+      // PITR Job watchdog: catch PITR Jobs whose
       // pod creation was rejected (ResourceQuota FailedCreate during
       // rollout transient). Without this, the chip stays in 'running'
       // forever + the PITR lock blocks subsequent restore attempts.
@@ -1328,6 +1328,8 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         const { ensureDmarcReportSender } = await import('./modules/mail-events/dmarc-report-sender.js');
         const { ensurePlatformHostnameIntake } = await import('./modules/mail-events/platform-hostname-intake.js');
         const { pollDmarcReports } = await import('./modules/mail-events/dmarc.js');
+        const { pollAbuseReports } = await import('./modules/mail-events/abuse-reports.js');
+        const { pollTlsReports } = await import('./modules/mail-events/tls-reports.js');
         const { repairDmarcRuaRecords } = await import('./modules/mail-events/dmarc-rua-repair.js');
         const { evaluateMailThresholds } = await import('./modules/mail-events/thresholds.js');
         const { createK8sClients } = await import('./modules/k8s-provisioner/k8s-client.js');
@@ -1353,7 +1355,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           });
           // `postmaster@` and `abuse@` on the platform's OWN mail hostname —
           // the domain in every EHLO and in the TLS cert, which answered 550
-          // to both until 2026-09-17. Runs on the same tick as the per-domain
+          // to both. Runs on the same tick as the per-domain
           // intake above, so a fresh bootstrap converges as soon as the
           // hostname's Stalwart domain exists.
           ensurePlatformHostnameIntake(app.db, app.log).catch((err) => {
@@ -1370,6 +1372,16 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           });
           pollDmarcReports(app.db, app.log).catch((err) => {
             app.log.warn({ err }, 'dmarc poll failed');
+          });
+          // Abuse complaints (ARF). The webhook nudges this too; the tick is
+          // the floor, so an unsubscribed or dropped event delays a complaint
+          // rather than losing it.
+          pollAbuseReports(app.db, app.log).catch((err) => {
+            app.log.warn({ err }, 'abuse report poll failed');
+          });
+          // TLS-RPT: inbound delivery health, reported by receivers.
+          pollTlsReports(app.db, app.log).catch((err) => {
+            app.log.warn({ err }, 'tls report poll failed');
           });
           // R5. The generator fix only reaches domains provisioned AFTER it;
           // the `_dmarc` record is written once at enable time and nothing
@@ -1402,14 +1414,14 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         });
       }
 
-      // Mail monitoring (2026-07): publish mail-server-up + outbound
+      // Mail monitoring: publish mail-server-up + outbound
       // queue-depth first-party gauges every 60s (feeds the mail-server-
       // down / mail-queue-backlog alert rules on the already-scraped
       // :9090 /metrics — no Stalwart scrape/port change), and run the
       // hourly DNSBL blocklist watch that alerts an admin when a sending
       // IP is listed. Both degrade to a logged skip when mail is absent.
       //
-      // The health WATCH (2026-08) is a third, separate thing from the two
+      // The health WATCH is a third, separate thing from the two
       // above: the collector publishes gauges, the blocklist watch alerts on
       // DNSBL listings, and neither evaluated the health COMPONENTS (pod, JMAP,
       // RocksDB, cert, ports, deliverability) outside the on-demand admin
@@ -1563,6 +1575,16 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         const { startTenantSnapshotReaper } = await import('./modules/tenant-snapshots/scheduler.js');
         const snapshotReaperHandle = startTenantSnapshotReaper(app.db, kubeconfigPath);
         app.addHook('onClose', () => snapshotReaperHandle.stop());
+
+        // Longhorn recurring-job convergence. Keeps the platform database in
+        // the `system-critical` group (Longhorn copies a PVC's membership
+        // labels onto a volume at provision time and never again, so the CNPG
+        // inheritedMetadata label alone does not reach an existing volume),
+        // and clears scheduled snapshots left on volumes their job no longer
+        // covers — bare Snapshot CRs that no panel lists and no reaper sees.
+        const { startLonghornRecurringJobReconciler } = await import('./modules/longhorn-recurring-jobs/scheduler.js');
+        const longhornJobsHandle = startLonghornRecurringJobReconciler(app.log, kubeconfigPath);
+        app.addHook('onClose', () => longhornJobsHandle.stop());
       } catch (err) {
         app.log.warn({ err }, 'storage-lifecycle / lifecycle-retry scheduler: startup skipped');
       }
@@ -1592,7 +1614,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         app.log.warn({ err }, 'restic retention: scheduler startup skipped');
       }
 
-      // Legacy per-tenant scheduler retired 2026-05-28. The global
+      // Legacy per-tenant scheduler retired. The global
       // scheduler (startGlobalBundleScheduler below) replaces it —
       // single cron drives bundles for every eligible tenant. The
       // legacy tenant_backup_schedules table is dropped in migration
@@ -1627,7 +1649,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         app.log.warn({ err }, 'system-backup sweeper: scheduler startup skipped');
       }
 
-      // pg_dump scheduler removed 2026-05-24. The pg_dump path is now
+      // pg_dump scheduler removed. The pg_dump path is now
       // a super_admin-only operator tool for PG-major-version migrations
       // (curl POST /api/v1/system-backup/pg-dump). Scheduled exports are
       // no longer offered — barman-cloud base + WAL is the supported
@@ -1723,7 +1745,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
 
         // ADR-039 Phase 10: webmail engine mutex reconciler.
         //
-        // 2026-05-18 update: was a boot-only one-shot; now scheduled on
+        // update: was a boot-only one-shot; now scheduled on
         // a 5-min tick (`startWebmailRouterReconciler`) so the IR + Pod
         // mutex auto-recover from drift (Flux re-apply, kubectl edit,
         // storage-policy annotation churn). The scheduler fires once
@@ -1749,7 +1771,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           );
         }
 
-        // 2026-05-18: webmail feature-visibility CSS reconciler.
+        // webmail feature-visibility CSS reconciler.
         // Reads platform_settings.webmail_show_{contacts,calendar,files}
         // + writes the `mail/webmail-feature-overrides` ConfigMap +
         // stamps Bulwark/Roundcube Deployment annotations so rolling
@@ -1773,7 +1795,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           );
         }
 
-        // 2026-05-20: cluster-trusted-proxies reconciler. Reads
+        // cluster-trusted-proxies reconciler. Reads
         // cluster_trusted_proxy_ranges + platform_settings (k3s pod/svc
         // CIDRs) → materialises ConfigMap `platform/cluster-trusted-
         // proxies` (nginx snippet + CSV) + JSON-patches Traefik DS
@@ -1797,7 +1819,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           );
         }
 
-        // 2026-05-16: Roundcube DB password self-healer. If the
+        // Roundcube DB password self-healer. If the
         // password in `mail/mail-secrets.ROUNDCUBEMAIL_DB_PASSWORD`
         // drifts from what's set on the `roundcube` Postgres role,
         // Roundcube can't authenticate and the webmail page renders
@@ -1922,7 +1944,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         // DR-CronJob bridge (secrets-bundle / cluster-state / audit).
         // Feeds the legacy backup-credentials consumers from the SYSTEM
         // shim binding so a shim-only cluster still runs its nightly
-        // DR jobs (production gap 2026-08-26); also surfaces Longhorn
+        // DR jobs; also surfaces Longhorn
         // recurring-backup jobs that fail for lack of a BackupTarget.
         try {
           const { startDrCronJobsReconciler } = await import(
@@ -1943,6 +1965,31 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
             { err },
             'dr-cronjobs: scheduler start failed (non-blocking)',
           );
+        }
+
+        // DR cadence reconciler — makes the backup_schedules rows for the
+        // etcd snapshot upload, the secrets bundle, the cluster-state dump
+        // and the Postgres base backup actually drive their objects. Before
+        // this the System Backups page rendered no schedule cards at all and
+        // two of the rows it could edit (system_pitr, longhorn_recurring)
+        // drove nothing whatsoever. Non-blocking: a cadence failure must
+        // never keep the API from starting.
+        try {
+          const { startCadenceScheduler } = await import(
+            './modules/backup-schedules/cadence/scheduler.js'
+          );
+          const cadenceHandle = startCadenceScheduler({
+            db: app.db,
+            clients: {
+              batch: k8sForImapsync.batch as never,
+              custom: k8sForImapsync.custom as never,
+            },
+            log: app.log,
+          });
+          app.decorate('cadenceScheduler', cadenceHandle);
+          app.addHook('onClose', () => cadenceHandle.stop());
+        } catch (err) {
+          app.log.warn({ err }, 'cadence: scheduler start failed (non-blocking)');
         }
 
         // stalwart-snapshot CronJob reconciler. Flips spec.suspend false
@@ -2035,7 +2082,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         const nodeHealthHandle = startNodeHealthReconciler(app.db, k8sForImapsync);
         app.addHook('onClose', () => nodeHealthHandle.stop());
 
-        // 2026-05-08: broader node-health-monitor — closes the
+        // broader node-health-monitor — closes the
         // gaps the existing cluster-health reconciler doesn't cover:
         // host disk/memory/PID pressure, CSINode driver count vs
         // cluster baseline, recent pod-eviction-loop detection. Fires
@@ -2061,7 +2108,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         // the pin lets it reschedule. Local-tier tenants are never moved —
         // their only replica is on the dead node. 60s tick rather than the
         // node-health reconciler's 5 min, which took 4m20s to notice a dead
-        // node during the 2026-09-11 drill.
+        // node during the drill.
         // Kill switch: AUTO_REPIN_HA_TENANTS=disable
         // Fast node-down watch — one listNode every 30s so an outage is
         // announced in ~30s instead of the reconciler's 4m20s. Shares the
@@ -2147,7 +2194,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         // records accumulate monotonically: every node reboot adds a batch and
         // none ever leave. They hold no CPU, memory or scheduling capacity, but
         // they DO pin their container log directories on the node (~102 MB for
-        // 43 records on production 2026-09-15) and any scan that reads pods from
+        // 43 records on production) and any scan that reads pods from
         // a list sees a workload that is not running.
         const { startPodPruneScheduler } = await import('./modules/pod-prune/scheduler.js');
         const podPruneStop = startPodPruneScheduler({
@@ -2302,7 +2349,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         });
         app.addHook('onClose', () => stalwartDomainStop());
 
-        // 2026-05-27: self-heal the stalwart-snapshot CronJob retention env
+        // self-heal the stalwart-snapshot CronJob retention env
         // on startup so operator-set values in backup_schedules.mail take
         // effect even if a prior write completed before this PR shipped
         // (when the CronJob had hardcoded --keep-last 48). Fire-and-forget;
@@ -2336,7 +2383,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         const imapConcurrencyStop = startImapConcurrencyReverter(app.db);
         app.addHook('onClose', () => imapConcurrencyStop());
 
-        // Mail-task orphan reaper (2026-05-28): mark stale 'running'
+        // Mail-task orphan reaper: mark stale 'running'
         // mail.migration / mail.port-exposure tasks as 'failed' on boot.
         // Without this, an orphaned task from a previous pod's
         // in-flight work blocks the next operator action (the
@@ -2358,7 +2405,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           app.log.warn({ err }, 'mail-task orphan reaper failed on boot (non-fatal)');
         }
 
-        // Phase 2 streamline (2026-05-15): on first install the DB default is
+        // Phase 2 streamline: on first install the DB default is
         // mailPortExposureMode='allServerNodes' but nothing has applied the
         // haproxy DaemonSet yet. Drive cluster state to match the DB value
         // once at startup. Idempotent — if state already matches, the calls
@@ -2374,7 +2421,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
             );
           });
 
-        // A1 follow-up (2026-05-25): ensure both stalwart-mail AND
+        // A1 follow-up: ensure both stalwart-mail AND
         // bulwark Deployments are pinned to mailActiveNode on every
         // platform-api boot. Bulwark's static manifest dropped the
         // topologySpread + nodeSelector — without this reconciler a
@@ -2442,7 +2489,14 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           if (result.synced > 0) {
             app.log.info(`Certificate reconciler: synced ${result.synced}/${result.checked}`);
           }
-          if (result.errors.length > 0) {
+          if (result.unreachable) {
+            // Distinct from per-domain errors on purpose: this is one outage,
+            // and the count is what was left UNKNOWN rather than what failed.
+            app.log.warn(
+              { reason: result.unreachable.reason, unchecked: result.unreachable.unchecked },
+              'Certificate reconciler: Kubernetes API unreachable — sweep abandoned, certificate status unknown',
+            );
+          } else if (result.errors.length > 0) {
             app.log.warn({ errors: result.errors }, 'Certificate reconciler had errors');
           }
         } catch (err) {
@@ -2580,7 +2634,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
 
         // Daily unused-image prune — steady-state hygiene below the
         // pressure thresholds (watcher 75%, kubelet GC 85%). See
-        // storage/image-prune-scheduler.ts (2026-06-05 audit).
+        // storage/image-prune-scheduler.ts.
         const dailyImagePrune = startDailyImagePrune(watcherK8s, app.log);
         app.addHook('onClose', () => dailyImagePrune.stop());
 
@@ -2591,7 +2645,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         // and also arms an in-process timer for latency; this tick is what makes
         // the work survive a restart. Without it, a platform-api roll inside the
         // 5-minute grace window dropped the reap silently — no image_reap_log
-        // row, no retry (observed on DEV 2026-08-04, where Flux rolls the pod on
+        // row, no retry (observed on DEV, where Flux rolls the pod on
         // every push). Claims are DELETE … RETURNING, so running on every
         // replica is safe.
         const reapSweeper = setInterval(() => {

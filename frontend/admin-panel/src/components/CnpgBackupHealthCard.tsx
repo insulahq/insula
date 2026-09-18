@@ -328,7 +328,7 @@ function WalStreamingBadge({ wal }: { wal: WalArchiveCluster | null }) {
   );
 }
 
-// Phase 2 (2026-05-24) — total backup disk usage cell.
+// Phase 2 — total backup disk usage cell.
 // Renders sum(catalogue.backups[].dataSizeBytes). Shares the catalogue
 // queryKey with BackupListPanel below so TanStack Query dedups the
 // underlying S3 LIST — operator pays one network call regardless of

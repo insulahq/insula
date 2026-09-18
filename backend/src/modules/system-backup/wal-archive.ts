@@ -22,7 +22,7 @@
  *   3. ScheduledBackup CR uses `method: plugin` + `pluginConfiguration.name:
  *      barman-cloud.cloudnative-pg.io` for periodic base backups.
  *
- * 2026-05-24 — Phase 6 refactor: WAL streaming now ALWAYS goes through the
+ * — Phase 6 refactor: WAL streaming now ALWAYS goes through the
  * backup-rclone-shim's local S3 endpoint instead of dialling the upstream
  * S3 target directly. This unlocks CIFS / NFS / SFTP upstreams (the shim
  * handles the translation) and removes the dual-reconciler race where
@@ -35,7 +35,7 @@
  * In-tree `spec.backup.barmanObjectStore` was deprecated in CNPG 1.26 and
  * is scheduled for removal in 1.30. The new path is also the only one that
  * works with the `minimal-trixie` / `standard-trixie` operand images we
- * adopted on 2026-05-07 (those images do NOT bundle barman-cloud binaries —
+ * adopted (those images do NOT bundle barman-cloud binaries —
  * the plugin runs them as a sidecar).
  *
  * Shim creds Secret + endpoint:
@@ -70,7 +70,7 @@ export const BARMAN_GROUP = 'barmancloud.cnpg.io';
 export const BARMAN_VERSION = 'v1';
 export const BARMAN_PLUGIN_NAME = 'barman-cloud.cloudnative-pg.io';
 
-// Phase 8 (2026-05-25): wal-archive now SHARES the postgres-objectstore
+// Phase 8: wal-archive now SHARES the postgres-objectstore
 // reconciler's CR names so:
 //
 //   1. The CNPG barman-cloud plugin's auto-generated RBAC (Role
@@ -108,7 +108,7 @@ export interface EnableWalArchiveInput {
   readonly archiveTimeout?: string;
   readonly baseBackupSchedule?: string | null;
   /**
-   * 2026-05-24 (Phase 6): the WAL target is now derived from the SYSTEM
+   * (Phase 6): the WAL target is now derived from the SYSTEM
    * shim binding (see `loadSystemShimBinding`). The optional targetConfigId
    * passed in by the route handler is recorded for audit only — if it
    * doesn't match the shim binding, the shim binding wins. A future
@@ -116,7 +116,7 @@ export interface EnableWalArchiveInput {
    */
   readonly targetConfigId?: string;
   /**
-   * @deprecated 2026-05-24 (Phase 6): never applied to any CR. Kept for
+   * @deprecated (Phase 6): never applied to any CR. Kept for
    * back-compat with existing rows in systemWalArchiveState; the UI no
    * longer surfaces it.
    */
@@ -146,7 +146,7 @@ interface BackupConfigForWal {
 /**
  * Resolve the WAL streaming target from the SYSTEM shim binding.
  *
- * Phase 6 (2026-05-24) — replaces `loadActiveS3Target(targetConfigId)`.
+ * Phase 6 — replaces `loadActiveS3Target(targetConfigId)`.
  * Operators no longer pick a WAL target separately; the target IS the
  * SYSTEM shim binding chosen on /backups/system?tab=routing. This
  * unifies the two competing reconcilers (this one + the shim's
@@ -271,7 +271,7 @@ export function extractStatus(cr: ClusterCRSpec | null): ClusterStatus | null {
   const s = cr.status ?? {};
   // ContinuousArchiving is the operator-managed condition that surfaces
   // WAL-archive health. The plugin sets this same condition (verified
-  // 2026-05-07 against barman-cloud plugin v0.12.0); the in-tree path
+  // against barman-cloud plugin v0.12.0); the in-tree path
   // set it too. So this mapping is plugin-vs-in-tree agnostic.
   const cond = (s.conditions ?? []).find((c) => c.type === 'ContinuousArchiving');
   const isHealthy = cond?.status === 'True' || cond?.reason === 'ContinuousArchivingSuccess';
@@ -281,8 +281,8 @@ export function extractStatus(cr: ClusterCRSpec | null): ClusterStatus | null {
     firstRecoverabilityPoint: s.firstRecoverabilityPoint ?? null,
     // NOT a last-archive time. The condition only flips when archiving health
     // CHANGES, so a cluster archiving happily every five minutes keeps the
-    // transition time of the day it started: production read 2026-08-12 on
-    // 2026-09-11 while segments were going off-site continuously, and the card
+    // transition time of the day it started: production read on
+    // while segments were going off-site continuously, and the card
     // rendered that month-old instant as "Last WAL archived at …". Recency now
     // comes from pg_stat_archiver (readArchiverStats); these two fields stay
     // null here and are filled in by the route where the real values exist.
@@ -322,7 +322,7 @@ function buildObjectStoreBody(
   destinationPath: string,
   retentionDays: number,
 ): ObjectStoreBody {
-  // Phase 6 (2026-05-24): always route through the shim. Shim S3
+  // Phase 6: always route through the shim. Shim S3
   // endpoint + shim-derived HKDF credentials (Secret materialised in
   // the cluster ns by backup-rclone-shim/postgres-objectstore.ts).
   const config: ObjectStoreSpecConfig = {
@@ -425,7 +425,7 @@ async function deleteObjectStoreIfPresent(
 }
 
 /**
- * Phase 8 (2026-05-25) — best-effort cleanup of pre-Phase-8 wal-archive
+ * Phase 8 — best-effort cleanup of pre-Phase-8 wal-archive
  * CRs. Pre-Phase-8 we created `<cluster>-system-store` ObjectStore +
  * `<cluster>-system-backup` ScheduledBackup; Phase 8 unifies on the
  * postgres-objectstore reconciler's names. Without this cleanup the
@@ -493,7 +493,7 @@ async function patchClusterPlugin(
   enable: boolean,
   archiveTimeout?: string,
   /**
-   * Phase 7c (2026-05-24): allow explicit override of isWALArchiver so
+   * Phase 7c: allow explicit override of isWALArchiver so
    * the "scheduled-backups-only" enable path can attach the plugin in
    * ONE patch with isWALArchiver=false — closes the race where
    * patchClusterPlugin always set it to true, then a follow-up patch
@@ -597,7 +597,7 @@ async function upsertScheduledBackup(
       // with suspend:true on a no-target cluster; without an explicit
       // false here the merge-patch path below inherits that stale
       // suspend forever and the nightly base backup silently never
-      // fires (production, 2026-08-26).
+      // fires.
       suspend: false,
     },
   };
@@ -679,7 +679,7 @@ async function deleteScheduledBackupIfPresent(
  * Converge the ScheduledBackup CR with the wal-archive DB state. Called
  * from the postgres-objectstore 5-min tick whenever wal-archive owns
  * the cluster's CRs (it otherwise skips the ScheduledBackup entirely,
- * so nothing would ever repair drift — production 2026-08-26: the CR
+ * so nothing would ever repair drift — production: the CR
  * pre-existed suspend:true from the no-target era and the operator's
  * enable never cleared it, so the nightly base backup silently never
  * fired).
@@ -745,7 +745,7 @@ export async function enableWalArchive(input: EnableWalArchiveInput): Promise<{ 
   const cr = await readClusterCR(k8s, clusterNamespace, clusterName);
   if (!cr) throw new Error(`CNPG cluster ${clusterNamespace}/${clusterName} not found`);
 
-  // Phase 6 (2026-05-24): target = SYSTEM shim binding. The shim
+  // Phase 6: target = SYSTEM shim binding. The shim
   // handles upstream translation (S3 / CIFS / NFS / SFTP), so this
   // module is now storage-type agnostic.
   const binding = await loadSystemShimBinding(db);
@@ -861,7 +861,7 @@ export async function enableWalArchive(input: EnableWalArchiveInput): Promise<{ 
   return { destinationPath };
 }
 
-// ─── Phase 7a (2026-05-24) — split operations ─────────────────────────────
+// ─── Phase 7a — split operations ─────────────────────────────
 //
 // The combined `enableWalArchive` / `disableWalArchive` couple WAL
 // streaming and base-backup scheduling. Operators want them

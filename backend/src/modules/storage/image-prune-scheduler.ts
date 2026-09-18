@@ -2,7 +2,7 @@
  * Daily image prune — scheduled counterpart of the manual "Purge Cache"
  * button (POST /admin/storage/purge) and the reactive pressure watcher.
  *
- * Why (2026-06-05 audit): kubelet image GC only acts at 85% disk and the
+ * Why: kubelet image GC only acts at 85% disk and the
  * pressure watcher at 75% of ephemeral storage — below those thresholds
  * unused images accumulate indefinitely (22 GB on testing, 15 GB on
  * staging1, mostly per-push timestamped tags). A daily sweep keeps the

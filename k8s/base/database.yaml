@@ -58,6 +58,16 @@ spec:
       # cluster-wide.
       platform/role: system-db
       platform/owner: system
+      # Hourly in-volume snapshots — the `hourly-snap` RecurringJob selects
+      # this group, and inheritedMetadata puts every instance PVC
+      # (system-db-1/2/3 under HA) in it automatically.
+      #
+      # The job used to select `default`, which every tenant PVC also carries,
+      # so tenant volumes were being snapshotted hourly as well — invisible in
+      # both panels and unreachable by the tenant-snapshot reaper. Scoping the
+      # job needs a group the platform database is alone in, and this is where
+      # it joins.
+      recurring-job-group.longhorn.io/system-critical: enabled
       platform/managed-by: platform-api
 
   # spec.instances is INTENTIONALLY OMITTED. CNPG defaults to 1 on
@@ -66,7 +76,7 @@ spec:
   # patch (per the ssa: merge annotation) only re-asserts fields
   # PRESENT in the manifest. Setting `instances: 1` here would mean
   # every Flux reconcile (every 60s) reverts Apply HA's patch to 1,
-  # producing the oscillation observed on 2026-05-04
+  # producing the oscillation observed
   # (mail-pg-2 created → 2 min later "Scaling down — removing
   # mail-pg-2" → repeat forever).
 
@@ -109,7 +119,7 @@ spec:
         - "ALTER USER platform WITH SUPERUSER"
 
   storage:
-    # 2Gi base for fresh installs (Phase-2 right-size 2026-05-23: live
+    # 2Gi base for fresh installs (Phase-2 right-size: live
     # observation across 3 replicas shows 628 MiB used per PVC on a
     # 10Gi allocation = 7% utilization. 2Gi gives ~3× headroom for the
     # working set; CNPG supports ONLINE storage expansion via Cluster
@@ -131,14 +141,14 @@ spec:
     storageClass: longhorn-system-local
 
   # Per-instance resources. Sized for low-traffic single-tenant install.
-  # Live observation 2026-05-23: actual usage 75-110 Mi / 5-13m on
+  # Live observation: actual usage 75-110 Mi / 5-13m on
   # staging across 3 replicas. Dropping limits.memory 1Gi → 512Mi
   # gives ~4.5× headroom over peak observed (110 Mi); saves 1.5 GiB
   # of namespace quota commitment (3 replicas × 512Mi saved).
   # Production overlays can bump higher when their workload demands;
   # the storage-policy advisor also surfaces resource recommendations.
   #
-  # requests.memory 128Mi → 256Mi (2026-07-29). Re-measured working set:
+  # requests.memory 128Mi → 256Mi. Re-measured working set:
   # 86 Mi (staging) / 69 Mi (VM tier) for the `postgres` container alone,
   # 108-148 Mi for the whole pod. 128Mi left the container's own usage
   # sitting at ~70-90% of its request, so a modest spike (checkpoint,
@@ -154,7 +164,7 @@ spec:
       cpu: 50m
       memory: 256Mi
     limits:
-      # No CPU limit — high-priority platform postgres (2026-06-24).
+      # No CPU limit — high-priority platform postgres.
       memory: 512Mi
 
   # Slow the instance-manager probes from CNPG defaults (10s) to 60s.
@@ -183,7 +193,7 @@ spec:
   # own schema (no nodeAffinity sub-field through 1.21), so we set
   # nodeSelector here instead of patching via the component.
   # Evicted only after every tenant-tier pod (operator decision
-  # 2026-07-25) — the platform DB is the spine, tenants go first.
+  # ) — the platform DB is the spine, tenants go first.
   priorityClassName: platform-critical
   affinity:
     nodeSelector:
@@ -303,7 +313,7 @@ spec:
         cpu: 50m
         memory: 128Mi
       limits:
-        # No CPU limit — high-priority platform pod (2026-06-24).
+        # No CPU limit — high-priority platform pod.
         memory: 1Gi
   retentionPolicy: 30d
 ---
@@ -328,7 +338,7 @@ type: Opaque
 # DATABASE_URL stays valid).
 #
 # Bump+rename history: postgres-rw (PG 17.5) → postgres-18-rw
-# (PG 18.3, 2026-05-07) → system-db-rw (PG 18.3, renamed 2026-05-07
+# → system-db-rw (PG 18.3, renamed
 # to drop version baggage from the cluster name).
 apiVersion: v1
 kind: Service

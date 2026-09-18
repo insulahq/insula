@@ -96,7 +96,7 @@ export async function primeDnsResolverCache(db: Database): Promise<void> {
  * Returns null in `host` mode or when the cache is cold — callers MUST then
  * keep their own default. In particular mail must NOT fall back to the pod
  * resolver: routing PTR lookups through CoreDNS is what made a correctly
- * configured staging cluster report the wrong PTR on 2026-05-27, because
+ * configured staging cluster report the wrong PTR, because
  * CoreDNS's automatic node-name records shadowed the real answer. `host` mode
  * therefore leaves mail on its explicit external resolver.
  */

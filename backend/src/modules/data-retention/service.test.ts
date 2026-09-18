@@ -213,12 +213,12 @@ describe('data-retention runDataRetention', () => {
     expect(DR_DRILL_RUN_RETENTION_DAYS).toBe(180);
   });
 
-  // ── the two caps added 2026-09-11 ──
+  // ── the two caps ──
   //
   // Both tables were pruned by NOTHING anywhere in the codebase, found by a
   // production sweep. Neither is huge, but both are append-only, and
   // crowdsec_autoban_runs is bursty: one scanner burst wrote 1391 rows in a
-  // single day (2026-09-06) against 3-23/day either side of it.
+  // single day against 3-23/day either side of it.
 
   it('prunes crowdsec_autoban_runs by triggered_at at 90 days', async () => {
     const { db, conditions } = makeDb(new Map([[crowdsecAutobanRuns, rows(3)]]));

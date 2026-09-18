@@ -8,7 +8,7 @@
 # volumes — see project_stalwart_storage_benchmark_2026_05_11.md).
 # Longhorn-as-storage-for-mail is no longer supported, and the
 # UI's old "longhorn vs local-path" picker is being deleted in the
-# 2026-05-14 streamline.
+# streamline.
 #
 # This probe enforces the deletion. New code that grows a Longhorn
 # dependency in mail goes red.

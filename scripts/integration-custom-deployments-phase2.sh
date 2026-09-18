@@ -158,7 +158,7 @@ TOKEN=$(login_token)
 [[ -z "$TOKEN" ]] && { echo "FATAL: admin login failed" >&2; exit 2; }
 info "Admin login OK"
 
-# Tenant isolation (2026-07-24): provision our OWN ephemeral tenant instead of
+# Tenant isolation: provision our OWN ephemeral tenant instead of
 # borrowing the first active client — the root of the shared-client churn (T5/T6/T7
 # "concurrent transition" SKIP-EXPECTED) and the quota accumulation. Torn down in
 # cleanup() (cascades its deployments). CUSTOM_DEPLOY_TENANT_ID still overrides.
@@ -182,12 +182,12 @@ fi
 [[ -z "$TENANT_ID" ]] && { echo "FATAL: no active client" >&2; exit 2; }
 info "Client: $TENANT_ID"
 
-# ADR-036 subscription gate (migration 0078, shipped 2026-07-30 in 6ac21ae7):
+# ADR-036 subscription gate(migration 0078, shipped in 6ac21ae7):
 # custom containers are DENIED unless the tenant's plan allows them or the
 # tenant carries an explicit override. This suite exists to exercise custom
 # containers, so it must grant itself the capability — without it every create
 # returns 403 CUSTOM_CONTAINERS_NOT_IN_PLAN and the suite has been red since
-# that feature landed (observed 2026-08-04: T7/T10/T12/T14/T18/T19, and T10
+# that feature landed (: T7/T10/T12/T14/T18/T19, and T10
 # reporting "expected 422, got 403" because the gate short-circuits validation).
 # Uses the PER-TENANT override so no shared plan is mutated for other suites.
 # Note the request key is snake_case (allow_custom_containers_override) — the
@@ -1516,7 +1516,7 @@ run_group_d() {
 # groups so their deployments don't ACCUMULATE against the tenant ResourceQuota
 # (1 CPU / 1Gi). By group-e, ~10 deployments at 100m/128Mi each exhaust it, so a
 # group-e pod (e.g. T18 multi-port) can't be admitted by the ReplicaSet and never
-# reaches Running — ROOT CAUSE of the 2026-07-23 T18 flake (confirmed: the same
+# reaches Running — ROOT CAUSE of the T18 flake (confirmed: the same
 # multi-port deployment reaches Running in ~17s in a quota-free tenant). Groups are
 # independent (none reuses a prior group's deployment) so draining between them is
 # safe. Failed deletes stay tracked so the EXIT-trap cleanup retries them.

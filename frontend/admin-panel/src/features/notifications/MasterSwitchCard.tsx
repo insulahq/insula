@@ -1,7 +1,7 @@
 /**
  * The master notification switch.
  *
- * Exists because of 2026-09-16: a reconciler bug mailed five tenants every
+ * Exists because: a reconciler bug mailed five tenants every
  * five minutes for 45 minutes, and the only way to stop it was an operator
  * running `UPDATE notification_categories SET is_active = false` against the
  * production database — per category, during an incident, which requires

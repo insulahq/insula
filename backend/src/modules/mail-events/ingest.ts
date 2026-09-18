@@ -170,7 +170,7 @@ export function aggregateEvents(
       // consume that tenant's allowance. `postmaster@` receives DSNs and, once
       // a DMARC report sender is configured, SENDS outbound aggregate reports.
       // Counting those would charge a customer for the platform's own traffic
-      // and then alarm them about it — the 2026-09-16 storm in miniature. The
+      // and then alarm them about it — the storm in miniature. The
       // Stalwart throttle exempts the same address, so the two stay in step.
       if (PLATFORM_LOCAL_PARTS.has(localPartOf(ev.data) ?? '')) {
         counted += 1;

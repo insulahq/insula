@@ -41,6 +41,7 @@ import {
 import type { Database } from '../../db/index.js';
 import { JSON_PATCH } from '../../shared/k8s-patch.js';
 import { getClusterId } from '../system-settings/cluster-id.js';
+import { CADENCE_TARGETS } from '../backup-schedules/cadence/targets.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -73,7 +74,7 @@ const FLUX_RECONCILE_ANNOTATION_POINTER =
  * the reconciler stamps `kustomize.toolkit.fluxcd.io/reconcile: disabled` on the
  * live object, Flux reports `skipped` for it forever, so editing
  * k8s/base/backup/etcd-snap-via-shim-cronjob.yaml only ever reaches a FRESH
- * install. Verified on DEV 2026-09-15: the manifest carried the block, the live
+ * install. Verified on DEV: the manifest carried the block, the live
  * object's `spec.jobTemplate.metadata` was `{}`, and kustomize-controller logged
  * `"CronJob/platform/etcd-snap-via-shim":"skipped"`.
  *
@@ -121,7 +122,7 @@ interface CronJobView {
       spec?: {
         template?: {
           spec?: {
-            containers?: Array<{ env?: Array<{ name?: string; value?: string }> }>;
+            containers?: Array<{ env?: Array<{ name?: string; value?: string }>; args?: string[] }>;
           };
         };
       };
@@ -175,6 +176,67 @@ function findShimPrefixEnv(live: CronJobView): { path: string; current: string |
   return null;
 }
 
+/**
+ * Repairs for `$$VAR` used inside a `$( ... )` command substitution.
+ *
+ * This CronJob is seed-then-disown: it ships `reconcile: disabled`, so Flux
+ * skips it and never collapses the `$$` escaping that was written FOR Flux.
+ * The kubelet does collapse `$$` — but it leaves any `$( ... )` span verbatim,
+ * because it cannot resolve the span as a variable reference. Inside those
+ * spans the shell therefore reads `$$` as its own PID:
+ *
+ *     sha256sum: can't open '1name': No such file or directory
+ *
+ * Found on production: every uploaded etcd snapshot (24 of 24) had
+ * `"sha256":""` in its sidecar, so no stored snapshot could be checked before a
+ * restore. The `COUNT` line failed the same way, which is why the job logged
+ * `done ( uploaded)` with an empty number.
+ *
+ * Fixing the manifest is NOT enough — a disowned CronJob only re-reads it on a
+ * FRESH install, so every existing cluster would keep the broken script
+ * forever. The reconciler converges the live script instead.
+ *
+ * Each repair binds the value OUTSIDE the substitution, which renders correctly
+ * whether the manifest was applied raw or through Flux.
+ */
+const SCRIPT_REPAIRS: ReadonlyArray<{ readonly broken: string; readonly fixed: string }> = [
+  {
+    broken: `COUNT=$(wc -l < "$$TMP" | tr -d ' ')`,
+    fixed: `t="$$TMP"; COUNT=$(wc -l < "$t" | tr -d ' ')`,
+  },
+  {
+    broken: `SHA=$(sha256sum "$$name" | cut -d ' ' -f 1)`,
+    fixed: `f="$$name"; SHA=$(sha256sum "$f" | cut -d ' ' -f 1)`,
+  },
+];
+
+/**
+ * Returns the JSON-Patch op that repairs the live script, or null when the live
+ * script needs no repair (already fixed, or a fresh install that seeded the
+ * corrected manifest).
+ */
+export function findScriptRepair(live: CronJobView): { path: string; value: string } | null {
+  const containers = live.spec?.jobTemplate?.spec?.template?.spec?.containers ?? [];
+  for (let ci = 0; ci < containers.length; ci++) {
+    const args = containers[ci]?.args ?? [];
+    for (let ai = 0; ai < args.length; ai++) {
+      const script = args[ai];
+      if (typeof script !== 'string') continue;
+      let repaired = script;
+      for (const { broken, fixed } of SCRIPT_REPAIRS) {
+        if (repaired.includes(broken)) repaired = repaired.split(broken).join(fixed);
+      }
+      if (repaired !== script) {
+        return {
+          path: `/spec/jobTemplate/spec/template/spec/containers/${ci}/args/${ai}`,
+          value: repaired,
+        };
+      }
+    }
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Public entry point
 // ---------------------------------------------------------------------------
@@ -199,6 +261,17 @@ export async function reconcileEtcdCronJob(
   // ─── 1. Resolve desired suspend state + the cluster_id-namespaced
   //         upload prefix from the DB ─────────────────────────────
   const bound = await isSystemTargetBound(db);
+  // Suspend is owned by the cadence reconciler: it has to be
+  // able to suspend this CronJob when the operator disables the schedule, and
+  // two owners with different rules flip the field against each other every
+  // tick. This reconciler keeps the upload prefix and the Flux-disown stamp,
+  // which nothing else writes.
+  //
+  // `bound` is still read: the cadence reconciler gates on the SAME predicate,
+  // so an unbound cluster ends up suspended either way — just from one writer.
+  const suspendOwnedByCadence = CADENCE_TARGETS.some(
+    (t) => t.name === ETCD_CRONJOB_NAME && t.mechanism !== 'read-only',
+  );
   const desiredSuspend = !bound;
   // Namespace etcd snapshots by the stable cluster_id so two clusters sharing
   // one S3 target never cross-contaminate (a `--latest` restore could otherwise
@@ -247,7 +320,7 @@ export async function reconcileEtcdCronJob(
   // live object carry `reconcile: disabled` so Flux disowns it and never reverts
   // the SHIM_PREFIX / suspend fields this reconciler owns (seed-then-disown).
   const ops: Array<{ op: 'replace' | 'add'; path: string; value: unknown }> = [];
-  if (liveSuspend !== desiredSuspend) {
+  if (!suspendOwnedByCadence && liveSuspend !== desiredSuspend) {
     ops.push({ op: 'replace', path: '/spec/suspend', value: desiredSuspend });
   }
   const prefixEnv = findShimPrefixEnv(live);
@@ -264,6 +337,16 @@ export async function reconcileEtcdCronJob(
   // from Flux also disowned it from the manifest that carries them, so the
   // reconciler has to converge them itself or the Jobs stay invisible to the
   // watcher forever.
+  // Repair the upload script itself if this cluster still carries the version
+  // whose checksum and count lines silently evaluated to the shell's PID.
+  const scriptRepair = findScriptRepair(live);
+  if (scriptRepair) {
+    ops.push({ op: 'replace', path: scriptRepair.path, value: scriptRepair.value });
+    log.warn(
+      { path: scriptRepair.path },
+      'etcd-cronjob: repairing upload script — snapshot checksums were being written empty',
+    );
+  }
   const jtMeta = desiredJobTemplateMetadata(live);
   if (jtMeta) {
     // ONE `add` of the whole metadata object, merged over what is live:

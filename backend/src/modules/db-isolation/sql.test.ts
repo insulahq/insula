@@ -191,7 +191,7 @@ describe('parseDbIsolationState', () => {
   });
 
   it('parses the real DEV payload shape verbatim', () => {
-    // Captured from `psql -At` against system-db-1 on 2026-09-13, pre-change.
+    // Captured from `psql -At` against system-db-1, pre-change.
     // Parsers built from a doc rather than from the emitted bytes are how the
     // format drifts out from under the code.
     const raw = '[{"datname":"crowdsec","owner":"crowdsec","public_connect":true,"connect_grantees":["crowdsec"]}, '

@@ -60,7 +60,7 @@
 # Some sites derived from the configured apex first and some did not — three
 # such lines sat in ONE file next to two that were correct. The result is a
 # suite that can only pass on the apex whose name happens to be baked in: on
-# 2026-08-04 a run against a freshly bootstrapped cluster failed with
+# a run against a freshly bootstrapped cluster failed with
 #   "banner 'mail.<cluster apex>' DOES NOT MATCH expected 'mail.staging.example.test'"
 # even though mail was healthy. Each previous round fixed the line that failed
 # that day rather than the class, so it kept coming back.
@@ -89,7 +89,7 @@ load_integration_env() {
     # ADMIN_HOST/ADMIN_EMAIL silently replaced an explicitly exported target.
     # Running any suite with ADMIN_HOST=<dev cluster> therefore retargeted it at
     # whatever ~/.config/insula/integration.env names — with no warning. Hit
-    # 2026-08-08: a suite launched against the DEV cluster logged in as
+    # a suite launched against the DEV cluster logged in as
     # admin@staging.<apex> and began creating tenants on STAGING. Its cleanup
     # trap removed them, but pointing a test harness at a production-adjacent
     # cluster must not be one forgotten variable away.
@@ -143,7 +143,7 @@ load_integration_env() {
 #
 # The operator profile defines SOME of them. A caller exports SOME of them. Any
 # precedence rule — profile-wins or caller-wins — still merges two partial sets
-# into one config that names TWO DIFFERENT CLUSTERS. Observed 2026-08-08: a run
+# into one config that names TWO DIFFERENT CLUSTERS.: a run
 # sent its API traffic and kubectl to one cluster while mail/DNS probes went to
 # another, and the only visible symptom was a pile of "cert does not cover …"
 # assertions that read like a TLS bug. Worse, that run's destructive suites
@@ -258,7 +258,7 @@ require_env() {
 # result while this runner is CrowdSec-allowlisted.
 #
 # Allowlisting an IP suppresses WAF (AppSec) enforcement for it, not just
-# CrowdSec decisions. Proven on DEV 2026-09-13: identical payloads from the same
+# CrowdSec decisions. Proven on DEV: identical payloads from the same
 # runner returned 401 while allowlisted and 403 once the entry was removed. A
 # WAF suite run in that state reports "want 403 got 401" on every assertion —
 # a wall of red that says nothing about the WAF.
@@ -324,7 +324,7 @@ print('UNKNOWN')
 # fails deep in its run with
 #     NO_SNAPSHOT_TARGET — "No backup target bound to the 'tenant' class"
 #     target: no active backup config — run /tenant-backup → Off-site Targets
-# On 2026-08-04 that turned twelve suites red on a fresh cluster and read as
+# that turned twelve suites red on a fresh cluster and read as
 # twelve product failures. "Not configured" must report as SKIPPED, not FAILED.
 #
 # FAILS OPEN: if the check itself cannot run (no host, no credentials, API

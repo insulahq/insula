@@ -1,6 +1,6 @@
 # Services for Stalwart 0.16.
 #
-# THREE Services (split 2026-05-17 — see history note below):
+# THREE Services(split — see history note below):
 #   stalwart-mail       — mail ports (25/465/587/143/993/4190), LoadBalancer,
 #                         externalTrafficPolicy: Local. The staging/production
 #                         overlays patch this to ClusterIP+externalIPs to bind
@@ -24,7 +24,7 @@
 # plain HTTP; Traefik adds TLS termination in front. This avoids needing
 # a wildcard cert inside the Stalwart pod for the management UI.
 #
-# Why the split: prior to 2026-05-17, port 80 (http-acme) lived on the same
+# Why the split: prior to, port 80 (http-acme) lived on the same
 # `stalwart-mail` Service as the mail ports. On clusters where that Service
 # was patched with externalIPs (single-VPS staging/production overlays), the
 # kube-proxy KUBE-EXT rule for <node-ip>:80 hijacked Traefik's hostPort 80
@@ -32,7 +32,7 @@
 # on a fresh bootstrap because configure_stalwart_full can race) → connection
 # refused → cert-manager HTTP-01 challenges blocked for every other Certificate
 # in the cluster (admin/tenant/longhorn/bulwark/...). Caught fresh-bootstrap  # ci-no-longhorn: ignore
-# on testing.example.test 2026-05-17.
+# on testing.example.test.
 #
 # Dev overlay: patches stalwart-mail → NodePort (no LB controller in
 # DinD k3s). See k8s/overlays/dind/stalwart-mail/kustomization.yaml. The split
@@ -60,7 +60,7 @@ spec:
   # send-proxy-v2 re-injects the real client IP (see haproxy/configmap.yaml),
   # so source-IP for SPF/DKIM is preserved despite kube-proxy masquerade.
   # The dev overlay still `op: remove`s this (its Service is ClusterIP, which
-  # forbids externalTrafficPolicy). Was `Local`; fixed 2026-06-22 after the
+  # forbids externalTrafficPolicy). Was `Local`; after the
   # ADR-053 prod-mirror staging exposed the multi-node HA-mail drop.
   externalTrafficPolicy: Cluster
   selector:

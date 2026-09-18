@@ -178,7 +178,7 @@ describe('cnpg-backup-health: readBackupHealth', () => {
       backups: [],
       scheduledbackups: [
         // But ScheduledBackup CRs exist! This is the historical staging
-        // mistake from 2026-05-06 — Backup CR fired against a Cluster
+        // mistake — Backup CR fired against a Cluster
         // without backup config and failed: "cannot proceed with the
         // backup as the cluster has no backup section".
         { metadata: { name: 'system-db-daily', namespace: 'platform' }, spec: { cluster: { name: 'system-db' } } },
@@ -191,7 +191,7 @@ describe('cnpg-backup-health: readBackupHealth', () => {
     expect(cluster?.scheduledBackups).toEqual(['system-db-daily']);
   });
 
-  // B7 fix (2026-05-22): CNPG 1.21+ moved barman-cloud out of
+  // B7 fix: CNPG 1.21+ moved barman-cloud out of
   // spec.backup into the plugin model. A cluster running the plugin
   // path has spec.backup == null but spec.plugins[barman-cloud]
   // enabled — and DOES back up successfully. The health card was
@@ -253,7 +253,7 @@ describe('cnpg-backup-health: readBackupHealth', () => {
     expect(result.find((r) => r.clusterName === 'cluster-x')?.clusterHasBackupSpec).toBe(false);
   });
 
-  // ─── Phase 2 (2026-05-22): cnpg_operator_blind enrichment ──────────────
+  // ─── Phase 2: cnpg_operator_blind enrichment ──────────────
   //
   // When the cluster is on the plugin model AND the CNPG operator returns
   // zero Backup CRs BUT the object store catalogue reports N>0 backups,

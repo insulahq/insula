@@ -397,7 +397,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
   // The panel used to loop the single-path endpoint once per selected file.
   // Delete looped sequentially; move and copy were worse — `paths.map()` +
   // `Promise.all` put every request in flight at once. A production move of
-  // ~120 files (2026-09-02) fired 62 requests in two seconds, tripped the
+  // ~120 files fired 62 requests in two seconds, tripped the
   // global rate limit (100/window), and the 429s hit the panel's directory
   // listings and /files/status too — so the page looked dead while the moves
   // that HAD got through kept running. The `Promise.all` rejected on the first

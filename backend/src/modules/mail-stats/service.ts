@@ -142,7 +142,7 @@ export async function reconcileMailboxUsage(
     warn: () => {},
   },
 ): Promise<{ synced: number; failed: number }> {
-  // 2026-08 rewrite: the old implementation called the 0.15 REST API
+  // rewrite: the old implementation called the 0.15 REST API
   // (`/api/principal/<addr>`, dropped in Stalwart 0.16) with a
   // DIFFERENT env var (STALWART_ADMIN_SECRET) than the JMAP client's
   // credential chain — every request 404'd/401'd and `used_mb` stayed

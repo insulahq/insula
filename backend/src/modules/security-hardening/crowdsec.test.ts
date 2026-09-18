@@ -128,7 +128,7 @@ describe('parseLapiDecision — auto-ban classification', () => {
    * MANUAL_BAN_REASON_PREFIX. Before AUTO_BAN_SCENARIO_PREFIX existed, every
    * automatic ban came back manualByOperator=true and the Banned IPs table
    * rendered it as though a human had clicked it. This is the exact scenario
-   * string observed on the DEV cluster on 2026-09-05.
+   * string observed on the DEV cluster.
    */
   const autoScenario = 'admin-panel:autoban-scheduler:auto-ban:rules 920450,930120 count 6';
 
@@ -183,7 +183,7 @@ describe('applyDecisionFilters — source scoping and paging', () => {
     ...over,
   } as never);
 
-  // Production 2026-09-06: 16,220 CAPI decisions against 2 platform ones. A
+  // Production: 16,220 CAPI decisions against 2 platform ones. A
   // combined table buried every operator action and made the static-ban list
   // read as empty when the ban was present in the LAPI.
   const community = Array.from({ length: 50 }, (_, i) => dec({ id: 100 + i, value: `10.0.0.${i}` }));
@@ -248,7 +248,7 @@ describe('applyDecisionFilters — source scoping and paging', () => {
 describe('ensureCommunityBlocklistDefault', () => {
   // Flux inventories capi-config.yaml but never applies it: the
   // `reconcile: disabled` annotation that protects an operator's toggle makes
-  // Flux SKIP the object entirely. Verified on DEV 2026-09-06 — the inventory
+  // Flux SKIP the object entirely. Verified on DEV — the inventory
   // listed the ConfigMap while `kubectl get cm` returned NotFound, so the
   // "off by default" default never landed. The backend therefore creates it.
   const podList = { items: [{ metadata: { name: 'crowdsec-abc' } }] };
@@ -280,7 +280,7 @@ describe('ensureCommunityBlocklistDefault', () => {
       ['decisions', 'delete', '--origin', 'CAPI'],
     );
     // ORDER MATTERS: the purge execs INTO the LAPI pod, so it must run before
-    // the roll deletes it. Observed on DEV 2026-09-07 with the reverse order —
+    // the roll deletes it. Observed on DEV with the reverse order —
     // "cannot exec in a stopped container", and 18,770 decisions survived.
     const purgeOrder = (cscli.cscliExec as unknown as { mock: { invocationCallOrder: number[] } })
       .mock.invocationCallOrder[0];

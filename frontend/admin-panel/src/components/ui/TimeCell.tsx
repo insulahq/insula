@@ -3,7 +3,7 @@
  *
  * Every backup/snapshot table shows "TIME CREATED" as a relative age;
  * operators need the absolute instant without leaving the page
- * (operator request 2026-08-26). Uses the native `title` tooltip — the
+ * . Uses the native `title` tooltip — the
  * established pattern (MailBackupsPage, SystemBackupListSection); no
  * tooltip library exists in this panel.
  */

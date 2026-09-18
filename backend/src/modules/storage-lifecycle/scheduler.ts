@@ -31,7 +31,7 @@ const LIFECYCLE_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
 // trigger a manual repair from the admin UI.
 const INTEGRITY_INTERVAL_MS = 30 * 60 * 1000;
 // Quiesce watchdog: reap abandoned mid-quiesce storage ops and restore
-// workloads left at 0 replicas (operator report #7 2026-08-26). 15 min
+// workloads left at 0 replicas. 15 min
 // bounds how long a stranded tenant site can stay down unnoticed.
 const QUIESCE_WATCHDOG_INTERVAL_MS = 15 * 60 * 1000;
 const INITIAL_DELAY_MS = 2 * 60 * 1000; // 2 min after startup

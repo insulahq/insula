@@ -170,9 +170,9 @@ Key terms, acronyms, and concepts used throughout the platform documentation.
 
 **PersistentVolumeClaim (PVC)** — Request for storage. Bound to PV. Mounted into pods.
 
-**Phase 1 (MVP)** — Initial minimal deployment: single control plane, 1-2 workers, basic features, no HA.
+**Phase 1 (MVP)** — *Historical planning term.* Initial minimal deployment: single control plane, 1-2 workers, basic features, no HA. The platform is in production and past this framing; open work is tracked in `docs/roadmap/ROADMAP.md`, not by phase.
 
-**Phase 2 (Scale)** — Post-MVP: HA options, enterprise features, additional runtimes, compliance.
+**Phase 2 (Scale)** — *Historical planning term.* Post-MVP: HA options, enterprise features, additional runtimes, compliance. HA and additional runtimes shipped; multi-region was descoped.
 
 **PHP-FPM** — PHP FastCGI Process Manager. Runs PHP code inside the client's dedicated pod.
 

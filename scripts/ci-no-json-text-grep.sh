@@ -13,7 +13,7 @@
 # enforce pass. Three passes later, kustomize failed the second
 # `remove /spec/suspend` with "Unable to remove nonexistent key" and pinned the
 # whole platform Kustomization at Ready=False — nothing reconciled at all
-# (staging, 2026-08-27).
+# .
 #
 # The failure mode is nasty because it is SILENT and inverted: the script
 # reports success while doing the opposite of converging. Idempotence that is

@@ -240,7 +240,7 @@ describe('computeFailoverHeadroom — degenerate clamps + headroomClamped flag',
     const h = computeFailoverHeadroom(nodes, pods);
     expect(h.tenantAvailableCpu).toBe(0);
     expect(h.tenantAvailableMemoryGi).toBe(0);
-    // 2026-05-11 review fix: when headroom was clamped, we must NOT
+    // review fix: when headroom was clamped, we must NOT
     // claim survivability — silently green-flagging an over-committed
     // cluster was the original bug.
     expect(h.headroomClamped).toBe(true);

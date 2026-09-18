@@ -2,7 +2,7 @@
  * Fast node-down watch.
  *
  * Exists because the 5-minute reconciler reported `ready: true` for a node
- * that had been dead 4m20s during the 2026-09-11 drill — and because the
+ * that had been dead 4m20s during the drill — and because the
  * outage restarted the API pods, resetting that timer and delaying detection
  * of the event that caused it.
  */

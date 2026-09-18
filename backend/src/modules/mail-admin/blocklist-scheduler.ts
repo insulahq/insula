@@ -1,5 +1,5 @@
 /**
- * Scheduled DNSBL / blocklist watch (mail monitoring, 2026-07).
+ * Scheduled DNSBL / blocklist watch.
  *
  * The deliverability probe (probeDeliverability) already checks each
  * server-role sending IP against 8 DNSBLs, but only ON DEMAND when an

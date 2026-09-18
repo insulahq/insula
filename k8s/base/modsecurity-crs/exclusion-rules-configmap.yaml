@@ -22,7 +22,7 @@
 # coverage so any user-uploaded-file endpoint there still benefits
 # from ARGS_NAMES inspection.
 #
-# Hit pattern that caused this exclusion (staging 2026-05-19):
+# Hit pattern that caused this exclusion:
 #   POST /api/v1/system-backup/dr-drill/runs body field
 #   `secretsRestoredCount` matched `.secrets` in CRS's
 #   lfi-os-files.data dictionary → 403 from rule 930120.
@@ -48,7 +48,7 @@ data:
     # forwarded request with `Host: modsec-crs.traefik.svc.cluster.
     # local` (the modsec Service hostname) and puts the ORIGINAL
     # hostname in X-Forwarded-Host. Matching Host directly never
-    # fires — match X-Forwarded-Host instead. Found 2026-05-19
+    # fires — match X-Forwarded-Host instead. Found
     # debugging staging POST /system-backup/dr-drill/runs that
     # silently kept getting 403 even after the exclusion was
     # mounted + modsec rolled.
@@ -70,7 +70,7 @@ data:
     # forwarded request with `Host: modsec-crs.traefik.svc.cluster.
     # local` (the modsec Service hostname) and puts the ORIGINAL
     # hostname in X-Forwarded-Host. Matching Host directly never
-    # fires — match X-Forwarded-Host instead. Found 2026-05-19
+    # fires — match X-Forwarded-Host instead. Found
     # debugging staging POST /system-backup/dr-drill/runs that
     # silently kept getting 403 even after the exclusion was
     # mounted + modsec rolled.
@@ -111,7 +111,7 @@ data:
     # own domain keeps full 931100 coverage. Placed BEFORE the
     # single-rule 9000102 below on purpose — a chain that ends a file
     # swallows the first rule of the next-loaded (901 dynamic) file.
-    # (Reported 2026-08-03: POST /api/v1/admin/dns-servers with
+    # (Reported: POST /api/v1/admin/dns-servers with
     # connection_config.api_url = http://<mesh-ip>:8081 → 403.)
     SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\.${DOMAIN}(:[0-9]+)?$" \
         "id:9000103,\
@@ -132,7 +132,7 @@ data:
     # nginx-php NGINX_WEBROOT); CRS 930120 matches the `var/www` entry
     # of lfi-os-files.data inside that VALUE, scores 5, and 949110
     # blocks the deploy at the edge — every deploy of either entry
-    # failed before the API ever saw it. Measured 2026-08-26 on a live
+    # failed before the API ever saw it. on a live
     # cluster (CRS 4.28.0): "Matched Data: var/www found within
     # ARGS:json.configuration.APACHE_DOCUMENT_ROOT: /var/www/html".
     # The parameter's own help text recommends `/var/www/html/public`
@@ -151,7 +151,7 @@ data:
     # libmodsecurity 3.0.16 rejects regex-form targets in
     # ctl:ruleRemoveTarget* at config-parse time ("Expecting an
     # action"), which crash-loops the WAF exactly like the
-    # SanitiseRequestHeader note below. (Verified 2026-08-26 against
+    # SanitiseRequestHeader note below. (against
     # owasp/modsecurity-crs:4.28.0-nginx-alpine-202607160307.) So the
     # whole ARGS collection is dropped from 930120 for THIS endpoint
     # family only. 930120 keeps its cookie targets here; traversal
@@ -164,7 +164,7 @@ data:
     # The other half of this class is the 932xxx "Remote Command Execution"
     # family, which by design matches shell text — and the endpoints below
     # exist precisely to ACCEPT shell text and container configuration.
-    # Measured on a live cluster 2026-08-31 (CRS 4.28.0), every one a bare
+    # Measured on a live cluster (CRS 4.28.0), every one a bare
     # edge 403 the API never saw, read from the modsec audit log:
     #
     #   932160  `dev/stderr` in PHP_ERROR_LOG=/dev/stderr — the platform's
@@ -201,7 +201,7 @@ data:
     # even here.
     #
     # ⚠ USE ruleRemoveById FOR THE RANGE, NOT ruleRemoveTargetById.
-    # Measured 2026-08-31 on libmodsecurity 3.0.16 / CRS 4.28.0:
+    # on libmodsecurity 3.0.16 / CRS 4.28.0:
     #
     #   ctl:ruleRemoveTargetById=932000-932999;ARGS   parses, NO EFFECT
     #   ctl:ruleRemoveById=932000-932999              parses, WORKS
@@ -224,7 +224,7 @@ data:
     #
     # ── 934xxx "Application Attack Generic" — the SAME argument ──────
     #
-    # Added 2026-09-04 after the family blocked the compose editor. Measured
+    # after the family blocked the compose editor. Measured
     # on production (waf_logs, POST …/custom-deployments/validate) and
     # reproduced on DEV:
     #
@@ -293,7 +293,7 @@ data:
     # POST/PUT/PATCH /api/v1/tenants/:id/custom-deployments[/:id] and
     # …/custom-deployments/validate carry free-text fields that are, by
     # definition, filesystem paths and shell text for the TENANT's own
-    # container. Measured blocks on a live cluster 2026-08-26
+    # container. Measured blocks on a live cluster
     # (CRS 4.28.0), all as bare edge 403s the API never saw:
     #
     #   volumes[].containerPath /var/lib/mysql        930120 (var/lib/mysql)
@@ -327,7 +327,7 @@ data:
     # stays on, so e.g. SQLi in `image` still blocks here. Add further
     # ids ONLY with a measured false positive.
     #
-    # 9000109 (custom-deployments) was RETIRED 2026-08-31 — folded into
+    # 9000109 (custom-deployments) was RETIRED — folded into
     # 9000108, which now covers this URI with the whole 932xxx family
     # instead of just 932235. Keeping three sibling endpoints on three
     # different subsets was the bug, not the fix.
@@ -338,7 +338,7 @@ data:
     # ARGS:json.command — a shell command line run inside the tenant's
     # own workload container. `php /var/www/html/artisan schedule:run`
     # (the textbook Laravel cron) blocked via 930120 on `var/www`
-    # (measured 2026-08-26); any `… && exec …` or path-bearing command
+    # any `… && exec …` or path-bearing command
     # would trip the same families. Same data-not-parameter reasoning
     # and same two measured rule ids as 9000109 (ARGS-collection
     # removal — see 9000108 for why per-member removal is not
@@ -346,7 +346,7 @@ data:
     # rules and every other family keep full coverage on all fields,
     # including a webcron `url` with `../` in it.
     #
-    # 9000110 (cron-jobs) was RETIRED 2026-08-31 — folded into 9000108.
+    # 9000110 (cron-jobs) was RETIRED — folded into 9000108.
     # Two gaps it had, both fixed by the consolidation:
     #   · it carried 932235 but NOT 932160, so a cron command containing
     #     `/dev/stderr` or `/bin/sh` was blocked while `&& exec` passed;
@@ -364,13 +364,13 @@ data:
     # time —
     #   [emerg] Action: SanitiseRequestHeader is not yet supported
     # — which crash-loops the WAF, so do not re-add it on a future pass.
-    # (Verified 2026-08-03 against
+    # (against
     # owasp/modsecurity-crs:4.28.0-nginx-alpine-202607160307: control
     # file 855 rules OK, with the sanitise action [emerg].)
     # Dropping part B instead would break WAF Events, which resolves the
     # original hostname from request.headers["X-Forwarded-Host"] (see
     # backend/src/modules/ingress-routes/waf-log-scraper.ts).
-    # RESOLVED 2026-08-04 by a third route: the JSON audit record is written to
+    # RESOLVED by a third route: the JSON audit record is written to
     # a file (MODSEC_AUDIT_LOG) and the `audit-redactor` sidecar streams it to
     # stdout with the credential headers masked — see deployment.yaml. Nothing
     # here changes; do NOT re-add the sanitise action.
@@ -382,14 +382,14 @@ data:
     # pushing the inbound anomaly score to 5 → 949110 blocks it with a
     # 403 (nginx page from the modsec sidecar). It's an API endpoint,
     # not a served file, so the extension check is a false positive.
-    # Host-scoped chain (2026-09-09). It was previously a bare
+    # Host-scoped chain. It was previously a bare
     # REQUEST_URI match on the argument that no tenant workload serves this
     # path — true today, but it is an assumption about tenant content rather
     # than something we enforce, and the exclusion applied on EVERY WAF'd
     # host. The chain costs nothing: the `t:none` action list on the second
     # rule is what keeps a dangling `chain` from bleeding into the
     # next-loaded (dynamic) file. 920440 still guards `.bak`/`.key`/etc.
-    # everywhere else. (ADR-054; confirmed 2026-07-01 via the modsec audit
+    # everywhere else. (ADR-054; confirmed via the modsec audit
     # log — ruleId 920440, TX:EXTENSION=`.pem`.)
     SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\.${DOMAIN}(:[0-9]+)?$" \
         "id:9000102,\
@@ -432,7 +432,7 @@ data:
     # coverage, which is what actually matters here: `path` is the field a
     # traversal attack would use.
     #
-    # Host-scoped chain (2026-09-09) so a tenant app serving this URI on its
+    # Host-scoped chain so a tenant app serving this URI on its
     # own domain keeps full coverage. The `t:none` action list on the second
     # rule is what prevents a dangling `chain` bleeding into the next-loaded
     # (dynamic) exclusion file.
@@ -528,7 +528,7 @@ data:
     # — a completely ordinary web file that ships in most PHP applications —
     # puts that string in an ARG value and scores 5 per match.
     #
-    # Reproduced on DEV 2026-08-30, POST …/files/rename:
+    # Reproduced on DEV, POST …/files/rename:
     #   {"oldPath":"/x/.htaccess","newPath":"/x/.htaccess2"}  → 403 (score 10)
     #   {"oldPath":"/x/web.config","newPath":"/x/w2"}         → 403 (score  5)
     #   {"oldPath":"/x/normal.txt","newPath":"/x/n2.txt"}     → 404 (passed)
@@ -548,7 +548,7 @@ data:
     # headers and the request body as a whole stay inspected by every other
     # rule; only these four rules stop looking at ARGS on these paths.
     #
-    # Host-scoped 2026-09-09. It was previously unscoped on the grounds that
+    # Host-scoped. It was previously unscoped on the grounds that
     # "the file-manager API is reached from both admin.<apex> and
     # tenant.<apex>" — but the guard used throughout this file is
     # `^(admin|tenant|api)\.`, which matches BOTH, so that was never a reason
@@ -585,7 +585,7 @@ data:
     #   httpd.conf                     → in no data file       → PASSED
     #
     # Measured on DEV
-    # 2026-08-30 — every one of these was a 403 that never reached the API:
+    # — every one of these was a 403 that never reached the API:
     #
     #   POST …/files/rename        {"oldPath":"/p/.htaccess"}      (fixed by 9000111)
     #   POST …/files/copy          {"sourcePath":"/p/.htaccess"}   (fixed by 9000111)
@@ -654,7 +654,7 @@ data:
     # A compose document and its env files are shell commands and KEY=value
     # configuration by definition. Sent as application/json the WAF parses
     # them into ARGS and CRS matches content the tenant is entitled to submit.
-    # Measured on DEV 2026-09-09 — a realistic compose file plus a .env is
+    # Measured on DEV — a realistic compose file plus a.env is
     # refused at the edge with a bare 403 the API never sees:
     #
     #   933120  PHP Injection: Configuration Directive   <- .env KEY=value
@@ -676,7 +676,7 @@ data:
     # Everything else still applies here: URL, method, header and QUERY-STRING
     # rules are untouched, so ?path=../../etc/passwd is still caught.
     #
-    # Host-scoped chain (2026-09-09). LAST rule in the file, so the `t:none`
+    # Host-scoped chain. LAST rule in the file, so the `t:none`
     # action list on the second rule is REQUIRED — a chained SecRule with no
     # actions leaves the parser expecting one and it continues into the
     # next-loaded (dynamic) file, which crash-loops modsec and 502s every
@@ -690,7 +690,7 @@ data:
     # registered for the whole plugin, let a caller post an opaque uninspected
     # body to any of them. One trailing segment at most keeps those out (they
     # carry a second segment) and also stops `custom-deploymentsXXX` matching.
-    # Verified 2026-09-09 on DEV: PUT /<id>/pull-credentials as octet-stream
+    # on DEV: PUT /<id>/pull-credentials as octet-stream
     # returned 401 (past the WAF) before this narrowing, 403 after.
     SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\.${DOMAIN}(:[0-9]+)?$" \
         "id:9000115,\

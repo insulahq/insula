@@ -62,7 +62,7 @@ async function dispatchSafe(
 // ──────────────────────────────────────────────────────────────────
 //
 // There was a `notifyTenantMailboxLimitReached` here. It is gone, and nothing
-// should replace it. Operator decision 2026-09-16.
+// should replace it. Operator decision.
 //
 // It fired synchronously from the tenant's OWN failed click: `createMailbox`
 // rejects with 409 CLIENT_MAILBOX_LIMIT_REACHED, carrying the limit, the
@@ -98,11 +98,17 @@ export async function notifyTenantDkimRotated(
   payload: DkimRotatedPayload,
 ): Promise<void> {
   await dispatchSafe(db, 'tenant.mail_event', { kind: 'tenant', tenantId }, {
-    subsystem: 'DKIM key rotation',
+    // "DKIM" and "selector" are terms for whoever runs a mail server, not for
+    // the person who owns the domain. What the tenant needs to know is that
+    // the thing proving their mail is genuine was replaced, and that they do
+    // not have to do anything.
+    subsystem: 'Email signing key',
     objectLabel: payload.domainName,
-    detail: `A new DKIM signing key (selector "${payload.selector}") was automatically generated.`,
-    severityLabel: 'rotated',
-    recommendedAction: 'No action is required — the platform manages this for you.',
+    detail:
+      'The cryptographic key that proves mail from this domain is genuine was replaced automatically. '
+      + 'Mail keeps flowing throughout — receivers pick up the new key from DNS.',
+    severityLabel: 'replaced',
+    recommendedAction: 'Nothing to do — the platform manages this key for you.',
   }, tenantId);
 }
 
@@ -118,6 +124,19 @@ export type ImapsyncTerminalStatus = 'succeeded' | 'completed' | 'failed' | 'can
 
 export interface ImapsyncTerminalPayload {
   readonly jobId: string;
+  /**
+   * The mailbox being migrated INTO — the only thing a tenant needs to
+   * identify this notification, and the thing it did not carry.
+   *
+   * Required. The old payload had no mailbox at all, so the subject was built
+   * from the job id: `objectLabel: \`job ${jobId}\``. The dispatcher then
+   * resolved that id against tenants, users, mailboxes and domains, matched
+   * none of them (it is a JOB id), and substituted its placeholder — leaving
+   * the tenant with "IMAPSync migration: job (unnamed)".
+   */
+  readonly mailboxAddress: string;
+  /** Where the mail is being copied FROM, for context. */
+  readonly sourceHost?: string;
   readonly status: ImapsyncTerminalStatus;
   readonly messagesTransferred?: number;
   readonly errorMessage?: string;
@@ -151,24 +170,46 @@ export async function notifyTenantImapsyncTerminal(
   // No hand-derived `title` or `type` any more: the template builds the
   // subject and the category supplies the severity. Those two locals existed
   // only because the legacy path had nowhere else to put them.
-  const message = (() => {
-    if (payload.status === 'succeeded' || payload.status === 'completed') {
-      const count = payload.messagesTransferred ?? 0;
-      return `IMAPSync migration job finished successfully. ${count} message(s) transferred.`;
-    }
-    if (payload.status === 'failed') {
-      return `IMAPSync migration job failed. ${payload.errorMessage ?? 'See the job details in the tenant panel for the error log.'}`;
-    }
-    return 'IMAPSync migration job was cancelled before it could finish.';
+  // Plain language, on purpose. "IMAPSync" is the name of the tool the
+  // platform happens to shell out to; a tenant migrating their mail from an
+  // old host has never heard it and gains nothing from it. What they want is
+  // WHICH mailbox, whether it worked, and how much moved.
+  const outcomeLabel = (() => {
+    if (payload.status === 'succeeded' || payload.status === 'completed') return 'finished';
+    if (payload.status === 'failed') return 'failed';
+    return 'was cancelled';
   })();
 
-  await dispatchSafe(db, 'tenant.mail_event', { kind: 'tenant', tenantId }, {
-    subsystem: 'IMAPSync migration',
-    objectLabel: `job ${payload.jobId}`,
-    detail: message,
-    severityLabel: payload.status,
+  const detail = (() => {
+    if (payload.status === 'succeeded' || payload.status === 'completed') {
+      const count = payload.messagesTransferred ?? 0;
+      return count === 1
+        ? '1 message was copied across.'
+        : `${count} messages were copied across.`;
+    }
+    if (payload.status === 'failed') {
+      return payload.errorMessage
+        ? `The error was: ${payload.errorMessage}`
+        : 'Open the migration on your Email page to see what went wrong.';
+    }
+    return 'It was stopped before it finished, so some mail may not have been copied.';
+  })();
+
+  // Every key written as `name: value`, never shorthand and never a
+  // conditional spread. The variable-contract guard reads the payload keys out
+  // of this literal with `^\s*(\w+):` — shorthand (`detail,`) and a spread
+  // (`...(x ? { y } : {})`) are both invisible to it, so it reported three
+  // variables as supplied by nobody. `sourceLabel` is undefined rather than
+  // absent when there is no source host; the template guards it with
+  // `{{#if sourceLabel}}`, which treats undefined as absent, so nothing
+  // renders as "(copying from )".
+  await dispatchSafe(db, 'tenant.mailbox_migration', { kind: 'tenant', tenantId }, {
+    mailboxAddress: payload.mailboxAddress,
+    outcomeLabel: outcomeLabel,
+    detail: detail,
+    sourceLabel: payload.sourceHost,
     recommendedAction: payload.status === 'failed'
-      ? 'Review the job log in the tenant panel and re-run the migration.'
+      ? 'You can start the migration again from the Email page once the problem is fixed.'
       : '',
   }, tenantId);
 }
@@ -309,7 +350,7 @@ export async function notifyTenantPasswordChanged(
 
 // `notifyTenantSuspiciousActivity` and its payload lived here.
 //
-// Removed 2026-09-16 (operator decision). It had templates on every channel
+// Removed (operator decision). It had templates on every channel
 // and no caller, because nothing on the platform defines "suspicious".
 // Detecting it means choosing a security policy — is a new source IP
 // suspicious? a new user-agent? a new country? — and the wrong choice either
@@ -403,12 +444,81 @@ export interface AdminCertRenewalFailedPayload {
   readonly certSubject: string;
   readonly errorMessage?: string;
 }
+/**
+ * `dedupeKey` is REQUIRED here, unlike most notifiers.
+ *
+ * It used to be optional, and the one caller omitted it while the
+ * `cert_expiring` call fifteen lines above it passed one. A 21-second
+ * Kubernetes API blackout on production then produced 29 of these in a single
+ * second — one per domain. An optional parameter is exactly what made the
+ * omission invisible in review, so the type now refuses it.
+ */
 export async function notifyAdminCertRenewalFailed(
   db: Database,
   payload: AdminCertRenewalFailedPayload,
-  dedupeKey?: string,
+  dedupeKey: string,
 ): Promise<void> {
   await dispatchSafe(db, 'admin.cert_renewal_failed', { kind: 'admin' }, payload, undefined, { dedupeKey });
+}
+
+export interface AdminCertCheckUnavailablePayload {
+  /** Plain-English name of what could not be reached. */
+  readonly dependency: string;
+  /** How many certificates were left unchecked. */
+  readonly uncheckedCount: string;
+  readonly detail: string;
+  readonly recommendedAction: string;
+}
+/**
+ * The platform could not CHECK its certificates — not a verdict on any one of
+ * them. Raised once per outage, never per subject, and only once the failure
+ * has survived a retry (the reconciler runs every 60 seconds, so a single blip
+ * is over before an operator could read about it).
+ */
+export async function notifyAdminCertCheckUnavailable(
+  db: Database,
+  payload: AdminCertCheckUnavailablePayload,
+  dedupeKey: string,
+): Promise<void> {
+  await dispatchSafe(db, 'admin.cert_check_unavailable', { kind: 'admin' }, payload, undefined, { dedupeKey });
+}
+
+export interface AdminCertCheckResumedPayload {
+  readonly dependency: string;
+  /** How long checks were interrupted, already humanised. */
+  readonly outageLabel: string;
+  readonly certificateSummary: string;
+}
+/** Closes an `admin.cert_check_unavailable` warning. */
+export async function notifyAdminCertCheckResumed(
+  db: Database,
+  payload: AdminCertCheckResumedPayload,
+  dedupeKey: string,
+): Promise<void> {
+  await dispatchSafe(db, 'admin.cert_check_resumed', { kind: 'admin' }, payload, undefined, { dedupeKey });
+}
+
+export interface AdminCertRecoveredPayload {
+  readonly certSubject: string;
+  readonly expiresAt: string;
+  /** What it was doing before it recovered, in the operator's words. */
+  readonly previousState: string;
+}
+/**
+ * The closing half of a failure that was already reported.
+ *
+ * Two real wildcard issuance failures were each reported twice, the retry
+ * succeeded, and nobody was told — so the newest word an operator had on
+ * those domains stayed "failed" for weeks after they were fine. A failure
+ * notification without a recovery notification teaches operators that alarms
+ * mean nothing.
+ */
+export async function notifyAdminCertRecovered(
+  db: Database,
+  payload: AdminCertRecoveredPayload,
+  dedupeKey: string,
+): Promise<void> {
+  await dispatchSafe(db, 'admin.cert_recovered', { kind: 'admin' }, payload, undefined, { dedupeKey });
 }
 
 export interface AdminBackupFailedPayload {
@@ -579,7 +689,7 @@ export interface AdminNodeMemoryEventPayload {
   readonly summary: string;
 }
 /**
- * Node memory events (operator decision 2026-07-25): SystemOOM / evictions
+ * Node memory events: SystemOOM / evictions
  * touching SYSTEM workloads dispatch critical; tenant-only evictions
  * dispatch warning. Caller supplies an hour-scoped dedupeKey so a
  * sustained incident notifies at most once per node/class/hour (the
@@ -893,7 +1003,7 @@ export interface AdminClusterCapacityPayload {
 /**
  * Cluster storage capacity crossed a threshold.
  *
- * Moved off the raw-insert path 2026-09-15. It used to call
+ * Moved off the raw-insert path. It used to call
  * `db.insert(notifications)` directly, which reaches no template, no email, no
  * push, no preference gate and no delivery audit — and `category_id` is
  * nullable, so the row could not even be listed in the admin Sources screen.
@@ -983,7 +1093,7 @@ export async function notifyTenantEmailQuotaExceeded(
   await dispatchSafe(db, 'tenant.email_quota_exceeded', { kind: 'tenant', tenantId }, payload, tenantId);
 }
 
-// ── Mail monitoring (2026-07): send-limit saturation + blocklist ───────────
+// ── Mail monitoring: send-limit saturation + blocklist ───────────
 
 export interface AdminEmailAbusePayload {
   readonly tenantLabel: string;
@@ -1102,7 +1212,7 @@ export async function notifyAdminMailHealthDegraded(
   await dispatchSafe(db, 'admin.mail_health_degraded', { kind: 'admin' }, payload, undefined, { dedupeKey });
 }
 
-// ── Resource monitoring (2026-07): per-tenant CPU/memory/storage saturation ─
+// ── Resource monitoring: per-tenant CPU/memory/storage saturation ─
 
 export interface AdminTenantSaturationPayload {
   readonly tenantLabel: string;

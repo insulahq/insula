@@ -119,7 +119,7 @@ export async function reconcileCustomRow(
     // with NO message. The deployment then sits silent until the 60-minute
     // staleness timeout reports the uninformative "no progress".
     //
-    // Observed on production 2026-09-02: a custom container was started
+    // Observed on production: a custom container was started
     // whose spec asked for the tenant's entire CPU allowance while a sibling
     // held part of it. The ReplicaSet logged FailedCreate every few seconds;
     // the panel showed no error, no timeout and no feedback of any kind.
@@ -277,7 +277,7 @@ export async function readFirstPodObservation(
     // Skip dead pod OBJECTS the ReplicaSet has already replaced. A node-reboot
     // corpse keeps its exit-137 container status for as long as terminated-pod
     // GC lets it (default 12500 pods), and reading it reported healthy 1/1
-    // production workloads as OOM-killed on 2026-09-11. The live replica's own
+    // production workloads as OOM-killed. The live replica's own
     // state carries a real crash.
     if (isReplacedPodRecord({
       phase: pod.status?.phase,
@@ -292,7 +292,7 @@ export async function readFirstPodObservation(
       // and `waiting` (CrashLoopBackOff). The reconcile takes ONE snapshot, so
       // relying on the instantaneous reason misses the crash whenever it samples
       // the `terminated` half — the status then fell through to 'pending' and the
-      // UI showed "Starting…" forever (reproduced on DEV 2026-08-23). Read the
+      // UI showed "Starting…" forever. Read the
       // termination from state OR lastState, and treat restartCount as the
       // deterministic crash-loop signal so detection no longer depends on timing.
       const terminated = cs.state?.terminated ?? cs.lastState?.terminated;

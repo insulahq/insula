@@ -19,33 +19,33 @@ const BulkProgressModal = lazy(() => import('@/components/BulkProgressModal'));
 const OperationProgressModal = lazy(() => import('@/components/OperationProgressModal'));
 const ProvisioningProgressModal = lazy(() => import('@/components/ProvisioningProgressModal'));
 const ApplyHaProgressModal = lazy(() => import('@/components/ApplyHaProgressModal'));
-// 2026-05-16: long-running mail ops registered with the task center.
+// long-running mail ops registered with the task center.
 // `mail-operation` is the generic kind for port-exposure flips +
 // snapshot triggers (one-page lifecycle visible via task chip).
 // `mail-migration` reuses the dedicated migration modal that already
 // polls /admin/mail/migrate/:runId (per-step state machine UI).
 const MailTaskProgressModal = lazy(() => import('@/components/MailTaskProgressModal'));
 const MailMigrationProgressModal = lazy(() => import('@/components/MailMigrationProgressModal'));
-// 2026-05-17: Phase 10 of snapshot-storage overhaul. Speedtest is a
+// Phase 10 of snapshot-storage overhaul. Speedtest is a
 // platform-scoped op (NOT tenant-scoped) — modal polls /me/tasks +
 // /admin/backup-configs for the latest result.
 const SpeedtestProgressModal = lazy(() => import('@/components/SpeedtestProgressModal'));
-// 2026-05-22: Phase 4b PITR progress modal — chip click re-opens the
+// Phase 4b PITR progress modal — chip click re-opens the
 // step-stream timeline pointed at the in-flight Job. Without this
 // the task's target was `type: 'route'` to the API path which 404'd.
 const PitrProgressModal = lazy(() => import('@/components/backups/PitrProgressModal'));
-// 2026-06-16: snapshot create enrolls a `storage.snapshot` task with a
+// snapshot create enrolls a `storage.snapshot` task with a
 // `snapshot-create` modal target so the chip re-opens this progress modal.
 const SnapshotCreateProgressModal = lazy(() => import('@/components/SnapshotCreateProgressModal'));
-// 2026-07-28: platform upgrade (ADR-045 re-pin). The apply enrolls a
+// platform upgrade (ADR-045 re-pin). The apply enrolls a
 // `platform.upgrade` task with `target.modal = 'platform-upgrade'` so the chip
 // re-opens live roll progress + post-flight convergence.
 const PlatformUpgradeProgressModal = lazy(() => import('@/components/PlatformUpgradeProgressModal'));
-// 2026-08-11: additive apex-DNS repair. Detection is passive; this modal only
+// additive apex-DNS repair. Detection is passive; this modal only
 // appears for the operator-invoked fix, and the chip re-opens it so closing the
 // modal never abandons an in-flight repair.
 const DnsApexDriftTaskModal = lazy(() => import('@/components/DnsApexDriftTaskModal'));
-// 2026-08-17: on-demand TLS certificate reissue (ADR-058 follow-up). The
+// on-demand TLS certificate reissue (ADR-058 follow-up). The
 // chip re-opens the step checklist, which carries cert-manager's own
 // message for a stuck order.
 const TlsReissueTaskModal = lazy(() => import('@/components/TlsReissueTaskModal'));

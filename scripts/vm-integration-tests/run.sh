@@ -126,7 +126,7 @@ echo "════ vmtest run ${RUN}  apex=${APEX}  net=10.98.${OCTET}.0/24  mod
 
 cleanup() {
   local rc=$?
-  # RETAIN BY DEFAULT (2026-08-11). Throw-away-per-run keeps drift impossible,
+  # RETAIN BY DEFAULT. Throw-away-per-run keeps drift impossible,
   # but it also destroys the only copy of the evidence the moment a run finds
   # something: every follow-up question ("which pin is still on that node?",
   # "what did the scheduler say?") then costs a fresh ~4h run to ask. Runs are
@@ -269,7 +269,7 @@ if [[ -n "${VMTEST_PEBBLE_IP:-}" ]]; then
   # platform-config is Flux-managed (kustomize.toolkit.fluxcd.io/name=platform) so Flux
   # reconciles it straight back to LE — leaving every reconciler cert (platform-ingress/
   # dex/webmail/admin/tenant) + overlay cert on LE, which can NEVER validate the private
-  # test apex → all NotReady → smoke gate rc=60 before any suite runs (VM tier 2026-07-12).
+  # test apex → all NotReady → smoke gate rc=60 before any suite runs.
   # This cluster is DISPOSABLE, so: suspend the platform Kustomization (stop the revert),
   # pin platform-config to the custom ACME issuer, restart platform-api to pick up
   # CERT_ISSUER_*, and re-point every LE/local-ca cert at acme-custom-http01. Verified: all
@@ -280,7 +280,7 @@ if [[ -n "${VMTEST_PEBBLE_IP:-}" ]]; then
     # STOP Flux entirely (scale its controllers to 0) — `flux suspend kustomization platform`
     # does NOT hold here: the platform Kustomization is itself reconciled from git, so Flux
     # un-suspends it within minutes and reverts platform-config back to LE mid-suite (VM tier
-    # 2026-07-13: dex/platform-ingress found back on letsencrypt-prod-http01, oidc-dex
+    # dex/platform-ingress found back on letsencrypt-prod-http01, oidc-dex
     # discovery fetch 502). On this DISPOSABLE, already-deployed cluster nothing else needs
     # to reconcile during the test, so scaling the controllers to 0 makes the imperative cert
     # config below STICK for the whole run.
@@ -292,7 +292,7 @@ if [[ -n "${VMTEST_PEBBLE_IP:-}" ]]; then
     # The limiter buckets on `user.sub ?? request.ip` at 100 req/min. The
     # PARALLEL group runs ~28 suites that all authenticate as the SAME admin, so
     # they share ONE bucket and throttle each OTHER. Measured: 7 flaky suites on
-    # 2026-08-21 run 406f1f0a, 11 on run 2bf807f9 — every one "failed under
+    # run 406f1f0a, 11 on run 2bf807f9 — every one "failed under
     # parallel load, PASSED on serial retry".
     #
     # This MUST go in the DB, not `kubectl set env`. Scaling Flux to 0 does not

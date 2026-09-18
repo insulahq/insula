@@ -50,6 +50,7 @@ import {
   resolveIdVariables,
   greetingFor,
   findIds,
+  UNRESOLVED_NAME_PLACEHOLDER,
 } from './envelope.js';
 import { CLASS_POLICY } from '../routing/classes.js';
 import { isObjectMuted } from '../mutes/service.js';
@@ -105,8 +106,8 @@ export interface EmitEventOptions {
    * persists one notification per user.
    *
    * Format the key as `<event-kind>:<scope-discriminator>:<bucket>`
-   * e.g. `subscription-expiry:tenant-X:7d:2026-06-05` for a 7-day-out
-   * warning about the 2026-06-05 expiry slot.
+   * e.g. `subscription-expiry:tenant-X:7d:` for a 7-day-out
+   * warning about the expiry slot.
    */
   readonly dedupeKey?: string;
 }
@@ -308,11 +309,31 @@ function warnOnRenderedIds(
   body: string,
 ): void {
   const leaked = [...new Set([...findIds(subject ?? ''), ...findIds(body)])];
-  if (leaked.length === 0) return;
-  dispatchLog().warn(
-    { categoryId, channel, leakedIds: leaked },
-    'notification rendered with a raw id in the text a person reads',
-  );
+  if (leaked.length > 0) {
+    dispatchLog().warn(
+      { categoryId, channel, leakedIds: leaked },
+      'notification rendered with a raw id in the text a person reads',
+    );
+  }
+
+  // The placeholder is worse than the id it replaces, and it was INVISIBLE to
+  // the check above.: a tenant received "IMAPSync migration: job
+  // (unnamed)" because an emitter put a JOB id in a label, the resolver tried
+  // tenants/users/mailboxes/domains, matched none of them, and substituted the
+  // placeholder. No raw id survived, so nothing warned — a notification whose
+  // subject named nothing at all went out in silence.
+  //
+  // Error, not warn: a subject that identifies nothing is a defect in the
+  // emitter, not a condition of the world.
+  const text = `${subject ?? ''} ${body}`;
+  if (text.includes(UNRESOLVED_NAME_PLACEHOLDER)) {
+    dispatchLog().error(
+      { categoryId, channel, subject },
+      'notification rendered with an UNRESOLVABLE id — the reader is told nothing. '
+      + 'The emitter is passing an id of a kind the name resolver does not know; '
+      + 'pass the human label instead',
+    );
+  }
 }
 
 export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<EmitResult> {
@@ -545,7 +566,7 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
     // ABSENT keys (present-but-undefined renders ''). Without this,
     // any template referencing the shared {{platformName}} footer —
     // i.e. every seeded email template — threw TEMPLATE_RENDER_ERROR
-    // and the email silently vanished (caught live 2026-06-12 by the
+    // and the email silently vanished (caught live by the
     // SLO-alert E2E: zero email delivery rows cluster-wide).
     // Caller-supplied variables win over the defaults. undefined
     // values are normalised to null: strict mode tolerates both, but
@@ -838,7 +859,7 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
   const externalLocale = opts.localeOverride ?? 'en';
   // A person who is both a tenant admin AND the mailbox owner would otherwise
   // get two copies of the same notification, seconds apart — observed on
-  // production 2026-09-16, where one recipient received the same mailbox-quota
+  // production, where one recipient received the same mailbox-quota
   // warning twice under an identical dedupe key. The two legs resolve their
   // audience independently (by user id, and by address), so the only place
   // they can be reconciled is here, where both lists exist.

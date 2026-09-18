@@ -65,7 +65,7 @@ done
 # gap is intentional, not a place to silence the guard.
 #
 # Empty on purpose. It used to exempt the legacy.* categories, which were
-# removed on 2026-09-15 along with the notifyUser path they belonged to. An
+# removed along with the notifyUser path they belonged to. An
 # allowlist that outlives its subject is a silencer, not an exception.
 ALLOW_MISSING=""
 
@@ -153,8 +153,22 @@ for (const m of EVENTS_SRC.matchAll(/export async function (\w+)\(([\s\S]*?)\): 
   // so a comma-delimited segment match walks straight past the payload. Anchor
   // on the CLOSING brace of the scope argument instead.
   const literal = m[3].match(/dispatchSafe\([\s\S]*?\},\s*\{([\s\S]*?)\n\s*\},/);
+  // Both spellings a payload key can take: `name: value` and the ES2015
+  // shorthand `name,`. Only the first was matched until 2026-09-17, when a new
+  // emitter written with shorthand had three of its variables reported as
+  // supplied by nobody — a guard failure that looked exactly like a real
+  // contract break.
+  //
+  // A conditional spread — `...(x ? { y: z } : {})` — is still invisible, and
+  // deliberately not parsed: reading object keys out of arbitrary expressions
+  // with a regex invites the opposite error, a key claimed as supplied on a
+  // branch that never runs. Emitters write their keys unconditionally and pass
+  // undefined instead; the guard says so when it fails.
   const literalKeys = literal
-    ? [...literal[1].matchAll(/^\s*(\w+):/gm)].map((x) => x[1])
+    ? [
+      ...[...literal[1].matchAll(/^\s*(\w+):/gm)].map((x) => x[1]),
+      ...[...literal[1].matchAll(/^\s*(\w+),\s*$/gm)].map((x) => x[1]),
+    ]
     : [];
   const keys = literalKeys.length > 0
     ? literalKeys

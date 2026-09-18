@@ -10,7 +10,7 @@
  *
  * ## Shape details taken from the wire, not from the RFC
  *
- * Verified 2026-09-13 by delivering a real aggregate report to a live server
+ * by delivering a real aggregate report to a live server
  * and reading the stored object back:
  *
  *   - `records`, `dkimResults` and `spfResults` are **objects keyed by
@@ -335,10 +335,14 @@ export async function pollDmarcReports(
 // The webhook ingest calls this when an incoming-report.* event lands so a
 // report surfaces within seconds instead of waiting for the 5-min tick.
 //
-// Moved here from fbl.ts when FBL was retired (2026-09-15). It had always
+// Moved here from fbl.ts when FBL was retired. It had always
 // driven BOTH pollers — an incoming-report.* event does not say which report
 // type arrived — so deleting it with the FBL module would have silently cost
 // DMARC its fast path and left only the 5-minute tick.
+//
+// It drives both again now that abuse reports are ingested, for the same
+// reason: the event names the domain, not the report type, so a nudge that
+// polled only DMARC would leave a complaint sitting until the next tick.
 
 let pollTimer: NodeJS.Timeout | null = null;
 
@@ -353,6 +357,19 @@ export function schedulePollSoon(
     pollDmarcReports(db, logger).catch((err) => {
       logger.warn({ err }, 'dmarc poll (webhook-triggered) failed');
     });
+    // Imported at call time: abuse-reports.ts imports the notifications stack,
+    // and a module-level import here would pull it into every consumer of this
+    // file for a path that only runs on a webhook.
+    import('./abuse-reports.js')
+      .then(({ pollAbuseReports }) => pollAbuseReports(db, logger))
+      .catch((err) => {
+        logger.warn({ err }, 'abuse report poll (webhook-triggered) failed');
+      });
+    import('./tls-reports.js')
+      .then(({ pollTlsReports }) => pollTlsReports(db, logger))
+      .catch((err) => {
+        logger.warn({ err }, 'tls report poll (webhook-triggered) failed');
+      });
   }, delayMs);
   pollTimer.unref();
 }

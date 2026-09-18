@@ -51,7 +51,7 @@ const MAIL_SERVER_IPV6 = (): string | undefined =>
   normalizeEnv(process.env.MAIL_SERVER_IPV6)
   ?? normalizeEnv(process.env.INGRESS_DEFAULT_IPV6);
 
-// mtaStsPolicyId() helper removed 2026-05-06 along with the MTA-STS
+// mtaStsPolicyId helper removed along with the MTA-STS
 // records — see the comment block where the records were dropped.
 
 export interface MailDnsSyncOutcome {
@@ -288,7 +288,7 @@ function buildBaseRecords(
     // platform ever created. Stalwart does not bypass RCPT validation for
     // report addresses, so every aggregate report any receiver sent was
     // refused with `550 5.1.2 Mailbox does not exist` and silently discarded.
-    // Confirmed on DEV 2026-09-13: the record was published, the mailbox did
+    // Confirmed on DEV: the record was published, the mailbox did
     // not exist, and no report had ever been ingested.
     //
     // Same-domain rather than a central `dmarc@<apex>`: RFC 7489 §7.1 requires
@@ -302,7 +302,7 @@ function buildBaseRecords(
     {
       recordType: 'TXT',
       recordName: `_dmarc.${domainName}`,
-      // p=none, NOT p=quarantine (changed 2026-09-14, operator decision).
+      // p=none, NOT p=quarantine(changed, operator decision).
       //
       // A newly-enabled domain has no evidence that its legitimate mail
       // aligns. Publishing enforcement on day one spam-folders whatever does
@@ -373,7 +373,7 @@ function buildBaseRecords(
       priority: 10,
       purpose: 'srv',
     },
-    // ─── autoconfig / autodiscover CNAMEs (REMOVED 2026-05-06) ──────
+    // ─── autoconfig / autodiscover CNAMEs ──────
     // Previously this block created CNAMEs autoconfig.<domain> and
     // autodiscover.<domain> → platform mail hostname. The intent was
     // to let Thunderbird/Outlook discovery probes find the mail
@@ -397,7 +397,7 @@ function buildBaseRecords(
     // The TXT/CNAME entries previously written for these records will
     // be removed from PowerDNS the next time the domain is
     // re-provisioned via the existing diff-and-reconcile path.
-    // ─── MTA-STS records (REMOVED 2026-05-06) ───────────────────────
+    // ─── MTA-STS records ───────────────────────
     // Same cert-mismatch problem as the autoconfig CNAMEs above:
     // MTA-STS spec (RFC 8461) requires the policy file to be served
     // over HTTPS at mta-sts.<domain>/.well-known/mta-sts.txt with a
@@ -649,7 +649,7 @@ export async function deprovisionEmailDns(
     }
     if (r.recordType === 'CNAME') {
       // Legacy autoconfig / autodiscover / mta-sts CNAMEs created by
-      // earlier provisioning code (removed 2026-05-06). Cleanup
+      // earlier provisioning code. Cleanup
       // catches them so re-provisioning leaves no orphans in PowerDNS.
       const name = r.recordName ?? '';
       return /^(autoconfig|autodiscover|mta-sts)\./.test(name);

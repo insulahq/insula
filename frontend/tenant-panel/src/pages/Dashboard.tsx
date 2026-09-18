@@ -28,7 +28,7 @@ export default function Dashboard() {
   // The SAME source the Backups page lists from. It used to read the retired
   // per-resource `backups` table, which no backup engine has ever written to —
   // so this tile said "0" to tenants holding dozens of off-site bundles
-  // (operator report 2026-09-11).
+  // .
   const { data: bundlesData } = useTenantBundles();
   const { data: deploymentsData } = useDeployments(tenantId ?? undefined);
   const { data: mailboxUsageData, isLoading: mailboxUsageLoading } = useMailboxUsage(

@@ -5,7 +5,7 @@
  * `/var/log/stalwart`. In our container that directory does not exist
  * and is not a mounted volume, so the mail server produced **no logs
  * at all** — nothing on disk, nothing on stdout, nothing in
- * `kubectl logs`. Measured on DEV 2026-09-15: zero log lines in the
+ * `kubectl logs`. Measured on DEV: zero log lines in the
  * pod's entire 7-hour life while it was actively accepting SMTP.
  *
  * That blindness is not a cosmetic problem. It is what made a real

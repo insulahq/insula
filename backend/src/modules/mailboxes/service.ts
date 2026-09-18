@@ -34,7 +34,7 @@ import type { FastifyInstance } from 'fastify';
  * Resolve the Stalwart JMAP principals account ID.
  * Returns null if Stalwart is unreachable (unit tests, no mail stack).
  *
- * Security review M3 fix (2026-05-03): the cache used to be a permanent
+ * Security review M3 fix: the cache used to be a permanent
  * non-null slot. If Stalwart was unreachable at first call we'd cache
  * the null path indirectly (every call re-tried, but a transient
  * recovery would never invalidate a cached account ID after Stalwart
@@ -74,7 +74,7 @@ async function getJmapAccountId(): Promise<JmapAccountId | null> {
  * `maxDiskQuota`, value in BYTES. So the JMAP patch path is
  * `quotas/maxDiskQuota`. (The earlier `quota/storage` was wrong — Stalwart
  * 0.16 rejects it as invalidPatch — so quotas never actually reached Stalwart
- * before this fix; verified by E2E 2026-06-13. See git history.)
+ * before this fix; verified by E2E. See git history.)
  *
  * Best-effort: the platform DB is authoritative; on a transient Stalwart error
  * the next quota edit (or a re-create) re-applies it.
@@ -287,7 +287,7 @@ export async function createMailbox(
   const hiddenPrimarySecret = crypto.randomBytes(24).toString('base64url');
 
   // 5b. Provision mailbox in Stalwart via JMAP Principal/set.
-  //     Code-review HIGH-1 fix (2026-05-03): use compensating cleanup on
+  // Code-review HIGH-1 fix: use compensating cleanup on
   //     DB-write failure. The order is JMAP-first to avoid zombie DB
   //     rows; if the DB insert then fails (uniq race, conn loss), we
   //     destroy the just-created Stalwart principal so it doesn't
@@ -311,7 +311,7 @@ export async function createMailbox(
       }, 'createMailbox: email_domain has no stalwartDomainId — skipping JMAP create (principals-sync will reconcile after domain is enabled)');
     } else {
       try {
-        // Security review M1 (2026-05-03): cleartext password sent to
+        // Security review M1: cleartext password sent to
         // Stalwart over internal HTTP. Stalwart claims `$2b$` bcrypt
         // support but the staging E2E for hashed-secret login is still
         // pending; until that is verified, the fastest safe path is to
@@ -454,7 +454,7 @@ export async function createMailbox(
       // for its 30-day reap. WITHOUT this the recreate half of a reap leaves
       // `last_reaped_at` NULL, the next tick sees it as due again, and the
       // reconciler delete-and-recreates it every five minutes forever — the
-      // same runaway shape as the 2026-09-16 notification storm.
+      // same runaway shape as the notification storm.
       ...(platformManaged ? { lastReapedAt: new Date() } : {}),
     });
   } catch (dbErr) {
@@ -612,12 +612,12 @@ export async function updateMailbox(
   // Mail-rules validation — pure checks only; the Stalwart push happens
   // below, AFTER every other validation, so a rejected field elsewhere in
   // the same PATCH (e.g. an over-limit quota) can't leave the mail server
-  // already mutated while the DB keeps the old state (review 2026-08-24).
+  // already mutated while the DB keeps the old state.
   // Forwarding AND auto-reply both live in the platform-managed Sieve
   // script, so an edit to either regenerates it from the MERGED desired
   // state (input value where present, else the stored row).
   // A status flip applies the FULL access profile (operator decision
-  // 2026-08-26: `disabled` = mail shutdown — inbound bounced via ereject,
+  // `disabled` = mail shutdown — inbound bounced via ereject,
   // authentication refused, aliases off; `active` restores everything
   // from the stored row).
   const statusFlipped =
@@ -649,7 +649,7 @@ export async function updateMailbox(
   }
 
   // Desired auto-reply state (merged). Enabling with an empty body is
-  // rejected loudly — before 2026-08 the fields were stored but never
+  // rejected loudly — before the fields were stored but never
   // reached the mail server, and a bodyless vacation reply is exactly
   // the kind of silent no-op that era normalised.
   const desiredAutoReplyEnabled =
@@ -705,7 +705,7 @@ export async function updateMailbox(
       // BEFORE the script. An unresolvable admin account is a HARD
       // failure here — silently skipping would return 200 with the DB
       // flipped while the account can still authenticate and its aliases
-      // still resolve (fail-open suspension; review 2026-08-26 HIGH).
+      // still resolve(fail-open suspension; review HIGH).
       if (statusFlipped) {
         const accountId = await getJmapAccountId();
         if (!accountId) {
@@ -1080,7 +1080,7 @@ export async function generateWebmailToken(
   // enough for the redirect chain, short enough to minimise risk if the URL
   // leaks via logs, browser history, or Referer headers.
   //
-  // 2026-05-17 security fix (review #C1): per-engine HMAC keys to
+  // security fix (review #C1): per-engine HMAC keys to
   // eliminate cross-engine token replay. A Bulwark JWT contains an
   // `iss` claim that Roundcube's `jwt_auth.php` plugin ignores; under
   // the previous shared-key model a Bulwark token replayed at
@@ -1118,7 +1118,7 @@ export async function generateWebmailToken(
   // Engine resolution precedence:
   //   1. explicit caller override (options.engine)
   //   2. platform-wide `default_webmail_engine` setting
-  //   3. hardcoded 'bulwark' (fresh-install default since 2026-05-17;
+  // 3. hardcoded 'bulwark' (fresh-install default;
   //      see getDefaultWebmailEngine doc)
   let engine: 'roundcube' | 'bulwark';
   if (options?.engine) {
@@ -1142,7 +1142,7 @@ export async function generateWebmailToken(
       ?? process.env.JWT_SECRET;
     if (!process.env.BULWARK_WEBMAIL_JWT_SECRET && process.env.WEBMAIL_JWT_SECRET) {
       // Legacy single-secret deployment — fall back to the Roundcube
-      // key but warn. Operators upgrading from pre-2026-05-17 builds
+      // key but warn. Operators upgrading from pre- builds
       // hit this once on first deploy; bootstrap.sh's next run
       // provisions an independent BULWARK_JWT_AUTH_SECRET.
       app.log?.warn?.(
@@ -1211,10 +1211,10 @@ export async function generateWebmailToken(
     // against caller smuggling master-user syntax into the claim).
     // Bulwark itself builds the `<mailbox>%<masterUser>` Basic auth
     // header server-side from the master credentials in mail-secrets.
-    // NOTE (2026-06-08): the pinned Bulwark image (v1.6.7) reads those
+    // NOTE: the pinned Bulwark image (v1.6.7) reads those
     // creds from BULWARK_STALWART_MASTER_USER / *_PASSWORD (prefixed);
     // the bulwark Deployment provides both the prefixed and unprefixed
-    // spellings. A 2026-05-28 change that dropped the prefix broke
+    // spellings. A change that dropped the prefix broke
     // impersonation (route 404'd because the creds were undefined) —
     // see k8s/base/bulwark/deployment.yaml for the full history.
     const jti = crypto.randomUUID();

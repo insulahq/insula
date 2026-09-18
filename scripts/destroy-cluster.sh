@@ -84,7 +84,7 @@ echo "[$(hostname)] wt0 before: ${WTBEFORE:-none}"
 # stops the service, removes the /usr/local/bin/k3s binary, deletes the
 # systemd unit, and runs k3s-killall.sh — a genuine clean slate.
 #
-# Why this matters (regression fixed 2026-05-31): the old code only
+# Why this matters: the old code only
 # `systemctl stop`ped k3s and rm-rf'd /var/lib/rancher, leaving the k3s
 # binary + systemd unit behind. On the next bootstrap, bootstrap.sh's
 # "k3s already installed → skip install" path then skipped straight to
@@ -166,7 +166,7 @@ LH_IQN_PREFIX="iqn.2019-10.io.longhorn:"
 if command -v iscsiadm >/dev/null 2>&1; then
   _lh_before=$(iscsiadm -m session 2>/dev/null | grep -cF "$LH_IQN_PREFIX")
   _lh_out=0
-  # "tcp: [281] 10.42.0.5:3260,1 iqn.2019-10.io.longhorn:pvc-… (non-flash)"
+  # "tcp: [281] 10.42.0.5:3260,1 iqn..io.longhorn:pvc-… (non-flash)"
   while IFS='|' read -r _sid _iqn; do
     [[ -z "$_sid" ]] && continue
     iscsiadm -m session -r "$_sid" -u >/dev/null 2>&1 && _lh_out=$((_lh_out + 1))
@@ -195,7 +195,7 @@ fi
 # wipe + re-bootstrap the markers said "done" while the files were gone,
 # and the step never re-ran.
 #
-# Measured on a node wiped and re-bootstrapped 2026-08-08:
+# Measured on a node wiped and re-bootstrapped:
 #
 #   .memory-protection    Aug  4 00:33   <- previous install
 #   .calico-installed     Aug  8 12:50   <- the re-bootstrap

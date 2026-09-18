@@ -3,7 +3,7 @@
  * /api/v1/tenant/backups/* — the JWT carries the tenantId so the
  * hooks don't need it as a parameter.
  *
- * 2026-05-28: schedule hooks removed; on-demand `useRunBundleNow`
+ * schedule hooks removed; on-demand `useRunBundleNow`
  * added. Per platform policy, tenants don't set their own schedules.
  */
 

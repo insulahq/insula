@@ -6,7 +6,7 @@
  * production message volumes — see project_stalwart_storage_benchmark_
  * 2026_05_11.md). Resize was historically supported but local-path
  * does NOT quota — `requests.storage` is informational only after
- * creation. The resize endpoint was deleted as part of the 2026-05-14
+ * creation. The resize endpoint was deleted as part of the
  * streamline; this module is now READ-ONLY.
  */
 
@@ -17,13 +17,13 @@ import {
 } from '@insula/api-contracts';
 
 const MAIL_NAMESPACE = 'mail';
-// A2.5 (2026-05-25): mail-stack consolidation — the PVC now holds
+// A2.5: mail-stack consolidation — the PVC now holds
 // BOTH Stalwart RocksDB AND Bulwark config under subPaths
 // (stalwart/, bulwark/). Default size 30Gi (legacy was 20Gi
 // Stalwart-only). Legacy stalwart-rocksdb-data PVC kept in cluster
 // for 48-72h safety period.
-// (Pre-2026-05-12 the mail namespace ran a CNPG PostgreSQL cluster
-// backing Stalwart; migrated to RocksDB then consolidated 2026-05-25.)
+// (Pre- the mail namespace ran a CNPG PostgreSQL cluster
+// backing Stalwart; migrated to RocksDB then consolidated.)
 const MAIL_PVC_NAME = 'mail-stack-data';
 
 export interface MailPvcOptions {
@@ -79,7 +79,7 @@ export async function getMailPvcStorage(
     freeBytes: df.freeBytes,
     storageClass: scName,
     // local-path doesn't support expansion; resize was deleted in the
-    // 2026-05-14 streamline. Kept on the response for UI stability.
+    // streamline. Kept on the response for UI stability.
     expansionAllowed: false,
     lastResizedAt: null,
   });

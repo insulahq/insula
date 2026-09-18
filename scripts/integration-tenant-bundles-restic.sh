@@ -71,7 +71,7 @@ ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$SCRIPT_DIR/lib/integration-env.sh"
 load_integration_env
 # A cluster with no backup target bound cannot run this suite. Report that
-# as SKIPPED rather than a wall of red assertions (2026-08-04: twelve
+# as SKIPPED rather than a wall of red assertions (: twelve
 # suites failed on a fresh cluster purely because nothing was bound).
 require_backup_class_or_skip tenant
 
@@ -83,7 +83,7 @@ SSH_KEY="${SSH_KEY:-$HOME/hosting-platform.key}"
 # PLATFORM_ENCRYPTION_KEY + writer-pod info there. Prefer the integration.env
 # SSH_HOST (same cluster as ADMIN_HOST) over the compiled-in placeholder.
 TESTING_HOST="${TESTING_HOST:-${SSH_HOST:-root@testing.example.test}}"
-# servers.txt moved from ~/k8s-staging/ to ~/ (2026-06-17); honour the new
+# servers.txt moved from ~/k8s-staging/ to ~/; honour the new
 # location, fall back to the legacy path.
 SERVERS_TXT="${SERVERS_TXT:-$([ -f "$HOME/servers.txt" ] && echo "$HOME/servers.txt" || echo "$HOME/k8s-staging/servers.txt")}"
 require_env ADMIN_PASSWORD

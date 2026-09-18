@@ -209,7 +209,7 @@ describe('deleteNotification', () => {
   });
 });
 
-// notifyUser / notifyUsers were DELETED on 2026-09-15 along with the legacy
+// notifyUser / notifyUsers were DELETED along with the legacy
 // delivery path. They wrote a notifications row and reached no template, no
 // email, no preference gate and no delivery audit; every caller now dispatches
 // through a real category. Their test cases went with them rather than being

@@ -119,7 +119,7 @@ export async function findById(db: Database, sessionId: string): Promise<Session
  *  termination AFTER the WS has successfully re-attached but BEFORE
  *  a follow-up cancelDelayedTermination round-trip lands. Without
  *  this, a freshly-reconnected session could have its Pod deleted
- *  out from under it. (Security review HIGH finding, 2026-05-20.)
+ * out from under it.(Security review HIGH finding.)
  *
  *  Note: the comparison is by exact hash equality at the DB level —
  *  Postgres compares bytea byte-for-byte without short-circuit, which

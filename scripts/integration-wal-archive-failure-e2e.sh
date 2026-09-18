@@ -5,7 +5,7 @@
 # platform alerts — and never self-destructs — when continuous WAL archiving to a
 # SYSTEM backup target fails.
 #
-# Scenario (mirrors the 2026-06-02 runaway, but bounded + observable):
+# Scenario(mirrors the runaway, but bounded + observable):
 #   1. Baseline: no SYSTEM target → no barman plugin on the CNPG cluster →
 #      wal-archive no-op-succeeds → ContinuousArchiving healthy, breaker untripped.
 #   2. Bind a DEAD S3 target (unroutable endpoint) → the postgres-objectstore

@@ -80,11 +80,11 @@ spec:
     # backup-health-labels-reconciled-by: backup-rclone-shim/etcd-cronjob.ts
     # This CronJob is seed-then-disown (see `reconcile: disabled` below), so
     # THIS BLOCK ONLY REACHES A FRESH INSTALL — kustomize-controller reports
-    # "skipped" for a disowned object on every apply. On DEV 2026-09-15 the
+    # "skipped" for a disowned object on every apply. On DEV the
     # manifest carried it while the live object's spec.jobTemplate.metadata
     # was {}. The reconciler converges the same labels onto existing
     # clusters; keep the two in sync.
-    # Proven on DEV 2026-09-15: three labelled CronJobs firing normally,
+    # Proven on DEV: three labelled CronJobs firing normally,
     # `kubectl get jobs -A -l insula.host/backup-health-watch=true` empty.
     # Keep this block in sync with the CronJob-level labels above.
     metadata:
@@ -184,7 +184,14 @@ spec:
                     echo "[etcd-shim] no snapshots <75min old. k3s auto-schedule defaults to 0 */12 * * *; first-cycle clusters may skip until the next auto-snap. Exiting clean."
                     exit 0
                   fi
-                  COUNT=$(wc -l < "$$TMP" | tr -d ' ')
+                  # `$$VAR` inside $( ) never reaches the shell as `$VAR`:
+                  # this CronJob ships `reconcile: disabled`, so Flux SKIPS it
+                  # and never collapses `$$`, and the kubelet — which does
+                  # collapse `$$` — leaves any `$( ... )` span untouched
+                  # because it cannot resolve it as a variable reference. The
+                  # shell then reads `$$` as its own PID. Bind the value
+                  # OUTSIDE the substitution, where both renderers behave.
+                  t="$$TMP"; COUNT=$(wc -l < "$t" | tr -d ' ')
                   CFG_FLAGS="--s3-provider=Other \
                              --s3-endpoint=$$RCLONE_S3_ENDPOINT \
                              --s3-access-key-id=$$RCLONE_S3_ACCESS_KEY_ID \
@@ -206,7 +213,11 @@ spec:
                     # Sidecar metadata (timestamp + sha256 + source
                     # node) so operators can pick the right snapshot
                     # to restore from without listing object content.
-                    SHA=$(sha256sum "$$name" | cut -d ' ' -f 1)
+                    # Same `$$`-inside-$( ) trap as COUNT above. Until
+                    # this silently produced an EMPTY sha256 on
+                    # every uploaded snapshot (24 of 24 on production), so no
+                    # stored snapshot could be verified before a restore.
+                    f="$$name"; SHA=$(sha256sum "$f" | cut -d ' ' -f 1)
                     META="{\"timestamp\":\"$$TS\",\"sha256\":\"$$SHA\",\"node\":\"$$HOST\",\"source\":\"$$name\"}"
                     echo "$$META" | rclone $$CFG_FLAGS rcat \
                       ":s3:$$SHIM_BUCKET/$$SHIM_PREFIX/$$DEST.meta"

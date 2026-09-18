@@ -79,7 +79,10 @@ across nine tabs:
 4. **Firewall Posture** — mode, peer counts, public ports per node.
 5. **Node Hardening** — a CIS-style check matrix.
 6. **K8s Posture** — Pod Security Standards and privileged-pod listing.
-7. **Authentication** — Dex / oauth2-proxy health and failed-login counts.
+7. **Authentication** — oauth2-proxy health and failed-login counts. (It also
+   probes a `dex` deployment, which only exists where the dev/staging test IdP
+   is installed; on a normal deployment that reads as "not present", not as a
+   fault.)
 8. **Network Policies** — a bulk NetworkPolicy template catalog.
 9. **Security Events** — recent security-relevant audit entries.
 
@@ -281,11 +284,12 @@ strictly authentication is enforced:
     tenant panel uses `https://tenant.<your-domain>/oauth2/callback` while the
     admin panel uses `https://admin.<your-domain>/oauth2/callback`.
 
-    The bundled Dex already registers both. If you point the platform at an
-    **external** identity provider, add the tenant callback to that provider's
-    client yourself before switching *protect via OAuth2 Proxy* on for the
-    tenant panel — otherwise the sign-in fails at the provider with an
-    unregistered-redirect error.
+    Add the tenant callback to your identity provider's client yourself before
+    switching *protect via OAuth2 Proxy* on for the tenant panel — otherwise
+    sign-in fails at the provider with an unregistered-redirect error. (The
+    Dex instance that ships in dev and staging for OIDC testing registers both
+    already, which is why this bites on a real deployment and not while you
+    are trying it out.)
 
     Note this is a *different* URI from the per-provider OIDC redirect above:
     OAuth2 Proxy uses `/oauth2/callback`, the panel's own OIDC login uses

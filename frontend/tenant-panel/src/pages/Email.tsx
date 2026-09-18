@@ -68,10 +68,14 @@ const EmailConnectionGuideModal = lazy(() => import('@/components/EmailConnectio
 // Lazy: the DMARC tab pulls its own queries and is the least-visited tab on the
 // page — no reason for it to sit in the chunk that renders mailboxes.
 const DmarcTab = lazy(() => import('@/components/email/DmarcTab'));
+// Same reasoning as DmarcTab: its own queries, and the tab an operator hopes
+// never to need.
+const AbuseTab = lazy(() => import('@/components/email/AbuseTab'));
+const TlsTab = lazy(() => import('@/components/email/TlsTab'));
 
 const INPUT_CLASS = 'w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
 
-type Tab = 'mailboxes' | 'aliases' | 'settings' | 'dmarc';
+type Tab = 'mailboxes' | 'aliases' | 'settings' | 'dmarc' | 'abuse' | 'tls';
 
 export default function Email() {
   const { tenantId } = useTenantContext();
@@ -196,6 +200,8 @@ export default function Email() {
               { key: 'aliases' as Tab, label: 'Mailing Lists' },
               { key: 'settings' as Tab, label: 'Settings & DNS' },
               { key: 'dmarc' as Tab, label: 'Authentication' },
+              { key: 'abuse' as Tab, label: 'Abuse Reports' },
+              { key: 'tls' as Tab, label: 'Delivery Security' },
             ].map(t => (
               <button key={t.key} type="button" onClick={() => setTab(t.key)}
                 className={clsx('border-b-2 px-4 py-2.5 text-sm font-medium', tab === t.key ? 'border-brand-500 text-brand-600' : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200')}
@@ -229,6 +235,16 @@ export default function Email() {
                 tenantId={tenantId!}
                 domainName={selectedEmailDomain.domainName}
               />
+            </Suspense>
+          )}
+          {tab === 'abuse' && (
+            <Suspense fallback={<div className="flex justify-center py-12"><Loader2 size={24} className="animate-spin text-brand-500" /></div>}>
+              <AbuseTab tenantId={tenantId!} />
+            </Suspense>
+          )}
+          {tab === 'tls' && (
+            <Suspense fallback={<div className="flex justify-center py-12"><Loader2 size={24} className="animate-spin text-brand-500" /></div>}>
+              <TlsTab tenantId={tenantId!} />
             </Suspense>
           )}
         </>
@@ -605,16 +621,17 @@ function MailboxUsageBar({ tenantId }: { readonly tenantId: string }) {
   const pct = usage.limit > 0 ? (usage.current / usage.limit) * 100 : 0;
   const nearLimit = pct >= 80;
   const atLimit = pct >= 100;
-  const barColor = atLimit
-    ? 'bg-red-500'
-    : nearLimit
-      ? 'bg-amber-500'
-      : 'bg-brand-500';
-  const containerBorder = atLimit
-    ? 'border-red-200 dark:border-red-800'
-    : nearLimit
-      ? 'border-amber-200 dark:border-amber-800'
-      : 'border-gray-200 dark:border-gray-700';
+  // Always the default brand colour, including at and over the limit —
+  // operator decision. Reaching a plan limit is an ordinary fact
+  // about a plan, not a fault: the tenant is not broken, and nothing is
+  // degraded. The sentence below already says what happened and what to do,
+  // which is the part that carries information; recolouring the meter red only
+  // makes a normal state look like an incident.
+  //
+  // The card border stays neutral for the same reason — a red frame around a
+  // blue meter reads as a rendering bug rather than a warning.
+  const barColor = 'bg-brand-500';
+  const containerBorder = 'border-gray-200 dark:border-gray-700';
   return (
     <div
       className={clsx(
@@ -707,7 +724,7 @@ function MailboxesTab({
     } catch { /* error shown */ }
   };
 
-  // 2026-05-18: WEBMAIL button shows a spinner while the SSO round-trip
+  // WEBMAIL button shows a spinner while the SSO round-trip
   // is in flight + auto-clears once the new tab opens, OR after a 5s
   // safety timeout if the popup blocker (or browser quirks) prevents
   // `window.open` from returning a tracked reference. Tracked per
@@ -874,7 +891,7 @@ function MailboxesTab({
                         type="button"
                         onClick={() => handleOpenWebmail(mb.id)}
                         disabled={openingWebmailFor === mb.id}
-                        // 2026-05-18: WEBMAIL button is now green (was
+                        // WEBMAIL button is now green (was
                         // brand-blue) — emphasises the primary action
                         // on the row. Spinner replaces the icon during
                         // the SSO round-trip; cleared on tab-open or
@@ -1489,7 +1506,7 @@ function EditAliasModal({
     const changed = desired.length !== current.length || desired.some((d, i) => d !== current[i]);
     // A cleared field while DISABLING keeps the stored destinations —
     // the contract requires ≥1 destination, and disable-with-clear is a
-    // legitimate one-step action (review 2026-08-24).
+    // legitimate one-step action.
     if (changed && desired.length > 0) input.destination_addresses = desired;
     if (enabled !== (alias.enabled === 1)) input.enabled = enabled;
     if (Object.keys(input).length === 0) { onClose(); return; }
@@ -2191,7 +2208,13 @@ function ImapSyncPanel({
   const onSubmit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setFormError(null);
-    const fd = new FormData(e.currentTarget);
+    // Captured NOW, not after the await. React invalidates `currentTarget`
+    // when the synchronous dispatch ends, so reading it later yields null —
+    // which is where "Cannot read properties of null (reading 'reset')" came
+    // from. The migration had already been created successfully at that point.
+    const form = e.currentTarget;
+    const fd = new FormData(form);
+    let created = false;
     try {
       await create.mutateAsync({
         mailbox_id: String(fd.get('mailbox_id') ?? ''),
@@ -2205,10 +2228,20 @@ function ImapSyncPanel({
           dryRun: fd.get('dry_run') === 'on',
         },
       });
-      setShowForm(false);
-      (e.currentTarget as HTMLFormElement).reset();
+      created = true;
     } catch (err) {
       setFormError(err instanceof Error ? err.message : 'Failed to start sync');
+    }
+    // Outside the try on purpose. Tidying the form up is not part of starting
+    // the migration, and when the reset threw from inside it the catch
+    // recorded an error against a migration that had SUCCEEDED. That error
+    // renders inside the form, which had just closed, so it stayed invisible
+    // until the operator opened the form for the NEXT job — where it read as
+    // a failure of that one. Hence the report "an error is shown, but
+    // everything works fine".
+    if (created) {
+      setShowForm(false);
+      form.reset();
     }
   };
 
@@ -2224,7 +2257,7 @@ function ImapSyncPanel({
         </div>
         <button
           type="button"
-          onClick={() => setShowForm(s => !s)}
+          onClick={() => { setFormError(null); setShowForm(s => !s); }}
           disabled={jobs.length >= 10}
           className="inline-flex items-center gap-1 rounded-md border border-gray-200 dark:border-gray-600 px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50"
           data-testid="imapsync-toggle-form"

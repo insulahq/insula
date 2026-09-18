@@ -6,7 +6,7 @@
  * on a FRESH bootstrap — it claims SSA ownership of spec.schedule early so
  * the `platform` Kustomization reaches Ready with a valid live value.
  *
- * Drift-check fast path (2026-06-10): spec.schedule cannot be protected
+ * Drift-check fast path: spec.schedule cannot be protected
  * from Flux — it is required-on-create (cannot be stripped from the
  * apply) and no valid `kustomize.toolkit.fluxcd.io/ssa` policy
  * preserves a manifest-present field — so EVERY Flux reconcile reverts
@@ -118,7 +118,7 @@ export function startMailSnapshotCronJobReconciler(
       const liveSuspend = live.spec?.suspend === true;
       // Schedule comparison reads the DB-authoritative desired value,
       // NOT the cached lastDesired. The cache has a lost-update
-      // blindspot (caught live on testing 2026-06-11): a full tick that
+      // blindspot(caught live on testing): a full tick that
       // started BEFORE an operator PATCH can SSA-apply the stale
       // schedule AFTER the route's apply — live and cache then AGREE on
       // the stale value, no drift is seen, and the operator's setting

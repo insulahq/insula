@@ -1,4 +1,4 @@
-# Cut 3 (2026-05-04): staging Roundcube overlay.
+# Cut 3: staging Roundcube overlay.
 #
 # Webmail is always deployed alongside Stalwart on staging and
 # production — operator-bootstrapped Secret `mail-secrets` plus a

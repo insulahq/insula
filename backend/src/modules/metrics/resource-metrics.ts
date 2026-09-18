@@ -109,7 +109,7 @@ export async function collectTenantMetrics(
       // so corpses sit beside the running workload for weeks. Summing their
       // requests reported memory that nothing is holding.
       //
-      // Production 2026-09-15, tenant PHOENIX: 3.594Gi of a 4Gi plan reported
+      // Production, tenant PHOENIX: 3.594Gi of a 4Gi plan reported
       // "reserved" while the workload held 2.172Gi. The 1.422Gi gap was three
       // Succeeded pods from ONE graceful node shutdown at 12:30:18Z — exit 0,
       // reason Completed. Kubernetes' own ResourceQuota said 2224Mi (= 2.172Gi)

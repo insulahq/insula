@@ -1,5 +1,5 @@
 # mail namespace — created here because the 0.15 base was retired in
-# the staging cutover (2026-05-04). When the 0.15 base shipped this
+# the staging cutover. When the 0.15 base shipped this
 # Namespace, this file was a no-op reference for documentation only.
 # After cutover, v016 owns the namespace.
 #

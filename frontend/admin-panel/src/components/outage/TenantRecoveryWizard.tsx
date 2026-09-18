@@ -11,7 +11,7 @@ import { extractOperatorError } from '@/lib/extract-operator-error';
 /**
  * Guided recovery for a degraded tenant.
  *
- * Three steps — diagnose, choose, confirm — because the 2026-09-11 drill
+ * Three steps — diagnose, choose, confirm — because the drill
  * showed the hard part is not executing a recovery but knowing WHICH one
  * applies. The recovery primitives all existed; nothing connected "this
  * tenant is down" to "press this".

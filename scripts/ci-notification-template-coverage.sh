@@ -5,7 +5,7 @@
 #
 # Why this guard exists
 # ---------------------
-# 2026-08-26 added the `ntfy` push channel: an enum entry in
+# added the `ntfy` push channel: an enum entry in
 # NOTIFICATION_CHANNEL_ID, four columns on `notification_providers`, a
 # publisher, a pg-boss worker, a dispatcher leg, an admin UI card and an
 # e2e spec. What it did not add was a single template row.

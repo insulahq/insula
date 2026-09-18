@@ -112,7 +112,7 @@ describe('checkQuotaThresholds — who actually gets told', () => {
 
   it('sends ONE notification for the highest threshold, not one per crossing', async () => {
     // This asserted `fired === 4` — one notification per crossed threshold.
-    // Operator decision 2026-09-16 after production sent the same mailbox's
+    // Operator decision after production sent the same mailbox's
     // 80 and 90 warnings two seconds apart: a mailbox that jumps from 78% to
     // 95% between two passes has crossed three lines, and the reader needs to
     // be told once, at the worst of them. Inverted rather than deleted, so a

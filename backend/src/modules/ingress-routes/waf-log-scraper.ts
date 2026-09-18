@@ -9,7 +9,7 @@
  * No sidecar, no extra pods, no file mounts — just K8s API calls
  * from the existing backend process.
  *
- * Source pods (Traefik migration, 2026-05-15): the legacy nginx-ingress
+ * Source pods: the legacy nginx-ingress
  * embedded ModSecurity in the controller itself and emitted "ModSecurity"-
  * prefixed lines. Post-migration the WAF stack is two separate pods in
  * the `traefik` namespace:
@@ -47,8 +47,8 @@ const INGRESS_NAMESPACE = 'traefik';
 // The modsec-crs Deployment in k8s/base/modsecurity-crs/deployment.yaml uses
 // `app.kubernetes.io/name=modsec-crs`. The short `app=modsec-crs` label was
 // never set, so this selector was silently matching zero pods on every cycle
-// since the 2026-05-15 Traefik migration. The bug only became visible after
-// the WAF Events tab surfaced an empty scraperStatus banner on 2026-05-19.
+// since the Traefik migration. The bug only became visible after
+// the WAF Events tab surfaced an empty scraperStatus banner.
 const INGRESS_LABEL = 'app.kubernetes.io/name=modsec-crs';
 // Containers to read per modsec pod. `audit-redactor` streams the JSON audit
 // record with credential headers masked; a pod predating that sidecar simply
@@ -158,7 +158,7 @@ interface ParsedWafEvent {
  * cannot fix a false positive (it tests TX:BLOCKING_INBOUND_ANOMALY_SCORE,
  * not ARGS, so removing an ARGS target is a no-op) and at full_disable
  * switches off blocking for that entire host. The rule they needed, 931100,
- * was never on screen. (Reported 2026-08-03: a DNS API URL written as an IP
+ * was never on screen. (Reported: a DNS API URL written as an IP
  * literal 403'd; whitelisting the offered rule changed nothing.)
  *
  * These records carry the same unique_id as the [error] line, so pass 2
@@ -226,7 +226,7 @@ export function parseModSecurityLine(line: string): ParsedWafEvent | null {
   const sevNum = sevMatch ? parseInt(sevMatch[1], 10) : 5;
   const severity = sevNum <= 2 ? 'critical' : sevNum <= 4 ? 'warning' : 'info';
 
-  // 2026-05-21: dropped the previous `Total Score: N → Score: N`
+  // dropped the previous `Total Score: N → Score: N`
   // truncation. The full CRS message (e.g. "Inbound Anomaly Score
   // Exceeded (Total Score: 5)") is what operators actually need —
   // bare "Score: 5" loses the rule's descriptive prefix and forces
@@ -362,7 +362,7 @@ export async function scrapeWafLogs(
       if (jsonUid) {
         // URI + method come from the JSON record itself rather than the uid
         // maps, because an allowlisted (DetectionOnly) request produces NO
-        // [error] line at all — verified against the CRS image 2026-08-03 —
+        // [error] line at all — verified against the CRS image —
         // so those maps are empty for exactly the traffic the operator
         // allowlisted. Without this, every allowlisted event would land in
         // WAF Events as "GET /".
@@ -463,7 +463,7 @@ export async function scrapeWafLogs(
   //
   // ON CONFLICT (event_key) is what makes the re-read band harmless. The
   // scraper reads a 35s window every 30s, so ~5s of every cycle is read TWICE
-  // by design (a gap would lose events outright). Until 2026-09-05 the second
+  // by design (a gap would lose events outright). the second
   // read inserted a second row: measured 76 rows for 60 distinct (uri, rule)
   // pairs — every rule of the requests that happened to land in the band was
   // duplicated. That is not cosmetic: crowdsec-autoban's trigger is

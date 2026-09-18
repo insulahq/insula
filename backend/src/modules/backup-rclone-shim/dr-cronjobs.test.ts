@@ -79,13 +79,21 @@ beforeEach(() => {
 });
 
 describe('reconcileDrCronJobs', () => {
-  it('system class bound → writes shim-shaped backup-credentials + unsuspends the three bridged CronJobs', async () => {
+  it('system class bound → writes shim-shaped backup-credentials and leaves suspend to the cadence reconciler', async () => {
+    // Ownership changed. This bridge used to unsuspend the bridged
+    // CronJobs whenever the SYSTEM class was bound; now the cadence reconciler
+    // owns /spec/suspend for any job that has a schedule row, because it must
+    // be able to SUSPEND one whose operator cadence differs from the manifest
+    // (the platform fires those itself). If both wrote the field, the job
+    // would end up firing natively AND via platform firing — two backups per
+    // period. The credentials Secret is still this bridge's job alone.
     const db = fakeDb([{ enabled: 1 }]);
     const clients = fakeClients({ cronJobSuspend: true });
     const r = await reconcileDrCronJobs(db, clients as never, log());
     expect(r.state).toBe('bridged');
     expect(r.secretApplied).toBe(true);
-    expect(r.unsuspended).toBe(BRIDGED_DR_CRONJOBS.length);
+    expect(r.unsuspended).toBe(0);
+    expect(clients.batch.patchNamespacedCronJob).not.toHaveBeenCalled();
     const secretBody = clients.core.replaceNamespacedSecret.mock.calls[0][0] as {
       body: { stringData: Record<string, string> };
     };
@@ -94,12 +102,6 @@ describe('reconcileDrCronJobs', () => {
     expect(secretBody.body.stringData.S3_PATH_PREFIX).toBe('dr');
     expect(secretBody.body.stringData.S3_FORCE_PATH_STYLE).toBe('true');
     expect(secretBody.body.stringData.AWS_ENDPOINTS).toContain('backup-rclone-shim');
-    // Only the three bridged jobs are touched — never pg-dump/etcd-upload
-    // (their shim-era replacements already run).
-    const patched = clients.batch.patchNamespacedCronJob.mock.calls.map(
-      (c) => (c[0] as { name: string }).name,
-    );
-    expect(patched.sort()).toEqual([...BRIDGED_DR_CRONJOBS].sort());
   });
 
   it('idempotent: already-unsuspended CronJobs get no writes', async () => {

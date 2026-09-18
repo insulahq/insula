@@ -11,7 +11,7 @@ set -euo pipefail
 #
 # Why this narrow scope: Flux's envsubst silently passes through
 # unknown `${VAR}`, `$(cmd)`, and `$N` references — they don't crash
-# the apply. The 2026-05-04 staging cutover only got stuck on
+# the apply. The staging cutover only got stuck on
 # `${'` (a quote inside grep), `${ ` (space), `${ {` etc., where the
 # tokenizer can't decide on a variable name and aborts.
 #

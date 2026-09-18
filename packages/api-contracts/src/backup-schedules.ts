@@ -34,6 +34,12 @@ export const backupScheduleSubsystemEnum = z.enum([
   'tenant_bundle',       // nightly Plesk-style bundles — gates on tenant_bundle target
   'system_pitr',         // postgres base-backup cron — gates on system_backup target
   'longhorn_recurring',  // platform-wide Longhorn RecurringJob default
+  // Added 2026-09-18. The three DR artefacts an operator could previously not
+  // reach at all: their cadence was compiled into manifests, and the System
+  // Backups page rendered no schedule cards whatsoever.
+  'etcd_snapshot',       // upload of k3s etcd snapshots to the bound SYSTEM target
+  'secrets_bundle',      // age-encrypted secrets bundle
+  'cluster_state',       // platform-wide inventory dump
 ]);
 export type BackupScheduleSubsystem = z.infer<typeof backupScheduleSubsystemEnum>;
 

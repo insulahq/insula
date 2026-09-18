@@ -2,7 +2,7 @@
  * Characterization tests for the per-route Middleware emitters that
  * `buildMiddlewaresForRoute` produces. Pairs with annotation-sync.waf.test.ts
  * (which covers WAF + connections + error pages); this file covers the
- * remaining 7 emitters identified in the 2026-05-28 route-config audit:
+ * remaining 7 emitters identified in the route-config audit:
  *
  *   - forceHttps          → redirectScheme Middleware
  *   - wwwRedirect         → redirectRegex Middleware (add-www / remove-www)

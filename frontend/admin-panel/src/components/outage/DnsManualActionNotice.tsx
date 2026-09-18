@@ -10,7 +10,7 @@ interface Props {
  * "DNS still points at the node that just died."
  *
  * The platform does not own DNS and will not withdraw these records — that is
- * a deliberate decision (operator, 2026-09-11), not an oversight. Records are
+ * a deliberate decision, not an oversight. Records are
  * usually hosted elsewhere, TTLs outlive any outage worth reacting to, and
  * rewriting a zone automatically during an incident is a good way to turn one
  * outage into two.

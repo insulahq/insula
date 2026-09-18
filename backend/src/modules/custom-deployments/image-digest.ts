@@ -74,7 +74,7 @@ export async function resolveTagDigest(
   // WWW-Authenticate realm below has been guarded since it was written; the
   // manifest URL itself was not — the same validator now covers both.
   //
-  // Until 2026-09-04 CRS 934110/934190 caught part of this at the edge by
+  // CRS 934110/934190 caught part of this at the edge by
   // accident. That family is now excluded on the custom-deployment endpoints
   // (a compose file legitimately contains internal hostnames), so this is the
   // only control left. Do not remove it.

@@ -63,7 +63,7 @@ export default function MailDrCard() {
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [showReprovision, setShowReprovision] = useState(false);
 
-  // 2026-05-29: these two `useState`s used to live AFTER the early
+  // these two `useState`s used to live AFTER the early
   // returns for isLoading / isError below (around the legacy "current"
   // computation). That violated the Rule of Hooks — initial loading
   // render called 11 hooks, the loaded render called 13, and React 18
@@ -158,7 +158,7 @@ export default function MailDrCard() {
   //   clicks Move Now, the modal closes immediately, then they click
   //   the drift-banner CTA before `update.mutateAsync` resolves —
   //   `movePending` is still false at that point because handleMove
-  //   hasn't fired yet. Caught 2026-05-28 code review HIGH-2.
+  // hasn't fired yet. code review HIGH-2.
 
   async function persistPlacement(
     extra: { triggerMigration?: boolean } = {},
@@ -192,7 +192,7 @@ export default function MailDrCard() {
 
   async function handleSave() {
     if (hasDuplicates) return;
-    // Post-2026-05-28: primaryNode is required. Frontend dropdown
+    // Post-: primaryNode is required. Frontend dropdown
     // should no longer offer "Not selected" for primary; this is a
     // runtime guard for any stale UI state (e.g. fresh-bootstrap row
     // where mail_primary_node hasn't backfilled yet).
@@ -772,14 +772,14 @@ interface NodeDropdownProps {
   readonly onChange: (v: string | null) => void;
   readonly testId: string;
   /**
-   * 2026-05-28: when true, omit the "Not selected" option (used for
+   * when true, omit the "Not selected" option (used for
    * primary — the system must always have a designated primary).
    * Default false so secondary/tertiary keep the "Not selected"
    * affordance.
    */
   readonly required?: boolean;
   /**
-   * Node-count gate (2026-05-31): when true the slot cannot be set
+   * Node-count gate: when true the slot cannot be set
    * because the cluster lacks enough Ready nodes. The <select> is
    * disabled and forced to show "Not selected" so a disabled slot never
    * submits a value; `disabledReason` renders the exact gate label

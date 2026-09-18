@@ -15,7 +15,7 @@
 #      mail ports. Worker IP should NOT answer (no haproxy on worker).
 #   3. Switch to activeNodeOnly mode → only the active node's IP should
 #      answer. Server-role IPs that aren't active should NOT answer.
-#   4. (NEW 2026-05-28) Switch to assignedMailNodes mode. Two paths:
+# 4. Switch to assignedMailNodes mode. Two paths:
 #      a) REFUSAL: when active∉{primary,secondary,tertiary}, the PATCH
 #         must return MAIL_PORT_EXPOSURE_MODE_REFUSED (HTTP 400) BEFORE
 #         any cluster mutation.
@@ -62,7 +62,7 @@ api_patch() {
   # ssh joins argv with spaces and re-parses on the remote — JSON
   # double-quotes around field names get eaten by the second-pass shell,
   # so {"mode":"X"} arrives as {mode:X} and Fastify rejects with
-  # FST_ERR_CTP_INVALID_JSON_BODY. Caught 2026-05-28 by Phase 2 of the
+  # FST_ERR_CTP_INVALID_JSON_BODY. by Phase 2 of the
   # external reachability E2E (no port-exposure task ever started).
   local body_b64
   body_b64=$(printf '%s' "$1" | base64 -w0)
@@ -108,7 +108,7 @@ SSH
 # dropped SILENTLY — the TCP handshake completes and the server then EOFs with
 # no banner — which is byte-for-byte what a dead service looks like. The suite
 # therefore poisoned itself partway through and reported the platform as broken.
-# Diagnosed 2026-08-06 on VM runs 6e9e214b/34090e97: a fresh source address got
+# Diagnosed on VM runs 6e9e214b/34090e97: a fresh source address got
 # `220` from the exact node:port that had just "failed".
 #
 # Fix: tell the system under test that this source is a prober. We purge any
@@ -349,7 +349,7 @@ probe_node_ports() {
     # assertion; the port-open checks passed because the port genuinely was
     # bound. A fixed `sleep 10` was not enough on a 4-node cluster.
     #
-    # Measured 2026-08-07: with the exposure mode set and haproxy left to settle,
+    # with the exposure mode set and haproxy left to settle,
     # 12/12 banner samples across both non-active nodes returned the greeting —
     # so this is a readiness race in the harness, not a platform defect.
     local _bw=0
@@ -375,7 +375,7 @@ probe_node_ports() {
       if [ -z "$banner" ] && probe_tcp "$ip" 25; then
         # The ban is held IN MEMORY by the running Stalwart process. Deleting the
         # persisted BlockedIp row does NOT clear it, and adding the source to
-        # AllowedIp afterwards does not either — proven 2026-08-06: with the
+        # AllowedIp afterwards does not either — proven: with the
         # blocklist empty AND the source allowlisted, it still got no banner,
         # while a fresh source on the same host got 220 from the same node in the
         # same second. Only restarting the Stalwart pod cleared it. So the ONLY
@@ -498,7 +498,7 @@ echo "Server-role nodes: $SERVER_NODE_COUNT"
 # same nodes over both families. Run from an IPv4-only uplink every one of them
 # fails at connect() and the suite reports "IPv6 FAIL — mail not reachable over
 # v6" for a cluster that is serving v6 perfectly — a property of the operator's
-# network, not of the platform. Confirmed 2026-08-08: the DEV apex publishes
+# network, not of the platform. Confirmed: the DEV apex publishes
 # AAAA for the apex, admin, mail and the wildcard, all pointing at the node's
 # public v6, while the host running this suite had no v6 route at all.
 #
@@ -568,7 +568,7 @@ wait_for_haproxy_ds() {
   # burns the full timeout in every phase and prints "haproxy DS never reached
   # full readiness (ready=?/?)" against a perfectly healthy cluster (the ?/?
   # being an ABSENT DS, not a zero-scheduled one). Observed on the single-node
-  # DEV cluster 2026-08-08; the VM tier never showed it because it runs 3
+  # DEV cluster; the VM tier never showed it because it runs 3
   # servers.
   if [ "$expect" = "present" ] && [ "${SERVER_NODE_COUNT:-2}" -lt 2 ] 2>/dev/null; then
     echo "    haproxy DS not expected (${SERVER_NODE_COUNT:-?} server-role node) — active node serves mail directly"
@@ -589,7 +589,7 @@ wait_for_haproxy_ds() {
         # wait_for_stalwart_settled, which does gate on the hostPort), only in
         # the phases where those nodes must START serving, and only on the
         # banner probe — the port-open check passes because the port really is
-        # bound. Reproduced on a quiescent cluster 2026-08-07; probing the same
+        # bound. Reproduced on a quiescent cluster; probing the same
         # nodes by hand minutes later returned the banner every time.
         local want got
         want=$(ssh_kubectl 'kubectl get ds -n mail stalwart-haproxy -o jsonpath="{.status.desiredNumberScheduled}"' 2>/dev/null | tr -d '\r')
@@ -600,7 +600,7 @@ wait_for_haproxy_ds() {
         # for haproxy to run on, so the DS correctly schedules nothing. Treating
         # 0 as "not ready yet" made this gate burn its full timeout and print
         # "haproxy DS never reached full readiness (ready=0/0)" on a perfectly
-        # healthy single-node cluster — seen against DEV 2026-08-08.
+        # healthy single-node cluster — seen against DEV.
         if [ "$want" = "0" ]; then
           echo "    haproxy DS schedules 0 pods (single-node / no non-active server node) — nothing to wait for"
           return 0
@@ -625,7 +625,7 @@ assert_externalips_empty() {
   # Service.spec.externalIPs must stay EMPTY in every mode.
   #
   # This used to wait for externalIPs to converge to a per-mode node set. That
-  # feature was REMOVED on 2026-06-29 and the assertion outlived it, so every
+  # feature was REMOVED and the assertion outlived it, so every
   # phase burned its full 180s timeout waiting for something resolveExternalIpNodes()
   # can no longer produce (it returns [] unconditionally, locked in by
   # port-exposure-modes.test.ts) and then printed a failure the platform could
@@ -653,7 +653,7 @@ SERVER_IPS=$(echo "${NODE_LINES[*]}" | tr ' ' '\n' | awk -F'\t' '$2=="server"{pr
 ACTIVE_IP=$(echo "${NODE_LINES[*]}" | tr ' ' '\n' | awk -F'\t' -v a="$ACTIVE" '$1==a{print $3; exit}')
 
 # ── PHASE 1: allServerNodes mode ────────────────────────────────────────
-# Semantics (2026-05-28 redesign): allServerNodes data plane =
+# Semantics: allServerNodes data plane =
 # server-role nodes ∪ {active node if active is worker-role}.
 # So when active=worker, the worker IS in the public-facing set
 # (best fail-tolerance: mail survives a server-tier outage as long as
@@ -666,7 +666,7 @@ hdr "PHASE 1: allServerNodes mode — server-role nodes serve mail; worker too I
 # Attempting it anyway on a single node meant the PATCH was rejected while its
 # response went to /dev/null, so the phase then probed "allServerNodes
 # behaviour" against a cluster still in the previous mode — asserting semantics
-# that were never applied. Since 2026-08-10 `activeNodeOnly` is also the
+# that were never applied. `activeNodeOnly` is also the
 # bootstrap default, so on a single node there is no transition here to observe
 # at all.
 SERVER_NODE_COUNT=$(printf '%s' "$SERVER_IPS" | wc -w | tr -d ' ')
@@ -688,7 +688,7 @@ amber "  waiting for haproxy DS to come up + Stalwart hostPorts (always-on post-
 wait_for_haproxy_ds present || { red "  haproxy DS didn't come up in 120s"; }
 # Post-hairpin-fix: Stalwart hostPort is ALWAYS bound on the active node.
 wait_for_stalwart_settled yes || amber "  Stalwart hostPorts not yet bound in 300s (continuing — may not affect external reachability)"
-# Post-hairpin-fix (2026-05-28): the active node is NEVER in externalIPs
+# Post-hairpin-fix: the active node is NEVER in externalIPs
 # (kube-proxy DNAT preempts CNI portmap, causing same-node hairpin).
 # Server IPs are in externalIPs EXCEPT when the active node is server-role
 # (then that server's IP is excluded too — Stalwart hostPort handles it).
@@ -759,7 +759,7 @@ IFS='|' read -r PRE_PRIMARY PRE_SECONDARY PRE_TERTIARY <<<"$PLACEMENT_BEFORE"
 
 # Render a value as either 'literal' or SQL NULL (no quotes) so that
 # bash defaults of "" produce true SQL NULL instead of the string "NULL".
-# Caught 2026-05-28 when the prior harness left mail_*_node as literal
+# when the prior harness left mail_*_node as literal
 # 'NULL' strings, then the validation refused every subsequent placement
 # update because "NULL" isn't a valid RFC 1123 K8s node name.
 sql_str_or_null() {

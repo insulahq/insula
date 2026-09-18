@@ -89,7 +89,7 @@ export async function adminUserRoutes(app: FastifyInstance): Promise<void> {
 
   // GET /api/v1/admin/users — list all admin panel users
   //
-  // 2026-05-21 — augmented with `passkeyCount` and `lastLoginIp` so the
+  // — augmented with `passkeyCount` and `lastLoginIp` so the
   // Security Hub Identity page can show MFA-enrolment status and the
   // last-seen IP at a glance. passkeyCount is a left-joined aggregate
   // from user_passkeys (denormalising it would mean syncing on every
@@ -210,7 +210,7 @@ export async function adminUserRoutes(app: FastifyInstance): Promise<void> {
     );
   });
 
-  // ─── Active Sessions (refresh tokens) — 2026-05-21 ────────────────
+  // ─── Active Sessions (refresh tokens) — ────────────────
   // GET /api/v1/admin/users/:userId/sessions — list active sessions
   // for one admin user. super_admin OR admin role can read.
   app.get('/admin/users/:userId/sessions', {

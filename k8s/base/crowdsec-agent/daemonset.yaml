@@ -96,7 +96,7 @@
 # Getting that roll wrong is not cosmetic: CrowdSec parses both files once at
 # startup, so a security control can quietly disagree with its own config. This
 # feature has already produced that failure once (the hyphen/underscore bug,
-# 2026-09-05) — which is also why the backend validates a scenario name against
+# ) — which is also why the backend validates a scenario name against
 # what the agent REPORTS before writing it.
 ---
 apiVersion: apps/v1
@@ -119,7 +119,7 @@ metadata:
     # it ONCE at startup, so a write must roll this DaemonSet. The backend also
     # deletes the pods itself after a write — belt and braces, because Reloader
     # is an optional component and a silently-unapplied security toggle is the
-    # failure this feature has already produced once (2026-09-05).
+    # failure this feature has already produced once.
     configmap.reloader.stakater.com/reload: crowdsec-agent-simulation
   labels:
     app.kubernetes.io/name: crowdsec-agent
@@ -155,7 +155,7 @@ spec:
       # no agent means no scenario evaluation, so no traffic bans are ever
       # raised — ingress keeps serving, every pod stays Running, and detection
       # sensitivity simply drops to zero. Caught by
-      # integration-node-memory-protection.sh on DEV 2026-09-13
+      # integration-node-memory-protection.sh on DEV
       # ("host-agent DaemonSet pods below system-node-critical").
       priorityClassName: system-node-critical
       # Root is needed only to read the root-owned access log; every other
@@ -215,7 +215,7 @@ spec:
             # "crowdsecurity/whitelists" does not exist in the hub — asking for
             # it as a collection fails with "can't find ... did you mean
             # 'crowdsecurity/asterisk'?" and installs nothing (verified on DEV
-            # 2026-09-05). The agent still starts, so the loss is silent.
+            # ). The agent still starts, so the loss is silent.
             #
             # These are NOT optional: they whitelist verified search-engine
             # crawlers, and rdns is what verifies them (the s00-enrich stage
@@ -253,7 +253,7 @@ spec:
               readOnly: true
             # MANDATORY: the crowdsec entrypoint refuses to start without it —
             # "No volume mounted for /var/lib/crowdsec/data ... Exiting..." —
-            # and the pod then crash-loops forever. Verified on DEV 2026-09-05.
+            # and the pod then crash-loops forever. Verified on DEV.
             #
             # emptyDir, not a PVC: this agent keeps no local database (the LAPI
             # owns it, DISABLE_LOCAL_API=true). The directory holds hub

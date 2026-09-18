@@ -69,7 +69,7 @@ spec:
             # ("image has non-numeric user (node), cannot verify user is
             # non-root"). The `node` user in node:22-alpine is uid/gid 1000.
             # Without this the poller had NEVER started on any cluster (bug
-            # present since the W11 PR #171); found + fixed 2026-07-28.
+            # present since the W11 PR #171); found +.
             runAsUser: 1000
             runAsGroup: 1000
             seccompProfile:

@@ -4,7 +4,7 @@
 # End-to-end verification of the Stalwart webmail master-user rotation
 # flow on a real cluster (default: staging1.example.test). Covers the
 # domain-scoped lookup, auto-reseed when the principal is missing, and
-# the 2026-06-25 decouple: the master now lives on the FIXED sentinel
+# the decouple: the master now lives on the FIXED sentinel
 # Domain `local.host` (mail-domain-INDEPENDENT) — NOT `mail.<apex>`.
 #
 # REQUIRES the sentinel-aware backend (the local.host decouple). On a
@@ -27,7 +27,7 @@ set -euo pipefail
 # Node SSH target + platform apex. In a full integration-all run the operator's
 # profile exports SSH_HOST (real node) and PLATFORM_DOMAIN (real apex); honor them
 # before the redacted public placeholder so the suite isn't left SSHing to the
-# unresolvable example.test default (the 2026-07-18 full-run rc=255 failure).
+# unresolvable example.test default(the full-run rc=255 failure).
 HOST="${HOST:-${SSH_HOST:-root@staging1.example.test}}"
 PLATFORM_APEX="${PLATFORM_APEX:-$(resolve_platform_apex)}"
 # Public admin API base. Env-overridable for non-staging clusters (the old
@@ -36,7 +36,7 @@ ADMIN_HOST="${ADMIN_HOST:-https://admin.${PLATFORM_APEX}}"
 SSH_KEY="${SSH_KEY:-${HOME}/hosting-platform.key}"
 
 # The master is pinned to the fixed sentinel Domain (decoupled from the
-# mail domain, 2026-06-25) — keep in sync with MASTER_SENTINEL_DOMAIN in
+# mail domain,) — keep in sync with MASTER_SENTINEL_DOMAIN in
 # backend/src/modules/mail-admin/stalwart-master-user.ts.
 MASTER_SENTINEL_DOMAIN="${MASTER_SENTINEL_DOMAIN:-local.host}"
 EXPECTED_DOMAIN="$MASTER_SENTINEL_DOMAIN"

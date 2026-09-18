@@ -5,7 +5,7 @@
 # WHY: bootstrap.sh renders the host firewall (nft sets + drop/accept rules)
 # ONCE at install time. A change to that shape reaches FRESH installs but NOT
 # already-bootstrapped nodes — those need a one-shot W10c host-migration to
-# backfill (the firewall-blacklist gap, 2026-06-06, that this guard prevents
+# backfill (the firewall-blacklist gap,, that this guard prevents
 # from recurring). Until firewall rules are continuously converged (Tier 2),
 # this guard makes "change the firewall → ship a migration" a hard gate.
 #
@@ -20,9 +20,9 @@
 # kept only to avoid churning AGENTS.md / the workflow / cut-release.sh):
 #   1. firewall_shape        — nft sets + input-chain rules from bootstrap.sh
 #   2. infra_pin_shape       — bootstrap-pinned component versions
-#   3. install_time_unit_shape — the systemd units/timers bootstrap emits (2026-08-20)
+# 3. install_time_unit_shape — the systemd units/timers bootstrap emits
 #   4. helm_values_shape       — the --set flags and values-file heredocs of
-#                                bootstrap's helm installs (2026-08-20)
+# bootstrap's helm installs
 #
 # (3) was added after the converge-on-self-upgrade trigger (v2026.8.7) nearly
 # shipped as fresh-install-only: bootstrap writes each unit ONCE, so editing one
@@ -73,7 +73,7 @@ REQUIRED_HELM_RELEASES="${FWSHAPE_REQUIRED_HELM_RELEASES:-traefik cert-manager s
 # Notes:
 #   - drop set names end in a digit (@blacklist_v4) → the set-ref class must
 #     allow [a-z0-9_]+, not [a-z_]+ (which stops at the digit and matches
-#     NOTHING — a dead pattern bug, code-review 2026-06-06).
+# NOTHING — a dead pattern bug, code-review).
 #   - set declarations have NO `^[[:space:]]*` anchor: some live inside a
 #     `local set_decls="  set tenant_ports_tcp {` assignment, so anchoring to
 #     line-start would miss them.
@@ -89,7 +89,7 @@ firewall_shape() {
 # installs/pins these ONCE at install time, so a version bump reaches FRESH
 # installs but NOT already-bootstrapped clusters — those need a one-shot W10c
 # host-migration to upgrade in place (same forcing-function rationale as the
-# firewall shape above; the external-snapshotter v6→v8 gap, 2026-06-30, that
+# firewall shape above; the external-snapshotter v6→v8 gap,, that
 # adding this here prevents from recurring). Match only literal version
 # assignments (`="v?<digit>…`) so arg-parser lines like `K3S_VERSION="$2"` never
 # churn the hash; trailing `# date` comments are already stripped above, so a
@@ -118,7 +118,7 @@ infra_pin_shape() {
 # comment edit must not churn the hash) and whitespace is normalised, so
 # reindenting a unit is not a "change". The destination is part of the
 # fingerprint, so MOVING a unit counts as a change too.
-# Also covers the unattended-security-update config (2026-09-11). It is not a
+# Also covers the unattended-security-update config. It is not a
 # unit, but it is the same class the rest of this function exists for: bootstrap
 # writes it ONCE and nothing reconverges it, so an edit reaches FRESH INSTALLS
 # ONLY. That gap is not theoretical here — the platform shipped for months with
@@ -164,7 +164,7 @@ install_time_unit_shape() {
 #
 # bootstrap installs Traefik, cert-manager, sealed-secrets, Longhorn and CNPG
 # ONCE. A `--set` change therefore has exactly the reach of a pin bump — FRESH
-# INSTALLS ONLY — but until 2026-08-20 nothing fingerprinted it, so the guard
+# INSTALLS ONLY — but nothing fingerprinted it, so the guard
 # reported "unchanged — OK" for a change existing clusters would never receive.
 # Found while adding the Traefik plugin-wait initContainer (v2026.8.8), whose
 # host-migration had to be written by hand for exactly this reason.

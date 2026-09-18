@@ -4,7 +4,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // inside loadK8sTenants(). vi.hoisted+vi.mock at file top ensures any
 // dynamic import the module performs returns the test double.
 //
-// 2026-05-14 streamline: resize was removed (mail is local-path only,
+// streamline: resize was removed (mail is local-path only,
 // local-path does not quota requests.storage so resize was a no-op).
 // The module is now read-only; tests cover parseQuantity, parseDuOutput,
 // and getMailPvcStorage only.
@@ -116,7 +116,7 @@ describe('mail-pvc.getMailPvcStorage', () => {
       requestedBytes: 20 * 1024 ** 3,
       capacityBytes: 20 * 1024 ** 3,
       storageClass: 'local-path',
-      // Streamline (2026-05-14): mail is local-path only, resize was
+      // Streamline: mail is local-path only, resize was
       // removed because local-path does not enforce requests.storage.
       // The response always emits false / null for these fields now.
       expansionAllowed: false,

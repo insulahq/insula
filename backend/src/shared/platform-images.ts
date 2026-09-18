@@ -15,7 +15,7 @@
  *
  * WHY A TABLE INSTEAD OF `process.env.X ?? 'literal'` AT EACH CALL SITE
  *   Because that pattern had already rotted in two different ways when this was
- *   written (2026-08-07):
+ * written:
  *     * tenant-backup-tools was referenced from SIX modules (backup-restore
  *       executors, storage-lifecycle, tenant-bundles, mail-admin) via a
  *       module-local `TOOLS_IMAGE_DEFAULT` const with NO env read at all — the

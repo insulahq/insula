@@ -13,7 +13,7 @@ import { apiFetch, ApiError } from '@/lib/api-client';
  * Two things go wrong with that:
  *
  *   1. After a node reboot the panels are Ready ~2m20s before platform-api is
- *      (measured on production 2026-08-27: admin-panel 10:21:40, platform-api
+ * (measured on production: admin-panel 10:21:40, platform-api
  *      10:24:01). For that whole window an operator sees a normal login form
  *      and only discovers it is dead by typing credentials into it.
  *   2. On an OIDC-only cluster the fallback is actively WRONG — `providers:

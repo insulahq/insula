@@ -1,5 +1,5 @@
 /**
- * BarmanRestoreWizard — Phase 3 (2026-05-22). The "oops I deleted a row"
+ * BarmanRestoreWizard — Phase 3. The "oops I deleted a row"
  * flow. Modal walks the operator through:
  *
  *   Step 1 — Pick the source cluster + a recovery target time (or latest).
@@ -39,7 +39,7 @@ interface Envelope<T> { readonly data: T; }
 
 interface BarmanRestoreWizardProps {
   readonly onClose: () => void;
-  /** P4d (2026-05-22): when the wizard is opened from a backup row
+  /** P4d: when the wizard is opened from a backup row
    *  in the Health Card, pre-seed the source cluster + target time
    *  so the operator just confirms instead of re-picking. */
   readonly initialSourceName?: string;
@@ -92,7 +92,7 @@ export default function BarmanRestoreWizard({ onClose, initialSourceName, initia
   }, [initialTargetTime]);
   const [targetTime, setTargetTime] = useState<string>(initialTargetLocal); // empty = latest
   const [newName, setNewName] = useState<string>('');
-  // P4a (2026-05-22): default to the source's instances count when known,
+  // P4a: default to the source's instances count when known,
   // so HA-3 source → restore creates 3 replicas matching the operator's
   // HA state. Falls back to 1 if the health endpoint hasn't loaded yet
   // or the source cluster's instance count isn't surfaced.
@@ -167,7 +167,7 @@ export default function BarmanRestoreWizard({ onClose, initialSourceName, initia
 
   const effectiveNewName = newName.trim() || defaultNewName;
 
-  // Fresh-backup mitigation warning (2026-05-23): when the operator
+  // Fresh-backup mitigation warning: when the operator
   // requests a PITR-to-target restore, the backend triggers a fresh
   // CNPG Backup first to close the WAL gap. If that mitigation can't
   // complete, the restore still proceeds — we surface the warning here
@@ -677,7 +677,7 @@ function InFlight({
   // to be snapshot-able). `promotedJob` flips on after successful
   // POST — the section then surfaces a confirmation + chip-tracking
   // hint instead of immediately closing the wizard (review MEDIUM
-  // discoverability fix 2026-05-23).
+  // discoverability fix).
   const [confirmName, setConfirmName] = useState('');
   const [promoteError, setPromoteError] = useState<string | null>(null);
   const [promotedJob, setPromotedJob] = useState<string | null>(null);

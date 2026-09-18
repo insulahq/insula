@@ -402,7 +402,7 @@ export function buildMiddlewaresForRoute(
   }
 
   // ── WAF (ModSecurity-CRS sidecar) ───────────────────────────────────
-  // The 2026-05-14 smoke test established that the per-route Coraza
+  // The smoke test established that the per-route Coraza
   // model (option-C hybrid) is not viable: vendored Yaegi plugins fail
   // because Coraza imports `unsafe`, and the WASM build path crashes
   // Traefik with a split-stack-overflow during startup. The working

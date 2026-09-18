@@ -35,7 +35,7 @@ make_repo() {
 ### Added
 - a new thing
 
-## [2026.6.0] - 2026-06-01
+## [2026.6.0] -
 
 ### Added
 - the first thing

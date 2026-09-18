@@ -4,7 +4,7 @@
 #
 # WHY THIS EXISTS
 # ---------------
-# Tenant SFTP upload never worked on any real deployment until 2026-07-15, and
+# Tenant SFTP upload never worked on any real deployment, and
 # no test caught it, because every existing test routed AROUND the broken layer:
 #
 #   * integration-sftp-gateway-e2e.sh does `kubectl port-forward svc/sftp-gateway`
@@ -178,7 +178,7 @@ echo "Phase 4 — SFTP user"
 # The description deliberately avoids the literal "sftp " (the word followed by
 # a space): the edge WAF reads `sftp <arg>` as shell-command injection and
 # returns an HTML 403 BEFORE the API ever sees the request. Bisected on staging
-# 2026-07-15: "sftp"=201, "probe"=201, but "sftp probe"=403.
+# "sftp"=201, "probe"=201, but "sftp probe"=403.
 #
 # Retry on a NON-JSON body anyway: the edge (nginx/Traefik + CrowdSec) can also
 # return a transient HTML 403 under burst, and piping HTML into jq dies with a
@@ -215,7 +215,7 @@ for _ in $(seq 1 5); do
   # bytes: the gateway's banner is "SSH-2.0-Go\r\n" (12 bytes), so `head -c 20`
   # waits forever for 8 bytes that only arrive after the client sends its own
   # banner — the read times out and a WORKING gateway reads as unreachable.
-  # (This cost real debugging time on 2026-07-15: a packet capture showed the
+  # (This cost real debugging time: a packet capture showed the
   # full handshake + banner while the probe reported "unreachable".)
   BANNER=$(timeout 10 bash -c "exec 3<>/dev/tcp/${CONNECT_HOST}/${ADV_PORT}; IFS= read -r -t 5 line <&3; echo \"\$line\"" 2>/dev/null || true)
   [[ -n "$BANNER" ]] && break
@@ -275,7 +275,7 @@ else
 fi
 
 # ── Phase 7: the jail contains ONLY tenant data ───────────────────────────────
-# This is the assertion the operator's 2026-07-15 report needed and the old check
+# This is the assertion the operator's report needed and the old check
 # did not make. The previous version only looked for HOST-root directories
 # (etc|usr|proc|root|sbin), so it passed happily while the tenant could see — and
 # WRITE — the platform's own jail scaffolding: /.platform/sftp-server,
@@ -330,7 +330,7 @@ fi
 
 # ── Phase 8: home_path is a REAL boundary ─────────────────────────────────────
 # home_path used to be OpenSSH's -d — a STARTING directory that confines nothing.
-# Verified against the shipping design on staging 2026-07-15: a user scoped to
+# Verified against the shipping design on staging: a user scoped to
 # /public_html could simply `cd /` and read the tenant's whole PVC. sftp-serve
 # chroots into root+home, so the scope is kernel-enforced. Prove it: a scoped
 # user must NOT be able to see a marker sitting at the PVC root.

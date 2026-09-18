@@ -469,7 +469,7 @@ async function runShimAssignmentPipeline(
     // the Secret sat in CreateContainerConfigError ("secret not
     // found") and the UI surfaced a scary repo-unreachable error for
     // a target the operator had JUST assigned (live incident
-    // 2026-08-24). Reconciling inline closes the window to seconds.
+    // ). Reconciling inline closes the window to seconds.
     if (args.className === 'mail') {
       await tasks.progress(db, taskId, {
         pct: 68,

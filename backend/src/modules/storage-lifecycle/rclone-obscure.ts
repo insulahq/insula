@@ -27,7 +27,7 @@ import crypto from 'node:crypto';
 // This is NOT a secret — it's published in rclone's source code so
 // any rclone install can de-obscure any obscured value.
 //
-// 2026-07-28: this comment used to say the related "plaintext
+// this comment used to say the related "plaintext
 // credentials in the Job pod spec" finding was still a deferred
 // hardening item. It is NOT — Phase 12 closed it. `runRcloneOneShot`
 // and the streaming-Job builders split every envelope into

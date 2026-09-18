@@ -133,7 +133,7 @@ async function getCoreV1ApiForRotation(
  *                      affinity-patch-mail-stack.yaml). Public-facing IP
  *                      is the active node's IP, period.
  *
- * Pre-2026-05-28 this hardcoded `role !== 'server' continue`, so when
+ * Pre- this hardcoded `role!== 'server' continue`, so when
  * mail-on-worker landed (Phase C of the mobility E2E) the deliverability
  * probes silently dropped the worker IP and the operator had no visibility
  * into PTR/DNSBL/SMTP-banner health for the actually-public IP.
@@ -261,7 +261,7 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
     }
   });
 
-  // Security review HIGH-2 fix (2026-05-03): scope to super_admin only.
+  // Security review HIGH-2 fix: scope to super_admin only.
   // `support` and `admin` previously inherited the route-wide gate but
   // these are lower-privilege roles that should not see Stalwart's
   // cleartext admin password (which would let them bypass platform
@@ -343,14 +343,14 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
         mirrorNamespace: 'platform',
         mirrorSecretName: 'platform-stalwart-creds',
         username: readStalwartCredentials(process.env).username,
-        // 2026-05-06 hardening: explicitly recycle Stalwart pods between
+        // hardening: explicitly recycle Stalwart pods between
         // Secret-patch and verify so the verify-loop probes pods that
         // have the NEW env var (avoiding drift caused by Reloader's
         // async rollout). See rotate-jmap.ts comment block + memory.
         recyclePodsBeforeVerify: true,
       });
 
-      // 2026-05-06 hardening: best-effort purge of cluster-internal
+      // hardening: best-effort purge of cluster-internal
       // BlockedIp entries. The rotation churn may have left platform-api
       // pod IPs and/or hostNetwork node IPs in Stalwart's auth-rate-limit
       // blocklist. Leaving them blocks operator iframe logins (nginx-
@@ -461,7 +461,7 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
-  // Cut 3 (2026-05-05): rotate the Stalwart `master@local.host` Account
+  // Cut 3: rotate the Stalwart `master@local.host` Account
   // password (consumed by Roundcube's jwt_auth plugin for IMAP master-
   // user impersonation). Same JMAP+Secret mechanics as the admin route
   // but targets `mail-secrets/STALWART_MASTER_PASSWORD` and rolls
@@ -501,7 +501,7 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
       // happily create a working master principal under that tenant's
       // Domain — a one-click platform-wide mail backdoor.
       //
-      // Pre-2026-06-25 this guard compared against the live mail hostname
+      // Pre- this guard compared against the live mail hostname
       // (`mail.<apex>`), which BROKE every rotation after a mail-domain
       // rename (the Secret still pointed at `mail.<oldApex>`). The master
       // is now decoupled from the mail domain — it lives on the sentinel
@@ -549,9 +549,9 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
   // ─── Mail PVC storage (Stalwart data) ─────────────────────────────
   // GET reads live size + capacity + StorageClass.allowVolumeExpansion
   // + (best-effort) used/free from a df probe inside the Stalwart pod.
-  // Post-RocksDB-migration (2026-05-12) the data PVC is the
+  // Post-RocksDB-migration the data PVC is the
   // stalwart-data local-path volume; pre-migration this read the
-  // mail-pg-1 CNPG PVC. PATCH online-grow was removed in the 2026-05-14
+  // mail-pg-1 CNPG PVC. PATCH online-grow was removed in the
   // streamline because local-path doesn't enforce quotas
   // (`requests.storage` is informational after creation).
   app.get(
@@ -622,13 +622,13 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
-  // ─── Stalwart BlobStore routes REMOVED (ADR-046, 2026-06-05) ─────
+  // ─── Stalwart BlobStore routes REMOVED ─────
   // The blob-store switch feature was fenced: the platform stays on the
   // Default (RocksDB) blob store. The former GET/PATCH /admin/mail/blob-store
   // + jobs/:name routes were inoperative as shipped (BlobStore updates only
   // apply on Stalwart restart; S3 cli field shapes were schema-invalid; the
   // CIFS Deployment patch is stripped by Flux drift correction within 1m).
-  // The implementation was fully deleted on 2026-06-07 (remnant cleanup) —
+  // The implementation was fully deleted (remnant cleanup) —
   // findings + validated migration mechanics live in ADR-046 and
   // docs/operations/STALWART_BLOB_STORE_MIGRATION.md; code in git history.
 
@@ -698,7 +698,7 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
         const result = await triggerMailSnapshot({ kubeconfigPath, db: app.db });
         app.log.warn({ userId, jobName: result.jobName }, 'mail-admin: manual snapshot Job created');
 
-        // Task-center wiring (2026-05-16): chip + modal for the
+        // Task-center wiring: chip + modal for the
         // spawned Job. The existing SnapshotJobStatusPanel polls
         // /admin/mail/snapshot/jobs/:name; the chip's modal does the
         // same via MailTaskProgressModal. Background watcher updates
@@ -1322,7 +1322,7 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
   // ─── Mail failover readiness ──────────────────────────────────────
   //
   // Powers the "mail failover is not configured" banner added after the
-  // 2026-09-11 node-outage drill, where staging sat in HA mode with
+  // node-outage drill, where staging sat in HA mode with
   // auto-failover OFF and no secondary/tertiary set. `dr-watcher` returns
   // immediately when auto-failover is off — it does not even mark the state
   // degraded — so a mail-node death produced no alert and no action at all.
@@ -1808,7 +1808,7 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
       }
       app.log.warn({ userId, mode: parsed.data.mode }, 'mail-admin: port-exposure mode change requested');
 
-      // Pre-flight validation (2026-05-28): refuse the switch BEFORE any
+      // Pre-flight validation: refuse the switch BEFORE any
       // cluster mutation when the target mode would be incoherent with
       // current placement (e.g. assignedMailNodes target but active node
       // not in the assigned set). Returns a clean 400 instead of a
@@ -1823,7 +1823,7 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
         throw new ApiError('MAIL_PORT_EXPOSURE_MODE_REFUSED', validationError, 400);
       }
 
-      // Task-center wiring (2026-05-16): port-exposure flip takes 30-60s
+      // Task-center wiring: port-exposure flip takes 30-60s
       // (Stalwart Deployment roll + haproxy DS create/delete + rollout
       // wait). Run the work in the background while we return an
       // immediate response with the taskId — the operator's progress
@@ -1861,7 +1861,7 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
       })();
 
       // Step keys + labels per mode. Sequence matches applyModeToCluster
-      // (post-2026-05-28 hairpin fix). Haproxy DS lifecycle runs FIRST
+      // . Haproxy DS lifecycle runs FIRST
       // to free port 25 on the active node before Stalwart's new pod
       // (with hostPort=25) tries to schedule there. Without this
       // ordering the scheduler hits FailedScheduling("didn't have free
@@ -2026,13 +2026,13 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
 
   // ── Stalwart silent-data-loss guard endpoint ────────────────────────
   //
-  // 2026-05-28: read by the Stalwart Deployment's protect-from-silent-
+  // read by the Stalwart Deployment's protect-from-silent-
   // data-loss init container BEFORE the restore-state container runs.
   // Returns counts of platform-DB rows that reference Stalwart-side IDs.
   // If counts > 0 AND the PVC is empty AND no operator override
   // annotation is set, the init container refuses to fresh-start
   // (CrashLoopBackOff) — preventing the silent-loss class the
-  // 2026-05-25 + 2026-05-28 dev incidents both hit.
+  // + dev incidents both hit.
   //
   // Anonymous (no bearer token) — the response carries no sensitive
   // data (just integer counts) and the endpoint is reachable only from
@@ -2057,7 +2057,7 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
       // drizzle's PG adapter returns { rows: [...], rowCount, ... } — not
       // a bare array. Destructure via .rows; raw destructure fails with
       // "intermediate value is not iterable" (caught live on staging
-      // 2026-05-28).
+      // ).
       const mRes = await app.db.execute(sql`
         SELECT COUNT(*)::int AS c FROM ${mailboxes} WHERE ${isNotNull(mailboxes.stalwartPrincipalId)}
       `) as { rows?: Array<{ c: number }> };

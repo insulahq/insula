@@ -124,7 +124,7 @@ describe('apiFetch', () => {
   /**
    * The body below is byte-for-byte what ModSecurity returned when CRS rule
    * 931100 blocked POST /api/v1/admin/dns-servers because the operator entered
-   * a DNS API URL as an IP literal (2026-08-03). It never reaches the platform
+   * a DNS API URL as an IP literal. It never reaches the platform
    * API, so there is no envelope — the panel used to render a bare 403.
    */
   it("names the WAF when ModSecurity blocks the request", async () => {

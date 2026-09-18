@@ -34,7 +34,7 @@ export interface DrWatcherDeps {
   readonly core: CoreV1Api;
   readonly apps: AppsV1Api;
   /**
-   * Batch tenant — required since Phase 1 streamline (2026-05-15)
+   * Batch tenant — required since Phase 1 streamline
    * because the restore-based failover polls the snapshot CronJob's
    * `status.lastSuccessfulTime` to wait for fresh snapshots before
    * scaling Stalwart down.
@@ -126,7 +126,7 @@ export async function runDrWatcherTick(deps: DrWatcherDeps): Promise<void> {
       // list (secondary then tertiary) skipping nodes that don't exist
       // or aren't Ready. Both server-role and worker-role are valid
       // mail placements (see affinity-patch-mail-stack.yaml). Earlier
-      // server-role gating was reverted 2026-05-28 — the mail-stack
+      // server-role gating was reverted — the mail-stack
       // affinity now spans both roles, so failover to a worker is fine.
       const candidates = [settings.mailSecondaryNode, settings.mailTertiaryNode].filter((n): n is string => !!n);
       let targetNode: string | null = null;

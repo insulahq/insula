@@ -70,7 +70,7 @@ ssh_cluster() {
 
 # ssh_node <node-name> <cmd…> — run a command on the SPECIFIC node a pod
 # landed on (InternalIP resolved via the kube API, same operator key).
-# Multi-node correctness (2026-06-11): the nft tenant_ports probe used to
+# Multi-node correctness: the nft tenant_ports probe used to
 # try `ssh <node-name>` FROM the control host (no key, bare node name) and
 # then silently fall back to the CONTROL host's nft — wrong machine
 # whenever the scheduler picked another node. Same pattern as
@@ -89,7 +89,7 @@ ssh_node() {
 # Source the shared helper for api_curl (defines functions only — no side effects).
 # Without this, api() (routed through api_curl) emits nothing in the ALL run where
 # INTEGRATION_TOKEN is pre-set → empty bodies → JSONDecodeError (root cause of the
-# 2026-06-26 "parallel cascade"). This suite keeps its own login below.
+# "parallel cascade"). This suite keeps its own login below.
 # shellcheck source=integration-token.sh
 [[ -f "$(dirname "${BASH_SOURCE[0]}")/integration-token.sh" ]] && \
   source "$(dirname "${BASH_SOURCE[0]}")/integration-token.sh"
@@ -206,7 +206,7 @@ DEPLOY_NAME="coturn-fw-ok-$STAMP"
 log "── deploying $CATALOG_CODE ──"
 # `api` routes through api_curl, which backs off + retries the platform's GLOBAL
 # API rate limiter (429) — in a full ALL run the parallel batch's request burst
-# can trip it on this create (observed 2026-06-25; passes serially).
+# can trip it on this create(observed; passes serially).
 DEPLOY_RESP=$(api POST "/tenants/$CID/deployments" "{\"catalog_entry_id\":\"$CATALOG_ENTRY_ID\",\"name\":\"$DEPLOY_NAME\"}")
 DEP_ID=$(echo "$DEPLOY_RESP" | python3 -c "import json,sys;d=json.load(sys.stdin)['data'];print(d.get('id',''))" 2>/dev/null)
 if [[ -n "$DEP_ID" ]]; then ok "deployment created id=$DEP_ID"; else fail "deployment create failed: $DEPLOY_RESP"; exit 1; fi
@@ -241,7 +241,7 @@ else
 fi
 
 # ─── Phase 4: nft set on the POD'S host has the ports ──────────────────────
-# 2026-06-11: probe the node the pod actually landed on via ssh_node —
+# probe the node the pod actually landed on via ssh_node —
 # the reconciler programs tenant_ports on THAT host. This is now a hard
 # assertion (was a warning while the probe could silently hit the wrong
 # machine).
@@ -359,7 +359,7 @@ for _ in $(seq 1 30); do
   sleep 2
 done
 
-# 2026-06-11: same ssh_node fix as Phase 4 — and a NOTE on the old
+# same ssh_node fix as Phase 4 — and a NOTE on the old
 # behaviour: this negative check used to "pass" vacuously because the
 # fallback probed the CONTROL host, where the ports were never added in
 # the first place. Probing the pod's real node makes it meaningful, and

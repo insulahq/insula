@@ -37,7 +37,7 @@ const CROWDSEC_L4_ENV = 'CROWDSEC_L4_MODE';
 // CTR + CPP GVRs match what the firewall-reconciler Go code uses.
 // The CRDs live under `networking.insula.host` — see
 // k8s/base/cluster-network/ + backend/src/modules/cluster-network/
-// k8s-client.ts CRD_GROUP. Until 2026-05-21 these constants were
+// k8s-client.ts CRD_GROUP. these constants were
 // wrong (`insula.host`), every listClusterCustomObject
 // returned 404, and the silent catch below left the trust lists
 // EMPTY — so every operator IP failed the trust check, even when
@@ -202,7 +202,7 @@ export const resolveTrustSources = async (
     // List failures (404 on wrong GVR, RBAC denial, kube down) leave
     // the list empty and the operator-IP check falls back to other
     // trust sources. Log so a misconfig surfaces (the silent catch
-    // hid a GVR-group typo for several weeks pre-2026-05-21).
+    // hid a GVR-group typo for several weeks pre-).
     console.warn(
       '[crowdsec-l4] ClusterPendingPeer list failed:',
       err instanceof Error ? err.message : String(err),
@@ -422,7 +422,7 @@ export const setL4Mode = async (
   // apiserver rejects with `spec.template.spec.containers[0].image:
   // Required value`. Strategic-merge correctly recognises `name` as
   // the merge key and patches in place. Caught during Stage D harness
-  // verification on 2026-05-20.
+  // verification.
   await apps.patchNamespacedDaemonSet(
     {
       name: FIREWALL_RECONCILER_DS,

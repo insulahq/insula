@@ -58,7 +58,7 @@ describe('seedTemplatesIfMissing', () => {
   });
 
   it('REFRESHES a pristine stock row whose shipped text has changed', async () => {
-    // The DEV 2026-09-06 case: the build shipped `{{subject}}` in the SLO
+    // The DEV case: the build shipped `{{subject}}` in the SLO
     // templates and the database still held the old subject line, because the
     // loader was insert-only. The code changed and the behaviour did not.
     const stale = { ...pristineRowFor(0), subjectTemplate: '[OLD] {{ruleName}}', bodyTemplate: 'old body' };
