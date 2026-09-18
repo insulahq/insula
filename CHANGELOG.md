@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.9.24] - 2026-09-18
+
 ### Added
 - **You now hear about it when somebody reports your mail as abuse.** Mail
   providers and abuse desks send a complaint when a message from one of your
