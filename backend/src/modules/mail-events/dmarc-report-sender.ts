@@ -60,8 +60,108 @@ const SEND_FREQUENCY = 'daily';
 
 const expr = (value: string): StalwartExpression => ({ match: {}, else: `'${value}'` });
 
+/**
+ * A raw (unquoted) Stalwart expression, for the non-string fields of the group
+ * — `aggregateContactInfo` is a boolean and `aggregateMaxReportSize` a number.
+ * Quoting them would store the literal string `'false'`.
+ */
+const rawExpr = (value: string): StalwartExpression => ({ match: {}, else: value });
+
 /** Stalwart's own keyword for "do not send these at all". */
 const DISABLE = 'disable';
+
+/**
+ * EVERY field of `x:DmarcReportSettings`, so the patch is never partial.
+ *
+ * WHAT IS PROVEN, and what is not. Two previous fixes shipped a confident
+ * mechanism that turned out to be wrong, so this comment states only what was
+ * actually measured.
+ *
+ * Measured ON PRODUCTION (Stalwart v0.16.20, 2026-09-18): the singleton reads
+ * `list: []` while this reconciler logs a successful disable every 5 minutes.
+ * An empty group means Stalwart's built-in defaults are LIVE — 47 aggregate
+ * reports went out in 24h from `postmaster@` + `system('hostname')`, and their
+ * DSNs bounce to the admin roster. Re-running the reconciler's own patch by
+ * hand reproduced it exactly: `{updated: {singleton: null}}`, empty
+ * `notUpdated`, and the group still empty afterwards.
+ *
+ * NOT proven: which write materialises the group from empty. On a throwaway
+ * v0.16.20 instance neither a complete 13-field `update` nor a `create`
+ * persisted (polled 90s), and on that instance NO settings group — not even
+ * `SystemSettings` — ever read back, so it was not a faithful reproduction of
+ * production and its results are not evidence either way. The singleton also
+ * cannot be created or destroyed (`destroy` -> "Singletons cannot be created
+ * or destroyed"), so an environment whose group already exists — DEV, staging
+ * — cannot reproduce the bug at all. That is precisely how "the field COUNT
+ * matters" (#612) and "an ADDRESS field materialises the group" (#621) were
+ * each validated against a prepared environment and shipped broken.
+ *
+ * So this change does NOT claim to make the disable stick. Writing the full
+ * group is the strictly-safer shape; the post-write verification below is the
+ * part that matters, because it makes the failure LOUD instead of a success
+ * message over a live default. If a future Stalwart adds a field, the same
+ * verification catches that too.
+ */
+export const DMARC_SETTINGS_FIELDS = [
+  'aggregateSendFrequency',
+  'aggregateFromAddress',
+  'aggregateFromName',
+  'aggregateOrgName',
+  'aggregateDkimSignDomain',
+  'aggregateSubject',
+  'aggregateContactInfo',
+  'aggregateMaxReportSize',
+  'failureSendFrequency',
+  'failureFromAddress',
+  'failureFromName',
+  'failureDkimSignDomain',
+  'failureSubject',
+] as const;
+
+/**
+ * Stalwart's own defaults for the fields the platform has no opinion about.
+ * They are written verbatim so the patch is COMPLETE without changing any
+ * behaviour the operator can observe.
+ */
+const PRESENTATION_DEFAULTS = {
+  aggregateFromName: expr('Report Subsystem'),
+  aggregateSubject: expr('DMARC Aggregate Report'),
+  aggregateContactInfo: rawExpr('false'),
+  aggregateMaxReportSize: rawExpr('5242880'),
+  failureFromName: expr('Report Subsystem'),
+  failureSubject: expr('DMARC Authentication Failure Report'),
+} as const;
+
+/**
+ * Build the COMPLETE settings group.
+ *
+ * `sender` is the envelope/From address for report mail and `domain` the
+ * organisation + DKIM-signing domain. The failure half is pinned to the same
+ * identity rather than left at Stalwart's `'noreply-dmarc@' + system('domain')`
+ * default: gating one half and leaving the other pointing at an address nobody
+ * owns is the bug, not the fix. It stays `disable` in both directions.
+ */
+function buildSettingsPatch(params: {
+  aggregateFrequency: string;
+  sender: string;
+  domain: string;
+}): Record<string, unknown> {
+  const { aggregateFrequency, sender, domain } = params;
+  return {
+    ...PRESENTATION_DEFAULTS,
+    aggregateSendFrequency: expr(aggregateFrequency),
+    aggregateFromAddress: expr(sender),
+    aggregateOrgName: expr(domain),
+    aggregateDkimSignDomain: expr(domain),
+    // Failure (forensic, `ruf=`) reports stay OFF even when aggregate
+    // reporting is on: a failure report forwards headers of somebody's
+    // individual message to whoever asked for it, and turning that on is not
+    // implied by "send DMARC reports".
+    failureSendFrequency: expr(DISABLE),
+    failureFromAddress: expr(sender),
+    failureDkimSignDomain: expr(domain),
+  };
+}
 
 export interface EligibleReportSender {
   readonly address: string;
@@ -255,30 +355,25 @@ export async function ensureDmarcReportSender(
   // narrowing through an `if`.
   let patch: Record<string, unknown>;
   if (desired) {
-    patch = {
-      aggregateSendFrequency: expr(SEND_FREQUENCY),
-      aggregateFromAddress: expr(desired),
-      // Org name and DKIM signing follow the sender's own domain, so a report
-      // is signed by the domain it claims to come from.
-      aggregateOrgName: expr(desired.slice(desired.indexOf('@') + 1)),
-      aggregateDkimSignDomain: expr(desired.slice(desired.indexOf('@') + 1)),
-      failureSendFrequency: expr(DISABLE),
-    };
+    // Org name and DKIM signing follow the sender's own domain, so a report is
+    // signed by the domain it claims to come from.
+    patch = buildSettingsPatch({
+      aggregateFrequency: SEND_FREQUENCY,
+      sender: desired,
+      domain: desired.slice(desired.indexOf('@') + 1),
+    });
   } else {
     const host = hostname as string;
-    patch = {
-      aggregateSendFrequency: expr(DISABLE),
-      failureSendFrequency: expr(DISABLE),
-      // Present so the group is actually created (see above). The value is
-      // `postmaster@<mail hostname>`, which since 2026-09-17 is a real
-      // deliverable address forwarding to the admin roster — so in the worst
-      // case, where a future change lets sending happen while this says
-      // `disable`, reports come from somewhere a person reads instead of a
-      // black hole. Nothing sends while the schedule is `disable`.
-      aggregateFromAddress: expr(`${POSTMASTER_LOCAL_PART}@${host}`),
-      aggregateOrgName: expr(host),
-      aggregateDkimSignDomain: expr(host),
-    };
+    // The address is `postmaster@<mail hostname>`, which since 2026-09-17 is a
+    // real deliverable address forwarding to the admin roster — so in the
+    // worst case, where a future change lets sending happen while this says
+    // `disable`, reports come from somewhere a person reads instead of a black
+    // hole. Nothing sends while the schedule is `disable`.
+    patch = buildSettingsPatch({
+      aggregateFrequency: DISABLE,
+      sender: `${POSTMASTER_LOCAL_PART}@${host}`,
+      domain: host,
+    });
   }
 
   // Skip the write when Stalwart already agrees. The singleton being EMPTY is
@@ -317,6 +412,37 @@ export async function ensureDmarcReportSender(
       logger.error({ notUpdated: res.notUpdated }, 'dmarc report sender: Stalwart rejected the update');
       return { state: 'skipped', sender: null, reason: 'stalwart rejected the update' };
     }
+
+    // READ IT BACK. An accepted `/set` is not evidence that anything was
+    // stored: against a never-written group Stalwart answers
+    // `{updated: {singleton: null}}` with an empty `notUpdated` and persists
+    // nothing. That is not a hypothetical — it is what production did for six
+    // weeks while this function logged a successful disable every 5 minutes.
+    // Verifying here is what makes a future recurrence loud instead of silent.
+    const wantAggregate = (patch.aggregateSendFrequency as StalwartExpression).else;
+    const wantFailureFreq = (patch.failureSendFrequency as StalwartExpression).else;
+    const after = await dmarcReportSettingsGet(opts);
+    const landedAggregate = after?.aggregateSendFrequency?.else;
+    const landedFailure = after?.failureSendFrequency?.else;
+    if (!after || landedAggregate !== wantAggregate || landedFailure !== wantFailureFreq) {
+      logger.error(
+        {
+          wrote: { aggregate: wantAggregate, failure: wantFailureFreq },
+          readBack: after
+            ? { aggregate: landedAggregate, failure: landedFailure }
+            : 'EMPTY — the settings group does not exist, so Stalwart\'s built-in defaults are LIVE',
+          fields: Object.keys(patch).length,
+        },
+        'dmarc report sender: Stalwart ACCEPTED the update and did not store it — outbound reporting '
+        + 'is NOT in the intended state. Reports may still be going out.',
+      );
+      return {
+        state: 'skipped',
+        sender: null,
+        reason: 'stalwart accepted the update but did not store it',
+      };
+    }
+
     logger.info(
       { sender: desired, frequency: desired ? SEND_FREQUENCY : 'disable' },
       desired
