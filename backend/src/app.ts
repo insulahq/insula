@@ -1563,6 +1563,16 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         const { startTenantSnapshotReaper } = await import('./modules/tenant-snapshots/scheduler.js');
         const snapshotReaperHandle = startTenantSnapshotReaper(app.db, kubeconfigPath);
         app.addHook('onClose', () => snapshotReaperHandle.stop());
+
+        // Longhorn recurring-job convergence. Keeps the platform database in
+        // the `system-critical` group (Longhorn copies a PVC's membership
+        // labels onto a volume at provision time and never again, so the CNPG
+        // inheritedMetadata label alone does not reach an existing volume),
+        // and clears scheduled snapshots left on volumes their job no longer
+        // covers — bare Snapshot CRs that no panel lists and no reaper sees.
+        const { startLonghornRecurringJobReconciler } = await import('./modules/longhorn-recurring-jobs/scheduler.js');
+        const longhornJobsHandle = startLonghornRecurringJobReconciler(app.log, kubeconfigPath);
+        app.addHook('onClose', () => longhornJobsHandle.stop());
       } catch (err) {
         app.log.warn({ err }, 'storage-lifecycle / lifecycle-retry scheduler: startup skipped');
       }

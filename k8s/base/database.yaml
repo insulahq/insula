@@ -58,6 +58,16 @@ spec:
       # cluster-wide.
       platform/role: system-db
       platform/owner: system
+      # Hourly in-volume snapshots — the `hourly-snap` RecurringJob selects
+      # this group, and inheritedMetadata puts every instance PVC
+      # (system-db-1/2/3 under HA) in it automatically.
+      #
+      # The job used to select `default`, which every tenant PVC also carries,
+      # so tenant volumes were being snapshotted hourly as well — invisible in
+      # both panels and unreachable by the tenant-snapshot reaper. Scoping the
+      # job needs a group the platform database is alone in, and this is where
+      # it joins.
+      recurring-job-group.longhorn.io/system-critical: enabled
       platform/managed-by: platform-api
 
   # spec.instances is INTENTIONALLY OMITTED. CNPG defaults to 1 on
