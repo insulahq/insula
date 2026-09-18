@@ -348,3 +348,58 @@ export const dmarcSourcesQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(500).optional(),
 });
 export type DmarcSourcesQuery = z.infer<typeof dmarcSourcesQuerySchema>;
+
+// ── Abuse reports (ARF, RFC 5965) ──────────────────────────────────────────
+//
+// One entry per complaint Stalwart parsed and the platform consumed. Unlike
+// the DMARC surface there is no rate and no recommendation: the unit is an
+// incident to act on, not a trend.
+
+export const abuseFeedbackTypeSchema = z.enum(['abuse', 'fraud', 'virus', 'other']);
+export type AbuseFeedbackType = z.infer<typeof abuseFeedbackTypeSchema>;
+
+export const abuseReportSchema = z.object({
+  id: z.string(),
+  feedbackType: abuseFeedbackTypeSchema,
+  /** The reported domain. Null when the report named none we could read. */
+  domain: z.string().nullable(),
+  /**
+   * Null when the reported domain is not an email domain on this platform —
+   * which is itself informative (often a spoof of one of ours), so these are
+   * shown rather than filtered out.
+   */
+  tenantId: z.string().nullable(),
+  tenantName: z.string().nullable(),
+  originalMailFrom: z.string().nullable(),
+  originalRcptTo: z.string().nullable(),
+  sourceIp: z.string().nullable(),
+  reportingMta: z.string().nullable(),
+  /** Who complained — the report's own From. */
+  reporter: z.string().nullable(),
+  subject: z.string().nullable(),
+  /** ARF `Incidents`: one report can stand for many occurrences. */
+  incidents: z.number().int().positive(),
+  receivedAt: z.string(),
+});
+export type AbuseReport = z.infer<typeof abuseReportSchema>;
+
+export const abuseReportsOverviewSchema = z.object({
+  windowDays: z.number().int().positive(),
+  reports: z.array(abuseReportSchema).default([]),
+  /** Total in the window, which may exceed `reports.length` once capped. */
+  total: z.number().int().nonnegative(),
+  /**
+   * Where complaints are expected to arrive. Shown for the same reason as the
+   * DMARC intake address: an operator should not have to read DNS to find out
+   * whether the address a complaint would be sent to actually exists.
+   */
+  intakeLocalPart: z.string(),
+});
+export type AbuseReportsOverview = z.infer<typeof abuseReportsOverviewSchema>;
+
+export const abuseReportsQuerySchema = z.object({
+  windowDays: z.coerce.number().int().min(1).max(365).optional(),
+  limit: z.coerce.number().int().min(1).max(200).optional(),
+  feedbackType: abuseFeedbackTypeSchema.optional(),
+});
+export type AbuseReportsQuery = z.infer<typeof abuseReportsQuerySchema>;

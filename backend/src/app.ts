@@ -1328,6 +1328,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         const { ensureDmarcReportSender } = await import('./modules/mail-events/dmarc-report-sender.js');
         const { ensurePlatformHostnameIntake } = await import('./modules/mail-events/platform-hostname-intake.js');
         const { pollDmarcReports } = await import('./modules/mail-events/dmarc.js');
+        const { pollAbuseReports } = await import('./modules/mail-events/abuse-reports.js');
         const { repairDmarcRuaRecords } = await import('./modules/mail-events/dmarc-rua-repair.js');
         const { evaluateMailThresholds } = await import('./modules/mail-events/thresholds.js');
         const { createK8sClients } = await import('./modules/k8s-provisioner/k8s-client.js');
@@ -1370,6 +1371,12 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           });
           pollDmarcReports(app.db, app.log).catch((err) => {
             app.log.warn({ err }, 'dmarc poll failed');
+          });
+          // Abuse complaints (ARF). The webhook nudges this too; the tick is
+          // the floor, so an unsubscribed or dropped event delays a complaint
+          // rather than losing it.
+          pollAbuseReports(app.db, app.log).catch((err) => {
+            app.log.warn({ err }, 'abuse report poll failed');
           });
           // R5. The generator fix only reaches domains provisioned AFTER it;
           // the `_dmarc` record is written once at enable time and nothing

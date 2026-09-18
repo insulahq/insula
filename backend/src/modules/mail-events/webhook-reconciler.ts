@@ -43,11 +43,21 @@ export const SUBSCRIBED_EVENTS: readonly string[] = [
   // Nudges the debounced DMARC poll (dmarc.ts:schedulePollSoon) so a report
   // surfaces in seconds rather than on the 5-min tick.
   //
-  // The ARF family — abuse-report, auth-failure-report, fraud-report,
-  // arf-parse-failed — was unsubscribed with the FBL retirement.
-  // Stalwart only loads webhook config at boot, so the reconciler rolls the
-  // pod once to drop them.
   'incoming-report.dmarc-report',
+  // The ARF family. `abuse-report` and `fraud-report` are the complaints
+  // themselves; `arf-parse-failed` is subscribed so a report Stalwart could
+  // not parse is visible as a log line instead of silence — an abuse desk that
+  // looks quiet because parsing broke is the worst of both states.
+  //
+  // `auth-failure-report` (DMARC forensic, RFC 6591) is deliberately NOT here:
+  // the platform keeps `ruf=` off in both directions, and an inbound one is an
+  // authentication artefact, not an abuse complaint.
+  //
+  // Stalwart loads webhook config at boot only, so the reconciler rolls the
+  // pod once when this set changes.
+  'incoming-report.abuse-report',
+  'incoming-report.fraud-report',
+  'incoming-report.arf-parse-failed',
 ];
 
 export function desiredWebhookObject(masterSecret: string): Record<string, unknown> {

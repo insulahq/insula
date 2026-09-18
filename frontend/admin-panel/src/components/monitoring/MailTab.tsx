@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Mail, Loader2, AlertCircle, ShieldAlert, ShieldOff } from 'lucide-react';
 import { apiFetch } from '@/lib/api-client';
 import DmarcSection from './DmarcSection';
+import AbuseReportsSection from './AbuseReportsSection';
 import { Link } from 'react-router-dom';
 import type { MailOverviewResponse } from '@insula/api-contracts';
 
@@ -180,6 +181,7 @@ export default function MailTab() {
 
       {/* ROADMAP R5 */}
       <DmarcSection />
+      <AbuseReportsSection />
     </div>
   );
 }
