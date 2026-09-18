@@ -12,6 +12,34 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **The System Backups page can finally control when system backups run.** It
+  previously showed no schedule controls at all: the timing of the etcd
+  snapshot upload, the encrypted secrets bundle and the cluster-state dump was
+  compiled into cluster manifests, where an operator could not reach it. Worse,
+  two schedules the page *did* let you edit — the Postgres base backup and the
+  Longhorn snapshot cadence — were connected to nothing, so changing them
+  appeared to work and changed nothing at all.
+
+  Each of the five now behaves the way it reads. The etcd upload and the
+  Postgres base backup take your time directly. The secrets bundle and
+  cluster-state dump do too — and because their timing is owned by the cluster
+  manifest, the platform quietly takes over running them the moment you pick a
+  different time, so your choice is what actually happens. The Longhorn
+  snapshot cadence is the one exception: it is set by the cluster manifest and
+  cannot be changed from here, so it is now shown read-only with that stated,
+  rather than offering an edit that would be undone a minute later.
+
+  Seeding these schedules changes nothing about when your backups run today —
+  every one starts at the value its manifest already used.
+- **Certificates now tell you when they recover.** Two real wildcard failures
+  on 2026-09-01 were each reported twice; the retry succeeded quietly, so the
+  most recent thing an operator had been told about those domains was
+  "failed" — seventeen days after they were fine. A certificate that comes back
+  now closes its own alarm, for the admin and for the tenant, saying what it
+  had been doing and how long the new certificate is good for. The same
+  applies when certificate checks resume after an outage.
+
 ### Changed
 - **Incident detail no longer lives in the public source tree.** Code comments
   in this repository had accumulated over two thousand dated notes, many of
@@ -25,6 +53,13 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   itself is kept privately, and a new check keeps dates from creeping back into
   comments. Nothing about how the platform behaves changed; this is source
   commentary only.
+- **The mailbox usage meter stays its normal colour at every level, including
+  when the plan limit is reached.** It used to turn amber at 80% and red at
+  100%, which made an ordinary fact about your plan look like a fault on a page
+  you visit to do routine work. The message underneath still tells you the
+  limit is reached and what to do about it. Sending-limit meters still turn red
+  when sending is actually blocked, because that is a live restriction rather
+  than a count.
 
 ### Fixed
 - **Tenant volumes were being snapshotted every hour, invisibly.** Every tenant
@@ -75,29 +110,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   showing the wrong cadence everywhere since it appeared. It now shows the
   schedule Longhorn is really on. Asking the API to change it is refused
   outright rather than saved and quietly ignored.
-
-### Added
-- **The System Backups page can finally control when system backups run.** It
-  previously showed no schedule controls at all: the timing of the etcd
-  snapshot upload, the encrypted secrets bundle and the cluster-state dump was
-  compiled into cluster manifests, where an operator could not reach it. Worse,
-  two schedules the page *did* let you edit — the Postgres base backup and the
-  Longhorn snapshot cadence — were connected to nothing, so changing them
-  appeared to work and changed nothing at all.
-
-  Each of the five now behaves the way it reads. The etcd upload and the
-  Postgres base backup take your time directly. The secrets bundle and
-  cluster-state dump do too — and because their timing is owned by the cluster
-  manifest, the platform quietly takes over running them the moment you pick a
-  different time, so your choice is what actually happens. The Longhorn
-  snapshot cadence is the one exception: it is set by the cluster manifest and
-  cannot be changed from here, so it is now shown read-only with that stated,
-  rather than offering an edit that would be undone a minute later.
-
-  Seeding these schedules changes nothing about when your backups run today —
-  every one starts at the value its manifest already used.
-
-### Fixed
 - **Every off-site etcd snapshot was stored without a checksum.** The backup job
   records a small sidecar next to each snapshot so you can tell a good copy from
   a truncated one before trusting it in a restore. On production all 24 stored
@@ -139,15 +151,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   first issuance or renewal of a working certificate — was filed under
   issuance, which is why the renewal alarm was left to be raised by code that
   could not detect a renewal at all.
-
-### Added
-- **Certificates now tell you when they recover.** Two real wildcard failures
-  on 2026-09-01 were each reported twice; the retry succeeded quietly, so the
-  most recent thing an operator had been told about those domains was
-  "failed" — seventeen days after they were fine. A certificate that comes back
-  now closes its own alarm, for the admin and for the tenant, saying what it
-  had been doing and how long the new certificate is good for. The same
-  applies when certificate checks resume after an outage.
 - **Three platform alerts explained themselves to a reviewer instead of to
   you.** One arriving on the test cluster read *"Detection and the repair
   button already existed; nothing escalated, so a drift sat for three days on
@@ -182,15 +185,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   mail server; it now says the key that proves your mail is genuine was
   replaced, that mail keeps flowing throughout, and that there is nothing for
   you to do.
-
-### Changed
-- **The mailbox usage meter stays its normal colour at every level, including
-  when the plan limit is reached.** It used to turn amber at 80% and red at
-  100%, which made an ordinary fact about your plan look like a fault on a page
-  you visit to do routine work. The message underneath still tells you the
-  limit is reached and what to do about it. Sending-limit meters still turn red
-  when sending is actually blocked, because that is a live restriction rather
-  than a count.
 
 ## [2026.9.23] - 2026-09-17
 
