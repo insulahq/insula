@@ -13,6 +13,26 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Fixed
+- **Every off-site etcd snapshot was stored without a checksum.** The backup job
+  records a small sidecar next to each snapshot so you can tell a good copy from
+  a truncated one before trusting it in a restore. On production all 24 stored
+  snapshots carried an empty checksum, and had since the job was written — it
+  exited successfully every time, so nothing ever reported it.
+
+  The cause was an escaping rule that applies to most manifests but not this
+  one. Inline shell in this repo is written `$$VAR` because Flux collapses it;
+  this particular job is deliberately excluded from Flux, and the part of
+  Kubernetes that then handles it leaves `$( … )` expressions untouched — so
+  inside those expressions the shell saw `$$` and substituted its own process
+  id. The checksum line and the "N uploaded" counter were the two casualties,
+  which is why the job's log also read `done ( uploaded)` with no number.
+
+  The snapshots themselves were always uploaded correctly and are intact; only
+  the checksum recorded beside them was missing. New snapshots carry a real
+  checksum, verified against the source file. Existing clusters are repaired
+  automatically — the fix reaches them through the reconciler, because a job in
+  this state does not pick up manifest changes on its own. A CI guard now
+  rejects the pattern anywhere it could recur.
 - **Three platform alerts explained themselves to a reviewer instead of to
   you.** One arriving on the test cluster read *"Detection and the repair
   button already existed; nothing escalated, so a drift sat for three days on
