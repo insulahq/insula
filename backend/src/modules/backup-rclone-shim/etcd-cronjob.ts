@@ -41,6 +41,7 @@ import {
 import type { Database } from '../../db/index.js';
 import { JSON_PATCH } from '../../shared/k8s-patch.js';
 import { getClusterId } from '../system-settings/cluster-id.js';
+import { CADENCE_TARGETS } from '../backup-schedules/cadence/targets.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -260,6 +261,17 @@ export async function reconcileEtcdCronJob(
   // ─── 1. Resolve desired suspend state + the cluster_id-namespaced
   //         upload prefix from the DB ─────────────────────────────
   const bound = await isSystemTargetBound(db);
+  // Suspend is owned by the cadence reconciler as of 2026-09-18: it has to be
+  // able to suspend this CronJob when the operator disables the schedule, and
+  // two owners with different rules flip the field against each other every
+  // tick. This reconciler keeps the upload prefix and the Flux-disown stamp,
+  // which nothing else writes.
+  //
+  // `bound` is still read: the cadence reconciler gates on the SAME predicate,
+  // so an unbound cluster ends up suspended either way — just from one writer.
+  const suspendOwnedByCadence = CADENCE_TARGETS.some(
+    (t) => t.name === ETCD_CRONJOB_NAME && t.mechanism !== 'read-only',
+  );
   const desiredSuspend = !bound;
   // Namespace etcd snapshots by the stable cluster_id so two clusters sharing
   // one S3 target never cross-contaminate (a `--latest` restore could otherwise
@@ -308,7 +320,7 @@ export async function reconcileEtcdCronJob(
   // live object carry `reconcile: disabled` so Flux disowns it and never reverts
   // the SHIM_PREFIX / suspend fields this reconciler owns (seed-then-disown).
   const ops: Array<{ op: 'replace' | 'add'; path: string; value: unknown }> = [];
-  if (liveSuspend !== desiredSuspend) {
+  if (!suspendOwnedByCadence && liveSuspend !== desiredSuspend) {
     ops.push({ op: 'replace', path: '/spec/suspend', value: desiredSuspend });
   }
   const prefixEnv = findShimPrefixEnv(live);

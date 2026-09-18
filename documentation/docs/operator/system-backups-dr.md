@@ -63,6 +63,35 @@ window you can restore to, when the last and next base backups run, when the log
 was last shipped and how often that succeeds, and how much storage the copies and
 the log use at the target.
 
+### Timing the other system backups
+
+The same tab carries a card for each of the other things the platform backs up
+at the system level, so their timing is visible and changeable in one place:
+
+| Schedule | What it controls |
+|---|---|
+| **etcd snapshot upload** | How often the cluster-database snapshots k3s writes to disk are shipped to your backup target. k3s writes them every 12 hours; this setting is how often they are collected and sent. |
+| **Secrets bundle** | How often the encrypted copy of your cluster secrets is taken — the bundle you need to rebuild this platform elsewhere. |
+| **Cluster state dump** | How often the inventory of Kubernetes objects is captured. |
+| **Longhorn recurring snapshots** | Shown for reference only. This one is set by the cluster manifest and cannot be changed here. |
+
+Each card also has an on/off switch. Turning a schedule off stops that backup
+until you turn it back on — the platform will not quietly keep running it.
+
+!!! note "Changing a time takes effect immediately"
+    Two of these — the secrets bundle and the cluster-state dump — normally run
+    on a timing the cluster manifest sets. As soon as you choose a different
+    time, the platform takes over running them itself so that your choice is
+    what actually happens. Set them back to the original time and they go back
+    to running the standard way. Either way you should see the change reflected
+    within a minute or two; nothing needs to be redeployed.
+
+!!! warning "A schedule you cannot enable yet"
+    These backups all upload to whatever the **system** backup class is bound
+    to. Until you have bound a target, the panel refuses to enable them and
+    tells you why — a schedule with nowhere to upload would only produce
+    failures.
+
 The storage figure is measured by listing everything at the target, which takes
 minutes on a large archive, so it is measured **in the background** and shown
 with its age — *"8.85 GiB · measured 20 minutes ago"*. It refreshes on its own;

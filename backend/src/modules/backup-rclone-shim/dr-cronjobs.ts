@@ -48,6 +48,7 @@ import { backupConfigurations, backupTargetAssignments } from '../../db/schema.j
 import type { Database } from '../../db/index.js';
 import { buildS3SecretData } from '../backup-config/target-secret-shape.js';
 import { notifyAdminBackupTargetUnreachable } from '../notifications/events.js';
+import { CADENCE_TARGETS } from '../backup-schedules/cadence/targets.js';
 import { loadBackupTargetKey, SHIM_NAMESPACE } from './service.js';
 import { deriveShimAccessKey, deriveShimSecretKey } from './crypto.js';
 import { SHIM_S3_ENDPOINT_URL, SHIM_REGION } from './rclone-push.js';
@@ -67,6 +68,17 @@ const CREDENTIALS_SECRET_NAME = 'backup-credentials';
  * matched a tenant volume (`longhorn-tenant`), so it could not perform the
  * check it existed for. See k8s/base/backup/LEGACY-DEPRECATED.md.
  */
+/**
+ * True when a CronJob's suspend flag belongs to the cadence reconciler.
+ *
+ * Derived from the cadence target table rather than hard-coded, so adding a
+ * schedule row for another bridged job cannot silently recreate the
+ * double-fire this guards against.
+ */
+function cadenceOwnsSuspend(name: string): boolean {
+  return CADENCE_TARGETS.some((t) => t.name === name && t.mechanism !== 'read-only');
+}
+
 export const BRIDGED_DR_CRONJOBS = [
   'platform-secrets-backup',
   'platform-cluster-state-backup',
@@ -86,7 +98,12 @@ interface CronJobClients {
   readonly custom: k8s.CustomObjectsApi;
 }
 
-async function systemClassBound(db: Database): Promise<boolean> {
+/**
+ * Exported so the cadence reconciler gates on exactly the same condition. Two
+ * writers with two definitions of "bound" would flip suspend against each
+ * other forever.
+ */
+export async function systemClassBound(db: Database): Promise<boolean> {
   const rows = await db
     .select({ enabled: backupConfigurations.enabled })
     .from(backupTargetAssignments)
@@ -265,8 +282,18 @@ export async function reconcileDrCronJobs(
     return { state: 'error', errorMessage: msg, secretApplied: false, unsuspended: 0, suspended: 0 };
   }
 
+  // Ownership hand-off (2026-09-18): the cadence reconciler is now the sole
+  // writer of /spec/suspend for any CronJob that has a schedule row, because
+  // it has to suspend one whose operator cadence differs from the manifest
+  // (the platform fires those itself). Unsuspending here on the next tick
+  // would leave the CronJob firing natively AND the platform firing it —
+  // two backups per period. This bridge keeps the unbound case, which both
+  // agree on, and keeps sole ownership of the credentials Secret.
   let unsuspended = 0;
   for (const name of BRIDGED_DR_CRONJOBS) {
+    if (cadenceOwnsSuspend(name)) {
+      continue;
+    }
     try {
       if (await setCronJobSuspend(clients.batch, name, false)) {
         unsuspended += 1;

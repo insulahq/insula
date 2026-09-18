@@ -44,7 +44,11 @@ export default function SystemBackupsPage() {
         title="System Backups"
         subtitle="Postgres WAL + base backup, etcd snapshots, secrets bundle, monitoring + restic-backed components."
         shimClass="system"
-        scheduleSubsystems={[]}
+        // Until 2026-09-18 this was `[]`, so the page rendered no schedule
+        // cards at all: the cadence of every system artefact lived only in
+        // manifests. Order is the order an operator thinks about them —
+        // database first, then the three DR artefacts.
+        scheduleSubsystems={['system_pitr', 'etcd_snapshot', 'secrets_bundle', 'cluster_state', 'longhorn_recurring']}
         snapshotsTab={
           <div className="space-y-3">
             <p className="text-xs text-gray-500 dark:text-gray-400">
