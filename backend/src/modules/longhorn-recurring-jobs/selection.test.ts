@@ -19,7 +19,9 @@ const hourly = { name: 'hourly-snap', groups: ['system-critical'] };
 const hourlyOld = { name: 'hourly-snap', groups: ['default'] };
 const trim = { name: 'daily-fstrim', groups: ['default'] };
 
-const vol = (name: string, labels: Record<string, string> = {}) => ({ name, labels });
+const vol = (name: string, labels: Record<string, string> = {}, attached = true) =>
+  ({ name, labels, attached });
+const detachedVol = (name: string, labels: Record<string, string> = {}) => vol(name, labels, false);
 const tenantVol = (name: string) => vol(name, { [`${GROUP_LABEL_PREFIX}default`]: 'enabled' });
 const dbVol = (name: string) => vol(name, {
   [`${GROUP_LABEL_PREFIX}default`]: 'enabled',
@@ -27,9 +29,9 @@ const dbVol = (name: string) => vol(name, {
 });
 
 const snap = (name: string, volume: string, recurringJob: string | null = 'hourly-snap') =>
-  ({ name, volume, recurringJob, terminating: false });
-const terminatingSnap = (name: string, volume: string) =>
-  ({ ...snap(name, volume), terminating: true });
+  ({ name, volume, recurringJob, terminating: false, headAdjacent: false });
+const terminatingSnap = (name: string, volume: string, headAdjacent = false) =>
+  ({ ...snap(name, volume), terminating: true, headAdjacent });
 
 describe('jobCoversVolume', () => {
   it('covers a volume that carries the job group label', () => {
@@ -144,6 +146,44 @@ describe('planSnapshotSweep', () => {
     expect(plan.byVolume).toEqual([{ volume: 'pvc-t1', snapshots: ['fresh'] }]);
     expect(plan.pendingPurge).toBe(1);
     expect(plan.pendingPurgeVolumes).toEqual(['pvc-t1']);
+  });
+
+  it('blames a DETACHED volume, not head adjacency, when the volume is detached', () => {
+    // Longhorn cannot purge a detached volume at all. Getting this wrong meant
+    // logging "waiting for their volume to attach" about an attached one.
+    const plan = planSnapshotSweep({
+      ...base,
+      volumes: [detachedVol('pvc-t1', { [`${GROUP_LABEL_PREFIX}default`]: 'enabled' })],
+      snapshots: [terminatingSnap('going', 'pvc-t1', true)],
+    });
+    expect(plan.pendingDetached).toBe(1);
+    expect(plan.pendingHeadParent).toBe(0);
+  });
+
+  it('blames head adjacency on an ATTACHED volume', () => {
+    // Measured: the engine finishes its purge (progress 100, state complete)
+    // and still leaves the head's parent behind, because folding it would mean
+    // merging into the volume being written to. It clears on the next snapshot.
+    const plan = planSnapshotSweep({
+      ...base,
+      volumes: [tenantVol('pvc-t1')],
+      snapshots: [terminatingSnap('going', 'pvc-t1', true)],
+    });
+    expect(plan.pendingHeadParent).toBe(1);
+    expect(plan.pendingDetached).toBe(0);
+  });
+
+  it('attributes a mid-purge snapshot to neither cause', () => {
+    // Attached, not head-adjacent: Longhorn is simply working on it, which
+    // finishes in seconds. Counted as pending, blamed on nothing.
+    const plan = planSnapshotSweep({
+      ...base,
+      volumes: [tenantVol('pvc-t1')],
+      snapshots: [terminatingSnap('going', 'pvc-t1', false)],
+    });
+    expect(plan.pendingPurge).toBe(1);
+    expect(plan.pendingDetached).toBe(0);
+    expect(plan.pendingHeadParent).toBe(0);
   });
 
   it('does not count a terminating snapshot on a protected volume', () => {

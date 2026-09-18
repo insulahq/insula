@@ -40,6 +40,8 @@ export interface RecurringJobRef {
 export interface VolumeRef {
   readonly name: string;
   readonly labels: Readonly<Record<string, string>>;
+  /** `status.state === 'attached'`. Longhorn cannot purge a detached volume. */
+  readonly attached: boolean;
 }
 
 export interface SnapshotRef {
@@ -50,13 +52,29 @@ export interface SnapshotRef {
   /**
    * Already asked to go, finalizer not yet released.
    *
-   * On an ATTACHED volume a deletion completes in seconds. On a DETACHED one
-   * the object sits in Terminating until the volume next attaches and Longhorn
-   * can purge it — measured on both, and the reason this field exists: a sweep
-   * that counted "delete accepted" as "snapshot gone" would report a converged
-   * cluster while the objects were still there.
+   * On an ATTACHED volume a deletion normally completes in seconds. On a
+   * DETACHED one the object sits in Terminating until the volume next attaches
+   * and Longhorn can purge it — measured on both, and the reason this field
+   * exists: a sweep that counted "delete accepted" as "snapshot gone" would
+   * report a converged cluster while the objects were still there.
    */
   readonly terminating: boolean;
+  /**
+   * `status.children` contains `volume-head` — this snapshot is the live head's
+   * parent.
+   *
+   * Longhorn cannot coalesce such a snapshot: its blocks would have to merge
+   * into the volume that is being written to. Measured on a live attached
+   * volume — the engine ran its purge to `state: complete, progress: 100` and
+   * still left this one as `removed=True, children=[volume-head]`. It folds
+   * away once it is no longer adjacent to the head, i.e. on the volume's next
+   * snapshot, and its blocks are reclaimable by the nightly filesystem trim
+   * because `remove-snapshots-during-filesystem-trim` is on.
+   *
+   * Tracked so the sweep can say WHICH of the two reasons is holding an object,
+   * instead of blaming a detached volume for an attached one.
+   */
+  readonly headAdjacent: boolean;
 }
 
 /** The groups this volume is an explicit member of. */
@@ -105,10 +123,14 @@ export interface SweepPlan {
   readonly skippedUnknownVolume: number;
   /** Snapshots left alone because their volume is on the protected list. */
   readonly skippedProtected: number;
-  /** Deletion already requested, waiting on the volume to attach and purge. */
+  /** Deletion requested, object still present. Broken down by what holds it. */
   readonly pendingPurge: number;
   /** The volumes those pending snapshots belong to. */
   readonly pendingPurgeVolumes: readonly string[];
+  /** Held because the volume is detached: clears when it next attaches. */
+  readonly pendingDetached: number;
+  /** Held because it is the live head's parent: clears on the next snapshot. */
+  readonly pendingHeadParent: number;
 }
 
 export interface SweepInput {
@@ -144,6 +166,8 @@ export function planSnapshotSweep(input: SweepInput): SweepPlan {
   let skippedUnknownVolume = 0;
   let skippedProtected = 0;
   let pendingPurge = 0;
+  let pendingDetached = 0;
+  let pendingHeadParent = 0;
 
   for (const snap of input.snapshots) {
     if (!snap.recurringJob) continue; // human/CSI snapshot — not ours to judge
@@ -152,10 +176,14 @@ export function planSnapshotSweep(input: SweepInput): SweepPlan {
       continue;
     }
     if (snap.terminating) {
-      // Re-issuing the delete would change nothing. Counted so the caller can
-      // say "waiting on a detached volume" instead of "nothing left to do".
+      // Re-issuing the delete would change nothing. Counted, and attributed,
+      // so the caller can name what is holding the object rather than say
+      // "nothing left to do" or blame the wrong cause.
       pendingPurge += 1;
       pendingVolumes.add(snap.volume);
+      const vol = volumeByName.get(snap.volume);
+      if (vol && !vol.attached) pendingDetached += 1;
+      else if (snap.headAdjacent) pendingHeadParent += 1;
       continue;
     }
     const volume = volumeByName.get(snap.volume);
@@ -186,6 +214,8 @@ export function planSnapshotSweep(input: SweepInput): SweepPlan {
     skippedProtected,
     pendingPurge,
     pendingPurgeVolumes: [...pendingVolumes].sort(),
+    pendingDetached,
+    pendingHeadParent,
   };
 }
 
