@@ -516,11 +516,21 @@ export async function applyPVC(
           name: pvcName,
           namespace,
           labels: {
-            // Opt this PVC into Longhorn's `default` RecurringJob group
-            // so the daily/weekly backup schedule picks it up
-            // automatically. Without this label a new tenant PVC would
-            // silently fall outside the backup set — see
-            // project_backup_restore_benchmarks.md and N6 audit.
+            // Longhorn's `default` RecurringJob group. This buys the PVC a
+            // DAILY FILESYSTEM TRIM and nothing else.
+            //
+            // It is NOT a backup setting — this comment claimed it was, for
+            // a while after the daily/weekly Longhorn BACKUP jobs were
+            // deleted. Off-cluster protection is the tenant-bundle shim
+            // pipeline, driven by backup target assignments, which knows
+            // nothing about this label. Believing the stale wording is how
+            // tenant volumes ended up on an hourly automatic snapshot
+            // schedule that no panel showed and no reaper could clean.
+            //
+            // Hourly snapshots now belong to the `system-critical` group,
+            // which the platform database alone joins. A tenant's snapshots
+            // are the ones they take themselves from the tenant panel:
+            // visible, and reaped after snapshot_expiry_hours.
             'recurring-job-group.longhorn.io/default': 'enabled',
             'app.kubernetes.io/part-of': 'hosting-platform',
             'app.kubernetes.io/component': 'tenant-storage',

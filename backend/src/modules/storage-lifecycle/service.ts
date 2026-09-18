@@ -953,9 +953,13 @@ async function applyPVCMib(k8s: K8sClients, namespace: string, sizeMib: number, 
           labels: {
             // Same label set as applyPVC in k8s-provisioner — the
             // destructive-resize path replaces the PVC, so without
-            // re-stamping these labels the tenant would drop out of
-            // both the backup RecurringJob and the canonical label
-            // index after a shrink/snap-restore.
+            // re-stamping these labels the tenant would drop out of the
+            // daily filesystem trim and the canonical label index after a
+            // shrink/snap-restore.
+            //
+            // `default` grants trim only. It is not a backup group, and it no
+            // longer grants hourly snapshots either — those are scoped to
+            // `system-critical` (the platform database).
             'recurring-job-group.longhorn.io/default': 'enabled',
             'app.kubernetes.io/part-of': 'hosting-platform',
             'app.kubernetes.io/component': 'tenant-storage',
