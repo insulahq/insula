@@ -698,7 +698,7 @@ export async function scheduleDelayedTermination(
     // Without this guard, a multi-replica HA cluster would lose the
     // user's session ~60s after page reload whenever the reconnect
     // landed on a different replica than the original (production-
-    // observed regression, staging audit 2026-05-20 13:54).
+    // observed regression, staging audit 13:54).
     void (async () => {
       try {
         const row = await sessionStore.findById(ctx.db, sessionId);

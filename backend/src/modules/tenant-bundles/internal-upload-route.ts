@@ -87,7 +87,7 @@ export async function backupsV2InternalUploadRoutes(app: FastifyInstance): Promi
   // PUT, not POST — `curl --upload-file` (which the files-component
   // Job uses for streaming uploads from disk) defaults to HTTP PUT,
   // and the semantics here are "store at this exact path", which
-  // PUT expresses correctly. Caught E2E 2026-05-02 when the Job
+  // PUT expresses correctly. Caught E2E when the Job
   // tried PUT and Fastify returned 404 because the registered
   // method was POST.
   app.put('/internal/bundles/:bundleId/components/:component/:artifactName', {
@@ -233,10 +233,10 @@ export async function backupsV2InternalUploadRoutes(app: FastifyInstance): Promi
       .limit(1);
     if (!cfg) throw new ApiError('NOT_FOUND', 'Backup target not found', 404);
 
-    // B9 (2026-05-22): restic backend target also goes through the
+    // B9: restic backend target also goes through the
     // shim. The shim's `tenant` bucket route handles cifs/sftp
     // upstreams that resolveBackupTarget would otherwise throw 501
-    // on. (NFS was dropped 2026-05-25; see ADR-043 postscript.)
+    // on.(NFS was dropped; see ADR-043 postscript.)
     // Legacy direct fallback only fires when the shim Secret isn't
     // available.
     let target;
@@ -285,7 +285,7 @@ export async function backupsV2InternalUploadRoutes(app: FastifyInstance): Promi
     // Phase 1 piece #11 — abort the spawned restic when the inbound
     // HTTP request is cancelled (tenant Job crash, NIC reset, client
     // disconnect). Without this, the spawn loiters on stdin forever
-    // and accumulating zombies OOM-kill the pod (staging 2026-05-11
+    // and accumulating zombies OOM-kill the pod (staging
     // showed 5 stuck "running" backup_jobs producing that exact
     // pattern). The signal is also fired on response close in case
     // Fastify itself drops the connection mid-stream.
@@ -305,7 +305,7 @@ export async function backupsV2InternalUploadRoutes(app: FastifyInstance): Promi
     // because the kernel never sees a FIN/RST. Node's IncomingMessage
     // therefore never emits 'close' or 'aborted', and the route hangs
     // until the 1h runResticBackup timeout. Validated on staging
-    // 2026-05-11 13:13Z: socket stays ESTABLISHED, slot heartbeats
+    // 13:13Z: socket stays ESTABLISHED, slot heartbeats
     // for the full hour.
     //
     // Setting socket.setTimeout(N) makes Node emit 'timeout' after N
@@ -448,12 +448,12 @@ export async function backupsV2InternalUploadRoutes(app: FastifyInstance): Promi
  * in-flight uploads.
  */
 async function resolveStoreForUpload(app: FastifyInstance, targetConfigId: string): Promise<BackupStore> {
-  // B9 (2026-05-22): bundle component uploads from Job pods route
+  // B9: bundle component uploads from Job pods route
   // through the shim. Without this, the file/mailboxes Jobs hit a
   // PUT /internal/bundles/.../restic-stream that, for cifs cfg
   // targets, threw 501 NOT_IMPLEMENTED → the Job's
   // `Streaming tar to platform-api restic-stream... curl: (22)
-  // error: 501` we saw on staging. (NFS dropped 2026-05-25; see
+  // error: 501` we saw on staging. (NFS dropped; see
   // ADR-043 postscript.)
   //
   // The shim path is the source of truth; the legacy cfg-direct

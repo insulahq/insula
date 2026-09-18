@@ -5,7 +5,7 @@
  * the user-deletion paths: admin-user delete (modules/admin-users/routes.ts)
  * and tenant-user delete (modules/tenants/sub-users-service.ts).
  *
- * The tenant-user path was missing until 2026-09-10. `notifications.user_id`
+ * The tenant-user path was missing. `notifications.user_id`
  * carries no FK, so nothing at the database layer cascades either — a
  * deleted tenant user's inbox rows were simply orphaned in place, keyed to
  * a user id that no longer resolves.

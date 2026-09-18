@@ -11,7 +11,7 @@
 #   still on disk. The reaper then recorded succeeded=true with bytes_reclaimed
 #   copied from kubelet's node status, a figure it never measured.
 #
-#   Caught 2026-08-04: a digest ref (…/php@sha256:…) produced a "successful"
+# a digest ref (…/php@sha256:…) produced a "successful"
 #   reap at delete+306s and the image was still listed on the node 24s later.
 #   The integration suite reported it as "reaper did not fire", which sent the
 #   investigation at the scheduler rather than at the false success.
@@ -84,7 +84,7 @@ case "\$1" in
     # non-zero when the ref does not resolve. \`images -q <ref>\` is NOT usable
     # for this: on real CRI versions it ignores the ref and prints every image
     # ID on the node, so an emptiness test can never succeed (measured on a k3s
-    # node 2026-08-08). This branch mirrors the same fixture semantics as
+    # node). This branch mirrors the same fixture semantics as
     # "images" above, expressed as an EXIT CODE instead of stdout: non-empty
     # => present => exit 0; empty => absent => exit 1.
     case "$images_q" in

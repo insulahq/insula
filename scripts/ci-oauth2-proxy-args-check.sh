@@ -7,7 +7,7 @@
 # A Kustomize strategic-merge patch REPLACES a list of scalars wholesale. So an
 # overlay that patches `args:` — which every environment overlay does, to point
 # oauth2-proxy at a cluster-internal Dex — silently drops anything added to the
-# base args. On 2026-09-05 `--cookie-domain` / `--whitelist-domain` were added to
+# base args. `--cookie-domain` / `--whitelist-domain` were added to
 # k8s/base/oauth2-proxy/deployment.yaml, Flux reported the revision applied, and
 # the live Deployment still did not have them. Nothing failed; the tenant panel
 # simply could not complete an oauth2-proxy sign-in.

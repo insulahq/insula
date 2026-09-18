@@ -102,7 +102,7 @@ interface PersistedLock {
   // resume — otherwise Flux stays suspended forever and no manifest
   // changes (storage, ingress, scaling) propagate.
   readonly fluxSuspended?: boolean;
-  /** P4b (2026-05-22) — append-only list of completed steps with
+  /** P4b — append-only list of completed steps with
    *  elapsedMs + detail. Persisted after every steps.push() in the
    *  orchestrator so the wizard's live progress modal can render
    *  the timeline by polling /admin/postgres-restore/status. On
@@ -240,7 +240,7 @@ export async function isPostgresRestoreInProgressClusterWide(
   // and won unconditionally, so a completed restore left every replica claiming
   // inProgress forever.
   //
-  // Observed on DEV 2026-08-09: promote finished in ~71s with every step ok, and
+  // Observed on DEV: promote finished in ~71s with every step ok, and
   // /status still reported inProgress=true 40+ min later with source=in-memory
   // while pg_pitr_in_progress was ABSENT. Because the write-lock middleware
   // calls this on EVERY non-GET request, that stale flag then 503'd unrelated
@@ -318,12 +318,12 @@ export async function isPostgresRestoreInProgressClusterWide(
  * Optional taskKind override. PITR routes use 'postgres.pitr' (default),
  * but the barman-restore promote flow registers chips with
  * 'postgres.barman-promote' — releasePitrLock must finalize the right
- * chip when rolling back a promote. Phase 3.1 follow-up (2026-05-23).
+ * chip when rolling back a promote. Phase 3.1 follow-up.
  */
 /**
  * Release the PITR lock.
  *
- * 2026-05-23 follow-up (sc1b harness regression): when called with
+ * follow-up (sc1b harness regression): when called with
  * `expectedSnapshot` (the snapshot name THIS caller acquired the lock
  * for), the helper FIRST checks the persisted lock's snapshot field
  * matches before clearing. If a different snapshot is held, the lock
@@ -601,7 +601,7 @@ export async function recoverInterruptedRestore(
           group: CNPG_GROUP, version: CNPG_VERSION, namespace: lock.clusterNamespace, plural: 'clusters', name: lock.clusterName,
         }).catch(() => null);
         if (srcCluster && srcCluster.spec?.bootstrap?.recovery !== undefined) {
-          // Task #80 (2026-05-22): JSON-patch op:remove + op:add is
+          // Task #80: JSON-patch op:remove + op:add is
           // more reliable than merge-patch's null-delete for the
           // bootstrap field. Same shape as the orchestrator's
           // normalize-bootstrap step at line 1496.
@@ -655,7 +655,7 @@ interface CnpgCluster {
       };
       /** Present on a cluster bootstrapped from recovery. The PITR
        *  orchestrator's normalize-bootstrap step removes this via
-       *  JSON-patch op:remove (task #80 2026-05-22 — merge-patch's
+       * JSON-patch op:remove (task #80 — merge-patch's
        *  null-delete was unreliable). */
       readonly recovery?: unknown;
     };
@@ -673,7 +673,7 @@ interface CnpgCluster {
   readonly status?: {
     readonly currentPrimary?: string;
     readonly phase?: string;
-    /** P4 (2026-05-22): structurally healthy check uses this instead of
+    /** P4: structurally healthy check uses this instead of
      *  string-matching `phase === 'Cluster in healthy state'`. */
     readonly readyInstances?: number;
   };
@@ -925,7 +925,7 @@ async function patchCustomMerge(
  * patch can't unambiguously remove a key the same patch then adds, and
  * for `bootstrap.recovery → bootstrap.initdb` swaps CNPG silently
  * resurrects `recovery` from the merge-patch's null-deletes some of the
- * time (task #80 investigation 2026-05-22).
+ * time.
  */
 async function patchCustomJson(
   k8s: K8sClients,
@@ -1042,7 +1042,7 @@ async function waitClusterHealthy(
  * Wait for the cluster to be FULLY stable — all desired replicas
  * ready AND no in-flight pod rolling restart. Used at end of HA
  * orchestration to absorb CNPG's post-scale-up UpgradingInstance
- * cycle into the orchestrator's wall-clock (2026-05-23 follow-up
+ * cycle into the orchestrator's wall-clock (follow-up
  * to Task #94 — without this, operator sees the chip turn green
  * + then watches the cluster oscillate for 3-5 minutes as CNPG
  * rolls the primary one last time post-replica-bootstrap).
@@ -1152,15 +1152,15 @@ export async function barmanPluginDeploymentReady(k8s: K8sClients): Promise<bool
  * Wait until the WAL-archiver plugin sidecar (`plugin-barman-cloud`) is
  * present on the cluster's CURRENT primary pod — nudging CNPG if it stalls.
  *
- * WHY (2026-07-08): CNPG 1.29.1 + plugin-barman-cloud v0.12.0+ (bumped
- * 2026-06-12, c413d033) no longer inject the plugin sidecar at first pod
+ * WHY: CNPG 1.29.1 + plugin-barman-cloud v0.12.0+ (bumped
+ * c413d033) no longer inject the plugin sidecar at first pod
  * creation via an admission webhook — the operator adds it on a LATER
  * reconcile that RECREATES the primary pod. So a rebuilt cluster reports
  * readyInstances>=1 (waitClusterHealthy) BEFORE WAL archiving is
  * re-established. Declaring a PITR restore "done" in that window leaves the
  * recovered primary briefly without continuous backup.
  *
- * A purely passive wait was insufficient (2026-07-09, staging rc.16): when the
+ * A purely passive wait was insufficient: when the
  * plugin Deployment is ITSELF mid-rollout, CNPG's injecting reconcile can lag
  * ~30 min — far past any sane budget. Fix: after a short passive grace, once the
  * plugin Deployment is Ready, force ONE primary pod recreate. Verified live —
@@ -1488,7 +1488,7 @@ export function buildRecoveryCluster(
   const labels = isTemp
     ? pitrLabels(namespace)
     : (src.metadata as { labels?: Record<string, string> } | undefined)?.labels;
-  // Plugin propagation (FAST + RELIABLE restore — 2026-05-23):
+  // Plugin propagation(FAST + RELIABLE restore):
   //
   // The TEMP cluster intentionally OMITS spec.plugins so the snapshot
   // restore path doesn't try to register barman archive hooks against
@@ -1503,13 +1503,13 @@ export function buildRecoveryCluster(
   // the operator instance-manager logs "Unknown plugin:
   // barman-cloud.cloudnative-pg.io" forever — requiring a manual
   // `kubectl delete pod` to recreate the pod through the admission
-  // webhook (caught LIVE on staging1 Phase 3.1 promote 2026-05-23).
+  // webhook(caught LIVE on staging1 Phase 3.1 promote).
   //
   // Carrying source.spec.plugins INTO the rebuild cluster CR is still
   // required so the live spec declares the archiver from the start.
   //
-  // BEHAVIOR CHANGE (2026-07-08, CNPG 1.29.1 + plugin-barman-cloud
-  // v0.12.0, bumped 2026-06-12 c413d033): the sidecar is NO LONGER
+  // BEHAVIOR CHANGE (, CNPG 1.29.1 + plugin-barman-cloud
+  // v0.12.0, bumped c413d033): the sidecar is NO LONGER
   // injected at first-pod-creation by an admission webhook. The newer
   // operator adds the plugin sidecar on a subsequent reconcile that
   // RECREATES the primary pod — so there is a window after the cluster
@@ -1520,7 +1520,7 @@ export function buildRecoveryCluster(
   // `specHasBarmanPlugin`) before declaring the restore complete.
   const plugins = isTemp ? undefined : src.spec?.plugins;
 
-  // WAL archive source for the temp cluster (2026-05-23 — Task #97):
+  // WAL archive source for the temp cluster:
   //
   // Snapshot-based bootstrap.recovery only replays WAL records present
   // in the snapshot's pg_wal/ directory at snapshot time. For PITR
@@ -1539,7 +1539,7 @@ export function buildRecoveryCluster(
   //
   // Without this fix, Phase 1 PITR with recoveryTargetTime silently
   // bootstraps at snapshot LSN + drops markers between snapshot time
-  // and target time (harness test 2026-05-23 verified this gap).
+  // and target time(harness test verified this gap).
   function getBarmanObjectStoreForRecovery(): string | null {
     const sourcePlugins = (src.spec?.plugins ?? []) as ReadonlyArray<{
       readonly enabled?: boolean;
@@ -1612,7 +1612,7 @@ export function buildRecoveryCluster(
                 // namespaces archives by `<destPath>/<serverName>/...`.
                 // Without this, the plugin would look under the temp
                 // cluster's name + find nothing (verified by Phase 3
-                // staging 2026-05-22, see ci-postgres-barman-restore-check.sh
+                // staging, see ci-postgres-barman-restore-check.sh
                 // invariant #2).
                 serverName: sourceClusterName,
               },
@@ -1726,7 +1726,7 @@ export async function promotePostgresFromSnapshot(
     // prior PITRs' Retained PVs keep pinning budget, and starting the
     // cutover without headroom stalls mid-restore WITH THE DATABASE
     // DOWN (snapshot-recovery Init/FailedAttachVolume — reproduced
-    // twice on testing 2026-06-10/11). Fail fast HERE, before anything
+    // twice on testing /11). Fail fast HERE, before anything
     // destructive, with the reclaim candidates named. Skips cleanly on
     // non-Longhorn storage (local-path DinD) or unreadable state.
     const tB = nowMs();
@@ -1753,7 +1753,7 @@ export async function promotePostgresFromSnapshot(
     wrapped = await wrapVolumeSnapshot(deps.k8s, inputs.clusterNamespace, inputs.snapshotName, sourceLonghornVolume);
     recordStep({ step: 'wrap-volume-snapshot', ok: true, elapsedMs: nowMs() - t1, detail: wrapped.volumeSnapshotName });
 
-    // Phase-3 FAST-PATH (2026-05-23): when no PITR target time is
+    // Phase-3 FAST-PATH: when no PITR target time is
     // requested, the temp cluster contributes ZERO value — its only
     // purpose is to apply WAL replay to a target time and then hand
     // off a frozen snapshot. For "restore to snapshot LSN" (the
@@ -1975,7 +1975,7 @@ export async function promotePostgresFromSnapshot(
 
     // 8. Re-create source Cluster from temp's snapshot.
     //
-    // Phase 4a perf opt (2026-05-22): Recreate with instances=1 first
+    // Phase 4a perf opt: Recreate with instances=1 first
     // (primary only) and wait for primary healthy. Then immediately
     // PATCH the spec.instances back to the source's original HA count
     // and let the CNPG operator build the replicas in background. This
@@ -2053,7 +2053,7 @@ export async function promotePostgresFromSnapshot(
       }
     }
 
-    // 8a.2 Wait for HA to fully stabilize (Task #94 2026-05-23).
+    // 8a.2 Wait for HA to fully stabilize.
     //
     // Without this wait, the orchestrator declares done as soon as the
     // primary is up, but CNPG fires an UpgradingInstance event ~60s
@@ -2076,7 +2076,7 @@ export async function promotePostgresFromSnapshot(
     // oscillate after" behavior for users who'd rather see the chip
     // settle quickly + tolerate the post-orchestration cycle.
     // wait-ha-stable is INTENTIONALLY MOVED below resume-flux (Task #105
-    // 2026-05-23). The original location here only caught the
+    // ). The original location here only caught the
     // CNPG-internal post-scale-up rolling restart; it MISSED the
     // SECOND restart cycle Flux triggers when it re-applies the git
     // manifest (~30-60s of additional oscillation after the chip
@@ -2094,7 +2094,7 @@ export async function promotePostgresFromSnapshot(
     // submits a body that combines initdb (git) + recovery (live)
     // and the apply fails with "Only one bootstrap method".
     //
-    // Task #80 investigation 2026-05-22: the previous merge-patch shape
+    // Task #80 investigation: the previous merge-patch shape
     // `{spec:{bootstrap:{recovery:null,initdb:X}}}` recorded ok=true but
     // the live spec retained recovery + dropped initdb — CNPG appears
     // to silently strip the null-delete in merge-patch when the field
@@ -2118,7 +2118,7 @@ export async function promotePostgresFromSnapshot(
         });
         // Post-patch verification — read the live spec back + assert
         // recovery is gone. CNPG's reconciler can race with our patch
-        // (caught live 2026-05-22 on staging); the read-back catches
+        // (caught live on staging); the read-back catches
         // that case + surfaces a clear operator-actionable step result.
         const live = await getCustom<CnpgCluster>(deps.k8s, {
           group: CNPG_GROUP, version: CNPG_VERSION, namespace: inputs.clusterNamespace,
@@ -2200,7 +2200,7 @@ export async function promotePostgresFromSnapshot(
     }
     recordStep({ step: 'cleanup', ok: true, elapsedMs: nowMs() - t10, detail: usedFastPath ? 'fast-path: no temp cluster to clean' : 'slow-path: temp cluster + handoff snapshot removed' });
 
-    // 10b. Resume Flux on the main path (Task #105 2026-05-23).
+    // 10b. Resume Flux on the main path.
     //
     // Original placement was finally-block only; that meant the chip
     // could turn green BEFORE Flux re-applied the original git
@@ -2258,7 +2258,7 @@ export async function promotePostgresFromSnapshot(
       // still rolling some replicas in background.
     }
 
-    // 10d. Wait for the WAL-archiver plugin sidecar — FINAL gate (2026-07-09).
+    // 10d. Wait for the WAL-archiver plugin sidecar — FINAL gate.
     //
     // Runs LAST, after every step that can roll the primary (recreate-source,
     // scale-up-to-source-ha, normalize-bootstrap, resume-flux, wait-ha-stable),
@@ -2296,7 +2296,7 @@ export async function promotePostgresFromSnapshot(
     // may transiently fail auth while CNPG is re-syncing the platform
     // user's password against the rebuild — the cluster IS up, data IS
     // correct, but the auth-credential reconciler hasn't caught up yet
-    // (caught live on staging 2026-05-23). The notification is a UX
+    // (caught live on staging). The notification is a UX
     // courtesy, not a correctness requirement; swallow any auth error
     // here so the orchestration succeeds + downstream pitr-job.ts can
     // run the barman-promote cleanup (side-by-side cluster delete).
@@ -2372,7 +2372,7 @@ export async function promotePostgresFromSnapshot(
     // Best-effort failure notification — wrapped so a DB connection
     // error here (postgres briefly unreachable mid-cutover) doesn't
     // MASK the original cause of failure. Live regression caught
-    // 2026-05-23 in sc2 harness: emitAdminNotification threw
+    // in sc2 harness: emitAdminNotification threw
     // "Failed query: select id from users... ECONNREFUSED" because
     // the new primary was still booting; that error replaced the
     // REAL underlying error in the thrown exception, leaving the
@@ -2401,7 +2401,7 @@ export async function promotePostgresFromSnapshot(
     // success path already ran step 8b). When the orchestration dies
     // between recreate-source and normalize-bootstrap (e.g. the
     // snapshot-recovery volume can't schedule — caught live on testing
-    // 2026-06-11 with Longhorn "insufficient storage"), the rebuilt
+    // with Longhorn "insufficient storage"), the rebuilt
     // Cluster CR keeps spec.bootstrap.recovery. This finally also
     // clears the persisted lock below, so recoverInterruptedRestore at
     // the next platform-api start finds NOTHING to recover — and every
@@ -2466,7 +2466,7 @@ export async function promotePostgresFromSnapshot(
     // tasks row stuck `running` forever whenever the orchestration
     // failed — the watchdog can't repair it either once
     // ttlSecondsAfterFinished reaps the Failed Job CR (caught live on
-    // testing 2026-06-11: a stale running chip from a failed PITR
+    // testing: a stale running chip from a failed PITR
     // blocked every subsequent backup-target drain with
     // inflightSampleKinds=["postgres.pitr"]). releasePitrLock's chip
     // update targets `status='running'` only, so a path that already
@@ -2490,7 +2490,7 @@ export interface CreatePitrJobInputs {
    * CLI. Read from the platform-version ConfigMap so the Job uses the
    * same code as the API that triggered it. */
   readonly image: string;
-  /** Phase 3.1 (2026-05-23): additional env vars appended to the Job
+  /** Phase 3.1: additional env vars appended to the Job
    *  pod's env array. Used by the barman-restore promote flow to pass
    *  BARMAN_PROMOTE_MODE=true + BARMAN_PROMOTE_RESTORED_CLUSTER=<name>
    *  so pitr-job.ts can delete the side-by-side cluster after success.
@@ -2550,7 +2550,7 @@ export async function createPitrJob(
   // to the platform-api Service endpoints, so ~50% of live API traffic
   // round-robins to a pod that doesn't serve :3000 → 502s (and the Job pod
   // lingers past its CLI exit, making the outage permanent). Caught
-  // 2026-07-16 during a full-suite postgres-pitr run, where the resulting
+  // during a full-suite postgres-pitr run, where the resulting
   // 502s also made the suite's own status-poll unreachable → false failure.
   //
   // The pod still needs to reach postgres for its DB-backed lock (SELECT 1).
@@ -2573,7 +2573,7 @@ export async function createPitrJob(
     { name: 'JWT_SECRET', valueFrom: { secretKeyRef: { name: 'platform-jwt-secret', key: 'secret' } } },
     {
       // Without this the pitr-job runs with a ZERO encryption key and cannot
-      // decrypt ANY stored credential. Observed on staging 2026-09-15 — the
+      // decrypt ANY stored credential. Observed on staging — the
       // job's own first log line was:
       //
       //   [config] PLATFORM_ENCRYPTION_KEY is not set (PLATFORM_ENV=development).
@@ -2599,7 +2599,7 @@ export async function createPitrJob(
     // DB lock is held by the route's call).
     { name: 'PITR_LOCK_HELD', value: 'true' },
     // Job name = task chip refId; pitr-job.ts uses this to finalize
-    // the chip via finishByRef on success/failure (review HIGH 2026-05-23).
+    // the chip via finishByRef on success/failure.
     { name: 'JOB_NAME', value: jobName },
   ];
   if (inputs.recoveryTargetTime) env.push({ name: 'PITR_RECOVERY_TARGET_TIME', value: inputs.recoveryTargetTime });
@@ -2648,7 +2648,7 @@ export async function createPitrJob(
             command: ['node', 'dist/cli/pitr-job.js'],
             env,
             resources: {
-              // Phase-1 right-size 2026-05-23: 512Mi → 384Mi. The
+              // Phase-1 right-size: 512Mi → 384Mi. The
               // pitr-job pod is a Node.js orchestrator that issues
               // kubectl API calls + holds a postgres connection. It
               // does NOT process data — the snapshot/WAL handling

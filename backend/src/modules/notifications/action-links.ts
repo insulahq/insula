@@ -1,7 +1,7 @@
 /**
  * The links a notification carries.
  *
- * Operator requirement 2026-09-16: a notification may have MORE THAN ONE link,
+ * Operator requirement: a notification may have MORE THAN ONE link,
  * some inline inside the sentence (a tenant name that opens that tenant) and
  * some as action buttons ("Review mail operations"). One "open the subsystem
  * page" link per notification was the reason an alert about a specific tenant

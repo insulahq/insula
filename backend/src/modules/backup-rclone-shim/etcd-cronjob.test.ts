@@ -129,7 +129,7 @@ function silentLog() {
 }
 
 describe('reconcileEtcdCronJob', () => {
-  // Ownership note (2026-09-18): /spec/suspend on this CronJob moved to the
+  // Ownership note: /spec/suspend on this CronJob moved to the
   // cadence reconciler, which has to be able to suspend it when an operator
   // disables the etcd_snapshot schedule. Two writers with different rules
   // flipped the field against each other every tick. This reconciler still

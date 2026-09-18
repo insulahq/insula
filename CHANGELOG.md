@@ -12,7 +12,37 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Changed
+- **Incident detail no longer lives in the public source tree.** Code comments
+  in this repository had accumulated over two thousand dated notes, many of
+  them recounting specific incidents: when a component last ran out of memory
+  and how often, how many gigabytes a volume was carrying, which recovery
+  depended on which setting. Useful to whoever maintains it, and rather more
+  than a public repository needs to say about what breaks and when.
+
+  Those comments now state the constraint without the incident — the reason a
+  setting must not be changed, minus the story of the day it was. The history
+  itself is kept privately, and a new check keeps dates from creeping back into
+  comments. Nothing about how the platform behaves changed; this is source
+  commentary only.
+
 ### Fixed
+- **Tenant volumes were being snapshotted every hour, invisibly.** Every tenant
+  PVC was enrolled in a Longhorn housekeeping group that quietly gained an
+  hourly snapshot job after the nightly Longhorn backup jobs were removed, so
+  each tenant volume carried a rolling set of snapshots that appeared in
+  neither panel and that nothing cleaned up: they are raw Longhorn objects with
+  no snapshot record and no expiry, so the 48-hour tenant-snapshot reaper could
+  not see them, and once the schedule stopped covering a volume its own
+  retention stopped trimming it too. Hourly snapshots are now scoped to the
+  platform database alone — which keeps its six-hour rollback chain — and the
+  snapshots already taken on tenant volumes are removed automatically after the
+  upgrade, a few volumes at a time so the cleanup cannot itself become a disk
+  I/O spike. A volume that is currently idle and detached clears its share the
+  next time it is attached — Longhorn cannot reclaim space on a volume nothing
+  has mounted. Snapshots a tenant takes from the Snapshots page are untouched
+  and still expire on their own schedule; tenant volumes keep the nightly
+  filesystem trim that frees deleted-file space.
 - **The backup time you chose for the platform database is now the one used.**
   Its own card has always offered a "base backup cadence", and the value was
   saved — but a background job re-applied the built-in 03:00 schedule within

@@ -12,7 +12,7 @@
  *
  * Historically both call sites fell back to a hardcoded
  * `master@master.local`. That worked on the unit-test fixture but broke
- * any real cluster. As of 2026-06-25 bootstrap.sh provisions the master
+ * any real cluster. bootstrap.sh provisions the master
  * as `master@local.host` — a FIXED sentinel Domain decoupled from the
  * mail domain (see `MASTER_SENTINEL_DOMAIN`) — and stores the FQDN in
  * `mail/mail-secrets.STALWART_MASTER_USER`. Without this lookup Stalwart
@@ -53,7 +53,7 @@ export const MASTER_PASSWORD_KEY = 'STALWART_MASTER_PASSWORD';
 
 /**
  * The fixed, mail-domain-INDEPENDENT Stalwart Domain that holds the
- * master principal (2026-06-25).
+ * master principal.
  *
  * The master is used ONLY for IMAP/JMAP master-auth impersonation
  * (`<mailbox>%<master>`) — never for mail routing, DNS, or MX — so it
@@ -65,7 +65,7 @@ export const MASTER_PASSWORD_KEY = 'STALWART_MASTER_PASSWORD';
  * `AUTHENTICATIONFAILED` bug).
  *
  * `.host` is a real ICANN gTLD — verified (local Stalwart v0.16.9 spike,
- * 2026-06-25) that Stalwart 0.16 accepts it for auth and that an
+ * ) that Stalwart 0.16 accepts it for auth and that an
  * Admin-role master in this Domain impersonates mailboxes in ANY other
  * Domain and survives deletion of the old mail domain. Stalwart 0.16
  * rejects only the reserved `.local` pseudo-TLD (the reason the master
@@ -78,7 +78,7 @@ export const MASTER_SENTINEL_DOMAIN = 'local.host';
 export const MASTER_USER_DEFAULT = `master@${MASTER_SENTINEL_DOMAIN}`;
 
 /** Compiled-in fallback, used only when the Secret cannot be read AT ALL
- * (no k8s client / test fixtures / pre-bootstrap). Since 2026-06-25 this
+ * (no k8s client / test fixtures / pre-bootstrap). this
  * equals the canonical `master@local.host` sentinel — a VALID auth Domain
  * — so falling back to it (and auto-reseeding there) is now correct, not
  * a broken degrade as the old `master@master.local` was. */

@@ -10,7 +10,7 @@ function fetchFailure(code: string): Error {
 
 describe('describeFetchFailure', () => {
   // The three below were reproduced from inside the live platform-api
-  // container on 2026-08-03 — all three produced the identical operator-
+  // container — all three produced the identical operator-
   // facing string "Cannot connect to DNS server: fetch failed".
   it('names an unresolvable hostname and points at CoreDNS', () => {
     const msg = describeFetchFailure(fetchFailure('ENOTFOUND'), 'http://ns1.mesh.invalid:8081/api');

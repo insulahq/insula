@@ -29,7 +29,7 @@ export const FM_MEMORY_LIMIT = '256Mi';
  * The drift check below must compare limits NUMERICALLY. A string compare
  * (`existingMemLim !== '128Mi'`) treats an operator's deliberate increase as
  * drift and reverts it — which is exactly what happened on production
- * 2026-09-06: the FM was hand-raised to 1Gi to let a stuck rsync through, and
+ * the FM was hand-raised to 1Gi to let a stuck rsync through, and
  * the next SFTP session (every FM route calls the reconciler) deleted and
  * recreated the Deployment back at 128Mi, mid-transfer. An emergency override
  * has to be possible without the platform fighting the operator.
@@ -274,7 +274,7 @@ export async function ensureFileManagerRunning(
                   // freely for file streaming + zip/tar/git work.
                   //
                   // Memory request 64Mi / limit 256Mi, MEASURED on production
-                  // 2026-09-06 during a real 12.5 GB rsync of 131k files:
+                  // during a real 12.5 GB rsync of 131k files:
                   //
                   //   anon (node + 2 rsync)      24.7 Mi   <- the real need
                   //   slab_unreclaimable          0.2 Mi
@@ -304,9 +304,9 @@ export async function ensureFileManagerRunning(
                   // ceiling, only the request is reserved, so this frees 64Mi
                   // per tenant FM rather than costing anything.
                   //
-                  // RE-MEASURED 2026-09-11, same production FM, 2h after a
+                  // RE-, same production FM, 2h after a
                   // reboot and 4 days after this 256Mi limit landed. The limit
-                  // WORKED — zero OOM kills since (the last was 2026-09-06
+                  // WORKED — zero OOM kills since (the last was
                   // 23:25, before it) — but the composition has completely
                   // changed, and reading it wrong leads straight back here:
                   //
@@ -331,7 +331,7 @@ export async function ensureFileManagerRunning(
                   // kubelet's working set is memory.current MINUS inactive_file,
                   // so it EXCLUDES page cache but INCLUDES slab_reclaimable —
                   // reporting ~242 Mi here. Note this is the exact mirror of the
-                  // 2026-09-06 trap above, where working set UNDERSTATED the
+                  // trap above, where working set UNDERSTATED the
                   // problem. Neither number is the cgroup's real need. Read
                   // memory.stat and memory.events before touching the limit.
                   //
@@ -427,7 +427,7 @@ export async function ensureFileManagerRunning(
     // unexpected one (e.g. a pod still carrying SYS_ADMIN, or the pre-/jail/home
     // 3-cap set) so old deployments are recreated with the new spec. An
     // exact-match check is required: a too-narrow check left SYS_ADMIN behind and
-    // broke /files/start (caught 2026-05-14).
+    // broke /files/start.
     const allowedCaps = ['DAC_OVERRIDE', 'FOWNER', 'CHOWN', 'SYS_CHROOT', 'SETUID', 'SETGID'];
 
     const pvcMismatch = existingPvcClaim !== expectedPvcClaim;
@@ -448,7 +448,7 @@ export async function ensureFileManagerRunning(
     //
     // The limit is compared as ">= expected", NOT "== expected", so an
     // operator can raise it in an emergency and have it stick. Under the old
-    // exact-equality rule that was impossible: on production 2026-09-06 the FM
+    // exact-equality rule that was impossible: on production the FM
     // was hand-raised to 1Gi to get a stuck rsync through, and the next SFTP
     // session — every FM route calls this reconciler — saw 1Gi as drift and
     // deleted + recreated the Deployment back at 128Mi, killing the transfer
@@ -463,7 +463,7 @@ export async function ensureFileManagerRunning(
     // unequal to '500m' → mismatch every call → delete+recreate at
     // replicas=initialReplicas (0) → scale-to-1 branch never fires
     // → /files/start permanently no-op (caught by lifecycle-e2e
-    // 2026-05-14: "FM did not become ready").
+    // "FM did not become ready").
     const existingMemLimBytes = parseMemoryToBytes(existingMemLim);
     const wantedMemLimBytes = parseMemoryToBytes(FM_MEMORY_LIMIT) ?? 0;
     const memLimitTooSmall = existingMemLimBytes === null || existingMemLimBytes < wantedMemLimBytes;
@@ -478,7 +478,7 @@ export async function ensureFileManagerRunning(
       //
       // Recreate at whichever is HIGHER: what the caller asked for, or what was
       // already running. Two bugs otherwise, both observed on DEV after the
-      // 2026-08-31 sidecar image bump:
+      // sidecar image bump:
       //
       //   1. A caller that wants FM running (initialReplicas=1) got a
       //      Deployment at 0, because the scale-to-1 branch below is an

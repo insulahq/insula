@@ -144,7 +144,7 @@ From Folder [Spam]                 Size:     262144 Messages:    123
 // ─── Final summary ────────────────────────────────────────────────────────
 //
 // Fixture is VERBATIM from a real imapsync 2.319 run against Stalwart 0.16
-// on the DinD stack, 2026-09-02 — including imapsync's trailing spaces after
+// on the DinD stack, — including imapsync's trailing spaces after
 // some values, which a hand-written fixture would have quietly omitted.
 const REAL_STATS = `Host1: folder [spam] selected 1 messages, duplicates 0
 ++++ Statistics
@@ -216,7 +216,7 @@ describe('parseImapsyncSummary', () => {
 // ─── Real imapsync output (the format the shipped image actually emits) ──
 //
 // Captured from a REAL 120-message transfer on the DEV cluster
-// (2026-09-08, job status succeeded, 5 folders). The image emits NO
+// (job status succeeded, 5 folders). The image emits NO
 // `+ Copying msg N/M` line at all — every pattern above was written
 // against a format this build never produces, so messages_total stayed
 // NULL for the whole run and the tenant-panel progress bar, which

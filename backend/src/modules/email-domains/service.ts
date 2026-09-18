@@ -33,7 +33,7 @@ import { isNotFound } from '../../shared/k8s-errors.js';
 
 // ── Stalwart JMAP helper ──────────────────────────────────────────────────────
 
-// Security review M3 fix (2026-05-03): 5-minute TTL on the JMAP
+// Security review M3 fix: 5-minute TTL on the JMAP
 // account-ID cache so a Stalwart rebuild (different account ID) is
 // picked up without a platform-api restart. Mirrors mailboxes/service.ts.
 const JMAP_ACCOUNT_ID_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -106,7 +106,7 @@ export async function enableEmailForDomain(
 
   // Idempotency: if the email_domains row already exists, return it —
   // BUT if its stalwartDomainId is still null, fall through to retry the
-  // JMAP provisioning. Code-review HIGH-2 fix (2026-05-03): without the
+  // JMAP provisioning. Code-review HIGH-2 fix: without the
   // null-check, a previous enable that died after the DB insert but
   // before JMAP succeeded would be stuck forever (early return blocks
   // the JMAP retry).
@@ -132,12 +132,12 @@ export async function enableEmailForDomain(
   // stalwartDomainId to below.
   const id = existing?.id ?? crypto.randomUUID();
 
-  // Code-review H-4 fix (2026-05-03, second pass): the `void canManage…`
+  // Code-review H-4 fix: the `void canManage…`
   // call here was dead code — the result was discarded and the gate is
   // already enforced inside provisionEmailDns. Removed to avoid
   // signalling a guard that doesn't exist at this call-site.
 
-  // 2026-05-18: per-tenant webmail.<clientdomain> defaults OFF. Most
+  // per-tenant webmail.<clientdomain> defaults OFF. Most
   // tenants are well-served by the platform-wide webmail.<apex> URL,
   // which the platform automatically provisions + keeps in sync with
   // the active webmail engine (Bulwark/Roundcube). The per-domain
@@ -163,7 +163,7 @@ export async function enableEmailForDomain(
   // DKIM TXT record is NO LONGER provisioned here — Stalwart 0.16 generates
   // the DKIM key natively; the dns-sync reconciler publishes its dnsZoneFile.
   // webmail.<clientdomain> CNAME is only added when webmailEnabledFlag=1
-  // (opt-in per 2026-05-18 default flip).
+  // (opt-in per default flip).
   const mailServerHostname = await getMailServerHostname(db);
   await provisionEmailDns(
     db,
@@ -300,7 +300,7 @@ export async function enableEmailForDomain(
  * `objectIsLinked` while member principals or DkimSignatures still
  * reference the row. Skipping either step doesn't error the caller —
  * it silently strands the Domain forever (verified live on testing
- * 2026-06-10: every integration tenant left a `mail-e2e-*` Domain +
+ * every integration tenant left a `mail-e2e-*` Domain +
  * DKIM pair behind because the FK-cascade delete paths never invoked
  * any Stalwart cleanup at all).
  *
@@ -388,7 +388,7 @@ export async function destroyStalwartArtifactsForEmailDomain(
   // 1b. Alias MailingLists — linked to the Domain via domainId exactly
   //     like mailbox principals; an undamaged Domain destroy needs them
   //     gone first, and a leftover list would keep FORWARDING mail for a
-  //     torn-down domain (review 2026-08-24). Destroy by DB rows first,
+  // torn-down domain. Destroy by DB rows first,
   //     then sweep any list still addressing this email domain's rows
   //     (covers rows whose stalwart_list_id was stale/null).
   try {
@@ -419,7 +419,7 @@ export async function destroyStalwartArtifactsForEmailDomain(
   }
 
   // 2. DkimSignature rows — destroying the Domain principal alone
-  //    strands them as registry orphans (observed in the 2026-06-07
+  // strands them as registry orphans (observed in the
   //    DKIM E2E), and Stalwart refuses the Domain destroy with
   //    objectIsLinked while they exist.
   try {
@@ -438,7 +438,7 @@ export async function destroyStalwartArtifactsForEmailDomain(
 
   // 3. The Domain principal itself. Bounded in-call retry: the dominant cause
   //    of orphan pile-up is Stalwart being momentarily unreachable during a
-  //    redeploy/restart window (2026-06-30 churn left 63 orphans). Retrying a
+  // redeploy/restart window(churn left 63 orphans). Retrying a
   //    few times here rides out that blip so the FK cascade — which deletes
   //    this email_domain row moments later, making a hook-level retry useless —
   //    doesn't strand the Domain. A persistent failure still degrades to an
@@ -843,7 +843,7 @@ export async function updateEmailDomain(
 
   // Catch-all is a native Stalwart domain field (Domain.catchAllAddress,
   // verified live) — push BEFORE the DB write, fail-visible. Before
-  // 2026-08 this column was stored and never sent anywhere, so the
+  // this column was stored and never sent anywhere, so the
   // "catch-all" setting silently did nothing (ROADMAP R28).
   if (input.catch_all_address !== undefined && existing.stalwartDomainId) {
     const { getCachedPrincipalsAccountId } = await import('../stalwart-jmap/client.js');
@@ -1046,7 +1046,7 @@ export async function ensureWebmailIngress(
   // Step 1: ensure the ExternalName service that points at the
   // currently-active webmail engine Service in the `mail` namespace.
   //
-  // 2026-05-18: ExternalName used to be hardcoded to
+  // ExternalName used to be hardcoded to
   // `roundcube.mail.svc.cluster.local`. When the operator flipped the
   // platform default engine to Bulwark (and the Roundcube Deployment
   // was scaled to 0 by `reconcileEngineDeployments`), every per-tenant

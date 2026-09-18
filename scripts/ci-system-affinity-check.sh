@@ -44,14 +44,14 @@ WORKLOADS=(
   # (insula.host/node-role=server), so it self-manages placement — this
   # Deployment+nodeAffinity guardrail doesn't apply to it.
   # stalwart-mail + dex are overlay-specific — only in staging for now.
-  # Cut 3 (2026-05-04): the v015 StatefulSet `stalwart-mail` was retired;
+  # Cut 3: the v015 StatefulSet `stalwart-mail` was retired;
   # the v016 Deployment `stalwart-mail` replaces it.
   "mail|Deployment|stalwart-mail|1"
   # ADR-039 Bulwark — staging+production; impersonator runs as
   # sidecar inside this Pod and inherits the affinity.
   "mail|Deployment|bulwark|1"
   "platform|Deployment|dex|1"
-  # Valkey/Sentinel coordinator cache was DISABLED 2026-06-23 (nothing consumes
+  # Valkey/Sentinel coordinator cache was DISABLED (nothing consumes
   # it — see k8s/overlays/development/kustomization.yaml). The base manifests are
   # kept for re-activation; if `- valkey/` is re-enabled in an overlay, re-add
   # "redis-system|StatefulSet|valkey|1" here so the affinity is re-checked.

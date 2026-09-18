@@ -15,7 +15,7 @@ spec:
       labels:
         app: oauth2-proxy
     spec:
-      # 2026-05-11: DoNotSchedule enforces strict one-per-server placement
+      # DoNotSchedule enforces strict one-per-server placement
       # so on a 3-server HA cluster every server runs an oauth2-proxy pod.
       # Operator-visible invariant: "all servers same state for ease of
       # maintenance". Failover headroom (cluster_capacity − one_server)
@@ -44,7 +44,7 @@ spec:
       # at startup, exits, k8s applies exponential backoff, and even
       # after dex+cert come up the pod stays in long CrashLoopBackOff
       # — empirically requires manual `kubectl delete pod` (caught on
-      # testing.example.test 2026-05-08).
+      # testing.example.test).
       #
       # We pull OIDC_ISSUER_URL from the same Secret the main container
       # uses, so any environment-specific override (dev uses internal
@@ -68,7 +68,7 @@ spec:
             # substitution sources) to empty string, leaving curl with
             # url="/.well-known/..." which fails as "URL rejected: No
             # host part in the URL". Caught on testing.example.test
-            # 2026-05-08; same gotcha as project_valkey_phase1_2.
+            # same gotcha as project_valkey_phase1_2.
             - |
               set -eu
               url="$${OIDC_ISSUER_URL%/}/.well-known/openid-configuration"
@@ -88,12 +88,12 @@ spec:
             # (k8s/base/limit-ranges.yaml). 16Mi is rejected with "minimum
             # memory usage per Container is 32Mi, but request is 16Mi" and
             # the entire pod is denied admission, including the main
-            # container — caught on testing.example.test 2026-05-08.
+            # container — caught on testing.example.test.
             requests:
               cpu: 10m
               memory: 32Mi
             limits:
-              # No CPU limit — high-priority platform pod (2026-06-24).
+              # No CPU limit — high-priority platform pod.
               memory: 64Mi
       containers:
         - name: oauth2-proxy
@@ -128,7 +128,7 @@ spec:
             # to reach. Tenant-panel protection could not work by construction.
             #
             # Left empty, oauth2-proxy derives the callback per request from
-            # X-Forwarded-Host (verified against v7.15.3 on 2026-09-05: the
+            # X-Forwarded-Host (verified against v7.15.3: the
             # tenant host yields the tenant callback, the admin host the admin
             # one), which is exactly what a two-panel platform needs.
             - --redirect-url=$(OAUTH2_PROXY_REDIRECT_URL)
@@ -162,5 +162,5 @@ spec:
               cpu: 50m
               memory: 64Mi
             limits:
-              # No CPU limit — high-priority platform pod (2026-06-24).
+              # No CPU limit — high-priority platform pod.
               memory: 128Mi

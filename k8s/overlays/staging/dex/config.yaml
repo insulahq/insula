@@ -58,7 +58,7 @@ staticClients:
       # TENANT host, not admin. The tenant panel calls the API same-origin
       # (API_URL is deliberately empty in k8s/base/tenant-deployment.yaml), so
       # the backend builds the callback from the tenant host's Host header.
-      # This said admin.${DOMAIN} until 2026-09-05, which made tenant SSO fail
+      # This said admin.${DOMAIN}, which made tenant SSO fail
       # with "Unregistered redirect_uri" at Dex on every non-dind environment.
       - https://tenant.${DOMAIN}/api/v1/auth/oidc/callback
   - id: hosting-platform-oauth2-proxy
@@ -67,7 +67,7 @@ staticClients:
     # took the literal string "$OAUTH2_PROXY_CLIENT_SECRET" as the client
     # secret, so every token exchange came back
     # `invalid_client "Invalid client credentials."` and oauth2-proxy answered
-    # the callback with a 500. Measured on DEV 2026-09-05: Dex held a 27-char
+    # the callback with a 500. Measured on DEV: Dex held a 27-char
     # literal while oauth2-proxy sent the real 32-char value.
     #
     # `secretEnv` names an environment variable, which is the supported way to

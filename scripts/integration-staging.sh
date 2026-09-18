@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Real-lifecycle integration scenarios against the staging cluster.
 #
-# WHY (rewritten 2026-04-27 after fail #N):
+# WHY(rewritten after fail #N):
 #   The previous harness lied. Three of its five scenarios were
 #   either skipped by default (SSL gated on SSL_DOMAIN env var) or
 #   passed without ever asserting anything user-visible (drain was
@@ -56,7 +56,7 @@ for _tool in openssl ncat python3 curl jq; do
 done
 unset _tool
 
-# Config profile (2026-06-11): standalone invocations (`./scripts/
+# Config profile: standalone invocations (`./scripts/
 # integration-staging.sh <scenario>`) used to rely ENTIRELY on inherited
 # env vars — only integration-all.sh loaded scripts/integration.env, so
 # a direct scenario re-run silently fell back to the example.test
@@ -290,7 +290,7 @@ ssh_cp() {
 # Needed by node-local probes like `crictl images`: on a multi-node
 # cluster the pod may land on ANY node, and running crictl on the
 # control host false-fails the check (first hit: reaper scenario,
-# staging 4-node rebuild 2026-06-11 — pod on `worker`, crictl ran on
+# staging 4-node rebuild — pod on `worker`, crictl ran on
 # staging1). All platform nodes share the operator SSH key, so the
 # workstation can reach each node directly. Errors loudly (rc≠0, empty
 # stdout) when the node IP can't be resolved — callers treat that as
@@ -345,7 +345,7 @@ _ws_resolve_a() {
 # world can resolve it. The mail forward-DNS check then reports
 # "A/AAAA missing cluster IPs: <v6>" against a hostname that publishes a
 # perfectly good AAAA, which is a failure about the HARNESS's connectivity
-# wearing the costume of a cluster defect. Confirmed 2026-08-09: this exact
+# wearing the costume of a cluster defect. Confirmed: this exact
 # false failure on mail.<apex>, whose AAAA resolves fine from a v6-capable host.
 #
 # A DNS query is transport-independent — asking for AAAA over IPv4 is normal —
@@ -633,7 +633,7 @@ _resolve_serving_mail_host() {
     # this helper's own comment calls out as prone to accept-then-drop while its
     # Stalwart backend is mid-roll. The cert/banner probes then hit that node and
     # reported "no SMTP 220 banner" against a perfectly healthy mail server
-    # (staging-all mail_tls 25/465/587, full run 2026-08-07).
+    # (staging-all mail_tls 25/465/587, full run).
     #
     # The active node serves the port DIRECTLY with no proxy hop, so prefer it
     # and keep the DNS-resolved nodes as ordered fallbacks. Reachability THROUGH
@@ -1126,7 +1126,7 @@ _assert_smtp_banner_matches() {
 # and the ban list are read from RocksDB at Stalwart startup and cached
 # — a destroy doesn't lift an active ban and a fresh allow entry is
 # invisible to the running process (both verified live on testing
-# 2026-06-10) — so the helper recycles the Stalwart pod whenever it
+# ) — so the helper recycles the Stalwart pod whenever it
 # changed either list.
 #
 # Entirely advisory: any failure here logs a warning and returns 0 — the
@@ -1183,7 +1183,7 @@ _mail_allowlist_harness_ip() {
   # 1) Idempotent AllowedIp registration FIRST. Like the ban list, the
   #    allow list is read from RocksDB at Stalwart startup and cached —
   #    an entry created after pod start is invisible to the running
-  #    process (verified live 2026-06-10: the autoban re-fired on an IP
+  # process (verified live: the autoban re-fired on an IP
   #    registered post-start). Registering before the ban check means
   #    the recycle below (or any later restart) loads it.
   local allow_created=0
@@ -1451,7 +1451,7 @@ scenario_https() {
 
   # 6. TLS cert subject must match the host (not "Kubernetes Ingress
   #    Controller Fake Certificate"). This is THE assertion that
-  #    catches the exact bug from 2026-04-27. Retry up to 60s — even
+  # catches the exact bug. Retry up to 60s — even
   #    after the Certificate CR reaches Ready, ingress-nginx needs a
   #    few seconds to re-load its TLS config from the new secret. The
   #    cert IS issued; we're just waiting for the data plane to catch up.
@@ -1506,7 +1506,7 @@ scenario_https() {
   fi
 
   # 8. Force-https + add-www: EVERY host x scheme leg must answer.
-  #    Production found the gap first (2026-08-21): with both options on,
+  # Production found the gap first: with both options on,
   #    the :80 router existed only for the CANONICAL host, so
   #    http://<bare> was Traefik's unrouted 404 while the other three
   #    legs worked. No suite probed that leg, which is exactly why the
@@ -1600,7 +1600,7 @@ scenario_reprovision() {
   # with — e.g. the old platform/system-db PV that a postgres-pitr run
   # deliberately leaves Released with reclaimPolicy=Retain (system PVs
   # are excluded from the Released-PV janitor by design; 'STOP before
-  # any DROP on a system PVC'). Caught in the 2026-06-10 full pass:
+  # any DROP on a system PVC'). Caught in the full pass:
   # the suite ran after postgres-pitr for the first time and failed on
   # the PITR artifact, not on its own tenant.
   local i=0 stranded=999
@@ -1679,7 +1679,7 @@ scenario_reaper() {
   # scenario early-return between here and the final DELETE leaks
   # a `tenant-reaper-test-*` namespace and ~1 GB of tenant PVC,
   # which on staging accumulated to ~150 GB of orphan capacity
-  # observed 2026-05-04.
+  # .
   echo "$cid" >> /tmp/integration.cids
 
   provision_tenant "$cid" || { fail "reaper: client provisioning failed"; return 1; }
@@ -1738,7 +1738,7 @@ scenario_reaper() {
   # `sleep 330` (grace + 30s) budgets nothing for what happens AFTER the grace
   # expires: the due row is picked up on the next sweep tick, which then has to
   # schedule a privileged pod on the target node, start it, and exec crictl.
-  # Measured on a single-node cluster 2026-08-08:
+  # Measured on a single-node cluster:
   #
   #   19:44:24  deployment deleted, wait starts
   #   19:49:24  grace (300s) expires — row becomes due
@@ -2281,7 +2281,7 @@ for c in (items if isinstance(items, list) else []):
       # service certificate is self-signed).
       local imap_host="stalwart-mail.mail.svc.cluster.local"
       local imap_port="993"
-      # Stalwart master proxy needs the FQ master account. Since 2026-06-25 the
+      # Stalwart master proxy needs the FQ master account. the
       # master lives on the fixed sentinel `master@local.host` (decoupled from
       # the mail domain). Read the AUTHORITATIVE value from the secret
       # (STALWART_MASTER_USER), the same key the backup path resolves via
@@ -2635,7 +2635,7 @@ scenario_mail() {
   ok "mail/email-domain: enabled edid=$mail_edid"
 
   # ── Step 4b: assert Stalwart-side x:Domain exists ───────────────────
-  # Cut 3 (2026-05-04): use x:Domain/get with ids:null (server-side
+  # Cut 3: use x:Domain/get with ids:null (server-side
   # filtering on x:Domain/query is broken — silently returns []),
   # then grep tenant-side for the expected name. The kubectl run
   # output may include kubelet bookkeeping lines after the JMAP
@@ -2664,7 +2664,7 @@ scenario_mail() {
   fi
 
   # ── Step 5: verify DKIM key generated (read-only via Stalwart) ──
-  # M12 (2026-04-30): platform-side DKIM management retired; Stalwart 0.16
+  # M12: platform-side DKIM management retired; Stalwart 0.16
   # owns key generation + rotation. The platform-api exposes a single
   # read-only endpoint that parses Stalwart's `dnsZoneFile` JMAP field
   # for `_domainkey` TXT records. Path = the platform email_domains.id
@@ -2690,7 +2690,7 @@ scenario_mail() {
   # `initialLoginPassword` in the create response; every IMAP/SMTP/
   # webmail login below MUST use that secret. (The old typed-password
   # body made every auth probe fail 535 against a healthy Stalwart —
-  # caught on testing 2026-06-10.)
+  # caught on testing.)
   local mb_local="e2e${stamp}"
   local mb_resp; mb_resp=$(api POST "/tenants/$mail_cid/email/domains/$mail_edid/mailboxes" \
     "{\"local_part\":\"$mb_local\",\"quota_mb\":100}")
@@ -2717,7 +2717,7 @@ print(lp.get('secret',''))" 2>/dev/null)
   }
 
   # ── Step 6b: assert Stalwart-side account is provisioned (IMAP login) ──
-  # Cut 3 (2026-05-04): we used to assert via JMAP `x:Account/get` here,
+  # Cut 3: we used to assert via JMAP `x:Account/get` here,
   # but Stalwart 0.16's `x:Account/get` (and `Principal/get`) only return
   # accounts owned by the *calling* principal. The recovery-admin owns no
   # child Accounts, so the call returns `list:[]` even when accounts
@@ -2731,7 +2731,7 @@ print(lp.get('secret',''))" 2>/dev/null)
   # output dropped) — the login actually succeeded but stdout never
   # reached us. A flake here used to fail the suite while the SMTP/IMAP
   # steps seconds later passed with the same credential (testing
-  # 2026-06-10).
+  # ).
   local imap_probe imap_attempt
   for imap_attempt in 1 2; do
     imap_probe=$(ssh_cp "kubectl run mail-imap-probe-${stamp}-${imap_attempt} -n mail \
@@ -2790,7 +2790,7 @@ M.login(\"${mail_box_user}\",\"${mail_box_pass}\"); M.select(\"INBOX\"); print(\
   local subject="E2E-$stamp"
   # SMTP target: in-cluster Service DNS name. This is the real path tenant
   # apps use.
-  # Cut 3 (2026-05-04): v016 ships as `stalwart-mail` Service.
+  # Cut 3: v016 ships as `stalwart-mail` Service.
   # The legacy `stalwart-mail` was retired during the cutover.
   # Out-of-the-box Stalwart 0.16 binds 465 (SMTPS, implicit TLS) but
   # NOT 587 (submission STARTTLS) — listener config lives in the DB,
@@ -2938,7 +2938,7 @@ sys.exit(1)
       log "mail/stress: scheduled mid-storm replica kill (2s) — MAIL_STRESS_KILL=1"
     fi
 
-    # Cut 3 (2026-05-05): the python script ships via ConfigMap +
+    # Cut 3: the python script ships via ConfigMap +
     # `kubectl cp` — NOT via `python3 -c '<inline>'`. kubectl-exec-via-
     # SSH was empirically truncating the inline-script's stdout to
     # zero bytes (task #44) even with python -u + flush=True + file-
@@ -3121,7 +3121,7 @@ PY
     if [[ "$recv_line" == "STRESS_RECV=${stress_n}/${stress_n}" \
         && "$uniq_line" == "STRESS_UNIQUE=${stress_n}/${stress_n}" ]]; then
       ok "mail/stress: ${recv_line} ${dkim_line} ${uniq_line} (no losses, no duplicates)"
-      # Code-review MEDIUM (2026-05-04): same-domain loopback delivery in
+      # Code-review MEDIUM: same-domain loopback delivery in
       # Stalwart 0.16 may skip DKIM signing depending on whether the
       # outbound-signing connector applies. Treat zero-DKIM as a
       # smoke-fail (real misconfiguration), but accept partial-DKIM as
@@ -3149,7 +3149,7 @@ PY
   if [[ "$tester_spawned" == "1" ]]; then
     local master_pw master_user
     master_pw=$(ssh_cp "kubectl get secret -n mail mail-secrets -o jsonpath='{.data.STALWART_MASTER_PASSWORD}' | base64 -d" 2>/dev/null || echo "")
-    # The master principal's FQDN lives in the Secret too. Since 2026-06-25
+    # The master principal's FQDN lives in the Secret too.
     # the master is provisioned on the FIXED, mail-domain-INDEPENDENT
     # sentinel `master@local.host` (decoupled so a mail-domain rename can
     # never strand it). The fallback mirrors MASTER_USER_DEFAULT in
@@ -3221,7 +3221,7 @@ except Exception as e:
   # classic _token form flow; Bulwark is a JMAP-native Next.js SPA with
   # no such form (asserting `_token` against it fails on every cluster
   # whose default_webmail_engine=bulwark — caught on testing
-  # 2026-06-10). Branch on the live engine setting.
+  # ). Branch on the live engine setting.
   local wm_engine
   wm_engine=$(api GET "/admin/webmail-settings" \
     | python3 -c "import json,sys;print((json.load(sys.stdin).get('data') or {}).get('defaultWebmailEngine','roundcube'))" 2>/dev/null)
@@ -3261,7 +3261,7 @@ except Exception as e:
   wm_token=$(echo "$wm_login_html" | grep -oE 'name="_token" value="[^"]+"' \
     | head -1 | sed -E 's/.*value="([^"]+)".*/\1/')
   if [[ -z "$wm_token" ]]; then
-    # Code-review MEDIUM (2026-05-04): hard-fail when the login form
+    # Code-review MEDIUM: hard-fail when the login form
     # parser can't find _token. Silent skip would mask a real Roundcube
     # regression (changed HTML, stale cache, redirect to error page).
     fail "mail/webmail-login: no _token in login HTML — Roundcube login form unreachable or changed (preview: $(echo "$wm_login_html" | head -c 200 | tr -d '\n'))"
@@ -3498,7 +3498,7 @@ except Exception:
   local script_dir
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-  # CNPG cluster names changed 2026-05-07: postgres → system-db,
+  # CNPG cluster names changed: postgres → system-db,
   # mail-pg → mail-db (drop version baggage). The pg_dump sub-script
   # defaults to system-db now; we still pass the names explicitly for
   # readability + so the harness label matches the scenario.
@@ -3512,9 +3512,9 @@ except Exception:
     fail "system_backup: platform/system-db pg_dump"
   fi
 
-  # NOTE (2026-06-24): the mail/mail-db pg_dump leg was REMOVED. The mail
+  # NOTE: the mail/mail-db pg_dump leg was REMOVED. The mail
   # DataStore migrated CNPG-Postgres → RocksDB on a local-path PVC
-  # (stalwart-rocksdb-ha branch, 2026-05-12), so there is no `mail-db` CNPG
+  # so there is no `mail-db` CNPG
   # cluster anymore — the backend's KNOWN_CNPG_CLUSTERS (system-backup/
   # dr-sidecars.ts) lists only platform/system-db, and the removal is
   # CI-enforced (ci-mail-pg-removal-check.sh). A pg_dump against the
@@ -3566,7 +3566,7 @@ scenario_stalwart_webadmin_auth() {
 }
 
 scenario_mail_tls() {
-  # Validates the 2026-05-06 TLS-bootstrap rewrite: Stalwart-managed
+  # Validates the TLS-bootstrap rewrite: Stalwart-managed
   # ACME (HTTP-01), single-SAN cert covering mail.${DOMAIN}, SRV
   # records targeting that hostname, and the admin SSL-status
   # endpoint returning sane data.
@@ -3629,7 +3629,7 @@ scenario_mail_tls() {
   # an advisory warning, and leaves the stalwart-domain reconciler to finish the
   # order on its own tick. Asserting once, immediately, therefore fails on every
   # freshly bootstrapped cluster while nothing is actually wrong — measured
-  # 2026-08-09: 11 of staging-all's 109 assertions, all of them this cert, on a
+  # 11 of staging-all's 109 assertions, all of them this cert, on a
   # cluster whose real LE cert was serving ~20 minutes later with no
   # intervention at all.
   #
@@ -3821,7 +3821,7 @@ scenario_webmail() {
   # Validates the webmail (Roundcube) deployment end-to-end:
   #   1. Platform-level URL serves valid LE cert (the
   #      nginx-ingress-fake-cert regression that bit
-  #      webmail.staging.example.test on 2026-05-07 returns here)
+  # webmail.staging.example.test returns here)
   #   2. /admin/email-settings/ssl-status surfaces the webmail row
   #   3. The webmail-token endpoint signs a valid JWT
   #   4. SSO round-trip with that JWT lands on /?_task=mail
@@ -3980,7 +3980,7 @@ scenario_redis() {
   #   6. Stalwart Coordinator points at our Redis URL (post-migration
   #      verification — only fires if the migration script has run)
   #
-  # 2026-06-23: Valkey is DISABLED by default (removed from the deployed
+  # Valkey is DISABLED by default (removed from the deployed
   # overlays — nothing consumes it; see k8s/overlays/development/
   # kustomization.yaml). This scenario therefore SKIPS by default so it
   # stops failing. To run it, first re-enable the `valkey/` overlay entry
@@ -4056,7 +4056,7 @@ scenario_redis() {
   # cluster, the test is informational (logged, not failed).
   #
   # This used to select `-l client`, a label NOTHING sets: measured on
-  # production 2026-08-31, zero namespaces carry it, so this probe had never
+  # production, zero namespaces carry it, so this probe had never
   # once run — it took the "skipping" branch every time and reported success.
   # Tenant namespaces are `tenant-*` (tenants/service.ts:generateNamespace);
   # match on that. `platform-tenant-ops` is deliberately NOT matched — it
@@ -4198,14 +4198,14 @@ scenario_mail_hostname_rename() {
   # applyMailServerHostnameToStalwart). JMAP reads during the roll hit a
   # Service with no Ready endpoints and return empty — the run then
   # fails with "defaultHostname=empty (raw JMAP: )" / "domain-not-found"
-  # against a perfectly healthy rename (caught on testing 2026-06-10).
+  # against a perfectly healthy rename.
   # Settle the rollout first, then retry the read briefly.
   ssh_cp "kubectl -n mail rollout status deploy/stalwart-mail --timeout=240s" >/dev/null 2>&1 \
     || warn "hostname: stalwart-mail rollout not settled within 240s (continuing — reads below may catch up)"
   # Read Stalwart's applied defaultHostname via the pod LOOPBACK JMAP
   # (_stalwart_jmap → 127.0.0.1:8080), NOT the stalwart-mgmt ClusterIP.
   # The mgmt Service can have no Ready endpoint for a stretch right after
-  # the rename rollout — the 2026-06-28 staging-all run read an EMPTY body
+  # the rename rollout — the staging-all run read an EMPTY body
   # from the node→ClusterIP path for >60s while the pod was already serving
   # the new hostname. The pod loopback is up the instant the pod is Ready,
   # so it reflects the applied value reliably (~15s observed). This is the
@@ -4233,7 +4233,7 @@ except Exception:
   fi
 
   # ── Verify the new hostname is covered by some Domain row's SAN map ──
-  # Backend contract (2026-06-10): when the rename target has no
+  # Backend contract: when the rename target has no
   # pre-existing Domain row, applyMailServerHostnameToStalwart creates a
   # cert-anchor row NAMED the full hostname, and the post-rename
   # reconciler tick flips it to Automatic cert management with the SAN
@@ -4262,7 +4262,7 @@ except Exception:
       # NB: pass dynamic values via sys.argv, NEVER via env prefixes on a
       # pipeline — `VAR=x printf … | python3` binds the env to printf,
       # not python, and the resulting KeyError fires OUTSIDE the try
-      # (stdout empty, failure reads as `got: `). Caught live 2026-06-10;
+      # (stdout empty, failure reads as `got: `). Caught live;
       # matches the workstation-probe convention in this file.
       san_present=$(printf '%s' "$domain_get_json" | python3 -c "
 import sys, json
@@ -4441,7 +4441,7 @@ scenario_webmail_url_change() {
 
 # ─── scenario: mail-migration subPath guard + pre-migration tag + cron SSA ──
 #
-# Added 2026-05-29 after three production incidents on staging:
+# after three production incidents on staging:
 #   1. PR #103 silent-loss init container wrongly mounted PVC root
 #      without subPath:stalwart. The `>2` entries heuristic NEVER
 #      matched a healthy install (consolidated PVC root always has
@@ -4470,7 +4470,7 @@ scenario_mail_migration_fixes() {
   # ── Part A: CronJob schedule survives a Flux reconcile cycle ──────
   log "mail-migration-fixes: PART A — operator cadence via platform-fired mode (R17.1)"
 
-  # R17.1 contract (2026-06-11): platform-api NEVER patches
+  # R17.1 contract: platform-api NEVER patches
   # CronJob.spec.schedule — Flux owns it unopposed. An operator cadence
   # different from the manifest default flips the reconciler into
   # PLATFORM mode: the CronJob is force-suspended (pure Job-template
@@ -4566,7 +4566,7 @@ scenario_mail_migration_fixes() {
   # 4. Restore the original cadence (or clear back to default). The
   #    reconciler should return to NATIVE mode: unsuspend (target bound).
   #
-  #    LOAD-BEARING + CHECKED + RETRIED (2026-06-11): this PATCH used to
+  # LOAD-BEARING + CHECKED + RETRIED: this PATCH used to
   #    be fire-and-forget (>/dev/null || true). A single transient 502
   #    swallowed the restore, every downstream assert failed, and —
   #    worse — the suite left the CLUSTER in platform-fired */2 mode,

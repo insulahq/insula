@@ -73,7 +73,7 @@ interface CscliInspectOutput {
 }
 
 /**
- * Parse a cscli expiration string like "2027-05-20T00:00:00Z" into an
+ * Parse a cscli expiration string like "-20T00:00:00Z" into an
  * ISO datetime, or null if absent. cscli also accepts duration strings
  * ("8760h") which we don't store; we'd lose information by translating,
  * so just return null in that case.

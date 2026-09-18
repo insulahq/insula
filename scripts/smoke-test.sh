@@ -21,7 +21,7 @@ require_cmds curl jq
 # REMOTE cluster (integration-all.sh exports ADMIN_PASSWORD / API_URL / ADMIN_EMAIL,
 # or an operator sets them), those caller-provided values MUST win — otherwise a
 # stray .env.local silently clobbers them and the smoke gate 401s against the
-# remote cluster with local-dev creds (observed on the staging rebuild 2026-06-22).
+# remote cluster with local-dev creds(observed on the staging rebuild).
 # Capture what the caller passed, source the file, then restore the caller's values.
 _CALLER_API_URL="${API_URL:-}"
 _CALLER_ADMIN_EMAIL="${ADMIN_EMAIL:-}"
@@ -246,7 +246,7 @@ fi
 # Platform-migration gate: the registry HALTS on the first failing migration,
 # so a stuck one means the cluster is running new code against an unconverged
 # base. This runs after EVERY deploy — it is the check that should have stopped
-# 2026-08-19's migration 0009 at DEV instead of letting it reach STAGING and
+# 's migration 0009 at DEV instead of letting it reach STAGING and
 # production, where it surfaced days later as a wildcard cert stuck "Issuing".
 # Fails RED: pending migrations are never a normal steady state, and the whole
 # point is that this stops being something you have to go looking for.
@@ -518,7 +518,7 @@ if [[ "$MAIL_TESTS_ENABLED" == "1" ]]; then
   # it. The guard below only skipped when that container was ABSENT — so on a
   # workstation that also runs the local dev stack, pointing API_URL at a remote
   # cluster probed the LOCAL one instead and reported its mail ports as the
-  # remote cluster's. Observed 2026-08-08 against a freshly bootstrapped DEV
+  # remote cluster's. against a freshly bootstrapped DEV
   # host: four NodePort probes failed "connection refused" while the DEV node
   # was serving mail perfectly on 25/587/143 — the smoke gate is a hard gate, so
   # it aborted the entire integration suite before a single test ran.
@@ -571,7 +571,7 @@ if [[ "$MAIL_TESTS_ENABLED" == "1" ]]; then
   fi
 
   # ─── Mail DELIVERY gate (real cluster) ──────────────────────────────────
-  # CRITICAL (2026-06-21): the banner/TCP probes above are LIVENESS only — a
+  # CRITICAL: the banner/TCP probes above are LIVENESS only — a
   # listener answering "220" passes them even when the server REJECTS the
   # message at DATA with "452 4.3.1 Mail system full". That exact regression
   # (Stalwart v0.16.9) shipped in v2026.6.14 undetected because nothing in

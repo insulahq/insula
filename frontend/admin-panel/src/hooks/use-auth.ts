@@ -69,7 +69,7 @@ export const useAuth = create<AuthState>((set) => ({
             // runs on every ProtectedRoute mount — i.e. every navigation — so
             // a single 429, 502, WAF block or dropped connection silently
             // destroyed a perfectly valid session and bounced the operator to
-            // /login. Reproduced on DEV 2026-09-16: a burst of traffic tripped
+            // /login. Reproduced on DEV: a burst of traffic tripped
             // the per-user rate limit and the panel logged itself out while
             // holding an unexpired token.
             //

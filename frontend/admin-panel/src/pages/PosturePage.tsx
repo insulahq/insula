@@ -1,5 +1,5 @@
 /**
- * Posture — Security Hub → Posture (2026-05-21).
+ * Posture — Security Hub → Posture.
  *
  * Renamed from `SecurityHardeningSettings.tsx`. Read-mostly observability
  * for cluster hardening posture. WAF / Banned IPs / WAF Exclusions tabs
@@ -1288,7 +1288,7 @@ function severityTone(s: CisSeverity): { text: string } {
   }
 }
 
-// SkeletonLoader extracted to components/ui/SkeletonLoader.tsx (2026-05-21).
+// SkeletonLoader extracted to components/ui/SkeletonLoader.tsx.
 
 // ─── Lockdown runbook modal ─────────────────────────────────────────────
 
@@ -1414,12 +1414,12 @@ systemctl enable --now wg-quick@wg0`}</pre>
 // admin/api/client-host events that have no per-tenant ingress_route — those
 // are invisible in the per-route /tenants/.../waf-logs endpoint and were the
 // motivation for this tab (e.g. the 930120 LFI FP on POST
-// /admin/system-backup/dr-drill/runs on 2026-05-19).
+// /admin/system-backup/dr-drill/runs).
 
 // SEVERITY_OPTIONS / SCOPE_OPTIONS / SINCE_OPTIONS — moved with the
 // WAF tab extraction to components/security/web-defense-tabs.tsx.
 
-// useDebouncedValue extracted to hooks/use-debounced-value.ts (2026-05-21).
+// useDebouncedValue extracted to hooks/use-debounced-value.ts.
 
 
 // ─── fail2ban (SSH brute-force bans) ────────────────────────────────────

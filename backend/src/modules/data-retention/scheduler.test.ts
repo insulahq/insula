@@ -7,7 +7,7 @@ import type { DataRetentionResult } from './service.js';
  *
  * `runOnce` used a HAND-WRITTEN sum of every counter to decide whether to log,
  * with a comment warning that "a table missing from this total is a table whose
- * pruning is invisible in the logs". On 2026-09-11 two new counters
+ * pruning is invisible in the logs". two new counters
  * (crowdsec_autoban_runs, sftp_audit_log) were added to DataRetentionResult and
  * not to that sum — so a cycle that pruned only those two would have reported
  * NOTHING, which is the exact failure the comment warns about, reintroduced by

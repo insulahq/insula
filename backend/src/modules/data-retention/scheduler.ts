@@ -54,12 +54,12 @@ async function runOnce(db: Database): Promise<void> {
   try {
     const r = await runDataRetention(db);
     // Sum EVERY counter — a table missing from this total is a table whose
-    // pruning is invisible in the logs, which is how the 2026-06-01 sweep's
+    // pruning is invisible in the logs, which is how the sweep's
     // gaps went unnoticed for three months.
     //
     // Derived from the RESULT OBJECT rather than a hand-written sum, because
     // the hand-written one had already drifted: the crowdsec_autoban_runs and
-    // sftp_audit_log counters added on 2026-09-11 were missing from it, so a
+    // sftp_audit_log counters added were missing from it, so a
     // cycle that pruned only those two would have reported nothing at all —
     // the exact failure this comment warns about, reintroduced by the change
     // that was fixing unbounded tables. Object.values() cannot forget a field.

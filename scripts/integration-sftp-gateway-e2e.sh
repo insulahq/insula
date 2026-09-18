@@ -3,7 +3,7 @@
 #
 # Runs ON a cluster node (uses KUBECONFIG + port-forwards). Exercises the whole
 # chain through the DEPLOYED gateway + file-manager pod, so it catches the
-# integration bugs unit tests can't — every issue found during the 2026-06-08
+# integration bugs unit tests can't — every issue found during the
 # SFTP work, across BOTH auth methods:
 #
 #   * chroot-home (PR #256): subdir home_path lands in the subdirectory.

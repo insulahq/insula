@@ -1,7 +1,7 @@
 /**
  * The Postgres base-backup cadence must be the operator's, not a constant.
  *
- * Found 2026-09-18 while investigating an inert retention field. The admin
+ * Found while investigating an inert retention field. The admin
  * panel's Postgres card has a "Base backup cadence" control; saving it calls
  * `enableWalArchive`, which writes the value to `system_wal_archive_state` AND
  * onto the ScheduledBackup. This reconciler then patched the SAME CR back to a

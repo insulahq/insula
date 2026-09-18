@@ -12,7 +12,7 @@
  *
  *   2. `GET /tenants/:tenantId/domains/:domainId/ssl-cert/download` — normal
  *      session auth, backing the panel's download button. The spec originally
- *      said API-only; the button was added by operator decision 2026-09-03
+ * said API-only; the button was added by operator decision
  *      because minting a token for a one-off copy is disproportionate.
  *
  * Both hand out a PRIVATE KEY, so both:

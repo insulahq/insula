@@ -5,7 +5,7 @@ import type { ComponentType, ReactNode } from 'react';
 /**
  * Generic collapsible section for the Email Management page.
  *
- * 2026-05-14 streamline UX: every operational area collapses to a
+ * streamline UX: every operational area collapses to a
  * one-line summary so the operator can scan the page top-down and
  * only open the section they need. The pre-streamline layout dumped
  * 5+ heavy cards (300-800 lines each) inline; this wrapper changes

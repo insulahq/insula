@@ -1,7 +1,7 @@
 /**
  * The security notifications that existed and never fired.
  *
- * Measured 2026-09-16: `security.password_changed` and
+ * `security.password_changed` and
  * `account.sub_account_added` both had templates on every channel, both were
  * marked mandatory or security-class, and NOTHING in the codebase called
  * either emitter. The two notifications a person most needs — your password

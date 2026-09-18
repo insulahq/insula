@@ -3,7 +3,7 @@
 # contract must be selectable in BOTH panels, and neither panel may re-declare
 # the scope union locally.
 #
-# WHY: 2026-08-31 an operator whitelisted a WAF rule and reported "UNBLOCKING
+# WHY: an operator whitelisted a WAF rule and reported "UNBLOCKING
 # VIA WHITELIST HAS NO EFFECT". The exclusion saved, reconciled, and was present
 # in the running modsec container — and did nothing. Both panels defaulted to
 # and *recommended* `args_names_only`, which emits

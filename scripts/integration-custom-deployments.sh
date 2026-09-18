@@ -135,7 +135,7 @@ TOKEN=$(login_token)
 [[ -z "$TOKEN" ]] && { echo "FATAL: admin login failed" >&2; exit 2; }
 info "Admin login OK"
 
-# Tenant isolation (2026-07-24): provision our OWN ephemeral tenant instead of
+# Tenant isolation: provision our OWN ephemeral tenant instead of
 # borrowing the first active client. Sharing a live client was the root of the
 # cross-suite CHURN (a concurrent suite suspends/deletes the shared client
 # mid-test → SKIP-EXPECTED) AND the quota accumulation (a sibling's deployments
@@ -164,12 +164,12 @@ fi
 [[ -z "$TENANT_ID" ]] && { echo "FATAL: no tenant" >&2; exit 2; }
 info "Using client $TENANT_ID"
 
-# ADR-036 subscription gate (migration 0078, shipped 2026-07-30 in 6ac21ae7):
+# ADR-036 subscription gate(migration 0078, shipped in 6ac21ae7):
 # custom containers are DENIED unless the tenant's plan allows them or the
 # tenant carries an explicit override. This suite exists to exercise custom
 # containers, so it must grant itself the capability — without it every create
 # returns 403 CUSTOM_CONTAINERS_NOT_IN_PLAN and the suite has been red since
-# that feature landed (observed 2026-08-04: T7/T10/T12/T14/T18/T19, and T10
+# that feature landed (: T7/T10/T12/T14/T18/T19, and T10
 # reporting "expected 422, got 403" because the gate short-circuits validation).
 # Uses the PER-TENANT override so no shared plan is mutated for other suites.
 # Note the request key is snake_case (allow_custom_containers_override) — the
@@ -308,7 +308,7 @@ except Exception: pass
   # allowHostPorts ON for its test, then restores it via an EXIT trap) opens a
   # transient window where the GLOBAL setting has already changed while THIS
   # namespace's label has not yet been re-patched. A single read of
-  # (global, ns-label) can catch them mid-flux (2026-07-23 fullrun: got
+  # (global, ns-label) can catch them mid-flux (fullrun: got
   # 'privileged' while the global read 'no'). Poll until the namespace label
   # AGREES with the LIVE global setting — re-reading BOTH each round so we track
   # the reconciler to convergence (seconds) — and fail only if they never

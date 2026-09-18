@@ -311,7 +311,7 @@ export async function getCapacityCheck(
   };
 }
 
-// triggerUpdate() was removed 2026-07-28. It set `pending_update_version` and
+// triggerUpdate was removed. It set `pending_update_version` and
 // relied on the platform-update-checker CronJob to run `flux reconcile`, which
 // does NOT re-pin the tag → a no-op on the production pull model. The real
 // upgrade path is the ADR-045 re-pin (POST /admin/platform/upgrade, module

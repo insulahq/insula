@@ -586,7 +586,7 @@ export async function decryptImportTarball(args: {
   readonly passphrase: string;
 }): Promise<ReadonlyArray<ImportEntry>> {
   const { cipherBlob, passphrase } = args;
-  // No min-length floor since 2026-05-08 (matches the export side).
+  // No min-length floor (matches the export side).
   // Empty passphrase is still invalid — there's no plaintext path
   // through the decrypt branch.
   if (!passphrase) {
@@ -692,7 +692,7 @@ export async function decryptImportTarball(args: {
 //     S3 GetObject (Readable) → archiver.append(stream, { name, store: true })
 //   archiver.finalize() → reply
 //
-// **Why no password option on the ZIP path** (revisited 2026-05-08
+// **Why no password option on the ZIP path** (revisited
 // after a 524 MB E2E ran the platform-api pod OOM):
 //
 //   The only practical Node ZIP-encryption library
@@ -737,7 +737,7 @@ export interface StreamZipExportArgs {
 export async function streamZipExport(args: StreamZipExportArgs): Promise<Readable> {
   const { store, handle, components } = args;
 
-  // archiver changed its public shape in v8 (2026-07-28 dependency bump,
+  // archiver changed its public shape in v8 (dependency bump,
   // 5.3.2 → 8.0.0 to drop the vulnerable readdir-glob → minimatch →
   // brace-expansion chain, GHSA-mh99-v99m-4gvg):
   //   - v5/v6/v7: CommonJS, `module.exports = archiver`, called as a

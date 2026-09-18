@@ -44,7 +44,7 @@ metadata:
   annotations:
     # backup-coverage: excluded:cluster-infrastructure
     ttlSecondsAfterFinished: "3600"
-    # R17.1 (2026-06-11) — spec.schedule is FULLY Flux-owned now;
+    # R17.1 — spec.schedule is FULLY Flux-owned now;
     # platform-api never patches it (the SSA tug-of-war chronicled in
     # PRs #28/#34 is over). The cadence contract:
     #   - Operator cadence == the default below → NATIVE mode: this
@@ -81,7 +81,7 @@ spec:
     # The backup-health watcher selects JOBS, not CronJobs, and the CronJob
     # controller copies ONLY spec.jobTemplate.metadata onto the Jobs it
     # creates — labels on the CronJob's own metadata never reach them.
-    # Proven on DEV 2026-09-15: three labelled CronJobs firing normally,
+    # Proven on DEV: three labelled CronJobs firing normally,
     # `kubectl get jobs -A -l insula.host/backup-health-watch=true` empty.
     # PLATFORM mode fires Jobs from platform-api instead of the CronJob
     # controller — renderManualSnapshotJob propagates this same block, so
@@ -131,7 +131,7 @@ spec:
                 # ConfigMap is intentionally NOT part of the Flux kustomize
                 # tree — if Flux owned it, every reconcile cycle would
                 # revert the operator's retention to manifest defaults
-                # (caught 2026-05-27 — strategic-merge patch on the
+                # (— strategic-merge patch on the
                 # CronJob env array got overwritten by kustomize-controller).
                 # optional:true so a fresh cluster without the ConfigMap
                 # falls back to snapshot-upload.sh's --keep-last 48 default.
@@ -148,7 +148,7 @@ spec:
                       key: token
                       optional: true
               volumeMounts:
-                # A2.5 (2026-05-25): mount the consolidated mail-stack
+                # A2.5: mount the consolidated mail-stack
                 # PVC root (no subPath) so both stalwart/ + bulwark/
                 # subtrees end up in the same restic snapshot. The
                 # snapshot-upload.sh script reads DATA_DIR=/var/lib/mail-stack
@@ -167,5 +167,5 @@ spec:
           volumes:
             - name: stalwart-data
               persistentVolumeClaim:
-                # A2.5 (2026-05-25): consolidated PVC.
+                # A2.5: consolidated PVC.
                 claimName: mail-stack-data

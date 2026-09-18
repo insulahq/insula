@@ -73,7 +73,7 @@ describe('extractOomEvents', () => {
     expect(events).toEqual([]);
   });
 
-  // ── node-shutdown exclusion (production false alarms, 2026-09-11) ──
+  // ── node-shutdown exclusion ──
   //
   // Every fixture below is the real shape kubelet left on the five pods this
   // scan reported to admins as OOM kills after a reboot. The kernel logged no
@@ -136,7 +136,7 @@ describe('extractOomEvents', () => {
 
   // The real cgroup group-kill this inference exists for: a RUNNING pod whose
   // container the kubelet restarted, reported as {exitCode:137, reason:"Error"}.
-  // Production file-manager, 2026-09-06 — kernel confirmed CONSTRAINT_MEMCG.
+  // Production file-manager, — kernel confirmed CONSTRAINT_MEMCG.
   it('STILL reports an inferred kill on a healthy running pod', () => {
     const events = extractOomEvents([{
       metadata: { name: 'file-manager-695b58775c-ntqts' },

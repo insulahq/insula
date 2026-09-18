@@ -1,6 +1,6 @@
 # Initial ConfigMap with launcher.sh.
 #
-# R-X20 — always-combined rclone-serve-s3 architecture (2026-05-21):
+# R-X20 — always-combined rclone-serve-s3 architecture:
 #   - One `rclone serve s3` per pod, ALWAYS in `combined:` mode
 #   - The full rclone.conf is rendered by platform-api in TypeScript
 #     (rclone-config.ts) with passwords obscured via the canonical
@@ -16,7 +16,7 @@
 #   - Pod runs fully unprivileged: runAsUser:65534, drop:[ALL] caps.
 #     No FUSE, no kernel mounts, no CAP_SYS_ADMIN, no /dev/fuse.
 #
-# Memory tuning (v3-tuned per 2026-05-21 bench, holds for R-X20):
+# Memory tuning(v3-tuned per bench, holds for R-X20):
 #   - GOGC=20 + GOMEMLIMIT=200MiB (aggressive Go GC + soft cap)
 #   - --s3-disable-http2 (HTTP/1.1 = parallel TCP, no HoL blocking)
 #   - --s3-upload-concurrency 3 (upstream is the bottleneck; ~15 MiB
@@ -181,7 +181,7 @@ data:
     # restore failed with NoSuchKey on an object that WAS durably on the backend
     # (SFTP has no ChangeNotify, so only dir-cache-time refreshes it). 3s bounds
     # that window well under any capture→restore gap; listings are small + rare
-    # during a restore, so the extra re-list cost is negligible. (2026-07-16:
+    # during a restore, so the extra re-list cost is negligible. (:
     # broke tenant DR restore on the staging SSH-storagebox tenant store.)
     log "launching rclone serve s3 combined:"
     # Mark Ready just before exec. There's a sub-millisecond window where the

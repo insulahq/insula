@@ -78,7 +78,7 @@ export async function loadSystemOverview(db: Database): Promise<SystemBackupsOve
     runAt?: string;
   };
 
-  // B1 fix (2026-05-22): resolve the mail target NAME from the R-X
+  // B1 fix: resolve the mail target NAME from the R-X
   // shim assignment instead of the legacy
   // `system_settings.mail_snapshot_backup_store_id` mirror column.
   // The legacy column hasn't been kept in sync since Phase 2 deleted
@@ -117,7 +117,7 @@ export async function loadSystemOverview(db: Database): Promise<SystemBackupsOve
   // Schedule states for the page's schedule strip.
   const schedRows = await db.select().from(backupSchedules);
   // Quick gate-sat lookup per subsystem. Mirrors backup-schedules
-  // service.ts GATE_MAP — re-mapped Phase 2 legacy purge (2026-05-22)
+  // service.ts GATE_MAP — re-mapped Phase 2 legacy purge
   // from the legacy 4-class names to the 3 R-X shim classes.
   const gatedClassFor: Record<string, string | null> = {
     mail: 'mail',
@@ -452,7 +452,7 @@ export async function loadTenantDetail(db: Database, tenantId: string): Promise<
 // rows) with the tenant name joined in. One row per snapshot, sorted newest
 // first, capped at `limit`. Optional `tenantId` filter.
 //
-// 2026-06-16: switched from the legacy off-site tar `storage_snapshots` table
+// switched from the legacy off-site tar `storage_snapshots` table
 // to `tenant_volume_snapshots` (Longhorn CSI). Snapshots are now local PVC
 // recovery points — the off-site path is restic tenant bundles, surfaced on the
 // Backups tab, not here. `subsystem`/`targetId`/`targetName` are retained in the
@@ -536,5 +536,5 @@ export async function listTenantSnapshots(
   };
 }
 
-// 2026-05-22: trivial bump to force backend rebuild after the auto-pin
+// trivial bump to force backend rebuild after the auto-pin
 // race lost the ccd2325a tag. See gh run 26285402671.

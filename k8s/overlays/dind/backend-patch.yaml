@@ -154,7 +154,7 @@ spec:
             # This variable was ONLY ever set here, so mailbox migration
             # failed with `IMAPSYNC_NOT_CONFIGURED` on every real cluster.
             - name: STALWART_IMAP_HOST
-              # 0.16 service name; v015 was retired in Cut 3 (2026-05-04).
+              # 0.16 service name; v015 was retired in Cut 3.
               value: stalwart-mail.mail.svc.cluster.local
             - name: STALWART_IMAP_PORT
               value: "143"

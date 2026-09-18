@@ -2,7 +2,7 @@
 #
 # Master-user impersonation is handled by Bulwark's native
 # /api/auth/impersonate route (upstream issue #296, shipped in v1.6.7
-# stable on 2026-05-17). Our previous impersonator sidecar
+# stable). Our previous impersonator sidecar
 # (k8s/base/bulwark-impersonator/) is retired.
 #
 # The Deployment ships as part of the platform base but is NOT included
@@ -30,7 +30,7 @@ metadata:
     #     - STALWART_MASTER_USER
     #     - STALWART_MASTER_PASSWORD
     #   When rotateWebmailMasterPassword updates mail-secrets, Reloader
-    #   rolls Bulwark automatically (2026-05-28: replaced the
+    # rolls Bulwark automatically (: replaced the
     #   bulwark-secrets mirror that drifted on every rotation).
     secret.reloader.stakater.com/reload: "bulwark-secrets,mail-secrets"
     # Flux SSA: Merge so platform-api's webmail-router reconciler can
@@ -48,11 +48,11 @@ spec:
   # keeps the mail stack as one atomic unit.
   #
   # Historical: prior config used topologySpread + replicas owned by
-  # platform-storage-policy. Removed 2026-05-25 when the bulwark stuck-
+  # platform-storage-policy. Removed when the bulwark stuck-
   # in-Init bug was traced to that exact pattern (RWO PVC + replicas=2
   # + topologySpread = always-pending second pod).
   #
-  # 2026-06-23: `replicas` is now OMITTED (was hardcoded `1`) so the
+  # `replicas` is now OMITTED (was hardcoded `1`) so the
   # webmail-router reconciler can scale this engine to 0 when it is the
   # INACTIVE engine (it stamps insula.host/webmail-engine-disabled=true and
   # patches /scale to 0) WITHOUT Flux reverting it on the next apply. A
@@ -93,7 +93,7 @@ spec:
         fsGroup: 1000
         seccompProfile:
           type: RuntimeDefault
-      # 2026-05-18: webmail feature-visibility CSS injection. Bulwark's
+      # webmail feature-visibility CSS injection. Bulwark's
       # SPA <head> is React-rendered and there's no env-driven custom-
       # CSS hook in the v1.6.x image, so we append our overrides to the
       # bundled Tailwind CSS files that the SPA already loads. This
@@ -112,8 +112,8 @@ spec:
       # Deployment's pod template, which triggers a rolling restart that
       # re-runs this initContainer with the new ConfigMap content.
       initContainers:
-        # A4 (2026-05-25): restore-state with FAST PATH from standby
-        # DaemonSet + restic fallback (added 2026-05-25 follow-up).
+        # A4: restore-state with FAST PATH from standby
+        # DaemonSet + restic fallback.
         # Bulwark's /app/data subPath is empty on a fresh PVC
         # (failover landed on a new node, local-path provisioner
         # created a fresh dir). Cascade:
@@ -164,7 +164,7 @@ spec:
               # postBuild substituteFrom, which in Flux 2.9 runs envsubst
               # in STRICT mode. A plain dollar-brace reference gets
               # substituted away and, if unknown, hard-fails the build
-              # (live bug observed 2026-05-25 — age + limit appeared as
+              # (live bug — age + limit appeared as
               # empty in the rejection log). Double-$$ tells Flux to emit
               # a literal dollar; the shell sees the reference at runtime.
               STANDBY_MAX_AGE_SECONDS=$${FAST_PATH_MAX_AGE_SECONDS:-1800}
@@ -192,7 +192,7 @@ spec:
               # The old code read that exit code as failure and declared a
               # fresh start — so EVERY successful Bulwark restore wrote a
               # `.fresh-started-at` sentinel claiming the data was lost. A real
-              # restore on 2026-09-11 recovered 312 files and admin.json and
+              # restore recovered 312 files and admin.json and
               # still reported `reason=restic-copy-failed`. Stalwart never hit
               # this because its pod runs as root.
               #
@@ -318,7 +318,7 @@ spec:
               readOnly: true
       containers:
         - name: bulwark
-          # Bulwark 1.9.2 stable (2026-08-26). Bump per ADR-039; the digest is
+          # Bulwark 1.9.2 stable. Bump per ADR-039; the digest is
           # also recorded in security/components.yaml (component `bulwark`),
           # which ci-component-watch-check.sh asserts against this file.
           #
@@ -392,12 +392,12 @@ spec:
             # (rotateWebmailMasterPassword only patches mail-secrets). With
             # a direct reference the mirror disappears entirely.
             #
-            # CRITICAL — env var NAMES (corrected 2026-06-08): the pinned
+            # CRITICAL — env var NAMES: the pinned
             # Bulwark image (v1.6.7, sha256:4ee0f0b…) reads the master
             # credentials from BULWARK_STALWART_MASTER_USER +
             # BULWARK_STALWART_MASTER_PASSWORD (verified in the compiled
             # .next/server/app/api/auth/impersonate/route.js — it only
-            # references the BULWARK_-prefixed names). A 2026-05-28 change
+            # references the BULWARK_-prefixed names). A change
             # stripped the prefix on the wrong assumption that upstream
             # reads the unprefixed names; that left the master creds
             # `undefined` inside Bulwark, so /api/auth/impersonate silently
@@ -448,12 +448,12 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /app/data
-              # A2.5 (2026-05-25): consolidated mail-stack PVC. Bulwark
+              # A2.5: consolidated mail-stack PVC. Bulwark
               # subtree at subPath=bulwark; Stalwart sees the parent dir
               # via subPath=stalwart. Both mount the same mail-stack-data
               # PVC on the active mail node.
               subPath: bulwark
-            # 2026-05-18: shadow /app/.next/static/css with the
+            # shadow /app/.next/static/css with the
             # initContainer-prepared CSS (pristine bundle + appended
             # feature-visibility overrides). The image's layer is read-
             # only; this mount replaces it for the running Pod.
@@ -494,12 +494,12 @@ spec:
       volumes:
         - name: data
           persistentVolumeClaim:
-            # A2.5 (2026-05-25): switched from the old Longhorn `bulwark-data`
+            # A2.5: switched from the old Longhorn `bulwark-data`
             # PVC to the consolidated `mail-stack-data` local-path PVC.
             # Co-located with Stalwart on mailActiveNode. Legacy bulwark-data
             # PVC is kept for 48-72h safety period (consolidation Stage 3).
             claimName: mail-stack-data
-        # 2026-05-18: ephemeral scratch space the initContainer
+        # ephemeral scratch space the initContainer
         # populates with the modified CSS. Replaced on every Pod start.
         - name: css-overlay
           emptyDir:
@@ -512,7 +512,7 @@ spec:
           configMap:
             name: webmail-feature-overrides
             optional: false
-        # A4 (2026-05-25): standby DaemonSet's hostPath. Only mounted
+        # A4: standby DaemonSet's hostPath. Only mounted
         # into the restore-state init container — main Bulwark
         # container does NOT see it (data is copied into the PVC).
         - name: standby-data

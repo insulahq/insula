@@ -128,7 +128,7 @@ async function loadPersistedQuiesceSnapshot(db: Database, opId: string): Promise
  * when `quiesce()` RETURNS — a throw between "persist snapshot" and "all
  * workloads scaled" left the local null, the old `if (quiesceSnap)` guard
  * skipped the unquiesce, and the tenant stayed at 0 replicas with no
- * automatic recovery (operator report #7, 2026-08-26). The snapshot is
+ * automatic recovery. The snapshot is
  * persisted on the op row BEFORE any mutation, so fall back to that copy.
  * Best-effort: never throws.
  */
@@ -953,9 +953,13 @@ async function applyPVCMib(k8s: K8sClients, namespace: string, sizeMib: number, 
           labels: {
             // Same label set as applyPVC in k8s-provisioner — the
             // destructive-resize path replaces the PVC, so without
-            // re-stamping these labels the tenant would drop out of
-            // both the backup RecurringJob and the canonical label
-            // index after a shrink/snap-restore.
+            // re-stamping these labels the tenant would drop out of the
+            // daily filesystem trim and the canonical label index after a
+            // shrink/snap-restore.
+            //
+            // `default` grants trim only. It is not a backup group, and it no
+            // longer grants hourly snapshots either — those are scoped to
+            // `system-critical` (the platform database).
             'recurring-job-group.longhorn.io/default': 'enabled',
             'app.kubernetes.io/part-of': 'hosting-platform',
             'app.kubernetes.io/component': 'tenant-storage',
@@ -1616,7 +1620,7 @@ export async function suspendTenant(
    * `suppressTenantNotification` carries the operator's "Notify tenant"
    * choice down to the lifecycle hook that honours it. It has to be threaded
    * explicitly: the hook reads it off the cascade context, and until
-   * 2026-09-16 nothing on this path set it, so the checkbox did nothing.
+   * nothing on this path set it, so the checkbox did nothing.
    */
   opts: { triggeredByUserId?: string | null; suppressTenantNotification?: boolean } = {},
 ): Promise<{ operationId: string }> {
@@ -1688,7 +1692,7 @@ export async function resumeTenant(
    * `suppressTenantNotification` carries the operator's "Notify tenant"
    * choice down to the lifecycle hook that honours it. It has to be threaded
    * explicitly: the hook reads it off the cascade context, and until
-   * 2026-09-16 nothing on this path set it, so the checkbox did nothing.
+   * nothing on this path set it, so the checkbox did nothing.
    */
   opts: { triggeredByUserId?: string | null; suppressTenantNotification?: boolean } = {},
 ): Promise<{ operationId: string }> {

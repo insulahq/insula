@@ -27,7 +27,7 @@ import type { Database } from '../../db/index.js';
 // Stable fieldManager — claims SSA ownership of spec.schedule so that
 // Flux's `kustomize.toolkit.fluxcd.io/ssa: merge` reconciler stops
 // reverting operator schedules back to the manifest default
-// (2026-05-29 — the operator-set "*/10" silently regressed to "*/2"
+// (— the operator-set "*/10" silently regressed to "*/2"
 // on every Flux reconcile because the manifest declares the field
 // and STRATEGIC_MERGE_PATCH does not claim SSA ownership).
 // CRON_SCHEDULE_FIELD_MANAGER removed in R17.1 — no schedule SSA writes remain.
@@ -138,7 +138,7 @@ export async function updateMailSnapshotSchedule(
   db: Database,
   _opts: SnapshotSettingsOptions,
 ): Promise<MailSnapshotScheduleResponse> {
-  // R17.1 (2026-06-11): spec.schedule is NEVER patched anymore — Flux
+  // R17.1: spec.schedule is NEVER patched anymore — Flux
   // owns it unopposed. The operator cadence is persisted to
   // backup_schedules.mail.cron_expression (the canonical column
   // resolveDesiredSchedule reads); when it differs from the manifest
@@ -168,7 +168,7 @@ export async function updateMailSnapshotSchedule(
 /**
  * Read the currently configured backup target for mail snapshots.
  *
- * Phase 2 legacy purge (2026-05-22): source of truth moved from
+ * Phase 2 legacy purge: source of truth moved from
  * `backup_target_assignments[backup_class='mail']` (the R-X shim's `mail` class) and the
  * R-X8 shim `mail` class. The mail-restic-shim reconciler owns the
  * stalwart-snapshot-restic-repo Secret materialisation on every
@@ -211,7 +211,7 @@ export async function getMailSnapshotBackupTarget(
 /**
  * Update the backup target for mail snapshots — passthrough writer.
  *
- * Phase 2 legacy purge (2026-05-22): writes the `mail` shim class
+ * Phase 2 legacy purge: writes the `mail` shim class
  * assignment in one transaction. The mail-restic-shim reconciler
  * picks up the binding change on its 5-minute tick (or inline via
  * the assignments PUT endpoint when an operator uses the new
@@ -308,7 +308,7 @@ export async function recordMailSnapshotLastRun(
     .where(eq(systemSettings.id, SETTINGS_ID));
 }
 
-// Phase 2 legacy purge (2026-05-22): the stalwart-snapshot-restic-repo
+// Phase 2 legacy purge: the stalwart-snapshot-restic-repo
 // Secret is now owned by backup-rclone-shim/mail-restic.ts's reconciler.
 // This file is just the HTTP-facing surface for the legacy
 // /admin/mail/snapshot-target endpoint; it reads/writes the `mail`
@@ -317,7 +317,7 @@ export async function recordMailSnapshotLastRun(
 // pipeline when an operator uses the new /backups/mail UI).
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Retention reconciler (2026-05-27)
+// Retention reconciler
 //
 // Pre-fix: snapshot-upload.sh hardcoded `restic forget --keep-last 48`.
 // Operator-set values in backup_schedules.mail (retention_days +
@@ -357,7 +357,7 @@ export async function applyMailSnapshotRetention(
   // snapshot-upload.sh fallback when ConfigMap is missing).
   const retentionDays = row?.retentionDays ?? 0;
   const retentionCount = row?.retentionCount ?? 48;
-  // 2026-05-28: also reconcile the CronJob's spec.schedule from
+  // also reconcile the CronJob's spec.schedule from
   // backup_schedules.cron_expression. Pre-fix, this column was written
   // by /admin/backups/schedules/mail but never propagated to k8s; only
   // /admin/mail/snapshot-schedule patched the CronJob, so operators
@@ -370,7 +370,7 @@ export async function applyMailSnapshotRetention(
   // Write/update the mail-snapshot-retention ConfigMap.
   //
   // We OWN this ConfigMap exclusively. Flux's kustomize-controller is
-  // NOT given a manifest for it — deliberate (caught 2026-05-27: when
+  // NOT given a manifest for it — deliberate (: when
   // the retention env was on the CronJob spec, Flux's kustomize Apply
   // reverted operator-set values on its 5-10 min reconcile cycle).
   // The CronJob template uses `envFrom: configMapRef` with optional:true
@@ -428,7 +428,7 @@ export async function applyMailSnapshotRetention(
     }
   }
 
-  // R17.1 (2026-06-11): spec.schedule is NEVER patched anymore — Flux
+  // R17.1: spec.schedule is NEVER patched anymore — Flux
   // owns it unopposed. A custom backup_schedules.cron_expression flips
   // the snapshot-cronjob reconciler into platform-fired mode (CronJob
   // force-suspended; the scheduler's firing engine creates Jobs on the

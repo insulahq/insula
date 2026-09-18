@@ -92,7 +92,7 @@ export async function backupConfigRoutes(app: FastifyInstance): Promise<void> {
       throw new ApiError('VALIDATION_ERROR', zodMessage(parsed.error), 400);
     }
     const updated = await service.updateBackupConfig(app.db, id, parsed.data, encryptionKey);
-    // Legacy target-activate retirement (2026-08-26): no Longhorn
+    // Legacy target-activate retirement: no Longhorn
     // reconcile leg — the 3-class shim assignments are the only backup
     // routing, and credential changes reach the shim via its own
     // inputHash-driven reconciler.
@@ -186,7 +186,7 @@ export async function backupConfigRoutes(app: FastifyInstance): Promise<void> {
     return success(result);
   });
 
-  // Legacy target-activate routes retired 2026-08-26 (operator
+  // Legacy target-activate routes retired (operator
   // decision): POST /:id/activate, POST /:id/deactivate,
   // GET /:id/backups (Longhorn backup list) and POST /:id/backup-now
   // (Longhorn volume trigger) are gone. Backup routing is the 3-class

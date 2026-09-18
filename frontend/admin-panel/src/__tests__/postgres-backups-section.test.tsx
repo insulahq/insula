@@ -2,7 +2,7 @@
  * Platform-database backups: ONE switch, three settings, and a status block
  * that reports what the archive actually holds.
  *
- * Replaces `wal-archiving-truth.test.tsx` (2026-09-11). That file pinned an
+ * Replaces `wal-archiving-truth.test.tsx`. That file pinned an
  * intermediate design where WAL archiving could be "implied" — active while the
  * panel's own toggle said off. The operator's verdict was that the split should
  * not exist at all: a base backup is unrestorable without the WAL written

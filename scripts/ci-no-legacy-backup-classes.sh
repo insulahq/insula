@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Phase 2 legacy-purge CI guard (2026-05-22).
+# Phase 2 legacy-purge CI guard.
 #
 # After migration 0023, only the three R-X shim classes
 # (system / tenant / mail) are valid routing keys in

@@ -2,7 +2,7 @@
  * `<BackupClassPage>` — the shared tab shell used by
  * `/backups/system`, `/backups/tenants`, and `/backups/mail`.
  *
- * Honesty/B0 (2026-05-22): not every class has both snapshots AND
+ * Honesty/B0: not every class has both snapshots AND
  * backups. Mail has only off-site restic backups — no in-cluster
  * snapshot — so its Snapshots tab is suppressed. Callers pass
  * `snapshotsTab={null}` or omit the prop to opt out.
@@ -58,7 +58,7 @@ export default function BackupClassPage(props: BackupClassPageProps) {
   // provided. Routing is always present; snapshots/backups are only
   // present when the caller has real content to render. Backups lead:
   // durable off-site bundles are the primary artifact, snapshots are
-  // temporary on-cluster copies (operator request 2026-08-26).
+  // temporary on-cluster copies.
   const tabs: ReadonlyArray<TabSpec> = [
     ...(props.backupsTab != null ? [BACKUPS_TAB] : []),
     ...(props.snapshotsTab != null ? [SNAPSHOTS_TAB] : []),

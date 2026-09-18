@@ -62,7 +62,7 @@ spec:
     # every limitless pod ("must specify limits.cpu") and (b) wedge rolling
     # updates on burst-ceiling accounting even while nodes sit near-idle —
     # which is exactly what stalled the platform-api rollout for a day
-    # (2026-06-24). The real guardrails are requests.cpu + node capacity.
+    # . The real guardrails are requests.cpu + node capacity.
     requests.cpu: "4"
     requests.memory: 8Gi
     limits.memory: 16Gi
@@ -94,7 +94,7 @@ spec:
       # is still applied for scheduling, and memory default/max remain so
       # an unbounded pod can't OOM a node. Dropping default.cpu alone is
       # NOT enough — with `max.cpu` set, max becomes the implicit default
-      # limit — so max.cpu is removed too. (2026-06-24)
+      # limit — so max.cpu is removed too.
       default:
         memory: 384Mi
       defaultRequest:

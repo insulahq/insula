@@ -4,7 +4,7 @@
  * The node-health reconciler runs on a 5-minute tick because its other
  * signals are expensive: a kubelet `/stats/summary` call per node, two
  * cluster-wide event lists, a CSINode list. That cadence is right for those,
- * and wrong for "is a node dead": during the 2026-09-11 drill the platform
+ * and wrong for "is a node dead": during the drill the platform
  * reported `ready: true` for a node that had been offline for **4m20s**, and
  * served that stale snapshot to the operator with no indication it was stale.
  *

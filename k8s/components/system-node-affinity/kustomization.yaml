@@ -66,20 +66,20 @@ patches:
   # PVC (subPath split), so Bulwark must accept the same wider
   # node-role set as Stalwart. Using affinity-patch.yaml (server-only)
   # would block a worker-node mail migration with Bulwark Pending
-  # forever — caught 2026-05-28 by Phase C of the mobility E2E.
+  # forever — by Phase C of the mobility E2E.
   # See affinity-patch-mail-stack.yaml for the rationale.
   - target: { kind: Deployment, name: bulwark, namespace: mail }
     path: affinity-patch-mail-stack.yaml
-  # Cut 3 (2026-05-04): v015 StatefulSet `stalwart-mail` retired;
+  # Cut 3: v015 StatefulSet `stalwart-mail` retired;
   # v016 ships as a Deployment named `stalwart-mail`.
   #
-  # 2026-05-13: Stalwart uses a wider affinity than the shared patch
+  # Stalwart uses a wider affinity than the shared patch
   # — both `server` and `worker` roles are eligible candidates.
   - target: { kind: Deployment, name: stalwart-mail, namespace: mail }
     path: affinity-patch-mail-stack.yaml
 
   # ── redis-system namespace ────────────────────────────────────────
-  # Valkey/Sentinel coordinator cache shipped 2026-05-07. Without this
+  # Valkey/Sentinel coordinator cache shipped. Without this
   # patch, replicas land on tenant-bearing worker nodes and a worker
   # outage takes a third of the cache offline. Pinning to system nodes
   # also keeps the cache pods inside the system-only NetworkPolicy

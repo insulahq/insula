@@ -1,7 +1,7 @@
 /**
  * Guard: the CNPG backup plugin must scale with the platform tier.
  *
- * Regression test for the 2026-09-11 node-outage drill. `barman-cloud` ran
+ * Regression test for the node-outage drill. `barman-cloud` ran
  * at `replicas: 1`, so killing its node left the CNPG operator unable to
  * load the plugin. CNPG then refused to reconcile the Cluster at all and
  * never promoted a new Postgres primary — the platform database and the

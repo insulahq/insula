@@ -183,7 +183,7 @@ export function startExpiryWarningScheduler(
 // ─── pure date helpers ──────────────────────────────────────────────
 // All arithmetic is UTC-based — container clocks should be UTC anyway,
 // but doing arithmetic via Date.UTC and *UTC methods makes this robust
-// against the host timezone (DST review fix 2026-05-29).
+// against the host timezone.
 function addDays(d: Date, days: number): Date {
   return new Date(Date.UTC(
     d.getUTCFullYear(),

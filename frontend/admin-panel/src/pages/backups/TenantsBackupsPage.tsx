@@ -1,7 +1,7 @@
 /**
  * `/backups/tenants` — Tenants backup-class page.
  *
- * B2 (2026-05-22) replaces the per-tenant rollup with two real
+ * B2 replaces the per-tenant rollup with two real
  * lists:
  *
  *   (a) Snapshots — one row per storage_snapshots entry across all

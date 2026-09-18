@@ -2,7 +2,7 @@
 #
 # Integration E2E — bulk file-manager operations over the real API.
 #
-# Drives the exact flow that broke production on 2026-09-02: select a large
+# Drives the exact flow that broke production: select a large
 # group of files and move them to another folder. The old panel sent one HTTP
 # request PER FILE, all concurrently, which exceeded the global API rate limit
 # (100/min) and took the rest of the page down with it — including

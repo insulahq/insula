@@ -90,7 +90,7 @@ export interface BackupTargetConfig {
   readonly cifsPassword?: string | null;
   readonly cifsDomain?: string | null;
   readonly cifsPath?: string | null;
-  // NFS was dropped 2026-05-25 — see ADR-043 postscript.
+  // NFS was dropped — see ADR-043 postscript.
 }
 
 export interface ClassAssignment {
@@ -138,7 +138,7 @@ export interface RenderedShimConfig {
    *  R-X17: SFTP is now a POSIX mount via sshfs (FUSE), so both
    *  remote types are uniformly "POSIX upstream". The service merges
    *  these into the DaemonSet Pod spec — privileged mode is enabled
-   *  iff this array is non-empty. (NFS dropped 2026-05-25.) */
+   * iff this array is non-empty. */
   readonly posixMounts: ReadonlyArray<PosixMount>;
   /** PEM-format SSH private keys to project into a Secret volume at
    *  /etc/rclone/ssh-keys/upstream.pem. Empty when SFTP target uses
@@ -175,7 +175,7 @@ const MOUNT_POINT = '/mnt/upstream';
  * Render the shim config from a 32-byte BACKUP_TARGET_KEY and a list
  * of class→target assignments.
  *
- * R-X20 (2026-05-21): always-combined. The renderer emits an rclone
+ * R-X20: always-combined. The renderer emits an rclone
  * `[combined]` section that aliases each bound class to its target's
  * path with a class-name suffix. Single-target operators get ONE
  * upstream section + N class aliases pointing at the same upstream;

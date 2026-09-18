@@ -166,7 +166,7 @@ const STALWART_MGMT_URL =
 
 const JMAP_CORE = 'urn:ietf:params:jmap:core';
 const JMAP_PRINCIPALS = 'urn:ietf:params:jmap:principals';
-// Cut 3 follow-up (2026-05-04): Stalwart 0.16 implements its OWN
+// Cut 3 follow-up: Stalwart 0.16 implements its OWN
 // extension namespace for principal management — `x:Account/*` for
 // individual mailboxes / admin users and `x:Domain/*` for mail domains.
 // Standard JMAP `Principal/*` (RFC 8620) is NOT implemented; calls
@@ -189,7 +189,7 @@ function adminBasicAuth(env: NodeJS.ProcessEnv = process.env): string {
   //      picks up the new password without a pod restart.
   //   2. STALWART_ADMIN_PASSWORD / STALWART_ADMIN_SECRET_PLAIN /
   //      ADMIN_SECRET_PLAIN env vars (legacy, dev-mode only).
-  // Cut 3 follow-up (2026-05-04): the file-based path was missing here
+  // Cut 3 follow-up: the file-based path was missing here
   // even though the doc-comment promised it. Symptom: the staging
   // /admin/mail/rotate-admin-password 500'd with "STALWART_ADMIN_PASSWORD
   // not configured" because only the env-var fallback was implemented.
@@ -304,7 +304,7 @@ async function jmapPost(
     );
   }
 
-  // Code-review L1 fix (2026-05-04): guard the network boundary.
+  // Code-review L1 fix: guard the network boundary.
   // A 200 response from a reverse-proxy error page (Cloudflare, nginx
   // landing page, etc.) would JSON.parse fine but lack the expected
   // shape — extractResponse would then throw a confusing TypeError on
@@ -406,7 +406,7 @@ export async function verifyMasterJmapAuth(
 
 // ── Stalwart x:Account / x:Domain primitives ────────────────────────────────
 //
-// Cut 3 follow-up (2026-05-04): Stalwart 0.16 implements its own JMAP
+// Cut 3 follow-up: Stalwart 0.16 implements its own JMAP
 // extension namespace for principal management — `x:Account/*` for
 // individual users (mailboxes, admins) and `x:Domain/*` for mail
 // domains. RFC 8620 standard `Principal/*` is NOT implemented; calls
@@ -541,7 +541,7 @@ export async function dkimSignatureSet(params: {
 //   - x:MtaQueueQuota        — caps queued backlog; messages=0 rejects
 //                              every submission (the suspension lever)
 // Registry objects are account-agnostic: no accountId argument needed
-// (verified live on v0.16.5, 2026-06-12 spike).
+// (verified live on v0.16.5, spike).
 
 /**
  * Boolean match expression: `{match: {}, else: "<condition>"}`.
@@ -699,7 +699,7 @@ export async function mtaQueueQuotaSet(params: {
 // inboundReportAddresses and stores them as typed registry objects (default
 // retention 30d). The platform polls them and destroys what it consumes.
 //
-// The ARF/FBL half (x:ArfExternalReport) was removed 2026-09-15 with the FBL
+// The ARF/FBL half (x:ArfExternalReport) was removed with the FBL
 // retirement — see report-intake-reconciler.ts for why.
 
 // ── DMARC aggregate reports (x:DmarcExternalReport/*) ───────────────────────
@@ -707,7 +707,7 @@ export async function mtaQueueQuotaSet(params: {
 // Stalwart's report-analysis does the whole RFC 7489 job for us: it intercepts
 // mail to the configured report addresses, un-gzips the attachment, parses the
 // aggregate XML, and stores a typed registry object. The platform never sees
-// the XML. Confirmed against a live server on 2026-09-13 by delivering a real
+// the XML. Confirmed against a live server by delivering a real
 // aggregate report and reading the object back — `x:DmarcReport` and
 // `x:IncomingReport` return `unknownMethod` on the same server, so the types
 // below are the real ones rather than a catch-all responding to anything.
@@ -894,7 +894,7 @@ export interface StalwartReportSettingsRow {
  * Outbound DMARC aggregate reporting.
  *
  * A SEPARATE singleton from `x:ReportSettings` (which governs INBOUND report
- * intake). Read live on 2026-09-16: the object is addressable but its list is
+ * intake). Read live: the object is addressable but its list is
  * EMPTY on a fresh server, and empty does not mean off — Stalwart falls back
  * to its built-in defaults, which are `aggregateSendFrequency: daily` and
  * `aggregateFromAddress: 'noreply-dmarc@' + system('domain')`.
@@ -1065,7 +1065,7 @@ export async function queuedMessageCount(params: {
 // Stalwart loads most registry config (MTA throttles/quotas, report
 // settings, webhooks) at boot only; `x:Action/set` with
 // {"@type":"ReloadSettings"} re-reads it into the live server and
-// cluster-broadcasts the reload — proven live on v0.16.5 (2026-06-12):
+// cluster-broadcasts the reload — proven live on v0.16.5:
 // a throttle rate change applied immediately after the action, with
 // no pod restart.
 
@@ -1845,7 +1845,7 @@ export async function findDomainByName(params: {
   env?: NodeJS.ProcessEnv;
 }): Promise<StalwartPrincipal | null> {
   const { accountId, domainName, baseUrl, env } = params;
-  // Cut 3 follow-up (2026-05-04): Stalwart 0.16's x:Domain/query does
+  // Cut 3 follow-up: Stalwart 0.16's x:Domain/query does
   // not support a `name` filter — it silently returns `ids: []` for
   // any filter shape we tried, while x:Domain/get with `ids: null`
   // returns the full list correctly. Use list-and-filter until
@@ -1878,7 +1878,7 @@ export async function findMailboxByEmail(params: {
   env?: NodeJS.ProcessEnv;
 }): Promise<StalwartPrincipal | null> {
   const { accountId, email, baseUrl, env } = params;
-  // Cut 3 follow-up (2026-05-04): Stalwart 0.16's x:Account/query
+  // Cut 3 follow-up: Stalwart 0.16's x:Account/query
   // doesn't accept a working `email` / `name` filter (silently returns
   // ids: []). List-and-filter via x:Account/get with ids: null until
   // a working filter shape is documented.

@@ -1,5 +1,5 @@
 /**
- * PreSwitchConfirmModal — Phase 5 (2026-05-24).
+ * PreSwitchConfirmModal — Phase 5.
  *
  * Opens when an operator picks a new target in the Routing tab's
  * TargetSwitcher. Renders what will be paused (schedules + WAL),

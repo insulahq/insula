@@ -10,7 +10,7 @@
  *
  * ## Shape details taken from the wire, not from the RFC
  *
- * Verified 2026-09-13 by delivering a real aggregate report to a live server
+ * by delivering a real aggregate report to a live server
  * and reading the stored object back:
  *
  *   - `records`, `dkimResults` and `spfResults` are **objects keyed by
@@ -335,7 +335,7 @@ export async function pollDmarcReports(
 // The webhook ingest calls this when an incoming-report.* event lands so a
 // report surfaces within seconds instead of waiting for the 5-min tick.
 //
-// Moved here from fbl.ts when FBL was retired (2026-09-15). It had always
+// Moved here from fbl.ts when FBL was retired. It had always
 // driven BOTH pollers — an incoming-report.* event does not say which report
 // type arrived — so deleting it with the FBL module would have silently cost
 // DMARC its fast path and left only the 5-minute tick.

@@ -139,7 +139,7 @@ function signPreAuthToken(app: FastifyInstance, userId: string, panel: 'admin' |
 // much higher cap because integration test harnesses login on every
 // scenario step and quickly exceed 10/15 min on any meaningful suite,
 // which is what triggered the testing.example.test 429s on
-// 2026-05-01. Operator can also pin AUTH_LOGIN_RATE_LIMIT_MAX env var
+// . Operator can also pin AUTH_LOGIN_RATE_LIMIT_MAX env var
 // for custom values (e.g. CI runners that need even higher).
 const LOGIN_RATE_LIMIT_MAX = (() => {
   const fromEnv = Number(process.env.AUTH_LOGIN_RATE_LIMIT_MAX);

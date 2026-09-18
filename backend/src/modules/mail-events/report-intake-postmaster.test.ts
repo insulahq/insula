@@ -31,7 +31,7 @@ import type { Database } from '../../db/index.js';
  * The reconciler has listed `postmaster@*` in REQUIRED_INTAKE_PATTERNS since it
  * was written, and its own docblock records that this is not sufficient —
  * Stalwart refuses an unregistered report address at RCPT. Nothing created the
- * account. Measured on DEV 2026-09-16:
+ * account. Measured on DEV:
  *
  *     550 5.5.0 Mailbox not found    <- RCPT TO postmaster@<apex>
  *     385 messages queued to it, retrying every 24h
@@ -152,7 +152,7 @@ describe('report intake provisions postmaster@, not just the pattern', () => {
   });
 
   it('creates ONE mailbox per domain — dmarc@ is an alias, not a second account', async () => {
-    // Operator question 2026-09-16: why two mailboxes? Nothing justified it.
+    // Operator question: why two mailboxes? Nothing justified it.
     // Both patterns are registered identically in Stalwart, neither mailbox
     // stores anything (0 MB used across 19 of them on a live cluster, because
     // report-analysis intercepts before storage), and postmaster@ is mandatory
@@ -179,7 +179,7 @@ describe('report intake provisions postmaster@, not just the pattern', () => {
     ]), logger);
     expect(created()).toHaveLength(2);
     // 2 domains x 2 aliases. Was 2 when dmarc@ was the only alias; abuse@
-    // joined it 2026-09-17 (RFC 2142 makes both mandatory). Inverted rather
+    // joined it (RFC 2142 makes both mandatory). Inverted rather
     // than deleted: dropping back to 2 would mean a domain lost an alias.
     expect(createMailboxAlias).toHaveBeenCalledTimes(4);
   });
@@ -188,7 +188,7 @@ describe('report intake provisions postmaster@, not just the pattern', () => {
     // RFC 2142 makes abuse@ mandatory alongside postmaster@, and nothing
     // created it: a remote operator, a blocklist, or a provider's abuse desk
     // trying to report a problem with a tenant's mail got 550. Operator
-    // decision 2026-09-17: an alias on the postmaster intake, not a mailbox —
+    // decision: an alias on the postmaster intake, not a mailbox —
     // same reader, and a second mailbox is a second thing to reap.
     await ensureReportIntake(db(ONE), logger);
     const aliased = createMailboxAlias.mock.calls.map((c) => (c[3] as { local_part: string }).local_part);
@@ -208,7 +208,7 @@ describe('report intake provisions postmaster@, not just the pattern', () => {
 
   it('sizes the intake as a small transit buffer, not a mailbox', async () => {
     // This asserted `postmaster > dmarc`, on the theory that a DSN box needs
-    // headroom. Operator decision 2026-09-16 replaced that: nothing reads it
+    // headroom. Operator decision replaced that: nothing reads it
     // after ingest, so headroom is just unbounded growth. Inverted rather than
     // deleted — a size creeping back up here means the decision was undone.
     await ensureReportIntake(db(ONE), logger);
@@ -392,7 +392,7 @@ describe('the 30-day reap', () => {
   it('empties a mailbox that is DUE by age even though it is empty', async () => {
     // The size trigger fires at 40 MB and in practice never does:
     // report-analysis intercepts before storage, so these mailboxes measure
-    // 0 MB. Operator decision 2026-09-16 — empty them every 30 days anyway,
+    // 0 MB. Operator decision — empty them every 30 days anyway,
     // so a DSN Stalwart chose not to consume cannot sit forever.
     const due = new Date(Date.now() - 31 * 86_400_000);
     const db3 = makeDb({

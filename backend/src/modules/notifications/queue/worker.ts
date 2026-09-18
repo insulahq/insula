@@ -250,7 +250,7 @@ export async function processDelivery(
     //    .email_provider_id). If the override is set but disabled the
     //    function returns null and we surface a distinct error reason
     //    so the operator can see the override is the blocker (security
-    //    review 2026-05-29 MEDIUM-2: do NOT silently fall through).
+    // review MEDIUM-2: do NOT silently fall through).
     const provider = await getProviderForCategoryEmail(db, row.categoryId);
     if (!provider) {
       // We need to distinguish "no default" vs "override disabled".

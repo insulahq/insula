@@ -6,7 +6,7 @@ kind: Component
 #
 # Why this needs a whole component rather than a one-line mount:
 #
-#   Stalwart's ACME client reads the SYSTEM trust store — proven 2026-08-06 by
+# Stalwart's ACME client reads the SYSTEM trust store — proven by
 #   masking /etc/ssl/certs, which flipped the failure from a Let's Encrypt
 #   application response ("Rate limited") to a transport error ("error sending
 #   request"), and back again on restore.

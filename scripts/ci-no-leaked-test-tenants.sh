@@ -8,7 +8,7 @@
 #   suite to mop up tenants that escaped per-script EXIT traps. But
 #   integration-cleanup.sh calls the lifecycle API — when system-db is
 #   down (e.g. because the leaked tenants exhausted Longhorn's storage
-#   budget — observed 2026-05-17 on testing.example.test), the
+# budget — on testing.example.test), the
 #   cleanup API call ALSO fails and 16 Released PVs accumulate. This
 #   script is the second-line backstop: it directly inspects the
 #   cluster (no API), surfaces the leak count + sizes, and fails CI so
@@ -125,7 +125,7 @@ pv_count=0
 [[ -n "$leftover_pv" ]] && pv_count=$(echo "$leftover_pv" | grep -c .)
 
 # ── Check 3: orphaned Longhorn volume CRs from test namespaces ─────
-# (2026-06-12, found in the post-green-up audit: deleting a tenant
+# (, found in the post-green-up audit: deleting a tenant
 # namespace mid-detach can race the CSI delete — the PVC and PV go
 # away but the volumes.longhorn.io CR survives, silently pinning
 # replica disk space. 4 such CRs from the 06-10 integration runs sat

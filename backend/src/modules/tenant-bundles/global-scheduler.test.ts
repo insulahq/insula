@@ -1,7 +1,7 @@
 /**
  * Tests for the global tenant-bundle scheduler.
  *
- * Phase-0 (2026-05-28) live diagnosis on staging found the scheduler's
+ * Phase-0 live diagnosis on staging found the scheduler's
  * tenant-iteration query throws `invalid input value for enum
  * tenant_status: "deleted"` because the WHERE clause filters
  * `status != 'deleted'` but the enum only has
@@ -256,12 +256,12 @@ describe('runGlobalBundleTick — tenant filter SQL', () => {
       schedule: { enabled: true, cronExpression: '0 2 * * 0', lastFiredAt: null, retentionDays: 30 },
       eligibleTenants: [],
     });
-    // 2026-05-28 is a Thursday.
+    // is a Thursday.
     const thursday = new Date(Date.UTC(2026, 4, 28, 2, 0, 30));
     const resultThu = await runGlobalBundleTick(app as unknown as Parameters<typeof runGlobalBundleTick>[0], thursday);
     expect(resultThu.fired).toBe(false);
 
-    // 2026-05-31 is a Sunday.
+    // is a Sunday.
     const { app: app2 } = makeApp({
       schedule: { enabled: true, cronExpression: '0 2 * * 0', lastFiredAt: null, retentionDays: 30 },
       eligibleTenants: [],

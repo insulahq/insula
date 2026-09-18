@@ -2,7 +2,7 @@
  * `<BackupRoutingTab>` — the "Targets, Schedules & Retention" tab of every
  * backup-class page (system / mail / tenants).
  *
- * Phase 3 (2026-05-22) consolidates three previously-scattered
+ * Phase 3 consolidates three previously-scattered
  * surfaces into one tab per class:
  *
  *   1. Targets   — which Remote Storage Target the class binds to.
@@ -43,7 +43,7 @@ interface Props {
 
 /**
  * One sentence per class saying WHAT lands at the target. Operators asked for
- * this on all three pages (2026-09-11): the binding panel showed a target name
+ * this on all three pages: the binding panel showed a target name
  * and a drain timeout without ever saying what was being stored, or why an
  * unbound class is dangerous.
  */
@@ -126,7 +126,7 @@ export default function BackupRoutingTab({ shimClass, scheduleSubsystems }: Prop
   const row = assignments.find((a) => a.className === shimClass);
   const bound = !!row?.targetId;
 
-  // Phase 5 (2026-05-24): pre-switch confirm modal state. Set when
+  // Phase 5: pre-switch confirm modal state. Set when
   // the operator picks a new target OR clicks unbind. When set,
   // render PreSwitchConfirmModal which loads the preview + waits for
   // operator Confirm. `targetId: null` is the unbind case — modal
@@ -206,7 +206,7 @@ export default function BackupRoutingTab({ shimClass, scheduleSubsystems }: Prop
                 });
               }}
               onUnbind={() => {
-                // Phase 5 (2026-05-24): route unbind through the same
+                // Phase 5: route unbind through the same
                 // pre-switch modal as switch — operator sees the full
                 // list of schedules + WAL that pause as part of the
                 // unbind. Modal copy adapts to the null-target case.

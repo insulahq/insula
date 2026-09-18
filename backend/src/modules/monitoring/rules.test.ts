@@ -57,7 +57,7 @@ describe('SLO_RULES — mail monitoring additions', () => {
   });
 
   it('no longer carries a mailbox-quota rule', () => {
-    // Retired 2026-09-14. It alerted on max(platform_mail_mailboxes_over_quota)
+    // Retired. It alerted on max(platform_mail_mailboxes_over_quota)
     // with subjectLabels: [] — a single GLOBAL COUNTER, structurally incapable
     // of naming the mailbox, the tenant or the contact, delivered to the one
     // audience that could act on it least directly. A mailbox filling up is a
@@ -157,7 +157,7 @@ describe('rules keep the labels that identify what is broken', () => {
 
 describe('platform-migration registry alerting', () => {
   /**
-   * The 2026-08-19 incident: migration 0009 403'd (platform-api's ClusterRole
+   * The incident: migration 0009 403'd (platform-api's ClusterRole
    * had no `create` on clusterissuers), the registry HALTED, and DEV, STAGING
    * and production all ran for days against an unconverged base. Nothing
    * alerted; it surfaced as a wildcard certificate stuck "Issuing" because the
@@ -264,7 +264,7 @@ describe('SLO_RULES — histogram bucket edges must exist', () => {
 });
 
 describe('SLO_RULES — ratios must not mix metric families', () => {
-  // Measured on DEV 2026-09-12: with the per-service `_bucket` series freshly
+  // Measured on DEV: with the per-service `_bucket` series freshly
   // created by a scrape-config change while `_count` had months of history,
   // sum(rate(_bucket{le="1.2"}[30m])) exceeded sum(rate(_count[30m])) — rate()
   // extrapolates a young series across a window it does not span. The

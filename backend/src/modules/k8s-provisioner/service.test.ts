@@ -152,7 +152,7 @@ describe('K8s Provisioner Service', () => {
       expect(override?._expectedContentType).toBe('application/strategic-merge-patch+json');
     });
 
-    // 2026-05-17 firewall-toggle PSA fix: enforce level tracks the
+    // firewall-toggle PSA fix: enforce level tracks the
     // `allow_host_ports_*` toggles. When the operator enables host
     // ports cluster-wide, every tenant namespace's enforce label
     // must be `privileged` so PSA admits hostPort pods (baseline
@@ -176,7 +176,7 @@ describe('K8s Provisioner Service', () => {
 
     it('should default to enforce=baseline when allowHostPorts is unset (back-compat)', async () => {
       const { applyNamespace } = await import('./service.js');
-      // No options arg — same as every pre-2026-05-17 caller.
+      // No options arg — same as every pre- caller.
       await applyNamespace(mockK8s, 'tenant-test-ns', 'tenant-123');
       const callBody = (mockK8s.core.createNamespace as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
         body: { metadata: { labels: Record<string, string> } };

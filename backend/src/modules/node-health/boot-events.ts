@@ -1,7 +1,7 @@
 /**
  * Node reboot lifecycle — "this node is going down" and "this node is back".
  *
- * Operator request 2026-09-11, after a production reboot where the only
+ * Operator request, after a production reboot where the only
  * notifications that arrived were five FALSE OOM alerts (see
  * lib/container-termination.ts). Nothing told the admin the node had rebooted
  * at all, so the real event was invisible and the noise was misleading.

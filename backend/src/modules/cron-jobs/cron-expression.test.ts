@@ -50,7 +50,7 @@ describe('getNextRunTime', () => {
   });
 
   it('handles day-of-week', () => {
-    // 2026-09-16 is a Wednesday; the next Monday is the 21st.
+    // is a Wednesday; the next Monday is the 21st.
     expect(getNextRunTime('0 9 * * 1', at('2026-09-16T12:00:00Z')))
       .toEqual(at('2026-09-21T09:00:00Z'));
   });
@@ -62,7 +62,7 @@ describe('getNextRunTime', () => {
 
   it('ORs day-of-month with day-of-week when both are restricted', () => {
     // POSIX: "the 13th OR a Friday", not "Friday the 13th".
-    // From Wed 2026-09-16 the next hit is Friday the 18th, not the 13th of
+    // From Wed the next hit is Friday the 18th, not the 13th of
     // next month.
     expect(getNextRunTime('0 0 13 * 5', at('2026-09-16T12:00:00Z')))
       .toEqual(at('2026-09-18T00:00:00Z'));
@@ -161,8 +161,8 @@ describe('timezones', () => {
   //
   //   03:00 Berlin  = 01:00 UTC in summer (CEST), 02:00 UTC in winter (CET)
   //   09:00 Tokyo   = 00:00 UTC
-  //   2027-03-28    Berlin has no 02:00-02:59 (clocks jump 02:00 -> 03:00)
-  //   2026-10-25    Berlin has 02:30 twice (03:00 CEST -> 02:00 CET)
+  // Berlin has no 02:00-02:59 (clocks jump 02:00 -> 03:00)
+  // Berlin has 02:30 twice (03:00 CEST -> 02:00 CET)
 
   it("reads the expression on the zone's wall clock, not on UTC", () => {
     expect(getNextRunTime('0 3 * * *', at('2026-07-01T12:00:00Z'), undefined, 'Europe/Berlin'))
@@ -195,14 +195,14 @@ describe('timezones', () => {
 
   describe('daylight saving', () => {
     it('passes over a wall time that does not exist, instead of firing an hour early', () => {
-      // Berlin jumps 02:00 -> 03:00 on 2027-03-28, so 02:30 never happens that
+      // Berlin jumps 02:00 -> 03:00, so 02:30 never happens that
       // day. The job waits for the 29th rather than running at 03:30.
       expect(getNextRunTime('30 2 * * *', at('2027-03-27T12:00:00Z'), undefined, 'Europe/Berlin'))
         .toEqual(at('2027-03-29T00:30:00Z'));
     });
 
     it('fires at the first of a repeated wall time', () => {
-      // Berlin repeats 02:00-02:59 on 2026-10-25. The first 02:30 is 00:30 UTC.
+      // Berlin repeats 02:00-02:59. The first 02:30 is 00:30 UTC.
       expect(getNextRunTime('30 2 * * *', at('2026-10-24T12:00:00Z'), undefined, 'Europe/Berlin'))
         .toEqual(at('2026-10-25T00:30:00Z'));
     });

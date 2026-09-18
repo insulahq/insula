@@ -314,7 +314,7 @@ export async function generateTenantManifests(
     // first domain's secret; the ingress reconciler (domains/
     // k8s-ingress.ts) takes over on its first run and splits the
     // IngressRoute per certificate secret so every domain's cert is
-    // served (live incident 2026-08-24: second domain served TRAEFIK
+    // served (live incident: second domain served TRAEFIK
     // DEFAULT CERT while the UI said "issued").
     if (autoTls) {
       const clusterIssuer = await getClusterIssuerName(db);

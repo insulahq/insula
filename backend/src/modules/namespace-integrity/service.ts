@@ -115,7 +115,7 @@ export async function readClusterState(k8s: K8sClients, namespace: string): Prom
  * the tenant already holds, so a tenant moved down to a 512 MiB plan keeps its
  * 2 GiB volume — and every existing screen hides that, because the tenant panel
  * reports bytes WRITTEN (79 MB) against the plan (512 MiB) and the admin panel
- * showed the plan values from the DB. Production 2026-09-03.
+ * showed the plan values from the DB. Production.
  */
 export function compareSubscriptionToCluster(
   limits: SubscriptionLimits,
@@ -259,7 +259,7 @@ async function inspect(
   // — the reconciler recreates MISSING objects, and both of these are objects
   // that exist and are the wrong size.
   //
-  // Production 2026-09-03: a tenant was moved to a 512 MiB storage plan while
+  // Production: a tenant was moved to a 512 MiB storage plan while
   // holding a 2 GiB PVC that was never shrunk. Every screen hid it — the
   // tenant panel reports bytes WRITTEN against the plan ("78.8 MB of 512Mi"),
   // and the admin panel showed the plan values straight from the DB. The only

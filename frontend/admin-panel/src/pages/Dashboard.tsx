@@ -1,5 +1,5 @@
 /**
- * Dashboard — incident-first surface (rebuilt 2026-05-21 Wave 3).
+ * Dashboard — incident-first surface.
  *
  * Replaces the previous vanity dashboard (4 counters + tables that
  * duplicate Tenants and Nodes & Storage) with a "is the platform

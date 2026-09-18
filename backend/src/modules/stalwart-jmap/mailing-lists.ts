@@ -2,7 +2,7 @@
  * Stalwart MailingList + domain catch-all helpers — the mail-server side
  * of email aliases (ROADMAP R28 remainder).
  *
- * Verified live against Stalwart v0.16.16 (2026-08-24):
+ * Verified live against Stalwart v0.16.16:
  *   - `x:MailingList/set` create/update/destroy; `recipients` is a MAP of
  *     address → true (string values are rejected with invalidPatch).
  *     Fan-out delivers to every recipient, across local domains; external

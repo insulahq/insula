@@ -151,7 +151,7 @@ describe('image-reaper', () => {
       expect(valuesArg.bytesReclaimed).toBe(50_000_000);
     });
 
-    // ── digest-pinned images (regression, 2026-08-06) ──────────────────────
+    // ── digest-pinned images ──────────────────────
     //
     // kubelet lists BOTH the tag and the digest form under
     // node.status.images[].names, but containerd only answers `crictl rmi`
@@ -432,7 +432,7 @@ describe('image-reaper', () => {
 //
 // The grace period used to be an in-process setTimeout ONLY. A restart inside
 // the window dropped the reap silently — no image_reap_log row, no retry, no
-// trace. Reproduced on the DEV cluster 2026-08-04: a deployment deleted at
+// trace. Reproduced on the DEV cluster: a deployment deleted at
 // 13:43:44 armed a timer for 13:48:44, Flux rolled platform-api (new pod up
 // 13:49:28), and the image stayed on the node with NOTHING recorded anywhere.
 describe('image-reaper durability', () => {

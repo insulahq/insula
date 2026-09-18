@@ -45,6 +45,23 @@ jobs:
         # files. See docs/development/INTEGRATION_TESTS.md.
         run: ./scripts/ci-no-hardcoded-test-infra.sh
 
+  dated-comments:
+    name: No dates in code comments
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Scan code comments for dates
+        # Same reason this workflow exists: the guard reads the whole tree, so
+        # a path filter would let a backend-only change slip past it.
+        #
+        # This repo is public. Code comments had accumulated 2127 dated lines
+        # across 772 files, much of it narrating incidents — when a pod was
+        # OOM-killed and how often, which volume held how many gigabytes of
+        # dead blocks, which recovery depended on which setting. The incident
+        # detail now lives in the private insulahq/insula-ops repo; a comment
+        # here keeps the constraint and an OPS reference.
+        run: ./scripts/ci-no-dated-comments.sh
+
   secret-scan:
     name: Secret scan (gitleaks, repo-wide)
     runs-on: ubuntu-latest

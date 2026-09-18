@@ -5,7 +5,7 @@
 # rollback. Drives the REAL operator API and watches Flux actually redeploy the
 # platform, so it belongs on a cluster you are willing to roll — staging.
 #
-# WHY (2026-07-28): the upgrade module had 118 unit tests but NO end-to-end
+# WHY: the upgrade module had 118 unit tests but NO end-to-end
 # exercise against a live cluster — dev follows a git branch and staging follows
 # Flux-native `ref.semver`, so neither exercised the operator-click re-pin
 # (`flux-repin.ts`). This suite closes that gap AND guards the two version-poller
@@ -243,7 +243,7 @@ phase "Phase 5: REAL apply — POST /admin/platform/upgrade → $TARGET_VERSION"
 # CNPG may re-elect, so preflight can transiently fail for a minute or two.
 # Wait for it to go green (ok:true) before applying — an operator would do the
 # same, and the apply hard-fails (409) on any blocking gate. NOTE: this only
-# passes when the RUNNING (base) version already carries the 2026-07-28
+# passes when the RUNNING (base) version already carries the
 # single-node gate fix; older bases legitimately fail their own old gate.
 log "waiting for pre-flight to settle green after the setup roll (≤180s)…"
 pf_green=0

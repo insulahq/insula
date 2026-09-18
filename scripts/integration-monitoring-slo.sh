@@ -4,7 +4,7 @@
 # evaluator, and the categorised SLO alert notifications (#56 + #57).
 #
 # Phases:
-#   A — admin-host path-route auth gates + scrape health (2026-06-12:
+# A — admin-host path-route auth gates + scrape health (:
 #       both UIs ride admin.<apex> as paths — no metrics./longhorn.
 #       subdomains, no extra LE certs)
 #     A1. anonymous GET <admin>/metrics/ → denied (401/403/302)

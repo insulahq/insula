@@ -107,7 +107,7 @@ describe('master sentinel constants (mail-domain-independent master, 2026-06-25)
   });
 
   it('makes the compiled-in fallback equal the canonical sentinel FQDN', () => {
-    // Pre-2026-06-25 the fallback was the broken master@master.local; it is now
+    // Pre- the fallback was the broken master@master.local; it is now
     // a VALID auth Domain, so degrading to it self-heals instead of breaking.
     expect(MASTER_USER_FALLBACK).toBe(MASTER_USER_DEFAULT);
     expect(MASTER_USER_FALLBACK).toBe('master@local.host');

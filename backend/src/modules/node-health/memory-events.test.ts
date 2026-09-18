@@ -286,7 +286,7 @@ describe('collectOomKilledContainers', () => {
 
 });
 
-// ── node-shutdown exclusion (production false alarms, 2026-09-11) ──
+// ── node-shutdown exclusion ──
 //
 // The deletionTimestamp guard below was correct for rollout SIGKILLs and blind
 // to the far bigger source: a node reboot. Graceful node shutdown marks a pod
@@ -328,7 +328,7 @@ describe('collectOomKilledContainers — node shutdown', () => {
   });
 });
 
-// ── probe-restart exclusion (found by a real DEV reboot, 2026-09-11) ──
+// ── probe-restart exclusion(found by a real DEV reboot) ──
 //
 // A failed liveness/startup probe SIGKILLs the container: exit 137, pod stays
 // RUNNING, container restarts. None of the pod-level shutdown markers apply, so

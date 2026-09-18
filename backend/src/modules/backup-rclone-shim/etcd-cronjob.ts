@@ -74,7 +74,7 @@ const FLUX_RECONCILE_ANNOTATION_POINTER =
  * the reconciler stamps `kustomize.toolkit.fluxcd.io/reconcile: disabled` on the
  * live object, Flux reports `skipped` for it forever, so editing
  * k8s/base/backup/etcd-snap-via-shim-cronjob.yaml only ever reaches a FRESH
- * install. Verified on DEV 2026-09-15: the manifest carried the block, the live
+ * install. Verified on DEV: the manifest carried the block, the live
  * object's `spec.jobTemplate.metadata` was `{}`, and kustomize-controller logged
  * `"CronJob/platform/etcd-snap-via-shim":"skipped"`.
  *
@@ -187,7 +187,7 @@ function findShimPrefixEnv(live: CronJobView): { path: string; current: string |
  *
  *     sha256sum: can't open '1name': No such file or directory
  *
- * Found on production 2026-09-18: every uploaded etcd snapshot (24 of 24) had
+ * Found on production: every uploaded etcd snapshot (24 of 24) had
  * `"sha256":""` in its sidecar, so no stored snapshot could be checked before a
  * restore. The `COUNT` line failed the same way, which is why the job logged
  * `done ( uploaded)` with an empty number.
@@ -261,7 +261,7 @@ export async function reconcileEtcdCronJob(
   // ─── 1. Resolve desired suspend state + the cluster_id-namespaced
   //         upload prefix from the DB ─────────────────────────────
   const bound = await isSystemTargetBound(db);
-  // Suspend is owned by the cadence reconciler as of 2026-09-18: it has to be
+  // Suspend is owned by the cadence reconciler: it has to be
   // able to suspend this CronJob when the operator disables the schedule, and
   // two owners with different rules flip the field against each other every
   // tick. This reconciler keeps the upload prefix and the Flux-disown stamp,

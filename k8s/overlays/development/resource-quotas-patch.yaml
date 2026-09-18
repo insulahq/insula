@@ -44,12 +44,12 @@ metadata:
 spec:
   hard:
     # NO limits.cpu — platform pods run WITHOUT CPU limits (ADR-037; see
-    # k8s/base/resource-quotas.yaml, 2026-06-24). A limits.cpu quota (a)
+    # k8s/base/resource-quotas.yaml,). A limits.cpu quota (a)
     # rejects every limitless pod with "must specify limits.cpu" and (b)
     # wedges rolling updates on burst-ceiling accounting even while nodes
     # sit near-idle — which is exactly what stalled the platform-api rollout
-    # for a day (2026-06-24). This overlay previously re-added limits.cpu:20
-    # (stale from the pre-2026-06-24 CPU-limited model); removed 2026-07-30 to
+    # for a day. This overlay previously re-added limits.cpu:20
+    # (stale from the pre- CPU-limited model); removed to
     # match the base. Guardrails: requests.cpu + limits.memory + node capacity.
     # HA headroom for a 3-server cluster of 4 GB-RAM nodes; limits.memory 20Gi
     # allows over-commit + transient PITR pods (temp postgres + bootstrap-
@@ -70,7 +70,7 @@ spec:
 # CPU limits cause CFS throttling on high-priority infra, and platform-quota
 # no longer tracks limits.cpu). A default CPU REQUEST is still applied for
 # scheduling. max.cpu is removed too: with max.cpu set, max becomes the
-# implicit default limit. (Aligned with base 2026-07-30.)
+# implicit default limit.(Aligned with base.)
 apiVersion: v1
 kind: LimitRange
 metadata:

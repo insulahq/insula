@@ -50,7 +50,7 @@ export class WafRuleExclusionError extends Error {
 }
 
 /**
- * B2 (2026-05-26): turn a hostname into a SecRule-safe anchored regex.
+ * B2: turn a hostname into a SecRule-safe anchored regex.
  * `^foo\.bar\.com$` matches X-Forwarded-Host exactly; metacharacter
  * escape blocks the operator-IP-trust class of footgun where a stray
  * `.` matches more than the tenant's domain. Mirrors the helper used

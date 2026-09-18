@@ -82,7 +82,7 @@ fi
 # operator gets a confusing psql error. Same selector pattern the
 # admin-password-reset.sh sister tool uses.
 #
-# Cluster name was renamed `postgres` → `system-db` in the 2026-05-07
+# Cluster name was renamed `postgres` → `system-db` in the
 # PG18 migration; try the canonical name first and fall back to the
 # legacy name so this tool keeps working on pre-migration clusters.
 POD=$(kubectl -n "$NAMESPACE" get pods -l cnpg.io/cluster=system-db,role=primary -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)

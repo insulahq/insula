@@ -128,7 +128,7 @@ describe('describeDecision', () => {
 
 describe('groupDecisions', () => {
   it('collapses the per-scenario fan-out into one row per address', () => {
-    // Production 2026-09-13: 192.236.217.91 held seven decisions.
+    // Production: 192.236.217.91 held seven decisions.
     const many = ['a', 'b', 'c', 'd', 'e', 'f', 'g'].map((sc, i) => decision({
       id: i, value: '192.236.217.91', scenario: `crowdsecurity/${sc}`,
     }));

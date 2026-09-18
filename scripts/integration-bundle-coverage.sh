@@ -39,7 +39,7 @@ ADMIN_EMAIL="${ADMIN_EMAIL:-admin@example.test}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 
 # A cluster with no backup target bound to this class cannot run the suite.
-# Report SKIPPED instead of a wall of red assertions (2026-08-04: twelve
+# Report SKIPPED instead of a wall of red assertions (: twelve
 # suites went red on a fresh cluster purely because nothing was bound).
 require_backup_class_or_skip tenant
 TENANT_BASE="${TENANT_BASE:-$(resolve_platform_apex)}"
@@ -108,7 +108,7 @@ api() {
 #
 # Order matters: `0090_retire_backup_target_activate.sql` sets `active = FALSE`
 # on every row, and activateBackupConfig/deactivateBackupConfig were removed on
-# 2026-08-26. So on any current cluster the legacy lookup finds nothing and
+# . So on any current cluster the legacy lookup finds nothing and
 # there is no supported way to make it find something — this suite hard-failed
 # with rc=2 telling the operator to "run /tenant-backup → Off-site Targets
 # first", which is advice for a UI control that no longer exists.

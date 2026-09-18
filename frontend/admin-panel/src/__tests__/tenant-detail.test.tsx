@@ -62,7 +62,7 @@ const MOCK_DEPLOYMENTS = {
 };
 
 // Off-site bundles (`backup_jobs`) — what the Backups tab reads since the
-// retired per-resource `backups` table was dropped (2026-09-11).
+// retired per-resource `backups` table was dropped.
 const MOCK_BUNDLES = {
   data: [
     {
@@ -197,7 +197,7 @@ describe('TenantDetail resource tabs', () => {
     });
     // The row is a real off-site BUNDLE, not a row from the retired
     // per-resource `backups` table (which was empty on every cluster, so this
-    // tab and the tenant dashboard both showed 0 — operator report 2026-09-11).
+    // tab and the tenant dashboard both showed 0 — operator report).
     expect(screen.getByTestId('tenant-bundles-summary')).toHaveTextContent('1 off-site backup bundle');
     expect(screen.getByText('system')).toBeInTheDocument();
     // An expiry is a FUTURE instant: TimeCell's default age mode renders those
@@ -370,7 +370,7 @@ describe('TenantDetail resource limits — plan defaults', () => {
 /**
  * Subscription-vs-cluster surfacing.
  *
- * Production 2026-09-03: a tenant was moved to a 512 MiB storage plan while
+ * Production: a tenant was moved to a 512 MiB storage plan while
  * still holding the 2 GiB volume created under the old plan — it was never
  * shrunk. Nothing said so. The tenant panel reports bytes WRITTEN against the
  * plan ("78.8 MB of 512Mi", reassuring) and the admin panel showed the plan

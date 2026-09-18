@@ -1,5 +1,5 @@
 /**
- * Mail-task orphan reaper (2026-05-28).
+ * Mail-task orphan reaper.
  *
  * Background: long-running mail tasks (mail.migration, mail.port-exposure)
  * run as background promises inside the platform-api process. When

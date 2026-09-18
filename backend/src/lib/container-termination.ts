@@ -5,7 +5,7 @@
  * WHY THIS EXISTS
  * ---------------
  * The obvious test — `terminated.reason === 'OOMKilled'` — misses real OOM
- * kills. Observed on the production cluster 2026-08-30: the VictoriaMetrics
+ * kills. Observed on the production cluster: the VictoriaMetrics
  * pod was killed by its own memory cgroup —
  *
  *   kernel: Memory cgroup out of memory: Killed process 23616 (victoria-metric)
@@ -109,7 +109,7 @@ export function messageIndicatesOom(message: string): boolean {
  * labels `reason: "Error"`. It also catches every SIGKILL that has nothing to
  * do with memory — and the biggest source of those is a node reboot.
  *
- * Measured on production 2026-09-11. A graceful node shutdown SIGKILLs any
+ * Measured on production. A graceful node shutdown SIGKILLs any
  * container still alive at the end of its `shutdownGracePeriodByPodPriority`
  * group. Five containers exited 137 that way; all five were reported as OOM,
  * three of them to admins as "<tenant>: apache-php OOM-killed". The kernel ring
@@ -183,7 +183,7 @@ export interface PodRecordState extends PodShutdownState {
  * `listNamespacedPod(app=<name>)` will read those corpses, and a corpse from a
  * node reboot carries `exitCode: 137` — which `classifyOom()` infers as an OOM.
  *
- * Measured on production 2026-09-11: three tenants (`my-apache-php`,
+ * Measured on production: three tenants (`my-apache-php`,
  * `fpl-app`, `perfex`) were shown as FAILED with "Workload ran out of memory"
  * while every one of them was `1/1` READY. Each namespace held exactly one
  * `status.reason=Terminated` corpse from that morning's reboot. Deleting the

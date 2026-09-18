@@ -1,5 +1,5 @@
 /**
- * Scheduled mail-server health watch (2026-08).
+ * Scheduled mail-server health watch.
  *
  * WHY THIS EXISTS: mail health was computed ONLY on demand, when an admin
  * opened Monitoring → Mail. The periodic `mail-health-collector` publishes two

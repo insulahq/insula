@@ -426,6 +426,6 @@ describe('platform-updates service', () => {
     });
   });
 
-  // triggerUpdate() removed 2026-07-28 (dead push-model no-op on the pull model).
+  // triggerUpdate removed (dead push-model no-op on the pull model).
   // The real upgrade path is covered by platform-upgrades (orchestrate/scheduler).
 });

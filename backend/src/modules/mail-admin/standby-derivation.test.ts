@@ -1,7 +1,7 @@
 /**
  * Which nodes pre-stage the mail store.
  *
- * Before 2026-09-11 this was a literal secondary+tertiary list, which after a
+ * Before this was a literal secondary+tertiary list, which after a
  * failover put a replicator on the ACTIVE node (rsyncing from its own pod)
  * and left the PRIMARY — the failback target — with no fresh data, forcing
  * every failback down the slow restic path. On staging the primary's standby

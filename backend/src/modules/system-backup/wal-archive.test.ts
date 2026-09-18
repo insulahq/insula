@@ -104,7 +104,7 @@ function makeDbStub(opts: {
   // Pre-existing systemWalArchiveState row to simulate a re-enable.
   priorState?: { targetConfigId: string; destinationPath: string; retentionDays: number };
   /**
-   * Phase 6 (2026-05-24): when true, loadSystemShimBinding returns no
+   * Phase 6: when true, loadSystemShimBinding returns no
    * row → enableWalArchive should reject with "No SYSTEM backup target
    * bound". Tests that don't set this get a default binding derived
    * from activeS3Target.
@@ -132,7 +132,7 @@ function makeDbStub(opts: {
   // assertions check that *some* row was inserted/deleted, not which
   // table got it. Keeps the stub simple + decoupled from drizzle internals.
   //
-  // Phase 6 (2026-05-24): loadSystemShimBinding uses a leftJoin chain
+  // Phase 6: loadSystemShimBinding uses a leftJoin chain
   // (.from().innerJoin().where().orderBy().limit). We stub both the
   // direct .from().where().limit() path AND the joined path with the
   // SAME activeS3Target row so the binding always resolves. The
@@ -225,7 +225,7 @@ describe('extractStatus', () => {
     });
     // Health, not recency: the condition only transitions when archiving
     // health CHANGES. Reporting its lastTransitionTime as "last WAL archived"
-    // showed production a month-old instant (2026-08-12) while segments were
+    // showed production a month-old instant while segments were
     // going off-site every five minutes. Recency comes from pg_stat_archiver.
     expect(s?.archivingHealthySince).toBe('2026-05-07T10:01:00Z');
     expect(s?.lastArchivedWal).toBeNull();
@@ -266,7 +266,7 @@ describe('enableWalArchive — plugin model', () => {
       baseBackupRetentionDays: 30,
     });
 
-    // Phase 6 (2026-05-24): destinationPath uses the shim bucket scheme.
+    // Phase 6: destinationPath uses the shim bucket scheme.
     expect(result.destinationPath).toBe('s3://system/wal-archive/platform-system-db');
 
     // 1. Cluster READ (readClusterCR)
@@ -357,7 +357,7 @@ describe('enableWalArchive — plugin model', () => {
     expect(calls.find((c) => c.verb === 'create' && c.plural === 'objectstores')).toBeDefined();
   });
 
-  // Phase 6 (2026-05-24): non-S3 upstream targets are now SUPPORTED
+  // Phase 6: non-S3 upstream targets are now SUPPORTED
   // because barman-cloud writes always go through the shim's local S3
   // endpoint. Test the positive case: an SFTP shim binding should
   // still produce a valid ObjectStore (pointing at the shim).

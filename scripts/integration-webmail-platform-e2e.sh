@@ -91,7 +91,7 @@ done
 # Derive from the configured target before falling back to the local-dev
 # apex: an operator profile sets ADMIN_HOST/API_URL, not API_BASE, so a
 # bare local default silently pointed every request at localhost and
-# returned 000 against a remote cluster (seen 2026-08-04: node-terminal
+# returned 000 against a remote cluster (seen: node-terminal
 # "A1 expected super_admin, got ''" / "A2 step-up/password failed: 000").
 API_BASE="${API_BASE:-${ADMIN_HOST:-${API_URL:-https://admin.k8s-platform.test:2011}}}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@k8s-platform.test}"
@@ -289,7 +289,7 @@ pass "2.1 client created (id=${TENANT_ID})"
 
 # Provision + wait for active before attaching a domain: a freshly-created tenant
 # is 'provisioning' and POST /domains rejects with 409 TENANT_NOT_ACTIVE (the bare
-# create->attach raced the provisioner; fixed 2026-06-30).
+# create->attach raced the provisioner;).
 api POST "/api/v1/admin/tenants/${TENANT_ID}/provision" "{}" >/dev/null 2>&1 || true
 PSTATUS=""
 for _i in $(seq 1 45); do

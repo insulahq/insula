@@ -474,7 +474,7 @@ async function mysqlCreateUser(
   // as the credential. The operator then configures their application with a
   // password that was never applied and gets "Access denied".
   //
-  // Reproduced on DEV 2026-08-30: create user → retry the same username → the
+  // Reproduced on DEV: create user → retry the same username → the
   // hash is byte-identical, the newly displayed password fails, and the
   // ORIGINAL one still works. `CREATE OR REPLACE USER` would fix the password
   // but DROPS the user first, silently discarding every existing grant, so it
@@ -2336,7 +2336,7 @@ export async function exportDatabaseToPvc(
   // executor `find`s it there. Doing the move would (a) require the ON-DEMAND
   // file-manager pod to be running at capture time and (b) throw + poison the
   // dump status if it isn't, even though the dump itself succeeded (caught by
-  // the multi-engine E2E on DEV 2026-07-07). The interactive SQL-Manager export
+  // the multi-engine E2E on DEV). The interactive SQL-Manager export
   // (moveToExports defaults true) still moves the file to /exports for download.
   if (opts.moveToExports === false) {
     // In-place path (informational — the predump restore matches by filename).

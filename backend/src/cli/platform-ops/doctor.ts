@@ -112,7 +112,7 @@ async function checkHostMigrations(deps: Deps): Promise<Check> {
 }
 
 function checkSwapOff(deps: Deps): Check {
-  // K8s nodes run swap-less (operator decision 2026-07-25): paging turns a
+  // K8s nodes run swap-less: paging turns a
   // fast, alertable pod OOM-kill into un-alertable node-wide thrash under
   // the co-located etcd/CNPG/Longhorn, and the eviction design
   // (eviction-hard=memory.available<256Mi + platform-critical PriorityClass)

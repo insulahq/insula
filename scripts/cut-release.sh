@@ -255,7 +255,7 @@ unreleased_body() {
 # `grep -q` exits at the first match; if awk still has output buffered it takes
 # SIGPIPE, and `set -o pipefail` (line 36) turns the whole pipeline into 141.
 # That makes the gate depend on how long [Unreleased] happens to be and where
-# the heading sits in it: measured 2026-09-10, a 68-line section with the
+# the heading sits in it:, a 68-line section with the
 # heading at line 19 returned 141 on 18 of 20 runs while the 40-line section on
 # `development` returned 0 on 20 of 20. Both gates then misfire — the first
 # blocks a legitimate --breaking cut, and the second (where non-zero means "no
@@ -484,7 +484,7 @@ PY
 # value isn't a valid version. The base ships "unknown", and production/staging
 # had no patch, so staging permanently targeted the newest STABLE while running
 # an RC: an RC's host-migrations were never exercised on the RC-validation
-# cluster (found 2026-07-15). Now staging's ConfigMap names the RC it runs, so
+# cluster. Now staging's ConfigMap names the RC it runs, so
 # platform-ops upgrades to that RC and its converger applies the RC's
 # host-migrations.
 PV_PATCH="$ROOT/k8s/overlays/production/platform-version-patch.yaml"

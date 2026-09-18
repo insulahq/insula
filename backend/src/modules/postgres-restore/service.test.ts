@@ -247,7 +247,7 @@ describe('promotePostgresFromSnapshot — preflight only (real K8s ops mocked)',
     // pod to the platform-api Service endpoints and 502 ~50% of live API
     // traffic. It reaches postgres via the pitr-job component label instead
     // (allow-platform-internal NetworkPolicy). Regression guard for the
-    // 2026-07-16 postgres-pitr endpoint-pollution bug.
+    // postgres-pitr endpoint-pollution bug.
     expect(createCall[0].body.spec.template.metadata.labels.app).toBeUndefined();
     expect(createCall[0].body.spec.template.metadata.labels['app.kubernetes.io/component']).toBe('pitr-job');
     const envByName: Record<string, string | undefined> = {};
@@ -270,7 +270,7 @@ describe('promotePostgresFromSnapshot — preflight only (real K8s ops mocked)',
     // sidecar injection only fires at POD CREATION via an admission
     // webhook — so the pod runs without the sidecar forever and the
     // instance-manager logs "Unknown plugin: barman-cloud.cloudnative-pg.io".
-    // Caught LIVE on staging 2026-05-23.
+    // Caught LIVE on staging.
     //
     // The fix: buildRecoveryCluster propagates source.spec.plugins
     // when isTemp=false (rebuilt production cluster). When isTemp=true
@@ -423,7 +423,7 @@ describe('promotePostgresFromSnapshot — preflight only (real K8s ops mocked)',
     // pointing at the source's barman archive, CNPG can only replay WAL
     // records that exist in the snapshot's pg_wal/ directory (typically
     // none after pg_switch_wal). Result: target time is silently ignored
-    // + restored cluster sits at snapshot LSN. Harness test 2026-05-23
+    // + restored cluster sits at snapshot LSN. Harness test
     // verified the bug; this test guards the fix.
     const { buildRecoveryCluster } = await import('./service.js');
     const srcWithBarman = {
@@ -606,7 +606,7 @@ describe('runPitrPrechecks — read-only mirror of preflight', () => {
  * The cluster-wide check consulted the in-memory flag FIRST and let it win
  * unconditionally, so /status reported inProgress=true forever and the write-lock
  * middleware (which runs this on EVERY non-GET request) 503'd unrelated admin
- * operations cluster-wide. Observed on DEV 2026-08-09.
+ * operations cluster-wide. Observed on DEV.
  */
 describe('isPostgresRestoreInProgressClusterWide — stale in-memory lock', () => {
   const inputs = { clusterNamespace: 'platform', clusterName: 'system-db', snapshotName: 'snap-stale' };

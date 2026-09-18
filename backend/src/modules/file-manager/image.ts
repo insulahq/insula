@@ -11,7 +11,7 @@
  *      DinD where containerd has been pre-loaded by `scripts/local.sh`.
  *
  * History: a hardcoded fallback in `deployments/routes.ts:19`
- * (without reading the env first) caused the 2026-05-11 Normal Test
+ * (without reading the env first) caused the Normal Test
  * incident — containerd resolved the bare name as
  * `docker.io/library/<image>:latest`, ImagePullBackOff,
  * pod stuck holding the RWO PVC, Multi-Attach blocked every other

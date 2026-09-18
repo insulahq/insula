@@ -19,12 +19,12 @@
 # Nothing self-heals: plugins are only installed at process start.
 #
 # bootstrap.sh has had a detector+recycler (ensure_traefik_plugins_loaded) since
-# the 2026-08-04 fresh-install occurrence, but it is only called from
+# the fresh-install occurrence, but it is only called from
 # install_traefik and verify_install — INSTALL-TIME ONLY. A node reboot re-enters
 # the identical failure with nothing watching, which took production down on
-# 2026-08-20 and stayed down until an operator restarted the pod by hand.
+# and stayed down until an operator restarted the pod by hand.
 #
-# A persisted plugin cache does NOT fix this: measured 2026-08-20 against
+# A persisted plugin cache does NOT fix this: against
 # traefik:v3.7.6 with both archives present in /plugins-storage and no network,
 # Traefik still calls the registry unconditionally and still disables plugins
 # ("dial tcp: lookup plugins.traefik.io: network is unreachable"). The download
@@ -39,7 +39,7 @@
 # Editing the Middleware CR updates the API object and changes NOTHING in the
 # running process. There is no watch, no reload, and no log line saying so.
 #
-# Measured on DEV 2026-09-06. `updateMaxFailure: -1` (never block when the
+# Measured on DEV. `updateMaxFailure: -1` (never block when the
 # CrowdSec LAPI is unreachable) was applied by Flux at 00:52:06. The LAPI was
 # stopped at 00:54. The plugin — an 8h-old pod — still counted to its OLD
 # threshold and blocked:
@@ -236,7 +236,7 @@ spec:
                   #
                   # Compared LEXICOGRAPHICALLY, never with `date -d`: both
                   # strings come from the API server as RFC3339 UTC
-                  # (2026-09-06T00:52:06Z), which sorts correctly as text, and
+                  # which sorts correctly as text, and
                   # BusyBox cannot parse that format reliably anyway.
                   # No exit-code check here, unlike the pod query above, and
                   # for a reason: this pipeline ends in `head`, so $? would be

@@ -27,7 +27,7 @@ import type {
 //
 // NOTE: this deliberately overrides the one category that used to be in-app
 // only, `tls.certificate_issued` — it was kept off email so tenants are not
-// mailed on every routine renewal. Operator decision 2026-09-04 was that every
+// mailed on every routine renewal. Operator decision was that every
 // source starts with every channel; turn it back off for that source in the
 // admin panel if the renewal mail proves noisy.
 //
@@ -342,7 +342,7 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
   {
     // The failure that had NO detector: the CronJob fires, the Jobs fail, and
     // nothing compares "when did a backup last succeed" against "when was one
-    // supposed to". Measured on DEV 2026-09-15: last successful mail snapshot
+    // supposed to". Measured on DEV: last successful mail snapshot
     // four days earlier, 178 scheduled fires missed, every operator surface
     // green. A failed Job is caught by the Job watcher; this catches the
     // absence of runs, which is what silence actually looks like.
@@ -565,7 +565,7 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
     isMandatory: false,
     gdprBasis: 'contract',
   },
-  // ── Mail monitoring (2026-07): outbound send-limit saturation + blocklist ──
+  // ── Mail monitoring: outbound send-limit saturation + blocklist ──
   {
     id: 'admin.email_abuse_warning',
     cls: 'action',
@@ -659,7 +659,7 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
     rateLimitWindowS: 43200,
     rateLimitMax: 8,
   },
-  // ── Resource monitoring (2026-07): per-tenant CPU/memory/storage saturation ──
+  // ── Resource monitoring: per-tenant CPU/memory/storage saturation ──
   {
     id: 'admin.tenant_resource_saturation_warning',
     cls: 'action',

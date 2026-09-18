@@ -1,7 +1,7 @@
 /**
  * stalwart-haproxy DaemonSet builder.
  *
- * 2026-05-14 streamline: the haproxy DS used to live in
+ * streamline: the haproxy DS used to live in
  * k8s/base/stalwart-mail/haproxy/daemonset.yaml with a "disabled"
  * nodeSelector that platform-api flipped on/off via SSA. That setup
  * caused months of churn (PRs #43–#45) because Flux's kustomize-
@@ -141,7 +141,7 @@ export function buildHaproxyDaemonSet(): Record<string, unknown> {
                 // Writable tmpfs for the haproxy stats socket.
                 { name: 'haproxy-run', mountPath: '/tmp' },
               ],
-              // 2026-05-15: the old probe used `socat` to query the
+              // the old probe used `socat` to query the
               // haproxy admin socket. socat isn't installed in the
               // haproxy:2.9-alpine image, so the probe was failing
               // from second 5 onward and kubelet was killing the pod
@@ -152,7 +152,7 @@ export function buildHaproxyDaemonSet(): Record<string, unknown> {
                // connection to localhost:25 (frontend smtp_in). If
                // haproxy is alive and listening, TCP succeeds. No
                // extra tooling required.
-              // 2026-06-27: the tcpSocket :25 liveness probe collides
+              // the tcpSocket:25 liveness probe collides
               // with the externalIP→ClusterIP DNAT under hostNetwork.
               // Because each haproxy node IP is also in
               // Service.spec.externalIPs, kube-proxy's PREROUTING DNAT

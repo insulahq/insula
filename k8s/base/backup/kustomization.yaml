@@ -2,7 +2,7 @@
 # secrets-backup) consume the `backup-credentials`
 # Secret, which is reconciled from the SYSTEM-class shim binding by
 # backend/src/modules/backup-rclone-shim/dr-cronjobs.ts (the legacy
-# target-activate path was retired 2026-08-26; its etcd-upload and
+# target-activate path was retired; its etcd-upload and
 # pg-dump CronJobs were removed with it — their replacements are
 # etcd-snap-via-shim and CNPG base backups + WAL via the barman plugin).
 #
@@ -20,10 +20,10 @@ resources:
   - etcd-snap-via-shim-cronjob.yaml
   - cluster-state-cronjob.yaml
   - secrets-backup-cronjob.yaml
-  # backup-audit-cronjob.yaml removed 2026-09-03. It flagged Longhorn PVCs
+  # backup-audit-cronjob.yaml removed. It flagged Longhorn PVCs
   # missing `recurring-job-group.longhorn.io/default=enabled` and told the
   # operator "Backups will skip it" — but Longhorn volume backups were
-  # retired 2026-08-26, so that label governs only the local hourly-snap
+  # retired, so that label governs only the local hourly-snap
   # and daily-fstrim jobs. Worse, its filter was
   # `storageClassName=="longhorn"`, and tenant volumes are `longhorn-tenant`
   # — the job could never see the tenant PVCs it was written to protect. It
@@ -40,4 +40,4 @@ resources:
   # scripts/ci-secrets-denylist-check.sh.
   - secrets-denylist-configmap.yaml
   # hostpath-snapshot-cronjob (Phase 5 retirement) had its rollback
-  # burn-in — file deleted 2026-08-26 with the legacy-activate cleanup.
+  # burn-in — file deleted with the legacy-activate cleanup.

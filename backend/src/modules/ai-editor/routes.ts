@@ -208,7 +208,7 @@ export async function aiEditorRoutes(app: FastifyInstance): Promise<void> {
 
   // ─── Token budget status ────────────────────────────────────────────────
 
-  // SECURITY (2026-07-28): `requireTenantAccess()` is mandatory on every
+  // SECURITY: `requireTenantAccess` is mandatory on every
   // /tenants/:tenantId/* route. Without it `tenantId` is just an
   // attacker-chosen path segment: this handler reads the budget of any
   // tenant, and /ai/edit below resolves the victim's NAMESPACE and reads

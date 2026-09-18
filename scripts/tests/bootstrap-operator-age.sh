@@ -94,7 +94,7 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$out" ] || { echo "shim: -o required" >&2; exit 1; }
 cat > "$out" <<'BODY'
-# created: 2026-04-22T00:00:00Z
+# created: -22T00:00:00Z
 # public key: age1stubstubstubstubstubstubstubstubstubstubstubstubstubs
 AGE-SECRET-KEY-1STUBSTUBSTUBSTUBSTUBSTUBSTUBSTUBSTUBSTUBSTUBSTUBS
 BODY

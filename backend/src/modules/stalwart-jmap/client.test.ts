@@ -591,7 +591,7 @@ describe.skip("getDomainDnsZoneFile", () => {
 // ── findDomainByName ──────────────────────────────────────────────────────────
 
 describe('findDomainByName (Stalwart 0.16 list-and-filter)', () => {
-  // Cut 3 follow-up (2026-05-04): Stalwart 0.16's x:Domain/query
+  // Cut 3 follow-up: Stalwart 0.16's x:Domain/query
   // server-side filter silently returns []. We list-and-filter via
   // x:Domain/get with ids:null + tenant-side match. The test mocks
   // a single x:Domain/get fetch.

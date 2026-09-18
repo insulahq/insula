@@ -29,7 +29,7 @@ resources:
   - ../../base/oauth2-proxy
 
 patches:
-  # ── platform-critical eviction protection (operator decision 2026-07-25) ──
+  # ── platform-critical eviction protection ──
   # Covers resources added at THIS overlay level (dex) — the base +
   # production blankets only reach resources rendered in their own
   # kustomization. Re-applying to inherited resources is a harmless no-op.
@@ -85,7 +85,7 @@ patches:
   # runs 12 suites in PARALLEL, all authenticating as the ONE shared admin token,
   # so the global limiter's per-user bucket (keyGenerator = user.sub, default
   # 100/min) and the per-IP /auth/login limit saturate under a synthetic burst
-  # that no real operator produces (root-caused 2026-06-27). Raise both so the
+  # that no real operator produces. Raise both so the
   # harness has headroom. The rate-limit-TESTING suites are unaffected: waf-crowdsec
   # L6 exercises a per-route INGRESS limit, and no suite asserts these globals.
   #   • AUTH_LOGIN_RATE_LIMIT_MAX is env-only (auth/routes.ts, read at boot) →

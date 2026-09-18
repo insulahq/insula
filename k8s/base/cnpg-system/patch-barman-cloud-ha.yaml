@@ -1,6 +1,6 @@
 # Make the barman-cloud plugin survive a single node loss.
 #
-# WHY THIS EXISTS (2026-09-11 node-outage drill):
+# WHY THIS EXISTS:
 #
 # The vendored upstream manifest ships `replicas: 1` with
 # `strategy: Recreate` and no topology constraint. During a staging drill
@@ -35,7 +35,7 @@
 #    every replica at once.
 #
 # WHY maxUnavailable IS 1 AND NOT 0 (learned the hard way on staging
-# 2026-09-11, v2026.9.18-rc.2):
+# v2026.9.18-rc.2):
 #
 # Only the LEADER is ever Ready. The readiness probe is a TCP check on :9090,
 # and the plugin opens that port only after it wins the leader lease — a
@@ -58,7 +58,7 @@
 # it took when a single pod had to wait for Kubernetes' 300s eviction before
 # being rescheduled.
 #
-# WHY THERE IS NO PodDisruptionBudget (measured on staging, 2026-09-11):
+# WHY THERE IS NO PodDisruptionBudget:
 #
 # A PDB cannot protect this workload, because its readiness reflects
 # LEADERSHIP, not health. With exactly one Ready pod by design, every

@@ -1,7 +1,7 @@
 /**
  * Is this namespace a tenant's, or the platform's?
  *
- * ONE definition, because there were FOUR. On 2026-08-31 an admin was paged
+ * ONE definition, because there were FOUR. an admin was paged
  * that `tenant "traefik"` had a container OOM-killed and was advised to "raise
  * the tenant's plan/memory limit". `traefik` is a platform namespace; no such
  * tenant exists. The alert path enumerated 9 SYSTEM namespaces out of the 27 on

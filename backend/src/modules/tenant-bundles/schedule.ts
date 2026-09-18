@@ -2,7 +2,7 @@
  * Tenant-bundle execution helper for the global scheduler.
  *
  * The legacy per-tenant scheduler (Tier-1, drove tenant_backup_schedules)
- * was retired 2026-05-28 — see migration 0034 and
+ * was retired — see migration 0034 and
  * backend/src/modules/tenant-bundles/global-scheduler.ts. This file
  * now exports only `runOneScheduledBundle`, the per-tenant capture
  * helper that the global scheduler dynamic-imports.
@@ -20,7 +20,7 @@ import type { BackupStore } from './bundle-store.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 
 export async function runOneScheduledBundle(app: FastifyInstance, tenantId: string, retentionDays: number): Promise<void> {
-  // Prefer the new `backup_target_assignments` model (2026-05-28).
+  // Prefer the new `backup_target_assignments` model.
   // Falls back to the legacy `active=true` lookup so a cluster that
   // hasn't migrated assignments yet still fires bundles.
   let cfg: typeof backupConfigurations.$inferSelect | undefined;
@@ -56,7 +56,7 @@ export async function runOneScheduledBundle(app: FastifyInstance, tenantId: stri
   // only the legacy fallback for a cluster whose shim isn't
   // bootstrapped; anything else (e.g. cifs) without a shim is a hard,
   // named error instead of the silent per-tenant throw that ate every
-  // scheduled wave on a CIFS-bound cluster (2026-08-26).
+  // scheduled wave on a CIFS-bound cluster.
   const store: BackupStore = await resolveShimFirstBackupStore(app, 'tenant', async () => {
     if (cfg.storageType === 's3') {
       const accessKey = cfg.s3AccessKeyEncrypted ? decrypt(cfg.s3AccessKeyEncrypted, secretsKeyHex) : '';
@@ -129,6 +129,6 @@ export async function runOneScheduledBundle(app: FastifyInstance, tenantId: stri
   );
 }
 
-// startBackupScheduleTick + runScheduleTick removed 2026-05-28 with
+// startBackupScheduleTick + runScheduleTick removed with
 // the tenant_backup_schedules table drop. Global scheduler now drives
 // all tenant bundle captures from a single cron — see global-scheduler.ts.

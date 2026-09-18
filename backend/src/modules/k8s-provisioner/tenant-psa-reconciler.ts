@@ -14,7 +14,7 @@
  * the toggle flip gets the new label (via `applyNamespace` reading
  * settings), but every PRE-EXISTING tenant namespace keeps the stale
  * label until its next provisioning touch — which may be never. The
- * firewall integration test caught exactly this on 2026-05-17: toggle
+ * firewall integration test caught exactly this: toggle
  * flipped from off→on, deploy was accepted by platform-api, but k8s
  * still refused the pod because the namespace label was stale.
  *

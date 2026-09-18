@@ -2,7 +2,7 @@
  * Backup-target Secret shape + input types.
  *
  * Extracted from longhorn-reconciler.ts when the legacy target-activate
- * path was retired (2026-08-26). Two surviving consumers:
+ * path was retired. Two surviving consumers:
  *
  *   - backup-rclone-shim/dr-cronjobs.ts — writes `backup-credentials`
  *     pointing at the shim's S3 endpoint for the bridged DR CronJobs.

@@ -5,7 +5,7 @@
  * ---------------
  * Stalwart's built-in default is `aggregateSendFrequency: daily` with
  * `aggregateFromAddress: 'noreply-dmarc@' + system('domain')`. Read live on
- * 2026-09-16, the `x:DmarcReportSettings` singleton was EMPTY — and empty does
+ * the `x:DmarcReportSettings` singleton was EMPTY — and empty does
  * not mean off, it means those defaults apply. So a fresh install sends
  * aggregate reports from a hostname-derived address on a domain the operator
  * does not control and which has no mailbox: 78 reports went out in 6 hours,
@@ -22,7 +22,7 @@
  * There is no separate enable flag. Empty (or the literal DISABLE sentinel)
  * means disabled; an address means enabled. Two settings could disagree with
  * each other, and a control that disagrees with reality is what the
- * 2026-09-16 notification epic spent its day removing.
+ * notification epic spent its day removing.
  *
  * Why it is reconciled rather than set once
  * -----------------------------------------
@@ -75,8 +75,8 @@ const DISABLE = 'disable';
 /**
  * EVERY field of `x:DmarcReportSettings`, so the commit patch is never partial.
  *
- * Measured on a FRESH, bootstrapped Stalwart v0.16.20 (2026-09-18, throwaway
- * cluster, using this client's exact call shape):
+ * Measured on a FRESH, bootstrapped Stalwart v0.16.20 (throwaway cluster,
+ * using this client's exact call shape):
  *
  *     complete patch x4, identical   -> accepted every time, NEVER stored
  *     1-field primer, then complete  -> primer stores nothing, COMPLETE LANDS
@@ -88,10 +88,10 @@ const DISABLE = 'disable';
  *     nothing. The next one persists — and it must state every field, since a
  *     partial commit leaves the group unwritten.
  *  2. Stalwart DEDUPES an identical repeat, so re-sending the same patch is not
- *     "the next write". That is exactly why production never converged: the
- *     reconciler sent the same patch every 5 minutes for weeks, each one
- *     deduped, the group never materialised, and Stalwart's built-in defaults
- *     stayed live — 47 aggregate reports a day — while the log said DISABLED.
+ *     "the next write". That is why this reconciler never converged: it sent
+ *     the same patch on every tick, each one deduped, the group never
+ *     materialised, and Stalwart's built-in defaults stayed live while the log
+ *     said DISABLED.
  *
  * The singleton also cannot be created or destroyed (`destroy` returns
  * "Singletons cannot be created or destroyed"), so an environment whose group
@@ -274,7 +274,7 @@ export async function ensureDmarcReportSender(
       // Reset the STORED setting too, not just the Stalwart side. Leaving the
       // dead address in platform_settings would show the operator a sender
       // that is configured-looking but inert — reporting silently off while
-      // the panel claims an address. Operator requirement 2026-09-16.
+      // the panel claims an address. Operator requirement.
       try {
         await db
           .insert(platformSettings)
@@ -306,7 +306,7 @@ export async function ensureDmarcReportSender(
   //     bug this module exists to prevent in place.
   //
   //     What materialises the group is an ADDRESS field, not a second field.
-  //     Measured on staging 2026-09-17, same connection, read back after each:
+  // Measured on staging, same connection, read back after each:
   //
   //       {aggregateSendFrequency, failureSendFrequency}   -> accepted, read NULL
   //       {aggregateSendFrequency, aggregateFromAddress}   -> accepted, and now
@@ -362,11 +362,11 @@ export async function ensureDmarcReportSender(
     });
   } else {
     const host = hostname as string;
-    // The address is `postmaster@<mail hostname>`, which since 2026-09-17 is a
-    // real deliverable address forwarding to the admin roster — so in the
-    // worst case, where a future change lets sending happen while this says
-    // `disable`, reports come from somewhere a person reads instead of a black
-    // hole. Nothing sends while the schedule is `disable`.
+    // The address is `postmaster@<mail hostname>`, a real deliverable address
+    // forwarding to the admin roster — so in the worst case, where a future
+    // change lets sending happen while this says `disable`, reports come from
+    // somewhere a person reads instead of a black hole. Nothing sends while
+    // the schedule is `disable`.
     patch = buildSettingsPatch({
       aggregateFrequency: DISABLE,
       sender: `${POSTMASTER_LOCAL_PART}@${host}`,

@@ -225,7 +225,7 @@ export async function collectFacts(
   // reconciler persists every 60 s.
   //
   // Losing the control plane otherwise loses the node NAMES too, because the
-  // node list is itself an API-server read — the 2026-09-12 quorum-loss drill
+  // node list is itself an API-server read — the quorum-loss drill
   // left the platform able to say something was wrong but not which machine.
   // The database survives that: its primary sat on the surviving node and
   // served throughout, including operator logins.

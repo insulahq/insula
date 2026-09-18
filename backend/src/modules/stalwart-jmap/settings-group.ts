@@ -4,8 +4,8 @@
  * Stalwart's `x:<Type>/set` answers `{updated: {singleton: null}}` with an
  * empty `notUpdated` whether it stored the patch or silently discarded it, and
  * two rules decide which happened. Both were measured on a FRESH, bootstrapped
- * Stalwart v0.16.20 (2026-09-18, throwaway cluster, this client's exact call
- * shape), against `x:DmarcReportSettings` and re-confirmed on `x:ReportSettings`:
+ * Stalwart v0.16.20 (throwaway cluster, this client's exact call shape),
+ * against `x:DmarcReportSettings` and re-confirmed on `x:ReportSettings`:
  *
  *     complete patch x4, identical   -> accepted every time, NEVER stored
  *     1-field primer, then complete  -> primer stores nothing, COMPLETE LANDS
@@ -17,11 +17,11 @@
  *  2. Stalwart DEDUPES an identical repeat, so re-sending the same patch is not
  *     "the next write".
  *
- * Together those are why a 5-minute reconciler can rewrite the same patch for
- * weeks and never converge while logging success: every tick is deduped, the
- * group stays cold, and Stalwart's built-in defaults stay live. That is exactly
- * what outbound DMARC reporting did on production — 47 aggregate reports a day
- * under a log line that said DISABLED.
+ * Together those are why a reconciler can rewrite the same patch on every tick
+ * and never converge while logging success: every tick is deduped, the group
+ * stays cold, and Stalwart's built-in defaults stay live. Outbound DMARC
+ * reporting shipped in exactly that state — sending under a log line that said
+ * DISABLED.
  *
  * The singleton cannot be created or destroyed ("Singletons cannot be created
  * or destroyed"), so an environment whose group already exists — DEV, staging —

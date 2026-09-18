@@ -1,5 +1,5 @@
 /**
- * Mail standby de-election cleanup (2026-05-28).
+ * Mail standby de-election cleanup.
  *
  * When the operator changes secondary/tertiary placement, the
  * `mail-stack-standby-replicate` DaemonSet pod stops scheduling on
@@ -155,7 +155,7 @@ export async function spawnStandbyDeelectionCleanupJob(
                 // to find dirs older than 48h; without the touch, an
                 // already-stale standby dir would be reaped earlier
                 // than the promised 48h recovery window. Caught
-                // 2026-05-28 code review.
+                // code review.
                 `set -eu; ` +
                   `mv /host/${STANDBY_DIR_NAME} /host/${renameTarget} 2>/dev/null || ` +
                   `{ echo "no /host/${STANDBY_DIR_NAME} to rename (node never served as standby?)"; exit 0; }; ` +

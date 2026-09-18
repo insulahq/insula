@@ -1,5 +1,5 @@
 /**
- * Network Trust — Security Hub → Network Trust (2026-05-21).
+ * Network Trust — Security Hub → Network Trust.
  *
  * Renamed from `ClusterNetworkingSettings.tsx`. Three tabs:
  *   1. Trusted Ranges   — CRUD ClusterTrustedRange CRs (host firewall trust)

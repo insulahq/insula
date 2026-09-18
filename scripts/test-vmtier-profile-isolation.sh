@@ -2,7 +2,7 @@
 # test-vmtier-profile-isolation.sh — the VM tier must never inherit the
 # operator's integration profile, and must never copy it to a test VM.
 #
-# WHY (observed on runs 739730e6 / 5a7f45b3, 2026-08-19):
+# WHY(observed on runs 739730e6 / 5a7f45b3):
 #   run.sh tars the whole scripts/ directory to the throwaway runner VM. That
 #   directory contains the operator's gitignored scripts/integration.env, which
 #   pins ADMIN_HOST / MAIL_HOST / PLATFORM_BASE_DOMAIN at their REAL staging

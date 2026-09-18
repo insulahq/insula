@@ -15,7 +15,7 @@ interface CreateNotificationInput {
   readonly resourceType?: string | null;
   readonly resourceId?: string | null;
   /**
-   * The category this row belongs to. REQUIRED as of 2026-09-15.
+   * The category this row belongs to. REQUIRED.
    *
    * It used to be optional, falling back to a synthetic `legacy.<type>`
    * category — which is how 67 in-app notifications ended up on a path that

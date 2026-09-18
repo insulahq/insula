@@ -6,7 +6,7 @@ interface WebmailSettingsWrapped {
   readonly data: WebmailSettingsResponse;
 }
 
-// 2026-05-18: engine flips now run through the task-center. When the
+// engine flips now run through the task-center. When the
 // PATCH payload contains `defaultWebmailEngine`, the backend kicks off
 // a 5-step background task and returns `taskId` alongside the updated
 // settings. The frontend opens MailTaskProgressModal so the operator

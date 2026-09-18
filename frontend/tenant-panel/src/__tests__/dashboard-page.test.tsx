@@ -125,7 +125,7 @@ describe('Dashboard Page', () => {
 
   // Regression: the tile read the retired `backups` table, so a tenant with
   // bundles was told "0 backups" while the Backups page listed them all
-  // (operator report 2026-09-11).
+  // .
   it('counts off-site bundles in the Backups tile', () => {
     renderWithProviders(<Dashboard />);
     expect(screen.getByTestId('stat-backups')).toHaveTextContent('3');

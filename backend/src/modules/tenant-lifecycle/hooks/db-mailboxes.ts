@@ -14,7 +14,7 @@ import {
  *                  the DB (permissions re-enabled, forwarding/auto-reply
  *                  Sieve re-pushed, alias map re-enabled)
  *   - suspended  → status='disabled' + FULL mail shutdown per mailbox
- *                  (operator decision 2026-08-26: suspension disables
+ * (operator decision: suspension disables
  *                  the primary account AND its aliases for incoming and
  *                  outgoing mail until reactivation):
  *                    · `authenticate` permission disabled — no
@@ -26,7 +26,7 @@ import {
  *                  Alias rows and send-as identities keep the tenant's
  *                  configuration for reactivation.
  *   - archived   → destroy the Stalwart account principals FIRST, then
- *                  DELETE FROM mailboxes (2026-08-25 drift audit: rows
+ * DELETE FROM mailboxes (drift audit: rows
  *                  used to be deleted with the principals left alive —
  *                  live invisible mailboxes no reconcile could ever see
  *                  because the platform row was gone. Destroy-first +

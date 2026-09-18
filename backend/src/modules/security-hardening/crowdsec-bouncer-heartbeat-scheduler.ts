@@ -20,7 +20,7 @@
  * authenticated endpoints update `last_pull`.
  *
  * Endpoint choice (`/v1/decisions` vs `/v1/decisions/stream`):
- * verified on staging 2026-05-28 against CrowdSec v1.7.x that the
+ * verified on staging against CrowdSec v1.7.x that the
  * non-stream endpoint bumps `last_pull`. Real bouncers (Traefik
  * plugin) use the stream form because it's long-poll-friendly; for
  * heartbeat-only we don't need the streaming semantics. Keep the

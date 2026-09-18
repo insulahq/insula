@@ -1,5 +1,5 @@
 /**
- * Phase 5 (2026-05-24) — pre-switch confirm flow hooks.
+ * Phase 5 — pre-switch confirm flow hooks.
  *
  * Two hooks:
  *   - useShimSwitchPreview   — GET /admin/backup-rclone-shim/switch-preview

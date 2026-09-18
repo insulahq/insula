@@ -1,7 +1,7 @@
 /**
  * Guard: platform health must notice a dead node.
  *
- * Regression test for the 2026-09-11 node-outage drill, where
+ * Regression test for the node-outage drill, where
  * `/admin/status` reported `kubernetes: ok` — and the dashboard rendered
  * "Platform: Healthy — 4 / 4 services healthy" — with a control-plane node
  * NotReady, eight volumes stranded and mail completely down. The old check

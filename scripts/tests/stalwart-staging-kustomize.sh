@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Kustomize-level assertions for the staging Stalwart overlay.
 #
-# These tests encode the Phase A design (2026-04-23):
+# These tests encode the Phase A design:
 #   1. Stalwart's public-facing Service on staging must be externally
 #      reachable WITHOUT a cloud LoadBalancer provider. The staging
 #      overlay pins externalIPs: [<node public ip>] on the ClusterIP

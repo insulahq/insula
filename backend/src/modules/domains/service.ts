@@ -736,7 +736,7 @@ export async function deleteDomain(
   // principal) BEFORE the FK cascade removes the rows the helper
   // reads. The SQL cascade only ever touched the platform DB — every
   // deleted domain used to strand its Stalwart Domain + DKIM rows
-  // forever (caught on testing 2026-06-10). Best-effort: failures are
+  // forever. Best-effort: failures are
   // logged inside the helper and never block the delete.
   for (const ed of edRows) {
     await destroyStalwartArtifactsForEmailDomain(db, ed);

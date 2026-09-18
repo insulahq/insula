@@ -397,7 +397,7 @@ export async function getMailArchiveStatus(deps: ArchiveDeps): Promise<MailArchi
   const currentRow = (currentRows as unknown as { rows: ArchiveRunRow[] }).rows?.[0] ?? null;
 
   // Read the bound mail backup target via the canonical assignments-
-  // based getter. 2026-06-11: the legacy
+  // based getter.: the legacy
   // system_settings.mail_snapshot_backup_store_id column this used to
   // read is no longer written by the snapshot-backup-target setter
   // (it writes backup_target_assignments[backup_class='mail'] only),
@@ -689,7 +689,7 @@ const STALWART_IMAGE_FALLBACK = 'docker.io/stalwartlabs/stalwart:v0.16.20';
  *
  * Reading the live Deployment is what keeps export/import on the SAME binary
  * as the store it is reading, across every upgrade, with no second pin to
- * remember. Verified 2026-08-05 that a v0.16.5 binary still exports a
+ * remember. that a v0.16.5 binary still exports a
  * v0.16.16-written store byte-identically, so a stale image degrades rather
  * than corrupts — but matching is free here, so match.
  */
@@ -796,7 +796,7 @@ async function createArchiveJob(
   //
   // The PVC's local-path node affinity pins the Job to the right node;
   // no explicit podAffinity needed.
-  // A2.5 (2026-05-25): subPath=stalwart on the consolidated mail-stack-data PVC.
+  // A2.5: subPath=stalwart on the consolidated mail-stack-data PVC.
   const dataVolumeMount = { name: 'stalwart-data', mountPath: '/var/lib/stalwart/data', subPath: 'stalwart' };
   const configVolumeMount = { name: 'stalwart-config', mountPath: '/etc/stalwart' };
   const exportVolumeMount = { name: 'export', mountPath: '/export' };
@@ -1004,7 +1004,7 @@ async function createArchiveJobNoDowntime(
   // Neither operation writes to the live primary's files. The risk
   // boundary is a buggy/malicious image — which is exactly what PSS +
   // image-signing gate on a different axis.
-  // A2.5 (2026-05-25): subPath=stalwart on consolidated mail-stack-data PVC.
+  // A2.5: subPath=stalwart on consolidated mail-stack-data PVC.
   const dataVolumeMount = {
     name: 'stalwart-data',
     mountPath: '/data',

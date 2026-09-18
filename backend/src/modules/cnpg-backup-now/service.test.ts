@@ -156,7 +156,7 @@ describe('createBackupNow', () => {
     expect(spec.cluster?.name).toBe('tenant-pg-xyz');
   });
 
-  // Phase 7b/c (2026-05-24): operator description plumbed through as
+  // Phase 7b/c: operator description plumbed through as
   // ANNOTATION (not label — annotations have no charset restrictions
   // so natural-language descriptions like "pre-upgrade: tenant import"
   // are accepted).
@@ -209,7 +209,7 @@ describe('CnpgBackupNowError', () => {
 });
 
 // Schema-vs-service alignment: anything the contract accepts must also be
-// accepted by the service. Caught by typescript-reviewer 2026-05-24 —
+// accepted by the service. Caught by typescript-reviewer —
 // the contract regex previously had the `i` flag while the service
 // regex did not, so 'UPPER' passed validation in the route handler
 // then 400'd inside the service. Lock that in here.

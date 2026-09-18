@@ -78,7 +78,7 @@ describe('email-dkim/normalize: planDkimNormalization', () => {
 
 describe('email-dkim/normalize: hasCompleteAutoPair (auto-keygen race detector)', () => {
   it('false right after principal create when only the Ed25519 half landed', () => {
-    // The observed live race (2026-06-07): Ed25519 keygen is instant,
+    // The observed live race: Ed25519 keygen is instant,
     // RSA-2048 lags — a listing taken too early shows only one half.
     const rows = [row('ed', 'd1', 'v1-ed25519-20260607', 'Dkim1Ed25519Sha256')];
     expect(hasCompleteAutoPair(rows, 'd1')).toBe(false);

@@ -77,7 +77,7 @@ describe('UpgradesPage (consolidated)', () => {
  * re-reads what the hourly poller CronJob last wrote to the DB — and with a 60s
  * staleTime, repeated clicks often did not even reach the network. A release
  * published since the last tick was therefore invisible no matter how many
- * times the operator clicked. Reported 2026-08-03, ~90s after v2026.8.2 was
+ * times the operator clicked. Reported, ~90s after v2026.8.2 was
  * published: the 23:42 poll ran before the release existed, next tick an hour
  * away, and the button could not close that gap.
  */

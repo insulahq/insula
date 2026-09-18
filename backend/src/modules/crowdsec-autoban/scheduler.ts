@@ -25,7 +25,7 @@
  * `ORDER BY id DESC LIMIT 1` — the largest random UUID present, which
  * lands near the top of the UUID space — and from then on only an event
  * whose random UUID happened to sort above it was ever processed. Found
- * on production 2026-09-05 with a watermark of `ffd20474…` (~99.93rd
+ * on production with a watermark of `ffd20474…` (~99.93rd
  * percentile): 0 of 502 rows visible, 0 auto-ban runs ever recorded,
  * while a scanner with 18 qualifying events against a threshold of 5
  * went unbanned. Order by time; use the id only to break ties within an
@@ -51,7 +51,7 @@ type Db = NodePgDatabase<any>;
 
 // 30s (was 60s). The scheduler bans at the first tick that HAS the data, so
 // this interval — not eventThreshold — is what decides how many requests an
-// automated scanner lands before it is stopped. On production 2026-09-06 a
+// automated scanner lands before it is stopped. On production a
 // scanner emitted 285 events inside one 60s tick before the ban was issued.
 const TICK_INTERVAL_MS = 30_000;
 const INITIAL_DELAY_MS = 30_000;
@@ -134,13 +134,13 @@ export async function loadConfig(db: Db): Promise<CrowdsecAutobanConfig> {
  * Keyset cursor over (created_at, id) — the position of the last processed row.
  *
  * `createdAt` is the timestamp's EXACT Postgres text form
- * (`2026-09-06 19:18:07.188583`), never a JS Date.
+ * never a JS Date.
  *
  * Postgres timestamps carry MICROSECONDS; a JS Date carries milliseconds. Round
  * -tripping the cursor through a Date truncated `.188583` to `.188`, so
  * `(created_at, id) > (watermark)` matched the watermark's OWN row on every
  * tick: the boundary row was re-read forever and the watermark could never
- * advance. Observed on production 2026-09-06 — one row re-evaluated every 60s
+ * advance. Observed on production — one row re-evaluated every 60s
  * since 19:18, 1,206 junk `skipped_below_threshold` runs, and a stalled cursor
  * that would have hidden any genuinely new event behind it.
  */

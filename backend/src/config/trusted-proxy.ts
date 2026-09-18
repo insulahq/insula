@@ -3,10 +3,10 @@
  *
  * Mirrors `set_real_ip_from` in
  * frontend/{admin,tenant}-panel/nginx.conf.template — operator decision
- * 2026-07-19 was to use the RFC1918 super-set everywhere rather than the
+ * was to use the RFC1918 super-set everywhere rather than the
  * bare k3s pod CIDR (10.42.0.0/16 is a subset of 10.0.0.0/8).
  *
- * WHY NOT `trustProxy: true` (2026-07-28 security review):
+ * WHY NOT `trustProxy: true`:
  *   `true` means "trust every hop", so proxy-addr returns the LEFT-MOST
  *   X-Forwarded-For entry — the one furthest from us, and the one a client
  *   can write. `request.ip` keys the unauthenticated login rate limit and is
@@ -15,7 +15,7 @@
  *   Not exploitable in the shipped topology: Traefik fronts every route with
  *   `forwardedHeaders.trustedIPs=127.0.0.1/32` and therefore strips
  *   client-supplied X-Forwarded-For / X-Real-IP / Forwarded headers before
- *   they reach nginx (verified against staging 2026-07-28 — five spoof
+ * they reach nginx (verified against staging — five spoof
  *   variants all still audited the true client IP). But that protection
  *   lives one layer up and is operator-tunable: fronting the cluster with an
  *   external LB means ADDING that LB's CIDR to `forwardedHeaders.trustedIPs`,
