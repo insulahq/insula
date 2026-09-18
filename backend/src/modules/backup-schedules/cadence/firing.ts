@@ -96,6 +96,17 @@ export async function fireIfDue(
     return { fired: false, duplicate: false, jobName, errorMessage: msg };
   }
 
+  // Completed Jobs must clean themselves up. The CronJob controller prunes what
+  // IT creates via successfulJobsHistoryLimit, but a Job the platform creates
+  // directly is outside that bookkeeping and would accumulate one object per
+  // fire, forever.
+  //
+  // 7 days matches the convention for CronJob-template work: long enough that
+  // an operator looking into "did last night's backup run" still finds the Job
+  // and its logs, short enough that a daily schedule never holds more than a
+  // week of them.
+  const TTL_SECONDS_AFTER_FINISHED = 604800;
+
   const body = {
     apiVersion: 'batch/v1',
     kind: 'Job',
@@ -113,7 +124,10 @@ export async function fireIfDue(
         'insula.host/fired-for-minute': minuteStamp(args.at),
       },
     },
-    spec: template.spec,
+    spec: {
+      ...(template.spec as Record<string, unknown>),
+      ttlSecondsAfterFinished: TTL_SECONDS_AFTER_FINISHED,
+    },
   };
 
   try {

@@ -378,8 +378,15 @@ describe('the firing engine', () => {
       { namespace: 'platform', cronJobName: 'platform-secrets-backup', cron: '* * * * *', at: new Date('2026-09-18T04:30:00Z') },
       log,
     );
-    const body = (create.mock.calls[0][0] as { body: { spec: unknown; metadata: { labels: Record<string, string> } } }).body;
-    expect(body.spec).toEqual({ template: {} });
+    const body = (create.mock.calls[0][0] as {
+      body: { spec: Record<string, unknown>; metadata: { labels: Record<string, string> } };
+    }).body;
+    // The template is copied verbatim...
+    expect(body.spec.template).toEqual({});
+    // ...plus a TTL, because a Job the platform creates directly is outside the
+    // CronJob controller's history limits and would otherwise accumulate one
+    // object per fire forever.
+    expect(body.spec.ttlSecondsAfterFinished).toBe(604800);
     expect(body.metadata.labels['insula.host/fired-by']).toBe('platform-cadence');
     // The template's own labels survive — the backup-health watcher selects on them.
     expect(body.metadata.labels.a).toBe('b');

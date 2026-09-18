@@ -23,7 +23,7 @@ import type { Logger } from 'pino';
 
 import { backupSchedules } from '../../../db/schema.js';
 import type { Database } from '../../../db/index.js';
-import { JSON_PATCH } from '../../../shared/k8s-patch.js';
+import { JSON_PATCH, MERGE_PATCH } from '../../../shared/k8s-patch.js';
 import { CADENCE_TARGETS, toCnpgCron, type CadenceTarget } from './targets.js';
 import { systemClassBound } from '../../backup-rclone-shim/dr-cronjobs.js';
 
@@ -234,10 +234,13 @@ async function reconcileCnpg(
 
   try {
     // Merge-patch, not JSON-patch: `/spec/suspend` may be absent, and a JSON
-    // `replace` on an absent path is a 422.
+    // `replace` on an absent path is a 422. MERGE_PATCH carries the
+    // Content-Type override — the k8s client defaults every patch to
+    // json-patch regardless of body shape, so a merge body without it is
+    // rejected by the apiserver.
     await clients.custom.patchNamespacedCustomObject(
       { ...ref, body: { spec: { schedule: cnpgCron, suspend: desiredSuspend } } },
-      { headers: { 'Content-Type': 'application/merge-patch+json' } },
+      MERGE_PATCH,
     );
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
