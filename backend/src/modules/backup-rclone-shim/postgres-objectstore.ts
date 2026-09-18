@@ -300,7 +300,8 @@ export async function reconcilePostgresObjectStore(
     }
   } else {
     try {
-      await materializeScheduledBackup(clients.custom, log, { suspended });
+      const schedule = await resolveOperatorBackupSchedule(db);
+      await materializeScheduledBackup(clients.custom, log, { suspended, schedule });
       scheduledBackupApplied = true;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -691,11 +692,16 @@ async function materializeObjectStore(
 
 interface ScheduledBackupOpts {
   readonly suspended: boolean;
+  /**
+   * The cadence to assert. Defaults to {@link DEFAULT_BACKUP_SCHEDULE} when the
+   * operator has not set one.
+   */
+  readonly schedule: string;
 }
 
 function buildScheduledBackupSpec(opts: ScheduledBackupOpts): Record<string, unknown> {
   return {
-    schedule: DEFAULT_BACKUP_SCHEDULE,
+    schedule: opts.schedule,
     backupOwnerReference: 'self',
     immediate: false,
     cluster: {
@@ -715,6 +721,37 @@ function buildScheduledBackupSpec(opts: ScheduledBackupOpts): Record<string, unk
     // surface alive for observability + makes re-enabling trivial.
     suspend: opts.suspended,
   };
+}
+
+/**
+ * The base-backup cadence to assert: the operator's if they set one, else the
+ * platform default.
+ *
+ * Until 2026-09-18 this reconciler hard-coded DEFAULT_BACKUP_SCHEDULE and
+ * patched it onto the CR on every tick — including over a value
+ * `enableWalArchive` had just written from the Postgres card's "Base backup
+ * cadence" control. The control therefore appeared to work, persisted to
+ * `system_wal_archive_state`, and was reverted within minutes. Reading the
+ * same row here makes this reconciler the single writer AND honours the
+ * operator, instead of the two fighting.
+ */
+export async function resolveOperatorBackupSchedule(db: Database): Promise<string> {
+  try {
+    const [row] = await db
+      .select({ schedule: systemWalArchiveState.baseBackupSchedule })
+      .from(systemWalArchiveState)
+      .where(and(
+        eq(systemWalArchiveState.clusterNamespace, POSTGRES_NAMESPACE),
+        eq(systemWalArchiveState.clusterName, POSTGRES_CLUSTER_NAME),
+      ))
+      .limit(1);
+    const cron = row?.schedule?.trim();
+    return cron && cron.length > 0 ? cron : DEFAULT_BACKUP_SCHEDULE;
+  } catch {
+    // A read failure must not stop the reconcile — asserting the default keeps
+    // backups running, which is the safe side of this decision.
+    return DEFAULT_BACKUP_SCHEDULE;
+  }
 }
 
 async function materializeScheduledBackup(
