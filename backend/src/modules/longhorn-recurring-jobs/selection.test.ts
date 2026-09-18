@@ -27,7 +27,9 @@ const dbVol = (name: string) => vol(name, {
 });
 
 const snap = (name: string, volume: string, recurringJob: string | null = 'hourly-snap') =>
-  ({ name, volume, recurringJob });
+  ({ name, volume, recurringJob, terminating: false });
+const terminatingSnap = (name: string, volume: string) =>
+  ({ ...snap(name, volume), terminating: true });
 
 describe('jobCoversVolume', () => {
   it('covers a volume that carries the job group label', () => {
@@ -128,6 +130,42 @@ describe('planSnapshotSweep', () => {
     const plan = planSnapshotSweep({ ...base, volumes: [], snapshots: [snap('s1', 'pvc-gone')] });
     expect(plan.byVolume).toEqual([]);
     expect(plan.skippedUnknownVolume).toBe(1);
+  });
+
+  it('counts a snapshot already being purged instead of re-deleting it', () => {
+    // On a DETACHED volume the object sits in Terminating until the volume
+    // next attaches. Re-issuing the delete changes nothing, and treating the
+    // object as gone would report a converged cluster while it is still there.
+    const plan = planSnapshotSweep({
+      ...base,
+      volumes: [tenantVol('pvc-t1')],
+      snapshots: [terminatingSnap('going', 'pvc-t1'), snap('fresh', 'pvc-t1')],
+    });
+    expect(plan.byVolume).toEqual([{ volume: 'pvc-t1', snapshots: ['fresh'] }]);
+    expect(plan.pendingPurge).toBe(1);
+    expect(plan.pendingPurgeVolumes).toEqual(['pvc-t1']);
+  });
+
+  it('does not count a terminating snapshot on a protected volume', () => {
+    const plan = planSnapshotSweep({
+      ...base,
+      volumes: [dbVol('pvc-db')],
+      snapshots: [terminatingSnap('going', 'pvc-db')],
+    });
+    expect(plan.pendingPurge).toBe(0);
+    expect(plan.skippedProtected).toBe(1);
+  });
+
+  it('spends no per-tick budget on a volume whose snapshots are all terminating', () => {
+    // Otherwise a handful of detached volumes could starve the sweep forever.
+    const plan = planSnapshotSweep({
+      ...base,
+      volumes: [tenantVol('pvc-a'), tenantVol('pvc-b')],
+      snapshots: [terminatingSnap('a1', 'pvc-a'), snap('b1', 'pvc-b')],
+      maxVolumesPerTick: 1,
+    });
+    expect(plan.byVolume).toEqual([{ volume: 'pvc-b', snapshots: ['b1'] }]);
+    expect(plan.deferredVolumes).toBe(0);
   });
 
   it('caps volumes per tick and defers the rest', () => {

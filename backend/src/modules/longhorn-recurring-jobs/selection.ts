@@ -47,6 +47,16 @@ export interface SnapshotRef {
   readonly volume: string;
   /** `spec.labels.RecurringJob` — absent on a snapshot a human/CSI asked for. */
   readonly recurringJob: string | null;
+  /**
+   * Already asked to go, finalizer not yet released.
+   *
+   * On an ATTACHED volume a deletion completes in seconds. On a DETACHED one
+   * the object sits in Terminating until the volume next attaches and Longhorn
+   * can purge it — measured on both, and the reason this field exists: a sweep
+   * that counted "delete accepted" as "snapshot gone" would report a converged
+   * cluster while the objects were still there.
+   */
+  readonly terminating: boolean;
 }
 
 /** The groups this volume is an explicit member of. */
@@ -95,6 +105,10 @@ export interface SweepPlan {
   readonly skippedUnknownVolume: number;
   /** Snapshots left alone because their volume is on the protected list. */
   readonly skippedProtected: number;
+  /** Deletion already requested, waiting on the volume to attach and purge. */
+  readonly pendingPurge: number;
+  /** The volumes those pending snapshots belong to. */
+  readonly pendingPurgeVolumes: readonly string[];
 }
 
 export interface SweepInput {
@@ -126,13 +140,22 @@ export function planSnapshotSweep(input: SweepInput): SweepPlan {
   const protectedSet = new Set(input.protectedVolumes);
 
   const orphansByVolume = new Map<string, string[]>();
+  const pendingVolumes = new Set<string>();
   let skippedUnknownVolume = 0;
   let skippedProtected = 0;
+  let pendingPurge = 0;
 
   for (const snap of input.snapshots) {
     if (!snap.recurringJob) continue; // human/CSI snapshot — not ours to judge
     if (protectedSet.has(snap.volume)) {
       skippedProtected += 1;
+      continue;
+    }
+    if (snap.terminating) {
+      // Re-issuing the delete would change nothing. Counted so the caller can
+      // say "waiting on a detached volume" instead of "nothing left to do".
+      pendingPurge += 1;
+      pendingVolumes.add(snap.volume);
       continue;
     }
     const volume = volumeByName.get(snap.volume);
@@ -161,6 +184,8 @@ export function planSnapshotSweep(input: SweepInput): SweepPlan {
     deferredVolumes: volumes.length - budgeted.length,
     skippedUnknownVolume,
     skippedProtected,
+    pendingPurge,
+    pendingPurgeVolumes: [...pendingVolumes].sort(),
   };
 }
 

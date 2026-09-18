@@ -57,6 +57,12 @@ export interface ReconcileResult {
   readonly deletedSnapshots: number;
   readonly purgedVolumes: readonly string[];
   readonly deferredVolumes: number;
+  /**
+   * Snapshots whose deletion was accepted but whose object is still there,
+   * waiting on a DETACHED volume to attach so Longhorn can purge it. Reported
+   * so nothing calls the cluster converged while they are outstanding.
+   */
+  readonly pendingPurge: number;
   /** Set when the tick declined to act, with the reason. */
   readonly abortedReason?: string;
 }
@@ -108,12 +114,13 @@ export async function listSnapshots(k8s: K8sClients): Promise<SnapshotRef[]> {
   const items = await listLonghorn<LiveSnapshot>(k8s, 'snapshots');
   return items
     .filter((s) => Boolean(s.metadata?.name) && Boolean(s.spec?.volume))
-    // Already being purged — re-deleting would just re-issue the same call.
-    .filter((s) => !s.metadata?.deletionTimestamp)
     .map((s) => ({
       name: s.metadata?.name ?? '',
       volume: s.spec?.volume ?? '',
       recurringJob: s.spec?.labels?.RecurringJob ?? null,
+      // Kept in the list rather than filtered out: the planner counts these so
+      // the tick can distinguish "done" from "waiting on a detached volume".
+      terminating: Boolean(s.metadata?.deletionTimestamp),
     }));
 }
 
@@ -171,7 +178,9 @@ export interface ReconcileDeps {
 
 export async function reconcileLonghornRecurringJobs(deps: ReconcileDeps): Promise<ReconcileResult> {
   const { k8s, log } = deps;
-  const empty = { labelled: [], deletedSnapshots: 0, purgedVolumes: [], deferredVolumes: 0 };
+  const empty = {
+    labelled: [], deletedSnapshots: 0, purgedVolumes: [], deferredVolumes: 0, pendingPurge: 0,
+  };
 
   let protectedVolumes: string[];
   try {
@@ -255,11 +264,20 @@ export async function reconcileLonghornRecurringJobs(deps: ReconcileDeps): Promi
       'longhorn-recurring-jobs: more volumes to purge, deferred to a later tick to keep snapshot coalescing off the disk',
     );
   }
+  if (plan.pendingPurge > 0) {
+    // Not an error and not something to retry: Longhorn cannot purge a
+    // detached volume. The objects clear themselves when it next attaches.
+    log.info(
+      { pendingPurge: plan.pendingPurge, volumes: plan.pendingPurgeVolumes.length },
+      'longhorn-recurring-jobs: snapshots already marked for deletion are waiting for their volume to attach before Longhorn can purge them',
+    );
+  }
 
   return {
     labelled,
     deletedSnapshots: deleted,
     purgedVolumes: purged,
     deferredVolumes: plan.deferredVolumes,
+    pendingPurge: plan.pendingPurge,
   };
 }

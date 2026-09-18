@@ -38,8 +38,10 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   platform database alone — which keeps its six-hour rollback chain — and the
   snapshots already taken on tenant volumes are removed automatically after the
   upgrade, a few volumes at a time so the cleanup cannot itself become a disk
-  I/O spike. Snapshots a tenant takes from the Snapshots page are untouched and
-  still expire on their own schedule; tenant volumes keep the nightly
+  I/O spike. A volume that is currently idle and detached clears its share the
+  next time it is attached — Longhorn cannot reclaim space on a volume nothing
+  has mounted. Snapshots a tenant takes from the Snapshots page are untouched
+  and still expire on their own schedule; tenant volumes keep the nightly
   filesystem trim that frees deleted-file space.
 - **The backup time you chose for the platform database is now the one used.**
   Its own card has always offered a "base backup cadence", and the value was

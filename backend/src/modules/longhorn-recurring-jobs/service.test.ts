@@ -154,7 +154,11 @@ describe('reconcileLonghornRecurringJobs', () => {
     expect(r.deletedSnapshots).toBe(0);
   });
 
-  it('skips a snapshot already being purged', async () => {
+  it('reports a snapshot waiting on a detached volume instead of re-deleting it', async () => {
+    // Deleting a snapshot on an attached volume completes in seconds; on a
+    // detached one the object stays in Terminating until the volume attaches
+    // and Longhorn can purge. Both measured on a live cluster — hence the
+    // count, so a tick never reads as converged while objects are outstanding.
     const { k8s, deleted } = fakeK8s({
       pvcs: [{ spec: { volumeName: 'pvc-db' } }],
       volumes: [
@@ -168,7 +172,8 @@ describe('reconcileLonghornRecurringJobs', () => {
         recurringSnap('stays-until-swept', 'pvc-t1'),
       ],
     });
-    await reconcileLonghornRecurringJobs({ k8s, log });
+    const r = await reconcileLonghornRecurringJobs({ k8s, log });
     expect(deleted).toEqual(['stays-until-swept']);
+    expect(r.pendingPurge).toBe(1);
   });
 });

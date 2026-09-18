@@ -30,14 +30,20 @@ export function startLonghornRecurringJobReconciler(
       const k8s = createK8sClients(kubeconfigPath);
       const r = await reconcileLonghornRecurringJobs({ k8s, log });
       if (r.deletedSnapshots > 0 || r.labelled.length > 0) {
+        const outstanding = r.deferredVolumes > 0 || r.pendingPurge > 0;
         log.info(
           {
             labelled: r.labelled.length,
             deletedSnapshots: r.deletedSnapshots,
             purgedVolumes: r.purgedVolumes.length,
             deferredVolumes: r.deferredVolumes,
+            pendingPurge: r.pendingPurge,
           },
-          'longhorn-recurring-jobs: tick converged',
+          // "converged" is a claim about the cluster, so it is only made when
+          // nothing is deferred and nothing is still waiting to be purged.
+          outstanding
+            ? 'longhorn-recurring-jobs: tick applied, work still outstanding'
+            : 'longhorn-recurring-jobs: tick converged',
         );
       }
     } catch (err) {
