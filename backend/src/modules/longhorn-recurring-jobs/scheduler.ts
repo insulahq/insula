@@ -38,6 +38,8 @@ export function startLonghornRecurringJobReconciler(
             purgedVolumes: r.purgedVolumes.length,
             deferredVolumes: r.deferredVolumes,
             pendingPurge: r.pendingPurge,
+            pendingDetached: r.pendingDetached,
+            pendingHeadParent: r.pendingHeadParent,
           },
           // "converged" is a claim about the cluster, so it is only made when
           // nothing is deferred and nothing is still waiting to be purged.

@@ -16,7 +16,7 @@ const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 
 interface FakeState {
   pvcs?: Array<{ spec?: { volumeName?: string } }> | Error;
-  volumes?: Array<{ metadata: { name: string; labels?: Record<string, string> } }>;
+  volumes?: Array<{ metadata: { name: string; labels?: Record<string, string> }; status?: { state?: string } }>;
   jobs?: Array<{ metadata: { name: string }; spec: { groups: string[] } }>;
   snapshots?: Array<{ metadata: { name: string }; spec: { volume: string; labels?: Record<string, string> } }>;
 }
@@ -35,7 +35,11 @@ function fakeK8s(state: FakeState) {
     custom: {
       listNamespacedCustomObject: async ({ plural }: { plural: string }) => {
         listCalls.push(plural);
-        if (plural === 'volumes') return { items: state.volumes ?? [] };
+        // Volumes default to attached: a fixture that forgot `status.state`
+        // would otherwise read as detached and quietly change the verdict.
+        if (plural === 'volumes') {
+          return { items: (state.volumes ?? []).map((v) => ({ status: { state: 'attached' }, ...v })) };
+        }
         if (plural === 'recurringjobs') return { items: state.jobs ?? [] };
         if (plural === 'snapshots') return { items: state.snapshots ?? [] };
         return { items: [] };
@@ -175,5 +179,35 @@ describe('reconcileLonghornRecurringJobs', () => {
     const r = await reconcileLonghornRecurringJobs({ k8s, log });
     expect(deleted).toEqual(['stays-until-swept']);
     expect(r.pendingPurge).toBe(1);
+    // Attached and not the head's parent: mid-purge, blamed on nothing.
+    expect(r.pendingDetached).toBe(0);
+    expect(r.pendingHeadParent).toBe(0);
+  });
+
+  it('reads the volume attach state and the head-adjacency flag off the live objects', async () => {
+    // These two fields decide which cause the tick reports; reading them from
+    // the wrong place on the CR would be invisible in a plan-level test.
+    const { k8s, deleted } = fakeK8s({
+      pvcs: [{ spec: { volumeName: 'pvc-db' } }],
+      volumes: [
+        { metadata: { name: 'pvc-db', labels: { [`${GROUP_LABEL_PREFIX}${SYSTEM_CRITICAL_GROUP}`]: 'enabled' } } },
+        { metadata: { name: 'pvc-off', labels: { [`${GROUP_LABEL_PREFIX}default`]: 'enabled' } },
+          status: { state: 'detached' } },
+        { metadata: { name: 'pvc-on', labels: { [`${GROUP_LABEL_PREFIX}default`]: 'enabled' } },
+          status: { state: 'attached' } },
+      ],
+      jobs: [hourlySnapJob],
+      snapshots: [
+        { metadata: { name: 'on-detached', deletionTimestamp: '2026-01-01T00:00:00Z' },
+          spec: { volume: 'pvc-off', labels: { RecurringJob: 'hourly-snap' } } } as never,
+        { metadata: { name: 'head-parent', deletionTimestamp: '2026-01-01T00:00:00Z' },
+          spec: { volume: 'pvc-on', labels: { RecurringJob: 'hourly-snap' } },
+          status: { children: { 'volume-head': true } } } as never,
+      ],
+    });
+    const r = await reconcileLonghornRecurringJobs({ k8s, log });
+    expect(deleted).toEqual([]);
+    expect(r.pendingDetached).toBe(1);
+    expect(r.pendingHeadParent).toBe(1);
   });
 });
