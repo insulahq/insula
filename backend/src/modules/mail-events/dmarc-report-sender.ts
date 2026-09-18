@@ -39,7 +39,9 @@ import {
   dmarcReportSettingsGet,
   dmarcReportSettingsUpdate,
   type StalwartExpression,
+  type StalwartDmarcReportSettingsRow,
 } from '../stalwart-jmap/client.js';
+import { commitSettingsGroup } from '../stalwart-jmap/settings-group.js';
 import type { Database } from '../../db/index.js';
 import type { OutboundReconcileLogger } from '../email-outbound/service.js';
 
@@ -406,52 +408,38 @@ export async function ensureDmarcReportSender(
   }
 
   try {
-    // COLD START — measured on a fresh, bootstrapped Stalwart v0.16.20
-    // (2026-09-18, throwaway cluster, platform's exact call shape):
-    //
-    //   complete patch x4, identical  -> accepted every time, never stored
-    //   1-field primer, then complete -> primer stores nothing, COMPLETE LANDS
-    //   warm group, single complete   -> lands immediately, both directions
-    //
-    // The first `/set` against a never-written singleton primes it and stores
-    // nothing; the NEXT complete one persists. Identical repeats are deduped,
-    // so they do not count as the second write — which is exactly why writing
-    // the same patch every 5 minutes never converged on production. It stayed
-    // cold for weeks while logging a successful disable.
-    //
-    // The primer is deliberately a DIFFERENT shape (one field vs thirteen) so
-    // it cannot be deduped against the commit that follows it.
-    if (cold) {
-      await dmarcReportSettingsUpdate({
-        patch: { aggregateSendFrequency: patch.aggregateSendFrequency },
-        ...opts,
-      });
-    }
-    const res = await dmarcReportSettingsUpdate({ patch, ...opts });
-    if (res.notUpdated && Object.keys(res.notUpdated).length > 0) {
-      logger.error({ notUpdated: res.notUpdated }, 'dmarc report sender: Stalwart rejected the update');
-      return { state: 'skipped', sender: null, reason: 'stalwart rejected the update' };
-    }
-
-    // READ IT BACK. An accepted `/set` is not evidence that anything was
-    // stored: against a never-written group Stalwart answers
-    // `{updated: {singleton: null}}` with an empty `notUpdated` and persists
-    // nothing. That is not a hypothetical — it is what production did for six
-    // weeks while this function logged a successful disable every 5 minutes.
-    // Verifying here is what makes a future recurrence loud instead of silent.
+    // Prime-when-cold, commit the complete group, then read it back. The rule
+    // and the measurements behind it live in stalwart-jmap/settings-group.ts;
+    // the primer is one field against a thirteen-field commit so Stalwart
+    // cannot dedupe the two.
     const wantAggregate = (patch.aggregateSendFrequency as StalwartExpression).else;
     const wantFailureFreq = (patch.failureSendFrequency as StalwartExpression).else;
-    const after = await dmarcReportSettingsGet(opts);
-    const landedAggregate = after?.aggregateSendFrequency?.else;
-    const landedFailure = after?.failureSendFrequency?.else;
-    if (!after || landedAggregate !== wantAggregate || landedFailure !== wantFailureFreq) {
+    const outcome = await commitSettingsGroup<StalwartDmarcReportSettingsRow>({
+      read: () => dmarcReportSettingsGet(opts),
+      write: (p) => dmarcReportSettingsUpdate({ patch: p, ...opts }),
+      patch,
+      primer: { aggregateSendFrequency: patch.aggregateSendFrequency },
+      verify: (row) => row.aggregateSendFrequency?.else === wantAggregate
+        && row.failureSendFrequency?.else === wantFailureFreq,
+      current: cold ? null : undefined,
+    });
+
+    if (outcome.state === 'rejected') {
+      logger.error({ reason: outcome.reason }, 'dmarc report sender: Stalwart rejected the update');
+      return { state: 'skipped', sender: null, reason: 'stalwart rejected the update' };
+    }
+    if (outcome.state === 'not-stored') {
       logger.error(
         {
           wrote: { aggregate: wantAggregate, failure: wantFailureFreq },
-          readBack: after
-            ? { aggregate: landedAggregate, failure: landedFailure }
+          readBack: outcome.after
+            ? {
+              aggregate: outcome.after.aggregateSendFrequency?.else,
+              failure: outcome.after.failureSendFrequency?.else,
+            }
             : 'EMPTY — the settings group does not exist, so Stalwart\'s built-in defaults are LIVE',
           fields: Object.keys(patch).length,
+          wasCold: outcome.wasCold,
         },
         'dmarc report sender: Stalwart ACCEPTED the update and did not store it — outbound reporting '
         + 'is NOT in the intended state. Reports may still be going out.',
