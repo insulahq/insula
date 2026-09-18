@@ -85,6 +85,22 @@ function parseDate(value: string | null | undefined): Date | null {
 }
 
 /** Trim to a column width without throwing on a null. */
+/**
+ * Strip the angle brackets an ARF address carries.
+ *
+ * RFC 5965 gives `Original-Mail-From` and `Original-Rcpt-To` as RFC 5322
+ * angle-addr, so Stalwart hands them over as `<user@example.test>`. Stored raw
+ * they reach the panels and the admin notification verbatim, which is how
+ * `<newsletter@example.test>` ended up in operator-facing copy. The brackets
+ * are syntax, not part of the address.
+ */
+function unbracket(value: string | null | undefined): string | null {
+  if (typeof value !== 'string') return null;
+  const t = value.trim();
+  if (!t) return null;
+  return t.startsWith('<') && t.endsWith('>') ? t.slice(1, -1).trim() || null : t;
+}
+
 function cap(value: string | null | undefined, max: number): string | null {
   if (typeof value !== 'string') return null;
   const t = value.trim();
@@ -166,11 +182,15 @@ async function announce(
   const ip = row.sourceIp ? ` Source IP ${row.sourceIp}.` : '';
   const many = row.incidents > 1 ? ` The report covers ${row.incidents} incidents.` : '';
 
+  // "An abuse report", not "A abuse report". The feedback type is interpolated
+  // straight into operator-facing copy, and `abuse` is the commonest one.
+  const article = /^[aeiou]/i.test(row.feedbackType) ? 'An' : 'A';
+
   await notifyAdminOperationalEvent(db, 'mail', {
     subsystem: 'Abuse reports',
     objectLabel: subject,
     detail:
-      `A ${row.feedbackType} report was received for ${subject}${about}.${from}${ip}${many}`,
+      `${article} ${row.feedbackType} report was received for ${subject}${about}.${from}${ip}${many}`,
     severityLabel: row.feedbackType === 'abuse' ? 'abuse complaint' : `${row.feedbackType} report`,
     recommendedAction: row.tenantId
       ? 'Review the tenant’s outbound mail under Monitoring → Mail, and suspend outbound if the complaint is substantiated.'
@@ -224,11 +244,11 @@ export async function pollAbuseReports(
         tenantId,
         domain: cap(domain, 255),
         feedbackType,
-        originalMailFrom: cap(report.report?.originalMailFrom, 320),
-        originalRcptTo: cap(report.report?.originalRcptTo, 320),
+        originalMailFrom: cap(unbracket(report.report?.originalMailFrom), 320),
+        originalRcptTo: cap(unbracket(report.report?.originalRcptTo), 320),
         sourceIp: cap(report.report?.sourceIp, 64),
         reportingMta: cap(report.report?.reportingMta, 255),
-        reporter: cap(report.from, 320),
+        reporter: cap(unbracket(report.from), 320),
         subject: cap(report.subject, 2000),
         incidents: Math.max(1, Math.trunc(report.report?.incidents ?? 1)),
         receivedAt,

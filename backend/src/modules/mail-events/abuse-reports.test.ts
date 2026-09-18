@@ -239,6 +239,40 @@ describe('ingesting ARF abuse reports', () => {
     expect(rows[0].feedbackType).toBe('other');
   });
 
+  it('strips the angle brackets ARF carries, so addresses are not <bracketed>', async () => {
+    // RFC 5965 gives these as angle-addr. Stored raw they reached the panels
+    // and the admin notification verbatim — found by driving a real report
+    // through on DEV, not by any unit test.
+    arfExternalReportList.mockResolvedValue([arf({
+      from: '<abuse-desk@reporter.test>',
+      report: {
+        feedbackType: 'abuse',
+        originalMailFrom: '<sender@tenant.test>',
+        originalRcptTo: '<victim@reporter.test>',
+        reportedDomains: { 'tenant.test': true },
+      },
+    })]);
+    await pollAbuseReports(makeDb(), logger);
+    expect(rows[0].originalMailFrom).toBe('sender@tenant.test');
+    expect(rows[0].reporter).toBe('abuse-desk@reporter.test');
+    const [, , payload] = notifyAdminOperationalEvent.mock.calls[0];
+    expect(payload.detail).not.toContain('<');
+  });
+
+  it('says "An abuse report", not "A abuse report"', async () => {
+    arfExternalReportList.mockResolvedValue([arf()]);
+    await pollAbuseReports(makeDb(), logger);
+    const [, , payload] = notifyAdminOperationalEvent.mock.calls[0];
+    expect(payload.detail).toMatch(/^An abuse report/);
+  });
+
+  it('keeps the article correct for a consonant type', async () => {
+    arfExternalReportList.mockResolvedValue([arf({ id: 'sw-f', report: { feedbackType: 'fraud' } })]);
+    await pollAbuseReports(makeDb(), logger);
+    const [, , payload] = notifyAdminOperationalEvent.mock.calls[0];
+    expect(payload.detail).toMatch(/^A fraud report/);
+  });
+
   it('never throws when Stalwart is unreachable', async () => {
     arfExternalReportList.mockRejectedValue(new Error('connection refused'));
     const r = await pollAbuseReports(makeDb(), logger);
