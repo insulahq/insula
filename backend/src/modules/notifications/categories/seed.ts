@@ -314,6 +314,49 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
     gdprBasis: 'legitimate_interest',
   },
   {
+    id: 'admin.cert_check_unavailable',
+    cls: 'action',
+    reportsOn: 'tls',
+    displayName: 'Certificate checks not running',
+    description:
+      'The platform could not reach the Kubernetes API to check certificate status, so it '
+      + 'currently cannot tell whether renewals are working. Raised once per outage, not once '
+      + 'per certificate, and only after it survives a retry.',
+    audience: 'admin',
+    defaultSeverity: 'warning',
+    defaultChannels: ALL_NOTIFICATION_CHANNELS,
+    isMandatory: false,
+    gdprBasis: 'legitimate_interest',
+  },
+  {
+    id: 'admin.cert_check_resumed',
+    cls: 'record',
+    reportsOn: 'tls',
+    displayName: 'Certificate checks running again',
+    description:
+      'Closes a "certificate checks not running" warning: status checks are working again and '
+      + 'how long they were interrupted.',
+    audience: 'admin',
+    defaultSeverity: 'info',
+    defaultChannels: ALL_NOTIFICATION_CHANNELS,
+    isMandatory: false,
+    gdprBasis: 'legitimate_interest',
+  },
+  {
+    id: 'admin.cert_recovered',
+    cls: 'record',
+    reportsOn: 'tls',
+    displayName: 'Certificate recovered',
+    description:
+      'Closes a certificate issuance or renewal failure: the certificate is valid again, and '
+      + 'until when.',
+    audience: 'admin',
+    defaultSeverity: 'info',
+    defaultChannels: ALL_NOTIFICATION_CHANNELS,
+    isMandatory: false,
+    gdprBasis: 'legitimate_interest',
+  },
+  {
     id: 'admin.backup_failed',
     cls: 'incident',
     reportsOn: 'storage',

@@ -82,6 +82,11 @@ const EXTRA_LINKS: Readonly<Record<string, readonly LinkSpec[]>> = {
   'admin.cert_issuance_failed': [
     { text: 'Check DNS records', path: '/dns', style: 'secondary' },
   ],
+  // This one is a cluster problem, not a DNS or certificate problem — send the
+  // operator to node health, where an API outage is actually diagnosable.
+  'admin.cert_check_unavailable': [
+    { text: 'Check node health', path: '/cluster/nodes', style: 'secondary' },
+  ],
   'tls.certificate_failed': [
     { text: 'Check your DNS records', path: '/domains', style: 'secondary' },
   ],

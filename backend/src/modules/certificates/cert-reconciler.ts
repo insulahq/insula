@@ -32,11 +32,15 @@ import { tlsSecretNameFor } from './service.js';
 import { listCertificateHealth, shouldFallBack } from './status.js';
 import type { CertificateHealth } from './status.js';
 import {
+  notifyAdminCertCheckResumed,
+  notifyAdminCertCheckUnavailable,
   notifyAdminCertExpiring,
   notifyAdminCertIssuanceFailed,
+  notifyAdminCertRecovered,
   notifyAdminCertRenewalFailed,
   notifyTenantCertificateFailed,
   notifyTenantCertificateFallback,
+  notifyTenantCertificateIssued,
 } from '../notifications/events.js';
 import type { Database } from '../../db/index.js';
 import { createWedgeMemory } from './acme-challenges.js';
@@ -90,6 +94,10 @@ async function recordCertificateState(
       id: sslCertificates.id,
       status: sslCertificates.status,
       fallbackActive: sslCertificates.fallbackActive,
+      // Needed to tell a RENEWAL failure from a first-issuance failure, and to
+      // recognise a recovery. Without it every failure read as issuance.
+      lastIssuedAt: sslCertificates.lastIssuedAt,
+      expiresAt: sslCertificates.expiresAt,
     })
     .from(sslCertificates)
     .where(eq(sslCertificates.domainId, d.domainId));
@@ -128,6 +136,13 @@ async function recordCertificateState(
   }
 
   const wasFailed = existing?.status === 'failed';
+  // A certificate that HAS been issued before and is now failing is a renewal
+  // failure; one that never issued is a first-issuance failure. The category
+  // seed has always claimed this distinction ("Distinct from
+  // cert_renewal_failed: this is FIRST issuance") — nothing implemented it, so
+  // every renewal failure was reported as issuance, and the renewal category
+  // was left to be fired by a code path that only ever read Secrets.
+  const everIssued = existing?.lastIssuedAt != null;
   if (failed && !wasFailed) {
     const dedupeKey = `cert-failed:${d.domainName}:${health.lastFailureAt?.toISOString() ?? now.toISOString()}`;
     // The tenant gets a translation; the OPERATOR gets the raw cert-manager
@@ -138,9 +153,42 @@ async function recordCertificateState(
       { hostname: d.domainName, errorMessage: tenantSafeCertError(errorMessage) },
       dedupeKey,
     );
-    await notifyAdminCertIssuanceFailed(
+    if (everIssued) {
+      await notifyAdminCertRenewalFailed(
+        db,
+        { certSubject: d.domainName, errorMessage },
+        dedupeKey,
+      );
+    } else {
+      await notifyAdminCertIssuanceFailed(
+        db,
+        { certSubject: d.domainName, errorMessage },
+        dedupeKey,
+      );
+    }
+  }
+
+  // The closing half. Two real wildcard failures on production were reported
+  // twice each and their successful retry was never announced, so the newest
+  // word an operator had was "failed" — seventeen days after it was fine.
+  if (wasFailed && health.state === 'issued') {
+    const dedupeKey = `cert-recovered:${d.domainName}:${(health.notAfter ?? now).toISOString()}`;
+    await notifyAdminCertRecovered(
       db,
-      { certSubject: d.domainName, errorMessage },
+      {
+        certSubject: health.wildcard ? `*.${d.domainName}` : d.domainName,
+        expiresAt: (health.notAfter ?? now).toISOString(),
+        previousState: everIssued ? 'failing to renew' : 'failing to be issued',
+      },
+      dedupeKey,
+    );
+    // The tenant was told it failed, so the tenant is told it is fixed. This
+    // category and its templates already existed; nothing called them on a
+    // recovery.
+    await notifyTenantCertificateIssued(
+      db,
+      d.tenantId,
+      { hostname: d.domainName, expiresAt: (health.notAfter ?? now).toISOString() },
       dedupeKey,
     );
   }
@@ -173,6 +221,135 @@ function isK8s404(err: unknown): boolean {
   return k8sStatusCode(err) === 404;
 }
 
+/**
+ * Did this error mean "the Kubernetes API was not reachable", as opposed to
+ * "the API answered, and the answer was bad news about this one certificate"?
+ *
+ * The distinction is the whole reason this helper exists. A brief API blackout
+ * once produced dozens of notifications in one second — one per domain, every
+ * one titled "Cert renewal failed", none of them true. Nothing had failed to
+ * renew: the reconciler simply could not READ the Secrets.
+ *
+ * undici reports a connection it never completed as the bare string
+ * `fetch failed`, with the real reason on `.cause`. Both are checked, plus the
+ * status codes an overloaded or restarting apiserver returns.
+ */
+function isDependencyUnreachable(err: unknown): boolean {
+  const code = k8sStatusCode(err);
+  // 503/504 come from an apiserver that is up but not serving; 502 from a
+  // proxy in front of one that is not.
+  if (code === 502 || code === 503 || code === 504) return true;
+
+  const codesInCauseChain: string[] = [];
+  const messages: string[] = [];
+  let cur: unknown = err;
+  for (let depth = 0; cur && depth < 5; depth++) {
+    const e = cur as { message?: unknown; code?: unknown; cause?: unknown };
+    if (typeof e.message === 'string') messages.push(e.message);
+    if (typeof e.code === 'string') codesInCauseChain.push(e.code);
+    cur = e.cause;
+  }
+
+  const TRANSPORT_CODES = new Set([
+    'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'EHOSTUNREACH',
+    'ENETUNREACH', 'ENOTFOUND', 'EAI_AGAIN', 'UND_ERR_CONNECT_TIMEOUT',
+    'UND_ERR_SOCKET', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT',
+  ]);
+  if (codesInCauseChain.some((c) => TRANSPORT_CODES.has(c))) return true;
+
+  // undici's generic surface for a request that never completed. Matched as a
+  // whole message, not a substring of a longer sentence, so a cert-manager
+  // error that happens to contain the words cannot be mistaken for one.
+  return messages.some((m) => m.trim() === 'fetch failed' || m.trim() === 'TypeError: fetch failed');
+}
+
+/**
+ * Sweep-availability state.
+ *
+ * Survives ticks, not restarts — deliberately, like `wedgeMemory` above. A
+ * fresh process starts with no strikes, so the first sweep after a deploy only
+ * observes. Each replica in an HA deployment keeps its own count; the dedupe
+ * key (one per outage day) is what stops two replicas double-notifying.
+ */
+let consecutiveUnavailableSweeps = 0;
+let unavailableSince: Date | null = null;
+let unavailableNotified = false;
+
+/**
+ * A single failed sweep is not worth an operator's attention.
+ *
+ * The reconciler runs every 60 seconds. The production outage that prompted
+ * all of this lasted 21 seconds: by the time anyone could have read a
+ * notification about it, the next sweep had already succeeded. So the alarm
+ * waits for a SECOND consecutive failure — i.e. the fault has outlived a
+ * retry — and then fires exactly once, for the outage rather than for each
+ * certificate.
+ */
+const UNAVAILABLE_SWEEPS_BEFORE_ALARM = 2;
+
+function humaniseDuration(ms: number): string {
+  const mins = Math.round(ms / 60_000);
+  if (mins < 1) return 'under a minute';
+  if (mins === 1) return 'about a minute';
+  if (mins < 60) return `about ${mins} minutes`;
+  const hrs = Math.round(mins / 60);
+  return hrs === 1 ? 'about an hour' : `about ${hrs} hours`;
+}
+
+async function reportSweepAvailability(
+  db: Database,
+  unreachable: CertReconcileResult['unreachable'],
+  now: Date,
+): Promise<void> {
+  if (unreachable) {
+    consecutiveUnavailableSweeps++;
+    unavailableSince ??= now;
+    if (consecutiveUnavailableSweeps >= UNAVAILABLE_SWEEPS_BEFORE_ALARM && !unavailableNotified) {
+      unavailableNotified = true;
+      await notifyAdminCertCheckUnavailable(
+        db,
+        {
+          dependency: 'the Kubernetes API',
+          uncheckedCount: String(unreachable.unchecked),
+          // The raw transport error, labelled as what it is. "fetch failed"
+          // alone was the whole message operators used to get.
+          detail: `The platform reported: ${unreachable.reason}`,
+          recommendedAction:
+            'Check the cluster control plane — this is a connectivity problem, not a certificate '
+            + 'problem. Checks resume automatically within a minute of the API answering again.',
+        },
+        // One per outage, per day: a multi-hour outage does not re-alarm every
+        // minute, and a new outage tomorrow is still reported.
+        `cert-check-unavailable:${now.toISOString().slice(0, 10)}`,
+      );
+    }
+    return;
+  }
+
+  if (unavailableNotified) {
+    const outageMs = now.getTime() - (unavailableSince?.getTime() ?? now.getTime());
+    await notifyAdminCertCheckResumed(
+      db,
+      {
+        dependency: 'the Kubernetes API',
+        outageLabel: humaniseDuration(outageMs),
+        certificateSummary: 'Certificate status is being read again; nothing expired meanwhile.',
+      },
+      `cert-check-resumed:${now.toISOString()}`,
+    );
+  }
+  consecutiveUnavailableSweeps = 0;
+  unavailableSince = null;
+  unavailableNotified = false;
+}
+
+/** Test seam: the module-level strike counter would otherwise leak between tests. */
+export function __resetSweepAvailabilityForTests(): void {
+  consecutiveUnavailableSweeps = 0;
+  unavailableSince = null;
+  unavailableNotified = false;
+}
+
 // ─── Public API ─────────────────────────────────────────────────────────────
 
 export interface CertReconcileResult {
@@ -181,6 +358,13 @@ export interface CertReconcileResult {
   /** Wedged ACME challenges deleted so issuance could restart. */
   readonly healedChallenges: number;
   readonly errors: readonly string[];
+  /**
+   * Set when the sweep was abandoned because the Kubernetes API could not be
+   * reached. `unchecked` counts the domains never looked at, so the operator
+   * is told the scale of what is unknown rather than a per-domain verdict the
+   * reconciler is in no position to give.
+   */
+  readonly unreachable: { readonly reason: string; readonly unchecked: number } | null;
 }
 
 /**
@@ -261,6 +445,7 @@ export async function reconcileCertificateStatuses(
   let synced = 0;
   let healedChallenges = 0;
   const errors: string[] = [];
+  let unreachable: CertReconcileResult['unreachable'] = null;
   // One Certificate list per namespace, not per domain — a tenant with
   // twenty domains would otherwise issue twenty identical LISTs.
   const certsByNamespace = new Map<string, readonly CertificateHealth[]>();
@@ -423,15 +608,27 @@ export async function reconcileCertificateStatuses(
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       errors.push(`${d.domainName}: ${msg}`);
-      // Phase 6A: cert sync failure → admin.cert_renewal_failed.
-      // Best-effort: dispatchSafe never throws so a notification path
-      // error doesn't compound the original failure.
-      await notifyAdminCertRenewalFailed(db, {
-        certSubject: d.domainName,
-        errorMessage: msg.slice(0, 500),
-      });
+
+      // A dependency that is DOWN is one event, not one event per domain.
+      // Abandon the sweep: every remaining domain would fail identically, so
+      // continuing buys 28 more failed requests and 28 more alarms. The
+      // aggregate is reported by the caller instead — see `unreachable`.
+      if (isDependencyUnreachable(err)) {
+        unreachable = { reason: msg.slice(0, 300), unchecked: domainsWithTenants.length - checked + 1 };
+        break;
+      }
+
+      // Anything else is specific to this one domain (an unparseable PEM, a
+      // forbidden Secret, a failed write). It goes in `errors`, which the
+      // caller logs as a warning. It deliberately does NOT notify: this block
+      // only ever READS certificate state, so it can report that a check
+      // failed but never that a renewal did. A genuine renewal failure is
+      // detected where it is actually visible — in recordCertificateState,
+      // when a certificate that WAS issued goes back to failed.
     }
   }
 
-  return { checked, synced, healedChallenges, errors };
+  await reportSweepAvailability(db, unreachable, new Date());
+
+  return { checked, synced, healedChallenges, errors, unreachable };
 }

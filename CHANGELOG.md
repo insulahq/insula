@@ -118,6 +118,36 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   automatically — the fix reaches them through the reconciler, because a job in
   this state does not pick up manifest changes on its own. A CI guard now
   rejects the pattern anywhere it could recur.
+- **A 21-second cluster hiccup no longer arrives as 29 "certificate renewal
+  failed" alarms.** In the early hours of 2026-09-18 the production cluster's
+  Kubernetes API was briefly unreachable. Nothing was wrong with any
+  certificate — all 33 were valid with 53 days or more to run — but the
+  platform could not *read* them, and it reported that as a renewal failure for
+  every domain it had not managed to check: 29 notifications in a single
+  second, each naming a different site.
+
+  Three things were wrong and all three are fixed. The code that reports
+  failures only ever reads certificate status, so it can now say "I could not
+  check" but never "renewal failed". An unreachable dependency is reported
+  once, for the outage, with a count of what was left unchecked — not once per
+  certificate. And the alarm waits for the fault to survive one retry, so a
+  blip that is over within the minute stays quiet; if it does not clear, you
+  are told what could not be reached and that certificates keep serving
+  meanwhile.
+
+  A genuine renewal failure is now reported as one. Previously every failure —
+  first issuance or renewal of a working certificate — was filed under
+  issuance, which is why the renewal alarm was left to be raised by code that
+  could not detect a renewal at all.
+
+### Added
+- **Certificates now tell you when they recover.** Two real wildcard failures
+  on 2026-09-01 were each reported twice; the retry succeeded quietly, so the
+  most recent thing an operator had been told about those domains was
+  "failed" — seventeen days after they were fine. A certificate that comes back
+  now closes its own alarm, for the admin and for the tenant, saying what it
+  had been doing and how long the new certificate is good for. The same
+  applies when certificate checks resume after an outage.
 - **Three platform alerts explained themselves to a reviewer instead of to
   you.** One arriving on the test cluster read *"Detection and the repair
   button already existed; nothing escalated, so a drift sat for three days on
