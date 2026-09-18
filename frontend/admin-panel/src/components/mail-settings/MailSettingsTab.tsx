@@ -9,6 +9,41 @@ const INPUT_CLASS =
 
 const FQDN_RE = /^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?)+$/i;
 
+type MailEnforcementMode = 'notify' | 'off';
+
+/**
+ * The Sending Protection modes, in the order an operator would consider them.
+ *
+ * There are two, and there is deliberately no enforcing mode. The evaluator
+ * this setting governs only ever NOTIFIES — `mail_enforcement_mode` is read in
+ * exactly one place in the backend (`thresholds.ts`), where `off` returns
+ * early and anything else notifies. Enforcement of the send limits themselves
+ * happens in Stalwart, unconditionally, and is not governed by this control.
+ *
+ * A third `auto` mode existed until 2026-09-15. It acted solely on FBL
+ * complaint rates, and when FBL was retired it became a setting that promised
+ * automatic action and silently did nothing — so it was deleted rather than
+ * left in the dropdown. Adding an enforcing mode back means first deciding and
+ * building what it enforces; listing it here before then would recreate
+ * exactly the stored-and-ignored control that was removed.
+ */
+const ENFORCEMENT_MODES: ReadonlyArray<{
+  value: MailEnforcementMode;
+  label: string;
+  help: string;
+}> = [
+  {
+    value: 'notify',
+    label: 'Notify only (recommended)',
+    help: 'Send notifications on threshold crossings; admins act manually via the tenant levers.',
+  },
+  {
+    value: 'off',
+    label: 'Off',
+    help: 'No threshold evaluation at all. Stalwart still enforces the configured send limits.',
+  },
+];
+
 /**
  * Mail-side platform settings — the SMTP/IMAP hostname Stalwart
  * advertises and the URL the admin panel uses to embed Stalwart's
@@ -179,27 +214,28 @@ export default function MailSettingsTab() {
           (80% / 100% of send limits) and operator alerts when a sender
           saturates its limits. Send activity appears under Monitoring → Mail.
         </p>
-        <div className="space-y-2">
-          {([
-            ['notify', 'Notify only (recommended)', 'Send notifications on threshold crossings; admins act manually via the tenant levers.'],
-            ['off', 'Off', 'No threshold evaluation at all. Stalwart still enforces the configured send limits.'],
-          ] as const).map(([value, label, help]) => (
-            <label key={value} className="flex items-start gap-2 cursor-pointer">
-              <input
-                type="radio"
-                name="mail-enforcement-mode"
-                value={value}
-                checked={enforcementMode === value}
-                onChange={() => setEnforcementMode(value)}
-                className="mt-1 accent-brand-500"
-                data-testid={`enforcement-${value}`}
-              />
-              <span>
-                <span className="block text-sm font-medium text-gray-900 dark:text-gray-100">{label}</span>
-                <span className="block text-xs text-gray-500 dark:text-gray-400">{help}</span>
-              </span>
-            </label>
-          ))}
+        <div>
+          <label
+            htmlFor="mail-enforcement-mode"
+            className="block text-sm font-medium text-gray-700 dark:text-gray-300"
+          >
+            Mode
+          </label>
+          <select
+            id="mail-enforcement-mode"
+            name="mail-enforcement-mode"
+            value={enforcementMode}
+            onChange={(e) => setEnforcementMode(e.target.value as MailEnforcementMode)}
+            className={`mt-1 ${INPUT_CLASS}`}
+            data-testid="enforcement-mode-select"
+          >
+            {ENFORCEMENT_MODES.map(({ value, label }) => (
+              <option key={value} value={value}>{label}</option>
+            ))}
+          </select>
+          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400" data-testid="enforcement-mode-help">
+            {ENFORCEMENT_MODES.find((m) => m.value === enforcementMode)?.help}
+          </p>
         </div>
       </fieldset>
 

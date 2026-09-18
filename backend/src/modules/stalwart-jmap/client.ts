@@ -1103,6 +1103,19 @@ export interface StalwartDmarcReportSettingsRow {
    */
   readonly failureSendFrequency?: StalwartExpression;
   readonly failureFromAddress?: StalwartExpression;
+  /**
+   * The remaining fields of the group. They carry Stalwart's own defaults and
+   * the platform has no opinion about their values — but a `/set update`
+   * against a never-written singleton only persists when the patch states
+   * EVERY field, so they are written all the same. See
+   * `DMARC_SETTINGS_FIELDS` in mail-events/dmarc-report-sender.ts.
+   */
+  readonly aggregateSubject?: StalwartExpression;
+  readonly aggregateContactInfo?: StalwartExpression;
+  readonly aggregateMaxReportSize?: StalwartExpression;
+  readonly failureFromName?: StalwartExpression;
+  readonly failureDkimSignDomain?: StalwartExpression;
+  readonly failureSubject?: StalwartExpression;
 }
 
 export async function dmarcReportSettingsGet(params: {

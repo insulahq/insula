@@ -46,7 +46,9 @@ import {
   reportSettingsGet,
   reportSettingsUpdate,
   actionReloadSettings,
+  type StalwartReportSettingsRow,
 } from '../stalwart-jmap/client.js';
+import { commitSettingsGroup } from '../stalwart-jmap/settings-group.js';
 import type { Database } from '../../db/index.js';
 import type { OutboundReconcileLogger } from '../email-outbound/service.js';
 
@@ -124,6 +126,44 @@ const REQUIRED_INTAKE_PATTERNS = [
  * Stalwart diverting mail to a parser whose output nothing consumes.
  */
 const RETIRED_INTAKE_PATTERNS = ['fbl@*'] as const;
+
+/**
+ * Do NOT forward analysed reports to a human.
+ *
+ * `inboundReportForwarding` decides whether Stalwart, having parsed an
+ * incoming report that matched one of the patterns above, ALSO delivers a copy
+ * to the recipient. It shipped `true`, so every DMARC aggregate and TLS-RPT
+ * report the platform already ingests was additionally dropped into a mailbox
+ * — and on the mail hostname that mailbox is a list fanning out to the admin
+ * roster. Operators got machine mail they cannot act on and that the platform
+ * has already stored.
+ *
+ * Tenants read their own DMARC results at Tenant → Email → Authentication;
+ * nothing on the platform reads the forwarded copy. Turning this off keeps the
+ * ingestion and stops the copies.
+ *
+ * Scope, checked against Stalwart's docs before relying on it: the flag
+ * applies ONLY to messages recognised as reports at the intake patterns. It
+ * does not touch DSNs, bounces, or ordinary mail — so `postmaster@` and
+ * `abuse@` keep receiving everything a human is actually meant to see, and
+ * they keep ACCEPTING mail (a 550 here is what left 385 undeliverable DSNs
+ * queued and retrying every 24h — see POSTMASTER_LOCAL_PART above).
+ */
+const REPORT_FORWARDING = false;
+
+/**
+ * The rest of the `x:ReportSettings` group, at Stalwart's own defaults.
+ *
+ * Stated verbatim because a commit against a never-written group only persists
+ * when it names EVERY field — see stalwart-jmap/settings-group.ts. Read off a
+ * live warm instance rather than guessed; writing them changes nothing an
+ * operator can observe.
+ */
+const REPORT_SETTINGS_DEFAULTS = {
+  outboundReportDomain: null,
+  outboundReportSubmitter: { match: {}, else: "system('hostname')" },
+  inboundReportMaxSize: 26214400,
+} as const;
 
 /**
  * Both intake mailboxes are transit buffers, not archives: the DMARC poller
@@ -527,7 +567,7 @@ export async function ensureReportIntake(
         : 'exists';
   }
 
-  // ── 2. ReportSettings intake patterns ──
+  // ── 2. ReportSettings: intake patterns + report forwarding ──
   let settingsState: ReportIntakeResult['settings'] = 'skipped';
   try {
     const current = await reportSettingsGet(opts);
@@ -545,20 +585,49 @@ export async function ensureReportIntake(
         changed = true;
       }
     }
+    if (current?.inboundReportForwarding !== REPORT_FORWARDING) changed = true;
+    // A group that has never been written is NOT in sync: empty means
+    // Stalwart's built-in defaults are live, which is the state to overwrite.
+    if (!current) changed = true;
 
     if (!changed) {
       settingsState = 'in-sync';
     } else {
-      const res = await reportSettingsUpdate({ patch: { inboundReportAddresses: addresses }, ...opts });
-      if (res.notUpdated && Object.keys(res.notUpdated).length > 0) {
-        logger.error({ failures: res.notUpdated }, 'report intake: ReportSettings update failed');
+      const outcome = await commitSettingsGroup<StalwartReportSettingsRow>({
+        read: () => reportSettingsGet(opts),
+        write: (patch) => reportSettingsUpdate({ patch, ...opts }),
+        patch: {
+          ...REPORT_SETTINGS_DEFAULTS,
+          inboundReportAddresses: addresses,
+          inboundReportForwarding: REPORT_FORWARDING,
+        },
+        // One field against a five-field commit, so Stalwart cannot dedupe the
+        // primer against the commit that follows it.
+        primer: { inboundReportForwarding: REPORT_FORWARDING },
+        verify: (row) => row.inboundReportForwarding === REPORT_FORWARDING
+          && REQUIRED_INTAKE_PATTERNS.every((pattern) => row.inboundReportAddresses?.[pattern] === true)
+          && RETIRED_INTAKE_PATTERNS.every((pattern) => !(pattern in (row.inboundReportAddresses ?? {}))),
+        current,
+      });
+
+      if (outcome.state !== 'committed') {
+        logger.error(
+          { reason: outcome.reason, wasCold: outcome.wasCold },
+          'report intake: ReportSettings did NOT land — Stalwart accepted the write and kept its own '
+          + 'state, so report intake is not in the intended state',
+        );
       } else {
         // Report-analysis config is boot-loaded; the reload action
         // re-reads it live (same mechanism as the MTA throttles).
         await actionReloadSettings(opts);
         settingsState = 'updated';
         logger.info(
-          { patterns: REQUIRED_INTAKE_PATTERNS, removed: RETIRED_INTAKE_PATTERNS },
+          {
+            patterns: REQUIRED_INTAKE_PATTERNS,
+            removed: RETIRED_INTAKE_PATTERNS,
+            forwarding: REPORT_FORWARDING,
+            wasCold: outcome.wasCold,
+          },
           'report intake: ReportSettings updated + reloaded',
         );
       }

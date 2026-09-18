@@ -116,10 +116,29 @@ beforeEach(() => {
   updateMailbox.mockReset().mockResolvedValue(undefined);
   listMailboxAliases.mockReset().mockResolvedValue([]);
   createMailboxAlias.mockReset().mockResolvedValue(undefined);
-  reportSettingsGet.mockReset().mockResolvedValue({ inboundReportAddresses: {} });
-  reportSettingsUpdate.mockReset().mockResolvedValue({});
+  // A Stalwart that actually PERSISTS, so a write that lands is
+  // distinguishable from one it accepted and discarded. The old fake returned
+  // a fixed object no matter what was written, under which a reconciler that
+  // stored nothing still passed — see stalwart-jmap/settings-group.ts.
+  reportSettings = { inboundReportAddresses: {}, inboundReportForwarding: true };
+  lastReportPatch = null;
+  reportPrimed = false;
+  reportSettingsGet.mockReset().mockImplementation(async () => reportSettings);
+  reportSettingsUpdate.mockReset().mockImplementation(async (args: { patch: Record<string, unknown> }) => {
+    const serialised = JSON.stringify(args.patch);
+    if (serialised === lastReportPatch) return {};        // deduped: a no-op
+    lastReportPatch = serialised;
+    if (reportSettings) reportSettings = { ...reportSettings, ...args.patch };
+    else if (!reportPrimed) reportPrimed = true;          // cold: primes, stores nothing
+    else reportSettings = { ...args.patch };
+    return {};
+  });
   actionReloadSettings.mockReset().mockResolvedValue(undefined);
 });
+
+let reportSettings: Record<string, unknown> | null = null;
+let reportPrimed = false;
+let lastReportPatch: string | null = null;
 
 const created = () =>
   createMailbox.mock.calls.map((c) => (c[3] as { local_part: string }).local_part);
@@ -233,9 +252,43 @@ describe('report intake provisions postmaster@, not just the pattern', () => {
     // because abuse-reports.ts now consumes the resulting events: consume
     // first, intercept second, never the reverse.
     await ensureReportIntake(db(ONE), logger);
-    const patch = reportSettingsUpdate.mock.calls[0]?.[0] as
-      { patch: { inboundReportAddresses: Record<string, boolean> } } | undefined;
-    expect(patch?.patch.inboundReportAddresses).toHaveProperty(`${ABUSE_LOCAL_PART}@*`, true);
+    // The LAST write is the commit; on a cold group the first is a primer.
+    const calls = reportSettingsUpdate.mock.calls;
+    const patch = (calls[calls.length - 1][0] as
+      { patch: { inboundReportAddresses: Record<string, boolean> } }).patch;
+    expect(patch.inboundReportAddresses).toHaveProperty(`${ABUSE_LOCAL_PART}@*`, true);
+  });
+
+  it('turns report FORWARDING off so analysed reports stop reaching a human', async () => {
+    // Stalwart shipped this `true`, so every DMARC aggregate and TLS-RPT report
+    // it already parses was ALSO delivered to the intake mailbox — which on the
+    // mail hostname fans out to the admin roster. Tenants read their DMARC
+    // results in the panel; nothing reads the forwarded copy.
+    await ensureReportIntake(db(ONE), logger);
+    expect(reportSettings?.inboundReportForwarding).toBe(false);
+  });
+
+  it('rewrites forwarding back to off if it drifts on', async () => {
+    reportSettings = { inboundReportAddresses: { 'postmaster@*': true, 'dmarc@*': true }, inboundReportForwarding: true };
+    await ensureReportIntake(db(ONE), logger);
+    expect(reportSettings?.inboundReportForwarding).toBe(false);
+  });
+
+  it('PRIMES a cold ReportSettings group, then commits', async () => {
+    // Cold: the first /set primes the singleton and stores nothing, so the
+    // commit must be preceded by a differently-shaped primer or the group
+    // stays unwritten and Stalwart's built-in defaults stay live.
+    reportSettings = null;
+    await ensureReportIntake(db(ONE), logger);
+    expect(reportSettingsUpdate).toHaveBeenCalledTimes(2);
+    const [primer, commit] = reportSettingsUpdate.mock.calls
+      .map((c) => (c[0] as { patch: Record<string, unknown> }).patch);
+    expect(Object.keys(primer)).toEqual(['inboundReportForwarding']);
+    expect(JSON.stringify(primer)).not.toBe(JSON.stringify(commit));
+    expect(reportSettings).not.toBeNull();
+    expect((reportSettings as Record<string, unknown>).inboundReportForwarding).toBe(false);
+    expect((reportSettings as { inboundReportAddresses: Record<string, boolean> })
+      .inboundReportAddresses).toHaveProperty('postmaster@*', true);
   });
 
   it('does not recreate a mailbox that already has a row', async () => {
