@@ -7,7 +7,7 @@
  * never reached, so the records accumulate monotonically with nothing to reverse
  * them: every node reboot adds a batch and none ever leave.
  *
- * What they cost, measured on production 2026-09-15 (43 records from one
+ * What they cost, measured on production (43 records from one
  * graceful sv1 shutdown):
  *
  *   node CPU/memory   nothing — the containers are gone, cgroups torn down

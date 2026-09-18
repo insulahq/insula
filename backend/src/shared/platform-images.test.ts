@@ -56,7 +56,7 @@ describe('resolvePlatformImage', () => {
   it('every fallback is a fully-qualified ghcr reference', () => {
     // A bare name resolves to docker.io on a real cluster and ImagePullBackOffs
     // — that exact bug shipped for file-manager and was only caught on the
-    // prod-mirror staging in 2026-06.
+    // prod-mirror staging.
     for (const n of NAMES) {
       expect(PLATFORM_IMAGES[n].fallback).toMatch(/^ghcr\.io\/insulahq\/insula\/[a-z-]+:.+$/);
     }

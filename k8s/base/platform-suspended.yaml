@@ -5,7 +5,7 @@
 # Both files live in ONE ConfigMap that is mounted twice: the HTML at
 # /usr/share/nginx/html (re-read per request, so it was always fine) and the
 # nginx config at /etc/nginx/conf.d (read once at startup, so it was NOT).
-# Before 2026-09-05 a change to this ConfigMap therefore applied by halves —
+# Before a change to this ConfigMap therefore applied by halves —
 # the page updated while its server config silently did not.
 ---
 apiVersion: apps/v1
@@ -38,7 +38,7 @@ spec:
             # but the LimitRange's floor is 32Mi — anything lower is
             # rejected with "minimum memory usage per Container is 32Mi"
             # and the Deployment never produces a pod. Caught on
-            # testing.example.test fresh-bootstrap 2026-05-21.
+            # testing.example.test fresh-bootstrap.
             requests: { cpu: "10m", memory: "32Mi" }
             limits:   { memory: "64Mi" } # no CPU limit — high-priority platform pod
           volumeMounts:

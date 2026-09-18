@@ -38,7 +38,7 @@ vi.mock('../../db/schema.js', () => ({
     __table: 'mailboxAliases',
     id: 'id', fullAddress: 'full_address', enabled: 'enabled', mailboxId: 'mailbox_id',
   },
-  // 2026-05-27: drift-persistence + admin notification fan-out added to
+  // drift-persistence + admin notification fan-out added to
   // the reconciler. Stub the new schema exports just enough for the
   // chained query builders to run; the mock DB (createMockDb) returns
   // empty arrays for the new query shapes, so no field is dereferenced.
@@ -54,11 +54,11 @@ vi.mock('../../db/schema.js', () => ({
     id: 'id', userId: 'user_id', type: 'type', title: 'title',
     message: 'message', resourceType: 'resource_type',
   },
-  // 2026-08-25: orphan-list detection reads email_aliases ownership.
+  // orphan-list detection reads email_aliases ownership.
   emailAliases: { __table: 'emailAliases', id: 'id', sourceAddress: 'source_address' },
 }));
 
-// 2026-08-25: orphan-list check pulls listMailingLists; default = no lists.
+// orphan-list check pulls listMailingLists; default = no lists.
 const mockListMailingLists = vi.fn(async (): Promise<unknown[]> => []);
 vi.mock('./mailing-lists.js', () => ({
   listMailingLists: (...args: unknown[]) => mockListMailingLists(...args),
@@ -298,7 +298,7 @@ describe('createPrincipalsSyncScheduler — runOnce', () => {
     expect(inserted[0].platformRowId).toBe('orphan-list:ml-1');
   });
 
-  // ── mailbox ALIAS drift, both directions (2026-09-17) ───────────────────
+  // ── mailbox ALIAS drift, both directions ───────────────────
   //
   // Drift covered mailboxes and domains only, so an empty mail_drift_items
   // was never evidence that aliases were healthy — it could not have said

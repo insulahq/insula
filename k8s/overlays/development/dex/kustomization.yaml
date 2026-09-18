@@ -14,7 +14,7 @@ configMapGenerator:
       - config.yaml
 
 generatorOptions:
-  # Name suffix hash DELIBERATELY ON (this said `true` until 2026-09-05).
+  # Name suffix hash DELIBERATELY ON(this said `true` until).
   #
   # Dex parses config.yaml once, at startup. With a fixed ConfigMap name,
   # editing it changed nothing in the cluster's pod spec, so nothing rolled and

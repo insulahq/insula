@@ -11,7 +11,7 @@ vi.mock('../hooks/use-outage-impact', () => ({
 }));
 
 /**
- * What the 2026-09-12 quorum-loss drill actually put in front of the operator:
+ * What the quorum-loss drill actually put in front of the operator:
  * a raw Kubernetes client dump, response headers and all. Honest, and close to
  * unreadable. Their first question in an incident is "what can I no longer
  * trust?", not "what did the client library return?".

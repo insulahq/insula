@@ -231,7 +231,7 @@ export async function deleteBackupConfig(db: Database, id: string) {
   await db.delete(backupConfigurations).where(eq(backupConfigurations.id, id));
 }
 
-// activateBackupConfig / deactivateBackupConfig removed 2026-08-26 —
+// activateBackupConfig / deactivateBackupConfig removed —
 // the legacy target-activate path is retired (backup routing is the
 // 3-class shim assignments; migration 0090 cleared any active row).
 

@@ -53,7 +53,7 @@ configMapGenerator:
 # every content edit, so Flux+SSA spawns fresh pods with the new
 # mount immediately — no race window where the wrapper script's
 # `cp` reads a kubelet-cached stale ConfigMap (observed
-# 2026-05-07: pod started, ConfigMap mount briefly carried the
+# pod started, ConfigMap mount briefly carried the
 # previous content, the cp captured it, the source mount later
 # refreshed but the destination stayed stale until manual
 # intervention).

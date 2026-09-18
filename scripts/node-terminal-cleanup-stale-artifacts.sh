@@ -3,7 +3,7 @@
 #
 # One-off cleanup of node-terminal per-session artifacts that
 # accumulated on cluster nodes BEFORE the Pod preStop lifecycle hook
-# (added 2026-05-20) started removing them on every teardown.
+# started removing them on every teardown.
 #
 # Removes from EACH node:
 #   • /root/.bash_history-<uuid>     (operator-typed commands)

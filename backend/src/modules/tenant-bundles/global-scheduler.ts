@@ -25,7 +25,7 @@
  *   6. For each tenant, call runOneScheduledBundle from schedule.ts.
  *   7. Per-tenant failures are counted AND surfaced as an
  *      admin.backup_failed notification — a wave that fails for every
- *      tenant must never be silent (2026-08-26: a CIFS target made all
+ * tenant must never be silent (: a CIFS target made all
  *      scheduled bundles throw for two nights with only pod-local log
  *      lines as evidence).
  */

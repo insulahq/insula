@@ -58,7 +58,7 @@ IMAGE="docker.io/stalwartlabs/stalwart:v0.16.5"
 CLI_IMAGE="docker.io/stalwartlabs/stalwart:v0.16.5"
 CLI_VERSION="v1.0.4"
 CLI_URL="https://github.com/stalwartlabs/cli/releases/download/${CLI_VERSION}/stalwart-cli-x86_64-unknown-linux-musl.tar.xz"
-# SHA256 of the tar.xz tarball, pinned 2026-05-03 from GitHub release.
+# SHA256 of the tar.xz tarball, pinned from GitHub release.
 # Update when bumping CLI_VERSION. The verify step in ensure_cli aborts
 # if the download doesn't match — protects against a poisoned cache or
 # a tampered upstream release.

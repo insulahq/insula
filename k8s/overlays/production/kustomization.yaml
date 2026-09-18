@@ -30,7 +30,7 @@ resources:
   # Included in production + staging only — dev DinD has no real etcd and
   # backups-against-local-path would be noise.
   - ../../base/backup
-  # Cut 3 (2026-05-04): Stalwart 0.16 mail server. Cutover from v015
+  # Cut 3: Stalwart 0.16 mail server. Cutover from v015
   # is operator-driven via scripts/cutover-stalwart-v015-to-v016.sh
   # — when production cuts over, leave this entry uncommented.
   - stalwart-mail/
@@ -46,7 +46,7 @@ resources:
   # whose default engine is `bulwark` 404'd on webmail.${DOMAIN} (reconciler
   # had no Deployment to scale). Staging inherits this via ../production.
   - bulwark/
-  # 2026-05-18: webmail feature-visibility ConfigMap. Mounted by BOTH the
+  # webmail feature-visibility ConfigMap. Mounted by BOTH the
   # roundcube and bulwark Pods. The data keys are reconciler-owned — Flux is
   # told to skip them.
   - ../../base/mail-feature-css
@@ -66,7 +66,7 @@ components:
   - ../../components/system-node-affinity
   # Admin-only UIs (Stalwart web-admin, Longhorn, future) MUST be
   # gated by an auth-gate component. Production DEFAULT is the
-  # cookie-based gate (operator decision 2026-07-24; matches staging).
+  # cookie-based gate(operator decision; matches staging).
   # Swapping to admin-auth-gate-oauth2 (oauth2-proxy + an EXTERNAL
   # OIDC IdP — in-cluster Dex is dev/staging-only) is an optional,
   # supported configuration, not a pending cutover step. Without one
@@ -74,7 +74,7 @@ components:
   - ../../components/admin-auth-gate-cookie
 
 patches:
-  # ── platform-critical eviction protection (operator decision 2026-07-25) ──
+  # ── platform-critical eviction protection ──
   # Re-applies the base blanket (harmless) and covers the mail/webmail
   # resources added at THIS overlay level (stalwart, roundcube, bulwark).
   # DaemonSets keep their explicit system-node-critical — not patched.

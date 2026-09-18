@@ -3,7 +3,7 @@
  *
  * The sibling Job watcher answers "did a run fail". This answers the question
  * that had no detector at all: "has a run happened when one was supposed to".
- * Measured on DEV 2026-09-15 — last successful mail snapshot four days earlier,
+ * Measured on DEV — last successful mail snapshot four days earlier,
  * 178 scheduled fires missed, every operator surface green. Nothing failed.
  * Nothing ran. Nothing said so.
  *

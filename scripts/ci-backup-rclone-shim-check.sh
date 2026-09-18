@@ -294,15 +294,15 @@ pass "Invariant 15: rclone-push via shim wired"
 # The intent: existing operators don't get disrupted, but every
 # new backup pipeline is forced to go through the shim.
 LEGACY_ALLOWLIST=(
-  # 2026-08-26: etcd-snapshot / postgres-dump / hostpath-snapshot
+  # etcd-snapshot / postgres-dump / hostpath-snapshot
   # CronJobs deleted with the target-activate retirement. The
   # survivors are shim-BRIDGED (dr-cronjobs.ts writes their
   # backup-credentials against the shim's S3 endpoint) but still use
   # the aws-cli pattern internally, so they stay allowlisted.
-  # 2026-09-03: backup-audit-cronjob.yaml deleted — it audited
+  # backup-audit-cronjob.yaml deleted — it audited
   # membership of a Longhorn recurring-job group that no longer
   # governs any backup (Longhorn volume backups were retired
-  # 2026-08-26). See LEGACY-DEPRECATED.md.
+  # ). See LEGACY-DEPRECATED.md.
   "k8s/base/backup/cluster-state-cronjob.yaml"          # shim-bridged
   "k8s/base/backup/secrets-backup-cronjob.yaml"         # shim-bridged
   "k8s/base/stalwart-mail/stalwart/snapshot-cronjob.yaml" # legacy mail-target-sync owns
@@ -334,7 +334,7 @@ done
 pass "Invariant 16: no new legacy backup-credentials uses"
 
 # ─── 17. NFS support fully removed ─────────────────────────────────
-# NFS storage_type was dropped 2026-05-25 (migration 0026) because
+# NFS storage_type was dropped (migration 0026) because
 # the unprivileged R-X19 shim has no NFS-client backend — see ADR-043
 # postscript. Three things MUST stay gone:
 #   1. The staging `nfs-test-server` manifests (no bench harness now
@@ -399,7 +399,7 @@ pass "Invariant 18: DaemonSet is fully unprivileged (no SYS_ADMIN, no /dev/fuse,
 
 # ─── 19. R-X19 — memory tuning env vars present ─────────────────────
 # GOGC=20 + GOMEMLIMIT=200MiB is the v3-tuned config from the
-# 2026-05-21 bench. Without these, rclone serve s3 RSS grows to
+# bench. Without these, rclone serve s3 RSS grows to
 # ~470 MiB peak under multipart load (vs ~284 MiB with the tuning).
 if ! grep -qE 'name:\s*GOGC' "$DS_MANIFEST"; then
   fail "Invariant 19: DaemonSet missing GOGC env var (memory tuning regressed)"
@@ -480,7 +480,7 @@ pass "Invariant 22: R-X20 multi-target binding supported; rcloneConf in configHa
 # Cluster comes up. The reconciler later merge-patches both with real
 # HKDF-derived values. Without this guard, a future refactor could
 # strip the stub and re-introduce the chicken-and-egg.
-# Caught on testing.example.test fresh-bootstrap 2026-05-21.
+# Caught on testing.example.test fresh-bootstrap.
 DB_YAML="$ROOT/k8s/base/database.yaml"
 if [[ ! -f "$DB_YAML" ]]; then
   fail "Invariant 23: $DB_YAML missing"
@@ -501,7 +501,7 @@ pass "Invariant 23: bootstrap chicken-and-egg unblocker (static ObjectStore + cr
 # readiness probe therefore kept it NotReady forever, STALLING a
 # DaemonSet RollingUpdate (e.g. an image-pin bump) on the idle node —
 # making the shim un-updatable on a cluster with no backup target
-# (2026-06-06). Readiness must instead reflect a launcher-written marker
+# . Readiness must instead reflect a launcher-written marker
 # (alive == Ready), written in BOTH the idle and serving branches.
 if grep -qE '^\s*tcpSocket:' "$DS_MANIFEST"; then
   fail "Invariant 24: backup-rclone-shim uses a tcpSocket probe — a target-less shim never binds :9000, so this stalls RollingUpdate. Use the exec readiness marker."

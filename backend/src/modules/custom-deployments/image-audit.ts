@@ -79,7 +79,7 @@ export async function getRunningDigest(
     // to the checked image — a row carrying a DIFFERENT tag may belong
     // to another service of the same compose stack using the same
     // repository, and returning its digest would fake an update state
-    // for this one (review 2026-08-24).
+    // for this one.
     if (repoMatch === null && got.tag === null) repoMatch = row.digest;
   }
   return repoMatch;

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # End-to-end test for the tenant-bundles tenant-side surface
-# (2026-05-28).
+# .
 #
 # Validates:
 #   1. Schedule fix: backup_schedules.tenant_bundle row + global

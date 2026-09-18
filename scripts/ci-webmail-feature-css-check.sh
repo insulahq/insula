@@ -2,7 +2,7 @@
 #
 # Webmail feature-visibility CSS check.
 #
-# Invariants (2026-05-18):
+# Invariants:
 #
 #   1. Every overlay that includes the Roundcube and/or Bulwark
 #      Deployment MUST also include the `mail-feature-css` base module,
@@ -21,7 +21,7 @@
 
 set -euo pipefail
 
-# 2026-07-28: was `dev/roundcube dev/bulwark` — the local-dev overlay is
+# was `dev/roundcube dev/bulwark` — the local-dev overlay is
 # `dind/`, not `dev/`, so both engine overlays failed to build and the guard
 # always exited 1 (it ran in no workflow, so nobody saw it). The canonical
 # overlays are dind/{roundcube,bulwark} (the two webmail engines) plus the

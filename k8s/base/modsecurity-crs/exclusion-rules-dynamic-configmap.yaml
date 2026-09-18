@@ -44,7 +44,7 @@ metadata:
     # visible as "waf-rule-exclusions: ConfigMap updated (drift detected)"
     # every ~5 min plus a modsec-crs roll each time, while the WAF Events
     # "Whitelist this rule for this host" button appears to do nothing.
-    # (Observed on a live cluster 2026-08-03: 1 enabled row, count:1 in the
+    # (Observed on a live cluster: 1 enabled row, count:1 in the
     # reconciler log, empty ConfigMap.)
     # IfNotPresent rather than merge: the reconciler is the sole owner of
     # this file after first create, so there is nothing to merge.

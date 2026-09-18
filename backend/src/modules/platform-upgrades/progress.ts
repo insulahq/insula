@@ -1,5 +1,5 @@
 /**
- * Live upgrade progress + interruption preview (2026-07-28).
+ * Live upgrade progress + interruption preview.
  *
  * A platform upgrade is a Flux APP re-pin: it rolls the platform's own
  * Deployments (management API, admin/tenant panels, reconcilers) to the new

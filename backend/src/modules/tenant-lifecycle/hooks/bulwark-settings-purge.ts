@@ -1,5 +1,5 @@
 /**
- * bulwark-settings-purge hook (RETIRED 2026-05-17).
+ * bulwark-settings-purge hook.
  *
  * Original purpose: on `archived` transition, delete Bulwark
  * per-account settings files (`/app/data/settings/<sha256>.enc`) for

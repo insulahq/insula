@@ -7,7 +7,7 @@ import { ApiError } from '../../shared/errors.js';
  * A compose document and its env files are, by definition, shell commands and
  * `KEY=value` configuration. Sent as `application/json` the WAF parses them
  * into ARGS and the CRS families match on content the tenant is entitled to
- * submit — measured on DEV 2026-09-09, a realistic compose file plus a `.env`
+ * submit — measured on DEV, a realistic compose file plus a `.env`
  * is refused at the edge with a bare 403 the API never sees (933120 on the
  * `.env` lines, 942190 on a `mysql -e` command, aggregated by 949110).
  *

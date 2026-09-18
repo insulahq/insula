@@ -4,7 +4,7 @@
 #
 # Why this guard exists
 # ---------------------
-# On 2026-09-18 every etcd snapshot in off-site storage (24 of 24 on
+# every etcd snapshot in off-site storage (24 of 24 on
 # production) carried `"sha256":""` in its sidecar. No stored snapshot could be
 # verified before a restore, and nothing had ever reported a problem: the job
 # exited 0 every time.

@@ -8,7 +8,7 @@
 #     bulwark/      # ← Bulwark /app/data; mounted via subPath=bulwark
 #
 # WHY local-path (not Longhorn — see ci-no-longhorn allow-list):  # ci-no-longhorn: ignore
-#   RocksDB is I/O-latency-bound — the 2026-05-22 storage perf bench
+# RocksDB is I/O-latency-bound — the storage perf bench
 #   (project_stalwart_storage_perf_2026_05_22) showed Longhorn 1-replica  # ci-no-longhorn: ignore
 #   delivers 3-7x worse latency than local-path on RocksDB workloads.
 #   Bulwark's 60 KB working set is negligible — local-path saves the

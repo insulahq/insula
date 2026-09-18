@@ -1,5 +1,5 @@
 /**
- * switch-with-pause — Phase 5 (2026-05-24)
+ * switch-with-pause — Phase 5
  *
  * Pre-switch flow added in response to operator request: when an
  * operator switches the target for a shim class, the schedules

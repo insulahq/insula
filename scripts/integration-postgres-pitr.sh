@@ -21,7 +21,7 @@
 #      RESTORE_IN_PROGRESS but allows status polling.
 #
 #   5. Chip-persistence + plugin-sidecar propagation + fast/slow path
-#      selection (folded 2026-07-02 from the retired
+# selection (folded from the retired
 #      integration-postgres-snapshot-restore.sh):
 #        - the task-center chip lands in a TERMINAL state with the full
 #          step timeline persisted to tasks.details.steps (so re-opening
@@ -360,7 +360,7 @@ recover_best_effort() {
   #    clear claimRef → re-create PVC system-db-1 with the cnpg.io
   #    labels/annotations → delete + Flux-recreate the Cluster CR →
   #    CNPG adopts the PGDATA). Learned the hard way on testing
-  #    2026-06-11. Scratch snapshots are cleaned by step 11 on the
+  # . Scratch snapshots are cleaned by step 11 on the
   #    SUCCESS path only; on failure they are the operator's safety
   #    net, not litter.
   echo "  NOTE: system-db itself and all pitr-* snapshots were NOT touched."
@@ -436,7 +436,7 @@ else
   pass "round-trip verified: only pre-snapshot data present"
 fi
 
-# ── Folded from integration-postgres-snapshot-restore.sh (2026-07-02) ──
+# ── Folded from integration-postgres-snapshot-restore.sh ──
 # 9a) Fast/slow path selection: WAL mode MUST create the temp cluster
 #     (no SKIPPED); default mode MUST skip it (fast-path). 9b) plugin
 #     sidecar propagation on the recreated primary (no manual bounce).
@@ -472,7 +472,7 @@ if [[ -n "$JOB_NAME" ]]; then
     # `$SSH kubectl` (line 77) which does NOT shell-quote remote args, so a
     # jsonpath containing spaces/pipes ({range ...}{" "}{end}|...) is word-split by
     # the remote shell into "unclosed action" errors → a FALSE miss even when the
-    # sidecar is present (root-caused 2026-07-09 — this made 9b unreliable since it
+    # sidecar is present (root-caused — this made 9b unreliable since it
     # was added). -o yaml has no shell-special chars and survives. plugin-barman-
     # cloud is a native sidecar: an initContainer named `plugin-barman-cloud`.
     SIDE_OK=0; SIDE_PRIMARY=""
@@ -496,7 +496,7 @@ if [[ -n "$JOB_NAME" ]]; then
   log "9c) Task-center chip persistence (modal-reopen must render history)"
   # The task-center chip is finalized to 'succeeded' by an ASYNC finishByRef that
   # commits shortly AFTER the orchestration status endpoint reports done — so POLL
-  # rather than single-shot. Observed 2026-07-22: a single immediate read returned
+  # rather than single-shot.: a single immediate read returned
   # an empty row (chip not yet inserted), while the DB showed status='succeeded'
   # seconds later. The backend is correct; only the read was too eager.
   CHIP_ROW=""; CHIP_STATUS=""; CHIP_STEPS_LEN=0
@@ -555,7 +555,7 @@ if [[ "$LEAKED_VS" -gt 0 || "$LEAKED_VSC" -gt 0 || "$LEAKED_LH" -gt 0 ]]; then
   for lh in $($KUBECTL get snapshot.longhorn.io -n longhorn-system -o name 2>/dev/null | grep "pitr-handoff-"); do
     # --wait=false + --timeout=30s: snapshot finalizers can hang
     # indefinitely when the longhorn-manager controller isn't
-    # processing them (observed 2026-05-18: a stuck finalizer kept
+    # processing them (: a stuck finalizer kept
     # this call running for 6h41m, blocking the whole suite). Match
     # the fire-and-forget semantics used by the VS / VSC cleanups
     # above — the orphan-snapshot is best-effort cleanup, not a
@@ -573,7 +573,7 @@ log "11b) Reclaim the superseded pre-restore system-db PV (Longhorn budget)"
 # Longhorn SCHEDULING budget, so on a small single node the NEXT
 # PITR's recovery volume fails Longhorn's "insufficient storage"
 # precheck and the orchestration stalls mid-cutover with system-db
-# down (reproduced twice on testing, 2026-06-10/11 — every second
+# down (reproduced twice on testing, /11 — every second
 # full pass). On a TEST cluster the Retained copy's purpose is served
 # the moment step 9 verified the round-trip, so reclaim it here: PV
 # object AND the volumes.longhorn.io CR (deleting only the PV leaves

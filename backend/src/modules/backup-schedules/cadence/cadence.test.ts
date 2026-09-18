@@ -1,7 +1,7 @@
 /**
  * Cadence control for the DR artefacts.
  *
- * Context (2026-09-18): the System Backups page rendered NO schedule cards —
+ * Context: the System Backups page rendered NO schedule cards —
  * `scheduleSubsystems={[]}` — so the cadence of the etcd snapshot upload, the
  * secrets bundle and the cluster-state dump could only be changed by editing
  * manifests. Worse, two rows an operator COULD edit drove nothing at all:
@@ -437,7 +437,7 @@ describe('the API contract for a schedule the platform cannot apply', () => {
     // IS the contract: flipping it to a writable mechanism without wiring an
     // executor would silently re-open the "saved but inert" hole.
     //
-    // Verified against DEV 2026-09-18: before the guard the API answered 200
+    // Verified against DEV: before the guard the API answered 200
     // and stored '*/3 * * * *' while the live RecurringJob stayed '5 * * * *'.
     expect(targetFor('longhorn_recurring')?.mechanism).toBe('read-only');
     for (const s of ['etcd_snapshot', 'secrets_bundle', 'cluster_state', 'system_pitr']) {

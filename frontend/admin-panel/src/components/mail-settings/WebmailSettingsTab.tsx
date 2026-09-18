@@ -56,7 +56,7 @@ export default function WebmailSettingsTab() {
 
   const [defaultWebmailUrl, setDefaultWebmailUrl] = useState('');
   const [engine, setEngine] = useState<WebmailEngine>('roundcube');
-  // 2026-05-18: webmail feature-visibility toggles. Default to hidden
+  // webmail feature-visibility toggles. Default to hidden
   // (false) on a fresh install so the OOTB experience is mail-only.
   // Stalwart's DAV endpoints stay reachable — DAV clients keep working.
   const [showContacts, setShowContacts] = useState(false);

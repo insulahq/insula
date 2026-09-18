@@ -3,7 +3,7 @@ import type { TenantHealthFindingKind } from '@insula/api-contracts';
 /**
  * What the operator should actually DO about each finding.
  *
- * The recovery primitives all existed before the 2026-09-11 drill — what was
+ * The recovery primitives all existed before the drill — what was
  * missing was the mapping from "this tenant is degraded" to "here is the
  * button". Every finding kind must appear here; the `Record` type makes
  * adding a kind without an action a compile error rather than a blank modal

@@ -46,7 +46,7 @@ const SAFE_NAMESPACES: ReadonlySet<string> = new Set([
   'flux-system',
   'platform-system',
   'tigera-operator',
-  // `platform` added 2026-08-20. It holds the platform's own Deployments and
+  // `platform`. It holds the platform's own Deployments and
   // CronJobs (version-poller, snapshot/backup jobs), whose Failed pods are the
   // single most common source of stale records — a node reboot routinely
   // leaves a few behind when a Job fires before its dependencies are up. Until
@@ -88,7 +88,7 @@ function isStatefulCnpgInstance(pod: RawPod): boolean {
   // mid-flight can corrupt the cluster — operators who really need to move a
   // primary use the CNPG operator's failover endpoints instead.
   //
-  // 2026-08-20: this previously tested `cnpg.io/instance`, which CloudNativePG
+  // this previously tested `cnpg.io/instance`, which CloudNativePG
   // DOES NOT SET — verified against a live cluster, where zero pods carry it
   // and the real system-db-1 has cnpg.io/cluster, cnpg.io/instanceName,
   // cnpg.io/instanceRole and cnpg.io/podRole. The guard therefore always
@@ -154,7 +154,7 @@ async function audit(
  * Delete one specific pod on a node. The pod's controlling
  * Deployment/DaemonSet/StatefulSet will reschedule it; meanwhile,
  * containerd GCs the pod's writable overlay layer (the recovery
- * mechanism that fixed the 2026-05-08 worker incident).
+ * mechanism that fixed the worker incident).
  *
  * Refuses tenant namespaces + CNPG instance pods. Verifies the pod
  * is actually on the claimed node (typo-protection).

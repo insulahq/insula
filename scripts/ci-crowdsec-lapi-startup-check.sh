@@ -8,7 +8,7 @@
 # for all ingress, and anything that can stop it from starting is a total
 # outage, not a degraded feature.
 #
-# On 2026-09-05, upgrading production to 2026.9.9 did exactly that. The LAPI
+# upgrading production to 2026.9.9 did exactly that. The LAPI
 # Deployment gained `AGENT_USERNAME` / `AGENT_PASSWORD` as hard `secretKeyRef`s
 # on `crowdsec-agent-credentials` — a Secret created by host-migration
 # 2026.9.9/0003, which runs on the platform-ops converger's own timer and NOT in

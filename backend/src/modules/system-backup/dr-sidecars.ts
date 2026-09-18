@@ -58,7 +58,7 @@ export class BundleVersionError extends Error {
 
 /**
  * Per-cluster CNPG recovery pointer source. Today there's exactly one
- * (system-db); mail-db was dropped 2026-05-12 in the RocksDB-on-PVC
+ * (system-db); mail-db was dropped in the RocksDB-on-PVC
  * migration. Stalwart's PVC restore goes via mail-restic (Unit C), not
  * CNPG bootstrap.recovery, so no pointer is emitted for mail.
  */

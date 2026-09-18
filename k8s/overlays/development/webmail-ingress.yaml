@@ -1,4 +1,4 @@
-# Cut 3 (2026-05-04): public IngressRoute for Roundcube webmail at
+# Cut 3: public IngressRoute for Roundcube webmail at
 # https://webmail.${DOMAIN} on staging.
 #
 # Auth: NO admin-auth gate — webmail is end-user-facing. Authentication

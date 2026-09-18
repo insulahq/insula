@@ -295,7 +295,7 @@ describe('do not inform the tenant', () => {
   }
 
   it('sends nothing when the operator unticks it', async () => {
-    // Operator requirement 2026-09-16: correcting a mistyped renewal date
+    // Operator requirement: correcting a mistyped renewal date
     // should not mail the customer about it.
     notifyChangedMock.mockClear();
     notifyRenewedMock.mockClear();

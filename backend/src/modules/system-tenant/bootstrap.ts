@@ -116,7 +116,7 @@ export async function bootstrapSystemTenant(
   // submission path. An operator must manually create the sender
   // mailbox on Stalwart, then register the credentials via the
   // existing SMTP relay admin UI. Verified on staging
-  // 2026-05-28 (spike).
+  // (spike).
 
   return {
     ...ensureResult,

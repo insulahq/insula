@@ -12,7 +12,7 @@ function res(status: number, body = ''): Response {
 describe('probeHostRouted', () => {
   it('reports 0 when Traefik serves its OWN unrouted 404', async () => {
     // This exact body is Go's http.NotFound — what Traefik returns when no
-    // router matches, which is the 2026-08-20 outage signature.
+    // router matches, which is the outage signature.
     const f = (async () => res(404, '404 page not found\n')) as unknown as typeof fetch;
     const r = await probeHostRouted('admin.example.test', f);
     expect(r.value).toBe(0);

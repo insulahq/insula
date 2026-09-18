@@ -12,7 +12,7 @@
 #     so it fell back to GitHub `/releases/latest` — an endpoint that EXCLUDES
 #     prereleases. Staging therefore targeted the newest STABLE while running an
 #     RC, so an RC's host-migrations were NEVER exercised on the cluster whose
-#     whole job is validating RCs (found 2026-07-15: staging ran platform-ops
+# whole job is validating RCs (found: staging ran platform-ops
 #     rc.20/2026.6.18 while Flux had rc.21 applied).
 #  2. The admin panel reported the platform version as "unknown" on staging and
 #     production.

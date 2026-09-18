@@ -1,5 +1,5 @@
 /**
- * Mail port exposure — three-mode core logic (2026-05-28).
+ * Mail port exposure — three-mode core logic.
  *
  * Pure helpers consumed by port-exposure.ts (Kubernetes-touching code)
  * and by routes.ts (HTTP boundary). Keeping the policy logic in pure
@@ -144,7 +144,7 @@ export function resolveDataPlaneNodes(
  *
  * Excludes the active node in ALL haproxy-using modes because the
  * Stalwart Deployment ALWAYS binds hostPort=25 on the active node
- * (post-2026-05-28 hairpin fix), so haproxy hostPort=25 on the same
+ * so haproxy hostPort=25 on the same
  * node would conflict. Returns [] for activeNodeOnly (no DS at all —
  * Stalwart hostPort is the only listener).
  *
@@ -164,7 +164,7 @@ export function resolveHaproxyNodes(
   // the sole node fights Stalwart for hostPort=25. This guard is load-
   // bearing on a fresh single-node bootstrap where `settings.activeNode`
   // is not yet recorded, so the active-node exclusion below is a no-op and
-  // would otherwise schedule haproxy on the one node (regression, 2026-05-29).
+  // would otherwise schedule haproxy on the one node.
   if (nodes.length <= 1) return [];
 
   const known = new Set(nodes.map((n) => n.metadata.name));
@@ -190,7 +190,7 @@ export function resolveHaproxyNodes(
  * Compute the set of node names whose IPs should be in
  * Service.spec.externalIPs.
  *
- * Returns `[]` ALWAYS (2026-06-29). The haproxy DaemonSet runs
+ * Returns `[]` ALWAYS. The haproxy DaemonSet runs
  * `hostNetwork: true` and binds the public mail hostPorts directly on each
  * non-active node, so external mail reaches haproxy WITHOUT any Service
  * externalIP. The externalIP DNAT was not merely unnecessary — it was
@@ -206,7 +206,7 @@ export function resolveHaproxyNodes(
  *     `portScanning` autoban permanently banned that tunnel IP and killed
  *     mail on the node.
  *
- * Proven on multi-node staging 2026-06-29. The fix repoints haproxy
+ * Proven on multi-node staging. The fix repoints haproxy
  * backends to Stalwart's DEDICATED PROXY-protocol listeners (which trust
  * the pod CIDR) so send-proxy-v2 is honored and Stalwart sees the REAL
  * client IP — no Service externalIP is needed or wanted anywhere.
@@ -253,7 +253,7 @@ export async function reconcileMailHaproxyLabels(
     // which expects an array of JSON Patch ops; the merge-style body
     // we send below would error 400 with "cannot unmarshal object into
     // Go value of type []handlers.jsonPatchOp" — observed at staging
-    // deploy time (2026-05-28).
+    // deploy time.
     await core.patchNode(
       {
         name: node.metadata.name,

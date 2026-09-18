@@ -113,7 +113,7 @@ spec:
             # confuse it.
             - name: HOME
               value: /tmp
-            # R-X19 memory tuning per 2026-05-21 bench:
+            # R-X19 memory tuning per bench:
             # GOGC=20 + GOMEMLIMIT=200MiB → v3-tuned config that holds
             # avg RSS at ~133 MB for S3, ~106 MB for SFTP. The peaks
             # may temporarily exceed GOMEMLIMIT (it's a soft cap; Go
@@ -150,7 +150,7 @@ spec:
               cpu: 200m
               memory: 64Mi
             limits:
-              # No CPU limit (2026-06-24): a bursty rclone shim that
+              # No CPU limit: a bursty rclone shim that
               # requests only 200m. The old 1000m limit × 4 nodes pinned
               # half the platform limits.cpu quota and wedged rollouts.
               memory: 1Gi

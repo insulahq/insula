@@ -373,7 +373,7 @@ export function useDkimStatus(emailDomainId?: string) {
   });
 }
 
-// mail-submit (PHP sendmail-compat credentials) removed 2026-07-27 — see CHANGELOG.
+// mail-submit (PHP sendmail-compat credentials) removed — see CHANGELOG.
 
 // ─── Phase 3 T2.1 — IMAPSync job runner ───
 

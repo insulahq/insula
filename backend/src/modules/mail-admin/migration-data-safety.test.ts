@@ -1,5 +1,5 @@
 /**
- * Data-safety unit tests for the mail-migration PVC swap (2026-06-28).
+ * Data-safety unit tests for the mail-migration PVC swap.
  *
  * Regression guard for the data-loss incident: the swap deleted the
  * source local-path PVC (reclaimPolicy=Delete → wipes on-disk data)

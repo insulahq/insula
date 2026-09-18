@@ -65,7 +65,7 @@ api() {
 # integration-all run trips. All 12 parallel suites authenticate as the ONE shared
 # admin token, so the global limiter's per-user bucket (keyGenerator = user.sub,
 # default 100/min) saturates under the synthetic batch burst; a bare DELETE with
-# no retry then fails instantly (observed 2026-06-27: the cascade DELETE here + the
+# no retry then fails instantly (: the cascade DELETE here + the
 # EXIT-trap cleanup both 429'd). Self-contained (this suite sources integration-
 # token.sh only when INTEGRATION_TOKEN is unset, so api_curl isn't guaranteed to
 # exist). Echoes the same "<body>\nHTTP <code>" shape as
@@ -84,7 +84,7 @@ delete_tenant() {
     # lost to the very blip we retried on. The tenant is gone, which is the whole
     # goal, so normalize to success (idempotent DELETE) instead of failing on
     # "not found". A first-attempt 404 (retried=0) is a genuine error and still
-    # surfaces. Observed 2026-06-27: under the parallel burst on a freshly-rolled
+    # surfaces.: under the parallel burst on a freshly-rolled
     # pod, attempt 1 timed out (curl 000) after the server had accepted the
     # delete, so the retry hit 404 and false-failed the suite + leaked a PV.
     if [[ "$code" == "404" && "$retried" == "1" ]]; then

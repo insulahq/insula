@@ -40,7 +40,7 @@ export async function cnpgReady(k8s: K8sClients): Promise<{ ready: boolean; deta
  * (robustness degraded/faulted) — i.e. genuinely at risk if a node rolls during
  * the upgrade.
  *
- * 2026-07-28: this replaced a `min healthy replicas < 2` check that could NEVER
+ * this replaced a `min healthy replicas < 2` check that could NEVER
  * pass on the platform's documented single-node default ("Longhorn replica=1 on
  * single node") — a healthy replica=1 volume reported 1 < 2 → the upgrade
  * preflight hard-blocked, so single-node clusters could never upgrade. The

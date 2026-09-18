@@ -33,7 +33,7 @@ describe('buildEmailDnsRecordsForDisplay', () => {
 
     // No DKIM record — and specifically no junk "._domainkey.<domain>"
     // row with an empty selector (regression: was inserted on every
-    // email-domain enable until 2026-06-07).
+    // email-domain enable).
     expect(records.some((r) => r.purpose === 'dkim')).toBe(false);
     expect(records.some((r) => r.recordName?.includes('._domainkey.'))).toBe(false);
     // Core records unaffected
@@ -82,7 +82,7 @@ describe('buildEmailDnsRecordsForDisplay', () => {
     expect(records.some((r) => r.purpose === 'webmail')).toBe(false);
   });
 
-  // 2026-05-06 TLS-bootstrap rewrite: regression guards.
+  // TLS-bootstrap rewrite: regression guards.
   it('points the MX record at the platform mail-server hostname (not a per-tenant mail.<domain> alias)', () => {
     const records = buildEmailDnsRecordsForDisplay(
       'example.com', MOCK_DKIM_SELECTOR, MOCK_DKIM_PUBLIC_KEY, MOCK_MAIL_HOSTNAME,

@@ -41,7 +41,7 @@ const ZROK_FRONTDOOR_NAME = 'zrok-frontdoor';
 // Version-pinned, not `latest`. Both are third-party images we do not build, so
 // there is no CI of ours that could produce a digest — a version tag is the
 // reproducibility we can actually maintain (same trade-off as fatedier/frps).
-// Each value is what `latest` resolved to on 2026-08-07, verified by comparing
+// Each value is what `latest` resolved to, verified by comparing
 // manifest digests, so pinning changed no behaviour today; it only stops the
 // image drifting under us on the next upstream push.
 const ZITI_TUNNEL_IMAGE = process.env.ZITI_EDGE_TUNNEL_IMAGE

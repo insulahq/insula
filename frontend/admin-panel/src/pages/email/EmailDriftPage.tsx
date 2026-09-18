@@ -12,7 +12,7 @@ import type { MailDriftItem } from '@insula/api-contracts';
  *
  * Surfaces the platform_db / Stalwart drift items detected by the
  * principals-sync reconciler. Typical cause: a failed mail-stack
- * failover prior to the 2026-05-27 silent-loss fix. Two destructive
+ * failover prior to the silent-loss fix. Two destructive
  * actions per item:
  *
  *   - "Restore from snapshot" — disabled until a whole-stack

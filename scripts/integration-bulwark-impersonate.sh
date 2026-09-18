@@ -90,7 +90,7 @@ KCTL=("${KUBECTL:-kubectl}" --namespace="$NAMESPACE")
 # Resolve a READY bulwark pod. On a roundcube-active cluster bulwark is scaled to
 # 0 → self-skip (77) rather than fail. Right after a webmail-feature-toggle roll
 # the pod is briefly NotReady → poll instead of racing it (the A1 flake caught on
-# the 2026-06-30 DEV run, where the JMAP call then 500s against a half-rolled pod).
+# the DEV run, where the JMAP call then 500s against a half-rolled pod).
 POD=""
 for _i in $(seq 1 30); do
   "${KCTL[@]}" get deploy bulwark >/dev/null 2>&1 || { warn "no bulwark Deployment in namespace=$NAMESPACE — skipping (77)"; exit 77; }
@@ -514,7 +514,7 @@ try { const j=JSON.parse(require('fs').readFileSync(0,'utf8')); console.log(j.da
       fail "D2e active engine still has disabled=true annotation — reconciler regression"
     fi
 
-    # ─── D2f: active engine scaled to ≥1 (2026-05-18 fix) ───
+    # ─── D2f: active engine scaled to ≥1 ───
     # Was the root cause of staging's "no available server" — on flip
     # back to the previously-inactive engine, that Deployment was at 0
     # replicas and storage-policy didn't scale it up in time.

@@ -51,12 +51,12 @@ ADMIN_HOST="${ADMIN_HOST:-https://admin.$(resolve_platform_apex)}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@$(resolve_platform_apex)}"
 
 # A cluster with no backup target bound to this class cannot run the suite.
-# Report SKIPPED instead of a wall of red assertions (2026-08-04: twelve
+# Report SKIPPED instead of a wall of red assertions (: twelve
 # suites went red on a fresh cluster purely because nothing was bound).
 require_backup_class_or_skip system
 # Honor the operator profile's SSH_HOST (real node) before the redacted public
 # placeholder — otherwise a full integration-all run SSHes to the unresolvable
-# example.test default and dies rc=255 (the 2026-07-18 full-run failure).
+# example.test default and dies rc=255.
 STAGING_SSH="${STAGING_SSH:-${SSH_HOST:-root@staging1.example.test}}"
 SSH_KEY="${SSH_KEY:-$HOME/hosting-platform.key}"
 CLUSTER_NS="${CLUSTER_NS:-platform}"
@@ -232,7 +232,7 @@ fi
 # ─── Gate: archiver must cover RECOVERY_TARGET_TIME before we restore ──
 # The target-bounded restore replays WAL up to RECOVERY_TARGET_TIME; that WAL
 # must already be in the OFFSITE archive. Under heavy concurrent load the barman
-# archiver can fall far behind (observed 2026-07-22 full/isolation runs: the
+# archiver can fall far behind (full/isolation runs: the
 # source archive stalled ~1h behind while sibling suites hammered the object-store
 # shim, so the restore FATAL'd "recovery ended before configured recovery target
 # was reached"). A fixed sleep is not enough — poll the SOURCE archiver until it
@@ -380,7 +380,7 @@ fi
 #     loop below is explicitly written to handle an unreachable API ("[nnn]
 #     /status unreachable (API down during cutover — expected)") — but that
 #     branch could never run, because the moment curl actually failed the whole
-#     suite aborted. Observed 2026-08-09: the re-run died at poll 3 with rc=28
+# suite aborted.: the re-run died at poll 3 with rc=28
 #     (curl timeout) on a promote that SUCCEEDED, having printed nothing about
 #     why. `|| true` gives the loop's own tolerance a chance to work.
 #   * CURL_OPTS carries --max-time 180 as a hang guard for the heavy restore
@@ -433,7 +433,7 @@ pass "promote finished after ~$((i*8))s"
 # POLL — do not single-shot this. `inProgress=false` above comes from
 # platform-api's own bookkeeping, which flips as soon as the pitr-job writes its
 # result; the Kubernetes Job controller sets `.status.succeeded` independently
-# and a beat later. Reading immediately caught the gap on DEV 2026-08-08:
+# and a beat later. Reading immediately caught the gap on DEV:
 #
 #     ✗ promote Job failed: succeeded=/failed=
 #
@@ -444,7 +444,7 @@ pass "promote finished after ~$((i*8))s"
 # unambiguously the race, not a missing object. It was reported as a hard suite
 # failure both in the batch and in the retry.
 # The claim above — "empty-vs-empty is unambiguously the race, not a missing
-# object" — was WRONG, and this is what it cost on 2026-09-14: the suite failed
+# object" — was WRONG, and this is what it cost: the suite failed
 # with `succeeded=/failed=` again, in both the batch and the serial retry, after
 # every substantive assertion had already passed ("restored cluster does NOT
 # have post-archive marker — bootstrapped from barman correctly").
@@ -461,7 +461,7 @@ pass "promote finished after ~$((i*8))s"
 # Separate the two. NotFound is not evidence of failure, and the authoritative
 # outcome is the one the platform itself points at: the source cluster's health,
 # which this suite already asserts immediately below.
-# BUDGET, MEASURED — not guessed. On staging 2026-09-15 the promote Job reached
+# BUDGET, MEASURED — not guessed. On staging the promote Job reached
 # `succeeded=1` ~460s after it started, while platform-api had already reported
 # `inProgress=false` minutes earlier. The old 60s window could not see a terminal
 # state on a healthy run, which is why this failed with both counters empty after

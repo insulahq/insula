@@ -173,7 +173,7 @@ export async function computeConvergence(
     });
     for (const c of cnpgList.items ?? []) {
       // Only count platform/system-db (the only system CNPG cluster
-      // since Stalwart migrated to RocksDB on 2026-05-12 and mail-db
+      // since Stalwart migrated to RocksDB and mail-db
       // was deleted). Keep this filter in sync with CNPG_CLUSTERS in
       // ./service.ts.
       const ns = c.metadata?.namespace;

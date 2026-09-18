@@ -19,7 +19,7 @@ spec:
         app: platform-api
     spec:
       serviceAccountName: platform-api
-      # 2026-05-11: DoNotSchedule for strict one-per-server placement.
+      # DoNotSchedule for strict one-per-server placement.
       # In HA mode every server runs a platform-api pod, so node loss =
       # lose 1 of N; survivors already serve, no rescheduling needed.
       # Failover headroom (see backend/src/modules/platform-storage-policy/
@@ -125,7 +125,7 @@ spec:
                 secretKeyRef:
                   name: platform-jwt-secret
                   key: secret
-            # Cut 3 (2026-05-04): independent webmail SSO signing secret
+            # Cut 3: independent webmail SSO signing secret
             # (separate from JWT_SECRET so a leak of one doesn't enable
             # forged tokens of the other). Mirrors the Roundcube
             # `mail-secrets/JWT_AUTH_SECRET` value so platform-api's
@@ -138,7 +138,7 @@ spec:
                   name: platform-webmail-jwt
                   key: WEBMAIL_JWT_SECRET
                   optional: true
-            # ADR-039 (amended 2026-05-17): independent Bulwark
+            # ADR-039: independent Bulwark
             # webmail HMAC, distinct from WEBMAIL_JWT_SECRET so a
             # Bulwark JWT cannot be replayed against Roundcube's
             # jwt_auth.php plugin. Mirrors the value on
@@ -482,7 +482,7 @@ spec:
               cpu: 100m
               memory: 128Mi
             limits:
-              # No CPU limit (2026-06-24): platform-api is high-priority
+              # No CPU limit: platform-api is high-priority
               # infra and must not be CFS-throttled, and the platform-quota
               # no longer tracks limits.cpu (a limits.cpu quota wedged the
               # rolling update on burst-ceiling math while nodes sat idle).

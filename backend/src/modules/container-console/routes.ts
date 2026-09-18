@@ -71,7 +71,7 @@ function authenticateWs(app: FastifyInstance, request: FastifyRequest): JwtPaylo
  * before/outside the normal hook chain in the same way the node-terminal
  * WS does).
  *
- * SECURITY (2026-07-28): the previous version read
+ * SECURITY: the previous version read
  *   `user.panel === 'tenant' && user.tenantId && user.tenantId !== tenantId`
  * which FAILS OPEN for any tenant-panel token that carries no `tenantId`
  * claim — the exact hole middleware/auth.ts:requireTenantAccess closed
@@ -103,7 +103,7 @@ export async function containerConsoleRoutes(app: FastifyInstance): Promise<void
 
   // GET /api/v1/tenants/:tenantId/deployments/:deploymentId/components
   //
-  // SECURITY (2026-07-28): this route had `authenticate` only — no role
+  // SECURITY: this route had `authenticate` only — no role
   // gate and no tenant gate — so any authenticated user could enumerate
   // any tenant's pod/container topology by editing the path. It is a
   // plain HTTP route (not a WS upgrade), so it uses the standard
@@ -141,7 +141,7 @@ export async function containerConsoleRoutes(app: FastifyInstance): Promise<void
       return;
     }
 
-    // SECURITY (2026-07-28): the log stream had NO role check, so the
+    // SECURITY: the log stream had NO role check, so the
     // admin-panel reporting roles (`billing`, `read_only`) — which pass
     // enforceTenantAccess because panel !== 'tenant' — could stream live
     // container logs for every tenant. Logs routinely carry secrets and

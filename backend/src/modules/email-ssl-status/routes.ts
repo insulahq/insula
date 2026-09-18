@@ -58,7 +58,7 @@ export async function emailSslStatusRoutes(app: FastifyInstance): Promise<void> 
 
       // Resolve the webmail HTTPS host so the SSL-status table also
       // catches the nginx-ingress fake-cert fallback that bit
-      // webmail.staging.example.test on 2026-05-07. Extracts the
+      // webmail.staging.example.test. Extracts the
       // host from the configured webmail URL ("https://w.x/..." → "w.x")
       // and validates it before handing to the TLS probe.
       const webmailUrl = await getDefaultWebmailUrl(app.db);

@@ -121,7 +121,7 @@ describe('platform-updates routes', () => {
     expect(res.statusCode).toBe(401);
   });
 
-  // POST /api/v1/admin/platform/update removed 2026-07-28 (dead push-model
+  // POST /api/v1/admin/platform/update removed (dead push-model
   // no-op on the pull model). The real upgrade path is POST
   // /admin/platform/upgrade — covered by platform-upgrades route/orchestrate tests.
 });

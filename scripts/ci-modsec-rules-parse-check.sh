@@ -4,7 +4,7 @@
 #
 # WHY THIS EXISTS
 # ---------------
-# On 2026-09-09 two separate unparseable rule files reached `development`
+# two separate unparseable rule files reached `development`
 # within one hour:
 #
 #   1. a chained SecRule with no action list at end-of-file, which bleeds into
@@ -99,7 +99,7 @@ PY
 # exist there, so docker silently creates an empty DIRECTORY at the mount point
 # and modsec dies with "input in flex scanner failed" — a FALSE FAILURE on a
 # perfectly good rules file. A build context is streamed to the daemon, so it
-# works wherever docker does. Verified against a DinD daemon 2026-09-09.
+# works wherever docker does. Verified against a DinD daemon.
 loads() {
   local file="$1" tag="modsec-parsecheck:$$-$RANDOM" ctx
   ctx=$(mktemp -d)

@@ -116,7 +116,7 @@ done
 # Derive from the configured target before falling back to the local-dev
 # apex: an operator profile sets ADMIN_HOST/API_URL, not API_BASE, so a
 # bare local default silently pointed every request at localhost and
-# returned 000 against a remote cluster (seen 2026-08-04: node-terminal
+# returned 000 against a remote cluster (seen: node-terminal
 # "A1 expected super_admin, got ''" / "A2 step-up/password failed: 000").
 API_BASE="${API_BASE:-${ADMIN_HOST:-${API_URL:-https://admin.k8s-platform.test:2011}}}"
 # Accept INTEGRATION_TOKEN (master integration-all.sh exports this) as
@@ -894,7 +894,7 @@ fi
 #
 # This is the user-visible payoff of the whole feature. Without it the
 # system "reconnects" but every reload is a fresh PTY — operators
-# would call that broken (and one did, 2026-05-20).
+# would call that broken.
 if [[ $NEG_ONLY -eq 0 && -n "${NODE_NAME:-}" ]]; then
   phase "J. Shell continuity (tmux + history persistence)"
 
@@ -999,7 +999,7 @@ fi
 # session artifacts that live on the HOST (via nsenter -m). Without
 # this, /root/.bash_history-<uuid> and /tmp/.nt-tmux-<uuid>.conf
 # accumulate forever — staging worker had ~30 leaked files at the
-# time this assertion was added (2026-05-20).
+# time this assertion was added.
 #
 #   K1. Create + drive session (so the inner shell writes both files
 #       on the host).

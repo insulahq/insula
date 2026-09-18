@@ -96,7 +96,7 @@ export const ingressTargetTypeEnum = pgEnum('ingress_target_type', [
   'private_worker',
 ]);
 export const notificationTypeEnum = pgEnum('notification_type', ['info', 'warning', 'error', 'success']);
-// NFS was dropped 2026-05-25 (migration 0027) — the unprivileged
+// NFS was dropped (migration 0027) — the unprivileged
 // rclone-shim DaemonSet (R-X19) has no rclone NFS-client backend and
 // kernel-mount would re-introduce CAP_SYS_ADMIN. See ADR-043
 // postscript. (Number 0026 was already taken on main by
@@ -837,7 +837,7 @@ export const notifications = pgTable('notifications', {
   // cap silently dropped notifyUser() calls from the tenant-bundles
   // orchestrator — createNotification's fire-and-forget try/catch
   // swallowed the "value too long for type character varying(36)"
-  // error. Caught 2026-05-11 against staging.
+  // error. against staging.
   resourceId: varchar('resource_id', { length: 64 }),
   isRead: integer('is_read').notNull().default(0),
   readAt: timestamp('read_at'),
@@ -904,10 +904,10 @@ export const backupConfigurations = pgTable('backup_configurations', {
   cifsDomain: varchar('cifs_domain', { length: 255 }),
   cifsPath: varchar('cifs_path', { length: 500 }),
   // NFS columns (nfs_server / _export / _version / _options) were
-  // dropped 2026-05-25 (migration 0027) — the unprivileged rclone-shim
+  // dropped (migration 0027) — the unprivileged rclone-shim
   // DaemonSet cannot consume an NFS export. See ADR-043 postscript.
   //
-  // 2026-05-25 (this commit): force buildkit cache invalidation. The
+  // (this commit): force buildkit cache invalidation. The
   // image 0.1.0-d81c413 was tagged on a commit whose source removed
   // the nfsServer field, but the build picked up a cached
   // dist/db/schema.js that still SELECT'd nfs_server. Result: every
@@ -1369,7 +1369,7 @@ export const wafRuleExclusions = pgTable('waf_rule_exclusions', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   disabled: boolean('disabled').notNull().default(false),
-  // B2 (migration 0031, 2026-05-26): nullable tenant + route ownership.
+  // B2: nullable tenant + route ownership.
   // Both NULL = admin-scoped (current behaviour). Both set = tenant-
   // scoped, hostnameRegex must exactly match the route's hostname (the
   // service layer forces this server-side — clients can't pick the
@@ -1979,7 +1979,7 @@ export const imapSyncJobs = pgTable('imap_sync_jobs', {
   index('imap_sync_jobs_mailbox_idx').on(table.mailboxId),
 ]);
 
-// DEPRECATED 2026-07-27 — the mail-submit (PHP sendmail-compat) feature was
+// DEPRECATED — the mail-submit (PHP sendmail-compat) feature was
 // removed (obsolete + never production-tested). No code writes this table any
 // more; tenant apps configure an external SMTP relay (or mail.<apex> with
 // manual credentials) directly. The table + its tenant-bundles backup component
@@ -2543,7 +2543,7 @@ export const systemWalArchiveState = pgTable('system_wal_archive_state', {
 ]);
 export type SystemWalArchiveState = typeof systemWalArchiveState.$inferSelect;
 
-// system_pg_dump_schedules table removed 2026-05-24 (migration 0026).
+// system_pg_dump_schedules table removed (migration 0026).
 // pg_dump scheduling was a duplicate pathway alongside barman-cloud's
 // ScheduledBackup CRs. pg_dump is now super_admin-only on-demand via
 // POST /api/v1/system-backup/pg-dump for cross-PG-major-version
@@ -2932,7 +2932,7 @@ export const systemSettings = pgTable('system_settings', {
   apiRateLimit: integer('api_rate_limit').notNull().default(100),
   // Migration 0124 — master notification kill switch, checked by the
   // dispatcher on every event. The per-category `is_active` flag was the only
-  // stop available during the 2026-09-16 storm, and reaching it meant editing
+  // stop available during the storm, and reaching it meant editing
   // production rows by hand. Read UNCACHED at dispatch time so flipping it
   // takes effect on the next event rather than after a cache TTL.
   notificationsEnabled: boolean('notifications_enabled').notNull().default(true),
@@ -3081,7 +3081,7 @@ export const systemSettings = pgTable('system_settings', {
   //   automatically once mailFailoverThresholdSeconds have elapsed without a healthy pod.
   // mailFailoverThresholdSeconds: seconds of pod unavailability before auto-failover.
   // mailLastFailoverAt: timestamp of last failover action (manual or automatic).
-  // mailPortExposureMode: default 'activeNodeOnly' (2026-08-10). The haproxy
+  // mailPortExposureMode: default 'activeNodeOnly'. The haproxy
   //   DaemonSet (PROXY-v2) remains the production-ready HA path and is what an
   //   operator moves to once the cluster has >=2 server nodes — but it CANNOT
   //   be the bootstrap default, because it is not a legal mode on the cluster
@@ -3764,7 +3764,7 @@ export const tenantBackupScheduleFreqEnum = pgEnum('tenant_backup_schedule_freq'
 export const backupJobs = pgTable('backup_jobs', {
   id: varchar('id', { length: 64 }).primaryKey(),
   // LOOSE reference to tenants.id — deliberately NO `.references()`/ON DELETE
-  // CASCADE (2026-07-16). Deleting a tenant RETAINS its backup_jobs rows so the
+  // CASCADE. Deleting a tenant RETAINS its backup_jobs rows so the
   // retention reaper can still expire the off-site bundles by expires_at, and a
   // deleted tenant stays recoverable (DR recover + cross-cluster migration
   // import) for its retention window. The restic password derives from this
@@ -3837,7 +3837,7 @@ export const backupComponents = pgTable('backup_components', {
   index('backup_components_status_idx').on(table.status),
 ]);
 
-// tenantBackupSchedules table was dropped 2026-05-28 (migration 0034).
+// tenantBackupSchedules table was dropped (migration 0034).
 // Tenants no longer set their own bundle schedules; the platform's
 // global `backup_schedules.tenant_bundle` row drives all tenant bundles.
 
@@ -3987,7 +3987,7 @@ export const tenantBackupV2Settings = pgTable('tenant_backup_v2_settings', {
   id: integer('id').primaryKey().default(1),
   retentionDays: integer('retention_days').notNull().default(30),
   checkIntervalDays: integer('check_interval_days').notNull().default(7),
-  // Per-platform-api-pod cap (default 2 after 2026-05-11 OOM fix —
+  // Per-platform-api-pod cap (default 2 after OOM fix —
   // see migration 0096). Each restic process budgets ~320 MiB pack
   // buffer + ~200 MiB working set = ~520 MiB, so 2 fit in the 2 GiB
   // pod limit alongside ambient platform-api workload.
@@ -4290,7 +4290,7 @@ export type NewNodeHealthState = typeof nodeHealthState.$inferInsert;
 // Distinct node memory events (kernel SystemOOM on a node, kubelet pod
 // evictions) recorded by the node-health reconciler for the admin UI +
 // categorized admin notifications (migration 0074, operator decision
-// 2026-07-25). dedupe_key = k8s event uid + aggregation count, so a
+// ). dedupe_key = k8s event uid + aggregation count, so a
 // re-observed (aggregated) event lands once per occurrence. Pruned to a
 // 30-day window on each reconcile tick.
 export const nodeMemoryEvents = pgTable('node_memory_events', {
@@ -4335,7 +4335,7 @@ export type NewClusterTrustedProxyRange = typeof clusterTrustedProxyRanges.$infe
 // Mail drift items (migration 0032). Persisted drift state surfaced by
 // stalwart-principals-sync — platform_db rows whose corresponding Stalwart
 // entry has vanished (typical cause: a failed mail-stack failover prior to
-// the 2026-05-27 fixes).
+// the fixes).
 //
 // Pre-migration behaviour: log.warn only. Operationally invisible.
 // Post-migration: admin notification + UI alert + per-item "Recreate empty"

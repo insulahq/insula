@@ -29,7 +29,7 @@ export function useMailPortExposure() {
 /**
  * Trigger a port-exposure flip.
  *
- * 2026-05-16: the backend now runs the 30-60s flip in the background
+ * the backend now runs the 30-60s flip in the background
  * and returns `taskId` immediately. The mutation resolves to
  * `{ updated: true, taskId }`. Callers open `MailTaskProgressModal`
  * with that `taskId` for live progress.

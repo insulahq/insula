@@ -33,7 +33,7 @@ spec:
     solvers:
       - http01:
           ingress:
-            # Traefik migration 2026-05-15: was `nginx`. Traefik's
+            # Traefik migration: was `nginx`. Traefik's
             # kubernetesIngress provider is configured with
             # ingressClass=traefik + labelSelector
             # acme.cert-manager.io/http01-solver=true so the solver
@@ -56,7 +56,7 @@ spec:
             # platform-tenant-overhead PriorityClass (value=100) which the
             # quota scopeSelector explicitly excludes — same pattern used
             # by file-manager, snapshot, restore, and backup Pods.
-            # Caught on testing.example.test 2026-05-17 HTTPS scenario
+            # Caught on testing.example.test HTTPS scenario
             # (challenge stuck pending with "exceeded quota").
             podTemplate:
               spec:

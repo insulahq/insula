@@ -68,7 +68,7 @@ export const OAUTH2_PROXY_MIDDLEWARE_NAME = 'platform-oauth2-proxy-auth';
  * where `error_page 401 = @oauth2_signin` supplies the hop. Traefik ForwardAuth
  * has no equivalent — it hands the 401 straight to the browser, so an
  * unauthenticated visitor to a protected panel got a bare 401 page and no way
- * to sign in (measured on DEV 2026-09-05, both panels, ROADMAP R32).
+ * to sign in(measured on DEV, both panels, ROADMAP R32).
  *
  * A Traefik `errors` middleware placed BEFORE the ForwardAuth catches that 401,
  * fetches `/oauth2/sign_in?rd=<original url>` from oauth2-proxy — which does

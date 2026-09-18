@@ -17,7 +17,7 @@
 #   3) pod → pod cross-node matrix (control: should pass even when #2
 #      fails, isolating ingress-path-specific breakage).
 #   4) hostNetwork-source → platform-api:3000 is BLOCKED (negative
-#      test, inverted 2026-06-11: nothing host-sourced is in the
+# test, inverted: nothing host-sourced is in the
 #      serving path any more, and the :3000 traefik-ns-only netpol rule
 #      must reject every host source — an HTTP response here means
 #      policy enforcement is broken). Panels :80 deliberately excluded
@@ -171,7 +171,7 @@ test_1_external_ips() {
   # which becomes the malformed curl entry `--resolve host:443:<v4> <v6>` and
   # fails all five probes, reporting every platform hostname as "mostly broken"
   # on a cluster that is serving perfectly. Seen on the first --dual-stack
-  # bootstrap of the DEV box, 2026-08-09: 4 FAILs, 0 real. The inner range emits
+  # bootstrap of the DEV box: 4 FAILs, 0 real. The inner range emits
   # one line per ADDRESS, so each family is probed on its own.
   local raw_ips ips
   if ! raw_ips=$(kubectl get nodes -o jsonpath='{range .items[*]}{range .status.addresses[?(@.type=="ExternalIP")]}{.address}{"\n"}{end}{end}' 2>/dev/null); then
@@ -313,7 +313,7 @@ test_3_pod_to_pod() {
     -o jsonpath='{range .items[*]}{.metadata.name}={.spec.nodeName}{"\n"}{end}' 2>/dev/null) \
     || { emit "test3.pod_to_pod" FAIL "list platform-api failed"; return; }
   # Postgres pod naming: CNPG cluster (system-db-1, system-db-2) —
-  # was renamed from `postgres` to `system-db` during the 2026-05-07
+  # was renamed from `postgres` to `system-db` during the
   # PG18 migration. Fall back to the old name + legacy StatefulSet
   # for older clusters that haven't migrated yet.
   local pg_pod
@@ -374,14 +374,14 @@ test_3_pod_to_pod() {
 }
 
 # ─ test 4: hostNetwork-source → platform-api:3000 must be BLOCKED ───
-# INVERTED 2026-06-11. Historically this asserted that hostNetwork
+# INVERTED. Historically this asserted that hostNetwork
 # sources could reach platform pods (the old ingress-nginx-hostNetwork
 # serving path). Today nothing in the serving path is host-sourced:
 # Traefik is a hostPort pod (pod-network source) and the LE solver hop
 # is pod→pod. The F4 netpol (allow-ingress-to-platform) gates
 # platform-api:3000 with a `traefik` namespaceSelector ONLY — no
 # ipBlock — so EVERY host-sourced packet must be dropped, same-node and
-# cross-node alike (empirically verified on staging 2026-06-11: 000
+# cross-node alike (empirically verified on staging: 000
 # from all four nodes). An HTTP response here means the namespace-
 # scoped rule is not being enforced (Calico policy not programmed, or
 # someone re-added a pod-CIDR ipBlock to :3000 — see the F4 rationale
@@ -412,7 +412,7 @@ test_4_hostnetwork_to_pod() {
       bip=$(echo "$bp" | cut -d= -f3)
       # Same-node combos are EXCLUDED: Calico hard-allows traffic from
       # the host a pod runs on (kubelet liveness/readiness probes) and
-      # NetworkPolicy cannot override that — observed live 2026-06-11
+      # NetworkPolicy cannot override that — observed live
       # (same-node 404, all cross-node 000). Only cross-node host
       # sources are a policy assertion.
       if [[ "$node" == "$bnode" ]]; then
@@ -512,7 +512,7 @@ test_6_felix_logs() {
     # Patterns that indicate Felix is unhappy. The grep is anchored
     # to specific error classes — anything else is noise.
     #
-    # 2026-05-14: tightened from a permissive 'wireguard.*error'
+    # tightened from a permissive 'wireguard.*error'
     # which matched the benign `felix/wireguard.go ... Failed to
     # set NAPI threading to 0 ... operation not supported` warning
     # emitted on every Linux kernel without per-interface NAPI
@@ -661,7 +661,7 @@ test_8_ha_deployments() {
   # Cluster-size awareness: HA assertions only apply on clusters
   # with ≥2 schedulable nodes. Single-node testing/dev installs
   # legitimately run 1 replica per stateless Deployment and would
-  # falsely fail this test on every run (observed 2026-05-14).
+  # falsely fail this test on every run.
   #
   # Count via jsonpath rather than parsing `kubectl get nodes`
   # human output: that output mixes status fields (`Ready`,
@@ -720,7 +720,7 @@ test_9_cnpg_cluster() {
     return
   fi
 
-  # Cluster name was renamed postgres → system-db during 2026-05-07
+  # Cluster name was renamed postgres → system-db during
   # PG18 migration. Try the canonical name first; fall back to legacy
   # so this test still works on pre-migration clusters.
   local cluster cluster_name
@@ -770,7 +770,7 @@ test_9_cnpg_cluster() {
 # with only an A record comes back as `::ffff:10.0.0.5` and reads as "publishes
 # AAAA". On a single-stack cluster that would fire this test's FAIL branch for
 # EVERY hostname, which is worse than the bug the test exists to catch. Caught
-# on the first live run of this test, 2026-08-06.
+# on the first live run of this test.
 #
 # Prefer a real DNS query (dig/host); fall back to getent with the v4-mapped
 # forms stripped — `::ffff:a.b.c.d` and the all-hex `::ffff:0:0` variants.
@@ -826,7 +826,7 @@ test_10_aaaa_vs_stack() {
     # root), so an absolute check reports "AAAA published but not serving" for a
     # host whose v6 answer is byte-identical to its v4 answer — a family-specific
     # claim made from a family-agnostic measurement. Both fired on the DEV box
-    # 2026-08-09 with v4=404 v6=404.
+    # with v4=404 v6=404.
     #
     # Comparing against the v4 code is what actually detects the failure this
     # test is for: AAAA published but the v6 path dead (000/timeout) or serving

@@ -63,7 +63,7 @@ describe('safeTick', () => {
 });
 
 /**
- * Regression for the 2026-09-11 staging crash.
+ * Regression for the staging crash.
  *
  * Every test above passes `{ warn: vi.fn() }` — a bare object literal, whose
  * `warn` has no `this` dependency. That is precisely why they all passed while

@@ -19,7 +19,7 @@
  * before delivery, so what lands in the mailbox is a residual copy, bounded by
  * the mailbox quota.
  *
- * ## FBL was retired 2026-09-15
+ * ## FBL was retired
  *
  * `fbl@<apex>` intake and ARF complaint ingestion are gone. Measured on
  * production: **zero** complaints ingested in the feature's entire life, and no
@@ -54,7 +54,7 @@ import type { OutboundReconcileLogger } from '../email-outbound/service.js';
  * DMARC `rua=` addresses point here. It must be a REAL principal: Stalwart does
  * not bypass RCPT validation for report addresses, so an unregistered address
  * answers `550 5.1.2 Mailbox does not exist` and the report is never parsed.
- * Re-confirmed on a live server 2026-09-13 — `postmaster@<apex>`, which is in
+ * Re-confirmed on a live server — `postmaster@<apex>`, which is in
  * the pattern list but has no account, is refused at RCPT.
  */
 export const DMARC_LOCAL_PART = 'dmarc';
@@ -62,7 +62,7 @@ export const DMARC_LOCAL_PART = 'dmarc';
 /**
  * `postmaster@` must be a REAL principal for the same reason `dmarc@` is, and
  * it had been listed in REQUIRED_INTAKE_PATTERNS since this file was written
- * while nothing ever created the account. Measured on DEV 2026-09-16:
+ * while nothing ever created the account. Measured on DEV:
  *
  *     550 5.5.0 Mailbox not found          <- RCPT TO postmaster@<apex>
  *     385 messages queued to that address, retrying every 24h
@@ -84,7 +84,7 @@ export const POSTMASTER_LOCAL_PART = 'postmaster';
  *
  * An ALIAS on the postmaster intake, not a mailbox: the two audiences overlap
  * completely (the operator reading one reads the other) and a second mailbox
- * would be a second thing to reap. Operator decision 2026-09-17.
+ * would be a second thing to reap. Operator decision.
  */
 export const ABUSE_LOCAL_PART = 'abuse';
 
@@ -115,7 +115,7 @@ const RETIRED_INTAKE_PATTERNS = ['fbl@*'] as const;
  * mailbox after ingest, so any storage they hold is pure growth.
  *
  * 50 MB each, and reaped below once they fill — an operator decision
- * (2026-09-16) after production accumulated 385 undeliverable DSNs. The
+ * after production accumulated 385 undeliverable DSNs. The
  * previous 256/512 MB were sized as if these were real mailboxes.
  */
 const INTAKE_MAILBOX_QUOTA_MB = 50;
@@ -130,7 +130,7 @@ const INTAKE_REAP_AT_MB = Math.floor(INTAKE_MAILBOX_QUOTA_MB * 0.8);
 
 /**
  * Empty an intake mailbox every 30 days regardless of size — operator decision
- * 2026-09-16.
+ * .
  *
  * The size trigger above never fires in practice: report-analysis intercepts
  * and parses before storage, so these mailboxes measure 0 MB. A retention rule
@@ -312,7 +312,7 @@ export async function ensureReportIntake(
 ): Promise<ReportIntakeResult> {
   // ── 1. ONE intake mailbox per enabled email domain, with dmarc@ as an alias ──
   //
-  // There used to be two mailboxes. Operator question 2026-09-16: why? The
+  // There used to be two mailboxes. Operator question: why? The
   // honest answer was that nothing justified it —
   //
   //   * `postmaster@*` and `dmarc@*` are BOTH registered in

@@ -133,7 +133,7 @@ describe('countStalePodsByNode', () => {
   });
 });
 
-// ── node-shutdown debris, allowed in ANY namespace (2026-09-11) ──
+// ── node-shutdown debris, allowed in ANY namespace ──
 //
 // Production carried 17 reboot casualties across four reboots; five could not
 // be cleared from the UI at all — four in `tenant-*` and one in `mail`, which

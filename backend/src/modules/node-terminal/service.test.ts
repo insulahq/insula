@@ -590,7 +590,7 @@ describe('attachExec — grace-period reload survival', () => {
 
 // ─── Cross-replica grace-timer safety ─────────────────────────────────
 //
-// Multi-replica HA bug observed on staging 2026-05-20: reconnect
+// Multi-replica HA bug observed on staging: reconnect
 // landed on replica B but replica A's in-memory grace timer kept
 // running. When it fired 60s later, it terminated the user's active
 // session. Fix: grace timer must re-check terminate_after in the DB

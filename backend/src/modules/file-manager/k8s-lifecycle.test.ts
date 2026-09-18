@@ -62,7 +62,7 @@ describe('File Manager K8s Lifecycle', () => {
 
     it('recreates at 1 when the caller wants it running (image bump on a stopped FM)', async () => {
       // Documents the contract this function offers callers. NOTE: it does not
-      // by itself guard the DEV 2026-08-31 regression — that was /files/start
+      // by itself guard the DEV regression — that was /files/start
       // relying on the initialReplicas DEFAULT of 0, so the guard for it lives
       // in routes.test.ts ("asks for the pod to actually RUN"). Both were
       // verified to fail against the pre-fix code.
@@ -120,7 +120,7 @@ describe('File Manager K8s Lifecycle', () => {
 
     // ── memory drift: a RAISE is an override, a SHORTFALL is drift ──────
     //
-    // Production 2026-09-06: the FM was hand-raised to 1Gi to get a stuck
+    // Production: the FM was hand-raised to 1Gi to get a stuck
     // rsync through a 128Mi OOM loop. The old check was `existingMemLim !==
     // '128Mi'`, so the next SFTP session — every FM route calls this
     // reconciler — treated the override as drift, deleted and recreated the
@@ -202,7 +202,7 @@ describe('File Manager K8s Lifecycle', () => {
       // Pre-ADR-037 spec had `cpu: '500m'` limit. ADR-037 removed the
       // cpu limit (asymmetric QoS — cpu request only). Existing
       // deployments with a leftover cpu limit must recreate so they
-      // converge to the new spec. Caught 2026-05-14 (lifecycle-e2e):
+      // converge to the new spec. (lifecycle-e2e):
       // the old mismatch check was `existingCpuLim !== '500m'`, which
       // wrongly fired on every fresh ADR-037-compliant deployment
       // (cpuLim='') causing infinite recreate-at-replicas-0 loops,

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # integration-backups-ui.sh — REAL-AUTH end-to-end exercise of the
-# Backups UI surfaces, written 2026-05-22 after operator pointed out
+# Backups UI surfaces, written after operator pointed out
 # that "curl -X POST … → 401" is NOT a verification of feature
 # functionality. Every check here logs in as a super_admin, calls
 # the relevant API with the token, and asserts on the actual response
@@ -32,7 +32,7 @@ ADMIN_HOST="${ADMIN_HOST:-https://admin.$(resolve_platform_apex)}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@example.test}"
 
 # A cluster with no backup target bound to this class cannot run the suite.
-# Report SKIPPED instead of a wall of red assertions (2026-08-04: twelve
+# Report SKIPPED instead of a wall of red assertions (: twelve
 # suites went red on a fresh cluster purely because nothing was bound).
 require_backup_class_or_skip tenant
 CURL_OPTS=(-s --max-time 60)
@@ -123,7 +123,7 @@ else
 fi
 
 # ─── B2 — Cross-tenant snapshots endpoint (Longhorn-sourced) ─────────
-# 2026-06-16: the aggregate now reads tenant_volume_snapshots (Longhorn
+# the aggregate now reads tenant_volume_snapshots (Longhorn
 # on-server snapshots), NOT the legacy off-site tar `storage_snapshots`.
 # Every row therefore carries subsystem='longhorn'.
 echo '═══ B2 — /admin/backups/tenants/snapshots returns Longhorn rows ═══'
@@ -141,7 +141,7 @@ else
         fail "aggregate has rows but none are subsystem=longhorn — still reading the tar storage_snapshots table?"
       fi
     fi
-    # 2026-08-26: the Snapshots tab states the reap TTL — the response
+    # the Snapshots tab states the reap TTL — the response
     # must carry the live system_settings.snapshot_expiry_hours value.
     if printf '%s' "$SNAP_RESP" | grep -qE '"expiryHours":[0-9]+'; then
       pass "snapshots endpoint carries expiryHours (snapshot TTL for the UI notice)"
@@ -212,7 +212,7 @@ else
 fi
 
 # ─── B4 — Admin Longhorn tenant-snapshot lifecycle ──────────────────
-# 2026-06-16: the off-site tar snapshot path was REMOVED. The admin panel
+# the off-site tar snapshot path was REMOVED. The admin panel
 # drives the on-server Longhorn endpoints (`/tenants/:id/snapshots`),
 # which operator tokens reach for ANY tenant via requireTenantAccess.
 # This exercises the full create → ready → aggregate → delete loop an
@@ -228,7 +228,7 @@ elif { api GET "/api/v1/tenants/$SNAP_TENANT" '' TCHK_RESP TCHK_CODE; [[ "$TCHK_
   # The B4 tenant is auto-picked from the platform-wide cross-tenant snapshot
   # aggregate, a pool that concurrent suites create AND delete from. A sibling's
   # cleanup can hard-delete the picked tenant between selection and here
-  # (2026-07-18: dr-recover-all's trap deleted it mid-B4 → TENANT_NOT_FOUND). That
+  # (dr-recover-all's trap deleted it mid-B4 → TENANT_NOT_FOUND). That
   # is cross-suite churn, not a snapshot-endpoint bug — skip B4 rather than fail.
   info "Skipping B4 — auto-picked tenant $SNAP_TENANT was churned by a concurrent suite (TENANT_NOT_FOUND); snapshot lifecycle untested this run"
 else
@@ -317,7 +317,7 @@ except Exception as e:
   # stated above — is that the plugin path is detected, and hasSpec=true is what
   # confirms that; the state is incidental. Without it a fresh-cluster run
   # failed with "state=never_run (expected healthy / stale /
-  # cnpg_operator_blind)" on a perfectly healthy install (full run 2026-08-07).
+  # cnpg_operator_blind)" on a perfectly healthy install.
   case "$STATE" in
     healthy|stale|cnpg_operator_blind|never_run)
       if [[ "$HAS_SPEC" == "true" ]]; then
@@ -493,7 +493,7 @@ else
   fail "barman-restore POST same-name validation: http=$BR_BAD_CODE body=$(printf '%s' "$BR_BAD" | head -c 200)"
 fi
 
-# ─── Phase 3.1 (2026-05-23) — promote endpoint reachability + type-to-confirm
+# ─── Phase 3.1 — promote endpoint reachability + type-to-confirm
 # Promote is destructive; the harness only verifies (a) the route is wired,
 # (b) the server-side type-to-confirm rejects a mismatched confirmation, and
 # (c) 404 is returned when the restored cluster doesn't exist. We do NOT

@@ -279,7 +279,7 @@ describe('auth middleware', () => {
     });
   });
 
-  // 2026-05-28: regression guard for ADR-040 SYSTEM-tenant bypass.
+  // regression guard for ADR-040 SYSTEM-tenant bypass.
   // The createDomain + createDnsRecord guards skip the reserved-
   // hostname check when tenant.isSystem===true. That's safe only if
   // a NON-system tenant can never get past the auth middleware with a
@@ -402,7 +402,7 @@ describe('auth middleware', () => {
     });
   });
 
-  // ─── Pre-auth (passkey_2fa) token rejection — 2026-07-28 security fix ───
+  // ─── Pre-auth (passkey_2fa) token rejection — security fix ───
   //
   // /auth/login mints a pre-auth token when the user has passkey
   // second-factor enabled. It is signed with the SAME secret as an access

@@ -145,7 +145,7 @@ const PLATFORM_CROWDSEC_MIDDLEWARE_NAME = 'crowdsec';
  *
  * The madebymode ModSecurity plugin does `body, _ := io.ReadAll(req.Body)` with
  * NO size limit — verified by reading the plugin source off a running Traefik
- * pod (2026-08-30). Its `maxBodySize` knob, which our Middleware sets to 5 MiB
+ * pod. Its `maxBodySize` knob, which our Middleware sets to 5 MiB
  * and which earlier comments here described as a cap, is not in the plugin's
  * `Config` struct at all: Traefik drops the unknown key and the plugin never
  * consults it. So EVERY request body on a WAF-covered route is buffered whole
@@ -178,7 +178,7 @@ const UPLOAD_PATH_REGEXP = '^/api/v1/tenants/[^/]+/files/upload-raw$';
  * the WAF matches and blocks, so the operator cannot disarm a false positive:
  * the safety valve is behind the thing it disarms.
  *
- * Hit in production 2026-08-30. A tenant could not rename `.htaccess` (CRS
+ * Hit in production. A tenant could not rename `.htaccess` (CRS
  * 930120, "OS File Access Attempt" — see exclusion 9000111). The operator went
  * to Security → WAF Events to whitelist the rule and the whitelist request was
  * itself blocked, with the platform's own message telling them to go to

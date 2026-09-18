@@ -211,7 +211,7 @@ export async function evaluateOnce(
       // (which can legitimately be 0, e.g. `(count(...) or vector(0))
       // > -1`). So violated = "any sample survived", full stop — an
       // additional value>0 check silently un-fires zero-valued passes
-      // (caught live 2026-06-12 on the induced cnpg-down E2E).
+      // (caught live on the induced cnpg-down E2E).
 
       if (rule.subjectLabels.length === 0) {
         // Cluster-wide rule: one state row, keyed by the empty subject.

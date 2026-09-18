@@ -30,7 +30,7 @@
  * TWO NETWORK POLICIES ARE REQUIRED, and missing either one is silent:
  * `crowdsec` egress to `platform:5432`, and `allow-crowdsec-to-postgres`
  * ingress in `platform` (its `default-deny-ingress` drops the rest). Verified
- * on DEV 2026-09-07 — with only the egress rule, DNS resolved and the TCP
+ * on DEV — with only the egress rule, DNS resolved and the TCP
  * connect hung until timeout, which would present as a LAPI that looks
  * configured and reaches nothing.
  */
@@ -311,7 +311,7 @@ export async function ensureDbSecret(
  * registers its machines there on start, so a non-empty `machines` table is
  * proof that a live LAPI is talking to this database. The Secret existing
  * proves only that provisioning ran; the pod may still be on SQLite, which is
- * exactly the state DEV was in for twenty minutes on 2026-09-07.
+ * exactly the state DEV was in for twenty minutes.
  *
  * This gates the replica count, so getting it wrong in the optimistic
  * direction would put two pods on one SQLite file — the single-writer
@@ -512,7 +512,7 @@ export async function reconcileCrowdsecDb(
   // The init container reads the credentials at pod start. On an upgrading
   // cluster the pod is already running when this reconciler creates the
   // Secret, so without a roll it keeps the SQLite config until something else
-  // restarts it — observed on DEV 2026-09-07: database and Secret provisioned,
+  // restarts it — observed on DEV: database and Secret provisioned,
   // pod 3 minutes older than the Secret, `seed-config: db credentials absent
   // — staying on sqlite`. Stored, not running.
   //

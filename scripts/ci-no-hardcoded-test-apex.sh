@@ -9,7 +9,7 @@
 #   Some sites derived from the configured apex first, some did not — three
 #   non-deriving lines sat in ONE file next to two correct ones. A suite like
 #   that can only pass on the apex whose name happens to be baked in. Running
-#   the suite against a freshly bootstrapped cluster on 2026-08-04 produced
+# the suite against a freshly bootstrapped cluster produced
 #       "banner 'mail.<cluster apex>' DOES NOT MATCH expected
 #        'mail.staging.example.test'"
 #   while mail was in fact healthy — 113 literals across 51 files. Every
@@ -64,7 +64,7 @@ done < <(git ls-files '*.sh' 2>/dev/null)
 # defaults API_BASE straight to the local-dev apex therefore points every
 # request at localhost when run against a remote cluster, and every assertion
 # comes back 000. That is not a visible "wrong host" error; it reads as the
-# platform being broken (2026-08-04: node-terminal reported "A1 expected
+# platform being broken (: node-terminal reported "A1 expected
 # super_admin, got ''", webmail-platform failed outright).
 while IFS= read -r f; do
   while IFS= read -r hit; do
@@ -84,7 +84,7 @@ done < <(git ls-files 'scripts/integration-*.sh' 'scripts/ingress-*.sh' 2>/dev/n
 # latent trap: it only evaluates when X is unset, so it passes on any machine
 # with a profile and explodes on one without. A bare call is worse — it fails
 # outright with "command not found", which is how integration-bundle-coverage
-# died with rc=127 after the apex sweep (2026-08-04).
+# died with rc=127 after the apex sweep.
 while IFS= read -r f; do
   # This guard names the helpers in its own patterns and help text — scanning
   # itself would always "find" a use before the source line in the usage block.

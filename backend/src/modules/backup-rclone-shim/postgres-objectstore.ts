@@ -229,7 +229,7 @@ export async function reconcilePostgresObjectStore(
   }
 
   // ─── 4. Materialise ObjectStore CR ───────────────────────────────
-  // Phase 8 (2026-05-25): defer this too when wal-archive owns. The
+  // Phase 8: defer this too when wal-archive owns. The
   // operator's retention setting (stored on the ObjectStore CR via
   // wal-archive) was being clobbered back to the 30d default on every
   // postgres-objectstore reconciliation. Now wal-archive has exclusive
@@ -263,7 +263,7 @@ export async function reconcilePostgresObjectStore(
   }
 
   // ─── 5. Materialise ScheduledBackup CR (suspended when no target) ─
-  // Phase 7a (2026-05-24): defer to wal-archive when the operator has
+  // Phase 7a: defer to wal-archive when the operator has
   // enabled scheduled backups via the UI. The WAL Archive tab now owns
   // the ScheduledBackup CR (operator-configured cadence). When
   // wal-archive is NOT active, this reconciler keeps the
@@ -276,7 +276,7 @@ export async function reconcilePostgresObjectStore(
     // the CR may pre-date the operator's enable (created suspend:true by
     // the no-target safety net below) and ONLY a periodic re-assert
     // repairs that — the enable action alone runs once and can race a
-    // stale CR (production 2026-08-26: nightly base backup never fired
+    // stale CR (production: nightly base backup never fired
     // because spec.suspend stayed true forever). Dynamic import: this
     // module and wal-archive.ts import each other's constants.
     try {
@@ -342,7 +342,7 @@ export async function reconcilePostgresObjectStore(
   // auto-disabled archiving. The breaker gate is what makes an auto-disable
   // persist across reconcile ticks.
   //
-  // Dual-reconciler guard (2026-05-24): when the operator enabled WAL
+  // Dual-reconciler guard: when the operator enabled WAL
   // streaming via the UI, system-backup/wal-archive.ts owns the plugin entry
   // exclusively — normally skip here to avoid both reconcilers fighting.
   // EXCEPTION: a TRIPPED breaker overrides ownership — the breaker is a
@@ -397,8 +397,8 @@ export async function reconcilePostgresObjectStore(
 // ---------------------------------------------------------------------------
 
 /**
- * Phase 6 (2026-05-24) — dual-reconciler ownership guard.
- * Phase 7c (2026-05-24) — extended to ScheduledBackup CR ownership too.
+ * Phase 6 — dual-reconciler ownership guard.
+ * Phase 7c — extended to ScheduledBackup CR ownership too.
  *
  * Returns true when system-backup/wal-archive.ts owns ANY part of the
  * Cluster.spec / CR set for `platform/system-db` — either WAL streaming
@@ -575,7 +575,7 @@ function buildObjectStoreSpec(clusterId: string): Record<string, unknown> {
       // RFC named zstd but the upstream CRD has NOT shipped zstd
       // support yet (validation error: "Unsupported value: zstd").
       // gzip is the best balance of compatibility + ratio in v0.12.0.
-      // Surfaced during staging E2E round-trip test 2026-05-20.
+      // Surfaced during staging E2E round-trip test.
       // maxParallel: 2 (was 8). plugin-barman-cloud spawns ONE Python
       // subprocess per concurrent WAL-archive call; each subprocess
       // sits at ~80Mi RSS just from CPython + boto3 imports before
@@ -584,7 +584,7 @@ function buildObjectStoreSpec(clusterId: string): Record<string, unknown> {
       // though the data being moved was tiny. WAL segments are 16Mi
       // and arrive every few seconds; 2-way is plenty for throughput
       // and the 4× memory savings keep peak RSS well below the
-      // sidecar's resource limit. Surfaced 2026-05-20 during staging
+      // sidecar's resource limit. Surfaced during staging
       // E2E destructive round-trip.
       wal: { compression: 'gzip', maxParallel: 2 },
       data: { compression: 'gzip' },
@@ -595,7 +595,7 @@ function buildObjectStoreSpec(clusterId: string): Record<string, unknown> {
     // concurrency) PLUS holds compression buffers PLUS plugin gRPC server
     // state — peak RSS ~700-900Mi on a 1Gi-PGDATA cluster. 1Gi gives
     // headroom for ~5Gi PGDATA before hitting the next ceiling.
-    // Surfaced during staging E2E round-trip 2026-05-20:
+    // Surfaced during staging E2E round-trip:
     //   `kubectl describe pod` → Last State: Terminated  Reason: OOMKilled
     //   `kubectl logs` →
     //     "Backup failed uploading data (NoSuchUpload)" - the multipart
@@ -727,7 +727,7 @@ function buildScheduledBackupSpec(opts: ScheduledBackupOpts): Record<string, unk
  * The base-backup cadence to assert: the operator's if they set one, else the
  * platform default.
  *
- * Until 2026-09-18 this reconciler hard-coded DEFAULT_BACKUP_SCHEDULE and
+ * this reconciler hard-coded DEFAULT_BACKUP_SCHEDULE and
  * patched it onto the CR on every tick — including over a value
  * `enableWalArchive` had just written from the Postgres card's "Base backup
  * cadence" control. The control therefore appeared to work, persisted to

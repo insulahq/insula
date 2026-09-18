@@ -47,7 +47,7 @@ export async function nodeHealthRoutes(app: FastifyInstance): Promise<void> {
    * GET /api/v1/admin/node-health/memory-events?limit=50
    *
    * Recent distinct SystemOOM / pod-eviction events (30-day window,
-   * recorded by the reconciler — operator decision 2026-07-25: memory
+   * recorded by the reconciler — operator decision: memory
    * incidents must be UI-visible). Newest first. `systemWorkload: true`
    * rows are the abnormal ones — the eviction design takes tenants
    * first, so a system casualty deserves attention.
@@ -107,7 +107,7 @@ export async function nodeHealthRoutes(app: FastifyInstance): Promise<void> {
    *
    * Delete a system pod on a node — controlling DaemonSet/Deployment
    * reschedules; containerd GCs the pod's writable layer (the recovery
-   * mechanism that fixed the 2026-05-08 worker incident).
+   * mechanism that fixed the worker incident).
    */
   app.post('/admin/node-health/recovery/recycle-pod', {
     schema: {

@@ -6,7 +6,7 @@
  *
  * Surfaces ModSecurity/CRS events from the existing waf_logs table —
  * both per-tenant routes AND admin/api/client-host events (the latter
- * had no UI surface before the 2026-05-19 WAF Events tab).
+ * had no UI surface before the WAF Events tab).
  *
  * Default refetch is 30s (matches the scraper's own cadence — polling
  * faster surfaces nothing new). Pass `live=true` for 3s polling when

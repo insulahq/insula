@@ -286,7 +286,7 @@ describe('consumeWsToken', () => {
   });
 
   it('also clears terminate_after atomically (closes reconnect-vs-reap race)', async () => {
-    // Security review HIGH finding (2026-05-20). If consumeWsToken
+    // Security review HIGH finding. If consumeWsToken
     // didn't clear terminate_after in the same UPDATE, the scheduler's
     // findReadyForTermination could read a stale pending termination
     // AFTER the WS has reattached but BEFORE cancelDelayedTermination

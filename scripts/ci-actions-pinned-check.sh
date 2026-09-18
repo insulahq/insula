@@ -11,7 +11,7 @@
 #   tj-actions/changed-files pattern: one retagged release, thousands of repos
 #   leaking secrets, no CVE and no version bump to notice.
 #
-#   The whole workflow tree was SHA-pinned on 2026-08-05 — and by 2026-08-06 it
+# The whole workflow tree was SHA-pinned — and it
 #   was 227/228, because nothing enforced it. The single drifted reference was
 #   `actions/checkout@v7` in release.yml's version-sync job, which runs with
 #   `permissions: contents: write`. Pinning by hand is a one-time act; this guard

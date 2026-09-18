@@ -1,5 +1,5 @@
 /**
- * Email aliases — REAL since 2026-08 (ROADMAP R28 remainder).
+ * Email aliases — REAL (ROADMAP R28 remainder).
  *
  * An alias is an address with no inbox that delivers to 1..20
  * destinations (local mailboxes or external addresses). It is backed by
@@ -231,7 +231,7 @@ export async function updateAlias(
         } catch (err) {
           // A restored bundle / rebuilt mail store leaves a STALE foreign
           // list id — self-heal by recreating instead of hard-502ing a
-          // routine edit (review 2026-08-24). Any other error propagates.
+          // routine edit. Any other error propagates.
           const notFound = err instanceof JmapError && err.code === 'notFound';
           if (!notFound) throw err;
           const [emailDomain] = await db

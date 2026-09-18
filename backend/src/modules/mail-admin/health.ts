@@ -282,7 +282,7 @@ interface JmapProbeShape {
  * JMAP probe — exec curl inside the Stalwart pod.
  *
  * Why exec instead of fetch: defense-in-depth against Stalwart 0.16's
- * PROXY-v2 sniffing on the HTTP listener at :8080. As of 2026-05-17
+ * PROXY-v2 sniffing on the HTTP listener at:8080.
  * the proxy-networks-reconciler trims the per-listener trust list to
  * server-node IPs only (cluster CIDRs were removed because haproxy DS
  * runs hostNetwork, so its source IP is the node IP — including
@@ -567,7 +567,7 @@ function defaultTcpProbe(
 /**
  * Cert probe — exec openssl s_tenant inside the Stalwart pod.
  *
- * Same defense-in-depth rationale as probeJmap. As of 2026-05-17 the
+ * Same defense-in-depth rationale as probeJmap. the
  * proxy-networks-reconciler keeps cluster CIDRs OUT of the trust list
  * (haproxy DS uses hostNetwork, so its source IP is the node IP — the
  * cluster CIDR entries that used to be in the list just forced
@@ -675,7 +675,7 @@ async function defaultCertExec(
   //   notBefore=May 15 16:10:14 2026 GMT
   //   notAfter=Aug 13 16:10:13 2026 GMT
   //
-  // 2026-05-27 fix: was `openssl s_tenant` (typo) — openssl silently
+  // fix: was `openssl s_tenant` (typo) — openssl silently
   // errored, 2>/dev/null swallowed it, the probe saw no `subject=` and
   // reported "openssl returned no cert" indefinitely. `s_client` is
   // the correct subcommand.
@@ -703,7 +703,7 @@ async function defaultCertExec(
     const timer = setTimeout(() => {
       resolve({ subject: null, issuer: null, notAfter: null, error: 'cert probe timed out' });
     }, PROBE_TIMEOUT_MS + 5_000);
-    // 2026-05-27: this fn always resolves — never rejects. The whole
+    // this fn always resolves — never rejects. The whole
     // mail-health endpoint pipes every component through Promise.all;
     // any reject would bubble up and 503 the entire response, losing
     // OTHER healthy components. Common case that triggers this:

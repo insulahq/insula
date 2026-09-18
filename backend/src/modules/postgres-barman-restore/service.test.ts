@@ -148,7 +148,7 @@ describe('createBarmanRestore', () => {
       bootstrap: { recovery: { source: string; recoveryTarget?: { targetTime: string } } };
       externalClusters: Array<{ name: string; plugin: { name: string; parameters: Record<string, unknown> } }>;
     };
-    // P4a (2026-05-22): default inherits source.spec.instances when caller
+    // P4a: default inherits source.spec.instances when caller
     // doesn't pass explicit instances. Source has instances=3 (HA), so the
     // restore creates a 3-replica side-by-side cluster matching that.
     expect(spec.instances).toBe(3);
@@ -160,7 +160,7 @@ describe('createBarmanRestore', () => {
     // The plugin needs serverName=source so it resolves backups
     // against the correct path in the archive. Without this the
     // CNPG plugin defaults serverName to the NEW cluster name and
-    // can't find any backups (verified on staging 2026-05-22).
+    // can't find any backups.
     expect((spec.externalClusters[0].plugin.parameters as { serverName?: string }).serverName).toBe('system-db');
   });
 
@@ -510,7 +510,7 @@ describe('deleteBarmanRestore', () => {
   });
 });
 
-// ─── Phase 3.1 (2026-05-23) — Promote ──────────────────────────────────────
+// ─── Phase 3.1 — Promote ──────────────────────────────────────
 
 import { promoteRestoredCluster } from './service.js';
 

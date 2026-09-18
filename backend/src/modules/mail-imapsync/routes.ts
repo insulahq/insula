@@ -37,7 +37,7 @@ const encryptionKey = (): string => {
 
 const stalwartImapHost = (): string =>
   // Default to the 0.16 Service name. v015 was retired in Cut 3
-  // (2026-05-04); clusters still on v015 must set STALWART_IMAP_HOST
+  // clusters still on v015 must set STALWART_IMAP_HOST
   // explicitly to override.
   process.env.STALWART_IMAP_HOST ?? 'stalwart-mail.mail.svc.cluster.local';
 const stalwartImapPort = (): number =>

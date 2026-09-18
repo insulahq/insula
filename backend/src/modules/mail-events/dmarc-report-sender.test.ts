@@ -67,7 +67,7 @@ describe('outbound DMARC reporting is off unless a sender is named', () => {
     expect(r.sender).toBeNull();
     const patch = dmarcReportSettingsUpdate.mock.calls[0]?.[0]?.patch;
     expect(patch.aggregateSendFrequency).toEqual({ match: {}, else: "'disable'" });
-    // INVERTED 2026-09-17. This asserted `aggregateFromAddress` was UNDEFINED
+    // INVERTED. This asserted `aggregateFromAddress` was UNDEFINED
     // on the disable path, reasoning that the operator's last choice should not
     // be clobbered. That assumption is what made the defect possible: without
     // an address field Stalwart accepts the patch and stores NOTHING, leaving
@@ -135,7 +135,7 @@ describe('outbound DMARC reporting is off unless a sender is named', () => {
   });
 
   it('carries an ADDRESS field when disabling — schedule fields alone store nothing', async () => {
-    // Measured on staging 2026-09-17, one connection, read back after each:
+    // Measured on staging, one connection, read back after each:
     //
     //   {aggregateSendFrequency, failureSendFrequency}  -> accepted, read NULL
     //   {aggregateSendFrequency, aggregateFromAddress}  -> accepted, and now

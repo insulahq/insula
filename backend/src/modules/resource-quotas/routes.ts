@@ -31,7 +31,7 @@ export async function resourceQuotaRoutes(app: FastifyInstance): Promise<void> {
 
   // PATCH /api/v1/tenants/:tenantId/resource-quota — admin only
   //
-  // 2026-05-11 (Phase 2): cluster-failover-headroom gate. Before saving
+  // (Phase 2): cluster-failover-headroom gate. Before saving
   // the new limits, sum all tenant quota limits (across every tenant),
   // add the projected delta from this patch, and compare against
   // getClusterFailoverHeadroom().tenantAvailable{Cpu,MemoryGi}. If the
@@ -133,7 +133,7 @@ export async function resourceQuotaRoutes(app: FastifyInstance): Promise<void> {
           },
           httpStatus: 200,
         });
-        // Security-review follow-up (2026-05-11): an audit-log entry
+        // Security-review follow-up: an audit-log entry
         // alone is invisible to operators monitoring the bell icon. A
         // deliberate failover-survivability breach is at least as
         // significant as a storage-capacity warning — fan out a

@@ -96,7 +96,7 @@ export async function registerMailDriftRoutes(app: FastifyInstance): Promise<voi
   //   principal + its DkimSignature rows; the service REFUSES domains
   //   that still have member principals (ORPHAN_HAS_PRINCIPALS) — see
   //   deleteOrphanDomain for the PITR-rollback false-orphan rationale.
-  //   kind='orphan-list' (2026-08-25): deletes the orphaned Stalwart
+  // kind='orphan-list': deletes the orphaned Stalwart
   //   MailingList (a live forwarder no platform row owns).
   //   Both type-to-confirm guarded; dispatched by the item's kind.
   app.post(

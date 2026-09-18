@@ -6,7 +6,7 @@ import { desiredJobTemplateMetadata } from './etcd-cronjob.js';
  *
  * It is seed-then-disown: once the reconciler stamps
  * `kustomize.toolkit.fluxcd.io/reconcile: disabled`, Flux reports "skipped" for
- * it on every apply, forever. Proven on DEV 2026-09-15 — the committed manifest
+ * it on every apply, forever. Proven on DEV — the committed manifest
  * carried the labels, the live object's `spec.jobTemplate.metadata` was `{}`,
  * and kustomize-controller logged exactly that. The other three watched
  * CronJobs, which are not disowned, picked the labels up normally.

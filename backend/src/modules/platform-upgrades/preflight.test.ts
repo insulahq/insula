@@ -43,7 +43,7 @@ describe('evaluatePreflight', () => {
   });
 
   it('single-node default (replica=1, all healthy → 0 at-risk) does NOT block the upgrade', () => {
-    // Regression guard for 2026-07-28: the old `< 2` check made every
+    // Regression guard for: the old `< 2` check made every
     // single-node cluster fail this gate with no override, so it could never
     // upgrade. 0 at-risk volumes must be a clean pass in production.
     const r = evaluatePreflight({ ...healthy, environment: 'production', longhornAtRiskVolumes: 0 });

@@ -10,7 +10,7 @@
 # kubectl/helm/k3s chatter, inside which the things an operator must actually
 # read — a warning, a failure, which phase is running — were indistinguishable
 # from noise. Seven `command not found` errors rode along in that stream for
-# months without anyone reacting (2026-08-03). Volume was the camouflage.
+# months without anyone reacting. Volume was the camouflage.
 #
 # Model:
 #   • PHASES are the top-level unit of progress: "3/9 Installing platform".

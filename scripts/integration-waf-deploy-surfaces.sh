@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # integration-waf-deploy-surfaces.sh — asserts the WAF edge lets every
 # legitimate deploy-time payload REACH platform-api, and still blocks
-# attack payloads. Written 2026-08-26 after CRS 930120 silently blocked
+# attack payloads. Written after CRS 930120 silently blocked
 # every apache-php / nginx-php catalog deploy in production (the
 # `var/www` entry of lfi-os-files.data matched the docroot parameter
 # VALUE `/var/www/html`), plus custom-deployment env values / mount
@@ -10,7 +10,7 @@
 # 9000108 exclusion in
 # k8s/base/modsecurity-crs/exclusion-rules-configmap.yaml.
 #
-# 2026-08-31: 9000109 (custom-deployments) and 9000110 (cron-jobs) were
+# 9000109 (custom-deployments) and 9000110 (cron-jobs) were
 # folded into 9000108. They had carried three different subsets of the
 # 932xxx family across three sibling endpoints, so a value allowed on
 # one endpoint was blocked on the next; 9000108 now covers all of them
@@ -78,7 +78,7 @@ check 401 "cron: textbook Laravel scheduler command" POST \
   "/api/v1/tenants/$TEN/cron-jobs" \
   '{"name":"probe","schedule":"*/5 * * * *","type":"deployment","deployment_id":"1","command":"php /var/www/html/artisan schedule:run"}'
 
-# ── 934xxx "Application Attack Generic" (added 2026-09-04) ────────────────
+# ── 934xxx "Application Attack Generic" ────────────────
 # 934190 ('SSRF: scheme-less localhost or internal hostname', @pmFromFile
 # ssrf-no-scheme.data) blocked POST …/custom-deployments/validate on
 # production. The payload was `http://localhost/health` — the healthcheck in
@@ -107,7 +107,7 @@ check 401 "custom: env value with an in-cluster service host" POST \
 # `{{ … }}` is the 934180/934200 SSTI shape and passes now. NOT covered here:
 # `${VAR}` in an env value, which is blocked by 933135 (PHP-injection family,
 # "Matched Data: ${DB_HOST} found within ARGS:json.env.array_0.value" —
-# measured on DEV and production 2026-09-04). That is the same category error
+# measured on DEV and production). That is the same category error
 # as 932/934 on these endpoints (platform-api is Node; nothing evaluates the
 # value as PHP), but 933 is a family the 9000108 comment deliberately keeps,
 # so widening to it is a separate, explicit decision — not a silent rider on
@@ -149,7 +149,7 @@ check 403 "traversal in webcron url" POST \
 # when 9000112 shipped — it removes `930120;ARGS` across the whole of
 # `^/api/v1/` on the platform hosts, so an OS-file path in any ARG reaches the
 # API by design now. The assertion had been red on DEV and production alike
-# (measured 2026-09-04) and was testing a posture the platform deliberately
+# and was testing a posture the platform deliberately
 # left behind. What 9000112 explicitly does NOT drop is 930120 on cookies —
 # "REQUEST_URI, headers and cookies are still scanned by 930120 here; only
 # ARGS are dropped" — so that is the live control.

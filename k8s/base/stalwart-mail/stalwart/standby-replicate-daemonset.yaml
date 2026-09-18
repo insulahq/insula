@@ -4,7 +4,7 @@
 # 5 minutes so failover can promote a node WITHOUT paying any
 # restore latency at takeover time.
 #
-# A5 (2026-05-25): switched from restic-restore to rsync-pull from
+# A5: switched from restic-restore to rsync-pull from
 # the in-cluster mail-stack-rsyncd Service (sidecar on the active
 # stalwart-mail Pod). Failover now works WITHOUT restic. Restic
 # remains an independent optional offsite-backup CronJob, decoupled
@@ -62,7 +62,7 @@ spec:
           value: "true"
           effect: NoSchedule
       terminationGracePeriodSeconds: 10
-      # A5 (2026-05-25): switched from restic-restore to rsync-pull
+      # A5: switched from restic-restore to rsync-pull
       # from the in-cluster mail-stack-rsyncd Service. restic Secret
       # envFrom removed — failover now works WITHOUT restic. Restic
       # remains an independent optional offsite-backup CronJob.

@@ -82,7 +82,7 @@ describe('recyclePod', () => {
       },
     });
     const { db } = makeFakeDb();
-    // `platform` IS on the allow-list as of 2026-08-20 (it hosts the CNPG
+    // `platform` IS on the allow-list (it hosts the CNPG
     // system-db); cnpg-system is used here to exercise the instance guard on
     // its own, independent of the namespace check.
     const { k8s: k8s2 } = makeFakeK8s({

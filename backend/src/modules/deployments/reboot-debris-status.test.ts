@@ -1,7 +1,7 @@
 /**
  * A node reboot leaves dead pod OBJECTS behind, and nothing in Kubernetes
  * removes them promptly. These tests pin the production incident of
- * 2026-09-11 down: three tenants' deployments were `1/1` READY and serving,
+ * down: three tenants' deployments were `1/1` READY and serving,
  * each namespace held exactly one reboot corpse, and the admin/tenant panels
  * showed all three as FAILED — "Workload ran out of memory" — because the
  * status scan read the corpse's exit-137 container status.

@@ -20,7 +20,7 @@
 #   /health, which "worked" only for path `/` (coincidence: nginx
 #   forwarded to /health/, which exists). For /assets/* and every
 #   other non-root path the admin panel rendered blank — surfaced
-#   during the staging.example.test live install 2026-05-15.
+# during the staging.example.test live install.
 #
 # What this Deployment + Service provides:
 #   `traefik/whoami` returns 200 with a tiny plain-text request echo

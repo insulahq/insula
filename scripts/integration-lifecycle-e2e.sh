@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# End-to-end test for status-driven lifecycle (collapse phase, 2026-04-28).
+# End-to-end test for status-driven lifecycle.
 #
 # Verifies that the client.status dropdown is wired all the way down to
 # the storage-lifecycle orchestrators. Mirrors integration-grow-e2e.sh.
@@ -227,7 +227,7 @@ ARCH_SNAP_ID=$(echo "$ARCH_FINAL" | python3 -c "import json,sys;print(json.load(
 [[ -n "$ARCH_SNAP_ID" ]] && ok "pre-archive snapshot recorded id=${ARCH_SNAP_ID:0:8}" \
   || fail "no snapshotId on archive op (no rollback insurance)"
 
-# Snapshot row should be 'ready' AND be a restic bundle (2026-06-16: archive
+# Snapshot row should be 'ready' AND be a restic bundle (: archive
 # is now a restic files bundle, archivePath='bundle:<id>', NOT the legacy tar).
 read -r SNAP_STATUS SNAP_ARCHIVE_PATH < <(api GET "/admin/tenants/$CID/storage/snapshots" 2>/dev/null \
   | python3 -c "
@@ -312,7 +312,7 @@ fi
 #      state ∈ {ok, noop} (anything else means a registered hook failed).
 log "── Scenario 8: client_lifecycle_transitions + hook_runs ──"
 
-# Cluster name was renamed `postgres` → `system-db` in the 2026-05-07
+# Cluster name was renamed `postgres` → `system-db` in the
 # PG18 migration. Try the canonical name first and fall back to the
 # legacy name so this harness works on pre-migration clusters.
 PG_POD="$(ssh_cp 'kubectl -n platform get pod -l cnpg.io/cluster=system-db -o jsonpath="{.items[0].metadata.name}"' || true)"

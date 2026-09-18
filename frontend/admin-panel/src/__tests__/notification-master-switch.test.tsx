@@ -1,5 +1,5 @@
 /**
- * The lever the operator did not have on 2026-09-16, when stopping a
+ * The lever the operator did not have, when stopping a
  * notification storm meant editing `notification_categories` over psql.
  *
  * The disable path is asserted as TWO clicks on purpose: this switch silences

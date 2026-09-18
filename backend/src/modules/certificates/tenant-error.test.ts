@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { tenantSafeCertError, stripResourceNames } from './tenant-error.js';
 
-/** The exact string production sent to a customer on 2026-09-01. */
+/** The exact string production sent to a customer. */
 const REAL_LEAK = 'The certificate request has failed to complete and will be retried: '
   + 'Failed to wait for order resource "success-com-na-wildcard-cert-1-1573661536" to become ready';
 

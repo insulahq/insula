@@ -9,7 +9,7 @@ import type { MailOverviewResponse } from '@insula/api-contracts';
  * Monitoring → Mail: send stats, top senders, DMARC, live outbound queue,
  * and the sending-protection status.
  *
- * The FBL complaints table was removed 2026-09-15 with the FBL retirement —
+ * The FBL complaints table was removed with the FBL retirement —
  * it had never had a row to show.
  */
 

@@ -2,7 +2,7 @@
 #
 # Without this, integration-oidc-dex.sh and any external OIDC login
 # flow cannot reach Dex's discovery / authorize / token endpoints.
-# The bootstrap test on testing.example.test 2026-05-16 surfaced
+# The bootstrap test on testing.example.test surfaced
 # this gap — Dex Service is ClusterIP, no Ingress in the staging
 # overlay, every OIDC request 404'd.
 #

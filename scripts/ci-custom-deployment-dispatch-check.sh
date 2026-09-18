@@ -13,7 +13,7 @@
 # IN SILENCE — the DB row was updated, HTTP 200 was returned, and
 # `last_error` stayed empty because nothing had failed. Nothing was attempted.
 #
-# Production, 2026-09-02: an operator reduced a custom deployment from 4 CPU
+# Production: an operator reduced a custom deployment from 4 CPU
 # to 1 and stopped it. The row said `cpu_request=1, status=stopped`; the Pod
 # was still Running on 4 cores. That pinned the tenant's `requests.cpu` quota
 # at its ceiling and left a sibling catalog deployment permanently

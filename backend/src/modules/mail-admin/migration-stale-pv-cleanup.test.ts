@@ -1,6 +1,6 @@
 /**
  * Data-safety unit tests for cleanupStaleTargetMailPv (failback scaling-up hang,
- * root-caused 2026-07-04).
+ * root-caused).
  *
  * On a FAILBACK the target node (the original primary) often carries a leftover
  * mail-stack-data PV from before the failover whose local-path cleanup never ran

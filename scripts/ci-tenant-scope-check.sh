@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Verify every tenant-scoped API route is actually scoped to a tenant.
 #
-# WHY (2026-07-28 security review):
+# WHY:
 #   `/api/v1/tenants/:tenantId/...` takes the tenant from the URL. If the
 #   route does not also verify that the CALLER owns that tenant, `tenantId`
 #   is just an attacker-chosen path segment. Two modules had shipped that

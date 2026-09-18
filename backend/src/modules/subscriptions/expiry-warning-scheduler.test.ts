@@ -54,7 +54,7 @@ describe('runExpiryWarningPass', () => {
   });
 
   it('emits one warning per tenant×window across the five weekly slots', async () => {
-    // Cadence widened 2026-09-14 from 7/3/1 to weekly for five weeks. Seven
+    // Cadence widened from 7/3/1 to weekly for five weeks. Seven
     // days is not enough notice to raise a purchase order, so the first
     // warning a finance team could act on used to arrive after the point they
     // could act.

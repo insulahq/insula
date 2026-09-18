@@ -632,7 +632,7 @@ export async function reconcileIngress(
   // that some IngressRoute actually references — a Ready cert-manager
   // Secret nobody points at never enters the SNI store, so every domain
   // after the first served TRAEFIK DEFAULT CERT while the UI said
-  // "issued" (live incident websites.<apex> 2026-08-24). One IngressRoute
+  // "issued". One IngressRoute
   // per secret registers every issued certificate; SNI matching across
   // routers is global, so routing behaviour is unchanged.
   const groupedBySecret = groupRoutesByCertSecret(plainBuilds, hostCertSecret, primaryTlsSecret);
@@ -848,7 +848,7 @@ export function buildForceHttpsRoutes(
     // `altHost` from day one and then never used it, so with add-www a
     // visitor typing http://<apex> got Traefik's unrouted 404 while
     // http://www.<apex>, https://<apex> and https://www.<apex> all worked —
-    // observed live on production (forever.example.test shape, 2026-08-21).
+    // observed live on production.
     //
     // It carries the route's wwwredir Middleware, not force-https: the
     // wwwredir redirectRegex matches `^https?://<alt>` and targets

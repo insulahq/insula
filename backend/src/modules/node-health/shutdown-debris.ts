@@ -13,7 +13,7 @@
  *
  * WHY THIS IS WORTH AUTOMATING
  * ----------------------------
- * Production, 2026-09-03: one reboot produced 822 `NodeShutdown` pods in
+ * Production: one reboot produced 822 `NodeShutdown` pods in
  * `tigera-operator` alone. The mechanism (see
  * feedback: priority-zero floods) is that a drained pod goes terminal while the
  * node is still Ready and SCHEDULABLE, its ReplicaSet makes a replacement, the
@@ -22,7 +22,7 @@
  * the rest of the drain window.
  *
  * Giving tigera-operator a real priorityClassName (PR #363) moved it into the
- * LAST drain group and cut that to 20 per reboot — measured 2026-09-11 — but
+ * LAST drain group and cut that to 20 per reboot — — but
  * not to zero, and 20/reboot still accumulates without bound. The residue is
  * inherent: a Deployment with blanket `operator: Exists` tolerations will
  * always get a few replacements bound to a node that is draining but has not
@@ -30,7 +30,7 @@
  *
  * These records are not inert. They are pod objects with exit-code-137
  * container statuses, and they are precisely what made the OOM detectors report
- * five reboot corpses as tenant OOM kills on 2026-09-11.
+ * five reboot corpses as tenant OOM kills.
  *
  * SAFETY
  * ------

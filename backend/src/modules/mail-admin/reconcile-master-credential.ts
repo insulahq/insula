@@ -12,7 +12,7 @@
  * redeploy/restore, a snapshot rollback, or a half-run migration can revert or
  * drop that stored credential, leaving `mail-secrets` and Stalwart out of sync:
  * every `<mailbox>%<master>` proxy login then fails and ALL webmail
- * impersonation silently breaks (observed on staging 2026-07-01 after the
+ * impersonation silently breaks (observed on staging after the
  * 0.16.11 bump). Nothing re-converges it — which is the drift this closes.
  *
  * What it does

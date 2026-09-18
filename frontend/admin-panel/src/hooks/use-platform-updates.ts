@@ -68,6 +68,6 @@ export function useUpdateSettings() {
   });
 }
 
-// useTriggerUpdate() removed 2026-07-28. POST /admin/platform/update was the
+// useTriggerUpdate removed. POST /admin/platform/update was the
 // dead push-model no-op on the pull model. The real upgrade flow lives on the
 // Upgrades page (use-platform-upgrade.ts → POST /admin/platform/upgrade).

@@ -2,7 +2,7 @@
  * A missing WAL segment caps recovery. These tests pin the detector that finds
  * out, against the shapes the real archive produces.
  *
- * Ground truth, production 2026-09-12: 5389 segments,
+ * Ground truth, production: 5389 segments,
  * 000000010000000D00000057 → 0000000100000022000000063, span 5389, ZERO gaps,
  * one timeline, plus 19 `<seg>.00000028.backup.gz` label files that a naive
  * 24-hex regex counts as duplicate segments.

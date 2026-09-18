@@ -47,7 +47,7 @@ const SETTING_ENGINE = 'mailbox_backup_engine';
 const SETTING_MAX_CONCURRENT = 'mailbox_backup_max_concurrent';
 
 /**
- * Default engine is **'imap'** as of 2026-05-22. Perf testing
+ * Default engine is **'imap'**. Perf testing
  * (project_stalwart_imap_perf_2026_05_22) showed IMAP export is 2.3×
  * faster than JMAP and IMAP MULTIAPPEND import 2.6× faster — a real
  * win at no architectural cost since IMAP4rev2 + MULTIAPPEND +

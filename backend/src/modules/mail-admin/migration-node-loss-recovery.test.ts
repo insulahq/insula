@@ -1,5 +1,5 @@
 /**
- * Unit tests for the node-loss recovery helpers added 2026-07-02 (Gap A/B):
+ * Unit tests for the node-loss recovery helpers (Gap A/B):
  * a failed restore-verify must be able to distinguish a live source (roll back)
  * from a dead one (availability cutover + data-loss alert). These guard the two
  * decision inputs — node liveness + the admin data-loss fan-out.

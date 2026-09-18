@@ -5,7 +5,7 @@
 # WHY: a rule exclusion describes an attack pattern — that is its purpose.
 # Submitting one puts attack-shaped text in the request body, the WAF matches
 # it, and the operator cannot disarm a false positive. The safety valve ends up
-# behind the thing it disarms. Hit in production 2026-08-30: a tenant could not
+# behind the thing it disarms. Hit in production: a tenant could not
 # rename `.htaccess` (CRS 930120), and the whitelist request was itself blocked
 # by a message telling the operator to go and whitelist it.
 #

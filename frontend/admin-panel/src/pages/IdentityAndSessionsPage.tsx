@@ -1,5 +1,5 @@
 /**
- * Identity & Sessions — Security Hub → Identity (2026-05-21).
+ * Identity & Sessions — Security Hub → Identity.
  *
  * Combines four operator surfaces that previously didn't exist (or
  * existed but were unreachable):

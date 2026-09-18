@@ -1,5 +1,5 @@
 /**
- * Unit tests for the post-failover served-cert verification added 2026-07-03
+ * Unit tests for the post-failover served-cert verification
  * (issuance≠serving). Step 8b2 fires the ACME order; Step 8b3 must confirm the
  * new active node is actually SERVING a valid cert on :465 before the failover
  * is treated as fully healthy — Stalwart binds a freshly-issued cert on its own

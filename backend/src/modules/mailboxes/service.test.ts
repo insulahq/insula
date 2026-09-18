@@ -86,7 +86,7 @@ vi.mock('../stalwart-jmap/sieve.js', () => ({
   ensureSieveInterpreterLimits: vi.fn().mockResolvedValue(undefined),
 }));
 
-// Status-flip path (2026-08-26 full mail shutdown): the alias map is
+// Status-flip path: the alias map is
 // re-derived and pushed alongside the permission profile.
 vi.mock('../mailbox-aliases/service.js', () => ({
   desiredAliasesForMailbox: vi.fn().mockResolvedValue([
@@ -265,7 +265,7 @@ describe('createMailbox', () => {
   it('does not notify anyone when the cap is hit — the 409 is the message', async () => {
     // A `notifyTenantMailboxLimitReached` used to fire here, mailing every
     // tenant_admin about the click the tenant had just watched fail. Removed
-    // 2026-09-16 (operator decision): the panel already shows the used/quota
+    // (operator decision): the panel already shows the used/quota
     // bar and renders this very error. The guard asserts at the DISPATCHER, so
     // it fails for ANY re-added notification on this path, not just that one
     // helper — which matters because the platform's own report-intake
@@ -664,7 +664,7 @@ describe('generateWebmailToken', () => {
     const db = createMockDb();
 
     // Pin engine=roundcube to preserve this test's intent (URL host
-    // fallback behavior). Engine default flipped to bulwark in 2026-05-17.
+    // fallback behavior). Engine default flipped to bulwark.
     const result = await generateWebmailToken(makeMockApp(), db as never, 'u1', 'mb1', { engine: 'roundcube' });
 
     // Token is a real HS256 JWT, not a mock string
@@ -930,7 +930,7 @@ describe('signWebmailJwt', () => {
   });
 });
 
-// ── Send-only accounts + forwarding (2026-08) ───────────────────────────────
+// ── Send-only accounts + forwarding ───────────────────────────────
 
 describe('createMailbox — send-only + forwarding', () => {
   beforeEach(() => {

@@ -99,7 +99,7 @@ const dmarcOverviewQuerySchema = z.object({
  * Mail overview + DMARC aggregate reports.
  *
  * Was `mailComplaintRoutes`; the two `/admin/mail/complaints*` endpoints went
- * with the FBL retirement (2026-09-15) and the name would otherwise describe
+ * with the FBL retirement and the name would otherwise describe
  * routes that no longer exist.
  */
 export async function mailReportRoutes(app: FastifyInstance): Promise<void> {

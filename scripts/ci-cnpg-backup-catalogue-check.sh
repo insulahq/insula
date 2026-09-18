@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Phase 2 (2026-05-22) — CI invariants for cnpg-backup-catalogue.
+# Phase 2 — CI invariants for cnpg-backup-catalogue.
 #
 # The catalogue's ENTIRE reason to exist is graceful degradation when
 # the CNPG operator is down. If a future change makes it throw on any

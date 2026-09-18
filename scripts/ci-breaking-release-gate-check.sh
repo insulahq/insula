@@ -3,7 +3,7 @@
 # CI guard for the BREAKING-release auto-upgrade gate (ADR-045 W13).
 #
 # The gate is a four-link chain, and it was silently broken from the day it
-# shipped until 2026-08-26: release.yml never emitted `breaking` into
+# shipped: release.yml never emitted `breaking` into
 # release-manifest.json, so the poller always persisted
 # `available_breaking=false` and upgrade-planner's `blocked-breaking` branch
 # was unreachable — a release carrying `### BREAKING` would have been

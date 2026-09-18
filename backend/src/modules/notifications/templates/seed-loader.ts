@@ -11,7 +11,7 @@
  *
  * The loader used to insert-only, on the reasoning that never updating is the
  * safest way to protect operator edits. It also meant a shipped template change
- * reached FRESH INSTALLS ONLY. Caught on DEV 2026-09-06: the backend was
+ * reached FRESH INSTALLS ONLY. Caught on DEV: the backend was
  * running the build that added `{{subject}}` to the SLO alert templates — so
  * every alert would finally name which certificate or host it was about — and
  * the database still held `[SLO CRITICAL] {{ruleName}}`. The code shipped, the

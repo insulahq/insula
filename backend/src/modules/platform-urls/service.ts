@@ -64,7 +64,7 @@ export function computeDefaults(apex: string): {
     return { longhornUrl: '/longhorn/', stalwartAdminUrl: '', webmailUrl: '', mailServerHostname: '' };
   }
   return {
-    // 2026-06-12: the Longhorn UI rides the admin host as a path route
+    // the Longhorn UI rides the admin host as a path route
     // (k8s/base/longhorn/ui-ingress.yaml) — the longhorn.<apex>
     // subdomain + its certificate were removed. A same-origin relative
     // path works for both the StorageSettings iframe and the new-tab

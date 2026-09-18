@@ -23,7 +23,7 @@ function rethrowApi(err: unknown): never {
 export async function postgresBarmanRestoreRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
   app.addHook('onRequest', requirePanel('admin'));
-  // PHASE 3 (2026-05-22): Side-by-side restore is non-destructive
+  // PHASE 3: Side-by-side restore is non-destructive
   // (creates entirely new resources next to source). Promote is the
   // destructive sibling — gated to super_admin only and lives in a
   // separate route file (Phase 3.1). For now both routes here require
@@ -139,7 +139,7 @@ export async function postgresBarmanRestoreRoutes(app: FastifyInstance): Promise
 
   // POST /api/v1/admin/postgres-barman-restore/:namespace/:newClusterName/promote
   //
-  // Phase 3.1 (2026-05-23): destructive cutover. Take a Longhorn
+  // Phase 3.1: destructive cutover. Take a Longhorn
   // snapshot of the restored cluster's primary PVC, then invoke the
   // existing PITR orchestrator against the SOURCE cluster name with
   // that snapshot. After PITR success the Job pod additionally deletes

@@ -7,7 +7,7 @@
  * `lastTransitionTime` as "last WAL archived". A condition only transitions
  * when archiving HEALTH changes, so a cluster that has been archiving happily
  * since the day it was configured keeps that first timestamp forever. Measured
- * on production 2026-09-11: the card showed **2026-08-12** while the
+ * on production: the card showed **** while the
  * barman-cloud sidecar was uploading a segment every five minutes.
  *
  * `pg_stat_archiver` is the authority — it is what Postgres itself updates on
@@ -54,8 +54,8 @@ export interface ArchiverStats {
  *
  * `pg_stat_archiver` keeps `last_failed_wal`/`last_failed_time` forever (until
  * the stats are reset), so their mere presence says nothing about the current
- * state. Caught on DEV 2026-09-11 the moment this shipped: 64 failures with the
- * last one on 2026-09-08, 4472 successes with the last one seconds earlier —
+ * state. Caught on DEV the moment this shipped: 64 failures with the
+ * last one, 4472 successes with the last one seconds earlier —
  * and the health chip rendered a red "WAL failing". A failure counts only when
  * nothing has been archived SINCE it.
  */
@@ -131,7 +131,7 @@ export function isPlatformDbCluster(namespace: string, name: string): boolean {
  *
  * The WAL gap detector needs this to know that …0000FF is followed by
  * …00010000 rather than by a hole. It is 256 for the default 16 MB segment
- * size (verified on production 2026-09-12), but the setting is configurable at
+ * size, but the setting is configurable at
  * initdb time and a wrong divisor invents a gap at every roll-over — so it is
  * read from Postgres rather than assumed.
  *

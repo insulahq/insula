@@ -4,7 +4,7 @@ import { translateOperatorError } from './operator-error.js';
 describe('translateOperatorError — admission-webhook vs image-pull disambiguation', () => {
   it('classifies admission-webhook denials as ADMISSION_WEBHOOK_DENIED, not image pull', () => {
     // The shape that used to be swallowed by the image-pull branch via
-    // its bare /denied/ alternative (testing 2026-06-11: grow_online
+    // its bare /denied/ alternative (testing: grow_online
     // failures reported "Image pull failed" at the PVC patch step,
     // where no image is ever pulled). NB: denials whose message also
     // matches a MORE specific PVC pattern (e.g. "not ready for

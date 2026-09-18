@@ -10,7 +10,7 @@
  *   - an HMAC signatureKey derived from PLATFORM_INTERNAL_SECRET
  *   - lossy=false so batches survive restarts (discardAfter default 5m)
  *
- * Stalwart only loads webhook config at boot (proven live 2026-06-12),
+ * Stalwart only loads webhook config at boot,
  * so any create/update here must roll the stalwart pod: we DELETE the
  * pod and let the ReplicaSet recreate it (never rollout-restart — Flux
  * reverts the annotation). Drift in signatureKey is undetectable (the
@@ -44,7 +44,7 @@ export const SUBSCRIBED_EVENTS: readonly string[] = [
   // surfaces in seconds rather than on the 5-min tick.
   //
   // The ARF family — abuse-report, auth-failure-report, fraud-report,
-  // arf-parse-failed — was unsubscribed 2026-09-15 with the FBL retirement.
+  // arf-parse-failed — was unsubscribed with the FBL retirement.
   // Stalwart only loads webhook config at boot, so the reconciler rolls the
   // pod once to drop them.
   'incoming-report.dmarc-report',

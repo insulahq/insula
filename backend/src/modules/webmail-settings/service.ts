@@ -9,7 +9,7 @@
  * Both settings live in the key-value `platform_settings` table. No
  * schema changes required for new keys — they're just rows.
  *
- * 2026-05-09: mail server hostname is editable post-bootstrap via
+ * mail server hostname is editable post-bootstrap via
  * `SystemSettings.defaultHostname` (verified empirically — Bootstrap
  * is a transient install-only object that's gone post-install, but
  * SystemSettings is the runtime singleton that drives banners +
@@ -188,7 +188,7 @@ export type WebmailEngine = 'roundcube' | 'bulwark';
 /**
  * Read the platform-wide default webmail engine.
  *
- * **Fresh-install default (2026-05-17 onward): bulwark.** Bulwark
+ * **Fresh-install default: bulwark.** Bulwark
  * v1.6.7 stable ships native master-user impersonation (upstream
  * issue #296). New clusters land on Bulwark out of the box —
  * JMAP-native, calendar/contacts/files in one SPA, single shared
@@ -212,7 +212,7 @@ export async function getDefaultWebmailEngine(db: Database): Promise<WebmailEngi
   return 'bulwark';
 }
 
-// 2026-05-18: webmail feature visibility — three independent toggles
+// webmail feature visibility — three independent toggles
 // (Contacts / Calendar / Files). All default to **hidden** (false) so
 // the fresh-install UX is mail-only. The webmail-feature-css
 // reconciler reads these and renders a CSS file into the
@@ -349,7 +349,7 @@ export async function updateWebmailSettings(
     }
     await setSetting(db, 'default_webmail_engine', input.defaultWebmailEngine);
   }
-  // 2026-05-18: webmail feature visibility writes. Each flag is
+  // webmail feature visibility writes. Each flag is
   // stored as the literal string "true" / "false" so getSetting +
   // parseBoolSetting round-trip cleanly. The webmail-feature-css
   // reconciler picks up the change on the next tick (or immediately

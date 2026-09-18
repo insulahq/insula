@@ -1,7 +1,7 @@
 /**
  * Ingress-router health collector.
  *
- * WHY: on 2026-08-20 both panels served a bare `404 page not found` for hours
+ * WHY: both panels served a bare `404 page not found` for hours
  * while every conventional signal was green — pods Running and Ready, certs
  * valid, Flux READY=True, the API healthy. Traefik had failed to download its
  * plugins at startup, disabled the whole plugin subsystem, and dropped every

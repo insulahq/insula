@@ -1,4 +1,4 @@
-# 2026-05-14 streamline: daemonset.yaml was deleted from this kustomization.
+# streamline: daemonset.yaml was deleted from this kustomization.
 # The haproxy DaemonSet is now created and deleted by platform-api on
 # port-exposure mode flip. See:
 #   backend/src/modules/mail-admin/haproxy-builder.ts  (spec)

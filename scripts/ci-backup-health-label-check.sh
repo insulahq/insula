@@ -10,7 +10,7 @@
 # the watcher, and nothing fails: the scheduler lists an empty set every tick and
 # notifies on nothing, forever.
 #
-# That is not hypothetical. Proven on DEV 2026-09-15: three labelled, unsuspended
+# That is not hypothetical. Proven on DEV: three labelled, unsuspended
 # CronJobs firing normally, and
 #     kubectl get jobs -A -l insula.host/backup-health-watch=true
 #     No resources found
@@ -110,7 +110,7 @@ for path in sys.argv[1:]:
         # A Flux-disowned CronJob never receives manifest edits on an EXISTING
         # cluster — kustomize-controller reports "skipped" for it forever, so the
         # labels above only ever reach a fresh install. Caught on DEV
-        # 2026-09-15: etcd-snap-via-shim's manifest carried the block while the
+        # etcd-snap-via-shim's manifest carried the block while the
         # live object's spec.jobTemplate.metadata was {}. Such a CronJob needs a
         # reconciler that converges the labels, and the manifest must say which.
         annots = (doc.get('metadata') or {}).get('annotations') or {}

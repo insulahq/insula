@@ -9,7 +9,7 @@
 # each (tailored to the host's package manager), so a script fails EARLY and
 # actionably instead of dying deep in after minutes of work — e.g. local.sh
 # used to run the docker builds + k3s bringup before discovering `helm` was
-# missing (2026-07-30).
+# missing.
 #
 # Side-effect-free: only probes `command -v`; never installs anything. For the
 # auto-installing variant used by the integration suites see
