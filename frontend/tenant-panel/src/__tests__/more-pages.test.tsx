@@ -116,7 +116,7 @@ function renderWithProviders(ui: React.ReactElement) {
 
 // Backups surface tests live in backups-page.test.tsx — that page reads
 // /api/v1/tenant/backups/* (bundles). The skipped legacy block that used to
-// sit here went with the retired `backups` table (2026-09-11).
+// sit here went with the retired `backups` table.
 
 describe('Email', () => {
   it('renders the heading', () => {

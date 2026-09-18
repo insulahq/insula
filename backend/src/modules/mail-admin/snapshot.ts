@@ -243,7 +243,7 @@ export async function getMailSnapshotStatus(
 
   // Read persisted stats from system_settings + the bound backup store
   // via the canonical assignments-based getter (best-effort).
-  // 2026-06-11: the legacy system_settings.mail_snapshot_backup_store_id
+  // the legacy system_settings.mail_snapshot_backup_store_id
   // column is no longer written by the setter — see migration.ts /
   // archive.ts same-day fixes.
   let backupStoreId: string | null = null;
@@ -285,7 +285,7 @@ export async function getMailSnapshotStatus(
  * `snapshot-upload.sh` adds them as restic `--tag` args at backup time.
  * Also stamped as Job labels so the UI can filter without parsing tags.
  *
- * 2026-05-29: added to fix the operator-visibility gap where
+ * added to fix the operator-visibility gap where
  * pre-migration snapshots were indistinguishable from the every-two-min
  * routine snapshots in /backups/mail?tab=backups.
  */
@@ -631,7 +631,7 @@ export function renderManualSnapshotJobForTest(
 // ─────────────────────────────────────────────────────────────────────
 // waitForSnapshotJob — replaces waitForFreshSnapshot in migration.ts.
 //
-// PRE-FIX BUG (2026-05-29): migration's "snapshotting" step polled
+// PRE-FIX BUG: migration's "snapshotting" step polled
 // `CronJob.status.lastSuccessfulTime` which is only populated by Jobs
 // the CronJob CONTROLLER spawned. Manually-created Jobs (which
 // triggerMailSnapshot creates) do NOT update lastSuccessfulTime even

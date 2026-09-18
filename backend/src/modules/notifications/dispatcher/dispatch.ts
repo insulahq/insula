@@ -106,8 +106,8 @@ export interface EmitEventOptions {
    * persists one notification per user.
    *
    * Format the key as `<event-kind>:<scope-discriminator>:<bucket>`
-   * e.g. `subscription-expiry:tenant-X:7d:2026-06-05` for a 7-day-out
-   * warning about the 2026-06-05 expiry slot.
+   * e.g. `subscription-expiry:tenant-X:7d:` for a 7-day-out
+   * warning about the expiry slot.
    */
   readonly dedupeKey?: string;
 }
@@ -317,7 +317,7 @@ function warnOnRenderedIds(
   }
 
   // The placeholder is worse than the id it replaces, and it was INVISIBLE to
-  // the check above. 2026-09-17: a tenant received "IMAPSync migration: job
+  // the check above.: a tenant received "IMAPSync migration: job
   // (unnamed)" because an emitter put a JOB id in a label, the resolver tried
   // tenants/users/mailboxes/domains, matched none of them, and substituted the
   // placeholder. No raw id survived, so nothing warned — a notification whose
@@ -566,7 +566,7 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
     // ABSENT keys (present-but-undefined renders ''). Without this,
     // any template referencing the shared {{platformName}} footer —
     // i.e. every seeded email template — threw TEMPLATE_RENDER_ERROR
-    // and the email silently vanished (caught live 2026-06-12 by the
+    // and the email silently vanished (caught live by the
     // SLO-alert E2E: zero email delivery rows cluster-wide).
     // Caller-supplied variables win over the defaults. undefined
     // values are normalised to null: strict mode tolerates both, but
@@ -859,7 +859,7 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
   const externalLocale = opts.localeOverride ?? 'en';
   // A person who is both a tenant admin AND the mailbox owner would otherwise
   // get two copies of the same notification, seconds apart — observed on
-  // production 2026-09-16, where one recipient received the same mailbox-quota
+  // production, where one recipient received the same mailbox-quota
   // warning twice under an identical dedupe key. The two legs resolve their
   // audience independently (by user id, and by address), so the only place
   // they can be reconciled is here, where both lists exist.

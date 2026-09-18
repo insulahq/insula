@@ -13,7 +13,7 @@ import {
  *   - active     → enabled=1 + recreate the Stalwart MailingLists
  *   - suspended  → enabled=0 + DESTROY the Stalwart MailingLists (a
  *                  suspended tenant's alias must stop accepting mail
- *                  immediately — before 2026-08 `enabled` was DB-only
+ * immediately — before `enabled` was DB-only
  *                  fiction so the flag alone was "enough"; now the
  *                  MailingList is the live delivery path)
  *   - archived   → destroy the MailingLists, then DELETE the rows
@@ -37,7 +37,7 @@ async function runImpl(ctx: HookCtx): Promise<HookResult> {
     case 'archived': {
       const stalwart = await destroyTenantLists(ctx);
       if (!stalwart.ok) {
-        // 2026-08-25 drift audit: rows used to be deleted even when the
+        // drift audit: rows used to be deleted even when the
         // destroy failed — the retry re-run then found no rows, leaving a
         // permanently orphaned live MailingList invisible to the orphan
         // detection (keyed off email_aliases rows). Retry BEFORE deleting

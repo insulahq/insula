@@ -52,7 +52,7 @@ function buildBoss(): BossLike {
  * emits 'error' for any transient database problem, so without this listener a
  * routine Postgres restart takes platform-api down with it.
  *
- * Observed 2026-08-09 during a DR suite that restarts the CNPG cluster:
+ * during a DR suite that restarts the CNPG cluster:
  *
  *     error: the database system is shutting down     (SQLSTATE 57P03)
  *       at async #onPoll (pg-boss/dist/navigator.js)

@@ -198,7 +198,7 @@ export async function postgresRestoreRoutes(app: FastifyInstance): Promise<void>
           scope: 'admin',
           userId: actor.sub,
           label: toSafeText(`Postgres PITR (${body.clusterNamespace}/${body.clusterName})`),
-          // P4b follow-up (2026-05-22): clicking the chip re-opens
+          // P4b follow-up: clicking the chip re-opens
           // the PitrProgressModal pointed at the in-flight Job.
           // Previously this was `type: 'route'` pointing at the API
           // path (not an SPA route) — chip click 404'd.

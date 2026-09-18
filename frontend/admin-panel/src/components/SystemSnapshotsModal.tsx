@@ -70,10 +70,10 @@ export default function SystemSnapshotsModal({ volume, onClose }: SystemSnapshot
   const [confirmPrune, setConfirmPrune] = useState(false);
   const [keepNewest, setKeepNewest] = useState(1);
   const [manualLabel, setManualLabel] = useState('');
-  // Phase 1 (2026-05-22): CNPG snapshot → real PITR via wizard.
+  // Phase 1: CNPG snapshot → real PITR via wizard.
   // Holds the snapshot row the operator picked; null = wizard closed.
   const [pitrSnap, setPitrSnap] = useState<{ snapshotName: string; createdAt: string | null; sizeBytes: number } | null>(null);
-  // P4b (2026-05-22): jobName of the in-flight PITR for the live progress modal.
+  // P4b: jobName of the in-flight PITR for the live progress modal.
   // Set after a successful POST; the modal replaces the wizard.
   const [pitrProgressJob, setPitrProgressJob] = useState<string | null>(null);
 
@@ -322,7 +322,7 @@ export default function SystemSnapshotsModal({ volume, onClose }: SystemSnapshot
                       <td className="py-1.5 pr-2 max-w-[160px] truncate text-gray-600 dark:text-gray-300">{s.userLabel ?? <span className="text-gray-400 italic">none</span>}</td>
                       <td className="py-1.5 text-right whitespace-nowrap">
                         {volume.cnpgCluster ? (
-                          // Phase 1 (2026-05-22): CNPG snapshot Restore wires
+                          // Phase 1: CNPG snapshot Restore wires
                           // into the existing POST /admin/postgres-restore
                           // endpoint via the RestorationWizard. The backend
                           // spawns a dedicated k8s Job that promotes from

@@ -169,7 +169,7 @@ else
 fi
 
 # ─── Assertion 4: deploy a multi-component test app ─────────────────────────
-# /catalog/entries?code=<x> was removed (2026-06 restructure) → use the /catalog
+# /catalog/entries?code=<x> was removed → use the /catalog
 # list endpoint. Prefer a multi-component app (nextcloud/wordpress) but fall back
 # to ANY application-type entry, so the QoS check runs against whatever catalog is
 # synced on the target cluster (DEV/staging carry different seed sets).
@@ -180,7 +180,7 @@ NC_ID=$(curl -fsSL "$ADMIN_HOST/api/v1/catalog" -H "Authorization: Bearer $TOKEN
   // empty')
 
 if [[ -z "$NC_ID" ]]; then
-  # No application-type (multi-component) entry in the catalog. Since the 2026-07
+  # No application-type (multi-component) entry in the catalog. Since the
   # catalog split, self-contained app stacks (Nextcloud/WordPress/…) live in the
   # opt-in community catalog, NOT the default primitives-only catalog — so a fresh
   # cluster (the VM test tier and future staging) has none. Skip the multi-component

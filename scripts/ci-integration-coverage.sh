@@ -3,7 +3,7 @@
 # unregistered orphan. Every integration script MUST appear in
 # scripts/integration-test-registry.txt with a category; suites must actually be
 # wired into their orchestrator. Prevents the integration-test sprawl that let
-# ~half the E2E scripts rot unrun (2026-06-30 audit).
+# ~half the E2E scripts rot unrun.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 REG=scripts/integration-test-registry.txt

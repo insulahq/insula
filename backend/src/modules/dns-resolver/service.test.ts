@@ -59,7 +59,7 @@ describe('getCachedCustomServers', () => {
 
   it('returns null on a cold cache so mail keeps its own default', () => {
     // Critical: returning [] here would make mail fall back to the POD
-    // resolver, reintroducing the 2026-05-27 CoreDNS PTR-shadowing bug.
+    // resolver, reintroducing the CoreDNS PTR-shadowing bug.
     expect(getCachedCustomServers()).toBeNull();
   });
 });

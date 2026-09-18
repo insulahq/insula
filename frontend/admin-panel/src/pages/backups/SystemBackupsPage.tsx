@@ -1,7 +1,7 @@
 /**
  * `/backups/system` — System backup-class page.
  *
- * Phase 3 (2026-05-22) rebuilt the page on the shared
+ * Phase 3 rebuilt the page on the shared
  * `<BackupClassPage>` shell. Phase 7 added a "Restore postgres…"
  * action launcher for the BACKUPS tab — opens the Restoration
  * Wizard which navigates to the Disaster Recovery page's Restore
@@ -44,7 +44,7 @@ export default function SystemBackupsPage() {
         title="System Backups"
         subtitle="Postgres WAL + base backup, etcd snapshots, secrets bundle, monitoring + restic-backed components."
         shimClass="system"
-        // Until 2026-09-18 this was `[]`, so the page rendered no schedule
+        // this was `[]`, so the page rendered no schedule
         // cards at all: the cadence of every system artefact lived only in
         // manifests. Order is the order an operator thinks about them —
         // database first, then the three DR artefacts.
@@ -138,7 +138,7 @@ function BackupNowButton() {
     | { kind: 'err'; message: string }
   >(null);
 
-  // Phase 7c (2026-05-24): description stored as annotation (not label)
+  // Phase 7c: description stored as annotation (not label)
   // so the charset is unrestricted — only the length cap of 200 chars
   // applies. Empty stays valid (description is optional).
   const descValid = description.length <= 200;

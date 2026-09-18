@@ -7,8 +7,8 @@
  * exists" is answered by `lastSnapshotAt`, which nothing ever compares to the
  * schedule that was supposed to produce the next one.
  *
- * So the state that actually hurt — DEV, 2026-09-15: last successful mail
- * snapshot 2026-09-11T19:31, 178 scheduled fires missed, every operator surface
+ * So the state that actually hurt — DEV: last successful mail
+ * snapshot -11T19:31, 178 scheduled fires missed, every operator surface
  * green — had no detector at all. This is that detector.
  *
  * Counting MISSED FIRES rather than elapsed time is deliberate. A repo on

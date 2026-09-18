@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { isDbUnreachable } from './dr-ops.js';
 
 /**
- * Regression (2026-08-12, 4-node VM cluster): `insula dr restore` run on a node
+ * Regression: `insula dr restore` run on a node
  * that was not hosting the CNPG primary failed with
  *   "UNEXPECTED — Connection terminated due to connection timeout"
  * which tells an operator mid-incident nothing. Postgres pods are

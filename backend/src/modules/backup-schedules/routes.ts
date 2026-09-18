@@ -95,7 +95,7 @@ export async function backupSchedulesRoutes(app: FastifyInstance): Promise<void>
     }
     const row = await service.updateSchedule(app.db, subsystem, parsed.data, actorIdOf(request));
 
-    // 2026-05-27: for mail subsystem, propagate retention to the actual
+    // for mail subsystem, propagate retention to the actual
     // restic forget command via the stalwart-snapshot CronJob env. Pre-fix
     // operator-set retention in this DB row had ZERO effect — snapshot-
     // upload.sh hardcoded --keep-last 48. Inline patch ensures the change

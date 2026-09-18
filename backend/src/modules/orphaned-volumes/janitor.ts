@@ -3,8 +3,8 @@
  * provably garbage: a `Released` PV whose claim (`platform/system-db-N`)
  * is ALREADY `Bound` to a newer PV. CNPG never re-binds a Released PV,
  * so every instance recreate leaks one under reclaimPolicy=Retain
- * (3 found on staging 2026-06-05, leaked by the WAL-incident recovery;
- * 16 were observed on testing 2026-05-17 when leaked test tenants
+ * (3 found on staging, leaked by the WAL-incident recovery;
+ * 16 were observed on testing when leaked test tenants
  * exhausted the storage budget).
  *
  * Scope is deliberately TIGHT: platform/system-db-N claims only, with a

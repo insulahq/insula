@@ -90,7 +90,7 @@ export function useFileManagerStatus() {
       // exists to follow a file-manager through startup; applying it to an
       // errored query meant a rate-limited panel retried ten times in
       // thirteen seconds against the same bucket that was rejecting it
-      // (production, 2026-09-02). Back off instead — the limit window is a
+      // . Back off instead — the limit window is a
       // minute, so a slow poll recovers just as fast without feeding it.
       if (query.state.status === 'error') return ERROR_POLL_MS;
       const raw = query.state.data as { data: FileManagerStatus } | undefined;
@@ -205,7 +205,7 @@ export function useDeleteFile() {
  * Every multi-select operation sends the WHOLE selection in one streamed
  * request instead of one request per path.
  *
- * Looping the single-path endpoint is what broke production on 2026-09-02:
+ * Looping the single-path endpoint is what broke production:
  * move used `paths.map()` + `Promise.all`, so ~120 selected files became 62
  * concurrent requests in two seconds. That tripped the 100/min API rate limit,
  * and the resulting 429s hit the panel's own directory listings and

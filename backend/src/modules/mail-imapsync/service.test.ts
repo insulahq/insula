@@ -193,7 +193,7 @@ describe('buildJobManifest', () => {
     expect(argsText).toContain('--host2 stalwart-mail.mail.svc.cluster.local');
     expect(argsText).toContain('--port2 143');
 
-    // REGRESSION (2026-09-01): this used to be a hardcoded
+    // REGRESSION: this used to be a hardcoded
     // `--user2 alice@acme.com%master`. Stalwart 0.16 master-proxy auth
     // needs the master principal's FQDN — the bare short name resolves
     // against Stalwart's own default domain and fails with
@@ -589,7 +589,7 @@ describe('resyncImapSyncJob', () => {
 });
 
 /**
- * Spam-folder remapping. Measured on a real DinD Stalwart 0.16 (2026-09-02)
+ * Spam-folder remapping. Measured on a real DinD Stalwart 0.16
  * by running the pinned imapsync image twice against identical seeded
  * sources — once as shipped, once with the remap:
  *

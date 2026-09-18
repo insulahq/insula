@@ -15,7 +15,7 @@ import { destroyStalwartArtifactsForEmailDomain } from '../../email-domains/serv
  * FK cascade in cascades.applyDeleted — which never talks to Stalwart.
  * Without this hook every deleted tenant strands its Stalwart Domain
  * principal, the linked DkimSignature rows, and every mailbox
- * principal forever (caught live on testing 2026-06-10: a day of
+ * principal forever (caught live on testing: a day of
  * integration runs left 11 orphaned `mail-e2e-*` Domains + 17 DKIM
  * signatures, only removable by hand because Stalwart refuses linked
  * destroys with `objectIsLinked`).

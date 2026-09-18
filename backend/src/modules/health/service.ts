@@ -109,7 +109,7 @@ export function notReadyNodeNames(
  * This check used to call `listNode()` and return `ok` whenever the call
  * succeeded, reporting only a node COUNT. That made the platform's only
  * globally-mounted banner structurally incapable of showing a node outage:
- * during the 2026-09-11 drill the dashboard rendered "Platform: Healthy —
+ * during the drill the dashboard rendered "Platform: Healthy —
  * 4 / 4 services healthy" while a control-plane node was dead, eight volumes
  * were stranded and mail was down. A green banner during an outage is worse
  * than no banner, because it stops the operator looking further.

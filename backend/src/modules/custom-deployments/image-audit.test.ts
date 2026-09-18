@@ -158,7 +158,7 @@ describe('recordImageAudit — dedupe', () => {
   });
 });
 
-// ── getRunningDigest — canonical image matching (2026-08-24) ────────────────
+// ── getRunningDigest — canonical image matching ────────────────
 //
 // Audit rows carry the image AS THE KUBELET REPORTS IT (containerd
 // normalises `nginx:latest` → `docker.io/library/nginx:latest`), while the

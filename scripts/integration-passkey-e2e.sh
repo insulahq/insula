@@ -43,7 +43,7 @@ failed=0
 # Source the shared helper for api_curl (defines functions only — no side effects).
 # Without this, api() (routed through api_curl) emits nothing in the ALL run where
 # INTEGRATION_TOKEN is pre-set → empty bodies → JSONDecodeError (root cause of the
-# 2026-06-26 "parallel cascade"). This suite keeps its own per-panel login.
+# "parallel cascade"). This suite keeps its own per-panel login.
 # shellcheck source=integration-token.sh
 [[ -f "$(dirname "${BASH_SOURCE[0]}")/integration-token.sh" ]] && \
   source "$(dirname "${BASH_SOURCE[0]}")/integration-token.sh"

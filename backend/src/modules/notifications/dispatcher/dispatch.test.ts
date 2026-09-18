@@ -170,7 +170,7 @@ describe('emitEvent', () => {
   });
 
   it('delivers nothing at all when the master switch is OFF', async () => {
-    // The lever the operator lacked on 2026-09-16, when the only way to stop a
+    // The lever the operator lacked, when the only way to stop a
     // storm was editing notification_categories over psql, per category.
     getCategoryMock.mockResolvedValue(baseCategory);
     resolveRecipientsMock.mockResolvedValue(['u1', 'u2']);
@@ -236,7 +236,7 @@ describe('emitEvent', () => {
   });
 
   it('does not mail the same person twice when they are also the mailbox owner', async () => {
-    // Observed on production 2026-09-16: one recipient received the same
+    // Observed on production: one recipient received the same
     // mailbox-quota warning twice, seconds apart, under an IDENTICAL dedupe
     // key — because the two legs resolve their audience independently (by user
     // id, and by address) and neither could see the other's list.
@@ -438,7 +438,7 @@ describe('emitEvent', () => {
   });
 
   it('DELIVERS through the envelope fallback when the template cannot render', async () => {
-    // Behaviour change 2026-09-14. This used to persist status='skipped' and
+    // Behaviour change. This used to persist status='skipped' and
     // stop: a render failure is deterministic, so retrying could not help and
     // dropping seemed like the honest outcome. It was not — `skipped` raises
     // no alert and is not in the retry scan, so one variable-name mismatch
@@ -490,7 +490,7 @@ describe('emitEvent', () => {
   });
 
   it('injects strict-mode-safe COMMON_VARS defaults; caller variables win; undefined → null', async () => {
-    // Regression for the 2026-06-12 silent email loss: every emailMjml
+    // Regression for the silent email loss: every emailMjml
     // seed template references {{platformName}}, which no dispatcher
     // call-site supplied — strict-mode Handlebars threw on the absent
     // key and the email vanished without a delivery row.

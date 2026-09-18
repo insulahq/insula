@@ -1,5 +1,5 @@
 /**
- * Phase 1d — per-tenant OOM-kill detection (resource monitoring, 2026-07).
+ * Phase 1d — per-tenant OOM-kill detection.
  *
  * The platform already detects OOMKilled for *deployment status* (marks a
  * deployment failed), but nothing alerted an admin when a tenant's container was
@@ -27,7 +27,7 @@ export interface OomEvent {
    * 'unconfirmed' — inferred from exit 137 alone. Still worth alerting on (it
    *                 is how cgroup group-kills surface) but the alert must SAY
    *                 so rather than asserting an OOM. Three tenants were told
-   *                 "apache-php OOM-killed" for a node reboot on 2026-09-11.
+   * "apache-php OOM-killed" for a node reboot.
    */
   readonly confidence: 'confirmed' | 'unconfirmed';
 }
@@ -94,7 +94,7 @@ export function extractOomEvents(
       const kind = term ? classifyOom(term) : null;
       if (!term || !kind) continue;
       // ...but exit 137 on a pod that is shutting down is the shutdown itself.
-      // Dropping these is the whole fix for the 2026-09-11 reboot false alarms.
+      // Dropping these is the whole fix for the reboot false alarms.
       if (kind === 'inferred' && expectedKill) continue;
       const at = term.finishedAt ?? null;
       if (at) {

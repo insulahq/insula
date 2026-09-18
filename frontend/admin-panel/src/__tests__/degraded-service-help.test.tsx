@@ -9,7 +9,7 @@ import DegradedServiceHelp from '../components/outage/DegradedServiceHelp';
  * touch and to keyboard users, unannounced by screen readers. The platform named
  * the broken thing and effectively never said it would not fix itself.
  *
- * The guidance below is what was actually measured on staging 2026-09-12, not
+ * The guidance below is what was actually measured on staging, not
  * what seemed plausible. Two drafts of it were wrong before the drill:
  *
  *   - "removing the node is not a reliable substitute" — wrong, it does release

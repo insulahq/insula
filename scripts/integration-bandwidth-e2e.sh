@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # integration-bandwidth-e2e.sh — resource-monitoring / monthly-bandwidth E2E.
 #
-# Exercises the 2026-07 resource-monitoring work against a real cluster:
+# Exercises the resource-monitoring work against a real cluster:
 #   1. Plan exposes bandwidth_gb_limit (default 100) + per-tenant override
 #      round-trips through the API.
 #   2. Node-CPU SLO rules (node-cpu / node-cpu-critical) are registered +

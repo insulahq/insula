@@ -19,7 +19,7 @@
  *      under the SAME field manager the operator PATCH uses
  *      (platform-api.snapshot-settings).
  *
- * Ownership reality (corrected 2026-06-10): Flux strips ONLY
+ * Ownership reality: Flux strips ONLY
  * /spec/suspend from its apply (scripts/bootstrap.sh Kustomization CR).
  * /spec/schedule CANNOT be stripped — it is required on create, and a
  * schedule-less apply pins the platform Kustomization at Ready=False on
@@ -30,7 +30,7 @@
  * Flux reconcile reverts spec.schedule to the manifest default, and
  * THIS reconciler's 5-minute tick is what re-asserts the operator
  * value — eventual consistency with a ≤5-min revert window per Flux
- * pass, verified live on testing 2026-06-10. For /spec/suspend the
+ * pass, verified live on testing. For /spec/suspend the
  * strip works and this reconciler + operator PATCH are the sole owners.
  */
 
@@ -104,7 +104,7 @@ export async function reconcileMailSnapshotCronJob(
   log: Pick<Logger, 'info' | 'warn' | 'error'>,
 ): Promise<MailSnapshotCronJobResult> {
   // ─── 1. Desired state from the DB ──────────────────────────────
-  // R17.1 firing-mode split (2026-06-11):
+  // R17.1 firing-mode split:
   //   - desired == manifest default → NATIVE mode: the k8s CronJob
   //     fires on the manifest schedule; suspend follows the
   //     target-bound gate. spec.schedule is NEVER patched (the old SSA
@@ -123,7 +123,7 @@ export async function reconcileMailSnapshotCronJob(
   const enabled = await resolveMailScheduleEnabled(db);
   const platformFired = desiredSchedule !== DEFAULT_MAIL_SNAPSHOT_SCHEDULE;
   // `enabled` is the operator's schedule toggle (backup_schedules.mail).
-  // Until 2026-08 no executor read it — disabling the mail schedule in
+  // no executor read it — disabling the mail schedule in
   // the UI silently changed nothing, and switch-with-pause's "pause"
   // (enabled=false during a target switch) paused nothing. Migration
   // 0089 backfills enabled=TRUE on clusters with a bound mail target so

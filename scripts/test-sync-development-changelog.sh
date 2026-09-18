@@ -35,7 +35,7 @@ cat > CHANGELOG.md <<'EOF'
 ### Changed
 - `some-dep` 1.0 → 2.0 (a non-bold bullet).
 
-## [2026.7.0] - 2026-07-01
+## [2026.7.0] -
 
 ### Added
 - **Old thing.** Prior release.
@@ -48,7 +48,7 @@ cat > CHANGELOG.md <<'EOF'
 
 ## [Unreleased]
 
-## [2026.7.1] - 2026-07-15
+## [2026.7.1] -
 
 ### Added
 - **Feature A.** Shipped in this release.
@@ -61,7 +61,7 @@ cat > CHANGELOG.md <<'EOF'
 ### Changed
 - `some-dep` 1.0 → 2.0 (a non-bold bullet).
 
-## [2026.7.0] - 2026-07-01
+## [2026.7.0] -
 
 ### Added
 - **Old thing.** Prior release.
@@ -88,7 +88,7 @@ cat > CHANGELOG.md <<'EOF'
 - `some-dep` 1.0 → 2.0 (a non-bold bullet).
 - `new-dep` 3.0 → 4.0 (genuinely new, non-bold).
 
-## [2026.7.0] - 2026-07-01
+## [2026.7.0] -
 
 ### Added
 - **Old thing.** Prior release.

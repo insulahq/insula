@@ -115,7 +115,7 @@ if [[ -z "$API_POD" ]]; then
 fi
 
 # Pick the CNPG primary pod. Cluster name was renamed
-# `postgres` → `system-db` in the 2026-05-07 PG18 migration; try the
+# `postgres` → `system-db` in the PG18 migration; try the
 # canonical name first, then the legacy name, then the pre-CNPG
 # StatefulSet label as final fallback.
 PG_POD=$(kubectl -n "$PLATFORM_NS" get pods \
@@ -264,7 +264,7 @@ echo "Audit row written to audit_logs (action_type=admin_password_reset_via_cli)
 # ships in the secrets bundle and still "looks like" a valid credential during
 # incident response. Resetting here leaves the same stale value behind, so the
 # CLI break-glass path has to clean up after itself too — this was missed until
-# a staging login failed against the seed on 2026-08-05.
+# a staging login failed against the seed.
 #
 # Best-effort by design: the password change has already committed to the DB,
 # so a kubectl hiccup must not fail the reset. A missing Secret is the expected

@@ -53,7 +53,7 @@ function makeCustomApi(opts: {
 
 const fakeCore = {} as unknown as k8s.CoreV1Api;
 
-// Real backup.info captured from staging staging1, 2026-05-22.
+// Real backup.info captured from staging staging1.
 const SAMPLE_BACKUP_INFO = `backup_label='START WAL LOCATION: 4/9005C498\\n'
 backup_name=backup-20260522030000
 begin_time=2026-05-22 03:00:01.199315+00:00

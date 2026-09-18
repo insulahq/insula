@@ -36,7 +36,7 @@ describe('countScheduledFires', () => {
 
 describe('evaluateFreshness', () => {
   it('reproduces the DEV outage as stale, with the real numbers', () => {
-    // Last good mail snapshot 2026-09-11T19:31; noticed 2026-09-15T12:51.
+    // Last good mail snapshot -11T19:31; noticed -15T12:51.
     const r = evaluateFreshness({
       lastSuccessAt: d('2026-09-11T19:31:00Z'),
       cronExpression: EVERY_30M,

@@ -22,7 +22,7 @@
  *   frame on every cluster-internal direct connection (Roundcube, Bulwark,
  *   the health prober, integration probes, etc. all reach Stalwart via the
  *   Service from a pod-CIDR source) and break them with `write:errno=104` —
- *   the 2026-05-17 regression. So every non-`-proxy` listener gets an EMPTY
+ * the regression. So every non-`-proxy` listener gets an EMPTY
  *   override and the global trust stays empty.
  *
  *   We also append the server node IPs to x:AllowedIp so cluster sources are
@@ -169,7 +169,7 @@ export async function runProxyNetworksReconcilerTick(
   // a pod-CIDR source for haproxy's send-proxy-v2 forwards — never the
   // node's public IP. The old "trust the server node IPs" approach trusted
   // an address Stalwart NEVER saw, so PROXY-v2 was never honored. Proven on
-  // multi-node staging 2026-06-29.
+  // multi-node staging.
   //
   // WHY ONLY the `-proxy` listeners (and never the standard ones): trusting
   // the pod CIDR on the standard mail listeners (25/465/587/143/993/995/4190)
@@ -177,7 +177,7 @@ export async function runProxyNetworksReconcilerTick(
   // internal direct connection — Roundcube, Bulwark, the mail-admin health
   // prober, and the integration probes all reach Stalwart via the Service
   // from a pod-CIDR source — and break them with `write:errno=104` (the
-  // 2026-05-17 regression). So every non-`-proxy` listener keeps an EMPTY
+  // regression). So every non-`-proxy` listener keeps an EMPTY
   // override and inherits the empty global trust (no PROXY-v2 sniff).
   const podCidr = env.PLATFORM_POD_CIDR_V4 || '10.42.0.0/16';
   const proxyListenerTrust: Record<string, boolean> = { [podCidr]: true };
@@ -315,7 +315,7 @@ interface JmapInvocationResponse {
  *
  * **Why this is exec-based, not fetch:** Stalwart 0.16's HTTP listener at
  * `:8080` does PROXY-v2 sniffing on every incoming connection whose source
- * IP is in `SystemSettings.proxyTrustedNetworks`. As of 2026-05-17 the
+ * IP is in `SystemSettings.proxyTrustedNetworks`. the
  * trust list contains server-node IPs ONLY (cluster CIDRs were removed —
  * haproxy DS runs hostNetwork so its source IP is the node IP, not a
  * cluster CIDR address — including 10.42/16 + 10.43/16 forced PROXY-v2
@@ -491,7 +491,7 @@ async function jmapPost(
  * EMPTY ({}): the dedicated `-proxy` listeners carry their own pod-CIDR
  * override, and every other listener must inherit an empty trust so it is
  * never PROXY-v2-sniffed (in-cluster direct clients hit them via the
- * Service from a pod-CIDR source — the 2026-05-17 errno=104 regression).
+ * Service from a pod-CIDR source — the errno=104 regression).
  */
 async function reconcileSystemProxyTrustedNetworks(
   jmapCall: (auth: string, body: unknown) => Promise<JmapInvocationResponse>,
@@ -624,7 +624,7 @@ export function proxyNetworksMatches(
  *     arrive masqueraded to a pod-CIDR tunnel IP; see the proxyListenerTrust
  *     block in runProxyNetworksReconcilerTick for the full rationale)
  *   - Everything else (standard mail 25/465/..., http, mgmt) → empty map →
- *     inherits empty global → no PROXY-v2 sniff (the 2026-05-17 errno=104
+ * inherits empty global → no PROXY-v2 sniff (the errno=104
  *     regression: in-cluster direct clients reach these via the Service)
  *
  * Idempotent — only writes a listener if its current override doesn't

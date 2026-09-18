@@ -50,7 +50,7 @@ BUDGET="${DR_FAILOVER_BUDGET:-720}"
 # a tenant-delete cascade's retrying Stalwart-Domain DESTROY race the new run's
 # CREATE of the SAME domain — both surfaced as a misleading "master-auth never
 # healed" (the probe mailbox simply never got created). A per-run domain can
-# collide with neither. (2026-07-03.)
+# collide with neither.
 RUN="$(date +%s 2>/dev/null || echo "$$")"
 DOMAIN="drdp-${RUN}.net"
 ADDR="dr-probe@${DOMAIN}"
@@ -153,7 +153,7 @@ MP=$(kc "get secret -n mail mail-secrets -o jsonpath='{.data.STALWART_MASTER_PAS
 # password (post-migration security hygiene) and patches mail-secrets, so the
 # value cached at setup goes STALE across a failover/failback — impersonation
 # then 401s with the old value. Refresh before each auth/read attempt so the
-# probe follows the rotation. (2026-07-03: this masqueraded as "master-auth
+# probe follows the rotation. (: this masqueraded as "master-auth
 # never healed" post-failover; the platform DOES re-sync at cutover.)
 refresh_mp(){ local v; v=$(kc "get secret -n mail mail-secrets -o jsonpath='{.data.STALWART_MASTER_PASSWORD}' | base64 -d"); [ -n "$v" ] && MP="$v"; }
 # Resolve the tenant-backup-tools image. Prefer the stalwart Deployment's
@@ -171,7 +171,7 @@ MAILHOST=$(AH "$API/admin/email-settings/ssl-status" | jg "d['data']['host']")
 # CA-issued cert that NAMES the mail host, NOT Stalwart's self-signed rcgen
 # fallback (SAN=localhost). An invalid cert is a FAIL, never advisory: a
 # self-signed / SAN-mismatched cert breaks every TLS-verifying IMAP/SMTP client
-# and degrades outbound deliverability (the 2026-07-03 miss — mail was reported
+# and degrades outbound deliverability (the miss — mail was reported
 # "healthy" while serving a self-signed cert for days).
 cert_valid(){
   local ip="$1" out
@@ -192,7 +192,7 @@ force_reconcile(){ AH -X POST "$API/admin/mail/stalwart-reprovision" -H 'Content
 # Stalwart binds a new ACME cert on its own reload cadence (observed ~1h lag),
 # so a single probe right after failover can catch a transient self-signed
 # window. A cert still self-signed after the whole bounded window (+reconciles)
-# is a real FAIL — never advisory (the 2026-07-03 miss: mail reported "healthy"
+# is a real FAIL — never advisory (the miss: mail reported "healthy"
 # while serving a self-signed cert for days).
 assert_cert_valid(){
   local ip="$1" label="$2" i
@@ -360,7 +360,7 @@ hdr "FAILBACK → $ACTIVE (target-Ready gate + retry) and SYNC-BACK"
 # down node and the platform's preflight node-readiness gate correctly refuses
 # ("target node … did not become schedulable within 300s"). Restarting k3s here
 # simulates the operator recovering the node, so the failback can actually
-# return mail to it. (2026-07-04: this ordering gap made every failback attempt
+# return mail to it. (: this ordering gap made every failback attempt
 # fail at preflight until the gate landed and surfaced it.)
 ssh $SSH_OPTS "$ACTIVE_ADDR" 'systemctl start k3s' 2>&1 | head -1 || true
 # Gate on the target being genuinely SCHEDULABLE, not just node-Ready: the

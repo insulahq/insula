@@ -15,7 +15,7 @@
  * extracted CrowdSec + WAF render code lives. This page is just the
  * shell.
  *
- * History note (2026-05-26): the L4 banner used to sit above the tabs
+ * History note: the L4 banner used to sit above the tabs
  * because it has cluster-wide blast radius. The same toggle is also
  * surfaced inside the Banned IPs tab. Keeping both was a UX bug —
  * operators saw the same control twice. Banner removed; the L4 card

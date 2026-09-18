@@ -20,7 +20,7 @@ resources:
   # oauth2-proxy ships with Dex (moved out of base — see base/kustomization.yaml).
   # Its wait-for-dex-discovery init needs a reachable OIDC issuer, patched below.
   - ../../base/oauth2-proxy
-  # Stalwart 0.16 mail server (Cut 3 cutover, 2026-05-04). Replaces the
+  # Stalwart 0.16 mail server. Replaces the
   # 0.15 StatefulSet that lived under stalwart/. The cutover script
   # scripts/cutover-stalwart-v015-to-v016.sh removes the 0.15 resources
   # before this overlay applies.
@@ -29,7 +29,7 @@ resources:
   # (the bcrypt-hashed admin password Secret consumed by the Deployment).
   # See docs/operations/STALWART_DEPLOYMENT.md.
   - stalwart-mail/
-  # Cut 3 (2026-05-04): Roundcube webmail is always deployed alongside
+  # Cut 3: Roundcube webmail is always deployed alongside
   # Stalwart on staging+production. Operator-bootstrap step creates the
   # `mail-secrets` Secret + the `roundcube` PG database/role on
   # the platform CNPG cluster + the Stalwart master user — see
@@ -45,7 +45,7 @@ resources:
   # BULWARK_JWT_AUTH_SECRET key MUST equal platform-api's
   # WEBMAIL_JWT_SECRET (bootstrap.sh generates one shared value).
   - bulwark/
-  # 2026-05-18: webmail feature-visibility ConfigMap. Roundcube +
+  # webmail feature-visibility ConfigMap. Roundcube +
   # Bulwark Deployments mount this CM unconditionally; without the
   # ConfigMap their volume mounts fail and the Pods never start.
   # platform-api's webmail-feature-css reconciler is the
@@ -65,7 +65,7 @@ resources:
   # 69-86) wired for k8s-platform.test. Staging gets its own ingress
   # with the LE prod cluster issuer.
   - webmail-ingress.yaml
-  # Cut 3 (2026-05-05): staging-only override of Stalwart's default
+  # Cut 3: staging-only override of Stalwart's default
   # per-IP submission throttle (5/sec). Mail HA stress harness sends
   # N concurrent SMTPS from a single in-cluster pod — default trips
   # the throttle. Production keeps the default.
@@ -74,7 +74,7 @@ resources:
   # HA from day 1 + Sentinel co-located. NetworkPolicy locks the cache to
   # redis-system / mail / platform namespaces — tenant namespaces blocked.
   #
-  # 2026-06-23 — DISABLED (resource savings): nothing consumes Valkey in the
+  # — DISABLED (resource savings): nothing consumes Valkey in the
   # automated config. The backend cache is in-memory LRU (backend/src/shared/
   # redis.ts — no Redis client; REDIS_URL is unread). The only intended
   # consumer is Stalwart, and it is wired ONLY by manually running
@@ -87,11 +87,11 @@ resources:
   # Stalwart) lands. The scenario_redis integration test skips by default
   # while disabled (SKIP_REDIS_SCENARIO defaults on — integration-staging.sh).
   # - valkey/
-  # NFS test server (originally R-X17 follow-up, 2026-05-21) was
-  # REMOVED 2026-05-25 alongside the platform-wide NFS drop —
+  # NFS test server was
+  # REMOVED alongside the platform-wide NFS drop —
   # see ADR-043 postscript + migration 0027. No bench harness now
   # requires this fixture.
-  # Image promotion (was Flux Image Automation, removed 2026-05-09):
+  # Image promotion(was Flux Image Automation, removed):
   # Now handled by the in-CI "Pin image tags in kustomization.yaml"
   # step in .github/workflows/build-deploy.yml. Build * jobs export
   # their resolved timestamp tag; the version-bump job rewrites
@@ -129,7 +129,7 @@ components:
   - ../../components/stalwart-extra-ca
 
 patches:
-  # ── platform-critical eviction protection (operator decision 2026-07-25) ──
+  # ── platform-critical eviction protection ──
   # Covers resources added at THIS overlay level (dex) — the base +
   # production blankets only reach resources rendered in their own
   # kustomization. Re-applying to inherited resources is a harmless no-op.
@@ -168,11 +168,11 @@ patches:
   # ingress-reconciler.ts creates the IngressRoute from system_settings on
   # startup). Per-environment TLS settings flow through the reconciler
   # via the platform-cluster-config ConfigMap (Phase 2).
-  # longhorn-ui-patch.yaml was REMOVED 2026-06-12: the Longhorn UI now
+  # longhorn-ui-patch.yaml was REMOVED: the Longhorn UI now
   # rides the admin host as /longhorn (path route, no own Certificate),
   # so there is no issuerRef to override anymore.
-  # system-db-storage-patch.yaml (20Gi) was REMOVED 2026-07-08: it was a
-  # leftover from the 2026-06-02 staging WAL-runaway incident (staging grown
+  # system-db-storage-patch.yaml (20Gi) was REMOVED: it was a
+  # leftover from the staging WAL-runaway incident (staging grown
   # 10→20Gi) back when this overlay fed staging+testing. Post-ADR-053 staging
   # inherits the PRODUCTION overlay, not this one, and the DEV cluster is
   # re-bootstrapped fresh onto the 2Gi longhorn-system-local base. Operators
@@ -218,7 +218,7 @@ images:
   # tag by each image's OWN build workflow (.github/workflows/ci-*.yml →
   # .github/scripts/pin-image-tag.sh) AFTER the push completes, so Flux only
   # rolls to a tag that already exists. Replaces the old `:latest` + Always +
-  # deploy-rev-bump path, which raced the image push (2026-06-06 pull-race).
+  # deploy-rev-bump path, which raced the image push.
   # "latest" here is the pre-first-pin placeholder (matches the base tag); the
   # next build of each image rewrites it.
   - name: ghcr.io/insulahq/insula/security-probe

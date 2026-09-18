@@ -9,7 +9,7 @@
  * A cluster configured purely through the shim assignments — the normal
  * path since R-X20 — left them suspended forever, so the age-encrypted
  * secrets bundle and the cluster-state dump silently never ran
- * (production, 2026-08-26). Their planned shim-native replacement
+ * . Their planned shim-native replacement
  * ("R-X9 secrets-bundle rclone-push", see k8s/base/backup/
  * LEGACY-DEPRECATED.md) was never built.
  *
@@ -27,7 +27,7 @@
  *
  * Ownership: this bridge is the SOLE writer of `backup-credentials`
  * and the suspend flags. The legacy target-activate flow was retired
- * 2026-08-26 (routes + longhorn-reconciler deleted; migration 0090
+ * (routes + longhorn-reconciler deleted; migration 0090
  * cleared any `active` rows), so there is nothing to defer to.
  *
  * Side check — Longhorn volume backups: the same sweep found Longhorn's
@@ -60,9 +60,9 @@ const CREDENTIALS_SECRET_NAME = 'backup-credentials';
 /**
  * The legacy DR CronJobs with NO live shim-era replacement.
  *
- * `platform-backup-audit` was the third entry until 2026-09-03. It audited
+ * `platform-backup-audit` was the third entry. It audited
  * membership of Longhorn's `default` recurring-job group, which stopped
- * governing any backup when Longhorn volume backups were retired 2026-08-26 —
+ * governing any backup when Longhorn volume backups were retired —
  * the group now drives only local hourly snapshots and fstrim. Deleted rather
  * than reworded, because its PVC filter (`storageClassName=="longhorn"`) never
  * matched a tenant volume (`longhorn-tenant`), so it could not perform the
@@ -282,7 +282,7 @@ export async function reconcileDrCronJobs(
     return { state: 'error', errorMessage: msg, secretApplied: false, unsuspended: 0, suspended: 0 };
   }
 
-  // Ownership hand-off (2026-09-18): the cadence reconciler is now the sole
+  // Ownership hand-off: the cadence reconciler is now the sole
   // writer of /spec/suspend for any CronJob that has a schedule row, because
   // it has to suspend one whose operator cadence differs from the manifest
   // (the platform fires those itself). Unsuspending here on the next tick

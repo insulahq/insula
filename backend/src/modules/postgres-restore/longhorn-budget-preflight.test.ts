@@ -74,7 +74,7 @@ describe('checkLonghornBudgetForRecovery', () => {
   });
 
   it('insufficient reproduces the live testing arithmetic and names reclaim candidates', async () => {
-    // The 2026-06-11 shape: (80 − 24) × 100% − 44 = 12Gi < 20Gi.
+    // The shape: (80 − 24) × 100% − 44 = 12Gi < 20Gi.
     const k8s = makeK8s({
       nodes: [{ max: 80 * GI, reserved: 24 * GI, scheduled: 44 * GI }],
       releasedSystemPvs: [{ name: 'pvc-old-system-db', size: '20Gi' }],

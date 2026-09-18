@@ -58,7 +58,7 @@ _psql() {
   # The cluster's CR name is `postgres` (see k8s/base/database.yaml); the
   # label selector that picks the current primary is
   # `cnpg.io/cluster=postgres,role=primary`. Fix from cutover-on-staging
-  # (2026-05-04) — original selector had cluster=platform-pg which never
+  # — original selector had cluster=platform-pg which never
   # matched any pod and silently fell through to the host psql fallback.
   local pg_pod
   pg_pod=$(_kubectl get pod -n platform -l cnpg.io/cluster=postgres,role=primary \
@@ -164,7 +164,7 @@ if _kubectl get secret -n mail stalwart-admin-creds &>/dev/null; then
   echo "    OK — stalwart-admin-creds already exists."
 else
   echo "    Secret missing. Generating a fresh admin password and creating it."
-  # Code-review M-2 fix (2026-05-04): use `openssl rand -hex` so the
+  # Code-review M-2 fix: use `openssl rand -hex` so the
   # password length is deterministic. The previous `rand -base64 24 |
   # tr -d '/+=' | head -c 32` could yield <32 chars when the random
   # bytes happened to contain many strippable base64 chars. Hex is
@@ -195,7 +195,7 @@ else
     echo "    platform-stalwart-creds (mirror) created in platform namespace."
   fi
 
-  # Code-review M-1 fix (2026-05-04): write the cleartext to a chmod-600
+  # Code-review M-1 fix: write the cleartext to a chmod-600
   # tempfile instead of stdout. CI runs of this script with --force
   # would otherwise leak the password into job log artifacts. The
   # operator can `cat` the printed path interactively.

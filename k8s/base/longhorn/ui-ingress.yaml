@@ -1,5 +1,5 @@
 # Longhorn dashboard path routes on the ADMIN host (no dedicated
-# subdomain) — operator decision 2026-06-12, same rationale as the
+# subdomain) — operator decision, same rationale as the
 # vmsingle-ui route: one fewer public hostname + LE certificate.
 #
 #   https://admin.<apex>/longhorn/  →  longhorn-frontend (stripPrefix)
@@ -10,7 +10,7 @@
 # under a stripped prefix), but the SPA hardcodes ABSOLUTE `/v1/...`
 # API + websocket paths. The second route mounts that API surface at
 # the admin origin, cookie-gated like everything else. Verified live
-# on staging 2026-06-12 (assets relative, bundle greps show "/v1/…").
+# on staging (assets relative, bundle greps show "/v1/…").
 #
 # ⚠ /v1 on the admin host now belongs to Longhorn. The platform API
 #   lives under /api/v1 so there is no collision today — but no future

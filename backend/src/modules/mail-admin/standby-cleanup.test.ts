@@ -1,5 +1,5 @@
 /**
- * standby-cleanup.ts unit tests (2026-05-28).
+ * standby-cleanup.ts unit tests.
  *
  * When a node is de-elected from the secondary/tertiary placement, the
  * mail-standby DaemonSet pod is evicted (label removed) but the

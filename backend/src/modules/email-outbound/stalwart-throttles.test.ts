@@ -51,7 +51,7 @@ describe('buildDesiredSendLimitObjects', () => {
     // mailbox on this same host runs in the `local` queue. Without the
     // clause an OUTBOUND limit also throttles tenant-internal mail, the
     // platform's own notification email and DMARC intake — measured on
-    // DEV 2026-09-15, 82 local messages parked behind the daily bucket
+    // DEV, 82 local messages parked behind the daily bucket
     // with `250 … Message queued` returned to the sender.
     const { throttles, quotas } = buildDesiredSendLimitObjects([active('alpha.example.com', 80, 400)]);
     for (const suffix of ['hourly', 'daily'] as const) {
@@ -368,7 +368,7 @@ describe('postmaster@ is never rate limited', () => {
   };
 
   it('excludes postmaster@ from the hourly and daily throttle match', () => {
-    // Operator decision 2026-09-16. Throttle buckets are keyed by sender
+    // Operator decision. Throttle buckets are keyed by sender
     // DOMAIN, so a platform address living on a tenant's domain would spend
     // that tenant's allowance. postmaster@ carries DSNs and, once a DMARC
     // report sender is configured, sends the outbound aggregate reports —
@@ -381,7 +381,7 @@ describe('postmaster@ is never rate limited', () => {
       expect(e).toContain("sender != 'postmaster@example.test'");
       // The local-queue exemption must survive alongside it: without that,
       // an OUTBOUND limit also governs tenant-internal mail (82 local
-      // messages were parked that way on DEV 2026-09-15).
+      // messages were parked that way on DEV).
       expect(e).toContain("queue_name != 'local'");
     }
   });
@@ -397,7 +397,7 @@ describe('postmaster@ is never rate limited', () => {
   });
 
   it('uses `sender`, the only variable Stalwart accepts here', () => {
-    // Probed live on DEV 2026-09-16: `sender` is ACCEPTED, while
+    // Probed live on DEV: `sender` is ACCEPTED, while
     // `sender_address` and `from` are rejected at parse time with
     // "Error parsing 'else' expression" — which fails the whole throttle
     // write rather than degrading, so the name matters.

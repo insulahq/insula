@@ -3,7 +3,7 @@
  *
  * A node loss is the one moment this endpoint exists for — and it is also the
  * moment the platform Postgres may be mid-failover, because the dead node could
- * have been carrying the primary. Measured on staging 2026-09-11: the DB was
+ * have been carrying the primary. Measured on staging: the DB was
  * unavailable for ~90 s after `staging1` went NotReady.
  *
  * Node readiness comes from Kubernetes and survives that. Tenant impact comes
@@ -106,7 +106,7 @@ describe('collectFacts under a database outage', () => {
 /**
  * Recovering node identity from the platform's own inventory.
  *
- * The 2026-09-12 quorum-loss drill left the platform able to report that
+ * The quorum-loss drill left the platform able to report that
  * something was wrong but not WHICH machine — the node list is itself an
  * API-server read, so losing the control plane lost the names with it. The
  * database survives that (it served operator logins throughout the drill) and

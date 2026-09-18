@@ -49,7 +49,7 @@ describe('updateResourceQuota', () => {
   });
 });
 
-// ─── Float accumulation (production report, 2026-09-08) ──────────────────
+// ─── Float accumulation ──────────────────
 //
 // A tenant was blocked from deploying with
 //   "CPU: 0.10 cores available (0.10 cores required) — Insufficient"

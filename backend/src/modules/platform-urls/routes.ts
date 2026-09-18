@@ -62,7 +62,7 @@ export async function platformUrlsRoutes(app: FastifyInstance): Promise<void> {
     if (!parsed.success) {
       throw new ApiError('VALIDATION_ERROR', zodMessage(parsed.error), 400);
     }
-    // 2026-05-09: mailServerHostname is editable post-bootstrap via
+    // mailServerHostname is editable post-bootstrap via
     // SystemSettings.defaultHostname. Push to Stalwart first; if
     // Stalwart accepts, persist to platform_urls. If Stalwart rejects
     // (validation / missing Domain / network), fail loudly without

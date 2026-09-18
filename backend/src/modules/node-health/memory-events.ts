@@ -1,6 +1,6 @@
 /**
  * Node memory events — SystemOOM + pod evictions (operator decision
- * 2026-07-25: both must be UI-visible and reach admins as notifications).
+ * both must be UI-visible and reach admins as notifications).
  *
  * Fed by the node-health reconciler's 5-min tick with the raw k8s Event
  * lists (reason=Evicted for Pods, reason=SystemOOM for Nodes). Each
@@ -118,7 +118,7 @@ interface RawTermination {
  * Containers OOM-killed at their own cgroup limit, read from container
  * STATUS (containerd-sourced) rather than events or metrics. Both of
  * those ride cadvisor's kmsg oomparser — observed permanently broken on
- * a live node (2026-07-25) — and the per-container metric series is torn
+ * a live node — and the per-container metric series is torn
  * down before the 60s scrape can capture a short-lived kill. lastState
  * persists until the NEXT restart, so the 5-min reconciler reliably sees
  * each kill; the dedupe key (uid × container × restartCount × finishedAt)
@@ -139,7 +139,7 @@ interface RawTermination {
  * container restarts, so none of the pod-level shutdown markers apply and
  * isExpectedSigkill() correctly does not fire.
  *
- * Found by a real DEV reboot on 2026-09-11, after the node-shutdown fix: the
+ * Found by a real DEV reboot, after the node-shutdown fix: the
  * reboot produced no false tenant OOM alerts, but still raised a CRITICAL
  * "Node memory event" for two crowdsec containers. The kernel logged ZERO
  * cgroup OOMs for that boot, and the kubelet had already explained itself:
@@ -217,7 +217,7 @@ export function collectOomKilledContainers(
     //   status.reason      — a NODE SHUTDOWN never deletes the pod, it marks it
     //                        Failed in place, so deletionTimestamp is ABSENT.
     // Missing the second reported five reboot corpses as OOMs on production
-    // 2026-09-11. See isExpectedSigkill().
+    // . See isExpectedSigkill.
     const expectedKill = isExpectedSigkill({
       deletionTimestamp: pod.metadata?.deletionTimestamp,
       reason: pod.status?.reason,
@@ -235,7 +235,7 @@ export function collectOomKilledContainers(
         if (!oomKind) continue;
         const oomExplicit = oomKind === 'explicit';
         // Drop unconfirmed kills on a terminating pod: that is the rollout
-        // SIGKILL, not an OOM. Measured 2026-08-31 — the modsec-crs
+        // SIGKILL, not an OOM. — the modsec-crs
         // `audit-redactor` sidecar paged an admin as an OOM every time the WAF
         // exclusion reconciler rolled the deployment, while its cgroup reported
         // `oom_kill 0` and a peak of 8.5 MB against a 64 MiB limit, and the

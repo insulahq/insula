@@ -11,7 +11,7 @@ const mockStream = vi.hoisted(() => vi.fn());
 vi.mock('@/lib/ndjson-progress', () => ({ streamNdjsonOperation: mockStream }));
 vi.mock('@/hooks/use-tenant-context', () => ({ useTenantContext: () => ({ tenantId: 't1' }) }));
 
-// WHY THIS EXISTS: on 2026-09-02 a tenant moved ~120 files between folders in
+// WHY THIS EXISTS: a tenant moved ~120 files between folders in
 // the panel. The Copy/Move dialog fired one request PER FILE via
 // `paths.map()` + `Promise.all` — 62 requests in two seconds — which tripped
 // the 100/min API rate limit. `Promise.all` rejected on the first 429 while
@@ -216,7 +216,7 @@ describe('useBulkOperationRunner', () => {
 //
 // The cap is not ours: ModSecurity's JSON body processor turns every array
 // element into its own ARGS entry, and rule 200007 refuses a request once the
-// argument count reaches 1000. Measured on a live cluster (2026-09-02): a
+// argument count reaches 1000. Measured on a live cluster: a
 // 900-path body passes, a 1000-path body is refused at the edge as a bare
 // nginx 400 that never reaches the API and carries no error envelope. So a
 // large selection has to go out as several bounded requests.

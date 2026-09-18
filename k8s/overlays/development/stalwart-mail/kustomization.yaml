@@ -40,7 +40,7 @@ patches:
   # mail-externalip-reconciler CronJob (k8s/base/mail-externalips) keeps
   # the live Service.spec.externalIPs in sync with worker-role nodes on
   # multi-node clusters.
-  # 2026-05-28: externalIPs is NO LONGER declared here. Flux's
+  # externalIPs is NO LONGER declared here. Flux's
   # kustomize-controller and platform-api's mail-port-exposure reconciler
   # both tried to own the field — Flux's 5-10 min cycle would revert
   # the runtime SSA, sending traffic back to the bootstrap node (caught
@@ -51,7 +51,7 @@ patches:
   # ensureMailPortExposureApplied populates externalIPs on every
   # platform-api boot, so there's only a brief externalIPs-empty window
   # at very first bootstrap before platform-api ever starts.
-  # 2026-05-28 hairpin fix follow-up: the base Service hardcodes
+  # hairpin fix follow-up: the base Service hardcodes
   # `externalTrafficPolicy: Local` (was sensible for the original
   # LoadBalancer type). On staging we patch type → ClusterIP AND we
   # need to REMOVE externalTrafficPolicy entirely — K8s apiserver

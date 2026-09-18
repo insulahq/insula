@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // The tenant notification is the whole reason this reconciler joins
 // `mailboxes`. Mocked so a test can assert the mailbox ADDRESS reaches it:
-// before 2026-09-17 the payload carried only a job id, and the tenant was told
+// before the payload carried only a job id, and the tenant was told
 // "IMAPSync migration: job (unnamed)". A passing query proves nothing about
 // whether the value arrives.
 const { notifyTenantImapsyncTerminal } = vi.hoisted(() => ({

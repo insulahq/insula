@@ -1,7 +1,7 @@
 /**
  * `/backups/disaster-recovery` — Disaster Recovery hub.
  *
- * Phase 5 (2026-05-22) consolidates three previously-scattered
+ * Phase 5 consolidates three previously-scattered
  * surfaces into one DR page agreed with the operator:
  *
  *   1. Secrets Bundle — lifted from System Backups → Object Backups.

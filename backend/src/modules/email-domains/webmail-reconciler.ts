@@ -160,7 +160,7 @@ export async function reconcileWebmailCertificates(
 }
 
 /**
- * 2026-05-18: re-target every per-tenant webmail.<clientdomain>
+ * re-target every per-tenant webmail.<clientdomain>
  * ExternalName Service so it points at the currently-active webmail
  * engine (Roundcube or Bulwark), matching the behaviour of the
  * platform-wide webmail-router for `webmail.<apex>`.
@@ -175,7 +175,7 @@ export async function reconcileWebmailCertificates(
  * Service carries `insula.host/webmail-engine: <engine>`
  * stamped by `ensureWebmailIngress`. If the label doesn't match the
  * active engine, we MERGE_PATCH both the label and `spec.externalName`
- * in a single API call. Pre-2026-05-18 Services missing the label are
+ * in a single API call. Pre- Services missing the label are
  * patched once and then converge.
  *
  * Missing ExternalName Service (e.g. delete-by-hand) triggers a full
@@ -305,7 +305,7 @@ export function startWebmailReconciler(
         err instanceof Error ? err.message : String(err),
       );
     }
-    // 2026-05-18: also re-target per-tenant webmail Ingresses to
+    // also re-target per-tenant webmail Ingresses to
     // the active engine. Runs in the same tick (and same try-isolate
     // pattern) so a failure in one pass doesn't block the other.
     try {

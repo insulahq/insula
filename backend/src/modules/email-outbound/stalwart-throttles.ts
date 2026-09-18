@@ -48,7 +48,7 @@ const DAY_MS = 86_400_000;
 // quota is rejected with MinValue), so a block is a 1-BYTE size quota
 // — every real message exceeds it and submission is rejected at DATA
 // with "452 4.3.1 Mail system full" (JMAP: forbiddenToSend). Proven
-// live on v0.16.5 (2026-06-12 E2E).
+// live on v0.16.5.
 export const BLOCK_SIZE_BYTES = 1;
 
 export interface DomainSendLimit {
@@ -92,7 +92,7 @@ const SAFE_DOMAIN = /^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/;
 function domainMatch(domain: string): StalwartExpression {
   // Boolean expressions go in `else` (the match chain is empty and
   // falls through). The chain is a List<T> on the wire: an OBJECT
-  // with integer-string keys — `[]` is rejected (live-E2E 2026-06-12).
+  // with integer-string keys — `[]` is rejected.
   //
   // `postmaster@` is exempt here too. This match backs the BLOCK quota for a
   // suspended tenant, and postmaster@ is the PLATFORM's address on their
@@ -110,7 +110,7 @@ function domainMatch(domain: string): StalwartExpression {
  * delivery to a mailbox on this same host runs in the `local` queue —
  * so without this clause an OUTBOUND send limit also governs
  * tenant-internal mail, the platform's own notification email, and
- * DMARC report intake. Measured on DEV 2026-09-15, from Stalwart's log:
+ * DMARC report intake. Measured on DEV, from Stalwart's log:
  *
  *   Rate limit exceeded (queue.rate-limit-exceeded)
  *     queueName = "local"  from = "postmaster@<apex>"
@@ -128,18 +128,18 @@ function domainMatch(domain: string): StalwartExpression {
  * being rate-limited logged `delivery.completed` in 0ms.
  */
 function outboundDomainMatch(domain: string): StalwartExpression {
-  // `postmaster@` is exempt, by operator decision 2026-09-16.
+  // `postmaster@` is exempt, by operator decision.
   //
   // It is a PLATFORM address that happens to live on a tenant's domain: it
   // receives DSNs and reports, and once a DMARC report sender is configured it
   // also SENDS outbound aggregate reports. Throttle buckets are keyed by
   // sender DOMAIN, so without this clause the platform's own report traffic
   // would be charged to that tenant's hourly/daily plan allowance — the exact
-  // shape of the 2026-09-16 storm, where platform mail consumed a customer's
+  // shape of the storm, where platform mail consumed a customer's
   // quota and then alarmed about it.
   //
   // `sender` is the variable Stalwart exposes here. Probed live on DEV
-  // 2026-09-16: `sender` is ACCEPTED; `sender_address` and `from` are both
+  // `sender` is ACCEPTED; `sender_address` and `from` are both
   // rejected at parse time ("Error parsing 'else' expression"), which would
   // make the whole throttle write fail rather than degrade.
   return {
@@ -286,7 +286,7 @@ function throttleNeedsUpdate(
  *     "description": "Cannot modify read-only property",
  *     "properties": ["description"] } }
  *
- * Measured on DEV 2026-09-15 against v0.16.20. Because the reconciler
+ * Measured on DEV against v0.16.20. Because the reconciler
  * spread the whole desired object into the patch, EVERY x:MtaQueueQuota
  * update had always failed — a plan change that raised a tenant's daily
  * limit left the backlog quota pinned at its original `messages` value
@@ -318,7 +318,7 @@ function quotaNeedsUpdate(
  * Diff desired vs live platform-prefixed objects and apply.
  *
  * Stalwart applies registry throttle/quota changes without a restart
- * (verified live in the 2026-06-12 spike E2E for this PR) — no pod
+ * (verified live in the spike E2E for this PR) — no pod
  * roll is required here.
  */
 export async function reconcileStalwartSendLimits(
@@ -437,7 +437,7 @@ export async function reconcileStalwartSendLimits(
 
   // Stalwart reads MTA throttle/quota config at boot — without this
   // reload the running server keeps enforcing the OLD limits until the
-  // next pod restart (live-proven 2026-06-12). Cheap no-op when
+  // next pod restart. Cheap no-op when
   // nothing changed.
   if (created + updated + destroyed > 0) {
     try {

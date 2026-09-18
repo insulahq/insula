@@ -99,7 +99,7 @@ export async function webmailSettingsRoutes(app: FastifyInstance): Promise<void>
       );
     }
 
-    // 2026-05-09: mailServerHostname is editable post-bootstrap.
+    // mailServerHostname is editable post-bootstrap.
     // Stalwart 0.16's Bootstrap object is a transient install-only
     // singleton (not "locked" — empirically confirmed it returns
     // notFound after install). The runtime hostname source-of-truth
@@ -219,7 +219,7 @@ export async function webmailSettingsRoutes(app: FastifyInstance): Promise<void>
     // roll there is no Ready pod, so the tick used to bail without
     // ever flipping the fresh cert-anchor Domain to Automatic cert
     // management — leaving the renamed hostname without TLS until the
-    // 30-min scheduler tick (caught live on testing 2026-06-10: rename
+    // 30-min scheduler tick (caught live on testing: rename
     // logged sanAdded=true, but Stalwart silently drops the SAN merge
     // on a Manual-management row, and the inline tick raced the
     // rollout and no-op'd). Fire-and-forget so the PATCH response
@@ -266,7 +266,7 @@ export async function webmailSettingsRoutes(app: FastifyInstance): Promise<void>
     // resolve through hosting_plans and reconcile from the plan/tenant
     // update paths instead.
 
-    // 2026-05-18: if any webmail feature-visibility flag was changed,
+    // if any webmail feature-visibility flag was changed,
     // re-render the override CSS ConfigMap + stamp the Deployments so
     // a rolling restart picks the new content up. Synchronous because
     // it's fast (1 ConfigMap PATCH + 2 Deployment PATCHes ≈ 500 ms);
@@ -313,7 +313,7 @@ export async function webmailSettingsRoutes(app: FastifyInstance): Promise<void>
       }
     }
 
-    // ADR-039 Phase 10 (rev. 2026-05-18): when the operator flips the
+    // ADR-039 Phase 10: when the operator flips the
     // webmail engine, run the actual cluster-side work in the
     // task-center so the admin UI gets a progress modal with the 5
     // checklist steps (persist / IR flip / Pod mutex / wait-ready /
@@ -410,7 +410,7 @@ export async function webmailSettingsRoutes(app: FastifyInstance): Promise<void>
           });
           await runStep(2, 'mutex', 'Scaling engine Deployments…', 'Engine mutex applied', async () => {
             await reconcileEngineDeployments(app.db, k8sLocal.apps, app.log);
-            // 2026-05-18: re-target every per-tenant webmail.<clientdomain>
+            // re-target every per-tenant webmail.<clientdomain>
             // ExternalName Service to the new engine in the same step.
             // Without this, per-tenant routes keep pointing at the now-
             // scaled-to-0 inactive engine until the periodic reconciler
@@ -504,7 +504,7 @@ export async function webmailSettingsRoutes(app: FastifyInstance): Promise<void>
     return success(settings);
   });
 
-  // 2026-05-07: POST /admin/mail/certificate/ensure removed.
+  // POST /admin/mail/certificate/ensure removed.
   //
   // The endpoint provisioned a cert-manager Certificate CR for the
   // Stalwart mail hostname — that path was the v0.15 architecture

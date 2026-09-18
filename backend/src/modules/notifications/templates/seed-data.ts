@@ -50,7 +50,7 @@ const COMMON_VARS: readonly NotificationTemplateVariable[] = [
   // The tenant's billing/technical contact PERSON, distinct from the
   // organisation name. Populated centrally by the dispatcher from
   // tenants.contact_name, which was filled in for every tenant and read by
-  // nothing until 2026-09-14.
+  // nothing.
   { name: 'contactName', type: 'string', required: false },
   // Seeded by the dispatcher from "now"; a caller with a more precise instant
   // (when the threshold was actually crossed) overrides it.
@@ -2067,7 +2067,7 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     ];
   }),
 
-  // ── Node reboot lifecycle (operator request 2026-09-11) ──
+  // ── Node reboot lifecycle ──
   ...((): SeedTemplate[] => {
     const rebootVars: readonly NotificationTemplateVariable[] = [
       ...COMMON_VARS,

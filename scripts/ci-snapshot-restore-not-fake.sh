@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Phase 1 (2026-05-22) — CI invariant for the CNPG snapshot Restore wiring.
+# Phase 1 — CI invariant for the CNPG snapshot Restore wiring.
 #
 # The CNPG branch in SystemSnapshotsModal.tsx used to navigate to the
 # DR shell-instructions page. The operator called this "fake" — the

@@ -128,7 +128,7 @@ async function loadPersistedQuiesceSnapshot(db: Database, opId: string): Promise
  * when `quiesce()` RETURNS — a throw between "persist snapshot" and "all
  * workloads scaled" left the local null, the old `if (quiesceSnap)` guard
  * skipped the unquiesce, and the tenant stayed at 0 replicas with no
- * automatic recovery (operator report #7, 2026-08-26). The snapshot is
+ * automatic recovery. The snapshot is
  * persisted on the op row BEFORE any mutation, so fall back to that copy.
  * Best-effort: never throws.
  */
@@ -1616,7 +1616,7 @@ export async function suspendTenant(
    * `suppressTenantNotification` carries the operator's "Notify tenant"
    * choice down to the lifecycle hook that honours it. It has to be threaded
    * explicitly: the hook reads it off the cascade context, and until
-   * 2026-09-16 nothing on this path set it, so the checkbox did nothing.
+   * nothing on this path set it, so the checkbox did nothing.
    */
   opts: { triggeredByUserId?: string | null; suppressTenantNotification?: boolean } = {},
 ): Promise<{ operationId: string }> {
@@ -1688,7 +1688,7 @@ export async function resumeTenant(
    * `suppressTenantNotification` carries the operator's "Notify tenant"
    * choice down to the lifecycle hook that honours it. It has to be threaded
    * explicitly: the hook reads it off the cascade context, and until
-   * 2026-09-16 nothing on this path set it, so the checkbox did nothing.
+   * nothing on this path set it, so the checkbox did nothing.
    */
   opts: { triggeredByUserId?: string | null; suppressTenantNotification?: boolean } = {},
 ): Promise<{ operationId: string }> {

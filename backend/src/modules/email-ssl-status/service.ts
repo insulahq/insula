@@ -117,7 +117,7 @@ export interface ProbeOptions {
    * webmailHost:443) to the listener list. The probe goes through
    * the same nginx-ingress path that real browsers use, so it
    * catches the "fake-cert fallback" failure mode that bit
-   * webmail.staging.example.test on 2026-05-07.
+   * webmail.staging.example.test.
    */
   readonly webmailHost?: string;
 }
@@ -171,7 +171,7 @@ export async function probeAllListeners(
     // Roundcube. NOT Stalwart — different cert (cert-manager-issued
     // for the webmail hostname), different ingress path. Probe the
     // public hostname directly because the failure mode we caught
-    // on 2026-05-07 (nginx-ingress fake-cert fallback) is invisible
+    // (nginx-ingress fake-cert fallback) is invisible
     // from inside the cluster.
     //
     // OPERATOR NOTE for egress-restricted clusters: this probe goes

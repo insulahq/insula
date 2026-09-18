@@ -399,7 +399,7 @@ export default function Files() {
   // A status poll that FAILED is not the same as a file-manager that is
   // starting. Falling through to <FmStartingScreen> on an errored query is how
   // a rate-limited panel came to look exactly like a killed pod: on
-  // 2026-09-02 a bulk move exhausted the 100/min budget, /files/status
+  // a bulk move exhausted the 100/min budget, /files/status
   // answered 429, this branch rendered "Starting file manager…", and the
   // 2-second retry then hammered the very bucket that was rejecting it — all
   // while the pod underneath ran untouched with zero restarts.

@@ -1,5 +1,5 @@
 /**
- * Regression test for 2026-05-29.
+ * Regression test for.
  *
  * The `loadTenantsOverview` query had a stale enum reference:
  *

@@ -19,7 +19,7 @@ interface Readiness {
  * destroy and recreate the mail PVC, so the platform must never switch it on
  * by itself. What it CAN do is stop the gap being invisible.
  *
- * The 2026-09-11 drill found staging in exactly this state: HA mode, three
+ * The drill found staging in exactly this state: HA mode, three
  * server nodes, auto-failover off and no secondary/tertiary configured. When
  * the mail node was killed nothing happened at all — `dr-watcher` returns
  * immediately when auto-failover is off, without even marking the state

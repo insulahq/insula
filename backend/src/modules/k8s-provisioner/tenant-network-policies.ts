@@ -22,9 +22,9 @@
  *   6. allow-backup-jobs-egress — backup/restore Jobs → platform-api + the
  *                               rclone-shim (scoped by component label).
  *
- * ── Why the pod-CIDR ipBlock was REMOVED (2026-07-27) ──────────────────────
+ * ── Why the pod-CIDR ipBlock was REMOVED ──────────────────────
  * Policies 1 and 3 used to carry an `ipBlock: 10.42.0.0/16` (the whole k3s
- * pod CIDR) alongside their namespaceSelector, added 2026-04-27 to fix LE
+ * pod CIDR) alongside their namespaceSelector, to fix LE
  * HTTP-01 504s. But 10.42.0.0/16 matches EVERY pod in the cluster — including
  * every other tenant — so the "default-deny" denied nothing between tenants,
  * and :8111 (an unauthenticated root file API) was reachable cluster-wide.
@@ -34,7 +34,7 @@
  * could not match. Traefik runs hostPort (NOT hostNetwork), so Calico
  * preserves the Traefik pod's own source IP across the VXLAN overlay and the
  * `traefik` namespaceSelector matches cross-node. Verified live on the 4-node
- * staging cluster 2026-07-27: a pod in the traefik namespace reaches a tenant
+ * staging cluster: a pod in the traefik namespace reaches a tenant
  * pod on a DIFFERENT node with namespaceSelector-only (no ipBlock), while a
  * pod in any other namespace is denied. Same conclusion the platform-side
  * `allow-ingress-to-platform` policy already reached for platform-api:3000.
@@ -341,7 +341,7 @@ export function buildTenantNetworkPolicies(
                 },
               ],
               // No port restriction (was TCP/8111 file-manager only): the
-              // app-preview proxy (2026-08-24) reaches arbitrary workload
+              // app-preview proxy reaches arbitrary workload
               // Service ports. platform-api already holds cluster-admin
               // k8s credentials (it can exec into these pods), so a port
               // allowlist here added no real boundary — only breakage.

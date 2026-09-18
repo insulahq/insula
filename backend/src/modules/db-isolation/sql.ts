@@ -20,7 +20,7 @@
  * `cnpg_metrics_exporter` **connects to every database**, not just the app one:
  * the `pg_extensions` collector in `cnpg-default-monitoring` carries
  * `target_databases: ['*']` and its query calls `current_database()`, which
- * only answers from inside each database. Proven on DEV 2026-09-13 by sampling
+ * only answers from inside each database. Proven on DEV by sampling
  * `pg_stat_activity` across forced scrapes — connections from all four of
  * `platform`, `crowdsec`, `roundcube`, `postgres`.
  *

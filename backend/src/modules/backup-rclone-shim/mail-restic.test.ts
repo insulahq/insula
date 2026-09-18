@@ -144,7 +144,7 @@ describe('reconcileMailResticShim', () => {
     expect((body.metadata as Record<string, unknown>).namespace).toBe(MAIL_NAMESPACE);
   });
 
-  // Phase 2 legacy purge (2026-05-22): the `system_mail` legacy row
+  // Phase 2 legacy purge: the `system_mail` legacy row
   // can no longer exist (migration 0023 narrows the CHECK constraint),
   // so STATE_LEGACY_TAKING_OVER + the both-bound conflict branch are
   // gone. The remaining state machine is mail-bound → reconcile vs
@@ -192,7 +192,7 @@ describe('reconcileMailResticShim', () => {
 });
 
 // ---------------------------------------------------------------------------
-// ensurePlatformApiTokenSecret (2026-08-24) — the stats-reporting token
+// ensurePlatformApiTokenSecret — the stats-reporting token
 // Secret consumed by the snapshot Jobs + standby DaemonSet. Tested
 // through reconcileMailResticShim: it must run BEFORE the binding gate
 // (target-less clusters report too) and never fail the reconcile.

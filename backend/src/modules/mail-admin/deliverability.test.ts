@@ -124,7 +124,7 @@ describe('forward DNS probe', () => {
     expect(r.forwardDns?.actual).toMatch(/ENOTFOUND/);
   });
 
-  // REGRESSION (reported from a live dual-stack install, 2026-08-12).
+  // REGRESSION(reported from a live dual-stack install).
   //
   // resolvedIps deliberately merges A + AAAA, but the expected set was built
   // from serverNodeIps alone — IPv4 only. So on a dual-stack cluster every

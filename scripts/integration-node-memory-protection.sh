@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # integration-node-memory-protection.sh — node memory-protection E2E
-# (operator decision 2026-07-25; ships in v2026.7.2).
+# (operator decision; ships in v2026.7.2).
 #
 # Exercises the four protection layers against a real cluster:
 #   1. Host layer: kubelet drop-in (eviction-hard=memory.available<256Mi +
@@ -24,7 +24,7 @@
 #      bonus layer (parser-fed + short-lived-series race).
 #
 # Deliberately NOT tested here: a real node-level OOM/eviction storm. A
-# limit-less burst was E2E-proven on DEV (2026-07-25: three kernel OOMs all
+# limit-less burst was E2E-proven on DEV (: three kernel OOMs all
 # killed the tenant hog, system pods survived) but on shared staging it can
 # blip the control plane — the contained cgroup leg covers the metric path
 # with none of the blast radius.
@@ -282,7 +282,7 @@ fi
 #     the suite can read /sys/fs/cgroup over the existing ssh path.
 #   METRIC LAYER (strict when honest) — cadvisor's container_oom_events_total
 #     is fed by its kmsg oomparser, NOT by cgroup memory.events (proven
-#     2026-07-25: pod slice oom_kill=6 while cadvisor reported 0 on a node
+# pod slice oom_kill=6 while cadvisor reported 0 on a node
 #     whose parser had died with "/dev/kmsg: broken pipe"). When the control
 #     node's parser is provably dead, the missing metric is the KNOWN
 #     upstream cadvisor gap — NOTE it and rely on the kernel-truth assert;
@@ -357,7 +357,7 @@ fi
 # container_oom_events_total is fed by its kmsg oomparser AND the killed
 # container's cgroup (with its metric series) is torn down within seconds
 # of each restart — a 60s scrape rarely captures a short-lived kill even
-# with a healthy parser (proven on staging 2026-07-25). The kernel-truth
+# with a healthy parser. The kernel-truth
 # cgroup assert above and the container-oom event path are the reliable
 # layers; the SLO rules still catch durable-series cases (root-cgroup
 # global OOMs, long-lived containers).

@@ -78,7 +78,7 @@ api() {
 # ALWAYS source the shared helper for its functions (api_curl, get_admin_token).
 # The ALL run pre-sets INTEGRATION_TOKEN, so the old `-z`-gated source SKIPPED it
 # and left api_curl undefined → api() emitted nothing → JSONDecodeError (the
-# 2026-06-26 "parallel cascade" was this self-inflicted regression). Sourcing only
+# "parallel cascade" was this self-inflicted regression). Sourcing only
 # defines functions (no side effects); mint a token only when none is pre-set.
 if [[ -f "$(dirname "${BASH_SOURCE[0]}")/integration-token.sh" ]]; then
   # shellcheck source=integration-token.sh

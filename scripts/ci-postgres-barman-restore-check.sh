@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Phase 3 (2026-05-22) — CI invariants for postgres-barman-restore.
+# Phase 3 — CI invariants for postgres-barman-restore.
 #
 # This module spawns CNPG Cluster CRs. Two classes of regression matter:
 #
@@ -10,7 +10,7 @@
 #
 #   2. Plugin-reference shape: CNPG's plugin parameter is
 #      `barmanObjectName` (NOT `objectStoreName` — drift caught in
-#      2026-05-20 staging round-trip; see project memory). If a future
+# staging round-trip; see project memory). If a future
 #      change reverts to `objectStoreName`, restores silently fail.
 #
 #   3. Side-by-side is non-destructive: the module MUST refuse to delete
@@ -88,7 +88,7 @@ if ! grep -q "postgresBarmanRestoreRoutes" "$APP"; then
   FAILED=1
 fi
 
-# ─── Phase 3.1 (2026-05-23) — promote invariants ───────────────────────────
+# ─── Phase 3.1 — promote invariants ───────────────────────────
 
 # (7) service.ts must export promoteRestoredCluster.
 if ! grep -q "^export async function promoteRestoredCluster" "$SERVICE"; then
@@ -131,7 +131,7 @@ fi
 # when the snapshot carries the `insula.host/barman-promote`
 # label. Without this, Phase 3.1 promote (which feeds a snapshot from a
 # DIFFERENT cluster) hits "Snapshot X does not belong to any PVC in
-# cluster Y" 409. Live-staging regression caught 2026-05-23 against
+# cluster Y" 409. Live-staging regression against
 # `sysdb-recover-e2e` promote. Guard the bypass + the label spelling +
 # the fallback for primaryPvc (since the membership-check result is also
 # used in the return value).
@@ -161,7 +161,7 @@ fi
 # is stuck without the sidecar → instance-manager spins on "Unknown
 # plugin: barman-cloud.cloudnative-pg.io" and the operator has to
 # manually `kubectl delete pod` to recreate through the webhook.
-# Live regression caught on staging1 Phase 3.1 promote 2026-05-23.
+# Live regression caught on staging1 Phase 3.1 promote.
 if [[ -f "$PG_RESTORE_SVC" ]]; then
   if ! grep -q "const plugins = isTemp ? undefined : src.spec?.plugins" "$PG_RESTORE_SVC"; then
     echo "FAIL: postgres-restore/service.ts:buildRecoveryCluster must propagate spec.plugins on rebuild (isTemp=false) — required for plugin-barman-cloud sidecar admission injection"
@@ -173,7 +173,7 @@ fi
 # to the task chip on both success + failure. Without this, the
 # PitrProgressModal blanks when re-opened from the task-center chip
 # after the PersistedLock has been cleared (which happens on completion).
-# Live operator complaint 2026-05-23: "live pg-restore progress modal
+# Live operator complaint: "live pg-restore progress modal
 # did not show progress or completed items when opened via task-center".
 PITRJOB="$REPO_ROOT/backend/src/cli/pitr-job.ts"
 if [[ -f "$PITRJOB" ]]; then
@@ -232,7 +232,7 @@ fi
 # CNPG Backup before applying the restored Cluster CR when
 # recoveryTargetTime is set. This closes the WAL gap so CNPG's
 # bootstrap-recovery timeout doesn't fire on large catalogs.
-# Live regression 2026-05-23: a 39h WAL gap caused infinite recovery
+# Live regression: a 39h WAL gap caused infinite recovery
 # loops on staging (CNPG operator restarts recovery pods at ~2 min).
 if [[ -f "$SERVICE" ]]; then
   if ! grep -q "triggerFreshBarmanBackup" "$SERVICE"; then

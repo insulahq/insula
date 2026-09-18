@@ -1,5 +1,5 @@
 /**
- * Phase 2 — historical usage rollup + reaper (resource monitoring, 2026-07).
+ * Phase 2 — historical usage rollup + reaper.
  *
  * Turns the previously-dead `usage_metrics` table into a bounded time-series:
  *   • WRITER  — one aggregate row per (tenant, metric_type, hour). Called from

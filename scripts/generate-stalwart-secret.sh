@@ -80,7 +80,7 @@ log() { [ "$QUIET" = "1" ] || echo "[generate-stalwart-secret] $*" >&2; }
 # "admin:<password>"). On real installs bootstrap.sh creates it BEFORE
 # applying the overlay; local.sh never did, so local Stalwart started
 # with no admin credential at all and every management/JMAP call 401'd
-# (found during the 2026-06-07 app-password spike). Keys mirror
+# (found during the app-password spike). Keys mirror
 # bootstrap.sh's create_mail_secrets: adminPassword + recoveryPassword +
 # recoveryAdmin.
 ensure_admin_creds() {
@@ -102,7 +102,7 @@ if $KUBECTL get secret "$SECRET_NAME" -n "$MAIL_NS" >/dev/null 2>&1; then
   if [ "$FORCE" != "1" ]; then
     log "$MAIL_NS/$SECRET_NAME already exists — skipping. Use --force to overwrite."
     log "Retrieve creds via the admin panel's 'Show Stalwart Credentials' button."
-    # Heal-forward (2026-06-07): clusters created before stalwart-admin-creds
+    # Heal-forward: clusters created before stalwart-admin-creds
     # seeding existed have stalwart-secrets but not stalwart-admin-creds —
     # without it Stalwart 0.16 starts with NO admin credential (the
     # Deployment's only credential env is STALWART_RECOVERY_ADMIN from that

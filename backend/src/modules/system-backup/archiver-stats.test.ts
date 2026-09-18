@@ -1,5 +1,5 @@
 /**
- * Operator report 2026-09-11: the Database Backup Health card showed a green
+ * Operator report: the Database Backup Health card showed a green
  * "WAL streaming" chip while Backups → System reported WAL streaming as not
  * enabled. Both surfaces were describing the same cluster.
  *
@@ -100,7 +100,7 @@ describe('readArchiverStats', () => {
 });
 
 describe('isArchivingCurrentlyFailing', () => {
-  /** The DEV cluster's real counters, 2026-09-11 21:57. */
+  /** The DEV cluster's real counters, 21:57. */
   const DEV_HEALTHY = {
     lastArchivedWal: '00000002000000250000005E',
     lastArchivedWalTime: '2026-09-11T21:57:09.470Z',

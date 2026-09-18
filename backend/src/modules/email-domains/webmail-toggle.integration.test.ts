@@ -34,7 +34,7 @@ describe.skipIf(!dbAvailable)('Email domain webmail DNS toggle (integration)', (
     tenantId = tenant.id;
   });
 
-  // 2026-05-18: per-tenant webmail defaults OFF. The test was inverted
+  // per-tenant webmail defaults OFF. The test was inverted
   // from "publishes by default" to "no record published by default,
   // opt-in publishes it" to match the new contract.
   it('enableEmailForDomain does NOT publish webmail.<domain> A record by default', async () => {

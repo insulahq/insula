@@ -7,7 +7,7 @@
 # comment — so prose that happens to quote an identifier in backticks becomes
 # command substitution and RUNS.
 #
-# This shipped on 2026-08-11 and broke every fresh install. Two comment lines
+# This shipped and broke every fresh install. Two comment lines
 # inside `cat > /etc/nftables.conf <<NFT`:
 #
 #     # Pod CIDR → the node's own DNS resolver. CoreDNS runs `dnsPolicy: Default`

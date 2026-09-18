@@ -88,7 +88,7 @@ describe('serializeMeta / parseMeta', () => {
 });
 
 describe('parseMeta v1 → v2 read-side promotion', () => {
-  // Legacy v1 bundles (captured before 2026-05-08) lack the `tenant`,
+  // Legacy v1 bundles lack the `tenant`,
   // `domainsSummary`, `deploymentsSummary` fields. parseMeta promotes
   // them in-memory so verify / export / restore-cart still work for
   // pre-existing bundles. The IMPORT endpoint still rejects v1 — that

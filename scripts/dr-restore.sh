@@ -308,7 +308,7 @@ phase_postgres_restore() {
   log "  Dump: $dump"
 
   # Resolve the current Postgres primary. CNPG cluster was renamed
-  # `postgres` → `system-db` in the 2026-05-07 PG18 migration. Try
+  # `postgres` → `system-db` in the PG18 migration. Try
   # the canonical name first, then the legacy CNPG name, then the
   # pre-CNPG StatefulSet label (single instance, postgres-0).
   local POD
@@ -360,7 +360,7 @@ phase_secrets_apply() {
   # layout, but the target cluster may not yet have those namespaces (on
   # a fresh cold-restore they've all been wiped). Without this, the
   # kubectl apply below fails with "namespaces ... not found" on every
-  # tenant Secret. Caught during the 2026-04-23 staging rebootstrap.
+  # tenant Secret. Caught during the staging rebootstrap.
   if [[ -d "$WORK_DIR/secrets/tenants" ]]; then
     local tenants_count=0
     for ns_dir in "$WORK_DIR/secrets/tenants"/*/; do
@@ -438,7 +438,7 @@ phase_longhorn_reactivate() {
   #       bundle (longhorn-backup-credentials Secret has AWS_*). This
   #       closes the reviewer-found gap where --skip-postgres left the
   #       BackupTarget permanently Available=false without manual kubectl
-  #       patch. Caught during the 2026-04-23 drill.
+  # patch. Caught during the drill.
   if $SKIP_POSTGRES; then
     log "  --skip-postgres is set; manually wiring BackupTarget from restored longhorn-backup-credentials..."
     # Read creds from the in-cluster Secret (restored by Phase 6). The
@@ -532,7 +532,7 @@ phase_smoke() {
   # Derive the smoke-test host from the running cluster's platform-config
   # ConfigMap unless --smoke-host was passed. This replaces the old
   # hard-coded dev hostname inside smoke-test.sh. Resolves the Phase 9
-  # regression found in the 2026-04-23 drill where the smoke-test tried
+  # regression found in the drill where the smoke-test tried
   # to reach admin.k8s-platform.test:2010 against a staging cluster.
   local host="$SMOKE_HOST"
   if [[ -z "$host" ]]; then

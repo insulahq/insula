@@ -138,7 +138,7 @@ describe('platform addresses never consume a tenant allowance', () => {
     // postmaster@ lives on the tenant's domain but belongs to the PLATFORM:
     // it carries DSNs and, once a DMARC report sender is configured, sends the
     // outbound aggregate reports. Counting those would charge a customer for
-    // platform traffic and then alarm them about it — the 2026-09-16 storm in
+    // platform traffic and then alarm them about it — the storm in
     // miniature. The Stalwart throttle exempts the same address.
     const { deltas, senderDeltas } = aggregateEvents([
       { type: 'queue.authenticated-message-queued', createdAt: '2026-09-17T09:00:00Z', data: { from: 'postmaster@example.test', to: ['a@b.test'] } },

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 /**
- * port-exposure unit tests — covers the 2026-05-14 streamline change
+ * port-exposure unit tests — covers the streamline change
  * where the haproxy DaemonSet lifecycle moved out of Flux into
  * platform-api. The mode-flip transition now:
  *   activeNodeOnly → allServerNodes: removeHostPorts → CREATE DS
@@ -17,7 +17,7 @@ const mockCreateDs = vi.fn();
 const mockDeleteDs = vi.fn();
 const mockReadDeployment = vi.fn();
 const mockPatchDeployment = vi.fn();
-// Core mocks for the PVC→node active-node derivation path (2026-05-31
+// Core mocks for the PVC→node active-node derivation path (
 // fresh-multi-node haproxy-deadlock fix). Default to "PVC absent" + an
 // empty node list so the existing db-less tests are unaffected.
 const mockListNode = vi.fn(async () => ({ items: [] as unknown[] }));
@@ -114,7 +114,7 @@ describe('mail-admin/port-exposure.updateMailPortExposure', () => {
   });
 
   it('allServerNodes mode: ALWAYS adds hostPorts (post-hairpin-fix) AND creates haproxy DS', async () => {
-    // Post-2026-05-28 hairpin fix: Stalwart hostPort is ALWAYS set in
+    // Post- hairpin fix: Stalwart hostPort is ALWAYS set in
     // every mode. The active node serves via CNI portmap (no kube-proxy
     // DNAT hairpin); non-active data-plane nodes serve via haproxy DS
     // → ClusterIP → Stalwart pod (cross-node, no hairpin). The haproxy
@@ -329,7 +329,7 @@ describe('mail-admin/port-exposure.ensureMailPortExposureApplied — race guard'
    * check on a known column-set marker the production code passes in).
    *
    * This replaces the prior order-sensitive mock — see code review
-   * 2026-05-28 HIGH finding: the previous mock returned correct values
+   * HIGH finding: the previous mock returned correct values
    * by coincidence of which chain called .limit(), so deleting the
    * guard wouldn't have made the tests fail.
    */
@@ -385,7 +385,7 @@ describe('mail-admin/port-exposure.ensureMailPortExposureApplied — race guard'
     // Mock that tracks which TABLE was passed to .from(). If the
     // production code never queries `tasks`, the guard is dead code
     // and the SKIPS-test above would silently pass for the wrong
-    // reason (caught 2026-05-28 code review HIGH finding).
+    // reason(caught code review HIGH finding).
     const tablesQueried: string[] = [];
     const db = {
       select: vi.fn(() => ({
@@ -520,7 +520,7 @@ describe('mail-admin/port-exposure.getMailPortExposure', () => {
     expect(r.daemonSetStatus).toBeNull();
   });
 
-  // Regression (2026-08-10): the default used to be `allServerNodes`, which
+  // Regression: the default used to be `allServerNodes`, which
   // requires >= 2 server nodes and which the API itself REFUSES below that
   // ("Mail HA-Proxy requires 2 or more server nodes"). Every install starts as
   // a single node, so a fresh cluster stored a mode it could never realise —

@@ -220,7 +220,7 @@ describe('streamEncryptedExport + decryptImportTarball', () => {
     // VALID pad length about 1 time in 256 — the unpad check then passes and
     // the failure surfaces one layer later, as a corrupt tarball. Pinning only
     // the first message made this test fail ~0.4% of runs; CI hit it on
-    // 2026-09-16. What matters is that the import is refused.
+    // . What matters is that the import is refused.
     await expect(decryptImportTarball({ cipherBlob: blob, passphrase: 'wrong-passphrase-67890' }))
       .rejects.toThrow(/import-(decrypt|extract) failed/);
   });

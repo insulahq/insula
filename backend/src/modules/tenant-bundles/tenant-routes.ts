@@ -13,7 +13,7 @@
  *   GET  /api/v1/tenant/backups/bundles/:id/data-export
  *        Stream the GDPR data-export ciphertext (attachment).
  *
- * REMOVED 2026-05-28: GET/PUT /api/v1/tenant/backups/schedule.
+ * REMOVED: GET/PUT /api/v1/tenant/backups/schedule.
  * Tenants no longer set their own bundle schedules; the platform's
  * global `backup_schedules.tenant_bundle` row runs daily for ALL
  * eligible tenants. The legacy `tenant_backup_schedules` table is
@@ -75,7 +75,7 @@ export async function backupsV2ClientRoutes(app: FastifyInstance): Promise<void>
     // FLAT envelope. The previous `success({ data: rows.map(...) })`
     // wrapped an already-wrapped object → `{data:{data:[...]}}` —
     // the tenant Backups page expected `{data:[...]}` and silently
-    // rendered an empty list (user-reported 2026-05-28).
+    // rendered an empty list.
     return success(rows.map(toBundleSummary));
   });
 
@@ -131,7 +131,7 @@ export async function backupsV2ClientRoutes(app: FastifyInstance): Promise<void>
     return reply.send(body);
   });
 
-  // GET/PUT /tenant/backups/schedule routes were removed 2026-05-28.
+  // GET/PUT /tenant/backups/schedule routes were removed.
   // Tenants no longer control bundle schedules; the platform-global
   // schedule (`backup_schedules.tenant_bundle`) drives all tenant
   // bundles. See backend/src/modules/tenant-bundles/global-scheduler.ts.
@@ -198,7 +198,7 @@ function toComponentInfo(c: typeof backupComponents.$inferSelect): BackupCompone
 /**
  * Drop the `; logs: …` suffix appended by `mailboxes.ts:waitForJob`
  * so tenant-visible error messages don't include raw pod stderr
- * (security review 2026-05-28). Helper mirrored from the new
+ * . Helper mirrored from the new
  * `backup-restore/tenant-routes.ts:sanitizeTenantVisibleError`.
  */
 function sanitizeTenantVisibleError(raw: string | null): string | null {

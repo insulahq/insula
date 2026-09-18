@@ -25,7 +25,7 @@
  *     2. Re-add hostPort to Stalwart Deployment (Deployment rolls).
  *     3. Persist mode in system_settings.
  *
- * 2026-05-14 streamline: previously the DS was always-applied by Flux
+ * streamline: previously the DS was always-applied by Flux
  * with a dummy nodeSelector and platform-api SSA-patched the selector
  * to toggle. That created an ongoing field-ownership war with Flux's
  * kustomize-controller (PRs #43–#45). Moving the DS object lifecycle
@@ -212,7 +212,7 @@ export async function getMailPortExposure(
     .from(systemSettings)
     .where(eq(systemSettings.id, SETTINGS_ID));
 
-  // Default to activeNodeOnly (2026-08-10). Matches the schema column default,
+  // Default to activeNodeOnly. Matches the schema column default,
   // and it is the only mode legal on EVERY topology — `allServerNodes` and
   // `assignedMailNodes` both require >=2 server nodes, so defaulting to one of
   // them made a single-node install report a mode the API itself refuses to set
@@ -394,7 +394,7 @@ export async function updateMailPortExposure(
  * Skip-if-task-running: when a `mail.port-exposure` task is `running`,
  * an operator-initiated mode switch is in flight on some pod. Running
  * the startup reconciler concurrently would race over the same
- * Deployment patch / DS lifecycle / node labels (caught 2026-05-28:
+ * Deployment patch / DS lifecycle / node labels (:
  * CI deploys restart platform-api mid-PATCH; new pod's startup
  * reconciler raced the old pod's still-live orchestration of the
  * operator's PATCH and deadlocked the Deployment's SSA owners). Skip
@@ -541,7 +541,7 @@ async function applyModeToClusterUnlocked(
     }
   }
 
-  // Post-hairpin-fix invariant (2026-05-28): Stalwart Deployment ALWAYS
+  // Post-hairpin-fix invariant: Stalwart Deployment ALWAYS
   // has hostPort=25/465/587/143/993/995/4190 — the active node serves via
   // CNI portmap directly. In haproxy modes the OTHER data-plane nodes
   // bind hostPort=25 via the haproxy DS (no conflict because Stalwart's
@@ -735,7 +735,7 @@ async function reconcileMailServiceExternalIPsByName(
  */
 /**
  * SSA-apply hostPort=containerPort to every Stalwart mail port and
- * wait for the rollout. Post-2026-05-28 hairpin fix: Stalwart hostPort
+ * wait for the rollout. Post- hairpin fix: Stalwart hostPort
  * is always-on in every mode (the active node serves via CNI portmap,
  * never via kube-proxy DNAT). The previous `withHostPorts=false` path
  * was removed when removeHostPortsFromDeployment became dead code.
@@ -965,7 +965,7 @@ const MAIL_PVC_NAME = 'mail-stack-data';
  * resolver can't exclude the node Stalwart needs, so haproxy gets
  * labelled onto EVERY server node — including the one Stalwart must
  * schedule on — and the two fight for hostPort 25/465/587/143/993/995/4190.
- * Stalwart then stays Pending (observed on the 2026-05-31 staging cold
+ * Stalwart then stays Pending (observed on the staging cold
  * multi-node re-bootstrap: stalwart-mail Pending ~2h).
  *
  * The PVC is `local-path` RWO, so its bound PV is pinned to a single

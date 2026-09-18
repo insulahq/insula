@@ -2,7 +2,7 @@
 #
 # Four classes implement the tiered eviction/placement model
 # (ascending: tenants are ALWAYS evicted before platform workloads —
-# operator decision 2026-07-25; pairs with the kubelet
+# operator decision; pairs with the kubelet
 # eviction-hard=memory.available<256Mi drop-in from bootstrap
 # configure_memory_protection / host-migration 2026.7.2/0001):
 #

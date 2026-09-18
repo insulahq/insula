@@ -53,7 +53,7 @@ metadata:
     # not doing the job.
     #
     # Reloader is deployed cluster-wide (kube-system) on dev, staging and
-    # production; verified on production 2026-09-05.
+    # production; verified on production.
     # crowdsec-db-credentials covers ROTATION only — Reloader does not fire on
     # creation, so first provisioning is rolled by the crowdsec-db reconciler.
     secret.reloader.stakater.com/reload: crowdsec-agent-credentials,crowdsec-db-credentials
@@ -170,7 +170,7 @@ spec:
               # config with an empty dbname, delete db_path, report success and
               # leave no SQLite fallback: healthy-looking, non-functional, and
               # the LAPI is what the Traefik bouncer depends on. That is the
-              # 2026-09-05 shape, documented above in this same file.
+              # shape, documented above in this same file.
               #
               # Values are read with yq's load_str, NOT shell interpolation.
               # $(cat /db/host) would splice file content into the yq
@@ -184,7 +184,7 @@ spec:
               # cannot silently change on an image bump.
               #
               # This replaces the `crowdsec-retention` CronJob, removed
-              # 2026-09-11 after it was found never to have succeeded once in
+              # after it was found never to have succeeded once in
               # 29 days on production (`lastSuccessfulTime` empty). Two reasons,
               # both verified against the real v1.7.8 image:
               #   * `cscli alerts delete --older-than` — no such flag. The
@@ -216,7 +216,7 @@ spec:
                 # renames it, and this container has readOnlyRootFilesystem,
                 # so the default /tmp fails with "read-only file system" and
                 # kills the init container — taking the LAPI with it.
-                # Observed on DEV 2026-09-07.
+                # Observed on DEV.
                 TMPDIR=/etc/crowdsec yq -i '
                   .db_config.type     = "postgresql" |
                   .db_config.host     = load_str("/db/host") |
@@ -261,7 +261,7 @@ spec:
               app.kubernetes.io/name: crowdsec
       containers:
         - name: crowdsec
-          # v1.7.8 (2026-05-11) — latest stable on the v1.7.x line. Includes
+          # v1.7.8 — latest stable on the v1.7.x line. Includes
           # CVE patches + LAPI metrics-endpoint improvements since v1.7.0.
           image: docker.io/crowdsecurity/crowdsec:v1.7.8
           imagePullPolicy: IfNotPresent
@@ -269,7 +269,7 @@ spec:
           # (community blocklist opt-in). `optional: true` is deliberate and
           # load-bearing: on a cluster upgrading from a release without that
           # ConfigMap the LAPI must still start. A hard reference here is
-          # precisely what took every hosted site to 403 on 2026-09-05.
+          # precisely what took every hosted site to 403.
           envFrom:
             - configMapRef:
                 name: crowdsec-capi-config
@@ -284,7 +284,7 @@ spec:
             #    when inserting the community blocklist"
             #
             # A community pull inserts 15,000 rows in one transaction (measured
-            # on DEV 2026-09-07). In rollback-journal mode readers block for the
+            # on DEV). In rollback-journal mode readers block for the
             # duration — and every Traefik bouncer on every node is a reader of
             # this LAPI, so a stall here is a stall in the ingress decision path.
             # WAL lets readers proceed while the write commits.
@@ -341,7 +341,7 @@ spec:
             # runs `cscli machines add "$AGENT_USERNAME" --password ... --force`
             # whenever both are set, guarded only by DISABLE_LOCAL_API — so it
             # runs here despite DISABLE_AGENT=true above (verified against the
-            # image's /docker_start.sh, 2026-09-05).
+            # image's /docker_start.sh,).
             #
             # Without this the LAPI knows only `localhost`, and the agent
             # DaemonSet authenticates as a machine that was never created. The
@@ -360,7 +360,7 @@ spec:
             # every request to every hosted site returns 403.
             #
             # That is exactly what happened on production upgrading to 2026.9.9
-            # (2026-09-05): total ingress outage caused by a missing credential
+            # total ingress outage caused by a missing credential
             # for a feature that only pre-registers an agent. Nothing on the
             # request path needs these values.
             #
@@ -429,7 +429,7 @@ spec:
               # volume is emptyDir (pod-restart-ephemeral), so without
               # this hook every fresh pod reports CAPI as failed even
               # though credentials are valid + community blocklist is
-              # enabled. Bug observed 2026-05-20 — the platform-api
+              # enabled. Bug — the platform-api
               # status panel showed "Community blocklist: disabled
               # (CAPI auth failed)" until an operator manually ran
               # `cscli hub update`.

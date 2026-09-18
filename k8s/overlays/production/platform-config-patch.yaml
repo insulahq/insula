@@ -28,7 +28,7 @@ data:
   # ConfigMap's bare `file-manager:latest` resolves to docker.io and
   # ImagePullBackOffs — the dev overlay sets this but production didn't, so
   # file-manager was broken on every non-dev cluster (surfaced by the ADR-053
-  # prod-mirror staging, 2026-06-22).
+  # prod-mirror staging,).
   file-manager-image: "ghcr.io/insulahq/insula/file-manager:latest"
   # Mail-archive checkpoint binary. Production does NOT follow the development
   # overlay's CI pin (no cluster tracks a branch here — ADR-053's admin-controlled

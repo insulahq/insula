@@ -381,7 +381,7 @@ export async function ensureStalwartPrincipals(
             aliases: aliasRows.map((r) => ({
               localPart: r.localPart,
               stalwartDomainId: restoredDomainId,
-              // Suspended/disabled mailbox → every entry off (2026-08-26).
+              // Suspended/disabled mailbox → every entry off.
               enabled: !restoredSuspended && r.enabled === 1,
             })),
             baseUrl: jmapBaseUrl,

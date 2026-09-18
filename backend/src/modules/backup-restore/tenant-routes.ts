@@ -1,6 +1,6 @@
 /**
  * Tenant-scoped restore-cart + bundle-browse + on-demand bundle
- * routes (2026-05-28).
+ * routes.
  *
  * Sibling of `routes.ts` (admin). Reuses the shared cart machinery
  * + executors via `shared.ts` and applies `tenant-restore-policy`
@@ -71,7 +71,7 @@ import { backupConfigurations, backupTargetAssignments, hostingPlans } from '../
  * DB (`backup_jobs.last_error` / `backup_components.last_error`)
  * for admin visibility; tenants see only the headline.
  *
- * Security review 2026-05-28 HIGH: pod logs tailed into `last_error`
+ * Security review HIGH: pod logs tailed into `last_error`
  * by `waitForJob` can contain credential challenges, internal URLs
  * with tokens (curl error messages), or master-user identities.
  * Truncating at `; logs: ` is sufficient because the orchestrator

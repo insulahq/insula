@@ -56,7 +56,7 @@ export interface RotateJmapOptions {
   /** Timeout for credential verification in ms. Default: 30s. */
   readonly verifyTimeoutMs?: number;
   /**
-   * Cut 3 (2026-05-05): when set, override which Secret keys receive
+   * Cut 3: when set, override which Secret keys receive
    * the rotated password. Default is the admin/recovery shape:
    *   { adminPassword, ADMIN_SECRET_PLAIN, recoveryPassword, recoveryAdmin }
    * Webmail master rotation passes `[ 'STALWART_MASTER_PASSWORD' ]` so
@@ -92,7 +92,7 @@ export interface RotateJmapOptions {
    */
   readonly principalLookupName?: string;
   /**
-   * Domain name to scope the principal lookup to (2026-05-28 security
+   * Domain name to scope the principal lookup to (security
    * fix). Without this, `findAdminPrincipalId` matches by `name` alone
    * across all Domains in Stalwart — a tenant who provisions a mailbox
    * `master@<their-tenant-domain>` could be silently rotated by this
@@ -129,7 +129,7 @@ export interface RotateJmapOptions {
    * User principal that Stalwart can authenticate as itself but cannot
    * impersonate tenant mailboxes — bundle Jobs fail with "connection
    * closed by server" or AUTHENTICATIONFAILED depending on protocol
-   * (verified on staging post-2026-05-28 auto-reseed). Bootstrap's
+   * (verified on staging post- auto-reseed). Bootstrap's
    * direct-JMAP provision_stalwart_master_user() sets this; the
    * auto-reseed path MUST too.
    *
@@ -146,7 +146,7 @@ export interface RotateJmapOptions {
    */
   readonly skipJmapSessionVerify?: boolean;
   /**
-   * 2026-05-06 hardening: recycle Stalwart pods AFTER the Secret patch
+   * hardening: recycle Stalwart pods AFTER the Secret patch
    * and BEFORE the verify-loop. STALWART_RECOVERY_ADMIN is sourced via
    * `valueFrom.secretKeyRef`, which K8s bakes into the pod env at pod
    * CREATE time — changing the Secret afterward does not refresh the
@@ -408,7 +408,7 @@ export async function rotateAdminPasswordViaJmapImpl(
   //    env-vars, only consumed when no Account exists). Reloader rolls
   //    the Stalwart pod on Secret change so the recovery-admin path
   //    picks up the new password automatically.
-  // Cut 3 (2026-05-05): default key set is the admin/recovery shape;
+  // Cut 3: default key set is the admin/recovery shape;
   // overridable via opts.secretKeys for webmail master rotation which
   // only touches `mail-secrets/STALWART_MASTER_PASSWORD`. The
   // recoveryAdmin format is `<user>:<password>` and only relevant when
@@ -459,7 +459,7 @@ export async function rotateAdminPasswordViaJmapImpl(
     }
   } catch (err) {
     // Stalwart already has the new password. Code-review MEDIUM-3 fix
-    // (2026-05-03): use ApiError so the response envelope carries the
+    // use ApiError so the response envelope carries the
     // new plain password in `details.password` — the docstring promised
     // the operator sees it on partial failure, but a plain Error throw
     // produced a generic 500 with no payload.
@@ -479,7 +479,7 @@ export async function rotateAdminPasswordViaJmapImpl(
     );
   }
 
-  // 4c. 2026-05-06 hardening: recycle Stalwart pods explicitly so the
+  // 4c. hardening: recycle Stalwart pods explicitly so the
   //     verify-loop probes pods that have the NEW env var, not the old
   //     baked one. See `RotateJmapOptions.recyclePodsBeforeVerify` doc
   //     for the full rationale (drift between mounted-Secret view and
@@ -489,7 +489,7 @@ export async function rotateAdminPasswordViaJmapImpl(
   //     rotation. The rotation has already succeeded at the Secret level;
   //     Reloader will eventually roll pods even if our explicit recycle
   //     hits an RBAC issue.
-  // 2026-05-06 (Phase 2A.C): capture the recycle outcome and surface it
+  // (Phase 2A.C): capture the recycle outcome and surface it
   // in the response so the admin UI can render "X pods recycled" /
   // "recycle failed" without operators having to grep platform-api logs.
   // null when not requested (webmail-master rotation path).
@@ -530,7 +530,7 @@ export async function rotateAdminPasswordViaJmapImpl(
   //    `skipJmapSessionVerify: true`; the integration harness then
   //    verifies via the actual user-visible flow (Roundcube IMAP-login
   //    after pod roll).
-  // Code-review M-3 fix (2026-05-03, second pass): use do/while so we
+  // Code-review M-3 fix: use do/while so we
   // ALWAYS attempt at least one verification, even if `verifyTimeoutMs`
   // is zero or the clock advanced past the deadline before we got here.
   if (!opts.skipJmapSessionVerify) {
@@ -594,7 +594,7 @@ function defaultDeps(kubeconfigPath: string | undefined): RotateJmapDeps {
       username: string,
       domainName?: string,
     ): Promise<string | null> {
-      // 2026-05-28 security tightening: when `domainName` is set, the
+      // security tightening: when `domainName` is set, the
       // lookup MUST also constrain on `domainId`. Without this filter, a
       // tenant who provisions `master@<their-tenant-domain>` is silently
       // matched by name alone and the admin rotation flow would clobber
@@ -623,7 +623,7 @@ function defaultDeps(kubeconfigPath: string | undefined): RotateJmapDeps {
         constrainedDomainId = (found.id as string | undefined) ?? null;
       }
 
-      // Cut 3 follow-up (2026-05-04): Stalwart 0.16's x:Account/query
+      // Cut 3 follow-up: Stalwart 0.16's x:Account/query
       // does NOT honour `{ name }` (or any tested filter) — silently
       // returns ids: []. We list-and-filter via x:Account/get + tenant-
       // side match until a working filter shape is documented. The
@@ -822,7 +822,7 @@ function defaultDeps(kubeconfigPath: string | undefined): RotateJmapDeps {
       else kc.loadFromCluster();
       const core = kc.makeApiClient(k8s.CoreV1Api);
 
-      // Bug history (2026-05-03):
+      // Bug history:
       //   - First HIGH-3 fix (855b443) misdiagnosed the SDK default and
       //     switched the body to `{ data: {...} }` merge-object — that
       //     would have failed in production because tenant-node 1.4 forces
@@ -866,7 +866,7 @@ function defaultDeps(kubeconfigPath: string | undefined): RotateJmapDeps {
     },
 
     async recyclePods(): Promise<{ deletedCount: number; errors: readonly string[] }> {
-      // 2026-05-06: dynamic-import the recycler module so the heavy
+      // dynamic-import the recycler module so the heavy
       // @kubernetes/client-node code stays out of the test path that
       // injects fake deps.
       const { recycleStalwartPods } = await import('./recycle-stalwart-pods.js');

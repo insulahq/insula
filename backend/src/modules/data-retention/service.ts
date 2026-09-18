@@ -1,7 +1,7 @@
 // Data-retention pruning for append-only tables that otherwise grow
 // unbounded over the life of a cluster.
 //
-// Audit (2026-06-01): every node/infra log vector is already capped
+// Audit: every node/infra log vector is already capped
 // (kubelet container-log rotation 10Mi×5, journald ~4G, etcd snapshot
 // retention, kubelet image GC, Longhorn recurring-job retention, CNPG
 // 30d barman retention). Most DB tables are pruned too (tasks, waf_logs,
@@ -10,7 +10,7 @@
 //
 // NB: this list used to name `notifications` among the pruned tables. It
 // was not pruned — only `notification_deliveries` was, and the inbox table
-// itself had no age retention until 2026-09-10. It is now handled by
+// itself had no age retention. It is now handled by
 // modules/notifications/retention (90 days), not by this sweep.
 //
 //   - audit_logs                    : one row per admin/security action
@@ -21,7 +21,7 @@
 //   - storage_operations            : storage-lifecycle op records
 //   - provisioning_tasks            : per-tenant provisioning records
 //
-// The windows below were chosen 2026-06-01: 180 days for the audit
+// The windows below were chosen: 180 days for the audit
 // trail (compliance baseline), 90 days for the operational tables.
 //
 // custom_deployment_image_audit was added after that sweep and had no
@@ -66,8 +66,8 @@ export const EMAIL_SEND_COUNTER_RETENTION_DAYS = 35;
  * removes superseded rows once they age out.
  */
 export const IMAGE_AUDIT_RETENTION_DAYS = 90;
-// Per-event operational history added after the 2026-06-01 sweep and missed by
-// it (2026-09-03 re-audit). All four are pure per-event logs on a busy cluster:
+// Per-event operational history added after the sweep and missed by
+// it. All four are pure per-event logs on a busy cluster:
 // an upgrade attempt, an Apply HA/Local invocation, a DR drill, an image reap.
 export const DEPLOYMENT_UPGRADE_RETENTION_DAYS = 90;
 export const STORAGE_APPLY_RUN_RETENTION_DAYS = 90;
@@ -78,7 +78,7 @@ export const IMAGE_REAP_LOG_RETENTION_DAYS = 90;
 
 /**
  * CrowdSec autoban evaluation log. Event-driven, NOT a timer: production wrote
- * 1391 rows in a single day (2026-09-06) during one scanner burst and 3-23/day
+ * 1391 rows in a single day during one scanner burst and 3-23/day
  * either side of it, because a row is written for every evaluation including
  * the ones that take no action (`outcome = skipped_below_threshold`). So the
  * table is quiet until it very much isn't, which is exactly the shape that
@@ -256,7 +256,7 @@ export async function runDataRetention(db: Database): Promise<DataRetentionResul
     .returning({ id: imageReapLog.id });
 
   // 12. crowdsec_autoban_runs — append-only evaluation log. Pruned by age
-  //     rather than row count: the volume is bursty (one 2026-09-06 scanner
+  // rather than row count: the volume is bursty (one scanner
   //     burst produced 1391 rows in a day), so a row cap would silently drop
   //     the burst that is the interesting part while leaving quiet weeks
   //     untouched.

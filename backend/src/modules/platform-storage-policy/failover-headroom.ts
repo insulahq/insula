@@ -19,7 +19,7 @@
  * On a homogeneous 3-server HA cluster this means tenants can safely
  * use ~2/3 of total cluster capacity (after system baseline). On a
  * 5-server cluster, ~4/5. The shape matches the user's intent on
- * 2026-05-11 — "in HA mode all servers should replicate all essential
+ * — "in HA mode all servers should replicate all essential
  * services for ease of maintenance, so an operator might not
  * overschedule servers which might result in diminished fail-over
  * scenarios where system pods cannot re-schedule on node failure due
@@ -196,7 +196,7 @@ export function computeFailoverHeadroom(
   // misconfiguration (system baseline now exceeds one server's capacity
   // on a small cluster). Either way the operator needs to know via
   // `headroomClamped`; silently returning 0 was the original bug
-  // surfaced by the code-reviewer (2026-05-11).
+  // surfaced by the code-reviewer.
   const rawCpu = totalCpu - system.cpu - failoverReservedCpu;
   const rawMemGi = totalMemoryGi - system.memoryGi - failoverReservedMemoryGi;
   const headroomClamped = rawCpu <= 0 || rawMemGi <= 0;

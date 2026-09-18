@@ -4,7 +4,7 @@ import { useMailMigrationStatus, useCancelMailMigration } from '@/hooks/use-mail
 import type { MailMigrationStatusResponse } from '@insula/api-contracts';
 
 // Migration step labels — kept in sync with mailMigrationStatusResponseSchema.state
-// in packages/api-contracts/src/mail-placement.ts. Phase 1 streamline (2026-05-15)
+// in packages/api-contracts/src/mail-placement.ts. Phase 1 streamline
 // replaced 'rsync' + 'creating-target-pvc' + 'cutover' with 'swapping-pvc' +
 // 'scaling-up' — the data path is now snapshot+restore on a stable PVC name.
 const STEP_LABELS: Record<string, string> = {

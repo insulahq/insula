@@ -224,7 +224,7 @@ spec:
             # pod ready before Valkey finishes loading config and
             # accepting auth. PING with the password validates both.
             #
-            # S2 hardening (2026-05-07 security review): pass the
+            # S2 hardening: pass the
             # password via the REDISCLI_AUTH env var, NOT `-a $PW` on
             # the command line. The env-var form keeps the password
             # out of /proc/<pid>/cmdline (visible to any container
@@ -293,7 +293,7 @@ spec:
             initialDelaySeconds: 15
             periodSeconds: 15
           readinessProbe:
-            # S1 hardening (2026-05-07 security review): Sentinel's
+            # S1 hardening: Sentinel's
             # 26379 is now password-protected, so the probe must
             # AUTH. Same REDISCLI_AUTH env-var pattern as the valkey
             # container — keeps the password out of /proc/cmdline.

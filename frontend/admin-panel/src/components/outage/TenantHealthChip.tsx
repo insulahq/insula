@@ -8,7 +8,7 @@ import AffectedTenantsModal from './AffectedTenantsModal';
  *
  * `tenants.status` is a LIFECYCLE field (pending / active / suspended) — it
  * says nothing about whether the tenant is actually serving. Before the
- * 2026-09-11 drill there was no availability signal in the list at all, so a
+ * drill there was no availability signal in the list at all, so a
  * tenant whose only volume replica had been stranded on a dead node still
  * read "Active".
  *

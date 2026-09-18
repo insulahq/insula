@@ -2,7 +2,7 @@
 # ci-required-env-wired-check.sh — an env var the backend HARD-FAILS without
 # must be wired somewhere a real cluster will see it.
 #
-# WHY: 2026-09-01 an operator created a tenant mailbox on production and tried
+# WHY: an operator created a tenant mailbox on production and tried
 # to run a mailbox migration. It returned
 #   "STALWART_MASTER_SECRET is required (mail-imapsync routes)"
 # `mail-imapsync/routes.ts` read Stalwart's master password from

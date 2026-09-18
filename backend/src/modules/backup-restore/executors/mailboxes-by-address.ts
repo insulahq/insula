@@ -1,6 +1,6 @@
 /**
  * Restore executor: `mailboxes-by-address` (restic-native rewrite,
- * 2026-07-05).
+ * ).
  *
  * The `mailboxes` capture component (ADR-047, see
  * tenant-bundles/components/mailboxes.ts) writes ONE whole-tenant restic
@@ -120,7 +120,7 @@ const MAIL_NAMESPACE = 'mail';
 // preferring the HTTP mgmt service over the public HTTPS ingress
 // (cert verification + cluster-local routing).
 const JMAP_ENDPOINT_DEFAULT = 'http://stalwart-mgmt.mail.svc.cluster.local:8080';
-// MASTER_USER_DEFAULT intentionally removed 2026-05-23 — the executor
+// MASTER_USER_DEFAULT intentionally removed — the executor
 // now resolves the master FQDN at runtime via readStalwartMasterUser
 // (see ../../mail-admin/stalwart-master-user.ts) so it can never silently
 // fall back to the test-only 'master@master.local' value on a real

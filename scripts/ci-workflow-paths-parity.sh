@@ -9,7 +9,7 @@
 # The failure is invisible: the PR goes green with a smaller set of checks, and
 # nobody counts checks.
 #
-# Found live 2026-09-15: `backend/src/db/migrations/**` was on ci-infrastructure's
+# Found live: `backend/src/db/migrations/**` was on ci-infrastructure's
 # push trigger but not its pull_request trigger, so PR #579 — a migration plus a
 # doc — never ran ci-migration-safety-check.sh, the guard whose entire job is
 # gating migrations. ci-infrastructure.yml already carried three comments about

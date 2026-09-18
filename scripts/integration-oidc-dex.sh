@@ -29,7 +29,7 @@
 #      `platform` namespace with the right Host+PathPrefix match,
 #      references a stripPrefix Middleware, and points at the
 #      admin-panel service. The original CVE-2026-42945 named-PCRE-
-#      captures guard was nginx-specific; after the 2026-05-15
+# captures guard was nginx-specific; after the
 #      Traefik migration the path-stripping is done by a declarative
 #      Middleware, not a rewrite-target annotation. Restores original
 #      settings on completion or error.
@@ -778,9 +778,9 @@ ORIG_PROTECT_TENANT=$(echo "$ORIG_SETTINGS" | jq -r '.data.protectTenantViaProxy
 # so on any cluster without a break-glass path the restore PUT below was
 # refused with INVALID_FIELD_VALUE — "Too small: expected string to have >=1
 # characters" — and `protect_admin_via_proxy: false` never applied WITH it.
-# That is the real cause of the 2026-09-14 leak; #564 only made it visible by
+# That is the real cause of the leak; #564 only made it visible by
 # checking the PUT's result instead of discarding it. Proven against staging
-# 2026-09-15: "" is rejected, null is accepted, and staging's stored value is
+# "" is rejected, null is accepted, and staging's stored value is
 # null.
 ORIG_BG_PATH=$(echo "$ORIG_SETTINGS" | jq -c '.data.breakGlassPath // null')
 
@@ -810,7 +810,7 @@ restore_proxy_settings() {
   # protection ENABLED with nothing but the reachability probe below to hint
   # at it. That turns a recoverable blip into a cluster-wide global that the
   # runner's leak detector attributes to this suite and aborts the whole run
-  # on, which is exactly what happened on 2026-09-14.
+  # on, which is exactly what happened.
   local put_res
   put_res=$(curl -sk --max-time 15 -X PUT "${AUTH_H[@]}" \
     -H "Content-Type: application/json" \
@@ -827,7 +827,7 @@ restore_proxy_settings() {
   fi
 
   # Post-restore reachability assertion — the panel MUST return 200 after we
-  # restore. Was silently leaving 401 prior to 2026-05-16 when a script errored
+  # restore. Was silently leaving 401 prior to when a script errored
   # before this trap could fire.
   #
   # The budget matches the ENABLE path's ${BG_RECONCILE_WAIT:-45}s, and for the
@@ -881,7 +881,7 @@ else
 fi
 
 # Verify the break-glass IngressRoute (Traefik-native CRD) in the
-# cluster via SSH + kubectl. After the 2026-05-15 Traefik migration the
+# cluster via SSH + kubectl. After the Traefik migration the
 # platform-api emits an `IngressRoute` (group=traefik.io) — NOT a legacy
 # `kind: Ingress` — so the original CVE-2026-42945 test (named-PCRE-
 # captures on the nginx rewrite-target annotation) no longer applies to
@@ -956,7 +956,7 @@ if [[ -r "$local_ssh_key" ]]; then
     # primary security-relevant regression (platform-api stops emitting
     # the stripPrefix middleware → admin-panel sees `/<bg-path>/...`
     # instead of `/...` → routes break / leak the break-glass path
-    # token to the panel). Inverted to a hard fail per 2026-05-17
+    # token to the panel). Inverted to a hard fail per
     # review.
     STRIP_MW_NAME=$(echo "$BG_INGRESSROUTE_JSON" | jq -r '.spec.routes[0].middlewares[]? | select(.name | contains("strip")) | .name' | head -1)
     if [[ -z "$STRIP_MW_NAME" ]]; then

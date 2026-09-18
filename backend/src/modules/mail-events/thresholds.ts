@@ -13,7 +13,7 @@
  * saturation notifies the OPERATOR. Neither takes automatic action — Stalwart
  * already enforces the limit itself.
  *
- * ## `auto` was removed with FBL (2026-09-15)
+ * ## `auto` was removed with FBL
  *
  * The mode existed solely to act on FBL complaint rates: `mode === 'auto'`
  * appeared exactly once in this file, inside the complaint evaluator. With FBL

@@ -69,7 +69,7 @@ const {
 
 
 /**
- * These four events moved off the legacy notifyUsers path on 2026-09-15. They
+ * These four events moved off the legacy notifyUsers path. They
  * were the last in-app-only tenant events on the platform — IMAPSync, DKIM
  * rotation, email-enabled and the mailbox limit — so none of them had EVER
  * reached a tenant by email. The assertions below check the categorised
@@ -115,7 +115,7 @@ describe('notification events', () => {
     // THESE TESTS USED TO ASSERT THE DEFECT. They required
     // `subsystem` to match /IMAPSync/i and `objectLabel` to contain the job id
     // — so the suite actively protected the notification an operator received
-    // on 2026-09-17: "IMAPSync migration: job (unnamed)". Both assertions are
+    // "IMAPSync migration: job (unnamed)". Both assertions are
     // INVERTED below rather than deleted, because a regression to either is the
     // thing to catch.
     const BASE = { jobId: 'j1', mailboxAddress: 'sales@example.com', sourceHost: 'imap.oldhost.test' };

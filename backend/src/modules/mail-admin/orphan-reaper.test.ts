@@ -1,5 +1,5 @@
 /**
- * orphan-reaper unit tests (2026-05-28).
+ * orphan-reaper unit tests.
  *
  * The reaper runs on platform-api startup and marks stale 'running'
  * mail.migration / mail.port-exposure rows + corresponding

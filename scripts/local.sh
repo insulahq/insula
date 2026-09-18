@@ -522,7 +522,7 @@ _apply_dev_overlay() {
   # Stage the rendered manifest on the workspace side then docker-cp into
   # the k3s container. Piping via `docker exec ... sh -c 'cat > file'`
   # silently fails when -i is missing (no stdin attached) — we hit that
-  # exact bug in the 2026-05-07 broken-DinD recovery.
+  # exact bug in the broken-DinD recovery.
   local staged="${PROJECT_DIR}/.local.k8s-rendered.yaml"
   echo "$rendered" > "$staged"
   docker cp "$staged" "${K3S_CONTAINER}:/tmp/k8s-rendered.yaml"
@@ -530,12 +530,12 @@ _apply_dev_overlay() {
   # barman-cloud ObjectStore) whose CRDs are registered by operator pods
   # that are still pulling images during the first apply. One bounded
   # retry after a short wait absorbs that race instead of aborting `up`
-  # before migrations + seed ever run (observed 2026-06-07).
+  # before migrations + seed ever run.
   #
   # Capture-then-print so the retry decision rides on KUBECTL's exit
   # status alone — a display pipeline (`| grep -v "^$"`) would substitute
   # grep's status under pipefail and could mislabel an all-blank success
-  # as a failure (code-review note, 2026-06-07).
+  # as a failure.
   local apply_log
   if ! apply_log=$(k3s_exec kubectl apply -f /tmp/k8s-rendered.yaml 2>&1); then
     printf '%s\n' "$apply_log" | grep -v "^$" | sed 's/^/  /' || true
@@ -608,7 +608,7 @@ _bootstrap_stalwart_reader() {
   # The Drizzle migration creates stalwart_reader as NOLOGIN. Set the dev password
   # so Stalwart can authenticate to the platform DB.
   # Resolve current primary. Cluster name was renamed
-  # `postgres` → `system-db` in the 2026-05-07 PG18 migration; try the
+  # `postgres` → `system-db` in the PG18 migration; try the
   # canonical name first, then legacy CNPG name, then legacy postgres-0.
   local pg_pod
   pg_pod=$(k3s_exec kubectl -n platform get pods \
@@ -977,7 +977,7 @@ cmd_k3s_status() {
 #
 # A declared containerPort is not proof anything is bound: `kubectl get
 # endpoints` happily listed :143 while connections were refused. That cost
-# real debugging time on 2026-09-01 (mailbox-migration E2E, PR #346).
+# real debugging time (mailbox-migration E2E, PR #346).
 #
 # Rather than reimplement the sequence — which would drift from the real
 # thing — this reuses bootstrap.sh's own `bootstrap_stalwart_v016()`. That
@@ -1078,7 +1078,7 @@ _configure_stalwart() {
 #
 # DRIFT WARNING: these definitions MIRROR bootstrap.sh's step 7 (search
 # `x:NetworkListener/set`). They are duplicated deliberately — the operator's
-# call on 2026-09-02 was to leave bootstrap.sh untouched rather than add an
+# call was to leave bootstrap.sh untouched rather than add an
 # ACME-skip flag, since that would change mail cert strategy. If bootstrap.sh's
 # listener shapes change, change them here too.
 _ensure_stalwart_listeners() {
@@ -1272,7 +1272,7 @@ cmd_mail_test() {
 # standalone Postgres, and the in-cluster roundcube-db-reconciler only
 # converges on a 5-min tick (and only once mail-secrets exists), so a
 # fresh `webmail-up` + immediate login raced to a "password
-# authentication failed" 500. Found during the 2026-06-07 app-pw spike.
+# authentication failed" 500. Found during the app-pw spike.
 _ensure_roundcube_db() {
   local pw
   pw=$(k3s_exec kubectl -n mail get secret mail-secrets \
@@ -1351,7 +1351,7 @@ cmd_webmail_logs() {
 # substitution; plain `kubectl apply -k` / raw kustomize output keeps
 # them doubled, so shells inside ConfigMap scripts expand `$$` to the
 # PID at runtime — the backup-rclone-shim launcher crashlooped with
-# GOMEMLIMIT="7{GOMEMLIMIT:-200MiB}" exactly this way (2026-08-24).
+# GOMEMLIMIT="7{GOMEMLIMIT:-200MiB}" exactly this way.
 # Every dind apply path that consumes Flux-authored manifests MUST run
 # its rendered stream through this.
 _collapse_flux_escapes() {
@@ -1690,7 +1690,7 @@ cmd_help() {
 # Preflight the external tools each verb needs BEFORE doing any work, so a
 # missing tool fails instantly with an install one-liner instead of deep inside
 # the k3s bringup (helm used to be discovered missing only after the docker
-# builds + k3s start had already run — 2026-07-30). kubectl is exec'd inside the
+# builds + k3s start had already run —). kubectl is exec'd inside the
 # k3s container, so the host doesn't need it.
 case "${1:-help}" in
   help|-h|--help|"")            : ;;

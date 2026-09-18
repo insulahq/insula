@@ -10,7 +10,7 @@ import {
 describe('container-termination', () => {
   describe('isOomTermination', () => {
     // The case that motivated this module. Copied from the real
-    // lastState.terminated of the production vmsingle pod on 2026-08-30,
+    // lastState.terminated of the production vmsingle pod,
     // whose kill the kernel logged as "Memory cgroup out of memory".
     // The old `reason === 'OOMKilled'` test returned false for this.
     it('recognises the kubelet reporting a cgroup OOM as reason="Error"', () => {
@@ -77,7 +77,7 @@ describe('container-termination', () => {
 
   describe('isExpectedSigkill', () => {
     // Copied verbatim from the five pods production reported as OOMs after the
-    // 2026-09-11 reboot. Note deletionTimestamp is ABSENT on every one of them:
+    // reboot. Note deletionTimestamp is ABSENT on every one of them:
     // a node shutdown marks the pod Failed in place, it never deletes it, which
     // is exactly why the old deletionTimestamp-only guard let them through.
     it('recognises a pod the kubelet killed for a node shutdown', () => {

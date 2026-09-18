@@ -231,7 +231,7 @@ export const INFLIGHT_STALE_MS = 15 * 60 * 1000;
  * ...AND, for heartbeating kinds only, when they are still advancing. A task row
  * is persisted state: when platform-api dies mid-flight the row stays `running`
  * forever and nothing reconciles it, so drain counted a ghost and could never
- * reach zero. Observed 2026-08-09 after an API crash:
+ * reach zero. after an API crash:
  *
  *     restore.cart | running | started 12:00:26 | updated 12:00:26
  *     -> "drain-now never reached zero in-flight after 6 tries"

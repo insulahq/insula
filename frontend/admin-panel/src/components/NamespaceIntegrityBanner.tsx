@@ -20,7 +20,7 @@ import {
  *                          object exists, it is just too big — so the button
  *                          is hidden and the banner shows the numbers instead.
  *
- * Extracted from TenantDetail.tsx 2026-09-03; that file was over 3300 lines.
+ * Extracted from TenantDetail.tsx; that file was over 3300 lines.
  */
 const FINDING_LABEL: Record<IntegrityFinding, string> = {
   namespace_missing: 'Namespace missing',

@@ -9,7 +9,7 @@
 #   anti-spam protection matters there.
 #
 # Why a CronJob (not a one-shot Job):
-#   2026-05-08: rewritten from `kind: Job`. The Job version hit
+# rewritten from `kind: Job`. The Job version hit
 #   `spec.template is immutable` errors every time the script was
 #   tweaked (CLI version bump, throttle-id discovery refactor) — Flux
 #   couldn't re-apply without manual `kubectl delete job`. CronJob

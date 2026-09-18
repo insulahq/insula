@@ -29,7 +29,7 @@ export async function fetchDiscovery(issuerUrl: string): Promise<OidcDiscovery> 
   // with the underlying reason. Without this, raw fetch() throws an
   // unwrapped TypeError that the global error handler maps to a
   // generic INTERNAL_SERVER_ERROR 500 — losing the actual cause.
-  // Observed 2026-05-18 staging: pod-egress to Dex's public URL
+  // staging: pod-egress to Dex's public URL
   // failed at create-provider time, leaving the operator with no
   // diagnostic info.
   let res: Response;

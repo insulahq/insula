@@ -9,7 +9,7 @@ import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
  * and `waiting=CrashLoopBackOff`. Relying on the instantaneous reason missed the
  * crash whenever it sampled the `terminated` half. Detection is now driven by
  * restartCount so it no longer depends on timing. Reproduced live on DEV
- * 2026-08-23 (a container exiting 1 sat at status 'pending' across reconciles).
+ * (a container exiting 1 sat at status 'pending' across reconciles).
  */
 
 function k8sWithPods(pods: unknown[]): K8sClients {
@@ -110,7 +110,7 @@ describe('readFirstPodObservation crash-loop detection', () => {
  * Admission refusals are invisible to every pod-derived diagnostic, because no
  * Pod is ever created. Kubernetes records the reason on the ReplicaSet.
  *
- * Production, 2026-09-02: a custom container was started whose spec asked for
+ * Production: a custom container was started whose spec asked for
  * the tenant's whole CPU allowance while a sibling deployment held part of it.
  * The ReplicaSet emitted FailedCreate every few seconds; the panel showed
  * status `pending` with an empty status_message and an empty last_error — no
@@ -201,7 +201,7 @@ describe('readReplicaCreateFailure — admission refusals with no Pod to inspect
 /**
  * Custom deployments (ADR-036) take this reconcile path, so they were exposed
  * to the same node-reboot false positive that hit catalog workloads on
- * production 2026-09-11: a dead pod OBJECT left behind by a graceful node
+ * production: a dead pod OBJECT left behind by a graceful node
  * shutdown keeps `exitCode: 137` in its container status, which
  * `isOomTermination()` infers as an OOM. The corpse is not the workload.
  */

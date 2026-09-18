@@ -14,7 +14,7 @@
 #   6. Delete alias → RCPT rejected.
 #   7. Catch-all: set → unknown local part delivered; clear → rejected.
 #   8. usedMb: after deliveries, POST /admin/mail/stats/reconcile-usage →
-#      the destination mailbox's usedMb is REAL (>0) — the pre-2026-08
+# the destination mailbox's usedMb is REAL (>0) — the pre-
 #      implementation called a removed REST API and stayed 0 forever.
 #
 # USAGE: ADMIN_PASSWORD=<…> ADMIN_HOST=https://admin.<env>.example.test \

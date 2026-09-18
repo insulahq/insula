@@ -553,7 +553,7 @@ fi
 # operators carry no new muscle memory". The shim needs the full repo (it execs
 # the TS runner through tsx) and therefore cannot run on a real node at all —
 # the VM integration runner receives scripts/ only, which is why every H
-# assertion failed there on 2026-08-10. Testing the shim also tested the wrong
+# assertion failed there. Testing the shim also tested the wrong
 # thing: during an incident an operator runs the binary, and the binary is what
 # ships.
 #
@@ -609,7 +609,7 @@ fi
 
 # H4: --help works and documents both modes. This is the command an operator
 # reaches for mid-incident; it answered "unknown argument '--help'" (exit 2)
-# until 2026-08-11.
+# .
 _h=$(h_run dr restore --help)
 if [[ "${_h%%|*}" == "0" ]]; then
   _htext=$(ssh -i "${SSH_KEY:-$HOME/hosting-platform.key}" -o StrictHostKeyChecking=no \

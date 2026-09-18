@@ -23,7 +23,7 @@
  * it never ran. It has since been deleted — reconciling mail DNS from
  * Stalwart's zone file would delete a tenant's own apex MX or SPF include.)
  *
- * Verified on DEV 2026-09-13: after the generator fix deployed, the published
+ * Verified on DEV: after the generator fix deployed, the published
  * record still read `rua=mailto:dmarc-reports@…`.
  *
  * ## Scope — deliberately narrow

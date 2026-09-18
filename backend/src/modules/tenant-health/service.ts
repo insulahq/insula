@@ -247,19 +247,19 @@ export function findingsForTenant(
     // holds no data, and treating it as a survivor turns "your data is on
     // the dead node" into "rebuilding, no action required" — the single
     // most reassuring thing the platform could wrongly say. Observed on
-    // staging 2026-09-11 for a one-replica local-tier volume, which can
+    // staging for a one-replica local-tier volume, which can
     // never rebuild because the only source is the node that died.
     const liveRunning = liveRunningReplicaNodes(v.volumeName, byVolumeRunning, downNodeNames);
 
     // ATTACHED: a replica process must be running somewhere alive, or the data
-    // is not reachable. Unchanged from the rule the 2026-09-11 drill produced.
+    // is not reachable. Unchanged from the rule the drill produced.
     //
     // DETACHED: Longhorn stops every replica process on the last unmount, so
     // `liveRunning` is empty for every idle volume on a perfectly healthy
     // cluster. Judge it by PLACEMENT instead — the data is only unreachable
     // when every node holding a replica is down. Applying the attached rule
     // here marked the SYSTEM tenant and two serving tenants fully Down on
-    // production 2026-09-13 with the single node Ready and sites up.
+    // production with the single node Ready and sites up.
     const unreachable = v.attached ? liveRunning.length === 0 : liveNodes.length === 0;
 
     if (v.robustness === 'faulted' || unreachable) {
@@ -356,7 +356,7 @@ export function findingsForTenant(
 /**
  * Watched platform services that currently have NO ready endpoint.
  *
- * The 2026-09-11 worker drill is the case this exists for: the lost node held
+ * The worker drill is the case this exists for: the lost node held
  * no tenant workloads, so the banner said "0 tenants affected" — true, and
  * badly incomplete, because the backup plugin's Service had zero ready
  * endpoints and backups were unavailable the entire time.

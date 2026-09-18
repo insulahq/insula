@@ -1,5 +1,5 @@
 /**
- * Unit tests for listMailBackups' pre-check branches (2026-08-24).
+ * Unit tests for listMailBackups' pre-check branches.
  *
  * The list itself spawns a one-shot restic Pod (covered by the DinD
  * E2E harness); these tests pin the three honest early-out messages

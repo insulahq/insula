@@ -47,7 +47,7 @@ import {
 // 2.319, …), and on the strength of it every mail migration ran whatever
 // `latest` happened to be that day.
 //
-// 2.319 is what `latest` resolved to on 2026-08-07 (verified by comparing
+// 2.319 is what `latest` resolved to (verified by comparing
 // manifest digests), so this pin changed no behaviour — it only made the
 // behaviour reproducible. Bump deliberately after checking upstream release
 // notes; imapsync moves fast and talks to tenant mailboxes.
@@ -75,12 +75,12 @@ export const MASTER_SECRET_KEY_DEFAULT = 'STALWART_MASTER_PASSWORD';
 // Stalwart 0.16 master-proxy auth is `LOGIN <mailbox>%<master-principal>`,
 // and the master principal MUST be the FQDN form. This module used to
 // hardcode the literal string `master`, which Stalwart resolves against its
-// own default domain — on a 2026-09-01 DinD run that produced
+// own default domain — on a DinD run that produced
 //   NO [AUTHENTICATIONFAILED] localhost.local
 // and every migration failed at the destination login (exit 162,
 // EXIT_AUTHENTICATION_FAILURE_USER2) AFTER transferring nothing. The dev
 // mail-secrets manifest has carried a comment warning about exactly this
-// since 2026-05-16; plesk-migration/mail-sync.ts passes the FQDN correctly.
+// plesk-migration/mail-sync.ts passes the FQDN correctly.
 //
 // The value is per-cluster, so it comes from the same Secret as the
 // password and is composed into `--user2` by the entrypoint shim.
@@ -130,7 +130,7 @@ exec imapsync \\
 // `--automap` does not close this. It maps via RFC 6154 SPECIAL-USE plus a
 // fixed internal name list, so it only fires when the SOURCE advertises the
 // attribute (many IMAP servers, and every Maildir-derived migration, do not)
-// and the name is one it recognises. Reported on 2026-09-02 with automap ON:
+// and the name is one it recognises. Reported with automap ON:
 // `spam`, `Spam`, `Junk` and `junk` all failed to reach Stalwart's `Spam`.
 //
 // `--regextrans2` is applied to the computed DESTINATION folder name, after

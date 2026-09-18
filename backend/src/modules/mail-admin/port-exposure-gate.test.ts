@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 /**
- * validateModeSwitchAgainstDb node-count gate (2026-05-31).
+ * validateModeSwitchAgainstDb node-count gate.
  *
  * The HA-proxy port-exposure modes (assignedMailNodes + allServerNodes —
  * i.e. any non-activeNodeOnly mode) are refused unless the cluster has

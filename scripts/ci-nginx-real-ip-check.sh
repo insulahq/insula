@@ -2,7 +2,7 @@
 # ci-nginx-real-ip-check.sh — guard the real_ip directives in the admin
 # and tenant panel nginx templates.
 #
-# Trap this guard exists to prevent: 2026-05-20 incident, where
+# Trap this guard exists to prevent: incident, where
 # set_real_ip_from was added to frontend/admin-panel/nginx.conf (a
 # dev-fallback file) but NOT to nginx.conf.template (the one rendered
 # by docker-entrypoint.sh at runtime). The image was built, deployed,

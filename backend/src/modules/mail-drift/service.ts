@@ -3,7 +3,7 @@
  *
  * The principals-sync reconciler detects when platform DB rows reference
  * Stalwart entries that no longer exist (typically caused by a failed
- * mail-stack failover prior to the 2026-05-27 silent-loss fix). This
+ * mail-stack failover prior to the silent-loss fix). This
  * module exposes the drift list and two remediation actions: dismiss
  * (accepted loss) and recreate-empty (last-resort destructive action).
  *
@@ -182,7 +182,7 @@ export async function recreateDriftItemEmpty(
   // Orphan kinds describe a Stalwart object that EXISTS with no platform
   // row — there is nothing missing to recreate. Without this guard an
   // orphan item fell through to the mailbox branch and failed opaquely
-  // on the platform-row lookup (2026-08-25 audit).
+  // on the platform-row lookup.
   if (item.kind === 'orphan-domain' || item.kind === 'orphan-list') {
     throw new ApiError(
       'INVALID_DRIFT_ACTION',
@@ -516,7 +516,7 @@ export async function recreateDriftItemEmpty(
  * Kind of a drift item by id (any resolution state) — used by the
  * delete-orphan route to dispatch to the right destroyer. A capped list
  * scan is NOT equivalent: an old item beyond the page would silently
- * mis-dispatch (review 2026-08-25 HIGH).
+ * mis-dispatch.
  */
 export async function getDriftItemKindById(db: Database, id: string): Promise<MailDriftKind | null> {
   const [row] = await db

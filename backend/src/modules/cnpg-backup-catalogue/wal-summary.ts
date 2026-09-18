@@ -6,7 +6,7 @@
  * -----------------------
  * The backup catalogue enumerates base backups: one LIST plus a GET and a HEAD
  * per backup. Through the rclone gofakes3 shim that is slow — measured on DEV
- * 2026-09-11 at over three minutes for 29 backups — and folding a WAL LIST into
+ * at over three minutes for 29 backups — and folding a WAL LIST into
  * it made the panel that shows storage usage wait on all of it. The WAL side
  * needs only paginated LISTs and answers in seconds, so it gets its own
  * endpoint, its own budget, and a longer cache: segment counts move slowly and
@@ -40,7 +40,7 @@ const MAX_PAGES = 20;
 /**
  * Budget for the BACKGROUND walk. Generous, because nobody is waiting on it:
  * the request returns immediately and the panel polls. Measured on DEV
- * 2026-09-12: listing ~4 500 segments through the rclone shim exceeds 20s, so a
+ * listing ~4 500 segments through the rclone shim exceeds 20s, so a
  * request-blocking measurement could only ever report "could not measure".
  */
 const DEFAULT_DEADLINE_MS = 300_000;
@@ -116,7 +116,7 @@ export interface WalSummaryOpts {
  *
  * The per-request timeout is NOT enough: the AWS SDK retries a timed-out
  * request (3 attempts by default), so a 20s request timeout became a >60s call
- * on DEV 2026-09-12. Retries are disabled below AND the whole walk races this
+ * on DEV. Retries are disabled below AND the whole walk races this
  * timer, so the endpoint cannot outlive its budget whatever the shim does.
  */
 async function withDeadline<T>(ms: number, work: Promise<T>, onTimeout: () => T): Promise<T> {
@@ -135,7 +135,7 @@ async function withDeadline<T>(ms: number, work: Promise<T>, onTimeout: () => T)
  * Public entry point — NEVER blocks on the walk.
  *
  * Listing every retained WAL segment through the storage shim takes minutes on
- * a real archive (DEV 2026-09-12: >20s for ~4 500 segments and still counting).
+ * a real archive(DEV: >20s for ~4 500 segments and still counting).
  * A request that waits on that can only ever end in a timeout, which is how the
  * panel came to show "measuring…" forever and then "could not measure".
  *

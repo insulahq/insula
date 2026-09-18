@@ -350,7 +350,7 @@ describe('selfUpgrade', () => {
   });
 
   it('apply-on-Apply: a converge failure REPORTS ITS CAUSE, not just an exit code', async () => {
-    // Regression guard for the 2026-08-05 staging finding: the converge exited 1
+    // Regression guard for the staging finding: the converge exited 1
     // on all three nodes during the 2026.8.2 → 2026.8.3-rc.1 upgrade and the
     // warning carried only the number, so the cause was unrecoverable after the
     // fact. An exit code with no detail is not a diagnosable failure.
@@ -366,7 +366,7 @@ describe('selfUpgrade', () => {
   });
 
   it('apply-on-Apply: delegates the converge to the host-config unit, not this process', async () => {
-    // Regression guard for the 2026-08-05 staging root cause. The self-upgrade
+    // Regression guard for the staging root cause. The self-upgrade
     // unit is ProtectSystem=strict with ReadWritePaths limited to the binary dir
     // and /etc/platform. Running the converge as a CHILD of it meant every
     // migration that wrote a host file died on a read-only mount: the same

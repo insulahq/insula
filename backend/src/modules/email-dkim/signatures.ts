@@ -3,7 +3,7 @@
  * flow (./rotate.ts) and the enable/drift-repair normalization flow
  * (./normalize.ts).
  *
- * WIRE NOTE (2026-06-07): registry objects (DkimSignature et al.)
+ * WIRE NOTE: registry objects (DkimSignature et al.)
  * have NO REST endpoint on Stalwart v0.16.5 — they are managed over
  * the same JMAP surface the platform already uses for principals
  * (capability urn:stalwart:jmap), which is also what stalwart-cli

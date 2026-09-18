@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ci-mail-arch-regressions.sh — fail CI on mail-architecture regressions
-# that were intentionally retired in the Phase 1+2 streamline (2026-05-15).
+# that were intentionally retired in the Phase 1+2 streamline.
 #
 # Background. The mail subsystem accumulated 45+ PRs of patches around
 # the Flux/platform-api SSA war (rsync-based migration cutover) and the

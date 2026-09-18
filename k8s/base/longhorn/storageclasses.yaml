@@ -144,7 +144,7 @@ parameters:
   # Subsequent tier changes also live-patch via applyTenantTier.
   numberOfReplicas: "1"
   staleReplicaTimeout: "30"
-  # XFS on tenant volumes (was ext4 prior to 2026-04-28).
+  # XFS on tenant volumes(was ext4 prior to).
   #
   # Why: ext4 reserves ~5 % for the root user + writes a heavy
   # static inode table at mkfs time, which is what makes a freshly
@@ -188,7 +188,7 @@ parameters:
 # instead of accumulating as Released zombies that block future
 # storage scheduling.
 #
-# Today (2026-05-17) testing.example.test accumulated 16 Released
+# Today testing.example.test accumulated 16 Released
 # `longhorn-tenant` PVs from a single test run — Retain meant they
 # leaked even after the namespaces were deleted, pushing Longhorn's
 # storageScheduled from a comfortable 12 GiB up to 51 GiB and breaking

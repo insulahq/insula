@@ -1,7 +1,7 @@
 /**
  * Mail migration — Stalwart RocksDB DataStore node-swap pipeline.
  *
- * **2026-05-15 streamline (Phase 1 of mail-arch v2):**
+ * ** streamline (Phase 1 of mail-arch v2):**
  *   The pre-streamline pipeline rsynced the local-path PVC to a *new* PVC
  *   name (e.g. `stalwart-rocksdb-data-mig-XXXXXXX`) and then SSA-patched the  // ci-mail-arch: ignore
  *   Deployment to point at the new PVC. That triggered an ongoing
@@ -71,7 +71,7 @@ export const MAIL_STACK_DEPLOYMENTS = [
   DEPLOYMENT_NAME,
   BULWARK_DEPLOYMENT_NAME,
 ] as const;
-// A2.5 (2026-05-25): mail-stack consolidation — Stalwart + Bulwark both
+// A2.5: mail-stack consolidation — Stalwart + Bulwark both
 // mount this single PVC with subPaths (stalwart/, bulwark/). Legacy
 // name was `stalwart-rocksdb-data`; cutover via
 // scripts/mail-stack-consolidate.sh + the A2.5 manifest commit.
@@ -238,7 +238,7 @@ export async function startMailMigration(
   // (source data may already be lost). The snapshot step is also
   // implicitly skipped via skipFreshSnapshot=true (enforced below).
   //
-  // 2026-06-11 FIX: read the bound mail target from
+  // FIX: read the bound mail target from
   // backup_target_assignments (backup_class='mail') via the canonical
   // getter — the PATCH /admin/mail/snapshot-backup-target setter has
   // written ONLY that table since the R-X shim migration, so the
@@ -273,7 +273,7 @@ export async function startMailMigration(
     VALUES (${runId}, ${sourceNode}, ${targetNode}, 'queued', ${triggeredBy}, 'preflight')
   `);
 
-  // Task-center wiring (2026-05-16): write a task row keyed by runId so
+  // Task-center wiring: write a task row keyed by runId so
   // re-triggers are idempotent. The chip's modalProps include runId
   // (the existing MailMigrationProgressModal polls /admin/mail/migrate/:runId).
   let taskId: string | null = null;
@@ -374,7 +374,7 @@ export async function startMailRecover(
  * call and exits with MigrationCancelledError → the top-level catch
  * stamps the DB as 'failed' with an operator-friendly reason.
  *
- * Limitations (2026-05-27 baseline):
+ * Limitations:
  *   - Cancel does NOT interrupt in-flight K8s waits. If the state
  *     machine is sitting in a 10-min waitForReplicaCount, the cancel
  *     takes effect only after that wait completes/times out. Future
@@ -526,7 +526,7 @@ export async function triggerRestoreBasedFailover(
     VALUES (${runId}, ${sourceNode}, ${targetNode}, 'queued', 'dr-watcher', 'preflight')
   `);
 
-  // Fix #3 (2026-05-25): only stamp 'failed-over' when migration
+  // Fix #3: only stamp 'failed-over' when migration
   // actually succeeded. Pre-fix code did this unconditionally so a
   // failed migration looked succeeded and dr-watcher refused to
   // retry. Live failover test on staging hit the loop: PVC delete
@@ -536,7 +536,7 @@ export async function triggerRestoreBasedFailover(
   // intermediate failures (deletePvcAndWait timeout, createMailPvc
   // failure, etc.) — it doesn't throw on those. So a try/catch on
   // the call alone misses the dominant failure paths (code-review
-  // findings, 2026-05-25). Instead: post-call, read the
+  // findings,). Instead: post-call, read the
   // mail_migration_runs row state and re-throw if it landed at
   // 'failed'. dr-watcher's existing catch handler then sets
   // mailDrState='degraded' so the next tick retries.
@@ -632,7 +632,7 @@ export interface MigrationOptions {
  */
 const MIGRATION_STEP_META: Record<string, { label: string; pct: number }> = {
   preflight: { label: 'Preflight checks', pct: 5 },
-  // 2026-05-27: relabelled 'Triggering fresh snapshot' → 'Taking pre-
+  // relabelled 'Triggering fresh snapshot' → 'Taking pre-
   // migration mail backup'. This step writes a fresh restic backup to
   // the offsite mail BackupTarget — a safety net for the operator,
   // NOT a prerequisite (the actual restore path is rsync from a
@@ -696,7 +696,7 @@ async function setStep(
     WHERE id = ${runId}
   `);
 
-  // Task-center progress (2026-05-16): every state-machine step also
+  // Task-center progress: every state-machine step also
   // writes the chip's progress so the operator sees live state in the
   // top-bar chip + on the inline MailMigrationProgressModal which
   // polls the same data.
@@ -724,7 +724,7 @@ async function setStep(
  * run row stays in a non-terminal state forever and blocks every
  * subsequent migration attempt with MAIL_MIGRATION_ALREADY_RUNNING.
  *
- * Caught 2026-05-28 by Phase E of the mobility E2E — a platform-api
+ * by Phase E of the mobility E2E — a platform-api
  * deploy mid-test left two run rows stuck in `running` that required
  * manual SQL UPDATE to drain.
  *
@@ -951,13 +951,13 @@ async function runMigrationStateMachine(
   //         AND has a viable restore path BEFORE we delete the source PVC.
   await setStep(db, runId, 'preflight', 'running', taskId);
 
-  // Step 1a (2026-07-04): gate on the TARGET node being Ready + its transient
+  // Step 1a: gate on the TARGET node being Ready + its transient
   // recovery taints cleared BEFORE any destructive action. A FAILBACK commonly
   // fires while the target is still recovering from its k3s restart during the
   // preceding failover (NotReady + node.kubernetes.io/{not-ready,unreachable}
   // taints) — which blocks BOTH local-path provisioning AND pod scheduling and
   // hangs the migration for the full 600s scaling-up timeout. captureScaleUpDiagnostics
-  // pinned this on the 2026-07-04 runs (pvc=Pending vol=<unbound>, NodeNotReady,
+  // pinned this on the runs (pvc=Pending vol=<unbound>, NodeNotReady,
   // untolerated taint). Data-safe: nothing has been torn down yet, so a target that
   // never comes Ready fails the migration cleanly. No-op for an already-Ready target.
   const nodeReady = await waitForTargetNodeReady(core, targetNode, { timeoutSeconds: 300, log });
@@ -970,7 +970,7 @@ async function runMigrationStateMachine(
   const requiredBytes = Math.ceil(usedBytes * DISK_HEADROOM_RATIO);
   log.info(`[migration ${runId}] preflight: PVC requested=${usedBytes} bytes, target headroom=${requiredBytes}`);
 
-  // CRITICAL preflight (2026-05-27): before the destructive PVC swap,
+  // CRITICAL preflight: before the destructive PVC swap,
   // verify the target node has a viable RESTORE PATH. Without this
   // check, an operator can move mail to a node that has neither FAST
   // PATH standby data NOR working restic reachability — Stalwart's
@@ -1034,7 +1034,7 @@ async function runMigrationStateMachine(
   // The snapshot Pod inherits node affinity from the CronJob template
   // (preferred-during-scheduling pod-affinity to stalwart-mail), so it
   // runs on the ACTIVE node where the data actually lives.
-  // 2026-09-11 drill fix: ALSO skip when the source node is NotReady,
+  // drill fix: ALSO skip when the source node is NotReady,
   // whoever the caller is.
   //
   // `skipFreshSnapshot` is set only by the DR (auto-failover) path. The
@@ -1076,7 +1076,7 @@ async function runMigrationStateMachine(
     } else {
       await setStep(db, runId, 'snapshotting', 'running', taskId);
       try {
-        // 2026-05-29: tag the pre-migration snapshot so /backups/mail
+        // tag the pre-migration snapshot so /backups/mail
         // can render a `pre-migration` badge instead of leaving it
         // indistinguishable from the every-two-min routine runs.
         const snapshotModule = await import('./snapshot.js');
@@ -1111,7 +1111,7 @@ async function runMigrationStateMachine(
       } catch (snapErr) {
         // Don't swallow operator cancels — they must abort the
         // whole migration, not silently fall through to the next step.
-        // Pre-fix bug caught 2026-05-28 by Phase E of the mobility E2E.
+        // Pre-fix bug by Phase E of the mobility E2E.
         if (snapErr instanceof MigrationCancelledError) throw snapErr;
         // Re-classify the typed sentinel from snapshot.ts. The previous
         // regex-on-error-message approach silently broke whenever the
@@ -1125,7 +1125,7 @@ async function runMigrationStateMachine(
     }
   }
 
-  // Arm the restore safety net BEFORE the destructive window (2026-06-25). If
+  // Arm the restore safety net BEFORE the destructive window. If
   // ANYTHING from here on fails — stuck source-PVC delete, scale-up timeout,
   // verify failure — the next Stalwart start with an empty store self-heals from
   // the fresh snapshot rather than coming up empty (the confirmed data-loss
@@ -1166,7 +1166,7 @@ async function runMigrationStateMachine(
   // path drains live connections (incl. the haproxy backend health checks
   // on the dedicated PROXY listeners), which can exceed 90s — that
   // previously failed the migration at 'scaling-down' ("did not reach 0
-  // ready replica(s) within 90s"; observed on staging 2026-06-29). The
+  // ready replica(s) within 90s"; observed on staging). The
   // Step-2 pre-migration snapshot already captured the data and the source
   // PV is retained (rollback-safe), so once the graceful window elapses we
   // force-delete the mail pod(s) to guarantee the PVC releases for the swap.
@@ -1221,7 +1221,7 @@ async function runMigrationStateMachine(
 
   const pvcSizeGiB = newGiB ?? Math.ceil(await getMailPvcRequestedBytes(core) / (1024 ** 3));
 
-  // **Phase K live-test (2026-05-15) fix:** clear completed snapshot
+  // **Phase K live-test fix:** clear completed snapshot
   // CronJob pods that still reference the PVC, otherwise pvc-protection
   // deadlocks the delete. K8s holds the PVC in Terminating while ANY
   // pod references it — including Completed pods that haven't hit
@@ -1233,7 +1233,7 @@ async function runMigrationStateMachine(
     log.warn('[migration] snapshot CronJob cleanup non-fatal — proceeding:', err);
   }
 
-  // DATA-SAFETY (2026-06-28): retain the source PV BEFORE deleting the
+  // DATA-SAFETY: retain the source PV BEFORE deleting the
   // PVC so the delete can't wipe the only live copy of the mail store.
   // The retained PV is GC'd at Step 7 on success, or re-bound by
   // restoreMailOnSource on any failure below (declared at function scope
@@ -1250,7 +1250,7 @@ async function runMigrationStateMachine(
     return;
   }
 
-  // FORCE-RELEASE all PVC mounters BEFORE the delete (2026-07-10).
+  // FORCE-RELEASE all PVC mounters BEFORE the delete.
   //
   // The pvc-protection controller keeps (and re-adds, even after our manual
   // force-strip) the finalizer while ANY pod mounts the PVC, so the delete
@@ -1296,7 +1296,7 @@ async function runMigrationStateMachine(
   // Clear any stale mail-stack-data PV left pinned to the TARGET node by a
   // prior failover whose local-path cleanup never ran (node was down). Without
   // this, its mismatched-uid claimRef races the fresh PVC → pod stuck Pending →
-  // scaling-up 600s timeout (the failback hang root-caused 2026-07-04).
+  // scaling-up 600s timeout(the failback hang root-caused).
   // Data-safe: target-scoped + skips the retained source PV.
   await cleanupStaleTargetMailPv(core, targetNode, retainedSourcePv, log);
 
@@ -1333,12 +1333,12 @@ async function runMigrationStateMachine(
     return;
   }
 
-  // Step 4d (2026-05-28 hairpin-fix follow-up): strip mail-haproxy=true
+  // Step 4d: strip mail-haproxy=true
   // label from the TARGET node so the haproxy DS evicts its pod there,
   // freeing hostPort 25 for the new Stalwart pod. Without this step the
   // scaling-up below times out at 600s with FailedScheduling:
   // "didn't have free ports for the requested pod ports" — exact bug
-  // surfaced on staging 2026-05-28 19:31 (run 9d6c39ec failback to
+  // surfaced on staging 19:31 (run 9d6c39ec failback to
   // staging1 stuck for 10min then failed).
   //
   // Why the regular reconcileMailStandbyLabel doesn't handle this:
@@ -1386,7 +1386,7 @@ async function runMigrationStateMachine(
   // The scale-up above is the "first consumer" that triggers local-path to
   // provision the fresh target PVC. If that provisioning stalls — the stuck-
   // provisioner-after-node-restart bug that hangs a failback (TRUE root cause,
-  // rc.7 destructive run 2026-07-04) — bounce the provisioner so the PVC binds
+  // rc.7 destructive run) — bounce the provisioner so the PVC binds
   // and the pod can schedule, instead of silently burning the full 600s below.
   await ensureTargetPvcProvisions(core, log);
   try {
@@ -1396,7 +1396,7 @@ async function runMigrationStateMachine(
     // (pod Pending reason, init/container waiting reason, PVC bind state, recent
     // Warning events). Without this the operator/harness only sees the opaque
     // "did not reach 1 ready replica within 600s" — the exact gap that made the
-    // failback hang undiagnosable across two destructive runs (2026-07-04).
+    // failback hang undiagnosable across two destructive runs.
     const diag = err instanceof MigrationCancelledError ? '' : await captureScaleUpDiagnostics(core, log);
     // Source PVC is already gone — the new pod failing to come Ready (or
     // a cancel mid-swap) means the destination is unusable. Roll mail back
@@ -1417,11 +1417,11 @@ async function runMigrationStateMachine(
   // Step 6: Verify the restore actually RESTORED tenant data — not just
   // that Stalwart opened a (possibly empty) DataStore.
   //
-  // PRE-FIX (silent data-loss bug, root-caused 2026-05-27): we only
+  // PRE-FIX(silent data-loss bug, root-caused): we only
   // checked /var/lib/stalwart/data/CURRENT — the RocksDB MANIFEST file
   // RocksDB creates on first open of ANY data dir, including an empty
   // one. An init-container fresh-start (restic failed → silent
-  // exit 0) passed this check. The 2026-05-25 19:23 staging E2E lost
+  // exit 0) passed this check. The 19:23 staging E2E lost
   // 2 tenant Domains + their mailboxes via this exact path; migration
   // state machine happily marked state=done.
   //
@@ -1452,7 +1452,7 @@ async function runMigrationStateMachine(
     // Drift is independently surfaced via /email/drift and the
     // mail-drift module's notifications.
     //
-    // Caught 2026-05-27 E2E on staging: the recovery migration
+    // E2E on staging: the recovery migration
     // successfully restored Stalwart data, but the verifier flagged
     // 3 pre-existing missing tenant Domains as "restore was
     // incomplete — tenant mail data lost." That's misleading — the
@@ -1469,7 +1469,7 @@ async function runMigrationStateMachine(
     // the mail, Bulwark holds webmail admin state. A migration that restored
     // the mailboxes correctly did succeed, and failing it would hand the
     // operator a red run for a service that is actually serving. But the
-    // loss must not be silent either — before 2026-09-11 nothing in the
+    // loss must not be silent either — before nothing in the
     // backend read this sentinel at all, so a real Bulwark reset went
     // unnoticed for a month while its migration sat recorded as `done`.
     const bulwarkLoss = await detectBulwarkFreshStart(core, kubeconfigPath, runStartedAt, log);
@@ -1499,7 +1499,7 @@ async function runMigrationStateMachine(
       // source-INDEPENDENT offsite backup that may hold what the stale standby
       // copy lacked. This makes a node-loss recoverable even when the source is
       // dead (a rollback to a dead source cannot). Gap A/B, root-caused
-      // 2026-07-02; availability policy operator-selected same day.
+      // availability policy operator-selected same day.
       // Force restic by stamping restore-snapshot-id (any non-empty value
       // disables the FAST PATH; 'latest' → restic restore latest).
       let recovered = false;
@@ -1570,7 +1570,7 @@ async function runMigrationStateMachine(
     log.warn('[migration] failed to clear allow-restore annotation (non-fatal):', annotErr);
   }
 
-  // Step 7a (2026-06-28): destination verified — the retained source PV is
+  // Step 7a: destination verified — the retained source PV is
   // no longer the source of truth. Flip its reclaim back to Delete so the
   // orphaned source volume + on-disk data are GC'd, freeing the old node's
   // disk. Best-effort; a leftover Released PV is harmless if this fails.
@@ -1595,7 +1595,7 @@ async function runMigrationStateMachine(
   // the active node — without this, kube-proxy keeps routing mail
   // traffic to the OLD active node's IP and the new active node's
   // hostPorts are the only working external path (so DNS pointing at
-  // the old node breaks). Caught 2026-05-28 by Phase 2 of the external
+  // the old node breaks). by Phase 2 of the external
   // reachability E2E.
   try {
     const { ensureMailPortExposureApplied } = await import('./port-exposure.js');
@@ -1604,13 +1604,13 @@ async function runMigrationStateMachine(
     log.warn('[migration] post-success port-exposure reconcile failed (non-fatal):', err);
   }
 
-  // Step 8b1 (2026-07-03, credential-drift-on-restore fix): a restore brings
+  // Step 8b1: a restore brings
   // Stalwart up with the SNAPSHOT's admin credential — NOT the current secret —
   // so admin JMAP 401s and EVERY admin-authed step below silently fails: the
   // listener/hostname reconcile (8b2), the master rotation (8c), the ACME
   // provider/renewal, and every future domain-reconciler tick. That left staging
   // mail degraded (self-signed cert + dead HA listeners) until an operator ran
-  // rotate-admin-password by hand (2026-07-03 incident). Re-sync the admin
+  // rotate-admin-password by hand. Re-sync the admin
   // credential HERE first — rotate-admin-password uses the recovery-superuser
   // fallback, which works even when the DB admin credential is stale — so the
   // reconciles below actually succeed. Non-fatal: the cutover already succeeded;
@@ -1632,11 +1632,11 @@ async function runMigrationStateMachine(
     log.warn('[migration] post-cutover admin credential re-sync failed (non-fatal — operator can POST /admin/mail/rotate-admin-password):', err);
   }
 
-  // Step 8b1b (2026-07-03, master-drift-on-restore heal): a restore ALSO brings
+  // Step 8b1b: a restore ALSO brings
   // Stalwart up with the SNAPSHOT's MASTER account password — drifted from
   // mail-secrets — so Bulwark/Roundcube webmail impersonation is broken for ALL
   // mailboxes until the slow principals-sync auto-heal tick catches it (observed
-  // post-failover 2026-07-03: master-auth didn't heal within ~5min). Re-assert
+  // post-failover: master-auth didn't heal within ~5min). Re-assert
   // the mail-secrets master password HERE (mirrors 8b1 for the admin) so
   // impersonation heals AT CUTOVER — regardless of whether the security-hygiene
   // auto-rotate (Step 8c, flag-gated) runs. A no-op when the master already
@@ -1654,14 +1654,14 @@ async function runMigrationStateMachine(
     log.warn('[migration] post-cutover master credential re-sync failed (non-fatal — principals-sync auto-heal will retry):', err);
   }
 
-  // Step 8b2 (Gap C, 2026-07-02): re-assert Stalwart's REQUIRED_LISTENERS +
+  // Step 8b2: re-assert Stalwart's REQUIRED_LISTENERS +
   // defaultHostname on the newly-active pod. A restore brings Stalwart up with
   // whatever config was in the restored RocksDB — which can be MISSING the
   // platform's listeners (143/587 + the six :12xxx -proxy) and its
   // defaultHostname (SMTP banner = pod name → SPF/EHLO breakage). The
   // domain-reconciler heals these on its tick, but a migration must not depend
   // on that timing — a stalled reconciler left mail degraded (only 25/465/993/
-  // 4190 bound, HA entrypoints dead) for ~30min after a failover on 2026-07-02.
+  // 4190 bound, HA entrypoints dead) for ~30min after a failover.
   // (Runs AFTER 8b1 so its admin JMAP calls authenticate.)
   try {
     const { runStalwartDomainReconcilerTick } = await import('./stalwart-domain-reconciler.js');
@@ -1675,7 +1675,7 @@ async function runMigrationStateMachine(
     log.warn('[migration] post-cutover listener/hostname reconcile failed (non-fatal — domain-reconciler tick will retry):', err);
   }
 
-  // Step 8b3 (2026-07-03, issuance≠serving): confirm the newly-active pod is
+  // Step 8b3: confirm the newly-active pod is
   // actually SERVING a valid TLS cert on :465 — not just that Step 8b2 fired
   // the ACME order. Stalwart binds a freshly-issued cert on its own reload
   // cadence (observed ~1h lag on the post-restore self-heal path), so without
@@ -1731,7 +1731,7 @@ async function runMigrationStateMachine(
     log.warn('[migration] served-cert verification failed (non-fatal — reconciler tick will retry):', err);
   }
 
-  // Step 8c (2026-05-28): auto-rotate Stalwart master password.
+  // Step 8c: auto-rotate Stalwart master password.
   // Behind a feature flag — operators who pre-share the password to a
   // monitoring tool can opt out. Default ON because the most common
   // migration cause is "node compromised / drained for security reasons"
@@ -1953,7 +1953,7 @@ async function getMailPvcRequestedBytes(core: CoreV1Api): Promise<number> {
  *
  * The PVC's `pvc-protection` finalizer keeps it in Terminating while ANY pod
  * still references it. Robust two-stage escalation so the delete cannot wedge
- * the migration (observed 2026-06-30: a worker migration hung here because a
+ * the migration (: a worker migration hung here because a
  * pod referencing the PVC on a *healthy* node held the finalizer, which the old
  * dead-node-only escalation never cleared):
  *   1. at 15s — force-delete EVERY pod referencing the PVC (any node, any phase:
@@ -2317,7 +2317,7 @@ function pvPinnedNode(pv: {
  * Before creating the fresh target PVC in a swap, delete any STALE local-path
  * PV that still claims mail/mail-stack-data and is pinned to the TARGET node.
  *
- * Why (failback scaling-up hang, root-caused 2026-07-04): on a FAILBACK the
+ * Why(failback scaling-up hang, root-caused): on a FAILBACK the
  * target node (the original primary) usually carries a leftover mail-stack-data
  * PV from BEFORE the failover — `releaseRetainedSourcePv` flipped its reclaim to
  * Delete, but the local-path cleanup Job never ran because the node was DOWN
@@ -2431,7 +2431,7 @@ export async function bounceLocalPathProvisioner(
  * stalls, bounce the local-path provisioner to unstick it.
  *
  * Why (failback scaling-up hang, TRUE root cause found on the rc.7 destructive
- * run 2026-07-04): when the failover target's k3s is stopped + restarted, the
+ * run): when the failover target's k3s is stopped + restarted, the
  * single-replica local-path provisioner's informer/connection to that node goes
  * STALE. Its helper-pod-create then times out — `create process timeout after
  * 120s` + `failed to save logs: error in opening stream: resource name may not
@@ -2495,7 +2495,7 @@ export async function ensureTargetPvcProvisions(
  * Wait for the target node to be Ready and its transient recovery taints cleared
  * BEFORE the migration's destructive swap/scale-up.
  *
- * Why (failback root cause pinned by captureScaleUpDiagnostics on the 2026-07-04
+ * Why (failback root cause pinned by captureScaleUpDiagnostics on the
  * destructive runs): a FAILBACK commonly fires while the target is still recovering
  * from its k3s restart during the preceding failover — the node reports NotReady and
  * the node controller applies `node.kubernetes.io/not-ready` / `…/unreachable`
@@ -2552,7 +2552,7 @@ export async function waitForTargetNodeReady(
   return { ok: false, reason: `target node ${targetNode} did not become schedulable within ${timeoutSeconds}s (last: ${last})` };
 }
 
-// ── DATA-SAFETY: source-volume retain + rollback (data-loss incident 2026-06-28) ──
+// ── DATA-SAFETY: source-volume retain + rollback ──
 
 /**
  * Flip the source mail PV's reclaimPolicy to Retain BEFORE the PVC is
@@ -2560,7 +2560,7 @@ export async function waitForTargetNodeReady(
  * delete. local-path PVs default to reclaimPolicy=Delete, which runs a
  * cleanup Job that ERASES the directory the instant the PVC is gone —
  * destroying the only live copy of the mail store before the destination
- * is confirmed restored. (2026-06-28: a stuck-finalizer PVC delete during
+ * is confirmed restored. (: a stuck-finalizer PVC delete during
  * a migration left mail-stack-data bound to a fresh EMPTY volume; only a
  * pre-migration restic snapshot saved the data. Retaining the PV makes the
  * swap data-safe independent of whether any snapshot exists.)
@@ -2634,7 +2634,7 @@ export async function restoreMailOnSource(
   } catch (err) {
     if (!isNotFound(err)) log.warn('[migration] rollback: read PVC failed (continuing):', err);
   }
-  // Stuck-Terminating shape (the worker-migration deadlock, 2026-06-30): the swap's
+  // Stuck-Terminating shape: the swap's
   // delete set deletionTimestamp but a finalizer wedged it, so the PVC is neither
   // fully bound nor gone. Scaling Stalwart up onto it would make the pod
   // unschedulable ("PVC is being deleted") AND hold the finalizer open itself →
@@ -2657,7 +2657,7 @@ export async function restoreMailOnSource(
       MERGE_PATCH,
     ).catch((e) => log.warn(`[migration] rollback: clear claimRef on ${retainedPvName} failed:`, e));
     // Size the re-bound PVC to the RETAINED PV's actual capacity — NOT a
-    // hardcoded value. A too-small request (the old hardcoded '1Gi', 2026-07-03)
+    // hardcoded value. A too-small request(the old hardcoded '1Gi')
     // leaves the live PVC smaller than the git manifest, so Flux's next reconcile
     // tries to resize the local-path PVC and is Forbidden → the whole platform
     // kustomization wedges. Matching the PV capacity keeps the PVC in sync with
@@ -2727,7 +2727,7 @@ async function releaseRetainedSourcePv(
  *     `allowRestore` is true; the downward-API mount surfaces this to
  *     the `restore-state` initContainer).
  *
- * **Why nodeSelector, not nodeAffinity** (Phase K live-test, 2026-05-15):
+ * **Why nodeSelector, not nodeAffinity**:
  *
  * The `k8s/components/system-node-affinity/affinity-patch-stalwart.yaml`
  * component sets `nodeAffinity` to allow role: [server, worker]. Any
@@ -2765,7 +2765,7 @@ async function applyDeploymentAffinityOne(
   allowRestore: boolean,
   restoreSnapshotId: string | null,
 ): Promise<void> {
-  // Fix #4 (2026-05-25): allow-restore annotation MUST live in
+  // Fix #4: allow-restore annotation MUST live in
   // spec.template.metadata.annotations (pod template) — NOT
   // metadata.annotations (Deployment object). The restore-state init
   // container reads /podinfo via downwardAPI which mounts
@@ -2775,7 +2775,7 @@ async function applyDeploymentAffinityOne(
   // annotations, which never propagated to the pod, so the init
   // container always saw allow-restore=false and fresh-started.
   //
-  // restore-snapshot-id (2026-05-27) follows the same rule for the
+  // restore-snapshot-id follows the same rule for the
   // same reason — pod-template annotations only.
   //
   // IMPORTANT: strategic-merge-patch on metadata.annotations MERGES
@@ -2783,7 +2783,7 @@ async function applyDeploymentAffinityOne(
   // A DR failover that doesn't pass restoreSnapshotId would otherwise
   // inherit a stale per-snapshot-restore annotation from a prior
   // operator action, and try to restore a snapshot id that retention
-  // may have already forgotten. Catch caught 2026-05-28 by Phase H of
+  // may have already forgotten. Catch by Phase H of
   // the mobility E2E. Fix: ALWAYS set both annotation keys (null when
   // absent — strategic-merge interprets null as delete).
   const annotations: Record<string, string | null> = {
@@ -2916,7 +2916,7 @@ async function resumeSnapshotCronJob(deps: MigrationDeps): Promise<void> {
  * migration so subsequent pod restarts don't trigger the restore-state
  * initContainer's restic path with stale parameters.
  *
- * NOTE (2026-05-27): we DELIBERATELY do NOT clear
+ * NOTE: we DELIBERATELY do NOT clear
  * `mail.platform/restore-snapshot-id`. Clearing it triggers a pod-template
  * change → controller spins a new RS → old pod (the one that actually ran
  * the restore) gets killed → new pod starts on the rolled-back PVC. That
@@ -2964,13 +2964,13 @@ async function clearAllowRestoreAnnotation(apps: AppsV1Api): Promise<void> {
 
 /**
  * Arm the restore safety net BEFORE the destructive scale-down / PVC-swap
- * window (2026-06-25). Sets `allow-restore=true` (and clears any stale pinned
+ * window. Sets `allow-restore=true` (and clears any stale pinned
  * snapshot id → restore the LATEST, i.e. the fresh pre-migration snapshot) so
  * that if the migration FAILS — or any pod restarts with an EMPTY data store —
  * during or after the swap, the `restore-state` initContainer recovers from
  * the fresh snapshot instead of starting empty.
  *
- * Why this exists: an instrumented staging migration (2026-06-25) confirmed the
+ * Why this exists: an instrumented staging migration confirmed the
  * happy path is data-safe, but the FAILURE path (e.g. a stuck source-PVC
  * delete) `failRun`s WITHOUT arming any restore — so a failed swap on local-path
  * (reclaimPolicy=Delete) could leave a fresh empty PVC and silently lose the
@@ -3016,7 +3016,7 @@ async function patchDeploymentReplicasOne(
 }
 
 /**
- * A4 (2026-05-25): scale EVERY Deployment in MAIL_STACK_DEPLOYMENTS
+ * A4: scale EVERY Deployment in MAIL_STACK_DEPLOYMENTS
  * together. Migration moves the whole mail stack atomically — scaling
  * only Stalwart while leaving Bulwark trying to mount the deleted
  * legacy PVC would CrashLoopBackOff Bulwark for the entire migration
@@ -3061,7 +3061,7 @@ async function waitForReplicaCount(
 // CronJob controller's own scheduled Jobs, NOT manually-triggered
 // ones. The migration path that uses `triggerMailSnapshot` now waits
 // via `waitForSnapshotJob(jobName)` exported from `./snapshot.js`,
-// which polls the specific Job we just spawned. Removed 2026-05-29
+// which polls the specific Job we just spawned. Removed
 // because no other caller existed.)
 
 // ── Pod inspection ────────────────────────────────────────────────────────────
@@ -3078,18 +3078,18 @@ function trunc(s: string, max: number): string {
  * container waiting reasons, the mail PVC bind state, and recent Warning events —
  * so the failRun error is self-diagnosing instead of the opaque "did not reach 1
  * ready replica within 600s". This is the missing evidence the failback
- * investigation needed (2026-07-04). NEVER throws — returns '' when everything is
+ * investigation needed. NEVER throws — returns '' when everything is
  * unreadable.
  */
 /**
  * Why the mail stack did not reach 0 replicas.
  *
  * The scale-UP timeout has attached captureScaleUpDiagnostics since the
- * 2026-07-04 failback hang, but the scale-DOWN timeout threw a bare
+ * failback hang, but the scale-DOWN timeout threw a bare
  * "Deployment <name> did not reach 0 ready replica(s) within 60s" — no
  * indication of WHICH state the pod was in, so the failure was
  * unexplainable after the fact (the pod and its logs are gone by the time
- * anyone looks). Observed 2026-08-07 on a VM-tier run and not reproducible
+ * anyone looks). on a VM-tier run and not reproducible
  * afterwards, which is precisely the case this exists for.
  *
  * Reports, per mail-stack Deployment: the replica counters the wait
@@ -3270,7 +3270,7 @@ async function findStalwartPod(core: CoreV1Api): Promise<string | null> {
  * True when the .fresh-started-at sentinel provably predates this
  * migration/recovery run (with a 60s clock-skew grace).
  *
- * 2026-06-11 FIX (false-positive verify, first multi-node staging
+ * FIX (false-positive verify, first multi-node staging
  * migration): the init container writes the sentinel on every
  * LEGITIMATE fresh bootstrap (`reason=no-restic` /
  * `reason=allow-restore-not-set` — see stalwart deployment.yaml) and
@@ -3442,11 +3442,11 @@ async function verifyRestoreContent(
 /**
  * Did BULWARK fresh-start during this migration?
  *
- * Until 2026-09-11 the verify step read ONLY Stalwart's sentinel
+ * the verify step read ONLY Stalwart's sentinel
  * (`/var/lib/stalwart/data/.fresh-started-at`) — four references in the
  * backend — and NEVER Bulwark's (`/app/data/.fresh-started-at`) — zero
  * references, despite the manifest comment claiming "platform-api detects"
- * it. A real Bulwark data-loss event on 2026-08-11 therefore sat undetected
+ * it. A real Bulwark data-loss event therefore sat undetected
  * for a month, and the migration that caused it is still recorded
  * `state=done`.
  *
@@ -3697,7 +3697,7 @@ async function validateTargetRestoreReadiness(
   // Pre-fix this used `readNamespacedEndpoints` which silently returned
   // empty subsets on k8s 1.33+ (the v1 Endpoints API is deprecated in
   // favor of discovery.k8s.io/v1 EndpointSlice). Caught on staging E2E
-  // 2026-05-27 — preflight wrongly reported "no Endpoints" even though
+  // — preflight wrongly reported "no Endpoints" even though
   // 4 shim pods were Running. Counting Ready pods directly is robust
   // across k8s versions and is the same information from the operator's
   // standpoint (a Ready pod = a backend the Service routes to).

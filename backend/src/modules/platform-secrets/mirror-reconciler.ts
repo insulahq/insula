@@ -11,8 +11,8 @@ import * as k8s from '@kubernetes/client-node';
  * the `platform-system` copy stale. When `internal-secret` drifts, the
  * gateway's `X-Internal-Auth` header no longer matches platform-api's
  * `PLATFORM_INTERNAL_SECRET` and EVERY SFTP auth callback 403s — SFTP breaks
- * silently for all tenants (observed on the DEV cluster 2026-07-02, drifted
- * since the 2026-06-22 rebuild; nothing exercised SFTP so it went unnoticed).
+ * silently for all tenants (observed on the DEV cluster, drifted
+ * since the rebuild; nothing exercised SFTP so it went unnoticed).
  *
  * This reconciler re-asserts the mirror on boot: it copies the source keys the
  * `platform-system` consumers need into the mirror whenever they drift. It is

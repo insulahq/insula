@@ -1,6 +1,6 @@
 /**
  * Per-mailbox aliases — alternate receive+send-as addresses attached to
- * an existing mailbox (operator request 2026-08-25; spike-verified the
+ * an existing mailbox (operator request; spike-verified the
  * same day, see stalwart-jmap/account-aliases.ts for the server facts).
  *
  * Distinct from email-aliases (MailingList-backed forwarding addresses):
@@ -39,7 +39,7 @@ function aliasNotFound(id: string): ApiError {
 // Cap mirrors the mailing-list destination cap (20): every mutation
 // re-pushes the account's whole alias map and the periodic sweep loads
 // all rows, so an unbounded count is a shared-resource abuse vector
-// (security review 2026-08-25). Not a plan quota — a fixed sanity bound.
+// . Not a plan quota — a fixed sanity bound.
 export const MAX_ALIASES_PER_MAILBOX = 20;
 
 function mailServerError(op: string, err: unknown): ApiError {
@@ -118,7 +118,7 @@ async function loadMailboxContext(
  * server-side and Stalwart enforces the off state for both directions).
  * A disabled/suspended mailbox forces EVERY entry off — suspension
  * disables incoming and outgoing mail for the aliases too (operator
- * decision 2026-08-26); the rows keep the tenant's intent for
+ * decision); the rows keep the tenant's intent for
  * reactivation. Every push path derives the map through this one
  * function so the shape can never diverge between
  * create/update/delete/reconcile/lifecycle.
@@ -305,7 +305,7 @@ export async function updateMailboxAlias(
     // Re-read INSIDE the lock — a concurrent PATCH that queued ahead of
     // this one may have flipped the row already, and a no-op decision
     // against the stale pre-lock snapshot would silently skip the push
-    // (review 2026-08-25 HIGH).
+    // .
     const [alias] = await db
       .select()
       .from(mailboxAliases)

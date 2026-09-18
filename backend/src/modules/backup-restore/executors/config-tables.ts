@@ -107,7 +107,7 @@ export async function execConfigTablesItem(args: {
         const safeRow = tenantPolicy
           ? redactRowForTenant(sqlTable, row as Record<string, unknown>, tenantPolicy)
           : row;
-        // Stalwart object ids are CLUSTER-LOCAL (2026-08-25 drift audit):
+        // Stalwart object ids are CLUSTER-LOCAL:
         // a bundle restored on another cluster (or after a mail-store
         // rebuild) carries source-side ids that point at nothing — or
         // worse, at someone else's object. Null them on replay; the

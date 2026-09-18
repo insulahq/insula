@@ -95,7 +95,7 @@ describe('buildIngressRouteBody', () => {
   // A Traefik `errors` middleware only sees responses produced by what comes
   // AFTER it in the chain. Placed after the ForwardAuth it never sees the 401,
   // and an unauthenticated visitor gets a bare 401 page with no way to sign in
-  // — which is exactly what both panels did until 2026-09-05.
+  // which is exactly what both panels did.
   it('puts the oauth2 sign-in redirect BEFORE the ForwardAuth', () => {
     const body = buildIngressRouteBody(
       [{ host: 'admin.example.com', serviceName: 'admin-panel', oauth2: true }],
@@ -165,7 +165,7 @@ describe('buildIngressRouteBody', () => {
   // A rule exclusion describes an attack pattern — that is its purpose. With
   // the WAF in front of the endpoint that stores one, the operator cannot
   // disarm a false positive: the safety valve sits behind the thing it
-  // disarms. Hit in production 2026-08-30 — a tenant could not rename
+  // disarms. Hit in production — a tenant could not rename
   // `.htaccess` (CRS 930120) and the whitelist request was itself blocked,
   // by a message telling the operator to go and whitelist it.
   it('routes the WAF-admin API around the WAF so a false positive can be disarmed', () => {

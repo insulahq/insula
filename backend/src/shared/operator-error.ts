@@ -84,7 +84,7 @@ export function translateOperatorError(
   // swallow — every Longhorn validator rejection (e.g. refusing a PVC
   // expansion while the volume is degraded) surfaced as "Image pull
   // failed" at the resize step, which is maximally misleading (caught
-  // on testing 2026-06-11: two full-pass grow failures reported
+  // on testing: two full-pass grow failures reported
   // WORKLOAD_IMAGE_PULL at progress 10% "Patching PVC", where no image
   // is ever pulled).
   if (text.match(/admission webhook .* denied the request/i)) {

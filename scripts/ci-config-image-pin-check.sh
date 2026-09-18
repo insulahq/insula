@@ -8,7 +8,7 @@
 #   configMapKeyRef → env. The kustomization `images:` transformer cannot reach
 #   them, so pin-image-tag.sh does not cover them and every one of them sat on
 #   `:latest`. That is not theoretical here: the `is_default_branch` bug froze
-#   `:latest` at its pre-cutover build on 2026-06-22 and every consumer silently
+# `:latest` at its pre-cutover build and every consumer silently
 #   pulled a stale image for weeks.
 #
 #   Fixing them one at a time only helps if a NEW one cannot appear unnoticed —

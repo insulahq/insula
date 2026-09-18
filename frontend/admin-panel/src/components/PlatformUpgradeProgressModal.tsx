@@ -55,7 +55,7 @@ export default function PlatformUpgradeProgressModal({ version, onClose }: Props
   // migrations run after the new pod is serving, and host migrations converge
   // per node. `rolled || converged` reported 100% Done the moment the last
   // Deployment hit its tag — which is exactly what three clusters showed on
-  // 2026-08-19 while their migration registry sat halted at 0008.
+  // while their migration registry sat halted at 0008.
   //
   // Absent gates keep the old behaviour rather than hanging the modal open on
   // missing data: only a gate that EXISTS and is not passing holds `done` back.

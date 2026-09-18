@@ -15,7 +15,7 @@ rules:
   - apiGroups: ["networking.k8s.io"]
     resources: ["ingresses", "networkpolicies"]
     verbs: ["*"]
-  # Traefik migration 2026-05-15: the system-settings/ingress-reconciler,
+  # Traefik migration: the system-settings/ingress-reconciler,
   # ingress-routes/traefik-apply helpers, mtls-providers, oidc/ingress-
   # proxy-manager, tenant-provisioner, tenant-lifecycle/ingress-suspend,
   # private-workers/reconciler, domains/k8s-ingress, and ingress-auth/
@@ -106,7 +106,7 @@ rules:
     verbs: ["get", "update", "patch"]
   # DaemonSets — full CRUD for the mail-HA `stalwart-haproxy` lifecycle.
   #
-  # 2026-05-14 streamline (Phase 7): the haproxy DaemonSet lifecycle
+  # streamline (Phase 7): the haproxy DaemonSet lifecycle
   # moved out of Flux into platform-api. The mail port-exposure feature
   # (backend/src/modules/mail-admin/port-exposure.ts) now CREATES the DS
   # on flip to allServerNodes and DELETES it on flip to thisNodeOnly.
@@ -123,7 +123,7 @@ rules:
   - apiGroups: ["networking.k8s.io"]
     resources: ["ingresses", "networkpolicies"]
     verbs: ["*"]
-  # Traefik migration 2026-05-15: the system-settings/ingress-reconciler,
+  # Traefik migration: the system-settings/ingress-reconciler,
   # ingress-routes/traefik-apply helpers, mtls-providers, oidc/ingress-
   # proxy-manager, tenant-provisioner, tenant-lifecycle/ingress-suspend,
   # private-workers/reconciler, domains/k8s-ingress, and ingress-auth/
@@ -304,7 +304,7 @@ rules:
     resources: ["scheduledbackups"]
     verbs: ["get", "list", "create", "patch", "delete"]
   # Backup CRs (CNPG's record of completed base backups). Previously
-  # read-only for status surfacing — extended 2026-05-23 to include
+  # read-only for status surfacing — extended to include
   # `create` for the barman-restore WAL-gap mitigation: when the
   # operator triggers a PITR-to-target restore from a stale catalogue,
   # platform-api auto-triggers a fresh CNPG Backup before applying the

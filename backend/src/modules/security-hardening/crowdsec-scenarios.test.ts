@@ -10,7 +10,7 @@ import { deriveAddedBy } from './crowdsec.js';
  * The `addedBy` taxonomy is the whole point of the relabel: CrowdSec's raw
  * `origin` says `cscli` for three different platform actions and `crowdsec` for
  * the platform's OWN agent. Every row below is a real scenario string observed
- * on production 2026-09-13.
+ * on production.
  */
 describe('deriveAddedBy', () => {
   it('separates the two automatic engines, which both used to read as one thing', () => {
@@ -105,7 +105,7 @@ describe('simulation.yaml round-trip', () => {
   it('keeps the UNDERSCORE in http-crawl-non_statics', () => {
     // cscli accepts a nonexistent scenario name silently and echoes it back, so
     // the hyphen spelling produced a config that looked correct while the real
-    // scenario kept banning. Shipped on DEV 2026-09-05.
+    // scenario kept banning. Shipped on DEV.
     expect(DEFAULT_SIMULATED_SCENARIOS).toContain('crowdsecurity/http-crawl-non_statics');
     expect(DEFAULT_SIMULATED_SCENARIOS.join()).not.toContain('non-statics');
   });

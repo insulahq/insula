@@ -92,7 +92,7 @@ fi
 # 9. authenticateWs must reject pre-auth (passkey 2FA) tokens — they
 #    carry a `step` claim and must NEVER pass a privileged auth gate.
 #    Accepts either the shared middleware helper (preferred since
-#    2026-07-28, when assertAccessToken() was introduced so a single
+# when assertAccessToken was introduced so a single
 #    place covers `authenticate` AND every raw-WS verifier) or the older
 #    inline `.step` test. Assert the INVARIANT, not one spelling of it.
 if ! grep -Eq "assertAccessToken\(|decoded as.*step|payload.*\.step" "$ROUTES"; then
@@ -117,7 +117,7 @@ fi
 # WS query string) — accept any alternation that covers BOTH token and replica
 # rather than a fixed spelling. The old fixed pattern silently stopped matching
 # when `jwt|` was inserted, so this guard had been failing on `development`
-# until 2026-07-28.
+# .
 if ! grep -Eq "\(token\|([a-z]+\|)*replica\)=" "$APP_TS"; then
   fail "app.ts Pino redact must scrub ?token=/?replica= from URLs to prevent ws-token leakage in logs."
 fi
@@ -225,7 +225,7 @@ fi
 # lands on a different replica leaves the original replica's stale
 # in-memory timer running — when it fires (60s later) it kills the
 # session the user is actively connected to on the other replica.
-# (Production-observed regression on staging 2026-05-20.)
+# (Production-observed regression on staging.)
 if ! echo "$SERVICE_CODE" | grep -A35 'export async function scheduleDelayedTermination' \
    | grep -Eq 'findById|terminateAfter[[:space:]]*===[[:space:]]*null|terminateAfter[[:space:]]*\.getTime'; then
   fail "service.ts scheduleDelayedTermination's setTimeout MUST re-check terminate_after via findById before calling terminateSession (cross-replica safety)."
@@ -235,7 +235,7 @@ fi
 # hook MUST `rm -f` both the HISTFILE and tmux config that the inner
 # shell creates on the host. Without this, /root and /tmp accumulate
 # one tiny file per session forever (operator-reported leak on
-# staging 2026-05-20). The hook nsenters into PID 1's mount namespace
+# staging). The hook nsenters into PID 1's mount namespace
 # so it can see the host's filesystem (the files don't exist inside
 # the Pod's container fs).
 if ! echo "$POD_SPEC_CODE" | grep -Eq "preStop:" \

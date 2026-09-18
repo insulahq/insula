@@ -269,7 +269,7 @@ describe('runProxyNetworksReconcilerTick', () => {
             [
               'x:SystemSettings/get',
               {
-                // Phase 11 streamline (2026-05-15): global trust is now
+                // Phase 11 streamline: global trust is now
                 // empty; per-listener overrides own the trust. The
                 // reconciler should NOT call SystemSettings/set when
                 // current already matches the empty expected.
@@ -437,7 +437,7 @@ describe('runProxyNetworksReconcilerTick', () => {
 
     // ONLY the three `-proxy` listeners are updated, each to the pod CIDR.
     // The standard listeners already had {} and expect {} → no update → not
-    // in the set call. (Pre-2026-06-29 this trusted server node IPs on the
+    // in the set call. (Pre- this trusted server node IPs on the
     // standard mail listeners — an address Stalwart never saw cross-node.)
     expect(listenerUpdates).not.toBeNull();
     const updates = listenerUpdates! as Record<string, { overrideProxyTrustedNetworks: Record<string, boolean> }>;
