@@ -20,8 +20,18 @@
 
 import { z } from 'zod';
 import { dmarcDomainSummaries, dmarcSourcesForDomain, DMARC_WINDOW_DAYS } from './dmarc-summary.js';
+import { listAbuseReports } from './abuse-summary.js';
+import { listTlsReports } from './tls-summary.js';
+import { ABUSE_LOCAL_PART, POSTMASTER_LOCAL_PART } from './report-intake-reconciler.js';
 import { DMARC_LOCAL_PART } from './report-intake-reconciler.js';
-import { dmarcSourcesQuerySchema, type DmarcOverview } from '@insula/api-contracts';
+import {
+  dmarcSourcesQuerySchema,
+  abuseReportsQuerySchema,
+  tlsReportsQuerySchema,
+  type DmarcOverview,
+  type AbuseReportsOverview,
+  type TlsReportsOverview,
+} from '@insula/api-contracts';
 
 import type { FastifyInstance } from 'fastify';
 import { authenticate, requireRole, requireTenantAccess } from '../../middleware/auth.js';
@@ -146,6 +156,51 @@ export async function mailReportRoutes(app: FastifyInstance): Promise<void> {
     return success(sources);
   });
 
+  // ── Abuse reports, estate-wide ───────────────────────────────────────────
+  //
+  // A list rather than a summary: one complaint is the event. See
+  // abuse-summary.ts for why this does not aggregate the way DMARC does.
+  app.get('/admin/mail/abuse-reports', async (request) => {
+    const parsed = abuseReportsQuerySchema.safeParse(request.query ?? {});
+    if (!parsed.success) {
+      const first = parsed.error.issues[0];
+      throw new ApiError(
+        'INVALID_FIELD_VALUE',
+        `Validation error: ${first.message} (${first.path.join('.')})`,
+        400,
+        { field: first.path.join('.') },
+      );
+    }
+    const { reports, total, windowDays } = await listAbuseReports(app.db, parsed.data);
+    const overview: AbuseReportsOverview = {
+      windowDays,
+      reports,
+      total,
+      intakeLocalPart: ABUSE_LOCAL_PART,
+    };
+    return success(overview);
+  });
+
+  // ── TLS-RPT, estate-wide ─────────────────────────────────────────────────
+  //
+  // Inbound delivery TO us. Session totals travel with the failure count: "12
+  // failed" is a crisis at a small domain and noise at a large one.
+  app.get('/admin/mail/tls-reports', async (request) => {
+    const parsed = tlsReportsQuerySchema.safeParse(request.query ?? {});
+    if (!parsed.success) {
+      const first = parsed.error.issues[0];
+      throw new ApiError(
+        'INVALID_FIELD_VALUE',
+        `Validation error: ${first.message} (${first.path.join('.')})`,
+        400,
+        { field: first.path.join('.') },
+      );
+    }
+    const result = await listTlsReports(app.db, parsed.data);
+    const overview: TlsReportsOverview = { ...result, intakeLocalPart: POSTMASTER_LOCAL_PART };
+    return success(overview);
+  });
+
   app.get('/admin/mail/overview', async () => {
     return success(await getMailOverview(app.db));
   });
@@ -187,6 +242,67 @@ export async function mailUsageRoutes(app: FastifyInstance): Promise<void> {
       domains,
       intakeLocalPart: DMARC_LOCAL_PART,
     };
+    return success(overview);
+  });
+
+  // ── Abuse reports, for the domain owner ──────────────────────────────────
+  //
+  // A complaint about a tenant's mail is the tenant's problem to fix, and they
+  // cannot act on what they cannot see. Scoped by `tenantId` inside the query,
+  // so the row filter and the access check agree rather than relying on a
+  // post-filter over a capped page.
+  app.get('/tenants/:tenantId/mail/abuse-reports', {
+    onRequest: [
+      authenticate,
+      requireRole('super_admin', 'admin', 'support', 'tenant_admin', 'tenant_user'),
+      requireTenantAccess(),
+    ],
+  }, async (request) => {
+    const { tenantId } = request.params as { tenantId: string };
+    const parsed = abuseReportsQuerySchema.safeParse(request.query ?? {});
+    if (!parsed.success) {
+      const first = parsed.error.issues[0];
+      throw new ApiError(
+        'INVALID_FIELD_VALUE',
+        `Validation error: ${first.message} (${first.path.join('.')})`,
+        400,
+        { field: first.path.join('.') },
+      );
+    }
+    const { reports, total, windowDays } = await listAbuseReports(app.db, {
+      ...parsed.data,
+      tenantId,
+    });
+    const overview: AbuseReportsOverview = {
+      windowDays,
+      reports,
+      total,
+      intakeLocalPart: ABUSE_LOCAL_PART,
+    };
+    return success(overview);
+  });
+
+  // ── TLS-RPT, for the domain owner ────────────────────────────────────────
+  app.get('/tenants/:tenantId/mail/tls-reports', {
+    onRequest: [
+      authenticate,
+      requireRole('super_admin', 'admin', 'support', 'tenant_admin', 'tenant_user'),
+      requireTenantAccess(),
+    ],
+  }, async (request) => {
+    const { tenantId } = request.params as { tenantId: string };
+    const parsed = tlsReportsQuerySchema.safeParse(request.query ?? {});
+    if (!parsed.success) {
+      const first = parsed.error.issues[0];
+      throw new ApiError(
+        'INVALID_FIELD_VALUE',
+        `Validation error: ${first.message} (${first.path.join('.')})`,
+        400,
+        { field: first.path.join('.') },
+      );
+    }
+    const result = await listTlsReports(app.db, { ...parsed.data, tenantId });
+    const overview: TlsReportsOverview = { ...result, intakeLocalPart: POSTMASTER_LOCAL_PART };
     return success(overview);
   });
 

@@ -43,11 +43,34 @@ export const SUBSCRIBED_EVENTS: readonly string[] = [
   // Nudges the debounced DMARC poll (dmarc.ts:schedulePollSoon) so a report
   // surfaces in seconds rather than on the 5-min tick.
   //
-  // The ARF family — abuse-report, auth-failure-report, fraud-report,
-  // arf-parse-failed — was unsubscribed with the FBL retirement.
-  // Stalwart only loads webhook config at boot, so the reconciler rolls the
-  // pod once to drop them.
   'incoming-report.dmarc-report',
+  // The ARF family. `abuse-report` and `fraud-report` are the complaints
+  // themselves; `arf-parse-failed` is subscribed so a report Stalwart could
+  // not parse is visible as a log line instead of silence — an abuse desk that
+  // looks quiet because parsing broke is the worst of both states.
+  //
+  // `auth-failure-report` (DMARC forensic, RFC 6591) and `not-spam-report`
+  // (RFC 6430) are deliberately NOT here: the platform keeps `ruf=` off in
+  // both directions, an inbound auth-failure is an authentication artefact
+  // rather than a complaint, and `not-spam` is the inverse signal.
+  //
+  // Stalwart loads webhook config at boot only, so the reconciler rolls the
+  // pod once when this set changes.
+  'incoming-report.dmarc-report-with-warnings',
+  'incoming-report.abuse-report',
+  'incoming-report.fraud-report',
+  'incoming-report.virus-report',
+  // `other-report` is ARF Stalwart could not classify. The poller stores those
+  // as `other` rather than dropping them, so the event belongs here too.
+  'incoming-report.other-report',
+  'incoming-report.arf-parse-failed',
+  // TLS-RPT. `with-warnings` is a separate event, so subscribing only the
+  // clean one would mean the reports that actually recorded a failure are the
+  // ones that never nudge the poll. The same reasoning adds the DMARC
+  // `with-warnings` twin above, which had been missing.
+  'incoming-report.tls-report',
+  'incoming-report.tls-report-with-warnings',
+  'incoming-report.tls-rpc-parse-failed',
 ];
 
 export function desiredWebhookObject(masterSecret: string): Record<string, unknown> {

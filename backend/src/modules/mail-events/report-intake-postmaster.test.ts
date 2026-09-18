@@ -244,6 +244,21 @@ describe('report intake provisions postmaster@, not just the pattern', () => {
     expect(patch?.patch.inboundReportAddresses).toHaveProperty('postmaster@*', true);
   });
 
+  it('registers abuse@* so ARF complaints are actually PARSED', async () => {
+    // Without this pattern Stalwart never hands mail at `abuse@` to its ARF
+    // parser, so no `x:ArfExternalReport` is created and the abuse-report
+    // pipeline sees nothing — from the address RFC 2142 designates and that
+    // abuse desks and blocklist operators actually use. It is safe only
+    // because abuse-reports.ts now consumes the resulting events: consume
+    // first, intercept second, never the reverse.
+    await ensureReportIntake(db(ONE), logger);
+    // The LAST write is the commit; on a cold group the first is a primer.
+    const calls = reportSettingsUpdate.mock.calls;
+    const patch = (calls[calls.length - 1][0] as
+      { patch: { inboundReportAddresses: Record<string, boolean> } }).patch;
+    expect(patch.inboundReportAddresses).toHaveProperty(`${ABUSE_LOCAL_PART}@*`, true);
+  });
+
   it('turns report FORWARDING off so analysed reports stop reaching a human', async () => {
     // Stalwart shipped this `true`, so every DMARC aggregate and TLS-RPT report
     // it already parses was ALSO delivered to the intake mailbox — which on the

@@ -210,6 +210,48 @@ that feature in the webmail UI.
     A dash instead of a number means that reading failed, not that the value is
     zero.
 
+## Report ingestion
+
+Stalwart parses every report that arrives at the platform's report-intake
+addresses and stores it; the platform polls those, files them, and destroys
+what it has consumed. Three kinds are ingested, and each has a surface.
+
+| Report | What it tells you | Where |
+|---|---|---|
+| DMARC aggregate (RFC 7489) | who is sending as a hosted domain, and whether it authenticates | Monitoring → Mail → DMARC; tenant **Authentication** tab |
+| Abuse / ARF (RFC 5965) | a remote operator complaining about mail from a tenant | Monitoring → Mail → Abuse reports; tenant **Abuse Reports** tab |
+| TLS-RPT (RFC 8460) | whether senders could negotiate TLS to this platform's MX | Monitoring → Mail → Inbound TLS reports; tenant **Delivery Security** tab |
+
+Reports are **not** forwarded to a mailbox as well — the platform stores them
+and shows them here instead, so `postmaster@` does not fill with machine mail
+nobody reads. Ordinary mail to `postmaster@` and `abuse@` is unaffected: only
+messages recognised as reports are intercepted, so a person writing prose to
+your abuse desk still lands in the intake mailbox as before.
+
+`postmaster@`, `dmarc@` **and `abuse@`** are all registered as report-intake
+addresses. `abuse@` is the one RFC 2142 designates and the one abuse desks and
+blocklist operators actually send machine-readable complaints to, so leaving it
+unregistered meant the complaints most worth having were the ones never parsed.
+
+### Abuse reports raise a notification
+
+Every ingested abuse, fraud or virus report fans a notification to the admin
+roster, deduped per report so a retry cannot announce the same complaint twice.
+These are rare and individually actionable, which is why they alert and the
+other two do not.
+
+A complaint naming a domain this platform does **not** host is kept and shown
+as *unattributed* rather than dropped: that usually means somebody is spoofing
+a tenant, and hiding it would make the abuse desk look quiet at exactly the
+wrong moment.
+
+### TLS and DMARC do not notify
+
+Both are periodic summaries rather than incidents — one per reporting operator
+per day, whether anything is wrong or not. Alerting on them would train
+operators to ignore the channel. The surfaces carry the judgement instead, and
+the TLS view always shows failures next to the session count they came from.
+
 ## Data Drift
 
 **Email → Data Drift** surfaces mismatches between the platform database
