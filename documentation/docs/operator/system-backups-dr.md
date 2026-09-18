@@ -73,7 +73,7 @@ at the system level, so their timing is visible and changeable in one place:
 | **etcd snapshot upload** | How often the cluster-database snapshots k3s writes to disk are shipped to your backup target. k3s writes them every 12 hours; this setting is how often they are collected and sent. |
 | **Secrets bundle** | How often the encrypted copy of your cluster secrets is taken — the bundle you need to rebuild this platform elsewhere. |
 | **Cluster state dump** | How often the inventory of Kubernetes objects is captured. |
-| **Longhorn recurring snapshots** | Shown for reference only. This one is set by the cluster manifest and cannot be changed here. |
+| **Longhorn recurring snapshots** | Shown for reference only. This one is set by the cluster manifest, so the card displays the cadence the cluster is *actually* running and the controls are disabled — and the API refuses the change too, rather than storing a value that would never be applied. |
 
 Each card also has an on/off switch. Turning a schedule off stops that backup
 until you turn it back on — the platform will not quietly keep running it.

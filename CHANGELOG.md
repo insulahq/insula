@@ -12,6 +12,14 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **The Longhorn snapshot schedule showed a time it was not running.** The card
+  displayed a stored value that nothing applied — and the default it was
+  seeded with differs from the one the cluster actually uses, so it has been
+  showing the wrong cadence everywhere since it appeared. It now shows the
+  schedule Longhorn is really on. Asking the API to change it is refused
+  outright rather than saved and quietly ignored.
+
 ### Added
 - **The System Backups page can finally control when system backups run.** It
   previously showed no schedule controls at all: the timing of the etcd
