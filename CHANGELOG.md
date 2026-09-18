@@ -13,6 +13,25 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Added
+- **You now hear about it when somebody reports your mail as abuse.** Mail
+  providers and abuse desks send a complaint when a message from one of your
+  addresses is reported as spam, fraud or malware. Those complaints were
+  arriving and being thrown away. Each one is now kept and raises one
+  notification to the platform admins, and both panels list them: admins under
+  **Monitoring → Mail → Abuse reports** for the whole estate with the tenant
+  each complaint belongs to, tenants under **Email → Abuse Reports** for their
+  own addresses — who complained, about which address, and what to fix. A
+  complaint naming a domain the platform does not host is kept too rather than
+  dropped, because that is usually somebody spoofing one of your domains.
+
+  Reports are listed individually, not counted: one complaint *is* the event,
+  and a per-domain total would hide which message it was about. If the list
+  cannot be loaded it says so instead of showing an empty table.
+- **Mail servers' TLS reports are now collected and shown.** Receiving servers
+  send a daily summary of whether mail to your domains was delivered over an
+  encrypted connection. Those summaries are now ingested and surfaced beside
+  the DMARC and abuse reports in both panels, so a domain whose encrypted
+  delivery starts failing is visible rather than silent.
 - **The System Backups page can finally control when system backups run.** It
   previously showed no schedule controls at all: the timing of the etcd
   snapshot upload, the encrypted secrets bundle and the cluster-state dump was
@@ -41,6 +60,10 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   applies when certificate checks resume after an outage.
 
 ### Changed
+- **Sending Protection is one dropdown instead of a list of radio buttons.** The
+  help text now follows the option you have selected rather than printing every
+  option's explanation at once. The same two modes are offered and the setting
+  behaves exactly as before.
 - **Incident detail no longer lives in the public source tree.** Code comments
   in this repository had accumulated over two thousand dated notes, many of
   them recounting specific incidents: when a component last ran out of memory
@@ -62,6 +85,21 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   than a count.
 
 ### Fixed
+- **DMARC reporting said "disabled" while the mail server carried on sending
+  47 reports a day.** Turning DMARC reporting off, or setting a report address,
+  appeared to save and changed nothing at all on the mail server, which kept
+  using its own built-in defaults: aggregate reports went out from
+  `postmaster@` under the server's raw hostname, and the delivery failures they
+  produced landed in the admin roster's inbox. The platform's own log said
+  `DISABLED` throughout.
+
+  The cause was in how the mail server accepts settings: the very first write
+  to a never-configured section is only a primer and stores nothing, and an
+  identical repeat of a write is ignored — so a reconciler re-sending the same
+  settings every five minutes could never make them stick. The platform now
+  primes the section and then writes it in full, **reads it back**, and reports
+  the attempt as skipped with both values logged if what it reads is not what
+  it wrote, instead of claiming a success it did not achieve.
 - **Tenant volumes were being snapshotted every hour, invisibly.** Every tenant
   PVC was enrolled in a Longhorn housekeeping group that quietly gained an
   hourly snapshot job after the nightly Longhorn backup jobs were removed, so
