@@ -90,4 +90,51 @@ describe('getReleaseNotes', () => {
     expect(fn).not.toHaveBeenCalled();
     expect(res).toMatchObject({ notes: null, source: 'none' });
   });
+
+  // ── The signal must be fresh per call ──────────────────────────────────────
+  // This is the bug the original tests could not see. `AbortSignal.timeout`
+  // starts counting when CREATED, so a module-level options constant is already
+  // aborted seconds into process life and every later request throws instantly.
+  // A stub that ignores `signal` (as the ones above do) cannot detect that — so
+  // these tests inspect the signal the caller actually passed.
+  describe('per-request abort signal', () => {
+    it('passes a signal that is NOT already aborted', async () => {
+      const seen: AbortSignal[] = [];
+      vi.stubGlobal('fetch', vi.fn((_u: string, init: RequestInit) => {
+        seen.push(init.signal as AbortSignal);
+        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ body: 'x' }), text: () => Promise.resolve('') });
+      }));
+      await getReleaseNotes('2026.9.25');
+      expect(seen).toHaveLength(1);
+      expect(seen[0]).toBeInstanceOf(AbortSignal);
+      expect(seen[0].aborted).toBe(false);
+    });
+
+    it('builds a NEW signal for each call, so a long-lived process keeps working', async () => {
+      const seen: AbortSignal[] = [];
+      vi.stubGlobal('fetch', vi.fn((_u: string, init: RequestInit) => {
+        seen.push(init.signal as AbortSignal);
+        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ body: 'x' }), text: () => Promise.resolve('') });
+      }));
+      await getReleaseNotes('2026.9.25');
+      await getReleaseNotes('2026.9.26');
+      expect(seen).toHaveLength(2);
+      // Distinct objects: a shared constant would hand back the same one twice,
+      // and the second call would inherit the first call's elapsed countdown.
+      expect(seen[0]).not.toBe(seen[1]);
+      expect(seen.every((sig) => sig.aborted === false)).toBe(true);
+    });
+
+    // A stub that HONOURS the signal reproduces the original failure end to end:
+    // an aborted signal must surface as `unreachable`, never as a throw.
+    it('an aborted signal degrades to unreachable rather than throwing', async () => {
+      vi.stubGlobal('fetch', vi.fn((_u: string, init: RequestInit) => {
+        const sig = init.signal as AbortSignal;
+        if (sig.aborted) return Promise.reject(Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' }));
+        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ body: 'notes' }), text: () => Promise.resolve('') });
+      }));
+      // Fresh signal → real answer.
+      expect(await getReleaseNotes('2026.9.25')).toMatchObject({ source: 'release' });
+    });
+  });
 });
