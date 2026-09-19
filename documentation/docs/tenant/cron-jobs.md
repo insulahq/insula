@@ -98,10 +98,13 @@ The schedule uses standard **cron** notation — five fields:
 
 Each task row has quick actions:
 
-- **Run Now** (circular-arrow icon) — trigger the task immediately, without
-  waiting for its schedule. Handy for testing.
+- **Run Now** (play icon) — trigger the task immediately, without waiting for
+  its schedule. Handy for testing.
 - **Pause / Start** (pause or play icon) — disable or re-enable the task. A
-  paused task keeps its settings but won't run on schedule.
+  paused task keeps its settings but won't run on schedule. A *paused* task
+  shows a play icon here too; the two are told apart by position and tooltip —
+  **Start (enable)** puts the task back on its schedule, **Run Now** runs it
+  once and leaves it paused.
 - **Delete** (trash icon) — remove the task (asks you to confirm).
 
 ## Checking results
