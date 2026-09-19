@@ -68,12 +68,16 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 - **Looking a mailbox up by one of its alias addresses found nothing.** The same
   cause; anything asking "is there a mailbox at this address?" was told no
   whenever the address was an alias rather than the mailbox's primary.
-- **"Total Mailboxes" counted mailboxes that are not yours to see.** The Email
-  header tile included the platform's own `postmaster@` report-intake
-  mailboxes — on production it read 50 where the mailbox lists showed 34. The
-  lists and each plan's mailbox cap already excluded them; now the tile and the
-  per-domain **Mailboxes** column use that same definition, so the number agrees
-  with the rows underneath it.
+- **"Total Mailboxes" showed a number that was not a count at all.** The tile
+  glued the per-domain figures together instead of adding them, so an estate
+  with sixteen mail domains displayed a seventeen-digit number where the answer
+  was 34. The per-domain **Mailboxes** column sorted by the same broken values,
+  putting 10 before 2.
+
+  Separately, the figure it was built from counted the platform's own
+  `postmaster@` report-intake mailboxes, which no mailbox list shows and no
+  plan's mailbox cap charges for. Both are fixed: the tile now adds up, and it
+  counts the same mailboxes you can open.
 
 ## [2026.9.24] - 2026-09-18
 

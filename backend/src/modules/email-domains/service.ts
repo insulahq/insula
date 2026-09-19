@@ -651,7 +651,7 @@ export async function getEmailDomain(
   // own plumbing on the tenant's domain, not mailboxes the tenant has or can
   // see. See the subqueries in listEmailDomains / listAllEmailDomains.
   const [mailboxCount] = await db
-    .select({ count: sql<number>`count(*)` })
+    .select({ count: sql<number>`count(*)::int` })
     .from(mailboxes)
     .where(and(
       eq(mailboxes.emailDomainId, emailDomain.id),
@@ -791,7 +791,15 @@ export async function listEmailDomains(
       // on production, 50 against the 34 mailboxes an operator can actually
       // open, the extra 16 being the postmaster@ report-intake boxes the
       // platform provisions for itself.
-      mailboxCount: sql<number>`(SELECT count(*) FROM mailboxes WHERE mailboxes.email_domain_id = ${emailDomains.id} AND mailboxes.platform_managed = false)`,
+      // `::int` is load-bearing, not tidiness. `count(*)` is bigint, and node-postgres
+      // hands bigint back as a STRING to avoid precision loss — so this field was
+      // typed `number` and arrived as `"3"`. The Email header tile sums it with
+      // `reduce((sum, d) => sum + (d.mailboxCount ?? 0), 0)`, and in JS
+      // `0 + "3"` is `"03"`: with production's 16 domains the "Total Mailboxes"
+      // number rendered as a ~17-digit concatenation of the per-domain counts.
+      // The sortable Mailboxes column had the matching defect — string ordering
+      // puts "10" before "2". A mailbox count can never overflow int4.
+      mailboxCount: sql<number>`(SELECT count(*) FROM mailboxes WHERE mailboxes.email_domain_id = ${emailDomains.id} AND mailboxes.platform_managed = false)::int`,
     })
     .from(emailDomains)
     .innerJoin(domains, eq(emailDomains.domainId, domains.id))
@@ -827,7 +835,15 @@ export async function listAllEmailDomains(db: Database) {
       // on production, 50 against the 34 mailboxes an operator can actually
       // open, the extra 16 being the postmaster@ report-intake boxes the
       // platform provisions for itself.
-      mailboxCount: sql<number>`(SELECT count(*) FROM mailboxes WHERE mailboxes.email_domain_id = ${emailDomains.id} AND mailboxes.platform_managed = false)`,
+      // `::int` is load-bearing, not tidiness. `count(*)` is bigint, and node-postgres
+      // hands bigint back as a STRING to avoid precision loss — so this field was
+      // typed `number` and arrived as `"3"`. The Email header tile sums it with
+      // `reduce((sum, d) => sum + (d.mailboxCount ?? 0), 0)`, and in JS
+      // `0 + "3"` is `"03"`: with production's 16 domains the "Total Mailboxes"
+      // number rendered as a ~17-digit concatenation of the per-domain counts.
+      // The sortable Mailboxes column had the matching defect — string ordering
+      // puts "10" before "2". A mailbox count can never overflow int4.
+      mailboxCount: sql<number>`(SELECT count(*) FROM mailboxes WHERE mailboxes.email_domain_id = ${emailDomains.id} AND mailboxes.platform_managed = false)::int`,
     })
     .from(emailDomains)
     .innerJoin(domains, eq(emailDomains.domainId, domains.id));
