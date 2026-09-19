@@ -38,8 +38,13 @@ export default function UpdateBanner() {
               2026-07-28. Apply is super_admin-only (backend-enforced), so only
               they get the action button. */}
           {isSuperAdmin ? (
+            /* `?review=1` makes the page open the review modal on arrival
+               instead of landing the operator on the Updates page to hunt for
+               the same button. The modal needs the page's pre-flight/dry-run
+               queries, so it cannot be rendered from the banner itself — the
+               query param is the handoff. */
             <Link
-              to="/platform/updates"
+              to="/platform/updates?review=1"
               data-testid="update-banner-review"
               className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 transition-colors"
             >

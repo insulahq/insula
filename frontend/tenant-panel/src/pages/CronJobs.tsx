@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react';
-import { Clock, Plus, Loader2, AlertCircle, Trash2, X, Play, Pause, RotateCw, Globe, Terminal } from 'lucide-react';
+import { Clock, Plus, Loader2, AlertCircle, Trash2, X, Play, Pause, Globe, Terminal } from 'lucide-react';
 import clsx from 'clsx';
 import { useTenantContext } from '@/hooks/use-tenant-context';
 import { useCanManage } from '@/hooks/use-can-manage';
@@ -401,7 +401,7 @@ export default function CronJobs() {
                           title="Run Now"
                           data-testid={`run-cron-${job.id}`}
                         >
-                          <RotateCw size={12} />
+                          <Play size={12} />
                         </button>
                         {deleteConfirmId === job.id ? (
                           <>

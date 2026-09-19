@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import type { PlatformChangelogResponse } from '@insula/api-contracts';
 import { apiFetch } from '@/lib/api-client';
 
 interface PlatformVersionResponse {
@@ -25,6 +26,29 @@ interface PlatformVersionResponse {
 }
 
 export type PlatformVersionData = PlatformVersionResponse['data'];
+
+/**
+ * Release notes for a target version, via the backend proxy.
+ *
+ * Typed from `@insula/api-contracts` rather than a hand-written local interface
+ * (the older declarations in this file predate that rule) so the shape cannot
+ * drift from the endpoint.
+ *
+ * Disabled until a version is known, and never retried: the endpoint already
+ * answers "unreachable" instead of failing, so a retry would only delay the
+ * modal. Notes for a published release are immutable, hence the long staleTime.
+ */
+export function usePlatformChangelog(version: string | undefined) {
+  return useQuery({
+    queryKey: ['platform-changelog', version],
+    queryFn: () => apiFetch<{ data: PlatformChangelogResponse }>(
+      `/api/v1/admin/platform/changelog?version=${encodeURIComponent(version ?? '')}`,
+    ),
+    enabled: Boolean(version),
+    retry: false,
+    staleTime: 30 * 60 * 1000,
+  });
+}
 
 export function usePlatformVersion() {
   return useQuery({
