@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.9.25] - 2026-09-19
+
 ### Added
 - **You can read what a release changes before you approve it.** The upgrade
   review dialog now has a **Review changelog** button beside the approve action:
