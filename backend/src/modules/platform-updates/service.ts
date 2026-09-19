@@ -63,6 +63,54 @@ export async function persistInstalledVersion(db: Database): Promise<string | nu
   return CURRENT_VERSION;
 }
 
+/**
+ * Release notes for one version, proxied from the GitHub Releases API.
+ *
+ * Proxied rather than fetched by the browser: the admin panel is served inside
+ * the cluster and an operator's browser may have no route to github.com, while
+ * this process already reaches the Releases API to discover versions at all. It
+ * also keeps the outbound call on one auditable path.
+ *
+ * Never throws for an absent or unreachable release — the caller is rendering a
+ * modal next to an "approve" button, and a red panel there would read as "the
+ * upgrade is broken". `source` carries the distinction instead: `none` means the
+ * tag has no release body (a development build, or notes were never written),
+ * `unreachable` means we could not ask.
+ *
+ * `version` MUST already be validated against VERSION_RE by the caller — it is
+ * interpolated into the request URL.
+ */
+export async function getReleaseNotes(version: string): Promise<{
+  version: string;
+  notes: string | null;
+  source: 'release' | 'none' | 'unreachable';
+  url: string | null;
+}> {
+  const tag = version.replace(/^v/, '');
+  if (!VERSION_RE.test(tag)) {
+    // Defence in depth: the route validates, but a future caller might not.
+    return { version: tag, notes: null, source: 'none', url: null };
+  }
+  const url = `https://api.github.com/repos/insulahq/insula/releases/tags/v${encodeURIComponent(tag)}`;
+  try {
+    const resp = await fetch(url, FETCH_OPTS);
+    // 404 is the normal answer for a development build (`2026.9.24-670a573`)
+    // or any tag release.yml has not published — not an error.
+    if (resp.status === 404) return { version: tag, notes: null, source: 'none', url: null };
+    if (!resp.ok) return { version: tag, notes: null, source: 'unreachable', url: null };
+    const data = await resp.json() as { body?: string | null; html_url?: string | null };
+    const body = (data.body ?? '').trim();
+    return {
+      version: tag,
+      notes: body.length > 0 ? body : null,
+      source: body.length > 0 ? 'release' : 'none',
+      url: data.html_url ?? null,
+    };
+  } catch {
+    return { version: tag, notes: null, source: 'unreachable', url: null };
+  }
+}
+
 async function resolveLatestVersion(): Promise<{ version: string | null; source: LatestSource }> {
   // Try releases first — preferred because release.yml publishes pinned,
   // promoted versions (not every green main build).

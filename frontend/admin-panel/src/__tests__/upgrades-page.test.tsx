@@ -6,6 +6,7 @@ import UpgradesPage from '../pages/platform/UpgradesPage';
 
 let updateAvailable = true;
 let role = 'super_admin';
+let changelogNotes: string | null = '## Fixed\n- alias drift false positives';
 const checkMutate = vi.fn();
 
 vi.mock('../hooks/use-platform-updates', () => ({
@@ -20,6 +21,12 @@ vi.mock('../hooks/use-platform-updates', () => ({
   }),
   useCheckForUpdates: () => ({ mutate: checkMutate, isPending: false }),
   useUpdateSettings: () => ({ mutate: vi.fn(), isPending: false }),
+  // Used by ChangelogModal, which the review modal can open.
+  usePlatformChangelog: (version: string | undefined) => ({
+    data: { data: { version: version ?? '', notes: changelogNotes, source: changelogNotes ? 'release' : 'none', url: 'https://example.test/release' } },
+    isLoading: false,
+    error: null,
+  }),
 }));
 
 vi.mock('../hooks/use-auth', () => ({ useAuth: () => ({ user: { id: 'sa', role } }) }));
@@ -34,13 +41,17 @@ vi.mock('../hooks/use-platform-upgrade', () => ({
   useUpgradeProgress: () => ({ data: undefined, isLoading: false, isError: false, failureCount: 0 }),
 }));
 
-function renderPage() {
+function renderPage(path = '/platform/updates') {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(<QueryClientProvider client={qc}><MemoryRouter><UpgradesPage /></MemoryRouter></QueryClientProvider>);
+  return render(
+    <QueryClientProvider client={qc}>
+      <MemoryRouter initialEntries={[path]}><UpgradesPage /></MemoryRouter>
+    </QueryClientProvider>,
+  );
 }
 
 describe('UpgradesPage (consolidated)', () => {
-  beforeEach(() => { updateAvailable = true; role = 'super_admin'; });
+  beforeEach(() => { updateAvailable = true; role = 'super_admin'; changelogNotes = '## Fixed\n- alias drift false positives'; });
 
   it('version card shows installed + verified available (green) + update badge + small images button', () => {
     renderPage();
@@ -96,5 +107,72 @@ describe('UpgradesPage — Check for updates actually polls', () => {
     fireEvent.click(btn);
     fireEvent.click(btn);
     expect(checkMutate).toHaveBeenCalledTimes(2);
+  });
+
+  // ── Banner hand-off: ?review=1 opens the review modal on arrival ───────────
+});
+
+
+// Own top-level describe with its own state reset. Nested inside another
+// describe these shared module-level fixtures (`role`, `updateAvailable`)
+// carried over from whichever test ran last, and the modal silently never
+// opened — the negative assertions still passed, which is exactly how that
+// kind of leak hides.
+describe('UpgradesPage — review hand-off + changelog', () => {
+  beforeEach(() => {
+    updateAvailable = true;
+    role = 'super_admin';
+    changelogNotes = '## Fixed\n- alias drift false positives';
+  });
+
+  describe('?review=1 hand-off from the update banner', () => {
+    it('opens the review modal directly for a super_admin', async () => {
+      renderPage('/platform/updates?review=1');
+      expect(await screen.findByTestId('approve-upgrade-btn')).toBeInTheDocument();
+    });
+
+    it('does NOT open it for a non-super_admin, whose apply would be refused', () => {
+      role = 'admin';
+      renderPage('/platform/updates?review=1');
+      expect(screen.queryByTestId('approve-upgrade-btn')).toBeNull();
+    });
+
+    it('does NOT open it when no update is available', () => {
+      updateAvailable = false;
+      renderPage('/platform/updates?review=1');
+      expect(screen.queryByTestId('approve-upgrade-btn')).toBeNull();
+    });
+
+    it('stays closed without the param', () => {
+      renderPage();
+      expect(screen.queryByTestId('approve-upgrade-btn')).toBeNull();
+    });
+  });
+
+  // ── Changelog step inside the review modal ─────────────────────────────────
+  describe('Review changelog', () => {
+    it('offers the changelog BEFORE the approve action, in DOM order', async () => {
+      renderPage('/platform/updates?review=1');
+      const review = await screen.findByTestId('review-changelog-btn');
+      const approve = screen.getByTestId('approve-upgrade-btn');
+      // Node.compareDocumentPosition: 4 === FOLLOWING, i.e. approve comes after.
+      expect(review.compareDocumentPosition(approve) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it('shows the release notes for the resolved target and can approve from there', async () => {
+      renderPage('/platform/updates?review=1');
+      fireEvent.click(await screen.findByTestId('review-changelog-btn'));
+      expect(await screen.findByTestId('changelog-body')).toHaveTextContent('alias drift false positives');
+      // The changelog modal carries its own approve so reading is not a detour.
+      expect(screen.getByTestId('changelog-approve-upgrade-btn')).toBeEnabled();
+      expect(screen.getByTestId('changelog-cancel-btn')).toBeInTheDocument();
+    });
+
+    it('says so plainly when a version has no published notes', async () => {
+      changelogNotes = null;
+      renderPage('/platform/updates?review=1');
+      fireEvent.click(await screen.findByTestId('review-changelog-btn'));
+      expect(await screen.findByTestId('changelog-body')).toHaveTextContent(/No release notes/i);
+    });
   });
 });

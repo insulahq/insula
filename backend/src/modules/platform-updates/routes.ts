@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { capacityCheckRequestSchema } from '@insula/api-contracts';
+import { capacityCheckRequestSchema, platformChangelogQuerySchema } from '@insula/api-contracts';
 import { authenticate, requireRole } from '../../middleware/auth.js';
 import { updateSettingsSchema } from './schema.js';
 import * as service from './service.js';
@@ -140,6 +140,53 @@ export async function platformUpdateRoutes(app: FastifyInstance): Promise<void> 
     }
     const result = await service.updateSettings(app.db, parsed.data.autoUpdate, parsed.data.includePrereleases);
     return success(result);
+  });
+
+  // GET /api/v1/admin/platform/changelog?version=2026.9.25
+  //
+  // Release notes for a target version, so the operator can read what changed
+  // without leaving the approve flow. Read-only, admin-gated by the hooks above.
+  app.get('/admin/platform/changelog', {
+    schema: {
+      tags: ['Platform Updates'],
+      summary: 'Release notes for a platform version',
+      security: [{ bearerAuth: [] }],
+      querystring: {
+        type: 'object',
+        required: ['version'],
+        properties: { version: { type: 'string' } },
+      },
+      response: {
+        200: {
+          type: 'object',
+          properties: {
+            data: {
+              type: 'object',
+              properties: {
+                version: { type: 'string' },
+                notes: { type: 'string', nullable: true },
+                source: { type: 'string', enum: ['release', 'none', 'unreachable'] },
+                url: { type: 'string', nullable: true },
+              },
+            },
+          },
+        },
+      },
+    },
+  }, async (request) => {
+    // Parsed, not cast: the version reaches an outbound URL, so a loose value
+    // would be an SSRF surface (ROADMAP R29a — request bodies/queries are
+    // parsed, never asserted).
+    const parsed = platformChangelogQuerySchema.safeParse(request.query ?? {});
+    if (!parsed.success) {
+      const firstError = parsed.error.issues[0];
+      throw new ApiError(
+        'VALIDATION_ERROR',
+        `Validation error: ${firstError.message} (${firstError.path.join('.')})`,
+        400,
+      );
+    }
+    return success(await service.getReleaseNotes(parsed.data.version));
   });
 
   // GET /api/v1/admin/platform/images — enumerate platform-owned images

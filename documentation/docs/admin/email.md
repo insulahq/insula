@@ -8,6 +8,12 @@ Every **Email** page carries the same header: four tiles — **Storage Usage**
 (how much disk the mail data occupies), **Email Domains**, **Total Mailboxes**
 and **DKIM Configured** — above the live health banner.
 
+**Total Mailboxes** counts the mailboxes you can open and a tenant can use. It
+excludes the platform's own intake mailboxes (the `postmaster@` addresses
+described under *Outbound DMARC Reporting* below), which is the same definition
+the mailbox lists and the per-plan mailbox cap use — so the tile, the
+per-domain **Mailboxes** column and a tenant's quota all agree on one number.
+
 Insula runs a full mail server (Stalwart — SMTP, IMAP, JMAP) for your
 tenants. As the admin you manage per-tenant email domains and mailboxes,
 keep deliverability healthy, choose the webmail experience, and handle
