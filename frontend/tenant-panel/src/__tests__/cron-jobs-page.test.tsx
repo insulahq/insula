@@ -114,4 +114,52 @@ describe('Tenant CronJobs page', () => {
     render(<CronJobs />, { wrapper: createWrapper() });
     await waitFor(() => expect(screen.getByTestId('cron-jobs-empty')).toBeInTheDocument());
   });
+
+  // ── Action icons ───────────────────────────────────────────────────────────
+  // Pinned because the operator specified them explicitly and a swap is easy to
+  // make by accident: the three actions must stay visually distinct. A stopped
+  // task's Start control and Run Now previously both rendered a play triangle.
+  //
+  // Asserted via lucide's own `lucide-<name>` class on the emitted <svg> — the
+  // icon identity is the thing under test, and there is no other handle on it.
+  describe('action icons are distinct and correct', () => {
+    it('a running task offers STOP (solid square); a stopped one offers PLAY', async () => {
+      setupMocks();
+      render(<CronJobs />, { wrapper: createWrapper() });
+      // cj1 is enabled, cj2 is not.
+      await waitFor(() => expect(screen.getByTestId('toggle-cron-cj1')).toBeInTheDocument());
+
+      const running = screen.getByTestId('toggle-cron-cj1').querySelector('svg');
+      expect(running?.getAttribute('class')).toContain('lucide-square');
+      // Solid, not an outline box — an unfilled square reads as a checkbox.
+      expect(running?.getAttribute('fill')).toBe('currentColor');
+
+      const stopped = screen.getByTestId('toggle-cron-cj2').querySelector('svg');
+      expect(stopped?.getAttribute('class')).toContain('lucide-play');
+    });
+
+    it('Run Now is a lightning bolt, on both a running and a stopped task', async () => {
+      setupMocks();
+      render(<CronJobs />, { wrapper: createWrapper() });
+      await waitFor(() => expect(screen.getByTestId('run-cron-cj1')).toBeInTheDocument());
+      for (const id of ['cj1', 'cj2']) {
+        const svg = screen.getByTestId(`run-cron-${id}`).querySelector('svg');
+        expect(svg?.getAttribute('class')).toContain('lucide-zap');
+      }
+    });
+
+    it('Run Now never shares a glyph with the enable toggle', async () => {
+      setupMocks();
+      render(<CronJobs />, { wrapper: createWrapper() });
+      await waitFor(() => expect(screen.getByTestId('run-cron-cj2')).toBeInTheDocument());
+      // cj2 is stopped — the case where both used to be a play triangle.
+      const toggleClass = screen.getByTestId('toggle-cron-cj2').querySelector('svg')?.getAttribute('class');
+      const runClass = screen.getByTestId('run-cron-cj2').querySelector('svg')?.getAttribute('class');
+      // Both must EXIST before "they differ" means anything — two missing icons
+      // would satisfy `not.toBe` and report a pass for a blank row.
+      expect(typeof toggleClass).toBe('string');
+      expect(typeof runClass).toBe('string');
+      expect(toggleClass).not.toBe(runClass);
+    });
+  });
 });

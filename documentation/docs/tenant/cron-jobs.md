@@ -94,17 +94,16 @@ The schedule uses standard **cron** notation — five fields:
       second, because those are genuinely two different moments and skipping
       one would mean silently dropping a run.
 
-## Run, pause, and delete
+## Run, stop, and delete
 
 Each task row has quick actions:
 
-- **Run Now** (play icon) — trigger the task immediately, without waiting for
-  its schedule. Handy for testing.
-- **Pause / Start** (pause or play icon) — disable or re-enable the task. A
-  paused task keeps its settings but won't run on schedule. A *paused* task
-  shows a play icon here too; the two are told apart by position and tooltip —
-  **Start (enable)** puts the task back on its schedule, **Run Now** runs it
-  once and leaves it paused.
+- **Stop / Start** (solid square, or a play triangle once stopped) — disable or
+  re-enable the task. A stopped task keeps its settings but won't run on
+  schedule.
+- **Run Now** (lightning bolt) — trigger the task immediately, without waiting
+  for its schedule. Handy for testing. Running a stopped task does **not**
+  re-enable it: it fires once and the task stays stopped.
 - **Delete** (trash icon) — remove the task (asks you to confirm).
 
 ## Checking results
