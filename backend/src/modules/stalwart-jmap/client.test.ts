@@ -128,6 +128,29 @@ function mockFetch(status: number, body: object | string): void {
   });
 }
 
+/**
+ * Route responses by JMAP method name.
+ *
+ * `principalGet({ids: null})` fires x:Account/get and x:Domain/get through
+ * `Promise.all`, so a queue of `mockResolvedValueOnce` responses depends on
+ * scheduling order. Matching on the request body keeps these tests honest
+ * whichever way the two calls interleave.
+ */
+function mockFetchRouted(byMethod: Record<string, object>): void {
+  fetchMock.mockImplementation((_url: string, init: { body?: string }) => {
+    const body = init?.body ?? '';
+    const method = Object.keys(byMethod).find((m) => body.includes(m));
+    const payload = method ? byMethod[method] : { methodResponses: [], sessionState: 'state-001' };
+    return Promise.resolve({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      text: () => Promise.resolve(JSON.stringify(payload)),
+      json: () => Promise.resolve(payload),
+    });
+  });
+}
+
 beforeEach(() => {
   fetchMock = vi.fn();
   vi.stubGlobal('fetch', fetchMock);
@@ -247,20 +270,97 @@ describe('principalGet — account emailAddress mapping', () => {
     expect(result.list[0].emails).toEqual(['kjh@staging.example.net']);
   });
 
-  it('merges emailAddress + alias `emails` and de-duplicates (primary first)', async () => {
-    mockFetch(200, makeJmapResponse('x:Account/get', {
+  // This fixture is the shape Stalwart ACTUALLY returns, captured from a live
+  // v0.16 server. There is no `emails` property on x:Account at all: aliases
+  // live under `aliases`, as an index-keyed object (Stalwart's registry
+  // List<T> — see StalwartExpression), and each entry carries only the LOCAL
+  // part plus a `domainId` that must be joined against x:Domain to rebuild the
+  // address. The previous version of this test fed a flat `emails: [...]`
+  // array, which the server never sends — so it passed while every alias on
+  // production was reported as missing.
+  it('expands index-keyed `aliases` into full addresses via the domain map', async () => {
+    mockFetchRouted({
+      'x:Account/get': makeJmapResponse('x:Account/get', {
+        accountId: ACCOUNT_ID,
+        state: 'state-001',
+        list: [{
+          id: '3',
+          name: 'postmaster',
+          emailAddress: 'postmaster@example.test',
+          aliases: {
+            '0': { enabled: true, name: 'dmarc', domainId: 'f', description: null },
+            '1': { enabled: true, name: 'abuse', domainId: 'f', description: null },
+          },
+        }],
+        notFound: [],
+      }),
+      'x:Domain/get': makeJmapResponse('x:Domain/get', {
+        accountId: ACCOUNT_ID,
+        state: 'state-001',
+        list: [{ id: 'f', name: 'example.test' }],
+        notFound: [],
+      }),
+    });
+    const result = await principalGet({ accountId: ACCOUNT_ID, ids: null, baseUrl: BASE_URL, env: TEST_ENV });
+    const account = result.list.find((pr) => pr.id === '3');
+    expect(account?.emails).toEqual([
+      'postmaster@example.test',
+      'dmarc@example.test',
+      'abuse@example.test',
+    ]);
+  });
+
+  it('skips disabled aliases — a disabled row records intent, not a live address', async () => {
+    mockFetchRouted({
+      'x:Account/get': makeJmapResponse('x:Account/get', {
+        accountId: ACCOUNT_ID,
+        state: 'state-001',
+        list: [{
+          id: '3',
+          name: 'postmaster',
+          emailAddress: 'postmaster@example.test',
+          aliases: {
+            '0': { enabled: false, name: 'retired', domainId: 'f' },
+            '1': { enabled: true, name: 'abuse', domainId: 'f' },
+          },
+        }],
+        notFound: [],
+      }),
+      'x:Domain/get': makeJmapResponse('x:Domain/get', {
+        accountId: ACCOUNT_ID, state: 'state-001', list: [{ id: 'f', name: 'example.test' }], notFound: [],
+      }),
+    });
+    const result = await principalGet({ accountId: ACCOUNT_ID, ids: null, baseUrl: BASE_URL, env: TEST_ENV });
+    const account = result.list.find((pr) => pr.id === '3');
+    expect(account?.emails).toEqual(['postmaster@example.test', 'abuse@example.test']);
+  });
+
+  it('always projects `aliases` even when the caller pins a properties list', async () => {
+    // principals-sync pins properties, and Stalwart strips anything unlisted.
+    // A caller that forgets `aliases` would silently lose every alias and
+    // re-create the drift false-positive, so the client must add it back.
+    mockFetchRouted({
+      'x:Account/get': makeJmapResponse('x:Account/get', {
+        accountId: ACCOUNT_ID, state: 'state-001', list: [], notFound: [],
+      }),
+      'x:Domain/get': makeJmapResponse('x:Domain/get', {
+        accountId: ACCOUNT_ID, state: 'state-001', list: [], notFound: [],
+      }),
+    });
+    await principalGet({
       accountId: ACCOUNT_ID,
-      state: 'state-001',
-      list: [{
-        id: 'e',
-        name: 'master',
-        emailAddress: 'master@mail.example.net',
-        emails: ['master@mail.example.net', 'alias@mail.example.net'],
-      }],
-      notFound: [],
-    }));
-    const result = await principalGet({ accountId: ACCOUNT_ID, ids: ['e'], baseUrl: BASE_URL, env: TEST_ENV });
-    expect(result.list[0].emails).toEqual(['master@mail.example.net', 'alias@mail.example.net']);
+      ids: null,
+      properties: ['id', 'name', 'type', 'emailAddress'],
+      baseUrl: BASE_URL,
+      env: TEST_ENV,
+    });
+    const accountCall = fetchMock.mock.calls.find(
+      (c) => typeof c[1]?.body === 'string' && (c[1].body as string).includes('x:Account/get'),
+    );
+    const sent = JSON.parse((accountCall?.[1] as { body: string }).body) as {
+      methodCalls: [string, { properties?: string[] }, string][];
+    };
+    expect(sent.methodCalls[0][1].properties).toContain('aliases');
   });
 
   it('leaves `emails` undefined when the account has no addresses', async () => {
@@ -280,13 +380,30 @@ describe('principalGet — account emailAddress mapping', () => {
 // field. The full primary address is in `emailAddress`, so it MUST be requested
 // or the filter matches nothing (silent restore/provisioning bug).
 describe('findMailboxByEmail — emailAddress projection + match', () => {
+  /** The x:Account/get request body, whichever order the parallel calls ran in. */
+  function accountRequest(): { methodCalls: [string, { properties?: string[] }, string][] } {
+    const call = fetchMock.mock.calls.find(
+      (c) => typeof c[1]?.body === 'string' && (c[1].body as string).includes('x:Account/get'),
+    );
+    return JSON.parse((call?.[1] as { body: string }).body) as {
+      methodCalls: [string, { properties?: string[] }, string][];
+    };
+  }
+
   it('requests `emailAddress` in the projection and matches the account on it', async () => {
-    mockFetch(200, makeJmapResponse('x:Account/get', {
-      accountId: ACCOUNT_ID,
-      state: 'state-001',
-      list: [{ id: 'd', name: 'kjh', emailAddress: 'kjh@staging.example.net' }],
-      notFound: [],
-    }));
+    mockFetchRouted({
+      'x:Account/get': makeJmapResponse('x:Account/get', {
+        accountId: ACCOUNT_ID,
+        state: 'state-001',
+        list: [{ id: 'd', name: 'kjh', emailAddress: 'kjh@staging.example.net' }],
+        notFound: [],
+      }),
+      'x:Domain/get': makeJmapResponse('x:Domain/get', {
+        accountId: ACCOUNT_ID, state: 'state-001',
+        list: [{ id: 'd1', name: 'staging.example.net' }, { id: 'd2', name: 'example.com' }],
+        notFound: [],
+      }),
+    });
     const result = await findMailboxByEmail({
       accountId: ACCOUNT_ID, email: 'KJH@staging.example.net', baseUrl: BASE_URL, env: TEST_ENV,
     });
@@ -294,18 +411,52 @@ describe('findMailboxByEmail — emailAddress projection + match', () => {
     expect(result?.emails).toEqual(['kjh@staging.example.net']);
 
     // Regression guard: the outgoing request MUST project emailAddress.
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body as string);
-    const props = body.methodCalls[0][1].properties as string[];
-    expect(props).toContain('emailAddress');
+    expect(accountRequest().methodCalls[0][1].properties).toContain('emailAddress');
+  });
+
+  // The lookup that silently returned null: a real address, reachable at SMTP,
+  // that happens to be an alias rather than a mailbox's primary.
+  it('matches an ALIAS address, not just the primary', async () => {
+    mockFetchRouted({
+      'x:Account/get': makeJmapResponse('x:Account/get', {
+        accountId: ACCOUNT_ID,
+        state: 'state-001',
+        list: [{
+          id: 'd',
+          name: 'postmaster',
+          emailAddress: 'postmaster@staging.example.net',
+          aliases: { '0': { enabled: true, name: 'abuse', domainId: 'd1' } },
+        }],
+        notFound: [],
+      }),
+      'x:Domain/get': makeJmapResponse('x:Domain/get', {
+        accountId: ACCOUNT_ID, state: 'state-001',
+        list: [{ id: 'd1', name: 'staging.example.net' }, { id: 'd2', name: 'example.com' }],
+        notFound: [],
+      }),
+    });
+    const result = await findMailboxByEmail({
+      accountId: ACCOUNT_ID, email: 'abuse@staging.example.net', baseUrl: BASE_URL, env: TEST_ENV,
+    });
+    expect(result?.id).toBe('d');
+    // And the alias projection must be on the wire, or the server strips it.
+    expect(accountRequest().methodCalls[0][1].properties).toContain('aliases');
   });
 
   it('returns null when no account address matches', async () => {
-    mockFetch(200, makeJmapResponse('x:Account/get', {
-      accountId: ACCOUNT_ID,
-      state: 'state-001',
-      list: [{ id: 'd', name: 'kjh', emailAddress: 'kjh@staging.example.net' }],
-      notFound: [],
-    }));
+    mockFetchRouted({
+      'x:Account/get': makeJmapResponse('x:Account/get', {
+        accountId: ACCOUNT_ID,
+        state: 'state-001',
+        list: [{ id: 'd', name: 'kjh', emailAddress: 'kjh@staging.example.net' }],
+        notFound: [],
+      }),
+      'x:Domain/get': makeJmapResponse('x:Domain/get', {
+        accountId: ACCOUNT_ID, state: 'state-001',
+        list: [{ id: 'd1', name: 'staging.example.net' }, { id: 'd2', name: 'example.com' }],
+        notFound: [],
+      }),
+    });
     const result = await findMailboxByEmail({
       accountId: ACCOUNT_ID, email: 'nobody@staging.example.net', baseUrl: BASE_URL, env: TEST_ENV,
     });
@@ -675,34 +826,55 @@ describe('findDomainByName (Stalwart 0.16 list-and-filter)', () => {
 // ── findMailboxByEmail ────────────────────────────────────────────────────────
 
 describe('findMailboxByEmail (Stalwart 0.16 list-and-filter)', () => {
-  it('returns matching account when emails array contains the address', async () => {
-    mockFetch(200, makeJmapResponse('x:Account/get', {
-      accountId: ACCOUNT_ID,
-      state: 's1',
-      list: [
-        { id: 'u1', name: 'alice', emails: ['alice@example.com'] },
-        { id: 'u2', name: 'bob', emails: ['bob@example.com', 'bob+alias@example.com'] },
-      ],
-      notFound: [],
-    }));
-
-    const result = await findMailboxByEmail({
-      accountId: ACCOUNT_ID,
-      email: 'bob@example.com',
-      baseUrl: BASE_URL,
-      env: TEST_ENV,
+  it('returns the matching account, primary address or alias', async () => {
+    mockFetchRouted({
+      'x:Account/get': makeJmapResponse('x:Account/get', {
+        accountId: ACCOUNT_ID,
+        state: 's1',
+        list: [
+          { id: 'u1', name: 'alice', emailAddress: 'alice@example.com' },
+          {
+            id: 'u2',
+            name: 'bob',
+            emailAddress: 'bob@example.com',
+            aliases: { '0': { enabled: true, name: 'bob+alias', domainId: 'd2' } },
+          },
+        ],
+        notFound: [],
+      }),
+      'x:Domain/get': makeJmapResponse('x:Domain/get', {
+        accountId: ACCOUNT_ID, state: 'state-001',
+        list: [{ id: 'd1', name: 'staging.example.net' }, { id: 'd2', name: 'example.com' }],
+        notFound: [],
+      }),
     });
-    expect(result?.id).toBe('u2');
-    expect(result?.type).toBe('individual');
+
+    const byPrimary = await findMailboxByEmail({
+      accountId: ACCOUNT_ID, email: 'bob@example.com', baseUrl: BASE_URL, env: TEST_ENV,
+    });
+    expect(byPrimary?.id).toBe('u2');
+    expect(byPrimary?.type).toBe('individual');
+
+    const byAlias = await findMailboxByEmail({
+      accountId: ACCOUNT_ID, email: 'bob+alias@example.com', baseUrl: BASE_URL, env: TEST_ENV,
+    });
+    expect(byAlias?.id).toBe('u2');
   });
 
   it('returns null when no account contains the email', async () => {
-    mockFetch(200, makeJmapResponse('x:Account/get', {
-      accountId: ACCOUNT_ID,
-      state: 's1',
-      list: [{ id: 'u1', name: 'alice', emails: ['alice@example.com'] }],
-      notFound: [],
-    }));
+    mockFetchRouted({
+      'x:Account/get': makeJmapResponse('x:Account/get', {
+        accountId: ACCOUNT_ID,
+        state: 's1',
+        list: [{ id: 'u1', name: 'alice', emailAddress: 'alice@example.com' }],
+        notFound: [],
+      }),
+      'x:Domain/get': makeJmapResponse('x:Domain/get', {
+        accountId: ACCOUNT_ID, state: 'state-001',
+        list: [{ id: 'd1', name: 'staging.example.net' }, { id: 'd2', name: 'example.com' }],
+        notFound: [],
+      }),
+    });
 
     const result = await findMailboxByEmail({
       accountId: ACCOUNT_ID,
@@ -714,12 +886,16 @@ describe('findMailboxByEmail (Stalwart 0.16 list-and-filter)', () => {
   });
 
   it('uses x:Account/get on the wire (not Principal/get)', async () => {
-    mockFetch(200, makeJmapResponse('x:Account/get', {
-      accountId: ACCOUNT_ID,
-      state: 's1',
-      list: [],
-      notFound: [],
-    }));
+    mockFetchRouted({
+      'x:Account/get': makeJmapResponse('x:Account/get', {
+        accountId: ACCOUNT_ID, state: 's1', list: [], notFound: [],
+      }),
+      'x:Domain/get': makeJmapResponse('x:Domain/get', {
+        accountId: ACCOUNT_ID, state: 'state-001',
+        list: [{ id: 'd1', name: 'staging.example.net' }, { id: 'd2', name: 'example.com' }],
+        notFound: [],
+      }),
+    });
 
     await findMailboxByEmail({
       accountId: ACCOUNT_ID,
@@ -728,7 +904,9 @@ describe('findMailboxByEmail (Stalwart 0.16 list-and-filter)', () => {
       env: TEST_ENV,
     });
 
-    const call = fetchMock.mock.calls[0] as [string, { body: string }];
+    const call = fetchMock.mock.calls.find(
+      (c) => typeof c[1]?.body === 'string' && (c[1].body as string).includes('x:Account/get'),
+    ) as [string, { body: string }];
     const body = JSON.parse(call[1].body) as { using: string[]; methodCalls: [[string, unknown, string]] };
     expect(body.methodCalls[0][0]).toBe('x:Account/get');
     expect(body.using).toContain('urn:stalwart:jmap');

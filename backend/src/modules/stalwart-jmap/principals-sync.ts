@@ -174,13 +174,15 @@ async function syncPrincipals(params: {
     const result = await principalGet({
       accountId,
       ids: null,
-      // `emailAddress` is REQUIRED: Stalwart honours the JMAP `properties`
-      // projection and strips any field not listed. The individual's full
-      // address lives in `emailAddress` (the `name` is only the local part),
-      // and client.ts:_accountToPrincipal surfaces it into `emails`. Omitting
-      // it here makes the drift detector match nothing → false drift on every
-      // mailbox. `type` is also requested so the account/domain split works.
-      properties: ['id', 'name', 'type', 'emails', 'emailAddress'],
+      // Stalwart honours the JMAP `properties` projection and strips any field
+      // not listed, and this detector's whole job is deciding what Stalwart
+      // does NOT have — so an omitted field reads as missing data.
+      // `emailAddress` holds the individual's full address (`name` is only the
+      // local part) and `aliases` holds its alias entries; client.ts joins both
+      // into `emails`. `type` drives the account/domain split. client.ts adds
+      // the must-have fields back if a projection forgets them, but list them
+      // here too so the intent is readable at the call site.
+      properties: ['id', 'name', 'type', 'emailAddress', 'aliases'],
       baseUrl,
       env,
     });
@@ -493,9 +495,16 @@ async function syncPrincipals(params: {
   // why an empty `mail_drift_items` was never evidence that aliases were
   // healthy — it could not have said otherwise.
   //
-  // `p.emails` already carries each principal's primary address AND its
-  // aliases (see the map build above), so both directions come out of data
-  // this tick already fetched — no extra JMAP round trip.
+  // `p.emails` carries each principal's primary address AND its aliases (see
+  // the map build above), so both directions come out of data this tick
+  // already fetched — no extra JMAP round trip.
+  //
+  // That was ASSERTED here before it was true: x:Account has no `emails` field
+  // at all, aliases live under `aliases` as an index-keyed object, and
+  // client.ts read a flat array. Every enabled alias therefore came out of the
+  // map missing, and this loop reported 36 of 36 on production as drift while
+  // Stalwart was accepting mail for all of them. Verify a response shape
+  // against a live server before trusting a comment like this one.
   try {
     // Deliberately its own read: `platformMailboxes` in section 3 lives inside
     // that section's try, and sharing it would mean a failure there silently

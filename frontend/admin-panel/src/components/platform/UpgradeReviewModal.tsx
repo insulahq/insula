@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
-import { X, Loader2, CheckCircle, AlertTriangle, XCircle, Server, ShieldAlert } from 'lucide-react';
+import { X, Loader2, CheckCircle, AlertTriangle, XCircle, Server, ShieldAlert, FileText } from 'lucide-react';
 import { usePreflight, useHostMigrationsPreview, useUpgradeApply, type UpgradeGate, type UpgradeApplyData } from '@/hooks/use-platform-upgrade';
+import ChangelogModal from './ChangelogModal';
 
 function Gate({ gate }: { gate: UpgradeGate }) {
   const icon =
@@ -39,6 +40,7 @@ export default function UpgradeReviewModal({ targetVersion, onApprove, onClose }
   const [preview, setPreview] = useState<UpgradeApplyData | null>(null);
   const [loading, setLoading] = useState(true);
   const [applying, setApplying] = useState(false);
+  const [showChangelog, setShowChangelog] = useState(false);
 
   const pf = preflight.data?.data;
   const hm = hostMigrations.data?.data;
@@ -144,6 +146,22 @@ export default function UpgradeReviewModal({ targetVersion, onApprove, onClose }
 
         <div className="flex items-center justify-end gap-2 border-t border-gray-200 dark:border-gray-700 px-5 py-3">
           <button type="button" onClick={onClose} className="text-sm px-3 py-1.5 rounded text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700">Cancel</button>
+          {/* Sits before Approve so the reading step comes before the committing
+              one. Enabled even when pre-flight blocks the upgrade: knowing what
+              a release contains is exactly what helps an operator decide how to
+              clear a blocking gate. Disabled only while an apply is in flight,
+              and until the dry-run has resolved the target — without a version
+              there is nothing to fetch notes for. */}
+          <button
+            type="button"
+            data-testid="review-changelog-btn"
+            onClick={() => setShowChangelog(true)}
+            disabled={applying || !resolvedTarget}
+            className="text-sm px-3 py-1.5 rounded border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-1.5"
+          >
+            <FileText className="h-4 w-4" />
+            Review changelog
+          </button>
           <button
             type="button"
             data-testid="approve-upgrade-btn"
@@ -156,6 +174,16 @@ export default function UpgradeReviewModal({ targetVersion, onApprove, onClose }
           </button>
         </div>
       </div>
+
+      {showChangelog && (
+        <ChangelogModal
+          version={resolvedTarget}
+          canApprove={canApprove}
+          applying={applying}
+          onClose={() => setShowChangelog(false)}
+          onApprove={() => { setShowChangelog(false); void onApproveClick(); }}
+        />
+      )}
     </div>
   );
 }

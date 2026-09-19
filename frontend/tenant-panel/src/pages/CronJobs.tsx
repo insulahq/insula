@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react';
-import { Clock, Plus, Loader2, AlertCircle, Trash2, X, Play, Pause, RotateCw, Globe, Terminal } from 'lucide-react';
+import { Clock, Plus, Loader2, AlertCircle, Trash2, X, Play, Square, Zap, Globe, Terminal } from 'lucide-react';
 import clsx from 'clsx';
 import { useTenantContext } from '@/hooks/use-tenant-context';
 import { useCanManage } from '@/hooks/use-can-manage';
@@ -392,7 +392,12 @@ export default function CronJobs() {
                           title={job.enabled ? 'Stop (disable)' : 'Start (enable)'}
                           data-testid={`toggle-cron-${job.id}`}
                         >
-                          {job.enabled ? <Pause size={12} /> : <Play size={12} />}
+                          {/* Solid square = stop, outline triangle = resume. `fill` is
+                              explicit because lucide ships outline-only glyphs, and an
+                              unfilled square reads as a checkbox rather than a stop. */}
+                          {job.enabled
+                            ? <Square size={12} fill="currentColor" />
+                            : <Play size={12} />}
                         </button>
                         <button
                           type="button"
@@ -401,7 +406,10 @@ export default function CronJobs() {
                           title="Run Now"
                           data-testid={`run-cron-${job.id}`}
                         >
-                          <RotateCw size={12} />
+                          {/* Lightning bolt = fire it once, now. lucide's `Bolt`
+                              is a hardware bolt, not lightning — `Zap` is the
+                              glyph this means. */}
+                          <Zap size={12} />
                         </button>
                         {deleteConfirmId === job.id ? (
                           <>
