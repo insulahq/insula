@@ -92,9 +92,14 @@ export default function Applications() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      {/* Stacks on mobile: at the old `flex items-center justify-between` the
+          action sat beside the title and squeezed the subheadline into a
+          three-line wrap on a phone. Column below `sm`, row from `sm` up, so
+          the button lands under the subheadline where there is room for its
+          full label. */}
+      <div className="flex flex-col items-start gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-brand-50 text-brand-600 dark:bg-brand-900/40 dark:text-brand-400">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-brand-50 text-brand-600 dark:bg-brand-900/40 dark:text-brand-400">
             <AppWindow size={20} />
           </div>
           <div>
@@ -106,11 +111,11 @@ export default function Applications() {
           <button
             type="button"
             onClick={() => openDeployModal()}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700"
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700"
             data-testid="deploy-button"
           >
             <Rocket size={14} />
-            Deploy
+            Deploy Application
           </button>
         )}
       </div>

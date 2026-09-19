@@ -460,10 +460,11 @@ export async function accountGet(params: {
   env?: NodeJS.ProcessEnv;
 }): Promise<XAccountGetResponse> {
   const { accountId, ids, properties, baseUrl, env } = params;
+  const projected = _withRequired(properties, REQUIRED_ACCOUNT_PROPERTIES);
   return _xCall<XAccountGetResponse>(
     JMAP_STALWART,
     'x:Account/get',
-    { accountId, ids: ids ?? null, ...(properties ? { properties } : {}) },
+    { accountId, ids: ids ?? null, ...(projected ? { properties: projected } : {}) },
     baseUrl, env,
   );
 }
@@ -1449,10 +1450,11 @@ export async function domainGet(params: {
   env?: NodeJS.ProcessEnv;
 }): Promise<XAccountGetResponse> {
   const { accountId, ids, properties, baseUrl, env } = params;
+  const projected = _withRequired(properties, REQUIRED_DOMAIN_PROPERTIES);
   return _xCall<XAccountGetResponse>(
     JMAP_STALWART,
     'x:Domain/get',
-    { accountId, ids: ids ?? null, ...(properties ? { properties } : {}) },
+    { accountId, ids: ids ?? null, ...(projected ? { properties: projected } : {}) },
     baseUrl, env,
   );
 }
@@ -1502,23 +1504,76 @@ export async function domainSet(params: {
  * Map an x:Account/get list entry to the legacy `StalwartPrincipal`
  * shape (with `type: 'individual'`).
  */
-function _accountToPrincipal(raw: Record<string, unknown>): StalwartPrincipal {
+/**
+ * Normalise a Stalwart registry `List<T>`.
+ *
+ * Stalwart serialises repeated fields as a JSON OBJECT with integer-string
+ * keys (`{"0": …, "1": …}`), not as an array — the same shape documented on
+ * `StalwartExpression` above. `Array.isArray()` is therefore false for every
+ * one of them, and a reader that assumes an array silently sees nothing.
+ */
+function _stalwartList(raw: unknown): readonly Record<string, unknown>[] {
+  if (Array.isArray(raw)) {
+    return raw.filter((e): e is Record<string, unknown> => typeof e === 'object' && e !== null);
+  }
+  if (typeof raw === 'object' && raw !== null) {
+    return Object.values(raw as Record<string, unknown>)
+      .filter((e): e is Record<string, unknown> => typeof e === 'object' && e !== null);
+  }
+  return [];
+}
+
+/**
+ * Map an x:Account/get list entry to the legacy `StalwartPrincipal` shape.
+ *
+ * CRITICAL, and verified against a live v0.16 server rather than assumed:
+ *
+ *  - `name` is only the LOCAL login part ("postmaster"), never the address.
+ *  - The full primary address is `emailAddress`.
+ *  - **There is no `emails` property.** Aliases live under `aliases`, as a
+ *    registry List (index-keyed object), and each entry carries only
+ *    `{enabled, name, domainId}` — the local part plus a domain REFERENCE.
+ *    Rebuilding the address needs `domainNameById`, which the caller joins
+ *    from x:Domain/get.
+ *
+ * Callers match mailboxes by full address (principals-sync drift detection,
+ * `findMailboxByEmail`, the webmail master-user detector), so anything missing
+ * here gets reported as "missing from Stalwart". That already happened once for
+ * primary addresses; it happened again for aliases because this function read a
+ * flat `emails` array the server never sends — which made all 36 aliases on
+ * production look like drift while mail to them was being delivered normally.
+ *
+ * When `domainNameById` is absent, or a `domainId` is unknown, the alias is
+ * skipped: the caller could not have resolved it either. Every drift-detecting
+ * path lists all domains, so that case does not arise there.
+ */
+function _accountToPrincipal(
+  raw: Record<string, unknown>,
+  domainNameById?: ReadonlyMap<string, string>,
+): StalwartPrincipal {
   const id = typeof raw.id === 'string' ? raw.id : undefined;
   const name = typeof raw.name === 'string' ? raw.name : '';
   const description = typeof raw.description === 'string' ? raw.description : null;
-  // CRITICAL: Stalwart's x:Account `name` is only the LOCAL login part
-  // (e.g. "kjh"), NOT the full address. The full primary address is in
-  // `emailAddress` (verified on Stalwart v0.16.x). Surface it via
-  // `emails` so callers that match on the full address (principals-sync
-  // drift detection, the webmail master-user detector) work — without
-  // this, `emails` was almost always empty and every synced mailbox was
-  // falsely flagged as "missing from Stalwart". Include any additional
-  // `emails`/alias addresses too, de-duplicated, primary first.
   const primary = typeof raw.emailAddress === 'string' ? raw.emailAddress : undefined;
+
+  const aliasAddresses: string[] = [];
+  for (const entry of _stalwartList(raw.aliases)) {
+    // A disabled alias records intent, not a live address.
+    if (entry.enabled === false) continue;
+    const local = typeof entry.name === 'string' ? entry.name : '';
+    const domainId = typeof entry.domainId === 'string' ? entry.domainId : '';
+    if (local === '' || domainId === '') continue;
+    const domain = domainNameById?.get(domainId);
+    if (domain === undefined || domain === '') continue;
+    aliasAddresses.push(`${local}@${domain}`);
+  }
+
+  // Tolerate a flat `emails` array too — harmless if a future Stalwart adds one.
   const extra = Array.isArray(raw.emails)
     ? (raw.emails as unknown[]).filter((e): e is string => typeof e === 'string')
     : [];
-  const merged = [...(primary ? [primary] : []), ...extra];
+
+  const merged = [...(primary ? [primary] : []), ...aliasAddresses, ...extra];
   const seen = new Set<string>();
   const emails = merged.filter((e) => {
     const key = e.toLowerCase();
@@ -1527,6 +1582,36 @@ function _accountToPrincipal(raw: Record<string, unknown>): StalwartPrincipal {
     return true;
   });
   return { id, type: 'individual', name, description, emails: emails.length > 0 ? emails : undefined };
+}
+
+/** Build the `domainId → domain name` join used to rebuild alias addresses. */
+function _domainNameById(
+  list: readonly Record<string, unknown>[],
+): ReadonlyMap<string, string> {
+  const map = new Map<string, string>();
+  for (const d of list) {
+    if (typeof d.id === 'string' && typeof d.name === 'string') map.set(d.id, d.name);
+  }
+  return map;
+}
+
+/**
+ * Fields the client cannot build a correct principal without.
+ *
+ * Stalwart honours the JMAP `properties` projection and strips everything
+ * unlisted, so a caller that pins a list and forgets one of these gets a
+ * silently wrong answer — the exact failure this module has now hit twice.
+ * Rather than rely on every call site remembering, add them back here.
+ */
+const REQUIRED_ACCOUNT_PROPERTIES = ['id', 'name', 'emailAddress', 'aliases'] as const;
+const REQUIRED_DOMAIN_PROPERTIES = ['id', 'name'] as const;
+
+function _withRequired(
+  properties: readonly string[] | undefined,
+  required: readonly string[],
+): readonly string[] | undefined {
+  if (!properties) return undefined; // no projection → the server returns everything
+  return [...new Set([...properties, ...required])];
 }
 
 function _domainToPrincipal(raw: Record<string, unknown>): StalwartPrincipal {
@@ -1561,11 +1646,15 @@ export async function principalGet(params: {
       accountGet({ accountId, ids: null, properties, baseUrl, env }),
       domainGet({ accountId, ids: null, properties, baseUrl, env }),
     ]);
+    // Aliases carry a `domainId`, not a domain name, so accounts can only be
+    // mapped once the domain list is in hand. Both namespaces are fetched here
+    // anyway — join them rather than emitting half-built addresses.
+    const domainNameById = _domainNameById(domains.list);
     return {
       accountId,
       state: `${accounts.state}|${domains.state}`,
       list: [
-        ...accounts.list.map(_accountToPrincipal),
+        ...accounts.list.map((a) => _accountToPrincipal(a, domainNameById)),
         ...domains.list.map(_domainToPrincipal),
       ],
       notFound: [],
@@ -1588,11 +1677,22 @@ export async function principalGet(params: {
     domainList = domainResp.list.map(_domainToPrincipal);
     trulyNotFound = domainResp.notFound;
   }
+  // This branch has no domain list of its own (domains are fetched only for
+  // IDs the account namespace did not recognise), so resolve the join with one
+  // extra call — and only when an account actually has aliases to resolve.
+  // Dropping them instead would hand the caller an account whose alias
+  // addresses silently vanished, which is the bug this whole change fixes.
+  const needsDomains = accountResp.list.some((a) => _stalwartList(a.aliases).length > 0);
+  let domainNameById: ReadonlyMap<string, string> | undefined;
+  if (needsDomains) {
+    const allDomains = await domainGet({ accountId, ids: null, properties, baseUrl, env });
+    domainNameById = _domainNameById(allDomains.list);
+  }
   return {
     accountId,
     state: accountResp.state,
     list: [
-      ...accountResp.list.map(_accountToPrincipal),
+      ...accountResp.list.map((a) => _accountToPrincipal(a, domainNameById)),
       ...domainList,
     ],
     notFound: trulyNotFound,
@@ -2063,20 +2163,26 @@ export async function findMailboxByEmail(params: {
   // doesn't accept a working `email` / `name` filter (silently returns
   // ids: []). List-and-filter via x:Account/get with ids: null until
   // a working filter shape is documented.
-  const getRes = await accountGet({
-    accountId,
-    ids: null,
-    // `emailAddress` carries the full primary address (Stalwart's `name` is
-    // only the local login part and `emails` is empty for primaries). It MUST
-    // be projected or Stalwart strips it — without it this filter matched
-    // nothing. `_accountToPrincipal` merges emailAddress + alias `emails`.
-    properties: ['id', 'name', 'description', 'emails', 'emailAddress'],
-    baseUrl,
-    env,
-  });
+  // Domains are fetched alongside because an alias entry only carries a
+  // `domainId`; without the join this lookup cannot match an alias address at
+  // all, and callers read that as "the mailbox does not exist".
+  const [getRes, domainRes] = await Promise.all([
+    accountGet({
+      accountId,
+      ids: null,
+      // `emailAddress` carries the full primary address (Stalwart's `name` is
+      // only the local login part). It MUST be projected or Stalwart strips
+      // it — without it this filter matched nothing. `aliases` likewise.
+      properties: ['id', 'name', 'description', 'emailAddress', 'aliases'],
+      baseUrl,
+      env,
+    }),
+    domainGet({ accountId, ids: null, properties: ['id', 'name'], baseUrl, env }),
+  ]);
+  const domainNameById = _domainNameById(domainRes.list);
   const target = email.toLowerCase();
   const match = getRes.list
-    .map(_accountToPrincipal)
+    .map((a) => _accountToPrincipal(a, domainNameById))
     .find((p) => (p.emails ?? []).some((e) => e.toLowerCase() === target));
   return match ?? null;
 }

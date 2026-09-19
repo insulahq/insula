@@ -23,8 +23,8 @@ Open **Applications** from the left menu. It has three tabs:
 
 ## Deploy from the catalog
 
-1. Go to **Applications** → **Catalog** tab (or click **Deploy** in
-   the top right).
+1. Go to **Applications** → **Catalog** tab (or click **Deploy Application**,
+   top right on a wide screen, below the page heading on a phone).
 2. Use the search box and the type filter (**All**, **Applications**,
    **Runtimes**, **Static**, **Databases**, **Services**) to find what you
    want.

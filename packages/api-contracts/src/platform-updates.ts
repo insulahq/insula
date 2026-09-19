@@ -140,6 +140,38 @@ export const hostMigrationsPreviewResponseSchema = z.object({
 });
 export type HostMigrationsPreviewResponse = z.infer<typeof hostMigrationsPreviewResponseSchema>;
 
+// ── Release notes for a target version ───────────────────────────────────────
+// The operator is asked to approve an upgrade; "what changed" is part of that
+// decision and used to live only in the GitHub release page. The backend
+// already talks to the Releases API to discover versions, so it proxies the
+// release body too — the browser needs no internet, and a cluster with no
+// egress degrades to an honest "couldn't fetch" instead of a dead link.
+
+/** CalVer/SemVer MAJOR.MINOR.PATCH, no leading-zero segments, optional
+ *  `-<suffix>`. Mirrors the backend's VERSION_RE. Anchored on purpose: the
+ *  value is interpolated into an outbound URL, so anything looser would be an
+ *  SSRF surface. */
+export const PLATFORM_VERSION_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-[0-9A-Za-z.]+)?$/;
+
+export const platformChangelogQuerySchema = z.object({
+  version: z.string().regex(PLATFORM_VERSION_PATTERN, 'version must be MAJOR.MINOR.PATCH with an optional -suffix'),
+});
+export type PlatformChangelogQuery = z.infer<typeof platformChangelogQuerySchema>;
+
+export const platformChangelogResponseSchema = z.object({
+  /** The version the notes belong to, without a leading `v`. */
+  version: z.string(),
+  /** Release body as published (markdown), or null when there is nothing to show. */
+  notes: z.string().nullable(),
+  /** `release` = real notes; `none` = no release/body for this tag (a dev build,
+   *  or a release published without notes); `unreachable` = GitHub could not be
+   *  reached. The UI must distinguish "nothing to say" from "we don't know". */
+  source: z.enum(['release', 'none', 'unreachable']),
+  /** Link to the release page, when one exists. */
+  url: z.string().nullable(),
+});
+export type PlatformChangelogResponse = z.infer<typeof platformChangelogResponseSchema>;
+
 export type PlatformVersionResponse = z.infer<typeof platformVersionResponseSchema>;
 export type UpdateSettings = z.infer<typeof updateSettingsSchema>;
 export type TriggerUpdateResponse = z.infer<typeof triggerUpdateResponseSchema>;

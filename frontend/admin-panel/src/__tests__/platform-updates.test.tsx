@@ -112,7 +112,11 @@ describe('UpdateBanner', () => {
     expect(screen.queryByTestId('update-banner-review')).toBeNull();
   });
 
-  it('super_admin sees "Review & apply" linking to the Upgrades page', async () => {
+  // `?review=1` is the whole point of this link, not incidental: it is what makes
+  // the Updates page open the review modal on arrival instead of dropping the
+  // operator on the page to find the same button. Asserted exactly, so removing
+  // the param silently reverts the behaviour and fails here.
+  it('super_admin sees "Review & apply" linking straight into the review modal', async () => {
     const auth = await import('../hooks/use-auth');
     vi.mocked(auth.useAuth).mockReturnValueOnce({
       user: { id: 'sa-1', email: 'sa@k8s-platform.test', fullName: 'SA', role: 'super_admin' },
@@ -120,7 +124,15 @@ describe('UpdateBanner', () => {
       login: vi.fn(), logout: vi.fn(), initialize: vi.fn(),
     } as unknown as ReturnType<typeof auth.useAuth>);
     renderWithProviders(<UpdateBanner />);
-    expect(screen.getByTestId('update-banner-review')).toHaveAttribute('href', '/platform/updates');
+    expect(screen.getByTestId('update-banner-review')).toHaveAttribute('href', '/platform/updates?review=1');
+  });
+
+  // The non-apply audience must NOT be sent into the apply flow: the modal's only
+  // action is super_admin-only and server-enforced, so opening it for an admin
+  // would present a button that cannot work.
+  it('admin\'s "View details" link carries no review param', () => {
+    renderWithProviders(<UpdateBanner />);
+    expect(screen.getByTestId('update-banner-details')).toHaveAttribute('href', '/platform/updates');
   });
 
   it('"Dismiss" hides the banner', async () => {

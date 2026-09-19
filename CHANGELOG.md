@@ -12,6 +12,73 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **You can read what a release changes before you approve it.** The upgrade
+  review dialog now has a **Review changelog** button beside the approve action:
+  it shows the release notes for the version you are about to install, and you
+  can approve from there, so reading what changed is not a detour. The notes are
+  fetched by the platform rather than by your browser, so a workstation with no
+  route to GitHub still sees them. When there are none it says which of the two
+  reasons applies — a development build has no release page, whereas "could not
+  be fetched" means this cluster has no outbound access and tells you nothing
+  about the release. Neither blocks the upgrade.
+- **The admin sidebar says what its two lines are.** They now read
+  **Installed Version: v…** and **Current Server: …**. Previously two unlabelled
+  strings sat under the product name, and you could not tell the version from
+  the hostname at a glance.
+
+### Changed
+- **"Review & apply" on the update banner opens the review dialog directly**
+  instead of leaving you on the Updates page to find the same button again.
+- **Scheduled Tasks now uses one icon per action.** A running task offers a solid
+  **stop** square, a stopped one a **play** triangle, and **Run Now** is a
+  lightning bolt. Run Now previously shared the reload glyph with nothing and
+  read as "refresh"; briefly it shared the play triangle with Start, so a stopped
+  task showed the same icon twice.
+- **The tenant Applications action reads "Deploy Application"** and moves below
+  the page heading on a phone, where it used to sit beside the title and wrap the
+  subheading onto three lines.
+- **The tenant sidebar no longer shows the platform version or the server name.**
+  Neither is something a tenant can act on, and the server name is internal
+  infrastructure detail. The admin sidebar still shows both — that audience does
+  act on them.
+
+### Fixed
+- **Mail aliases were all reported as broken when none of them were.** Every
+  enabled alias — the `postmaster@`, `abuse@`, `dmarc@` and `info@` addresses on
+  each mail domain — was listed as missing from the mail server, and the alert
+  said mail to those addresses bounces until repaired. Mail to them was being
+  delivered normally the whole time: on production all 36 were reported, and all
+  36 accepted mail. The drift alert also escalated daily, so the false report was
+  becoming louder and would have buried a real one.
+
+  The check was reading the mail server's reply for a field that does not exist
+  there, so every alias came back absent. A genuinely missing alias is still
+  reported, and the stale reports clear themselves on the first check after the
+  upgrade — there is nothing to acknowledge or dismiss.
+- **Every check the platform made against GitHub failed silently after the first
+  ten seconds of uptime.** The shared request options held a timeout that starts
+  counting when it is *created*, not when a request uses it — so it was already
+  expired for the entire life of the process, and each read (the update check's
+  live poll, and the new release-notes fetch) reported "could not reach GitHub"
+  while the network was fine. Found by running the new changelog endpoint on a
+  real cluster: it reported unreachable for a release that exists, seconds after
+  the identical request by hand returned it.
+
+- **Looking a mailbox up by one of its alias addresses found nothing.** The same
+  cause; anything asking "is there a mailbox at this address?" was told no
+  whenever the address was an alias rather than the mailbox's primary.
+- **"Total Mailboxes" showed a number that was not a count at all.** The tile
+  glued the per-domain figures together instead of adding them, so an estate
+  with sixteen mail domains displayed a seventeen-digit number where the answer
+  was 34. The per-domain **Mailboxes** column sorted by the same broken values,
+  putting 10 before 2.
+
+  Separately, the figure it was built from counted the platform's own
+  `postmaster@` report-intake mailboxes, which no mailbox list shows and no
+  plan's mailbox cap charges for. Both are fixed: the tile now adds up, and it
+  counts the same mailboxes you can open.
+
 ## [2026.9.24] - 2026-09-18
 
 ### Added

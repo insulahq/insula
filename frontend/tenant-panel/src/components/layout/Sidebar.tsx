@@ -20,25 +20,13 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useSystemInfo } from '@/hooks/use-system-info';
-import { useRuntimeInfo } from '@/hooks/use-runtime-info';
 
-/** Compact identity block under the sidebar title — version, branch,
- *  and the platform-api node serving the user. Same shape as admin. */
-function RuntimeInfoBlock() {
-  const info = useRuntimeInfo();
-  if (!info) return null;
-  return (
-    <div className="px-5 pb-3 text-[10px] uppercase tracking-wide text-white/60" data-testid="sidebar-runtime-info">
-      <div className="font-mono normal-case text-[11px] tracking-normal text-white/80" title="Running version">
-        {info.version}
-      </div>
-      <div className="flex gap-2 normal-case tracking-normal">
-        {info.branch && <span title="Build branch">{info.branch}</span>}
-        {info.node && <span title="Serving node">· {info.node}</span>}
-      </div>
-    </div>
-  );
-}
+/* The runtime-info block (platform version, build branch, serving node) used
+   to render here, mirroring the admin sidebar. Removed by operator decision:
+   a tenant has no action to take on the platform's version or on which node
+   answered them, and naming internal node identities to tenants leaks
+   infrastructure detail for no benefit. The admin sidebar keeps it — that
+   audience DOES act on it. */
 
 const navItems = [
   { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
@@ -99,8 +87,6 @@ export default function Sidebar({ open, onClose }: SidebarProps) {
             <X size={20} />
           </button>
         </div>
-
-        <RuntimeInfoBlock />
 
         {/* min-h-0 is doing as much work here as overflow-y-auto: a flex item
             defaults to min-height:auto and so refuses to shrink below its
