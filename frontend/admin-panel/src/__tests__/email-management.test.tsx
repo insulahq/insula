@@ -162,4 +162,48 @@ describe('EmailManagement page', () => {
     // mailboxCount 5 appears in both the table cell and stat card; just verify domain row rendered
     expect(screen.getByText('Junk: 5.0')).toBeInTheDocument();
   });
+
+  // ── Total Mailboxes tile ───────────────────────────────────────────────────
+  // The fixtures elsewhere in this file use `mailboxCount: 5` — a NUMBER, which
+  // the API does not send. `count(*)` is bigint and node-postgres returns bigint
+  // as a STRING to avoid precision loss, so the field is typed `number` and
+  // arrives as `"5"`. `sum + "5"` is string concatenation in JS, so the tile
+  // rendered the per-domain counts glued together: on production, sixteen
+  // domains produced a ~17-digit "total". Fixtures here use the real shape.
+  describe('Total Mailboxes tile', () => {
+    function tileValue(title: string): string {
+      const card = screen.getAllByTestId('stat-card').find((c) => c.textContent?.includes(title));
+      if (!card) throw new Error(`no stat card titled ${title}`);
+      return (card.textContent ?? '').replace(title, '').trim();
+    }
+
+    const DOMAINS = [
+      { id: 'ed-1', domainName: 'one.example.test', mailboxCount: '3', mxProvisioned: 1, spfProvisioned: 1, dkimProvisioned: 1, dmarcProvisioned: 0, spamThresholdJunk: '5.0', enabled: 1 },
+      { id: 'ed-2', domainName: 'two.example.test', mailboxCount: '2', mxProvisioned: 1, spfProvisioned: 1, dkimProvisioned: 1, dmarcProvisioned: 0, spamThresholdJunk: '5.0', enabled: 1 },
+      { id: 'ed-3', domainName: 'three.example.test', mailboxCount: '4', mxProvisioned: 1, spfProvisioned: 1, dkimProvisioned: 0, dmarcProvisioned: 0, spamThresholdJunk: '5.0', enabled: 1 },
+    ];
+
+    it('SUMS string counts arithmetically instead of concatenating them', async () => {
+      setupMockApi(DOMAINS);
+      render(<EmailManagement />, { wrapper: createWrapper() });
+      await waitFor(() => expect(screen.getByText('one.example.test')).toBeInTheDocument());
+      expect(tileValue('Total Mailboxes')).toBe('9');
+      // The exact pre-fix rendering, pinned so a regression is unmistakable.
+      expect(tileValue('Total Mailboxes')).not.toBe('0324');
+    });
+
+    it('still sums numeric counts, in case the field is ever a real number', async () => {
+      setupMockApi(DOMAINS.map((d) => ({ ...d, mailboxCount: Number(d.mailboxCount) })));
+      render(<EmailManagement />, { wrapper: createWrapper() });
+      await waitFor(() => expect(screen.getByText('one.example.test')).toBeInTheDocument());
+      expect(tileValue('Total Mailboxes')).toBe('9');
+    });
+
+    it('treats a missing count as zero rather than NaN', async () => {
+      setupMockApi([{ ...DOMAINS[0], mailboxCount: undefined }, DOMAINS[1]]);
+      render(<EmailManagement />, { wrapper: createWrapper() });
+      await waitFor(() => expect(screen.getByText('one.example.test')).toBeInTheDocument());
+      expect(tileValue('Total Mailboxes')).toBe('2');
+    });
+  });
 });
