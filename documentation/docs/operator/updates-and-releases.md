@@ -28,7 +28,9 @@ nothing is pushed at it.
 
 1. A **version poller** notices a newer release is available.
 2. You open **Platform Settings → Upgrades** and review the version spine
-   (installed → available) and the pre-flight checks.
+   (installed → available) and the pre-flight checks. The *update available*
+   banner's **Review & apply** takes you straight into the review dialog rather
+   than dropping you on the page to find it again.
 3. You **Preview**, then **Apply** the upgrade. Apply re-pins the cluster's
    GitOps source to the verified release tag; the platform rolls every
    workload to the new version.
@@ -54,6 +56,18 @@ On **Platform Settings → Upgrades** (`super_admin`):
    specific version (e.g. `2026.7.0`). Click **Preview** to see the decision
    and target, then **Apply upgrade →**. Apply is a deliberate two-click
    confirmation: *"Re-pin the cluster to … ? This rolls every workload."*
+5. **Review changelog** — in the review dialog, next to the approve button.
+   Opens the release notes for the version you are about to install, with
+   **Approve & upgrade** available from there too, so reading what changed is
+   not a detour. **Cancel** returns to the review with the pre-flight result
+   intact.
+
+    Notes are fetched by the platform, not by your browser, so a workstation
+    with no route to GitHub still sees them. Two things it may tell you instead
+    of notes, and they mean different things: *no release notes were published*
+    (normal for a development build, which has no release page) versus *could
+    not be fetched* (this cluster has no outbound access to GitHub — which says
+    nothing about the release). Neither blocks the upgrade.
 
 While the upgrade rolls, a **Post-flight** panel appears and tracks convergence
 to the pending version. If the cluster is not converging after several

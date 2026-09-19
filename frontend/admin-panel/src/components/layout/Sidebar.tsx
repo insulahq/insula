@@ -42,21 +42,34 @@ import clsx from 'clsx';
 import { useSystemInfo } from '@/hooks/use-system-info';
 import { useRuntimeInfo } from '@/hooks/use-runtime-info';
 
-/** Compact identity block under the sidebar title — version, branch,
- *  and the node name of the platform-api pod that's serving us. Hidden
- *  until the fetch completes; null fields render as "—". */
+/** Compact identity block under the sidebar title — installed version, the
+ *  node serving us, and the build branch. Hidden until the fetch completes.
+ *
+ *  Labelled rather than bare: two unlabelled strings stacked under the product
+ *  name read as decoration, and operators could not tell the version from the
+ *  hostname at a glance. The version also carries an explicit `v` prefix —
+ *  normalised, because the API may or may not already include one depending on
+ *  whether the value came from a tag or from the platform-version ConfigMap,
+ *  and "vv2026.9.24" is worse than either. */
 function RuntimeInfoBlock() {
   const info = useRuntimeInfo();
   if (!info) return null;
+  const version = `v${info.version.replace(/^v/, '')}`;
   return (
     <div className="px-5 pb-3 text-[10px] uppercase tracking-wide text-white/60" data-testid="sidebar-runtime-info">
-      <div className="font-mono normal-case text-[11px] tracking-normal text-white/80" title="Running version">
-        {info.version}
+      <div className="normal-case text-[11px] tracking-normal text-white/80" title="Installed platform version">
+        Installed Version: <span className="font-mono">{version}</span>
       </div>
-      <div className="flex gap-2 normal-case tracking-normal">
-        {info.branch && <span title="Build branch">{info.branch}</span>}
-        {info.node && <span title="Serving node">· {info.node}</span>}
-      </div>
+      {info.node && (
+        <div className="normal-case text-[11px] tracking-normal text-white/70" title="The node serving this request">
+          Current Server: <span className="font-mono">{info.node}</span>
+        </div>
+      )}
+      {info.branch && (
+        <div className="normal-case tracking-normal text-white/60" title="Build branch">
+          {info.branch}
+        </div>
+      )}
     </div>
   );
 }

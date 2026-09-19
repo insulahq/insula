@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Loader2, RefreshCw, CheckCircle, ShieldAlert, Download, Container, ArrowUpCircle } from 'lucide-react';
+import { useSearchParams } from 'react-router-dom';
 import { usePlatformVersion, useCheckForUpdates, useUpdateSettings } from '@/hooks/use-platform-updates';
 import { useRollback, type RollbackData } from '@/hooks/use-platform-upgrade';
 import { useAuth } from '@/hooks/use-auth';
@@ -26,6 +27,7 @@ export default function UpgradesPage() {
   const rollback = useRollback();
   const { user } = useAuth();
 
+  const [searchParams, setSearchParams] = useSearchParams();
   const [autoUpdateLocal, setAutoUpdateLocal] = useState<boolean | null>(null);
   const [showImages, setShowImages] = useState(false);
   const [showReview, setShowReview] = useState(false);
@@ -39,6 +41,26 @@ export default function UpgradesPage() {
   const isProduction = (v?.environment ?? '') === 'production';
   const isSuperAdmin = user?.role === 'super_admin';
   const canUpgrade = Boolean(v?.updateAvailable && isSuperAdmin);
+
+  // Arriving from the update banner's "Review & apply" (`?review=1`) opens the
+  // review modal directly.
+  //
+  // Gated on `canUpgrade`, not just on the param: the modal's only useful action
+  // is an apply, which is super_admin-only and server-enforced, so opening it
+  // for anyone else would present a button that cannot work. Waits for the
+  // version query because `canUpgrade` is false while it loads — firing early
+  // would consume the param and never open anything.
+  //
+  // The param is cleared as it is consumed (`replace: true`), so a reload or a
+  // Back-then-Forward does not re-open a modal the operator dismissed.
+  useEffect(() => {
+    if (searchParams.get('review') === null) return;
+    if (versionLoading) return;
+    if (canUpgrade) setShowReview(true);
+    const next = new URLSearchParams(searchParams);
+    next.delete('review');
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams, versionLoading, canUpgrade]);
   const rbError = rollback.error as Error | null;
 
   const onRbPreview = async () => { setRbConfirming(false); const res = await rollback.mutateAsync({ apply: false, restoreData }); setRbPreview(res.data); };

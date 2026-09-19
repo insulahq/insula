@@ -646,11 +646,17 @@ export async function getEmailDomain(
     throw new ApiError('EMAIL_DOMAIN_NOT_FOUND', `Email is not enabled for domain '${domainId}'`, 404);
   }
 
-  // Get mailbox count
+  // Mailbox count, on the same definition as the list endpoints and the plan
+  // cap: platform-managed rows (postmaster@ report intake) are the platform's
+  // own plumbing on the tenant's domain, not mailboxes the tenant has or can
+  // see. See the subqueries in listEmailDomains / listAllEmailDomains.
   const [mailboxCount] = await db
     .select({ count: sql<number>`count(*)` })
     .from(mailboxes)
-    .where(eq(mailboxes.emailDomainId, emailDomain.id));
+    .where(and(
+      eq(mailboxes.emailDomainId, emailDomain.id),
+      eq(mailboxes.platformManaged, false),
+    ));
 
   return { ...emailDomain, mailboxCount: mailboxCount?.count ?? 0 };
 }
@@ -777,7 +783,15 @@ export async function listEmailDomains(
       spamThresholdReject: emailDomains.spamThresholdReject,
       createdAt: emailDomains.createdAt,
       updatedAt: emailDomains.updatedAt,
-      mailboxCount: sql<number>`(SELECT count(*) FROM mailboxes WHERE mailboxes.email_domain_id = ${emailDomains.id})`,
+      // `platform_managed = false` is not a filter, it is the definition.
+      // `listMailboxes` hides platform-managed rows unless a caller opts in,
+      // and `getTenantMailboxCount` (the plan cap) excludes them outright — so
+      // counting them here made the Email Management "Total Mailboxes" tile and
+      // the per-domain column report a number no list on any page could show:
+      // on production, 50 against the 34 mailboxes an operator can actually
+      // open, the extra 16 being the postmaster@ report-intake boxes the
+      // platform provisions for itself.
+      mailboxCount: sql<number>`(SELECT count(*) FROM mailboxes WHERE mailboxes.email_domain_id = ${emailDomains.id} AND mailboxes.platform_managed = false)`,
     })
     .from(emailDomains)
     .innerJoin(domains, eq(emailDomains.domainId, domains.id))
@@ -805,7 +819,15 @@ export async function listAllEmailDomains(db: Database) {
       spamThresholdReject: emailDomains.spamThresholdReject,
       createdAt: emailDomains.createdAt,
       updatedAt: emailDomains.updatedAt,
-      mailboxCount: sql<number>`(SELECT count(*) FROM mailboxes WHERE mailboxes.email_domain_id = ${emailDomains.id})`,
+      // `platform_managed = false` is not a filter, it is the definition.
+      // `listMailboxes` hides platform-managed rows unless a caller opts in,
+      // and `getTenantMailboxCount` (the plan cap) excludes them outright — so
+      // counting them here made the Email Management "Total Mailboxes" tile and
+      // the per-domain column report a number no list on any page could show:
+      // on production, 50 against the 34 mailboxes an operator can actually
+      // open, the extra 16 being the postmaster@ report-intake boxes the
+      // platform provisions for itself.
+      mailboxCount: sql<number>`(SELECT count(*) FROM mailboxes WHERE mailboxes.email_domain_id = ${emailDomains.id} AND mailboxes.platform_managed = false)`,
     })
     .from(emailDomains)
     .innerJoin(domains, eq(emailDomains.domainId, domains.id));
