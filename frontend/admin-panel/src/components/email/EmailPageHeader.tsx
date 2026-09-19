@@ -37,7 +37,12 @@ function formatBytes(n: number): string {
 export default function EmailPageHeader({ subtitle }: { readonly subtitle?: string }) {
   const { data: domainsRes, isLoading: domainsLoading } = useAdminEmailDomains();
   const domains = domainsRes?.data ?? [];
-  const totalMailboxes = domains.reduce((sum, d) => sum + (d.mailboxCount ?? 0), 0);
+  // `Number(...)` belongs here even though the API now casts to int: this reduce
+  // is what turned a per-domain count into a ~17-digit string when the field
+  // arrived as text (`0 + "3"` is `"03"` in JS, not 3). The backend fix makes it
+  // a number; this makes the tile immune to it ever becoming text again, which a
+  // `number`-typed field arriving as a string did once already.
+  const totalMailboxes = domains.reduce((sum, d) => sum + Number(d.mailboxCount ?? 0), 0);
   const dkimOk = domains.filter((d) => d.dkimProvisioned).length;
 
   // Mail lives on one node at a time, so "storage used" is the active node's
