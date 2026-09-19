@@ -56,6 +56,15 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   there, so every alias came back absent. A genuinely missing alias is still
   reported, and the stale reports clear themselves on the first check after the
   upgrade — there is nothing to acknowledge or dismiss.
+- **Every check the platform made against GitHub failed silently after the first
+  ten seconds of uptime.** The shared request options held a timeout that starts
+  counting when it is *created*, not when a request uses it — so it was already
+  expired for the entire life of the process, and each read (the update check's
+  live poll, and the new release-notes fetch) reported "could not reach GitHub"
+  while the network was fine. Found by running the new changelog endpoint on a
+  real cluster: it reported unreachable for a release that exists, seconds after
+  the identical request by hand returned it.
+
 - **Looking a mailbox up by one of its alias addresses found nothing.** The same
   cause; anything asking "is there a mailbox at this address?" was told no
   whenever the address was an alias rather than the mailbox's primary.

@@ -13,10 +13,26 @@ const RELEASES_API = 'https://api.github.com/repos/insulahq/insula/releases/late
 // tags; we pick the newest valid semver. Keeps the UI from showing a
 // permanent "—" just because release.yml hasn't been cut yet.
 const TAGS_API = 'https://api.github.com/repos/insulahq/insula/tags?per_page=20';
-const FETCH_OPTS = {
-  signal: AbortSignal.timeout(10_000),
-  headers: { 'Accept': 'application/vnd.github+json' } as const,
-} as const;
+/**
+ * Fresh request options per call — NOT a shared constant.
+ *
+ * `AbortSignal.timeout(ms)` starts counting the moment it is CREATED, not when
+ * a request uses it. As a module-level constant the signal was therefore already
+ * aborted ~10 seconds into the process's life, and every GitHub read after that
+ * threw `TimeoutError: The operation was aborted due to timeout` instantly —
+ * indistinguishable, to the callers here, from "GitHub is unreachable".
+ *
+ * Caught on a live cluster: the changelog endpoint reported `unreachable` for a
+ * release that exists, while the identical fetch run by hand in the same pod
+ * returned 200 with rate-limit headroom to spare. Unit tests could not see it —
+ * they stub `fetch`, so the signal is never honoured.
+ */
+function githubFetchOpts(): RequestInit {
+  return {
+    signal: AbortSignal.timeout(10_000),
+    headers: { Accept: 'application/vnd.github+json' },
+  };
+}
 
 type LatestSource = 'releases' | 'tags' | 'none' | 'unreachable';
 // PLATFORM_VERSION is injected into the Deployment from the platform-
@@ -93,7 +109,7 @@ export async function getReleaseNotes(version: string): Promise<{
   }
   const url = `https://api.github.com/repos/insulahq/insula/releases/tags/v${encodeURIComponent(tag)}`;
   try {
-    const resp = await fetch(url, FETCH_OPTS);
+    const resp = await fetch(url, githubFetchOpts());
     // 404 is the normal answer for a development build (`2026.9.24-670a573`)
     // or any tag release.yml has not published — not an error.
     if (resp.status === 404) return { version: tag, notes: null, source: 'none', url: null };
@@ -115,7 +131,7 @@ async function resolveLatestVersion(): Promise<{ version: string | null; source:
   // Try releases first — preferred because release.yml publishes pinned,
   // promoted versions (not every green main build).
   try {
-    const resp = await fetch(RELEASES_API, FETCH_OPTS);
+    const resp = await fetch(RELEASES_API, githubFetchOpts());
     if (resp.ok) {
       const data = await resp.json() as { tag_name?: string };
       const tag = (data.tag_name ?? '').replace(/^v/, '');
@@ -133,7 +149,7 @@ async function resolveLatestVersion(): Promise<{ version: string | null; source:
   // Fallback: inspect tags. Useful on fresh repos that haven't cut a
   // GitHub release yet but have started tagging (e.g., v0.1.0).
   try {
-    const resp = await fetch(TAGS_API, FETCH_OPTS);
+    const resp = await fetch(TAGS_API, githubFetchOpts());
     if (resp.ok) {
       const tags = await resp.json() as Array<{ name?: string }>;
       const semvers = tags
