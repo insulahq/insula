@@ -1,6 +1,7 @@
 import { eq, and, notInArray } from 'drizzle-orm';
 import { resourceQuotas, tenants, hostingPlans, deployments } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
+import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { parseResourceValue } from '../../shared/resource-parser.js';
 import { tenantNotFound } from '../../shared/errors.js';
 
@@ -67,9 +68,62 @@ interface ResourceAvailability {
   readonly storageAvailableGi: number;
 }
 
+/**
+ * Read `requests.{cpu,memory}` from the tenant's namespace ResourceQuota.
+ *
+ * Returns nulls rather than throwing: a cluster read failing must not take out
+ * the availability endpoint the panel polls. It IS logged — a gate silently
+ * falling back to the number that caused the original mismatch is exactly the
+ * failure this change exists to remove.
+ */
+async function readLiveQuotaUsage(
+  opts: AvailabilityOptions,
+  namespace: string | null | undefined,
+): Promise<{ readonly cpuMilli: number | null; readonly memoryMiB: number | null }> {
+  const none = { cpuMilli: null, memoryMiB: null };
+  if (!opts.k8s || !namespace) return none;
+
+  try {
+    const quota = await opts.k8s.core.readNamespacedResourceQuota({
+      name: `${namespace}-quota`,
+      namespace,
+    });
+    const used = (quota as { status?: { used?: Record<string, string> } }).status?.used ?? {};
+    // Requests-first, same rule as the metrics path: tenant workloads set
+    // `requests.cpu` and no CPU limit at all (ADR-037), so reading limits first
+    // reads zero.
+    const rawCpu = used['requests.cpu'] ?? used['limits.cpu'];
+    const rawMem = used['requests.memory'] ?? used['limits.memory'];
+    return {
+      cpuMilli: rawCpu ? Math.round(parseResourceValue(rawCpu, 'cpu') * MILLI_PER_CORE) : null,
+      memoryMiB: rawMem ? Math.round(parseResourceValue(rawMem, 'memory') * MIB_PER_GI) : null,
+    };
+  } catch (err: unknown) {
+    // A namespace with no quota yet is the normal case for a brand-new tenant,
+    // not an incident — but we cannot tell it apart from an API outage here
+    // without coupling to the client's error shape, so both log at warn.
+    opts.log?.warn(
+      { namespace, err: err instanceof Error ? err.message : String(err) },
+      'resource-availability: ResourceQuota unreadable, falling back to the database sum',
+    );
+    return none;
+  }
+}
+
+export interface AvailabilityOptions {
+  /**
+   * When supplied, the namespace ResourceQuota is consulted as well — see the
+   * reconciliation step below. Omitted (tests, callers with no cluster) the
+   * gate degrades to the database-only figure it used before.
+   */
+  readonly k8s?: K8sClients | null;
+  readonly log?: { warn(obj: unknown, msg: string): void };
+}
+
 export async function getTenantResourceAvailability(
   db: Database,
   tenantId: string,
+  opts: AvailabilityOptions = {},
 ): Promise<ResourceAvailability> {
   // 1. Fetch tenant record
   const [tenant] = await db
@@ -124,6 +178,27 @@ export async function getTenantResourceAvailability(
     cpuUsedMilli += Math.round(parseResourceValue(dep.cpuRequest, 'cpu') * MILLI_PER_CORE);
     memoryUsedMiB += Math.round(parseResourceValue(dep.memoryRequest, 'memory') * MIB_PER_GI);
   }
+
+  // 6. Reconcile against what Kubernetes will actually charge.
+  //
+  // The sum above is what the platform INTENDED to reserve. The namespace
+  // ResourceQuota is what admission enforces, and the two diverge: Kubernetes
+  // charges a pod `max(sum(containers), max(initContainers))`, and an init
+  // container has no `deployments` row to be summed from in the first place.
+  //
+  // Production 2026-09-19, on one tenant: this gate computed 432Mi used
+  // of a 1Gi plan and enabled the deploy button for a 512Mi app; the quota
+  // said 544Mi and admission refused it. The tenant was told twice, by the
+  // same product, that the same deploy both would and would not fit.
+  //
+  // Take the LARGER of the two. The database covers deployments whose pods are
+  // momentarily absent — a node reboot or a reschedule makes the live quota
+  // read low — while the quota covers everything the database cannot see. A
+  // gate is allowed to be pessimistic for a moment; it must never promise
+  // headroom that admission will refuse.
+  const live = await readLiveQuotaUsage(opts, tenant.kubernetesNamespace);
+  if (live.cpuMilli !== null) cpuUsedMilli = Math.max(cpuUsedMilli, live.cpuMilli);
+  if (live.memoryMiB !== null) memoryUsedMiB = Math.max(memoryUsedMiB, live.memoryMiB);
 
   const cpuLimitMilli = Math.round(cpuLimit * MILLI_PER_CORE);
   const memoryLimitMiB = Math.round(memoryLimitGi * MIB_PER_GI);

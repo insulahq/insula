@@ -17,6 +17,8 @@ import InstalledAppDetailModal from '@/components/InstalledAppDetailModal';
 import AppPreviewModal from '@/components/AppPreviewModal';
 import { CustomContainersTab } from '@/components/custom-deployments/CustomContainersTab';
 import { getStatusColor } from '@/lib/status-colors';
+import ErrorPanel from '@/components/ErrorPanel';
+import { describeDeploymentError } from '@/lib/describe-deployment-error';
 import type { CatalogEntry, Deployment } from '@/types/api';
 import { useResourceMetrics } from '@/hooks/use-resource-metrics';
 import { resourceBarColor, resourcePercent, resourceRatio, formatGiB } from '@/lib/resource-usage';
@@ -1565,21 +1567,18 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
                     )}
                   </div>
 
-                  {/* Issue 4: Error messages on failed cards */}
-                  {deployment.lastError && deployment.status === 'failed' && (
-                    <p className="text-xs text-red-600 dark:text-red-400 mt-2 line-clamp-2" data-testid={`last-error-${deployment.id}`}>
-                      {deployment.lastError}
-                    </p>
-                  )}
-
-                  {/* Show lastError banner for non-failed statuses too (existing behavior) */}
-                  {deployment.lastError && deployment.status !== 'failed' && (
-                    <div
-                      className="mt-3 flex items-start gap-1.5 rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-3 py-2 text-xs text-red-700 dark:text-red-400"
-                      data-testid={`last-error-${deployment.id}`}
-                    >
-                      <AlertTriangle size={14} className="mt-0.5 shrink-0" />
-                      <span className="line-clamp-2">{deployment.lastError}</span>
+                  {/* Error on the card. Both statuses render the same decoded
+                      panel: a plain sentence plus a "More details" table. The
+                      two used to print `lastError` verbatim, which for a quota
+                      rejection is the Kubernetes API's entire JSON body —
+                      line-clamped to two lines of `{"kind":"Status",…`. */}
+                  {deployment.lastError && (
+                    <div className="mt-3" data-testid={`last-error-${deployment.id}`}>
+                      <ErrorPanel
+                        error={describeDeploymentError(deployment.lastError)}
+                        severity={deployment.status === 'failed' ? 'error' : 'warn'}
+                        compact
+                      />
                     </div>
                   )}
 

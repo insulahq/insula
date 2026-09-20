@@ -25,7 +25,14 @@ export async function resourceQuotaRoutes(app: FastifyInstance): Promise<void> {
     onRequest: [authenticate, requireTenantAccess()],
   }, async (request) => {
     const { tenantId } = request.params as { tenantId: string };
-    const availability = await service.getTenantResourceAvailability(app.db, tenantId);
+    // Pass the cluster client so the gate reconciles against the live
+    // ResourceQuota — the thing that will actually refuse the deploy — and not
+    // only against the platform's own `deployments` sum. See service.ts.
+    const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+    const availability = await service.getTenantResourceAvailability(app.db, tenantId, {
+      k8s: createK8sClients(kubeconfigPath),
+      log: app.log,
+    });
     return success(availability);
   });
 

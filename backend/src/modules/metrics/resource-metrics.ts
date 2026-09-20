@@ -1,5 +1,6 @@
 import { isReplacedPodRecord } from '../../lib/container-termination.js';
 import { getRedis } from '../../shared/redis.js';
+import { effectivePodRequest, type PodSpecResourcesLike } from '../../shared/pod-resources.js';
 import { parseResourceValue } from '../../shared/resource-parser.js';
 import { queryInstant } from '../monitoring/vm-client.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -46,14 +47,12 @@ type PodItem = {
    * filter on, and every dead pod looked exactly like a running one.
    */
   readonly status?: { readonly phase?: string; readonly reason?: string };
-  readonly spec?: {
-    readonly containers?: ReadonlyArray<{
-      readonly resources?: {
-        readonly limits?: { readonly cpu?: string; readonly memory?: string };
-        readonly requests?: { readonly cpu?: string; readonly memory?: string };
-      };
-    }>;
-  };
+  /**
+   * `initContainers` is modelled here for the same reason `status` was: with no
+   * field there was nothing to read, and a pod fronted by an oversized init
+   * container looked exactly like one that was not.
+   */
+  readonly spec?: PodSpecResourcesLike;
 };
 
 export async function collectTenantMetrics(
@@ -126,19 +125,14 @@ export async function collectTenantMetrics(
         reason: pod.status?.reason,
         deletionTimestamp: pod.metadata?.deletionTimestamp,
       })) continue;
-      for (const container of pod.spec?.containers ?? []) {
-        // REQUESTS, not limits. Tenant workloads run asymmetric QoS (ADR-037):
-        // CPU request only, memory request==limit — so `limits.cpu` is UNSET on
-        // every tenant container and reading it reported CPU reserved as 0
-        // forever. The request is also the honest number: it is what the
-        // scheduler actually reserves on the node.
-        const req = container.resources?.requests;
-        const lim = container.resources?.limits;
-        const cpu = req?.cpu ?? lim?.cpu;
-        const memory = req?.memory ?? lim?.memory;
-        if (cpu) cpuReserved += parseResourceValue(cpu, 'cpu');
-        if (memory) memoryReserved += parseResourceValue(memory, 'memory');
-      }
+      // The EFFECTIVE pod request, not the container sum — init containers are
+      // charged too, and this panel used to miss them entirely. Production,
+      // one tenant, 2026-09-19: a 400Mi MariaDB behind a 512Mi
+      // `reset-root-password` init container showed 432Mi reserved of a 1Gi
+      // plan while the ResourceQuota said 544Mi and refused the next deploy.
+      // See shared/pod-resources.ts for the rule and the sidecar case.
+      cpuReserved += effectivePodRequest(pod.spec, 'cpu');
+      memoryReserved += effectivePodRequest(pod.spec, 'memory');
     }
   } catch {
     // Fall back to ResourceQuota if pod listing fails

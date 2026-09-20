@@ -21,8 +21,8 @@ interface ErrorPanelProps {
  * domain SSL state, file manager, tenant provisioning.
  *
  * Renders title + plain-English detail + 1-3 actionable remediation
- * bullets. Optional collapsed "Show raw error" expander for the raw
- * upstream string. Optional Retry button when `onRetry` is provided
+ * bullets. Optional collapsed "More details" expander that renders the
+ * diagnostics as a two-column table. Optional Retry button when `onRetry` is provided
  * AND the error is `retryable=true`.
  */
 export default function ErrorPanel({
@@ -113,18 +113,67 @@ export default function ErrorPanel({
               type="button"
               onClick={() => setShowRaw((p) => !p)}
               className={`mt-2 inline-flex items-center gap-1 text-[10px] ${palette.body} opacity-70 hover:opacity-100`}
+              data-testid="error-panel-details-toggle"
             >
               {showRaw ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
-              {showRaw ? 'Hide raw error' : 'Show raw error'}
+              {showRaw ? 'Hide details' : 'More details'}
             </button>
           )}
           {showRaw && error.diagnostics && (
-            <pre className="mt-1 max-h-40 overflow-auto rounded bg-black/10 dark:bg-black/40 p-2 font-mono text-[10px]">
-              {JSON.stringify(error.diagnostics, null, 2)}
-            </pre>
+            <DiagnosticsTable diagnostics={error.diagnostics} bodyClass={palette.body} />
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Diagnostics rendered as a labelled table rather than `JSON.stringify`.
+ *
+ * A tenant hitting a quota was shown the Kubernetes API's raw JSON body —
+ * `{"kind":"Status",...,"message":"pods \"x\" is forbidden: exceeded quota..."}` —
+ * which is unreadable as prose and unreadable as JSON at 10px. The values that
+ * matter (what was asked for, what is in use, what the limit is) are flat
+ * key/value pairs, so they belong in two columns.
+ *
+ * Nested values have no table shape and fall back to a <pre>, so nothing is
+ * silently dropped from the expander that operators copy into bug reports.
+ */
+function DiagnosticsTable({
+  diagnostics, bodyClass,
+}: {
+  readonly diagnostics: Readonly<Record<string, unknown>>;
+  readonly bodyClass: string;
+}) {
+  const entries = Object.entries(diagnostics);
+  const flat = entries.filter(([, v]) => v === null || ['string', 'number', 'boolean'].includes(typeof v));
+  const nested = entries.filter(([, v]) => !(v === null || ['string', 'number', 'boolean'].includes(typeof v)));
+
+  return (
+    <div className="mt-1.5 max-h-56 overflow-auto rounded bg-black/5 dark:bg-black/30 p-2" data-testid="error-panel-details">
+      {flat.length > 0 && (
+        <table className="w-full text-left text-[10px]">
+          <tbody>
+            {flat.map(([key, value]) => (
+              <tr key={key} className="align-top">
+                <th scope="row" className={`py-0.5 pr-3 font-medium whitespace-nowrap ${bodyClass} opacity-70`}>
+                  {key}
+                </th>
+                <td className={`py-0.5 font-mono break-all ${bodyClass}`}>
+                  {value === null ? '—' : String(value)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {nested.map(([key, value]) => (
+        <div key={key} className="mt-1.5">
+          <div className={`text-[10px] font-medium opacity-70 ${bodyClass}`}>{key}</div>
+          <pre className="mt-0.5 overflow-auto font-mono text-[10px]">{JSON.stringify(value, null, 2)}</pre>
+        </div>
+      ))}
     </div>
   );
 }
