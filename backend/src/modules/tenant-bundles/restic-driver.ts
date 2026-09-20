@@ -117,6 +117,22 @@ export interface ResticBackupResult {
   readonly snapshotId: string;
   readonly totalBytesProcessed: number;
   readonly totalFilesProcessed: number;
+  /**
+   * Bytes this snapshot actually ADDED to the repository, after dedup and
+   * compression — restic's `data_added_packed`. Not to be confused with
+   * `totalBytesProcessed`, which is the logical size of what was scanned.
+   *
+   * This is what makes a live repo size possible without paying for
+   * `restic stats --mode raw-data`: summing it across snapshots tracks the
+   * authoritative raw-data total to a rounding error (measured on restic
+   * 0.18.1: 4,503,074 accumulated vs 4,502,582 measured — 0.011%). The
+   * residual is pack-file framing that raw-data's blob sum excludes.
+   *
+   * 0 when the restic build predates `data_added_packed` (< 0.17) AND emits
+   * no `data_added` either — callers must treat 0 as "no information", never
+   * as "nothing was added".
+   */
+  readonly dataAddedPacked: number;
 }
 
 export interface RunResticBackupArgs {
@@ -867,10 +883,16 @@ function parseResticSummary(stdoutBuf: string): ResticBackupResult | null {
     try {
       const obj = JSON.parse(line) as Record<string, unknown>;
       if (obj.message_type === 'summary' && typeof obj.snapshot_id === 'string') {
+        // `data_added_packed` is post-compression (restic >= 0.17); older
+        // builds emit only the pre-compression `data_added`. Prefer the
+        // packed figure, fall back, and never let a NaN through — a NaN here
+        // would poison the accumulated repo total for good.
+        const added = Number(obj.data_added_packed ?? obj.data_added ?? 0);
         return {
           snapshotId: String(obj.snapshot_id),
           totalBytesProcessed: Number(obj.total_bytes_processed ?? 0),
           totalFilesProcessed: Number(obj.total_files_processed ?? 0),
+          dataAddedPacked: Number.isFinite(added) && added > 0 ? added : 0,
         };
       }
     } catch {

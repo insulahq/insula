@@ -12,6 +12,57 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **Tenant backups showed 1-3 bundles each when tenants held dozens.** The
+  admin Backups page asked for the bundle list without a page size, so the
+  server applied its default of 50 — *across all tenants* — and the page then
+  grouped those 50 per tenant. With 25 tenants backed up nightly that worked
+  out to two or three each, for tenants holding 26. Nothing was ever missing:
+  every bundle was present, complete, and restorable the whole time. The page
+  now asks for a page size, each group's count comes from the per-tenant totals
+  rather than from whatever happened to be fetched, and the list says how much
+  of itself is on screen with a **Load more** to reach the rest. The bundle
+  list endpoint had also, from the day it shipped, returned a page marker it
+  would not accept — so paging was impossible even for a client that tried. It
+  accepts one now.
+- **"Bundles" size no longer reads as your off-site storage filling up.** The
+  group header added up every bundle's logical size, and because each nightly
+  bundle re-states the tenant's whole footprint, a tenant occupying 15 GB of
+  the backup target showed 452 GB. That figure is gone. What remains is the
+  repository size — what the target actually holds — labelled with how it was
+  obtained and when it was last verified.
+- **Repository size keeps itself up to date instead of waiting to be asked.**
+  It could previously only be established by an operator pressing Refresh on
+  each tenant, so on a real cluster 23 of 25 tenants had never been measured
+  and the honest number read "not measured" while the misleading one read
+  452 GB. restic reports what each snapshot added to the repository, and the
+  platform was already reading that line and discarding the figure; it now
+  keeps a running total, re-measured properly after each prune and seeded for
+  any repository that has never been measured. There is no extra work per
+  backup and no extra call to the storage target. Mail repositories are counted
+  too — until now only the files repository was tracked at all, so the
+  per-tenant total silently left mail out.
+### Added
+- **Every bundle now shows what it cost in storage.** Alongside **Bundle Size**
+  — everything the bundle captured — there is a **Restic Size**: what it
+  actually added after deduplication and compression. The first is why a
+  nightly bundle looks enormous; the second is what your backup target is
+  paying for, and unlike the first it is meaningful to add up. Bundles captured
+  before this shipped show "—" rather than a zero they cannot vouch for. Both
+  panels.
+
+### Changed
+- **Release notes in the upgrade review render as formatted text.** The
+  changelog dialog printed the release body raw, so an operator deciding
+  whether to approve an upgrade read `### Fixed` and `**bold**` markers instead
+  of headings and emphasis. Notes are still never treated as markup — the text
+  is rendered into the page as content, not as HTML — so nothing in a release
+  body can execute or restyle the admin panel.
+- **The "Backups per tenant" filter chips are gone.** They were computed from
+  the bundles loaded into the page rather than from each tenant's real total,
+  so they under-reported in exactly the way above, and the tenant dropdown and
+  group headers already do the job.
+
 ## [2026.9.26] - 2026-09-20
 
 ### Added

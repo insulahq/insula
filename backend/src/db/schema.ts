@@ -3846,6 +3846,16 @@ export const backupJobs = pgTable('backup_jobs', {
   label: varchar('label', { length: 255 }),
   description: text('description'),
   sizeBytes: bigint('size_bytes', { mode: 'number' }).notNull().default(0),
+  // Bytes this bundle actually ADDED to the restic repository, summed across
+  // its restic components — `data_added_packed` from each snapshot's summary
+  // (migration 0132). `sizeBytes` above is the LOGICAL size of everything the
+  // bundle captured; restic deduplicates and compresses, so on a nightly
+  // bundle of a mostly-unchanged tenant this is a small fraction of it.
+  // Summing sizeBytes across bundles is what made a 15 GB repository read as
+  // 452 GB in the admin UI.
+  // NULL on bundles captured before the column existed, and on any component
+  // whose Job log predates the field — NULL means "unknown", never 0.
+  resticAddedBytes: bigint('restic_added_bytes', { mode: 'number' }),
   retentionDays: integer('retention_days').notNull(),
   expiresAt: timestamp('expires_at'),
   exportMode: varchar('export_mode', { length: 32 }),
@@ -3948,6 +3958,19 @@ export const tenantResticRepoState = pgTable('tenant_restic_repo_state', {
   // NULL = never measured; the UI says so rather than showing 0.
   repoTotalBytes: bigint('repo_total_bytes', { mode: 'number' }),
   repoStatsAt: timestamp('repo_stats_at'),
+  // How `repoTotalBytes` got its current value (migration 0132):
+  //   'measured' — `restic stats --mode raw-data` walked the repo. Exact.
+  //   'tracked'  — anchored by an earlier measurement, then advanced by each
+  //                snapshot's `data_added_packed`. Accurate to ~0.01% until
+  //                the next forget/prune, which only ever SHRINKS the repo,
+  //                so a tracked figure errs high and is re-anchored by the
+  //                reclamation sweep.
+  // NULL alongside a NULL repoTotalBytes = never established.
+  repoTotalSource: varchar('repo_total_source', { length: 16 }),
+  // When repoTotalBytes last changed, by either path. `repoStatsAt` stays the
+  // last AUTHORITATIVE measurement, so the UI can say "tracked, last verified
+  // <repoStatsAt>" without either timestamp having to lie.
+  repoTotalAt: timestamp('repo_total_at'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (table) => [

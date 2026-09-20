@@ -40,6 +40,60 @@ describe('backups-overview: db.execute returns a QueryResult, not an array', () 
     expect(res.kpi.openCarts).toBe(1);
   });
 
+  it('never labels a repo size that does not exist', async () => {
+    // Found on DEV: every tenant came back `repoTotalSource: "measured"` with
+    // `repoTotalBytes: null`, including two with no tenant_restic_repo_state
+    // row at all. Over zero rows `bool_or()` is NULL, not FALSE, so the
+    // aggregate's CASE fell through to its ELSE. The SQL is fixed; this pins
+    // the invariant at the mapping layer too, where a unit test can reach it:
+    // provenance describes a number, so with no number there is none.
+    const db = {
+      execute: vi.fn(async () => ({
+        rowCount: 1,
+        rows: [{
+          tenant_id: 't1', tenant_name: 'Acme', is_system: false, plan_name: 'Starter',
+          include_override: null, plan_include: true, resolved_include: true,
+          snapshot_count: 0, snapshot_bytes: '0', last_snapshot_at: null,
+          bundle_count: 0, bundle_bytes: '0', last_bundle_at: null,
+          quota_max_bytes: null, open_cart_id: null,
+          repo_total_bytes: null,
+          // Deliberately contradictory input — the mapping must not pass it on.
+          repo_total_source: 'measured',
+          repo_stats_at: new Date('2026-06-01T00:00:00Z'),
+          repo_verified_at: new Date('2026-06-01T00:00:00Z'),
+        }],
+      })),
+    } as unknown as Database;
+
+    const res = await loadTenantsOverview(db, {});
+    expect(res.rows[0].repoTotalBytes).toBeNull();
+    expect(res.rows[0].repoTotalSource).toBeNull();
+    expect(res.rows[0].repoVerifiedAt).toBeNull();
+  });
+
+  it('keeps the provenance when there IS a size', async () => {
+    const db = {
+      execute: vi.fn(async () => ({
+        rowCount: 1,
+        rows: [{
+          tenant_id: 't1', tenant_name: 'Acme', is_system: false, plan_name: 'Starter',
+          include_override: null, plan_include: true, resolved_include: true,
+          snapshot_count: 0, snapshot_bytes: '0', last_snapshot_at: null,
+          bundle_count: 3, bundle_bytes: '2048', last_bundle_at: null,
+          quota_max_bytes: null, open_cart_id: null,
+          repo_total_bytes: '1500', repo_total_source: 'tracked',
+          repo_stats_at: new Date('2026-06-01T00:00:00Z'),
+          repo_verified_at: new Date('2026-06-01T00:00:00Z'),
+        }],
+      })),
+    } as unknown as Database;
+
+    const res = await loadTenantsOverview(db, {});
+    expect(res.rows[0].repoTotalBytes).toBe(1500);
+    expect(res.rows[0].repoTotalSource).toBe('tracked');
+    expect(res.rows[0].repoVerifiedAt).toBe('2026-06-01T00:00:00.000Z');
+  });
+
   it('loadTenantsOverview returns an empty rollup for an empty result set', async () => {
     const db = { execute: vi.fn(async () => ({ rowCount: 0, rows: [] })) } as unknown as Database;
     const res = await loadTenantsOverview(db, {});

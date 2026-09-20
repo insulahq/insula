@@ -19,7 +19,7 @@
  * cache for the admin UI and the retention sweeper.
  */
 
-import { sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
 import {
   tenantResticRepoState,
@@ -38,6 +38,16 @@ export interface RecordResticSnapshotArgs {
   readonly sizeBytes: number;
   readonly regionId: string;
   readonly snapshotAt: Date;
+  /**
+   * `data_added_packed` from this snapshot's restic summary — the bytes the
+   * snapshot actually added to the repository. Advances `repo_total_bytes`
+   * so the admin UI has a live repo size without paying for `restic stats`.
+   *
+   * NULL = the snapshot did not report one. The accumulator is then left
+   * untouched rather than advanced by 0, so `repo_total_at` keeps saying when
+   * the total was last genuinely updated.
+   */
+  readonly dataAddedPacked: number | null;
 }
 
 /**
@@ -73,8 +83,66 @@ export async function recordResticSnapshot(args: RecordResticSnapshotArgs): Prom
         lastRunAt: sql`excluded.last_run_at`,
         bundleSchemaVersion: sql`excluded.bundle_schema_version`,
         sourceRegionId: sql`excluded.source_region_id`,
+        // Advance the tracked repo total — but ONLY on a row that already has
+        // one. Accumulating from NULL would produce "bytes added since we
+        // started counting" and present it as the repo size, which for a
+        // tenant with 26 existing snapshots understates it by orders of
+        // magnitude. A confidently wrong number is worse than "not measured",
+        // so an unanchored row stays NULL until the reclamation sweep seeds it
+        // with a real measurement (see anchorResticRepoTotal).
+        //
+        // The bare table reference is the EXISTING row in an ON CONFLICT SET
+        // clause; `excluded.*` would be the row we tried to insert.
+        repoTotalBytes: sql`CASE
+          WHEN ${tenantResticRepoState.repoTotalBytes} IS NULL THEN NULL
+          WHEN ${args.dataAddedPacked}::bigint IS NULL THEN ${tenantResticRepoState.repoTotalBytes}
+          ELSE ${tenantResticRepoState.repoTotalBytes} + ${args.dataAddedPacked}::bigint
+        END`,
+        repoTotalSource: sql`CASE
+          WHEN ${tenantResticRepoState.repoTotalBytes} IS NULL THEN ${tenantResticRepoState.repoTotalSource}
+          WHEN ${args.dataAddedPacked}::bigint IS NULL THEN ${tenantResticRepoState.repoTotalSource}
+          ELSE 'tracked'
+        END`,
+        repoTotalAt: sql`CASE
+          WHEN ${tenantResticRepoState.repoTotalBytes} IS NULL THEN ${tenantResticRepoState.repoTotalAt}
+          WHEN ${args.dataAddedPacked}::bigint IS NULL THEN ${tenantResticRepoState.repoTotalAt}
+          ELSE ${args.snapshotAt}
+        END`,
       },
     });
+}
+
+/**
+ * Write an AUTHORITATIVE repo size — the result of `restic stats --mode
+ * raw-data` — and reset the tracking anchor.
+ *
+ * Called from two places: the operator's Refresh button, and the reclamation
+ * sweep (after a prune, and once for any component that has never been
+ * measured). Both stamp `repoStatsAt`, which is what lets the UI distinguish
+ * "verified just now" from "tracked since a measurement four days ago".
+ *
+ * Uses UPDATE, not upsert: a component with no state row has never been backed
+ * up, so there is nothing to anchor and nothing to create.
+ */
+export async function anchorResticRepoTotal(args: {
+  readonly db: Database;
+  readonly tenantId: string;
+  readonly component: string;
+  readonly totalBytes: number;
+  readonly measuredAt: Date;
+}): Promise<void> {
+  await args.db
+    .update(tenantResticRepoState)
+    .set({
+      repoTotalBytes: args.totalBytes,
+      repoStatsAt: args.measuredAt,
+      repoTotalAt: args.measuredAt,
+      repoTotalSource: 'measured',
+    })
+    .where(and(
+      eq(tenantResticRepoState.tenantId, args.tenantId),
+      eq(tenantResticRepoState.component, args.component),
+    ));
 }
 
 /**
