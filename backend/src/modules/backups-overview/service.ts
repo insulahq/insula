@@ -252,8 +252,17 @@ export async function loadTenantsOverview(db: Database, opts: ListTenantsOpts = 
         -- The OLDEST authoritative measurement wins: a total is only as
         -- trustworthy as its least recently verified component.
         MIN(repo_stats_at) AS verified_at,
-        -- One tracked component makes the whole sum tracked.
-        CASE WHEN bool_or(repo_total_source = 'tracked') THEN 'tracked' ELSE 'measured' END AS total_source
+        -- One tracked component makes the whole sum tracked. The first arm is
+        -- load-bearing: over zero contributing rows bool_or() returns NULL,
+        -- not FALSE, so a bare CASE falls through to the ELSE and a tenant
+        -- that has never been measured reports itself as measured beside a
+        -- NULL size. Caught on DEV: every tenant said so, including two with
+        -- no repo state row at all.
+        CASE
+          WHEN count(repo_total_bytes) = 0 THEN NULL
+          WHEN COALESCE(bool_or(repo_total_source = 'tracked'), FALSE) THEN 'tracked'
+          ELSE 'measured'
+        END AS total_source
       FROM tenant_restic_repo_state
       WHERE tenant_id = t.id AND repo_total_bytes IS NOT NULL
     ) repo ON TRUE
@@ -312,8 +321,13 @@ export async function loadTenantsOverview(db: Database, opts: ListTenantsOpts = 
       openCartId: r.open_cart_id,
       repoTotalBytes: r.repo_total_bytes == null ? null : Number(r.repo_total_bytes),
       repoStatsAt: toIso(r.repo_stats_at),
-      repoVerifiedAt: toIso(r.repo_verified_at),
-      repoTotalSource: r.repo_total_source === 'tracked' || r.repo_total_source === 'measured'
+      // Provenance describes a number. With no number there is nothing to
+      // describe, so both fields are forced to null here rather than trusting
+      // the aggregate above — a source of 'measured' beside a null size is a
+      // claim the row cannot support, and the SQL got exactly that wrong once.
+      repoVerifiedAt: r.repo_total_bytes == null ? null : toIso(r.repo_verified_at),
+      repoTotalSource: r.repo_total_bytes != null
+        && (r.repo_total_source === 'tracked' || r.repo_total_source === 'measured')
         ? r.repo_total_source
         : null,
     };

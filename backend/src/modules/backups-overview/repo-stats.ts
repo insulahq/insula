@@ -28,6 +28,7 @@ import {
   deriveResticPassword,
 } from '../tenant-bundles/restic-driver.js';
 import { resolveShimBackupTarget } from '../tenant-bundles/resolve-backup-target.js';
+import { anchorResticRepoTotal } from '../tenant-bundles/repo-state.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
 export interface RefreshRepoStatsArgs {
@@ -88,12 +89,15 @@ export async function refreshTenantRepoStats(args: RefreshRepoStatsArgs): Promis
       const stats = await runResticStats({ target, passwordHex, repoUri });
       total += stats.totalSizeBytes;
       components.push({ component, totalBytes: stats.totalSizeBytes, error: null });
-      await db.update(tenantResticRepoState)
-        .set({ repoTotalBytes: stats.totalSizeBytes, repoStatsAt: measuredAt })
-        .where(and(
-          eq(tenantResticRepoState.tenantId, tenantId),
-          eq(tenantResticRepoState.component, component),
-        ));
+      // Goes through the shared anchor writer rather than setting the two
+      // columns it used to own. `repo_total_bytes` now also carries a
+      // provenance label and its own "as of", and writing the size without
+      // them left an exact measurement describing itself as `tracked` since
+      // an older timestamp — the button understating its own result. One
+      // writer for "this is a real measurement" keeps all four in step.
+      await anchorResticRepoTotal({
+        db, tenantId, component, totalBytes: stats.totalSizeBytes, measuredAt,
+      });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       logger.warn({ tenantId, component, err: msg }, 'restic stats failed for component');
