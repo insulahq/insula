@@ -125,11 +125,10 @@ export async function collectTenantMetrics(
         reason: pod.status?.reason,
         deletionTimestamp: pod.metadata?.deletionTimestamp,
       })) continue;
-      // The EFFECTIVE pod request, not the container sum — init containers are
-      // charged too, and this panel used to miss them entirely. Production,
-      // one tenant, 2026-09-19: a 400Mi MariaDB behind a 512Mi
-      // `reset-root-password` init container showed 432Mi reserved of a 1Gi
-      // plan while the ResourceQuota said 544Mi and refused the next deploy.
+      // The EFFECTIVE pod request, not the container sum. Init containers are
+      // charged for the pod's whole life, so summing `spec.containers` reports
+      // headroom the cluster will not honour — and this panel is what a tenant
+      // reads before sizing the next deploy.
       // See shared/pod-resources.ts for the rule and the sidecar case.
       cpuReserved += effectivePodRequest(pod.spec, 'cpu');
       memoryReserved += effectivePodRequest(pod.spec, 'memory');

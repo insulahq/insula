@@ -4,14 +4,12 @@ import { collectTenantMetrics } from './resource-metrics.js';
 /**
  * Reserved must be the EFFECTIVE pod request, not the container sum.
  *
- * Production 2026-09-19, on one tenant: a 400Mi MariaDB ran behind a
- * 512Mi `reset-root-password` init container. Kubernetes charges a pod
- * `max(sum(containers), max(initContainers))` for its whole lifetime, so the
- * ResourceQuota said 544Mi — while this panel summed `spec.containers` and
- * reported 432Mi of a 1Gi plan. The tenant was shown 592Mi of headroom, the
- * deploy gate agreed, and admission then refused a 512Mi app.
+ * Kubernetes charges a pod `max(sum(containers), max(initContainers))` for its
+ * whole lifetime, so a database sized below the init container in front of it
+ * is charged the init container's figure. Summing `spec.containers` shows the
+ * tenant headroom that admission will refuse.
  *
- * The fixture below is that namespace, to the byte.
+ * The fixture below is a namespace of exactly that shape.
  */
 
 const NS = 'tenant-example';

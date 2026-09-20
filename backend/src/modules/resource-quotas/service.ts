@@ -186,10 +186,9 @@ export async function getTenantResourceAvailability(
   // charges a pod `max(sum(containers), max(initContainers))`, and an init
   // container has no `deployments` row to be summed from in the first place.
   //
-  // Production 2026-09-19, on one tenant: this gate computed 432Mi used
-  // of a 1Gi plan and enabled the deploy button for a 512Mi app; the quota
-  // said 544Mi and admission refused it. The tenant was told twice, by the
-  // same product, that the same deploy both would and would not fit.
+  // Left to the database alone, this gate enables a deploy button for a
+  // workload admission then refuses — the same product telling the tenant, in
+  // two places, that one deploy both does and does not fit.
   //
   // Take the LARGER of the two. The database covers deployments whose pods are
   // momentarily absent — a node reboot or a reschedule makes the live quota
