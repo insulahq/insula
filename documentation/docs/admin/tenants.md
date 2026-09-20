@@ -240,6 +240,16 @@ set a tenant-specific value.
   smaller → restore). The platform refuses it on a normal save and prompts
   you with a confirmation explaining the steps before it runs.
 
+    When it finishes successfully, the progress dialog offers to delete the
+    volume it replaced, with its size. The old volume is **kept** by
+    default and goes on reserving its full original size until something
+    removes it, so accepting is usually what you want. Declining is safe —
+    it stays listed under
+    [Cluster → Storage → Orphaned volumes](nodes-and-storage.md), where you
+    can delete it later. The offer never appears when the resize failed:
+    the old volume is the way back, and deleting it then would remove the
+    only copy of the data.
+
 See [Plans & subscriptions](plans-and-subscriptions.md) for what each
 plan field means.
 

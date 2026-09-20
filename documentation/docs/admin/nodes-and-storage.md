@@ -88,8 +88,25 @@ before relying on it.
   activate a Longhorn target, and vice versa.
 - **Orphaned volumes** — a maintenance surface for storage drift:
   persistent volumes / Longhorn volumes whose owning tenant is gone, or
-  that linger in a Released phase past the stale threshold. The **Manage**
+  that have been released by a resize or a deletion. The **Manage**
   button lets you review and reclaim them.
+
+    A released volume is listed **immediately**, not after a waiting
+    period — it reserves its full provisioned size from the moment it is
+    released, however little is stored in it, so a large one can eat into
+    schedulable capacity long before anyone thinks to look. Recently
+    released volumes are shown with a distinct label and are **skipped by
+    *Purge all***: deleting one is an individual, deliberate choice, since
+    it is also the volume you would go back to if a resize turned out
+    wrong.
+
+    Orphaned volumes also surface where you are already looking:
+
+    - the **dashboard** shows a card with the count whenever any exist —
+      and nothing at all when there are none — which opens this same
+      management list;
+    - a **tenant's detail page** lists the orphaned volumes that can still
+      be attributed to that tenant, alongside its live PVCs.
 
 !!! info "Snapshots, backups, and reclaim"
     Storage-lifecycle housekeeping (snapshot scheduling, orphan reclaim)
