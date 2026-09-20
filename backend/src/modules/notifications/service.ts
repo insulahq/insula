@@ -120,6 +120,26 @@ export async function getUnreadCount(db: Database, userId: string): Promise<numb
   return Number(result?.count ?? 0);
 }
 
+/**
+ * Delete EVERY notification belonging to the user, in one statement.
+ *
+ * Deliberately server-side rather than a client loop over the rows the page
+ * happens to have fetched: the list endpoint caps at 100, so a loop would
+ * leave the 101st onward in place while reporting success — the same trap
+ * `markAllAsRead` exists to avoid for the unread badge.
+ *
+ * Total by design, not scoped to the page's read-state filter. The filter is
+ * a view; this is an account-wide action, and the UI names the full count in
+ * its confirmation so the two can't be confused.
+ */
+export async function deleteAllNotifications(db: Database, userId: string): Promise<number> {
+  const result = await db
+    .delete(notifications)
+    .where(eq(notifications.userId, userId))
+    .returning({ id: notifications.id });
+  return result.length;
+}
+
 export async function deleteNotification(db: Database, userId: string, id: string) {
   const [notification] = await db
     .select()
