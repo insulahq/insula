@@ -39,10 +39,14 @@ import { tenants } from '../../db/schema.js';
  *                          cleaned up, or admin DELETE finished without
  *                          the cascade running.
  */
+// NOTE: hand-maintained alongside `orphanReasonSchema` in
+// @insula/api-contracts. The two must agree; adding a value to one and not
+// the other compiles cleanly on both sides and diverges silently at the wire.
 export type OrphanReason =
   | 'namespace_deleted'
   | 'tenant_record_deleted'
   | 'pv_released_stale'
+  | 'pv_released_recent'
   | 'longhorn_volume_unbound'
   | 'namespace_orphaned';
 
@@ -119,7 +123,15 @@ interface RawLhReplica {
 
 interface RawLhSnapshot {
   readonly metadata?: { readonly name?: string };
-  readonly spec?: { readonly volume?: string };
+  readonly spec?: {
+    readonly volume?: string;
+    /**
+     * FALSE for snapshots Longhorn takes on its own behalf — notably the
+     * `expand-<bytes>` marker written on every volume expansion. See the
+     * retention guard below for why telling them apart matters.
+     */
+    readonly userCreated?: boolean;
+  };
 }
 
 /** Longhorn's writable head snapshot — never a real restore point. */
@@ -247,7 +259,23 @@ export async function detectOrphans(
   for (const s of snapList.items ?? []) {
     const vol = s.spec?.volume;
     const name = s.metadata?.name;
-    if (vol && name && name !== LH_VOLUME_HEAD) volumesWithSnapshots.add(vol);
+    if (!vol || !name || name === LH_VOLUME_HEAD) continue;
+    // `userCreated` is the whole distinction, and leaving it out made this
+    // guard permanent for volumes it was never meant to cover.
+    //
+    // Longhorn writes its OWN snapshots — an `expand-<bytes>` marker on every
+    // volume expansion, among others — with `userCreated: false`. Those are
+    // not retained fallbacks; nothing tracks them in `tenant_volume_snapshots`
+    // and so the reaper that is supposed to expire retention snapshots never
+    // sees them. A volume carrying only Longhorn's own snapshot was therefore
+    // excluded from orphan detection FOREVER, not "until its snapshots
+    // expire".
+    //
+    // Found on production: a tenant volume expanded to 256 GiB and replaced
+    // 14 minutes later held 63% of the cluster's entire storage commitment,
+    // invisible to this scan, with a capacity warning as the only symptom.
+    if (s.spec?.userCreated !== true) continue;
+    volumesWithSnapshots.add(vol);
   }
 
   // 3) Walk PVs and classify each one.
@@ -277,14 +305,23 @@ export async function detectOrphans(
       // DB row delete or a half-failed deprovision.
       reason = 'tenant_record_deleted';
     } else if (phase === 'Released'
-      && ageDays !== null
-      && ageDays >= stalePvThresholdDays
-      // A Released volume that still holds a restorable snapshot is a
+      // A Released volume that still holds a USER snapshot is a
       // deliberately-retained fallback (post-shrink/archive) — surfaced in the
       // tenant's retained-volumes restore UI, NOT an orphan to reap. Skip it
       // until its snapshots expire, then it falls through as a normal stale PV.
       && !(lhVolName && volumesWithSnapshots.has(lhVolName))) {
-      reason = 'pv_released_stale';
+      // Released PVs are now REPORTED from the moment they are released, and
+      // the threshold decides which of two reasons they carry rather than
+      // whether they are seen at all.
+      //
+      // Before, a Released PV was invisible for the whole grace period. That
+      // is the window in which it is most likely to be an accident worth
+      // undoing — a destructive resize, a mis-sized provision — and the
+      // window in which its full size is already charged against Longhorn's
+      // schedulable capacity. Being unable to see it did not make it free.
+      reason = (ageDays !== null && ageDays >= stalePvThresholdDays)
+        ? 'pv_released_stale'
+        : 'pv_released_recent';
     }
 
     if (reason && lhVolName) seenLonghornVols.add(lhVolName);
@@ -542,6 +579,12 @@ export async function purgeAllOrphans(
   const failures: Array<{ key: string; reason: OrphanReason; error: string }> = [];
 
   for (const entry of report.orphans) {
+    // Never bulk-purge a volume that is still inside its grace period. It is
+    // listed so the operator can SEE it; removing it is a per-volume decision,
+    // because this is exactly the class an operator may still want to restore
+    // from. A "purge all" that quietly took these would be the worst possible
+    // reading of a button whose whole job is tidying up known garbage.
+    if (entry.reason === 'pv_released_recent') continue;
     const key = entry.longhornVolumeName ?? entry.pvName ?? entry.namespace ?? '';
     if (!key) {
       failures.push({ key: '(unknown)', reason: entry.reason, error: 'orphan has no actionable key' });

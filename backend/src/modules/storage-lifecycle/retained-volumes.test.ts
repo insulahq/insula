@@ -24,10 +24,20 @@ function lhVol(name: string, pvName: string, size = '32212254720') {
   return { metadata: { name }, spec: { size }, status: { kubernetesStatus: { pvName } } };
 }
 
-function snap(name: string, volume: string, opts: { created?: string; size?: string; ready?: boolean } = {}) {
+/**
+ * A snapshot fixture. `userCreated` defaults to TRUE because every existing
+ * case here means "a person took a snapshot before a destructive op" — that
+ * is what makes a volume a restorable fallback. Pass `userCreated: false` for
+ * the snapshots Longhorn writes on its own behalf.
+ */
+function snap(
+  name: string,
+  volume: string,
+  opts: { created?: string; size?: string; ready?: boolean; userCreated?: boolean } = {},
+) {
   return {
     metadata: { name },
-    spec: { volume },
+    spec: { volume, userCreated: opts.userCreated ?? true },
     status: {
       readyToUse: opts.ready ?? true,
       size: opts.size ?? '1048576',
@@ -110,6 +120,26 @@ describe('classifyRetainedVolumes', () => {
     expect(out).toHaveLength(0);
   });
 
+  it("does NOT offer a restore onto Longhorn's own expansion marker", () => {
+    // Production: a tenant volume was expanded to 256 GiB and replaced 14
+    // minutes later. Its only snapshot was `expand-274877906944`, written by
+    // Longhorn on the expansion with `userCreated: false`.
+    //
+    // Counting that as a restore point made this card offer to roll the
+    // tenant back onto it — onto a marker recording that a resize happened,
+    // not a state anyone chose to keep. It also kept the volume out of orphan
+    // detection, so 256 GiB sat unnoticed holding most of the cluster's
+    // storage commitment.
+    const out = classifyRetainedVolumes({
+      namespace: 'tenant-x',
+      boundVolumeName: 'pvc-live',
+      pvs: [pv('pvc-old', 'tenant-x', { phase: 'Released' })],
+      longhornVolumes: [lhVol('pvc-old', 'pvc-old')],
+      snapshots: [snap('expand-274877906944', 'pvc-old', { userCreated: false })],
+    });
+    expect(out).toHaveLength(0);
+  });
+
   it('sorts snapshots newest-first within a volume', () => {
     const out = classifyRetainedVolumes({
       namespace: NS,
@@ -146,7 +176,7 @@ describe('classifyRetainedVolumes', () => {
       boundVolumeName: null,
       pvs: [pv('pvc-old')],
       longhornVolumes: [{ metadata: { name: 'pvc-old' }, spec: { size: 2147483648 }, status: { kubernetesStatus: { pvName: 'pvc-old' } } } as never],
-      snapshots: [{ metadata: { name: 'snapshot-num' }, spec: { volume: 'pvc-old' }, status: { readyToUse: true, size: 1048576, creationTime: '2026-06-16T09:00:00Z' } } as never],
+      snapshots: [{ metadata: { name: 'snapshot-num' }, spec: { volume: 'pvc-old', userCreated: true }, status: { readyToUse: true, size: 1048576, creationTime: '2026-06-16T09:00:00Z' } } as never],
     });
     expect(out).toHaveLength(1);
     expect(out[0].snapshots[0].sizeBytes).toBe(1048576);

@@ -157,6 +157,58 @@ describe('detectOrphans', () => {
     expect(r.orphans[0].ageDays).toBeGreaterThanOrEqual(10);
   });
 
+  it("Longhorn's OWN snapshot does not make a volume look deliberately retained", async () => {
+    // THE production bug. A tenant volume expanded to 256 GiB and replaced 14
+    // minutes later carried one snapshot — `expand-274877906944`, written by
+    // Longhorn itself on every expansion, with `userCreated: false`.
+    //
+    // The retention guard matched any non-head snapshot, so the volume was
+    // excluded from detection. And the comment's escape hatch ("until its
+    // snapshots expire") never fires for these: nothing tracks a Longhorn
+    // snapshot in `tenant_volume_snapshots`, so the reaper never sees it. The
+    // exclusion was permanent, and the volume held 63% of the cluster's
+    // storage commitment while being invisible here.
+    const old = new Date(Date.now() - 30 * 86400_000).toISOString();
+    const k8s = makeK8s({
+      pvs: [{
+        metadata: { name: 'pvc-expanded' },
+        spec: { claimRef: { namespace: 'tenant-x', name: 'tenant-x-storage' }, capacity: { storage: '256Gi' } },
+        status: { phase: 'Released', lastTransitionTime: old },
+      }],
+      namespaces: ['tenant-x'],
+      longhornVolumes: [{ metadata: { name: 'pvc-expanded' }, status: { kubernetesStatus: { pvName: 'pvc-expanded' } } }],
+      longhornSnapshots: [
+        { metadata: { name: 'volume-head' }, spec: { volume: 'pvc-expanded' } },
+        { metadata: { name: 'expand-274877906944' }, spec: { volume: 'pvc-expanded', userCreated: false } },
+      ],
+    });
+    // The tenant is ALIVE — this is a leftover volume, not a deleted tenant.
+    const db = makeDb([{ ns: 'tenant-x', name: 'Tenant X' }]);
+    const r = await detectOrphans(db, k8s, { stalePvThresholdDays: 7 });
+    expect(r.orphans[0]?.reason).toBe('pv_released_stale');
+  });
+
+  it('reports a just-released PV immediately, as recent rather than stale', async () => {
+    // It used to be invisible for the whole grace period — which is both the
+    // window where it is most likely to be an accident worth undoing, and the
+    // window where its full size is already charged against schedulable
+    // capacity. Not seeing it never made it free.
+    const justNow = new Date(Date.now() - 3600_000).toISOString();
+    const k8s = makeK8s({
+      pvs: [{
+        metadata: { name: 'pvc-fresh' },
+        spec: { claimRef: { namespace: 'tenant-x', name: 'tenant-x-storage' }, capacity: { storage: '256Gi' } },
+        status: { phase: 'Released', lastTransitionTime: justNow },
+      }],
+      namespaces: ['tenant-x'],
+      longhornVolumes: [{ metadata: { name: 'pvc-fresh' }, status: { kubernetesStatus: { pvName: 'pvc-fresh' } } }],
+    });
+    const db = makeDb([{ ns: 'tenant-x', name: 'Tenant X' }]);
+    const r = await detectOrphans(db, k8s, { stalePvThresholdDays: 7 });
+    expect(r.orphans).toHaveLength(1);
+    expect(r.orphans[0].reason).toBe('pv_released_recent');
+  });
+
   it('does NOT flag a stale Released PV that still holds a restorable snapshot (deliberately retained volume)', async () => {
     const old = new Date(Date.now() - 30 * 86400_000).toISOString(); // 30 days, well past stale
     const k8s = makeK8s({
@@ -167,10 +219,12 @@ describe('detectOrphans', () => {
       }],
       namespaces: ['tenant-x'],
       longhornVolumes: [{ metadata: { name: 'pvc-retained' }, status: { kubernetesStatus: { pvName: 'pvc-retained' } } }],
-      // A real (non-head) snapshot on that volume → it's a retained fallback.
+      // A USER snapshot on that volume → it's a retained fallback. The
+      // `userCreated` flag is what makes it one: Longhorn writes its own
+      // snapshots too, and those must not confer this protection.
       longhornSnapshots: [
         { metadata: { name: 'volume-head' }, spec: { volume: 'pvc-retained' } },
-        { metadata: { name: 'snap-pre-shrink' }, spec: { volume: 'pvc-retained' } },
+        { metadata: { name: 'snap-pre-shrink' }, spec: { volume: 'pvc-retained', userCreated: true } },
       ],
     });
     const db = makeDb([{ ns: 'tenant-x', name: 'Tenant X' }]);
