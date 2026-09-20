@@ -1457,21 +1457,16 @@ function DeploymentsTab({ data, isLoading, error, tenantId }: TabContentProps<De
         {sortedItems.map((d) => {
           // Try to parse lastError as the OperatorError envelope (JSON
           // produced by the status-reconciler since the error-standard
-          // change). Anything else — a legacy row, or the Kubernetes client's
-          // raw HTTP body — is decoded into an envelope rather than printed,
-          // so a quota rejection reads as a sentence with the numbers folded
-          // into "More details" instead of `{"kind":"Status",…}` in a table cell.
+          // change). One decoder handles every shape: a stored envelope, a
+          // legacy plain string, or the Kubernetes client's raw HTTP body. It
+          // used to short-circuit on "looks like an envelope" and render that
+          // envelope verbatim, which for a quota rejection meant the generic
+          // "Operation failed" and a detail truncated mid-word — strictly
+          // worse than what the decoder makes of the same input.
           let envelope: import('@insula/api-contracts').OperatorError | null = null;
           let plainDetail = '';
           if (d.lastError && d.lastError.trim()) {
-            try {
-              const parsed = JSON.parse(d.lastError);
-              envelope = parsed && typeof parsed === 'object' && parsed.code && parsed.title
-                ? parsed as import('@insula/api-contracts').OperatorError
-                : describeDeploymentError(d.lastError);
-            } catch {
-              envelope = describeDeploymentError(d.lastError);
-            }
+            envelope = describeDeploymentError(d.lastError);
           }
           if (!envelope && !plainDetail) plainDetail = (d.statusMessage ?? '').trim();
           const detailTone = d.status === 'failed'

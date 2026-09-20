@@ -138,6 +138,62 @@ function parseQuotaResources(message: string): QuotaResource[] {
 }
 
 /**
+ * An `OperatorError` the platform already built, JSON-encoded.
+ *
+ * The status reconciler stores its envelope in `lastError`, so most of what
+ * reaches this function is NOT a raw Kubernetes body — it is a structured
+ * error that only *looks* like noise because it arrives as a string. Rendering
+ * it without unpacking puts `{"code":"UNKNOWN","title":…}` on the card, which
+ * is the exact failure decoding was added to remove, reached by another door.
+ */
+function parseOperatorEnvelope(raw: string): OperatorError | null {
+  if (!raw.startsWith('{')) return null;
+  try {
+    const p = JSON.parse(raw) as Record<string, unknown>;
+    if (typeof p.code === 'string' && typeof p.title === 'string' && typeof p.detail === 'string') {
+      return p as unknown as OperatorError;
+    }
+  } catch { /* not an envelope — fall through to the plain-text paths */ }
+  return null;
+}
+
+/**
+ * The platform's own rendering of a quota rejection, e.g.
+ * `memory limit: requesting 512Mi, already using 1792Mi of 2Gi limit`.
+ *
+ * By the time a quota failure has been through the status reconciler the
+ * original `requested:/used:/limited:` key-value form is gone — it has already
+ * been formatted for a human. Both shapes therefore have to be readable here,
+ * or the table is only ever built for whichever path happens to reach the
+ * panel first.
+ */
+const FORMATTED_QUOTA = /([A-Za-z ]+?):\s*requesting\s+(\S+?),\s*already using\s+(\S+?)\s+of\s+(\S+?)\s+limit/g;
+
+function parseFormattedQuota(message: string): QuotaResource[] {
+  const seen = new Set<string>();
+  const rows: QuotaResource[] = [];
+  for (const m of message.matchAll(FORMATTED_QUOTA)) {
+    // "memory limit" / "memory request" both describe one resource to a
+    // tenant; the distinction is Kubernetes' bookkeeping, not theirs.
+    const label = /cpu/i.test(m[1]) ? 'CPU' : /memory/i.test(m[1]) ? 'Memory' : /storage/i.test(m[1]) ? 'Storage' : m[1].trim();
+    if (seen.has(label)) continue;
+    seen.add(label);
+    const [, , requested, used, limit] = m;
+    const isCpu = label === 'CPU';
+    const parse = isCpu ? toCores : toMiB;
+    const format = isCpu ? formatCores : formatMiB;
+    const pReq = parse(requested), pUse = parse(used), pLim = parse(limit);
+    const known = pReq !== null && pUse !== null && pLim !== null;
+    rows.push({
+      key: label, label, requested, used, limit,
+      free: known ? format(Math.max(0, pLim! - pUse!)) : null,
+      shortBy: known ? format(Math.max(0, pReq! - (pLim! - pUse!))) : null,
+    });
+  }
+  return rows;
+}
+
+/**
  * Unwrap the Kubernetes Status envelope, if there is one.
  *
  * The client stringifies the whole HTTP response, so the useful message sits
@@ -165,10 +221,46 @@ function unwrapK8sStatus(raw: string): { message: string; fields: Record<string,
 
 export function describeDeploymentError(raw: string): OperatorError {
   const trimmed = raw.trim();
+
+  // Structured already? Then the work is to USE it, not to rebuild it.
+  const envelope = parseOperatorEnvelope(trimmed);
+  if (envelope) {
+    // `detail` is capped at 240 chars upstream and can stop mid-word;
+    // `diagnostics.raw` carries the whole message.
+    const upstream = typeof envelope.diagnostics?.raw === 'string'
+      ? envelope.diagnostics.raw
+      : envelope.detail;
+    const rows = parseFormattedQuota(upstream);
+    if (rows.length > 0) return quotaError(rows, {}, trimmed);
+    return {
+      ...envelope,
+      diagnostics: { ...(envelope.diagnostics ?? {}), 'Raw error': trimmed },
+    };
+  }
+
   const { message, fields } = unwrapK8sStatus(trimmed);
 
   if (message.includes('exceeded quota')) {
-    const rows = parseQuotaResources(message);
+    return quotaError(parseQuotaResources(message), fields, trimmed);
+  }
+
+  return {
+    code: 'DEPLOYMENT_FAILED',
+    title: 'Deployment failed',
+    detail: message,
+    remediation: ['Retry the deployment.', 'If it keeps failing, send the details below to your provider.'],
+    retryable: true,
+    diagnostics: { ...fields, 'Raw error': trimmed },
+  };
+}
+
+/** One rendering of a quota rejection, whichever shape it arrived in. */
+function quotaError(
+  rows: readonly QuotaResource[],
+  fields: Record<string, unknown>,
+  trimmed: string,
+): OperatorError {
+  {
     const primary = rows[0];
 
     const diagnostics: Record<string, unknown> = {};
@@ -215,13 +307,4 @@ export function describeDeploymentError(raw: string): OperatorError {
       diagnostics,
     };
   }
-
-  return {
-    code: 'DEPLOYMENT_FAILED',
-    title: 'Deployment failed',
-    detail: message,
-    remediation: ['Retry the deployment.', 'If it keeps failing, send the details below to your provider.'],
-    retryable: true,
-    diagnostics: { ...fields, 'Raw error': trimmed },
-  };
 }

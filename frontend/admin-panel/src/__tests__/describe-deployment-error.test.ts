@@ -120,3 +120,88 @@ describe('describeDeploymentError — everything else', () => {
     expect(e.detail).toBe('config error near { "port"');
   });
 });
+
+// ── The shape the platform actually stores ───────────────────────────────────
+//
+// `lastError` is usually NOT a raw Kubernetes body: the status reconciler
+// writes its own OperatorError envelope there, JSON-encoded. Decoding only the
+// Kubernetes shape meant a quota rejection reached the card as
+// `{"code":"UNKNOWN","title":"Operation failed",…}` — the same unreadable JSON,
+// through another door. This fixture is the exact string DEV stored for a
+// deployment refused on memory.
+const STORED_ENVELOPE = JSON.stringify({
+  code: 'UNKNOWN',
+  title: 'Operation failed',
+  detail: 'Quota exceeded — memory limit: requesting 512Mi, already using 1792Mi of 2Gi limit; '
+    + 'memory request: requesting 2Gi, already using 2Gi of 2Gi limit; used: limits.memory: 1792Mi; '
+    + 'limited: limits.memory: 2Gi. Free up resources or upgrade the p',
+  remediation: ['Open "More details" below for the upstream message.'],
+  retryable: true,
+  diagnostics: {
+    raw: 'Quota exceeded — memory limit: requesting 512Mi, already using 1792Mi of 2Gi limit; '
+      + 'memory request: requesting 2Gi, already using 2Gi of 2Gi limit; used: limits.memory: 1792Mi; '
+      + 'limited: limits.memory: 2Gi. Free up resources or upgrade the plan.',
+  },
+});
+
+describe('describeDeploymentError — the stored OperatorError envelope', () => {
+  it('never puts the envelope’s JSON on screen', () => {
+    const e = describeDeploymentError(STORED_ENVELOPE);
+    expect(e.detail).not.toContain('{');
+    expect(e.detail).not.toContain('"code"');
+    expect(e.detail).not.toContain('retryable');
+  });
+
+  it('recognises the quota rejection inside it and states it plainly', () => {
+    const e = describeDeploymentError(STORED_ENVELOPE);
+    expect(e.code).toBe('QUOTA_EXCEEDED');
+    expect(e.title).toBe('Not enough memory in your plan');
+    expect(e.detail).toBe(
+      'This app asks for 512Mi of memory, but only 256Mi of your 2Gi plan is free — 1792Mi is already in use.',
+    );
+  });
+
+  it('builds the same table from the formatted text as from the raw one', () => {
+    const e = describeDeploymentError(STORED_ENVELOPE);
+    expect(e.diagnostics).toMatchObject({
+      'Memory requested': '512Mi',
+      'Memory already in use': '1792Mi',
+      'Memory plan limit': '2Gi',
+      'Memory free': '256Mi',
+      'Memory short by': '256Mi',
+    });
+  });
+
+  // `detail` is capped at 240 chars upstream and stops mid-word ("upgrade the
+  // p"); diagnostics.raw is whole.
+  it('reads the untruncated message, not the capped one', () => {
+    const e = describeDeploymentError(STORED_ENVELOPE);
+    expect(e.detail).not.toContain('upgrade the p');
+    expect(e.diagnostics?.['Raw error']).toBe(STORED_ENVELOPE);
+  });
+
+  it('is not retryable — retrying frees nothing', () => {
+    expect(describeDeploymentError(STORED_ENVELOPE).retryable).toBe(false);
+  });
+
+  it('passes a non-quota envelope through with its own advice intact', () => {
+    const env = JSON.stringify({
+      code: 'IMAGE_PULL_FAILED', title: 'Image could not be pulled',
+      detail: 'manifest unknown', remediation: ['Check the image tag.'],
+      retryable: true, diagnostics: { raw: 'ErrImagePull: manifest unknown' },
+    });
+    const e = describeDeploymentError(env);
+    expect(e.code).toBe('IMAGE_PULL_FAILED');
+    expect(e.title).toBe('Image could not be pulled');
+    expect(e.detail).toBe('manifest unknown');
+    expect(e.remediation).toEqual(['Check the image tag.']);
+    expect(e.diagnostics).toMatchObject({ raw: 'ErrImagePull: manifest unknown', 'Raw error': env });
+  });
+
+  // Not every brace-leading string is an envelope.
+  it('still handles a bare Kubernetes Status body', () => {
+    const k8s = JSON.stringify({ kind: 'Status', message: 'deployments.apps "web" not found', reason: 'NotFound', code: 404 });
+    const e = describeDeploymentError(k8s);
+    expect(e.detail).toBe('deployments.apps "web" not found');
+  });
+});
