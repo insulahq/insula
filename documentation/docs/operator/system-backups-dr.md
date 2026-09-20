@@ -65,18 +65,38 @@ the log use at the target.
 
 ### Timing the other system backups
 
-The same tab carries a card for each of the other things the platform backs up
-at the system level, so their timing is visible and changeable in one place:
+The platform database comes first on this tab, above the rest — it is the one
+backup the platform cannot be rebuilt without, and the others are of limited
+use without it. Below it, a card for each of the other things the platform
+backs up at the system level, so their timing is visible and changeable in one
+place:
 
 | Schedule | What it controls |
 |---|---|
 | **etcd snapshot upload** | How often the cluster-database snapshots k3s writes to disk are shipped to your backup target. k3s writes them every 12 hours; this setting is how often they are collected and sent. |
 | **Secrets bundle** | How often the encrypted copy of your cluster secrets is taken — the bundle you need to rebuild this platform elsewhere. |
 | **Cluster state dump** | How often the inventory of Kubernetes objects is captured. |
-| **Longhorn recurring snapshots** | Shown for reference only. This one is set by the cluster manifest, so the card displays the cadence the cluster is *actually* running and the controls are disabled — and the API refuses the change too, rather than storing a value that would never be applied. |
+
+Longhorn's recurring snapshots are **not** listed here. Their cadence is
+compiled into the cluster manifest, which the platform neither owns nor has
+permission to change, so a card for them could only display a number and refuse
+every edit. The live value belongs with the rest of the Longhorn snapshot state
+rather than among schedules you can actually set.
 
 Each card also has an on/off switch. Turning a schedule off stops that backup
 until you turn it back on — the platform will not quietly keep running it.
+
+!!! info "Only the database's retention is yours to set"
+    The **Retention** setting above applies to the platform database alone —
+    it is the retention policy on the database's own backup store.
+
+    The other three keep a fixed number of copies, decided by the job that
+    writes them: the newest **24** etcd snapshots, **30** secrets bundles and
+    **14** cluster state dumps. Those limits are not settable from here, which
+    is why those cards have no retention field. A single platform-wide
+    retention number would be a promise the platform cannot keep — the limits
+    are different values, and two different *kinds* of limit: days for the
+    database, a count of copies for the rest.
 
 !!! info "Times are on the platform's clock"
     A schedule you enter here is read in the platform time zone (**Platform

@@ -81,18 +81,6 @@ const SCHEDULE_META: Record<string, {
     title: 'Tenant bundle schedule',
     description: 'Nightly Plesk-style bundles: files + mailboxes + config per tenant.',
   },
-  longhorn_recurring: {
-    title: 'Longhorn recurring snapshots',
-    description: 'Block-snapshot every PVC with the recurring-job label.',
-    // The cadence is compiled into a Flux-managed RecurringJob the platform
-    // neither owns nor has permission to patch, so this card shows the value
-    // and does not pretend to change it.
-    readOnly: true,
-    readOnlyReason:
-      'Set by the cluster manifest. Changing it here would be reverted within a minute, '
-      + 'so the control is not offered.',
-    hideRetention: true,
-  },
   etcd_snapshot: {
     title: 'etcd snapshot upload',
     description:
@@ -248,7 +236,7 @@ export default function BackupRoutingTab({ shimClass, scheduleSubsystems }: Prop
       </section>
 
       {/* ── Schedules section ──────────────────────────────────────── */}
-      {scheduleSubsystems.length > 0 && (
+      {(scheduleSubsystems.length > 0 || shimClass === 'system') && (
         <section
           className="space-y-3"
           data-testid="routing-tab-schedules"
@@ -257,9 +245,24 @@ export default function BackupRoutingTab({ shimClass, scheduleSubsystems }: Prop
           <header className="flex items-center gap-2">
             <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Schedules</h2>
             <span className="text-xs text-gray-500 dark:text-gray-400">
-              ({scheduleSubsystems.length})
+              ({scheduleSubsystems.length + (shimClass === 'system' ? 1 : 0)})
             </span>
           </header>
+
+          {/* The platform database comes FIRST. It used to sit in its own
+              section below every other schedule, which put the one backup the
+              platform cannot be rebuilt without at the bottom of the page,
+              under three DR artefacts that depend on it existing.
+
+              Its backups are configured as ONE thing — base copies plus
+              write-ahead log, on or off together, with their own retention.
+              See PostgresBackupsSection for why that is not a choice. */}
+          {shimClass === 'system' && (
+            <div data-testid="routing-tab-wal-streaming" id="wal-streaming">
+              <PostgresBackupsSection />
+            </div>
+          )}
+
           {scheduleSubsystems.map((subsystem) => {
             const meta = SCHEDULE_META[subsystem] ?? {
               title: subsystem,
@@ -279,21 +282,6 @@ export default function BackupRoutingTab({ shimClass, scheduleSubsystems }: Prop
               />
             );
           })}
-        </section>
-      )}
-
-      {/* ── Platform database (system class only) ─────────────────────
-          The CNPG cluster lives in the system class, and its backups are
-          configured as ONE thing: base copies + write-ahead log, on or off
-          together. See PostgresBackupsSection for why that is not a choice. */}
-      {shimClass === 'system' && (
-        <section
-          className="space-y-3"
-          data-testid="routing-tab-wal-streaming"
-          aria-label="Platform database backups"
-          id="wal-streaming"
-        >
-          <PostgresBackupsSection />
         </section>
       )}
 
