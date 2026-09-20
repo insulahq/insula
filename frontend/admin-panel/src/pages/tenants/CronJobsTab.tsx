@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, Search, Loader2, Play, Pause, Trash2, Globe, Terminal } from 'lucide-react';
+import { Plus, Search, Loader2, Play, Pause, Trash2, Globe, Terminal, Pencil } from 'lucide-react';
 import clsx from 'clsx';
-import CreateCronJobModal from '@/components/CreateCronJobModal';
+import CronJobModal from '@/components/CronJobModal';
 import SearchableTenantSelect from '@/components/ui/SearchableTenantSelect';
 import PaginationBar from '@/components/ui/PaginationBar';
 import BulkActionBar, { SelectCheckbox } from '@/components/ui/BulkActionBar';
@@ -43,6 +43,8 @@ export default function CronJobsTab() {
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [showCreate, setShowCreate] = useState(false);
+  /** Row being edited. The modal is keyed on this so switching rows remounts it. */
+  const [editingJob, setEditingJob] = useState<(typeof cronJobs)[number] | null>(null);
   const [confirmAction, setConfirmAction] = useState<'enable' | 'disable' | 'delete' | null>(null);
   const pagination = useCursorPagination({ defaultLimit: 20 });
 
@@ -171,6 +173,7 @@ export default function CronJobsTab() {
                     <SortableHeader label="Enabled" sortKey="enabled" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
                     <SortableHeader label="Last Run" sortKey="lastRunAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden lg:table-cell" />
                     <SortableHeader label="Status" sortKey="lastRunStatus" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden lg:table-cell" />
+                    <th className="px-5 py-3 text-right">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
@@ -265,11 +268,26 @@ export default function CronJobsTab() {
                           <span className="text-sm text-gray-400">—</span>
                         )}
                       </td>
+                      <td className="px-5 py-3.5 text-right">
+                        <button
+                          type="button"
+                          // The row itself toggles selection for the bulk bar,
+                          // so this must not bubble — editing a job and
+                          // selecting it for a bulk delete are very different
+                          // intents to conflate on one click.
+                          onClick={(e) => { e.stopPropagation(); setEditingJob(job); }}
+                          className="rounded-md border border-gray-200 bg-white px-2 py-1.5 text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700/50"
+                          title="Edit"
+                          data-testid={`edit-cron-${job.id}`}
+                        >
+                          <Pencil size={14} />
+                        </button>
+                      </td>
                     </tr>
                   ))}
                   {cronJobs.length === 0 && (
                     <tr>
-                      <td colSpan={9} className="px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400">
+                      <td colSpan={10} className="px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400">
                         {debouncedSearch
                           ? 'No cron jobs found matching your search.'
                           : selectedTenantId
@@ -359,10 +377,25 @@ export default function CronJobsTab() {
       )}
 
       {selectedTenantId && (
-        <CreateCronJobModal
+        <CronJobModal
+          key="create"
           open={showCreate}
           onClose={() => setShowCreate(false)}
           tenantId={selectedTenantId}
+        />
+      )}
+
+      {/* Edit is available with no tenant filter set — the row carries its own
+          tenant, which is the one the PATCH must go to. Keyed on the job id so
+          moving between rows remounts the form instead of leaving the previous
+          job's schedule in the fields. */}
+      {editingJob && (
+        <CronJobModal
+          key={editingJob.id}
+          open
+          job={editingJob}
+          onClose={() => setEditingJob(null)}
+          tenantId={editingJob.tenantId}
         />
       )}
     </div>

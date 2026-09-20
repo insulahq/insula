@@ -163,3 +163,193 @@ describe('Tenant CronJobs page', () => {
     });
   });
 });
+
+// ── Editing a saved task ─────────────────────────────────────────────────────
+//
+// The page could create, enable, disable, run and delete a task, but a saved
+// one could never be corrected — a typo in a schedule or a URL meant deleting
+// and re-entering the whole job, losing its run history with it. The PATCH
+// endpoint had accepted every field all along; only the panel could not reach
+// it (`useUpdateCronJob` was typed `{ enabled?: boolean }`).
+describe('editing a saved cron job', () => {
+  const EDITABLE_JOBS = [
+    {
+      id: 'cj1', tenantId: 'c1', name: 'daily-backup', type: 'webcron',
+      schedule: '0 2 * * *', url: 'https://example.test/cron.php', httpMethod: 'GET',
+      command: null, deploymentId: null, timeoutSeconds: 600, timezone: 'Europe/Berlin',
+      enabled: 1, lastRunAt: null, lastRunStatus: null,
+      createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z',
+    },
+    {
+      id: 'cj2', tenantId: 'c1', name: 'moodle-cron', type: 'deployment',
+      schedule: '* * * * *', url: null, httpMethod: null,
+      command: 'php admin/cli/cron.php', deploymentId: '11111111-2222-4333-8444-555555555555',
+      timeoutSeconds: null, timezone: null,
+      enabled: 1, lastRunAt: null, lastRunStatus: null,
+      createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z',
+    },
+  ];
+
+  function setupEditable() {
+    mockApiFetch.mockImplementation((url: string, init?: { method?: string }) => {
+      if (url.includes('/cron-jobs') && init?.method === 'PATCH') {
+        return Promise.resolve({ data: EDITABLE_JOBS[0] });
+      }
+      if (url.includes('/cron-jobs')) {
+        return Promise.resolve({ data: EDITABLE_JOBS, pagination: { total_count: 2, cursor: null, has_more: false, page_size: 50 } });
+      }
+      return Promise.resolve({ data: [] });
+    });
+  }
+
+  /** The PATCH body the page sent, parsed. */
+  function patchBody() {
+    const call = mockApiFetch.mock.calls.find(
+      ([, init]) => (init as { method?: string } | undefined)?.method === 'PATCH',
+    );
+    expect(call, 'expected a PATCH request').toBeDefined();
+    return JSON.parse((call![1] as { body: string }).body);
+  }
+
+  it('offers an edit button on every row', async () => {
+    setupEditable();
+    render(<CronJobs />, { wrapper: createWrapper() });
+    await waitFor(() => expect(screen.getByTestId('edit-cron-cj1')).toBeInTheDocument());
+    expect(screen.getByTestId('edit-cron-cj2')).toBeInTheDocument();
+    expect(screen.getByTestId('edit-cron-cj1').querySelector('svg')?.getAttribute('class'))
+      .toContain('lucide-pencil');
+  });
+
+  it('loads the saved values into the form — not a blank one', async () => {
+    setupEditable();
+    const user = userEvent.setup();
+    render(<CronJobs />, { wrapper: createWrapper() });
+    await waitFor(() => expect(screen.getByTestId('edit-cron-cj1')).toBeInTheDocument());
+    await user.click(screen.getByTestId('edit-cron-cj1'));
+
+    expect(screen.getByTestId('cron-edit-banner')).toHaveTextContent('daily-backup');
+    expect(screen.getByTestId('cron-name-input')).toHaveValue('daily-backup');
+    expect(screen.getByTestId('cron-schedule-input')).toHaveValue('0 2 * * *');
+    expect(screen.getByTestId('cron-url-input')).toHaveValue('https://example.test/cron.php');
+    expect(screen.getByTestId('cron-timeout-input')).toHaveValue(600);
+  });
+
+  it('shows the deployment fields when editing a deployment task', async () => {
+    setupEditable();
+    const user = userEvent.setup();
+    render(<CronJobs />, { wrapper: createWrapper() });
+    await waitFor(() => expect(screen.getByTestId('edit-cron-cj2')).toBeInTheDocument());
+    await user.click(screen.getByTestId('edit-cron-cj2'));
+
+    expect(screen.getByTestId('cron-command-input')).toHaveValue('php admin/cli/cron.php');
+    expect(screen.queryByTestId('cron-url-input')).not.toBeInTheDocument();
+  });
+
+  // Type decides which field set the scheduler reads; flipping it would leave
+  // the row holding both a url and a command.
+  it('locks the type while editing', async () => {
+    setupEditable();
+    const user = userEvent.setup();
+    render(<CronJobs />, { wrapper: createWrapper() });
+    await waitFor(() => expect(screen.getByTestId('edit-cron-cj1')).toBeInTheDocument());
+    await user.click(screen.getByTestId('edit-cron-cj1'));
+
+    expect(screen.getByTestId('cron-type-webcron')).toBeDisabled();
+    expect(screen.getByTestId('cron-type-deployment')).toBeDisabled();
+  });
+
+  it('PATCHes the edited fields to that job', async () => {
+    setupEditable();
+    const user = userEvent.setup();
+    render(<CronJobs />, { wrapper: createWrapper() });
+    await waitFor(() => expect(screen.getByTestId('edit-cron-cj1')).toBeInTheDocument());
+    await user.click(screen.getByTestId('edit-cron-cj1'));
+
+    await user.clear(screen.getByTestId('cron-schedule-input'));
+    await user.type(screen.getByTestId('cron-schedule-input'), '30 3 * * *');
+    await user.click(screen.getByTestId('submit-cron-job'));
+
+    await waitFor(() => expect(patchBody().schedule).toBe('30 3 * * *'));
+    const call = mockApiFetch.mock.calls.find(([, i]) => (i as { method?: string })?.method === 'PATCH');
+    expect(call![0]).toContain('/cron-jobs/cj1');
+    expect(patchBody()).toMatchObject({
+      name: 'daily-backup',
+      url: 'https://example.test/cron.php',
+      http_method: 'GET',
+      timeout_seconds: 600,
+      timezone: 'Europe/Berlin',
+    });
+  });
+
+  // Omitting a field means "leave it alone", so a cleared box has to send null
+  // or the pin survives a save that visibly removed it.
+  it('sends null when a pinned timeout is cleared, not nothing', async () => {
+    setupEditable();
+    const user = userEvent.setup();
+    render(<CronJobs />, { wrapper: createWrapper() });
+    await waitFor(() => expect(screen.getByTestId('edit-cron-cj1')).toBeInTheDocument());
+    await user.click(screen.getByTestId('edit-cron-cj1'));
+
+    await user.clear(screen.getByTestId('cron-timeout-input'));
+    await user.click(screen.getByTestId('submit-cron-job'));
+
+    await waitFor(() => expect(mockApiFetch.mock.calls.some(([, i]) => (i as { method?: string })?.method === 'PATCH')).toBe(true));
+    const body = patchBody();
+    expect(body.timeout_seconds).toBeNull();
+    expect('timeout_seconds' in body).toBe(true);
+  });
+
+  it('never sends the other type’s fields', async () => {
+    setupEditable();
+    const user = userEvent.setup();
+    render(<CronJobs />, { wrapper: createWrapper() });
+    await waitFor(() => expect(screen.getByTestId('edit-cron-cj1')).toBeInTheDocument());
+    await user.click(screen.getByTestId('edit-cron-cj1'));
+    await user.click(screen.getByTestId('submit-cron-job'));
+
+    await waitFor(() => expect(mockApiFetch.mock.calls.some(([, i]) => (i as { method?: string })?.method === 'PATCH')).toBe(true));
+    const body = patchBody();
+    expect('command' in body).toBe(false);
+    expect('deployment_id' in body).toBe(false);
+  });
+
+  it('closes the form and forgets the job after saving', async () => {
+    setupEditable();
+    const user = userEvent.setup();
+    render(<CronJobs />, { wrapper: createWrapper() });
+    await waitFor(() => expect(screen.getByTestId('edit-cron-cj1')).toBeInTheDocument());
+    await user.click(screen.getByTestId('edit-cron-cj1'));
+    await user.click(screen.getByTestId('submit-cron-job'));
+
+    await waitFor(() => expect(screen.queryByTestId('cron-job-form')).not.toBeInTheDocument());
+  });
+
+  // A half-loaded form left behind after Cancel is how an edit becomes an
+  // accidental create with someone else's values in it.
+  it('Cancel clears the loaded job so the next Add starts blank', async () => {
+    setupEditable();
+    const user = userEvent.setup();
+    render(<CronJobs />, { wrapper: createWrapper() });
+    await waitFor(() => expect(screen.getByTestId('edit-cron-cj1')).toBeInTheDocument());
+
+    await user.click(screen.getByTestId('edit-cron-cj1'));
+    await user.click(screen.getByTestId('cancel-cron-edit'));
+    expect(screen.queryByTestId('cron-job-form')).not.toBeInTheDocument();
+
+    await user.click(screen.getByTestId('add-cron-job-button'));
+    expect(screen.getByTestId('cron-name-input')).toHaveValue('');
+    expect(screen.queryByTestId('cron-edit-banner')).not.toBeInTheDocument();
+    expect(screen.getByTestId('cron-type-webcron')).not.toBeDisabled();
+  });
+
+  it('the enable/disable toggle still sends only `enabled`', async () => {
+    setupEditable();
+    const user = userEvent.setup();
+    render(<CronJobs />, { wrapper: createWrapper() });
+    await waitFor(() => expect(screen.getByTestId('toggle-cron-cj1')).toBeInTheDocument());
+    await user.click(screen.getByTestId('toggle-cron-cj1'));
+
+    await waitFor(() => expect(mockApiFetch.mock.calls.some(([, i]) => (i as { method?: string })?.method === 'PATCH')).toBe(true));
+    expect(patchBody()).toEqual({ enabled: false });
+  });
+});
