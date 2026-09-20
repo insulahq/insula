@@ -42,25 +42,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   backup and no extra call to the storage target. Mail repositories are counted
   too — until now only the files repository was tracked at all, so the
   per-tenant total silently left mail out.
-- **Deployment errors read as sentences, not as the raw API response.** A
-  refused deployment used to print the Kubernetes API's entire JSON body onto
-  the app card, clipped to two lines. It now says what happened — "This app asks
-  for 512Mi of memory, but only 480Mi of your 1Gi plan is free" — with what to
-  do about it, and folds the numbers into a **More details** table. Nothing is
-  discarded: the original text is the last row. Retry is no longer offered for
-  errors retrying cannot fix.
-- **The decoded error panel now reaches the case it was written for.** Most
-  deployment failures are stored as a structured error, not as a raw API
-  response — so the decoding added alongside it only applied to the rarer
-  shape, and a quota rejection still arrived on the card as
-  `{"code":"UNKNOWN","title":"Operation failed"…}`. Every stored shape is now
-  unpacked the same way, the plain sentence and the **More details** table are
-  built from whichever form the message arrives in, and the admin deployment
-  list uses the same decoder instead of printing the stored error as-is (which
-  gave a generic "Operation failed" and a sentence cut off mid-word). One
-  remediation line still told operators to click "Show raw error", a control
-  renamed to "More details"; corrected.
-
 ### Added
 - **Every bundle now shows what it cost in storage.** Alongside **Bundle Size**
   — everything the bundle captured — there is a **Restic Size**: what it
