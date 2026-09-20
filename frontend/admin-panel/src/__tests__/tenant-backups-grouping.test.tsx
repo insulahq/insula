@@ -15,12 +15,15 @@
  *   Bundle Size  — per bundle, the logical size (do not add these up).
  *   Restic Size  — per bundle, what it ADDED. These DO add up.
  *
- * And the counts: the group header count comes from the per-tenant ROLLUP,
- * never from the rows fetched into the page. The list is paged, so counting
- * the fetched rows reported "2 backups" for a tenant holding 26. The fixtures
- * below deliberately DISAGREE — 2 rows fetched, 26 in the rollup — so a
- * regression to counting rows fails instead of passing on a fixture that
- * happens to match.
+ * And the loading shape: the page fetches ONLY the rollup up front — every
+ * tenant's name, backup count and repository size. No bundle is fetched until
+ * a group is opened; opening one then loads that tenant's COMPLETE history,
+ * following the cursor to the end on the operator's behalf.
+ *
+ * The fixtures below make the rollup and the bundle pages deliberately
+ * DISAGREE (26 in the rollup, 3 + 1 across two pages) so that a regression to
+ * counting fetched rows fails instead of passing on a fixture that happens to
+ * match.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
@@ -42,7 +45,6 @@ const TENANT_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const BUNDLES_PAGE_1 = [
   { id: 'b1', tenantId: TENANT_A, tenantName: 'Acme', status: 'completed', label: 'nightly', sizeBytes: 1_000_000, resticAddedBytes: 4_096, createdAt: '2026-08-29T00:00:00.000Z', initiator: 'system', lastError: null },
   { id: 'b2', tenantId: TENANT_A, tenantName: 'Acme', status: 'completed', label: 'manual', sizeBytes: 2_000_000, resticAddedBytes: null, createdAt: '2026-08-30T00:00:00.000Z', initiator: 'tenant', lastError: null },
-  { id: 'b3', tenantId: TENANT_B, tenantName: 'Beta', status: 'failed', label: null, sizeBytes: 0, resticAddedBytes: null, createdAt: '2026-08-30T01:00:00.000Z', initiator: 'system', lastError: 'boom' },
 ];
 const BUNDLES_PAGE_2 = [
   { id: 'b4', tenantId: TENANT_A, tenantName: 'Acme', status: 'completed', label: 'older', sizeBytes: 1_500_000, resticAddedBytes: 2_048, createdAt: '2026-08-28T00:00:00.000Z', initiator: 'system', lastError: null },
@@ -67,13 +69,17 @@ const apiFetch = vi.fn(async (url: string, init?: { method?: string }) => {
   if (url.includes('/repo-stats/refresh')) return { data: { totalBytes: 4_242_000, measuredAt: '2026-08-30T13:00:00.000Z', components: [] } };
   if (url.includes('/admin/backups/tenants/overview')) return { data: { rows: ROLLUP, kpi: {}, generatedAt: '' } };
   if (url.includes('/admin/tenant-bundles')) {
-    // Behave like the real endpoint: a cursor returns the NEXT page, and the
-    // envelope always carries the full count. A mock that ignored the cursor
-    // would let a client that never sends one still look correct.
+    // Behave like the real endpoint: scoped to one tenant, and a cursor
+    // returns the NEXT page. A mock that ignored either would let a client
+    // that never sends them still look correct.
+    const tenant = /tenantId=([^&]+)/.exec(url)?.[1];
+    if (tenant !== TENANT_A) {
+      return { data: [], pagination: { total_count: 0, cursor: null, has_more: false, page_size: 100 } };
+    }
     const hasCursor = url.includes('cursor=');
     return hasCursor
       ? { data: BUNDLES_PAGE_2, pagination: { total_count: BUNDLE_TOTAL, cursor: null, has_more: false, page_size: 100 } }
-      : { data: BUNDLES_PAGE_1, pagination: { total_count: BUNDLE_TOTAL, cursor: 'b3', has_more: true, page_size: 100 } };
+      : { data: BUNDLES_PAGE_1, pagination: { total_count: BUNDLE_TOTAL, cursor: 'b2', has_more: true, page_size: 100 } };
   }
   if (url.includes('/admin/backups/tenants/snapshots')) return { data: { rows: [] } };
   if (init?.method === 'DELETE') return undefined;
@@ -106,14 +112,55 @@ describe('tenant backup grouping', () => {
       .toHaveAttribute('aria-expanded', 'false');
   });
 
-  it('shows that tenant’s backups when opened', async () => {
+  it('fetches NO bundles until a group is opened', async () => {
+    // The page used to pull a page of bundles across all tenants on mount.
+    // Its only up-front request is now the rollup.
+    renderPage();
+    await waitFor(() => expect(screen.getByTestId(`tenant-backup-group-${TENANT_A}`)).toBeInTheDocument());
+    expect(apiFetch.mock.calls.some(([u]) => String(u).includes('/admin/tenant-bundles?'))).toBe(false);
+  });
+
+  it('loads that tenant’s backups when opened, and only that tenant’s', async () => {
     renderPage();
     await waitFor(() => expect(screen.getByTestId(`tenant-backup-group-${TENANT_A}`)).toBeInTheDocument());
     fireEvent.click(screen.getByTestId(`tenant-backup-group-toggle-${TENANT_A}`));
-    // Acme's two bundles appear; Beta's does not.
+    await waitFor(() => expect(screen.getByTestId('tenant-bundle-restore-b1')).toBeInTheDocument());
+    // Every bundle request is scoped to the tenant whose group was opened.
+    const bundleCalls = apiFetch.mock.calls.map(([u]) => String(u)).filter((u) => u.includes('/admin/tenant-bundles?'));
+    expect(bundleCalls.length).toBeGreaterThan(0);
+    expect(bundleCalls.every((u) => u.includes(`tenantId=${TENANT_A}`))).toBe(true);
+  });
+
+  it('follows the cursor to the END without the operator asking', async () => {
+    // b4 is on page 2. Nothing is clicked between opening the group and it
+    // appearing — the old shape needed a "Load more" press per page.
+    renderPage();
+    await waitFor(() => expect(screen.getByTestId(`tenant-backup-group-${TENANT_A}`)).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId(`tenant-backup-group-toggle-${TENANT_A}`));
+    await waitFor(() => expect(screen.getByTestId('tenant-bundle-restore-b4')).toBeInTheDocument());
     expect(screen.getByTestId('tenant-bundle-restore-b1')).toBeInTheDocument();
     expect(screen.getByTestId('tenant-bundle-restore-b2')).toBeInTheDocument();
-    expect(screen.queryByTestId('tenant-bundle-restore-b3')).toBeNull();
+    expect(apiFetch.mock.calls.some(([u]) => String(u).includes('cursor=b2'))).toBe(true);
+  });
+
+  it('shows a loader naming the count it is fetching', async () => {
+    renderPage();
+    await waitFor(() => expect(screen.getByTestId(`tenant-backup-group-${TENANT_A}`)).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId(`tenant-backup-group-toggle-${TENANT_A}`));
+    // The rollup already knows the total, so the wait states the size of the
+    // job rather than spinning anonymously.
+    const loader = await screen.findByTestId(`tenant-bundle-loading-${TENANT_A}`);
+    expect(loader.textContent).toContain('26');
+  });
+
+  it('lists a tenant that has no bundles at all', async () => {
+    // Groups come from the rollup. Deriving them from fetched rows meant a
+    // tenant with nothing in the fetched page simply vanished from a page
+    // whose job is saying who is covered.
+    renderPage();
+    await waitFor(() => expect(screen.getByTestId(`tenant-backup-group-${TENANT_B}`)).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId(`tenant-backup-group-toggle-${TENANT_B}`));
+    await waitFor(() => expect(screen.getByTestId(`tenant-bundle-empty-${TENANT_B}`)).toBeInTheDocument());
   });
 
   it('says "not measured" rather than 0 when the repo has never been measured', async () => {
@@ -144,40 +191,15 @@ describe('tenant backup grouping', () => {
     expect(header).not.toContain('2 backups');
   });
 
-  it('asks for a page size instead of taking the server default', async () => {
-    // The request carried no `limit`, so the server applied its default of 50
-    // — across ALL tenants — and the page grouped that. Asserting the
-    // parameter is on the URL is asserting the fix at the layer it broke.
+  it('no longer shows a truncation line or a Load more button', async () => {
+    // Both existed to cope with a cross-tenant page. Nothing is truncated now:
+    // a group either has not been opened, or holds its tenant's whole history.
     renderPage();
     await waitFor(() => expect(screen.getByTestId(`tenant-backup-group-${TENANT_A}`)).toBeInTheDocument());
-    const call = apiFetch.mock.calls.find(([u]) => String(u).includes('/admin/tenant-bundles?'));
-    expect(call).toBeDefined();
-    expect(String(call![0])).toContain('limit=100');
-  });
-
-  it('says how much of the list is on screen, and offers the rest', async () => {
-    // `has_more: true` was returned from the day this shipped and thrown away
-    // by the client, so a truncated list claimed to be the whole list.
-    renderPage();
-    await waitFor(() => expect(screen.getByTestId('tenant-bundle-list-range')).toBeInTheDocument());
-    const range = screen.getByTestId('tenant-bundle-list-range').textContent ?? '';
-    expect(range).toContain('3');
-    expect(range).toContain(String(BUNDLE_TOTAL));
-    expect(screen.getByTestId('tenant-bundle-load-more')).toBeInTheDocument();
-  });
-
-  it('pages with the cursor the envelope returned', async () => {
-    renderPage();
-    await waitFor(() => expect(screen.getByTestId('tenant-bundle-load-more')).toBeInTheDocument());
-    fireEvent.click(screen.getByTestId('tenant-bundle-load-more'));
-    await waitFor(() => {
-      expect(apiFetch.mock.calls.some(([u]) => String(u).includes('cursor=b3'))).toBe(true);
-    });
-    // And the second page's rows join the first rather than replacing them.
-    await waitFor(() => {
-      const range = screen.getByTestId('tenant-bundle-list-range').textContent ?? '';
-      expect(range).toContain('4');
-    });
+    fireEvent.click(screen.getByTestId(`tenant-backup-group-toggle-${TENANT_A}`));
+    await waitFor(() => expect(screen.getByTestId('tenant-bundle-restore-b4')).toBeInTheDocument());
+    expect(screen.queryByTestId('tenant-bundle-list-range')).toBeNull();
+    expect(screen.queryByTestId('tenant-bundle-load-more')).toBeNull();
   });
 
   it('no longer shows the per-tenant filter chips', async () => {
@@ -199,7 +221,7 @@ describe('tenant backup grouping', () => {
     renderPage();
     await waitFor(() => expect(screen.getByTestId(`tenant-backup-group-${TENANT_A}`)).toBeInTheDocument());
     fireEvent.click(screen.getByTestId(`tenant-backup-group-toggle-${TENANT_A}`));
-    expect(screen.getAllByText('Bundle Size').length).toBeGreaterThan(0);
+    await waitFor(() => expect(screen.getAllByText('Bundle Size').length).toBeGreaterThan(0));
     expect(screen.getAllByText('Restic Size').length).toBeGreaterThan(0);
     // b1 reported 4096 bytes added; b2 reported nothing at all. Rendering the
     // second as "0 B" would claim the bundle added nothing, which is a

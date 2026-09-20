@@ -22,7 +22,7 @@
 import type { FastifyInstance } from 'fastify';
 import { eq, and, lt, inArray } from 'drizzle-orm';
 import { sql } from 'drizzle-orm';
-import { backupJobs, backupConfigurations } from '../../db/schema.js';
+import { backupJobs, backupConfigurations, backupSchedules } from '../../db/schema.js';
 import { decrypt } from '../oidc/crypto.js';
 import { S3BackupStore } from './s3-backup-store.js';
 import { SshBackupStore } from './ssh-backup-store.js';
@@ -44,6 +44,8 @@ const STUCK_RUNNING_HOURS = Number.parseFloat(
 );
 
 export interface RetentionSweepResult {
+  /** Bundles brought forward by keep-last-N before the expiry pass ran. */
+  readonly overCountMarked: number;
   readonly inFlightReaped: number;
   readonly expiredDeleted: number;
   readonly expiredFailed: number;
@@ -59,12 +61,83 @@ export async function runRetentionSweep(app: FastifyInstance): Promise<Retention
   let expiredFailed = 0;
   let stuckMarkedFailed = 0;
 
+  // ── 0. Keep-last-N ────────────────────────────────────────────────
+  //
+  // `backup_schedules.tenant_bundle.retention_count` — the operator's
+  // "Retention (keep last N)" — was written by the UI, stored in the DB and
+  // read by NOTHING on this path. The scheduler passes only `retentionDays`,
+  // so every bundle got `expires_at = created + days` and a tenant backed up
+  // nightly accumulated `days` bundles, not `N`. Observed on production: N set
+  // to 14, tenants holding 26 and climbing toward 30. The mail subsystem had
+  // the identical defect and was fixed with a reconciler; this is the tenant
+  // -bundle half.
+  //
+  // Enforced by bringing a bundle's `expires_at` FORWARD to now rather than by
+  // deleting here, so the whole tested path below — frozen-target skip, remote
+  // delete, status flip, and the restic reclamation that follows the DB — runs
+  // unchanged. Days and count therefore compose as "whichever removes it
+  // first": days still expires a bundle on its own schedule, and this cannot
+  // push one out any later than days already would.
+  const now = new Date();
+  let overCountMarked = 0;
+  const [schedule] = await app.db
+    .select({ retentionCount: backupSchedules.retentionCount })
+    .from(backupSchedules)
+    .where(eq(backupSchedules.subsystem, 'tenant_bundle'))
+    .limit(1);
+  const keepLast = schedule?.retentionCount ?? null;
+  if (keepLast !== null && keepLast > 0) {
+    // Ranked over `completed`/`partial` only. A failed bundle holds no
+    // restorable data, so counting it toward N would silently reduce the
+    // tenant's real coverage — 14 kept, three of them empty. `running` rows
+    // are excluded for the same reason and because they are still being
+    // written.
+    //
+    // (created_at DESC, id DESC) matches the list's ordering, so "the newest
+    // 14" means the same thing here as on screen even when two bundles share a
+    // timestamp.
+    const marked = await app.db.execute(sql`
+      WITH ranked AS (
+        SELECT id,
+               row_number() OVER (
+                 PARTITION BY tenant_id ORDER BY created_at DESC, id DESC
+               ) AS rn
+          FROM backup_jobs
+         WHERE status IN ('completed','partial')
+      )
+      UPDATE backup_jobs b
+         SET expires_at = ${now}
+        FROM ranked r
+       WHERE b.id = r.id
+         AND r.rn > ${keepLast}
+         AND (b.expires_at IS NULL OR b.expires_at > ${now})
+         -- Never pull a bundle out from under a restore that is still open.
+         -- The cart holds the bundle id; deleting it mid-flight would fail the
+         -- restore with a missing-artifact error the operator cannot act on.
+         AND NOT EXISTS (
+           SELECT 1
+             FROM restore_items ri
+             JOIN restore_jobs rj ON rj.id = ri.restore_job_id
+            WHERE ri.bundle_id = b.id
+              AND rj.status NOT IN ('done','failed')
+         )
+      RETURNING b.id
+    `);
+    overCountMarked = ((marked as unknown as { rows?: unknown[] }).rows ?? []).length;
+    if (overCountMarked > 0) {
+      app.log.info(
+        { keepLast, marked: overCountMarked },
+        'tenant-backup retention: bundles beyond keep-last-N brought forward for expiry',
+      );
+    }
+  }
+
   // ── 1. Expired bundles ────────────────────────────────────────────
   // Lock candidate IDs first, then process outside any single
   // transaction so a slow remote delete doesn't hold a lock.
   // Cap at 50 per tick — a backlog catches up over multiple ticks
-  // without overwhelming the target.
-  const now = new Date();
+  // without overwhelming the target. Shares `now` with pass 0 so a bundle
+  // marked there is picked up in this same tick.
   const expiredCandidates = await app.db
     .select({ id: backupJobs.id, targetConfigId: backupJobs.targetConfigId })
     .from(backupJobs)
@@ -203,7 +276,7 @@ export async function runRetentionSweep(app: FastifyInstance): Promise<Retention
     app.log.warn({ err }, 'tenant-backup retention: in-flight reap failed (non-fatal)');
   }
 
-  return { expiredDeleted, expiredFailed, stuckMarkedFailed, inFlightReaped };
+  return { overCountMarked, expiredDeleted, expiredFailed, stuckMarkedFailed, inFlightReaped };
 }
 
 /**
