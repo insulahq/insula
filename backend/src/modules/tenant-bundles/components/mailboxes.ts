@@ -99,6 +99,12 @@ export interface MailboxesComponentResult {
    * `restic restore` — same source + column the files component uses.
    */
   readonly snapshotId: string;
+  /**
+   * Bytes this snapshot added to the restic repository (`data_added_packed`),
+   * relayed by the upload route. NULL when unknown — never 0, which a
+   * mailbox set with no new mail legitimately reports.
+   */
+  readonly dataAddedPacked: number | null;
   /** Per-mailbox new state, for the orchestrator to persist AFTER the
    *  restic snapshot is acknowledged. */
   readonly newStates: ReadonlyArray<{
@@ -385,7 +391,8 @@ export function buildMailboxesComponentJobSpec(input: {
     'SNAP=$(grep -o \'"snapshotId":"[0-9a-f]\\{64\\}"\' /tmp/restic-resp.json | sed \'s/.*":"//;s/"$//\')',
     '[ -n "$SNAP" ] || { echo "ERROR: no snapshotId in response"; cat /tmp/restic-resp.json; exit 1; }',
     'SIZE=$(grep -o \'"sizeBytes":[0-9]\\+\' /tmp/restic-resp.json | sed \'s/.*://\')',
-    `echo "MAILBOXES_DONE bundleId=${input.backupId} snapshot=$SNAP sizeBytes=\${SIZE:-0}"`,
+    'ADDED=$(grep -o \'"dataAddedPacked":[0-9]\\+\' /tmp/restic-resp.json | sed \'s/.*://\')',
+    `echo "MAILBOXES_DONE bundleId=${input.backupId} snapshot=$SNAP sizeBytes=\${SIZE:-0} addedBytes=\${ADDED:-}"`,
   ].join('\n');
 
   return {
@@ -547,7 +554,9 @@ export async function captureMailboxesComponent(
 ): Promise<MailboxesComponentResult> {
   const addresses = await listTenantMailboxAddresses(opts.db, opts.tenantId);
   if (addresses.length === 0) {
-    return { mailboxCount: 0, addresses: [], sizeBytes: 0, snapshotId: '', newStates: [] };
+    // No mailboxes to capture: no snapshot ran, so 0 bytes were added.
+    // A genuine zero, not an unknown.
+    return { mailboxCount: 0, addresses: [], sizeBytes: 0, snapshotId: '', dataAddedPacked: 0, newStates: [] };
   }
 
   // Engine selection: explicit override > platform_settings > default ('imap').
@@ -668,13 +677,14 @@ export async function captureMailboxesComponent(
     // the FULL multi-line log (one *_DONE per mailbox), not the single-
     // last-line summary that tailJobLog returns for progress.
     const log = await readJobLogTail(opts.k8s, mailNamespace, jobName, { tailLines: 500 }).catch(() => null);
-    const { newStates, sizeBytes, snapshotId } = parseMailboxesDone(log ?? '', opts.backupId);
+    const { newStates, sizeBytes, snapshotId, dataAddedPacked } = parseMailboxesDone(log ?? '', opts.backupId);
 
     return {
       mailboxCount: addresses.length,
       addresses,
       sizeBytes,
       snapshotId,
+      dataAddedPacked,
       newStates,
     };
   } finally {
@@ -708,6 +718,8 @@ export function parseMailboxesDone(
   sizeBytes: number;
   /** Full 64-char restic snapshot id from MAILBOXES_DONE, '' if absent. */
   snapshotId: string;
+  /** Bytes added to the repo; null when the line carries no such field. */
+  dataAddedPacked: number | null;
 } {
   const newStates: Array<{
     address: string;
@@ -719,6 +731,7 @@ export function parseMailboxesDone(
   }> = [];
   let sizeBytes = 0;
   let snapshotId = '';
+  let dataAddedPacked: number | null = null;
   for (const line of log.split('\n')) {
     // Accept both `JMAP_DONE` (legacy) and `IMAP_DONE` (new engine).
     // IMAP summaries never carry `newState`/`fullPull` — we synthesize
@@ -757,13 +770,19 @@ export function parseMailboxesDone(
       }
       continue;
     }
-    const mboxMatch = line.match(/MAILBOXES_DONE bundleId=(\S+) snapshot=([0-9a-f]{64}) sizeBytes=(\d+)/);
+    // `addedBytes` is optional: a Job already in flight across the rollout,
+    // or an upload route that predates the field, emits the three-field line.
+    // Requiring it would fail the mailboxes component to gain a statistic.
+    // It can also be present but EMPTY (`addedBytes=`) when the response
+    // carried no figure — that is "unknown" too, not zero.
+    const mboxMatch = line.match(/MAILBOXES_DONE bundleId=(\S+) snapshot=([0-9a-f]{64}) sizeBytes=(\d+)(?: addedBytes=(\d*))?/);
     if (mboxMatch && mboxMatch[1] === expectedBundleId) {
       snapshotId = mboxMatch[2]!;
       sizeBytes = Number.parseInt(mboxMatch[3]!, 10);
+      dataAddedPacked = mboxMatch[4] ? Number.parseInt(mboxMatch[4], 10) : null;
     }
   }
-  return { newStates, sizeBytes, snapshotId };
+  return { newStates, sizeBytes, snapshotId, dataAddedPacked };
 }
 
 async function waitForJob(

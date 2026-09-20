@@ -1,8 +1,9 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { eq, desc, sql, inArray } from 'drizzle-orm';
+import { and, eq, desc, sql, inArray } from 'drizzle-orm';
 import { authenticate, requireRole, requirePanel } from '../../middleware/auth.js';
 import { success, paginated } from '../../shared/response.js';
+import { MAX_PAGE_LIMIT } from '@insula/api-contracts';
 import { ApiError } from '../../shared/errors.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { filesSnapshotReachable } from '../backup-restore/browse-files-restic.js';
@@ -111,15 +112,63 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
   app.get('/admin/tenant-bundles', {
     schema: { tags: ['TenantBundles'], summary: 'List bundles', security: [{ bearerAuth: [] }] },
   }, async (request) => {
-    const q = request.query as { tenantId?: string; limit?: string; status?: string };
-    const limit = Math.min(Math.max(parseInt(q.limit ?? '50', 10) || 50, 1), 100);
+    const q = request.query as { tenantId?: string; limit?: string; status?: string; cursor?: string };
+    const limit = Math.min(Math.max(parseInt(q.limit ?? '50', 10) || 50, 1), MAX_PAGE_LIMIT);
 
-    const whereClause = q.tenantId ? eq(backupJobs.tenantId, q.tenantId) : undefined;
+    // Keyset pagination on (created_at, id).
+    //
+    // This endpoint EMITTED a cursor from the day it shipped and never
+    // accepted one, so `has_more: true` was a dead end: the admin Backups
+    // page could reach at most the newest `limit` bundles across ALL
+    // tenants, then grouped them per tenant. With 25 tenants backed up
+    // nightly that showed 1-3 bundles each for tenants holding 26.
+    //
+    // created_at alone is not a key — two bundles can share a timestamp and
+    // a row would be skipped or repeated at the page boundary. The id is the
+    // tiebreaker only; it never orders on its own.
+    const filters = [];
+    if (q.tenantId) filters.push(eq(backupJobs.tenantId, q.tenantId));
+    // `status` was destructured here and never applied — a filter that
+    // silently returned everything. Applied now, so it means what it says.
+    if (q.status) filters.push(eq(backupJobs.status, q.status as typeof backupJobs.$inferSelect.status));
+    const filterClause = filters.length === 0
+      ? undefined
+      : filters.length === 1 ? filters[0] : and(...filters);
+
+    let cursorClause;
+    if (q.cursor) {
+      const [anchor] = await app.db
+        .select({ id: backupJobs.id, createdAt: backupJobs.createdAt })
+        .from(backupJobs)
+        .where(eq(backupJobs.id, q.cursor))
+        .limit(1);
+      if (!anchor) {
+        // A cursor whose row has been purged (retention deletes backup_jobs
+        // rows) must not silently restart at page 1 — that loops forever.
+        throw new ApiError(
+          'INVALID_CURSOR',
+          'That page marker no longer exists — the bundle it pointed at has been removed.',
+          400,
+          undefined,
+          'Reload the list to start from the newest bundles.',
+        );
+      }
+      cursorClause = sql`(${backupJobs.createdAt}, ${backupJobs.id}) < (${anchor.createdAt}, ${anchor.id})`;
+    }
+
+    const whereClause = cursorClause && filterClause
+      ? and(filterClause, cursorClause)
+      : (cursorClause ?? filterClause);
+
     const rowsQuery = whereClause
-      ? app.db.select().from(backupJobs).where(whereClause).orderBy(desc(backupJobs.createdAt)).limit(limit + 1)
-      : app.db.select().from(backupJobs).orderBy(desc(backupJobs.createdAt)).limit(limit + 1);
-    const countQuery = whereClause
-      ? app.db.select({ n: sql<number>`count(*)::int` }).from(backupJobs).where(whereClause)
+      ? app.db.select().from(backupJobs).where(whereClause)
+          .orderBy(desc(backupJobs.createdAt), desc(backupJobs.id)).limit(limit + 1)
+      : app.db.select().from(backupJobs)
+          .orderBy(desc(backupJobs.createdAt), desc(backupJobs.id)).limit(limit + 1);
+    // The total is of the FILTERED set, not the page — it must not shrink as
+    // the caller pages forward, so the cursor is deliberately excluded here.
+    const countQuery = filterClause
+      ? app.db.select({ n: sql<number>`count(*)::int` }).from(backupJobs).where(filterClause)
       : app.db.select({ n: sql<number>`count(*)::int` }).from(backupJobs);
     const [rows, countRows] = await Promise.all([rowsQuery, countQuery]);
 
@@ -1816,6 +1865,7 @@ function toBundleSummary(
     label: j.label,
     description: j.description,
     sizeBytes: Number(j.sizeBytes),
+    resticAddedBytes: j.resticAddedBytes == null ? null : Number(j.resticAddedBytes),
     retentionDays: j.retentionDays,
     expiresAt: j.expiresAt ? j.expiresAt.toISOString() : null,
     exportMode: j.exportMode,

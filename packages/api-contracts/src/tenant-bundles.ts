@@ -297,7 +297,24 @@ export const bundleSummarySchema = z.object({
   targetConfigId: uuidField.nullable(),
   label: z.string().nullable(),
   description: z.string().nullable(),
+  /**
+   * LOGICAL size of everything this bundle captured — what restic scanned
+   * (`total_bytes_processed`), before dedup and compression. Surfaced as
+   * "Bundle Size". Do NOT sum this across bundles to estimate storage: a
+   * nightly bundle re-states the tenant's whole footprint, so 26 nightlies of
+   * a 15 GB tenant sum to 452 GB of a repository that holds 15.
+   */
   sizeBytes: z.number().int().nonnegative(),
+  /**
+   * Bytes this bundle actually ADDED to the restic repository
+   * (`data_added_packed`, post-dedup and post-compression). Surfaced as
+   * "Restic Size"; summing it across a tenant's bundles IS the repository
+   * size, which is how the per-tenant repo total is accumulated.
+   *
+   * NULL = unknown, never 0: bundles captured before this shipped, and any
+   * component whose Job log predates the field, have no figure to report.
+   */
+  resticAddedBytes: z.number().int().nonnegative().nullable(),
   retentionDays: z.number().int().positive(),
   expiresAt: z.string().nullable(),
   exportMode: z.string().nullable(),

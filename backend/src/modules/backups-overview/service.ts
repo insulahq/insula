@@ -212,7 +212,9 @@ export async function loadTenantsOverview(db: Database, opts: ListTenantsOpts = 
       p.max_snapshot_size_bytes AS quota_max_bytes,
       cart.id AS open_cart_id,
       repo.total_bytes AS repo_total_bytes,
-      repo.measured_at AS repo_stats_at
+      repo.measured_at AS repo_stats_at,
+      repo.verified_at AS repo_verified_at,
+      repo.total_source AS repo_total_source
     FROM tenants t
     LEFT JOIN hosting_plans p ON p.id = t.plan_id
     LEFT JOIN LATERAL (
@@ -246,7 +248,12 @@ export async function loadTenantsOverview(db: Database, opts: ListTenantsOpts = 
       -- last_repo_size_bytes can stand in for this.
       SELECT
         SUM(repo_total_bytes) AS total_bytes,
-        MAX(repo_stats_at) AS measured_at
+        MAX(repo_total_at) AS measured_at,
+        -- The OLDEST authoritative measurement wins: a total is only as
+        -- trustworthy as its least recently verified component.
+        MIN(repo_stats_at) AS verified_at,
+        -- One tracked component makes the whole sum tracked.
+        CASE WHEN bool_or(repo_total_source = 'tracked') THEN 'tracked' ELSE 'measured' END AS total_source
       FROM tenant_restic_repo_state
       WHERE tenant_id = t.id AND repo_total_bytes IS NOT NULL
     ) repo ON TRUE
@@ -272,6 +279,8 @@ export async function loadTenantsOverview(db: Database, opts: ListTenantsOpts = 
     open_cart_id: string | null;
     repo_total_bytes: string | number | null;
     repo_stats_at: Date | string | null;
+    repo_verified_at: Date | string | null;
+    repo_total_source: string | null;
   }> }).rows;
 
   const toIso = (v: Date | string | null): string | null => {
@@ -303,6 +312,10 @@ export async function loadTenantsOverview(db: Database, opts: ListTenantsOpts = 
       openCartId: r.open_cart_id,
       repoTotalBytes: r.repo_total_bytes == null ? null : Number(r.repo_total_bytes),
       repoStatsAt: toIso(r.repo_stats_at),
+      repoVerifiedAt: toIso(r.repo_verified_at),
+      repoTotalSource: r.repo_total_source === 'tracked' || r.repo_total_source === 'measured'
+        ? r.repo_total_source
+        : null,
     };
   });
 

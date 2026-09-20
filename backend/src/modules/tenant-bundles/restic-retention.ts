@@ -78,9 +78,11 @@ import {
   listResticSnapshots,
   runResticForget,
   runResticPrune,
+  runResticStats,
   type BackupTarget,
   type ResticComponent,
 } from './restic-driver.js';
+import { anchorResticRepoTotal } from './repo-state.js';
 import { notifyResticFailure } from './restic-failure-notify.js';
 import { resolveShimBackupTarget } from './resolve-backup-target.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -114,6 +116,8 @@ export interface ResticRetentionResult {
   readonly reposSkipped: number;
   readonly snapshotsForgotten: number;
   readonly prunesRun: number;
+  /** Repos whose size was re-measured with `restic stats` this sweep. */
+  readonly reposAnchored: number;
   /** backup_jobs rows deleted because nothing of them remains in storage. */
   readonly bundlesPurged: number;
   readonly errors: number;
@@ -140,10 +144,19 @@ export interface ResticRetentionArgs {
   /** Bound the work in one tick. */
   readonly maxRepos?: number;
   readonly maxPrunes?: number;
+  /** Bound the `restic stats` measurements in one tick (see the anchor pass). */
+  readonly maxRepoAnchors?: number;
 }
 
 const DEFAULT_MAX_REPOS = 25;
 const DEFAULT_MAX_PRUNES = 4;
+/**
+ * Repos re-measured per sweep beyond those just pruned. `restic stats --mode
+ * raw-data` walks the repo index, so this is the one deliberately expensive
+ * thing in the sweep — bounded, and whatever is left over is LOGGED rather
+ * than silently dropped, then picked up by the next tick.
+ */
+const DEFAULT_MAX_REPO_ANCHORS = 10;
 const RESTIC_COMPONENTS: ReadonlySet<string> = new Set<ResticComponent>(['files', 'mailboxes']);
 
 /** `bundle-id=<uuid>` → `<uuid>`. Returns null when the tag is absent. */
@@ -245,7 +258,7 @@ export async function runResticRetentionSweep(
     );
     return {
       dryRun, reposScanned: 0, reposSkipped: 0, snapshotsForgotten: 0,
-      prunesRun: 0, bundlesPurged: 0, errors: 0,
+      prunesRun: 0, reposAnchored: 0, bundlesPurged: 0, errors: 0,
       repos: [{
         tenantId: args.tenantId ?? '*', component: '*', repoUri: '',
         snapshotsInRepo: 0, keptCount: 0, forgottenCount: 0, forgottenIds: [],
@@ -291,7 +304,7 @@ export async function runResticRetentionSweep(
   `) as unknown as { rows: Array<{ tenantId: string; component: string }> }).rows;
 
   if (stateRows.length === 0) {
-    return { dryRun, reposScanned: 0, reposSkipped: 0, snapshotsForgotten: 0, prunesRun: 0, bundlesPurged: 0, errors: 0, repos: [] };
+    return { dryRun, reposScanned: 0, reposSkipped: 0, snapshotsForgotten: 0, prunesRun: 0, reposAnchored: 0, bundlesPurged: 0, errors: 0, repos: [] };
   }
 
   // G3: frozen (read-only / DR) targets, fetched once for the batch.
@@ -311,7 +324,7 @@ export async function runResticRetentionSweep(
     const msg = err instanceof Error ? err.message : String(err);
     logger.error({ err: msg }, 'restic retention: cannot resolve shim backup target — sweep aborted');
     return {
-      dryRun, reposScanned: 0, reposSkipped: 0, snapshotsForgotten: 0, prunesRun: 0, bundlesPurged: 0, errors: 1,
+      dryRun, reposScanned: 0, reposSkipped: 0, snapshotsForgotten: 0, prunesRun: 0, reposAnchored: 0, bundlesPurged: 0, errors: 1,
       repos: [{
         tenantId: args.tenantId ?? '*', component: '*', repoUri: '', snapshotsInRepo: 0,
         keptCount: 0, forgottenCount: 0, forgottenIds: [], prunedNow: false,
@@ -528,6 +541,7 @@ export async function runResticRetentionSweep(
 
   // ── Prune pass ────────────────────────────────────────────────────────────
   let prunesRun = 0;
+  const justPruned: Array<{ tenantId: string; component: string }> = [];
   if (!dryRun) {
     const pruneCutoff = new Date(now().getTime() - pruneIntervalHours * 60 * 60 * 1000);
     const due = await db.execute(sql`
@@ -561,6 +575,7 @@ export async function runResticRetentionSweep(
             eq(resticRepoReclaimState.component, component),
           ));
         prunesRun++;
+        justPruned.push({ tenantId, component });
         logger.info({ tenantId, component, ms: Date.now() - startedAt }, 'restic retention: pruned repo');
         const existing = repos.find((r) => r.tenantId === tenantId && r.component === component);
         if (existing) {
@@ -583,6 +598,86 @@ export async function runResticRetentionSweep(
           dedupeScope: `${tenantId}:${component}`,
         }, err, logger);
       }
+    }
+  }
+
+  // ── Repo-size anchor pass ─────────────────────────────────────────────────
+  //
+  // `tenant_restic_repo_state.repo_total_bytes` is advanced on every snapshot
+  // by that snapshot's `data_added_packed` (see repo-state.ts), which is free
+  // — restic already prints it. That accumulator only ever GROWS, so it needs
+  // a real measurement to anchor it in two situations:
+  //
+  //   1. A prune just ran. Prune is the only thing that SHRINKS a repo, so a
+  //      tracked total is stale the moment one completes. We are already
+  //      paying for a repack here; one `restic stats` beside it is noise.
+  //   2. The row has never been measured. Accumulating from NULL would report
+  //      "bytes added since we started counting" as the repo size, which for
+  //      a tenant with 26 existing snapshots is wrong by orders of magnitude.
+  //      repo-state.ts deliberately leaves those NULL, and this seeds them.
+  //
+  // Failures are logged and skipped: an unreachable repo must leave the last
+  // good number alone rather than zero it.
+  let reposAnchored = 0;
+  if (!dryRun) {
+    const anchored = new Set<string>();
+    const queue: Array<{ tenantId: string; component: string }> = [];
+    for (const pair of justPruned) {
+      const key = `${pair.tenantId}:${pair.component}`;
+      if (anchored.has(key)) continue;
+      anchored.add(key);
+      queue.push(pair);
+    }
+
+    const unseeded = await db.execute(sql`
+      SELECT tenant_id, component
+      FROM tenant_restic_repo_state
+      WHERE repo_total_bytes IS NULL
+        AND repo_uri <> ''
+        ${args.tenantId ? sql`AND tenant_id = ${args.tenantId}` : sql``}
+      ORDER BY last_snapshot_at DESC NULLS LAST
+    `) as unknown as { rows: Array<{ tenant_id: string; component: string }> };
+
+    const budget = args.maxRepoAnchors ?? DEFAULT_MAX_REPO_ANCHORS;
+    let deferred = 0;
+    for (const row of unseeded.rows) {
+      const key = `${row.tenant_id}:${row.component}`;
+      if (anchored.has(key)) continue;
+      if (queue.length >= budget) { deferred += 1; continue; }
+      anchored.add(key);
+      queue.push({ tenantId: row.tenant_id, component: row.component });
+    }
+    if (deferred > 0) {
+      // Never let a bound look like completion: say what was left behind.
+      logger.info(
+        { deferred, budget },
+        'restic retention: repo-size seeding deferred to the next sweep (per-sweep budget reached)',
+      );
+    }
+
+    for (const { tenantId, component } of queue) {
+      if (!RESTIC_COMPONENTS.has(component)) continue;
+      try {
+        const repoUri = buildResticRepoUri(target, tenantId, component as ResticComponent);
+        const stats = await runResticStats({
+          target,
+          passwordHex: deriveResticPassword(secretsKeyHex, tenantId),
+          repoUri,
+        });
+        await anchorResticRepoTotal({
+          db, tenantId, component, totalBytes: stats.totalSizeBytes, measuredAt: now(),
+        });
+        reposAnchored += 1;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.warn(
+          { err: msg, tenantId, component },
+          'restic retention: could not measure repo size (previous value kept, retried next sweep)',
+        );
+      }
+    }
+    if (reposAnchored > 0) {
+      logger.info({ reposAnchored }, 'restic retention: repo sizes re-anchored');
     }
   }
 
@@ -617,6 +712,7 @@ export async function runResticRetentionSweep(
     reposSkipped,
     snapshotsForgotten,
     prunesRun,
+    reposAnchored,
     errors,
     repos,
   };
