@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import type { CreateCronJobRequest } from '@insula/api-contracts';
+import type { CreateCronJobRequest, UpdateCronJobRequest } from '@insula/api-contracts';
 import { apiFetch } from '@/lib/api-client';
 import type { CronJob, PaginatedResponse } from '@/types/api';
 
@@ -47,10 +47,15 @@ export function useCreateCronJob(tenantId: string | undefined) {
   });
 }
 
+/**
+ * Full PATCH, not just the enable toggle — this was typed `{ enabled?: boolean }`,
+ * narrower than the endpoint it calls, which makes the rest of the contract
+ * unreachable from the panel without failing anywhere visible.
+ */
 export function useUpdateCronJob(tenantId: string | undefined) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ cronJobId, ...input }: { cronJobId: string; enabled?: boolean }) =>
+    mutationFn: ({ cronJobId, ...input }: UpdateCronJobRequest & { cronJobId: string }) =>
       apiFetch<{ data: CronJob }>(`/api/v1/tenants/${tenantId}/cron-jobs/${cronJobId}`, {
         method: 'PATCH',
         body: JSON.stringify(input),

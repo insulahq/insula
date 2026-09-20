@@ -12,6 +12,20 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **Saved scheduled tasks can be edited.** Every row in Scheduled Tasks now has
+  a pencil button that loads the task back into the form it was created in —
+  name, schedule, URL or command, timeout and timezone. Until now a typo in a
+  cron expression meant deleting the task and re-entering it, which threw away
+  its run history; the API had accepted these edits all along, the panel just
+  never asked. Also on the admin **Tenants → Cron Jobs** tab, where the pencil
+  edits the job on its own tenant even with no tenant filter set. A task's type
+  (webcron or deployment) stays fixed — it decides which fields the scheduler
+  reads — so changing that still means creating a new task.
+- **A pinned timeout or timezone can be un-pinned.** Clearing either field on an
+  edit puts the task back on the default (30s/300s by type, and the platform
+  clock) instead of silently keeping the old pin.
+
 ### Fixed
 - **Your plan's memory reading now matches what the cluster actually enforces.**
   A database deployment runs behind a short-lived init container that re-stamps
