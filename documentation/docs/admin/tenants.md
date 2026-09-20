@@ -27,7 +27,7 @@ list of accounts, and the other tabs are cross-tenant views:
 | **Workloads** | Every deployment across all tenants, with a `custom` tag for bring-your-own-container deployments. → [Catalogs & applications](catalogs-and-applications.md) |
 | **Users** | Sub-users across all tenants. |
 | **Email Accounts** | Mailboxes across all tenants. → [Email](email.md) |
-| **Cron Jobs** | Scheduled jobs across all tenants. |
+| **Cron Jobs** | Scheduled jobs across all tenants. Select rows for the bulk enable / disable / delete bar, or use a row's **pencil** to edit one — it saves against that job's own tenant, so it works with no tenant filter set. Type cannot be changed once saved. → [Scheduled tasks](../tenant/cron-jobs.md) |
 
 ### The "N issues" chip
 
