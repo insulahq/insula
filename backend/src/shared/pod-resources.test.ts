@@ -6,8 +6,8 @@ import { effectivePodRequest } from './pod-resources.js';
  * `max(sum(containers), max(initContainers))`, and it is charged that for the
  * pod's whole lifetime — long after the init container has exited.
  *
- * Every fixture below is dimensioned from the production case that exposed the
- * gap (one tenant, 2026-09-19).
+ * The fixtures are dimensioned from the case that exposed the gap: a database
+ * sized below the init container standing in front of it.
  */
 
 const c = (memory: string, cpu = '100m') => ({ resources: { requests: { memory, cpu } } });
