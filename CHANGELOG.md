@@ -12,6 +12,23 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Changed
+- **The platform database now comes first among the system schedules.** It sat
+  in its own section *below* the three disaster-recovery schedules, which put
+  the one backup the platform cannot be rebuilt without at the bottom of the
+  page, under three artefacts that are of little use without it.
+- **The Longhorn recurring-snapshot card is gone from Targets, Schedules &
+  Retention.** Its cadence is compiled into a cluster manifest the platform
+  neither owns nor has permission to change, so the card could only ever show
+  a number and refuse every edit — a row of controls whose whole purpose was to
+  say no. The live cadence is still visible with the rest of the Longhorn
+  snapshot state.
+- **The manual now says which retention setting governs what.** The tab is
+  called "Targets, Schedules & Retention" but only the database has a retention
+  control, and it was written down nowhere that the other three keep a fixed
+  number of copies decided by the job that writes them — the newest 24 etcd
+  snapshots, 30 secrets bundles and 14 cluster state dumps.
+
 ## [2026.9.27] - 2026-09-20
 
 ### Fixed
