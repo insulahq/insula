@@ -64,6 +64,18 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   check, which previously could not happen at all — the check only wrote when
   the status itself changed, and a healthy application has no change to make.
 
+- **The decoded error panel now reaches the case it was written for.** Most
+  deployment failures are stored as a structured error, not as a raw API
+  response — so the decoding added alongside it only applied to the rarer
+  shape, and a quota rejection still arrived on the card as
+  `{"code":"UNKNOWN","title":"Operation failed"…}`. Every stored shape is now
+  unpacked the same way, the plain sentence and the **More details** table are
+  built from whichever form the message arrives in, and the admin deployment
+  list uses the same decoder instead of printing the stored error as-is (which
+  gave a generic "Operation failed" and a sentence cut off mid-word). One
+  remediation line still told operators to click "Show raw error", a control
+  renamed to "More details"; corrected.
+
 ## [2026.9.25] - 2026-09-19
 
 ### Added
