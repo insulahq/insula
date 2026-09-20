@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.9.27] - 2026-09-20
+
 ### Fixed
 - **Tenant backups showed 1-3 bundles each when tenants held dozens.** The
   admin Backups page asked for the bundle list without a page size, so the
@@ -42,6 +44,7 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   backup and no extra call to the storage target. Mail repositories are counted
   too — until now only the files repository was tracked at all, so the
   per-tenant total silently left mail out.
+
 ### Added
 - **Every bundle now shows what it cost in storage.** Alongside **Bundle Size**
   — everything the bundle captured — there is a **Restic Size**: what it
