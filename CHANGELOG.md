@@ -12,6 +12,28 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **Deployment errors read as sentences, not as the raw API response.** A
+  refused deployment used to print the Kubernetes API's entire JSON body onto
+  the app card, clipped to two lines. It now says what happened — "This app asks
+  for 512Mi of memory, but only 480Mi of your 1Gi plan is free" — with what to
+  do about it, and folds the numbers into a **More details** table. Nothing is
+  discarded: the original text is the last row. Retry is no longer offered for
+  errors retrying cannot fix.
+- **The decoded error panel now reaches the case it was written for.** Most
+  deployment failures are stored as a structured error, not as a raw API
+  response — so the decoding added alongside it only applied to the rarer
+  shape, and a quota rejection still arrived on the card as
+  `{"code":"UNKNOWN","title":"Operation failed"…}`. Every stored shape is now
+  unpacked the same way, the plain sentence and the **More details** table are
+  built from whichever form the message arrives in, and the admin deployment
+  list uses the same decoder instead of printing the stored error as-is (which
+  gave a generic "Operation failed" and a sentence cut off mid-word). One
+  remediation line still told operators to click "Show raw error", a control
+  renamed to "More details"; corrected.
+
+## [2026.9.26] - 2026-09-20
+
 ### Added
 - **Saved scheduled tasks can be edited.** Every row in Scheduled Tasks now has
   a pencil button that loads the task back into the form it was created in —
@@ -41,13 +63,17 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   checks the namespace quota itself instead of trusting its own bookkeeping.
   Shrinking the database below 512Mi used to free nothing and return a
   byte-identical error, which made the problem look like it had not moved.
-- **Deployment errors read as sentences, not as the raw API response.** A
-  refused deployment used to print the Kubernetes API's entire JSON body onto
-  the app card, clipped to two lines. It now says what happened — "This app asks
-  for 512Mi of memory, but only 480Mi of your 1Gi plan is free" — with what to
-  do about it, and folds the numbers into a **More details** table. Nothing is
-  discarded: the original text is the last row. Retry is no longer offered for
-  errors retrying cannot fix.
+- **A failed deployment tells you what happened, in a sentence.** It used to
+  print the cluster's raw reply onto the app card — clipped to two lines of
+  JSON — whether that reply was the Kubernetes API's response body or the
+  platform's own stored error. Either way it now reads "This app asks for
+  512Mi of memory, but only 256Mi of your 2Gi plan is free — 1792Mi is already
+  in use", with what to do about it, and folds the figures into a **More
+  details** table: requested, already in use, plan limit, free, and how far
+  short the request falls. Nothing is discarded — the cluster's original text
+  is the table's last row. **Retry** is offered only where retrying could
+  work, so a plan that is simply full no longer invites you to try again. The
+  admin deployment list reads the same way as the tenant's.
 - **An old error no longer follows you to the next application.** The
   application detail panel is kept open in the background by the page behind
   it, so a failed resource or environment-variable change kept its message
@@ -63,18 +89,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   healthy but still carrying an old error is also cleaned up on the next status
   check, which previously could not happen at all — the check only wrote when
   the status itself changed, and a healthy application has no change to make.
-
-- **The decoded error panel now reaches the case it was written for.** Most
-  deployment failures are stored as a structured error, not as a raw API
-  response — so the decoding added alongside it only applied to the rarer
-  shape, and a quota rejection still arrived on the card as
-  `{"code":"UNKNOWN","title":"Operation failed"…}`. Every stored shape is now
-  unpacked the same way, the plain sentence and the **More details** table are
-  built from whichever form the message arrives in, and the admin deployment
-  list uses the same decoder instead of printing the stored error as-is (which
-  gave a generic "Operation failed" and a sentence cut off mid-word). One
-  remediation line still told operators to click "Show raw error", a control
-  renamed to "More details"; corrected.
 
 ## [2026.9.25] - 2026-09-19
 
