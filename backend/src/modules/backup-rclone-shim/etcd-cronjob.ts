@@ -156,16 +156,41 @@ export function desiredJobTemplateMetadata(live: CronJobView): {
 }
 
 /**
- * Locate the SHIM_PREFIX env (the etcd upload prefix) in the live CronJob, so
- * we can patch it by index — found by NAME, robust to env reordering. Returns
- * the JSON-pointer to its `value` + the current value, or null if absent.
+ * The operator's "keep last N" for etcd snapshots, as the env value the upload
+ * script reads.
+ *
+ * NULL in `backup_schedules` means "never configured", which is the shipped
+ * default of 24 rather than "keep nothing". Values below 1 are refused the
+ * same way: the script guards itself too, but a reconciler that can write a
+ * destructive number and rely on the script to ignore it is one script edit
+ * away from being destructive.
  */
-function findShimPrefixEnv(live: CronJobView): { path: string; current: string | undefined } | null {
+export const ETCD_DEFAULT_RETENTION_COUNT = 24;
+
+export async function desiredEtcdRetentionCount(db: Database): Promise<string> {
+  const { backupSchedules } = await import('../../db/schema.js');
+  const [row] = await db
+    .select({ retentionCount: backupSchedules.retentionCount })
+    .from(backupSchedules)
+    .where(eq(backupSchedules.subsystem, 'etcd_snapshot'));
+  const n = row?.retentionCount;
+  if (n === null || n === undefined || !Number.isInteger(n) || n < 1) {
+    return String(ETCD_DEFAULT_RETENTION_COUNT);
+  }
+  return String(n);
+}
+
+/**
+ * Locate a named env in the live CronJob, so we can patch it by index — found
+ * by NAME, robust to env reordering. Returns the JSON-pointer to its `value`
+ * plus the current value, or null if absent.
+ */
+function findEnv(live: CronJobView, name: string): { path: string; current: string | undefined } | null {
   const containers = live.spec?.jobTemplate?.spec?.template?.spec?.containers ?? [];
   for (let ci = 0; ci < containers.length; ci++) {
     const envs = containers[ci]?.env ?? [];
     for (let ei = 0; ei < envs.length; ei++) {
-      if (envs[ei]?.name === 'SHIM_PREFIX') {
+      if (envs[ei]?.name === name) {
         return {
           path: `/spec/jobTemplate/spec/template/spec/containers/${ci}/env/${ei}/value`,
           current: envs[ei]?.value,
@@ -207,6 +232,23 @@ const SCRIPT_REPAIRS: ReadonlyArray<{ readonly broken: string; readonly fixed: s
   {
     broken: `SHA=$(sha256sum "$$name" | cut -d ' ' -f 1)`,
     fixed: `f="$$name"; SHA=$(sha256sum "$f" | cut -d ' ' -f 1)`,
+  },
+  // Retention was the literal `25` in the eviction pipeline, so the operator's
+  // "keep last N" had nothing to act on. Replaced by the same one-line awk the
+  // manifest now ships, so a fresh install and a repaired cluster run
+  // byte-identical scripts.
+  //
+  // Deliberately a SINGLE pipeline stage with no `$$`-form variables of its
+  // own: this substitution has to be correct whether the surrounding script
+  // was applied raw or rendered through Flux, and a multi-line block cannot
+  // replace one stage of a pipeline.
+  //
+  // `keep+0 >= 1` is the safety. A missing, zero or non-numeric value yields
+  // 0, the guard is false, and NOTHING is evicted — the failure mode of a bad
+  // retention value must be "keeps too much", never "deletes the history".
+  {
+    broken: 'tail -n +25',
+    fixed: 'awk -v keep="${RETENTION_COUNT:-24}" \'keep+0 >= 1 && NR > keep+0\'',
   },
 ];
 
@@ -323,9 +365,17 @@ export async function reconcileEtcdCronJob(
   if (!suspendOwnedByCadence && liveSuspend !== desiredSuspend) {
     ops.push({ op: 'replace', path: '/spec/suspend', value: desiredSuspend });
   }
-  const prefixEnv = findShimPrefixEnv(live);
+  const prefixEnv = findEnv(live, 'SHIM_PREFIX');
   if (prefixEnv && prefixEnv.current !== desiredPrefix) {
     ops.push({ op: 'replace', path: prefixEnv.path, value: desiredPrefix });
+  }
+  // The operator's retention count. Patched here rather than left to the
+  // manifest because this CronJob is seed-then-disown: Flux never re-applies
+  // it, so a manifest value would reach fresh installs only.
+  const retentionEnv = findEnv(live, 'RETENTION_COUNT');
+  const desiredRetention = await desiredEtcdRetentionCount(db);
+  if (retentionEnv && retentionEnv.current !== desiredRetention) {
+    ops.push({ op: 'replace', path: retentionEnv.path, value: desiredRetention });
   }
   // `add` upserts the annotation (replaces if present, creates if not). The
   // parent `/metadata/annotations` always exists — the manifest ships a
