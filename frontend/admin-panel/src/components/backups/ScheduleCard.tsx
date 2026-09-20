@@ -59,12 +59,23 @@ interface Props {
    * fields would accept a value, persist it, and change nothing — the exact
    * "saved but inert" trap these cards exist to remove.
    */
+  /** No operator-settable retention at all — hides both fields. */
   readonly hideRetention?: boolean;
+  /**
+   * Hide the DAYS field but keep the count.
+   *
+   * For artefacts whose job keeps a fixed number of copies rather than a time
+   * window. Offering a days field there would be a control with nothing behind
+   * it — the failure this whole area has had twice now.
+   */
+  readonly hideRetentionDays?: boolean;
   readonly title: string;
   readonly description: string;
 }
 
-export default function ScheduleCard({ subsystem, title, description, readOnly, readOnlyReason, hideRetention }: Props) {
+export default function ScheduleCard({
+  subsystem, title, description, readOnly, readOnlyReason, hideRetention, hideRetentionDays,
+}: Props) {
   const qc = useQueryClient();
   const { data, isLoading, error } = useQuery({
     queryKey: ['admin', 'backups', 'schedules', subsystem],
@@ -226,6 +237,7 @@ export default function ScheduleCard({ subsystem, title, description, readOnly, 
         </div>
       {!hideRetention && (
         <>
+        {!hideRetentionDays && (
         <div>
           <label className="text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400" htmlFor={`retdays-${subsystem}`}>Retention (days)</label>
           <input
@@ -250,6 +262,7 @@ export default function ScheduleCard({ subsystem, title, description, readOnly, 
             </p>
           )}
         </div>
+        )}
         <div>
           <label className="text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400" htmlFor={`retcount-${subsystem}`}>Retention (keep last N)</label>
           <input

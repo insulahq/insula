@@ -110,6 +110,21 @@ spec:
               # pinned tags sunsetted from Docker Hub in 2026.
               image: alpine/k8s:1.33.13
               imagePullPolicy: IfNotPresent
+              # Operator-set retention, written by platform-api into a ConfigMap
+              # it owns EXCLUSIVELY — Flux is given no manifest for it.
+              #
+              # Putting the value in this CronJob's own spec instead would put
+              # Flux and the platform in a tug-of-war over the field: Flux owns
+              # this object and reverts anything it did not apply, which is
+              # exactly how the mail snapshot's retention was silently reset on
+              # every reconcile before it moved to this pattern.
+              #
+              # `optional: true` so an absent ConfigMap is not a crash: the
+              # script's own default applies until the platform writes one.
+              envFrom:
+                - configMapRef:
+                    name: cluster-state-backup-retention
+                    optional: true
               env:
                 - name: AWS_ACCESS_KEY_ID
                   valueFrom: { secretKeyRef: { name: backup-credentials, key: AWS_ACCESS_KEY_ID } }
@@ -183,7 +198,7 @@ spec:
                     | awk '{print $4}' \
                     | grep -E '^cluster-state-.*\.tar\.gz$' \
                     | sort -r \
-                    | tail -n +15 \
+                    | awk -v keep="$${RETENTION_COUNT:-14}" 'keep+0 >= 1 && NR > keep+0' \
                     | while read -r f; do
                         aws s3 rm --endpoint-url="$${AWS_ENDPOINT_URL}" \
                           "s3://$${S3_BUCKET}/$${PREFIX}/$${f}"

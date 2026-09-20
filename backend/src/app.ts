@@ -1983,6 +1983,10 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
             clients: {
               batch: k8sForImapsync.batch as never,
               custom: k8sForImapsync.custom as never,
+              // Retention for the Flux-owned DR jobs is delivered by a
+              // ConfigMap the platform owns; without a core client the
+              // cadence pass converges schedules only.
+              core: k8sForImapsync.core as never,
             },
             log: app.log,
           });
