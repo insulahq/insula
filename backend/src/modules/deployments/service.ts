@@ -681,8 +681,18 @@ export async function getDeploymentById(db: Database, tenantId: string, deployme
   return deployment;
 }
 
+/**
+ * Forget the last failure.
+ *
+ * Clears `statusMessage` alongside `lastError`: the transitional message is
+ * the same kind of stale claim, and leaving it behind means the panel still
+ * has something to render about an attempt that has been superseded.
+ */
 export async function clearDeploymentError(db: Database, deploymentId: string): Promise<void> {
-  await db.update(deployments).set({ lastError: null }).where(eq(deployments.id, deploymentId));
+  await db
+    .update(deployments)
+    .set({ lastError: null, statusMessage: null })
+    .where(eq(deployments.id, deploymentId));
 }
 
 export async function listDeployments(
@@ -1630,6 +1640,21 @@ export async function redeployWithCurrentConfig(
   k8s: K8sClients,
   opts: { armPasswordReset?: boolean } = {},
 ): Promise<void> {
+  // A redeploy supersedes whatever the last one failed with. Without this the
+  // previous failure stays on the row and keeps being rendered — the panel
+  // shows a banner describing a state that no longer exists, over a
+  // deployment that is being replaced as it is read.
+  //
+  // Clearing BEFORE the attempt rather than after it on success is deliberate:
+  // every failure path below writes its own `lastError`, and every caller that
+  // reaches this line has already decided to replace the workload. An error
+  // that survives its own redeploy cannot be told apart from a current one.
+  //
+  // `updateDeploymentResources` already did this for its own path; the env-var
+  // and mount edits, the credential rotation and the DR reconcile did not,
+  // because their clear was attached to a status transition they do not make.
+  await clearDeploymentError(db, deployment.id);
+
   // Custom deployments redeploy from their own spec. Falling through to the
   // catalog lookup below would hit `if (!entry) return` and no-op silently,
   // so a mount edit or credential regen would report success and change

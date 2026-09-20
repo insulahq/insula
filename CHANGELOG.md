@@ -12,6 +12,70 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **Saved scheduled tasks can be edited.** Every row in Scheduled Tasks now has
+  a pencil button that loads the task back into the form it was created in —
+  name, schedule, URL or command, timeout and timezone. Until now a typo in a
+  cron expression meant deleting the task and re-entering it, which threw away
+  its run history; the API had accepted these edits all along, the panel just
+  never asked. Also on the admin **Tenants → Cron Jobs** tab, where the pencil
+  edits the job on its own tenant even with no tenant filter set. A task's type
+  (webcron or deployment) stays fixed — it decides which fields the scheduler
+  reads — so changing that still means creating a new task.
+- **A pinned timeout or timezone can be un-pinned.** Clearing either field on an
+  edit puts the task back on the default (30s/300s by type, and the platform
+  clock) instead of silently keeping the old pin.
+
+### Fixed
+- **Your plan's memory reading now matches what the cluster actually enforces.**
+  A database deployment runs behind a short-lived init container that re-stamps
+  its root password, and Kubernetes charges a pod the *larger* of its containers
+  and its init containers — for the pod's whole life, long after the init
+  container has exited. That init container asked for a flat 512Mi regardless of
+  how big the database was, and neither the Resource Usage panel nor the deploy
+  form counted it. A 1Gi plan running a 400Mi database therefore showed 432Mi
+  reserved while the cluster was holding 544Mi, offered 592Mi of headroom, let a
+  512Mi app through the deploy form, and then refused to start it. Three changes:
+  the init container now mirrors the database's own request, so it can never
+  inflate the reservation; the panel counts init containers; and the deploy form
+  checks the namespace quota itself instead of trusting its own bookkeeping.
+  Shrinking the database below 512Mi used to free nothing and return a
+  byte-identical error, which made the problem look like it had not moved.
+- **Deployment errors read as sentences, not as the raw API response.** A
+  refused deployment used to print the Kubernetes API's entire JSON body onto
+  the app card, clipped to two lines. It now says what happened — "This app asks
+  for 512Mi of memory, but only 480Mi of your 1Gi plan is free" — with what to
+  do about it, and folds the numbers into a **More details** table. Nothing is
+  discarded: the original text is the last row. Retry is no longer offered for
+  errors retrying cannot fix.
+- **An old error no longer follows you to the next application.** The
+  application detail panel is kept open in the background by the page behind
+  it, so a failed resource or environment-variable change kept its message
+  after you closed the panel — and showed it again the next time you opened
+  *any* application, reported against whichever one was on screen. Opening an
+  application now starts clean, and closing it forgets the attempt you walked
+  away from. Any editor left half-open closes with it.
+- **A redeploy clears the previous failure.** Editing environment variables or
+  mounts, rotating credentials and recovering from a backup all replace the
+  running workload, but left the last failure on the record, so the panel kept
+  describing a state that no longer existed. Changing an application's
+  CPU/memory already did this; now every path does. A deployment that is
+  healthy but still carrying an old error is also cleaned up on the next status
+  check, which previously could not happen at all — the check only wrote when
+  the status itself changed, and a healthy application has no change to make.
+
+- **The decoded error panel now reaches the case it was written for.** Most
+  deployment failures are stored as a structured error, not as a raw API
+  response — so the decoding added alongside it only applied to the rarer
+  shape, and a quota rejection still arrived on the card as
+  `{"code":"UNKNOWN","title":"Operation failed"…}`. Every stored shape is now
+  unpacked the same way, the plain sentence and the **More details** table are
+  built from whichever form the message arrives in, and the admin deployment
+  list uses the same decoder instead of printing the stored error as-is (which
+  gave a generic "Operation failed" and a sentence cut off mid-word). One
+  remediation line still told operators to click "Show raw error", a control
+  renamed to "More details"; corrected.
+
 ## [2026.9.25] - 2026-09-19
 
 ### Added

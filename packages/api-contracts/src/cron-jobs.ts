@@ -83,6 +83,18 @@ export const createCronJobSchema = z.object({
   { message: 'Webcron requires url; deployment cron requires command and deployment_id' }
 );
 
+/**
+ * `type` is deliberately absent: it selects which of the two field sets is
+ * meaningful, and flipping it would leave a job carrying a url AND a command
+ * with no way to say which one the scheduler should honour. Delete and
+ * recreate instead.
+ *
+ * `timeout_seconds` and `timezone` are nullable HERE and only here. Omitting a
+ * field means "leave it as it is", which on create is the same thing as "use
+ * the default" — on update it is not. Without an explicit null there is no way
+ * to put a job that was pinned to 600s or Europe/Berlin back on the default,
+ * and the edit form's cleared field would silently do nothing.
+ */
 export const updateCronJobSchema = z.object({
   name: z.string().min(1).max(255).optional(),
   schedule: z.string().regex(cronRegex, 'Invalid cron expression').optional(),
@@ -90,8 +102,8 @@ export const updateCronJobSchema = z.object({
   http_method: z.enum(['GET', 'POST', 'PUT']).optional(),
   command: z.string().min(1).max(2000).optional(),
   deployment_id: z.string().uuid().optional(),
-  timeout_seconds: timeoutField,
-  timezone: timezoneField,
+  timeout_seconds: timeoutField.nullable(),
+  timezone: timezoneField.nullable(),
   enabled: z.boolean().optional(),
 });
 
@@ -156,6 +168,8 @@ export type CreateCronJobInput = z.infer<typeof createCronJobSchema>;
 export type CreateCronJobRequest = z.input<typeof createCronJobSchema>;
 
 export type UpdateCronJobInput = z.infer<typeof updateCronJobSchema>;
+/** Wire shape for the PATCH body — see the CreateCronJobRequest note above. */
+export type UpdateCronJobRequest = z.input<typeof updateCronJobSchema>;
 export type CronJobResponse = z.infer<typeof cronJobResponseSchema>;
 export type CronJobListResponse = z.infer<typeof cronJobListResponseSchema>;
 

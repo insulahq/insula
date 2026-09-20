@@ -237,6 +237,33 @@ toolbar.
   still occupies its storage. Whichever view you pick is remembered the next
   time you open the tab.
 
+## When an app fails to start
+
+A failed app shows the reason on its card, in plain language rather than as the
+cluster's raw reply. A deployment refused for lack of memory reads:
+
+!!! failure "Not enough memory in your plan"
+
+    This app asks for 512Mi of memory, but only 256Mi of your 2Gi plan is free
+    — 1792Mi is already in use.
+
+    1. Free at least 256Mi by stopping, deleting, or shrinking another app.
+    2. Or reduce this app's resource request on the deployment form.
+    3. Or ask your provider to raise the plan limit.
+
+Below it, **More details** opens a table of the exact figures — what was asked
+for, what is already in use, your plan's limit, what is free, and how much
+short the request falls — with the original message from the cluster as the
+last row, so there is always something precise to quote to your provider.
+
+Some failures can be retried and some cannot: a **Retry** button appears only
+where trying again could actually work. Running out of plan memory is not one
+of those — nothing changes until something is freed — so no button is offered.
+
+!!! note "Errors do not linger"
+    A message describes the attempt it came from. Re-deploying clears it, and
+    opening one app never shows you an error left over from another.
+
 ## Manage an installed app
 
 Each deployment is a card on the **Installed Apps** tab showing live CPU,

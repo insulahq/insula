@@ -1,5 +1,5 @@
-import { useState, type FormEvent } from 'react';
-import { Clock, Plus, Loader2, AlertCircle, Trash2, X, Play, Square, Zap, Globe, Terminal } from 'lucide-react';
+import { useRef, useState, type FormEvent } from 'react';
+import { Clock, Plus, Loader2, AlertCircle, Trash2, X, Play, Square, Zap, Globe, Terminal, Pencil } from 'lucide-react';
 import clsx from 'clsx';
 import { useTenantContext } from '@/hooks/use-tenant-context';
 import { useCanManage } from '@/hooks/use-can-manage';
@@ -92,13 +92,79 @@ export default function CronJobs() {
   const [showForm, setShowForm] = useState(false);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [form, setForm] = useState<CronFormState>(INITIAL_FORM);
+  /** Job being edited, or null when the form is creating a new one. */
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const formRef = useRef<HTMLFormElement | null>(null);
 
-  const handleCreate = async (e: FormEvent) => {
+  const editingJob = editingId ? jobsRaw.find((j) => j.id === editingId) ?? null : null;
+  const pending = createJob.isPending || updateJob.isPending;
+  const submitError = editingId ? updateJob.error : createJob.error;
+
+  const closeForm = () => {
+    setForm(INITIAL_FORM);
+    setEditingId(null);
+    setShowForm(false);
+    createJob.reset();
+    updateJob.reset();
+  };
+
+  /**
+   * Load a saved job back into the same form that created it.
+   *
+   * Deliberately the same form rather than a second one: a separate edit dialog
+   * is where the two drift — a field added to create and forgotten on edit is
+   * invisible until someone cannot change it.
+   */
+  const startEdit = (job: (typeof jobsRaw)[number]) => {
+    createJob.reset();
+    updateJob.reset();
+    setEditingId(job.id);
+    setForm({
+      name: job.name,
+      type: job.type,
+      schedule: job.schedule,
+      url: job.url ?? '',
+      httpMethod: (job.httpMethod as 'GET' | 'POST' | 'PUT' | null) ?? 'GET',
+      command: job.command ?? '',
+      deploymentId: job.deploymentId ?? '',
+      // Blank is meaningful on the way back out: it clears the pin.
+      timeoutSeconds: job.timeoutSeconds != null ? String(job.timeoutSeconds) : '',
+      timezone: job.timezone ?? '',
+    });
+    setShowForm(true);
+    // jsdom has no scrollIntoView; the optional call keeps tests honest rather
+    // than forcing a stub that hides a real missing element.
+    formRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
+  };
+
+  const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     if (!form.name.trim() || !form.schedule.trim()) return;
 
     if (form.type === 'webcron' && !form.url.trim()) return;
     if (form.type === 'deployment' && (!form.command.trim() || !form.deploymentId)) return;
+
+    if (editingId) {
+      try {
+        await updateJob.mutateAsync({
+          cronJobId: editingId,
+          name: form.name.trim(),
+          schedule: form.schedule.trim(),
+          // Only the fields this job's type actually uses. A webcron carrying a
+          // command, or a deployment cron carrying a url, is a row the
+          // scheduler would have to guess about.
+          ...(form.type === 'webcron'
+            ? { url: form.url.trim(), http_method: form.httpMethod }
+            : { command: form.command.trim(), deployment_id: form.deploymentId }),
+          // null, not omitted: omitting means "leave it", so a cleared field
+          // has to say so explicitly to get back to the default.
+          timeout_seconds: form.timeoutSeconds.trim() ? Number(form.timeoutSeconds) : null,
+          timezone: form.timezone.trim() ? form.timezone.trim() : null,
+        });
+        closeForm();
+      } catch { /* error via updateJob.error */ }
+      return;
+    }
 
     try {
       await createJob.mutateAsync({
@@ -116,8 +182,7 @@ export default function CronJobs() {
         ...(form.timezone.trim() ? { timezone: form.timezone.trim() } : {}),
         enabled: true,
       });
-      setForm(INITIAL_FORM);
-      setShowForm(false);
+      closeForm();
     } catch { /* error via createJob.error */ }
   };
 
@@ -154,7 +219,7 @@ export default function CronJobs() {
         {canManage && (
           <button
             type="button"
-            onClick={() => setShowForm((p) => !p)}
+            onClick={() => (showForm ? closeForm() : setShowForm(true))}
             className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700"
             data-testid="add-cron-job-button"
           >
@@ -167,7 +232,20 @@ export default function CronJobs() {
       {!canManage && <ReadOnlyNotice message="You have read-only access to scheduled tasks. Creating, editing, and running cron jobs require administrator access." />}
 
       {showForm && (
-        <form onSubmit={handleCreate} className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-4 space-y-4" data-testid="cron-job-form">
+        <form ref={formRef} onSubmit={handleSubmit} className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-4 space-y-4" data-testid="cron-job-form">
+          {editingJob && (
+            <div
+              className="flex items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800 dark:border-blue-700 dark:bg-blue-900/30 dark:text-blue-300"
+              data-testid="cron-edit-banner"
+            >
+              <Pencil size={12} className="shrink-0" />
+              <span>
+                Editing <span className="font-semibold">{editingJob.name}</span>. Changes apply
+                from the next run — a run already in flight is not interrupted.
+              </span>
+            </div>
+          )}
+
           {/* Type selector */}
           <div>
             <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-2">Type</label>
@@ -175,7 +253,13 @@ export default function CronJobs() {
               <button
                 type="button"
                 onClick={() => setForm({ ...form, type: 'webcron' })}
+                // A saved job's type is fixed: it decides which field set the
+                // scheduler reads, and flipping it would leave the row holding
+                // both a url and a command. Delete and recreate to change it.
+                disabled={Boolean(editingId)}
+                title={editingId ? 'A task\u2019s type cannot be changed \u2014 delete it and create a new one' : undefined}
                 className={clsx(
+                  editingId && 'cursor-not-allowed opacity-60',
                   'flex items-center gap-2 rounded-lg border px-4 py-2 text-sm font-medium transition-colors',
                   form.type === 'webcron'
                     ? 'border-blue-500 bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300 dark:border-blue-500'
@@ -189,7 +273,13 @@ export default function CronJobs() {
               <button
                 type="button"
                 onClick={() => setForm({ ...form, type: 'deployment' })}
+                // A saved job's type is fixed: it decides which field set the
+                // scheduler reads, and flipping it would leave the row holding
+                // both a url and a command. Delete and recreate to change it.
+                disabled={Boolean(editingId)}
+                title={editingId ? 'A task\u2019s type cannot be changed \u2014 delete it and create a new one' : undefined}
                 className={clsx(
+                  editingId && 'cursor-not-allowed opacity-60',
                   'flex items-center gap-2 rounded-lg border px-4 py-2 text-sm font-medium transition-colors',
                   form.type === 'deployment'
                     ? 'border-purple-500 bg-purple-50 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300 dark:border-purple-500'
@@ -285,18 +375,30 @@ export default function CronJobs() {
                 {form.timezone ? '' : ' Changing the platform timezone moves this task with it.'}
               </p>
             </div>
-            <div className="flex items-end">
-              <button type="submit" disabled={createJob.isPending} className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50" data-testid="submit-cron-job">
-                {createJob.isPending && <Loader2 size={14} className="animate-spin" />}
-                Add
+            <div className="flex items-end gap-2">
+              <button type="submit" disabled={pending} className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50" data-testid="submit-cron-job">
+                {pending && <Loader2 size={14} className="animate-spin" />}
+                {editingId ? 'Save Changes' : 'Add'}
               </button>
+              {editingId && (
+                <button
+                  type="button"
+                  onClick={closeForm}
+                  className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
+                  data-testid="cancel-cron-edit"
+                >
+                  Cancel
+                </button>
+              )}
             </div>
           </div>
 
-          {createJob.error && (
+          {submitError && (
             <div className="flex items-center gap-2 text-sm text-red-600" data-testid="cron-create-error">
               <AlertCircle size={14} />
-              {createJob.error instanceof Error ? createJob.error.message : 'Failed to create cron job'}
+              {submitError instanceof Error
+                ? submitError.message
+                : editingId ? 'Failed to save changes' : 'Failed to create cron job'}
             </div>
           )}
         </form>
@@ -398,6 +500,20 @@ export default function CronJobs() {
                           {job.enabled
                             ? <Square size={12} fill="currentColor" />
                             : <Play size={12} />}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => startEdit(job)}
+                          className={clsx(
+                            'rounded-md border px-2 py-1.5 text-xs',
+                            editingId === job.id
+                              ? 'border-blue-500 bg-blue-50 text-blue-700 dark:border-blue-500 dark:bg-blue-900/30 dark:text-blue-300'
+                              : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700/50',
+                          )}
+                          title="Edit"
+                          data-testid={`edit-cron-${job.id}`}
+                        >
+                          <Pencil size={12} />
                         </button>
                         <button
                           type="button"
