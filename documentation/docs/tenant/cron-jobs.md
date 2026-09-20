@@ -57,9 +57,8 @@ enabled, and the result of the last run.
       the platform gives up on it and records a failure. Leave it blank for the
       default: **30 seconds** for a webcron, **300 seconds** for a deployment
       command. Raise it for an application cron that legitimately runs for
-      minutes — a Moodle site's `admin/cli/cron.php` takes around three minutes
-      on its own, and longer when it runs a course backup or rebuilds its
-      search index. The most you can set is one hour.
+      minutes — a Moodle site rebuilding its search index or running a course
+      backup, for instance. The most you can set is one hour.
 5. Click **Add**. New tasks start **enabled**.
 
 ### Writing the schedule
@@ -78,6 +77,20 @@ The schedule uses standard **cron** notation — five fields:
     If you're unsure, an online "crontab generator" can turn plain English into
     the five-field expression to paste here.
 
+!!! warning "A task never overlaps itself"
+    The platform will not start a run while the previous one is still going.
+    A task is claimed for the whole of its run, so a schedule of `* * * * *`
+    on a job that takes three minutes does **not** give you three runs at
+    once — it gives you one run roughly every three to four minutes, and the
+    schedule you asked for is quietly out of reach.
+
+    If a task is running further apart than its schedule says, look at how
+    long its runs take (**Last Run** shows the duration) before changing the
+    schedule. An application cron that idles deliberately — many keep polling
+    for work for a fixed period after finishing — spends that whole time
+    holding its slot, and shortening *that* setting is usually what fixes the
+    interval.
+
 !!! info "Which clock a schedule uses"
     A schedule is read on the task's **timezone** — its own if you set one,
     otherwise the platform's. `0 3 * * *` means 3 a.m. on that clock, and it
@@ -94,10 +107,32 @@ The schedule uses standard **cron** notation — five fields:
       second, because those are genuinely two different moments and skipping
       one would mean silently dropping a run.
 
+## Change a saved task
+
+Click the **pencil** on a task's row. It opens the same form you created it
+with, filled in, and the button reads **Save Changes**. Everything is editable
+— name, schedule, the URL or command, timeout and timezone — so a typo in a
+cron expression is a correction, not a reason to delete the task and start
+over (which would also throw away its run history).
+
+Changes apply from the **next** run; a run already in flight is not
+interrupted.
+
+!!! note "Two things behave specially"
+    - **Type is fixed.** A task cannot be switched between *Webcron* and
+      *Deployment* once saved — the type decides which fields the platform
+      reads. To change it, delete the task and create a new one.
+    - **Clearing a field restores the default.** Empty the **Timeout** or
+      **Timezone** box and save, and that task goes back to the default (30 or
+      300 seconds by type, and the platform's clock) rather than keeping what
+      was there before.
+
 ## Run, stop, and delete
 
 Each task row has quick actions:
 
+- **Edit** (pencil) — change the task's settings; see
+  [Change a saved task](#change-a-saved-task) above.
 - **Stop / Start** (solid square, or a play triangle once stopped) — disable or
   re-enable the task. A stopped task keeps its settings but won't run on
   schedule.
