@@ -60,6 +60,7 @@ import {
 } from '@/hooks/use-storage-lifecycle';
 import { useTableSearch } from '@/hooks/use-table-search';
 import ErrorPanel from '@/components/ErrorPanel';
+import { describeDeploymentError } from '@/lib/describe-deployment-error';
 import { useTabParam } from '@/hooks/use-tab-param';
 
 type TabKey = 'domains' | 'applications' | 'deployments' | 'files' | 'email' | 'backups' | 'snapshots' | 'users';
@@ -1456,19 +1457,20 @@ function DeploymentsTab({ data, isLoading, error, tenantId }: TabContentProps<De
         {sortedItems.map((d) => {
           // Try to parse lastError as the OperatorError envelope (JSON
           // produced by the status-reconciler since the error-standard
-          // change). Fall back to plain string for legacy rows.
+          // change). Anything else — a legacy row, or the Kubernetes client's
+          // raw HTTP body — is decoded into an envelope rather than printed,
+          // so a quota rejection reads as a sentence with the numbers folded
+          // into "More details" instead of `{"kind":"Status",…}` in a table cell.
           let envelope: import('@insula/api-contracts').OperatorError | null = null;
           let plainDetail = '';
           if (d.lastError && d.lastError.trim()) {
             try {
               const parsed = JSON.parse(d.lastError);
-              if (parsed && typeof parsed === 'object' && parsed.code && parsed.title) {
-                envelope = parsed as import('@insula/api-contracts').OperatorError;
-              } else {
-                plainDetail = d.lastError;
-              }
+              envelope = parsed && typeof parsed === 'object' && parsed.code && parsed.title
+                ? parsed as import('@insula/api-contracts').OperatorError
+                : describeDeploymentError(d.lastError);
             } catch {
-              plainDetail = d.lastError;
+              envelope = describeDeploymentError(d.lastError);
             }
           }
           if (!envelope && !plainDetail) plainDetail = (d.statusMessage ?? '').trim();

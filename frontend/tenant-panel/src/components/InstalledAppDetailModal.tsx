@@ -46,6 +46,8 @@ import DatabaseManagementModal from './DatabaseManagementModal';
 import LogViewer from './LogViewer';
 import ChangeStoragePathModal from './ChangeStoragePathModal';
 import WebTerminal from './WebTerminal';
+import ErrorPanel from './ErrorPanel';
+import { describeDeploymentError } from '@/lib/describe-deployment-error';
 import type { Deployment, CatalogEntry } from '@/types/api';
 
 interface ComponentEntry {
@@ -375,14 +377,11 @@ export default function InstalledAppDetailModal({
           </div>
         </div>
 
-        {/* Last Error Banner */}
+        {/* Last error — decoded to a sentence, with the numbers folded into
+            "More details". It used to print the Kubernetes API's raw JSON body. */}
         {deployment.lastError && (
-          <div
-            className="mb-6 flex items-start gap-2 rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-4 py-3 text-sm text-red-700 dark:text-red-400"
-            data-testid="last-error-banner"
-          >
-            <AlertTriangle size={16} className="mt-0.5 shrink-0" />
-            <span>Last error: {deployment.lastError}</span>
+          <div className="mb-6" data-testid="last-error-banner">
+            <ErrorPanel error={describeDeploymentError(deployment.lastError)} />
           </div>
         )}
 

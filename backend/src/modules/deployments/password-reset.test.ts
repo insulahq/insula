@@ -5,6 +5,8 @@ describe('buildPasswordResetInitContainer', () => {
   const baseArgs = {
     storagePath: 'database/mariadb/my-db',
     volumeMountName: 'tenant-storage',
+    cpuRequest: '100m',
+    memoryRequest: '400Mi',
   };
 
   describe('MariaDB', () => {
@@ -207,6 +209,50 @@ describe('buildPasswordResetInitContainer', () => {
       expect(script).toContain('restore_hba');
       expect(script).toMatch(/EXIT INT TERM/);
     });
+  });
+
+  /**
+   * The init container is charged against the tenant's ResourceQuota for the
+   * pod's WHOLE lifetime — Kubernetes bills a pod
+   * `max(sum(containers), max(initContainers))` — so asking for more than the
+   * container it precedes silently eats quota nothing is using.
+   *
+   * Production 2026-09-19, on one tenant: a flat 512Mi here charged a
+   * 400Mi MariaDB as 512Mi. The panel read 432Mi of a 1Gi plan, the quota read
+   * 544Mi, and a 512Mi PHP app the panel had approved was refused by
+   * admission. Mirroring the fronted container makes the init container free.
+   */
+  describe('resources mirror the container it fronts', () => {
+    const forDb = (cpuRequest: string, memoryRequest: string) =>
+      buildPasswordResetInitContainer({
+        ...baseArgs,
+        cpuRequest,
+        memoryRequest,
+        catalogCode: 'mariadb',
+        image: 'mariadb:12',
+        passwordEnvVar: 'MARIADB_ROOT_PASSWORD',
+      })!;
+
+    it('requests exactly the fronted container request, not a fixed 512Mi', () => {
+      const result = forDb('100m', '400Mi');
+      expect(result.resources.requests.memory).toBe('400Mi');
+      expect(result.resources.requests.cpu).toBe('100m');
+    });
+
+    it('keeps memory request == limit (Guaranteed QoS, ADR-037)', () => {
+      const result = forDb('100m', '400Mi');
+      expect(result.resources.limits.memory).toBe(result.resources.requests.memory);
+    });
+
+    // The regression that shipped: any database under 512Mi was charged 512Mi,
+    // which is why dropping that database from 400Mi to 350Mi moved the quota
+    // not at all and returned a byte-identical error.
+    it.each(['128Mi', '256Mi', '350Mi', '400Mi', '2Gi'])(
+      'never exceeds the container it fronts (%s)',
+      (memory) => {
+        expect(forDb('100m', memory).resources.requests.memory).toBe(memory);
+      },
+    );
   });
 
   // The create path used a loose `.includes('PASSWORD')` while the redeploy

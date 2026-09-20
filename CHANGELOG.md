@@ -12,6 +12,29 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **Your plan's memory reading now matches what the cluster actually enforces.**
+  A database deployment runs behind a short-lived init container that re-stamps
+  its root password, and Kubernetes charges a pod the *larger* of its containers
+  and its init containers — for the pod's whole life, long after the init
+  container has exited. That init container asked for a flat 512Mi regardless of
+  how big the database was, and neither the Resource Usage panel nor the deploy
+  form counted it. A 1Gi plan running a 400Mi database therefore showed 432Mi
+  reserved while the cluster was holding 544Mi, offered 592Mi of headroom, let a
+  512Mi app through the deploy form, and then refused to start it. Three changes:
+  the init container now mirrors the database's own request, so it can never
+  inflate the reservation; the panel counts init containers; and the deploy form
+  checks the namespace quota itself instead of trusting its own bookkeeping.
+  Shrinking the database below 512Mi used to free nothing and return a
+  byte-identical error, which made the problem look like it had not moved.
+- **Deployment errors read as sentences, not as the raw API response.** A
+  refused deployment used to print the Kubernetes API's entire JSON body onto
+  the app card, clipped to two lines. It now says what happened — "This app asks
+  for 512Mi of memory, but only 480Mi of your 1Gi plan is free" — with what to
+  do about it, and folds the numbers into a **More details** table. Nothing is
+  discarded: the original text is the last row. Retry is no longer offered for
+  errors retrying cannot fix.
+
 ## [2026.9.25] - 2026-09-19
 
 ### Added
