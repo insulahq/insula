@@ -28,6 +28,20 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   control, and it was written down nowhere that the other three keep a fixed
   number of copies decided by the job that writes them — the newest 24 etcd
   snapshots, 30 secrets bundles and 14 cluster state dumps.
+- **The Backups page loads a tenant's backups when you open that tenant.** It
+  used to fetch a page of bundles across every tenant before you had asked
+  about any of them, group what came back, and offer a **Load more** under a
+  line explaining how much of the list you were not seeing. Opening a tenant
+  now loads that tenant's **complete** history — all of it, following on by
+  itself until there is nothing left, with the wait telling you how many
+  backups it is fetching. The truncation line and the Load more button are
+  gone; there is nothing left for them to say.
+
+  The tenant list itself comes from the per-tenant totals, so it shows **every**
+  tenant with its backup count and repository size. Previously a tenant only
+  appeared if one of its bundles happened to fall in the fetched page — on a
+  busy platform a tenant could be missing from the page whose whole job is
+  telling you who is covered.
 
 ## [2026.9.27] - 2026-09-20
 

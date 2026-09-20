@@ -17,7 +17,7 @@
  * eligible tenants" buttons. Free-text + tenant filter for narrowing.
  */
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Package, Search, Loader2, Filter, Camera, Archive, RotateCw, AlertCircle, Trash2, Clock,
@@ -116,74 +116,6 @@ function describeRepoSize(roll: TenantBackupOverviewRow | undefined): string {
     return `Tracked: each backup adds what restic reported it wrote (${verified}). Re-measured after every prune.`;
   }
   return `Measured with restic stats --mode raw-data (${verified}).`;
-}
-
-interface BundlePage {
-  readonly rows: ReadonlyArray<BundleSummary>;
-  readonly cursor: string | null;
-  readonly hasMore: boolean;
-  readonly totalCount: number | null;
-}
-
-/**
- * Bundles, PAGED.
- *
- * This used to be a single unparameterised GET. The server defaults `limit` to
- * 50 — across ALL tenants — and the page groups what comes back per tenant, so
- * with 25 tenants backed up nightly every tenant showed 1-3 bundles while
- * holding 26. The envelope said `has_more: true` and `total_count: 269` the
- * whole time; the old `select` returned `raw.data` and dropped it, leaving the
- * UI no way to know it was looking at a truncated list, let alone ask for the
- * rest.
- *
- * Counts in the group headers now come from the per-tenant rollup, so they are
- * right regardless of how much of the list has been fetched. This query is the
- * list itself: one page at a time, newest first, with an explicit "load more".
- */
-function useTenantBundles(tenantFilter: string | null) {
-  return useInfiniteQuery({
-    queryKey: ['admin', 'tenant-bundles', tenantFilter],
-    initialPageParam: null as string | null,
-    queryFn: ({ pageParam }) => {
-      const qs = new URLSearchParams({ limit: String(MAX_PAGE_LIMIT) });
-      if (tenantFilter) qs.set('tenantId', tenantFilter);
-      if (pageParam) qs.set('cursor', pageParam);
-      return apiFetch<{
-        data: ReadonlyArray<BundleSummary> | { data?: ReadonlyArray<BundleSummary> };
-        pagination?: { cursor?: string | null; has_more?: boolean; total_count?: number };
-      }>(`/api/v1/admin/tenant-bundles?${qs.toString()}`);
-    },
-    // Defensive unwrap — accept BOTH the canonical `{data: [...], pagination}`
-    // envelope AND a legacy double-wrap (`{data: {data: [...], pagination}}`)
-    // that was shipped briefly. Without this normaliser an old platform-api
-    // still in the wild blows up the page with "rows.filter is not a
-    // function". Once every cluster runs the paginated() fix the inner
-    // branch is dead code.
-    getNextPageParam: (last) => {
-      const p = (last as { pagination?: { cursor?: string | null; has_more?: boolean } }).pagination;
-      return p?.has_more ? (p.cursor ?? null) : null;
-    },
-    staleTime: 15_000,
-    select: (raw): BundlePage => {
-      const pages = raw.pages ?? [];
-      const rows: BundleSummary[] = [];
-      for (const page of pages) {
-        const top = page?.data;
-        if (Array.isArray(top)) rows.push(...top);
-        else if (top && typeof top === 'object' && 'data' in top && Array.isArray((top as { data?: unknown }).data)) {
-          rows.push(...(top as { data: ReadonlyArray<BundleSummary> }).data);
-        }
-      }
-      const lastPage = pages[pages.length - 1] as
-        { pagination?: { cursor?: string | null; has_more?: boolean; total_count?: number } } | undefined;
-      return {
-        rows,
-        cursor: lastPage?.pagination?.cursor ?? null,
-        hasMore: Boolean(lastPage?.pagination?.has_more),
-        totalCount: lastPage?.pagination?.total_count ?? null,
-      };
-    },
-  });
 }
 
 /** Restore carts across all tenants — grouped per tenant in the Backups tab. */
@@ -531,12 +463,6 @@ function SnapshotsTab(p: SnapshotsTabProps) {
 // ── Backups tab ──────────────────────────────────────────────────────
 
 interface BackupsTabProps {
-  readonly rows: ReadonlyArray<BundleSummary>;
-  /** Bundles matching the current filter across ALL pages, from the envelope. */
-  readonly totalCount: number | null;
-  readonly hasMore: boolean;
-  readonly isFetchingMore: boolean;
-  readonly onLoadMore: () => void;
   readonly tenantOptions: ReadonlyArray<{ id: string; name: string }>;
   readonly isLoading: boolean;
   readonly search: string;
@@ -559,22 +485,201 @@ interface BackupsTabProps {
   readonly inclusionPendingFor: string | null;
 }
 
-function BackupsTab(p: BackupsTabProps) {
-  const filtered = useMemo(() => {
-    const q = p.search.toLowerCase();
-    return p.rows.filter((r) => {
-      if (p.selectedTenantId && r.tenantId !== p.selectedTenantId) return false;
-      if (!q) return true;
-      return (
-        r.status.toLowerCase().includes(q)
-        || (r.label ?? '').toLowerCase().includes(q)
-        || (r.tenantName ?? '').toLowerCase().includes(q)
-        || (r.lastError ?? '').toLowerCase().includes(q)
-      );
-    });
-  }, [p.rows, p.search, p.selectedTenantId]);
-  const { sortedData } = useSortable(filtered, 'createdAt', 'desc');
+/**
+ * Ceiling on the auto-paging walk below. 100 rows a page × 50 pages is 5,000
+ * bundles — years of nightlies for one tenant — so reaching it means the
+ * server is answering `has_more` unconditionally, not that a tenant really has
+ * that many. Bounded so a server bug cannot spin the browser forever.
+ */
+const MAX_AUTO_PAGES = 50;
 
+/**
+ * EVERY bundle for ONE tenant, fetched only when that tenant's group is open.
+ *
+ * The page used to fetch a page of bundles across ALL tenants up front and
+ * group what came back. That is the wrong shape twice over: the operator opens
+ * this page to ask "how is THIS tenant covered", and a cross-tenant page can
+ * only ever hold a few rows per tenant — which is how tenants holding 26
+ * bundles displayed 2. It also meant a tenant whose bundles all fell outside
+ * that page did not appear in the list at all.
+ *
+ * Now nothing is fetched until a group is opened, and then it is that tenant's
+ * COMPLETE history: the query follows its own cursor to the end rather than
+ * asking the operator to press "load more" until the list stops growing. The
+ * tenant list itself comes from the rollup, which already carries every
+ * tenant's name, bundle count and repository size.
+ */
+function useAllBundlesForTenant(tenantId: string, enabled: boolean) {
+  const q = useInfiniteQuery({
+    queryKey: ['admin', 'tenant-bundles', 'all', tenantId],
+    enabled,
+    initialPageParam: null as string | null,
+    queryFn: ({ pageParam }) => {
+      const qs = new URLSearchParams({ tenantId, limit: String(MAX_PAGE_LIMIT) });
+      if (pageParam) qs.set('cursor', pageParam);
+      return apiFetch<{
+        data: ReadonlyArray<BundleSummary> | { data?: ReadonlyArray<BundleSummary> };
+        pagination?: { cursor?: string | null; has_more?: boolean; total_count?: number };
+      }>(`/api/v1/admin/tenant-bundles?${qs.toString()}`);
+    },
+    getNextPageParam: (last, allPages) => {
+      // Hard stop. The cursor comes from the server, and a server that always
+      // answered has_more would otherwise spin this forever; MAX_PAGE_LIMIT ×
+      // this is far past any real tenant's history.
+      if (allPages.length >= MAX_AUTO_PAGES) return null;
+      const pg = (last as { pagination?: { cursor?: string | null; has_more?: boolean } }).pagination;
+      return pg?.has_more ? (pg.cursor ?? null) : null;
+    },
+    staleTime: 15_000,
+    select: (raw): ReadonlyArray<BundleSummary> => {
+      const rows: BundleSummary[] = [];
+      for (const page of raw.pages ?? []) {
+        const top = page?.data;
+        // Accept the canonical `{data: [...]}` envelope and the legacy
+        // double-wrap an older platform-api still in the wild may send.
+        if (Array.isArray(top)) rows.push(...top);
+        else if (top && typeof top === 'object' && 'data' in top && Array.isArray((top as { data?: unknown }).data)) {
+          rows.push(...(top as { data: ReadonlyArray<BundleSummary> }).data);
+        }
+      }
+      return rows;
+    },
+  });
+
+  // Walk to the end on the operator's behalf.
+  const { hasNextPage, isFetchingNextPage, fetchNextPage } = q;
+  useEffect(() => {
+    if (!enabled || !hasNextPage || isFetchingNextPage) return;
+    void fetchNextPage();
+  }, [enabled, hasNextPage, isFetchingNextPage, fetchNextPage]);
+
+  return q;
+}
+
+/**
+ * One tenant's bundle table. Mounts when the group opens, which is what
+ * triggers the fetch — so a page with 25 tenants issues no bundle requests
+ * until the operator asks about one.
+ */
+function TenantBundleTable({
+  tenantId, expectedCount, onRestore,
+}: {
+  readonly tenantId: string;
+  /** From the rollup, so "loading 26" is shown rather than a bare spinner. */
+  readonly expectedCount: number | undefined;
+  readonly onRestore: (row: BundleSummary) => void;
+}) {
+  const q = useAllBundlesForTenant(tenantId, true);
+  const rows = q.data ?? [];
+  // `isFetching` rather than `isLoading`: isLoading is only true for the FIRST
+  // page, and this query walks several. A table that stopped showing progress
+  // after page 1 would look finished while still filling in.
+  const busy = q.isFetching || q.hasNextPage;
+
+  if (q.isError) {
+    return (
+      <p className="px-2 py-3 text-xs text-red-600 dark:text-red-400" data-testid={`tenant-bundle-error-${tenantId}`}>
+        {q.error instanceof Error ? q.error.message : 'Could not load this tenant\u2019s backups'}
+      </p>
+    );
+  }
+
+  if (rows.length === 0 && busy) {
+    return (
+      <p className="flex items-center gap-2 px-2 py-4 text-xs text-gray-500 dark:text-gray-400" data-testid={`tenant-bundle-loading-${tenantId}`}>
+        <Loader2 size={13} className="animate-spin" />
+        {expectedCount ? `Loading ${expectedCount} backup${expectedCount === 1 ? '' : 's'}\u2026` : 'Loading backups\u2026'}
+      </p>
+    );
+  }
+
+  if (rows.length === 0) {
+    return (
+      <p className="px-2 py-4 text-xs text-gray-500 dark:text-gray-400" data-testid={`tenant-bundle-empty-${tenantId}`}>
+        No backups for this tenant yet.
+      </p>
+    );
+  }
+
+  return (
+    <>
+      <table className="min-w-full divide-y divide-gray-200 text-sm dark:divide-gray-700">
+        <thead>
+          <tr className="text-left text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400">
+            <th className="px-2 py-1">Label</th>
+            <th className="px-2 py-1">Status</th>
+            <th
+              className="px-2 py-1 text-right"
+              title="Everything this bundle captured, at its logical size. Do not add these up — each nightly bundle re-states the tenant's whole footprint."
+            >
+              Bundle Size
+            </th>
+            <th
+              className="px-2 py-1 text-right"
+              title="What this bundle actually added to the repository, after deduplication and compression. These DO add up — their sum is the repo size."
+            >
+              Restic Size
+            </th>
+            <th className="px-2 py-1 text-right">Created</th>
+            <th className="px-2 py-1">Initiator</th>
+            <th className="px-2 py-1 text-right">Actions</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
+          {rows.map((r) => (
+            <tr key={r.id} className="hover:bg-gray-50 dark:hover:bg-gray-800">
+              <td className="px-2 py-1 text-xs">{r.label ?? <span className="text-gray-400">unlabeled</span>}</td>
+              <td className="px-2 py-1"><StatusPill status={r.status} /></td>
+              <td className="px-2 py-1 text-right tabular-nums text-xs">{formatBytes(r.sizeBytes)}</td>
+              <td className="px-2 py-1 text-right tabular-nums text-xs">
+                {r.resticAddedBytes == null
+                  // Not 0: bundles captured before this shipped have no
+                  // figure, and an unchanged tenant legitimately adds
+                  // nothing. Rendering "0 B" for both would make the
+                  // first look like the second.
+                  ? <span className="text-gray-400" title="Captured before this was recorded">—</span>
+                  : formatBytes(r.resticAddedBytes)}
+              </td>
+              <td className="px-2 py-1 text-right text-xs text-gray-500"><TimeCell iso={r.createdAt} /></td>
+              <td className="px-2 py-1 text-xs"><code>{r.initiator}</code></td>
+              <td className="px-2 py-1 text-right">
+                <button
+                  type="button"
+                  onClick={() => onRestore(r)}
+                  // `partial` bundles can be restored — they're missing one
+                  // or more components (typically mailboxes when Stalwart
+                  // is misconfigured), but the components that DID complete
+                  // still have valid artifacts and are restorable via the
+                  // cart, which skips items whose component is missing.
+                  disabled={r.status !== 'completed' && r.status !== 'partial'}
+                  className="inline-flex items-center gap-1 rounded border border-gray-300 px-2 py-0.5 text-[11px] font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-40 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+                  data-testid={`tenant-bundle-restore-${r.id}`}
+                  title={
+                    r.status === 'completed' ? 'Open the Restoration Wizard'
+                    : r.status === 'partial' ? 'Open the Restoration Wizard (some components are missing — see bundle detail)'
+                    : `Bundles in '${r.status}' state cannot be restored`
+                  }
+                >
+                  <RotateCw size={11} /> Restore…
+                </button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {busy && (
+        // Still walking the cursor. Says so under the rows already drawn, so a
+        // partially-loaded list is never mistaken for the whole history.
+        <p className="flex items-center gap-2 px-2 py-2 text-[11px] text-gray-500 dark:text-gray-400" data-testid={`tenant-bundle-loading-more-${tenantId}`}>
+          <Loader2 size={12} className="animate-spin" />
+          Loaded {rows.length}{expectedCount ? ` of ${expectedCount}` : ''}\u2026
+        </p>
+      )}
+    </>
+  );
+}
+
+function BackupsTab(p: BackupsTabProps) {
   // ── Grouping ───────────────────────────────────────────────────────
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
   const toggleGroup = (tenantId: string) => {
@@ -603,34 +708,31 @@ function BackupsTab(p: BackupsTabProps) {
     [p.rollupRows],
   );
 
-  // Bundles grouped by tenant, each group's bundles keeping the sorted
-  // (newest-first) order from above.
+  // The tenant list comes from the ROLLUP, not from a page of bundles.
+  //
+  // Deriving it from fetched rows meant a tenant appeared only if one of its
+  // bundles happened to be in the page — so a tenant with no recent backup, or
+  // simply an unlucky position in a cross-tenant ordering, was missing from a
+  // page whose whole job is telling you who is covered. The rollup has every
+  // tenant, with the count and repository size already attached.
   const groups = useMemo(() => {
-    const m = new Map<string, { tenantId: string; tenantName: string; bundles: BundleSummary[]; totalBytes: number }>();
-    for (const r of sortedData) {
-      const g = m.get(r.tenantId);
-      if (g) {
-        g.bundles.push(r);
-        g.totalBytes += r.sizeBytes;
-      } else {
-        m.set(r.tenantId, {
-          tenantId: r.tenantId,
-          tenantName: r.tenantName ?? r.tenantId.slice(0, 8),
-          bundles: [r],
-          totalBytes: r.sizeBytes,
-        });
-      }
-    }
-    return [...m.values()].sort((a, b) =>
-      a.tenantName.localeCompare(b.tenantName, undefined, { sensitivity: 'base' }));
-  }, [sortedData]);
+    const q = p.search.toLowerCase();
+    return p.rollupRows
+      .filter((r) => {
+        if (p.selectedTenantId && r.tenantId !== p.selectedTenantId) return false;
+        if (!q) return true;
+        return r.tenantName.toLowerCase().includes(q);
+      })
+      .map((r) => ({ tenantId: r.tenantId, tenantName: r.tenantName }))
+      .sort((a, b) => a.tenantName.localeCompare(b.tenantName, undefined, { sensitivity: 'base' }));
+  }, [p.rollupRows, p.search, p.selectedTenantId]);
 
   return (
     <div className="space-y-4">
       <FilterBar
         search={p.search}
         setSearch={p.setSearch}
-        rowCount={filtered.length}
+        rowCount={groups.length}
         tenantOptions={p.tenantOptions}
         selectedTenantId={p.selectedTenantId}
         setSelectedTenantId={p.setSelectedTenantId}
@@ -717,13 +819,13 @@ function BackupsTab(p: BackupsTabProps) {
         </button>
       </div>
 
-      {p.isLoading && filtered.length === 0 ? (
+      {p.isLoading && groups.length === 0 ? (
         <div className="flex items-center gap-2 text-sm text-gray-500"><Loader2 size={14} className="animate-spin" /> Loading…</div>
-      ) : filtered.length === 0 ? (
+      ) : groups.length === 0 ? (
         <div className="rounded border border-dashed border-gray-300 bg-gray-50 px-3 py-6 text-center text-sm text-gray-500 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-400">
-          {p.rows.length === 0
-            ? 'No tenant bundles yet. Trigger one with "Bundle all eligible tenants" or per-tenant below.'
-            : 'No bundles match the filter.'}
+          {p.rollupRows.length === 0
+            ? 'No tenants yet.'
+            : 'No tenants match the filter.'}
         </div>
       ) : (
         // Grouped by tenant. A flat cross-tenant list answers "what happened
@@ -752,12 +854,11 @@ function BackupsTab(p: BackupsTabProps) {
                 >
                   {open ? <ChevronDown size={14} className="shrink-0 text-gray-500" /> : <ChevronRight size={14} className="shrink-0 text-gray-500" />}
                   <span className="font-medium text-gray-900 dark:text-gray-100">{g.tenantName}</span>
-                  {/* The COUNT comes from the per-tenant rollup, never from
-                      `g.bundles.length`. The list is paged; the group holds
-                      only the bundles fetched so far, and reading the count
-                      off it reported "2 backups" for tenants holding 26. */}
+                  {/* The count is the tenant's real total, from the rollup.
+                      There is no longer any other number it could be: the
+                      group holds no bundles until it is opened. */}
                   <span className="rounded-full bg-gray-200 px-2 py-0.5 text-[11px] text-gray-700 dark:bg-gray-700 dark:text-gray-300">
-                    {(roll?.bundleCount ?? g.bundles.length)} backup{(roll?.bundleCount ?? g.bundles.length) === 1 ? '' : 's'}
+                    {roll?.bundleCount ?? 0} backup{(roll?.bundleCount ?? 0) === 1 ? '' : 's'}
                   </span>
                   {carts.length > 0 && (
                     <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] text-amber-800 dark:bg-amber-900/40 dark:text-amber-300">
@@ -863,104 +964,16 @@ function BackupsTab(p: BackupsTabProps) {
                       </div>
                     )}
 
-                    <table className="min-w-full divide-y divide-gray-200 text-sm dark:divide-gray-700">
-                      <thead>
-                        <tr className="text-left text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400">
-                          <th className="px-2 py-1">Label</th>
-                          <th className="px-2 py-1">Status</th>
-                          <th
-                            className="px-2 py-1 text-right"
-                            title="Everything this bundle captured, at its logical size. Do not add these up — each nightly bundle re-states the tenant's whole footprint."
-                          >
-                            Bundle Size
-                          </th>
-                          <th
-                            className="px-2 py-1 text-right"
-                            title="What this bundle actually added to the repository, after deduplication and compression. These DO add up — their sum is the repo size."
-                          >
-                            Restic Size
-                          </th>
-                          <th className="px-2 py-1 text-right">Created</th>
-                          <th className="px-2 py-1">Initiator</th>
-                          <th className="px-2 py-1 text-right">Actions</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-                        {g.bundles.map((r) => (
-                          <tr key={r.id} className="hover:bg-gray-50 dark:hover:bg-gray-800">
-                            <td className="px-2 py-1 text-xs">{r.label ?? <span className="text-gray-400">unlabeled</span>}</td>
-                            <td className="px-2 py-1"><StatusPill status={r.status} /></td>
-                            <td className="px-2 py-1 text-right tabular-nums text-xs">{formatBytes(r.sizeBytes)}</td>
-                            <td className="px-2 py-1 text-right tabular-nums text-xs">
-                              {r.resticAddedBytes == null
-                                // Not 0: bundles captured before this shipped have no
-                                // figure, and an unchanged tenant legitimately adds
-                                // nothing. Rendering "0 B" for both would make the
-                                // first look like the second.
-                                ? <span className="text-gray-400" title="Captured before this was recorded">—</span>
-                                : formatBytes(r.resticAddedBytes)}
-                            </td>
-                            <td className="px-2 py-1 text-right text-xs text-gray-500"><TimeCell iso={r.createdAt} /></td>
-                            <td className="px-2 py-1 text-xs"><code>{r.initiator}</code></td>
-                            <td className="px-2 py-1 text-right">
-                              <button
-                                type="button"
-                                onClick={() => p.onRestore(r)}
-                                // `partial` bundles can be restored — they're missing one
-                                // or more components (typically mailboxes when Stalwart
-                                // is misconfigured), but the components that DID complete
-                                // still have valid artifacts and are restorable via the
-                                // cart, which skips items whose component is missing.
-                                disabled={r.status !== 'completed' && r.status !== 'partial'}
-                                className="inline-flex items-center gap-1 rounded border border-gray-300 px-2 py-0.5 text-[11px] font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-40 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
-                                data-testid={`tenant-bundle-restore-${r.id}`}
-                                title={
-                                  r.status === 'completed' ? 'Open the Restoration Wizard'
-                                  : r.status === 'partial' ? 'Open the Restoration Wizard (some components are missing — see bundle detail)'
-                                  : `Bundles in '${r.status}' state cannot be restored`
-                                }
-                              >
-                                <RotateCw size={11} /> Restore…
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+<TenantBundleTable
+                      tenantId={g.tenantId}
+                      expectedCount={roll?.bundleCount}
+                      onRestore={p.onRestore}
+                    />
                   </div>
                 )}
               </div>
             );
           })}
-        </div>
-      )}
-
-      {/* Say what is on screen and what is not. The list is paged, and a
-          truncated list that says nothing about being truncated is how
-          "1-3 backups per tenant" looked like a backup failure rather than a
-          page-size. The per-group COUNTS come from the rollup, so they stay
-          right no matter how many pages have been loaded — this line is about
-          the rows themselves. */}
-      {p.rows.length > 0 && (
-        <div className="flex items-center justify-between gap-3 px-1 text-[11px] text-gray-500 dark:text-gray-400">
-          <span data-testid="tenant-bundle-list-range">
-            {p.totalCount != null && p.totalCount > p.rows.length
-              ? `Showing the ${p.rows.length} most recent of ${p.totalCount} bundles${p.selectedTenantId ? '' : ' across all tenants'}.`
-              : `Showing all ${p.rows.length} bundle${p.rows.length === 1 ? '' : 's'}${p.selectedTenantId ? '' : ' across all tenants'}.`}
-            {!p.selectedTenantId && p.hasMore && ' Filter to one tenant to page through its full history.'}
-          </span>
-          {p.hasMore && (
-            <button
-              type="button"
-              onClick={p.onLoadMore}
-              disabled={p.isFetchingMore}
-              className="inline-flex shrink-0 items-center gap-1 rounded border border-gray-300 px-2 py-0.5 font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
-              data-testid="tenant-bundle-load-more"
-            >
-              {p.isFetchingMore ? <Loader2 size={11} className="animate-spin" /> : null}
-              Load more
-            </button>
-          )}
         </div>
       )}
 
@@ -1009,7 +1022,7 @@ export default function TenantsBackupsPage() {
     shimResp?.data?.assignments?.find((a) => a.className === 'tenant')?.targetId ?? null;
   const tenantTargetBound = !!tenantTargetId;
 
-  const { data: rollupData } = useTenantsRollup();
+  const { data: rollupData, isLoading: rollupLoading } = useTenantsRollup();
   const tenantOptions = useMemo(
     () => (rollupData?.data?.rows ?? [])
       .map((r: TenantBackupOverviewRow) => ({ id: r.tenantId, name: r.tenantName }))
@@ -1032,7 +1045,6 @@ export default function TenantsBackupsPage() {
   });
 
   const snapshotsQ = useTenantSnapshots(selectedTenantId);
-  const bundlesQ = useTenantBundles(selectedTenantId);
 
   const { snapshotNow, bundleNow, deleteSnapshot, createCart } = useTenantActions(tenantTargetId);
 
@@ -1186,13 +1198,11 @@ export default function TenantsBackupsPage() {
           <div className="space-y-3">
             {errorBanner}
             <BackupsTab
-              rows={bundlesQ.data?.rows ?? []}
-              totalCount={bundlesQ.data?.totalCount ?? null}
-              hasMore={bundlesQ.hasNextPage}
-              isFetchingMore={bundlesQ.isFetchingNextPage}
-              onLoadMore={() => { void bundlesQ.fetchNextPage(); }}
               tenantOptions={tenantOptions}
-              isLoading={bundlesQ.isLoading}
+              // The page's only up-front fetch is the rollup — the tenant
+              // list with each one's backup count and repository size.
+              // Bundles load per tenant, when a group is opened.
+              isLoading={rollupLoading}
               search={search}
               setSearch={setSearch}
               selectedTenantId={selectedTenantId}
