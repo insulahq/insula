@@ -47,13 +47,22 @@ export default function SystemBackupsPage() {
         // this was `[]`, so the page rendered no schedule
         // cards at all: the cadence of every system artefact lived only in
         // manifests. Order is the order an operator thinks about them —
-        // database first, then the three DR artefacts.
+        // the database first (rendered by the routing tab itself), then the
+        // DR artefacts.
+        //
         // `system_pitr` is NOT here: the Postgres base backup has its own card
         // on the Backups tab, which sets cadence, retention and archive
         // timeout together and validates them against each other. A second
         // cadence field on this tab would write the same ScheduledBackup from
         // a different stored value.
-        scheduleSubsystems={['etcd_snapshot', 'secrets_bundle', 'cluster_state', 'longhorn_recurring']}
+        //
+        // `longhorn_recurring` is NOT here either. Its cadence is compiled
+        // into a Flux-managed RecurringJob that the platform neither owns nor
+        // holds RBAC for, so the card could only ever display the value and
+        // refuse to change it — a row of controls that exists to say no. The
+        // live value belongs with the rest of the Longhorn snapshot state,
+        // not among schedules an operator can set.
+        scheduleSubsystems={['etcd_snapshot', 'secrets_bundle', 'cluster_state']}
         snapshotsTab={
           <div className="space-y-3">
             <p className="text-xs text-gray-500 dark:text-gray-400">
