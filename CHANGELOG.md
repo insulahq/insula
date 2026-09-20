@@ -80,6 +80,26 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   Every plan change now clears that cached list, and the page uses the values
   the save returned rather than waiting to re-read them, so the new numbers are
   on screen as soon as you save.
+- **Mail migrations no longer stall on folder names with stray spaces.** A
+  source folder named with a trailing space — `Invoices ` rather than
+  `Invoices` — could not be migrated at all. The mail server trims the space
+  when creating the folder, so it reported the folder as already existing, then
+  refused to open it under the padded name. imapsync could neither create it
+  nor write to it, counted two errors for every such folder, and gave up —
+  even when every message had already transferred. One migration hit seven of
+  them.
+
+  Folder names are now normalised the same way the mail server normalises them,
+  so the migration asks for the name that will actually be stored. Leading
+  spaces, tabs, and spaces around a sub-folder separator are covered too:
+  `Clients /2024` and `Clients/2024` are the same folder.
+
+- **A failed migration now says what failed.** It recorded "imapsync job failed
+  — see logTail", which told you where to look rather than what happened, and
+  the email sent to the tenant left the reason out entirely because there was
+  nothing worth sending. The failure is now summarised from the migration's own
+  output: how it exited, how many errors, and which folders were affected —
+  with their exact names, spaces included, since that is usually the cause.
 
 ### Changed
 - **The platform database now comes first among the system schedules.** It sat
