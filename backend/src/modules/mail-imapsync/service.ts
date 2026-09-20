@@ -186,6 +186,46 @@ export function buildFolderRemapExpression(group: FolderAliasGroup): string {
 }
 
 /**
+ * Strip the whitespace Stalwart strips, so imapsync asks for the name Stalwart
+ * will actually store.
+ *
+ * A source folder named `INBOX.Acme ` — with a trailing space — deadlocks the
+ * sync (name paraphrased; this repository is public):
+ *
+ *   CREATE "Acme "  -> NO [ALREADYEXISTS] Mailbox 'Acme' already exists
+ *   SELECT "Acme "  -> NO [NONEXISTENT]   Mailbox does not exist
+ *
+ * Stalwart normalises the name on CREATE, so it reports the TRIMMED name as
+ * already existing; it does not normalise on SELECT, so the padded name
+ * resolves to nothing. imapsync can therefore neither create nor open the
+ * folder, counts two errors for each one, and exits 116 (EXIT_ERR_CREATE) —
+ * even when every message has already transferred. Seen on a real migration:
+ * seven such folders, 14 errors, a job that could never finish.
+ *
+ * What Stalwart trims was measured against a live server rather than assumed.
+ * It trims leading AND trailing whitespace, per hierarchy COMPONENT, and tabs
+ * as well as spaces:
+ *
+ *   "x "        -> "x"          " x"      -> "x"
+ *   "x /child"  -> "x/child"    "x\t"     -> "x"
+ *
+ * Hence two substitutions: one around every separator, one at the two ends.
+ * A rule that only handled the end of the name would have left `Parent /Child`
+ * broken in exactly the same way.
+ *
+ * Two source folders that differ only by this whitespace collapse onto one
+ * destination. That is not a choice this makes — Stalwart can only store the
+ * trimmed name, so merging is the sole possible outcome; the alternative is
+ * the folder failing to sync at all.
+ */
+export const FOLDER_WHITESPACE_EXPRESSIONS: readonly string[] = [
+  // Whitespace hugging a hierarchy separator.
+  's{\\s*/\\s*}{/}g',
+  // Whitespace at either end of the whole name.
+  's{^\\s+|\\s+$}{}g',
+];
+
+/**
  * Default spam destination: Stalwart's own default junk folder NAME.
  *
  * VERIFIED, not assumed — `Mailbox/get` against a live Stalwart 0.16 returns
@@ -267,6 +307,13 @@ export function buildJobManifest(input: BuildJobManifestInput): V1Job {
       dest: spamFolder,
       aliases: SPAM_ALIASES,
     }));
+  }
+
+  // Emitted LAST so it also normalises whatever the rules above produced.
+  // Unconditional: a folder name the destination will silently rewrite is
+  // never something the operator wants sent verbatim.
+  for (const expr of FOLDER_WHITESPACE_EXPRESSIONS) {
+    args.push('--regextrans2', expr);
   }
 
   for (const folder of input.options.excludeFolders ?? []) {
