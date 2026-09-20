@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.9.26] - 2026-09-20
+
 ### Added
 - **Saved scheduled tasks can be edited.** Every row in Scheduled Tasks now has
   a pencil button that loads the task back into the form it was created in —
