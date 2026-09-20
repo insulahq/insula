@@ -129,6 +129,22 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   *Purge all*: removing one stays a deliberate, individual choice.
 
 ### Changed
+- **The notifications page clears out in one click.** Two buttons — *Mark All
+  As Read* and *Delete All* — act on the whole account rather than on the
+  messages currently on screen, so the bell badge actually reaches zero and a
+  long history can be cleared without deleting messages one at a time.
+  *Delete All* asks first, says plainly that it also removes messages the
+  filter is hiding, and afterwards reports how many it removed.
+
+  The unread number beside the filter is now the account total, the same one
+  the bell shows. It used to count only the unread messages on screen, and the
+  list stops at 100 — so anyone with more saw the two disagree.
+
+- **The notification type filter is gone.** With four types, a short list and
+  an icon on every row already showing the type, it only hid messages the
+  reader had just scanned past. Filtering by read state remains.
+
+### Changed
 - **The platform database now comes first among the system schedules.** It sat
   in its own section *below* the three disaster-recovery schedules, which put
   the one backup the platform cannot be rebuilt without at the bottom of the

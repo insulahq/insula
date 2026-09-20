@@ -48,6 +48,14 @@ export async function notificationRoutes(app: FastifyInstance): Promise<void> {
     return success({ updated });
   });
 
+  // DELETE /api/v1/notifications — clears the whole list in one request.
+  // Registered before the `:id` route for readability only; Fastify's radix
+  // router keeps a static path and a parametric one distinct regardless.
+  app.delete('/notifications', async (request, reply) => {
+    const deleted = await service.deleteAllNotifications(app.db, request.user!.sub);
+    reply.status(200).send(success({ deleted }));
+  });
+
   // DELETE /api/v1/notifications/:id
   app.delete('/notifications/:id', async (request, reply) => {
     const { id } = request.params as { id: string };
