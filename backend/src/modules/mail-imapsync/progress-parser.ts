@@ -173,6 +173,104 @@ export function parseImapsyncProgress(log: string): ImapsyncProgress {
 // The block sits at the END of the output, so a log TAIL contains it even
 // when the head has been dropped.
 
+// ─── Failure summary ─────────────────────────────────────────────────────────
+//
+// A failed job recorded `errorMessage: 'imapsync job failed — see logTail'`.
+// That is not a message, it is a redirection — and the code that notifies the
+// tenant deliberately DROPPED it, because "The error was: imapsync job failed
+// — see logTail" is worse than saying nothing. So a failure reached the
+// operator as a red status with no reason, and reached the tenant as a
+// generic line, while the log itself carried a precise, structured account.
+//
+// imapsync ends a failed run with material worth reading:
+//
+//   Detected 14 errors
+//   Err 1/14: Could not create folder [X ] from [INBOX.X ]: 584 NO [ALREADYEXISTS] ...
+//   The most frequent error is ERR_CREATE.
+//   Exiting with return value 116 (EXIT_ERR_CREATE) 14/50 nb_errors/max_errors
+//
+// This turns that into one sentence naming the exit reason, how many errors,
+// and which folders were affected — the three things that decide what to do
+// next.
+
+export interface ImapsyncFailure {
+  readonly exitCode: number | null;
+  /** imapsync's own name for the exit code, e.g. `EXIT_ERR_CREATE`. */
+  readonly exitLabel: string | null;
+  readonly errorCount: number | null;
+  /** imapsync's "most frequent error" verdict, e.g. `ERR_CREATE`. */
+  readonly mostFrequent: string | null;
+  /** Distinct folders named in the error lines, in first-seen order. */
+  readonly folders: readonly string[];
+  /** Operator-facing sentence, or null when the log carries no failure. */
+  readonly message: string | null;
+}
+
+const EMPTY_FAILURE: ImapsyncFailure = {
+  exitCode: null, exitLabel: null, errorCount: null,
+  mostFrequent: null, folders: [], message: null,
+};
+
+/** Folders listed in the message are capped — a run can fail on hundreds. */
+const MAX_NAMED_FOLDERS = 5;
+
+/**
+ * Read the failure account out of an imapsync log tail.
+ *
+ * Tolerant by design: the tail is truncated to a byte budget, so any of these
+ * lines may be missing. Every field is independently optional and the message
+ * is built from whatever survived — a partial explanation beats "see logTail".
+ */
+export function parseImapsyncFailure(logTail: string | null | undefined): ImapsyncFailure {
+  if (!logTail) return EMPTY_FAILURE;
+
+  const exit = /Exiting with return value (\d+)(?:\s+\(([A-Z_]+)\))?/.exec(logTail);
+  const exitCode = exit ? Number(exit[1]) : null;
+  const exitLabel = exit?.[2] ?? null;
+
+  // `Detected N errors` is the most reliable count; the `n/max` on the exit
+  // line is a fallback for tails that lost the earlier line.
+  const detected = /Detected (\d+) errors?/.exec(logTail);
+  const ratio = /return value \d+(?:\s+\([A-Z_]+\))?\s+(\d+)\/\d+ nb_errors/.exec(logTail);
+  const errorCount = detected ? Number(detected[1]) : ratio ? Number(ratio[1]) : null;
+
+  const freq = /The most frequent error is ([A-Z_]+)/.exec(logTail);
+
+  // The first bracketed name on an `Err N/M:` line is the DESTINATION folder.
+  // Trailing whitespace is kept: it is frequently the whole problem, so
+  // stripping it here would hide the cause from the person reading the message.
+  const folders: string[] = [];
+  for (const m of logTail.matchAll(/^Err \d+\/\d+: [^\[\n]*\[([^\]\n]+)\]/gm)) {
+    const name = m[1];
+    if (name && !folders.includes(name)) folders.push(name);
+  }
+
+  // A successful run also prints an "Exiting with return value 0" line, and a
+  // log with no errors is not a failure however it exited.
+  const failed = (exitCode !== null && exitCode !== 0) || (errorCount !== null && errorCount > 0);
+  if (!failed) return { ...EMPTY_FAILURE, exitCode, exitLabel };
+
+  const parts: string[] = [];
+  parts.push(
+    exitCode === null
+      ? 'imapsync reported errors'
+      : `imapsync exited ${exitCode}${exitLabel ? ` (${exitLabel})` : ''}`,
+  );
+  if (errorCount !== null) parts.push(`${errorCount} error${errorCount === 1 ? '' : 's'}`);
+  if (freq?.[1]) parts.push(`mostly ${freq[1]}`);
+
+  let message = parts.join(', ') + '.';
+  if (folders.length > 0) {
+    const shown = folders.slice(0, MAX_NAMED_FOLDERS).map((f) => `"${f}"`).join(', ');
+    const more = folders.length > MAX_NAMED_FOLDERS
+      ? ` and ${folders.length - MAX_NAMED_FOLDERS} more`
+      : '';
+    message += ` ${folders.length} folder${folders.length === 1 ? '' : 's'} affected: ${shown}${more}.`;
+  }
+
+  return { exitCode, exitLabel, errorCount, mostFrequent: freq?.[1] ?? null, folders, message };
+}
+
 export interface ImapsyncSummary {
   readonly messagesTransferred: number | null;
   readonly messagesSkipped: number | null;

@@ -612,7 +612,7 @@ describe('resyncImapSyncJob', () => {
  * targeting `Spam` would create a second, role-less folder.
  */
 describe('spam-folder remapping', () => {
-  const { buildFolderRemapExpression, SPAM_ALIASES, DEFAULT_SPAM_FOLDER, buildJobManifest } = service;
+  const { buildFolderRemapExpression, SPAM_ALIASES, DEFAULT_SPAM_FOLDER, buildJobManifest, FOLDER_WHITESPACE_EXPRESSIONS } = service;
   const baseManifestInput = (over: { options: Record<string, unknown> }) => ({
     jobId: 'job-spam', secretName: 'imapsync-job-spam', namespace: 'mail',
     mailboxAddress: 'alice@acme.com', sourceHost: 'imap.example.test', sourcePort: 993,
@@ -677,10 +677,30 @@ describe('spam-folder remapping', () => {
     expect(args[args.indexOf('--regextrans2') + 1]).toContain('{Junk}');
   });
 
-  it('omits the remap entirely when spamFolder is blank', () => {
+  it('omits the SPAM remap when spamFolder is blank', () => {
     const job = buildJobManifest(baseManifestInput({ options: { spamFolder: '' } }));
     const args = job.spec?.template.spec?.containers[0].args ?? [];
-    expect(args).not.toContain('--regextrans2');
+    // `--regextrans2` is no longer spam's alone — folder-name whitespace
+    // normalisation uses it too, unconditionally. So the assertion is about
+    // the spam expression, not about the flag: asserting the flag's absence
+    // would now fail for a reason that has nothing to do with spam.
+    const expressions = args.filter((_, i) => args[i - 1] === '--regextrans2');
+    expect(expressions.some((e) => /spam|junk/i.test(e))).toBe(false);
+  });
+
+  it('still normalises folder-name whitespace when the spam remap is off', () => {
+    const job = buildJobManifest(baseManifestInput({ options: { spamFolder: '' } }));
+    const args = job.spec?.template.spec?.containers[0].args ?? [];
+    const expressions = args.filter((_, i) => args[i - 1] === '--regextrans2');
+    expect(expressions).toEqual([...FOLDER_WHITESPACE_EXPRESSIONS]);
+  });
+
+  it('emits the whitespace rules AFTER the spam remap, so they normalise its output too', () => {
+    const job = buildJobManifest(baseManifestInput({ options: { spamFolder: 'Junk Mail ' } }));
+    const args = job.spec?.template.spec?.containers[0].args ?? [];
+    const expressions = args.filter((_, i) => args[i - 1] === '--regextrans2');
+    expect(expressions[0]).toContain('{Junk Mail }');
+    expect(expressions.slice(1)).toEqual([...FOLDER_WHITESPACE_EXPRESSIONS]);
   });
 });
 
