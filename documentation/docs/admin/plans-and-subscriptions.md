@@ -42,6 +42,21 @@ Each plan has these fields:
 The currency that prices are shown in comes from
 [Platform → Limits & Regional](platform-settings.md).
 
+Saved changes appear on the list straight away.
+
+!!! warning "Changing CPU, memory or storage re-quotas live tenants immediately"
+    Those three are not just defaults for future tenants. Saving them applies
+    the new limits to **every tenant already on the plan**, there and then —
+    so lowering one takes capacity away from running workloads, and a tenant
+    already using more than the new figure will have deployments refused until
+    they fit.
+
+    Tenants given an individual override on their **Resource Limits** card are
+    not affected: the override wins, and a plan edit does not overwrite it.
+
+    The other fields on this page — price, mailbox and sub-user counts,
+    bandwidth, AI budget — do not re-quota anything.
+
 ## The monthly bandwidth cap
 
 Every plan carries a monthly bandwidth allowance, and each tenant can be given
