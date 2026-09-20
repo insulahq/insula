@@ -101,6 +101,25 @@ export const tenantBackupOverviewRowSchema = z.object({
   repoTotalBytes: z.number().nonnegative().nullable(),
   /** When repoTotalBytes was measured. */
   repoStatsAt: z.string().datetime().nullable(),
+  /**
+   * How the current `repoTotalBytes` was obtained, across this tenant's
+   * components:
+   *   'measured' — every component's figure came straight from
+   *                `restic stats --mode raw-data`.
+   *   'tracked'  — at least one component has been advanced since its last
+   *                measurement by each snapshot's `data_added_packed`.
+   *                Accurate to ~0.01%, and errs HIGH (only prune shrinks a
+   *                repo, and a prune re-measures).
+   *   null       — nothing measured yet; `repoTotalBytes` is null too.
+   */
+  repoTotalSource: z.enum(['measured', 'tracked']).nullable(),
+  /**
+   * The OLDEST authoritative measurement among this tenant's components —
+   * the weakest link, not the newest. A tenant whose files repo was verified
+   * an hour ago and whose mailboxes repo was verified a month ago is as stale
+   * as the month.
+   */
+  repoVerifiedAt: z.string().datetime().nullable(),
 });
 export type TenantBackupOverviewRow = z.infer<typeof tenantBackupOverviewRowSchema>;
 

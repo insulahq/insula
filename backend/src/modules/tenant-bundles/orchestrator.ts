@@ -374,12 +374,14 @@ export async function runBundle(
         // does NOT mark the bundle failed (snapshot is already on the
         // store). Operator surfaces it via the staleness query.
         try {
-          await recordResticSnapshotForFiles({
+          await recordResticSnapshotForComponent({
             deps,
             input,
             bundleId,
+            component: 'files',
             snapshotId: filesResult.snapshotId,
             sizeBytes: filesResult.sizeBytes,
+            dataAddedPacked: filesResult.dataAddedPacked,
           });
         } catch (err) {
           // eslint-disable-next-line no-console
@@ -529,6 +531,29 @@ export async function runBundle(
             ? { sha256: mailboxesResult.snapshotId }
             : {}),
         };
+        // Persist tenant_restic_repo_state for the mailboxes repo, the same
+        // way the files component does. Until this, only `files` ever had a
+        // row, so the mailboxes repo could get a size ONLY by an operator
+        // pressing Refresh — and the per-tenant total silently omitted it.
+        // Best-effort: the snapshot is already on the store, so a bookkeeping
+        // failure must not fail the bundle.
+        if (mailboxesResult.snapshotId) {
+          try {
+            await recordResticSnapshotForComponent({
+              deps,
+              input,
+              bundleId,
+              component: 'mailboxes',
+              snapshotId: mailboxesResult.snapshotId,
+              sizeBytes: mailboxesResult.sizeBytes,
+              dataAddedPacked: mailboxesResult.dataAddedPacked,
+            });
+          } catch (err) {
+            // eslint-disable-next-line no-console
+            console.warn(`[bundle ${bundleId}] could not persist mailboxes tenant_restic_repo_state: ${(err as Error).message}`);
+          }
+        }
+
         // Persist Email/changes state AFTER the restic snapshot is
         // acked (ADR-047 — at-least-once: dedup makes re-pull harmless).
         // Best-effort: a row-write failure here doesn't fail the
@@ -613,6 +638,23 @@ export async function runBundle(
     (secretsResult?.sizeBytes ?? 0) +
     (mailboxesResult?.sizeBytes ?? 0);
 
+  // What this bundle actually ADDED to the restic repository — the "Restic
+  // Size" column, and the increment behind the per-tenant repo total. The two
+  // restic components (files, mailboxes) write to separate repos; their sum
+  // is what this bundle cost in storage.
+  //
+  // A component that DIDN'T RUN contributes 0. A component that ran but
+  // reported no figure makes the whole bundle's total UNKNOWN (null) — a
+  // partial sum presented as a total would quietly understate it, and this
+  // column has to add up to the repo size or it is worse than nothing.
+  const resticAddedBytes = ((): number | null => {
+    const parts = [filesResult, mailboxesResult]
+      .filter((r): r is NonNullable<typeof r> => r != null)
+      .map((r) => r.dataAddedPacked);
+    if (parts.some((v) => v == null)) return null;
+    return parts.reduce((sum: number, v) => sum + (v ?? 0), 0);
+  })();
+
   // v2 meta.json: capture the tenant account + counts + summaries so
   // the import flow can present a confirmation dialog without
   // unzipping the config component.
@@ -687,6 +729,7 @@ export async function runBundle(
     .set({
       status,
       sizeBytes: totalSize,
+      resticAddedBytes,
       finishedAt: new Date(),
       lastError: errors.length === 0 ? null : errors.join('; '),
       exportMode: input.exportMode ?? null,
@@ -1151,14 +1194,16 @@ async function tenantNamespaceHasSecrets(
  * (orchestrator catches around the call so a state-write failure
  * never marks the bundle failed).
  */
-async function recordResticSnapshotForFiles(args: {
+async function recordResticSnapshotForComponent(args: {
   deps: OrchestratorDeps;
   input: RunBundleInput;
   bundleId: string;
+  component: ResticComponent;
   snapshotId: string;
   sizeBytes: number;
+  dataAddedPacked: number | null;
 }): Promise<void> {
-  const { deps, input, bundleId, snapshotId, sizeBytes } = args;
+  const { deps, input, bundleId, component, snapshotId, sizeBytes, dataAddedPacked } = args;
   const targetConfigId = input.targetConfigId ?? null;
   let target: BackupTarget | null = null;
 
@@ -1197,7 +1242,7 @@ async function recordResticSnapshotForFiles(args: {
   // was missing (e.g. ad-hoc bundle without a target), record the row
   // anyway with an empty repoUri — the admin UI will surface the gap.
   const repoUri = target
-    ? buildResticRepoUri(target, input.tenantId, 'files' satisfies ResticComponent)
+    ? buildResticRepoUri(target, input.tenantId, component)
     : '';
 
   // Region id derivation: read the override from settings, fall back
@@ -1217,7 +1262,7 @@ async function recordResticSnapshotForFiles(args: {
   await recordResticSnapshot({
     db: deps.db,
     tenantId: input.tenantId,
-    component: 'files',
+    component,
     repoUri,
     targetConfigId,
     snapshotId,
@@ -1225,5 +1270,6 @@ async function recordResticSnapshotForFiles(args: {
     sizeBytes,
     regionId,
     snapshotAt: new Date(),
+    dataAddedPacked,
   });
 }

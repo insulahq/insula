@@ -21,9 +21,19 @@ provider — you don't configure the timing yourself. Whether your account is
 included, and how long bundles are kept, depend on your plan.
 
 The **Backups** page lists your bundles with their **status** (completed,
-running, partial, failed, expired), **size**, **created** date, and **expires**
-date. The page note reminds you that scheduling is managed centrally by your
-admins.
+running, partial, failed, expired), two size columns, **created** date, and
+**expires** date. The page note reminds you that scheduling is managed
+centrally by your admins.
+
+!!! info "Bundle Size and Restic Size answer different questions"
+    **Bundle Size** is everything the bundle captured. A scheduled bundle
+    re-states your whole site every night, so this figure is large and adding
+    up a month of them would suggest far more storage than is really held.
+
+    **Restic Size** is what that bundle actually added to storage after
+    deduplication and compression — usually a small fraction of the first, and
+    the figure that reflects what a backup costs. A bundle taken before the
+    platform recorded this shows **—** rather than `0`.
 
 !!! info "Scheduled backups do not send you notifications"
     Scheduled runs are the platform's, not yours — you did not ask for them and

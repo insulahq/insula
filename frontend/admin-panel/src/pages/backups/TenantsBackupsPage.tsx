@@ -24,8 +24,9 @@ import {
   ChevronDown,
   ChevronRight,
 } from 'lucide-react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
+import { MAX_PAGE_LIMIT } from '@insula/api-contracts';
 import type {
   BundleSummary,
   TenantsBackupsOverviewResponse,
@@ -95,26 +96,92 @@ function useTenantSnapshots(tenantFilter: string | null) {
   });
 }
 
+/**
+ * Tooltip for the per-tenant repo size, naming HOW the number was obtained.
+ *
+ * "Measured" and "tracked" differ by about 0.01%, but they fail differently:
+ * a tracked total is advanced by each snapshot's `data_added_packed` and only
+ * ever grows, so between prunes it errs HIGH. Saying which one you are looking
+ * at — and when it was last verified against the repository — is the
+ * difference between a number and a number you can act on.
+ */
+function describeRepoSize(roll: TenantBackupOverviewRow | undefined): string {
+  if (!roll || roll.repoTotalBytes == null) {
+    return 'Not measured yet. The reclamation sweep measures every repository it has not seen; Refresh measures this one now.';
+  }
+  const verified = roll.repoVerifiedAt
+    ? `last verified against the repository ${new Date(roll.repoVerifiedAt).toLocaleString()}`
+    : 'never verified against the repository';
+  if (roll.repoTotalSource === 'tracked') {
+    return `Tracked: each backup adds what restic reported it wrote (${verified}). Re-measured after every prune.`;
+  }
+  return `Measured with restic stats --mode raw-data (${verified}).`;
+}
+
+interface BundlePage {
+  readonly rows: ReadonlyArray<BundleSummary>;
+  readonly cursor: string | null;
+  readonly hasMore: boolean;
+  readonly totalCount: number | null;
+}
+
+/**
+ * Bundles, PAGED.
+ *
+ * This used to be a single unparameterised GET. The server defaults `limit` to
+ * 50 — across ALL tenants — and the page groups what comes back per tenant, so
+ * with 25 tenants backed up nightly every tenant showed 1-3 bundles while
+ * holding 26. The envelope said `has_more: true` and `total_count: 269` the
+ * whole time; the old `select` returned `raw.data` and dropped it, leaving the
+ * UI no way to know it was looking at a truncated list, let alone ask for the
+ * rest.
+ *
+ * Counts in the group headers now come from the per-tenant rollup, so they are
+ * right regardless of how much of the list has been fetched. This query is the
+ * list itself: one page at a time, newest first, with an explicit "load more".
+ */
 function useTenantBundles(tenantFilter: string | null) {
-  return useQuery({
+  return useInfiniteQuery({
     queryKey: ['admin', 'tenant-bundles', tenantFilter],
-    queryFn: () => apiFetch<{ data: ReadonlyArray<BundleSummary> | { data?: ReadonlyArray<BundleSummary> }; pagination?: unknown }>(
-      `/api/v1/admin/tenant-bundles${tenantFilter ? `?tenantId=${encodeURIComponent(tenantFilter)}` : ''}`,
-    ),
-    staleTime: 15_000,
+    initialPageParam: null as string | null,
+    queryFn: ({ pageParam }) => {
+      const qs = new URLSearchParams({ limit: String(MAX_PAGE_LIMIT) });
+      if (tenantFilter) qs.set('tenantId', tenantFilter);
+      if (pageParam) qs.set('cursor', pageParam);
+      return apiFetch<{
+        data: ReadonlyArray<BundleSummary> | { data?: ReadonlyArray<BundleSummary> };
+        pagination?: { cursor?: string | null; has_more?: boolean; total_count?: number };
+      }>(`/api/v1/admin/tenant-bundles?${qs.toString()}`);
+    },
     // Defensive unwrap — accept BOTH the canonical `{data: [...], pagination}`
     // envelope AND a legacy double-wrap (`{data: {data: [...], pagination}}`)
     // that was shipped briefly. Without this normaliser an old platform-api
     // still in the wild blows up the page with "rows.filter is not a
     // function". Once every cluster runs the paginated() fix the inner
     // branch is dead code.
-    select: (raw): ReadonlyArray<BundleSummary> => {
-      const top = raw?.data;
-      if (Array.isArray(top)) return top;
-      if (top && typeof top === 'object' && 'data' in top && Array.isArray((top as { data?: unknown }).data)) {
-        return (top as { data: ReadonlyArray<BundleSummary> }).data;
+    getNextPageParam: (last) => {
+      const p = (last as { pagination?: { cursor?: string | null; has_more?: boolean } }).pagination;
+      return p?.has_more ? (p.cursor ?? null) : null;
+    },
+    staleTime: 15_000,
+    select: (raw): BundlePage => {
+      const pages = raw.pages ?? [];
+      const rows: BundleSummary[] = [];
+      for (const page of pages) {
+        const top = page?.data;
+        if (Array.isArray(top)) rows.push(...top);
+        else if (top && typeof top === 'object' && 'data' in top && Array.isArray((top as { data?: unknown }).data)) {
+          rows.push(...(top as { data: ReadonlyArray<BundleSummary> }).data);
+        }
       }
-      return [];
+      const lastPage = pages[pages.length - 1] as
+        { pagination?: { cursor?: string | null; has_more?: boolean; total_count?: number } } | undefined;
+      return {
+        rows,
+        cursor: lastPage?.pagination?.cursor ?? null,
+        hasMore: Boolean(lastPage?.pagination?.has_more),
+        totalCount: lastPage?.pagination?.total_count ?? null,
+      };
     },
   });
 }
@@ -465,6 +532,11 @@ function SnapshotsTab(p: SnapshotsTabProps) {
 
 interface BackupsTabProps {
   readonly rows: ReadonlyArray<BundleSummary>;
+  /** Bundles matching the current filter across ALL pages, from the envelope. */
+  readonly totalCount: number | null;
+  readonly hasMore: boolean;
+  readonly isFetchingMore: boolean;
+  readonly onLoadMore: () => void;
   readonly tenantOptions: ReadonlyArray<{ id: string; name: string }>;
   readonly isLoading: boolean;
   readonly search: string;
@@ -553,21 +625,6 @@ function BackupsTab(p: BackupsTabProps) {
       a.tenantName.localeCompare(b.tenantName, undefined, { sensitivity: 'base' }));
   }, [sortedData]);
 
-  // Per-tenant backup counts across ALL bundles (unfiltered) — makes
-  // "this tenant has N backups" visible at a glance and doubles as a
-  // one-click tenant filter.
-  const perTenant = useMemo(() => {
-    const m = new Map<string, { name: string; count: number }>();
-    for (const r of p.rows) {
-      const cur = m.get(r.tenantId);
-      if (cur) m.set(r.tenantId, { ...cur, count: cur.count + 1 });
-      else m.set(r.tenantId, { name: r.tenantName ?? r.tenantId.slice(0, 8), count: 1 });
-    }
-    return [...m.entries()]
-      .map(([id, v]) => ({ id, ...v }))
-      .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
-  }, [p.rows]);
-
   return (
     <div className="space-y-4">
       <FilterBar
@@ -578,26 +635,6 @@ function BackupsTab(p: BackupsTabProps) {
         selectedTenantId={p.selectedTenantId}
         setSelectedTenantId={p.setSelectedTenantId}
       />
-      {perTenant.length > 0 && (
-        <div className="flex flex-wrap items-center gap-1.5 text-[11px]" data-testid="tenant-bundle-counts">
-          <span className="text-gray-500 dark:text-gray-400">Backups per tenant:</span>
-          {perTenant.map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              onClick={() => p.setSelectedTenantId(p.selectedTenantId === t.id ? null : t.id)}
-              className={`rounded-full border px-2 py-0.5 font-mono transition-colors ${
-                p.selectedTenantId === t.id
-                  ? 'border-brand-400 bg-brand-100 text-brand-800 dark:border-brand-600 dark:bg-brand-900/40 dark:text-brand-200'
-                  : 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'
-              }`}
-              data-testid={`tenant-bundle-count-${t.id}`}
-            >
-              {t.name} ×{t.count}
-            </button>
-          ))}
-        </div>
-      )}
       {/* Inclusion summary + editor — which tenants the platform-global
           daily scheduler bundles (hosting_plans.include_in_scheduled_bundles
           with per-tenant override), editable in place. */}
@@ -715,8 +752,12 @@ function BackupsTab(p: BackupsTabProps) {
                 >
                   {open ? <ChevronDown size={14} className="shrink-0 text-gray-500" /> : <ChevronRight size={14} className="shrink-0 text-gray-500" />}
                   <span className="font-medium text-gray-900 dark:text-gray-100">{g.tenantName}</span>
+                  {/* The COUNT comes from the per-tenant rollup, never from
+                      `g.bundles.length`. The list is paged; the group holds
+                      only the bundles fetched so far, and reading the count
+                      off it reported "2 backups" for tenants holding 26. */}
                   <span className="rounded-full bg-gray-200 px-2 py-0.5 text-[11px] text-gray-700 dark:bg-gray-700 dark:text-gray-300">
-                    {g.bundles.length} backup{g.bundles.length === 1 ? '' : 's'}
+                    {(roll?.bundleCount ?? g.bundles.length)} backup{(roll?.bundleCount ?? g.bundles.length) === 1 ? '' : 's'}
                   </span>
                   {carts.length > 0 && (
                     <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] text-amber-800 dark:bg-amber-900/40 dark:text-amber-300">
@@ -724,20 +765,18 @@ function BackupsTab(p: BackupsTabProps) {
                     </span>
                   )}
                   <span className="ml-auto flex items-center gap-4 text-xs text-gray-500 dark:text-gray-400">
-                    {/* Two DIFFERENT numbers, labelled as such. Total bundle
-                        size is the logical sum; restic dedupes, so it is not
-                        what the repository occupies. Repo size is measured. */}
-                    <span title="Sum of every bundle's logical size. Not storage consumed — restic deduplicates across snapshots.">
-                      bundles {formatBytes(g.totalBytes)}
-                    </span>
+                    {/* ONE storage number. The logical "bundles <size>" sum
+                        that used to sit here answered a question nobody
+                        asked: on a tenant holding 15 GB it read 452 GB,
+                        because every nightly bundle re-states the whole
+                        footprint. Repo size is what the target actually
+                        holds. */}
                     <span
                       className="tabular-nums"
-                      title={roll?.repoStatsAt
-                        ? `Measured ${new Date(roll.repoStatsAt).toLocaleString()} with restic stats`
-                        : 'Never measured — press Refresh to measure the repository'}
+                      title={describeRepoSize(roll)}
                       data-testid={`tenant-repo-size-${g.tenantId}`}
                     >
-                      repo {roll?.repoTotalBytes != null ? formatBytes(roll.repoTotalBytes) : 'not measured'}
+                      repo {roll?.repoTotalBytes != null ? formatBytes(roll.repoTotalBytes) : 'not measured yet'}
                     </span>
                   </span>
                 </button>
@@ -829,7 +868,18 @@ function BackupsTab(p: BackupsTabProps) {
                         <tr className="text-left text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400">
                           <th className="px-2 py-1">Label</th>
                           <th className="px-2 py-1">Status</th>
-                          <th className="px-2 py-1 text-right">Size</th>
+                          <th
+                            className="px-2 py-1 text-right"
+                            title="Everything this bundle captured, at its logical size. Do not add these up — each nightly bundle re-states the tenant's whole footprint."
+                          >
+                            Bundle Size
+                          </th>
+                          <th
+                            className="px-2 py-1 text-right"
+                            title="What this bundle actually added to the repository, after deduplication and compression. These DO add up — their sum is the repo size."
+                          >
+                            Restic Size
+                          </th>
                           <th className="px-2 py-1 text-right">Created</th>
                           <th className="px-2 py-1">Initiator</th>
                           <th className="px-2 py-1 text-right">Actions</th>
@@ -841,6 +891,15 @@ function BackupsTab(p: BackupsTabProps) {
                             <td className="px-2 py-1 text-xs">{r.label ?? <span className="text-gray-400">unlabeled</span>}</td>
                             <td className="px-2 py-1"><StatusPill status={r.status} /></td>
                             <td className="px-2 py-1 text-right tabular-nums text-xs">{formatBytes(r.sizeBytes)}</td>
+                            <td className="px-2 py-1 text-right tabular-nums text-xs">
+                              {r.resticAddedBytes == null
+                                // Not 0: bundles captured before this shipped have no
+                                // figure, and an unchanged tenant legitimately adds
+                                // nothing. Rendering "0 B" for both would make the
+                                // first look like the second.
+                                ? <span className="text-gray-400" title="Captured before this was recorded">—</span>
+                                : formatBytes(r.resticAddedBytes)}
+                            </td>
                             <td className="px-2 py-1 text-right text-xs text-gray-500"><TimeCell iso={r.createdAt} /></td>
                             <td className="px-2 py-1 text-xs"><code>{r.initiator}</code></td>
                             <td className="px-2 py-1 text-right">
@@ -873,6 +932,35 @@ function BackupsTab(p: BackupsTabProps) {
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* Say what is on screen and what is not. The list is paged, and a
+          truncated list that says nothing about being truncated is how
+          "1-3 backups per tenant" looked like a backup failure rather than a
+          page-size. The per-group COUNTS come from the rollup, so they stay
+          right no matter how many pages have been loaded — this line is about
+          the rows themselves. */}
+      {p.rows.length > 0 && (
+        <div className="flex items-center justify-between gap-3 px-1 text-[11px] text-gray-500 dark:text-gray-400">
+          <span data-testid="tenant-bundle-list-range">
+            {p.totalCount != null && p.totalCount > p.rows.length
+              ? `Showing the ${p.rows.length} most recent of ${p.totalCount} bundles${p.selectedTenantId ? '' : ' across all tenants'}.`
+              : `Showing all ${p.rows.length} bundle${p.rows.length === 1 ? '' : 's'}${p.selectedTenantId ? '' : ' across all tenants'}.`}
+            {!p.selectedTenantId && p.hasMore && ' Filter to one tenant to page through its full history.'}
+          </span>
+          {p.hasMore && (
+            <button
+              type="button"
+              onClick={p.onLoadMore}
+              disabled={p.isFetchingMore}
+              className="inline-flex shrink-0 items-center gap-1 rounded border border-gray-300 px-2 py-0.5 font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+              data-testid="tenant-bundle-load-more"
+            >
+              {p.isFetchingMore ? <Loader2 size={11} className="animate-spin" /> : null}
+              Load more
+            </button>
+          )}
         </div>
       )}
 
@@ -1098,7 +1186,11 @@ export default function TenantsBackupsPage() {
           <div className="space-y-3">
             {errorBanner}
             <BackupsTab
-              rows={bundlesQ.data ?? []}
+              rows={bundlesQ.data?.rows ?? []}
+              totalCount={bundlesQ.data?.totalCount ?? null}
+              hasMore={bundlesQ.hasNextPage}
+              isFetchingMore={bundlesQ.isFetchingNextPage}
+              onLoadMore={() => { void bundlesQ.fetchNextPage(); }}
               tenantOptions={tenantOptions}
               isLoading={bundlesQ.isLoading}
               search={search}

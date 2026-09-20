@@ -434,6 +434,11 @@ export async function backupsV2InternalUploadRoutes(app: FastifyInstance): Promi
       snapshotId: result.snapshotId,
       sizeBytes: result.totalBytesProcessed,
       fileCount: result.totalFilesProcessed,
+      // Bytes this snapshot added to the repository. The mailboxes component
+      // reaches restic through this route rather than running it in its own
+      // Job, so without returning it here the mailboxes repo could only ever
+      // get a size by measuring it.
+      dataAddedPacked: result.dataAddedPacked,
       regionId,
       tags,
     });
