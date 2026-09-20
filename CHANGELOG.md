@@ -70,6 +70,16 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   job runs. Zero is refused — by the panel, and again inside the jobs, which
   keep everything rather than delete everything if handed a value they cannot
   read.
+- **Editing a hosting plan no longer looks like it did nothing.** Changing a
+  plan's memory, CPU, storage, price or limits saved correctly and then showed
+  the old numbers again — with no error, because nothing had failed. The plan
+  list is cached on the server for speed, and none of the plan edits cleared
+  that cache, so for the next five minutes the page re-read the values from
+  before the change. The edit was in the database the whole time.
+
+  Every plan change now clears that cached list, and the page uses the values
+  the save returned rather than waiting to re-read them, so the new numbers are
+  on screen as soon as you save.
 
 ### Changed
 - **The platform database now comes first among the system schedules.** It sat
