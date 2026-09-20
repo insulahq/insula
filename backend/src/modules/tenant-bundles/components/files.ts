@@ -45,7 +45,8 @@
  *
  * FILES_DONE log line (UNCHANGED format):
  *   FILES_DONE bundleId=<id> snapshot=<64hex> sizeBytes=<n> fileCount=<n> addedBytes=<n>
- *   (addedBytes appended 2026-09; parsed as optional for in-flight Jobs)
+ *   (addedBytes is parsed as OPTIONAL — a Job launched by an older image,
+ *    or one already in flight across a rollout, omits it)
  *   parsed by `parseFilesDone`. snapshot id / size / count come from
  *   restic's `--json` summary: snapshot_id, total_bytes_processed,
  *   total_files_processed.
