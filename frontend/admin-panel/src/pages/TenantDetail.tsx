@@ -11,6 +11,7 @@ import { useTenantIssues } from '@/hooks/use-tenant-issues';
 import DeleteConfirmDialog from '@/components/DeleteConfirmDialog';
 import OperationProgressModal from '@/components/OperationProgressModal';
 import RetainedVolumesCard from '@/components/RetainedVolumesCard';
+import OrphanedVolumesAlert from '@/components/OrphanedVolumesAlert';
 import TransitionProgressModal from '@/components/TransitionProgressModal';
 import TenantUsersTab from '@/components/TenantUsersTab';
 import { useAdminSubUsers } from '@/hooks/use-sub-users';
@@ -613,6 +614,16 @@ export default function TenantDetail() {
       <StorageLifecycleCard tenantId={id!} tenant={tenant} onManageSnapshots={() => setActiveTab('snapshots')} />
 
       <RetainedVolumesCard tenantId={id!} />
+
+      {/* Orphaned volumes still attributable to THIS tenant — a PV released by
+          a resize or a deleted claim, whose claimRef still names this
+          namespace. Shown here as well as in the cluster-wide modal because
+          the person who caused one is usually on this page, and because the
+          volume is charged against the cluster while it sits here. Renders
+          nothing when the tenant has none. */}
+      {tenant.kubernetesNamespace && (
+        <OrphanedVolumesAlert namespace={tenant.kubernetesNamespace} />
+      )}
 
       <PlacementCard tenantId={id!} tenant={tenant} />
 
