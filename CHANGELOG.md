@@ -12,6 +12,28 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **"Retention (keep last N)" now actually limits how many backups a tenant
+  keeps.** The field was accepted by the panel and stored, and then read by
+  nothing: only the *days* half of the setting was ever enforced, so a tenant
+  backed up nightly accumulated one bundle per day up to the retention period
+  — 30 of them where the setting said 14. The two limits now compose as
+  whichever removes a backup first, so neither can be exceeded: a tenant backed
+  up less often than daily is still bounded by days, and a daily one is bounded
+  by the count.
+
+  Counting is over **restorable** backups only — a failed run holds no data and
+  no longer occupies one of the N places, which previously would have quietly
+  reduced real coverage. A backup referenced by a restore you have open is
+  never removed while that restore is still in progress.
+
+  **On upgrade this deletes backups.** A platform that has been running longer
+  than its keep-last-N setting is over the limit right now, and the first
+  retention pass after upgrading brings it down to the configured number —
+  roughly a dozen per tenant where 14 is set and 26 have accumulated. Check the
+  value under **Backups → Targets, Schedules & Retention** before upgrading if
+  you are not certain it says what you want.
+
 ### Changed
 - **The platform database now comes first among the system schedules.** It sat
   in its own section *below* the three disaster-recovery schedules, which put
