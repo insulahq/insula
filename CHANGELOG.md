@@ -12,6 +12,28 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **"Retention (keep last N)" now actually limits how many backups a tenant
+  keeps.** The field was accepted by the panel and stored, and then read by
+  nothing: only the *days* half of the setting was ever enforced, so a tenant
+  backed up nightly accumulated one bundle per day up to the retention period
+  — 30 of them where the setting said 14. The two limits now compose as
+  whichever removes a backup first, so neither can be exceeded: a tenant backed
+  up less often than daily is still bounded by days, and a daily one is bounded
+  by the count.
+
+  Counting is over **restorable** backups only — a failed run holds no data and
+  no longer occupies one of the N places, which previously would have quietly
+  reduced real coverage. A backup referenced by a restore you have open is
+  never removed while that restore is still in progress.
+
+  **On upgrade this deletes backups.** A platform that has been running longer
+  than its keep-last-N setting is over the limit right now, and the first
+  retention pass after upgrading brings it down to the configured number —
+  roughly a dozen per tenant where 14 is set and 26 have accumulated. Check the
+  value under **Backups → Targets, Schedules & Retention** before upgrading if
+  you are not certain it says what you want.
+
 ### Changed
 - **The platform database now comes first among the system schedules.** It sat
   in its own section *below* the three disaster-recovery schedules, which put
@@ -28,6 +50,20 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   control, and it was written down nowhere that the other three keep a fixed
   number of copies decided by the job that writes them — the newest 24 etcd
   snapshots, 30 secrets bundles and 14 cluster state dumps.
+- **The Backups page loads a tenant's backups when you open that tenant.** It
+  used to fetch a page of bundles across every tenant before you had asked
+  about any of them, group what came back, and offer a **Load more** under a
+  line explaining how much of the list you were not seeing. Opening a tenant
+  now loads that tenant's **complete** history — all of it, following on by
+  itself until there is nothing left, with the wait telling you how many
+  backups it is fetching. The truncation line and the Load more button are
+  gone; there is nothing left for them to say.
+
+  The tenant list itself comes from the per-tenant totals, so it shows **every**
+  tenant with its backup count and repository size. Previously a tenant only
+  appeared if one of its bundles happened to fall in the fetched page — on a
+  busy platform a tenant could be missing from the page whose whole job is
+  telling you who is covered.
 
 ## [2026.9.27] - 2026-09-20
 
