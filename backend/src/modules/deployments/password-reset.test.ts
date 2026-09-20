@@ -217,10 +217,9 @@ describe('buildPasswordResetInitContainer', () => {
    * `max(sum(containers), max(initContainers))` — so asking for more than the
    * container it precedes silently eats quota nothing is using.
    *
-   * Production 2026-09-19, on one tenant: a flat 512Mi here charged a
-   * 400Mi MariaDB as 512Mi. The panel read 432Mi of a 1Gi plan, the quota read
-   * 544Mi, and a 512Mi PHP app the panel had approved was refused by
-   * admission. Mirroring the fronted container makes the init container free.
+   * A flat figure here charges every database below it the same, so mirroring
+   * the fronted container is what keeps the init container free: with
+   * init <= containers, `max(sum, init)` collapses to `sum`.
    */
   describe('resources mirror the container it fronts', () => {
     const forDb = (cpuRequest: string, memoryRequest: string) =>

@@ -60,12 +60,10 @@ const DB_ENGINES: Record<string, 'mariadb' | 'mysql' | 'postgresql' | 'mongodb'>
 // precedes silently inflates the tenant's quota footprint — and neither the
 // panel nor the deploy gate could see it (both summed `spec.containers`).
 //
-// Production 2026-09-19: this was a flat 512Mi. A tenant's 400Mi MariaDB was
-// therefore charged 512Mi, the panel reported 432Mi of a 1Gi plan while the
-// ResourceQuota said 544Mi, and a 512Mi PHP app the panel had just approved was
-// refused by admission. Trimming the database from 400Mi to 350Mi changed
-// nothing visible — below 512Mi the charge does not move, so the error message
-// came back byte-identical.
+// A flat constant here is silently wrong in one direction only, which is what
+// makes it hard to see: while the constant exceeds the database's own request,
+// shrinking the database frees nothing and the quota error comes back
+// byte-identical, because the charge is pinned to the constant.
 //
 // Mirroring is also the safe bound, not merely the cheap one: this container
 // boots the SAME engine binary from the SAME datadir as the container behind

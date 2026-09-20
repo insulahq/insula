@@ -7,11 +7,10 @@
  * `max(sum(containers), max(initContainers))` per resource — and it charges it
  * for the pod's WHOLE lifetime, long after the init container has exited.
  *
- * Production 2026-09-19, on one tenant: a 400Mi MariaDB carried a 512Mi
- * `reset-root-password` init container. Our panel summed `spec.containers` and
- * reported 432Mi reserved of a 1Gi plan; the ResourceQuota said 544Mi and
- * refused a 512Mi PHP app the panel had just told the tenant would fit. The
- * init container had exited minutes earlier — the reservation had not.
+ * The consequence that matters: a pod fronted by an init container larger
+ * than its own workload is charged the init container's figure for as long as
+ * the pod exists, so any accounting that sums `spec.containers` under-reports
+ * it and disagrees with the admission decision it is meant to predict.
  *
  * Sidecars (init containers with `restartPolicy: Always`) DO run alongside the
  * app containers, so Kubernetes adds them to the sum instead, and a regular

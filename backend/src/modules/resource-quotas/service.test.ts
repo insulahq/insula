@@ -99,11 +99,9 @@ describe('getTenantResourceAvailability — exact arithmetic', () => {
 
 // ─── The deploy gate vs. what admission will actually charge ──────────
 //
-// Production 2026-09-19, on one tenant: the `deployments` sum said 432Mi
-// used of a 1Gi plan, so this gate offered 592Mi of headroom and the panel
-// enabled a 512Mi deploy. Kubernetes charged 544Mi — a 400Mi MariaDB behind a
-// 512Mi init container — and refused the pod. Nothing in the database could
-// ever have shown that: an init container has no `deployments` row.
+// The `deployments` sum cannot see an init container — there is no row for
+// one — so a pod charged more than its containers request leaves this gate
+// offering headroom that admission refuses.
 //
 // The gate now takes the larger of the two. It may be pessimistic for a
 // moment; it must never promise headroom admission will refuse.
