@@ -62,7 +62,7 @@ The cluster-wide **Secrets bundle** lives on the
 
 - **Backups** — **grouped by tenant**. Each tenant is one collapsible row
   showing its bundle count, how many restore carts it has open, and its
-  two size figures; open it for that tenant's bundles, a repo-size
+  repository size; open it for that tenant's bundles, a repo-size
   refresh, and its restore carts. Each bundle's **Restore…** opens the
   granular **restore cart** (below) for exactly that bundle — restores
   never silently "pick the latest".
@@ -71,17 +71,53 @@ The cluster-wide **Secrets bundle** lives on the
   it per tenant (*Inherit plan* / *Always include* / *Exclude from
   schedule*).
 
-    ??? info "The two size figures mean different things"
-        **bundles** is the sum of every bundle's logical size. restic
-        deduplicates across snapshots, so this is **not** the storage the
-        tenant consumes — it is generally larger.
+    ??? info "The bundle count is the tenant's total, not what is on screen"
+        The bundle list is **paged**, newest first. The count on a
+        tenant's row is that tenant's real total, so it does not change
+        as you load more; the line under the list says how many bundles
+        are currently on screen out of how many exist, and **Load more**
+        fetches the next page.
 
-        **repo** is the real size of the tenant's restic repository,
-        measured by `restic stats`. It reads **not measured** until you
-        press **Refresh repo size**, because measuring walks the
-        repository index over the network and cannot run on every page
-        load. It is deliberately never shown as `0` when unmeasured —
-        a zero in a size column reads as "this tenant has no backups".
+        With many tenants, one page of the unfiltered list holds only the
+        most recent few bundles *per* tenant. To walk one tenant's full
+        history, pick it in the tenant filter first — the list then pages
+        through that tenant alone.
+
+    ??? info "Bundle Size and Restic Size are different questions"
+        **Bundle Size** is everything the bundle captured, at its logical
+        size. A scheduled bundle re-states the tenant's whole footprint
+        every night, so these figures are large and **must not be added
+        up** — summing a month of nightlies suggests tens of times more
+        storage than exists.
+
+        **Restic Size** is what that bundle actually *added* to the
+        repository after deduplication and compression. This is the
+        figure that answers "what did this cost", and unlike Bundle Size
+        it is meaningful to add up: the sum across a tenant's bundles is
+        the repository size.
+
+        A bundle captured before the platform recorded this shows **—**
+        rather than `0`, which would claim it stored nothing.
+
+    ??? info "How repo size is kept current"
+        **repo** is the real size of the tenant's restic repository — what
+        the backup target actually holds.
+
+        It maintains itself: every backup reports how much it added, and
+        that advances the total at no extra cost. It is re-measured
+        properly with `restic stats` after each prune (the only operation
+        that makes a repository smaller), and any repository that has
+        never been measured is measured once by the reclamation sweep.
+        **Refresh repo size** forces a measurement immediately.
+
+        Hover the figure to see which of the two you are looking at —
+        *measured* straight from the repository, or *tracked* since the
+        last measurement — and when it was last verified. A tracked
+        figure errs slightly high rather than low.
+
+        Until a repository has been measured even once the row reads
+        **not measured yet**, never `0` — a zero in a size column reads as
+        "this tenant has no backups".
 
         A tenant's repository is measured per component (files,
         mailboxes) and summed. If one component's repository is

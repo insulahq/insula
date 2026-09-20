@@ -162,6 +162,7 @@ function toBundleSummary(j: typeof backupJobs.$inferSelect): BundleSummary {
     label: j.label,
     description: j.description,
     sizeBytes: Number(j.sizeBytes),
+    resticAddedBytes: j.resticAddedBytes == null ? null : Number(j.resticAddedBytes),
     retentionDays: j.retentionDays,
     expiresAt: j.expiresAt ? j.expiresAt.toISOString() : null,
     exportMode: j.exportMode,

@@ -247,12 +247,32 @@ describe('parseFilesDone', () => {
   const SNAP2 = 'b'.repeat(64);
   const ok = `FILES_DONE bundleId=bk-test snapshot=${SNAP} sizeBytes=12345 fileCount=7`;
 
-  it('parses a clean FILES_DONE line', () => {
+  it('parses a FILES_DONE line from a Job that predates addedBytes', () => {
+    // `ok` is the FOUR-field line. A Job launched by the previous image —
+    // including one already running when the new one rolls out — emits
+    // exactly this, and it must still parse: failing it would turn every
+    // in-flight backup into a failed bundle to gain a statistic.
     expect(parseFilesDone(`...\n${ok}\n...`, 'bk-test')).toEqual({
       snapshotId: SNAP,
       sizeBytes: 12345,
       fileCount: 7,
+      // Absent, so UNKNOWN. Not 0 — see the next test for why that matters.
+      dataAddedPacked: null,
     });
+  });
+
+  it('parses addedBytes when the Job reports it', () => {
+    const line = `FILES_DONE bundleId=bk-test snapshot=${SNAP} sizeBytes=12345 fileCount=7 addedBytes=4096`;
+    expect(parseFilesDone(line, 'bk-test')?.dataAddedPacked).toBe(4096);
+  });
+
+  it('keeps a reported ZERO distinct from an absent field', () => {
+    // An unchanged tenant legitimately adds 0 bytes to the repo. Collapsing
+    // that into the same value as "this Job told us nothing" would let the
+    // repo-size accumulator treat an unknown as a confirmed no-op.
+    const zero = `FILES_DONE bundleId=bk-test snapshot=${SNAP} sizeBytes=12345 fileCount=7 addedBytes=0`;
+    expect(parseFilesDone(zero, 'bk-test')?.dataAddedPacked).toBe(0);
+    expect(parseFilesDone(ok, 'bk-test')?.dataAddedPacked).toBeNull();
   });
 
   it('returns null when the bundleId in the line does not match', () => {
