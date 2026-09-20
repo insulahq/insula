@@ -9,7 +9,7 @@ import { messageIndicatesOom } from '../lib/container-termination.js';
  * cases we KNOW how to advise on. Anything else falls through to a
  * generic UNKNOWN-coded entry that includes the raw text in
  * diagnostics, so the operator can still see the upstream message
- * via the "Show raw error" expander.
+ * via the "More details" expander.
  *
  * Used by the deployments status-reconciler, the file-manager
  * lifecycle, the drain endpoint, and the certificate state poller.
@@ -266,7 +266,7 @@ export function translateOperatorError(
     title: 'Operation failed',
     detail: text.slice(0, 240) || 'No further detail provided by the upstream system.',
     remediation: [
-      'Click "Show raw error" below to see the upstream message.',
+      'Open "More details" below for the upstream message.',
       'If reproducible, capture the request_id from the response header and check platform-api logs.',
     ],
     retryable: true,
