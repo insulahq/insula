@@ -96,3 +96,79 @@ describe('getTenantResourceAvailability — exact arithmetic', () => {
     expect(r.cpuAvailable >= 0.1).toBe(false);
   });
 });
+
+// ─── The deploy gate vs. what admission will actually charge ──────────
+//
+// The `deployments` sum cannot see an init container — there is no row for
+// one — so a pod charged more than its containers request leaves this gate
+// offering headroom that admission refuses.
+//
+// The gate now takes the larger of the two. It may be pessimistic for a
+// moment; it must never promise headroom admission will refuse.
+describe('getTenantResourceAvailability — reconciled with the live ResourceQuota', () => {
+  const TENANT = {
+    id: 'c1', planId: 'p1', kubernetesNamespace: 'tenant-example',
+    cpuLimitOverride: null, memoryLimitOverride: null, storageLimitOverride: null,
+  };
+  const PLAN = { id: 'p1', cpuLimit: '1', memoryLimit: '1', storageLimit: '5' };
+  const DEPS = [
+    { cpuRequest: '0.1', memoryRequest: '400Mi', status: 'running' },
+    { cpuRequest: '0.10', memoryRequest: '32Mi', status: 'running' },
+  ];
+
+  function k8sReporting(used: Record<string, string> | null) {
+    return {
+      core: {
+        readNamespacedResourceQuota: vi.fn(async () => {
+          if (used === null) throw new Error('quotas "x" not found');
+          return { status: { used } };
+        }),
+      },
+    } as never;
+  }
+
+  async function availability(k8s: unknown, log?: unknown) {
+    const { getTenantResourceAvailability } = await import('./service.js');
+    return getTenantResourceAvailability(
+      createMockDb([[TENANT], [PLAN], DEPS]), 'c1',
+      { k8s: k8s as never, log: log as never },
+    );
+  }
+
+  it('reports the quota figure when it exceeds the database sum', async () => {
+    const r = await availability(k8sReporting({ 'requests.memory': '544Mi', 'requests.cpu': '200m' }));
+    expect(Math.round(r.memoryUsedGi * 1024)).toBe(544);          // not 432
+    expect(Math.round(r.memoryAvailableGi * 1024)).toBe(480);     // not 592
+  });
+
+  it('no longer offers headroom for the deploy admission refused', async () => {
+    const r = await availability(k8sReporting({ 'requests.memory': '544Mi' }));
+    expect(r.memoryAvailableGi * 1024 >= 512).toBe(false);
+  });
+
+  it('keeps the database sum when the quota reads lower (a pod is momentarily absent)', async () => {
+    // A node reboot or reschedule empties the namespace; the quota drops to
+    // zero while the deployments are still very much committed.
+    const r = await availability(k8sReporting({ 'requests.memory': '0', 'requests.cpu': '0' }));
+    expect(Math.round(r.memoryUsedGi * 1024)).toBe(432);
+    expect(r.cpuUsed).toBe(0.2);
+  });
+
+  it('falls back to the database sum — and says so — when the quota is unreadable', async () => {
+    const log = { warn: vi.fn() };
+    const r = await availability(k8sReporting(null), log);
+    expect(Math.round(r.memoryUsedGi * 1024)).toBe(432);
+    expect(log.warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('degrades to the database sum when no cluster client is supplied', async () => {
+    const { getTenantResourceAvailability } = await import('./service.js');
+    const r = await getTenantResourceAvailability(createMockDb([[TENANT], [PLAN], DEPS]), 'c1');
+    expect(Math.round(r.memoryUsedGi * 1024)).toBe(432);
+  });
+
+  it('reads requests.* first — tenant containers declare no CPU limit (ADR-037)', async () => {
+    const r = await availability(k8sReporting({ 'requests.cpu': '700m', 'limits.cpu': '0' }));
+    expect(r.cpuUsed).toBe(0.7);
+  });
+});

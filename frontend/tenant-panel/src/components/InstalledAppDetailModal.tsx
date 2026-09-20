@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { API_BASE } from '@/lib/api-client';
 import { X, Play, Square, Cpu, HardDrive, Server, Clock, Shield, Eye, EyeOff, AppWindow, Loader2, Database, AlertTriangle, Tag as TagIcon, Save, AlertCircle, Terminal, RefreshCw, Pencil } from 'lucide-react';
@@ -46,6 +46,8 @@ import DatabaseManagementModal from './DatabaseManagementModal';
 import LogViewer from './LogViewer';
 import ChangeStoragePathModal from './ChangeStoragePathModal';
 import WebTerminal from './WebTerminal';
+import ErrorPanel from './ErrorPanel';
+import { describeDeploymentError } from '@/lib/describe-deployment-error';
 import type { Deployment, CatalogEntry } from '@/types/api';
 
 interface ComponentEntry {
@@ -194,6 +196,48 @@ export default function InstalledAppDetailModal({
   const updateDeployment = useUpdateDeployment(tenantId);
   const [editingMounts, setEditingMounts] = useState(false);
   const [mountRows, setMountRows] = useState<ExtraMountRow[]>([]);
+
+  // ─── Forget the last attempt when the subject changes ──────────────────────
+  //
+  // The parent keeps this modal MOUNTED and only toggles `open` — which is why
+  // the hooks above sit in front of the null guard below. Every useMutation
+  // here therefore outlives both closing the modal and switching to a
+  // different application, and each holds its last error until something calls
+  // reset().
+  //
+  // So a resource change that failed on one app came back, word for word, the
+  // next time any app's details were opened — reported against whichever app
+  // was on screen, which is worse than merely stale. Only two of the five
+  // editors reset on Cancel, and none reset on close.
+  //
+  // A new attempt already clears its own error (mutate() resets status), so
+  // this is specifically about the attempt you walked away from. The open
+  // editors are reset with it: reopening into a half-open form belonging to
+  // another application is the same bug wearing different clothes.
+  //
+  // Held behind a ref so the effect depends on the SUBJECT alone. useMutation
+  // returns a new object every render, so listing the mutations (or their
+  // reset functions) as dependencies re-runs this on every render — and with
+  // the setState calls in it, that is an infinite loop rather than a stale
+  // dependency warning. Each reset is called optionally: a detached method
+  // that turns out to be undefined takes the whole page down with it, and a
+  // modal that cannot forget an old error is a far smaller problem than a
+  // modal that will not render.
+  const forgetLastAttempt = useRef<() => void>(() => {});
+  forgetLastAttempt.current = () => {
+    updateResources.reset?.();
+    updateDeployment.reset?.();
+    setMultihost.reset?.();
+    switchVersion.reset?.();
+  };
+  const subjectId = deployment?.id ?? null;
+  useEffect(() => {
+    forgetLastAttempt.current();
+    setEditingResources(false);
+    setEditingConfig(false);
+    setEditingMounts(false);
+    setVersionTarget(null);
+  }, [subjectId, open]);
 
   if (!open || !deployment) return null;
 
@@ -375,14 +419,11 @@ export default function InstalledAppDetailModal({
           </div>
         </div>
 
-        {/* Last Error Banner */}
+        {/* Last error — decoded to a sentence, with the numbers folded into
+            "More details". It used to print the Kubernetes API's raw JSON body. */}
         {deployment.lastError && (
-          <div
-            className="mb-6 flex items-start gap-2 rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-4 py-3 text-sm text-red-700 dark:text-red-400"
-            data-testid="last-error-banner"
-          >
-            <AlertTriangle size={16} className="mt-0.5 shrink-0" />
-            <span>Last error: {deployment.lastError}</span>
+          <div className="mb-6" data-testid="last-error-banner">
+            <ErrorPanel error={describeDeploymentError(deployment.lastError)} />
           </div>
         )}
 

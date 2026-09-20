@@ -59,3 +59,42 @@ describe('cron job timeout_seconds', () => {
     }
   });
 });
+
+/**
+ * The edit form can clear a field. "Cleared" and "not touched" are different
+ * intents and must not share a wire representation: an omitted key leaves the
+ * stored value alone, so without an explicit null a job pinned to 600s or to
+ * Europe/Berlin could never be put back on the platform default.
+ */
+describe('updateCronJobSchema: clearing a pinned field', () => {
+  it('accepts null for timeout_seconds — back to the per-type default', () => {
+    const parsed = updateCronJobSchema.safeParse({ timeout_seconds: null });
+    expect(parsed.success).toBe(true);
+    expect(parsed.success && parsed.data.timeout_seconds).toBeNull();
+  });
+
+  it('accepts null for timezone — back to the platform clock', () => {
+    const parsed = updateCronJobSchema.safeParse({ timezone: null });
+    expect(parsed.success).toBe(true);
+    expect(parsed.success && parsed.data.timezone).toBeNull();
+  });
+
+  it('still distinguishes omitted from cleared', () => {
+    const omitted = updateCronJobSchema.parse({ name: 'x' });
+    expect('timeout_seconds' in omitted && omitted.timeout_seconds !== undefined).toBe(false);
+    expect(updateCronJobSchema.parse({ timeout_seconds: null }).timeout_seconds).toBeNull();
+  });
+
+  it('does not loosen the range — null is the only non-number allowed', () => {
+    expect(updateCronJobSchema.safeParse({ timeout_seconds: 0 }).success).toBe(false);
+    expect(updateCronJobSchema.safeParse({ timeout_seconds: CRON_TIMEOUT_MAX_SECONDS + 1 }).success).toBe(false);
+    expect(updateCronJobSchema.safeParse({ timezone: 'Mars/Olympus_Mons' }).success).toBe(false);
+  });
+
+  // Flipping type would leave a row holding both a url and a command with
+  // nothing to say which the scheduler should honour.
+  it('refuses to change a job between webcron and deployment', () => {
+    const parsed = updateCronJobSchema.parse({ type: 'webcron', name: 'x' } as never);
+    expect('type' in parsed).toBe(false);
+  });
+});

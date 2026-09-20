@@ -60,6 +60,7 @@ import {
 } from '@/hooks/use-storage-lifecycle';
 import { useTableSearch } from '@/hooks/use-table-search';
 import ErrorPanel from '@/components/ErrorPanel';
+import { describeDeploymentError } from '@/lib/describe-deployment-error';
 import { useTabParam } from '@/hooks/use-tab-param';
 
 type TabKey = 'domains' | 'applications' | 'deployments' | 'files' | 'email' | 'backups' | 'snapshots' | 'users';
@@ -1456,20 +1457,16 @@ function DeploymentsTab({ data, isLoading, error, tenantId }: TabContentProps<De
         {sortedItems.map((d) => {
           // Try to parse lastError as the OperatorError envelope (JSON
           // produced by the status-reconciler since the error-standard
-          // change). Fall back to plain string for legacy rows.
+          // change). One decoder handles every shape: a stored envelope, a
+          // legacy plain string, or the Kubernetes client's raw HTTP body. It
+          // used to short-circuit on "looks like an envelope" and render that
+          // envelope verbatim, which for a quota rejection meant the generic
+          // "Operation failed" and a detail truncated mid-word — strictly
+          // worse than what the decoder makes of the same input.
           let envelope: import('@insula/api-contracts').OperatorError | null = null;
           let plainDetail = '';
           if (d.lastError && d.lastError.trim()) {
-            try {
-              const parsed = JSON.parse(d.lastError);
-              if (parsed && typeof parsed === 'object' && parsed.code && parsed.title) {
-                envelope = parsed as import('@insula/api-contracts').OperatorError;
-              } else {
-                plainDetail = d.lastError;
-              }
-            } catch {
-              plainDetail = d.lastError;
-            }
+            envelope = describeDeploymentError(d.lastError);
           }
           if (!envelope && !plainDetail) plainDetail = (d.statusMessage ?? '').trim();
           const detailTone = d.status === 'failed'

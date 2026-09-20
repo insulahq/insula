@@ -604,16 +604,27 @@ export async function deployCatalogEntry(
     env.push({ name: 'TZ', value: timezone });
   }
 
-  // Build password-reset init container for reused data directories
-  const passwordResetContainer = input.reuseExistingData && input.catalogCode && input.passwordEnvVar
-    ? buildPasswordResetInitContainer({
-        catalogCode: input.catalogCode,
-        image: components[0]?.image ?? '',
-        storagePath: input.storagePath,
-        volumeMountName: 'tenant-storage',
-        passwordEnvVar: input.passwordEnvVar,
-      })
-    : null;
+  // Build password-reset init container for reused data directories.
+  //
+  // Built PER COMPONENT, not once: the init container mirrors the resources of
+  // the container it runs in front of, and that is the only thing keeping it
+  // out of the tenant's quota. Kubernetes charges a pod
+  // `max(sum(containers), max(initContainers))`, so an init container sized
+  // independently of its component inflates the charge for the pod's whole
+  // lifetime — invisibly, because our own accounting summed `spec.containers`.
+  // See password-reset.ts:initResources and shared/pod-resources.ts.
+  const buildPasswordResetFor = (cpu: string, memory: string) =>
+    input.reuseExistingData && input.catalogCode && input.passwordEnvVar
+      ? buildPasswordResetInitContainer({
+          catalogCode: input.catalogCode,
+          image: components[0]?.image ?? '',
+          storagePath: input.storagePath,
+          volumeMountName: 'tenant-storage',
+          passwordEnvVar: input.passwordEnvVar,
+          cpuRequest: cpu,
+          memoryRequest: memory,
+        })
+      : null;
 
   // Weighted per-component allocation of the deployment-level CPU/memory
   // budget. Components with hard-pinned `resources` (one-shot Jobs, etc.)
@@ -640,6 +651,7 @@ export async function deployCatalogEntry(
     const allocation = allocations.get(component.name);
     const compCpu = component.resources?.cpu ?? allocation?.cpu ?? cpuRequest;
     const compMem = component.resources?.memory ?? allocation?.memory ?? memoryRequest;
+    const passwordResetContainer = buildPasswordResetFor(compCpu, compMem);
     // Pull host-port bindings for this component out of the manifest's
     // top-level networking.host_ports[]. The shape is
     // `{ component, port, protocol }`; we match on component name and
