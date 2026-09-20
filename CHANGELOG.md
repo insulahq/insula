@@ -33,6 +33,43 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   roughly a dozen per tenant where 14 is set and 26 have accumulated. Check the
   value under **Backups → Targets, Schedules & Retention** before upgrading if
   you are not certain it says what you want.
+- **A failed application stops calling itself failed when you restart it.** The
+  previous release stopped the old *message* outliving its attempt, but left
+  the verdict: the application stayed marked **failed**, so restarting one — or
+  saving its environment variables, resources, mounts or storage path — cleared
+  the explanation and went on showing a red FAILED badge over an application
+  that was at that moment being restarted. It corrected itself within about
+  fifteen seconds, when the status check next ran, which is exactly long enough
+  to look like the restart did not work.
+
+  Forgetting a failure now drops the badge with the message. The application
+  moves to **pending** until its pods report ready — not straight to running,
+  which would be the same overstatement in the other direction, and if the pods
+  never come back the existing timeout returns it to failed on its own.
+
+  Both panels also stop showing the old state during the moment between
+  pressing the button and the page reloading its data. That gap was the
+  "transient" part: the server had already forgotten the failure, and the page
+  was still drawing the copy it had.
+
+### Added
+- **The other system backups now have a retention setting too.** How many etcd
+  snapshots, secrets bundles and cluster state dumps are kept was fixed in the
+  jobs that write them — the newest 24, 30 and 14 — and the cards showed no
+  retention at all. Each card now has **Retention (keep last N)**, starting at
+  the number its job has always used.
+
+  There is deliberately no days field on these three, and no single setting
+  covering all four. The database keeps a *window* — its retention is the
+  recovery range, in days. The others keep a number of *copies*. One
+  platform-wide number would also land very differently on each: etcd uploads
+  hourly, so "30 days" there means 720 snapshots, where the same number on the
+  daily jobs means thirty copies.
+
+  Lowering a count deletes the copies it brings you below, the next time that
+  job runs. Zero is refused — by the panel, and again inside the jobs, which
+  keep everything rather than delete everything if handed a value they cannot
+  read.
 
 ### Changed
 - **The platform database now comes first among the system schedules.** It sat
@@ -64,26 +101,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   appeared if one of its bundles happened to fall in the fetched page — on a
   busy platform a tenant could be missing from the page whose whole job is
   telling you who is covered.
-
-### Fixed
-- **A failed application stops calling itself failed when you restart it.** The
-  previous release stopped the old *message* outliving its attempt, but left
-  the verdict: the application stayed marked **failed**, so restarting one — or
-  saving its environment variables, resources, mounts or storage path — cleared
-  the explanation and went on showing a red FAILED badge over an application
-  that was at that moment being restarted. It corrected itself within about
-  fifteen seconds, when the status check next ran, which is exactly long enough
-  to look like the restart did not work.
-
-  Forgetting a failure now drops the badge with the message. The application
-  moves to **pending** until its pods report ready — not straight to running,
-  which would be the same overstatement in the other direction, and if the pods
-  never come back the existing timeout returns it to failed on its own.
-
-  Both panels also stop showing the old state during the moment between
-  pressing the button and the page reloading its data. That gap was the
-  "transient" part: the server had already forgotten the failure, and the page
-  was still drawing the copy it had.
 
 ## [2026.9.27] - 2026-09-20
 

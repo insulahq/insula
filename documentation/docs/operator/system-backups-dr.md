@@ -86,17 +86,31 @@ rather than among schedules you can actually set.
 Each card also has an on/off switch. Turning a schedule off stops that backup
 until you turn it back on — the platform will not quietly keep running it.
 
-!!! info "Only the database's retention is yours to set"
-    The **Retention** setting above applies to the platform database alone —
-    it is the retention policy on the database's own backup store.
+!!! info "Two kinds of retention, and which card has which"
+    The database keeps a **window**: its **Retention** setting is a number of
+    days, and that is what your recovery range means — "restore to any moment
+    in the last N days".
 
-    The other three keep a fixed number of copies, decided by the job that
-    writes them: the newest **24** etcd snapshots, **30** secrets bundles and
-    **14** cluster state dumps. Those limits are not settable from here, which
-    is why those cards have no retention field. A single platform-wide
-    retention number would be a promise the platform cannot keep — the limits
-    are different values, and two different *kinds* of limit: days for the
-    database, a count of copies for the rest.
+    The other three keep a number of **copies**. Each card has a
+    **Retention (keep last N)** field and no days field, because there is no
+    time window behind those jobs to set. They start at the numbers their jobs
+    have always used — the newest **24** etcd snapshots, **30** secrets bundles
+    and **14** cluster state dumps — and each can be changed here.
+
+    They are deliberately not one setting. The values differ, and so do the
+    kinds of limit; one platform-wide number would also land very differently
+    on each job, because their cadences differ. etcd uploads hourly, so
+    "30 days" there is 720 snapshots, where the same number on the daily jobs
+    is thirty copies.
+
+!!! warning "Lowering a count deletes copies"
+    Each job applies its retention the next time it runs, so reducing a count
+    removes the copies it brings you below. Raising one does not bring anything
+    back.
+
+    Zero is refused — by the panel, and again by the jobs themselves, which
+    keep everything rather than delete everything if they are ever handed a
+    value they cannot read.
 
 !!! info "Times are on the platform's clock"
     A schedule you enter here is read in the platform time zone (**Platform
