@@ -82,8 +82,22 @@ Preferences** (or **Notifications** → preferences).
 
 Click **Save** in each section to apply.
 
-Your full message history lives under **Notifications** in the left menu, where
-you can filter by type and read/unread, and mark messages as read.
+Your full message history lives under **Notifications** in the left menu.
+Filter the list by **Read state**, and read the counter beside it: the first
+number is how many messages the filter is showing, the second is how many
+unread you have in total — the same number as the bell badge.
+
+Two buttons on the right act on the whole account, not just the messages on
+screen:
+
+- **Mark All As Read** clears every unread message, which is what makes the
+  bell badge go to zero.
+- **Delete All** removes every message and asks you to confirm first. It
+  cannot be undone, and it reaches messages the current filter is hiding —
+  so the confirmation says so, and tells you afterwards how many were
+  removed.
+
+Each message also has its own mark-as-read and delete buttons.
 
 ## Sub-users — add teammates
 
