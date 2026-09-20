@@ -14,6 +14,12 @@ interface PasswordResetInput {
   readonly volumeMountName: string;
   readonly passwordEnvVar: string;
   readonly passwordEnvVarUser?: string;
+  /**
+   * CPU/memory request of the container this init container runs in front of.
+   * Both are mirrored onto the init container — see initResources() below.
+   */
+  readonly cpuRequest: string;
+  readonly memoryRequest: string;
 }
 
 interface InitContainer {
@@ -47,10 +53,31 @@ const DB_ENGINES: Record<string, 'mariadb' | 'mysql' | 'postgresql' | 'mongodb'>
 };
 
 // Asymmetric QoS (ADR-037): CPU request only, memory request==limit.
-const INIT_RESOURCES = {
-  requests: { cpu: '50m', memory: '512Mi' },
-  limits: { memory: '512Mi' },
-};
+//
+// Mirror the fronted container's own request rather than pick a number.
+// Kubernetes charges a pod `max(sum(containers), max(initContainers))` for its
+// WHOLE lifetime, so any init container asking for more than the workload it
+// precedes silently inflates the tenant's quota footprint — and neither the
+// panel nor the deploy gate could see it (both summed `spec.containers`).
+//
+// Production 2026-09-19: this was a flat 512Mi. A tenant's 400Mi MariaDB was
+// therefore charged 512Mi, the panel reported 432Mi of a 1Gi plan while the
+// ResourceQuota said 544Mi, and a 512Mi PHP app the panel had just approved was
+// refused by admission. Trimming the database from 400Mi to 350Mi changed
+// nothing visible — below 512Mi the charge does not move, so the error message
+// came back byte-identical.
+//
+// Mirroring is also the safe bound, not merely the cheap one: this container
+// boots the SAME engine binary from the SAME datadir as the container behind
+// it, with --skip-networking and no client load, so it is strictly the lighter
+// of the two. A datadir that cannot be reset inside the request is a datadir
+// whose database could not have started either.
+function initResources(cpuRequest: string, memoryRequest: string) {
+  return {
+    requests: { cpu: cpuRequest, memory: memoryRequest },
+    limits: { memory: memoryRequest },
+  };
+}
 
 // Every reset script is BEST-EFFORT and always exits 0.
 //
@@ -199,7 +226,7 @@ function buildMongodbResetScript(passwordEnvVar: string, userEnvVar: string): st
 }
 
 export function buildPasswordResetInitContainer(input: PasswordResetInput): InitContainer | null {
-  const { catalogCode, image, storagePath, volumeMountName, passwordEnvVar, passwordEnvVarUser } = input;
+  const { catalogCode, image, storagePath, volumeMountName, passwordEnvVar, passwordEnvVarUser, cpuRequest, memoryRequest } = input;
 
   if (!passwordEnvVar) return null;
 
@@ -240,7 +267,7 @@ export function buildPasswordResetInitContainer(input: PasswordResetInput): Init
     volumeMounts: [
       { name: volumeMountName, mountPath, subPath: storagePath },
     ],
-    resources: INIT_RESOURCES,
+    resources: initResources(cpuRequest, memoryRequest),
     ...(securityContext ? { securityContext } : {}),
   };
 }
