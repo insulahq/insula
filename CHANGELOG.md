@@ -100,6 +100,33 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   nothing worth sending. The failure is now summarised from the migration's own
   output: how it exited, how many errors, and which folders were affected —
   with their exact names, spaces included, since that is usually the cause.
+- **Leftover volumes are found again.** After a storage resize, the volume that
+  was replaced is kept rather than deleted, and it goes on reserving its full
+  original size on the cluster however little is stored in it. Two checks
+  decide whether one of these is a leftover to clean up or a copy being kept
+  on purpose, and both were reading a mark the storage system writes *itself*
+  every time a volume is resized as though an administrator had chosen to keep
+  it. So a replaced volume could be treated as a deliberate backup forever — it
+  never appeared under orphaned volumes, and the tenant was offered a
+  "restore" onto a marker that holds nothing.
+
+  On one platform a 256 GB volume replaced fourteen minutes after it was
+  created came to account for **63% of the entire cluster's reservable
+  storage**, with an unexplained capacity warning as the only sign.
+- **Orphaned volumes are shown where you already are.** The dashboard gains a
+  card — only when there are any — showing how many exist and opening the
+  management list when clicked. A tenant's page lists any that still belong to
+  them. Neither appears when there is nothing to report.
+- **A resize offers to clean up after itself.** When a resize that replaces the
+  volume finishes, it now offers to delete the one it replaced, with its size,
+  so the capacity comes straight back. Declining is fine — it stays listed
+  under orphaned volumes. Offered only when the resize actually replaced
+  something, and never when the resize failed, since the old volume is the way
+  back then.
+- **Recently released volumes are listed immediately** instead of after a
+  week's wait. They are the likeliest to be an accident worth undoing, and
+  their space is already reserved the whole time. They are excluded from
+  *Purge all*: removing one stays a deliberate, individual choice.
 
 ### Changed
 - **The platform database now comes first among the system schedules.** It sat

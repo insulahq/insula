@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import type { ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Loader2, CheckCircle2, AlertTriangle, X } from 'lucide-react';
 import clsx from 'clsx';
@@ -41,9 +42,18 @@ interface OperationProgressModalProps {
   readonly operationId: string | null;
   readonly title?: string;
   readonly onClose: () => void;
+  /**
+   * Rendered once the operation finishes SUCCESSFULLY.
+   *
+   * Exists for the follow-up an operation creates but cannot itself do — a
+   * destructive resize leaves the old volume Released, and the moment the
+   * operator learns the resize worked is the moment to offer clearing it up.
+   * Not rendered on failure: the source volume is the fallback then.
+   */
+  readonly onSuccessSlot?: ReactNode;
 }
 
-export default function OperationProgressModal({ operationId, title, onClose }: OperationProgressModalProps) {
+export default function OperationProgressModal({ operationId, title, onClose, onSuccessSlot }: OperationProgressModalProps) {
   const { data, error } = useQuery<StorageOperationResponse, Error>({
     queryKey: ['operation-progress', operationId],
     queryFn: () => apiFetch(`/api/v1/admin/storage/operations/${operationId}`),
@@ -159,6 +169,12 @@ export default function OperationProgressModal({ operationId, title, onClose }: 
               {isTerminal && !isFailure && (
                 <p className="text-xs text-gray-500 dark:text-gray-400">Completed at {op.completedAt ? new Date(op.completedAt).toLocaleString() : 'just now'}</p>
               )}
+
+              {/* Success-only follow-up. Withheld on failure on purpose: if
+                  the operation did not finish, the source volume is the
+                  fallback, and offering to delete it then would be offering to
+                  destroy the recovery path. */}
+              {isTerminal && !isFailure && onSuccessSlot}
             </>
           )}
         </div>

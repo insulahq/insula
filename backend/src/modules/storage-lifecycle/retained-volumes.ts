@@ -48,7 +48,11 @@ interface RawLhVolume {
 
 interface RawLhSnapshot {
   readonly metadata?: { readonly name?: string };
-  readonly spec?: { readonly volume?: string };
+  readonly spec?: {
+    readonly volume?: string;
+    /** FALSE for Longhorn's own snapshots, e.g. the `expand-<bytes>` marker. */
+    readonly userCreated?: boolean;
+  };
   readonly status?: {
     readonly readyToUse?: boolean;
     // Longhorn reports snapshot size as an int64 → a JSON number.
@@ -124,6 +128,18 @@ export function classifyRetainedVolumes(input: {
     const vol = s.spec?.volume;
     const name = s.metadata?.name;
     if (!vol || !name || name === VOLUME_HEAD) continue;
+    // Only snapshots a PERSON asked for are restore points.
+    //
+    // Longhorn writes its own — an `expand-<bytes>` marker on every volume
+    // expansion — with `userCreated: false`. Counting those made a volume
+    // whose only snapshot was an expansion artefact look like a retained
+    // fallback, and this card would offer to "restore" the tenant onto it.
+    // There is nothing there to restore TO: the marker records that a resize
+    // happened, not a state anyone chose to keep.
+    //
+    // It also kept such volumes out of orphan detection, which is how one
+    // sat unnoticed holding 63% of a production cluster's storage commitment.
+    if (s.spec?.userCreated !== true) continue;
     const arr = snapsByVolume.get(vol) ?? [];
     arr.push({
       name,
