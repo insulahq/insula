@@ -65,6 +65,26 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   busy platform a tenant could be missing from the page whose whole job is
   telling you who is covered.
 
+### Fixed
+- **A failed application stops calling itself failed when you restart it.** The
+  previous release stopped the old *message* outliving its attempt, but left
+  the verdict: the application stayed marked **failed**, so restarting one — or
+  saving its environment variables, resources, mounts or storage path — cleared
+  the explanation and went on showing a red FAILED badge over an application
+  that was at that moment being restarted. It corrected itself within about
+  fifteen seconds, when the status check next ran, which is exactly long enough
+  to look like the restart did not work.
+
+  Forgetting a failure now drops the badge with the message. The application
+  moves to **pending** until its pods report ready — not straight to running,
+  which would be the same overstatement in the other direction, and if the pods
+  never come back the existing timeout returns it to failed on its own.
+
+  Both panels also stop showing the old state during the moment between
+  pressing the button and the page reloading its data. That gap was the
+  "transient" part: the server had already forgotten the failure, and the page
+  was still drawing the copy it had.
+
 ## [2026.9.27] - 2026-09-20
 
 ### Fixed
