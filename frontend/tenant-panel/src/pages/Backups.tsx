@@ -200,7 +200,14 @@ export default function Backups() {
                   <SortableHeader label="Bundle" sortKey="label" {...th} />
                   <SortableHeader label="Initiator" sortKey="initiator" {...th} />
                   <SortableHeader label="Status" sortKey="status" {...th} />
-                  <SortableHeader label="Size" sortKey="sizeBytes" {...th} className={`hidden sm:table-cell ${th.className}`} />
+                  {/* Two sizes, as in the admin panel. "Bundle Size" is what
+                      this bundle captured; because every nightly bundle
+                      re-states the whole site, adding those up wildly
+                      overstates what is stored. "Restic Size" is what it
+                      actually added after deduplication — the figure that
+                      answers "what is this costing me". */}
+                  <SortableHeader label="Bundle Size" sortKey="sizeBytes" {...th} className={`hidden sm:table-cell ${th.className}`} />
+                  <SortableHeader label="Restic Size" sortKey="resticAddedBytes" {...th} className={`hidden md:table-cell ${th.className}`} />
                   <SortableHeader label="Created" sortKey="createdAt" {...th} className={`hidden lg:table-cell ${th.className}`} />
                   <SortableHeader label="Expires" sortKey="expiresAt" {...th} className={`hidden lg:table-cell ${th.className}`} />
                   <th className="px-6 py-3 font-medium text-gray-500 dark:text-gray-400">Actions</th>
@@ -215,6 +222,13 @@ export default function Backups() {
                     <td className="px-6 py-3 text-gray-600 dark:text-gray-400">{b.initiator}</td>
                     <td className="px-6 py-3"><StatusBadge status={b.status} /></td>
                     <td className="hidden px-6 py-3 text-gray-600 dark:text-gray-400 sm:table-cell">{formatBytes(b.sizeBytes)}</td>
+                    <td className="hidden px-6 py-3 text-gray-600 dark:text-gray-400 md:table-cell">
+                      {b.resticAddedBytes == null
+                        // Bundles captured before this was recorded have no
+                        // figure. "0 B" would claim it stored nothing.
+                        ? <span className="text-gray-400" title="Captured before this was recorded">—</span>
+                        : formatBytes(b.resticAddedBytes)}
+                    </td>
                     <td className="hidden px-6 py-3 text-gray-500 dark:text-gray-400 lg:table-cell"><TimeCell iso={b.createdAt} /></td>
                     <td className="hidden px-6 py-3 text-gray-500 dark:text-gray-400 lg:table-cell">
                       <TimeCell iso={b.expiresAt} mode="until" />

@@ -159,6 +159,28 @@ describe('parseMailboxesDone', () => {
     expect(r.newStates[1]).toMatchObject({ address: 'user2@example.com', newState: 's2', fullPull: true, skipped: 1 });
   });
 
+  it('leaves addedBytes unknown on a line that predates it', () => {
+    // The three-field MAILBOXES_DONE above is what a Job already in flight
+    // across the rollout emits. It must parse, with the figure UNKNOWN.
+    const log = 'MAILBOXES_DONE bundleId=bkp-test snapshot=' + 'a'.repeat(64) + ' sizeBytes=4096';
+    expect(parseMailboxesDone(log, 'bkp-test').dataAddedPacked).toBeNull();
+  });
+
+  it('parses addedBytes when the upload route reported one', () => {
+    const log = 'MAILBOXES_DONE bundleId=bkp-test snapshot=' + 'a'.repeat(64) + ' sizeBytes=4096 addedBytes=512';
+    const r = parseMailboxesDone(log, 'bkp-test');
+    expect(r.dataAddedPacked).toBe(512);
+    expect(r.sizeBytes).toBe(4096);
+  });
+
+  it('treats an EMPTY addedBytes as unknown, not zero', () => {
+    // The Job shell emits `addedBytes=${ADDED:-}` — empty when the response
+    // carried no figure. Reading that as 0 would record "this snapshot added
+    // nothing" for a snapshot we know nothing about.
+    const log = 'MAILBOXES_DONE bundleId=bkp-test snapshot=' + 'a'.repeat(64) + ' sizeBytes=4096 addedBytes=';
+    expect(parseMailboxesDone(log, 'bkp-test').dataAddedPacked).toBeNull();
+  });
+
   it('skips JMAP_DONE lines for a different bundleId (defends against stale Job-log reuse)', () => {
     const log = [
       'JMAP_DONE bundleId=other-bundle address=x@y.com summary={"address":"x@y.com","fetched":1,"skipped":0,"newState":"s","fullPull":false}',

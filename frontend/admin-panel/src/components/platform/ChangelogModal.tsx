@@ -1,5 +1,6 @@
 import { X, Loader2, FileText, ExternalLink, AlertTriangle } from 'lucide-react';
 import { usePlatformChangelog } from '@/hooks/use-platform-updates';
+import { renderChangelog } from '@/lib/render-changelog';
 
 /**
  * Release notes for the version about to be installed, opened from the upgrade
@@ -11,10 +12,16 @@ import { usePlatformChangelog } from '@/hooks/use-platform-updates';
  * only this modal and returns to the review, which still holds the pre-flight
  * result — nothing is re-fetched and no decision is lost.
  *
- * Notes render as pre-formatted text, not parsed markdown. The body is remote
- * content, and rendering it as HTML would put a third party's markup inside an
- * authenticated admin page; `whitespace-pre-wrap` keeps the release's own
- * line structure readable without that exposure.
+ * Notes render as MARKDOWN — headings, bullets, bold, code — because release
+ * notes written in markdown and shown as pre-formatted text are a wall of
+ * asterisks and hashes, and an operator is being asked to approve an upgrade
+ * on the strength of them.
+ *
+ * The body is still remote content, so it is parsed into React ELEMENTS and
+ * never into HTML: see `@/lib/render-changelog`. There is no
+ * `dangerouslySetInnerHTML` in this path, so markup in the release body stays
+ * text. That was the original reason for the plaintext rendering, and it is
+ * preserved rather than traded away.
  */
 interface Props {
   /** Resolved target version — without this there is nothing to fetch. */
@@ -64,9 +71,7 @@ export default function ChangelogModal({ version, onApprove, onClose, canApprove
               <span>Could not load the changelog. The upgrade itself is unaffected — you can still approve it.</span>
             </div>
           ) : changelog?.notes ? (
-            <pre className="whitespace-pre-wrap break-words font-sans text-sm leading-relaxed text-gray-800 dark:text-gray-200">
-              {changelog.notes}
-            </pre>
+            renderChangelog(changelog.notes)
           ) : changelog?.source === 'unreachable' ? (
             <div className="flex items-start gap-2 text-sm text-amber-700 dark:text-amber-400">
               <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />

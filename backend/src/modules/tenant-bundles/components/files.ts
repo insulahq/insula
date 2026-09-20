@@ -44,7 +44,8 @@
  *   recovered after the first snapshot — incrementals ship only deltas.
  *
  * FILES_DONE log line (UNCHANGED format):
- *   FILES_DONE bundleId=<id> snapshot=<64hex> sizeBytes=<n> fileCount=<n>
+ *   FILES_DONE bundleId=<id> snapshot=<64hex> sizeBytes=<n> fileCount=<n> addedBytes=<n>
+ *   (addedBytes appended 2026-09; parsed as optional for in-flight Jobs)
  *   parsed by `parseFilesDone`. snapshot id / size / count come from
  *   restic's `--json` summary: snapshot_id, total_bytes_processed,
  *   total_files_processed.
@@ -90,6 +91,16 @@ export interface FilesComponentResult {
   readonly sizeBytes: number;
   /** Files processed by restic for this snapshot (total_files_processed). */
   readonly fileCount: number;
+  /**
+   * Bytes ADDED to the repository by this snapshot (`data_added_packed`).
+   * Feeds the accumulated repo size in tenant_restic_repo_state.
+   *
+   * NULL when the Job log carries no such field (an image predating it, or a
+   * Job already in flight across the rollout). Deliberately not 0: an
+   * unchanged tenant legitimately adds 0 bytes, and conflating the two would
+   * let "we don't know" be silently recorded as "nothing was added".
+   */
+  readonly dataAddedPacked: number | null;
   /**
    * @deprecated Compatibility shim. The pre-restic path recorded a sha256
    * of the tar.gz on backup_components.sha256. Restic content-addresses
@@ -190,7 +201,15 @@ function buildScript(opts: { tags: ReadonlyArray<string>; bundleId: string }): s
     '[ -n "$SNAP" ] || { echo "ERROR: no snapshot_id in restic output"; tail -n 40 /tmp/out.json; exit 1; }',
     'SIZE=$(grep -o \'"total_bytes_processed":[0-9]\\+\' /tmp/out.json | tail -n1 | sed \'s/.*://\')',
     'COUNT=$(grep -o \'"total_files_processed":[0-9]\\+\' /tmp/out.json | tail -n1 | sed \'s/.*://\')',
-    `echo "FILES_DONE bundleId=${opts.bundleId} snapshot=$SNAP sizeBytes=\${SIZE:-0} fileCount=\${COUNT:-0}"`,
+    // Bytes this snapshot ADDED to the repo, which is what the admin UI's
+    // repo size is accumulated from. `data_added_packed` is post-compression
+    // (restic >= 0.17); fall back to the pre-compression `data_added` so an
+    // older image still reports something usable. The two greps cannot
+    // collide: `"data_added":` requires the quote-colon immediately after the
+    // name, which `"data_added_packed":` does not satisfy.
+    'ADDED=$(grep -o \'"data_added_packed":[0-9]\\+\' /tmp/out.json | tail -n1 | sed \'s/.*://\')',
+    '[ -n "$ADDED" ] || ADDED=$(grep -o \'"data_added":[0-9]\\+\' /tmp/out.json | tail -n1 | sed \'s/.*://\')',
+    `echo "FILES_DONE bundleId=${opts.bundleId} snapshot=$SNAP sizeBytes=\${SIZE:-0} fileCount=\${COUNT:-0} addedBytes=\${ADDED:-0}"`,
   ].join('\n');
 }
 
@@ -464,6 +483,7 @@ export async function captureFilesComponent(
       snapshotId: parsed.snapshotId,
       sizeBytes: parsed.sizeBytes,
       fileCount: parsed.fileCount,
+      dataAddedPacked: parsed.dataAddedPacked,
       sha256: parsed.snapshotId, // see FilesComponentResult.sha256 deprecation note
     };
   } finally {
@@ -514,11 +534,17 @@ async function readEndOfJobLog(k8s: K8sClients, namespace: string, jobName: stri
 export function parseFilesDone(
   log: string,
   expectedBundleId: string,
-): { snapshotId: string; sizeBytes: number; fileCount: number } | null {
+): { snapshotId: string; sizeBytes: number; fileCount: number; dataAddedPacked: number | null } | null {
   const lines = log.split('\n').reverse();
   for (const line of lines) {
+    // `addedBytes` is OPTIONAL on purpose. A Job launched by the previous
+    // image — including one already running when this rolls out — emits the
+    // four-field line. Requiring the fifth would turn every in-flight backup
+    // into an unparseable log and fail the bundle, to gain a statistic.
+    // Absent yields null — "unknown" — which is NOT the same as the 0 an
+    // unchanged tenant legitimately reports.
     const m = line.match(
-      /FILES_DONE bundleId=(\S+) snapshot=([0-9a-f]{64}) sizeBytes=(\d+) fileCount=(\d+)/,
+      /FILES_DONE bundleId=(\S+) snapshot=([0-9a-f]{64}) sizeBytes=(\d+) fileCount=(\d+)(?: addedBytes=(\d+))?/,
     );
     if (!m) continue;
     if (m[1] !== expectedBundleId) continue;
@@ -526,6 +552,7 @@ export function parseFilesDone(
       snapshotId: m[2]!,
       sizeBytes: Number.parseInt(m[3]!, 10),
       fileCount: Number.parseInt(m[4]!, 10),
+      dataAddedPacked: m[5] === undefined ? null : Number.parseInt(m[5], 10),
     };
   }
   return null;
