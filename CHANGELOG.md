@@ -34,6 +34,21 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   do about it, and folds the numbers into a **More details** table. Nothing is
   discarded: the original text is the last row. Retry is no longer offered for
   errors retrying cannot fix.
+- **An old error no longer follows you to the next application.** The
+  application detail panel is kept open in the background by the page behind
+  it, so a failed resource or environment-variable change kept its message
+  after you closed the panel — and showed it again the next time you opened
+  *any* application, reported against whichever one was on screen. Opening an
+  application now starts clean, and closing it forgets the attempt you walked
+  away from. Any editor left half-open closes with it.
+- **A redeploy clears the previous failure.** Editing environment variables or
+  mounts, rotating credentials and recovering from a backup all replace the
+  running workload, but left the last failure on the record, so the panel kept
+  describing a state that no longer existed. Changing an application's
+  CPU/memory already did this; now every path does. A deployment that is
+  healthy but still carrying an old error is also cleaned up on the next status
+  check, which previously could not happen at all — the check only wrote when
+  the status itself changed, and a healthy application has no change to make.
 
 ## [2026.9.25] - 2026-09-19
 

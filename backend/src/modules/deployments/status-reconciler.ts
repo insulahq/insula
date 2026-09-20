@@ -85,6 +85,44 @@ function resolveComponentsForReconcile(
  * Reconcile all deployments that are in a non-terminal DB state
  * (running, pending, deploying) against actual K8s cluster state.
  */
+/**
+ * Should this tick write to the row at all?
+ *
+ * The reconciler runs constantly over every active deployment, so it only
+ * writes when something actually moved. That guard used to consider the status,
+ * the transitional message and the node — which left one hole: a row that was
+ * ALREADY `running` when something wrote an error to it never transitions
+ * again, so the "clear errors when status recovers" branch was unreachable and
+ * the failure stayed on the row for good. A tenant editing resources or env
+ * vars then kept seeing a banner describing an attempt that had long since
+ * been superseded.
+ *
+ * Split out from the loop so the decision can be tested on its own — the loop
+ * around it needs a live db, k8s and catalog graph, which is exactly the shape
+ * of test that would have passed against the hole.
+ */
+export function needsStatusWrite(
+  current: {
+    readonly status: string;
+    readonly statusMessage: string | null;
+    readonly lastError: string | null;
+    readonly currentNodeName: string | null;
+  },
+  next: {
+    readonly status: string;
+    readonly statusMessage: string | null;
+    readonly nodeName: string | null;
+  },
+): boolean {
+  if (next.status !== current.status) return true;
+  if (next.statusMessage !== current.statusMessage) return true;
+  if (next.nodeName !== current.currentNodeName) return true;
+  // Healthy, but still carrying the last failure. Nothing else will ever clear
+  // it, because nothing else is going to change.
+  return next.status === 'running'
+    && (current.lastError !== null || current.statusMessage !== null);
+}
+
 export async function reconcileDeploymentStatuses(
   db: Database,
   k8s: K8sClients,
@@ -201,9 +239,15 @@ export async function reconcileDeploymentStatuses(
 
       const nodeChanged = observedNode !== (deployment.currentNodeName ?? null);
 
-      if (newDbStatus !== deployment.status
-        || statusMessage !== (deployment.statusMessage ?? null)
-        || nodeChanged) {
+      if (needsStatusWrite(
+        {
+          status: deployment.status,
+          statusMessage: deployment.statusMessage ?? null,
+          lastError: deployment.lastError ?? null,
+          currentNodeName: deployment.currentNodeName ?? null,
+        },
+        { status: newDbStatus, statusMessage, nodeName: observedNode },
+      )) {
         const updateValues: Record<string, unknown> = { status: newDbStatus, statusMessage };
         if (nodeChanged) updateValues.currentNodeName = observedNode;
 
