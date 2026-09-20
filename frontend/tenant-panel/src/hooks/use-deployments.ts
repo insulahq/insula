@@ -59,6 +59,49 @@ export function useSwitchDeploymentVersion(tenantId: string | undefined, deploym
   });
 }
 
+/**
+ * Drop the previous failure from the cached row the moment a redeploy starts.
+ *
+ * The server forgets it immediately — the redeploy path clears `lastError` and
+ * moves the row off `failed` before it touches the cluster. But the panel goes
+ * on rendering whatever React Query already holds until the refetch that
+ * follows `invalidateQueries` comes back. On a restart or a settings save that
+ * is a visible flash of the old error and a red FAILED chip, over an
+ * application that is at that moment being replaced.
+ *
+ * Invalidating alone cannot avoid it: invalidation schedules a round trip, and
+ * the component re-renders from cache first. So the cache is corrected up
+ * front with the same three fields the server just wrote, and the refetch
+ * confirms rather than reveals it.
+ *
+ * Safe to apply optimistically because it only ever REMOVES a claim. If the
+ * redeploy fails, the failure path writes a new error and the refetch brings
+ * it back — the worst case is that a genuine failure appears a second later
+ * than it would have, not that one is hidden.
+ */
+function forgetFailureInCache(
+  queryClient: ReturnType<typeof useQueryClient>,
+  tenantId: string | undefined,
+  deploymentId: string,
+): void {
+  queryClient.setQueriesData<PaginatedResponse<Deployment>>(
+    { queryKey: ['deployments', tenantId] },
+    (prev) => {
+      if (!prev?.data) return prev;
+      let touched = false;
+      const data = prev.data.map((d) => {
+        if (d.id !== deploymentId) return d;
+        if (d.status !== 'failed' && !d.lastError && !d.statusMessage) return d;
+        touched = true;
+        // 'pending', not 'running': the pods are coming back, and claiming
+        // they are up is the same overstatement in the other direction.
+        return { ...d, status: d.status === 'failed' ? 'pending' : d.status, lastError: null, statusMessage: null };
+      });
+      return touched ? { ...prev, data } : prev;
+    },
+  );
+}
+
 export function useUpdateDeployment(tenantId: string | undefined) {
   const queryClient = useQueryClient();
   return useMutation({
@@ -67,6 +110,9 @@ export function useUpdateDeployment(tenantId: string | undefined) {
         method: 'PATCH',
         body: JSON.stringify(input),
       }),
+    // An env-var or mount save replaces the pod template, so a previous
+    // failure stops describing anything the moment it is sent.
+    onMutate: ({ deploymentId }) => { forgetFailureInCache(queryClient, tenantId, deploymentId); },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['deployments', tenantId] });
     },
@@ -160,6 +206,7 @@ export function useUpdateDeploymentResources(tenantId: string | undefined) {
         method: 'PATCH',
         body: JSON.stringify({ cpu_request, memory_request }),
       }),
+    onMutate: ({ deploymentId }) => { forgetFailureInCache(queryClient, tenantId, deploymentId); },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['deployments', tenantId] });
     },
@@ -207,6 +254,10 @@ export function useRestartDeployment(tenantId: string | undefined) {
         `/api/v1/tenants/${tenantId}/deployments/${deploymentId}/restart`,
         { method: 'POST' },
       ),
+    // The restart response carries only a message, so there is nothing to seed
+    // the cache from on success — the stale row has to be corrected as the
+    // request goes out, not when it comes back.
+    onMutate: (deploymentId: string) => { forgetFailureInCache(queryClient, tenantId, deploymentId); },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['deployments', tenantId] });
     },
@@ -228,6 +279,8 @@ export function useSetMultihost(tenantId: string | undefined) {
         `/api/v1/tenants/${tenantId}/deployments/${deploymentId}/multihost`,
         { method: 'PATCH', body: JSON.stringify({ enabled }) },
       ),
+    // This one restarts the app by design — same stale-verdict window.
+    onMutate: ({ deploymentId }) => { forgetFailureInCache(queryClient, tenantId, deploymentId); },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['deployments', tenantId] });
     },

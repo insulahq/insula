@@ -17,6 +17,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
  *     behind a guard that only fires on a transition. A row that was ALREADY
  *     `running` when something wrote an error to it never transitions again,
  *     so nothing would ever clear it.
+ *
+ * Reported again afterwards, and correctly: clearing the MESSAGE left the
+ * VERDICT. The row stayed on `failed`, so the panel stopped saying why it had
+ * failed and carried on showing a red FAILED chip over an application that was
+ * being restarted as it was read. The reconciler corrects it, but only on its
+ * next pass — up to 15 seconds later.
  */
 
 const dispatchCustomRedeploy = vi.fn().mockResolvedValue(undefined);
@@ -69,15 +75,29 @@ describe('clearDeploymentError', () => {
   it('clears the transitional message as well as the error', async () => {
     const { db, sets } = recordingDb();
     await clearDeploymentError(db, 'd1');
-    expect(sets).toEqual([{ lastError: null, statusMessage: null }]);
+    expect(sets).toHaveLength(1);
+    expect(sets[0]).toMatchObject({ lastError: null, statusMessage: null });
   });
+
+  // The guard that keeps this to `failed` rows is a SQL CASE, executed by
+  // Postgres — asserting its text here would test the string, not the
+  // behaviour. It is verified against a real database instead; see the PR.
+  it('drops the FAILED verdict, not just the message', async () => {
+    // The whole point of the follow-up. A cleared error on a row still marked
+    // `failed` reads as "it failed and we cannot tell you why", which is worse
+    // than the stale message it replaced.
+    const { db, sets } = recordingDb();
+    await clearDeploymentError(db, 'd1');
+    expect(sets[0]).toHaveProperty('status');
+  });
+
 });
 
 describe('redeployWithCurrentConfig', () => {
   it('forgets the previous failure before replacing the workload', async () => {
     const { db, sets } = recordingDb();
     await redeployWithCurrentConfig(db, DEPLOYMENT, {} as never);
-    expect(sets).toContainEqual({ lastError: null, statusMessage: null });
+    expect(sets.some((v) => v.lastError === null && v.statusMessage === null)).toBe(true);
   });
 
   // The clear sits above every branch on purpose. A custom deployment returns
@@ -87,7 +107,7 @@ describe('redeployWithCurrentConfig', () => {
     const { db, sets } = recordingDb();
     await redeployWithCurrentConfig(db, DEPLOYMENT, {} as never);
     expect(dispatchCustomRedeploy).toHaveBeenCalledOnce();
-    expect(sets[0]).toEqual({ lastError: null, statusMessage: null });
+    expect(sets[0]).toMatchObject({ lastError: null, statusMessage: null });
   });
 });
 
