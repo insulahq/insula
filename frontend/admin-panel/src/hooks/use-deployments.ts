@@ -129,6 +129,61 @@ interface UpdateDeploymentInput {
   readonly status?: 'running' | 'stopped';
 }
 
+/**
+ * Drop a previous failure from every cached view of one deployment, the moment
+ * its redeploy starts.
+ *
+ * Same defect as the tenant panel's: the server forgets the failure before it
+ * touches the cluster, but the panel renders what React Query holds, and
+ * `invalidateQueries` only SCHEDULES a refetch. Until that lands the operator
+ * sees the old error and a red FAILED chip over an application being replaced
+ * as they look at it.
+ *
+ * The admin panel caches the same deployment under three keys with two
+ * shapes — the per-tenant list, the paged admin list, and the single-row
+ * detail — so this matches on the `deployments` prefix and tolerates `data`
+ * being either an array or one row. Matching narrowly would leave whichever
+ * view the operator happened to be on still showing the stale verdict.
+ *
+ * Only ever REMOVES a claim, so applying it optimistically cannot hide a real
+ * failure: if the redeploy fails, the failure path writes a new error and the
+ * refetch brings it back.
+ */
+function forgetFailureInCache(
+  queryClient: ReturnType<typeof useQueryClient>,
+  deploymentId: string,
+): void {
+  const forget = (row: Record<string, unknown>): Record<string, unknown> => {
+    if (row.id !== deploymentId) return row;
+    if (row.status !== 'failed' && !row.lastError && !row.statusMessage) return row;
+    // 'pending', not 'running': the pods are coming back, and claiming they
+    // are up would be the same overstatement in the other direction.
+    return { ...row, status: row.status === 'failed' ? 'pending' : row.status, lastError: null, statusMessage: null };
+  };
+  queryClient.setQueriesData<unknown>(
+    { predicate: (q) => Array.isArray(q.queryKey) && q.queryKey[0] === 'deployments' },
+    (prev: unknown) => {
+      const env = prev as { data?: unknown } | undefined;
+      if (!env || typeof env !== 'object' || !('data' in env)) return prev;
+      const d = env.data;
+      if (Array.isArray(d)) {
+        let touched = false;
+        const next = d.map((row) => {
+          const out = forget(row as Record<string, unknown>);
+          if (out !== row) touched = true;
+          return out;
+        });
+        return touched ? { ...env, data: next } : prev;
+      }
+      if (d && typeof d === 'object') {
+        const out = forget(d as Record<string, unknown>);
+        return out === d ? prev : { ...env, data: out };
+      }
+      return prev;
+    },
+  );
+}
+
 export function useUpdateDeployment(tenantId: string | undefined) {
   const queryClient = useQueryClient();
   return useMutation({
@@ -137,6 +192,7 @@ export function useUpdateDeployment(tenantId: string | undefined) {
         method: 'PATCH',
         body: JSON.stringify(input),
       }),
+    onMutate: ({ deploymentId }) => { forgetFailureInCache(queryClient, deploymentId); },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['deployments', tenantId] });
     },
@@ -159,6 +215,9 @@ export function useRestartDeployment(tenantId: string | undefined) {
   return useMutation({
     mutationFn: (deploymentId: string) =>
       apiFetch(`/api/v1/tenants/${tenantId}/deployments/${deploymentId}/restart`, { method: 'POST' }),
+    // The restart response carries no deployment, so the stale row has to be
+    // corrected as the request goes out rather than when it comes back.
+    onMutate: (deploymentId: string) => { forgetFailureInCache(queryClient, deploymentId); },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['deployments'] });
     },
