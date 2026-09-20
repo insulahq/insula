@@ -4,12 +4,30 @@ import { authenticate, requireRole } from '../../middleware/auth.js';
 import { hostingPlans, tenants } from '../../db/schema.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
-import { createCacheMiddleware } from '../../middleware/cache.js';
+import { createCacheMiddleware, clearCache } from '../../middleware/cache.js';
 import { createPlanSchema, updatePlanSchema } from '@insula/api-contracts';
+
+/**
+ * The response-cache key for the plan list — every mutation below drops it.
+ *
+ * Without that, editing a plan looked like it silently did nothing: the PATCH
+ * returned 200 with the new value, the row in the database changed, and the
+ * list the panel re-read came back from this cache with the OLD numbers for
+ * the next five minutes. No error, nothing to retry, and the operator
+ * reasonably concluded the edit had not saved.
+ */
+const PLANS_CACHE_KEY = 'GET:/api/v1/plans';
 
 export async function planRoutes(app: FastifyInstance) {
   // GET /api/v1/plans — public, no auth
-  app.get('/plans', { preHandler: createCacheMiddleware(300_000) }, async () => {
+  //
+  // Cached because this route is UNAUTHENTICATED: without it, anonymous
+  // traffic reaches the database once per request. Ten seconds is enough for
+  // that, and the TTL is the ceiling on how long the OTHER api replicas can
+  // disagree with a just-saved edit — the cache is a per-process Map, so
+  // clearing it below only clears it on the replica that served the write.
+  // At five minutes that window was long enough to look permanent.
+  app.get('/plans', { preHandler: createCacheMiddleware(10_000) }, async () => {
     const rows = await app.db.select().from(hostingPlans);
     return { data: rows };
   });
@@ -67,6 +85,7 @@ export async function planRoutes(app: FastifyInstance) {
     });
 
     const [created] = await app.db.select().from(hostingPlans).where(eq(hostingPlans.id, id));
+    clearCache(PLANS_CACHE_KEY);
     reply.status(201).send(success(created));
   });
 
@@ -161,6 +180,7 @@ export async function planRoutes(app: FastifyInstance) {
       }
     }
 
+    clearCache(PLANS_CACHE_KEY);
     return success(updated);
   });
 
@@ -173,6 +193,7 @@ export async function planRoutes(app: FastifyInstance) {
     if (!existing) throw new ApiError('PLAN_NOT_FOUND', `Plan '${id}' not found`, 404);
 
     await app.db.update(hostingPlans).set({ status: 'deprecated' }).where(eq(hostingPlans.id, id));
+    clearCache(PLANS_CACHE_KEY);
     reply.status(204).send();
   });
 }
