@@ -103,26 +103,21 @@ describe('Dashboard', () => {
     localStorage.clear();
   });
 
-  it('renders welcome heading', () => {
+  it('renders the overview heading', () => {
     renderWithProviders(<Dashboard />);
-    expect(screen.getByTestId('welcome-heading')).toBeInTheDocument();
-    expect(screen.getByText(/Welcome back/)).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: /hosting overview/i })).toBeInTheDocument();
   });
 
-  it('renders quick stats grid', () => {
+  it('renders the plan section', () => {
     renderWithProviders(<Dashboard />);
-    expect(screen.getByTestId('quick-stats')).toBeInTheDocument();
-    expect(screen.getByText('Domains')).toBeInTheDocument();
-    expect(screen.getByText('Applications')).toBeInTheDocument();
-    expect(screen.getByText('Backups')).toBeInTheDocument();
-    expect(screen.getByText('Deployments')).toBeInTheDocument();
+    expect(screen.getAllByText(/your plan/i).length).toBeGreaterThan(0);
   });
 
-  it('renders overview description under the welcome heading', () => {
+  it('renders no alert chips when nothing needs the customer', () => {
+    // The attention band is conditional — an empty warnings region teaches
+    // people to skip the one region that must never be skipped.
     renderWithProviders(<Dashboard />);
-    expect(
-      screen.getByText(/Here is an overview of your hosting account/),
-    ).toBeInTheDocument();
+    expect(screen.queryAllByTestId('alert-chip')).toHaveLength(0);
   });
 });
 
