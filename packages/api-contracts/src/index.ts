@@ -120,6 +120,7 @@ export * from './mail-backups.js';
 export * from './mail-recover.js';
 export * from './mail-node-storage.js';
 export * from './resource-quotas.js';
+export * from './dashboard.js';
 export * from './security-hardening.js';
 export * from './secrets-audit.js';
 export * from './secrets-bundle.js';
