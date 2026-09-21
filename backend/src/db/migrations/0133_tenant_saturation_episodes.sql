@@ -3,24 +3,20 @@
 -- What was wrong
 -- --------------
 -- `evaluateTenantSaturation()` ran on every metrics cycle and deduped with a
--- key that embedded the current hour:
---
---     sat:<tenant>:<resource>:<level>:2026-09-21T16
---
--- The metrics scheduler ticks once an hour. So the bucket width and the tick
--- period were identical, every cycle minted a key that had never been seen,
--- and nothing was ever deduplicated. The comment above it read "re-fires at
--- most once per hour" — written as a CEILING against a fast evaluation loop.
--- With a one-hour loop the ceiling is also the floor.
---
--- Measured on production 2026-09-21: one tenant at 94% of a 100 GiB storage
--- limit produced, every hour, on the hour, four deliveries — admin in-app,
--- admin email, tenant in-app, tenant email — with no end condition. A tenant
--- that is merely LARGE, rather than in trouble, mails its operator and its
--- owner 96 times a day until somebody deletes files.
+-- key that embedded the current hour (`sat:<tenant>:<resource>:<level>:<hour>`).
+-- The metrics scheduler ticks once an hour, so the bucket width and the tick
+-- period were identical: every cycle minted a key that had never been seen and
+-- nothing was ever deduplicated. The comment above it read "re-fires at most
+-- once per hour" — written as a CEILING against a fast evaluation loop. With a
+-- one-hour loop the ceiling is also the floor, and a sustained condition
+-- announced itself to both audiences on both channels every hour without end.
 --
 -- There was also no all-clear. Dropping back under the threshold simply made
 -- the messages stop, which is indistinguishable from the alerting breaking.
+--
+-- A dedupe key must therefore be keyed on the IDENTITY of the thing being
+-- announced, never on a wall-clock bucket whose width can coincide with the
+-- caller's period.
 --
 -- The shape used here
 -- -------------------

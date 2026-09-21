@@ -152,6 +152,12 @@ export async function evaluateTenantSaturation(
         used: String(Math.round(d.inUse * 100) / 100),
         limit: limitText,
         unit: d.available > 0 ? d.unit : '',
+      };
+      // Only the tenant-facing templates render a timestamp. Shipping one to
+      // the admin templates too would be a payload key no template reads —
+      // a fact fetched and then silently discarded.
+      const tenantCommon = {
+        ...common,
         occurredAt: now.toISOString().slice(0, 16).replace('T', ' ') + ' UTC',
       };
       // Episode identity, not a time bucket: unique per intended send, so a
@@ -167,7 +173,7 @@ export async function evaluateTenantSaturation(
         await events.notifyTenantResourceRecovered(
           db,
           tenantId,
-          { ...common, durationText: lasted },
+          { ...tenantCommon, durationText: lasted },
           `sat-tenant-ok:${keyBase}`,
         );
         await events.notifyAdminTenantResourceRecovered(
@@ -183,7 +189,7 @@ export async function evaluateTenantSaturation(
           db,
           tenantId,
           level,
-          common,
+          tenantCommon,
           `sat-tenant:${keyBase}:${level}:${n}`,
         );
         await events.notifyAdminTenantResourceSaturation(
