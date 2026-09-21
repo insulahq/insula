@@ -232,9 +232,14 @@ export async function buildAdminLive(
         if (!name) continue;
         usage.set(name, { cpu: cpuToCores(m.usage?.cpu), mem: memToGiB(m.usage?.memory) });
       }
-    } catch {
-      // metrics-server absent or not ready: usage stays unknown and the
-      // triad shows commitment only, rather than claiming zero.
+    } catch (err) {
+      // An EMPTY catch here cost a debugging cycle: the tiles rendered
+      // "0.00 cores in use" on a live cluster and there was nothing anywhere
+      // saying why. Whatever goes wrong must be visible.
+      logger?.warn?.(
+        { err: err instanceof Error ? err.message : String(err) },
+        'dashboard: node metrics unavailable — usage will read as unknown',
+      );
     }
 
     const health = await db.execute<{ node_name: string; severity: string; disk_used_pct: string | null; evictions: number; pressures: string[] | null }>(sql`
@@ -281,6 +286,33 @@ export async function buildAdminLive(
 
   const cluster = await collect('cluster', async () => {
     const nodes = nodesSection.data ?? [];
+
+    // Storage comes from Longhorn, which is the only thing that knows what a
+    // volume actually holds. Left at zeros it rendered "0.0 GB in use of 0.0",
+    // which reads as a measurement rather than as missing data.
+    let storageTriad = { inUse: 0, committed: 0, total: 0, unit: 'GB', kind: 'consume' as const };
+    try {
+      const vols = await k8s.custom.listNamespacedCustomObject({
+        group: 'longhorn.io', version: 'v1beta2',
+        namespace: 'longhorn-system', plural: 'volumes',
+      }) as { items?: Array<{ spec?: { size?: string | number }; status?: { actualSize?: string | number } }> };
+      const num = (v: string | number | undefined): number =>
+        typeof v === 'number' ? v : Number(v ?? 0) || 0;
+      const used = (vols.items ?? []).reduce((t, v) => t + num(v.status?.actualSize), 0);
+      const req = (vols.items ?? []).reduce((t, v) => t + num(v.spec?.size), 0);
+      storageTriad = {
+        inUse: Math.round((used / 1e9) * 10) / 10,
+        committed: Math.round((req / 1e9) * 10) / 10,
+        total: Math.round((req / 1e9) * 10) / 10,
+        unit: 'GB', kind: 'consume' as const,
+      };
+    } catch (err) {
+      logger?.warn?.(
+        { err: err instanceof Error ? err.message : String(err) },
+        'dashboard: Longhorn volumes unreadable — storage will read as zero',
+      );
+    }
+
     const sum = (f: (n: AdminNode) => number): number =>
       Math.round(nodes.reduce((s, n) => s + f(n), 0) * 100) / 100;
     const cpuTotal = sum((n) => n.cpu.total);
@@ -297,7 +329,7 @@ export async function buildAdminLive(
         committed: sum((n) => n.memory.committed),
         total: sum((n) => n.memory.total), unit: 'GiB', kind: 'reserve' as const,
       },
-      storage: { inUse: 0, committed: 0, total: 0, unit: 'GB', kind: 'consume' as const },
+      storage: storageTriad,
       nodeCount: nodes.length,
       // One node cannot survive losing one node. Stating that plainly beats
       // rendering a headroom percentage that means nothing at n=1.
