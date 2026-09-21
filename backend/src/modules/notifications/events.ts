@@ -816,6 +816,34 @@ export async function notifyTenantResourceSaturation(
   await dispatchSafe(db, categoryId, { kind: 'tenant', tenantId }, payload, tenantId, { dedupeKey });
 }
 
+export interface ResourceRecoveredPayload extends TenantResourceSaturationPayload {
+  /** "3 hours" — how long the episode ran, so the close has a shape. */
+  readonly durationText: string;
+}
+/**
+ * A tenant resource episode ended.
+ *
+ * The counterpart to the two above, and the reason they can now be quiet: an
+ * alert that simply STOPS is indistinguishable from an alerting path that
+ * broke. Sent once, when usage falls back below the warning threshold minus
+ * hysteresis.
+ */
+export async function notifyTenantResourceRecovered(
+  db: Database,
+  tenantId: string,
+  payload: ResourceRecoveredPayload,
+  dedupeKey?: string,
+): Promise<void> {
+  await dispatchSafe(
+    db,
+    'tenant.resource_saturation_recovered',
+    { kind: 'tenant', tenantId },
+    payload,
+    tenantId,
+    { dedupeKey },
+  );
+}
+
 export interface AdminEmailQuotaPayload {
   readonly tenantLabel: string;
   readonly window: string;
@@ -1242,6 +1270,30 @@ export async function notifyAdminTenantResourceSaturation(
   // tenantId tags the row so the admin notification deep-links to /tenants/<id>
   // (recipients stay admin-scoped — tenantId only sets resourceType/resourceId).
   await dispatchSafe(db, categoryId, { kind: 'admin' }, payload, tenantId, { dedupeKey });
+}
+
+export interface AdminTenantRecoveredPayload extends AdminTenantSaturationPayload {
+  readonly durationText: string;
+}
+/**
+ * A tenant's saturation episode closed. Fires once per episode, so the
+ * operator's inbox shows a matched pair rather than a stream that stops for
+ * an unknowable reason.
+ */
+export async function notifyAdminTenantResourceRecovered(
+  db: Database,
+  tenantId: string,
+  payload: AdminTenantRecoveredPayload,
+  dedupeKey?: string,
+): Promise<void> {
+  await dispatchSafe(
+    db,
+    'admin.tenant_resource_saturation_recovered',
+    { kind: 'admin' },
+    payload,
+    tenantId,
+    { dedupeKey },
+  );
 }
 
 // ── Per-tenant OOM kill (Phase 1d) ──────────────────────────────────────────
