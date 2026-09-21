@@ -161,9 +161,19 @@ interface RawNode {
   };
 }
 
+/**
+ * Kubernetes writes CPU three ways and they are not interchangeable:
+ * `"3500m"` on a node's allocatable, `"3.5"` as a plain quantity, and
+ * `"897123456n"` (nanocores) from the metrics API. Reading a nanocore figure
+ * as plain cores overstates usage by a factor of a billion.
+ */
 function cpuToCores(v: string | undefined): number {
   if (!v) return 0;
-  return v.endsWith('m') ? Number(v.slice(0, -1)) / 1000 : Number(v);
+  if (v.endsWith('n')) return Number(v.slice(0, -1)) / 1e9;
+  if (v.endsWith('u')) return Number(v.slice(0, -1)) / 1e6;
+  if (v.endsWith('m')) return Number(v.slice(0, -1)) / 1000;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
 }
 function memToGiB(v: string | undefined): number {
   if (!v) return 0;
@@ -182,13 +192,24 @@ export async function buildAdminLive(
   const nodesSection = await collect('nodes', async () => {
     const list = (await k8s.core.listNode()) as unknown as { items?: RawNode[] };
     const pods = (await k8s.core.listPodForAllNamespaces()) as unknown as {
-      items?: Array<{ spec?: { nodeName?: string; containers?: Array<{ resources?: { requests?: Record<string, string> } }> } }>;
+      items?: Array<{
+        metadata?: { name?: string; namespace?: string };
+        status?: { phase?: string };
+        spec?: { nodeName?: string; containers?: Array<{ resources?: { requests?: Record<string, string> } }> };
+      }>;
     };
 
     const perNode = new Map<string, { cpuReq: number; memReq: number; count: number }>();
     for (const p of pods.items ?? []) {
       const n = p.spec?.nodeName;
       if (!n) continue;
+      // A Succeeded or Failed pod still has a record and still lists its
+      // requests, but it holds nothing: the scheduler has already released
+      // them. Counting terminal pods made committed CPU exceed the node's own
+      // allocatable — 3.60 of 3.50 cores — and inflated the pod count by the
+      // reboot corpses sitting on the node.
+      const phase = p.status?.phase;
+      if (phase === 'Succeeded' || phase === 'Failed') continue;
       const acc = perNode.get(n) ?? { cpuReq: 0, memReq: 0, count: 0 };
       for (const c of p.spec?.containers ?? []) {
         acc.cpuReq += cpuToCores(c.resources?.requests?.cpu);
@@ -196,6 +217,24 @@ export async function buildAdminLive(
       }
       acc.count += 1;
       perNode.set(n, acc);
+    }
+
+    // Actual usage, from the metrics API. Without it the triad's headline
+    // figure would be a hardcoded zero, which is worse than absent: the tile
+    // would read "0.00 cores in use" on a busy cluster.
+    const usage = new Map<string, { cpu: number; mem: number }>();
+    try {
+      const nm = await k8s.custom.listClusterCustomObject({
+        group: 'metrics.k8s.io', version: 'v1beta1', plural: 'nodes',
+      }) as { items?: Array<{ metadata?: { name?: string }; usage?: { cpu?: string; memory?: string } }> };
+      for (const m of nm.items ?? []) {
+        const name = m.metadata?.name;
+        if (!name) continue;
+        usage.set(name, { cpu: cpuToCores(m.usage?.cpu), mem: memToGiB(m.usage?.memory) });
+      }
+    } catch {
+      // metrics-server absent or not ready: usage stays unknown and the
+      // triad shows commitment only, rather than claiming zero.
     }
 
     const health = await db.execute<{ node_name: string; severity: string; disk_used_pct: string | null; evictions: number; pressures: string[] | null }>(sql`
@@ -209,19 +248,22 @@ export async function buildAdminLive(
       const req = perNode.get(name) ?? { cpuReq: 0, memReq: 0, count: 0 };
       const h = byName.get(name);
       const ready = (n.status?.conditions ?? []).some((c) => c.type === 'Ready' && c.status === 'True');
+      const u = usage.get(name);
       const isServer = (n.metadata?.labels ?? {})['node-role.kubernetes.io/control-plane'] != null;
       return {
         name,
         role: isServer ? 'server' : 'worker',
         ready,
         cpu: {
-          // Requests are what the scheduler honours. Actual usage needs
-          // metrics-server and is reported separately by the cluster tile.
-          inUse: 0, committed: Math.round(req.cpuReq * 1000) / 1000,
+          // Requests are what the scheduler honours; usage is what is really
+          // happening. The gap between them is the whole point of the tile.
+          inUse: Math.round((u?.cpu ?? 0) * 1000) / 1000,
+          committed: Math.round(req.cpuReq * 1000) / 1000,
           total: cpuToCores(n.status?.allocatable?.cpu), unit: 'cores', kind: 'reserve',
         },
         memory: {
-          inUse: 0, committed: Math.round(req.memReq * 100) / 100,
+          inUse: Math.round((u?.mem ?? 0) * 100) / 100,
+          committed: Math.round(req.memReq * 100) / 100,
           total: Math.round(memToGiB(n.status?.allocatable?.memory) * 100) / 100,
           unit: 'GiB', kind: 'reserve',
         },
@@ -246,9 +288,13 @@ export async function buildAdminLive(
     const biggest = nodes.reduce<AdminNode | null>(
       (a, b) => (a === null || b.cpu.total > a.cpu.total ? b : a), null);
     return {
-      cpu: { inUse: 0, committed: cpuReq, total: cpuTotal, unit: 'cores', kind: 'reserve' as const },
+      cpu: {
+        inUse: sum((n) => n.cpu.inUse), committed: cpuReq,
+        total: cpuTotal, unit: 'cores', kind: 'reserve' as const,
+      },
       memory: {
-        inUse: 0, committed: sum((n) => n.memory.committed),
+        inUse: sum((n) => n.memory.inUse),
+        committed: sum((n) => n.memory.committed),
         total: sum((n) => n.memory.total), unit: 'GiB', kind: 'reserve' as const,
       },
       storage: { inUse: 0, committed: 0, total: 0, unit: 'GB', kind: 'consume' as const },
@@ -333,3 +379,7 @@ export async function buildAdminLive(
     clusterAlerts,
   };
 }
+
+/** Unit conversions, exported for test. Wrong by a factor of a billion is
+ *  still a plausible-looking number, so these are pinned. */
+export const __testing = { cpuToCores, memToGiB };
