@@ -20,6 +20,19 @@ import { getMailStats } from './service.js';
 
 const db = getTestDb();
 const dbAvailable = await isDbAvailable();
+
+// A silent skip is how this whole class of bug survives. Vitest exits 0 when
+// every test is skipped, so a `describe.skip` on an unreachable database
+// reports a GREEN check that executed nothing — the same false confidence
+// that let the endpoint stay broken. CI provisions Postgres for this job, so
+// there an unreachable DB is a CI fault to fix, never a reason to pass.
+if (!dbAvailable && process.env.CI) {
+  throw new Error(
+    'DATABASE_URL is unreachable and CI is set. This suite exists to run ' +
+      'against a real Postgres; skipping it here would report success ' +
+      'without executing the query it guards.',
+  );
+}
 const d = dbAvailable ? describe : describe.skip;
 
 const TENANT = 'msx11111-2222-3333-4444-555555555555';

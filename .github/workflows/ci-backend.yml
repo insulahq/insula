@@ -173,6 +173,23 @@ jobs:
       - run: npm ci
       - run: npm run build -w @insula/api-contracts
       - run: npm run test:coverage -w @insula/backend
+      # The unit run EXCLUDES **/*.integration.test.ts, so the Postgres and
+      # Redis services above were provisioned and never used by it. Run the
+      # mail-stats integration test against them.
+      #
+      # Scoped to one file on purpose. `GET /admin/mail/stats` answered 400 for
+      # its entire life because its only test covered the pure string parser
+      # and nothing exercised the query — a raw sql`` fragment comparing an
+      # enum column to a label the enum has never had, which TypeScript cannot
+      # see inside and a mocked database happily agrees with. Only a real
+      # server rejects it.
+      #
+      # The other 17 integration files have never run in CI either. Turning
+      # them all on in the same change would mix "is the new test green" with
+      # "do seventeen untried suites pass", so that is deliberately left as its
+      # own decision rather than smuggled in here.
+      - name: Integration — mail stats against real Postgres
+        run: npm run test:integration -w @insula/backend -- src/modules/mail-stats
       - name: Upload coverage
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
