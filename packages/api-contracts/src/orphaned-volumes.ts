@@ -19,6 +19,17 @@ export const orphanReasonSchema = z.enum([
   'namespace_deleted',
   'tenant_record_deleted',
   'pv_released_stale',
+  /**
+   * Released, but younger than the stale threshold — still inside the grace
+   * period an operator might restore from.
+   *
+   * REPORTED, never bulk-purged. These used to be invisible until the
+   * threshold elapsed, which is how a 256 GiB volume came to hold 63% of a
+   * cluster's storage commitment with a capacity warning as the only symptom.
+   * Seeing it is the point; reaping it automatically is not, so `purgeAll`
+   * skips this reason and only an explicit per-volume delete removes one.
+   */
+  'pv_released_recent',
   'longhorn_volume_unbound',
   'namespace_orphaned',
 ]);

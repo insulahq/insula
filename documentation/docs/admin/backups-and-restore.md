@@ -71,17 +71,18 @@ The cluster-wide **Secrets bundle** lives on the
   it per tenant (*Inherit plan* / *Always include* / *Exclude from
   schedule*).
 
-    ??? info "The bundle count is the tenant's total, not what is on screen"
-        The bundle list is **paged**, newest first. The count on a
-        tenant's row is that tenant's real total, so it does not change
-        as you load more; the line under the list says how many bundles
-        are currently on screen out of how many exist, and **Load more**
-        fetches the next page.
+    ??? info "Backups load when you open a tenant"
+        The page itself loads only the tenant list — every tenant, with
+        its backup count and repository size. No backup is fetched until
+        you open a tenant, and opening one loads **all** of that tenant's
+        backups, however many there are. While it works through them the
+        wait says how many it is fetching, and once rows appear it keeps
+        reporting how many of the total have loaded — so a list still
+        filling in is never mistaken for a complete one.
 
-        With many tenants, one page of the unfiltered list holds only the
-        most recent few bundles *per* tenant. To walk one tenant's full
-        history, pick it in the tenant filter first — the list then pages
-        through that tenant alone.
+        The count on a tenant's row is that tenant's real total, from the
+        per-tenant figures rather than from whatever is on screen, so it
+        is correct before you have opened anything.
 
     ??? info "Bundle Size and Restic Size are different questions"
         **Bundle Size** is everything the bundle captured, at its logical
@@ -123,6 +124,31 @@ The cluster-wide **Secrets bundle** lives on the
         mailboxes) and summed. If one component's repository is
         unreachable, its error is reported and it contributes nothing
         rather than silently making the total wrong.
+
+    ??? info "How long backups are kept"
+        Two limits, set per subsystem under **Targets, Schedules &
+        Retention**, and a backup is removed as soon as **either** of them
+        is reached:
+
+        - **Retention (days)** — a backup is removed once it is older than
+          this, whatever else is kept.
+        - **Retention (keep last N)** — only the newest N backups per
+          tenant are kept.
+
+        So a tenant backed up nightly with 30 days and keep-last-14 settles
+        at 14; one backed up weekly with the same settings is bounded by
+        the days instead. Leaving keep-last-N empty applies no count limit
+        — it is never read as "keep none".
+
+        Only **restorable** backups count toward N. A failed run holds no
+        data and does not occupy one of the N places, so a run of failures
+        cannot quietly reduce how much real coverage you have. A backup
+        that an open restore refers to is never removed while that restore
+        is still in progress.
+
+        Reducing keep-last-N takes effect on the next retention pass, and
+        it **deletes** the backups it brings you down to. Raising it does
+        not bring anything back.
 
     ??? info "Restore carts in the group"
         Open a tenant's group to see its restore carts. **Resume**

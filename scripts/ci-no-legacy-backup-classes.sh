@@ -62,6 +62,10 @@ ALLOW_LIST=(
   "backend/src/modules/backup-schedules/service.ts"
   "backend/src/modules/backup-rclone-shim/switch-with-pause.ts"
   "backend/src/modules/tenant-bundles/global-scheduler.ts"
+  # Same reason as global-scheduler above: the retention sweep reads
+  # backup_schedules.subsystem = 'tenant_bundle' to get keep-last-N.
+  # A subsystem name, not a routing key.
+  "backend/src/modules/tenant-bundles/retention.ts"
   "packages/api-contracts/src/backup-schedules.ts"
   # Frontend: `tenant_bundle` is a valid subsystem prop on the
   # schedule UI components. They never write it back to

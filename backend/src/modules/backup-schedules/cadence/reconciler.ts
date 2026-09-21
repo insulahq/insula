@@ -25,6 +25,7 @@ import { backupSchedules } from '../../../db/schema.js';
 import type { Database } from '../../../db/index.js';
 import { JSON_PATCH, MERGE_PATCH } from '../../../shared/k8s-patch.js';
 import { CADENCE_TARGETS, toCnpgCron, type CadenceTarget } from './targets.js';
+import { RETENTION_CONFIGMAP_TARGETS, applyRetentionConfigMap } from './retention-configmap.js';
 import { systemClassBound } from '../../backup-rclone-shim/dr-cronjobs.js';
 
 export interface CadenceClients {
@@ -40,6 +41,17 @@ export interface CadenceClients {
     patchNamespacedCustomObject: (args: {
       group: string; version: string; namespace: string; plural: string; name: string; body: unknown;
     }, opts?: unknown) => Promise<unknown>;
+  };
+  /**
+   * Core client, for the retention ConfigMaps the Flux-owned CronJobs read.
+   * Optional so the many call sites that only exercise cadence — and the
+   * tests that stub this interface — do not have to supply one; retention is
+   * simply skipped when it is absent.
+   */
+  readonly core?: {
+    readNamespacedConfigMap: (args: { name: string; namespace: string }) => Promise<unknown>;
+    replaceNamespacedConfigMap: (args: { name: string; namespace: string; body: object }) => Promise<unknown>;
+    createNamespacedConfigMap: (args: { namespace: string; body: object }) => Promise<unknown>;
   };
 }
 
@@ -391,6 +403,24 @@ export async function reconcileAllCadence(
         patched: false,
         errorMessage: msg,
       });
+    }
+  }
+
+  // Retention for the Flux-owned jobs rides along with the cadence pass: same
+  // inputs (`backup_schedules`), same cadence of convergence, and an operator
+  // who changes both in one save sees both applied together.
+  //
+  // Deliberately outside the per-target loop and never fatal — a ConfigMap the
+  // cluster refused leaves the job on its previous number, which is a stale
+  // retention rather than a stopped backup.
+  if (clients.core) {
+    for (const rt of RETENTION_CONFIGMAP_TARGETS) {
+      try {
+        await applyRetentionConfigMap(db, clients.core, rt, log);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        log.warn({ err: msg, subsystem: rt.subsystem }, 'cadence: retention ConfigMap threw');
+      }
     }
   }
   return out;

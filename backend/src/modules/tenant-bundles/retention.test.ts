@@ -133,6 +133,18 @@ describe('runRetentionSweep', () => {
         created_at      TIMESTAMP NOT NULL DEFAULT now(),
         updated_at      TIMESTAMP NOT NULL DEFAULT now()
       );
+      -- The sweep reads the keep-last-N setting from here. No row = no count
+      -- configured, which must mean "no limit", never "keep zero".
+      CREATE TABLE backup_schedules (
+        subsystem        VARCHAR(64) PRIMARY KEY,
+        enabled          BOOLEAN NOT NULL DEFAULT false,
+        cron_expression  VARCHAR(128),
+        retention_days   INTEGER,
+        retention_count  INTEGER,
+        updated_at       TIMESTAMP NOT NULL DEFAULT now(),
+        updated_by       VARCHAR(36),
+        last_fired_at    TIMESTAMP
+      );
     `);
     const db = pgMemDatabase(mem);
     const app = {
@@ -140,6 +152,8 @@ describe('runRetentionSweep', () => {
       log: { info: () => {}, warn: () => {}, error: () => {} },
     } as unknown as FastifyInstance;
     const r = await runRetentionSweep(app);
-    expect(r).toEqual({ expiredDeleted: 0, expiredFailed: 0, stuckMarkedFailed: 0, inFlightReaped: 0 });
+    expect(r).toEqual({
+      overCountMarked: 0, expiredDeleted: 0, expiredFailed: 0, stuckMarkedFailed: 0, inFlightReaped: 0,
+    });
   });
 });
