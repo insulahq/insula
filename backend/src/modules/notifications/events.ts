@@ -816,7 +816,13 @@ export async function notifyTenantResourceSaturation(
   await dispatchSafe(db, categoryId, { kind: 'tenant', tenantId }, payload, tenantId, { dedupeKey });
 }
 
-export interface ResourceRecoveredPayload extends TenantResourceSaturationPayload {
+export interface ResourceRecoveredPayload {
+  readonly resource: string;
+  readonly usedPct: string;
+  readonly used: string;
+  readonly limit: string;
+  readonly unit: string;
+  readonly occurredAt: string;
   /** "3 hours" — how long the episode ran, so the close has a shape. */
   readonly durationText: string;
 }
@@ -1272,7 +1278,13 @@ export async function notifyAdminTenantResourceSaturation(
   await dispatchSafe(db, categoryId, { kind: 'admin' }, payload, tenantId, { dedupeKey });
 }
 
-export interface AdminTenantRecoveredPayload extends AdminTenantSaturationPayload {
+export interface AdminTenantRecoveredPayload {
+  readonly tenantLabel: string;
+  readonly resource: string;
+  readonly usedPct: string;
+  readonly used: string;
+  readonly limit: string;
+  readonly unit: string;
   readonly durationText: string;
 }
 /**

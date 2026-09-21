@@ -81,8 +81,9 @@ describe('evaluateTenantSaturation — opening an episode', () => {
     expect(tenantId).toBe('t1');
     expect(level).toBe('critical');
     expect(payload).toMatchObject({ resource: 'CPU', usedPct: '100', limit: '2', unit: ' cores' });
-    // Episode identity, NOT a wall-clock bucket. The absence of an hour here
-    // is the entire fix — a key ending in :2026-09-21T18 is the bug.
+    // Episode identity, NOT a wall-clock bucket. The absence of a trailing
+    // hour stamp here is the entire fix: a key whose bucket width equals the
+    // caller's tick period deduplicates nothing.
     expect(key).not.toMatch(/\d{4}-\d{2}-\d{2}T\d{2}$/);
     expect(key).toBe('sat:t1:CPU:2026-09-21T12:00:00:critical:1');
   });
