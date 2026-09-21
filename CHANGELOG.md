@@ -12,6 +12,26 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **A tenant that is low on space no longer mails you every hour, forever.** A
+  tenant sitting above 90% of its CPU, memory or storage allocation sent the
+  operator *and* the tenant a notification every single hour, on the hour, for
+  as long as it stayed there — on production, four messages an hour, 96 a day,
+  for one tenant at 94% of its disk. Going back under the threshold sent
+  nothing at all, which is indistinguishable from the alerting having broken.
+
+  The alert now behaves like one situation rather than an hourly reading. It
+  arrives once when it starts, repeats on a widening schedule if it persists —
+  after an hour, then six hours, then daily — speaks up immediately if it gets
+  worse, and sends an explicit **back to normal** message, saying how long it
+  lasted, when it ends. Usage has to fall a clear five points below the
+  threshold before it is called resolved, so a tenant hovering on the line no
+  longer opens and closes the same alert over and over.
+
+  Nothing needs configuring, and an ongoing situation on an upgraded cluster is
+  picked up where it stands: the first evaluation after the upgrade opens one
+  episode and then goes quiet.
+
 ## [2026.9.28] - 2026-09-21
 
 ### Added

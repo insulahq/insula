@@ -734,6 +734,20 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
     rateLimitWindowS: 3600,
     rateLimitMax: 20,
   },
+  {
+    id: 'admin.tenant_resource_saturation_recovered',
+    cls: 'record',
+    reportsOn: 'compute',
+    displayName: 'Tenant resource usage back to normal',
+    description: 'Closes a tenant CPU/memory/storage saturation alert: usage has fallen back below '
+      + 'the warning threshold. Without this, the alerts simply stop, which is indistinguishable '
+      + 'from the alerting itself having broken.',
+    audience: 'admin',
+    defaultSeverity: 'info',
+    defaultChannels: ALL_NOTIFICATION_CHANNELS,
+    isMandatory: false,
+    gdprBasis: 'legitimate_interest',
+  },
   // ── Phase 1d: per-tenant OOM-kill alert ──
   {
     id: 'admin.tenant_pod_oom',
@@ -936,6 +950,19 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
     description: 'A tenant resource is at or above its critical threshold (95% for storage, 100% for CPU and memory) and writes or workloads are being refused.',
     audience: 'tenant',
     defaultSeverity: 'error',
+    defaultChannels: ALL_NOTIFICATION_CHANNELS,
+    isMandatory: false,
+    gdprBasis: 'contract',
+  },
+  {
+    id: 'tenant.resource_saturation_recovered',
+    cls: 'record',
+    reportsOn: 'storage',
+    displayName: 'Resource usage back to normal',
+    description: 'Closes a resource warning: CPU, memory or storage has dropped back below the '
+      + 'warning threshold and nothing is being refused.',
+    audience: 'tenant',
+    defaultSeverity: 'info',
     defaultChannels: ALL_NOTIFICATION_CHANNELS,
     isMandatory: false,
     gdprBasis: 'contract',
