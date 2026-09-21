@@ -58,7 +58,7 @@ export function rankAlerts(alerts: readonly DashboardAlert[]): DashboardAlert[] 
 // ─────────────────────────────────────────────────────────────────────
 
 interface MailboxRow extends Record<string, unknown> {
-  full_address: string; pct: number; used_mb: number; quota_mb: number;
+  full_address: string; pct: number; used_mb: number; quota_mb: number; total?: number;
 }
 
 export async function buildAdminAlerts(db: Database): Promise<DashboardAlert[]> {
@@ -98,7 +98,7 @@ export async function buildAdminAlerts(db: Database): Promise<DashboardAlert[]> 
   // the COUNT of mailboxes against a plan limit is not an alert and has no
   // category, so it deliberately does not appear here.
   const boxes = await db.execute<MailboxRow>(sql`
-    SELECT m.full_address,
+    SELECT COUNT(*) OVER ()::int AS total, m.full_address,
            ROUND((m.used_mb::numeric / NULLIF(m.quota_mb,0)) * 100)::int AS pct,
            m.used_mb::float8, m.quota_mb::float8
       FROM mailboxes m
@@ -110,14 +110,15 @@ export async function buildAdminAlerts(db: Database): Promise<DashboardAlert[]> 
   `);
   const boxRows = boxes.rows ?? [];
   if (boxRows.length > 0) {
+    const boxTotal = Number(boxRows[0].total ?? boxRows.length);
     const full = boxRows.filter((b) => b.pct >= 100).length;
     out.push(alert({
       categoryId: 'admin.mailbox_quota_fleet',
       severity: full > 0 ? 'critical' : 'warning',
-      value: String(boxRows.length),
+      value: String(boxTotal),
       title: full > 0 ? 'Mailboxes over quota' : 'Mailboxes nearly full',
       subtitle: `${boxRows[0].full_address} · ${boxRows[0].pct}%`
-        + (boxRows.length > 1 ? ` · ${boxRows.length - 1} more` : ''),
+        + (boxTotal > 1 ? ` · ${boxTotal - 1} more` : ''),
       href: '/email/operations',
       detail: boxRows.map((b) => [b.full_address, `${b.used_mb} / ${b.quota_mb} MB · ${b.pct}%`] as [string, string]),
       note: 'At 100% inbound mail is rejected at RCPT TO — the sender gets a bounce.',
@@ -276,18 +277,19 @@ export async function buildTenantAlerts(
   // Scheduled task failing — tasks.scheduled_failure.
   // `lastRunStatus` is stored camelCase and MUST stay quoted; unquoted it
   // folds to lastrunstatus and the query errors rather than returning rows.
-  const cron = await db.execute<{ name: string }>(sql`
-    SELECT name FROM cron_jobs
+  const cron = await db.execute<{ name: string; total: number }>(sql`
+    SELECT name, COUNT(*) OVER ()::int AS total FROM cron_jobs
      WHERE tenant_id = ${tenantId} AND enabled = 1 AND "lastRunStatus" = 'failed'
      LIMIT 5
   `);
   const cronRows = cron.rows ?? [];
   if (cronRows.length > 0) {
+    const cronTotal = Number(cronRows[0].total);
     out.push(alert({
       categoryId: 'tasks.scheduled_failure',
       severity: 'warning',
-      value: String(cronRows.length),
-      title: cronRows.length === 1 ? 'Scheduled task failing' : 'Scheduled tasks failing',
+      value: String(cronTotal),
+      title: cronTotal === 1 ? 'Scheduled task failing' : 'Scheduled tasks failing',
       subtitle: cronRows.map((c) => c.name).join(', ').slice(0, 90),
       href: '/cron-jobs',
       detail: cronRows.map((c) => [c.name, 'last run failed'] as [string, string]),
@@ -299,19 +301,24 @@ export async function buildTenantAlerts(
   // `status` is the enum `domain_status`. Comparing it to '' asks Postgres to
   // cast an empty string into the enum, which errors rather than returning
   // nothing — so compare as text.
-  const dom = await db.execute<{ domain_name: string }>(sql`
-    SELECT domain_name FROM domains
+  // COUNT is taken over the whole set; the rows are a capped SAMPLE for the
+  // hover card. Reporting rows.length after a LIMIT made the chip read "5"
+  // next to a tile saying 0 of 6 verified — the page size posing as the total.
+  const dom = await db.execute<{ domain_name: string; total: number }>(sql`
+    SELECT domain_name, COUNT(*) OVER ()::int AS total FROM domains
      WHERE tenant_id = ${tenantId} AND status::text <> 'active'
      LIMIT 5
   `);
   const domRows = dom.rows ?? [];
   if (domRows.length > 0) {
+    const domTotal = Number(domRows[0].total);
     out.push(alert({
       categoryId: 'tenant.domain_verification',
       severity: 'warning',
-      value: String(domRows.length),
-      title: domRows.length === 1 ? 'Domain not verified' : 'Domains not verified',
-      subtitle: domRows.map((d) => d.domain_name).join(', ').slice(0, 90),
+      value: String(domTotal),
+      title: domTotal === 1 ? 'Domain not verified' : 'Domains not verified',
+      subtitle: domRows.map((d) => d.domain_name).join(', ').slice(0, 90)
+        + (domTotal > domRows.length ? ` · ${domTotal - domRows.length} more` : ''),
       href: '/domains',
       detail: domRows.map((d) => [d.domain_name, 'awaiting DNS'] as [string, string]),
       note: 'Mail and certificates for the domain cannot be set up until it verifies.',
