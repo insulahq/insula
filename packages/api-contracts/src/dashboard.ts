@@ -1,5 +1,20 @@
 import { z } from 'zod';
 
+// ─── Legacy four-counter endpoint ────────────────────────────────────────────
+//
+// The original GET /admin/dashboard payload. Retained because clients still
+// call it; the richer payloads below are additions, not a replacement.
+
+export const dashboardResponseSchema = z.object({
+  total_tenants: z.number(),
+  active_tenants: z.number(),
+  total_domains: z.number(),
+  total_backups: z.number(),
+  platform_version: z.string(),
+});
+
+export type DashboardResponse = z.infer<typeof dashboardResponseSchema>;
+
 /**
  * Dashboard payloads for both panels.
  *
