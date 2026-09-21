@@ -13,7 +13,7 @@
 import { eq, inArray, getTableColumns } from 'drizzle-orm';
 import { imapSyncJobs, mailboxes } from '../../db/schema.js';
 import { notifyTenantImapsyncTerminal } from '../notifications/events.js';
-import { parseImapsyncProgress, parseImapsyncSummary } from './progress-parser.js';
+import { parseImapsyncProgress, parseImapsyncSummary, parseImapsyncFailure } from './progress-parser.js';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { isNotFound } from '../../shared/k8s-errors.js';
@@ -260,12 +260,18 @@ export async function reconcileImapSyncJobs(
 
       if ((status.failed ?? 0) >= 1) {
         const log = await fetchPodLogs(k8s, row.k8sNamespace, row.k8sJobName);
+        // Read imapsync's own account of the failure instead of telling the
+        // operator to go and read it themselves. Falls back to the old
+        // placeholder only when the log carries nothing recognisable — a
+        // truncated or empty tail still has to produce SOMETHING.
+        const failure = parseImapsyncFailure(log);
+        const errorMessage = failure.message ?? 'imapsync job failed — see logTail';
         await db
           .update(imapSyncJobs)
           .set({
             status: 'failed',
             finishedAt: new Date(),
-            errorMessage: 'imapsync job failed — see logTail',
+            errorMessage,
             logTail: truncateTail(log),
             // A failed run still has a Statistics block when it got far
             // enough — showing what DID move matters when deciding whether
@@ -282,11 +288,13 @@ export async function reconcileImapSyncJobs(
           mailboxAddress: row.mailboxAddress ?? row.sourceUsername,
           sourceHost: row.sourceHost,
           status: 'failed',
-          // Deliberately no errorMessage: the only thing available here is the
-          // placeholder written to the DB row above ("imapsync job failed — see
-          // logTail"), which would have reached the tenant as "The error was:
-          // imapsync job failed — see logTail". The emitter has a plain-English
-          // fallback that points at the page instead.
+          // Passed only when the log actually explained itself. This used to
+          // be omitted on purpose, because the sole candidate was the
+          // placeholder and "The error was: imapsync job failed — see logTail"
+          // is worse than the emitter's plain-English fallback. A parsed
+          // message names the exit reason and the folders, which is worth
+          // sending; when parsing finds nothing, the fallback still applies.
+          ...(failure.message ? { errorMessage: failure.message } : {}),
         });
         continue;
       }

@@ -36,6 +36,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import StatCard from '@/components/ui/StatCard';
+import OrphanedVolumesAlert from '@/components/OrphanedVolumesAlert';
 import StatusBadge from '@/components/ui/StatusBadge';
 import { useTenants } from '@/hooks/use-tenants';
 import { useAuditLogs } from '@/hooks/use-audit-logs';
@@ -157,6 +158,14 @@ export default function Dashboard() {
           Health details →
         </Link>
       </div>
+
+      {/* ── Orphaned volumes ────────────────────────────────────────
+          Renders only when some exist. An orphan holds its full provisioned
+          size against Longhorn's schedulable capacity however empty it is,
+          and the Storage tab is not somewhere anyone looks unprompted — so a
+          cluster can run out of schedulable space with a capacity warning as
+          its only symptom. */}
+      <OrphanedVolumesAlert />
 
       {/* ── Incident stat cards ─────────────────────────────────── */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">

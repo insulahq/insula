@@ -32,6 +32,15 @@ const REASON_LABELS: Record<OrphanReason, { label: string; explainer: string; to
     explainer: 'PV stuck in Released phase past the stale threshold (default 7 days).',
     tone: 'amber',
   },
+  pv_released_recent: {
+    label: 'Recently released',
+    explainer:
+      'Released within the grace period — most often a resize or a re-created claim. '
+      + 'It already holds its full size against schedulable capacity, so it is listed here from '
+      + 'the moment it is released. Excluded from Purge all: removing one is a per-volume '
+      + 'decision while it may still be worth restoring from.',
+    tone: 'gray',
+  },
   longhorn_volume_unbound: {
     label: 'No PV',
     explainer: 'Longhorn volume CR exists but no PV references it.',

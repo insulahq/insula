@@ -100,6 +100,25 @@ export function useDeleteNotification() {
   });
 }
 
+/** Delete EVERY notification for the current user in one request.
+ *  Server-side on purpose: the list endpoint caps at 100 rows, so a client
+ *  loop over what the page fetched would leave the rest in place while
+ *  reporting success. Returns how many rows were actually removed so the
+ *  UI can say so rather than guess. */
+export function useDeleteAllNotifications() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      apiFetch<{ data: { deleted: number } }>('/api/v1/notifications', {
+        method: 'DELETE',
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['notifications'] });
+      qc.invalidateQueries({ queryKey: ['notifications-unread-count'] });
+    },
+  });
+}
+
 // ─── Per-user notification preferences (Phase 1) ───
 // Backend: GET/PATCH /api/v1/notifications/preferences|settings.
 

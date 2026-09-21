@@ -65,18 +65,52 @@ the log use at the target.
 
 ### Timing the other system backups
 
-The same tab carries a card for each of the other things the platform backs up
-at the system level, so their timing is visible and changeable in one place:
+The platform database comes first on this tab, above the rest — it is the one
+backup the platform cannot be rebuilt without, and the others are of limited
+use without it. Below it, a card for each of the other things the platform
+backs up at the system level, so their timing is visible and changeable in one
+place:
 
 | Schedule | What it controls |
 |---|---|
 | **etcd snapshot upload** | How often the cluster-database snapshots k3s writes to disk are shipped to your backup target. k3s writes them every 12 hours; this setting is how often they are collected and sent. |
 | **Secrets bundle** | How often the encrypted copy of your cluster secrets is taken — the bundle you need to rebuild this platform elsewhere. |
 | **Cluster state dump** | How often the inventory of Kubernetes objects is captured. |
-| **Longhorn recurring snapshots** | Shown for reference only. This one is set by the cluster manifest, so the card displays the cadence the cluster is *actually* running and the controls are disabled — and the API refuses the change too, rather than storing a value that would never be applied. |
+
+Longhorn's recurring snapshots are **not** listed here. Their cadence is
+compiled into the cluster manifest, which the platform neither owns nor has
+permission to change, so a card for them could only display a number and refuse
+every edit. The live value belongs with the rest of the Longhorn snapshot state
+rather than among schedules you can actually set.
 
 Each card also has an on/off switch. Turning a schedule off stops that backup
 until you turn it back on — the platform will not quietly keep running it.
+
+!!! info "Two kinds of retention, and which card has which"
+    The database keeps a **window**: its **Retention** setting is a number of
+    days, and that is what your recovery range means — "restore to any moment
+    in the last N days".
+
+    The other three keep a number of **copies**. Each card has a
+    **Retention (keep last N)** field and no days field, because there is no
+    time window behind those jobs to set. They start at the numbers their jobs
+    have always used — the newest **24** etcd snapshots, **30** secrets bundles
+    and **14** cluster state dumps — and each can be changed here.
+
+    They are deliberately not one setting. The values differ, and so do the
+    kinds of limit; one platform-wide number would also land very differently
+    on each job, because their cadences differ. etcd uploads hourly, so
+    "30 days" there is 720 snapshots, where the same number on the daily jobs
+    is thirty copies.
+
+!!! warning "Lowering a count deletes copies"
+    Each job applies its retention the next time it runs, so reducing a count
+    removes the copies it brings you below. Raising one does not bring anything
+    back.
+
+    Zero is refused — by the panel, and again by the jobs themselves, which
+    keep everything rather than delete everything if they are ever handed a
+    value they cannot read.
 
 !!! info "Times are on the platform's clock"
     A schedule you enter here is read in the platform time zone (**Platform

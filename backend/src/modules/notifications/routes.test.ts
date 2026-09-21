@@ -21,8 +21,12 @@ vi.mock('./service.js', () => ({
   listNotifications: vi.fn().mockResolvedValue([mockNotification]),
   getUnreadCount: vi.fn().mockResolvedValue(3),
   markAsRead: vi.fn().mockResolvedValue(undefined),
+  markAllAsRead: vi.fn().mockResolvedValue(7),
   deleteNotification: vi.fn().mockResolvedValue(undefined),
+  deleteAllNotifications: vi.fn().mockResolvedValue(12),
 }));
+
+const service = await import('./service.js');
 
 const { notificationRoutes } = await import('./routes.js');
 
@@ -118,5 +122,53 @@ describe('notification routes', () => {
       headers: { authorization: `Bearer ${userToken}` },
     });
     expect(res.statusCode).toBe(204);
+  });
+
+  // ─── DELETE /notifications (bulk) ────────────────────────────────────────
+
+  it('DELETE /notifications should require auth', async () => {
+    const res = await app.inject({ method: 'DELETE', url: '/api/v1/notifications' });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it('DELETE /notifications returns how many rows it removed', async () => {
+    const res = await app.inject({
+      method: 'DELETE',
+      url: '/api/v1/notifications',
+      headers: { authorization: `Bearer ${userToken}` },
+    });
+    expect(res.statusCode).toBe(200);
+    // 200 + a body, not 204: the UI reports the count back to the operator,
+    // and a no-content response would leave it guessing.
+    expect(res.json().data.deleted).toBe(12);
+  });
+
+  it('DELETE /notifications scopes the delete to the caller', async () => {
+    const otherToken = app.jwt.sign({ sub: 'admin-2', role: 'super_admin', panel: 'admin', iat: Math.floor(Date.now() / 1000) });
+    vi.mocked(service.deleteAllNotifications).mockClear();
+
+    await app.inject({
+      method: 'DELETE',
+      url: '/api/v1/notifications',
+      headers: { authorization: `Bearer ${otherToken}` },
+    });
+
+    // Wiring only — that the userId reaching the service is the JWT's `sub`
+    // and not a request-supplied value. The scoping of the SQL itself is
+    // asserted against a real database, not this mock.
+    expect(vi.mocked(service.deleteAllNotifications).mock.calls[0]?.[1]).toBe('admin-2');
+  });
+
+  it('DELETE /notifications/:id is still reachable behind the bulk route', async () => {
+    // Fastify keeps a static and a parametric path distinct, but a future
+    // reorder or a wildcard would silently swallow one of them.
+    vi.mocked(service.deleteNotification).mockClear();
+    const res = await app.inject({
+      method: 'DELETE',
+      url: '/api/v1/notifications/n-single',
+      headers: { authorization: `Bearer ${userToken}` },
+    });
+    expect(res.statusCode).toBe(204);
+    expect(vi.mocked(service.deleteNotification).mock.calls[0]?.[2]).toBe('n-single');
   });
 });

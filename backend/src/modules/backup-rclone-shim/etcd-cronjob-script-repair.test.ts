@@ -18,6 +18,8 @@
  * CronJob never re-reads it — so the reconciler repairs the live script.
  */
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { findScriptRepair } from './etcd-cronjob.js';
 
 /** The exact script shipped to production, trimmed to the two broken lines. */
@@ -90,5 +92,61 @@ describe('findScriptRepair', () => {
   it('returns null when the container has no args at all', () => {
     expect(findScriptRepair({ spec: { jobTemplate: { spec: { template: { spec: { containers: [{}] } } } } } })).toBeNull();
     expect(findScriptRepair({})).toBeNull();
+  });
+});
+
+/**
+ * Retention: the eviction count was the literal `25`, so the operator's
+ * "keep last N" had nothing to act on. The repair swaps that one pipeline
+ * stage for the env-driven awk the manifest now ships.
+ *
+ * The important property is not that SOME replacement happens — it is that a
+ * repaired cluster and a fresh install end up running the SAME line. So this
+ * reads the expectation out of the manifest rather than restating it, which
+ * would let the two drift apart while both tests stayed green.
+ */
+describe('retention count repair', () => {
+  const MANIFEST = fileURLToPath(new URL(
+    '../../../../k8s/base/backup/etcd-snap-via-shim-cronjob.yaml', import.meta.url,
+  ));
+
+  /** The eviction stage as the manifest ships it, with Flux's `$$` collapsed. */
+  function manifestEvictionStage(): string {
+    const yaml = readFileSync(MANIFEST, 'utf8');
+    const line = yaml.split('\n').find((l) => l.includes('awk -v keep='));
+    expect(line, 'manifest no longer contains an awk eviction stage').toBeTruthy();
+    // `$$` is Flux escaping; the kubelet collapses it before the shell runs.
+    return line!.trim().replace(/\$\$/g, '$').replace(/^\|\s*/, '').replace(/\s*>.*$/, '');
+  }
+
+  it('replaces the hardcoded 25 with the env-driven stage', () => {
+    const live = {
+      spec: { jobTemplate: { spec: { template: { spec: { containers: [{
+        args: ['set -eu\nrclone lsf | sort -r | tail -n +25 > "$TMP_EV" || true\n'],
+      }] } } } } },
+    };
+    const repair = findScriptRepair(live as never);
+    expect(repair).not.toBeNull();
+    expect(repair!.value).not.toContain('tail -n +25');
+    expect(repair!.value).toContain('RETENTION_COUNT');
+  });
+
+  it('produces exactly the stage the manifest ships (no drift)', () => {
+    const live = {
+      spec: { jobTemplate: { spec: { template: { spec: { containers: [{
+        args: ['sort -r | tail -n +25 > "$TMP_EV"'],
+      }] } } } } },
+    };
+    const repair = findScriptRepair(live as never);
+    expect(repair!.value).toContain(manifestEvictionStage());
+  });
+
+  it('leaves an already-repaired script alone', () => {
+    const live = {
+      spec: { jobTemplate: { spec: { template: { spec: { containers: [{
+        args: [`sort -r | ${manifestEvictionStage()} > "$TMP_EV"`],
+      }] } } } } },
+    };
+    expect(findScriptRepair(live as never)).toBeNull();
   });
 });

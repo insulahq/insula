@@ -687,11 +687,31 @@ export async function getDeploymentById(db: Database, tenantId: string, deployme
  * Clears `statusMessage` alongside `lastError`: the transitional message is
  * the same kind of stale claim, and leaving it behind means the panel still
  * has something to render about an attempt that has been superseded.
+ *
+ * And moves the row off `failed`, which the first version of this did not.
+ * Clearing the message while leaving the status alone fixes the sentence and
+ * keeps the verdict: the panel stopped saying *why* it failed and went on
+ * showing a red FAILED chip over an application that was at that moment being
+ * restarted. The status reconciler corrects it, but only on its next pass —
+ * up to 15 seconds of a deployment reporting a failure it is no longer in.
+ *
+ * `pending` rather than `running`: the pods are coming back, and claiming they
+ * are up before the reconciler has seen them would be the same mistake in the
+ * other direction. If they never become ready, the reconciler's staleness
+ * timeout escalates `pending` back to `failed` on its own.
+ *
+ * Guarded in SQL to `failed` rows only. A `stopped` deployment whose last
+ * attempt failed must stay stopped — the caller asked to forget an error, not
+ * to start anything.
  */
 export async function clearDeploymentError(db: Database, deploymentId: string): Promise<void> {
   await db
     .update(deployments)
-    .set({ lastError: null, statusMessage: null })
+    .set({
+      lastError: null,
+      statusMessage: null,
+      status: sql`CASE WHEN ${deployments.status} = 'failed' THEN 'pending' ELSE ${deployments.status} END`,
+    })
     .where(eq(deployments.id, deploymentId));
 }
 

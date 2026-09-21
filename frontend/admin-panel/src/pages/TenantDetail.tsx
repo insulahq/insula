@@ -11,6 +11,8 @@ import { useTenantIssues } from '@/hooks/use-tenant-issues';
 import DeleteConfirmDialog from '@/components/DeleteConfirmDialog';
 import OperationProgressModal from '@/components/OperationProgressModal';
 import RetainedVolumesCard from '@/components/RetainedVolumesCard';
+import OrphanedVolumesAlert from '@/components/OrphanedVolumesAlert';
+import ReleasedSourceVolumeOffer from '@/components/ReleasedSourceVolumeOffer';
 import TransitionProgressModal from '@/components/TransitionProgressModal';
 import TenantUsersTab from '@/components/TenantUsersTab';
 import { useAdminSubUsers } from '@/hooks/use-sub-users';
@@ -613,6 +615,16 @@ export default function TenantDetail() {
       <StorageLifecycleCard tenantId={id!} tenant={tenant} onManageSnapshots={() => setActiveTab('snapshots')} />
 
       <RetainedVolumesCard tenantId={id!} />
+
+      {/* Orphaned volumes still attributable to THIS tenant — a PV released by
+          a resize or a deleted claim, whose claimRef still names this
+          namespace. Shown here as well as in the cluster-wide modal because
+          the person who caused one is usually on this page, and because the
+          volume is charged against the cluster while it sits here. Renders
+          nothing when the tenant has none. */}
+      {tenant.kubernetesNamespace && (
+        <OrphanedVolumesAlert namespace={tenant.kubernetesNamespace} />
+      )}
 
       <PlacementCard tenantId={id!} tenant={tenant} />
 
@@ -1742,6 +1754,13 @@ function ResourceLimitsCard({
   // includes storageGrowOperationId. Open the shared progress modal so
   // the operator can watch growing_pvc → growing_filesystem → idle live.
   const [growOpId, setGrowOpId] = useState<string | null>(null);
+  // Whether the op the modal is watching REPLACED the volume.
+  //
+  // `growOpId` carries both an online grow and a destructive shrink. Only the
+  // shrink leaves the old volume behind, so only the shrink should be offered
+  // a clean-up at the end — otherwise a harmless grow would point at whatever
+  // unrelated orphan the tenant happened to already have.
+  const [growWasDestructive, setGrowWasDestructive] = useState(false);
   // Shrink path: PATCH rejects with STORAGE_RESIZE_REQUIRED. We surface
   // a confirmation dialog with the OperatorError remediation, then call
   // the explicit destructive resize endpoint when the operator confirms.
@@ -1822,7 +1841,7 @@ function ResourceLimitsCard({
       // If the PATCH grew storage online, the backend kicked off a
       // storage-lifecycle op and surfaces its id here.
       const opId = (result as { data?: { storageGrowOperationId?: string | null } })?.data?.storageGrowOperationId;
-      if (opId) setGrowOpId(opId);
+      if (opId) { setGrowWasDestructive(false); setGrowOpId(opId); }
       setEditing(false);
     } catch (err) {
       // Shrink-path: backend rejects with STORAGE_RESIZE_REQUIRED. We
@@ -1863,7 +1882,7 @@ function ResourceLimitsCard({
         confirm_destructive_shrink: true,
       });
       const opId = (result as { data?: { storageShrinkOperationId?: string | null } })?.data?.storageShrinkOperationId;
-      if (opId) setGrowOpId(opId);
+      if (opId) { setGrowWasDestructive(true); setGrowOpId(opId); }
       setShrinkPending(null);
       setEditing(false);
     } catch (err) {
@@ -2157,7 +2176,12 @@ function ResourceLimitsCard({
       <OperationProgressModal
         operationId={growOpId}
         title="Storage grow"
-        onClose={() => setGrowOpId(null)}
+        onClose={() => { setGrowOpId(null); setGrowWasDestructive(false); }}
+        onSuccessSlot={
+          growWasDestructive && tenant.kubernetesNamespace
+            ? <ReleasedSourceVolumeOffer namespace={tenant.kubernetesNamespace} />
+            : undefined
+        }
       />
 
       {/* Destructive shrink confirmation. Opens when PATCH rejected

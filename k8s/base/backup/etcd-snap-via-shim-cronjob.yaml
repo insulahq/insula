@@ -222,15 +222,30 @@ spec:
                     echo "$$META" | rclone $$CFG_FLAGS rcat \
                       ":s3:$$SHIM_BUCKET/$$SHIM_PREFIX/$$DEST.meta"
                   done < "$$TMP"
-                  # Retention: keep the newest 24. List, sort desc,
-                  # skip first 24, rm the rest. Both the .db and
+                  # Retention: keep the newest RETENTION_COUNT. List, sort
+                  # desc, skip the ones we keep, rm the rest. Both the .db and
                   # .meta are subject to retention — we sort by name
                   # which sorts the .db before its .meta alphabetically.
+                  #
+                  # The count was the literal `25` here until the operator
+                  # got a control for it; it now comes from RETENTION_COUNT.
+                  #
+                  # awk does the guarding, in ONE expression, because this
+                  # exact line is also what the etcd-cronjob reconciler repairs
+                  # onto clusters that were installed before it existed — a
+                  # multi-line block could not be substituted for a single
+                  # pipeline stage, and fresh installs and repaired clusters
+                  # must end up running identical scripts.
+                  #
+                  # `keep+0 >= 1` is the safety: a missing, zero or
+                  # non-numeric value yields 0, the guard is false, and NOTHING
+                  # is evicted. The failure mode of a bad retention value has
+                  # to be "keeps too much", never "deletes the history".
                   TMP_EV=/tmp/etcd-evict
                   rclone $$CFG_FLAGS lsf ":s3:$$SHIM_BUCKET/$$SHIM_PREFIX/" 2>/dev/null \
                     | grep '\.db$$' \
                     | sort -r \
-                    | tail -n +25 > "$$TMP_EV" || true
+                    | awk -v keep="$${RETENTION_COUNT:-24}" 'keep+0 >= 1 && NR > keep+0' > "$$TMP_EV" || true
                   while IFS= read -r f; do
                     [ -z "$$f" ] && continue
                     echo "[etcd-shim] evict $$SHIM_PREFIX/$$f (+ .meta)"

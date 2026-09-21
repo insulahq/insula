@@ -12,6 +12,165 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **The other system backups now have a retention setting too.** How many etcd
+  snapshots, secrets bundles and cluster state dumps are kept was fixed in the
+  jobs that write them — the newest 24, 30 and 14 — and the cards showed no
+  retention at all. Each card now has **Retention (keep last N)**, starting at
+  the number its job has always used.
+
+  There is deliberately no days field on these three, and no single setting
+  covering all four. The database keeps a *window* — its retention is the
+  recovery range, in days. The others keep a number of *copies*. One
+  platform-wide number would also land very differently on each: etcd uploads
+  hourly, so "30 days" there means 720 snapshots, where the same number on the
+  daily jobs means thirty copies.
+
+  Lowering a count deletes the copies it brings you below, the next time that
+  job runs. Zero is refused — by the panel, and again inside the jobs, which
+  keep everything rather than delete everything if handed a value they cannot
+  read.
+- **Orphaned volumes are shown where you already are.** The dashboard gains a
+  card — only when there are any — showing how many exist and opening the
+  management list when clicked. A tenant's page lists any that still belong to
+  them. Neither appears when there is nothing to report.
+- **A resize offers to clean up after itself.** When a resize that replaces the
+  volume finishes, it now offers to delete the one it replaced, with its size,
+  so the capacity comes straight back. Declining is fine — it stays listed
+  under orphaned volumes. Offered only when the resize actually replaced
+  something, and never when the resize failed, since the old volume is the way
+  back then.
+
+### Changed
+- **The Backups page loads a tenant's backups when you open that tenant.** It
+  used to fetch a page of bundles across every tenant before you had asked
+  about any of them, group what came back, and offer a **Load more** under a
+  line explaining how much of the list you were not seeing. Opening a tenant
+  now loads that tenant's **complete** history — all of it, following on by
+  itself until there is nothing left, with the wait telling you how many
+  backups it is fetching. The truncation line and the Load more button are
+  gone; there is nothing left for them to say.
+
+  The tenant list itself comes from the per-tenant totals, so it shows **every**
+  tenant with its backup count and repository size. Previously a tenant only
+  appeared if one of its bundles happened to fall in the fetched page — on a
+  busy platform a tenant could be missing from the page whose whole job is
+  telling you who is covered.
+- **The platform database now comes first among the system schedules.** It sat
+  in its own section *below* the three disaster-recovery schedules, which put
+  the one backup the platform cannot be rebuilt without at the bottom of the
+  page, under three artefacts that are of little use without it.
+- **The Longhorn recurring-snapshot card is gone from Targets, Schedules &
+  Retention.** Its cadence is compiled into a cluster manifest the platform
+  neither owns nor has permission to change, so the card could only ever show
+  a number and refuse every edit — a row of controls whose whole purpose was to
+  say no. The live cadence is still visible with the rest of the Longhorn
+  snapshot state.
+- **The notifications page clears out in one click.** Two buttons — *Mark All
+  As Read* and *Delete All* — act on the whole account rather than on the
+  messages currently on screen, so the bell badge actually reaches zero and a
+  long history can be cleared without deleting messages one at a time.
+  *Delete All* asks first, says plainly that it also removes messages the
+  filter is hiding, and afterwards reports how many it removed.
+
+  The unread number beside the filter is now the account total, the same one
+  the bell shows. It used to count only the unread messages on screen, and the
+  list stops at 100 — so anyone with more saw the two disagree.
+- **The notification type filter is gone.** With four types, a short list and
+  an icon on every row already showing the type, it only hid messages the
+  reader had just scanned past. Filtering by read state remains.
+- **Recently released volumes are listed immediately** instead of after a
+  week's wait. They are the likeliest to be an accident worth undoing, and
+  their space is already reserved the whole time. They are excluded from
+  *Purge all*: removing one stays a deliberate, individual choice.
+- **The manual now says which retention setting governs what.** The tab is
+  called "Targets, Schedules & Retention" but only the database has a retention
+  control, and it was written down nowhere that the other three keep a fixed
+  number of copies decided by the job that writes them — the newest 24 etcd
+  snapshots, 30 secrets bundles and 14 cluster state dumps.
+
+### Fixed
+- **"Retention (keep last N)" now actually limits how many backups a tenant
+  keeps.** The field was accepted by the panel and stored, and then read by
+  nothing: only the *days* half of the setting was ever enforced, so a tenant
+  backed up nightly accumulated one bundle per day up to the retention period
+  — 30 of them where the setting said 14. The two limits now compose as
+  whichever removes a backup first, so neither can be exceeded: a tenant backed
+  up less often than daily is still bounded by days, and a daily one is bounded
+  by the count.
+
+  Counting is over **restorable** backups only — a failed run holds no data and
+  no longer occupies one of the N places, which previously would have quietly
+  reduced real coverage. A backup referenced by a restore you have open is
+  never removed while that restore is still in progress.
+
+  **On upgrade this deletes backups.** A platform that has been running longer
+  than its keep-last-N setting is over the limit right now, and the first
+  retention pass after upgrading brings it down to the configured number —
+  roughly a dozen per tenant where 14 is set and 26 have accumulated. Check the
+  value under **Backups → Targets, Schedules & Retention** before upgrading if
+  you are not certain it says what you want.
+- **A failed application stops calling itself failed when you restart it.** The
+  previous release stopped the old *message* outliving its attempt, but left
+  the verdict: the application stayed marked **failed**, so restarting one — or
+  saving its environment variables, resources, mounts or storage path — cleared
+  the explanation and went on showing a red FAILED badge over an application
+  that was at that moment being restarted. It corrected itself within about
+  fifteen seconds, when the status check next ran, which is exactly long enough
+  to look like the restart did not work.
+
+  Forgetting a failure now drops the badge with the message. The application
+  moves to **pending** until its pods report ready — not straight to running,
+  which would be the same overstatement in the other direction, and if the pods
+  never come back the existing timeout returns it to failed on its own.
+
+  Both panels also stop showing the old state during the moment between
+  pressing the button and the page reloading its data. That gap was the
+  "transient" part: the server had already forgotten the failure, and the page
+  was still drawing the copy it had.
+- **Editing a hosting plan no longer looks like it did nothing.** Changing a
+  plan's memory, CPU, storage, price or limits saved correctly and then showed
+  the old numbers again — with no error, because nothing had failed. The plan
+  list is cached on the server for speed, and none of the plan edits cleared
+  that cache, so for the next five minutes the page re-read the values from
+  before the change. The edit was in the database the whole time.
+
+  Every plan change now clears that cached list, and the page uses the values
+  the save returned rather than waiting to re-read them, so the new numbers are
+  on screen as soon as you save.
+- **Leftover volumes are found again.** After a storage resize, the volume that
+  was replaced is kept rather than deleted, and it goes on reserving its full
+  original size on the cluster however little is stored in it. Two checks
+  decide whether one of these is a leftover to clean up or a copy being kept
+  on purpose, and both were reading a mark the storage system writes *itself*
+  every time a volume is resized as though an administrator had chosen to keep
+  it. So a replaced volume could be treated as a deliberate backup forever — it
+  never appeared under orphaned volumes, and the tenant was offered a
+  "restore" onto a marker that holds nothing.
+
+  On one platform a 256 GB volume replaced fourteen minutes after it was
+  created came to account for **63% of the entire cluster's reservable
+  storage**, with an unexplained capacity warning as the only sign.
+- **Mail migrations no longer stall on folder names with stray spaces.** A
+  source folder named with a trailing space — `Invoices ` rather than
+  `Invoices` — could not be migrated at all. The mail server trims the space
+  when creating the folder, so it reported the folder as already existing, then
+  refused to open it under the padded name. imapsync could neither create it
+  nor write to it, counted two errors for every such folder, and gave up —
+  even when every message had already transferred. One migration hit seven of
+  them.
+
+  Folder names are now normalised the same way the mail server normalises them,
+  so the migration asks for the name that will actually be stored. Leading
+  spaces, tabs, and spaces around a sub-folder separator are covered too:
+  `Clients /2024` and `Clients/2024` are the same folder.
+- **A failed migration now says what failed.** It recorded "imapsync job failed
+  — see logTail", which told you where to look rather than what happened, and
+  the email sent to the tenant left the reason out entirely because there was
+  nothing worth sending. The failure is now summarised from the migration's own
+  output: how it exited, how many errors, and which folders were affected —
+  with their exact names, spaces included, since that is usually the cause.
+
 ## [2026.9.27] - 2026-09-20
 
 ### Fixed
