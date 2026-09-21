@@ -396,7 +396,7 @@ function CertificatesTile({ summary }: { summary: Summary | undefined }) {
 
 function ScheduledTasksTile({ summary }: { summary: Summary | undefined }) {
   const t = summary?.scheduledTasks.data;
-  if (!t) return <SectionFallback title="Scheduled tasks" to="/platform/cron-jobs" section={summary?.scheduledTasks ?? { state: 'stale', reason: null, observedAt: null }} />;
+  if (!t) return <SectionFallback title="Scheduled" to="/platform/cron-jobs" section={summary?.scheduledTasks ?? { state: 'stale', reason: null, observedAt: null }} />;
   return (
     <MatrixTile title="Scheduled tasks" to="/platform/cron-jobs" cells={[
       { k: 'Jobs', v: String(t.total), sub: `${t.enabled} enabled` },
@@ -436,7 +436,7 @@ function UpdatesTile({ summary }: { summary: Summary | undefined }) {
 function ChangesTile({ summary }: { summary: Summary | undefined }) {
   const rows = summary?.recentChanges.data ?? [];
   return (
-    <Tile title="Recent changes" to="/monitoring/audit-logs">
+    <Tile title="Changes" to="/monitoring/audit-logs">
       <div className="flex flex-1 flex-col gap-px overflow-hidden rounded-lg bg-gray-200 dark:bg-gray-700">
         {rows.length === 0 ? (
           <p className="bg-white p-2.5 text-xs text-gray-500 dark:bg-gray-800 dark:text-gray-400">Nothing recorded.</p>

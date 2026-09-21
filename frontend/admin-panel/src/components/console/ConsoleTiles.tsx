@@ -105,7 +105,7 @@ export function Tile({ title, to, children, card, busy }: {
           {title}
         </span>
         <span className="flex-1" />
-        <span className="whitespace-nowrap font-mono text-[10px] text-gray-400 opacity-0 transition-opacity group-hover:opacity-100 dark:text-gray-500">
+        <span className="hidden whitespace-nowrap font-mono text-[10px] text-gray-400 opacity-0 transition-opacity group-hover:opacity-100 lg:inline dark:text-gray-500">
           {to} →
         </span>
       </div>
@@ -138,6 +138,13 @@ export function TriadBar({ triad, label, to, note, vocab = 'committed' }: {
   const usedPct = total > 0 ? (inUse / total) * 100 : 0;
   const cmtPct = consume || total <= 0 ? 0 : Math.max(0, ((committed - inUse) / total) * 100);
   const tight = total > 0 && claimed / total >= (vocab === 'reserved' ? 0.75 : 0.9);
+  /**
+   * A zero usage reading against a non-zero commitment is almost always a
+   * metrics source that did not answer, not a genuinely idle cluster. Printing
+   * "0.00 cores in use" states a measurement that was never taken, so the
+   * headline reads em-dash and the bar falls back to the commitment.
+   */
+  const usageUnknown = !consume && inUse === 0 && committed > 0;
 
   return (
     <Tile
@@ -149,7 +156,7 @@ export function TriadBar({ triad, label, to, note, vocab = 'committed' }: {
           rows={[
             ['Allocatable', `${fmt(total, unit)} ${unit}`],
             ...(consume ? [] : [['Committed', `${fmt(committed, unit)} ${unit} · ${Math.round((committed / (total || 1)) * 100)}%`] as const]),
-            ['In use', `${fmt(inUse, unit)} ${unit} · ${Math.round(usedPct)}%`],
+            ['In use', usageUnknown ? 'not reported' : `${fmt(inUse, unit)} ${unit} · ${Math.round(usedPct)}%`],
             [consume ? 'Free' : 'Schedulable left', `${fmt(free, unit)} ${unit}`],
           ]}
           note={consume
@@ -160,9 +167,11 @@ export function TriadBar({ triad, label, to, note, vocab = 'committed' }: {
     >
       <div className="mb-2 flex flex-wrap items-baseline gap-1.5">
         <span className="font-mono text-2xl font-semibold tabular-nums tracking-tight text-gray-900 dark:text-gray-100">
-          {fmt(inUse, unit)}
+          {usageUnknown ? '—' : fmt(inUse, unit)}
         </span>
-        <span className="font-mono text-xs text-gray-500 dark:text-gray-400">{unit} in use</span>
+        <span className="font-mono text-xs text-gray-500 dark:text-gray-400">
+          {usageUnknown ? `${unit} · usage unavailable` : `${unit} in use`}
+        </span>
         <span className="ml-auto whitespace-nowrap font-mono text-xs text-gray-500 dark:text-gray-400">
           of {fmt(total, unit)}
         </span>
@@ -178,7 +187,7 @@ export function TriadBar({ triad, label, to, note, vocab = 'committed' }: {
         />
       </div>
       <div className="mt-2 flex flex-wrap gap-3 font-mono text-[11px] tabular-nums text-gray-600 dark:text-gray-400">
-        <span>in use {Math.round(usedPct)}%</span>
+        {usageUnknown ? null : <span>in use {Math.round(usedPct)}%</span>}
         {!consume && <span>{vocab} {Math.round((committed / (total || 1)) * 100)}%</span>}
         <span>{consume ? 'free' : 'schedulable'} {fmt(free, unit)}</span>
       </div>
