@@ -12,6 +12,42 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Changed
+- **Both dashboards rebuilt around what you actually need to see.** The admin
+  dashboard's own data source returned five numbers — how many tenants,
+  domains and backups exist — padded out with tables already available from
+  the sidebar. The tenant dashboard counted much the same things.
+
+  Warning tiles are now **conditional**: they appear only when something needs
+  you, and the section is absent — not empty — when nothing does. A row of
+  warning tiles that is usually blank is a row people learn to skip, and that
+  is the one row that must never be skipped. Two warnings were removed
+  entirely because nothing could ever raise them: "low free memory" and a
+  mailbox count against the plan limit. What replaced them is what really
+  happens: a mailbox filling up (which is what refuses mail), a volume filling
+  up (which is what stops a workload writing), and orphaned pods left behind
+  on a node.
+
+  In their place the operator console shows cluster capacity as three figures
+  rather than one: what is **in use**, what is **committed**, and what can
+  still be scheduled. Those differ enormously — a cluster can be 88% idle and
+  still refuse to start anything, because the room is reserved. There is a row
+  per node with the same breakdown, and a line that says in plain words
+  whether the cluster would survive losing its busiest node.
+
+  The tenant panel gets the same treatment from the customer's side: how much
+  of your plan your apps have **reserved** versus what they are using,
+  bandwidth against the cycle allowance, a row per site with its certificate
+  and the attacks blocked for it, and mail measured by the fullest mailbox
+  rather than by how many you have.
+
+  Both pages now load from two requests instead of twenty-three, refresh on a
+  schedule matched to how fast each kind of data actually changes, and stop
+  refreshing when the tab is in the background. Each tile reports its own
+  state, so one slow source greys a single tile and says why, instead of
+  leaving the page blank.
+
+
 ### Fixed
 - **Tenant webmail addresses now actually work.** Turning on webmail for a
   domain published `webmail.<domain>` in DNS and then served nothing at it.
