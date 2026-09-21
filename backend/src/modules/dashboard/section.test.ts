@@ -79,3 +79,29 @@ describe('degradedSections', () => {
     expect(degradedSections({ a: { state: 'ok', reason: null, observedAt: null } })).toEqual([]);
   });
 });
+
+/* Unit-conversion regressions, pinned because they are invisible at runtime:
+   a nanocore figure read as cores is wrong by a factor of a billion and still
+   renders as a plausible-looking number. */
+import { __testing } from './admin-service.js';
+
+describe('cpuToCores', () => {
+  it('reads every unit Kubernetes actually emits', () => {
+    expect(__testing.cpuToCores('3500m')).toBeCloseTo(3.5, 6);
+    expect(__testing.cpuToCores('3.5')).toBeCloseTo(3.5, 6);
+    // metrics-server reports node CPU in NANOCORES
+    expect(__testing.cpuToCores('897123456n')).toBeCloseTo(0.897123456, 9);
+    expect(__testing.cpuToCores('1200000u')).toBeCloseTo(1.2, 6);
+    expect(__testing.cpuToCores(undefined)).toBe(0);
+    expect(__testing.cpuToCores('garbage')).toBe(0);
+  });
+});
+
+describe('memToGiB', () => {
+  it('reads the binary suffixes', () => {
+    expect(__testing.memToGiB('1Gi')).toBeCloseTo(1, 6);
+    expect(__testing.memToGiB('1024Mi')).toBeCloseTo(1, 6);
+    expect(__testing.memToGiB('15064816Ki')).toBeCloseTo(14.367, 2);
+    expect(__testing.memToGiB(undefined)).toBe(0);
+  });
+});
