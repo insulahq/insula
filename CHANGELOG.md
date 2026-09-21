@@ -13,6 +13,34 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Fixed
+- **Tenant webmail addresses now actually work.** Turning on webmail for a
+  domain published `webmail.<domain>` in DNS and then served nothing at it.
+  The hostname was answered by a Kubernetes Ingress asking for the `nginx`
+  ingress class — this platform routes with Traefik and has no such class, so
+  the object was accepted and then ignored. The DNS record also pointed at the
+  *mail* server's address rather than the ingress, and, for domains migrated
+  from another host, could be a leftover record still pointing at the old
+  provider.
+
+  `webmail.<domain>` is now a CNAME at the platform's own webmail hostname,
+  and the platform answers there with a redirect to the platform webmail —
+  so visitors land on the same webmail they would reach directly, with a
+  certificate that matches. Because the redirect names the platform webmail
+  rather than a specific application, it follows the engine setting: Bulwark
+  and Roundcube both work, and switching between them no longer leaves tenant
+  addresses pointing at a stopped one.
+
+  Turning webmail back off now removes the record whatever type it is. The
+  previous cleanup only looked for the old record type, so disabling webmail
+  could leave the address published.
+
+### Changed
+- The tenant Email page no longer describes the webmail toggle as
+  "→ Roundcube". It names no engine, because the operator chooses which one
+  the platform runs.
+
+
+### Fixed
 - **A tenant that is low on space no longer mails you every hour, forever.** A
   tenant sitting above 90% of its CPU, memory or storage allocation sent the
   operator *and* the tenant a notification every single hour, on the hour, for

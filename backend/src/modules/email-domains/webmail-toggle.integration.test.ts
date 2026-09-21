@@ -54,7 +54,7 @@ describe.skipIf(!dbAvailable)('Email domain webmail DNS toggle (integration)', (
       .where(eq(dnsRecords.domainId, domain.id));
 
     const webmailRecord = records.find(
-      (r) => r.recordType === 'A' && r.recordName === 'webmail.webmail-test.example.com',
+      (r) => r.recordType === 'CNAME' && r.recordName === 'webmail.webmail-test.example.com',
     );
     expect(webmailRecord).toBeUndefined();
   });
@@ -76,7 +76,7 @@ describe.skipIf(!dbAvailable)('Email domain webmail DNS toggle (integration)', (
       .where(eq(dnsRecords.domainId, domain.id));
 
     const webmailRecord = records.find(
-      (r) => r.recordType === 'A' && r.recordName === 'webmail.webmail-optin.example.com',
+      (r) => r.recordType === 'CNAME' && r.recordName === 'webmail.webmail-optin.example.com',
     );
     expect(webmailRecord).toBeDefined();
     expect(webmailRecord?.recordValue).toBeTruthy();
@@ -99,7 +99,7 @@ describe.skipIf(!dbAvailable)('Email domain webmail DNS toggle (integration)', (
       .from(dnsRecords)
       .where(eq(dnsRecords.domainId, domain.id));
     expect(
-      before.some((r) => r.recordType === 'A' && r.recordName === 'webmail.toggle-test.example.com'),
+      before.some((r) => r.recordType === 'CNAME' && r.recordName === 'webmail.toggle-test.example.com'),
     ).toBe(true);
 
     // Toggle webmail off
@@ -110,7 +110,7 @@ describe.skipIf(!dbAvailable)('Email domain webmail DNS toggle (integration)', (
       .from(dnsRecords)
       .where(eq(dnsRecords.domainId, domain.id));
     expect(
-      after.some((r) => r.recordType === 'A' && r.recordName === 'webmail.toggle-test.example.com'),
+      after.some((r) => r.recordType === 'CNAME' && r.recordName === 'webmail.toggle-test.example.com'),
     ).toBe(false);
 
     // Verify the email_domains row also reflects the change
@@ -142,7 +142,7 @@ describe.skipIf(!dbAvailable)('Email domain webmail DNS toggle (integration)', (
       .where(eq(dnsRecords.domainId, domain.id));
 
     const webmailRecord = records.find(
-      (r) => r.recordType === 'A' && r.recordName === 'webmail.republish-test.example.com',
+      (r) => r.recordType === 'CNAME' && r.recordName === 'webmail.republish-test.example.com',
     );
     expect(webmailRecord).toBeDefined();
 
@@ -158,19 +158,35 @@ describe.skipIf(!dbAvailable)('Email domain webmail DNS toggle (integration)', (
   // Build a fake K8sClients that fakes Service / Ingress / Cert
   // creation. The test asserts the `webmail_status` column transitions
   // through the expected lifecycle.
+  /**
+   * Fake K8sClients for the Traefik CRD path.
+   *
+   * The webmail hostname is published as an IngressRoute + redirect
+   * Middleware (custom objects), not as a networking.k8s.io Ingress. The
+   * previous fake only stubbed `createNamespacedIngress`, which is exactly
+   * the object the cluster ignored — a fake that still accepted it would keep
+   * this test green against code that serves nothing.
+   */
   function makeFakeK8s(opts: {
     certShouldFail?: boolean;
     ingressShouldFail?: boolean;
-  } = {}): K8sClients {
-    return {
+  } = {}): { k8s: K8sClients; applied: Array<Record<string, unknown>> } {
+    const applied: Array<Record<string, unknown>> = [];
+    const createCustom = (args: Record<string, unknown>) => {
+      const plural = args.plural as string;
+      if (opts.ingressShouldFail && plural === 'ingressroutes') {
+        return Promise.reject(new Error('forced ingress failure'));
+      }
+      applied.push(args);
+      return Promise.resolve({});
+    };
+    const k8s = {
       core: {
         createNamespacedService: () => Promise.resolve({}),
         replaceNamespacedService: () => Promise.resolve({}),
       },
       networking: {
-        createNamespacedIngress: opts.ingressShouldFail
-          ? () => Promise.reject(new Error('forced ingress failure'))
-          : () => Promise.resolve({}),
+        createNamespacedIngress: () => Promise.resolve({}),
         replaceNamespacedIngress: () => Promise.resolve({}),
       },
       apps: {} as never,
@@ -179,8 +195,12 @@ describe.skipIf(!dbAvailable)('Email domain webmail DNS toggle (integration)', (
         getNamespacedCustomObject: opts.certShouldFail
           ? () => Promise.reject(new Error('cert not ready'))
           : () => Promise.resolve({ status: { conditions: [{ type: 'Ready', status: 'True' }] } }),
+        createNamespacedCustomObject: createCustom,
+        replaceNamespacedCustomObject: createCustom,
+        deleteNamespacedCustomObject: () => Promise.resolve({}),
       },
     } as unknown as K8sClients;
+    return { k8s, applied };
   }
 
   it('ensureWebmailIngress writes status=ready when cert + ingress succeed', async () => {
@@ -198,7 +218,7 @@ describe.skipIf(!dbAvailable)('Email domain webmail DNS toggle (integration)', (
     );
 
     // Mock cert manager to succeed.
-    const k8s = makeFakeK8s({});
+    const { k8s, applied } = makeFakeK8s({});
     // ensureRouteCertificate is invoked dynamically inside
     // ensureWebmailIngress — to keep this test focused on the status
     // write paths, we skip cert provisioning by passing a fake k8s
@@ -218,6 +238,27 @@ describe.skipIf(!dbAvailable)('Email domain webmail DNS toggle (integration)', (
       .from(emailDomains)
       .where(eq(emailDomains.id, enabled.id));
     expect(['ready', 'ready_no_tls']).toContain(ed.status);
+
+    // What actually reached the cluster: a Traefik IngressRoute matching the
+    // tenant hostname, and a redirect Middleware sending 302 to the platform
+    // webmail. Asserting the status column alone was what allowed a route
+    // nothing could serve to read as 'ready'.
+    const plurals = applied.map((a) => a.plural);
+    expect(plurals).toContain('ingressroutes');
+    expect(plurals).toContain('middlewares');
+
+    const route = applied.find((a) => a.plural === 'ingressroutes')!
+      .body as { spec: { routes: Array<{ match: string; services: Array<{ name: string }> }> } };
+    expect(route.spec.routes[0].match).toBe('Host(`webmail.status-ok.example.com`)');
+
+    const mw = applied.find((a) => a.plural === 'middlewares')!
+      .body as { spec: { redirectRegex: { replacement: string; permanent: boolean } } };
+    expect(mw.spec.redirectRegex.permanent).toBe(false); // 302, not 301
+    expect(mw.spec.redirectRegex.replacement).toMatch(/^https?:\/\//);
+
+    // No nginx Ingress, and no per-engine ExternalName upstream: the redirect
+    // is engine-agnostic, so neither object has a reason to exist.
+    expect(plurals).not.toContain('ingresses');
   });
 
   it('ensureWebmailIngress writes status=failed when ingress create throws', async () => {
@@ -234,7 +275,7 @@ describe.skipIf(!dbAvailable)('Email domain webmail DNS toggle (integration)', (
       '0'.repeat(64),
     );
 
-    const k8s = makeFakeK8s({ ingressShouldFail: true });
+    const { k8s } = makeFakeK8s({ ingressShouldFail: true });
 
     await expect(
       ensureWebmailIngress(db as never, k8s, enabled.id),
