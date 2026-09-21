@@ -151,9 +151,16 @@ rules:
   - apiGroups: ["rbac.authorization.k8s.io"]
     resources: ["clusterrolebindings"]
     verbs: ["get", "list", "delete"]
-  # Pod metrics via metrics-server (resource-metrics.ts, deployments/routes.ts)
+  # Metrics via metrics-server.
+  #
+  # `nodes` is listed alongside `pods` because the operator console reads
+  # per-node CPU and memory USAGE, and the pod subject does not cover it:
+  # metrics.k8s.io/nodes is a separate, cluster-scoped resource. Without it the
+  # read returns 403 and every capacity tile reports usage as unknown while
+  # still showing commitment — which is how the dashboard shipped reading
+  # "0.00 cores in use" on a busy cluster.
   - apiGroups: ["metrics.k8s.io"]
-    resources: ["pods"]
+    resources: ["pods", "nodes"]
     verbs: ["get", "list"]
   # Node awareness: list/get for health checks and M1 node pinning,
   # plus patch so the admin API can update platform-managed labels
