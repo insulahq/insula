@@ -609,6 +609,10 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(appPreviewProxyRoutes, { prefix: '/api/v1' });
   await app.register(customDeploymentAdminRoutes, { prefix: '/api/v1' });
   await app.register(dashboardRoutes, { prefix: '/api/v1' });
+  {
+    const { tenantDashboardRoutes } = await import('./modules/dashboard/tenant-routes.js');
+    await app.register(tenantDashboardRoutes, { prefix: '/api/v1' });
+  }
   await app.register(auditLogRoutes, { prefix: '/api/v1' });
   await app.register(storageSettingsRoutes, { prefix: '/api/v1' });
   await app.register(storageRoutes, { prefix: '/api/v1' });
