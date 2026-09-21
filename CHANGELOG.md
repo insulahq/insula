@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.9.28] - 2026-09-21
+
 ### Added
 - **The other system backups now have a retention setting too.** How many etcd
   snapshots, secrets bundles and cluster state dumps are kept was fixed in the
