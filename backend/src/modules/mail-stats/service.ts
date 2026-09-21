@@ -18,8 +18,23 @@
  */
 
 import type { Database } from '../../db/index.js';
-import { mailboxes } from '../../db/schema.js';
+import { mailboxes, mailboxStatusEnum } from '../../db/schema.js';
 import { and, eq, ne, sql } from 'drizzle-orm';
+
+/**
+ * The mailbox_status labels, taken from the schema rather than retyped.
+ *
+ * `satisfies` is the point: a raw sql`` fragment comparing the column to a
+ * bare string opts out of the enum entirely, and Postgres only objects at
+ * RUN time — with "invalid input value for enum mailbox_status", which fails
+ * the whole request. This endpoint counted `status = 'suspended'`, a label
+ * the enum has never had (it has been ('active','disabled') since migration
+ * 0000), so GET /admin/mail/stats returned 400 for its entire life. Binding
+ * the literals here moves that class of typo to compile time.
+ */
+type MailboxStatus = (typeof mailboxStatusEnum.enumValues)[number];
+const STATUS_ACTIVE = 'active' satisfies MailboxStatus;
+const STATUS_DISABLED = 'disabled' satisfies MailboxStatus;
 
 const STALWART_MGMT_URL =
   process.env.STALWART_MGMT_URL ?? 'http://stalwart-mgmt.mail.svc.cluster.local:8080';
@@ -30,7 +45,8 @@ export interface MailStatsResponse {
   readonly mailboxSummary: {
     readonly total: number;
     readonly active: number;
-    readonly suspended: number;
+    /** Mailboxes with status='disabled'. Named for the value it counts. */
+    readonly disabled: number;
     readonly totalQuotaMb: number;
     readonly totalUsedMb: number;
   };
@@ -100,8 +116,8 @@ export async function getMailStats(db: Database): Promise<MailStatsResponse> {
   const [summaryRow] = await db
     .select({
       total: sql<number>`count(*)::int`,
-      active: sql<number>`count(*) filter (where status = 'active')::int`,
-      suspended: sql<number>`count(*) filter (where status = 'suspended')::int`,
+      active: sql<number>`count(*) filter (where ${mailboxes.status} = ${STATUS_ACTIVE})::int`,
+      disabled: sql<number>`count(*) filter (where ${mailboxes.status} = ${STATUS_DISABLED})::int`,
       totalQuotaMb: sql<number>`coalesce(sum(${mailboxes.quotaMb}), 0)::int`,
       totalUsedMb: sql<number>`coalesce(sum(${mailboxes.usedMb}), 0)::int`,
     })
@@ -113,7 +129,7 @@ export async function getMailStats(db: Database): Promise<MailStatsResponse> {
     mailboxSummary: {
       total: summaryRow?.total ?? 0,
       active: summaryRow?.active ?? 0,
-      suspended: summaryRow?.suspended ?? 0,
+      disabled: summaryRow?.disabled ?? 0,
       totalQuotaMb: summaryRow?.totalQuotaMb ?? 0,
       totalUsedMb: summaryRow?.totalUsedMb ?? 0,
     },
