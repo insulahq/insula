@@ -10,6 +10,7 @@ import {
 import { seedRegion, seedPlan, seedTenant, seedDomain } from '../../test-helpers/fixtures.js';
 import { emailDomains, dnsRecords } from '../../db/schema.js';
 import { enableEmailForDomain, updateEmailDomain, ensureWebmailIngress } from './service.js';
+import { getDefaultWebmailUrl } from '../webmail-settings/service.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
 const dbAvailable = await isDbAvailable();
@@ -259,6 +260,46 @@ describe.skipIf(!dbAvailable)('Email domain webmail DNS toggle (integration)', (
     // No nginx Ingress, and no per-engine ExternalName upstream: the redirect
     // is engine-agnostic, so neither object has a reason to exist.
     expect(plurals).not.toContain('ingresses');
+  });
+
+  it('does NOT publish a route when the hostname IS the platform webmail host', async () => {
+    // The SYSTEM tenant owns the apex domain (ADR-040), so enabling webmail on
+    // the apex email domain arrives here with hostname === the redirect
+    // target. Publishing would mint a CNAME to itself, a router that redirects
+    // the host to itself, and a second IngressRoute competing with the
+    // platform's own for that hostname.
+    const db = getTestDb();
+    const url = new URL(await getDefaultWebmailUrl(db as never));
+    // webmail.<apex> is the platform webmail host; derive the apex from it.
+    const apex = url.hostname.replace(/^webmail\./, '');
+    const domain = await seedDomain(db, tenantId, {
+      domainName: apex,
+      dnsMode: 'primary',
+    });
+    const enabled = await enableEmailForDomain(
+      db as never,
+      tenantId,
+      domain.id,
+      { webmail_enabled: true } as never,
+      '0'.repeat(64),
+    );
+
+    const { k8s, applied } = makeFakeK8s({});
+    const result = await ensureWebmailIngress(db as never, k8s, enabled.id);
+
+    expect(result.ingressCreated).toBe(false);
+    expect(result.status).toBe('ready');
+    expect(applied).toEqual([]);
+
+    // And no self-referential CNAME.
+    const records = await db
+      .select()
+      .from(dnsRecords)
+      .where(eq(dnsRecords.domainId, domain.id));
+    const selfCname = records.find(
+      (r) => r.recordName === `webmail.${apex}` && (r.recordValue ?? '').startsWith(`webmail.${apex}`),
+    );
+    expect(selfCname).toBeUndefined();
   });
 
   it('ensureWebmailIngress writes status=failed when ingress create throws', async () => {

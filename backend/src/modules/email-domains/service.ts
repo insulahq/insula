@@ -939,7 +939,11 @@ export async function updateEmailDomain(
           // setting the redirect uses, so the record and the route cannot name
           // two different places.
           const webmailHostname = new URL(await getDefaultWebmailUrl(db)).hostname;
-          await publishWebmailDnsRecord(db, existing.domainId, domainRow.domainName, effectiveKey, webmailHostname);
+          // A CNAME whose target is its own name is a resolution loop. Skip it
+          // when the domain's webmail host IS the platform webmail host.
+          if (`webmail.${domainRow.domainName}`.toLowerCase() !== webmailHostname.toLowerCase()) {
+            await publishWebmailDnsRecord(db, existing.domainId, domainRow.domainName, effectiveKey, webmailHostname);
+          }
         } else {
           await unpublishWebmailDnsRecord(db, existing.domainId, domainRow.domainName, effectiveKey);
         }
@@ -1103,6 +1107,24 @@ export async function ensureWebmailIngress(
   // `webmail.<domain>` BEFORE it can be redirected, so this hostname needs a
   // certificate that covers it. That is why the cert step below stays.
   const webmailUrl = await getDefaultWebmailUrl(db);
+
+  // The platform's OWN webmail host is already served by the platform webmail
+  // IngressRoute. Reachable because the SYSTEM tenant owns the apex domain
+  // (ADR-040), so enabling webmail on the apex email domain lands here with
+  // hostname === the redirect target. Publishing anyway would mint a
+  // self-referential CNAME, a router that redirects the host to itself, and a
+  // second IngressRoute competing with the platform's own for that hostname.
+  let platformWebmailHost: string;
+  try {
+    platformWebmailHost = new URL(webmailUrl).hostname.toLowerCase();
+  } catch {
+    await setWebmailStatus(db, row.emailDomainId, 'failed', `default_webmail_url is not a valid URL: ${webmailUrl}`);
+    return { ingressCreated: false, reason: 'invalid default_webmail_url', status: 'failed' };
+  }
+  if (hostname.toLowerCase() === platformWebmailHost) {
+    await setWebmailStatus(db, row.emailDomainId, 'ready', 'Served by the platform webmail route — no tenant redirect needed.');
+    return { ingressCreated: false, reason: 'hostname is the platform webmail host', status: 'ready' };
+  }
 
   const { ensureRouteCertificate } = await import('../certificates/service.js');
   let certResult: Awaited<ReturnType<typeof ensureRouteCertificate>> | null = null;
