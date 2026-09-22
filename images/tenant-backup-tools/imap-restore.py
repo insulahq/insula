@@ -598,7 +598,7 @@ def _collect_existing_message_ids(client: ImapClient, folder: str) -> set[str]:
     # FETCH 1:* BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)] which streams only
     # headers.
     out: set[str] = set()
-    for _uid, _flags, body in client.fetch_all_bodies():
+    for _uid, _flags, _idate, body in client.fetch_all_bodies():
         mid = _parse_message_id(body[:8192])
         if mid:
             out.add(mid)
