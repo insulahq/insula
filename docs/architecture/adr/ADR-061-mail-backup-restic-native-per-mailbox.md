@@ -126,10 +126,23 @@ Consequences:
 
 ### 3. Compression becomes per-component
 
-`restic-driver.ts` hardcodes `--compression off` for every component, with a rationale
+`restic-driver.ts` hardcodes `--compression off` on the stdin path, with a rationale
 written for tenant *files* ("jpegs, mp4, .gz dumps"). Tenant repos are already format
 version 2. Measured on a **1.5 GB sample of a real production maildir tar**, zstd-3 yields
-**1.672× — a 40.2% saving**. `mailboxes` moves to `auto`; `files` keeps `off`.
+**1.672× — a 40.2% saving**; on text-dominated mail, measured on DEV, **3.69×** (27.0 MB
+stored as 7.34 MB).
+
+Both in-Job components pass **`--compression auto` explicitly**.
+
+> **Corrected after implementation.** This section first said "`files` keeps `off`", on the
+> strength of a comment in `files.ts` claiming `off` was restic's default. It is not:
+> `restic backup --compression` defaults to **`auto`** on a version-2 repository, so the
+> files component has been compressing ever since its restic-native rewrite — the comment
+> described behaviour the code never had. Both components now pass the flag explicitly
+> rather than inherit it, because the flag's default is `$RESTIC_COMPRESSION`: an env var
+> set anywhere in a Job's environment would otherwise change how tenant data is stored,
+> silently and cluster-wide. `off` survives only on the legacy stdin path, so that a Job
+> from an older image behaves exactly as it did.
 
 ### 4. One restic repo per tenant; the bundle becomes a tag
 
