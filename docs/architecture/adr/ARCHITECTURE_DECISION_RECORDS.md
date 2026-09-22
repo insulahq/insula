@@ -2669,3 +2669,33 @@ binaries the image has — static-nginx is distroless, where an early `cat`-base
 projection probe failed silently and disabled the feature while every other
 signal looked correct. TLS for a multi-host site is not yet exercised: issuance
 is gated on domain verification and the DEV apex is deliberately unverified.
+
+## ADR-061: Tenant mail backup — restic-native per-mailbox capture, one repo per tenant
+
+See [ADR-061-mail-backup-restic-native-per-mailbox.md](ADR-061-mail-backup-restic-native-per-mailbox.md).
+
+Proposed (2026-09-22): the `mailboxes` component stores ~4.7× the data it needs to — a
+production tenant with 15.5 GB of mail and 0.4–6.9 MB of real nightly growth was adding
+8.2 GB of restic data every night, 94 GB of repo for 12 snapshots, and 40 GB of live mail
+platform-wide sat in 188 GB of repos. The control rules out restic and the storage target:
+the same tenant's `files` component, same driver and backend, is 8.4 MB of repo for 12
+snapshots. Cause is the last pre-restic transport: `tar cf - .` over a Maildir tree rebuilt
+nightly, piped to `restic backup --stdin`, so both the filename (prefixed with the capture
+clock by a function whose docstring promises the opposite) and the tar header mtime differ
+on every file, and only large-attachment interiors survive chunk-level dedup. Fixing either
+cause alone is worth ~10% and reads as "not the cause"; measured on an 800-message corpus,
+night-2 growth was 155 MB today, 139 MB with stable names, 149 MB with clamped mtimes,
+2.3 MB with both — and **1.3 MB with `restic backup <dir>`, which needs neither fix**
+because restic deduplicates per file content. Decision: finish the migration `files`
+already made — restic-native capture, one snapshot per mailbox (peak scratch becomes the
+largest mailbox, and single-mailbox restore stops needing ~31 GB), per-component
+compression (`auto` for mail: measured 1.672× on real mail, `off` stays for files), one
+repo per tenant with the bundle as a `bundle=<id>` tag, INTERNALDATE captured and used as
+the Maildir timestamp (restores currently stamp every message with the night the backup
+ran), and an export that streams from restic — today a tenant data export contains neither
+files nor mail, because both are restic-only while the export enumerates the object store
+and skips what it cannot find. Existing backups are not migrated: layout is resolved per
+bundle from `meta.json`, legacy bundles stay restorable until they expire, with an opt-in
+admin action to drop the legacy mail repos early (safe because mail loss protection is the
+independent whole-store snapshot, taken every 10 minutes). Rejected: a persistent staging
+mirror of the mail pool and the incremental IMAP fetch it would enable.
