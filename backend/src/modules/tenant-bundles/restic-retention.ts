@@ -85,7 +85,7 @@ import {
 import { anchorResticRepoTotal } from './repo-state.js';
 import { notifyResticFailure } from './restic-failure-notify.js';
 import { resolveShimBackupTarget } from './resolve-backup-target.js';
-import { repoLayoutForStateRow } from './repo-layout.js';
+import { layoutsWithLiveBundles, repoLayoutForStateRow } from './repo-layout.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
 export type RepoSkipReason =
@@ -371,9 +371,15 @@ export async function runResticRetentionSweep(
       }
     }
 
-    // Which repository this row's snapshots are actually in. A tenant
-    // mid-migration has rows pointing at both layouts (ADR-061).
-    const layout = await repoLayoutForStateRow(db, tenantId, component);
+    // Which repositories this row's snapshots are actually in.
+    //
+    // The state row records only the MOST RECENT repository, so after the
+    // merge it stops naming the legacy one — and a tenant's pre-merge
+    // snapshots would then never be swept again, leaking until someone
+    // deleted the repository by hand. So sweep every layout the tenant still
+    // has live bundles in, not just the one the row happens to point at.
+    const layoutsToSweep = await layoutsWithLiveBundles(db, tenantId, component);
+    for (const layout of layoutsToSweep) {
     const repoUri = buildResticRepoUri(target, tenantId, component as ResticComponent, layout);
     try {
       // Keep-set: snapshots belonging to bundles that are still live. A bundle
@@ -547,6 +553,7 @@ export async function runResticRetentionSweep(
       }, err, logger);
       repos.push({ ...base, repoUri, skipped: null, error: msg.slice(0, 300) });
       errors++;
+    }
     }
   }
 
