@@ -17,6 +17,47 @@
 #   was generated from, so all five workspace manifests are copied even though
 #   only the backend's dependencies are installed. Manifests only — no sources —
 #   so this layer stays cached until a dependency actually changes.
+# ── restic, built from source with refreshed dependencies ──────────────────
+#
+# Not the distro package (0.18.1, moves on the distro's schedule) and not the
+# upstream prebuilt binary (0.19.1 ships go1.26.4, which fails the image's
+# CVE gate on Go stdlib advisories fixed in go1.26.6 — a prebuilt binary can
+# only be patched by upstream, which is what the distros solve by rebuilding).
+#
+# Building from the release tarball on a current toolchain fixes the stdlib
+# findings. restic 0.19.1's own go.mod then pins google.golang.org/grpc
+# v1.81.1 and golang.org/x/crypto v0.53.0, which Trivy flags (CVE-2026-84304,
+# CVE-2026-84445, GHSA-hrxh-6v49-42gf, CVE-2026-56854), so those two are moved
+# forward here. golang.org/x/text follows them up on its own.
+#
+# What that costs: this binary is built against dependency versions upstream
+# did not ship or test. grpc is reached only by restic's Google Cloud Storage
+# backend, which this platform never selects — every tenant repository is S3
+# (through the shim), SFTP or hostpath. The build itself is the compatibility
+# check, and it fails loudly if the bump does not hold.
+#
+# Both the tarball checksum and the compiler are pinned: an unverified
+# download here would be arbitrary code holding the credentials to every
+# tenant repository.
+FROM golang:1.26-alpine AS restic-build
+ARG RESTIC_VERSION=0.19.1
+ARG RESTIC_SRC_SHA256=bb9b1a19040744d26d8a79be029d4e6b189c45ccc9d8831d7fe367d3c33df725
+ARG RESTIC_GRPC_VERSION=v1.83.2
+ARG RESTIC_XCRYPTO_VERSION=v0.55.0
+RUN apk add --no-cache curl tar git
+RUN set -eu; \
+    f="restic-${RESTIC_VERSION}.tar.gz"; \
+    curl -fsSLO "https://github.com/restic/restic/releases/download/v${RESTIC_VERSION}/${f}"; \
+    echo "${RESTIC_SRC_SHA256}  ${f}" | sha256sum -c -; \
+    tar xzf "$f"; \
+    cd "restic-${RESTIC_VERSION}"; \
+    go get "google.golang.org/grpc@${RESTIC_GRPC_VERSION}"; \
+    go get "golang.org/x/crypto@${RESTIC_XCRYPTO_VERSION}"; \
+    go mod tidy; \
+    CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${RESTIC_VERSION}" \
+        -o /out/restic ./cmd/restic; \
+    /out/restic version
+
 FROM node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32 AS deps
 WORKDIR /repo
 COPY package.json package-lock.json ./
@@ -105,7 +146,8 @@ FROM node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a55
 # It's the same rclone the shim uses, but run one-shot against a single
 # rendered target so CIFS/SMB sources are readable (the native S3/SSH stores
 # can't do SMB). Config is passed via RCLONE_CONFIG_* env, never a file.
-RUN apk add --no-cache openssl age postgresql18-client restic openssh-client rclone
+RUN apk add --no-cache openssl age postgresql18-client openssh-client rclone
+COPY --from=restic-build /out/restic /usr/local/bin/restic
 
 WORKDIR /app
 
