@@ -1,201 +1,137 @@
 import { render, screen } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { describe, it, expect, vi } from 'vitest';
+import { MemoryRouter } from 'react-router-dom';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type { TenantDashboardSummary, TenantDashboardLive } from '@insula/api-contracts';
 import Dashboard from '../pages/Dashboard';
 
-vi.mock('../hooks/use-auth', () => ({
-  useAuth: vi.fn(() => ({
-    user: { id: 'tenant-1', email: 'test@example.com', fullName: 'Test User', role: 'tenant' },
-    token: 'test-token',
-    isAuthenticated: true,
-    isLoading: false,
-    error: null,
-    login: vi.fn(),
-    logout: vi.fn(),
-    initialize: vi.fn(),
-  })),
+/**
+ * The tenant overview's load-bearing behaviours.
+ *
+ * The one worth stating: `reserved` is shown separately from `in use`,
+ * because reserved is the figure that refuses the next deployment while
+ * usage says there is plenty of room — the shape of the 1Gi tenant that
+ * could not fit a 512Mi app.
+ */
+
+const { summaryFn, liveFn } = vi.hoisted(() => ({ summaryFn: vi.fn(), liveFn: vi.fn() }));
+vi.mock('@/hooks/use-hosting-overview', () => ({
+  useOverviewSummary: () => summaryFn(),
+  useOverviewLive: () => liveFn(),
+}));
+vi.mock('@/hooks/use-tenant-context', () => ({
+  useTenantContext: () => ({ tenantId: 't1' }),
 }));
 
-vi.mock('../hooks/use-tenant-context', () => ({
-  useTenantContext: vi.fn(() => ({ tenantId: 'c1', tenantName: 'Test', isLoading: false })),
-}));
+const ok = <T,>(data: T) => ({ state: 'ok' as const, reason: null, observedAt: null, data });
 
-vi.mock('../hooks/use-domains', () => ({
-  useDomains: vi.fn(() => ({ data: { data: [] } })),
-}));
-
-// The Backups tile counts OFF-SITE BUNDLES — the same source the Backups page
-// lists. It used to read the retired `backups` table and always showed 0.
-vi.mock('../hooks/use-tenant-backups', () => ({
-  useTenantBundles: vi.fn(() => ({
-    data: { data: [{ id: 'b1' }, { id: 'b2' }, { id: 'b3' }] },
-  })),
-}));
-
-vi.mock('../hooks/use-deployments', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../hooks/use-deployments')>();
+function summary(over: Partial<TenantDashboardSummary> = {}): TenantDashboardSummary {
   return {
-    ...actual,
-    useDeployments: vi.fn(() => ({ data: { data: [] } })),
-  };
+    generatedAt: new Date().toISOString(),
+    alerts: ok([]),
+    plan: ok({ name: 'Ultimate', bandwidthUsedGb: 16, bandwidthLimitGb: 100, bandwidthResetDays: 9, bandwidthCapped: false }),
+    mail: ok({ mailboxes: 6, maxMailboxes: 10, storageUsedGb: 11.4, storageLimitGb: 50, fullestMailboxPct: 42, fullestMailboxAddress: 'sales@example.test', sentToday: 38, dailyLimit: 100 }),
+    domains: ok({ domains: 3, verified: 3, certificates: 4, nearestRenewalDays: 74 }),
+    backups: ok({ restorePoints: 31, newestAt: new Date().toISOString(), oldestAt: new Date().toISOString(), coversFiles: true, coversDatabases: true }),
+    scheduledTasks: ok({ total: 3, enabled: 2, failed24h: 0, nextRunAt: null }),
+    recentChanges: ok([]),
+    ...over,
+  } as TenantDashboardSummary;
+}
+
+function live(over: Partial<TenantDashboardLive> = {}): TenantDashboardLive {
+  return {
+    generatedAt: new Date().toISOString(),
+    resources: ok({
+      cpu: { inUse: 0.02, committed: 0.5, total: 2, unit: 'cores', kind: 'reserve' as const },
+      memory: { inUse: 0.39, committed: 1.5, total: 2, unit: 'GiB', kind: 'reserve' as const },
+      storage: { inUse: 6, committed: 6, total: 10, unit: 'GiB', kind: 'consume' as const },
+    }),
+    sites: ok([]),
+    blocked: ok([]),
+    ...over,
+  } as TenantDashboardLive;
+}
+
+const show = () => render(
+  <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+    <MemoryRouter><Dashboard /></MemoryRouter>
+  </QueryClientProvider>,
+);
+
+beforeEach(() => {
+  summaryFn.mockReturnValue({ data: { data: summary() }, isLoading: false });
+  liveFn.mockReturnValue({ data: { data: live() }, isLoading: false });
 });
 
-// The dashboard reads the SAME endpoint as the Resource Usage page and the
-// metrics modal. Values below are the operator-reported case: 6 GiB of a 10 GiB
-// storage plan, which is 60% and must NOT render as a warning.
-vi.mock('../hooks/use-resource-metrics', () => ({
-  useResourceMetrics: vi.fn(() => ({
-    data: {
-      data: {
-        tenantId: 't1',
-        cpu: { inUse: 0.25, reserved: 0.5, available: 2 },
-        memory: { inUse: 1.5, reserved: 2, available: 4 },
-        storage: { inUse: 6, reserved: 8, available: 10 },
-        lastUpdatedAt: '2026-08-30T00:00:00.000Z',
-      },
-    },
-    isLoading: false,
-  })),
-}));
-
-vi.mock('../hooks/use-email', () => ({
-  useMailboxUsage: vi.fn(() => ({
-    data: { data: { limit: 50, current: 3, remaining: 47, source: 'plan' } },
-    isLoading: false,
-  })),
-}));
-
-import { useAuth } from '../hooks/use-auth';
-
-const mockedUseAuth = vi.mocked(useAuth);
-
-function createTestQueryClient() {
-  return new QueryClient({
-    defaultOptions: {
-      queries: { retry: false, gcTime: 0 },
-      mutations: { retry: false },
-    },
-  });
-}
-
-function renderWithProviders(ui: React.ReactElement) {
-  const queryClient = createTestQueryClient();
-  return render(
-    <QueryClientProvider client={queryClient}>
-      <MemoryRouter>{ui}</MemoryRouter>
-    </QueryClientProvider>,
-  );
-}
-
-describe('Dashboard Page', () => {
-  it('renders welcome heading with user name', () => {
-    renderWithProviders(<Dashboard />);
-    expect(screen.getByTestId('welcome-heading')).toBeInTheDocument();
-    expect(screen.getByText(/Welcome back, Test User/)).toBeInTheDocument();
+describe('Hosting overview — conditional alerts', () => {
+  it('shows no alert chips when nothing needs the customer', () => {
+    show();
+    expect(screen.queryAllByTestId('alert-chip')).toHaveLength(0);
+    expect(screen.getByText(/nothing needs you/i)).toBeInTheDocument();
   });
 
-  it('renders overview description', () => {
-    renderWithProviders(<Dashboard />);
-    expect(screen.getByText('Here is an overview of your hosting account.')).toBeInTheDocument();
+  it('shows a chip when something does', () => {
+    summaryFn.mockReturnValue({
+      data: { data: summary({ alerts: ok([{
+        categoryId: 'mailbox.quota_threshold', severity: 'critical' as const, value: '94%',
+        title: 'A mailbox is nearly full', subtitle: 'sales@example.test', href: '/email',
+        detail: [['Used', '4.7 of 5 GB']], note: null,
+      }]) }) }, isLoading: false,
+    });
+    show();
+    expect(screen.getAllByTestId('alert-chip')).toHaveLength(1);
+    expect(screen.getAllByText('A mailbox is nearly full').length).toBeGreaterThan(0);
+  });
+});
+
+describe('Hosting overview — plan', () => {
+  it('shows in use and reserved as different figures', () => {
+    show();
+    // 0.02 in use against 0.50 reserved of 2.00 — the gap is the point.
+    expect(screen.getByText('0.02')).toBeInTheDocument();
+    expect(screen.getByText(/reserved 25%/)).toBeInTheDocument();
   });
 
-  it('renders quick stats grid with all five cards including Email accounts', () => {
-    renderWithProviders(<Dashboard />);
-    expect(screen.getByTestId('quick-stats')).toBeInTheDocument();
-    expect(screen.getByText('Domains')).toBeInTheDocument();
-    expect(screen.getByText('Applications')).toBeInTheDocument();
-    expect(screen.getByText('Backups')).toBeInTheDocument();
-    expect(screen.getByText('Deployments')).toBeInTheDocument();
-    expect(screen.getByText('Email accounts')).toBeInTheDocument();
+  it('warns when little is left to reserve, and says what that means', () => {
+    show();
+    // Memory: 1.5 of 2 reserved = 75%, which is the tight threshold.
+    expect(screen.getByText(/has to fit in that, not in what is idle/i)).toBeInTheDocument();
   });
 
-  it('shows mailbox usage count in the Email accounts tile', () => {
-    renderWithProviders(<Dashboard />);
-    expect(screen.getByTestId('stat-email accounts')).toHaveTextContent('3/50');
+  it('treats storage as consumed, not reserved — no reserved band', () => {
+    show();
+    // A "reserved" legend for storage would claim the full limit is free
+    // while 6 GiB sits on disk.
+    expect(screen.queryByText(/reserved 60%/)).not.toBeInTheDocument();
+    expect(screen.getByText(/free 4/)).toBeInTheDocument();
   });
 
-  it('shows zero values in the empty stats cards', () => {
-    renderWithProviders(<Dashboard />);
-    // Domains, Applications and Deployments default to 0; Email accounts is
-    // driven by useMailboxUsage and Backups by useTenantBundles (3 bundles).
-    const zeros = screen.getAllByText('0');
-    expect(zeros.length).toBe(3);
+  it('shows bandwidth against the allowance', () => {
+    show();
+    expect(screen.getByText('16.0')).toBeInTheDocument();
+    expect(screen.getByText(/resets in 9 days/i)).toBeInTheDocument();
   });
+});
 
-  // Regression: the tile read the retired `backups` table, so a tenant with
-  // bundles was told "0 backups" while the Backups page listed them all
-  // .
-  it('counts off-site bundles in the Backups tile', () => {
-    renderWithProviders(<Dashboard />);
-    expect(screen.getByTestId('stat-backups')).toHaveTextContent('3');
+describe('Hosting overview — mail', () => {
+  it('shows the fullest mailbox, which is what refuses mail', () => {
+    show();
+    // The COUNT against the plan is not an alert; per-mailbox storage is.
+    expect(screen.getAllByText('Fullest mailbox').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('42%').length).toBeGreaterThan(0);
   });
+});
 
-  it('renders overview description under the welcome heading', () => {
-    renderWithProviders(<Dashboard />);
-    expect(
-      screen.getByText(/Here is an overview of your hosting account/),
-    ).toBeInTheDocument();
-  });
-
-  it('shows email as fallback when fullName is null', () => {
-    mockedUseAuth.mockReturnValue({
-      user: { id: 'tenant-1', email: 'jane@example.com', fullName: null, role: 'tenant' },
-      token: 'test-token',
-      isAuthenticated: true,
-      isLoading: false,
-      error: null,
-      login: vi.fn(),
-      logout: vi.fn(),
-      initialize: vi.fn(),
-    } as unknown as ReturnType<typeof useAuth>);
-    renderWithProviders(<Dashboard />);
-    expect(screen.getByText(/Welcome back, jane@example.com/)).toBeInTheDocument();
-  });
-
-  it('shows "there" when both fullName and email are missing', () => {
-    mockedUseAuth.mockReturnValue({
-      user: null,
-      token: null,
-      isAuthenticated: false,
-      isLoading: false,
-      error: null,
-      login: vi.fn(),
-      logout: vi.fn(),
-      initialize: vi.fn(),
-    } as unknown as ReturnType<typeof useAuth>);
-    renderWithProviders(<Dashboard />);
-    expect(screen.getByText(/Welcome back, there/)).toBeInTheDocument();
-  });
-
-  it('shows used / reserved / available on every resource tile', () => {
-    renderWithProviders(<Dashboard />);
-    for (const testId of ['dashboard-cpu-bar', 'dashboard-memory-bar', 'dashboard-storage-bar']) {
-      const tile = screen.getByTestId(testId);
-      expect(tile.textContent).toContain('used');
-      expect(tile.textContent).toContain('reserved');
-      expect(tile.textContent).toContain('available');
-    }
-  });
-
-  it('renders the storage tile at 60% of plan WITHOUT a warning colour', () => {
-    // The reported bug: storage was hardcoded amber, so 6 GB of a 10 GB plan
-    // looked like a warning. Amber must not appear below the 80% threshold.
-    renderWithProviders(<Dashboard />);
-    const tile = screen.getByTestId('dashboard-storage-bar');
-    const bars = tile.querySelectorAll('div[style*="width"]');
-    const classes = Array.from(bars).map((b) => b.className).join(' ');
-    expect(classes).toContain('bg-brand-500');
-    expect(classes).not.toContain('bg-amber');
-    expect(classes).not.toContain('bg-red');
-    expect(tile.textContent).toContain('60%');
-  });
-
-  it('shows the reserved figure that explains a refused deployment', () => {
-    // reserved (8) exceeds in-use (6): the tenant has headroom by usage but not
-    // by allocation. That number was absent from the dashboard entirely.
-    renderWithProviders(<Dashboard />);
-    const tile = screen.getByTestId('dashboard-storage-bar');
-    expect(tile.textContent).toContain('8');
+describe('Hosting overview — degraded sections', () => {
+  it('a failed section says so rather than rendering blank', () => {
+    liveFn.mockReturnValue({
+      data: { data: live({
+        resources: { state: 'failed', reason: 'metrics did not answer within 4000ms', observedAt: null, data: null },
+      }) }, isLoading: false,
+    });
+    show();
+    expect(screen.getByText(/could not be read/i)).toBeInTheDocument();
+    expect(screen.getByText(/metrics did not answer/i)).toBeInTheDocument();
   });
 });

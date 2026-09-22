@@ -896,6 +896,47 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
       { name: 'occurredAt', type: 'string', required: false },
     ],
   },
+  {
+    categoryId: 'tenant.resource_saturation_recovered',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: '{{resource}} for {{tenantName}} is back to normal ({{usedPct}}%)',
+    bodyTemplate: emailMjml(
+      'Resource back to normal',
+      '{{tenantName}} is using {{used}}{{unit}} of its {{limit}}{{unit}} {{resource}} limit '
+      + '({{usedPct}}%), as of {{occurredAt}}. The earlier warning is closed — it ran for '
+      + '{{durationText}}. Nothing further is needed.',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'resource', type: 'string', required: false },
+      { name: 'usedPct', type: 'string', required: false },
+      { name: 'used', type: 'string', required: false },
+      { name: 'limit', type: 'string', required: false },
+      { name: 'unit', type: 'string', required: false },
+      { name: 'durationText', type: 'string', required: false },
+      { name: 'occurredAt', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'tenant.resource_saturation_recovered',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: '{{resource}} back to normal ({{usedPct}}%)',
+    bodyTemplate: '{{tenantName}}: {{resource}} at {{used}}{{unit}} of {{limit}}{{unit}} ({{usedPct}}%) as of {{occurredAt}} — warning closed after {{durationText}}.',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'resource', type: 'string', required: false },
+      { name: 'usedPct', type: 'string', required: false },
+      { name: 'used', type: 'string', required: false },
+      { name: 'limit', type: 'string', required: false },
+      { name: 'unit', type: 'string', required: false },
+      { name: 'durationText', type: 'string', required: false },
+      { name: 'occurredAt', type: 'string', required: false },
+    ],
+  },
   // ── admin.email_quota_exceeded ─────────────────────────────────────
   {
     categoryId: 'admin.email_quota_exceeded',
@@ -2181,6 +2222,45 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
       },
     ];
   }),
+
+  // ── admin.tenant_resource_saturation_recovered ──
+  ...((): SeedTemplate[] => {
+    const okVars: readonly NotificationTemplateVariable[] = [
+      ...COMMON_VARS,
+      { name: 'tenantLabel', type: 'string', required: true },
+      { name: 'resource', type: 'string', required: true },
+      { name: 'usedPct', type: 'string', required: true },
+      { name: 'used', type: 'string', required: true },
+      { name: 'limit', type: 'string', required: true },
+      { name: 'unit', type: 'string', required: true },
+      { name: 'durationText', type: 'string', required: true },
+    ];
+    return [
+      {
+        categoryId: 'admin.tenant_resource_saturation_recovered',
+        channel: 'email',
+        locale: 'en',
+        subjectTemplate: '[RESOURCE] Back to normal: {{tenantLabel}} ({{resource}})',
+        bodyTemplate: emailMjml(
+          'Tenant resource back to normal: {{tenantLabel}}',
+          'Tenant {{tenantLabel}} is back under its {{resource}} warning threshold — '
+          + '{{used}}{{unit}} of {{limit}}{{unit}} ({{usedPct}}%). The episode ran for '
+          + '{{durationText}}. No action required.',
+        ),
+        bodyFormat: 'mjml',
+        variablesSchema: okVars,
+      },
+      {
+        categoryId: 'admin.tenant_resource_saturation_recovered',
+        channel: 'in_app',
+        locale: 'en',
+        subjectTemplate: '[RESOURCE] {{tenantLabel}} {{resource}} back to normal ({{usedPct}}%)',
+        bodyTemplate: '{{tenantLabel}} {{resource}} at {{used}}{{unit}} / {{limit}}{{unit}} ({{usedPct}}%) — closed after {{durationText}}.',
+        bodyFormat: 'plaintext',
+        variablesSchema: okVars,
+      },
+    ];
+  })(),
 
   // ── Node reboot lifecycle ──
   ...((): SeedTemplate[] => {

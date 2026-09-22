@@ -40,6 +40,50 @@ const D = describe.skipIf(!dbAvailable);
 // Fixtures
 // ---------------------------------------------------------------------------
 
+/**
+ * Wait for a task row to reach a terminal state.
+ *
+ * `applyShimAssignmentChange` and `runDrainNow` return an OPTIMISTIC result
+ * and fork the real work via `setImmediate` (see the "Fork the heavy pipeline"
+ * block in apply-assignment.ts). The binding row, the final task status and
+ * the settled drain phase all land AFTER the call resolves — so asserting
+ * straight off the return value races the product and reads whatever the
+ * previous test happened to leave behind.
+ */
+async function waitForTask(taskId: string, timeoutMs = 10_000): Promise<{
+  status: string;
+  errorMessage: string | null;
+  details: { drain?: { phase?: string; drained?: boolean } } | null;
+}> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const rows = await db.execute<{
+      status: string;
+      error_message: string | null;
+      details: unknown;
+    }>(sql`
+      SELECT status, error_message, details FROM tasks WHERE id = ${taskId}
+    `);
+    const row = rows.rows?.[0];
+    if (row && row.status !== 'queued' && row.status !== 'running') {
+      // Carry error_message out: the pipeline captures its failure there
+      // rather than throwing, so without it a failed task asserts as the
+      // bare string 'failed' with no clue why.
+      return {
+        status: row.status,
+        errorMessage: row.error_message ?? null,
+        details: (row.details ?? null) as never,
+      };
+    }
+    if (Date.now() > deadline) {
+      throw new Error(
+        `task ${taskId} still ${row?.status ?? 'missing'} after ${timeoutMs}ms`,
+      );
+    }
+    await new Promise((r) => setTimeout(r, 50));
+  }
+}
+
 async function insertTarget(
   name: string,
   drainTimeoutSeconds: number = 300,
@@ -212,8 +256,8 @@ D('backup-rclone-shim integration', () => {
       // Insert the user since tasks.user_id has an FK constraint
       // (notifications too). We bypass full auth by inserting directly.
       await db.execute(sql`
-        INSERT INTO users (id, email, password_hash, role, created_at, updated_at)
-        VALUES (${userId}, ${`rx5-${userId}@test`}, '$2a$10$x', 'super_admin', NOW(), NOW())
+        INSERT INTO users (id, email, password_hash, full_name, role_name, created_at, updated_at)
+        VALUES (${userId}, ${`rx5-${userId}@test`}, '$2a$10$x', 'Shim Test User', 'super_admin', NOW(), NOW())
       `);
       const targetId = await insertTarget('rx5-test-apply');
       const k8s = fakeK8sClients();
@@ -240,27 +284,34 @@ D('backup-rclone-shim integration', () => {
       expect(result.assignment.className).toBe('tenant');
       expect(result.assignment.targetId).toBe(targetId);
       expect(result.assignment.targetStorageType).toBe('s3');
-      // DB row must exist after success.
+      // The row is written by the background pipeline, not by the call above.
+      const task = await waitForTask(result.taskId);
+      // fakeK8sClients serves the BACKUP_TARGET_KEY Secret as 404, so the
+      // reconcile leg necessarily ends in SHIM_KEY_MISSING and the task is
+      // FAILED. That is the honest outcome, and it is what makes the next
+      // assertion meaningful: the pipeline order is drain -> DB replace ->
+      // reconcile, so the binding must already be on disk even though the
+      // leg after it failed. A write that only landed on full success would
+      // show up here as count '0'.
+      expect(task.status).toBe('failed');
+      expect(task.errorMessage ?? '').toContain('BACKUP_TARGET_KEY');
       const rows = await db.execute<{ count: string }>(sql`
         SELECT COUNT(*)::text AS count
           FROM backup_target_assignments
          WHERE backup_class = 'tenant' AND target_id = ${targetId}
       `);
       expect(rows.rows?.[0]?.count).toBe('1');
-      // Task must be marked succeeded.
-      const taskRows = await db.execute<{ status: string }>(sql`
-        SELECT status FROM tasks WHERE id = ${result.taskId}
-      `);
-      expect(taskRows.rows?.[0]?.status).toBe('succeeded');
-      // Drain phase was drain_immediate (no inflight).
-      expect(result.drain.phase).toBe('drain_immediate');
+      // With no inflight consumers the settled phase is drain_immediate. It
+      // is recorded on the task; the synchronous return always says
+      // drain_waiting because the wait has not happened yet.
+      expect(task.details?.drain?.phase).toBe('drain_immediate');
     });
 
     it('targetId=null replace-sets to empty (unassign)', async () => {
       const userId = crypto.randomUUID();
       await db.execute(sql`
-        INSERT INTO users (id, email, password_hash, role, created_at, updated_at)
-        VALUES (${userId}, ${`rx5-${userId}@test`}, '$2a$10$x', 'super_admin', NOW(), NOW())
+        INSERT INTO users (id, email, password_hash, full_name, role_name, created_at, updated_at)
+        VALUES (${userId}, ${`rx5-${userId}@test`}, '$2a$10$x', 'Shim Test User', 'super_admin', NOW(), NOW())
       `);
       const targetId = await insertTarget('rx5-test-unassign');
       await db.execute(sql`
@@ -280,6 +331,11 @@ D('backup-rclone-shim integration', () => {
         { className: 'mail', targetId: null, force: false, userId },
       );
       expect(result.assignment.targetId).toBeNull();
+      // Same deferral: the replace-set to empty happens in the pipeline.
+      // Same 404-Secret reconcile failure as above; the replace-set to empty
+      // still has to have landed before it.
+      const unassignTask = await waitForTask(result.taskId);
+      expect(unassignTask.errorMessage ?? '').toContain('BACKUP_TARGET_KEY');
       const rows = await db.execute<{ count: string }>(sql`
         SELECT COUNT(*)::text AS count
           FROM backup_target_assignments
@@ -291,8 +347,8 @@ D('backup-rclone-shim integration', () => {
     it('rejects disabled target with TARGET_DISABLED', async () => {
       const userId = crypto.randomUUID();
       await db.execute(sql`
-        INSERT INTO users (id, email, password_hash, role, created_at, updated_at)
-        VALUES (${userId}, ${`rx5-${userId}@test`}, '$2a$10$x', 'super_admin', NOW(), NOW())
+        INSERT INTO users (id, email, password_hash, full_name, role_name, created_at, updated_at)
+        VALUES (${userId}, ${`rx5-${userId}@test`}, '$2a$10$x', 'Shim Test User', 'super_admin', NOW(), NOW())
       `);
       const targetId = await insertTarget('rx5-test-disabled', 300, false);
       await expect(
@@ -311,8 +367,8 @@ D('backup-rclone-shim integration', () => {
     it('rejects unknown target with TARGET_NOT_FOUND', async () => {
       const userId = crypto.randomUUID();
       await db.execute(sql`
-        INSERT INTO users (id, email, password_hash, role, created_at, updated_at)
-        VALUES (${userId}, ${`rx5-${userId}@test`}, '$2a$10$x', 'super_admin', NOW(), NOW())
+        INSERT INTO users (id, email, password_hash, full_name, role_name, created_at, updated_at)
+        VALUES (${userId}, ${`rx5-${userId}@test`}, '$2a$10$x', 'Shim Test User', 'super_admin', NOW(), NOW())
       `);
       await expect(
         applyShimAssignmentChange(
@@ -338,8 +394,8 @@ D('backup-rclone-shim integration', () => {
     it('returns immediately with drain_immediate when no inflight', async () => {
       const userId = crypto.randomUUID();
       await db.execute(sql`
-        INSERT INTO users (id, email, password_hash, role, created_at, updated_at)
-        VALUES (${userId}, ${`rx5-${userId}@test`}, '$2a$10$x', 'super_admin', NOW(), NOW())
+        INSERT INTO users (id, email, password_hash, full_name, role_name, created_at, updated_at)
+        VALUES (${userId}, ${`rx5-${userId}@test`}, '$2a$10$x', 'Shim Test User', 'super_admin', NOW(), NOW())
       `);
       const out = await runDrainNow(
         {
@@ -348,12 +404,14 @@ D('backup-rclone-shim integration', () => {
         },
         { classes: [], userId },
       );
-      expect(out.drain.phase).toBe('drain_immediate');
-      expect(out.drain.drained).toBe(true);
-      const taskRows = await db.execute<{ status: string }>(sql`
-        SELECT status FROM tasks WHERE id = ${out.taskId}
-      `);
-      expect(taskRows.rows?.[0]?.status).toBe('succeeded');
+      // runDrainNow answers immediately with an honest "not drained yet"
+      // snapshot so the modal can render inFlightAtStart; the settled verdict
+      // is written to the task by the background waiter.
+      expect(out.drain.phase).toBe('drain_waiting');
+      const task = await waitForTask(out.taskId);
+      expect(task.status).toBe('succeeded');
+      expect(task.details?.drain?.phase).toBe('drain_immediate');
+      expect(task.details?.drain?.drained).toBe(true);
     });
   });
 });

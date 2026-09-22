@@ -31,6 +31,7 @@ const TENANT_SCOPED_ADMIN = new Set<string>([
   'admin.tenant_bandwidth_critical',
   'admin.tenant_resource_saturation_warning',
   'admin.tenant_resource_saturation_critical',
+  'admin.tenant_resource_saturation_recovered',
   'admin.tenant_pod_oom',
   'admin.custom_deployment_failed',
   // . It pointed at `/tenants` — the LIST, which shows no
@@ -112,6 +113,7 @@ const STATIC_PATHS: Record<string, string> = {
   // about the concept of a limit.
   'tenant.resource_saturation_warning': '/dashboard',
   'tenant.resource_saturation_critical': '/dashboard',
+  'tenant.resource_saturation_recovered': '/dashboard',
   'tls.certificate_issued': '/domains',
   'tls.certificate_failed': '/domains',
   'tls.certificate_fallback': '/domains',

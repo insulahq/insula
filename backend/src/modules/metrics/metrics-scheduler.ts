@@ -2,7 +2,7 @@ import { eq } from 'drizzle-orm';
 import { hostingPlans, tenants, platformSettings } from '../../db/schema.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { collectTenantMetrics } from './resource-metrics.js';
-import { evaluateTenantSaturation } from './tenant-saturation.js';
+import { evaluateTenantSaturation, gcClearedSaturationEpisodes } from './tenant-saturation.js';
 import { scanTenantOom, describeOomEvent } from './oom-scan.js';
 import { notifyAdminTenantOom } from '../notifications/events.js';
 import { recordHourlyUsage } from './usage-rollup.js';
@@ -127,6 +127,10 @@ export function startMetricsScheduler(db: Database): NodeJS.Timeout {
           await new Promise(r => setTimeout(r, STAGGER_DELAY_MS));
         }
       }
+
+      // Cleared saturation episodes are a short audit tail; open ones are
+      // bounded by (tenant x 3 resources). Once per cycle, not per tenant.
+      if (alertsOn) await gcClearedSaturationEpisodes(db, console);
 
       console.log(`[metrics-scheduler] Refreshed ${provisioned.length} tenants`);
     } catch (err) {

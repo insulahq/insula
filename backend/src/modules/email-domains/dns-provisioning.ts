@@ -9,47 +9,10 @@ import { canManageDnsZone } from '../dns-servers/authority.js';
 import { formatDkimDnsValue } from './dkim.js';
 import type { Database } from '../../db/index.js';
 
-// Round-4 Phase 1: multi-step fallback so deployments only need to
-// set the one env var they already have. INGRESS_DEFAULT_IPV4 is
-// already wired into docker-compose.local.yml for the local stack
-// and should be the canonical platform ingress IP in production.
-// 127.0.0.1 is a last-resort dev fallback — a WARN fires the first
-// time a record is built so operators see it in logs.
-//
-// Review HIGH-1 fix: an empty string in a Docker Compose / systemd
-// env file (e.g. `MAIL_SERVER_IP=`) is functionally undefined, NOT
-// a valid override. Normalize blank values to undefined before the
-// truthiness gate so the fallback chain progresses correctly.
-let mailServerIpWarned = false;
-const normalizeEnv = (v: string | undefined): string | undefined => {
-  if (v === undefined) return undefined;
-  const trimmed = v.trim();
-  return trimmed.length > 0 ? trimmed : undefined;
-};
-const MAIL_SERVER_IP = (): string => {
-  const explicit = normalizeEnv(process.env.MAIL_SERVER_IP);
-  if (explicit) return explicit;
-  const ingressIp = normalizeEnv(process.env.INGRESS_DEFAULT_IPV4);
-  if (ingressIp) return ingressIp;
-  if (!mailServerIpWarned) {
-    console.warn(
-      '[email-dns] Neither MAIL_SERVER_IP nor INGRESS_DEFAULT_IPV4 is set — '
-      + 'falling back to 127.0.0.1 for mail.<domain> and webmail.<domain> A records. '
-      + 'This is almost certainly wrong in production.',
-    );
-    mailServerIpWarned = true;
-  }
-  return '127.0.0.1';
-};
-
-// IPv6 sibling of MAIL_SERVER_IP. Deliberately returns undefined rather than a
-// fallback: a wrong AAAA is worse than no AAAA. A published AAAA that nothing
-// answers on makes a v6-only client fail outright and costs every dual-stack
-// client a connection timeout first, so the record is emitted ONLY when the
-// operator has actually configured an address.
-const MAIL_SERVER_IPV6 = (): string | undefined =>
-  normalizeEnv(process.env.MAIL_SERVER_IPV6)
-  ?? normalizeEnv(process.env.INGRESS_DEFAULT_IPV6);
+// The webmail record is a CNAME at the platform webmail hostname, so this
+// module no longer resolves any IP itself. MAIL_SERVER_IP / MAIL_SERVER_IPV6
+// and their INGRESS_DEFAULT_* fallbacks lived here to address
+// `webmail.<domain>` directly; both are gone with the A/AAAA records they fed.
 
 // mtaStsPolicyId helper removed along with the MTA-STS
 // records — see the comment block where the records were dropped.
@@ -163,7 +126,7 @@ export function buildEmailDnsRecordsForDisplay(
   dkimSelector: string,
   dkimPublicKey: string,
   mailServerHostname: string,
-  options: { readonly webmailEnabled?: boolean } = {},
+  options: WebmailRecordOptions = {},
 ): readonly DnsRecordSpec[] {
   return buildEmailDnsRecords(
     domainName,
@@ -174,15 +137,25 @@ export function buildEmailDnsRecordsForDisplay(
   );
 }
 
+export interface WebmailRecordOptions {
+  readonly webmailEnabled?: boolean;
+  /**
+   * Platform webmail hostname the tenant's `webmail.<domain>` points at.
+   * Resolved from `default_webmail_url`; callers that only render a preview
+   * may omit it and get the documented placeholder.
+   */
+  readonly webmailHostname?: string;
+}
+
 function buildEmailDnsRecords(
   domainName: string,
   dkimSelector: string,
   dkimPublicKey: string,
   mailServerHostname: string,
-  options: { readonly webmailEnabled?: boolean } = {},
+  options: WebmailRecordOptions = {},
 ): readonly DnsRecordSpec[] {
   const webmailRecords: readonly DnsRecordSpec[] = options.webmailEnabled
-    ? buildWebmailRecords(domainName)
+    ? buildWebmailRecords(domainName, options.webmailHostname ?? mailServerHostname)
     : [];
 
   const base: readonly DnsRecordSpec[] = buildBaseRecords(
@@ -195,37 +168,40 @@ function buildEmailDnsRecords(
 }
 
 /**
- * `webmail.<domain>` — A always, AAAA only when an IPv6 is configured.
+ * `webmail.<domain>` — a single CNAME at the platform's webmail hostname.
  *
- * The MX target is the platform hostname (see buildBaseRecords), so this is the
- * only per-tenant record that points at the platform's own address and the only
- * one that needs a v6 sibling here.
+ * This used to be an A (plus an optional AAAA) at MAIL_SERVER_IP, which is the
+ * MAIL server's address: webmail is served by the ingress, so the pair could
+ * point at different hosts, and every ingress address change meant rewriting
+ * one record per tenant. A CNAME tracks the platform hostname on its own.
+ *
+ * A CNAME does NOT change the SNI — the browser still presents
+ * `webmail.<domain>` — so this record alone is not enough. The platform also
+ * has to answer for that hostname with a certificate that covers it; see
+ * `ensureWebmailIngress`, which publishes the redirect and the cert together.
+ * Publishing the record without that route is what left the hostname
+ * unreachable.
  */
-function buildWebmailRecords(domainName: string): readonly DnsRecordSpec[] {
-  const records: DnsRecordSpec[] = [
+function buildWebmailRecords(
+  domainName: string,
+  webmailHostname: string,
+): readonly DnsRecordSpec[] {
+  return [
     {
-      recordType: 'A',
+      recordType: 'CNAME',
       recordName: `webmail.${domainName}`,
-      recordValue: MAIL_SERVER_IP(),
+      recordValue: ensureTrailingDot(webmailHostname),
       ttl: 3600,
       priority: null,
       purpose: 'webmail',
     },
   ];
+}
 
-  const ipv6 = MAIL_SERVER_IPV6();
-  if (ipv6) {
-    records.push({
-      recordType: 'AAAA',
-      recordName: `webmail.${domainName}`,
-      recordValue: ipv6,
-      ttl: 3600,
-      priority: null,
-      purpose: 'webmail',
-    });
-  }
-
-  return records;
+/** CNAME targets are absolute — a missing root label re-anchors at the zone. */
+export function ensureTrailingDot(host: string): string {
+  const trimmed = host.trim();
+  return trimmed.endsWith('.') ? trimmed : `${trimmed}.`;
 }
 
 function buildBaseRecords(
@@ -545,33 +521,70 @@ async function isZoneWritable(db: Database, domainId: string): Promise<boolean> 
   }
 }
 
-// Round-3: idempotently publish / unpublish the webmail.<domain> A
-// record. Used by updateEmailDomain when webmail_enabled flips.
-// Returns true if a DB row was inserted/deleted.
+// Idempotently publish the webmail.<domain> CNAME. Used by updateEmailDomain
+// when webmail_enabled flips. Returns true if a DB row was inserted.
+//
+// Two naming conventions used to coexist here. This function wrote the record
+// under its FQDN (`webmail.example.com`) while the ingress-route path writes
+// the bare label (`webmail`), so neither could see the other's row and
+// enabling webmail on a domain that already had a route produced a second,
+// conflicting record. Both spellings are treated as the same record now.
 export async function publishWebmailDnsRecord(
   db: Database,
   domainId: string,
   domainName: string,
   encryptionKey: string,
+  webmailHostname: string,
 ): Promise<boolean> {
   const hostname = `webmail.${domainName}`;
-  const value = MAIL_SERVER_IP();
+  const value = ensureTrailingDot(webmailHostname);
 
-  // Idempotent insert — if the record already exists, leave it.
   const existing = await db
     .select()
     .from(dnsRecords)
     .where(eq(dnsRecords.domainId, domainId));
-  const alreadyHasWebmail = existing.some(
-    (r) => r.recordType === 'A' && r.recordName === hostname,
-  );
-  if (alreadyHasWebmail) return false;
+  // recordName is nullable in the schema; a nameless row is not a webmail row.
+  const isWebmailRow = (r: { recordName: string | null }): boolean =>
+    r.recordName === hostname || r.recordName === 'webmail';
+
+  // A/AAAA rows are the pre-CNAME shape (and, for migrated domains, a stale
+  // pointer at the customer's OLD provider). Retire them, or the zone answers
+  // with an address record that outranks the CNAME we are about to write.
+  for (const stale of existing.filter((r) => isWebmailRow(r) && r.recordType !== 'CNAME')) {
+    await db.delete(dnsRecords).where(eq(dnsRecords.id, stale.id));
+    await syncRecordToProviders(
+      db,
+      domainId,
+      domainName,
+      'delete',
+      { type: stale.recordType, name: stale.recordName ?? hostname, content: stale.recordValue ?? '', ttl: stale.ttl ?? 3600, priority: null },
+      encryptionKey,
+    );
+  }
+
+  const current = existing.find((r) => isWebmailRow(r) && r.recordType === 'CNAME');
+  if (current && current.recordValue === value) return false;
+
+  // A CNAME that exists but points somewhere else is repointed, not left
+  // alone: "already has a webmail record" was the old test, and it is exactly
+  // what let a wrong target survive forever.
+  if (current) {
+    await db.delete(dnsRecords).where(eq(dnsRecords.id, current.id));
+    await syncRecordToProviders(
+      db,
+      domainId,
+      domainName,
+      'delete',
+      { type: 'CNAME', name: current.recordName ?? hostname, content: current.recordValue ?? '', ttl: current.ttl ?? 3600, priority: null },
+      encryptionKey,
+    );
+  }
 
   const id = crypto.randomUUID();
   await db.insert(dnsRecords).values({
     id,
     domainId,
-    recordType: 'A',
+    recordType: 'CNAME',
     recordName: hostname,
     recordValue: value,
     ttl: 3600,
@@ -583,7 +596,7 @@ export async function publishWebmailDnsRecord(
     domainId,
     domainName,
     'create',
-    { type: 'A', name: hostname, content: value, ttl: 3600, priority: null },
+    { type: 'CNAME', name: hostname, content: value, ttl: 3600, priority: null },
     encryptionKey,
   );
   return true;
@@ -600,8 +613,12 @@ export async function unpublishWebmailDnsRecord(
     .select()
     .from(dnsRecords)
     .where(eq(dnsRecords.domainId, domainId));
+  // Match on the NAME and take whatever type is there. Filtering on `A` was
+  // correct only while this module published A records; once the record became
+  // a CNAME the same filter silently matched nothing, so disabling webmail
+  // left the record published and the hostname still pointing at the platform.
   const matches = rows.filter(
-    (r) => r.recordType === 'A' && r.recordName === hostname,
+    (r) => r.recordName === hostname || r.recordName === 'webmail',
   );
   if (matches.length === 0) return false;
 
@@ -613,10 +630,10 @@ export async function unpublishWebmailDnsRecord(
       domainName,
       'delete',
       {
-        type: 'A',
-        name: hostname,
+        type: m.recordType,
+        name: m.recordName ?? hostname,
         content: m.recordValue ?? '',
-        ttl: 3600,
+        ttl: m.ttl ?? 3600,
         priority: null,
         id: m.id,
       },

@@ -3,7 +3,6 @@ import { sql } from 'drizzle-orm';
 import crypto from 'node:crypto';
 import { getTestDb, runMigrations, isDbAvailable } from '../../test-helpers/db.js';
 import { resolveTargetFor, maybeResolveTargetFor } from './target-resolver.js';
-import { setAssignments } from '../snapshot-classes/service.js';
 
 const db = getTestDb();
 const dbAvailable = await isDbAvailable();
@@ -15,6 +14,42 @@ async function insertTarget(name: string): Promise<string> {
     VALUES (${id}, ${name}, 's3', 30, '0 2 * * *', 1, false, NOW(), NOW())
   `);
   return id;
+}
+
+/**
+ * Seeds `backup_target_assignments`, which is keyed by SHIM class
+ * ('system' | 'tenant' | 'mail') and CHECK-constrained to those three — not by
+ * the SnapshotClass the resolver is called with. Seeding the shim class here
+ * and querying by snapshot class below keeps `shimRoutingClassFor`'s mapping
+ * (tenant_snapshot|tenant_bundle -> tenant, system_backup -> system,
+ * system_mail -> mail) inside what these tests actually verify: break the
+ * mapping and resolution stops finding the row.
+ *
+ * Local stand-in for the deleted `snapshot-classes/service.setAssignments`.
+ *
+ * That module no longer exists anywhere in the tree, so this file could not be
+ * imported at all — vitest reported "no tests" for it rather than a failure,
+ * which is why the breakage went unnoticed. tsconfig excludes test files from
+ * `typecheck`, so the dangling import was invisible there too.
+ *
+ * The subject under test — resolveTargetFor / maybeResolveTargetFor — is very
+ * much alive; only the seeding helper went away, and all it did was replace the
+ * rows for one class.
+ */
+async function setAssignments(
+  database: typeof db,
+  shimClass: 'system' | 'tenant' | 'mail',
+  spec: { assignments: ReadonlyArray<{ targetId: string; priority: number }> },
+): Promise<void> {
+  await database.execute(sql`
+    DELETE FROM backup_target_assignments WHERE backup_class = ${shimClass}
+  `);
+  for (const a of spec.assignments) {
+    await database.execute(sql`
+      INSERT INTO backup_target_assignments (backup_class, target_id, priority)
+      VALUES (${shimClass}, ${a.targetId}, ${a.priority})
+    `);
+  }
 }
 
 describe.skipIf(!dbAvailable)('target-resolver', () => {
@@ -29,7 +64,7 @@ describe.skipIf(!dbAvailable)('target-resolver', () => {
 
   it('resolveTargetFor returns assigned primary', async () => {
     const t1 = await insertTarget('tr-test-a');
-    await setAssignments(db, 'tenant_snapshot', {
+    await setAssignments(db, 'tenant', {
       assignments: [{ targetId: t1, priority: 100 }],
     });
 
@@ -51,7 +86,7 @@ describe.skipIf(!dbAvailable)('target-resolver', () => {
     const tA = await insertTarget('tr-test-a');
     const tB = await insertTarget('tr-test-b');
     const tC = await insertTarget('tr-test-c');
-    await setAssignments(db, 'system_backup', {
+    await setAssignments(db, 'system', {
       assignments: [
         { targetId: tA, priority: 300 },
         { targetId: tB, priority: 50 },
@@ -71,7 +106,7 @@ describe.skipIf(!dbAvailable)('target-resolver', () => {
 
   it('maybeResolveTargetFor returns target when assigned', async () => {
     const t1 = await insertTarget('tr-test-maybe');
-    await setAssignments(db, 'system_backup', {
+    await setAssignments(db, 'system', {
       assignments: [{ targetId: t1, priority: 100 }],
     });
 
@@ -83,8 +118,8 @@ describe.skipIf(!dbAvailable)('target-resolver', () => {
   it('each class resolves independently', async () => {
     const tA = await insertTarget('tr-test-x');
     const tB = await insertTarget('tr-test-y');
-    await setAssignments(db, 'tenant_snapshot', { assignments: [{ targetId: tA, priority: 100 }] });
-    await setAssignments(db, 'system_backup', { assignments: [{ targetId: tB, priority: 100 }] });
+    await setAssignments(db, 'tenant', { assignments: [{ targetId: tA, priority: 100 }] });
+    await setAssignments(db, 'system', { assignments: [{ targetId: tB, priority: 100 }] });
 
     const r1 = await resolveTargetFor(db, 'tenant_snapshot');
     const r2 = await resolveTargetFor(db, 'system_backup');

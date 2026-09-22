@@ -1,463 +1,454 @@
 /**
- * Dashboard — incident-first surface.
+ * Operator console.
  *
- * Replaces the previous vanity dashboard (4 counters + tables that
- * duplicate Tenants and Nodes & Storage) with a "is the platform
- * broken right now?" page operators actually need during incidents.
+ * Answers two questions in the order an operator asks them: is anything
+ * wrong, and where is my capacity going.
  *
- * Composition (top to bottom):
- *   1. Health banner — single line, red/amber/green from /admin/health
- *   2. Incident stat cards — failed pods, recent 5xx, failing backups,
- *      in-flight lifecycle transitions
- *   3. Backup-freshness list — any backup with state != healthy
- *   4. In-flight transitions list — running / failed_blocking transitions
- *   5. Recent 5xx alerts (last 24h) — actionable audit-log entries
- *   6. Recent tenants — small table, "who joined this week"
+ * Two principles shape the layout:
  *
- * Pages this Dashboard intentionally does NOT duplicate (use the
- * sidebar instead):
- *   - Tenants list (Tenants page is the source of truth)
- *   - Cluster nodes (Nodes & Storage)
- *   - Domains (Domains page)
+ *   Warnings are CONDITIONAL. The attention band does not exist when there is
+ *   nothing in it — not greyed, not empty, absent. A region that is usually
+ *   blank is a region people learn to skip, and that is the one region that
+ *   must never be skipped.
+ *
+ *   Capacity is a triad, not a percentage. Production runs at 12% CPU usage
+ *   and 92% CPU commitment: the second number is what refuses the next
+ *   deployment while the first says there is plenty of room.
+ *
+ * Fed by exactly two endpoints — see use-operator-console.ts for why.
  */
-import { useState } from 'react';
 import { Link } from 'react-router-dom';
+import type { AdminNode, DashboardAlert } from '@insula/api-contracts';
+import { useConsoleSummary, useConsoleLive } from '@/hooks/use-operator-console';
 import {
-  AlertCircle,
-  AlertTriangle,
-  Archive,
-  CheckCircle,
-  Container,
-  Loader2,
-  ServerCrash,
-  ShieldAlert,
-  Workflow,
-  X,
-  XCircle,
-} from 'lucide-react';
-import StatCard from '@/components/ui/StatCard';
-import OrphanedVolumesAlert from '@/components/OrphanedVolumesAlert';
-import StatusBadge from '@/components/ui/StatusBadge';
-import { useTenants } from '@/hooks/use-tenants';
-import { useAuditLogs } from '@/hooks/use-audit-logs';
-import { useBackupHealth } from '@/hooks/use-backup-health';
-import { useHealth } from '@/hooks/use-health';
-import { useLifecycleTransitions } from '@/hooks/use-lifecycle';
-import { usePods } from '@/hooks/use-pods';
-import { usePlatformStatus } from '@/hooks/use-dashboard';
-import { usePlatformImages } from '@/hooks/use-platform-images';
+  AlertBand, HoverCard, MatrixTile, SectionFallback, Tile, TileSkeleton, TriadBar,
+  type MatrixCell,
+} from '@/components/console/ConsoleTiles';
 
-const ALERT_WINDOW_HOURS = 24;
+function SectionHead({ title, count }: { title: string; count?: string }) {
+  return (
+    <div className="mt-6 mb-2.5 flex items-center gap-2.5">
+      <h2 className="whitespace-nowrap text-[11px] font-bold uppercase tracking-widest text-gray-500 dark:text-gray-400">
+        {title}
+      </h2>
+      {count ? <span className="font-mono text-[11px] text-gray-400 dark:text-gray-500">{count}</span> : null}
+      <span className="h-px flex-1 bg-gray-200 dark:bg-gray-700" />
+    </div>
+  );
+}
+
+const ago = (iso: string | null): string => {
+  if (!iso) return 'never';
+  const mins = Math.round((Date.now() - Date.parse(iso)) / 60000);
+  if (!Number.isFinite(mins)) return 'never';
+  if (mins < 60) return `${mins}m`;
+  const hrs = Math.round(mins / 60);
+  return hrs < 48 ? `${hrs}h` : `${Math.round(hrs / 24)}d`;
+};
+
+const bytesToGb = (b: number | null): string =>
+  b == null ? '—' : `${(b / 1e9).toFixed(1)} GB`;
 
 export default function Dashboard() {
-  const [showImagesModal, setShowImagesModal] = useState(false);
-  const { data: tenantsResp, isLoading: tenantsLoading } = useTenants({ limit: 5 });
-  const { data: healthResp } = useHealth();
-  const { data: statusResp } = usePlatformStatus();
-  const { data: podsResp, isError: podsUnreadable } = usePods();
-  const { data: backupHealth, isError: backupsUnreadable } = useBackupHealth();
-  // Show last 50 transitions; we filter in-flight client-side.
-  const { data: lifecycleResp } = useLifecycleTransitions({ limit: 50, refetchInterval: 15_000 });
-  // Pull a bigger window than the 24h slice so the count is accurate
-  // when there are many recent audits (100 should comfortably cover).
-  // useAuditLogs already polls every 30s internally — acceptable on
-  // an operator-stare-during-incidents page.
-  const { data: auditResp } = useAuditLogs({ limit: 100 });
+  const summary = useConsoleSummary();
+  const live = useConsoleLive();
 
-  const tenants = tenantsResp?.data ?? [];
-  const health = healthResp?.data;
-  const pods = podsResp?.data?.pods ?? [];
-  const transitions = lifecycleResp?.data?.transitions ?? [];
-  const auditEntries = auditResp?.data ?? [];
+  const s = summary.data?.data;
+  const l = live.data?.data;
 
-  // ── Derived signals ───────────────────────────────────────────────
-  const cutoff = Date.now() - ALERT_WINDOW_HOURS * 60 * 60 * 1000;
-  const recent5xx = auditEntries.filter(
-    (e) => e.httpStatus !== null && e.httpStatus >= 500 && new Date(e.createdAt).getTime() >= cutoff,
-  );
-  // Distinct categories — both worth surfacing but mean different
-  // operator actions ("investigate crash" vs "clean up dangling pod").
-  const failedPods = pods.filter((p) => p.classification === 'failed');
-  const orphanedPods = pods.filter((p) => p.classification === 'orphaned');
-  const podsNeedingAttention = failedPods.length + orphanedPods.length;
-  const failingBackups = (backupHealth ?? []).filter((b) => b.state === 'failing');
-  const neverRunBackups = (backupHealth ?? []).filter((b) => b.state === 'never_run');
-  const inflightTransitions = transitions.filter((t) => t.state === 'running');
-  const failedTransitions = transitions.filter(
-    (t) => t.state === 'failed_blocking' || t.state === 'failed_partial',
-  );
+  // The band fills in two stages: database alerts arrive on the fast poll,
+  // cluster alerts (volumes, orphaned pods) on the slow one.
+  const alerts: DashboardAlert[] = [
+    ...(s?.alerts.data ?? []),
+    ...(l?.clusterAlerts.data ?? []),
+  ];
 
-  // Overall posture for the banner.
-  const overall = health?.overall ?? 'healthy';
-  const bannerTone =
-    overall === 'healthy'
-      ? 'border-green-200 dark:border-green-800 bg-green-50 dark:bg-green-900/20 text-green-800 dark:text-green-200'
-      : overall === 'degraded'
-        ? 'border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 text-amber-800 dark:text-amber-200'
-        : 'border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 text-red-800 dark:text-red-200';
-  const bannerIcon = overall === 'healthy' ? CheckCircle : overall === 'degraded' ? AlertTriangle : XCircle;
-  const Icon = bannerIcon;
-
-  const platformStatus = statusResp?.data;
+  const loadingFirst = summary.isLoading && !s;
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between gap-3 flex-wrap">
-        <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Dashboard</h1>
-        {/* Platform info strip (moved from /settings on the Cluster + Platform
-            Settings cleanup, 2026-05-27). Compact line — version + a button
-            into the Deployed Images modal. Health/status data already lives
-            in the banner below; this strip only carries non-incident reference
-            data. */}
-        <div
-          className="flex items-center gap-3 text-xs text-gray-500 dark:text-gray-400"
-          data-testid="dashboard-platform-strip"
-        >
-          {platformStatus && (
-            <span>
-              <span className="text-gray-700 dark:text-gray-300">v{platformStatus.version}</span>
-              {' · '}checked {platformStatus.timestamp ? new Date(platformStatus.timestamp).toLocaleTimeString() : '—'}
+    <div className="mx-auto max-w-[1340px] px-1 pb-16">
+      <header className="mb-3 flex flex-wrap items-baseline gap-3 border-b border-gray-200 pb-3 dark:border-gray-700">
+        <h1 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Operator Console</h1>
+        <span className="font-mono text-xs text-gray-500 dark:text-gray-400">
+          {s ? `updated ${ago(s.generatedAt)} ago` : 'loading…'}
+        </span>
+      </header>
+
+      {/* ── attention: conditional, and absent when empty ──────────── */}
+      {loadingFirst ? (
+        <>
+          <SectionHead title="Needs attention" />
+          <p className="rounded-xl border border-dashed border-gray-300 bg-gray-50 p-3 text-sm text-gray-500 dark:border-gray-600 dark:bg-gray-800/50 dark:text-gray-400">
+            Checking alerts, nodes, backups and mail…
+          </p>
+        </>
+      ) : alerts.length > 0 ? (
+        <>
+          <SectionHead title="Needs attention" count={`${alerts.length} open`} />
+          <AlertBand alerts={alerts} />
+        </>
+      ) : (
+        <>
+          <SectionHead title="Needs attention" />
+          <p className="rounded-xl border border-dashed border-gray-300 bg-gray-50 p-3 text-sm text-gray-500 dark:border-gray-600 dark:bg-gray-800/50 dark:text-gray-400">
+            Nothing needs attention — no alerts firing and every node ready.
+          </p>
+        </>
+      )}
+
+      {/* ── cluster capacity ───────────────────────────────────────── */}
+      <SectionHead title="Cluster capacity" count="in use · committed · schedulable" />
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+        {live.isLoading && !l ? (
+          <><TileSkeleton /><TileSkeleton /><TileSkeleton /></>
+        ) : l?.cluster.data ? (
+          <>
+            <TriadBar triad={l.cluster.data.cpu} label="CPU" to="/cluster/nodes" />
+            <TriadBar triad={l.cluster.data.memory} label="Memory" to="/cluster/nodes" />
+            <TriadBar triad={l.cluster.data.storage} label="Storage" to="/cluster/storage" />
+          </>
+        ) : (
+          <SectionFallback title="Cluster capacity" to="/cluster/nodes" section={l?.cluster ?? { state: 'stale', reason: null, observedAt: null }} />
+        )}
+      </div>
+
+      {l?.cluster.data ? (
+        <div className={`mt-3 rounded-xl border p-3 text-sm ${
+          l.cluster.data.survivesSingleNodeLoss
+            ? 'border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800'
+            : 'border-amber-500 bg-amber-50 dark:bg-amber-950/40'
+        }`}>
+          <span className="mr-2 font-mono text-[11px] uppercase tracking-wider text-gray-500 dark:text-gray-400">Failover</span>
+          {l.cluster.data.nodeCount <= 1 ? (
+            <span className="text-gray-700 dark:text-gray-300">
+              <b>No redundancy.</b> A single node carries every workload — losing it is a full outage.
+            </span>
+          ) : l.cluster.data.survivesSingleNodeLoss ? (
+            <span className="text-gray-700 dark:text-gray-300">
+              <b>Survives losing any one node.</b> Worst case is {l.cluster.data.worstNode}.
+            </span>
+          ) : (
+            <span className="text-amber-800 dark:text-amber-200">
+              <b>Would not survive losing {l.cluster.data.worstNode}.</b> Its requests do not fit on the rest.
             </span>
           )}
-          <button
-            type="button"
-            onClick={() => setShowImagesModal(true)}
-            className="inline-flex items-center gap-1.5 rounded-md border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-700 px-2 py-1 text-xs font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-600"
-            data-testid="show-deployed-images-button"
-          >
-            <Container size={12} />
-            Deployed Images
-          </button>
         </div>
-      </div>
+      ) : null}
 
-      {showImagesModal && <DeployedImagesModal onClose={() => setShowImagesModal(false)} />}
+      {/* ── nodes ──────────────────────────────────────────────────── */}
+      <SectionHead
+        title="Nodes"
+        count={l?.nodes.data ? `${l.nodes.data.length} node${l.nodes.data.length === 1 ? '' : 's'}` : undefined}
+      />
+      <NodeStrip nodes={l?.nodes.data ?? []} loading={live.isLoading && !l} />
 
-      {/* ── Health banner ───────────────────────────────────────── */}
-      <div
-        className={`rounded-md border px-4 py-3 flex items-center gap-3 ${bannerTone}`}
-        data-testid="health-banner"
-      >
-        <Icon size={20} />
-        <div className="flex-1">
-          <div className="text-sm font-semibold capitalize">
-            Platform: {overall}
-          </div>
-          {health && (
-            <div className="text-xs opacity-80">
-              {health.services.filter((s) => s.status === 'ok').length} / {health.services.length} services healthy
-              {' · '}
-              checked {new Date(health.checkedAt).toLocaleTimeString()}
-            </div>
-          )}
-        </div>
-        <Link
-          to="/monitoring?tab=health"
-          className="text-xs font-medium underline opacity-80 hover:opacity-100"
-        >
-          Health details →
-        </Link>
-      </div>
-
-      {/* ── Orphaned volumes ────────────────────────────────────────
-          Renders only when some exist. An orphan holds its full provisioned
-          size against Longhorn's schedulable capacity however empty it is,
-          and the Storage tab is not somewhere anyone looks unprompted — so a
-          cluster can run out of schedulable space with a capacity warning as
-          its only symptom. */}
-      <OrphanedVolumesAlert />
-
-      {/* ── Incident stat cards ─────────────────────────────────── */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <div data-testid="stat-failed-pods">
-          {/*
-            A zero here means "nothing wrong" ONLY if the read succeeded. When
-            the cluster is unreadable the query errors, the list falls back to
-            empty, and the card would otherwise render a green "0 · all clear"
-            directly beneath an "unhealthy" banner — which is what the
-            2026-09-12 quorum-loss drill showed.
-          */}
-          <StatCard
-            title="Failed / Orphaned Pods"
-            value={podsUnreadable ? '—' : podsNeedingAttention}
-            subtitle={
-              podsUnreadable
-                ? 'cannot read pods — unknown, not zero'
-                : podsNeedingAttention === 0
-                  ? 'all clear'
-                  : `${failedPods.length} failed · ${orphanedPods.length} orphaned`
-            }
-            icon={ServerCrash}
-            accent={
-              podsUnreadable ? 'unknown'
-                : failedPods.length > 0 ? 'red'
-                  : orphanedPods.length > 0 ? 'amber' : 'green'
-            }
-          />
-        </div>
-        <div data-testid="stat-5xx-alerts">
-          <StatCard
-            title={`5xx Alerts (${ALERT_WINDOW_HOURS}h)`}
-            value={recent5xx.length}
-            subtitle={recent5xx.length > 0 ? 'audit log filter →' : 'all clear'}
-            icon={ShieldAlert}
-            accent={recent5xx.length > 0 ? 'red' : 'green'}
-          />
-        </div>
-        <div data-testid="stat-failing-backups">
-          <StatCard
-            title="Failing Backups"
-            value={backupsUnreadable ? '—' : failingBackups.length}
-            subtitle={
-              backupsUnreadable
-                ? 'cannot read backup health — unknown, not zero'
-                : failingBackups.length > 0
-                  ? `${failingBackups.length} failing, ${neverRunBackups.length} never-run`
-                  : neverRunBackups.length > 0
-                    ? `${neverRunBackups.length} never run yet`
-                    : 'all healthy'
-            }
-            icon={Archive}
-            accent={
-              backupsUnreadable ? 'unknown'
-                : failingBackups.length > 0 ? 'red'
-                  : neverRunBackups.length > 0 ? 'amber' : 'green'
-            }
-          />
-        </div>
-        <div data-testid="stat-transitions">
-          <StatCard
-            title="In-flight Transitions"
-            value={inflightTransitions.length}
-            subtitle={
-              failedTransitions.length > 0
-                ? `${failedTransitions.length} failed — needs operator`
-                : inflightTransitions.length > 0
-                  ? 'tenant lifecycle running'
-                  : 'idle'
-            }
-            icon={Workflow}
-            accent={failedTransitions.length > 0 ? 'red' : inflightTransitions.length > 0 ? 'amber' : 'green'}
-          />
-        </div>
-      </div>
-
-      {/* ── Incident detail cards: only render when something needs attention ── */}
-      {(failingBackups.length > 0 || neverRunBackups.length > 0) && (
-        <section
-          className="rounded-md border border-amber-200 dark:border-amber-800 bg-white dark:bg-gray-900 p-4 space-y-2"
-          data-testid="backup-incidents"
-        >
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-amber-800 dark:text-amber-200 flex items-center gap-2">
-              <Archive size={16} /> Backup health
-            </h2>
-            <Link to="/backups/system" className="text-xs text-brand-600 dark:text-brand-400 hover:underline">
-              Manage →
-            </Link>
-          </div>
-          <ul className="text-xs space-y-1">
-            {[...failingBackups, ...neverRunBackups].slice(0, 8).map((b) => (
-              <li key={b.groupKey} className="flex items-center gap-2">
-                <span className={`inline-block w-2 h-2 rounded-full ${b.state === 'failing' ? 'bg-red-500' : 'bg-amber-500'}`} />
-                <span className="font-medium text-gray-900 dark:text-gray-100">{b.displayName}</span>
-                <span className="text-gray-500 dark:text-gray-400">({b.category})</span>
-                {b.lastFailedReason && (
-                  <span className="text-gray-500 dark:text-gray-400 truncate max-w-md" title={b.lastFailedReason}>
-                    — {b.lastFailedReason}
-                  </span>
-                )}
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
-
-      {failedTransitions.length > 0 && (
-        <section
-          className="rounded-md border border-red-200 dark:border-red-800 bg-white dark:bg-gray-900 p-4 space-y-2"
-          data-testid="failed-transitions"
-        >
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-red-800 dark:text-red-200 flex items-center gap-2">
-              <Workflow size={16} /> Failed tenant transitions
-            </h2>
-            <Link to="/platform/lifecycle-hooks" className="text-xs text-brand-600 dark:text-brand-400 hover:underline">
-              Hook registry →
-            </Link>
-          </div>
-          <ul className="text-xs space-y-1">
-            {failedTransitions.slice(0, 5).map((t) => (
-              <li key={t.id} className="flex items-center gap-2">
-                <Link to={`/tenants/${t.tenantId}`} className="font-mono text-brand-600 dark:text-brand-400 hover:underline">
-                  {t.tenantId.slice(0, 8)}
-                </Link>
-                <span className="text-gray-700 dark:text-gray-300">{t.transitionKind}</span>
-                <span className="text-gray-500 dark:text-gray-400">{t.fromStatus ?? '?'} → {t.toStatus}</span>
-                <span className="text-red-700 dark:text-red-300 font-medium">{t.state}</span>
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
-
-      {recent5xx.length > 0 && (
-        <section
-          className="rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4 space-y-2"
-          data-testid="recent-5xx"
-        >
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100 flex items-center gap-2">
-              <ShieldAlert size={16} /> Recent 5xx alerts (last {ALERT_WINDOW_HOURS}h)
-            </h2>
-            <Link to="/monitoring/audit-logs" className="text-xs text-brand-600 dark:text-brand-400 hover:underline">
-              All audit logs →
-            </Link>
-          </div>
-          <ul className="text-xs space-y-1 font-mono">
-            {recent5xx.slice(0, 8).map((e) => (
-              <li key={e.id} className="flex items-center gap-2">
-                <span className="text-red-700 dark:text-red-300">{e.httpStatus}</span>
-                <span className="text-gray-700 dark:text-gray-300">{e.httpMethod}</span>
-                <span className="text-gray-900 dark:text-gray-100 truncate max-w-xl" title={e.httpPath ?? ''}>
-                  {e.httpPath ?? '—'}
-                </span>
-                <span className="text-gray-500 dark:text-gray-400 ml-auto">
-                  {new Date(e.createdAt).toLocaleTimeString()}
-                </span>
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
-
-      {/* ── Secondary: recent tenants (kept — "who joined this week" is a useful glance) ── */}
-      <div
-        className="rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900"
-        data-testid="recent-tenants"
-      >
-        <div className="flex items-center justify-between border-b border-gray-200 dark:border-gray-700 px-4 py-3">
-          <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Recent tenants</h2>
-          <Link to="/tenants" className="text-xs text-brand-600 dark:text-brand-400 hover:underline">
-            View all →
-          </Link>
-        </div>
-        {tenantsLoading && (
-          <div className="flex items-center justify-center py-6">
-            <Loader2 size={18} className="animate-spin text-gray-400" />
-          </div>
+      {/* ── platform ───────────────────────────────────────────────── */}
+      <SectionHead title="Platform" />
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        {loadingFirst ? (
+          <><TileSkeleton /><TileSkeleton /><TileSkeleton /><TileSkeleton /></>
+        ) : (
+          <>
+            <MailTile live={l} />
+            <WebDefenceTile live={l} />
+            <TenantsTile summary={s} />
+            <BackupsTile summary={s} />
+          </>
         )}
-        {!tenantsLoading && tenants.length === 0 && (
-          <div className="px-4 py-6 text-center text-xs text-gray-500 dark:text-gray-400">
-            No tenants yet.
-          </div>
-        )}
-        {!tenantsLoading && tenants.length > 0 && (
-          <ul className="divide-y divide-gray-100 dark:divide-gray-800 text-xs">
-            {tenants.slice(0, 5).map((t) => (
-              <li key={t.id} className="flex items-center justify-between px-4 py-2">
-                <div className="flex items-center gap-3">
-                  <Link to={`/tenants/${t.id}`} className="font-medium text-gray-900 dark:text-gray-100 hover:text-brand-500">
-                    {t.name}
-                  </Link>
-                  <span className="text-gray-500 dark:text-gray-400">{t.primaryEmail}</span>
-                </div>
-                <div className="flex items-center gap-3">
-                  <StatusBadge status={t.status} />
-                  <span className="text-gray-400 dark:text-gray-500">
-                    {t.createdAt ? new Date(t.createdAt).toLocaleDateString() : '—'}
-                  </span>
-                </div>
-              </li>
-            ))}
-          </ul>
+      </div>
+
+      {/* ── operations ─────────────────────────────────────────────── */}
+      <SectionHead title="Operations" />
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        {loadingFirst ? (
+          <><TileSkeleton /><TileSkeleton /><TileSkeleton /><TileSkeleton /></>
+        ) : (
+          <>
+            <CertificatesTile summary={s} />
+            <ScheduledTasksTile summary={s} />
+            <UpdatesTile summary={s} />
+            <ChangesTile summary={s} />
+          </>
         )}
       </div>
     </div>
   );
 }
 
-/**
- * Deployed Images modal — same content as the legacy Settings page
- * carried, now triggered from the Dashboard's Platform info strip and
- * from /platform/updates. Lazy-loaded — usePlatformImages only runs
- * while the modal is mounted.
- */
-function DeployedImagesModal({ onClose }: { readonly onClose: () => void }) {
-  const { data, isLoading, isError } = usePlatformImages();
-  const images = data?.data ?? [];
+/* ── node strip ──────────────────────────────────────────────────── */
 
+function MiniTriad({ label, inUse, committed, total, unit }: {
+  label: string; inUse: number; committed: number; total: number; unit: string;
+}) {
+  const pct = total > 0 ? (committed / total) * 100 : 0;
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div
-        className="w-full max-w-4xl max-h-[90vh] overflow-hidden rounded-xl bg-white dark:bg-gray-800 shadow-xl flex flex-col"
-        data-testid="platform-images-modal"
-      >
-        <div className="flex items-center justify-between border-b border-gray-200 dark:border-gray-700 px-5 py-3">
-          <div className="flex items-center gap-2">
-            <Container size={20} className="text-gray-600 dark:text-gray-400" />
-            <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Deployed Images</h2>
-          </div>
-          <button
-            onClick={onClose}
-            className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-600 dark:hover:text-gray-200"
-            aria-label="Close"
-          >
-            <X size={18} />
-          </button>
-        </div>
-        <div className="overflow-y-auto p-5">
-          {isLoading ? (
-            <div className="flex items-center gap-2 py-8 justify-center">
-              <Loader2 size={16} className="animate-spin text-gray-400" />
-              <span className="text-sm text-gray-500 dark:text-gray-400">Loading image inventory…</span>
-            </div>
-          ) : isError ? (
-            <p className="text-sm text-red-600 dark:text-red-400">Failed to load image inventory.</p>
-          ) : images.length === 0 ? (
-            <p className="text-sm text-gray-500 dark:text-gray-400">
-              No images enumerated. The backend may lack cluster read permissions.
-            </p>
-          ) : (
-            <table className="min-w-full text-sm" data-testid="platform-images-table">
-              <thead>
-                <tr className="text-left text-xs uppercase tracking-wider text-gray-500 dark:text-gray-400 border-b border-gray-100 dark:border-gray-700">
-                  <th className="px-2 py-2 font-medium">Component</th>
-                  <th className="px-2 py-2 font-medium">Namespace</th>
-                  <th className="px-2 py-2 font-medium">Image</th>
-                  <th className="px-2 py-2 font-medium">Tag</th>
-                  <th className="px-2 py-2 font-medium text-right">Ready</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-                {images.map((row) => (
-                  <tr key={`${row.namespace}/${row.component}/${row.image}`}>
-                    <td className="px-2 py-2 text-gray-900 dark:text-gray-100 font-medium">{row.component}</td>
-                    <td className="px-2 py-2 text-gray-600 dark:text-gray-400 font-mono text-xs">{row.namespace}</td>
-                    <td className="px-2 py-2 text-gray-600 dark:text-gray-400 font-mono text-xs break-all">{row.image}</td>
-                    <td className="px-2 py-2 text-gray-900 dark:text-gray-100 font-mono text-xs">{row.tag}</td>
-                    <td className="px-2 py-2 text-right">
-                      <span
-                        className={`inline-flex items-center gap-1 text-xs font-medium ${
-                          row.healthy ? 'text-green-700 dark:text-green-400' : 'text-amber-700 dark:text-amber-400'
-                        }`}
-                      >
-                        {row.running}/{row.desired}
-                        {row.healthy ? <CheckCircle size={12} /> : <AlertCircle size={12} />}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
+    <div className="min-w-0">
+      <div className="mb-1 flex flex-wrap items-baseline gap-x-2 font-mono text-[11px] tabular-nums text-gray-600 dark:text-gray-400">
+        <span className="whitespace-nowrap">
+          <span className="text-gray-900 dark:text-gray-100">{inUse.toFixed(2)}</span> / {committed.toFixed(2)}
+        </span>
+        <span className="min-w-0 truncate opacity-60">of {total.toFixed(2)} {unit}</span>
+        <span className="ml-auto whitespace-nowrap">{Math.round(pct)}%</span>
       </div>
+      <div className="flex h-1.5 overflow-hidden rounded bg-gray-200 dark:bg-gray-700">
+        <div className={pct >= 90 ? 'bg-amber-500' : 'bg-teal-600 dark:bg-teal-400'}
+             style={{ width: `${Math.min(100, (inUse / (total || 1)) * 100).toFixed(1)}%` }} />
+        <div className={`opacity-60 ${pct >= 90 ? 'bg-amber-300' : 'bg-teal-300 dark:bg-teal-700'}`}
+             style={{ width: `${Math.max(0, Math.min(100, ((committed - inUse) / (total || 1)) * 100)).toFixed(1)}%` }} />
+      </div>
+      <span className="sr-only">{label}</span>
     </div>
+  );
+}
+
+function NodeStrip({ nodes, loading }: { nodes: readonly AdminNode[]; loading: boolean }) {
+  if (loading) {
+    return (
+      <div className="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800">
+        {[0, 1].map((i) => <div key={i} className="mb-3 h-6 animate-pulse rounded bg-gray-200 dark:bg-gray-700" />)}
+      </div>
+    );
+  }
+  if (nodes.length === 0) {
+    return (
+      <p className="rounded-xl border border-gray-200 bg-white p-4 text-sm text-gray-500 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400">
+        No nodes could be read.
+      </p>
+    );
+  }
+  return (
+    // NOT overflow-hidden: that clips the last row's hover card. Corners are
+    // kept by rounding the first and last rows instead.
+    <div className="rounded-xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800">
+      <div className="hidden grid-cols-[minmax(0,1.3fr)_auto_minmax(0,2.4fr)_minmax(0,2.4fr)_auto_auto] items-center gap-3 rounded-t-xl bg-gray-50 px-4 py-2 text-[10px] font-semibold uppercase tracking-wider text-gray-500 lg:grid dark:bg-gray-900/40 dark:text-gray-400">
+        <span>Node</span><span>Role</span><span>CPU — in use / committed</span>
+        <span>Memory — in use / committed</span>
+        <span className="text-right">Disk</span><span className="text-right">Pods</span>
+      </div>
+      {nodes.map((n, i) => {
+        const sev = !n.ready ? 'crit' : (n.pressures.length > 0 || n.evictionsLastHour > 0 || (n.diskUsedPct ?? 0) >= 70) ? 'warn' : 'ok';
+        return (
+          <Link
+            key={n.name}
+            to="/cluster/nodes"
+            className={`group relative grid grid-cols-1 items-center gap-y-2 gap-x-3 border-t border-gray-200 px-4 py-3 transition-colors hover:bg-gray-50 lg:grid-cols-[minmax(0,1.3fr)_auto_minmax(0,2.4fr)_minmax(0,2.4fr)_auto_auto] dark:border-gray-700 dark:hover:bg-gray-700/40 ${
+              i === nodes.length - 1 ? 'rounded-b-xl' : ''
+            }`}
+          >
+            <span className="flex min-w-0 items-center gap-2">
+              <span className={`h-2 w-2 shrink-0 rounded-full ${
+                sev === 'crit' ? 'bg-red-500' : sev === 'warn' ? 'bg-amber-500' : 'bg-green-500'
+              }`} />
+              <b title={n.name} className="min-w-0 truncate font-mono text-[13px] font-semibold text-gray-900 dark:text-gray-100">{n.name}</b>
+            </span>
+            <span className="inline-flex w-fit items-center rounded-md border border-gray-300 px-1.5 py-0.5 font-mono text-[10px] text-gray-600 dark:border-gray-600 dark:text-gray-400">
+              {n.role}
+            </span>
+            <MiniTriad label="CPU" inUse={n.cpu.inUse} committed={n.cpu.committed} total={n.cpu.total} unit="cores" />
+            <MiniTriad label="Memory" inUse={n.memory.inUse} committed={n.memory.committed} total={n.memory.total} unit="GiB" />
+            <span className="text-right font-mono text-xs tabular-nums text-gray-600 dark:text-gray-400">
+              {n.diskUsedPct == null ? '—' : `${Math.round(n.diskUsedPct)}%`}
+            </span>
+            <span className="text-right font-mono text-xs tabular-nums text-gray-600 dark:text-gray-400">{n.pods}</span>
+            <HoverCard
+              title={`${n.name} — node detail`}
+              rows={[
+                ['CPU in use / committed', `${n.cpu.inUse.toFixed(2)} / ${n.cpu.committed.toFixed(2)} of ${n.cpu.total.toFixed(2)}`],
+                ['Memory in use / committed', `${n.memory.inUse.toFixed(2)} / ${n.memory.committed.toFixed(2)} of ${n.memory.total.toFixed(2)} GiB`],
+                ['Schedulable CPU left', `${Math.max(0, n.cpu.total - n.cpu.committed).toFixed(2)} cores`],
+                ['Pods scheduled', String(n.pods)],
+                ['Disk used', n.diskUsedPct == null ? '—' : `${Math.round(n.diskUsedPct)}%`],
+                ['Evictions, last hour', String(n.evictionsLastHour)],
+                ['Pressures', n.pressures.length ? n.pressures.join(', ') : 'none'],
+                ['Kubelet', n.kubeletVersion ?? '—'],
+                ['Ready', n.ready ? 'yes' : 'no'],
+              ]}
+              note={sev === 'ok'
+                ? `Healthy. Draining moves ${n.pods} pods to the remaining nodes.`
+                : `Draining this node would need somewhere for ${n.pods} pods to go.`}
+            />
+          </Link>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ── platform tiles ──────────────────────────────────────────────── */
+
+type Summary = ReturnType<typeof useConsoleSummary>['data'] extends { data: infer T } | undefined ? T : never;
+type Live = ReturnType<typeof useConsoleLive>['data'] extends { data: infer T } | undefined ? T : never;
+
+function MailTile({ live }: { live: Live | undefined }) {
+  const m = live?.mail.data;
+  if (!m) return <SectionFallback title="Mail" to="/email/operations" section={live?.mail ?? { state: 'stale', reason: null, observedAt: null }} />;
+  const cells: MatrixCell[] = [
+    { k: 'Sent · 7d', v: m.sent7d.toLocaleString() },
+    { k: 'Queue', v: m.queueReachable ? String(m.queueDepth) : 'unreachable', tone: m.queueReachable ? 'ok' : 'crit' },
+    { k: 'Mailboxes', v: String(m.mailboxes), sub: `${m.emailDomains} domains` },
+    { k: 'Over quota', v: String(m.overQuotaMailboxes), tone: m.overQuotaMailboxes > 0 ? 'crit' : 'ok' },
+  ];
+  return (
+    <MatrixTile title="Mail" to="/email/operations" cells={cells} card={(
+      <HoverCard title="Mail — last 7 days" rows={[
+        ['Delivered', m.sent7d.toLocaleString()],
+        ['Rate-limited', m.rateLimited7d.toLocaleString()],
+        ['Mailboxes', String(m.mailboxes)],
+        ['Email domains', String(m.emailDomains)],
+        ['Mailboxes over quota', String(m.overQuotaMailboxes)],
+      ]} note="At 100% of its quota a mailbox refuses inbound mail at RCPT TO." />
+    )} />
+  );
+}
+
+function WebDefenceTile({ live }: { live: Live | undefined }) {
+  const w = live?.webDefence.data;
+  if (!w) return <SectionFallback title="Web defence" to="/security/web-defense" section={live?.webDefence ?? { state: 'stale', reason: null, observedAt: null }} />;
+  const cells: MatrixCell[] = [
+    { k: 'Blocked · 24h', v: w.blocked24h.toLocaleString(), tone: w.blocked24h > 0 ? 'warn' : 'ok' },
+    { k: 'Critical', v: w.critical24h.toLocaleString() },
+    { k: 'Sources', v: String(w.distinctSources) },
+    { k: 'Top rule', v: w.topRuleId ?? '—' },
+  ];
+  return (
+    <MatrixTile title="Web defence" to="/security/web-defense" cells={cells} card={(
+      <HoverCard title="Web defence — last 24 hours" rows={[
+        ['Requests blocked', w.blocked24h.toLocaleString()],
+        ['Critical', w.critical24h.toLocaleString()],
+        ['Distinct sources', String(w.distinctSources)],
+        ['Most hit rule', w.topRuleId ?? '—'],
+      ]} note="Your own address may be allowlisted — a probe from here can read as a pass." />
+    )} />
+  );
+}
+
+function TenantsTile({ summary }: { summary: Summary | undefined }) {
+  const t = summary?.tenants.data;
+  if (!t) return <SectionFallback title="Tenants & workloads" to="/tenants" section={summary?.tenants ?? { state: 'stale', reason: null, observedAt: null }} />;
+  const cells: MatrixCell[] = [
+    { k: 'Active', v: String(t.active), sub: `of ${t.total}` },
+    { k: 'Routes', v: String(t.routes) },
+    { k: 'Domains', v: String(t.domains) },
+    { k: 'Provisioning', v: String(t.provisioningInFlight), tone: t.provisioningInFlight > 0 ? 'warn' : undefined, sub: t.provisioningInFlight > 0 ? 'in flight' : undefined },
+  ];
+  return (
+    <MatrixTile title="Tenants & workloads" to="/tenants" cells={cells} card={(
+      <HoverCard title="Tenancy" rows={[
+        ['Active tenants', String(t.active)],
+        ['Total', String(t.total)],
+        ['Ingress routes', String(t.routes)],
+        ['Domains', String(t.domains)],
+        ['Provisioning in flight', String(t.provisioningInFlight)],
+      ]} note="A tenant above 90% of any limit opens one alert episode, not one per hour." />
+    )} />
+  );
+}
+
+function BackupsTile({ summary }: { summary: Summary | undefined }) {
+  const b = summary?.backups.data;
+  if (!b) return <SectionFallback title="Backups & DR" to="/backups" section={summary?.backups ?? { state: 'stale', reason: null, observedAt: null }} />;
+  // Built on the three shim classes, not on one blended "backups are fine"
+  // number: each routes to its own target and can go stale alone.
+  const cells: MatrixCell[] = b.classes.map((c) => ({
+    k: c.backupClass,
+    v: c.lastSuccessAt ? ago(c.lastSuccessAt) : (c.healthy ? 'target set' : '—'),
+    sub: c.lastSuccessAt ? 'ago' : undefined,
+    tone: c.healthy ? 'ok' : 'warn',
+  }));
+  cells.push({ k: 'Bundles', v: b.bundles.toLocaleString() });
+  return (
+    <MatrixTile title="Backups & DR" to="/backups" cells={cells.slice(0, 4)} card={(
+      <HoverCard title="Backup classes" rows={[
+        ...b.classes.flatMap((c) => ([
+          [`${c.backupClass} — last success`, c.lastSuccessAt ? `${ago(c.lastSuccessAt)} ago` : 'never recorded'],
+          [`${c.backupClass} target`, c.targetName ? `${c.targetName} · ${c.targetKind ?? '?'}` : 'unassigned'],
+        ] as Array<[string, string]>)),
+        ['Bundles', b.bundles.toLocaleString()],
+        ['Repository size', bytesToGb(b.repoBytes)],
+        ['Tenants never backed up', String(b.tenantsNeverBackedUp)],
+      ]} note="Each class routes to its own target independently — one can go stale without the other two noticing." />
+    )} />
+  );
+}
+
+/* ── operations tiles ────────────────────────────────────────────── */
+
+function CertificatesTile({ summary }: { summary: Summary | undefined }) {
+  const c = summary?.certificates.data;
+  if (!c) return <SectionFallback title="Certificates" to="/domains" section={summary?.certificates ?? { state: 'stale', reason: null, observedAt: null }} />;
+  return (
+    <MatrixTile title="Certificates" to="/domains" cells={[
+      { k: 'Issued', v: String(c.issued) },
+      { k: 'Wildcards', v: String(c.wildcards), tone: 'ok' },
+      { k: 'Nearest expiry', v: c.nearestExpiryDays == null ? '—' : `${c.nearestExpiryDays}d`,
+        tone: c.nearestExpiryDays != null && c.nearestExpiryDays < 14 ? 'crit' : undefined },
+      { k: 'Failing', v: String(c.failing), tone: c.failing > 0 ? 'crit' : 'ok' },
+    ]} card={(
+      <HoverCard title="TLS" rows={[
+        ['Certificates', String(c.issued)],
+        ['With a wildcard SAN', String(c.wildcards)],
+        ['Nearest expiry', c.nearestExpiryDays == null ? '—' : `${c.nearestExpiryDays} days`],
+        ['Renewal failures', String(c.failing)],
+      ]} note="Wildcards cover webmail and autodiscover on tenant domains at no extra cost." />
+    )} />
+  );
+}
+
+function ScheduledTasksTile({ summary }: { summary: Summary | undefined }) {
+  const t = summary?.scheduledTasks.data;
+  if (!t) return <SectionFallback title="Scheduled" to="/platform/cron-jobs" section={summary?.scheduledTasks ?? { state: 'stale', reason: null, observedAt: null }} />;
+  return (
+    <MatrixTile title="Scheduled tasks" to="/platform/cron-jobs" cells={[
+      { k: 'Jobs', v: String(t.total), sub: `${t.enabled} enabled` },
+      { k: 'Failed · 24h', v: String(t.failed24h), tone: t.failed24h > 0 ? 'warn' : 'ok' },
+      { k: 'Enabled', v: String(t.enabled) },
+      { k: 'Overdue', v: String(t.overdue), tone: t.overdue > 0 ? 'warn' : undefined },
+    ]} card={(
+      <HoverCard title="Cron & platform jobs" rows={[
+        ['Jobs', String(t.total)],
+        ['Enabled', String(t.enabled)],
+        ['Failures, 24h', String(t.failed24h)],
+      ]} note="A job that has never succeeded shows an empty last-success, not a zero." />
+    )} />
+  );
+}
+
+function UpdatesTile({ summary }: { summary: Summary | undefined }) {
+  const u = summary?.updates.data;
+  if (!u) return <SectionFallback title="Updates" to="/platform/updates" section={summary?.updates ?? { state: 'stale', reason: null, observedAt: null }} />;
+  return (
+    <MatrixTile title="Updates" to="/platform/updates" cells={[
+      { k: 'Platform', v: u.platformCurrent ? 'Current' : 'Behind', tone: u.platformCurrent ? 'ok' : 'warn' },
+      { k: 'Apps behind', v: String(u.deploymentsBehind), tone: u.deploymentsBehind > 0 ? 'warn' : 'ok' },
+      { k: 'Auto-upgrade', v: String(u.autoUpgradeEnabled) },
+      { k: 'EOL runtimes', v: String(u.eolRuntimes), tone: u.eolRuntimes > 0 ? 'warn' : 'ok' },
+    ]} card={(
+      <HoverCard title="Available upgrades" rows={[
+        ['Platform release', u.platformCurrent ? 'current' : 'behind'],
+        ['Deployments behind', String(u.deploymentsBehind)],
+        ['Auto-upgrade enabled', String(u.autoUpgradeEnabled)],
+        ['Runtimes past end-of-life', String(u.eolRuntimes)],
+      ]} note="Advisory locks let a tenant pin a version; blocking locks would refuse the upgrade." />
+    )} />
+  );
+}
+
+function ChangesTile({ summary }: { summary: Summary | undefined }) {
+  const rows = summary?.recentChanges.data ?? [];
+  return (
+    <Tile title="Changes" to="/monitoring/audit-logs">
+      <div className="flex flex-1 flex-col gap-px overflow-hidden rounded-lg bg-gray-200 dark:bg-gray-700">
+        {rows.length === 0 ? (
+          <p className="bg-white p-2.5 text-xs text-gray-500 dark:bg-gray-800 dark:text-gray-400">Nothing recorded.</p>
+        ) : rows.slice(0, 5).map((r, i) => (
+          <div key={`${r.label}-${i}`} className={`flex min-w-0 items-center gap-2 border-l-2 bg-white px-2.5 py-1.5 dark:bg-gray-800 ${
+            r.severity === 'critical' ? 'border-red-500' : r.severity === 'warning' ? 'border-amber-500' : 'border-green-500'
+          }`}>
+            <span className="min-w-0 flex-1 truncate text-xs text-gray-800 dark:text-gray-200">{r.label}</span>
+            <span className="shrink-0 font-mono text-[11px] tabular-nums text-gray-500 dark:text-gray-400">{ago(r.at)}</span>
+          </div>
+        ))}
+      </div>
+    </Tile>
   );
 }
