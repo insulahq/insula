@@ -47,6 +47,9 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   state, so one slow source greys a single tile and says why, instead of
   leaving the page blank.
 
+- The tenant Email page no longer describes the webmail toggle as
+  "→ Roundcube". It names no engine, because the operator chooses which one
+  the platform runs.
 
 ### Fixed
 - **Tenant webmail addresses now actually work.** Turning on webmail for a
@@ -70,13 +73,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   previous cleanup only looked for the old record type, so disabling webmail
   could leave the address published.
 
-### Changed
-- The tenant Email page no longer describes the webmail toggle as
-  "→ Roundcube". It names no engine, because the operator chooses which one
-  the platform runs.
-
-
-### Fixed
 - **A tenant that is low on space no longer mails you every hour, forever.** A
   tenant sitting above 90% of its CPU, memory or storage allocation sent the
   operator *and* the tenant a notification every single hour, on the hour, for
@@ -95,6 +91,49 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   Nothing needs configuring, and an ongoing situation on an upgraded cluster is
   picked up where it stands: the first evaluation after the upgrade opens one
   episode and then goes quiet.
+
+- **The mail statistics endpoint never worked.** `GET /admin/mail/stats`
+  answered an error for its entire life: the mailbox summary asked the
+  database to count mailboxes whose status was `suspended`, a value mailbox
+  status has never had — it has been `active` or `disabled` since the first
+  migration. The server rejected the query outright, so the endpoint could
+  only ever fail. It now counts active and disabled mailboxes, and the
+  response names the `disabled` bucket for what it holds.
+
+- **A platform that cannot see its cluster now says so instead of hanging.**
+  Command-line tools run outside the cluster, and without a kubeconfig to
+  point at, silently built a Kubernetes client aimed at a non-existent
+  address. Every call against it then waited on a connection that could never
+  open. Callers were written to notice "there is no cluster here" and fall
+  back — deleting a tenant, for instance, falls back to a database-only
+  cascade — but that fallback could never trigger, because nothing ever
+  reported the failure. The platform now recognises that it has no usable
+  cluster configuration and takes the fallback it was always meant to.
+
+- **Starting several replicas at once could fail to bring up the platform.**
+  On a high-availability cluster every replica checks for the SYSTEM tenant at
+  startup and races to create it if missing. Exactly one was supposed to win
+  and the rest to notice and carry on. The losers instead stopped with an
+  error, because the database rejected them over the duplicate namespace
+  before it ever reached the rule the recovery was watching for. Any replica
+  that loses the race now recovers as intended.
+
+- **Editing a tenant's name no longer runs a suspend/resume cycle.** The
+  tenant form submits every field, so saving a name change also re-sent the
+  tenant's current status — and that was enough to call the suspend/resume
+  machinery, which did the work of looking, concluded nothing had changed, and
+  threw the answer away. Saving a name is now just saving a name; genuine
+  status changes are unaffected.
+
+### Fixed (developer tooling)
+- **The integration test suites had never run.** Continuous integration
+  started a database for them and then ran a command configured to skip every
+  integration test, so sixteen suites had never executed there — which is how
+  the mail statistics endpoint above shipped broken and stayed that way. They
+  now run on every change, and the run fails if any suite skips itself: these
+  tests quietly pass when they cannot reach a database, so "nothing ran" would
+  otherwise be indistinguishable from "everything passed".
+
 
 ## [2026.9.28] - 2026-09-21
 
