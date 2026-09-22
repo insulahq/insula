@@ -30,10 +30,11 @@
 import type { FastifyInstance } from 'fastify';
 import { eq, and } from 'drizzle-orm';
 import type { BackupStore } from '../../tenant-bundles/bundle-store.js';
+import { resolveBundleRepoLayout } from '../../tenant-bundles/repo-layout.js';
 import { restoreItems, restoreJobs, tenants, backupComponents, deployments, catalogEntries, type RestoreItem } from '../../../db/schema.js';
 import { ApiError } from '../../../shared/errors.js';
 import { scaleDeploymentReplicas } from '../../../shared/scale-deployment.js';
-import { tailJobLog } from '../../storage-lifecycle/job-log-tail.js';
+import { readJobLogTail, tailJobLog } from '../../storage-lifecycle/job-log-tail.js';
 import { createK8sClients, type K8sClients } from '../../k8s-provisioner/k8s-client.js';
 import { resolveShimBackupTarget } from '../../tenant-bundles/resolve-backup-target.js';
 import {
@@ -113,7 +114,7 @@ export async function execFilesPathsItem(args: {
   const k8s: K8sClients = createK8sClients(kubeconfigPath);
   const target = await resolveShimBackupTarget(k8s.core, 'tenant', app.log);
   const passwordHex = deriveResticPassword(secretsKeyHex, job.tenantId);
-  const repoUri = buildResticRepoUri(target, job.tenantId, 'files');
+  const repoUri = buildResticRepoUri(target, job.tenantId, 'files', await resolveBundleRepoLayout(app.db, item.bundleId));
   const env = buildResticEnv(target);
 
   // ── Build + dispatch the restore Job ──────────────────────────────
@@ -195,9 +196,11 @@ export async function execFilesPathsItem(args: {
         .where(eq(restoreItems.id, item.id));
     });
 
-    // Read the Job's tail log to surface a result line.
+    // Read the Job's tail log to surface a result line. readJobLogTail, not
+    // tailJobLog — the latter returns only the LAST line, so this match works
+    // only for as long as FILES_RESTORED happens to be emitted last.
     let log = '';
-    try { log = (await tailJobLog(k8s, namespace, jobName, { tailLines: 30, maxLineLength: 5000 })) ?? ''; } catch { /* ignore */ }
+    try { log = (await readJobLogTail(k8s, namespace, jobName, { tailLines: 60 })) ?? ''; } catch { /* ignore */ }
     const extracted = (log.match(/FILES_RESTORED count=(\d+)/) ?? [])[1] ?? '?';
 
     await app.db.update(restoreItems)

@@ -35,7 +35,7 @@ import {
   upstreamRootPath,
   type BackupTargetConfig,
 } from '../backup-rclone-shim/rclone-config.js';
-import type { BackupStore } from '../tenant-bundles/bundle-store.js';
+import type { BackupStore, BundleHandle } from '../tenant-bundles/bundle-store.js';
 import { resolveShimFirstBackupStore } from '../tenant-bundles/shim-backup-store.js';
 import { execConfigTablesItem } from './executors/config-tables.js';
 import { execDatabasesByIdItem } from './executors/databases-by-id.js';
@@ -253,6 +253,43 @@ export async function readConfigDump(app: FastifyInstance, bundleId: string): Pr
   const buf = gunzipSync(Buffer.concat(chunks));
   const dump = JSON.parse(buf.toString('utf8')) as { tables?: Record<string, unknown[]> };
   return { tables: dump.tables ?? {} };
+}
+
+/**
+ * Mailbox addresses captured in a bundle, for the restore cart's picker.
+ *
+ * Sourced from `meta.json` (`components.mailboxes.addresses`), NOT from
+ * `store.listArtifacts(handle, 'mailboxes')`. The artifact listing was written
+ * for the pre-restic layout where each mailbox was a `<address>.mbox.tar.gz`
+ * object under the bundle prefix. Since the component became restic-only,
+ * that listing is always EMPTY, so the picker rendered "No mailboxes captured
+ * in this bundle" for bundles that captured every one of them (ADR-061).
+ *
+ * The manifest carries the addresses for every bundle this platform has ever
+ * written, so this also repairs the picker for bundles captured before ADR-061.
+ * The artifact listing stays as a fallback for the oldest bundles, whose meta
+ * predates the `addresses` field.
+ */
+export async function readMailboxAddresses(
+  store: BackupStore,
+  handle: BundleHandle,
+): Promise<string[]> {
+  try {
+    const meta = await store.getMeta(handle);
+    const addresses = meta.components?.mailboxes?.addresses;
+    if (Array.isArray(addresses) && addresses.length > 0) {
+      return [...addresses].sort();
+    }
+  } catch {
+    // Fall through to the artifact listing — a bundle whose meta.json is
+    // missing or unreadable is a real problem, but it is the restore path's
+    // problem to report, not the picker's.
+  }
+  const refs = await store.listArtifacts(handle, 'mailboxes');
+  return refs
+    .map((r) => r.name.replace(/\.mbox\.tar\.gz$/, ''))
+    .filter((s) => s.length > 0)
+    .sort();
 }
 
 /**

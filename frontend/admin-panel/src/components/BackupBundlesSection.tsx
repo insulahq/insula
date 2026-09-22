@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Package, Plus, Trash2, ShieldCheck, Loader2, AlertCircle, CheckCircle, X, Database, KeyRound, FolderOpen, RotateCcw, Download, Lock } from 'lucide-react';
+import { Package, Plus, Trash2, ShieldCheck, Loader2, AlertCircle, CheckCircle, X, Database, KeyRound, FolderOpen, RotateCcw, Download, Lock, FileArchive } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import StatusBadge from '@/components/ui/StatusBadge';
 import {
@@ -7,6 +7,7 @@ import {
   useCreateBundle,
   useDeleteBundle,
   useVerifyBundle,
+  downloadBundleExport,
   downloadDataExport,
 } from '@/hooks/use-backup-bundles';
 import { useTenants } from '@/hooks/use-tenants';
@@ -171,6 +172,7 @@ function BundleRow({
   onVerify: (id: string) => void;
   onDelete: (id: string) => void;
 }) {
+  const [exporting, setExporting] = useState(false);
   const target = configs.find((c) => c.id === bundle.targetConfigId);
   const targetLabel = target ? target.name : `${bundle.targetKind}://${bundle.targetConfigId ?? '?'}`;
   return (
@@ -178,8 +180,12 @@ function BundleRow({
       <td className="px-3 py-2 font-mono text-xs text-gray-600 dark:text-gray-400" title={bundle.id}>
         {bundle.id.slice(0, 16)}…
       </td>
-      <td className="px-3 py-2 font-mono text-xs text-gray-600 dark:text-gray-400" title={bundle.tenantId}>
-        {bundle.tenantId.slice(0, 8)}
+      <td className="px-3 py-2 text-xs text-gray-700 dark:text-gray-300" title={bundle.tenantId}>
+        {bundle.tenantName ?? (
+          <span className="italic text-gray-400 dark:text-gray-500" title={`tenant ${bundle.tenantId} no longer exists`}>
+            deleted tenant
+          </span>
+        )}
       </td>
       <td className="px-3 py-2 text-gray-900 dark:text-gray-100">
         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300">
@@ -223,6 +229,22 @@ function BundleRow({
             >
               <RotateCcw size={14} /> Restore
             </Link>
+          )}
+          {bundle.status === 'completed' && (
+            <button
+              type="button"
+              disabled={exporting}
+              onClick={async () => {
+                setExporting(true);
+                try { await downloadBundleExport(bundle.id, 'tar', null); }
+                catch (e) { window.alert(`Export failed: ${(e as Error).message}`); }
+                finally { setExporting(false); }
+              }}
+              className="cursor-pointer flex items-center gap-1 px-2 py-1 rounded text-xs font-medium text-emerald-700 dark:text-emerald-300 hover:bg-emerald-50 dark:hover:bg-emerald-950/30 disabled:opacity-40 disabled:cursor-not-allowed"
+              title="Download the whole bundle as a tar.gz — meta.json, config, secrets, every file and every mailbox. Streams from the off-site target; the secrets component stays inner-encrypted."
+            >
+              {exporting ? <Loader2 size={14} className="animate-spin" /> : <FileArchive size={14} />} Export
+            </button>
           )}
           {bundle.exportArtifact && bundle.status === 'completed' && (
             <button

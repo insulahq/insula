@@ -104,6 +104,20 @@ describe('buildFilesComponentJobSpec', () => {
     expect(cmd).toContain('--json');
   });
 
+  it('passes --compression auto EXPLICITLY, never relying on the default', () => {
+    // restic's default IS `auto` on a v2 repo, but the flag's default value is
+    // `$RESTIC_COMPRESSION` — so an env var set anywhere in the Job's
+    // environment would otherwise change how tenant data is stored, silently
+    // and cluster-wide. (An earlier comment here claimed the default was
+    // `off` and that files were stored uncompressed; it was wrong.)
+    const spec = buildFilesComponentJobSpec(baseInput) as {
+      spec: { template: { spec: { containers: Array<{ command: string[] }> } } };
+    };
+    const cmd = spec.spec.template.spec.containers[0]!.command.join(' ');
+    expect(cmd).toContain('--compression auto');
+    expect(cmd).not.toContain('--compression off');
+  });
+
   it('passes every snapshot tag as a --tag argument', () => {
     const spec = buildFilesComponentJobSpec(baseInput) as {
       spec: { template: { spec: { containers: Array<{ command: string[] }> } } };

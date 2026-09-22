@@ -122,6 +122,43 @@ describe('buildResticRepoUri', () => {
     expect(() => buildResticRepoUri(s3Target, '../etc/passwd', 'files')).toThrow(/tenantId/i);
     expect(() => buildResticRepoUri(s3Target, 'a/b', 'files')).toThrow(/tenantId/i);
   });
+  describe('buildResticRepoUri — layout', () => {
+    // ADR-061: the merge is safe only because an ABSENT layout resolves to the
+    // repository a bundle was actually written to. If the default ever flips,
+    // every pre-merge bundle starts reading from a repository that does not
+    // hold it — which surfaces as "the backup is gone", not as an error.
+    it('defaults to the historical per-component split', () => {
+      expect(buildResticRepoUri(s3Target, 'tenant-abc', 'files'))
+        .toBe(buildResticRepoUri(s3Target, 'tenant-abc', 'files', 'per-component'));
+      expect(buildResticRepoUri(s3Target, 'tenant-abc', 'files')).toContain('restic-files/tenant-abc');
+    });
+
+    it('puts every component in one repository under per-tenant', () => {
+      const files = buildResticRepoUri(s3Target, 'tenant-abc', 'files', 'per-tenant');
+      const mail = buildResticRepoUri(s3Target, 'tenant-abc', 'mailboxes', 'per-tenant');
+      expect(files).toBe(mail);
+      expect(files).toContain('restic/tenant-abc');
+      expect(files).not.toContain('restic-files');
+    });
+
+    it('keeps the two layouts on DISTINCT paths', () => {
+      // `restic/<id>` must not be a prefix collision with `restic-files/<id>`.
+      const merged = buildResticRepoUri(s3Target, 'tenant-abc', 'files', 'per-tenant');
+      const split = buildResticRepoUri(s3Target, 'tenant-abc', 'files', 'per-component');
+      expect(merged).not.toBe(split);
+      expect(split.startsWith(merged)).toBe(false);
+    });
+
+    it('applies the layout on every target kind', () => {
+      expect(buildResticRepoUri(sftpTarget, 'tenant-abc', 'mailboxes', 'per-tenant')).toContain('restic/tenant-abc');
+      expect(buildResticRepoUri(hostpathTarget, 'tenant-abc', 'mailboxes', 'per-tenant')).toContain('restic/tenant-abc');
+    });
+
+    it('rejects an unknown layout rather than falling back', () => {
+      expect(() => buildResticRepoUri(s3Target, 'tenant-abc', 'files', 'per-clients' as never))
+        .toThrow(/layout/i);
+    });
+  });
 });
 
 describe('buildResticEnv', () => {

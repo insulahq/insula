@@ -78,6 +78,7 @@ def _write_message(
     uid: int,
     body: bytes,
     flags: frozenset[str],
+    internal_date: int | None,
 ) -> str:
     """
     Write one captured message to the Maildir layout. Returns its path.
@@ -91,7 +92,11 @@ def _write_message(
     written before this change).
     """
     suffix = maildir_flags_suffix(flags)
-    unique = deterministic_unique(uid, folder)
+    # A server that omits INTERNALDATE leaves us no real date; fall back to the
+    # capture clock for THAT message only (it then behaves as every message did
+    # before ADR-061). Stalwart always sends it.
+    idate = int(internal_date) if internal_date is not None else int(time.time())
+    unique = deterministic_unique(uid, folder, idate)
     fname = f"{unique}:2,{suffix}"
     addr_dir = _safe_filename(account_address)
     mb_name = _safe_filename(folder)
@@ -103,6 +108,10 @@ def _write_message(
     with open(tmp, "wb") as f:
         f.write(body)
     os.rename(tmp, target_path)
+    # Stamp the file's mtime with the message date too. The tar-stream capture
+    # is gone, but a stable mtime is what lets restic treat an unchanged message
+    # as unchanged instead of re-reading it (ADR-061).
+    os.utime(target_path, (idate, idate))
     # Sidecar with custom keywords if any are set. We skip writing the
     # file at all when there are none — keeps the maildir tree tidy.
     extras = custom_keywords(flags)
@@ -113,6 +122,7 @@ def _write_message(
             for kw in sorted(extras):
                 f.write(kw + "\n")
         os.rename(sidecar_tmp, sidecar)
+        os.utime(sidecar, (idate, idate))
     return target_path
 
 
@@ -178,7 +188,7 @@ def run(args: argparse.Namespace) -> int:
                 folder_fetched = 0
                 folder_skipped = 0
                 try:
-                    for uid, flags, body in client.fetch_all_bodies():
+                    for uid, flags, internal_date, body in client.fetch_all_bodies():
                         try:
                             _write_message(
                                 args.output_dir,
@@ -187,6 +197,7 @@ def run(args: argparse.Namespace) -> int:
                                 uid,
                                 body,
                                 flags,
+                                internal_date,
                             )
                             folder_fetched += 1
                         except OSError as e:

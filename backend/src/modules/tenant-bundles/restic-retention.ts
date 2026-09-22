@@ -85,6 +85,7 @@ import {
 import { anchorResticRepoTotal } from './repo-state.js';
 import { notifyResticFailure } from './restic-failure-notify.js';
 import { resolveShimBackupTarget } from './resolve-backup-target.js';
+import { layoutsWithLiveBundles, repoLayoutForStateRow } from './repo-layout.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
 export type RepoSkipReason =
@@ -370,19 +371,35 @@ export async function runResticRetentionSweep(
       }
     }
 
-    const repoUri = buildResticRepoUri(target, tenantId, component as ResticComponent);
+    // Which repositories this row's snapshots are actually in.
+    //
+    // The state row records only the MOST RECENT repository, so after the
+    // merge it stops naming the legacy one — and a tenant's pre-merge
+    // snapshots would then never be swept again, leaking until someone
+    // deleted the repository by hand. So sweep every layout the tenant still
+    // has live bundles in, not just the one the row happens to point at.
+    const layoutsToSweep = await layoutsWithLiveBundles(db, tenantId, component);
+    for (const layout of layoutsToSweep) {
+    const repoUri = buildResticRepoUri(target, tenantId, component as ResticComponent, layout);
     try {
       // Keep-set: snapshots belonging to bundles that are still live. A bundle
       // is live when it completed (fully or partially) AND has not passed its
       // expires_at. Note this keys off expires_at directly rather than
       // status='expired', so the reconciler agrees with the expiry sweep even
       // when it has not run yet.
+      //
+      // The component filter is dropped for a MERGED repository, because that
+      // repository holds every component's snapshots. Filtering it to one
+      // component there would make every OTHER component's snapshot look
+      // unreferenced — and an unreferenced snapshot is one this sweep forgets.
+      // That is the single most destructive thing this file can get wrong, so
+      // it is expressed as a widening of the keep-set, never a narrowing.
       const keepRows = await db.execute(sql`
         SELECT bc.sha256 AS snapshot_id, bj.id AS bundle_id
         FROM backup_components bc
         JOIN backup_jobs bj ON bj.id = bc.backup_job_id
         WHERE bj.tenant_id = ${tenantId}
-          AND bc.component::text = ${component}
+          ${layout === 'per-tenant' ? sql`` : sql`AND bc.component::text = ${component}`}
           AND bj.status IN ('completed','partial')
           AND (bj.expires_at IS NULL OR bj.expires_at > ${now()})
       `) as unknown as { rows: Array<{ snapshot_id: string | null; bundle_id: string }> };
@@ -537,6 +554,7 @@ export async function runResticRetentionSweep(
       repos.push({ ...base, repoUri, skipped: null, error: msg.slice(0, 300) });
       errors++;
     }
+    }
   }
 
   // ── Prune pass ────────────────────────────────────────────────────────────
@@ -554,9 +572,17 @@ export async function runResticRetentionSweep(
       LIMIT ${args.maxPrunes ?? DEFAULT_MAX_PRUNES}
     `) as unknown as { rows: Array<{ tenant_id: string; component: string }> };
 
+    // A merged repository is reached by both of a tenant's component rows;
+    // pruning it twice in one pass is wasted work on an exclusive lock.
+    const prunedRepos = new Set<string>();
     for (const { tenant_id: tenantId, component } of due.rows) {
       if (!RESTIC_COMPONENTS.has(component)) continue;
-      const repoUri = buildResticRepoUri(target, tenantId, component as ResticComponent);
+      const repoUri = buildResticRepoUri(
+        target, tenantId, component as ResticComponent,
+        await repoLayoutForStateRow(db, tenantId, component),
+      );
+      if (prunedRepos.has(repoUri)) continue;
+      prunedRepos.add(repoUri);
       const startedAt = Date.now();
       try {
         await runResticPrune({
@@ -655,10 +681,27 @@ export async function runResticRetentionSweep(
       );
     }
 
+    // Measured once per REPOSITORY. Under the merged layout both component
+    // rows name the same repository, and anchoring its full size against each
+    // of them would double the tenant's reported storage — the rollup sums the
+    // rows. The size lands on the first component seen; the others anchor 0,
+    // so the per-tenant total stays exact.
+    const measuredRepos = new Set<string>();
     for (const { tenantId, component } of queue) {
       if (!RESTIC_COMPONENTS.has(component)) continue;
       try {
-        const repoUri = buildResticRepoUri(target, tenantId, component as ResticComponent);
+        const repoUri = buildResticRepoUri(
+          target, tenantId, component as ResticComponent,
+          await repoLayoutForStateRow(db, tenantId, component),
+        );
+        if (measuredRepos.has(repoUri)) {
+          await anchorResticRepoTotal({
+            db, tenantId, component, totalBytes: 0, measuredAt: now(),
+          });
+          reposAnchored += 1;
+          continue;
+        }
+        measuredRepos.add(repoUri);
         const stats = await runResticStats({
           target,
           passwordHex: deriveResticPassword(secretsKeyHex, tenantId),

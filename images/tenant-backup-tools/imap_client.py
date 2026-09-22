@@ -27,6 +27,7 @@ References:
 """
 from __future__ import annotations
 
+import calendar
 import re
 import socket
 import ssl
@@ -34,6 +35,46 @@ import sys
 import time
 from dataclasses import dataclass
 from typing import Callable, Iterator
+
+
+# ── INTERNALDATE ────────────────────────────────────────────────────────────
+
+_MONTHS = {
+    "Jan": 1, "Feb": 2, "Mar": 3, "Apr": 4, "May": 5, "Jun": 6,
+    "Jul": 7, "Aug": 8, "Sep": 9, "Oct": 10, "Nov": 11, "Dec": 12,
+}
+
+_INTERNALDATE_RE = re.compile(
+    r'INTERNALDATE "\s*(\d{1,2})-(\w{3})-(\d{4}) '
+    r'(\d{2}):(\d{2}):(\d{2}) ([+-])(\d{2})(\d{2})"'
+)
+
+
+def parse_internaldate(attrs_blob: str) -> int | None:
+    """
+    Extract the RFC 3501 INTERNALDATE from a FETCH attribute blob and return
+    it as a unix timestamp. `None` when absent or unparseable.
+
+    INTERNALDATE is the message's arrival time on the server — the date every
+    mail client sorts by. It is the correct source for the Maildir filename
+    timestamp, which `imap-restore.py` reads back and replays as the
+    INTERNALDATE on APPEND (ADR-061).
+    """
+    m = _INTERNALDATE_RE.search(attrs_blob)
+    if not m:
+        return None
+    day, mon, year, hh, mm, ss, sign, off_h, off_m = m.groups()
+    month = _MONTHS.get(mon)
+    if month is None:
+        return None
+    try:
+        utc = calendar.timegm(
+            (int(year), month, int(day), int(hh), int(mm), int(ss), 0, 0, 0)
+        )
+    except (ValueError, OverflowError):
+        return None
+    offset = (int(off_h) * 3600 + int(off_m) * 60) * (1 if sign == "+" else -1)
+    return utc - offset
 
 
 # ── Errors ──────────────────────────────────────────────────────────────────
@@ -346,9 +387,11 @@ class ImapClient:
                 return [int(p) for p in parts[2:] if p.isdigit()]
         return []
 
-    def fetch_all_bodies(self) -> Iterator[tuple[int, frozenset[str], bytes]]:
+    def fetch_all_bodies(self) -> Iterator[tuple[int, frozenset[str], int | None, bytes]]:
         """
-        FETCH 1:* (UID FLAGS BODY.PEEK[]) — streams (uid, flags, body) tuples.
+        FETCH 1:* (UID FLAGS INTERNALDATE BODY.PEEK[]) — streams
+        (uid, flags, internal_date, body) tuples. `internal_date` is a unix
+        timestamp, or None when the server omits/mangles it.
         Caller must have already SELECT/EXAMINEd a mailbox.
 
         We parse the streamed response inline because FETCH responses
@@ -359,7 +402,7 @@ class ImapClient:
         if self._sock is None:
             raise ImapError("client not connected")
         tag = self._next_tag()
-        self._send_raw(tag + b" FETCH 1:* (UID FLAGS BODY.PEEK[])\r\n")
+        self._send_raw(tag + b" FETCH 1:* (UID FLAGS INTERNALDATE BODY.PEEK[])\r\n")
 
         # State for the current FETCH untagged entry.
         # Stalwart emits: `* <seq> FETCH (UID 123 FLAGS (\Seen) BODY[] {N}`
@@ -384,6 +427,7 @@ class ImapClient:
             flags_m = re.search(r"FLAGS \(([^)]*)\)", attrs_blob)
             uid = int(uid_m.group(1)) if uid_m else 0
             flag_list = (flags_m.group(1).split() if flags_m else [])
+            internal_date = parse_internaldate(attrs_blob)
             body = self._read_exact(body_len)
             # After the literal, RFC 9051 allows the server to interleave
             # untagged responses (e.g. * N EXPUNGE, * N RECENT, * FLAGS)
@@ -405,7 +449,7 @@ class ImapClient:
                     f"fetch_all_bodies: unexpected post-literal line: {stripped!r}"
                 )
                 break
-            yield uid, frozenset(flag_list), body
+            yield uid, frozenset(flag_list), internal_date, body
 
     def append_single_sync(
         self,
@@ -605,13 +649,26 @@ def custom_keywords(imap_flags: frozenset[str]) -> frozenset[str]:
     )
 
 
-def deterministic_unique(uid: int, mailbox: str, now: float | None = None) -> str:
+def deterministic_unique(uid: int, mailbox: str, internal_date: int) -> str:
     """
     Generate a Maildir filename's unique segment (the `<unix>.<unique>`
-    middle part of `<unix>.<unique>:2,<flags>`). Stable for a given
-    (uid, mailbox) pair so re-runs produce identical names.
+    middle part of `<unix>.<unique>:2,<flags>`).
+
+    `internal_date` is the message's IMAP INTERNALDATE as a unix timestamp,
+    and it is load-bearing twice over:
+
+      1. `imap-restore.py` parses the leading integer back out of the filename
+         and replays it as the restored message's INTERNALDATE — the date every
+         mail client sorts by.
+      2. It makes the name STABLE across captures, which is what lets restic
+         deduplicate a re-captured mailbox.
+
+    It used to default to `time.time()` — the capture clock — which stamped
+    every restored message with the night the backup ran AND gave every file a
+    new name on every run. Callers must now supply the real date; there is no
+    wall-clock fallback here, because that fallback was the bug (ADR-061).
     """
-    ts = int(now if now is not None else time.time())
+    ts = int(internal_date)
     # PID + hostname not needed because the script is the sole producer
     # of the output tree.
     safe_mb = re.sub(r"[^A-Za-z0-9._-]", "_", mailbox)[:32]

@@ -319,6 +319,21 @@ three sections:
 The deep operator runbooks for these live in the
 [Operator guide](../operator/system-backups-dr.md).
 
+## Exporting a bundle
+
+Every completed bundle has an **Export** button in the bundle list. It streams
+the whole bundle down as a `.tar.gz` — `meta.json`, the tenant's configuration
+rows, their TLS secrets, every file, and every mailbox as a browsable Maildir
+under `components/mailboxes/<address>/`. Nothing is staged on the server, so a
+large tenant downloads at the speed of your connection rather than waiting for
+the platform to assemble an archive first.
+
+The `secrets` component stays encrypted inside the archive with the platform's
+own key, so a plain download never exposes TLS private keys.
+
+Use this when a tenant asks for their data, when you are moving a tenant to
+another cluster by hand, or to satisfy a data-portability request.
+
 ## Restoring: the wizard and the cart
 
 Two restore experiences, depending on what you're restoring.
@@ -346,6 +361,18 @@ deployments, domains, mailboxes, or files — add them to the cart, then
 execute. The admin cart additionally supports **rollback** if a restore
 goes wrong. This is the surface to use when a customer needs "just my
 WordPress database from Tuesday", not the whole account.
+
+### Picking what to restore
+
+The cart's **Mailboxes** tab lists the tenant's mailbox addresses as captured
+in that bundle, so you pick `someone@example.test` rather than an identifier.
+Restoring one mailbox fetches only that mailbox.
+
+Bundle lists and disaster recovery show **tenant names**, not internal ids.
+Recovery offers the tenants that actually have bundles on the target —
+including tenants already deleted from this cluster, which is the case cold
+restore exists for. If you are recovering from a target this cluster has never
+written to, switch the field to accept a tenant id directly.
 
 ## On-demand backups and snapshots
 

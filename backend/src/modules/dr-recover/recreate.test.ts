@@ -179,6 +179,42 @@ describe('recreateTenantFromBundle', () => {
     expect(result.residualGaps).toEqual([...DR_RECREATE_RESIDUAL_GAPS]);
   });
 
+  it('registers ONE component row per mailbox for an ADR-061 bundle', async () => {
+    // Per-mailbox snapshots live in meta.components.mailboxes.snapshots. Building
+    // a single row off the legacy whole-tenant `sha256` would leave it null and
+    // the restore executor would report the bundle as having no mailboxes
+    // snapshot — mail silently unrecoverable on the path DR exists for.
+    vi.mocked(createTenant).mockResolvedValue({
+      id: TENANT_ID, kubernetesNamespace: NAMESPACE, status: 'pending',
+    } as unknown as Awaited<ReturnType<typeof createTenant>>);
+    const meta = makeMeta();
+    const perMailbox = {
+      ...meta.components.mailboxes,
+      sha256: undefined,
+      addresses: ['a@example.test', 'b@example.test'],
+      snapshots: { 'b@example.test': 'd'.repeat(64), 'a@example.test': 'c'.repeat(64) },
+    };
+    const metaV3 = {
+      ...meta,
+      components: { ...meta.components, mailboxes: perMailbox },
+    } as unknown as BackupMetaV2;
+    const { app, inserts } = makeApp([[{ id: PLAN_ID }], [{ id: REGION_ID }]]);
+
+    await recreateTenantFromBundle(app, TENANT_ID, BUNDLE_ID, {
+      targetNode: 'worker-2',
+      resolveStore: inject(makeStore(metaV3)),
+    });
+
+    const rows = inserts[1].values as Array<Record<string, unknown>>;
+    const mailboxRows = rows.filter((r) => r.component === 'mailboxes');
+    expect(mailboxRows).toHaveLength(2);
+    // Keyed by ADDRESS — that is what mailboxes-by-address resolves against.
+    expect(mailboxRows.map((r) => r.artifactName)).toEqual(['a@example.test', 'b@example.test']);
+    expect(mailboxRows.map((r) => r.sha256)).toEqual(['c'.repeat(64), 'd'.repeat(64)]);
+    // The other components are untouched by the per-mailbox branch.
+    expect(rows.filter((r) => r.component === 'files')).toHaveLength(1);
+  });
+
   it('rejects a bundle whose meta.tenantId does not match (400)', async () => {
     const meta = makeMeta({ tenantId: '99999999-2222-4333-8444-555555555555' });
     const { app } = makeApp([]);

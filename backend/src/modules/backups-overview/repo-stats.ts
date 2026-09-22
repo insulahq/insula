@@ -29,6 +29,7 @@ import {
 } from '../tenant-bundles/restic-driver.js';
 import { resolveShimBackupTarget } from '../tenant-bundles/resolve-backup-target.js';
 import { anchorResticRepoTotal } from '../tenant-bundles/repo-state.js';
+import { repoLayoutForStateRow } from '../tenant-bundles/repo-layout.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
 export interface RefreshRepoStatsArgs {
@@ -83,8 +84,24 @@ export async function refreshTenantRepoStats(args: RefreshRepoStatsArgs): Promis
   const components: Array<{ component: string; totalBytes: number | null; error: string | null }> = [];
   let total = 0;
 
+  // Measured once per REPOSITORY, not once per component. Under the merged
+  // layout (ADR-061) both component rows name the same repository, and
+  // measuring it twice would double this tenant's reported storage — the
+  // caller sums `components`. The size lands on the first component seen; any
+  // other component sharing that repository reports 0 rather than repeating
+  // it, so the total stays exact.
+  const measuredRepos = new Set<string>();
   for (const { component } of stateRows) {
-    const repoUri = buildResticRepoUri(target, tenantId, component as 'files' | 'mailboxes');
+    const repoUri = buildResticRepoUri(
+      target, tenantId, component as 'files' | 'mailboxes',
+      await repoLayoutForStateRow(db, tenantId, component),
+    );
+    if (measuredRepos.has(repoUri)) {
+      components.push({ component, totalBytes: 0, error: null });
+      await anchorResticRepoTotal({ db, tenantId, component, totalBytes: 0, measuredAt });
+      continue;
+    }
+    measuredRepos.add(repoUri);
     try {
       const stats = await runResticStats({ target, passwordHex, repoUri });
       total += stats.totalSizeBytes;

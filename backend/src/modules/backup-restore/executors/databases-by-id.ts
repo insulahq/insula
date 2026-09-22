@@ -46,6 +46,7 @@ import {
   type DatabasesSelector,
 } from '@insula/api-contracts';
 import type { BackupStore } from '../../tenant-bundles/bundle-store.js';
+import { resolveBundleRepoLayout } from '../../tenant-bundles/repo-layout.js';
 import {
   restoreItems,
   restoreJobs,
@@ -628,7 +629,7 @@ async function fetchPredumpsFromSnapshot(args: {
 
   const target = await resolveShimBackupTarget(k8s.core, 'tenant', app.log);
   const passwordHex = deriveResticPassword(secretsKeyHex, tenantId);
-  const repoUri = buildResticRepoUri(target, tenantId, 'files');
+  const repoUri = buildResticRepoUri(target, tenantId, 'files', await resolveBundleRepoLayout(app.db, bundleId));
   const env = buildResticEnv(target);
 
   // Include this bundle's predump files in each DB's datadir. restic --include
