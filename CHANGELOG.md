@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.9.29] - 2026-09-22
+
 ### Changed
 - **Both dashboards rebuilt around what you actually need to see.** The admin
   dashboard's own data source returned five numbers — how many tenants,
