@@ -1000,7 +1000,7 @@ export async function runResticRestore(args: RunResticRestoreArgs): Promise<void
 
 // ─── Dump a stored file as a stream (restore-into-PVC) ──────────────────────
 
-const DUMP_PATH_RE = /^\/?[A-Za-z0-9._/-]+$/;
+const DUMP_PATH_RE = /^\/?[A-Za-z0-9._@+/-]+$/;
 
 export interface RunResticDumpArgs {
   readonly target: BackupTarget;
@@ -1013,6 +1013,13 @@ export interface RunResticDumpArgs {
   readonly dumpPath: string;
   readonly passwordHex: string;
   readonly semaphore?: ResticConcurrencySemaphore;
+  /**
+   * When set, `dumpPath` is a DIRECTORY and restic emits it as an archive
+   * stream instead of a single file's bytes. Used by the data export, which
+   * has to reproduce a component that exists only as a restic snapshot
+   * (ADR-061) without staging it on the API pod.
+   */
+  readonly archive?: 'tar' | 'zip';
 }
 
 /**
@@ -1071,7 +1078,9 @@ export async function runResticDump(args: RunResticDumpArgs): Promise<Readable> 
     cliArgs.push('--repo', repoUri);
     cliArgs.push(...performanceOpts(args.target));
     cliArgs.push('--no-lock');
-    cliArgs.push('dump', args.snapshotId, args.dumpPath);
+    cliArgs.push('dump');
+    if (args.archive) cliArgs.push('--archive', args.archive);
+    cliArgs.push(args.snapshotId, args.dumpPath);
 
     const child = spawnRestic(cliArgs, env);
     let stderrBuf = '';
