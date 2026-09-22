@@ -397,6 +397,23 @@ export async function captureMailboxesComponent(
       );
     }
 
+    // Compression, per mailbox, in the bundle's own progress channel. restic
+    // reports both numbers on every snapshot; until now only the packed one
+    // was echoed, so the ratio could not be seen without a synthetic corpus.
+    for (const m of perMailbox) {
+      if (m.dataAddedRaw !== null && m.dataAddedPacked !== null && m.dataAddedPacked > 0) {
+        mlog.info(
+          {
+            address: m.address,
+            rawBytes: m.dataAddedRaw,
+            packedBytes: m.dataAddedPacked,
+            ratio: Number((m.dataAddedRaw / m.dataAddedPacked).toFixed(2)),
+          },
+          'mailbox capture: compression',
+        );
+      }
+    }
+
     const sizeBytes = perMailbox.reduce((acc, m) => acc + m.sizeBytes, 0);
     const measured = perMailbox.filter((m) => m.dataAddedPacked !== null);
     return {

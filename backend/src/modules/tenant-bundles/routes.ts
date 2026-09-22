@@ -563,7 +563,13 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     if (!job.targetConfigId) {
       throw new ApiError('CONFIG_INVALID', 'Bundle has no target_config_id', 400);
     }
-    const store = await resolveStore(app, job.targetConfigId);
+    // requireActive:false, like every other read here. `active` protects a
+    // target from new WRITES, and nothing has written the column since the
+    // target-activate flow was retired — production runs with active=false on
+    // every row. Gating a DOWNLOAD on it made this endpoint unreachable on
+    // every cluster: the only thing standing between an operator and their own
+    // data export was a flag no code sets.
+    const store = await resolveStore(app, job.targetConfigId, { requireActive: false });
     const handle = await store.open(id);
     if (!handle) throw new ApiError('NOT_FOUND', 'Bundle artefacts not found on remote target', 404);
     // exportArtifact is `components/<comp>/<name>` — split.

@@ -27,19 +27,42 @@ A backup is a directory-structured artifact on the storage target:
 ```
 <backup-id>/
   ├── meta.json                     — canonical manifest (required)
-  ├── components/files/
-  │   ├── archive.tar.gz            — tar of the tenant PVC contents
-  │   ├── archive.tar.gz.sha256     — SHA-256 of the tarball
-  │   └── tree.jsonl.gz             — per-file path/size/mode/mtime index
-  ├── components/mailboxes/
-  │   ├── <address-1>.mbox.tar.gz   — per-mailbox export (Stalwart CLI)
-  │   ├── <address-1>.mbox.tar.gz.sha256
-  │   └── <address-2>.mbox.tar.gz
   ├── components/config/
   │   └── db-rows.json.gz           — client-scoped platform-DB rows
   └── components/secrets/
       └── tls.json.gz.enc           — encrypted TLS Secrets payload
 ```
+
+**`files` and `mailboxes` are NOT in this prefix.** They live only as restic
+snapshots in the tenant's repository, and have since each was migrated to
+restic-native capture (ADR-048, then ADR-061 for mail). A completed production
+bundle's prefix holds exactly the three objects above.
+
+Resolve them through `backup_components.sha256`, never through
+`store.listArtifacts`:
+
+| component | where it lives | how it is addressed |
+|---|---|---|
+| `files` | restic snapshot of the tenant PVC at `/source` | one row, `sha256` = snapshot id |
+| `mailboxes` | one restic snapshot PER MAILBOX, capture root `/capture/<address>` | one row per address, `artifact_name` = the address |
+| `config` | object under the bundle prefix | `db-rows.json.gz` |
+| `secrets` | object under the bundle prefix | `tls.json.gz.enc` |
+
+Which repository a bundle's snapshots are in is recorded on
+`backup_jobs.repo_layout` and mirrored into `meta.json` (`repoLayout`):
+`per-tenant` = `restic/<tenantId>`, absent/`per-component` = the historical
+`restic-<component>/<tenantId>` split. Absent means the split, so pre-merge
+bundles resolve to the repository that actually holds them (ADR-061).
+
+> **This section was wrong for two releases.** It described the pre-restic
+> layout — `components/files/archive.tar.gz` and
+> `components/mailboxes/<addr>.mbox.tar.gz` — long after neither was written,
+> and the data export enumerated the object store on the strength of it. The
+> result was an export containing the tenant's DB rows and TLS secrets and
+> neither their files nor their mail, reporting success. The export now
+> streams both components out of restic (`restic dump --archive tar`).
+
+
 
 The storage target may be a local hostpath directory, an S3 prefix,
 or an SSH-accessible remote path (see [Storage targets](#storage-targets)).
@@ -115,6 +138,7 @@ snapshot index *is* the file tree.
 > SHA-256 sidecar + a `tree.jsonl.gz` index, captured by a now-deleted
 > `storage-lifecycle/snapshot.ts` Job (with off-site streaming variants). That
 > tar path was replaced by restic-native files (#105) and removed (#118).
+> The `mailboxes` tar-stream went the same way in ADR-061.
 
 **Browse.** The file-browser UI (admin + client) lazily lists a snapshot's tree
 via `restic ls` (`GET …/bundles/:id/browse/files/tree`) so operators can pick
@@ -180,10 +204,27 @@ floor** — a degraded/failed logical dump **never** flips the bundle to
 
 ### `mailboxes` — per-mailbox Stalwart exports
 
-**Capture.** For each `mailboxes` row owned by the client, a short-lived
-Job runs `stalwart-cli account export --address <address> --out
-/tmp/<address>.mbox.tar.gz` against the Stalwart admin API. The artifact
-is written to `components/mailboxes/<address>.mbox.tar.gz`.
+**Capture (ADR-061).** One Job in the `mail` namespace walks the tenant's
+mailboxes. For each address it pulls the mail over IMAP with master-user proxy
+auth into a Maildir-shaped tree at `/capture/<address>`, runs `restic backup`
+against the tenant's repository, records the snapshot, and DELETES that tree
+before starting the next address — so peak scratch is the largest single
+mailbox, not the tenant's whole mail.
+
+One snapshot per mailbox, one `backup_components` row per address
+(`artifact_name` = the address, `sha256` = its snapshot). The Maildir filename
+carries the message's IMAP INTERNALDATE, which `imap-restore.py` replays on
+APPEND and which also keeps the name stable between captures so restic
+deduplicates.
+
+> Two earlier shapes are gone, and neither is written any more:
+> `stalwart-cli account export` per mailbox to
+> `components/mailboxes/<address>.mbox.tar.gz`, and the tar-stream that
+> replaced it (a whole-tenant Maildir piped into `restic backup --stdin`).
+> The tar stream is why this component stored ~4.7x the data it needed to:
+> the tree was rebuilt nightly, so every filename and tar header mtime
+> changed and chunk-level deduplication only caught the interiors of large
+> attachments.
 
 **Restore scopes.**
 - `full` per-mailbox — **replace** semantics. The target mailbox is wiped

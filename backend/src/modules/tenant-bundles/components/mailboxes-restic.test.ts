@@ -59,6 +59,7 @@ describe('buildMailboxesCaptureScript', () => {
     // Peak scratch is bounded by the largest mailbox only if this runs.
     expect(s).toContain('rm -rf "$CAPTURE_ROOT/$ADDRDIR"');
     expect(s).toContain('--tag "address=$ADDR"');
+    expect(s).toContain('rawBytes=');
   });
 
   it('dispatches addresses by index rather than interpolating into a loop', () => {
@@ -222,6 +223,21 @@ describe('parseMailboxDoneLines', () => {
   it('ignores lines belonging to a different bundle', () => {
     expect(parseMailboxDoneLines(log, BUNDLE).some((x) => x.address === 'c@example.test'))
       .toBe(false);
+  });
+
+  it('carries the pre-compression size so the ratio is visible', () => {
+    // restic reports data_added and data_added_packed on every snapshot. The
+    // Job used to echo only the packed one, so the compression ratio could not
+    // be read off a real capture at all.
+    const line = `MAILBOX_DONE bundleId=${BUNDLE} address=a@example.test snapshot=${'a'.repeat(64)} sizeBytes=100 messages=2 addedBytes=30 rawBytes=90`;
+    const r = parseMailboxDoneLines(line, BUNDLE)[0];
+    expect(r.dataAddedRaw).toBe(90);
+    expect(r.dataAddedPacked).toBe(30);
+  });
+
+  it('reports an unmeasured rawBytes as null, never 0', () => {
+    const line = `MAILBOX_DONE bundleId=${BUNDLE} address=a@example.test snapshot=${'a'.repeat(64)} sizeBytes=100 messages=2 addedBytes=30 rawBytes=`;
+    expect(parseMailboxDoneLines(line, BUNDLE)[0].dataAddedRaw).toBeNull();
   });
 
   it('reports an unmeasured addedBytes as null, never 0', () => {
