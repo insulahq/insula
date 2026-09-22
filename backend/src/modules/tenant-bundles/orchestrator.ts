@@ -723,18 +723,31 @@ export async function runBundle(
   let exportArtifact: string | null = null;
   if (status === 'completed' && input.exportMode === 'data_export' && input.exportPassphrase) {
     try {
-      const componentsToWrap: ReadonlyArray<{ component: BackupComponentName; name: string }> = (
-        await deps.db.select().from(backupComponents).where(eq(backupComponents.backupJobId, bundleId))
-      )
-        .filter((c) => c.status === 'completed' && c.artifactName)
-        .map((c) => ({ component: c.component as BackupComponentName, name: c.artifactName! }));
+      // Resolve SOURCES, not component rows: `files` and `mailboxes` have no
+      // object under the bundle prefix, so mapping rows to artifact names
+      // produced entries the store could not serve — and the wrapper skipped
+      // them in silence (ADR-061).
+      const { resolveExportSources, bindExportSources } = await import('./export-sources.js');
+      if (!deps.k8s) {
+        throw new Error('data_export: kubernetes client unavailable; cannot open the restic repository');
+      }
+      const exportCtx = { db: deps.db, k8s: deps.k8s, secretsKeyHex: deps.secretsKeyHex };
+      const componentsToWrap = bindExportSources(
+        exportCtx,
+        bundleId,
+        await resolveExportSources(
+          exportCtx,
+          bundleId,
+          (component) => deps.store.listArtifacts(handle, component),
+        ),
+      );
       const { wrapBundleAsDataExport } = await import('./data-export.js');
       const wrapped = await wrapBundleAsDataExport({
         store: deps.store,
         handle,
         backupId: bundleId,
         passphrase: input.exportPassphrase,
-        components: componentsToWrap as ReadonlyArray<{ component: 'files' | 'mailboxes' | 'config' | 'secrets'; name: string }>,
+        components: componentsToWrap,
       });
       exportArtifact = wrapped.artifactPath;
     } catch (err) {

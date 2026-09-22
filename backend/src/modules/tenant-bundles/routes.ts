@@ -17,6 +17,7 @@ import {
   type BackupComponentInfo,
 } from '@insula/api-contracts';
 import { S3BackupStore } from './s3-backup-store.js';
+import { bindExportSources, exportCtxFromApp, resolveExportSources } from './export-sources.js';
 import { resolveShimBackupStore, resolveShimFirstBackupStore } from './shim-backup-store.js';
 import { SshBackupStore } from './ssh-backup-store.js';
 import type { BackupStore } from './bundle-store.js';
@@ -28,6 +29,7 @@ import { BUNDLE_COMPONENTS, ownerOfTable } from './component-registry.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { gunzip } from 'node:zlib';
 import { Readable } from 'node:stream';
+
 
 // Backups-v2 stores bundles OFF-CLUSTER only (S3 / SSH). The cluster's
 // disk is reserved for live tenant data — backups must never compete
@@ -56,6 +58,17 @@ export function redactCredentialsForUi(message: string): string {
     .replace(/AKIA[A-Z0-9]{12,}/g, 'AKIA***')
     // 32+ char hex blobs (likely raw key material)
     .replace(/\b[0-9a-f]{32,}\b/gi, '***');
+}
+
+/**
+ * Context for resolving a bundle's export sources. `files` and `mailboxes`
+ * live only as restic snapshots, so the export needs repo credentials as well
+ * as the object store (ADR-061).
+ */
+function exportCtx(app: FastifyInstance) {
+  const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined
+    ?? process.env.KUBECONFIG_PATH;
+  return exportCtxFromApp(app, createK8sClients(kubeconfigPath));
 }
 
 export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
@@ -619,18 +632,12 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
 
     // Enumerate every artifact across components. Skip components
     // that weren't captured (orchestrator records `skipped` in meta).
-    const allArtifacts: Array<{ component: 'files' | 'mailboxes' | 'config' | 'secrets'; name: string }> = [];
-    for (const component of (['files', 'mailboxes', 'config', 'secrets'] as const)) {
-      const refs = await store.listArtifacts(handle, component);
-      for (const r of refs) {
-        // Skip the data-export artifact itself — it'd be circular
-        // (and pointless: it's already encrypted with a different
-        // passphrase). The synthetic name lives in components/config/
-        // and starts with `data-export-`.
-        if (component === 'config' && r.name.startsWith('data-export-')) continue;
-        allArtifacts.push({ component, name: r.name });
-      }
-    }
+    // Sources, not just objects: `files` and `mailboxes` live only as restic
+    // snapshots, so enumerating the object store alone is exactly what made
+    // the export ship with neither of them (ADR-061).
+    const allArtifacts = bindExportSources(exportCtx(app), id, await resolveExportSources(
+      exportCtx(app), id, (component) => store.listArtifacts(handle, component),
+    ));
 
     const { streamEncryptedExport } = await import('./data-export.js');
     const stream = await streamEncryptedExport({ store, handle, passphrase: encrypt ? passphrase : undefined, components: allArtifacts });
@@ -679,15 +686,12 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     const handle = await store.open(id);
     if (!handle) throw new ApiError('NOT_FOUND', 'Bundle artifacts not found on off-site target', 404);
 
-    const allArtifacts: Array<{ component: 'files' | 'mailboxes' | 'config' | 'secrets'; name: string }> = [];
-    for (const component of (['files', 'mailboxes', 'config', 'secrets'] as const)) {
-      const refs = await store.listArtifacts(handle, component);
-      for (const r of refs) {
-        // Same circular-skip as the tar variant.
-        if (component === 'config' && r.name.startsWith('data-export-')) continue;
-        allArtifacts.push({ component, name: r.name });
-      }
-    }
+    // Sources, not just objects: `files` and `mailboxes` live only as restic
+    // snapshots, so enumerating the object store alone is exactly what made
+    // the export ship with neither of them (ADR-061).
+    const allArtifacts = bindExportSources(exportCtx(app), id, await resolveExportSources(
+      exportCtx(app), id, (component) => store.listArtifacts(handle, component),
+    ));
 
     const { streamZipExport } = await import('./data-export.js');
     const stream = await streamZipExport({ store, handle, components: allArtifacts });
@@ -826,14 +830,9 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
       const handle = await store.open(bundleId);
       if (!handle) throw new ApiError('NOT_FOUND', 'Bundle artifacts not found on off-site target', 404);
 
-      const allArtifacts: Array<{ component: 'files' | 'mailboxes' | 'config' | 'secrets'; name: string }> = [];
-      for (const component of (['files', 'mailboxes', 'config', 'secrets'] as const)) {
-        const refs = await store.listArtifacts(handle, component);
-        for (const r of refs) {
-          if (component === 'config' && r.name.startsWith('data-export-')) continue;
-          allArtifacts.push({ component, name: r.name });
-        }
-      }
+      const allArtifacts = bindExportSources(exportCtx(app), bundleId, await resolveExportSources(
+        exportCtx(app), bundleId, (component) => store.listArtifacts(handle, component),
+      ));
 
       let stream: import('node:stream').Readable;
       if (format === 'zip') {
