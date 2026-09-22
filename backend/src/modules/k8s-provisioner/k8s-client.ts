@@ -23,6 +23,23 @@ export function createK8sClients(kubeconfigPath?: string): K8sClients {
     kc.loadFromFile(kubeconfigPath);
   } else {
     kc.loadFromCluster();
+    // loadFromCluster() does NOT throw outside a cluster. With no service
+    // account mounted it reads the unset KUBERNETES_SERVICE_HOST/PORT and
+    // yields a cluster whose server is the literal 'https://undefined:undefined'
+    // — a client that looks fine and then hangs on every request.
+    //
+    // Callers treat a throw as "no cluster here" and fall back (tenant DELETE
+    // does a DB-only cascade, server.ts returns null). That fallback could
+    // never fire, so off-cluster runs blocked on a dead socket instead of
+    // taking the documented path.
+    const server = kc.getCurrentCluster()?.server;
+    if (!server || server.includes('undefined')) {
+      throw new Error(
+        'no usable Kubernetes config: not running in-cluster and no kubeconfig ' +
+          'path was given (in-cluster discovery produced ' +
+          `'${server ?? 'no server'}')`,
+      );
+    }
   }
 
   return {
