@@ -16,9 +16,9 @@
  * absent. A wrong layout surfaces to an operator as "the backup is gone".
  */
 
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 
-import { backupJobs, tenantResticRepoState } from '../../db/schema.js';
+import { backupComponents, backupJobs, tenantResticRepoState } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import { DEFAULT_REPO_LAYOUT, type ResticRepoLayout } from './restic-driver.js';
 
@@ -116,4 +116,41 @@ export async function repoLayoutForStateRow(
     ))
     .limit(1);
   return layoutFromRepoUri(row?.repoUri, tenantId);
+}
+
+/**
+ * Layouts a tenant still has LIVE bundles in, for a given component.
+ *
+ * The retention sweep iterates `tenant_restic_repo_state` rows, and such a row
+ * records only the most recent repository. After the merge it stops naming the
+ * legacy one, so a sweep driven by the row alone would silently stop visiting
+ * the repository holding every pre-merge snapshot — they would never be
+ * forgotten and would leak until an operator removed the repository by hand.
+ *
+ * Driven off the bundles instead: a layout is swept while any bundle that
+ * still references it is live. When the last pre-merge bundle expires, the
+ * legacy repository drops out on its own.
+ */
+export async function layoutsWithLiveBundles(
+  db: Database,
+  tenantId: string,
+  component: string,
+): Promise<ResticRepoLayout[]> {
+  const rows = await db.execute(sql`
+    SELECT DISTINCT coalesce(bj.repo_layout, 'per-component') AS layout
+    FROM backup_jobs bj
+    JOIN backup_components bc ON bc.backup_job_id = bj.id
+    WHERE bj.tenant_id = ${tenantId}
+      AND bc.component::text = ${component}
+      AND bc.sha256 IS NOT NULL
+      AND bj.status IN ('completed','partial')
+  `) as unknown as { rows: Array<{ layout: string }> };
+
+  const layouts = new Set<ResticRepoLayout>();
+  for (const r of rows.rows) layouts.add(normaliseRepoLayout(r.layout));
+  // A tenant with no live bundle for this component still gets one pass over
+  // the repository its state row names, so an orphaned snapshot there is still
+  // reachable by the reclaimer.
+  if (layouts.size === 0) layouts.add(await repoLayoutForStateRow(db, tenantId, component));
+  return [...layouts];
 }
