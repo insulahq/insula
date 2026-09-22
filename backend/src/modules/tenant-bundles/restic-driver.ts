@@ -645,9 +645,13 @@ export async function runResticBackup(args: RunResticBackupArgs): Promise<Restic
     // Memory-bounded restic flags (Phase 1 piece #8 — staging measured
     // 389 MiB peak on 5 GiB stream; target <256 MiB):
     // - read-concurrency 1: single reader (no concurrent stdin makes sense)
-    // - compression off: tenant tar carries already-compressed content
-    //   (jpegs, mp4, .gz dumps) where restic compression wastes CPU + RAM
-    //   for ≤1% gain. Drops restic working set by ~80–120 MiB.
+    // - compression off: this is the LEGACY stdin path (a whole tar piped in
+    //   from a Job). Both components now run restic in the Job and choose
+    //   their own mode — `auto` for files and for mail. `off` is kept here
+    //   only so an in-flight Job from an older image behaves exactly as it
+    //   did; it is NOT restic's default, which is `auto` on a v2 repo.
+    //   Dropping compression also keeps this path's working set ~80–120 MiB
+    //   lower, which mattered when it carried whole-tenant streams.
     // - pack-size 64 (default 16): 4× fewer S3/SFTP round-trips per backup.
     //   Cuts restore wall-clock substantially (RTT-dominated). Memory cost
     //   is one in-flight pack buffer ≈ +48 MiB; still well under 256 MiB.
