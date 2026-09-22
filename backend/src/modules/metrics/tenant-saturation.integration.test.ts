@@ -131,19 +131,26 @@ d('tenant saturation episodes against a real Postgres', () => {
   });
 
   it('the reminder age guard is a real interval comparison', async () => {
-    await evaluateTenantSaturation(db, TENANT, 'Sat Tenant', M(94, 100), undefined, new Date('2026-09-21T12:00:00Z'));
+    // Two clocks decide a reminder and they must agree. The claim SQL gates on
+    // `last_notified_at <= NOW() - interval` (the DATABASE clock), while the
+    // policy computes the rung from the `now` argument. Backdating with NOW()
+    // and then passing a fixed historical timestamp puts the stamp AFTER the
+    // injected now, so the policy sees a negative age and declines a reminder
+    // the SQL would happily have made. Drive both off the real clock.
+    await evaluateTenantSaturation(db, TENANT, 'Sat Tenant', M(94, 100));
     // Backdate the stamp past the first (1h) rung.
     await db.execute(sql`
       UPDATE tenant_saturation_events
          SET last_notified_at = NOW() - INTERVAL '90 minutes'
        WHERE tenant_id = ${TENANT} AND resource = 'storage'
     `);
-    const reminded = await evaluateTenantSaturation(db, TENANT, 'Sat Tenant', M(94, 100), undefined, new Date('2026-09-21T13:30:00Z'));
+    const reminded = await evaluateTenantSaturation(db, TENANT, 'Sat Tenant', M(94, 100));
     expect(reminded).toBe(1);
     expect((await openEpisodes())[0]).toMatchObject({ notify_count: 2 });
 
-    // The second rung is 6h, so an immediate re-run says nothing.
-    const quiet = await evaluateTenantSaturation(db, TENANT, 'Sat Tenant', M(94, 100), undefined, new Date('2026-09-21T13:31:00Z'));
+    // The second rung is 6h, and the reminder above reset the stamp to now,
+    // so an immediate re-run says nothing.
+    const quiet = await evaluateTenantSaturation(db, TENANT, 'Sat Tenant', M(94, 100));
     expect(quiet).toBe(0);
   });
 });

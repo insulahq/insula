@@ -330,6 +330,10 @@ describe.skipIf(!dbAvailable)('Email domain webmail DNS toggle (integration)', (
       .from(emailDomains)
       .where(eq(emailDomains.id, enabled.id));
     expect(ed.status).toBe('failed');
-    expect(ed.message).toContain('Ingress create failed');
+    // webmail.<domain> is served by a Traefik IngressRoute that 302s to the
+    // platform webmail host — it is no longer an nginx Ingress + ExternalName
+    // Service, so the persisted failure text moved with the mechanism.
+    expect(ed.message).toContain('webmail redirect route failed');
+    expect(ed.message).toContain('forced ingress failure');
   });
 });

@@ -17,7 +17,10 @@ import {
 const skipIntegration = !await isDbAvailable();
 
 describe.skipIf(skipIntegration)('refresh-token-service (integration)', () => {
-  const userId = `u-${crypto.randomUUID()}`;
+  // users.id is varchar(36) — exactly a UUID. The old `u-` prefix pushed it to
+  // 38 chars, so the beforeAll insert died with 22001 (value too long) and
+  // every test below reported as SKIPPED rather than failed.
+  const userId = crypto.randomUUID();
   let db: ReturnType<typeof getTestDb>;
 
   beforeAll(async () => {

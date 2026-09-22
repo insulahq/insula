@@ -30,12 +30,21 @@ describe.skipIf(!dbAvailable)('reserved-subdomains (integration)', () => {
     await db.execute(sql.raw('TRUNCATE TABLE system_settings CASCADE'));
     await db.execute(sql.raw('TRUNCATE TABLE platform_settings CASCADE'));
     _resetReservedHostnamesCache();
-    // Seed apex via system_settings so the resolver picks it up.
     await db.insert(systemSettings).values({
       id: 'system',
       platformName: 'Reserved Test',
       apiRateLimit: 100,
       ingressBaseDomain: TEST_APEX,
+    });
+    // The apex resolver (R16) reads the platform_settings KV table —
+    // `platform_domain`, falling back to the `ingress_base_domain` ROW — not
+    // the system_settings COLUMN seeded above. Seeding only the column leaves
+    // both rows absent, so getPlatformApex() returns null and the resolver
+    // falls back to DEV_DEFAULT_BASE_DOMAIN ('k8s-platform.test'), which is
+    // not the apex any of these assertions are written against.
+    await db.insert(platformSettings).values({
+      key: 'platform_domain',
+      value: TEST_APEX,
     });
   });
 

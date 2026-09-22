@@ -3,6 +3,7 @@ import { isDbAvailable, runMigrations, cleanTables, closeTestDb } from '../../te
 import { buildTestApp, generateToken } from '../../test-helpers/app.js';
 import { seedRegion, seedPlan, seedTenant } from '../../test-helpers/fixtures.js';
 import { getTestDb } from '../../test-helpers/db.js';
+import { sql } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 
 const dbAvailable = await isDbAvailable();
@@ -120,15 +121,17 @@ describe.skipIf(!dbAvailable)('Tenant CRUD (integration)', () => {
       headers: { authorization: `Bearer ${adminToken}` },
       payload: { name: 'Updated Name', status: 'active' },
     });
-    expect(res.statusCode).toBe(200);
+    expect(res.statusCode, res.body?.slice(0, 400) ?? '').toBe(200);
     expect(res.json().data.name).toBe('Updated Name');
     expect(res.json().data.status).toBe('active');
   });
 
-  it('DELETE /api/v1/tenants/:id — removes an active tenant with 204', async () => {
+  it('DELETE /api/v1/tenants/:id — removes an active tenant and returns the transition id', async () => {
     // Historical note: this endpoint used to require status=cancelled,
-    // but the guard was removed in a later refactor. The integration
-    // test was stale because the test DB did not exist in CI.
+    // but the guard was removed in a later refactor. It also no longer
+    // answers 204 — it returns 200 with { transitionId } so the panel can
+    // open the progress modal by id instead of polling-by-since. Both
+    // drifts survived because the test DB did not exist in CI.
     const db = getTestDb();
     const tenant = await seedTenant(db, regionId, planId, { status: 'active' });
 
@@ -137,7 +140,16 @@ describe.skipIf(!dbAvailable)('Tenant CRUD (integration)', () => {
       url: `/api/v1/tenants/${tenant.id}`,
       headers: { authorization: `Bearer ${adminToken}` },
     });
-    expect(res.statusCode).toBe(204);
+    expect(res.statusCode, res.body?.slice(0, 300) ?? '').toBe(200);
+    // transitionId is `string | null`: the hard-delete cascade records a
+    // lifecycle transition only on the K8s path. With no cluster reachable
+    // deleteTenant takes the DB-only cascade and reports null, so the id is
+    // not the assertable outcome here — the row being gone is.
+    expect(res.json().data).toHaveProperty('transitionId');
+    const after = await db.execute<{ count: string }>(sql`
+      SELECT COUNT(*)::text AS count FROM tenants WHERE id = ${tenant.id}
+    `);
+    expect(after.rows?.[0]?.count).toBe('0');
   });
 
   it('DELETE /api/v1/tenants/:id — succeeds when archived', async () => {
@@ -149,7 +161,11 @@ describe.skipIf(!dbAvailable)('Tenant CRUD (integration)', () => {
       url: `/api/v1/tenants/${tenant.id}`,
       headers: { authorization: `Bearer ${adminToken}` },
     });
-    expect(res.statusCode).toBe(204);
+    expect(res.statusCode, res.body?.slice(0, 300) ?? '').toBe(200);
+    const gone = await db.execute<{ count: string }>(sql`
+      SELECT COUNT(*)::text AS count FROM tenants WHERE id = ${tenant.id}
+    `);
+    expect(gone.rows?.[0]?.count).toBe('0');
   });
 
   it('returns 401 without token', async () => {
