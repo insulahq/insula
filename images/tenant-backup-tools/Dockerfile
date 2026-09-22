@@ -45,47 +45,6 @@
 # Image size budget: <120 MiB (debian:trixie-slim ~80 MiB base + restic
 # ~25 MiB + python3-minimal ~10 MiB). Trivy CRITICAL/HIGH must pass.
 
-# ── restic, built from source with refreshed dependencies ──────────────────
-#
-# Not the distro package (0.18.1, moves on the distro's schedule) and not the
-# upstream prebuilt binary (0.19.1 ships go1.26.4, which fails the image's
-# CVE gate on Go stdlib advisories fixed in go1.26.6 — a prebuilt binary can
-# only be patched by upstream, which is what the distros solve by rebuilding).
-#
-# Building from the release tarball on a current toolchain fixes the stdlib
-# findings. restic 0.19.1's own go.mod then pins google.golang.org/grpc
-# v1.81.1 and golang.org/x/crypto v0.53.0, which Trivy flags (CVE-2026-84304,
-# CVE-2026-84445, GHSA-hrxh-6v49-42gf, CVE-2026-56854), so those two are moved
-# forward here. golang.org/x/text follows them up on its own.
-#
-# What that costs: this binary is built against dependency versions upstream
-# did not ship or test. grpc is reached only by restic's Google Cloud Storage
-# backend, which this platform never selects — every tenant repository is S3
-# (through the shim), SFTP or hostpath. The build itself is the compatibility
-# check, and it fails loudly if the bump does not hold.
-#
-# Both the tarball checksum and the compiler are pinned: an unverified
-# download here would be arbitrary code holding the credentials to every
-# tenant repository.
-FROM golang:1.26-alpine AS restic-build
-ARG RESTIC_VERSION=0.19.1
-ARG RESTIC_SRC_SHA256=bb9b1a19040744d26d8a79be029d4e6b189c45ccc9d8831d7fe367d3c33df725
-ARG RESTIC_GRPC_VERSION=v1.83.2
-ARG RESTIC_XCRYPTO_VERSION=v0.55.0
-RUN apk add --no-cache curl tar git
-RUN set -eu; \
-    f="restic-${RESTIC_VERSION}.tar.gz"; \
-    curl -fsSLO "https://github.com/restic/restic/releases/download/v${RESTIC_VERSION}/${f}"; \
-    echo "${RESTIC_SRC_SHA256}  ${f}" | sha256sum -c -; \
-    tar xzf "$f"; \
-    cd "restic-${RESTIC_VERSION}"; \
-    go get "google.golang.org/grpc@${RESTIC_GRPC_VERSION}"; \
-    go get "golang.org/x/crypto@${RESTIC_XCRYPTO_VERSION}"; \
-    go mod tidy; \
-    CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${RESTIC_VERSION}" \
-        -o /out/restic ./cmd/restic; \
-    /out/restic version
-
 FROM debian:trixie-slim@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -106,6 +65,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
  && apt-get upgrade -y \
  && apt-get install -y --no-install-recommends \
+      restic \
       isync \
       python3 \
       curl \
@@ -119,8 +79,6 @@ RUN apt-get update \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* \
            /usr/share/doc/* /usr/share/man/*
-
-COPY --from=restic-build /out/restic /usr/local/bin/restic
 
 # Legacy capture helper — wraps mbsync + Option F streaming upload.
 # Argv: capture-mailbox.sh <addr> <upload_url>
