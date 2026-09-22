@@ -278,6 +278,38 @@ export async function recreateTenantFromBundle(
   for (const name of ['config', 'files', 'mailboxes', 'secrets'] as const) {
     const c = meta.components[name];
     if (!c) continue;
+
+    // ADR-061 bundles hold ONE SNAPSHOT PER MAILBOX, recorded in meta as
+    // `snapshots: { <address>: <snapshotId> }`. Re-creating a single row from
+    // the legacy whole-tenant `sha256` would leave it null for those bundles,
+    // and the restore executor would then report the bundle as having no
+    // mailboxes snapshot at all — mail would be silently unrecoverable on the
+    // exact path DR exists for. Emit one row per address, keyed by address,
+    // which is what the executor resolves against.
+    const perMailbox = name === 'mailboxes' && 'snapshots' in c
+      ? (c.snapshots as Record<string, string> | undefined)
+      : undefined;
+    if (perMailbox && Object.keys(perMailbox).length > 0) {
+      const addresses = Object.keys(perMailbox).sort();
+      // meta records the component's total; split it evenly only for display —
+      // the authoritative per-mailbox sizes are re-learned on the next capture.
+      const share = typeof c.sizeBytes === 'number' ? Math.floor(c.sizeBytes / addresses.length) : 0;
+      for (const address of addresses) {
+        componentRows.push({
+          id: crypto.randomUUID(),
+          backupJobId: bundleId,
+          component: name,
+          artifactName: address,
+          status: 'completed',
+          sizeBytes: share,
+          sha256: perMailbox[address],
+          startedAt: now,
+          finishedAt: now,
+        });
+      }
+      continue;
+    }
+
     componentRows.push({
       id: crypto.randomUUID(),
       backupJobId: bundleId,
