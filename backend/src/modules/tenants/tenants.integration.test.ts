@@ -126,6 +126,35 @@ describe.skipIf(!dbAvailable)('Tenant CRUD (integration)', () => {
     expect(res.json().data.status).toBe('active');
   });
 
+  it('a REAL status transition still reaches the suspend/resume orchestrator', async () => {
+    // Guards the dispatch condition in updateTenant. Re-sending the status a
+    // tenant already has (the panel PATCHes the whole form, so a name edit
+    // carries the current status) deliberately SKIPS the orchestrator — the
+    // test above proves that returns 200. A genuine transition must not be
+    // skipped, and nothing else covers that direction.
+    //
+    // No cluster is reachable here, so the orchestrator cannot complete; the
+    // proof that it was ATTEMPTED is that the request does not succeed and the
+    // row is left alone. Were the dispatch wrongly skipped, this would answer
+    // 200 and write status='suspended' — silently turning suspend into a
+    // rename in production.
+    const db = getTestDb();
+    const tenant = await seedTenant(db, regionId, planId, { status: 'active' });
+
+    const res = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/tenants/${tenant.id}`,
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: { name: 'Transitioning', status: 'suspended' },
+    });
+    expect(res.statusCode).not.toBe(200);
+
+    const after = await db.execute<{ status: string }>(sql`
+      SELECT status FROM tenants WHERE id = ${tenant.id}
+    `);
+    expect(after.rows?.[0]?.status).toBe('active');
+  });
+
   it('DELETE /api/v1/tenants/:id — removes an active tenant and returns the transition id', async () => {
     // Historical note: this endpoint used to require status=cancelled,
     // but the guard was removed in a later refactor. It also no longer
