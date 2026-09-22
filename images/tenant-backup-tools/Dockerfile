@@ -65,12 +65,12 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
  && apt-get upgrade -y \
  && apt-get install -y --no-install-recommends \
+      restic \
       isync \
       python3 \
       curl \
       tar \
       gzip \
-      bzip2 \
       coreutils \
       ca-certificates \
       rsync \
@@ -79,42 +79,6 @@ RUN apt-get update \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* \
            /usr/share/doc/* /usr/share/man/*
-
-# ── restic, pinned to an upstream release ──────────────────────────────────
-#
-# NOT the distro package. Debian/Alpine both ship 0.18.1, which predates two
-# repository-integrity fixes we want in a backup system (restic #21820:
-# duplicate index entries, and pack files missing from the index), and the
-# distro pin moves on its own schedule rather than ours. Pinning the upstream
-# release means WE choose when the thing that writes tenant backups changes.
-#
-# The cost of pinning is that Debian/Alpine no longer patch it for us, so the
-# version here is a thing to watch, not set-and-forget. Bumping it means
-# re-reading the changelog for exit-code semantics — 0.19 changed `backup` to
-# exit 3 on a missing source path and `forget` to exit 3 when removal fails,
-# both of which this codebase branches on.
-#
-# Checksums are the official SHA256SUMS from the release. Verified before the
-# binary is unpacked, because an unverified download here would be an
-# arbitrary binary with the credentials to every tenant repository.
-ARG RESTIC_VERSION=0.19.1
-ARG RESTIC_SHA256_amd64=f415415624dcc452f2a02b8c33641791a8c6d6d3b65bbb3543fcf9a25151585c
-ARG RESTIC_SHA256_arm64=a5f64aaab53d51e311fa3829124c5b703f2d14cf187d8640b6be3b2b49376465
-ARG TARGETARCH
-RUN set -eu; \
-    arch="${TARGETARCH:-amd64}"; \
-    case "$arch" in \
-      amd64) sha="$RESTIC_SHA256_amd64" ;; \
-      arm64) sha="$RESTIC_SHA256_arm64" ;; \
-      *) echo "restic: unsupported TARGETARCH '$arch'" >&2; exit 1 ;; \
-    esac; \
-    f="restic_${RESTIC_VERSION}_linux_${arch}.bz2"; \
-    curl -fsSLO "https://github.com/restic/restic/releases/download/v${RESTIC_VERSION}/${f}"; \
-    echo "${sha}  ${f}" | sha256sum -c -; \
-    bunzip2 -c "$f" > /usr/local/bin/restic; \
-    rm -f "$f"; \
-    chmod 0755 /usr/local/bin/restic; \
-    restic version
 
 # Legacy capture helper — wraps mbsync + Option F streaming upload.
 # Argv: capture-mailbox.sh <addr> <upload_url>
