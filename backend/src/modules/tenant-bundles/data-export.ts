@@ -90,23 +90,36 @@ async function feedSourceIntoTar(
   const tarX = tarExtract();
   const prefix = `components/${src.component}/${src.name}`;
   let entries = 0;
-  await new Promise<void>((resolve, reject) => {
-    tarX.on('entry', (header, stream, next) => {
-      const rel = String(header.name).replace(/^\.\/+/, '').replace(/^\/+/, '');
-      const name = rel.length > 0 ? `${prefix}/${rel}` : prefix;
-      entries += 1;
-      const out = tar.entry({ ...header, name }, (err?: Error | null) => {
-        if (err) reject(err);
-        else next();
+  // The outer tar is destroyed when the HTTP consumer disconnects. Without
+  // this listener the promise below would never settle and the restic child
+  // would keep streaming into a pipe nobody reads, holding its repo lock and
+  // its slot on the per-pod semaphore until the pod restarts.
+  let onOuterError: ((err: Error) => void) | null = null;
+  try {
+    await new Promise<void>((resolve, reject) => {
+      onOuterError = (err: Error) => reject(err instanceof Error ? err : new Error(String(err)));
+      (tar as unknown as NodeJS.EventEmitter).once('error', onOuterError);
+      tarX.on('entry', (header, stream, next) => {
+        const rel = String(header.name).replace(/^\.\/+/, '').replace(/^\/+/, '');
+        const name = rel.length > 0 ? `${prefix}/${rel}` : prefix;
+        entries += 1;
+        const out = tar.entry({ ...header, name }, (err?: Error | null) => {
+          if (err) reject(err);
+          else next();
+        });
+        stream.on('error', reject);
+        (stream as unknown as NodeJS.ReadableStream).pipe(out as unknown as NodeJS.WritableStream);
       });
-      stream.on('error', reject);
-      (stream as unknown as NodeJS.ReadableStream).pipe(out as unknown as NodeJS.WritableStream);
+      tarX.on('finish', () => resolve());
+      tarX.on('error', reject);
+      raw.on('error', reject);
+      raw.pipe(tarX as unknown as NodeJS.WritableStream);
     });
-    tarX.on('finish', () => resolve());
-    tarX.on('error', reject);
-    raw.on('error', reject);
-    raw.pipe(tarX as unknown as NodeJS.WritableStream);
-  });
+  } finally {
+    if (onOuterError) (tar as unknown as NodeJS.EventEmitter).removeListener('error', onOuterError);
+    // Idempotent: a stream that ended on its own is already destroyed.
+    if (!raw.destroyed) raw.destroy();
+  }
   if (entries === 0) {
     throw new Error(`data-export: restic source ${src.component}/${src.name} produced no entries`);
   }
@@ -857,6 +870,11 @@ export async function streamZipExport(args: StreamZipExportArgs): Promise<Readab
           // in as one `.tar` member rather than being re-emitted file by file.
           const raw = await c.open();
           const name = c.name.endsWith('.tar') ? c.name : `${c.name}.tar`;
+          // Kill the restic child if the ZIP is torn down under us (client
+          // disconnect) — archiver will not do it for an appended stream.
+          const reap = (): void => { if (!raw.destroyed) raw.destroy(); };
+          (archive as unknown as NodeJS.EventEmitter).once('error', reap);
+          (archive as unknown as NodeJS.EventEmitter).once('close', reap);
           archive.append(raw, { name: `components/${c.component}/${name}`, date: new Date(), store: true });
           continue;
         }

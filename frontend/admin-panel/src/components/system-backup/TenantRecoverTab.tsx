@@ -26,6 +26,7 @@ import type {
 } from '@insula/api-contracts';
 import ErrorPanel from '@/components/ErrorPanel';
 import { extractOperatorError } from '@/lib/extract-operator-error';
+import { useBundles } from '@/hooks/use-backup-bundles';
 import {
   useRecoverTenantFromBundle,
   useLiveRestoreCart,
@@ -85,6 +86,26 @@ function reconcileBadgeClass(kind: 'ok' | 'bad' | 'muted'): string {
 
 export default function TenantRecoverTab() {
   const [tenantId, setTenantId] = useState('');
+  // Recovery is driven by NAME, not by a UUID an operator has to find and
+  // paste. The candidate list comes from the bundles themselves, so a tenant
+  // that has already been DELETED locally — the case cold restore exists for —
+  // is still offered, by the name its bundle recorded.
+  const [manualTenantId, setManualTenantId] = useState(false);
+  const bundlesQuery = useBundles();
+  const tenantChoices = (() => {
+    const byId = new Map<string, { id: string; name: string; bundles: number }>();
+    const raw = bundlesQuery.data as { data?: ReadonlyArray<{ tenantId: string; tenantName: string | null }> } | undefined;
+    const rows = Array.isArray(raw?.data) ? raw.data : [];
+    for (const b of rows) {
+      const prev = byId.get(b.tenantId);
+      byId.set(b.tenantId, {
+        id: b.tenantId,
+        name: b.tenantName ?? prev?.name ?? '',
+        bundles: (prev?.bundles ?? 0) + 1,
+      });
+    }
+    return [...byId.values()].sort((a, b) => (a.name || a.id).localeCompare(b.name || b.id));
+  })();
   const [bundleId, setBundleId] = useState('');
   const [targetNode, setTargetNode] = useState('');
   const [components, setComponents] = useState<ReadonlySet<DrRecoverComponent>>(
@@ -154,17 +175,43 @@ export default function TenantRecoverTab() {
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <label className="block">
             <span className="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">
-              Tenant ID <span className="text-red-600 dark:text-red-400">*</span>
+              Tenant <span className="text-red-600 dark:text-red-400">*</span>
             </span>
-            <input
-              type="text"
-              value={tenantId}
-              onChange={(e) => setTenantId(e.target.value)}
-              placeholder="tenant UUID"
-              disabled={recover.isPending}
-              data-testid="dr-recover-tenant-id"
-              className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 font-mono text-sm text-gray-900 placeholder:text-gray-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 disabled:opacity-50 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100 dark:placeholder:text-gray-500"
-            />
+            {manualTenantId || tenantChoices.length === 0 ? (
+              <input
+                type="text"
+                value={tenantId}
+                onChange={(e) => setTenantId(e.target.value)}
+                placeholder="tenant UUID"
+                disabled={recover.isPending}
+                data-testid="dr-recover-tenant-id"
+                className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 font-mono text-sm text-gray-900 placeholder:text-gray-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 disabled:opacity-50 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100 dark:placeholder:text-gray-500"
+              />
+            ) : (
+              <select
+                value={tenantId}
+                onChange={(e) => setTenantId(e.target.value)}
+                disabled={recover.isPending}
+                data-testid="dr-recover-tenant-id"
+                className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 disabled:opacity-50 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100"
+              >
+                <option value="">Select a tenant…</option>
+                {tenantChoices.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name || 'deleted tenant'} — {t.bundles} bundle{t.bundles === 1 ? '' : 's'}
+                  </option>
+                ))}
+              </select>
+            )}
+            <button
+              type="button"
+              onClick={() => setManualTenantId((v) => !v)}
+              className="mt-1 cursor-pointer text-xs text-gray-500 underline hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+            >
+              {manualTenantId
+                ? 'Pick from the tenants that have bundles'
+                : 'Enter a tenant ID instead (bundle on a foreign target)'}
+            </button>
           </label>
 
           <label className="block">
