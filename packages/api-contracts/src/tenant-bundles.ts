@@ -71,6 +71,17 @@ export const backupMetaComponentMailboxesSchema = z.object({
    * still present then), and the executor re-validates the format on read.
    */
   sha256: z.string().regex(/^[0-9a-f]{8,64}$/).optional(),
+  /**
+   * Per-mailbox restic snapshot ids, keyed by address (ADR-061). Supersedes
+   * the whole-tenant `sha256` above, which no capture writes any more.
+   *
+   * Added as an OPTIONAL field on schemaVersion 2 rather than as a version
+   * bump: `parseMeta` REJECTS an unknown schemaVersion outright, so bumping
+   * would make every older platform — including the far side of a
+   * cross-cluster migration — refuse bundles it can otherwise read. Old
+   * readers ignore this key; new readers prefer it and fall back to `sha256`.
+   */
+  snapshots: z.record(z.string(), z.string().regex(/^[0-9a-f]{8,64}$/)).optional(),
 });
 
 export const backupMetaComponentConfigSchema = z.object({
@@ -191,6 +202,17 @@ export const backupMetaV2Schema = z.object({
   tenant: backupMetaTenantSchema.nullable(),
   domainsSummary: z.array(backupMetaDomainSummarySchema),
   deploymentsSummary: z.array(backupMetaDeploymentSummarySchema),
+  /**
+   * Which restic repository layout this bundle's components live in
+   * (ADR-061). Absent means `per-component` — the historical
+   * `restic-<component>/<tenantId>` split — which is exactly what every
+   * bundle written before this field used, so no backfill is needed.
+   *
+   * Read by anything that has to BUILD a repo URI for an existing bundle:
+   * restore, browse, export, retention, and the cross-cluster import that
+   * has the target but not this platform's database.
+   */
+  repoLayout: z.enum(['per-component', 'per-tenant']).optional(),
 });
 export type BackupMetaV2 = z.infer<typeof backupMetaV2Schema>;
 

@@ -499,7 +499,7 @@ export async function captureFilesComponent(
 }
 
 /** Best-effort delete of a per-Job creds Secret (404 tolerated). */
-async function deleteSecretBestEffort(k8s: K8sClients, namespace: string, name: string): Promise<void> {
+export async function deleteSecretBestEffort(k8s: K8sClients, namespace: string, name: string): Promise<void> {
   try {
     await (k8s.core as unknown as {
       deleteNamespacedSecret: (args: { name: string; namespace: string }) => Promise<unknown>;
