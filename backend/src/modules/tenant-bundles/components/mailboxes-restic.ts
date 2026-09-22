@@ -112,6 +112,9 @@ export interface MailboxCaptureResult {
   readonly sizeBytes: number;
   /** `data_added_packed`; null when restic did not report it. */
   readonly dataAddedPacked: number | null;
+  /** `data_added` — the same bytes BEFORE compression. null when unreported.
+   *  Paired with dataAddedPacked this is the compression ratio, per mailbox. */
+  readonly dataAddedRaw: number | null;
   readonly messageCount: number;
 }
 
@@ -227,8 +230,12 @@ export function buildMailboxesCaptureScript(input: {
     '  [ -n "$SNAP" ] || { echo "ERROR: no snapshot_id for $ADDR"; tail -n 40 /tmp/out.json; exit 1; }',
     '  SIZE=$(grep -o \'"total_bytes_processed":[0-9]\\+\' /tmp/out.json | tail -n1 | sed \'s/.*://\')',
     '  ADDED=$(grep -o \'"data_added_packed":[0-9]\\+\' /tmp/out.json | tail -n1 | sed \'s/.*://\')',
+    // Pre-compression size too. restic reports both, but the Job only ever
+    // echoed the packed one, so the compression ratio was invisible without
+    // seeding a controlled corpus and inferring it.
+    '  RAW=$(grep -o \'"data_added":[0-9]\\+\' /tmp/out.json | tail -n1 | sed \'s/.*://\')',
     '  [ -n "$ADDED" ] || ADDED=$(grep -o \'"data_added":[0-9]\\+\' /tmp/out.json | tail -n1 | sed \'s/.*://\')',
-    `  echo "MAILBOX_DONE bundleId=${input.backupId} address=$ADDR snapshot=$SNAP sizeBytes=\${SIZE:-0} messages=\${MSGS:-0} addedBytes=\${ADDED:-}"`,
+    `  echo "MAILBOX_DONE bundleId=${input.backupId} address=$ADDR snapshot=$SNAP sizeBytes=\${SIZE:-0} messages=\${MSGS:-0} addedBytes=\${ADDED:-} rawBytes=\${RAW:-}"`,
     // Free the tree before the next mailbox — this is what bounds peak disk
     // to the largest single mailbox instead of the tenant's whole mail.
     '  rm -rf "$CAPTURE_ROOT/$ADDRDIR"',
@@ -350,6 +357,7 @@ export function parseMailboxDoneLines(
     const snapshotId = fields.get('snapshot') ?? '';
     if (!address || !/^[0-9a-f]{64}$/.test(snapshotId)) continue;
     const added = fields.get('addedBytes');
+    const raw = fields.get('rawBytes');
     out.push({
       address,
       snapshotId,
@@ -357,6 +365,9 @@ export function parseMailboxDoneLines(
       messageCount: Number.parseInt(fields.get('messages') ?? '0', 10) || 0,
       dataAddedPacked: added !== undefined && added !== '' && /^\d+$/.test(added)
         ? Number.parseInt(added, 10)
+        : null,
+      dataAddedRaw: raw !== undefined && raw !== '' && /^\d+$/.test(raw)
+        ? Number.parseInt(raw, 10)
         : null,
     });
   }
