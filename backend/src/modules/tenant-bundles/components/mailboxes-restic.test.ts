@@ -82,6 +82,16 @@ describe('buildMailboxesCaptureScript', () => {
     expect(s).toContain('ERROR: restic backup failed for $ADDR');
   });
 
+  it('asserts the capture directory exists, so exit 3 can only mean read errors', () => {
+    // restic 0.19 exits 3 for a MISSING SOURCE PATH as well as for partial
+    // read errors. Without this assert, a vanished capture directory would be
+    // warned about and then recorded as a captured mailbox holding nothing.
+    const s = script();
+    expect(s).toContain('[ -d "$CAPTURE_ROOT/$ADDRDIR" ]');
+    expect(s.indexOf('[ -d "$CAPTURE_ROOT/$ADDRDIR" ]'))
+      .toBeLessThan(s.indexOf('restic -r "$REPO" backup'));
+  });
+
   it('keeps the aux capture best-effort so a blip cannot cost the mail snapshot', () => {
     expect(script()).toContain('|| echo "AUX_WARN address=$ADDR');
   });
