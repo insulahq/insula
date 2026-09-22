@@ -72,6 +72,7 @@
 import type { FastifyInstance } from 'fastify';
 import { eq, and } from 'drizzle-orm';
 import type { BackupStore } from '../../tenant-bundles/bundle-store.js';
+import { resolveBundleRepoLayout } from '../../tenant-bundles/repo-layout.js';
 import { restoreItems, restoreJobs, backupComponents, type RestoreItem } from '../../../db/schema.js';
 import { ApiError } from '../../../shared/errors.js';
 import { readJobLogTail, tailJobLog } from '../../storage-lifecycle/job-log-tail.js';
@@ -315,7 +316,7 @@ export async function execMailboxesByAddressItem(args: {
   // stream endpoint uses); the repo URI component is `mailboxes`.
   const target = await resolveShimBackupTarget(k8s.core, 'tenant', app.log);
   const passwordHex = deriveResticPassword(secretsKeyHex, job.tenantId);
-  const repoUri = buildResticRepoUri(target, job.tenantId, 'mailboxes');
+  const repoUri = buildResticRepoUri(target, job.tenantId, 'mailboxes', await resolveBundleRepoLayout(app.db, item.bundleId));
   const env = buildResticEnv(target);
 
   // Resolve the Stalwart master-user FQDN from mail-secrets — the

@@ -68,6 +68,7 @@ import { backupConfigurations, tenantBackupV2Settings, hostingPlans } from '../.
 import { captureConfigComponent, type ConfigComponentResult } from './components/config.js';
 import { captureSecretsComponent, type SecretsComponentResult } from './components/secrets.js';
 import { shouldNotifyTenant, shouldNotifyAdmins } from './notification-policy.js';
+import { CURRENT_REPO_LAYOUT, resolveBundleRepoLayout } from './repo-layout.js';
 
 export interface OrchestratorDeps {
   readonly db: Database;
@@ -193,6 +194,10 @@ export async function runBundle(
     label: input.label ?? null,
     description: input.description ?? null,
     sizeBytes: 0,
+    // Stamped at CREATE, not at completion: the capture Jobs read it to decide
+    // which repository to write to, and a restore months later reads the same
+    // value to decide where to look. A bundle's layout can never change.
+    repoLayout: CURRENT_REPO_LAYOUT,
     retentionDays: input.retentionDays,
     expiresAt: input.retentionDays > 0 ? addDays(new Date(), input.retentionDays) : null,
     startedAt: new Date(),
@@ -1328,7 +1333,7 @@ async function recordResticSnapshotForComponent(args: {
   // was missing (e.g. ad-hoc bundle without a target), record the row
   // anyway with an empty repoUri — the admin UI will surface the gap.
   const repoUri = target
-    ? buildResticRepoUri(target, input.tenantId, component)
+    ? buildResticRepoUri(target, input.tenantId, component, CURRENT_REPO_LAYOUT)
     : '';
 
   // Region id derivation: read the override from settings, fall back
