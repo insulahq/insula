@@ -45,6 +45,93 @@ import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { pack as tarPack, extract as tarExtract } from '../../shared/tar-stream-compat.js';
 import type { BackupStore, BundleHandle } from './bundle-store.js';
+import type { ExportEntrySource } from './export-sources.js';
+
+/**
+ * Feed one export source into the outer tar.
+ *
+ * An object artifact is copied through with the size the store reports. A
+ * restic source arrives as a TAR STREAM (`restic dump --archive tar`, or a
+ * stored `maildir.tar` which already is one) and is RE-EMITTED entry by
+ * entry under `components/<component>/<name>/…`. Re-emitting rather than
+ * embedding keeps every size exact — tar has no unknown-length entry — and
+ * means the export holds the tenant's actual files instead of an opaque
+ * nested archive. Nothing is staged on disk either way.
+ *
+ * A source that yields NOTHING throws. Silently skipping is how the export
+ * came to ship without files or mail in the first place.
+ */
+async function feedSourceIntoTar(
+  tar: ReturnType<typeof tarPack>,
+  store: BackupStore,
+  handle: BundleHandle,
+  src: ExportEntrySource,
+): Promise<void> {
+  // Branch on the RESTIC discriminator, not on 'artifact': a caller that
+  // passes a bare { component, name } (as the contract did before ADR-061)
+  // must still be read as an object artifact rather than falling through to
+  // the restic branch and calling a method it does not have.
+  if (src.kind !== 'restic') {
+    const stat = await store.stat(handle, src.component, src.name);
+    if (!stat) {
+      throw new Error(`data-export: component ${src.component}/${src.name} is missing from the target`);
+    }
+    const body = await store.readComponent(handle, src.component, src.name);
+    const entry = tar.entry({
+      name: `components/${src.component}/${src.name}`,
+      size: stat.sizeBytes,
+      mtime: new Date(),
+    });
+    await pipeline(body, entry);
+    return;
+  }
+
+  const raw = await src.open();
+  const tarX = tarExtract();
+  const prefix = `components/${src.component}/${src.name}`;
+  let entries = 0;
+  // The outer tar is destroyed when the HTTP consumer disconnects. Without
+  // this listener the promise below would never settle and the restic child
+  // would keep streaming into a pipe nobody reads, holding its repo lock and
+  // its slot on the per-pod semaphore until the pod restarts.
+  let onOuterError: ((err: Error) => void) | null = null;
+  try {
+    await new Promise<void>((resolve, reject) => {
+      onOuterError = (err: Error) => reject(err instanceof Error ? err : new Error(String(err)));
+      (tar as unknown as NodeJS.EventEmitter).once('error', onOuterError);
+      tarX.on('entry', (header, stream, next) => {
+        let rel = String(header.name).replace(/^\.\/+/, '').replace(/^\/+/, '');
+        // Drop the snapshot's absolute capture root so the export reads
+        // `components/mailboxes/<addr>/INBOX/...` rather than repeating the
+        // address and exposing an internal mount point.
+        const strip = (src.stripPrefix ?? '').replace(/^\/+|\/+$/g, '');
+        if (strip && (rel === strip || rel.startsWith(`${strip}/`))) {
+          rel = rel.slice(strip.length).replace(/^\/+/, '');
+        }
+        if (rel.length === 0) { next(); return; }
+        const name = `${prefix}/${rel}`;
+        entries += 1;
+        const out = tar.entry({ ...header, name }, (err?: Error | null) => {
+          if (err) reject(err);
+          else next();
+        });
+        stream.on('error', reject);
+        (stream as unknown as NodeJS.ReadableStream).pipe(out as unknown as NodeJS.WritableStream);
+      });
+      tarX.on('finish', () => resolve());
+      tarX.on('error', reject);
+      raw.on('error', reject);
+      raw.pipe(tarX as unknown as NodeJS.WritableStream);
+    });
+  } finally {
+    if (onOuterError) (tar as unknown as NodeJS.EventEmitter).removeListener('error', onOuterError);
+    // Idempotent: a stream that ended on its own is already destroyed.
+    if (!raw.destroyed) raw.destroy();
+  }
+  if (entries === 0) {
+    throw new Error(`data-export: restic source ${src.component}/${src.name} produced no entries`);
+  }
+}
 
 // 100k-iter PBKDF2 takes 50–100 ms — too long to block the Node
 // event loop. The async variant runs the work on libuv's threadpool.
@@ -62,7 +149,7 @@ export interface WrapBundleArgs {
   /** Plaintext passphrase. Caller MUST NOT log it. */
   readonly passphrase: string;
   /** All component artifacts to bundle into the tarball. */
-  readonly components: ReadonlyArray<{ component: 'files' | 'mailboxes' | 'config' | 'secrets'; name: string }>;
+  readonly components: ReadonlyArray<ExportEntrySource>;
 }
 
 export interface WrapBundleResult {
@@ -107,15 +194,7 @@ export async function wrapBundleAsDataExport(args: WrapBundleArgs): Promise<Wrap
   const tarFeeder = (async () => {
     try {
       for (const c of components) {
-        const stat = await store.stat(handle, c.component, c.name);
-        if (!stat) continue; // missing artifact (component was skipped)
-        const body = await store.readComponent(handle, c.component, c.name);
-        const entry = tar.entry({
-          name: `components/${c.component}/${c.name}`,
-          size: stat.sizeBytes,
-          mtime: new Date(),
-        });
-        await pipeline(body, entry);
+        await feedSourceIntoTar(tar, store, handle, c);
       }
       tar.finalize();
     } catch (err) {
@@ -199,7 +278,7 @@ export interface StreamExportArgs {
    * extract with `tar -xzf` and no key.
    */
   readonly passphrase?: string;
-  readonly components: ReadonlyArray<{ component: 'files' | 'mailboxes' | 'config' | 'secrets'; name: string }>;
+  readonly components: ReadonlyArray<ExportEntrySource>;
 }
 
 /**
@@ -235,15 +314,7 @@ export async function streamEncryptedExport(args: StreamExportArgs): Promise<Rea
       tar.entry({ name: 'meta.json', size: metaBuf.length, mtime: new Date(meta.capturedAt) }, metaBuf);
 
       for (const c of components) {
-        const stat = await store.stat(handle, c.component, c.name);
-        if (!stat) continue;
-        const body = await store.readComponent(handle, c.component, c.name);
-        const entry = tar.entry({
-          name: `components/${c.component}/${c.name}`,
-          size: stat.sizeBytes,
-          mtime: new Date(),
-        });
-        await pipeline(body, entry);
+        await feedSourceIntoTar(tar, store, handle, c);
       }
       tar.finalize();
     } catch (err) {
@@ -722,7 +793,7 @@ export async function decryptImportTarball(args: {
 export interface StreamZipExportArgs {
   readonly store: BackupStore;
   readonly handle: BundleHandle;
-  readonly components: ReadonlyArray<{ component: 'files' | 'mailboxes' | 'config' | 'secrets'; name: string }>;
+  readonly components: ReadonlyArray<ExportEntrySource>;
 }
 
 /**
@@ -802,8 +873,23 @@ export async function streamZipExport(args: StreamZipExportArgs): Promise<Readab
       archive.append(metaBuf, { name: 'meta.json', date: new Date(meta.capturedAt), store: true });
 
       for (const c of components) {
+        if (c.kind === 'restic') {
+          // archiver accepts a stream of unknown length, so the component goes
+          // in as one `.tar` member rather than being re-emitted file by file.
+          const raw = await c.open();
+          const name = c.name.endsWith('.tar') ? c.name : `${c.name}.tar`;
+          // Kill the restic child if the ZIP is torn down under us (client
+          // disconnect) — archiver will not do it for an appended stream.
+          const reap = (): void => { if (!raw.destroyed) raw.destroy(); };
+          (archive as unknown as NodeJS.EventEmitter).once('error', reap);
+          (archive as unknown as NodeJS.EventEmitter).once('close', reap);
+          archive.append(raw, { name: `components/${c.component}/${name}`, date: new Date(), store: true });
+          continue;
+        }
         const stat = await store.stat(handle, c.component, c.name);
-        if (!stat) continue;
+        if (!stat) {
+          throw new Error(`data-export: component ${c.component}/${c.name} is missing from the target`);
+        }
         const body = await store.readComponent(handle, c.component, c.name);
         archive.append(body, { name: `components/${c.component}/${c.name}`, date: new Date(), store: true });
       }

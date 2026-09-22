@@ -72,11 +72,13 @@
 import type { FastifyInstance } from 'fastify';
 import { eq, and } from 'drizzle-orm';
 import type { BackupStore } from '../../tenant-bundles/bundle-store.js';
+import { resolveBundleRepoLayout } from '../../tenant-bundles/repo-layout.js';
 import { restoreItems, restoreJobs, backupComponents, type RestoreItem } from '../../../db/schema.js';
 import { ApiError } from '../../../shared/errors.js';
-import { tailJobLog } from '../../storage-lifecycle/job-log-tail.js';
+import { readJobLogTail, tailJobLog } from '../../storage-lifecycle/job-log-tail.js';
 import { createK8sClients, type K8sClients } from '../../k8s-provisioner/k8s-client.js';
 import { ensureStalwartPrincipals } from './ensure-stalwart-principals.js';
+import { MAILBOX_CAPTURE_ROOT, addressDirName } from '../../tenant-bundles/components/mailboxes-restic.js';
 import { listTenantMailboxAddresses } from '../../tenant-bundles/components/mailboxes.js';
 import { resolveShimBackupTarget } from '../../tenant-bundles/resolve-backup-target.js';
 import {
@@ -212,17 +214,30 @@ export async function execMailboxesByAddressItem(args: {
   // ── Resolve the mailboxes restic snapshot id ──────────────────────
   // Persisted on backup_components.sha256 (component='mailboxes') by the
   // orchestrator — the same source + column the files component uses.
-  const [comp] = await app.db.select()
+  const comps = await app.db.select()
     .from(backupComponents)
     .where(and(
       eq(backupComponents.backupJobId, item.bundleId),
       eq(backupComponents.component, 'mailboxes'),
-    ))
-    .limit(1);
-  if (!comp?.sha256 || !RESTIC_SNAPSHOT_ID_RE.test(comp.sha256)) {
+    ));
+  const usable = comps.filter(
+    (c) => typeof c.sha256 === 'string' && RESTIC_SNAPSHOT_ID_RE.test(c.sha256),
+  );
+  if (usable.length === 0) {
     throw new ApiError('NOT_FOUND', `Bundle ${item.bundleId} has no mailboxes restic snapshot`, 404);
   }
-  const snapshotId = comp.sha256;
+  // ADR-061 bundles carry one row per mailbox, named by address. Pre-ADR-061
+  // bundles carry a single row whose artifact name is a placeholder
+  // (`__pending__` / `restic-stream`) and whose snapshot is the whole-tenant
+  // tarball. Distinguish on the artifact name rather than on row COUNT — a
+  // tenant with exactly one mailbox produces one row either way.
+  const perAddressRows = usable.filter((c) => c.artifactName.includes('@'));
+  const snapshotByAddressAll = new Map(
+    perAddressRows.map((c) => [c.artifactName, c.sha256 as string]),
+  );
+  const legacySnapshotId = perAddressRows.length > 0
+    ? ''
+    : (usable[0].sha256 as string);
 
   // ── Resolve target addresses ──────────────────────────────────────
   let addresses: readonly string[];
@@ -301,7 +316,7 @@ export async function execMailboxesByAddressItem(args: {
   // stream endpoint uses); the repo URI component is `mailboxes`.
   const target = await resolveShimBackupTarget(k8s.core, 'tenant', app.log);
   const passwordHex = deriveResticPassword(secretsKeyHex, job.tenantId);
-  const repoUri = buildResticRepoUri(target, job.tenantId, 'mailboxes');
+  const repoUri = buildResticRepoUri(target, job.tenantId, 'mailboxes', await resolveBundleRepoLayout(app.db, item.bundleId));
   const env = buildResticEnv(target);
 
   // Resolve the Stalwart master-user FQDN from mail-secrets — the
@@ -325,7 +340,16 @@ export async function execMailboxesByAddressItem(args: {
     masterSecretKey: MASTER_SECRET_KEY_DEFAULT,
     mode,
     credsSecretName,
-    snapshotId,
+    snapshotId: legacySnapshotId,
+    // Only the addresses being restored — the Job validates that every one of
+    // them has a snapshot and refuses to restore a silent subset.
+    snapshotByAddress: snapshotByAddressAll.size > 0
+      ? addresses.map((a) => ({
+        address: a,
+        addressDir: addressDirName(a),
+        snapshotId: snapshotByAddressAll.get(a) ?? '',
+      }))
+      : undefined,
     addresses,
     workers: RESTORE_WORKERS_DEFAULT,
   });
@@ -405,42 +429,17 @@ export async function execMailboxesByAddressItem(args: {
     });
 
     let log = '';
-    // jmap-restore.py emits one JSON summary line per address to stdout.
-    // The script's `echo "MAILBOX_RESTORED addr=$ADDR ..."` lines and
-    // python stderr can interleave, so we don't require a fixed tail
-    // length — grab the last 200 lines and JSON-parse any that look like
-    // our summary shape.
-    try { log = (await tailJobLog(k8s, MAIL_NAMESPACE, jobName, { tailLines: 200, maxLineLength: 5000 })) ?? ''; } catch { /* ignore */ }
-    let imported = 0;
-    let skippedTotal = 0;
-    let failed = 0;
-    let mailboxesCreated = 0;
-    let prePurged = 0;
-    let elapsedMs = 0;
-    for (const line of log.split('\n')) {
-      const t = line.trim();
-      if (!t.startsWith('{') || !t.endsWith('}')) continue;
-      try {
-        const j = JSON.parse(t) as Partial<{
-          imported: number;
-          skipped: number;
-          failed: number;
-          prePurged: number;
-          mailboxesCreated: string[];
-          elapsedSeconds: number;
-        }>;
-        if (typeof j.imported === 'number') {
-          imported += j.imported;
-          skippedTotal += j.skipped ?? 0;
-          failed += j.failed ?? 0;
-          prePurged += j.prePurged ?? 0;
-          mailboxesCreated += (j.mailboxesCreated ?? []).length;
-          elapsedMs = Math.max(elapsedMs, Math.round((j.elapsedSeconds ?? 0) * 1000));
-        }
-      } catch {
-        // Not a jmap-restore summary line; ignore.
-      }
-    }
+    // MUST be readJobLogTail, NOT tailJobLog: the latter fetches N lines and
+    // then returns only the LAST one (it exists to feed a one-line progress
+    // chip). Parsing summaries out of it could only ever see the script's
+    // final `MAILBOXES_RESTORED total=N` line, which is not JSON — so every
+    // mailbox restore reported `imported=0` no matter how much it restored,
+    // and a non-zero `failed` count was invisible. The capture path hit this
+    // and worked around it; this one never did.
+    try { log = (await readJobLogTail(k8s, MAIL_NAMESPACE, jobName, { tailLines: 400 })) ?? ''; } catch { /* ignore */ }
+    const {
+      imported, skippedTotal, failed, mailboxesCreated, prePurged, elapsedMs,
+    } = parseMailboxRestoreSummary(log);
     await app.db.update(restoreItems)
       .set({
         progressMessage:
@@ -467,6 +466,56 @@ export async function execMailboxesByAddressItem(args: {
   }
 }
 
+
+/**
+ * Sum the per-address JSON summaries `imap-restore.py` / `jmap-restore.py`
+ * write to stdout — one line per mailbox, interleaved with the shell's own
+ * progress echoes, restic's restore output and python stderr.
+ *
+ * Exported so it can be exercised against a REAL Job log; the numbers here are
+ * what the operator reads to decide whether a restore did anything.
+ */
+export function parseMailboxRestoreSummary(log: string): {
+  imported: number;
+  skippedTotal: number;
+  failed: number;
+  mailboxesCreated: number;
+  prePurged: number;
+  elapsedMs: number;
+} {
+  let imported = 0;
+  let skippedTotal = 0;
+  let failed = 0;
+  let mailboxesCreated = 0;
+  let prePurged = 0;
+  let elapsedMs = 0;
+  for (const line of log.split('\n')) {
+    const t = line.trim();
+    if (!t.startsWith('{') || !t.endsWith('}')) continue;
+    try {
+      const j = JSON.parse(t) as Partial<{
+        imported: number;
+        skipped: number;
+        failed: number;
+        prePurged: number;
+        mailboxesCreated: string[];
+        elapsedSeconds: number;
+      }>;
+      if (typeof j.imported === 'number') {
+        imported += j.imported;
+        skippedTotal += j.skipped ?? 0;
+        failed += j.failed ?? 0;
+        prePurged += j.prePurged ?? 0;
+        mailboxesCreated += (j.mailboxesCreated ?? []).length;
+        elapsedMs = Math.max(elapsedMs, Math.round((j.elapsedSeconds ?? 0) * 1000));
+      }
+    } catch {
+      // Not a restore summary line (the aux summary has no `imported`); ignore.
+    }
+  }
+  return { imported, skippedTotal, failed, mailboxesCreated, prePurged, elapsedMs };
+}
+
 export function buildMailboxesByAddressJobSpec(input: {
   jobName: string;
   mailNamespace: string;
@@ -491,8 +540,14 @@ export function buildMailboxesByAddressJobSpec(input: {
   mode: MailboxRestoreMode;
   /** Name of the per-Job creds Secret (restic_password, aws_*, repo_uri). */
   credsSecretName: string;
-  /** Mailboxes restic snapshot id (from backup_components.sha256). */
+  /** Mailboxes restic snapshot id (from backup_components.sha256).
+   *  Legacy (pre-ADR-061) bundles only: one snapshot holding maildir.tar for
+   *  the whole tenant. Ignored when `snapshotByAddress` is supplied. */
   snapshotId: string;
+  /** Per-address snapshots (ADR-061 captures). When present the Job restores
+   *  ONLY the requested mailbox's snapshot — no whole-tenant tarball, and no
+   *  second copy on disk to extract it into. */
+  snapshotByAddress?: ReadonlyArray<{ address: string; addressDir: string; snapshotId: string }>;
   /** Target mailbox addresses (validated, whitelisted). */
   addresses: ReadonlyArray<string>;
   workers: number;
@@ -517,7 +572,26 @@ export function buildMailboxesByAddressJobSpec(input: {
   if (!VALID_MODES.has(input.mode)) {
     throw new Error(`buildMailboxesByAddressJobSpec: invalid mode '${input.mode}'`);
   }
-  if (!RESTIC_SNAPSHOT_ID_RE.test(input.snapshotId)) {
+  const perAddress = input.snapshotByAddress ?? [];
+  if (perAddress.length > 0) {
+    for (const e of perAddress) {
+      if (!RESTIC_SNAPSHOT_ID_RE.test(e.snapshotId)) {
+        throw new Error(`buildMailboxesByAddressJobSpec: invalid snapshotId for '${e.address}'`);
+      }
+      if (!isSafeAddress(e.address)) {
+        throw new Error(`buildMailboxesByAddressJobSpec: invalid address '${e.address}'`);
+      }
+    }
+    const known = new Set(perAddress.map((e) => e.address));
+    const missing = input.addresses.filter((a) => !known.has(a));
+    if (missing.length > 0) {
+      // Restoring a subset silently would hand back a mailbox the operator
+      // did not ask to lose.
+      throw new Error(
+        `buildMailboxesByAddressJobSpec: no snapshot for ${missing.join(', ')}`,
+      );
+    }
+  } else if (!RESTIC_SNAPSHOT_ID_RE.test(input.snapshotId)) {
     throw new Error(`buildMailboxesByAddressJobSpec: invalid snapshotId '${input.snapshotId}'`);
   }
   const engine = input.engine ?? 'jmap';
@@ -553,9 +627,13 @@ export function buildMailboxesByAddressJobSpec(input: {
   // STALWART_MASTER_PASSWORD is read by jmap-restore.py via
   // --auth-pass-env (the password value never appears in argv, keeping
   // it out of /proc/<pid>/cmdline and `kubectl get pod -o yaml`).
-  const caseBlock = input.addresses.map((address, i) =>
-    `    ${i}) ADDR="${address}";;`,
-  ).join('\n');
+  const snapFor = new Map(perAddress.map((e) => [e.address, e]));
+  const caseBlock = input.addresses.map((address, i) => {
+    const e = snapFor.get(address);
+    return e
+      ? `    ${i}) ADDR="${address}"; SNAP="${e.snapshotId}"; ADDRDIR="${e.addressDir}";;`
+      : `    ${i}) ADDR="${address}";;`;
+  }).join('\n');
 
   const mailRestoreLine = engine === 'imap'
     // shQuote `imapHost` for parity with the capture-side script — even
@@ -594,19 +672,24 @@ export function buildMailboxesByAddressJobSpec(input: {
     `MODE=${input.mode}`,
     `WORKERS=${input.workers}`,
     `mkdir -p ${RESTORE_TMP} ${MAILDIR_ALL}`,
-    // ── Restore the ONE whole-tenant Maildir tarball via restic ──────────
-    `echo "Restoring maildir snapshot ${input.snapshotId} from restic..." >&2`,
-    `restic -r "$REPO" restore ${input.snapshotId} --target ${RESTORE_TMP} --no-lock || { echo "ERROR: restic restore failed"; exit 1; }`,
-    // The stdin capture lands as a single file `<target>/maildir.tar`.
-    // Fall back to a defensive `find` in case restic nests it under a
-    // sub-path for the stdin-filename layout.
-    `TARBALL=${RESTORE_TMP}/${STDIN_TARBALL}`,
-    `[ -f "$TARBALL" ] || TARBALL=$(find ${RESTORE_TMP} -type f -name ${STDIN_TARBALL} 2>/dev/null | head -n1)`,
-    `{ [ -n "$TARBALL" ] && [ -f "$TARBALL" ]; } || { echo "ERROR: ${STDIN_TARBALL} not found in restored snapshot"; ls -laR ${RESTORE_TMP} >&2 || true; exit 1; }`,
-    // Extract → /tmp/maildir-all/<address>/<mailbox>/cur/... (capture
-    // tarred `.` over /tmp/maildir-out, so entries are ./<address>/...).
-    `tar xf "$TARBALL" -C ${MAILDIR_ALL}`,
-    `rm -f "$TARBALL"`,
+    // ── Materialise the Maildir tree ─────────────────────────────────────
+    // ADR-061 captures hold ONE SNAPSHOT PER MAILBOX, so the tree for the
+    // address being restored is fetched inside the loop below — only that
+    // mailbox is transferred, and it lands on disk once.
+    //
+    // Pre-ADR-061 bundles hold a single whole-tenant `maildir.tar`, which has
+    // to be restored in full and then extracted: two copies of the tenant's
+    // entire mail on scratch to restore one mailbox. That path stays for as
+    // long as those bundles are inside their retention window.
+    ...(perAddress.length > 0 ? [] : [
+      `echo "Restoring whole-tenant maildir snapshot ${input.snapshotId} (pre-ADR-061 bundle)..." >&2`,
+      `restic -r "$REPO" restore ${input.snapshotId} --target ${RESTORE_TMP} --no-lock || { echo "ERROR: restic restore failed"; exit 1; }`,
+      `TARBALL=${RESTORE_TMP}/${STDIN_TARBALL}`,
+      `[ -f "$TARBALL" ] || TARBALL=$(find ${RESTORE_TMP} -type f -name ${STDIN_TARBALL} 2>/dev/null | head -n1)`,
+      `{ [ -n "$TARBALL" ] && [ -f "$TARBALL" ]; } || { echo "ERROR: ${STDIN_TARBALL} not found in restored snapshot"; ls -laR ${RESTORE_TMP} >&2 || true; exit 1; }`,
+      `tar xf "$TARBALL" -C ${MAILDIR_ALL}`,
+      `rm -f "$TARBALL"`,
+    ]),
     // ── Per-address restore loop ─────────────────────────────────────────
     'for i in $(seq 0 $((COUNT - 1))); do',
     '  ADDR=',
@@ -615,6 +698,23 @@ export function buildMailboxesByAddressJobSpec(input: {
     '    *) echo "BUG: address index $i out of bounds" >&2; exit 1;;',
     '  esac',
     '  [ -n "$ADDR" ] || { echo "BUG: empty address at $i" >&2; exit 1; }',
+    // Per-mailbox snapshot: restore just this address, then move its tree to
+    // the layout the restore scripts expect (`<root>/<address>/<folder>/cur`).
+    // The capture root (`/capture/<addressDir>`) is stripped here, the same
+    // way the files component strips its own `/source` prefix.
+    ...(perAddress.length > 0 ? [
+      '  [ -n "$SNAP" ] || { echo "BUG: no snapshot for $ADDR" >&2; exit 1; }',
+      `  rm -rf ${RESTORE_TMP}`,
+      `  mkdir -p ${RESTORE_TMP}`,
+      `  echo "Restoring $ADDR from snapshot $SNAP..." >&2`,
+      `  restic -r "$REPO" restore "$SNAP" --target ${RESTORE_TMP} --no-lock || { echo "ERROR: restic restore failed for $ADDR"; exit 1; }`,
+      `  SRC="${RESTORE_TMP}${MAILBOX_CAPTURE_ROOT}/$ADDRDIR"`,
+      `  [ -d "$SRC" ] || SRC=$(find ${RESTORE_TMP} -maxdepth 4 -type d -name "$ADDRDIR" 2>/dev/null | head -n1)`,
+      `  { [ -n "$SRC" ] && [ -d "$SRC" ]; } || { echo "ERROR: snapshot $SNAP holds no tree for $ADDR"; ls -laR ${RESTORE_TMP} >&2 || true; exit 1; }`,
+      `  rm -rf "${MAILDIR_ALL}/$ADDR"`,
+      `  mv "$SRC" "${MAILDIR_ALL}/$ADDR"`,
+      `  rm -rf ${RESTORE_TMP}`,
+    ] : []),
     `  echo "Restoring $ADDR via ${engine.toUpperCase()} (mode=$MODE workers=$WORKERS)..." >&2`,
     mailRestoreLine,
     // Auxiliary surfaces — Sieve scripts, Contacts, Calendars, Vacation

@@ -68,8 +68,6 @@ import type { K8sClients } from '../../k8s-provisioner/k8s-client.js';
 import type { Database } from '../../../db/index.js';
 import { tailJobLog, readJobLogTail } from '../../storage-lifecycle/job-log-tail.js';
 import { readJobToleratingEarlyAbsence, type JobReader } from '../../../shared/k8s-job-wait.js';
-import { signUploadToken } from '../upload-token.js';
-import { tenantJmapState } from '../../../db/schema.js';
 import {
   getMailboxBackupEngine,
   getMailboxBackupMaxConcurrent,
@@ -82,6 +80,31 @@ import {
 } from '../../mail-admin/imap-concurrency.js';
 import { mailLogger } from '../../../shared/mail-logger.js';
 import { resolvePlatformImage } from '../../../shared/platform-images.js';
+import { tenants, tenantBackupV2Settings } from '../../../db/schema.js';
+import { resolveBaseDomain } from '../../../config/domains.js';
+import { resolveShimBackupTarget } from '../resolve-backup-target.js';
+import {
+  buildResticRepoUri,
+  buildResticEnv,
+  buildSnapshotTags,
+  deriveResticPassword,
+  deriveRegionId,
+  ensureResticRepoInitialised,
+  type BackupTarget,
+} from '../restic-driver.js';
+import { notifyResticFailure } from '../restic-failure-notify.js';
+import { resolveBundleRepoLayout } from '../repo-layout.js';
+import {
+  buildResticCredsStringData,
+  createResticCredsSecret,
+  deleteSecretBestEffort,
+  wireSecretOwnerRef,
+} from './files.js';
+import {
+  buildMailboxesResticJobSpec,
+  parseMailboxDoneLines,
+  type MailboxCaptureResult,
+} from './mailboxes-restic.js';
 
 const mlog = mailLogger().child({ module: 'tenant-bundles-mailboxes' });
 
@@ -91,9 +114,14 @@ export interface MailboxesComponentResult {
   /** Total bytes the restic snapshot reported for this component. */
   readonly sizeBytes: number;
   /**
-   * Restic snapshot id (full 64-char) for the whole-tenant Maildir
-   * tarball, parsed from the MAILBOXES_DONE Job-log line. Empty string
-   * when no mailboxes were captured. The orchestrator persists this to
+   * One entry per captured mailbox (ADR-061). Each carries its own restic
+   * snapshot, which is what the per-address restore resolves against.
+   */
+  readonly perMailbox: ReadonlyArray<MailboxCaptureResult>;
+  /**
+   * DEPRECATED by `perMailbox` — there is no longer a single whole-tenant
+   * snapshot. Always '' for captures taken after ADR-061; retained so
+   * meta.json and the restore executor keep reading pre-ADR-061 bundles. The orchestrator persists this to
    * `backup_components.sha256` (component='mailboxes') so the
    * `mailboxes-by-address` restore executor can resolve the snapshot to
    * `restic restore` — same source + column the files component uses.
@@ -138,6 +166,11 @@ export interface CaptureMailboxesComponentOpts {
    * which value Stalwart actually has provisioned.
    */
   readonly stalwartMasterUser: string;
+  /** Apex resolution for the snapshot's region tag (mirrors files.ts). */
+  readonly platformBaseDomain?: string;
+  readonly ingressBaseDomain?: string;
+  /** Stamped onto every snapshot tag so a restore can tell what wrote it. */
+  readonly platformVersion?: string;
   readonly masterSecretName?: string;    // defaults to 'mail-secrets'
   readonly masterSecretKey?: string;     // defaults to 'STALWART_MASTER_PASSWORD'
   readonly toolsImage?: string;          // defaults to ghcr.io/.../tenant-backup-tools:latest
@@ -152,7 +185,6 @@ export interface CaptureMailboxesComponentOpts {
 }
 
 const DEFAULT_TIMEOUT_MS = 60 * 60 * 1000;
-const UPLOAD_TOKEN_TTL_SEC = 60 * 60;
 // K8s `activeDeadlineSeconds` is the orchestrator timeout minus this
 // buffer so K8s force-kills first and the orchestrator's next poll
 // sees `DeadlineExceeded` rather than its own generic timeout.
@@ -170,8 +202,6 @@ const MASTER_SECRET_KEY_DEFAULT = 'STALWART_MASTER_PASSWORD';
 // Resolved through the shared table so an operator CAN repoint it — this was
 // a bare literal with no env read in six modules (see shared/platform-images.ts).
 const TOOLS_IMAGE_DEFAULT = resolvePlatformImage('tenant-backup-tools');
-const RESTIC_STREAM_ARTIFACT = 'restic-stream';
-const STDIN_FILENAME = 'maildir.tar';
 
 export async function listTenantMailboxAddresses(db: Database, tenantId: string): Promise<string[]> {
   // `mailboxes.full_address` (camelCase = `fullAddress` per Drizzle
@@ -189,365 +219,13 @@ export async function listTenantMailboxAddresses(db: Database, tenantId: string)
   return r.rows.map((row) => row.full_address);
 }
 
-/** Returns prior JMAP state per (client, address). Empty map for first-ever capture. */
-async function loadPriorStates(db: Database, tenantId: string): Promise<Map<string, { jmapId: string; state: string }>> {
-  const rows = await db
-    .select({
-      jmapId: tenantJmapState.mailboxJmapId,
-      address: tenantJmapState.mailboxAddress,
-      state: tenantJmapState.lastJmapState,
-    })
-    .from(tenantJmapState)
-    .where(eq(tenantJmapState.tenantId, tenantId));
-  const out = new Map<string, { jmapId: string; state: string }>();
-  for (const r of rows) {
-    if (r.address && r.state) out.set(r.address, { jmapId: r.jmapId, state: r.state });
-  }
-  return out;
-}
 
-function isSafeAddress(address: string): boolean {
-  return /^[A-Za-z0-9._+\-]+@[A-Za-z0-9.\-]+$/.test(address);
-}
 
-function isSafeJmapEndpoint(url: string): boolean {
-  // The endpoint is interpolated into the shell script body. Limit to
-  // http(s) + cluster DNS chars + port. No spaces, no shell metas.
-  return /^https?:\/\/[A-Za-z0-9.\-]+(:\d+)?(\/[A-Za-z0-9._\-/]*)?$/.test(url);
-}
 
-function isSafeMasterUser(user: string): boolean {
-  return /^[A-Za-z0-9._\-]+(@[A-Za-z0-9.\-]+)?$/.test(user);
-}
 
-/** Single-quote a string for safe inclusion in a POSIX shell command.
- *  Used for whitelisted values (address, endpoint, master user) that
- *  still benefit from a quoted form so a value like `master@a.b` parses
- *  as one token. The `'` escape is the standard `'\''` POSIX pattern. */
-function shQuote(s: string): string {
-  if (/^[A-Za-z0-9_./@:-]+$/.test(s)) return s;
-  return `'${s.replace(/'/g, `'\\''`)}'`;
-}
 
-/**
- * Build the K8s Job spec for the JMAP mailboxes-component capture.
- * Pure function — exposed for unit-testing the spec without a kube tenant.
- */
-export function buildMailboxesComponentJobSpec(input: {
-  jobName: string;
-  mailNamespace: string;
-  tenantId: string;
-  backupId: string;
-  toolsImage: string;
-  /**
-   * Active engine. `jmap` (default — legacy) runs `jmap-sync.py` with
-   * the JMAP HTTP endpoint + per-mailbox state Secret. `imap` runs the
-   * new `imap-sync.py` with IMAPS connection details and NO state
-   * (COMPLETE bundles only). See platform_settings.mailbox_backup_engine.
-   */
-  engine?: MailboxBackupEngine;
-  jmapEndpoint: string;
-  /** IMAPS host (used when engine='imap'). */
-  imapHost?: string;
-  imapPort?: number;
-  stalwartMasterUser: string;
-  masterSecretName: string;
-  masterSecretKey: string;
-  /** Full URL (token-less) to the restic-stream endpoint. The script
-   *  appends `&token=$TOKEN` after reading the token from the per-Job
-   *  Secret mounted at /var/run/upload-token/token. */
-  uploadUrlNoToken: string;
-  uploadTokenSecretName: string;
-  /** Name of the per-Job Secret holding the address→state map at
-   *  data.states.json. Mounted read-only at /var/run/jmap-state/states.json.
-   *  Only used when engine='jmap'; ignored when engine='imap'. */
-  stateSecretName: string;
-  addresses: ReadonlyArray<{ address: string; stateIn: string | null }>;
-  activeDeadlineSeconds?: number;
-}): Record<string, unknown> {
-  for (const a of input.addresses) {
-    if (!isSafeAddress(a.address)) {
-      throw new Error(`buildMailboxesComponentJobSpec: invalid address '${a.address}'`);
-    }
-  }
-  if (!isSafeJmapEndpoint(input.jmapEndpoint)) {
-    throw new Error(`buildMailboxesComponentJobSpec: invalid jmapEndpoint '${input.jmapEndpoint}'`);
-  }
-  if (!isSafeMasterUser(input.stalwartMasterUser)) {
-    throw new Error(`buildMailboxesComponentJobSpec: invalid stalwartMasterUser '${input.stalwartMasterUser}'`);
-  }
-  const engine: MailboxBackupEngine = input.engine ?? 'jmap';
-  const imapHost = input.imapHost ?? IMAP_HOST_DEFAULT;
-  const imapPort = input.imapPort ?? IMAP_PORT_DEFAULT;
-  if (engine === 'imap') {
-    if (!/^[A-Za-z0-9.\-]+$/.test(imapHost)) {
-      throw new Error(`buildMailboxesComponentJobSpec: invalid imapHost '${imapHost}'`);
-    }
-    if (!Number.isInteger(imapPort) || imapPort < 1 || imapPort > 65535) {
-      throw new Error(`buildMailboxesComponentJobSpec: invalid imapPort ${imapPort}`);
-    }
-  }
 
-  // Per-mailbox addresses are whitelisted (`isSafeAddress`) so the
-  // shell loop can safely interpolate them via a hard-coded `case`
-  // dispatch. JMAP state tokens are server-issued opaque strings
-  // (RFC 8620 §2) — we MUST NOT pass them through `eval` or `printf`
-  // format strings, since a malicious Stalwart server or a poisoned
-  // DB row could inject `$(cmd)`. The (address → state) map is
-  // mounted as a Secret-backed JSON file at
-  // /var/run/jmap-state/states.json; the Job's python3 helper reads
-  // it and writes per-mailbox state-in files into the emptyDir
-  // scratch. The shell loop never sees a state token directly.
-  // The Secret is created separately by `captureMailboxesComponent`
-  // and referenced via `input.stateSecretName`.
 
-  const masterPasswordEnv = {
-    name: 'STALWART_MASTER_PASSWORD',
-    valueFrom: {
-      secretKeyRef: {
-        name: input.masterSecretName,
-        key: input.masterSecretKey,
-        optional: false,
-      },
-    },
-  };
-
-  // Script (POSIX sh):
-  //   - Read upload token from the mounted Secret (NOT etcd-visible argv).
-  //   - For each address: derive its state-in file with python from
-  //     the Secret-mounted states.json (state token never goes through
-  //     `eval` or `printf` format strings — reviewer-flagged shell
-  //     injection vector).
-  //   - Run jmap-sync.py per mailbox; append a JMAP_DONE line to the
-  //     Job log so the orchestrator can parse summaries from the
-  //     bounded job-log tail.
-  //   - tar /tmp/maildir-out | curl --upload-file - to the restic-stream
-  //     endpoint. Same tar-exit + http-status side-channel pattern as
-  //     the files component.
-  //   - Echo MAILBOXES_DONE bundleId=... snapshot=... sizeBytes=... .
-  //
-  // The `seq + case` loop pattern avoids dynamic env-var dereferencing
-  // (`eval echo \$VAR_$i`) which would let a poisoned state token
-  // execute commands. Each iteration's address is dispatched via a
-  // POSIX case statement keyed on the integer index, with the actual
-  // string literal embedded at TS-build time (whitelisted by
-  // isSafeAddress, so safe to interpolate).
-  const caseBranches = input.addresses
-    .map((a, i) => `  ${i}) ADDR=${shQuote(a.address)} ;;`)
-    .join('\n');
-  // Engine-specific per-address script body. Both engines are now
-  // COMPLETE-only — no incremental state plumbing for either. The
-  // legacy --state-in/--state-out flags are still understood by
-  // jmap-sync.py but ignored; the orchestrator no longer mounts the
-  // state Secret.
-  const mailCaptureLines: string[] =
-    engine === 'imap'
-      ? [
-          '  echo "Capturing mailbox $ADDR (#$i of $COUNT)..." >&2',
-          `    SUMMARY=$(/usr/local/bin/imap-sync.py --imap-host ${shQuote(imapHost)} --imap-port ${imapPort} --account-address "$ADDR" --master-user ${shQuote(input.stalwartMasterUser)} --auth-pass-env STALWART_MASTER_PASSWORD --output-dir /tmp/maildir-out)`,
-          `  echo "IMAP_DONE bundleId=${input.backupId} address=$ADDR summary=$SUMMARY"`,
-        ]
-      : [
-          '  echo "Capturing mailbox $ADDR (#$i of $COUNT)..." >&2',
-          `    SUMMARY=$(/usr/local/bin/jmap-sync.py --endpoint ${shQuote(input.jmapEndpoint)} --account-address "$ADDR" --master-user ${shQuote(input.stalwartMasterUser)} --auth-pass-env STALWART_MASTER_PASSWORD --output-dir /tmp/maildir-out)`,
-          `  echo "JMAP_DONE bundleId=${input.backupId} address=$ADDR summary=$SUMMARY"`,
-        ];
-
-  // Aux capture (Sieve / Contacts / Calendar / Vacation / FileNode)
-  // runs after the mail capture for the same address. ALWAYS via JMAP
-  // regardless of the mail engine — IMAP can't transport these
-  // surfaces. The aux script is best-effort: a non-zero exit (network
-  // blip, missing capability for an unusual account type) logs a WARN
-  // and the per-address loop continues so the mail snapshot still
-  // ships. The JSON summary line is parsed by the orchestrator from
-  // the bounded job-log tail (search prefix "{\"kind\":\"aux\"").
-  const auxCaptureLines: string[] = [
-    `    AUX_SUMMARY=$(/usr/local/bin/jmap-aux-sync.py --endpoint ${shQuote(input.jmapEndpoint)} --account-address "$ADDR" --master-user ${shQuote(input.stalwartMasterUser)} --auth-pass-env STALWART_MASTER_PASSWORD --output-dir /tmp/maildir-out) || { echo "AUX_WARN address=$ADDR jmap-aux-sync.py exited non-zero — continuing"; AUX_SUMMARY='{}'; }`,
-    `  echo "AUX_DONE bundleId=${input.backupId} address=$ADDR summary=$AUX_SUMMARY"`,
-  ];
-
-  const perAddressLines: string[] = [...mailCaptureLines, ...auxCaptureLines];
-
-  const script = [
-    'set -e',
-    'set -o pipefail',
-    'TOKEN=$(cat /var/run/upload-token/token)',
-    '[ -n "$TOKEN" ] || { echo "ERROR: upload token missing"; exit 1; }',
-    'mkdir -p /tmp/maildir-out /tmp/state',
-    `COUNT=${input.addresses.length}`,
-    'for i in $(seq 0 $((COUNT - 1))); do',
-    '  case "$i" in',
-    caseBranches,
-    '  *) echo "ERROR: invalid index $i"; exit 1 ;;',
-    '  esac',
-    ...perAddressLines,
-    'done',
-    'echo "Streaming Maildir tarball to platform-api restic-stream..."',
-    `( cd /tmp/maildir-out && tar cf - . 2>/tmp/tar.err; echo $? > /tmp/tar.exit ) | curl --fail-with-body -sS -o /tmp/restic-resp.json -w "%{http_code}" --upload-file - -H "Content-Type: application/x-tar" "${input.uploadUrlNoToken}&token=$TOKEN" > /tmp/http_status`,
-    'TAR_EXIT=$(cat /tmp/tar.exit 2>/dev/null || echo "missing")',
-    '[ "$TAR_EXIT" = "0" ] || { echo "ERROR: tar exited $TAR_EXIT; tar.err:"; cat /tmp/tar.err 2>/dev/null || true; exit 1; }',
-    'HTTP=$(tr -d "\\r\\n " < /tmp/http_status)',
-    '[ "$HTTP" = "200" ] || { echo "ERROR: platform-api returned HTTP \\"$HTTP\\""; cat /tmp/restic-resp.json 2>/dev/null || true; exit 1; }',
-    'SNAP=$(grep -o \'"snapshotId":"[0-9a-f]\\{64\\}"\' /tmp/restic-resp.json | sed \'s/.*":"//;s/"$//\')',
-    '[ -n "$SNAP" ] || { echo "ERROR: no snapshotId in response"; cat /tmp/restic-resp.json; exit 1; }',
-    'SIZE=$(grep -o \'"sizeBytes":[0-9]\\+\' /tmp/restic-resp.json | sed \'s/.*://\')',
-    'ADDED=$(grep -o \'"dataAddedPacked":[0-9]\\+\' /tmp/restic-resp.json | sed \'s/.*://\')',
-    `echo "MAILBOXES_DONE bundleId=${input.backupId} snapshot=$SNAP sizeBytes=\${SIZE:-0} addedBytes=\${ADDED:-}"`,
-  ].join('\n');
-
-  return {
-    metadata: {
-      name: input.jobName,
-      namespace: input.mailNamespace,
-      labels: {
-        'platform.io/component': 'backup-files',
-        'platform.io/tenant-id': input.tenantId,
-        'platform.io/backup-id': input.backupId,
-        'platform.io/sub-component': 'backup-mailboxes',
-      },
-    },
-    spec: {
-      backoffLimit: 0,
-      ttlSecondsAfterFinished: 600,
-      ...(input.activeDeadlineSeconds && input.activeDeadlineSeconds > 0
-        ? { activeDeadlineSeconds: input.activeDeadlineSeconds }
-        : {}),
-      template: {
-        metadata: {
-          labels: {
-            'platform.io/component': 'backup-files',
-            'platform.io/tenant-id': input.tenantId,
-            'platform.io/backup-id': input.backupId,
-            'platform.io/sub-component': 'backup-mailboxes',
-          },
-        },
-        spec: {
-          restartPolicy: 'Never',
-          priorityClassName: 'platform-tenant-overhead',
-          containers: [{
-            name: 'mailboxes',
-            image: input.toolsImage,
-            // Always pull: the tenant-backup-tools image is published
-            // with `:latest` floating to the newest build, but worker
-            // nodes cache by tag. Without Always, a cached older
-            // image (e.g. pre-Phase 2, no jmap-sync.py) silently runs
-            // and the Job fails with `jmap-sync.py: not found`
-            // . Image is small (<120 MiB)
-            // so the pull cost is minor.
-            imagePullPolicy: 'Always',
-            command: ['sh', '-c', script],
-            env: [
-              masterPasswordEnv,
-            ],
-            resources: {
-              requests: { cpu: '100m', memory: '256Mi' },
-              limits: { cpu: '1500m', memory: '1Gi' },
-            },
-            volumeMounts: [
-              { name: 'scratch', mountPath: '/tmp' },
-              { name: 'upload-token', mountPath: '/var/run/upload-token', readOnly: true },
-              // jmap-state mount removed — both engines are
-              // COMPLETE-only now, no per-mailbox state tokens to read.
-              // stateSecretName param retained for orchestrator-side
-              // backward compat but no longer mounted.
-            ],
-          }],
-          volumes: [
-            // 50Gi for the in-flight Maildir tree. Tarball never lands
-            // on disk — streamed end-to-end via curl --upload-file -.
-            { name: 'scratch', emptyDir: { sizeLimit: '50Gi' } },
-            {
-              name: 'upload-token',
-              secret: {
-                secretName: input.uploadTokenSecretName,
-                defaultMode: 0o400,
-                items: [{ key: 'token', path: 'token' }],
-              },
-            },
-          ],
-        },
-      },
-    },
-  };
-}
-
-/**
- * Idempotent create of the per-Job state Secret. data.states.json is
- * the JSON map `{address: state-token}`. Mounted read-only in the
- * Job's pod so the python helper can derive per-mailbox state-in
- * files WITHOUT the opaque tokens ever passing through shell.
- *
- * AlreadyExists (409) is tolerated — the orchestrator may retry the
- * Job create and we want the second call to reuse the existing
- * Secret content (it's deterministic per bundleId).
- */
-async function createStateSecret(
-  k8s: K8sClients,
-  namespace: string,
-  name: string,
-  statesJson: string,
-): Promise<void> {
-  const body = {
-    metadata: {
-      name,
-      namespace,
-      labels: {
-        'platform.io/component': 'backup-mailboxes',
-        'platform.io/managed-by': 'tenant-bundles',
-      },
-    },
-    type: 'Opaque',
-    stringData: { 'states.json': statesJson },
-  };
-  try {
-    // backup-coverage: excluded:transient-job-state
-    await (k8s.core as unknown as {
-      createNamespacedSecret: (args: { namespace: string; body: unknown }) => Promise<unknown>;
-    }).createNamespacedSecret({ namespace, body });
-  } catch (err) {
-    const httpErr = err as { code?: number; statusCode?: number };
-    const code = httpErr.code ?? httpErr.statusCode;
-    if (code === 409) return;
-    throw err;
-  }
-}
-
-/**
- * Idempotent create of the per-Job upload-token Secret. Mirrors the
- * pattern in files.ts:createTokenSecret. The orchestrator wires the
- * Job's ownerReferences onto this Secret after Job create so
- * kube-controller-manager GCs the Secret with the Job.
- */
-async function createUploadTokenSecret(
-  k8s: K8sClients,
-  namespace: string,
-  name: string,
-  token: string,
-): Promise<void> {
-  const body = {
-    metadata: {
-      name,
-      namespace,
-      labels: {
-        'platform.io/component': 'backup-mailboxes',
-        'platform.io/managed-by': 'tenant-bundles',
-      },
-    },
-    type: 'Opaque',
-    stringData: { token },
-  };
-  try {
-    // backup-coverage: excluded:transient-job-token
-    await (k8s.core as unknown as {
-      createNamespacedSecret: (args: { namespace: string; body: unknown }) => Promise<unknown>;
-    }).createNamespacedSecret({ namespace, body });
-  } catch (err) {
-    const httpErr = err as { code?: number; statusCode?: number };
-    const code = httpErr.code ?? httpErr.statusCode;
-    if (code === 409) return; // AlreadyExists — idempotent retry.
-    throw err;
-  }
-}
 
 export async function captureMailboxesComponent(
   opts: CaptureMailboxesComponentOpts,
@@ -556,50 +234,73 @@ export async function captureMailboxesComponent(
   if (addresses.length === 0) {
     // No mailboxes to capture: no snapshot ran, so 0 bytes were added.
     // A genuine zero, not an unknown.
-    return { mailboxCount: 0, addresses: [], sizeBytes: 0, snapshotId: '', dataAddedPacked: 0, newStates: [] };
+    return { mailboxCount: 0, addresses: [], sizeBytes: 0, snapshotId: '', dataAddedPacked: 0, newStates: [], perMailbox: [] };
   }
 
   // Engine selection: explicit override > platform_settings > default ('imap').
   const engine: MailboxBackupEngine =
     opts.engineOverride ?? (await getMailboxBackupEngine(opts.db));
 
-  // tenant bundles are COMPLETE only — neither engine reads
-  // prior state. loadPriorStates() is dead code kept for one cycle; the
-  // perAddress.stateIn field is always null.
-  const perAddress = addresses.map((address) => ({
-    address,
-    stateIn: null as string | null,
-  }));
 
-  const archiveToken = signUploadToken(
-    {
-      bundleId: opts.backupId,
-      component: 'mailboxes',
-      artifactName: RESTIC_STREAM_ARTIFACT,
-      ttlSeconds: UPLOAD_TOKEN_TTL_SEC,
-    },
-    opts.secretsKeyHex,
-  );
+  // ── Restic target, password, repo, tags (mirrors files.ts) ────────
+  let target: BackupTarget;
+  try {
+    target = await resolveShimBackupTarget(opts.k8s.core, 'tenant');
+  } catch (err) {
+    throw new Error(`mailboxes-component: shim backup target unavailable: ${(err as Error).message}`);
+  }
+  const passwordHex = deriveResticPassword(opts.secretsKeyHex, opts.tenantId);
+  // The bundle's OWN layout, not the current default: a re-run or retry of an
+  // older bundle must write where that bundle's other components went.
+  const repoLayout = await resolveBundleRepoLayout(opts.db, opts.backupId);
+  const repoUri = buildResticRepoUri(target, opts.tenantId, 'mailboxes', repoLayout);
+  const env = buildResticEnv(target);
+
+  const [tenant] = await opts.db.select().from(tenants).where(eq(tenants.id, opts.tenantId)).limit(1);
+  if (!tenant) throw new Error(`mailboxes-component: tenant ${opts.tenantId} not found`);
+  const [settings] = await opts.db.select().from(tenantBackupV2Settings).limit(1);
+  const apex = resolveBaseDomain({
+    PLATFORM_BASE_DOMAIN: opts.platformBaseDomain ?? '',
+    INGRESS_BASE_DOMAIN: opts.ingressBaseDomain ?? '',
+  });
+  const tags = buildSnapshotTags({
+    bundleId: opts.backupId,
+    tenantId: opts.tenantId,
+    tenantSlug: tenant.kubernetesNamespace,
+    component: 'mailboxes',
+    regionId: deriveRegionId(apex, settings?.regionIdOverride ?? ''),
+    platformVersion: opts.platformVersion ?? '',
+  });
 
   const mailNamespace = opts.mailNamespace ?? MAIL_NAMESPACE_DEFAULT;
-  const apiBase = opts.platformApiUrl.replace(/\/$/, '');
-  const uploadUrlNoToken =
-    `${apiBase}/api/v1/internal/bundles/${opts.backupId}` +
-    `/components/mailboxes/restic-stream` +
-    `?filename=${encodeURIComponent(STDIN_FILENAME)}`;
-
   const jobName = `bk-mbox-${opts.backupId}`.slice(0, 63);
-  const tokenSecretName = `bk-mbox-token-${opts.backupId}`.slice(0, 63);
-  const stateSecretName = `bk-mbox-state-${opts.backupId}`.slice(0, 63);
+  const credsSecretName = `bk-mbox-creds-${opts.backupId}`.slice(0, 63);
   const orchestratorTimeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
-  // Cluster-wide cap on concurrent mailbox capture Jobs. Uses the
-  // existing cluster-concurrency gate (DB-mutex) with a distinct
-  // `mailbox-worker` component so it composes with — and does not
-  // deadlock against — the `mailboxes` gate that protects the
-  // restic-stream upload endpoint.
+  // Initialise the repo in-process, before any Job exists — `restic backup`
+  // against an uninitialised repo just exits non-zero inside the Job, where
+  // the reason is a log line rather than an operator-facing error.
+  const lockLog = {
+    warn: (msg: string): void => {
+      if (opts.onProgress) void opts.onProgress(msg);
+      else mlog.warn({}, msg);
+    },
+  };
+  try {
+    await ensureResticRepoInitialised({ target, passwordHex, repoUri, log: lockLog });
+  } catch (err) {
+    await notifyResticFailure(opts.db, {
+      operation: 'repo init',
+      scope: `tenant ${opts.tenantId} / mailboxes`,
+      dedupeScope: `${opts.tenantId}:mailboxes`,
+    }, err);
+    throw err;
+  }
+
+  // Cluster-wide cap on concurrent mailbox capture Jobs.
   const maxConcurrent = await getMailboxBackupMaxConcurrent(opts.db);
   let slot: SlotHandle | null = null;
+  let credsCreated = false;
   try {
     try {
       slot = await acquireGlobalSlot(opts.db, {
@@ -610,43 +311,37 @@ export async function captureMailboxesComponent(
       });
     } catch (err) {
       if (err instanceof ClusterGateError) {
-        throw new Error(
-          `mailbox-worker cluster gate refused (${err.code}): ${err.message}`,
-        );
+        throw new Error(`mailbox-worker cluster gate refused (${err.code}): ${err.message}`);
       }
       throw err;
     }
 
-    // Elevate Stalwart's x:Imap.maxConcurrent before the Job starts so
-    // imap-sync.py's K=4 worker pool isn't throttled to a single
-    // effective connection per user. Idempotent — no-op if already
-    // elevated by another in-flight Job. Best-effort: a Stalwart blip
-    // here logs a warning and continues; the worst case is degraded
-    // throughput, not a failed capture. The mail-admin reverter
-    // scheduler will return Stalwart to the default once no mailbox
-    // jobs remain in-flight. See backend/src/modules/mail-admin/imap-concurrency.ts.
-    //
-    // Only fires for the IMAP engine — the JMAP engine doesn't open
-    // IMAP connections at all, so the elevation would be a pointless
-    // global mutation that just delays the reverter.
+    // Elevate Stalwart's x:Imap.maxConcurrent so imap-sync.py's worker pool
+    // isn't throttled to one effective connection per user. IMAP engine only
+    // — JMAP opens no IMAP connections, so the elevation would be a pointless
+    // global mutation. Best-effort: degraded throughput, never a failed
+    // capture.
     if (engine === 'imap') {
       try {
         await ensureImapMaxConcurrentAtLeast(IMAP_MAX_CONCURRENT_MIGRATION);
       } catch (err) {
         mlog.warn(
           { err: err instanceof Error ? err.message : String(err), target: IMAP_MAX_CONCURRENT_MIGRATION },
-          'failed to elevate x:Imap.maxConcurrent — continuing with current setting; throughput may be degraded',
+          'failed to elevate x:Imap.maxConcurrent — continuing; throughput may be degraded',
         );
       }
     }
 
-    await createUploadTokenSecret(opts.k8s, mailNamespace, tokenSecretName, archiveToken);
-    // state Secret no longer created — both engines are
-    // COMPLETE-only. createStateSecret() is dead code kept for one
-    // cycle; the stateSecretName param is retained on the Job spec
-    // builder for backward compat but no longer mounted.
+    await createResticCredsSecret(
+      opts.k8s,
+      mailNamespace,
+      credsSecretName,
+      buildResticCredsStringData({ passwordHex, repoUri, env }),
+      'backup-mailboxes',
+    );
+    credsCreated = true;
 
-    const spec = buildMailboxesComponentJobSpec({
+    const spec = buildMailboxesResticJobSpec({
       jobName,
       mailNamespace,
       tenantId: opts.tenantId,
@@ -659,131 +354,88 @@ export async function captureMailboxesComponent(
       stalwartMasterUser: opts.stalwartMasterUser,
       masterSecretName: opts.masterSecretName ?? MASTER_SECRET_NAME_DEFAULT,
       masterSecretKey: opts.masterSecretKey ?? MASTER_SECRET_KEY_DEFAULT,
-      uploadUrlNoToken,
-      uploadTokenSecretName: tokenSecretName,
-      stateSecretName,
-      addresses: perAddress,
+      credsSecretName,
+      tags,
+      addresses,
       activeDeadlineSeconds: Math.max(60, Math.ceil(orchestratorTimeoutMs / 1000) - JOB_DEADLINE_BUFFER_SEC),
     });
 
-    await (opts.k8s.batch as unknown as {
-      createNamespacedJob: (a: { namespace: string; body: unknown }) => Promise<unknown>;
+    const createdJob = await (opts.k8s.batch as unknown as {
+      createNamespacedJob: (a: { namespace: string; body: unknown }) => Promise<{ metadata?: { uid?: string } }>;
     }).createNamespacedJob({ namespace: mailNamespace, body: spec });
     const jobCreatedAt = Date.now();
 
+    // ownerRef the creds Secret to the Job so kube-controller GCs it with the
+    // Job's ttlSecondsAfterFinished.
+    const jobUid = createdJob.metadata?.uid;
+    if (jobUid) {
+      try {
+        await wireSecretOwnerRef(opts.k8s, mailNamespace, credsSecretName, jobName, jobUid);
+        credsCreated = false; // the Job owns it now
+      } catch (err) {
+        mlog.warn(
+          { err: err instanceof Error ? err.message : String(err), secret: credsSecretName },
+          'could not wire ownerRef on mailbox creds Secret — falling back to explicit delete',
+        );
+      }
+    }
+
     await waitForJob(opts.k8s, mailNamespace, jobName, jobCreatedAt, orchestratorTimeoutMs, opts.onProgress);
 
-    // Parse Job log for {JMAP,IMAP}_DONE + MAILBOXES_DONE lines. We need
-    // the FULL multi-line log (one *_DONE per mailbox), not the single-
-    // last-line summary that tailJobLog returns for progress.
-    const log = await readJobLogTail(opts.k8s, mailNamespace, jobName, { tailLines: 500 }).catch(() => null);
-    const { newStates, sizeBytes, snapshotId, dataAddedPacked } = parseMailboxesDone(log ?? '', opts.backupId);
+    // One MAILBOX_DONE line per mailbox. tailLines must comfortably exceed
+    // 2 lines per mailbox plus the per-address progress chatter.
+    const log = await readJobLogTail(opts.k8s, mailNamespace, jobName, { tailLines: 2000 }).catch(() => null);
+    const perMailbox = parseMailboxDoneLines(log ?? '', opts.backupId);
 
+    if (perMailbox.length !== addresses.length) {
+      // A short result means a mailbox produced no snapshot. Treating that as
+      // success would ship a bundle that silently omits someone's mail.
+      const captured = new Set(perMailbox.map((m) => m.address));
+      const missing = addresses.filter((a) => !captured.has(a));
+      throw new Error(
+        `mailboxes-component: ${missing.length} of ${addresses.length} mailbox(es) produced no snapshot: ${missing.join(', ')}`,
+      );
+    }
+
+    // Compression, per mailbox, in the bundle's own progress channel. restic
+    // reports both numbers on every snapshot; until now only the packed one
+    // was echoed, so the ratio could not be seen without a synthetic corpus.
+    for (const m of perMailbox) {
+      if (m.dataAddedRaw !== null && m.dataAddedPacked !== null && m.dataAddedPacked > 0) {
+        mlog.info(
+          {
+            address: m.address,
+            rawBytes: m.dataAddedRaw,
+            packedBytes: m.dataAddedPacked,
+            ratio: Number((m.dataAddedRaw / m.dataAddedPacked).toFixed(2)),
+          },
+          'mailbox capture: compression',
+        );
+      }
+    }
+
+    const sizeBytes = perMailbox.reduce((acc, m) => acc + m.sizeBytes, 0);
+    const measured = perMailbox.filter((m) => m.dataAddedPacked !== null);
     return {
       mailboxCount: addresses.length,
       addresses,
       sizeBytes,
-      snapshotId,
-      dataAddedPacked,
-      newStates,
+      perMailbox,
+      // No single whole-tenant snapshot exists any more.
+      snapshotId: '',
+      // Null — not 0 — when nothing reported a measurement, so an unmeasured
+      // run can never read as "measured zero".
+      dataAddedPacked: measured.length > 0
+        ? measured.reduce((acc, m) => acc + (m.dataAddedPacked ?? 0), 0)
+        : null,
+      newStates: [],
     };
   } finally {
     if (slot) await slot.release();
+    if (credsCreated) await deleteSecretBestEffort(opts.k8s, mailNamespace, credsSecretName);
   }
 }
 
-/**
- * Parse JMAP_DONE + MAILBOXES_DONE lines from the Job log.
- *
- * `JMAP_DONE bundleId=<id> address=<addr> summary=<json>` — one per mailbox.
- *   summary is the JSON object jmap-sync.py emits on stdout:
- *     { "address": ..., "fetched": N, "skipped": M, "newState": "...", "fullPull": bool }
- *
- * `MAILBOXES_DONE bundleId=<id> snapshot=<64hex> sizeBytes=<n>` — one final line.
- *
- * Exported for unit-testing without spinning a Job.
- */
-export function parseMailboxesDone(
-  log: string,
-  expectedBundleId: string,
-): {
-  newStates: Array<{
-    address: string;
-    jmapId: string;
-    newState: string;
-    fetched: number;
-    skipped: number;
-    fullPull: boolean;
-  }>;
-  sizeBytes: number;
-  /** Full 64-char restic snapshot id from MAILBOXES_DONE, '' if absent. */
-  snapshotId: string;
-  /** Bytes added to the repo; null when the line carries no such field. */
-  dataAddedPacked: number | null;
-} {
-  const newStates: Array<{
-    address: string;
-    jmapId: string;
-    newState: string;
-    fetched: number;
-    skipped: number;
-    fullPull: boolean;
-  }> = [];
-  let sizeBytes = 0;
-  let snapshotId = '';
-  let dataAddedPacked: number | null = null;
-  for (const line of log.split('\n')) {
-    // Accept both `JMAP_DONE` (legacy) and `IMAP_DONE` (new engine).
-    // IMAP summaries never carry `newState`/`fullPull` — we synthesize
-    // empty defaults so the orchestrator's downstream code that
-    // persists `tenant_jmap_state` skips the row (empty state = no-op).
-    //
-    // Split on `summary=` instead of trying to regex-match the JSON
-    // body — the earlier `\{.*\}` was greedy and would span any second
-    // `{` to the last `}` on the same line. JSON.parse() below catches
-    // any non-JSON tail.
-    const doneMatch = line.match(/(JMAP|IMAP)_DONE bundleId=(\S+) address=(\S+) summary=(.+)$/);
-    if (doneMatch && doneMatch[2] === expectedBundleId) {
-      try {
-        const summary = JSON.parse(doneMatch[4]!) as {
-          address: string;
-          fetched: number;
-          skipped: number;
-          newState?: string;
-          fullPull?: boolean;
-        };
-        newStates.push({
-          address: doneMatch[3]!,
-          // jmap-sync.py doesn't expose accountId in the summary today;
-          // we use the address as a stable proxy. IMAP also uses the
-          // address as the stable identity since IMAP has no equivalent
-          // of JMAP's accountId.
-          jmapId: doneMatch[3]!,
-          newState: summary.newState ?? '',
-          fetched: summary.fetched ?? 0,
-          skipped: summary.skipped ?? 0,
-          fullPull: summary.fullPull ?? true, // IMAP is always full pull
-        });
-      } catch {
-        // Malformed summary — skip; the orchestrator will not persist
-        // state for this mailbox so the next run re-pulls fresh.
-      }
-      continue;
-    }
-    // `addedBytes` is optional: a Job already in flight across the rollout,
-    // or an upload route that predates the field, emits the three-field line.
-    // Requiring it would fail the mailboxes component to gain a statistic.
-    // It can also be present but EMPTY (`addedBytes=`) when the response
-    // carried no figure — that is "unknown" too, not zero.
-    const mboxMatch = line.match(/MAILBOXES_DONE bundleId=(\S+) snapshot=([0-9a-f]{64}) sizeBytes=(\d+)(?: addedBytes=(\d*))?/);
-    if (mboxMatch && mboxMatch[1] === expectedBundleId) {
-      snapshotId = mboxMatch[2]!;
-      sizeBytes = Number.parseInt(mboxMatch[3]!, 10);
-      dataAddedPacked = mboxMatch[4] ? Number.parseInt(mboxMatch[4], 10) : null;
-    }
-  }
-  return { newStates, sizeBytes, snapshotId, dataAddedPacked };
-}
 
 async function waitForJob(
   k8s: K8sClients,

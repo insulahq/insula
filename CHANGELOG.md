@@ -12,6 +12,98 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### BREAKING
+
+- **The first backup after this release re-uploads each tenant's whole
+  footprint once.** A tenant's two restic repositories
+  (`restic-files/<id>` and `restic-mailboxes/<id>`) are merged into one
+  `restic/<id>`. No data is moved and nothing is rewritten: the layout is
+  recorded per bundle, existing bundles stay where they are and are read
+  from there until they expire under normal retention, and the retention
+  sweep visits both layouts so the old repositories drain on their own.
+
+  But the first merged bundle is a cold write into an empty repository, and
+  restic cannot deduplicate against a repository it is not writing to. On a
+  cluster holding ~40 GB of live mail that is roughly **24 GB uploaded in one
+  night**, and off-site storage **peaks at old + new** — around 210 GB against
+  a 24 GB steady state — until the legacy repositories drain. Check the
+  backup target has that headroom before applying. Subsequent nights return
+  to single-digit MB.
+
+### Fixed
+
+- **Mail backups stored roughly 4.7x the data they needed to.** A tenant with
+  15.5 GB of mail and 0.4–6.9 MB of real nightly growth was adding **8.2 GB of
+  restic data every night** — 94 GB of repository for 12 snapshots — and
+  40 GB of live mail platform-wide sat in 188 GB of repositories.
+
+  The cause was the last pre-restic transport. The `mailboxes` component tarred
+  a Maildir tree that is rebuilt from scratch every night and piped it into
+  `restic backup --stdin`, so both the filename (prefixed with the capture
+  clock) and the tar header mtime differed on every file, and chunk-level
+  deduplication only caught the interiors of large attachments. The same
+  tenant's `files` component — same driver, same storage target, but
+  restic-native — was 8.4 MB of repository for 12 snapshots.
+
+  Mail is now captured the way files already were: restic runs in the Job,
+  once per mailbox. Measured on a benchmark tenant, an unchanged follow-up
+  bundle dropped from 233 MB to **50 kB**, and a bundle after twelve new
+  messages added **1,202 kB** for 1.2 MB of new mail.
+
+- **Tenant data exports contained neither files nor mail.** Both components
+  exist only as restic snapshots, while the export enumerated objects under
+  the bundle prefix and skipped what it could not find — so an export was
+  about 17 KB of database rows and TLS secrets, and reported success. Exports
+  now stream both components out of restic, entry by entry, with nothing
+  staged on the API pod. A component that yields nothing is now an error.
+
+- **Every mailbox restore reported `imported=0`.** The executor read its
+  summary through a helper that returns only the *last* log line, which is not
+  the JSON summary — so the counts were always zero however much was restored,
+  and a non-zero failure count was invisible.
+
+- **Restored messages were stamped with the night the backup ran.** The
+  Maildir filename's timestamp is replayed as the restored message's
+  INTERNALDATE, and it held the capture clock; the real INTERNALDATE was never
+  fetched. It is now captured and used, which also keeps filenames stable
+  between captures.
+
+- **Disaster recovery could not restore mail from new bundles.** Re-creating a
+  deleted tenant rebuilt its component rows from the whole-tenant snapshot id,
+  which per-mailbox bundles do not carry. One row per address is emitted now.
+
+- An abandoned export download left a `restic dump` process running, holding a
+  concurrency slot until the pod restarted.
+
+- The `files` component now passes `--compression auto` explicitly rather than
+  inheriting it, so a stray `RESTIC_COMPRESSION` in the environment cannot
+  change how tenant data is stored.
+
+- The tenant data export download was gated on `backup_configurations.active`,
+  a column nothing has written since the target-activate flow was retired —
+  making the endpoint unreachable on every cluster.
+
+### Changed
+
+- **Mail is captured one mailbox at a time**, and each address's tree is
+  deleted before the next is captured, so peak scratch is the largest single
+  mailbox rather than the tenant's whole mail. Restoring one mailbox now
+  restores one snapshot instead of fetching the whole-tenant tarball and
+  extracting it a second time.
+
+- **Every completed bundle has an Export button.** The streaming download it
+  uses was already implemented and simply had no caller; the only Export
+  button rendered for bundles created with a passphrase, of which there were
+  none.
+
+- **Tenant names instead of UUIDs** in the bundle list and in disaster
+  recovery, which now offers the tenants that actually have bundles — including
+  ones already deleted locally, which is the case cold restore exists for.
+
+- Mail is compressed (`--compression auto`): measured 1.67x on a real
+  attachment-heavy mailbox and 3.69x on text-dominated mail. Each capture logs
+  its own ratio per mailbox.
+
 ## [2026.9.29] - 2026-09-22
 
 ### Changed
@@ -135,7 +227,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   now run on every change, and the run fails if any suite skips itself: these
   tests quietly pass when they cannot reach a database, so "nothing ran" would
   otherwise be indistinguishable from "everything passed".
-
 
 ## [2026.9.28] - 2026-09-21
 

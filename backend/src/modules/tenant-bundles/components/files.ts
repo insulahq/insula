@@ -37,11 +37,22 @@
  *   tenant PVC; `restic backup /source` snapshots them alongside the
  *   raw on-disk files. NO DB CLIENTS in this Job's image.
  *
- * Why no gzip / compression:
- *   restic dedups on uncompressed blocks; `--compression off` is the
- *   default for incompressible tenant content (jpegs, mp4, .gz dumps).
- *   We let restic's own packing handle storage. Network cost is
- *   recovered after the first snapshot — incrementals ship only deltas.
+ * Compression:
+ *   `--compression auto` is passed EXPLICITLY. It is also restic's default
+ *   for a version-2 repository, so this component has in fact been
+ *   compressing since the restic-native rewrite — an earlier version of this
+ *   comment claimed `off` was the default and that files were stored
+ *   uncompressed, which was simply wrong. Being explicit matters anyway:
+ *   the flag's default is `$RESTIC_COMPRESSION`, so an env var set anywhere
+ *   in the Job's environment would otherwise change how tenant data is
+ *   stored, silently and cluster-wide.
+ *
+ *   `auto` is the right mode rather than `off`: restic skips data it detects
+ *   as incompressible, so the jpegs and mp4s this comment used to worry about
+ *   cost almost nothing, while the SQL predumps, source trees and configs
+ *   that share the PVC compress several-fold. Measured on DEV (ADR-061):
+ *   27.0 MB of text mail stored as 7.34 MB (3.69x); a real production maildir
+ *   sample, attachment-heavy, 1.67x.
  *
  * FILES_DONE log line (UNCHANGED format):
  *   FILES_DONE bundleId=<id> snapshot=<64hex> sizeBytes=<n> fileCount=<n> addedBytes=<n>
@@ -72,6 +83,7 @@ import {
   type BackupTarget,
 } from '../restic-driver.js';
 import { notifyResticFailure } from '../restic-failure-notify.js';
+import { resolveBundleRepoLayout } from '../repo-layout.js';
 import { resolvePlatformImage } from '../../../shared/platform-images.js';
 
 /**
@@ -179,6 +191,10 @@ function buildScript(opts: { tags: ReadonlyArray<string>; bundleId: string }): s
     `if [ -f ${CREDS_MOUNT_PATH}/aws_region ]; then export AWS_DEFAULT_REGION="$(cat ${CREDS_MOUNT_PATH}/aws_region)"; fi`,
     `REPO="$(cat ${CREDS_MOUNT_PATH}/repo_uri)"`,
     `[ -n "$REPO" ] || { echo "ERROR: repo uri missing"; exit 1; }`,
+    // restic 0.19 exits 3 for a missing source path as well as for partial
+    // read errors, and exit 3 is accepted below. Assert the mount first so
+    // that acceptance can only ever mean "some files were unreadable".
+    `[ -d ${FILES_CAPTURE_ROOT} ] || { echo "ERROR: capture root ${FILES_CAPTURE_ROOT} is not mounted"; exit 1; }`,
     'echo "Running restic backup of /source..."',
     // Capture root is /source; restic stores absolute paths /source/<...>.
     // Disable set -e around restic so we can inspect $? — restic exits 3
@@ -188,7 +204,7 @@ function buildScript(opts: { tags: ReadonlyArray<string>; bundleId: string }): s
     // fatal. Only a short stderr tail is surfaced (the repo is the
     // in-cluster shim — no off-site presigned URLs leak here).
     'set +e',
-    `restic -r "$REPO" backup ${FILES_CAPTURE_ROOT} ${tagArgs} --pack-size 64 --option s3.connections=5 --json > /tmp/out.json 2>/tmp/err`,
+    `restic -r "$REPO" backup ${FILES_CAPTURE_ROOT} ${tagArgs} --compression auto --pack-size 64 --option s3.connections=5 --json > /tmp/out.json 2>/tmp/err`,
     'RC=$?',
     'set -e',
     '[ "$RC" = "3" ] && echo "WARN: restic backup completed with partial read errors (exit 3)"',
@@ -353,7 +369,10 @@ export async function captureFilesComponent(
   }
 
   const passwordHex = deriveResticPassword(opts.secretsKeyHex, opts.tenantId);
-  const repoUri = buildResticRepoUri(target, opts.tenantId, 'files');
+  // The bundle's OWN layout, not the current default: a re-run or retry of an
+  // older bundle must write where that bundle's other components went.
+  const repoLayout = await resolveBundleRepoLayout(opts.db, opts.backupId);
+  const repoUri = buildResticRepoUri(target, opts.tenantId, 'files', repoLayout);
   const env = buildResticEnv(target);
 
   // ── Snapshot tags (replicate internal-upload-route.ts) ────────────
@@ -499,7 +518,7 @@ export async function captureFilesComponent(
 }
 
 /** Best-effort delete of a per-Job creds Secret (404 tolerated). */
-async function deleteSecretBestEffort(k8s: K8sClients, namespace: string, name: string): Promise<void> {
+export async function deleteSecretBestEffort(k8s: K8sClients, namespace: string, name: string): Promise<void> {
   try {
     await (k8s.core as unknown as {
       deleteNamespacedSecret: (args: { name: string; namespace: string }) => Promise<unknown>;

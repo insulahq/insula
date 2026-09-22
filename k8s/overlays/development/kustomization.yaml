@@ -209,11 +209,11 @@ patches:
 
 images:
   - name: ghcr.io/insulahq/insula/backend
-    newTag: "20260922092458-8120b2b" # {"$imagepolicy": "flux-system:backend:tag"}
+    newTag: "20260922224800-3fbb3e6" # {"$imagepolicy": "flux-system:backend:tag"}
   - name: ghcr.io/insulahq/insula/admin-panel
-    newTag: "20260922092459-8120b2b" # {"$imagepolicy": "flux-system:admin-panel:tag"}
+    newTag: "20260922224756-3fbb3e6" # {"$imagepolicy": "flux-system:admin-panel:tag"}
   - name: ghcr.io/insulahq/insula/tenant-panel
-    newTag: "20260922092455-8120b2b" # {"$imagepolicy": "flux-system:tenant-panel:tag"}
+    newTag: "20260922224757-3fbb3e6" # {"$imagepolicy": "flux-system:tenant-panel:tag"}
   # Internal DaemonSet/sidecar images — pinned to an immutable <timestamp>-<sha>
   # tag by each image's OWN build workflow (.github/workflows/ci-*.yml →
   # .github/scripts/pin-image-tag.sh) AFTER the push completes, so Flux only
@@ -232,4 +232,4 @@ images:
   - name: ghcr.io/insulahq/insula/sftp-gateway
     newTag: "20260915110139-80a71f8"
   - name: ghcr.io/insulahq/insula/tenant-backup-tools
-    newTag: "20260915140154-e9a2926"
+    newTag: "20260922223323-c06879a"

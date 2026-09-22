@@ -68,6 +68,7 @@ import { backupConfigurations, tenantBackupV2Settings, hostingPlans } from '../.
 import { captureConfigComponent, type ConfigComponentResult } from './components/config.js';
 import { captureSecretsComponent, type SecretsComponentResult } from './components/secrets.js';
 import { shouldNotifyTenant, shouldNotifyAdmins } from './notification-policy.js';
+import { CURRENT_REPO_LAYOUT, resolveBundleRepoLayout } from './repo-layout.js';
 
 export interface OrchestratorDeps {
   readonly db: Database;
@@ -193,6 +194,10 @@ export async function runBundle(
     label: input.label ?? null,
     description: input.description ?? null,
     sizeBytes: 0,
+    // Stamped at CREATE, not at completion: the capture Jobs read it to decide
+    // which repository to write to, and a restore months later reads the same
+    // value to decide where to look. A bundle's layout can never change.
+    repoLayout: CURRENT_REPO_LAYOUT,
     retentionDays: input.retentionDays,
     expiresAt: input.retentionDays > 0 ? addDays(new Date(), input.retentionDays) : null,
     startedAt: new Date(),
@@ -509,15 +514,25 @@ export async function runBundle(
           platformApiUrl: deps.platformApiUrl,
           secretsKeyHex: deps.secretsKeyHex,
           stalwartMasterUser,
+          platformBaseDomain: deps.platformBaseDomain ?? '',
+          ingressBaseDomain: deps.ingressBaseDomain ?? '',
+          platformVersion: deps.platformVersion,
         });
         // Persist the mailboxes restic snapshot id to backup_components.sha256
         // (component='mailboxes') — same column the files component uses — so
         // the mailboxes-by-address restore executor can resolve it to
         // `restic restore`. Fall back to null if the Job log had no snapshot.
-        await markComponentDone(deps.db, componentRowId, {
-          sizeBytes: mailboxesResult.sizeBytes,
-          sha256: mailboxesResult.snapshotId || null,
-        });
+        // One row per mailbox (ADR-061): each address has its own restic
+        // snapshot, and `mailboxes-by-address` resolves the snapshot for the
+        // address it is restoring. The pending row becomes the first address
+        // so no placeholder `__pending__` row survives into the UI.
+        await recordPerMailboxComponentRows(
+          deps.db,
+          bundleId,
+          componentRowId,
+          mailboxesResult.perMailbox,
+          mailboxesResult.sizeBytes,
+        );
         componentInfos.mailboxes = {
           sizeBytes: mailboxesResult.sizeBytes,
           mailboxCount: mailboxesResult.mailboxCount,
@@ -530,6 +545,16 @@ export async function runBundle(
           ...(mailboxesResult.snapshotId && /^[0-9a-f]{8,64}$/.test(mailboxesResult.snapshotId)
             ? { sha256: mailboxesResult.snapshotId }
             : {}),
+          // Per-address snapshots, so a cross-cluster import or a DR re-create
+          // of a deleted tenant can name every mailbox's snapshot without this
+          // platform's database.
+          ...(mailboxesResult.perMailbox.length > 0
+            ? {
+              snapshots: Object.fromEntries(
+                mailboxesResult.perMailbox.map((m) => [m.address, m.snapshotId]),
+              ),
+            }
+            : {}),
         };
         // Persist tenant_restic_repo_state for the mailboxes repo, the same
         // way the files component does. Until this, only `files` ever had a
@@ -537,14 +562,17 @@ export async function runBundle(
         // pressing Refresh — and the per-tenant total silently omitted it.
         // Best-effort: the snapshot is already on the store, so a bookkeeping
         // failure must not fail the bundle.
-        if (mailboxesResult.snapshotId) {
+        const mailboxAnchorSnapshot = mailboxesResult.perMailbox.length > 0
+          ? mailboxesResult.perMailbox[mailboxesResult.perMailbox.length - 1].snapshotId
+          : mailboxesResult.snapshotId;
+        if (mailboxAnchorSnapshot) {
           try {
             await recordResticSnapshotForComponent({
               deps,
               input,
               bundleId,
               component: 'mailboxes',
-              snapshotId: mailboxesResult.snapshotId,
+              snapshotId: mailboxAnchorSnapshot,
               sizeBytes: mailboxesResult.sizeBytes,
               dataAddedPacked: mailboxesResult.dataAddedPacked,
             });
@@ -700,18 +728,31 @@ export async function runBundle(
   let exportArtifact: string | null = null;
   if (status === 'completed' && input.exportMode === 'data_export' && input.exportPassphrase) {
     try {
-      const componentsToWrap: ReadonlyArray<{ component: BackupComponentName; name: string }> = (
-        await deps.db.select().from(backupComponents).where(eq(backupComponents.backupJobId, bundleId))
-      )
-        .filter((c) => c.status === 'completed' && c.artifactName)
-        .map((c) => ({ component: c.component as BackupComponentName, name: c.artifactName! }));
+      // Resolve SOURCES, not component rows: `files` and `mailboxes` have no
+      // object under the bundle prefix, so mapping rows to artifact names
+      // produced entries the store could not serve — and the wrapper skipped
+      // them in silence (ADR-061).
+      const { resolveExportSources, bindExportSources } = await import('./export-sources.js');
+      if (!deps.k8s) {
+        throw new Error('data_export: kubernetes client unavailable; cannot open the restic repository');
+      }
+      const exportCtx = { db: deps.db, k8s: deps.k8s, secretsKeyHex: deps.secretsKeyHex };
+      const componentsToWrap = bindExportSources(
+        exportCtx,
+        bundleId,
+        await resolveExportSources(
+          exportCtx,
+          bundleId,
+          (component) => deps.store.listArtifacts(handle, component),
+        ),
+      );
       const { wrapBundleAsDataExport } = await import('./data-export.js');
       const wrapped = await wrapBundleAsDataExport({
         store: deps.store,
         handle,
         backupId: bundleId,
         passphrase: input.exportPassphrase,
-        components: componentsToWrap as ReadonlyArray<{ component: 'files' | 'mailboxes' | 'config' | 'secrets'; name: string }>,
+        components: componentsToWrap,
       });
       exportArtifact = wrapped.artifactPath;
     } catch (err) {
@@ -892,6 +933,56 @@ export async function runBundle(
   }
 
   return { bundleId, status, meta };
+}
+
+/**
+ * Persist one `backup_components` row per captured mailbox.
+ *
+ * The bundle starts with a single `__pending__` row so a capture failure has
+ * something to mark failed. On success that row is reused for the first
+ * address and the remaining addresses get their own rows — the table's
+ * unique index is already (backup_job_id, component, artifact_name), so the
+ * address is a legal artifact name and no migration is needed.
+ *
+ * `sizeBytes` on each row is that mailbox's own size; the caller's total is
+ * only used when a capture somehow produced no per-mailbox results, which the
+ * component treats as a failure before reaching here.
+ */
+async function recordPerMailboxComponentRows(
+  db: Database,
+  bundleId: string,
+  pendingRowId: string,
+  perMailbox: ReadonlyArray<{ address: string; snapshotId: string; sizeBytes: number }>,
+  totalSizeBytes: number,
+): Promise<void> {
+  if (perMailbox.length === 0) {
+    await markComponentDone(db, pendingRowId, { sizeBytes: totalSizeBytes, sha256: null });
+    return;
+  }
+  const [first, ...rest] = perMailbox;
+  await db
+    .update(backupComponents)
+    .set({
+      artifactName: first.address,
+      status: 'completed',
+      sizeBytes: first.sizeBytes,
+      sha256: first.snapshotId,
+      finishedAt: new Date(),
+    })
+    .where(eq(backupComponents.id, pendingRowId));
+  for (const m of rest) {
+    await db.insert(backupComponents).values({
+      id: randomUUID(),
+      backupJobId: bundleId,
+      component: 'mailboxes',
+      artifactName: m.address,
+      status: 'completed',
+      sizeBytes: m.sizeBytes,
+      sha256: m.snapshotId,
+      startedAt: new Date(),
+      finishedAt: new Date(),
+    } satisfies NewBackupComponent);
+  }
 }
 
 async function insertComponentRow(
@@ -1242,7 +1333,7 @@ async function recordResticSnapshotForComponent(args: {
   // was missing (e.g. ad-hoc bundle without a target), record the row
   // anyway with an empty repoUri — the admin UI will surface the gap.
   const repoUri = target
-    ? buildResticRepoUri(target, input.tenantId, component)
+    ? buildResticRepoUri(target, input.tenantId, component, CURRENT_REPO_LAYOUT)
     : '';
 
   // Region id derivation: read the override from settings, fall back

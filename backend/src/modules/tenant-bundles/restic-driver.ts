@@ -141,6 +141,8 @@ export interface RunResticBackupArgs {
   readonly component: ResticComponent;
   readonly passwordHex: string;
   readonly stdinFilename: string;
+  /** Repository layout for THIS bundle. Omit → the historical split. */
+  readonly layout?: ResticRepoLayout;
   readonly tags: ReadonlyArray<string>;
   readonly stdin: Readable;
   /** Per-pod concurrency gate. Defaults to a process-singleton (DEFAULT_SEM). */
@@ -344,10 +346,40 @@ export function buildSnapshotTags(inputs: SnapshotTagInputs): string[] {
 
 // ─── Repo URI builder ───────────────────────────────────────────────────────
 
+/**
+ * Which repository layout a bundle's snapshots live in (ADR-061).
+ *
+ *   'per-component'  `restic-files/<tenantId>` + `restic-mailboxes/<tenantId>`
+ *                    — the historical split. Every bundle written before the
+ *                    merge is here, and stays here for its whole life.
+ *   'per-tenant'     `restic/<tenantId>` — one repository holding every
+ *                    component, with the bundle identified by its `bundle-id=`
+ *                    tag.
+ *
+ * ABSENT MEANS 'per-component'. That is what makes the migration a no-op for
+ * existing data: no backfill, no rewrite, and a bundle row or meta.json that
+ * predates the field resolves to exactly the repository it was written to.
+ */
+export type ResticRepoLayout = 'per-component' | 'per-tenant';
+
+export const DEFAULT_REPO_LAYOUT: ResticRepoLayout = 'per-component';
+
+/** Path segment for a tenant's repo under the given layout. */
+function repoPathSegments(
+  tenantId: string,
+  component: ResticComponent,
+  layout: ResticRepoLayout,
+): string {
+  return layout === 'per-tenant'
+    ? `restic/${tenantId}`
+    : `restic-${component}/${tenantId}`;
+}
+
 export function buildResticRepoUri(
   target: BackupTarget,
   tenantId: string,
   component: ResticComponent,
+  layout: ResticRepoLayout = DEFAULT_REPO_LAYOUT,
 ): string {
   if (!ALLOWED_COMPONENTS.has(component)) {
     throw new Error(`buildResticRepoUri: invalid component '${component}'`);
@@ -355,31 +387,35 @@ export function buildResticRepoUri(
   if (!CLIENT_ID_RE.test(tenantId)) {
     throw new Error(`buildResticRepoUri: invalid tenantId '${tenantId}'`);
   }
+  if (layout !== 'per-component' && layout !== 'per-tenant') {
+    // A typo'd layout must never silently fall back to the other repository —
+    // that reads as "the backup is gone".
+    throw new Error(`buildResticRepoUri: invalid layout '${String(layout)}'`);
+  }
+  const tail = repoPathSegments(tenantId, component, layout);
   switch (target.kind) {
     case 's3': {
       const prefix = (target.s3Prefix ?? '').replace(/^\/+|\/+$/g, '');
       const segments = [target.s3Endpoint.replace(/\/$/, ''), target.s3Bucket];
       if (prefix) segments.push(prefix);
-      segments.push(`restic-${component}`, tenantId);
+      segments.push(tail);
       return `s3:${segments.join('/')}`;
     }
     case 'ssh': {
       const path = target.sshPath.replace(/^\/+|\/+$/g, '');
-      const tail = path
-        ? `${path}/restic-${component}/${tenantId}`
-        : `restic-${component}/${tenantId}`;
-      return `sftp:${target.sshUser}@${target.sshHost}:${tail}`;
+      const full = path ? `${path}/${tail}` : tail;
+      return `sftp:${target.sshUser}@${target.sshHost}:${full}`;
     }
     case 'hostpath': {
       const root = target.hostPath.replace(/\/$/, '');
-      return `${root}/restic-${component}/${tenantId}`;
+      return `${root}/${tail}`;
     }
     case 'shim': {
       // s3:http://backup-rclone-shim.platform.svc.cluster.local:9000/<class>/restic-<component>/<tenantId>
       // The shim's `combined:` remote routes <class> to whichever
       // upstream the operator bound (S3/SFTP/CIFS/NFS).
       const ep = target.endpoint.replace(/\/$/, '');
-      return `s3:${ep}/${target.bucket}/restic-${component}/${tenantId}`;
+      return `s3:${ep}/${target.bucket}/${tail}`;
     }
   }
 }
@@ -622,7 +658,7 @@ export async function runResticBackup(args: RunResticBackupArgs): Promise<Restic
   const release = await sem.acquire();
   let sftpCleanup: (() => Promise<void>) | null = null;
   try {
-    const repoUri = buildResticRepoUri(args.target, args.tenantId, args.component);
+    const repoUri = buildResticRepoUri(args.target, args.tenantId, args.component, args.layout);
     const env = {
       ...buildResticEnv(args.target),
       RESTIC_PASSWORD: args.passwordHex,
@@ -645,9 +681,13 @@ export async function runResticBackup(args: RunResticBackupArgs): Promise<Restic
     // Memory-bounded restic flags (Phase 1 piece #8 — staging measured
     // 389 MiB peak on 5 GiB stream; target <256 MiB):
     // - read-concurrency 1: single reader (no concurrent stdin makes sense)
-    // - compression off: tenant tar carries already-compressed content
-    //   (jpegs, mp4, .gz dumps) where restic compression wastes CPU + RAM
-    //   for ≤1% gain. Drops restic working set by ~80–120 MiB.
+    // - compression off: this is the LEGACY stdin path (a whole tar piped in
+    //   from a Job). Both components now run restic in the Job and choose
+    //   their own mode — `auto` for files and for mail. `off` is kept here
+    //   only so an in-flight Job from an older image behaves exactly as it
+    //   did; it is NOT restic's default, which is `auto` on a v2 repo.
+    //   Dropping compression also keeps this path's working set ~80–120 MiB
+    //   lower, which mattered when it carried whole-tenant streams.
     // - pack-size 64 (default 16): 4× fewer S3/SFTP round-trips per backup.
     //   Cuts restore wall-clock substantially (RTT-dominated). Memory cost
     //   is one in-flight pack buffer ≈ +48 MiB; still well under 256 MiB.
@@ -1000,7 +1040,7 @@ export async function runResticRestore(args: RunResticRestoreArgs): Promise<void
 
 // ─── Dump a stored file as a stream (restore-into-PVC) ──────────────────────
 
-const DUMP_PATH_RE = /^\/?[A-Za-z0-9._/-]+$/;
+const DUMP_PATH_RE = /^\/?[A-Za-z0-9._@+/-]+$/;
 
 export interface RunResticDumpArgs {
   readonly target: BackupTarget;
@@ -1013,6 +1053,15 @@ export interface RunResticDumpArgs {
   readonly dumpPath: string;
   readonly passwordHex: string;
   readonly semaphore?: ResticConcurrencySemaphore;
+  /** Repository layout for THIS bundle. Omit → the historical split. */
+  readonly layout?: ResticRepoLayout;
+  /**
+   * When set, `dumpPath` is a DIRECTORY and restic emits it as an archive
+   * stream instead of a single file's bytes. Used by the data export, which
+   * has to reproduce a component that exists only as a restic snapshot
+   * (ADR-061) without staging it on the API pod.
+   */
+  readonly archive?: 'tar' | 'zip';
 }
 
 /**
@@ -1057,7 +1106,7 @@ export async function runResticDump(args: RunResticDumpArgs): Promise<Readable> 
   };
   let sftpCleanup: (() => Promise<void>) | null = null;
   try {
-    const repoUri = buildResticRepoUri(args.target, args.tenantId, args.component);
+    const repoUri = buildResticRepoUri(args.target, args.tenantId, args.component, args.layout);
     const env = {
       ...buildResticEnv(args.target),
       RESTIC_PASSWORD: args.passwordHex,
@@ -1071,7 +1120,9 @@ export async function runResticDump(args: RunResticDumpArgs): Promise<Readable> 
     cliArgs.push('--repo', repoUri);
     cliArgs.push(...performanceOpts(args.target));
     cliArgs.push('--no-lock');
-    cliArgs.push('dump', args.snapshotId, args.dumpPath);
+    cliArgs.push('dump');
+    if (args.archive) cliArgs.push('--archive', args.archive);
+    cliArgs.push(args.snapshotId, args.dumpPath);
 
     const child = spawnRestic(cliArgs, env);
     let stderrBuf = '';

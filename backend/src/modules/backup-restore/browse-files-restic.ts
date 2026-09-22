@@ -24,6 +24,7 @@ import { ApiError } from '../../shared/errors.js';
 import { backupComponents, backupJobs } from '../../db/schema.js';
 import { createK8sClients, type K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { resolveShimBackupTarget } from '../tenant-bundles/resolve-backup-target.js';
+import { resolveBundleRepoLayout } from '../tenant-bundles/repo-layout.js';
 import {
   runResticLs,
   listResticSnapshots,
@@ -147,7 +148,7 @@ export async function filesSnapshotReachable(
     const k8s = sharedK8sClients(kubeconfigPath);
     const target = await resolveShimBackupTarget(k8s.core, 'tenant', app.log);
     const passwordHex = deriveResticPassword(secretsKeyHex, tenantId);
-    const repoUri = buildResticRepoUri(target, tenantId, 'files');
+    const repoUri = buildResticRepoUri(target, tenantId, 'files', await resolveBundleRepoLayout(app.db, bundleId));
 
     // Metadata-only listing (no file-tree walk) — cheap reachability probe.
     const snaps = await listResticSnapshots({ target, passwordHex, repoUri, readOnly: true });
@@ -205,7 +206,7 @@ export async function browseFilesTree(
   const k8s = sharedK8sClients(kubeconfigPath);
   const target = await resolveShimBackupTarget(k8s.core, 'tenant', app.log);
   const passwordHex = deriveResticPassword(secretsKeyHex, tenantId);
-  const repoUri = buildResticRepoUri(target, tenantId, 'files');
+  const repoUri = buildResticRepoUri(target, tenantId, 'files', await resolveBundleRepoLayout(app.db, bundleId));
 
   // restic ls of the requested dir. `dir` is the ABSOLUTE in-snapshot
   // path (capture root + display dir). One directory level per call.

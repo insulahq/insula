@@ -42,6 +42,7 @@ import {
   loadBundle,
   resolveStoreForBundle,
   readConfigDump,
+  readMailboxAddresses,
   dispatchExecutor,
   toJobSummary,
   toItemInfo,
@@ -491,12 +492,8 @@ export async function backupRestoreRoutes(app: FastifyInstance): Promise<void> {
     const store = await resolveStoreForBundle(app, bundleId);
     const handle = await store.open(bundleId);
     if (!handle) throw new ApiError('NOT_FOUND', 'Bundle artefacts not found on remote target', 404);
-    const refs = await store.listArtifacts(handle, 'mailboxes');
-    const addresses = refs
-      .map((r) => r.name.replace(/\.mbox\.tar\.gz$/, ''))
-      .filter((s) => s.length > 0);
     void job;
-    return success({ bundleId, addresses });
+    return success({ bundleId, addresses: await readMailboxAddresses(store, handle) });
   });
 
   app.get('/admin/tenant-bundles/:bundleId/browse/deployments', async (request) => {

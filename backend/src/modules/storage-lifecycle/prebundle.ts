@@ -43,6 +43,7 @@ import { ApiError } from '../../shared/errors.js';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { runBundle } from '../tenant-bundles/orchestrator.js';
+import { resolveBundleRepoLayout } from '../tenant-bundles/repo-layout.js';
 import { resolveShimBackupStore } from '../tenant-bundles/shim-backup-store.js';
 import { S3BackupStore } from '../tenant-bundles/s3-backup-store.js';
 import { SshBackupStore } from '../tenant-bundles/ssh-backup-store.js';
@@ -332,7 +333,7 @@ export async function restoreFilesBundleIntoPvc(args: {
   // Shim target + per-tenant restic password + repo (same as the capture).
   const target = await resolveShimBackupTarget(k8s.core, 'tenant');
   const passwordHex = deriveResticPassword(secretsKey(), tenantId);
-  const repoUri = buildResticRepoUri(target, tenantId, 'files');
+  const repoUri = buildResticRepoUri(target, tenantId, 'files', await resolveBundleRepoLayout(db, bundleId));
   const env = buildResticEnv(target);
 
   const safe = bundleId.replace(/[^a-z0-9]/gi, '').toLowerCase();
