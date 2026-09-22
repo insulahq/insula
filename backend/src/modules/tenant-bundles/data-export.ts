@@ -100,8 +100,16 @@ async function feedSourceIntoTar(
       onOuterError = (err: Error) => reject(err instanceof Error ? err : new Error(String(err)));
       (tar as unknown as NodeJS.EventEmitter).once('error', onOuterError);
       tarX.on('entry', (header, stream, next) => {
-        const rel = String(header.name).replace(/^\.\/+/, '').replace(/^\/+/, '');
-        const name = rel.length > 0 ? `${prefix}/${rel}` : prefix;
+        let rel = String(header.name).replace(/^\.\/+/, '').replace(/^\/+/, '');
+        // Drop the snapshot's absolute capture root so the export reads
+        // `components/mailboxes/<addr>/INBOX/...` rather than repeating the
+        // address and exposing an internal mount point.
+        const strip = (src.stripPrefix ?? '').replace(/^\/+|\/+$/g, '');
+        if (strip && (rel === strip || rel.startsWith(`${strip}/`))) {
+          rel = rel.slice(strip.length).replace(/^\/+/, '');
+        }
+        if (rel.length === 0) { next(); return; }
+        const name = `${prefix}/${rel}`;
         entries += 1;
         const out = tar.entry({ ...header, name }, (err?: Error | null) => {
           if (err) reject(err);

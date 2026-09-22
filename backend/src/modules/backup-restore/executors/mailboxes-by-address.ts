@@ -74,7 +74,7 @@ import { eq, and } from 'drizzle-orm';
 import type { BackupStore } from '../../tenant-bundles/bundle-store.js';
 import { restoreItems, restoreJobs, backupComponents, type RestoreItem } from '../../../db/schema.js';
 import { ApiError } from '../../../shared/errors.js';
-import { tailJobLog } from '../../storage-lifecycle/job-log-tail.js';
+import { readJobLogTail, tailJobLog } from '../../storage-lifecycle/job-log-tail.js';
 import { createK8sClients, type K8sClients } from '../../k8s-provisioner/k8s-client.js';
 import { ensureStalwartPrincipals } from './ensure-stalwart-principals.js';
 import { MAILBOX_CAPTURE_ROOT, addressDirName } from '../../tenant-bundles/components/mailboxes-restic.js';
@@ -428,42 +428,17 @@ export async function execMailboxesByAddressItem(args: {
     });
 
     let log = '';
-    // jmap-restore.py emits one JSON summary line per address to stdout.
-    // The script's `echo "MAILBOX_RESTORED addr=$ADDR ..."` lines and
-    // python stderr can interleave, so we don't require a fixed tail
-    // length — grab the last 200 lines and JSON-parse any that look like
-    // our summary shape.
-    try { log = (await tailJobLog(k8s, MAIL_NAMESPACE, jobName, { tailLines: 200, maxLineLength: 5000 })) ?? ''; } catch { /* ignore */ }
-    let imported = 0;
-    let skippedTotal = 0;
-    let failed = 0;
-    let mailboxesCreated = 0;
-    let prePurged = 0;
-    let elapsedMs = 0;
-    for (const line of log.split('\n')) {
-      const t = line.trim();
-      if (!t.startsWith('{') || !t.endsWith('}')) continue;
-      try {
-        const j = JSON.parse(t) as Partial<{
-          imported: number;
-          skipped: number;
-          failed: number;
-          prePurged: number;
-          mailboxesCreated: string[];
-          elapsedSeconds: number;
-        }>;
-        if (typeof j.imported === 'number') {
-          imported += j.imported;
-          skippedTotal += j.skipped ?? 0;
-          failed += j.failed ?? 0;
-          prePurged += j.prePurged ?? 0;
-          mailboxesCreated += (j.mailboxesCreated ?? []).length;
-          elapsedMs = Math.max(elapsedMs, Math.round((j.elapsedSeconds ?? 0) * 1000));
-        }
-      } catch {
-        // Not a jmap-restore summary line; ignore.
-      }
-    }
+    // MUST be readJobLogTail, NOT tailJobLog: the latter fetches N lines and
+    // then returns only the LAST one (it exists to feed a one-line progress
+    // chip). Parsing summaries out of it could only ever see the script's
+    // final `MAILBOXES_RESTORED total=N` line, which is not JSON — so every
+    // mailbox restore reported `imported=0` no matter how much it restored,
+    // and a non-zero `failed` count was invisible. The capture path hit this
+    // and worked around it; this one never did.
+    try { log = (await readJobLogTail(k8s, MAIL_NAMESPACE, jobName, { tailLines: 400 })) ?? ''; } catch { /* ignore */ }
+    const {
+      imported, skippedTotal, failed, mailboxesCreated, prePurged, elapsedMs,
+    } = parseMailboxRestoreSummary(log);
     await app.db.update(restoreItems)
       .set({
         progressMessage:
@@ -488,6 +463,56 @@ export async function execMailboxesByAddressItem(args: {
       }
     }
   }
+}
+
+
+/**
+ * Sum the per-address JSON summaries `imap-restore.py` / `jmap-restore.py`
+ * write to stdout — one line per mailbox, interleaved with the shell's own
+ * progress echoes, restic's restore output and python stderr.
+ *
+ * Exported so it can be exercised against a REAL Job log; the numbers here are
+ * what the operator reads to decide whether a restore did anything.
+ */
+export function parseMailboxRestoreSummary(log: string): {
+  imported: number;
+  skippedTotal: number;
+  failed: number;
+  mailboxesCreated: number;
+  prePurged: number;
+  elapsedMs: number;
+} {
+  let imported = 0;
+  let skippedTotal = 0;
+  let failed = 0;
+  let mailboxesCreated = 0;
+  let prePurged = 0;
+  let elapsedMs = 0;
+  for (const line of log.split('\n')) {
+    const t = line.trim();
+    if (!t.startsWith('{') || !t.endsWith('}')) continue;
+    try {
+      const j = JSON.parse(t) as Partial<{
+        imported: number;
+        skipped: number;
+        failed: number;
+        prePurged: number;
+        mailboxesCreated: string[];
+        elapsedSeconds: number;
+      }>;
+      if (typeof j.imported === 'number') {
+        imported += j.imported;
+        skippedTotal += j.skipped ?? 0;
+        failed += j.failed ?? 0;
+        prePurged += j.prePurged ?? 0;
+        mailboxesCreated += (j.mailboxesCreated ?? []).length;
+        elapsedMs = Math.max(elapsedMs, Math.round((j.elapsedSeconds ?? 0) * 1000));
+      }
+    } catch {
+      // Not a restore summary line (the aux summary has no `imported`); ignore.
+    }
+  }
+  return { imported, skippedTotal, failed, mailboxesCreated, prePurged, elapsedMs };
 }
 
 export function buildMailboxesByAddressJobSpec(input: {
