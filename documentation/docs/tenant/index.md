@@ -54,26 +54,55 @@ two-factor protection.
 
 ## A quick tour of the dashboard
 
-After signing in you land on the **Dashboard** — a one-glance summary of your
-account.
+After signing in you land on the **Dashboard** — what your account is using,
+and anything that needs you. Every tile is clickable and opens the page that
+acts on it; hovering one shows the detail behind the number.
 
-| What you see | What it means |
+### Needs your attention
+
+This section **only appears when something needs you** — when everything is
+fine it is not there at all. It covers the things that actually interrupt
+service: a mailbox nearly full (which is what starts refusing mail), disk
+nearly full, a certificate that failed to renew, a backup that did not run,
+an application that is not starting, and bandwidth close to your cycle
+allowance.
+
+### Your plan
+
+Your plan's CPU, memory and storage each show **reserved** against
+**in use**:
+
+- **Reserved** is what your applications have claimed from your plan — it
+  counts against your limit whether or not they are busy.
+- **In use** is what they are actually consuming right now.
+
+This is why an account can be "full" while everything looks idle: the room
+is claimed, not used. Trimming an application's reservation frees plan space
+that raw usage figures never show.
+
+Storage is consumed rather than reserved, so it simply reads as used against
+your limit.
+
+### The rest of the page
+
+| Tile | What it tells you |
 |---|---|
-| **Welcome back, …** | Your name (or email). |
-| **Quick stats** row | Counts of your Domains, Applications, Backups, Deployments, and Email accounts. Click any card to jump straight there. The **Backups** count is the number of off-site backup bundles on your account — the same list the [Backups](backups-and-restore.md) page shows. |
-| **Subscription** card | Your current plan and its limits (CPU, memory, storage). Click to open Settings. |
-| **Deployed Applications** card | Your running websites and apps with a status dot. |
-| **Resource Usage** card | Live bars for CPU, memory and storage, each showing **in use / reserved / available** against your plan — the same three figures as the full [Resource Usage](#resource-usage) page. |
-| **Notifications** card | Your latest account messages. |
+| **Bandwidth this cycle** | Traffic used against your cycle allowance, and when the cycle resets. |
+| **Sites & applications** | Each site with its status, its certificate, and the attacks blocked for it. |
+| **Domains & certificates** | Your domains, what is verified, and what renews soon. |
+| **Mail** | Your mailboxes measured by the **fullest** one — the one that will start refusing mail — rather than by how many you have. |
+| **Attacks blocked for you** | What the platform's web defence stopped on your behalf, and recently blocked sources. |
+| **Backups & restore** | Your backups and the points you can restore to. |
+| **Scheduled tasks** | Your cron jobs and when they last ran. |
+| **Recent activity** | The latest changes on your account. |
 
-If your account is ever **suspended** or a maintenance task is running, an
-**Account state** box appears at the top of the dashboard so you always know
-the current status.
+If your account is ever **suspended**, or a maintenance task is running, an
+**Account state** box appears at the top so you always know where you stand.
 
 The bar across the **top** of every page has a [search box](#search), live
-CPU/memory/storage chips, a bell for notifications, a light/dark theme toggle,
-and your **user menu** (top-right circle) for quick access to settings,
-changing your password, and signing out.
+CPU/memory/storage chips, a bell for notifications, a light/dark theme
+toggle, and your **user menu** (top-right circle) for settings, changing your
+password, and signing out.
 
 ### Search
 
@@ -114,6 +143,7 @@ The **menu on the left** is how you move around. Here is what each item is for:
 | **Resource Usage** | Detailed CPU/memory/storage figures — see below. | — |
 | **Notifications** | Your full message history and preferences. | [Account & security](account-and-security.md) |
 | **Settings** | Subscription details and account-wide settings. | [Account & security](account-and-security.md) |
+
 
 ## Resource Usage
 
