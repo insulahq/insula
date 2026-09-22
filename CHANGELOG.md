@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.9.29] - 2026-09-22
+
 ### Changed
 - **Both dashboards rebuilt around what you actually need to see.** The admin
   dashboard's own data source returned five numbers — how many tenants,
@@ -133,7 +135,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   now run on every change, and the run fails if any suite skips itself: these
   tests quietly pass when they cannot reach a database, so "nothing ran" would
   otherwise be indistinguishable from "everything passed".
-
 
 ## [2026.9.28] - 2026-09-21
 
