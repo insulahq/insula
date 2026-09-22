@@ -72,6 +72,14 @@ export interface ResticExportSource {
   readonly snapshotId: string;
   /** Directory inside the snapshot to emit. */
   readonly dumpPath: string;
+  /**
+   * Leading path to strip from each emitted entry. A restic snapshot stores
+   * ABSOLUTE paths, so without this the export reads
+   * `components/mailboxes/<addr>/capture/<addr>/INBOX/...` — the address twice
+   * and an internal mount point an operator has no use for. Mirrors how the
+   * files browse strips its own `/source` prefix.
+   */
+  readonly stripPrefix: string;
 }
 
 export type ExportSource = ObjectExportSource | ResticExportSource;
@@ -121,6 +129,7 @@ export async function resolveExportSources(
         name: 'archive',
         snapshotId: row.sha256,
         dumpPath: FILES_CAPTURE_ROOT,
+        stripPrefix: FILES_CAPTURE_ROOT.replace(/^\/+/, ''),
       });
     } else if (row.artifactName.includes('@')) {
       // ADR-061 capture: one snapshot per mailbox, named by address.
@@ -130,6 +139,7 @@ export async function resolveExportSources(
         name: row.artifactName,
         snapshotId: row.sha256,
         dumpPath: `${MAILBOX_CAPTURE_ROOT}/${addressDirName(row.artifactName)}`,
+        stripPrefix: `${MAILBOX_CAPTURE_ROOT}/${addressDirName(row.artifactName)}`.replace(/^\/+/, ''),
       });
     } else {
       // Pre-ADR-061 capture: one snapshot holding the whole-tenant
@@ -140,6 +150,8 @@ export async function resolveExportSources(
         name: 'maildir.tar',
         snapshotId: row.sha256,
         dumpPath: '/maildir.tar',
+        // A legacy whole-tenant tarball already has the addresses at its root.
+        stripPrefix: '',
       });
     }
   }
@@ -194,6 +206,7 @@ export type ExportEntrySource =
     readonly kind: 'restic';
     readonly component: 'files' | 'mailboxes';
     readonly name: string;
+    readonly stripPrefix: string;
     readonly open: () => Promise<Readable>;
   };
 
@@ -209,6 +222,7 @@ export function bindExportSources(
       kind: 'restic' as const,
       component: s.component,
       name: s.name,
+      stripPrefix: s.stripPrefix,
       open: () => openResticExportSource(ctx, bundleId, s),
     }));
 }

@@ -36,8 +36,8 @@ describe('resolveExportSources', () => {
       noArtifacts,
     );
     expect(sources).toEqual([
-      { kind: 'restic', component: 'mailboxes', name: 'a@example.test', snapshotId: SNAP_A, dumpPath: '/capture/a@example.test' },
-      { kind: 'restic', component: 'mailboxes', name: 'b@example.test', snapshotId: SNAP_B, dumpPath: '/capture/b@example.test' },
+      { kind: 'restic', component: 'mailboxes', name: 'a@example.test', snapshotId: SNAP_A, dumpPath: '/capture/a@example.test', stripPrefix: 'capture/a@example.test' },
+      { kind: 'restic', component: 'mailboxes', name: 'b@example.test', snapshotId: SNAP_B, dumpPath: '/capture/b@example.test', stripPrefix: 'capture/b@example.test' },
     ]);
   });
 
@@ -48,7 +48,7 @@ describe('resolveExportSources', () => {
       noArtifacts,
     );
     expect(sources).toEqual([
-      { kind: 'restic', component: 'files', name: 'archive', snapshotId: SNAP_F, dumpPath: '/source' },
+      { kind: 'restic', component: 'files', name: 'archive', snapshotId: SNAP_F, dumpPath: '/source', stripPrefix: 'source' },
     ]);
   });
 
@@ -60,7 +60,7 @@ describe('resolveExportSources', () => {
       noArtifacts,
     );
     expect(sources).toEqual([
-      { kind: 'restic', component: 'mailboxes', name: 'maildir.tar', snapshotId: SNAP_A, dumpPath: '/maildir.tar' },
+      { kind: 'restic', component: 'mailboxes', name: 'maildir.tar', snapshotId: SNAP_A, dumpPath: '/maildir.tar', stripPrefix: '' },
     ]);
   });
 
