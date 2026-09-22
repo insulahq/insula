@@ -1,400 +1,409 @@
+/**
+ * Hosting overview.
+ *
+ * The customer's half of the same design as the operator console, answering a
+ * different question. An operator asks "is the platform broken"; a customer
+ * asks "are my sites up, and am I about to run out of something I pay for".
+ * So: no node names, no cluster internals, and `reserved` framed as what their
+ * own apps hold — because that is the number that refuses their next deploy
+ * while the usage figure says there is plenty of room.
+ *
+ * Warnings are conditional. Nothing renders in the attention band when nothing
+ * needs the customer, and every chip corresponds to a notification category
+ * that can actually fire.
+ */
 import { Link } from 'react-router-dom';
-import {
-  Globe, AppWindow, Archive, Server, Mail, CreditCard,
-  Cpu, HardDrive, MemoryStick, Bell, ArrowRight, CheckCircle2,
-  AlertCircle, Info, AlertTriangle,
-} from 'lucide-react';
-import clsx from 'clsx';
-import { useAuth } from '@/hooks/use-auth';
+import type { TenantSite } from '@insula/api-contracts';
 import { useTenantContext } from '@/hooks/use-tenant-context';
-import { useMyLifecycle } from '@/hooks/use-my-lifecycle';
-import { useDomains } from '@/hooks/use-domains';
-import { useTenantBundles } from '@/hooks/use-tenant-backups';
-import { useDeployments } from '@/hooks/use-deployments';
-import { useResourceMetrics } from '@/hooks/use-resource-metrics';
-import { resourceBarColor, resourcePercent, resourceRatio, formatCpu, formatGiB } from '@/lib/resource-usage';
-import { useMailboxUsage } from '@/hooks/use-email';
-import { useCatalog } from '@/hooks/use-catalog';
-import { useSubscription } from '@/hooks/use-subscription';
-import { useNotifications } from '@/hooks/use-notifications';
+import { useOverviewSummary, useOverviewLive } from '@/hooks/use-hosting-overview';
+import {
+  AlertBand, HoverCard, MatrixTile, SectionFallback, Tile, TileSkeleton, TriadBar,
+  type MatrixCell,
+} from '@/components/console/ConsoleTiles';
+
+function SectionHead({ title, count }: { title: string; count?: string }) {
+  return (
+    <div className="mt-6 mb-2.5 flex items-center gap-2.5">
+      <h2 className="whitespace-nowrap text-[11px] font-bold uppercase tracking-widest text-gray-500 dark:text-gray-400">{title}</h2>
+      {count ? <span className="font-mono text-[11px] text-gray-400 dark:text-gray-500">{count}</span> : null}
+      <span className="h-px flex-1 bg-gray-200 dark:bg-gray-700" />
+    </div>
+  );
+}
+
+const ago = (iso: string | null): string => {
+  if (!iso) return 'never';
+  const mins = Math.round((Date.now() - Date.parse(iso)) / 60000);
+  if (!Number.isFinite(mins)) return 'never';
+  if (mins < 60) return `${mins}m`;
+  const hrs = Math.round(mins / 60);
+  return hrs < 48 ? `${hrs}h` : `${Math.round(hrs / 24)}d`;
+};
 
 export default function Dashboard() {
-  const { user } = useAuth();
   const { tenantId } = useTenantContext();
-  const { data: lifecycle } = useMyLifecycle();
-  const displayName = user?.fullName ?? user?.email ?? 'there';
+  const summary = useOverviewSummary(tenantId ?? undefined);
+  const live = useOverviewLive(tenantId ?? undefined);
 
-  const { data: domainsData } = useDomains(tenantId ?? undefined);
-  // The SAME source the Backups page lists from. It used to read the retired
-  // per-resource `backups` table, which no backup engine has ever written to —
-  // so this tile said "0" to tenants holding dozens of off-site bundles
-  // .
-  const { data: bundlesData } = useTenantBundles();
-  const { data: deploymentsData } = useDeployments(tenantId ?? undefined);
-  const { data: mailboxUsageData, isLoading: mailboxUsageLoading } = useMailboxUsage(
-    tenantId ?? undefined,
-  );
-  const { data: catalogData } = useCatalog();
-  const { data: subscriptionData } = useSubscription(tenantId ?? undefined);
-  // Same endpoint the Resource Usage page and the metrics modal read, so the
-  // three screens can no longer disagree about the same tenant's numbers.
-  const { data: resourceUsageData } = useResourceMetrics();
-  const { data: notificationsData } = useNotifications(5);
-
-  const domainCount = domainsData?.data?.length ?? 0;
-  const backupCount = bundlesData?.data?.length ?? 0;
-  const deploymentCount = deploymentsData?.data?.length ?? 0;
-  const mailboxUsage = mailboxUsageData?.data;
-  const mailboxStat: number | string = mailboxUsageLoading || !mailboxUsage
-    ? '\u2014'
-    : `${mailboxUsage.current}/${mailboxUsage.limit}`;
-
-  const stats = [
-    { label: 'Domains', value: domainCount, icon: Globe, color: 'bg-blue-50 text-blue-600 dark:bg-blue-900/40 dark:text-blue-400', to: '/domains' },
-    { label: 'Applications', value: deploymentCount, icon: AppWindow, color: 'bg-green-50 text-green-600 dark:bg-green-900/40 dark:text-green-400', to: '/applications' },
-    { label: 'Backups', value: backupCount, icon: Archive, color: 'bg-amber-50 text-amber-600 dark:bg-amber-900/40 dark:text-amber-400', to: '/backups' },
-    { label: 'Deployments', value: deploymentCount, icon: Server, color: 'bg-purple-50 text-purple-600 dark:bg-purple-900/40 dark:text-purple-400', to: '/applications' },
-    { label: 'Email accounts', value: mailboxStat, icon: Mail, color: 'bg-rose-50 text-rose-600 dark:bg-rose-900/40 dark:text-rose-400', to: '/email' },
-  ];
-
-  // Catalog map for deployment -> catalog entry name lookup
-  const catalogEntries = catalogData?.data ?? [];
-  const catalogMap = new Map(catalogEntries.map((e) => [e.id, e]));
-
-  // Active deployments (non-deleted), top 5
-  const activeDeployments = (deploymentsData?.data ?? [])
-    .filter((d) => !d.deletedAt)
-    .slice(0, 5);
-
-  // Subscription
-  const subscription = subscriptionData?.data ?? null;
-  const plan = subscription?.plan ?? null;
-
-  // Resource usage
-  const resources = resourceUsageData?.data ?? null;
-
-  // Notifications (top 3)
-  const notifications = (notificationsData?.data ?? []).slice(0, 3);
-
-  const notificationIcon = (type: string) => {
-    switch (type) {
-      case 'success': return <CheckCircle2 size={14} className="text-green-500 dark:text-green-400 shrink-0" />;
-      case 'error': return <AlertCircle size={14} className="text-red-500 dark:text-red-400 shrink-0" />;
-      case 'warning': return <AlertTriangle size={14} className="text-amber-500 dark:text-amber-400 shrink-0" />;
-      default: return <Info size={14} className="text-blue-500 dark:text-blue-400 shrink-0" />;
-    }
-  };
-
-  const statusColor = (status: string) => {
-    switch (status) {
-      case 'running': return 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300';
-      case 'stopped': return 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300';
-      case 'deploying':
-      case 'pending':
-      case 'upgrading': return 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300';
-      case 'error':
-      case 'failed': return 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300';
-      default: return 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300';
-    }
-  };
+  const s = summary.data?.data;
+  const l = live.data?.data;
+  const alerts = s?.alerts.data ?? [];
+  const loadingFirst = summary.isLoading && !s;
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100" data-testid="welcome-heading">
-          Welcome back, {displayName}
-        </h1>
-        <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
-          Here is an overview of your hosting account.
-        </p>
-      </div>
+    <div className="mx-auto max-w-[1340px] px-1 pb-16">
+      <header className="mb-3 flex flex-wrap items-baseline gap-3 border-b border-gray-200 pb-3 dark:border-gray-700">
+        <h1 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Hosting Overview</h1>
+        <span className="font-mono text-xs text-gray-500 dark:text-gray-400">
+          {s?.plan.data ? `${s.plan.data.name} plan` : 'loading…'}
+        </span>
+      </header>
 
-      {lifecycle && (lifecycle.tenantStatus !== 'active' || (lifecycle.storageLifecycleState && lifecycle.storageLifecycleState !== 'idle')) && (
-        <div
-          className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 shadow-sm"
-          data-testid="lifecycle-card"
-        >
-          <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-200 mb-2">Account state</h2>
-          <dl className="grid grid-cols-2 gap-2 text-sm">
-            <dt className="text-gray-500 dark:text-gray-400">Status</dt>
-            <dd className="font-medium text-gray-900 dark:text-gray-100 capitalize">{lifecycle.tenantStatus ?? 'unknown'}</dd>
-            {lifecycle.storageLifecycleState && lifecycle.storageLifecycleState !== 'idle' && (
-              <>
-                <dt className="text-gray-500 dark:text-gray-400">Storage operation</dt>
-                <dd className="font-medium text-blue-700 dark:text-blue-300 capitalize">{lifecycle.storageLifecycleState}</dd>
-              </>
-            )}
-          </dl>
-        </div>
+      {/* ── needs your attention: absent when there is nothing ─────── */}
+      {loadingFirst ? (
+        <>
+          <SectionHead title="Needs your attention" />
+          <p className="rounded-xl border border-dashed border-gray-300 bg-gray-50 p-3 text-sm text-gray-500 dark:border-gray-600 dark:bg-gray-800/50 dark:text-gray-400">
+            Checking your sites, mail and restore points…
+          </p>
+        </>
+      ) : alerts.length > 0 ? (
+        <>
+          <SectionHead title="Needs your attention" count={String(alerts.length)} />
+          <AlertBand alerts={alerts} />
+        </>
+      ) : (
+        <>
+          <SectionHead title="Needs your attention" />
+          <p className="rounded-xl border border-dashed border-gray-300 bg-gray-50 p-3 text-sm text-gray-500 dark:border-gray-600 dark:bg-gray-800/50 dark:text-gray-400">
+            Nothing needs you right now.
+          </p>
+        </>
       )}
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5" data-testid="quick-stats">
-        {stats.map(({ label, value, icon: Icon, color, to }) => (
-          <Link
-            key={label}
-            to={to}
-            className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm hover:border-gray-300 dark:hover:border-gray-600 hover:shadow-md transition-all"
-          >
-            <div className="flex items-center gap-3">
-              <div className={`flex h-10 w-10 items-center justify-center rounded-lg ${color}`}>
-                <Icon size={20} />
-              </div>
-              <div>
-                <p className="text-sm text-gray-500 dark:text-gray-400">{label}</p>
-                <p className="text-xl font-semibold text-gray-900 dark:text-gray-100" data-testid={`stat-${label.toLowerCase()}`}>{value}</p>
-              </div>
-            </div>
-          </Link>
-        ))}
+      {/* ── your plan ──────────────────────────────────────────────── */}
+      <SectionHead title="Your plan" count="in use · reserved by your apps · free" />
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        {live.isLoading && !l ? (
+          <><TileSkeleton /><TileSkeleton /><TileSkeleton /><TileSkeleton /></>
+        ) : (
+          <>
+            {l?.resources.data ? (
+              <>
+                <TriadBar triad={l.resources.data.cpu} label="CPU" to="/resource-usage" vocab="reserved" />
+                <TriadBar triad={l.resources.data.memory} label="Memory" to="/resource-usage" vocab="reserved" />
+                <TriadBar triad={l.resources.data.storage} label="Storage" to="/resource-usage" vocab="reserved" />
+              </>
+            ) : (
+              <SectionFallback title="Your plan" to="/resource-usage" section={l?.resources ?? { state: 'stale', reason: null, observedAt: null }} />
+            )}
+            <BandwidthTile summary={s} />
+          </>
+        )}
       </div>
 
-      {/* Two-column grid for detail sections */}
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        {/* Subscription Details */}
-        <Link to="/settings" className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm hover:border-gray-300 dark:hover:border-gray-600 hover:shadow-md transition-all block" data-testid="subscription-card">
-          <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-700 px-5 py-4">
-            <div className="flex items-center gap-2">
-              <CreditCard size={16} className="text-indigo-500 dark:text-indigo-400" />
-              <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">Subscription</h2>
-            </div>
-            <span className="inline-flex items-center gap-1 text-sm font-medium text-indigo-600 dark:text-indigo-400">
-              Manage
-              <ArrowRight size={14} />
-            </span>
-          </div>
-          <div className="px-5 py-4 space-y-3">
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-gray-500 dark:text-gray-400">Plan</span>
-              <span className="text-sm font-medium text-gray-900 dark:text-gray-100">
-                {plan?.name ?? 'Your Plan'}
-              </span>
-            </div>
-            {plan?.description && (
-              <p className="text-xs text-gray-400 dark:text-gray-500">{plan.description}</p>
-            )}
-            {subscription?.subscription_expires_at && (
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-gray-500 dark:text-gray-400">Expires</span>
-                <span className="text-sm text-gray-900 dark:text-gray-100">
-                  {new Date(subscription.subscription_expires_at).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}
-                </span>
-              </div>
-            )}
-            {plan && (
-              <>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-gray-500 dark:text-gray-400">CPU limit</span>
-                  <span className="text-sm text-gray-900 dark:text-gray-100">{plan.cpuLimit}</span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-gray-500 dark:text-gray-400">Memory limit</span>
-                  <span className="text-sm text-gray-900 dark:text-gray-100">{plan.memoryLimit}</span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-gray-500 dark:text-gray-400">Storage limit</span>
-                  <span className="text-sm text-gray-900 dark:text-gray-100">{plan.storageLimit}</span>
-                </div>
-              </>
-            )}
-            {subscription?.status && (
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-gray-500 dark:text-gray-400">Status</span>
-                <span className={clsx(
-                  'inline-flex rounded-full px-2 py-0.5 text-xs font-medium',
-                  subscription.status === 'active' ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300' : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300',
-                )}>
-                  {subscription.status}
-                </span>
-              </div>
-            )}
-          </div>
-        </Link>
+      {/* ── sites ──────────────────────────────────────────────────── */}
+      <SectionHead
+        title="Sites & applications"
+        count={l?.sites.data ? `${l.sites.data.length} site${l.sites.data.length === 1 ? '' : 's'}` : undefined}
+      />
+      <SiteStrip sites={l?.sites.data ?? []} loading={live.isLoading && !l} />
 
-        {/* Deployed Applications */}
-        <Link to="/applications" className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm hover:border-gray-300 dark:hover:border-gray-600 hover:shadow-md transition-all block" data-testid="deployments-card">
-          <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-700 px-5 py-4">
-            <div className="flex items-center gap-2">
-              <AppWindow size={16} className="text-green-500 dark:text-green-400" />
-              <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">Deployed Applications</h2>
-            </div>
-            <span className="inline-flex items-center gap-1 text-sm font-medium text-green-600 dark:text-green-400">
-              View All
-              <ArrowRight size={14} />
-            </span>
-          </div>
-          <div className="px-5 py-4">
-            {activeDeployments.length === 0 ? (
-              <p className="text-sm text-gray-500 dark:text-gray-400">No active deployments yet.</p>
-            ) : (
-              <div className="space-y-3">
-                {activeDeployments.map((d) => {
-                  const entry = d.catalogEntryId ? catalogMap.get(d.catalogEntryId) : undefined;
-                  return (
-                    <div key={d.id} className="flex items-center justify-between">
-                      <div className="min-w-0 flex-1">
-                        <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{d.name}</p>
-                        <p className="text-xs text-gray-400 dark:text-gray-500 truncate">
-                          {entry?.name ?? 'Unknown entry'}
-                        </p>
-                      </div>
-                      <span className={clsx(
-                        'ml-3 inline-flex shrink-0 rounded-full px-2 py-0.5 text-xs font-medium',
-                        statusColor(d.status),
-                      )}>
-                        {d.status}
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        </Link>
+      {/* ── services ───────────────────────────────────────────────── */}
+      <SectionHead title="Services" />
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        {loadingFirst ? (
+          <><TileSkeleton /><TileSkeleton /><TileSkeleton /><TileSkeleton /></>
+        ) : (
+          <>
+            <MailTile summary={s} />
+            <DomainsTile summary={s} />
+            <BackupsTile summary={s} />
+            <TasksTile summary={s} />
+          </>
+        )}
+      </div>
 
-        {/* Resource Usage */}
-        <Link to="/resource-usage" className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm hover:border-gray-300 dark:hover:border-gray-600 hover:shadow-md transition-all block" data-testid="resource-usage-card">
-          <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-700 px-5 py-4">
-            <div className="flex items-center gap-2">
-              <Cpu size={16} className="text-purple-500 dark:text-purple-400" />
-              <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">Resource Usage</h2>
-            </div>
-            <span className="inline-flex items-center gap-1 text-sm font-medium text-purple-600 dark:text-purple-400">
-              Details
-              <ArrowRight size={14} />
-            </span>
-          </div>
-          <div className="px-5 py-4 space-y-4">
-            {resources ? (
-              <>
-                <ResourceBar
-                  label="CPU"
-                  icon={<Cpu size={14} className="text-blue-500 dark:text-blue-400" />}
-                  inUse={resources.cpu.inUse}
-                  reserved={resources.cpu.reserved}
-                  available={resources.cpu.available}
-                  formatValue={formatCpu}
-                  testId="dashboard-cpu-bar"
-                />
-                <ResourceBar
-                  label="Memory"
-                  icon={<MemoryStick size={14} className="text-emerald-500 dark:text-emerald-400" />}
-                  inUse={resources.memory.inUse}
-                  reserved={resources.memory.reserved}
-                  available={resources.memory.available}
-                  formatValue={formatGiB}
-                  testId="dashboard-memory-bar"
-                />
-                <ResourceBar
-                  label="Storage"
-                  icon={<HardDrive size={14} className="text-amber-500 dark:text-amber-400" />}
-                  inUse={resources.storage.inUse}
-                  reserved={resources.storage.reserved}
-                  available={resources.storage.available}
-                  formatValue={formatGiB}
-                  testId="dashboard-storage-bar"
-                />
-              </>
-            ) : (
-              <p className="text-sm text-gray-500 dark:text-gray-400">Loading resource data...</p>
-            )}
-          </div>
-        </Link>
-
-        {/* Notifications */}
-        <Link to="/notifications" className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm hover:border-gray-300 dark:hover:border-gray-600 hover:shadow-md transition-all block" data-testid="notifications-card">
-          <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-700 px-5 py-4">
-            <div className="flex items-center gap-2">
-              <Bell size={16} className="text-rose-500 dark:text-rose-400" />
-              <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">Notifications</h2>
-            </div>
-            <span className="inline-flex items-center gap-1 text-sm font-medium text-rose-600 dark:text-rose-400">
-              View All
-              <ArrowRight size={14} />
-            </span>
-          </div>
-          <div className="px-5 py-4">
-            {notifications.length === 0 ? (
-              <p className="text-sm text-gray-500 dark:text-gray-400">No recent notifications.</p>
-            ) : (
-              <div className="space-y-3">
-                {notifications.map((n) => (
-                  <div key={n.id} className="flex items-start gap-2">
-                    {notificationIcon(n.type)}
-                    <div className="min-w-0 flex-1">
-                      <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{n.title}</p>
-                      <p className="text-xs text-gray-400 dark:text-gray-500 truncate">{n.message}</p>
-                      <p className="mt-0.5 text-xs text-gray-300 dark:text-gray-600">
-                        {new Date(n.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
-                      </p>
-                    </div>
-                    {n.isRead === 0 && (
-                      <span className="mt-1 h-2 w-2 shrink-0 rounded-full bg-blue-500 dark:bg-blue-400" />
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </Link>
+      {/* ── activity ───────────────────────────────────────────────── */}
+      <SectionHead title="Recent activity" />
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+        <BlockedTile live={l} />
+        <ChangesTile summary={s} />
       </div>
     </div>
   );
 }
 
-// ─── Resource Bar ──────────────────────────────────────────────────────────
+type Summary = NonNullable<ReturnType<typeof useOverviewSummary>['data']>['data'];
+type Live = NonNullable<ReturnType<typeof useOverviewLive>['data']>['data'];
 
-/**
- * Dashboard usage bar — same data, thresholds and vocabulary as the Resource
- * Usage page and the metrics modal.
- *
- * Two things were wrong here before:
- *   * `barColor` was passed in per metric, so storage was ALWAYS amber. At 60%
- *     of plan that reads as a warning; it was decoration and encoded nothing.
- *   * only used/limit were shown, so the reserved figure — the one that
- *     explains why a new deployment gets refused while "used" looks low —
- *     appeared on the detail page and modal but not here.
- */
-function ResourceBar({ label, icon, inUse, reserved, available, formatValue, testId }: {
-  readonly label: string;
-  readonly icon: React.ReactNode;
-  readonly inUse: number;
-  readonly reserved: number;
-  readonly available: number;
-  readonly formatValue: (v: number) => string;
-  readonly testId: string;
-}) {
-  const ratio = resourceRatio(inUse, available);
-  const percent = Math.round(resourcePercent(inUse, available));
-  const reservedPercent = resourcePercent(reserved, available);
+/* ── bandwidth ───────────────────────────────────────────────────── */
 
+function BandwidthTile({ summary }: { summary: Summary | undefined }) {
+  const p = summary?.plan.data;
+  if (!p) return <SectionFallback title="Bandwidth" to="/resource-usage" section={summary?.plan ?? { state: 'stale', reason: null, observedAt: null }} />;
+  const pct = p.bandwidthLimitGb > 0 ? (p.bandwidthUsedGb / p.bandwidthLimitGb) * 100 : 0;
+  const tone = pct >= 100 ? 'crit' : pct >= 80 ? 'warn' : 'ok';
   return (
-    <div data-testid={testId}>
-      <div className="flex items-center justify-between mb-1">
-        <div className="flex items-center gap-1.5">
-          {icon}
-          <span className="text-sm font-medium text-gray-700 dark:text-gray-300">{label}</span>
-        </div>
-        <span className="text-xs text-gray-500 dark:text-gray-400">
-          {formatValue(inUse)} / {formatValue(available)}
+    <Tile title="Bandwidth" to="/resource-usage" card={(
+      <HoverCard title="Bandwidth this cycle" rows={[
+        ['Allowance', `${p.bandwidthLimitGb} GB`],
+        ['Used', `${p.bandwidthUsedGb.toFixed(2)} GB · ${Math.round(pct)}%`],
+        ['Remaining', `${Math.max(0, p.bandwidthLimitGb - p.bandwidthUsedGb).toFixed(2)} GB`],
+        ['Cycle resets in', p.bandwidthResetDays == null ? 'unknown' : `${p.bandwidthResetDays} days`],
+        ['Capped', p.bandwidthCapped ? 'yes' : 'no'],
+      ]} note="Counted on traffic leaving your sites. Restores and backups are not counted." />
+    )}>
+      <div className="mb-2 flex flex-wrap items-baseline gap-1.5">
+        <span className="font-mono text-2xl font-semibold tabular-nums text-gray-900 dark:text-gray-100">
+          {p.bandwidthUsedGb.toFixed(1)}
         </span>
+        <span className="font-mono text-xs text-gray-500 dark:text-gray-400">GB this cycle</span>
+        <span className="ml-auto whitespace-nowrap font-mono text-xs text-gray-500 dark:text-gray-400">of {p.bandwidthLimitGb}</span>
       </div>
-      {/* Stacked: reserved (grey) behind in-use (status colour) */}
-      <div className="relative h-2 w-full overflow-hidden rounded-full bg-gray-100 dark:bg-gray-700">
+      <div className="h-3 overflow-hidden rounded-md bg-gray-200 dark:bg-gray-700">
         <div
-          className="absolute inset-y-0 left-0 bg-gray-300 dark:bg-gray-600"
-          style={{ width: `${reservedPercent}%` }}
-        />
-        <div
-          className={clsx('absolute inset-y-0 left-0 transition-all', resourceBarColor(ratio))}
-          style={{ width: `${percent}%` }}
+          className={tone === 'crit' ? 'h-full bg-red-500' : tone === 'warn' ? 'h-full bg-amber-500' : 'h-full bg-teal-600 dark:bg-teal-400'}
+          style={{ width: `${Math.min(100, pct).toFixed(1)}%` }}
         />
       </div>
-      <div className="mt-0.5 flex items-center justify-between text-xs text-gray-400 dark:text-gray-500">
-        <span>
-          {formatValue(inUse)} used · {formatValue(reserved)} reserved · {formatValue(available)} available
-        </span>
-        <span>{percent}%</span>
+      <div className="mt-2 font-mono text-[11px] tabular-nums text-gray-600 dark:text-gray-400">
+        used {Math.round(pct)}% · left {Math.max(0, p.bandwidthLimitGb - p.bandwidthUsedGb).toFixed(1)} GB
       </div>
+      <p className="mt-2.5 border-t border-dashed border-gray-200 pt-2 text-xs text-gray-600 dark:border-gray-700 dark:text-gray-400">
+        {p.bandwidthCapped
+          ? 'Your allowance is used up — traffic may be slowed until the cycle resets.'
+          : p.bandwidthResetDays == null
+            ? 'Resets at the start of your next billing cycle.'
+            : `Resets in ${p.bandwidthResetDays} days.`}
+      </p>
+    </Tile>
+  );
+}
+
+/* ── site strip ──────────────────────────────────────────────────── */
+
+function SiteStrip({ sites, loading }: { sites: readonly TenantSite[]; loading: boolean }) {
+  if (loading) {
+    return (
+      <div className="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800">
+        {[0, 1, 2].map((i) => <div key={i} className="mb-3 h-6 animate-pulse rounded bg-gray-200 dark:bg-gray-700" />)}
+      </div>
+    );
+  }
+  if (sites.length === 0) {
+    return (
+      <p className="rounded-xl border border-gray-200 bg-white p-4 text-sm text-gray-500 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400">
+        No sites yet. Deploy one from Applications.
+      </p>
+    );
+  }
+  return (
+    // NOT overflow-hidden: that clips the last row's hover card.
+    <div className="rounded-xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800">
+      <div className="hidden grid-cols-[minmax(0,2.2fr)_minmax(0,1.3fr)_88px_96px_92px] items-center gap-3 rounded-t-xl bg-gray-50 px-4 py-2 text-[10px] font-semibold uppercase tracking-wider text-gray-500 lg:grid dark:bg-gray-900/40 dark:text-gray-400">
+        <span>Site</span><span>Application</span>
+        <span className="text-right">Blocked</span>
+        <span className="text-right">Certificate</span>
+        <span className="text-right">State</span>
+      </div>
+      {sites.map((site, i) => {
+        const sev = site.status === 'running' ? 'ok' : site.status === 'failed' ? 'crit' : 'warn';
+        return (
+          <Link
+            key={site.host}
+            to="/applications"
+            className={`group relative grid grid-cols-1 items-center gap-y-2 gap-x-3 border-t border-gray-200 px-4 py-3 transition-colors hover:bg-gray-50 lg:grid-cols-[minmax(0,2.2fr)_minmax(0,1.3fr)_88px_96px_92px] dark:border-gray-700 dark:hover:bg-gray-700/40 ${
+              i === sites.length - 1 ? 'rounded-b-xl' : ''
+            }`}
+          >
+            <span className="flex min-w-0 items-center gap-2">
+              <span className={`h-2 w-2 shrink-0 rounded-full ${
+                sev === 'crit' ? 'bg-red-500' : sev === 'warn' ? 'bg-amber-500' : 'bg-green-500'
+              }`} />
+              <b title={site.host} className="min-w-0 truncate font-mono text-[13px] font-semibold text-gray-900 dark:text-gray-100">{site.host}</b>
+            </span>
+            <span className="min-w-0">
+              <span className="inline-flex max-w-full items-center truncate rounded-md border border-gray-300 px-1.5 py-0.5 font-mono text-[10px] text-gray-600 dark:border-gray-600 dark:text-gray-400">
+                {site.application}
+              </span>
+            </span>
+            <span className="font-mono text-xs tabular-nums text-gray-600 lg:text-right dark:text-gray-400">
+              {site.blocked7d.toLocaleString()}
+            </span>
+            <span className="lg:text-right">
+              <span className={`inline-flex min-w-[58px] items-center justify-center rounded-md border px-1.5 py-0.5 font-mono text-[10px] ${
+                site.tlsState === 'valid' ? 'border-green-500 text-green-600 dark:text-green-400'
+                  : site.tlsState === 'expired' ? 'border-red-500 text-red-600 dark:text-red-400'
+                    : 'border-amber-500 text-amber-600 dark:text-amber-400'
+              }`}>
+                {site.tlsState === 'valid' && site.tlsDaysRemaining != null ? `${site.tlsDaysRemaining}d` : site.tlsState}
+              </span>
+            </span>
+            <span className="lg:text-right">
+              <span className={`inline-flex min-w-[74px] items-center justify-center rounded-md border px-1.5 py-0.5 font-mono text-[10px] ${
+                sev === 'ok' ? 'border-green-500 text-green-600 dark:text-green-400'
+                  : sev === 'crit' ? 'border-red-500 text-red-600 dark:text-red-400'
+                    : 'border-amber-500 text-amber-600 dark:text-amber-400'
+              }`}>
+                {site.status}
+              </span>
+            </span>
+            <HoverCard
+              title={site.host}
+              rows={[
+                ['Application', site.application],
+                ['State', site.status],
+                ['Attacks blocked · 7 days', site.blocked7d.toLocaleString()],
+                ['Scheduled tasks', String(site.cronJobs)],
+                ['Certificate', site.tlsState === 'valid' && site.tlsDaysRemaining != null
+                  ? `valid, renews in ${site.tlsDaysRemaining} days` : site.tlsState],
+              ]}
+              note={sev === 'ok'
+                ? 'Serving normally. Open Applications to deploy, restart or view logs.'
+                : 'Not serving visitors right now. Open Applications to start it or read the logs.'}
+            />
+          </Link>
+        );
+      })}
     </div>
+  );
+}
+
+/* ── service tiles ───────────────────────────────────────────────── */
+
+function MailTile({ summary }: { summary: Summary | undefined }) {
+  const m = summary?.mail.data;
+  if (!m) return <SectionFallback title="Mail" to="/email" section={summary?.mail ?? { state: 'stale', reason: null, observedAt: null }} />;
+  const cells: MatrixCell[] = [
+    { k: 'Mailboxes', v: String(m.mailboxes), sub: m.maxMailboxes > 0 ? `of ${m.maxMailboxes}` : undefined },
+    { k: 'Storage used', v: `${m.storageUsedGb.toFixed(1)}`, sub: `of ${m.storageLimitGb.toFixed(0)} GB` },
+    { k: 'Sent today', v: String(m.sentToday), sub: m.dailyLimit > 0 ? `of ${m.dailyLimit}` : undefined },
+    {
+      k: 'Fullest mailbox',
+      v: m.fullestMailboxPct == null ? '—' : `${m.fullestMailboxPct}%`,
+      tone: m.fullestMailboxPct == null ? undefined
+        : m.fullestMailboxPct >= 100 ? 'crit' : m.fullestMailboxPct >= 90 ? 'warn' : 'ok',
+    },
+  ];
+  return (
+    <MatrixTile title="Mail" to="/email" cells={cells} card={(
+      <HoverCard title="Mail" rows={[
+        ['Mailboxes', m.maxMailboxes > 0 ? `${m.mailboxes} of ${m.maxMailboxes}` : String(m.mailboxes)],
+        ['Storage used', `${m.storageUsedGb.toFixed(1)} of ${m.storageLimitGb.toFixed(0)} GB`],
+        ['Fullest mailbox', m.fullestMailboxAddress
+          ? `${m.fullestMailboxAddress} · ${m.fullestMailboxPct}%` : '—'],
+        ['Sent today', m.dailyLimit > 0 ? `${m.sentToday} of ${m.dailyLimit}` : String(m.sentToday)],
+      ]} note="A mailbox at 100% of its own quota refuses new mail — the count against your plan does not." />
+    )} />
+  );
+}
+
+function DomainsTile({ summary }: { summary: Summary | undefined }) {
+  const d = summary?.domains.data;
+  if (!d) return <SectionFallback title="Domains & certificates" to="/domains" section={summary?.domains ?? { state: 'stale', reason: null, observedAt: null }} />;
+  return (
+    <MatrixTile title="Domains & certificates" to="/domains" cells={[
+      { k: 'Domains', v: String(d.domains) },
+      { k: 'Verified', v: String(d.verified), sub: `of ${d.domains}`, tone: d.verified === d.domains ? 'ok' : 'warn' },
+      { k: 'Certificates', v: String(d.certificates), tone: 'ok' },
+      { k: 'Renews in', v: d.nearestRenewalDays == null ? '—' : `${d.nearestRenewalDays}d` },
+    ]} card={(
+      <HoverCard title="Domains & certificates" rows={[
+        ['Domains', String(d.domains)],
+        ['Verified', `${d.verified} of ${d.domains}`],
+        ['Certificates', String(d.certificates)],
+        ['Earliest renewal', d.nearestRenewalDays == null ? '—' : `${d.nearestRenewalDays} days`],
+      ]} note="Certificates renew automatically about 30 days before they expire." />
+    )} />
+  );
+}
+
+function BackupsTile({ summary }: { summary: Summary | undefined }) {
+  const b = summary?.backups.data;
+  if (!b) return <SectionFallback title="Backups & restore" to="/backups" section={summary?.backups ?? { state: 'stale', reason: null, observedAt: null }} />;
+  return (
+    <MatrixTile title="Backups & restore" to="/backups" cells={[
+      { k: 'Restore points', v: String(b.restorePoints), tone: b.restorePoints > 0 ? 'ok' : 'warn' },
+      { k: 'Newest', v: ago(b.newestAt), sub: b.newestAt ? 'ago' : undefined },
+      { k: 'Oldest', v: ago(b.oldestAt), sub: b.oldestAt ? 'ago' : undefined },
+      { k: 'Covers', v: b.coversFiles && b.coversDatabases ? 'Both' : 'Partial', tone: b.coversFiles && b.coversDatabases ? 'ok' : 'warn' },
+    ]} card={(
+      <HoverCard title="What you can restore to" rows={[
+        ['Restore points', String(b.restorePoints)],
+        ['Newest', b.newestAt ? `${ago(b.newestAt)} ago` : 'none yet'],
+        ['Oldest', b.oldestAt ? `${ago(b.oldestAt)} ago` : 'none yet'],
+        ['Covers', 'site files and databases'],
+      ]} note="Restoring is self-service from the Backups page — pick a point and choose what to bring back." />
+    )} />
+  );
+}
+
+function TasksTile({ summary }: { summary: Summary | undefined }) {
+  const t = summary?.scheduledTasks.data;
+  if (!t) return <SectionFallback title="Scheduled tasks" to="/cron-jobs" section={summary?.scheduledTasks ?? { state: 'stale', reason: null, observedAt: null }} />;
+  return (
+    <MatrixTile title="Scheduled tasks" to="/cron-jobs" cells={[
+      { k: 'Jobs', v: String(t.total), sub: `${t.enabled} enabled` },
+      { k: 'Failing', v: String(t.failed24h), tone: t.failed24h > 0 ? 'warn' : 'ok' },
+      { k: 'Enabled', v: String(t.enabled) },
+      { k: 'Disabled', v: String(Math.max(0, t.total - t.enabled)) },
+    ]} card={(
+      <HoverCard title="Scheduled tasks" rows={[
+        ['Jobs', String(t.total)],
+        ['Enabled', String(t.enabled)],
+        ['Currently failing', String(t.failed24h)],
+      ]} note="A job that keeps failing will not retry on its own — open it to see the output." />
+    )} />
+  );
+}
+
+/* ── activity ────────────────────────────────────────────────────── */
+
+function BlockedTile({ live }: { live: Live | undefined }) {
+  const rows = live?.blocked.data ?? [];
+  return (
+    <Tile title="Attacks blocked for you" to="/domains" card={(
+      <HoverCard title="Recently blocked" rows={[
+        ['Shown', String(rows.length)],
+        ['Reached your sites', '0'],
+      ]} note="These never reached your applications. No action is needed — this is the protection working." />
+    )}>
+      <div className="flex flex-1 flex-col gap-px overflow-hidden rounded-lg bg-gray-200 dark:bg-gray-700">
+        {rows.length === 0 ? (
+          <p className="bg-white p-2.5 text-xs text-gray-500 dark:bg-gray-800 dark:text-gray-400">
+            Nothing blocked recently.
+          </p>
+        ) : rows.map((r, i) => (
+          <div key={`${r.label}-${i}`} className={`flex min-w-0 items-center gap-2 border-l-2 bg-white px-2.5 py-1.5 dark:bg-gray-800 ${
+            r.severity === 'critical' ? 'border-red-500' : 'border-amber-500'
+          }`}>
+            <span className="min-w-0 flex-1 truncate text-xs text-gray-800 dark:text-gray-200">{r.label}</span>
+            <span className="min-w-0 max-w-[40%] shrink truncate font-mono text-[11px] text-gray-500 dark:text-gray-400">{r.host}</span>
+            <span className="shrink-0 font-mono text-[11px] tabular-nums text-gray-500 dark:text-gray-400">{ago(r.at)}</span>
+          </div>
+        ))}
+      </div>
+    </Tile>
+  );
+}
+
+function ChangesTile({ summary }: { summary: Summary | undefined }) {
+  const rows = summary?.recentChanges.data ?? [];
+  return (
+    <Tile title="Recent changes" to="/notifications">
+      <div className="flex flex-1 flex-col gap-px overflow-hidden rounded-lg bg-gray-200 dark:bg-gray-700">
+        {rows.length === 0 ? (
+          <p className="bg-white p-2.5 text-xs text-gray-500 dark:bg-gray-800 dark:text-gray-400">Nothing recorded.</p>
+        ) : rows.map((r, i) => (
+          <div key={`${r.label}-${i}`} className={`flex min-w-0 items-center gap-2 border-l-2 bg-white px-2.5 py-1.5 dark:bg-gray-800 ${
+            r.severity === 'critical' ? 'border-red-500' : r.severity === 'warning' ? 'border-amber-500' : 'border-green-500'
+          }`}>
+            <span className="min-w-0 flex-1 truncate text-xs text-gray-800 dark:text-gray-200">{r.label}</span>
+            <span className="shrink-0 font-mono text-[11px] tabular-nums text-gray-500 dark:text-gray-400">{ago(r.at)}</span>
+          </div>
+        ))}
+      </div>
+    </Tile>
   );
 }

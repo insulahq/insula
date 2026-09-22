@@ -2,8 +2,7 @@ import { eq, and, sql } from 'drizzle-orm';
 import { emailDomains, domains, mailboxes, tenants, emailAliases, dnsRecords } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { provisionEmailDns, deprovisionEmailDns } from './dns-provisioning.js';
-import { getMailServerHostname, getDefaultWebmailEngine, getDefaultWebmailUrl } from '../webmail-settings/service.js';
-import { serviceNameForEngine } from '../webmail-router/reconciler.js';
+import { getMailServerHostname, getDefaultWebmailUrl } from '../webmail-settings/service.js';
 import { notifyTenantEmailBootstrapped } from '../notifications/events.js';
 import { mailLogger } from '../../shared/mail-logger.js';
 import { assertTenantActive } from '../tenants/guards.js';
@@ -936,7 +935,15 @@ export async function updateEmailDomain(
         const effectiveKey = encryptionKey ?? process.env.PLATFORM_ENCRYPTION_KEY ?? '0'.repeat(64);
         const { publishWebmailDnsRecord, unpublishWebmailDnsRecord } = await import('./dns-provisioning.js');
         if (input.webmail_enabled) {
-          await publishWebmailDnsRecord(db, existing.domainId, domainRow.domainName, effectiveKey);
+          // CNAME target = the platform webmail hostname, taken from the same
+          // setting the redirect uses, so the record and the route cannot name
+          // two different places.
+          const webmailHostname = new URL(await getDefaultWebmailUrl(db)).hostname;
+          // A CNAME whose target is its own name is a resolution loop. Skip it
+          // when the domain's webmail host IS the platform webmail host.
+          if (`webmail.${domainRow.domainName}`.toLowerCase() !== webmailHostname.toLowerCase()) {
+            await publishWebmailDnsRecord(db, existing.domainId, domainRow.domainName, effectiveKey, webmailHostname);
+          }
         } else {
           await unpublishWebmailDnsRecord(db, existing.domainId, domainRow.domainName, effectiveKey);
         }
@@ -1076,78 +1083,49 @@ export async function ensureWebmailIngress(
   const namespace = tenant.kubernetesNamespace;
   const hostname = `webmail.${row.domainName}`;
 
-  // Ingress name: stable per hostname, sanitized for DNS-1123
+  // Route name: stable per hostname, sanitized for DNS-1123.
   const safeName = hostname.replace(/[^a-z0-9-]/gi, '-').toLowerCase().slice(0, 50);
   const ingressName = `${safeName}-ingress`;
-  const externalSvcName = `${safeName}-upstream`;
 
-  // Step 1: ensure the ExternalName service that points at the
-  // currently-active webmail engine Service in the `mail` namespace.
+  // The tenant hostname REDIRECTS to the platform webmail origin; it is not
+  // reverse-proxied.
   //
-  // ExternalName used to be hardcoded to
-  // `roundcube.mail.svc.cluster.local`. When the operator flipped the
-  // platform default engine to Bulwark (and the Roundcube Deployment
-  // was scaled to 0 by `reconcileEngineDeployments`), every per-tenant
-  // webmail.<clientdomain> route went dark while the platform-wide
-  // webmail.<apex> URL kept working. We now resolve the active engine
-  // the same way the webmail-router does, and a parallel periodic
-  // reconciler (startPerTenantWebmailRouter) re-applies this Ingress
-  // on every engine flip so the ExternalName follows.
-  const activeEngine = await getDefaultWebmailEngine(db);
-  const engineServiceName = serviceNameForEngine(activeEngine);
-  const externalName = `${engineServiceName}.mail.svc.cluster.local`;
-  const externalSvcBody = {
-    metadata: {
-      name: externalSvcName,
-      namespace,
-      labels: {
-        'app.kubernetes.io/part-of': 'hosting-platform',
-        'app.kubernetes.io/component': 'webmail-upstream',
-        'app.kubernetes.io/managed-by': 'insula',
-        // Stamp the engine so a quick `kubectl get svc -l ...` shows
-        // which engine each per-tenant route currently targets. The
-        // reconciler reads this label to detect drift cheaply
-        // (label compare beats reading + diffing the full spec).
-        'insula.host/webmail-engine': activeEngine,
-      },
-    },
-    spec: {
-      type: 'ExternalName',
-      externalName,
-      ports: [{ port: 80, targetPort: 80, protocol: 'TCP', name: 'http' }],
-    },
-  };
+  // What was here before: an ExternalName Service per domain pointing at the
+  // active engine's Service, plus a `networking.k8s.io` Ingress carrying
+  // `ingressClassName: 'nginx'`. The platform routes with Traefik (ADR-038) and
+  // has no nginx IngressClass, so that object was admitted and then ignored —
+  // the hostname resolved and answered nothing. A parallel reconciler existed
+  // purely to chase the ExternalName across engine flips.
+  //
+  // A 302 removes all of it. The redirect names the platform webmail origin,
+  // and `webmail-router` already points that one origin at whichever engine is
+  // default, so Bulwark and Roundcube both work here with no per-engine state
+  // to drift. It also keeps every webmail session on a single origin, which is
+  // what the JWT-SSO origin check and the session cookie scope both assume.
+  //
+  // TLS still matters: the browser completes the handshake for
+  // `webmail.<domain>` BEFORE it can be redirected, so this hostname needs a
+  // certificate that covers it. That is why the cert step below stays.
+  const webmailUrl = await getDefaultWebmailUrl(db);
 
+  // The platform's OWN webmail host is already served by the platform webmail
+  // IngressRoute. Reachable because the SYSTEM tenant owns the apex domain
+  // (ADR-040), so enabling webmail on the apex email domain lands here with
+  // hostname === the redirect target. Publishing anyway would mint a
+  // self-referential CNAME, a router that redirects the host to itself, and a
+  // second IngressRoute competing with the platform's own for that hostname.
+  let platformWebmailHost: string;
   try {
-    await k8s.core.createNamespacedService({ namespace, body: externalSvcBody });
-  } catch (err: unknown) {
-    const statusCode = (err as { statusCode?: number })?.statusCode;
-    if (statusCode !== 409) {
-      const msg = err instanceof Error ? err.message : String(err);
-      await setWebmailStatus(db, row.emailDomainId, 'failed', `ExternalName service create failed: ${msg}`);
-      throw err;
-    }
-    try {
-      await k8s.core.replaceNamespacedService({
-        name: externalSvcName,
-        namespace,
-        body: externalSvcBody,
-      });
-    } catch (replaceErr) {
-      const msg = replaceErr instanceof Error ? replaceErr.message : String(replaceErr);
-      await setWebmailStatus(db, row.emailDomainId, 'failed', `ExternalName service replace failed: ${msg}`);
-      throw replaceErr;
-    }
+    platformWebmailHost = new URL(webmailUrl).hostname.toLowerCase();
+  } catch {
+    await setWebmailStatus(db, row.emailDomainId, 'failed', `default_webmail_url is not a valid URL: ${webmailUrl}`);
+    return { ingressCreated: false, reason: 'invalid default_webmail_url', status: 'failed' };
+  }
+  if (hostname.toLowerCase() === platformWebmailHost) {
+    await setWebmailStatus(db, row.emailDomainId, 'ready', 'Served by the platform webmail route — no tenant redirect needed.');
+    return { ingressCreated: false, reason: 'hostname is the platform webmail host', status: 'ready' };
   }
 
-  // Step 2: ensure the Ingress rule for webmail.<domain>
-  //
-  // Use ensureRouteCertificate to get the right secret name. Round-3
-  // round-2 surfaced cert failures as a tenant-facing notification.
-  // Round-4 Phase 2: cert failure is no longer a "failed" outcome —
-  // the Ingress is still created without TLS and is reachable on
-  // plain HTTP. Status becomes 'ready_no_tls' and the cert
-  // reconciler can flip it to 'ready' once cert-manager catches up.
   const { ensureRouteCertificate } = await import('../certificates/service.js');
   let certResult: Awaited<ReturnType<typeof ensureRouteCertificate>> | null = null;
   let certError: string | null = null;
@@ -1155,65 +1133,66 @@ export async function ensureWebmailIngress(
     certResult = await ensureRouteCertificate(db, k8s, row.domainId, hostname);
   } catch (err) {
     certError = err instanceof Error ? err.message : String(err);
-    log.warn({ hostname, err: certError }, 'ensureRouteCertificate failed (Ingress will publish without TLS until cert-manager catches up)');
+    log.warn({ hostname, err: certError }, 'ensureRouteCertificate failed (webmail redirect will publish without TLS until cert-manager catches up)');
   }
 
   const tls = certResult && !certResult.skipped && certResult.secretName
-    ? [{ hosts: [hostname], secretName: certResult.secretName }]
+    ? { secretName: certResult.secretName }
     : undefined;
 
-  const ingressBody = {
-    metadata: {
-      name: ingressName,
-      namespace,
-      labels: {
-        'app.kubernetes.io/part-of': 'hosting-platform',
-        'app.kubernetes.io/component': 'webmail',
-        'app.kubernetes.io/managed-by': 'insula',
-      },
-    },
-    spec: {
-      ingressClassName: 'nginx',
-      rules: [
-        {
-          host: hostname,
-          http: {
-            paths: [
-              {
-                path: '/',
-                pathType: 'Prefix' as const,
-                backend: {
-                  service: { name: externalSvcName, port: { number: 80 } },
-                },
-              },
-            ],
-          },
-        },
-      ],
-      ...(tls ? { tls } : {}),
-    },
+  const { buildIngressRoute, buildMiddleware, redirectRegexSpec } =
+    await import('../ingress-routes/traefik-types.js');
+  const { applyIngressRoute, applyMiddleware } =
+    await import('../ingress-routes/traefik-apply.js');
+  const { ensureRedirectSinkService, REDIRECT_SINK_SERVICE_NAME, REDIRECT_SINK_PORT } =
+    await import('../domains/redirect-sink.js');
+
+  const middlewareName = `${safeName}-redirect`;
+  const routeLabels = {
+    'app.kubernetes.io/component': 'webmail',
+    'app.kubernetes.io/managed-by': 'insula',
+    'insula.host/webmail-domain': row.domainName.slice(0, 63),
   };
 
   try {
-    await k8s.networking.createNamespacedIngress({ namespace, body: ingressBody });
-  } catch (err: unknown) {
-    const statusCode = (err as { statusCode?: number })?.statusCode;
-    if (statusCode !== 409) {
-      const msg = err instanceof Error ? err.message : String(err);
-      await setWebmailStatus(db, row.emailDomainId, 'failed', `Ingress create failed: ${msg}`);
-      throw err;
-    }
-    try {
-      await k8s.networking.replaceNamespacedIngress({
-        name: ingressName,
-        namespace,
-        body: ingressBody,
-      });
-    } catch (replaceErr) {
-      const msg = replaceErr instanceof Error ? replaceErr.message : String(replaceErr);
-      await setWebmailStatus(db, row.emailDomainId, 'failed', `Ingress replace failed: ${msg}`);
-      throw replaceErr;
-    }
+    // The sink is the route's backend and is never reached: the middleware
+    // answers first. It exists so the route is still admissible if the
+    // middleware is ever missing, and it fails to a generic error page rather
+    // than to whatever else might answer on this namespace.
+    await ensureRedirectSinkService(k8s, namespace);
+
+    await applyMiddleware(k8s.custom, buildMiddleware({
+      name: middlewareName,
+      namespace,
+      spec: redirectRegexSpec({
+        regex: '.*',
+        // Every path collapses onto the webmail root. Carrying the tenant path
+        // across would be meaningless — the target is a different application.
+        replacement: webmailUrl,
+        // 302, not 301: the platform webmail URL is an operator setting, and a
+        // permanent redirect would be cached by browsers long after it changed.
+        permanent: false,
+      }),
+      labels: routeLabels,
+    }));
+
+    await applyIngressRoute(k8s.custom, buildIngressRoute({
+      name: ingressName,
+      namespace,
+      entryPoints: ['websecure'],
+      routes: [{
+        kind: 'Rule',
+        match: `Host(\`${hostname}\`)`,
+        middlewares: [{ name: middlewareName, namespace }],
+        services: [{ name: REDIRECT_SINK_SERVICE_NAME, port: REDIRECT_SINK_PORT }],
+      }],
+      ...(tls ? { tls } : {}),
+      labels: routeLabels,
+    }));
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await setWebmailStatus(db, row.emailDomainId, 'failed', `webmail redirect route failed: ${msg}`);
+    throw err;
   }
 
   // Final status: ready (with TLS) or ready_no_tls (cert pending/failed).
@@ -1255,19 +1234,33 @@ export async function removeWebmailIngress(
   const hostname = `webmail.${row.domainName}`;
   const safeName = hostname.replace(/[^a-z0-9-]/gi, '-').toLowerCase().slice(0, 50);
   const ingressName = `${safeName}-ingress`;
+  const middlewareName = `${safeName}-redirect`;
   const externalSvcName = `${safeName}-upstream`;
 
+  const { deleteIngressRoute, deleteMiddleware } =
+    await import('../ingress-routes/traefik-apply.js');
+
+  // Current shape: a Traefik IngressRoute plus its redirect Middleware. The
+  // route goes first — a Middleware removed while a route still references it
+  // makes Traefik drop the WHOLE router, which is a 404 for the hostname
+  // rather than the clean removal this function promises.
+  await deleteIngressRoute(k8s.custom, namespace, ingressName);
+  await deleteMiddleware(k8s.custom, namespace, middlewareName);
+
+  // Legacy shape, for clusters provisioned before the redirect: a
+  // networking.k8s.io Ingress and a per-engine ExternalName Service. Both are
+  // inert (the Ingress named a non-existent nginx class) but they are real
+  // objects, and leaving them behind means `webmail_enabled=false` does not
+  // actually empty the namespace. Deleted idempotently.
   try {
     await k8s.networking.deleteNamespacedIngress({ name: ingressName, namespace });
   } catch (err: unknown) {
-    const statusCode = (err as { statusCode?: number })?.statusCode;
     if (!isNotFound(err)) throw err;
   }
 
   try {
     await k8s.core.deleteNamespacedService({ name: externalSvcName, namespace });
   } catch (err: unknown) {
-    const statusCode = (err as { statusCode?: number })?.statusCode;
     if (!isNotFound(err)) throw err;
   }
 }

@@ -410,16 +410,12 @@ export async function webmailSettingsRoutes(app: FastifyInstance): Promise<void>
           });
           await runStep(2, 'mutex', 'Scaling engine Deployments…', 'Engine mutex applied', async () => {
             await reconcileEngineDeployments(app.db, k8sLocal.apps, app.log);
-            // re-target every per-tenant webmail.<clientdomain>
-            // ExternalName Service to the new engine in the same step.
-            // Without this, per-tenant routes keep pointing at the now-
-            // scaled-to-0 inactive engine until the periodic reconciler
-            // catches up (up to 5 minutes). The reconciler is idempotent
-            // and label-cheap (no rewrite on no-drift rows).
-            const { reconcilePerTenantWebmailEngineRouting } = await import(
-              '../email-domains/webmail-reconciler.js'
-            );
-            await reconcilePerTenantWebmailEngineRouting(app.db, k8sLocal);
+            // Per-tenant routes used to be re-targeted here, because each one
+            // reverse-proxied a per-domain ExternalName Service at the active
+            // engine and would otherwise keep pointing at the Deployment this
+            // step just scaled to zero. Tenant hostnames now 302 to the
+            // platform webmail origin — the same origin step 1 just flipped —
+            // so they follow the engine with nothing to re-target.
           });
           await runStep(3, 'wait_ready', 'Waiting for active engine to be ready…', 'Active engine has ≥1 ready Pod', async () => {
             const r = await waitForActiveEngineReady(app.db, k8sLocal.apps, { timeoutMs: 180_000 });

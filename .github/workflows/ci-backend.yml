@@ -9,12 +9,14 @@ on:
     # lesson: a paths filter that omits its own subject is not a guard).
     paths: ['backend/**', 'packages/api-contracts/**',
             'scripts/ci-route-body-validation-check.sh',
-            'scripts/.route-body-cast-allowlist.txt']
+            'scripts/.route-body-cast-allowlist.txt',
+            'scripts/ci-integration-tests.sh']
   pull_request:
     branches: [development, main]
     paths: ['backend/**', 'packages/api-contracts/**',
             'scripts/ci-route-body-validation-check.sh',
-            'scripts/.route-body-cast-allowlist.txt']
+            'scripts/.route-body-cast-allowlist.txt',
+            'scripts/ci-integration-tests.sh']
 
 # Least privilege (2026-07-28 security review): these workflows only read the
 # repo, so drop the token to read-only instead of inheriting the repository
@@ -173,6 +175,16 @@ jobs:
       - run: npm ci
       - run: npm run build -w @insula/api-contracts
       - run: npm run test:coverage -w @insula/backend
+      # The unit run EXCLUDES **/*.integration.test.ts, so the Postgres and
+      # Redis services above were provisioned and never used by it. This runs
+      # every integration suite against them.
+      #
+      # The runner demands ZERO skipped tests: each suite falls back to
+      # `describe.skip` when the DB is unreachable and vitest exits 0 when all
+      # tests are skipped, so without that check a broken DATABASE_URL would
+      # report a green check that executed nothing.
+      - name: Integration suites against real Postgres
+        run: ./scripts/ci-integration-tests.sh
       - name: Upload coverage
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

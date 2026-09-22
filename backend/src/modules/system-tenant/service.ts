@@ -158,8 +158,16 @@ export async function ensureSystemTenant(
     // re-read so we return a consistent `alreadyExisted: true` result.
     const pgErr = err as { code?: string; cause?: { code?: string; constraint?: string } };
     const code = pgErr.code ?? pgErr.cause?.code;
-    const constraint = pgErr.cause?.constraint;
-    if (code === '23505' && (constraint === 'tenants_only_one_system_idx' || !constraint)) {
+    // Any unique violation here means another replica inserted the SYSTEM row
+    // first. Matching only `tenants_only_one_system_idx` missed the race it was
+    // written for: every racer inserts the same kubernetes_namespace
+    // ('tenant-system'), so Postgres rejects the loser on
+    // `tenants_namespace_unique` before it ever evaluates the partial
+    // is_system index, and the fallback below was skipped in favour of a
+    // rethrow — on concurrent startup, which is exactly when HA runs 2-3
+    // replicas. Narrowing by constraint name is not worth it: a 23505 that is
+    // NOT this race finds no SYSTEM row on the re-read and still rethrows.
+    if (code === '23505') {
       const existingAfterRace = await findSystemTenant(db);
       if (existingAfterRace) {
         const apexCreated = await ensureSystemApexDomain(db, existingAfterRace.id, apex);

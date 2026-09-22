@@ -12,6 +12,129 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Changed
+- **Both dashboards rebuilt around what you actually need to see.** The admin
+  dashboard's own data source returned five numbers — how many tenants,
+  domains and backups exist — padded out with tables already available from
+  the sidebar. The tenant dashboard counted much the same things.
+
+  Warning tiles are now **conditional**: they appear only when something needs
+  you, and the section is absent — not empty — when nothing does. A row of
+  warning tiles that is usually blank is a row people learn to skip, and that
+  is the one row that must never be skipped. Two warnings were removed
+  entirely because nothing could ever raise them: "low free memory" and a
+  mailbox count against the plan limit. What replaced them is what really
+  happens: a mailbox filling up (which is what refuses mail), a volume filling
+  up (which is what stops a workload writing), and orphaned pods left behind
+  on a node.
+
+  In their place the operator console shows cluster capacity as three figures
+  rather than one: what is **in use**, what is **committed**, and what can
+  still be scheduled. Those differ enormously — a cluster can be 88% idle and
+  still refuse to start anything, because the room is reserved. There is a row
+  per node with the same breakdown, and a line that says in plain words
+  whether the cluster would survive losing its busiest node.
+
+  The tenant panel gets the same treatment from the customer's side: how much
+  of your plan your apps have **reserved** versus what they are using,
+  bandwidth against the cycle allowance, a row per site with its certificate
+  and the attacks blocked for it, and mail measured by the fullest mailbox
+  rather than by how many you have.
+
+  Both pages now load from two requests instead of twenty-three, refresh on a
+  schedule matched to how fast each kind of data actually changes, and stop
+  refreshing when the tab is in the background. Each tile reports its own
+  state, so one slow source greys a single tile and says why, instead of
+  leaving the page blank.
+
+- The tenant Email page no longer describes the webmail toggle as
+  "→ Roundcube". It names no engine, because the operator chooses which one
+  the platform runs.
+
+### Fixed
+- **Tenant webmail addresses now actually work.** Turning on webmail for a
+  domain published `webmail.<domain>` in DNS and then served nothing at it.
+  The hostname was answered by a Kubernetes Ingress asking for the `nginx`
+  ingress class — this platform routes with Traefik and has no such class, so
+  the object was accepted and then ignored. The DNS record also pointed at the
+  *mail* server's address rather than the ingress, and, for domains migrated
+  from another host, could be a leftover record still pointing at the old
+  provider.
+
+  `webmail.<domain>` is now a CNAME at the platform's own webmail hostname,
+  and the platform answers there with a redirect to the platform webmail —
+  so visitors land on the same webmail they would reach directly, with a
+  certificate that matches. Because the redirect names the platform webmail
+  rather than a specific application, it follows the engine setting: Bulwark
+  and Roundcube both work, and switching between them no longer leaves tenant
+  addresses pointing at a stopped one.
+
+  Turning webmail back off now removes the record whatever type it is. The
+  previous cleanup only looked for the old record type, so disabling webmail
+  could leave the address published.
+
+- **A tenant that is low on space no longer mails you every hour, forever.** A
+  tenant sitting above 90% of its CPU, memory or storage allocation sent the
+  operator *and* the tenant a notification every single hour, on the hour, for
+  as long as it stayed there — on production, four messages an hour, 96 a day,
+  for one tenant at 94% of its disk. Going back under the threshold sent
+  nothing at all, which is indistinguishable from the alerting having broken.
+
+  The alert now behaves like one situation rather than an hourly reading. It
+  arrives once when it starts, repeats on a widening schedule if it persists —
+  after an hour, then six hours, then daily — speaks up immediately if it gets
+  worse, and sends an explicit **back to normal** message, saying how long it
+  lasted, when it ends. Usage has to fall a clear five points below the
+  threshold before it is called resolved, so a tenant hovering on the line no
+  longer opens and closes the same alert over and over.
+
+  Nothing needs configuring, and an ongoing situation on an upgraded cluster is
+  picked up where it stands: the first evaluation after the upgrade opens one
+  episode and then goes quiet.
+
+- **The mail statistics endpoint never worked.** `GET /admin/mail/stats`
+  answered an error for its entire life: the mailbox summary asked the
+  database to count mailboxes whose status was `suspended`, a value mailbox
+  status has never had — it has been `active` or `disabled` since the first
+  migration. The server rejected the query outright, so the endpoint could
+  only ever fail. It now counts active and disabled mailboxes, and the
+  response names the `disabled` bucket for what it holds.
+
+- **A platform that cannot see its cluster now says so instead of hanging.**
+  Command-line tools run outside the cluster, and without a kubeconfig to
+  point at, silently built a Kubernetes client aimed at a non-existent
+  address. Every call against it then waited on a connection that could never
+  open. Callers were written to notice "there is no cluster here" and fall
+  back — deleting a tenant, for instance, falls back to a database-only
+  cascade — but that fallback could never trigger, because nothing ever
+  reported the failure. The platform now recognises that it has no usable
+  cluster configuration and takes the fallback it was always meant to.
+
+- **Starting several replicas at once could fail to bring up the platform.**
+  On a high-availability cluster every replica checks for the SYSTEM tenant at
+  startup and races to create it if missing. Exactly one was supposed to win
+  and the rest to notice and carry on. The losers instead stopped with an
+  error, because the database rejected them over the duplicate namespace
+  before it ever reached the rule the recovery was watching for. Any replica
+  that loses the race now recovers as intended.
+
+- **Editing a tenant's name no longer runs a suspend/resume cycle.** The
+  tenant form submits every field, so saving a name change also re-sent the
+  tenant's current status — and that was enough to call the suspend/resume
+  machinery, which did the work of looking, concluded nothing had changed, and
+  threw the answer away. Saving a name is now just saving a name; genuine
+  status changes are unaffected.
+
+### Fixed (developer tooling)
+- **The integration test suites had never run.** Continuous integration
+  started a database for them and then ran a command configured to skip every
+  integration test, so sixteen suites had never executed there — which is how
+  the mail statistics endpoint above shipped broken and stayed that way. They
+  now run on every change, and the run fails if any suite skips itself: these
+  tests quietly pass when they cannot reach a database, so "nothing ran" would
+  otherwise be indistinguishable from "everything passed".
+
+
 ## [2026.9.28] - 2026-09-21
 
 ### Added

@@ -740,9 +740,8 @@ function MailboxesTab({
     const safetyTimer = setTimeout(() => setOpeningWebmailFor(null), 5000);
     try {
       const result = await webmailToken.mutateAsync(mailboxId);
-      // Backend returns a ready-to-open URL. For Bulwark this is
-      // /api/auth/impersonate?token=<JWT>; for Roundcube it's
-      // /?_task=login&_jwt=<JWT>. window.open returns the new
+      // Backend returns a ready-to-open URL whose shape depends on the
+      // engine the platform currently runs. window.open returns the new
       // window's reference — null when blocked by the popup blocker.
       const win = window.open(result.data.webmailUrl, '_blank', 'noopener,noreferrer');
       if (!win) {
@@ -1720,7 +1719,7 @@ function DomainSettingsCard({
         <div>
           <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Webmail</label>
           <p className="mb-1 text-xs text-gray-500 dark:text-gray-400">
-            Enable webmail.{domain.domainName} → Roundcube.
+            Enable webmail.{domain.domainName} — forwards to the platform webmail.
           </p>
           <div className="flex items-center gap-3">
             <label className="inline-flex items-center gap-2">

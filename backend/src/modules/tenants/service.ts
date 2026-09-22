@@ -1237,7 +1237,16 @@ export async function updateTenant(
       const msg = err instanceof Error ? err.message : String(err);
       throw new ApiError('RESTORE_FAILED', `Failed to start restore: ${msg}`, 502, undefined, 'Verify pre-archive snapshot still exists (retention may have expired) and retry');
     }
-  } else if (input.status === 'suspended' || input.status === 'active') {
+  } else if (
+    (input.status === 'suspended' || input.status === 'active')
+    // Only dispatch when the status actually CHANGES. Re-sending the status a
+    // tenant already has (the panel PATCHes the whole form, so every name edit
+    // carries the current status) used to build K8s clients and call the
+    // suspend/resume orchestrator just to be handed back NOT_SUSPENDED /
+    // ALREADY_SUSPENDED, which the catch below discards. Same outcome, minus
+    // an orchestrator round trip and a cluster dependency on a no-op edit.
+    && input.status !== existing.status
+  ) {
     // Non-archive transitions: dispatch to the storage-lifecycle
     // suspend/resume orchestrators. They quiesce K8s deployments
     // (scale to 0 / restore pre-suspend replicas) AND run the

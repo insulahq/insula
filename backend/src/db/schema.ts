@@ -4375,6 +4375,38 @@ export const nodeHealthState = pgTable('node_health_state', {
 export type NodeHealthState = typeof nodeHealthState.$inferSelect;
 export type NewNodeHealthState = typeof nodeHealthState.$inferInsert;
 
+// Migration 0133 — per-tenant resource-saturation EPISODES.
+//
+// One row per (tenant, resource); `level` is a column so warning→critical is a
+// transition inside one episode instead of a second row that can never clear.
+// Replaces an hour-bucketed dedupe key that re-announced a sustained condition
+// 24 times a day to both the operator and the tenant, and never sent an
+// all-clear. See the migration for the measurement.
+//
+// `cleared_at IS NULL` is the open-episode predicate; cleared rows are a short
+// audit tail, GC'd at 30 days like `mailbox_quota_events`.
+export const tenantSaturationEvents = pgTable('tenant_saturation_events', {
+  tenantId: varchar('tenant_id', { length: 36 })
+    .notNull()
+    .references(() => tenants.id, { onDelete: 'cascade' }),
+  /** 'CPU' | 'memory' | 'storage' — the label the notification renders. */
+  resource: varchar('resource', { length: 16 }).notNull(),
+  /** 'warning' | 'critical'. */
+  level: varchar('level', { length: 16 }).notNull(),
+  usedPct: integer('used_pct').notNull(),
+  firstSeenAt: timestamp('first_seen_at', { withTimezone: true }).notNull().defaultNow(),
+  lastNotifiedAt: timestamp('last_notified_at', { withTimezone: true }).notNull().defaultNow(),
+  /** Drives the reminder ladder (1h → 6h → daily). Reset to 1 on escalation. */
+  notifyCount: integer('notify_count').notNull().default(1),
+  clearedAt: timestamp('cleared_at', { withTimezone: true }),
+}, (table) => [
+  primaryKey({ columns: [table.tenantId, table.resource] }),
+  index('tenant_saturation_events_open_idx').on(table.tenantId),
+]);
+
+export type TenantSaturationEvent = typeof tenantSaturationEvents.$inferSelect;
+export type NewTenantSaturationEvent = typeof tenantSaturationEvents.$inferInsert;
+
 // Distinct node memory events (kernel SystemOOM on a node, kubelet pod
 // evictions) recorded by the node-health reconciler for the admin UI +
 // categorized admin notifications (migration 0074, operator decision

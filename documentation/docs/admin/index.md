@@ -87,7 +87,7 @@ pages; others are collapsible groups that expand to reveal sub-pages.
 
 | Area | What lives there |
 |------|------------------|
-| **Dashboard** | The incident-first home page (below). |
+| **Dashboard** | The Operator Console — capacity, mail, web defence, and anything needing attention (below). |
 | **Tenants** | Every customer account, plus cross-tenant tabs for Domains, Workloads, Users, Email Accounts and Cron Jobs. → [Tenants](tenants.md) |
 | **Applications** | The catalog, installed deployments, upgrades, and catalog repositories. → [The catalog & applications](catalogs-and-applications.md) |
 | **Backups** | Dashboard, System, Tenants, Mail, Remote Storage Targets, Disaster Recovery. → [Backups & restore](backups-and-restore.md) |
@@ -104,38 +104,79 @@ pages; others are collapsible groups that expand to reveal sub-pages.
     Cluster require `super_admin` or `admin`. If a sidebar link doesn't
     work for you, your role lacks it. See [Security](security.md).
 
-## The incident-first Dashboard
+## The Operator Console
 
-The Dashboard is deliberately *not* a vanity wall of counters. It answers
-one question — **"is the platform broken right now?"** — and links you to
-the fix. From top to bottom:
+The Dashboard is deliberately *not* a wall of counters. It answers two
+questions — **"does anything need me right now?"** and **"has the cluster
+got room?"** — and links you to the fix. Every tile is clickable and takes
+you to the page that acts on it, and hovering a tile opens a card with the
+detail behind the number.
 
-1. **Health banner** — a single red / amber / green line: "Platform:
-   healthy / degraded / down", with an "X / Y services healthy" subline
-   and a **Health details →** link into Monitoring.
-2. **Four incident stat cards**:
-    - **Failed / Orphaned Pods** — workloads that crashed or were left
-      dangling.
-    - **5xx Alerts (24h)** — server errors pulled from the audit log.
-    - **Failing Backups** — backup jobs in a `failing` or never-run state.
-    - **In-flight Transitions** — tenant lifecycle operations running, and
-      a red count if any *failed and needs an operator*.
-3. **Detail cards that only appear when something is wrong** — a backup
-   health list, a failed-transitions list (each linking to the tenant and
-   to the [Lifecycle Hooks](platform-settings.md) registry), and a recent
-   5xx list (linking to [Audit Logs](security.md)).
-4. **Recent tenants** — a small "who joined this week" table.
+### Needs attention
 
-In the top-right of the Dashboard is a compact platform strip showing the
-version, when it was last checked, and a **Deployed Images** button that
-opens a modal listing every platform component's image, tag, and
-ready-count. (The same modal is reachable from
-[Platform Settings → Updates](platform-settings.md).)
+The first section **only appears when something is wrong**. When the
+platform is healthy it is absent entirely — not an empty box, not a row of
+green ticks. A row of warnings that is usually blank is a row people learn
+to skip past, and this is the one row that must never be skipped.
 
-!!! tip "If a card is red, click it"
-    Every red signal on the Dashboard deep-links to the page that fixes
-    it. You should rarely need to hunt through the sidebar during an
-    incident — start at the Dashboard and follow the links.
+What can raise it: a tenant over its storage, a mailbox that is nearly full
+(which is what actually starts refusing mail), a volume nearly full (which
+is what stops a workload writing), orphaned pods left on a node, failed
+lifecycle transitions, backups that are failing or have never run, and
+certificates close to expiry. Each entry links to the tenant, volume or
+page that resolves it.
+
+### Cluster capacity
+
+Capacity is shown as **three** figures per resource, not one:
+
+| Figure | Meaning |
+|---|---|
+| **In use** | What is actually being consumed right now. |
+| **Committed** | What workloads have *reserved*, whether or not they are using it. |
+| **Available** | What is left to schedule. |
+
+These differ enormously, and the difference is the thing that bites: a
+cluster can sit at 12% actual usage and still refuse to start anything,
+because the room is already reserved. A single "usage" percentage hides
+that completely.
+
+Storage is the exception — it is consumed rather than reserved, so it
+reads as used against total.
+
+Underneath, a **Failover** line says in plain words whether the cluster
+would survive losing its busiest node.
+
+### Nodes
+
+One row per node with the same in-use / committed / available breakdown, so
+you can see which node is carrying the cluster. Hovering a row opens its
+full detail — kubelet version, age, pod count and conditions. Long node
+names are truncated rather than pushing the layout sideways.
+
+### The rest of the console
+
+| Tile | What it tells you |
+|---|---|
+| **Tenants & workloads** | Tenant count by state, and how many workloads are running, pending or failing. |
+| **Mail — last 7 days** | Delivery volume, rejections and the fullest mailbox on the platform. |
+| **Web defence — last 24 hours** | Requests blocked, the rules that fired, and the noisiest sources. |
+| **Backups & DR** | The three backup classes — system, tenant and mail — each with its target, last run and age. |
+| **Certificates** | What is issued, what renews soon, and anything that failed to renew. |
+| **Cron & platform jobs** | Scheduled work, and anything that has not run when it should have. |
+| **Platform** | Running version, available upgrades, and recent changes. |
+
+!!! tip "If something is flagged, click it"
+    Every signal deep-links to the page that fixes it. You should rarely
+    need to hunt through the sidebar during an incident — start here and
+    follow the links.
+
+!!! note "How it loads"
+    The page fetches from two requests rather than one per tile, and each
+    refreshes on a schedule matched to how fast that data actually changes.
+    Refreshing stops while the tab is in the background. Each tile reports
+    its own state, so one slow source greys a single tile and says why
+    instead of leaving the page blank.
 
 ## How the rest of this guide is organized
 
