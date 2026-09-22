@@ -232,4 +232,4 @@ images:
   - name: ghcr.io/insulahq/insula/sftp-gateway
     newTag: "20260915110139-80a71f8"
   - name: ghcr.io/insulahq/insula/tenant-backup-tools
-    newTag: "20260922220703-8c4f1fa"
+    newTag: "20260922223323-c06879a"
