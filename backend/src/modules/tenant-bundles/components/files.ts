@@ -191,6 +191,10 @@ function buildScript(opts: { tags: ReadonlyArray<string>; bundleId: string }): s
     `if [ -f ${CREDS_MOUNT_PATH}/aws_region ]; then export AWS_DEFAULT_REGION="$(cat ${CREDS_MOUNT_PATH}/aws_region)"; fi`,
     `REPO="$(cat ${CREDS_MOUNT_PATH}/repo_uri)"`,
     `[ -n "$REPO" ] || { echo "ERROR: repo uri missing"; exit 1; }`,
+    // restic 0.19 exits 3 for a missing source path as well as for partial
+    // read errors, and exit 3 is accepted below. Assert the mount first so
+    // that acceptance can only ever mean "some files were unreadable".
+    `[ -d ${FILES_CAPTURE_ROOT} ] || { echo "ERROR: capture root ${FILES_CAPTURE_ROOT} is not mounted"; exit 1; }`,
     'echo "Running restic backup of /source..."',
     // Capture root is /source; restic stores absolute paths /source/<...>.
     // Disable set -e around restic so we can inspect $? — restic exits 3

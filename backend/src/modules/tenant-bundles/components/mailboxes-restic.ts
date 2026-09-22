@@ -209,6 +209,11 @@ export function buildMailboxesCaptureScript(input: {
     // and restic is happy to store an empty tree. Skipping it instead would
     // leave the bundle without a row for that address, which reads as "not
     // captured" rather than "nothing to capture".
+    // restic 0.19 exits 3 BOTH for partial read errors and for a source path
+    // that does not exist. We treat 3 as a warning, so assert the path here:
+    // otherwise a vanished capture directory would be warned about and then
+    // recorded as a captured mailbox holding nothing.
+    '  [ -d "$CAPTURE_ROOT/$ADDRDIR" ] || { echo "ERROR: capture dir missing for $ADDR"; exit 1; }',
     '  MSGS=$(find "$CAPTURE_ROOT/$ADDRDIR" -type f \\( -path "*/cur/*" -o -path "*/new/*" \\) 2>/dev/null | wc -l | tr -d " ")',
     '  set +e',
     `  restic -r "$REPO" backup "$CAPTURE_ROOT/$ADDRDIR" ${tagArgs} --tag "address=$ADDR"`
