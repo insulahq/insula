@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.9.30] - 2026-09-22
+
 ### BREAKING
 
 - **The first backup after this release re-uploads each tenant's whole
