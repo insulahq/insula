@@ -28,6 +28,7 @@ import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { resolveShimBackupTarget } from './resolve-backup-target.js';
 import { deriveResticPassword, runResticDump, type BackupTarget } from './restic-driver.js';
+import { resolveBundleRepoLayout } from './repo-layout.js';
 import { FILES_CAPTURE_ROOT } from './components/files.js';
 import { MAILBOX_CAPTURE_ROOT, addressDirName } from './components/mailboxes-restic.js';
 import type { Readable } from 'node:stream';
@@ -185,6 +186,7 @@ export async function openResticExportSource(
   return runResticDump({
     target,
     tenantId: job.tenantId,
+    layout: await resolveBundleRepoLayout(ctx.db, bundleId),
     component: source.component,
     snapshotId: source.snapshotId,
     dumpPath: source.dumpPath,

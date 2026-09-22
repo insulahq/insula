@@ -83,6 +83,7 @@ import {
   type BackupTarget,
 } from '../restic-driver.js';
 import { notifyResticFailure } from '../restic-failure-notify.js';
+import { resolveBundleRepoLayout } from '../repo-layout.js';
 import { resolvePlatformImage } from '../../../shared/platform-images.js';
 
 /**
@@ -364,7 +365,10 @@ export async function captureFilesComponent(
   }
 
   const passwordHex = deriveResticPassword(opts.secretsKeyHex, opts.tenantId);
-  const repoUri = buildResticRepoUri(target, opts.tenantId, 'files');
+  // The bundle's OWN layout, not the current default: a re-run or retry of an
+  // older bundle must write where that bundle's other components went.
+  const repoLayout = await resolveBundleRepoLayout(opts.db, opts.backupId);
+  const repoUri = buildResticRepoUri(target, opts.tenantId, 'files', repoLayout);
   const env = buildResticEnv(target);
 
   // ── Snapshot tags (replicate internal-upload-route.ts) ────────────

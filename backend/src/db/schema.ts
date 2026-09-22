@@ -3856,6 +3856,19 @@ export const backupJobs = pgTable('backup_jobs', {
   // NULL on bundles captured before the column existed, and on any component
   // whose Job log predates the field — NULL means "unknown", never 0.
   resticAddedBytes: bigint('restic_added_bytes', { mode: 'number' }),
+  /**
+   * Which restic repository layout this bundle's snapshots live in (ADR-061):
+   * 'per-component' (`restic-files/<id>` + `restic-mailboxes/<id>`) or
+   * 'per-tenant' (`restic/<id>`).
+   *
+   * NULL means 'per-component'. That default is what makes the merge a no-op
+   * for existing data — nothing is backfilled or moved, and every bundle
+   * written before the merge keeps resolving to the repository that actually
+   * holds it. A restore reading the wrong repository does not error; it
+   * reports the bundle as missing, which is why this is resolved per bundle
+   * and never inferred from the tenant or from "the current" layout.
+   */
+  repoLayout: varchar('repo_layout', { length: 16 }),
   retentionDays: integer('retention_days').notNull(),
   expiresAt: timestamp('expires_at'),
   exportMode: varchar('export_mode', { length: 32 }),

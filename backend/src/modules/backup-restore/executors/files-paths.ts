@@ -30,6 +30,7 @@
 import type { FastifyInstance } from 'fastify';
 import { eq, and } from 'drizzle-orm';
 import type { BackupStore } from '../../tenant-bundles/bundle-store.js';
+import { resolveBundleRepoLayout } from '../../tenant-bundles/repo-layout.js';
 import { restoreItems, restoreJobs, tenants, backupComponents, deployments, catalogEntries, type RestoreItem } from '../../../db/schema.js';
 import { ApiError } from '../../../shared/errors.js';
 import { scaleDeploymentReplicas } from '../../../shared/scale-deployment.js';
@@ -113,7 +114,7 @@ export async function execFilesPathsItem(args: {
   const k8s: K8sClients = createK8sClients(kubeconfigPath);
   const target = await resolveShimBackupTarget(k8s.core, 'tenant', app.log);
   const passwordHex = deriveResticPassword(secretsKeyHex, job.tenantId);
-  const repoUri = buildResticRepoUri(target, job.tenantId, 'files');
+  const repoUri = buildResticRepoUri(target, job.tenantId, 'files', await resolveBundleRepoLayout(app.db, item.bundleId));
   const env = buildResticEnv(target);
 
   // ── Build + dispatch the restore Job ──────────────────────────────
