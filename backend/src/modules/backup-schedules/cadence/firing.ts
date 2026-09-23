@@ -16,7 +16,7 @@
 
 import type { Logger } from 'pino';
 
-import { cronMatchesMinute, minuteStamp } from '../../../shared/cron-match.js';
+import { cronMatchesMinuteInZone, minuteStamp } from '../../../shared/cron-match.js';
 
 export interface FiringClients {
   readonly batch: {
@@ -69,11 +69,19 @@ export async function fireIfDue(
     readonly cronJobName: string;
     readonly cron: string;
     readonly at: Date;
+    /**
+     * Platform wall-clock zone — the same value the platform writes into this
+     * CronJob's `spec.timeZone`. Reading the schedule in any other zone fires
+     * the platform-side Job at a different minute than Kubernetes would.
+     */
+    readonly zone: string;
   },
   log: Pick<Logger, 'info' | 'warn' | 'error'>,
 ): Promise<FireResult> {
+  // UTC instant, deliberately: the Job name is the cross-replica dedup key
+  // and must not move with the reading zone.
   const jobName = firedJobName(args.cronJobName, args.at);
-  if (!cronMatchesMinute(args.cron, args.at)) {
+  if (!cronMatchesMinuteInZone(args.cron, args.at, args.zone)) {
     return { fired: false, duplicate: false, jobName, errorMessage: '' };
   }
 
