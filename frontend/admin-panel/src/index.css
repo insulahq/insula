@@ -74,6 +74,70 @@
   .badge-warning {
     @apply bg-orange-100 text-orange-800;
   }
+
+  /* ── capacity-bar bands ───────────────────────────────────────────
+     The COMMITTED band is hatched, not a flat lighter fill. That is the
+     whole point of the triad: solid means "being used right now", hatch
+     means "claimed but idle". Two flat tints of the same hue read as one
+     gradient and the distinction disappears — which is what happened when
+     this was first built from the written spec instead of the mockup.
+
+     Defined here rather than as Tailwind arbitrary values because the
+     gradient needs a light and a dark colour and appears on both the bar
+     segment and its legend swatch; four inline copies of the same
+     repeating-linear-gradient is how they drift apart. The swatch uses a
+     finer 2px/3px pitch so the texture still reads at 8px square. */
+  .seg-committed {
+    background-color: var(--color-teal-100);
+    background-image: repeating-linear-gradient(-45deg, transparent 0 3px, var(--color-teal-700) 3px 4px);
+    opacity: .85;
+  }
+  .seg-committed-warn {
+    background-color: var(--color-amber-100);
+    background-image: repeating-linear-gradient(-45deg, transparent 0 3px, var(--color-amber-700) 3px 4px);
+    opacity: .85;
+  }
+  .seg-committed-crit {
+    background-color: var(--color-red-100);
+    background-image: repeating-linear-gradient(-45deg, transparent 0 3px, var(--color-red-700) 3px 4px);
+    opacity: .85;
+  }
+  .swatch-committed {
+    background-color: var(--color-teal-100);
+    background-image: repeating-linear-gradient(-45deg, transparent 0 2px, var(--color-teal-700) 2px 3px);
+  }
+  .swatch-committed-warn {
+    background-color: var(--color-amber-100);
+    background-image: repeating-linear-gradient(-45deg, transparent 0 2px, var(--color-amber-700) 2px 3px);
+  }
+  .swatch-committed-crit {
+    background-color: var(--color-red-100);
+    background-image: repeating-linear-gradient(-45deg, transparent 0 2px, var(--color-red-700) 2px 3px);
+  }
+  .dark .seg-committed,
+  .dark .swatch-committed {
+    background-color: var(--color-teal-950);
+    background-image: repeating-linear-gradient(-45deg, transparent 0 3px, var(--color-teal-400) 3px 4px);
+  }
+  .dark .swatch-committed {
+    background-image: repeating-linear-gradient(-45deg, transparent 0 2px, var(--color-teal-400) 2px 3px);
+  }
+  .dark .seg-committed-warn,
+  .dark .swatch-committed-warn {
+    background-color: var(--color-amber-950);
+    background-image: repeating-linear-gradient(-45deg, transparent 0 3px, var(--color-amber-400) 3px 4px);
+  }
+  .dark .swatch-committed-warn {
+    background-image: repeating-linear-gradient(-45deg, transparent 0 2px, var(--color-amber-400) 2px 3px);
+  }
+  .dark .seg-committed-crit,
+  .dark .swatch-committed-crit {
+    background-color: var(--color-red-950);
+    background-image: repeating-linear-gradient(-45deg, transparent 0 3px, var(--color-red-400) 3px 4px);
+  }
+  .dark .swatch-committed-crit {
+    background-image: repeating-linear-gradient(-45deg, transparent 0 2px, var(--color-red-400) 2px 3px);
+  }
 }
 
 /* Custom scrollbar — thin, transparent bg, primary color thumb */

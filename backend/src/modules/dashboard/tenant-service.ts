@@ -3,6 +3,7 @@ import type { TenantDashboardSummary, TenantDashboardLive, TenantSite } from '@i
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { collect } from './section.js';
+import { describeChange } from './admin-service.js';
 import { buildTenantAlerts } from './alerts.js';
 
 interface Logger { warn?(...a: unknown[]): void }
@@ -138,18 +139,36 @@ export async function buildTenantSummary(
     }, { logger }),
 
     collect('recentChanges', async () => {
-      const r = await db.execute<{ action_type: string; actor: string | null; at: string; http_status: number | null }>(sql`
-        SELECT action_type, actor_id AS actor, created_at AS at, http_status
-          FROM audit_logs
-         WHERE resource_id = ${tenantId} OR actor_id IN (
-           SELECT id FROM users WHERE tenant_id = ${tenantId}
-         )
-         ORDER BY created_at DESC LIMIT 6
+      // Same problem the operator console had: the raw audit log is mostly
+      // machine bookkeeping, and `action_type` alone reads as "create" for
+      // everything. A tenant's feed is narrower — their own people, their own
+      // resources — but the noise is the same noise.
+      //
+      // One deliberate difference from the admin feed: `file` stays IN. A
+      // tenant uploading files is a real thing that happened on their site,
+      // and on their own dashboard it is the change they most expect to see.
+      const r = await db.execute<{
+        action_type: string; resource_type: string | null; actor: string | null;
+        at: string; http_status: number | null;
+      }>(sql`
+        SELECT a.action_type, a.resource_type, u.email AS actor,
+               a.created_at AS at, a.http_status
+          FROM audit_logs a
+          JOIN users u ON u.id = a.actor_id
+         WHERE (a.resource_id = ${tenantId} OR u.tenant_id = ${tenantId})
+           AND a.http_method IN ('POST', 'PUT', 'PATCH', 'DELETE')
+           AND COALESCE(a.resource_type, '') NOT IN (
+             'snapshot-last-run', 'event', 'audit', 'login', 'auth', 'session',
+             'passkey', 'notification', 'resource-metric'
+           )
+         ORDER BY a.created_at DESC LIMIT 6
       `);
       return (r.rows ?? []).map((row) => ({
         severity: (row.http_status != null && row.http_status >= 500 ? 'critical'
           : row.http_status != null && row.http_status >= 400 ? 'warning' : 'ok') as 'ok' | 'warning' | 'critical',
-        label: row.action_type, actor: row.actor ?? 'system', at: String(row.at),
+        label: describeChange(row.action_type, row.resource_type, null),
+        actor: row.actor ?? 'system',
+        at: String(row.at),
       }));
     }, { logger }),
   ]);

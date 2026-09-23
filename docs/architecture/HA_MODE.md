@@ -93,6 +93,40 @@ Reverting does NOT lose data anywhere. CNPG drops the standby pods cleanly; Long
 | CNPG instance scale-up fails (insufficient resources) | `cnpgClusters[0].error="..."`, primary unaffected | Operator must address resource issue |
 | `kubectl patch deploy admin-panel` fails (RBAC) | `deployments[i].error="forbidden"` | Check ServiceAccount permissions |
 
+## Control-plane leader election
+
+Every k3s server writes `/etc/rancher/k3s/config.yaml.d/60-leader-election.yaml`
+(`bootstrap.sh:configure_control_plane_resilience`; existing nodes are converged by
+host-migration `2026.9.31/0001-k3s-leader-election`):
+
+| Setting | Kubernetes default | Here |
+|---|---|---|
+| `leader-elect-lease-duration` | 15s | **45s** |
+| `leader-elect-renew-deadline` | 10s | **30s** |
+| `leader-elect-retry-period` | 2s | **5s** |
+
+Applied to `kube-controller-manager`, `kube-scheduler` and the embedded cloud-controller-manager.
+
+**Why:** losing leadership exits the whole k3s process, taking the control plane with it. A
+storage stall longer than the *renew deadline* is enough to trigger that, and a 10s deadline is
+shorter than stalls this platform has actually seen. Raising it turns such a stall into a latency
+blip.
+
+**HA cost — read this before tuning it back:** a genuinely dead server is taken over after
+**~45s instead of ~15s**. Workloads keep serving throughout either way; what is delayed is the
+surviving server picking up controller-manager and scheduler duties.
+
+**Verify against the Lease, never the config file.** k3s logs `Unknown flag … in config.yaml,
+skipping` and carries on if a key name is wrong, leaving that component on the default:
+
+```bash
+kubectl -n kube-system get lease kube-controller-manager \
+  -o jsonpath='{.spec.leaseDurationSeconds}'   # expect 45
+```
+
+The cloud-controller-manager key is `kube-cloud-controller-manager-arg`, **not**
+`cloud-controller-manager-arg` — the latter is silently ignored.
+
 ## Replica/instance field ownership
 
 Two cooperating mechanisms keep Apply HA's imperative scale

@@ -25,6 +25,32 @@ import {
   type MatrixCell,
 } from '@/components/console/ConsoleTiles';
 
+/**
+ * Where the disk went, for the Storage tile's hover card.
+ *
+ * "Images & other" is a REMAINDER — container images, logs, and anything on
+ * the node that is neither a Longhorn volume nor mail. Labelling it as the
+ * remainder is the honest framing: on production it is ~25 GB of which ~18 GB
+ * is containerd, and pretending to measure the rest precisely would be a
+ * bigger claim than the data supports.
+ *
+ * Mail comes from the platform's mailbox accounting rather than Longhorn,
+ * because the mail stack lives on a node-pinned local-path PVC that Longhorn
+ * cannot see — a Longhorn-fed line would read 0 on a cluster holding 38 GB.
+ */
+function storageRows(
+  b: { tenants: number; mail: number; system: number; imagesAndOther: number } | null,
+): ReadonlyArray<readonly [string, string]> {
+  if (!b) return [];
+  const gb = (n: number): string => `${n.toFixed(1)} GB`;
+  return [
+    ['Tenant volumes', gb(b.tenants)],
+    ['Mail', gb(b.mail)],
+    ['Platform volumes', gb(b.system)],
+    ['Images & other', gb(b.imagesAndOther)],
+  ];
+}
+
 function SectionHead({ title, count }: { title: string; count?: string }) {
   return (
     <div className="mt-6 mb-2.5 flex items-center gap-2.5">
@@ -66,9 +92,9 @@ export default function Dashboard() {
   const loadingFirst = summary.isLoading && !s;
 
   return (
-    <div className="mx-auto max-w-[1340px] px-1 pb-16">
+    <div className="w-full px-1 pb-16">
       <header className="mb-3 flex flex-wrap items-baseline gap-3 border-b border-gray-200 pb-3 dark:border-gray-700">
-        <h1 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Operator Console</h1>
+        <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Operator Console</h1>
         <span className="font-mono text-xs text-gray-500 dark:text-gray-400">
           {s ? `updated ${ago(s.generatedAt)} ago` : 'loading…'}
         </span>
@@ -105,7 +131,12 @@ export default function Dashboard() {
           <>
             <TriadBar triad={l.cluster.data.cpu} label="CPU" to="/cluster/nodes" />
             <TriadBar triad={l.cluster.data.memory} label="Memory" to="/cluster/nodes" />
-            <TriadBar triad={l.cluster.data.storage} label="Storage" to="/cluster/storage" />
+            <TriadBar
+              triad={l.cluster.data.storage}
+              label="Storage"
+              to="/cluster/storage"
+              extraRows={storageRows(l.cluster.data.storageBreakdown)}
+            />
           </>
         ) : (
           <SectionFallback title="Cluster capacity" to="/cluster/nodes" section={l?.cluster ?? { state: 'stale', reason: null, observedAt: null }} />
@@ -201,6 +232,7 @@ function MiniTriad({ label, inUse, committed, total, unit }: {
   );
 }
 
+
 function NodeStrip({ nodes, loading }: { nodes: readonly AdminNode[]; loading: boolean }) {
   if (loading) {
     return (
@@ -220,7 +252,15 @@ function NodeStrip({ nodes, loading }: { nodes: readonly AdminNode[]; loading: b
     // NOT overflow-hidden: that clips the last row's hover card. Corners are
     // kept by rounding the first and last rows instead.
     <div className="rounded-xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800">
-      <div className="hidden grid-cols-[minmax(0,1.3fr)_auto_minmax(0,2.4fr)_minmax(0,2.4fr)_auto_auto] items-center gap-3 rounded-t-xl bg-gray-50 px-4 py-2 text-[10px] font-semibold uppercase tracking-wider text-gray-500 lg:grid dark:bg-gray-900/40 dark:text-gray-400">
+      {/* NODE COLUMN TEMPLATE — must stay byte-identical to the row template
+          below (minus the lg: prefix). The header and each row are separate
+          grid containers, so `auto` tracks sized to their own content — the
+          word "Role" up here, a bordered badge down there — and the columns
+          drifted apart. Fixed widths resolve the same everywhere. Spelled
+          out twice on purpose: Tailwind only emits CSS for class names it
+          can see literally in the source. dashboard-node-grid.test.ts pins
+          the two copies together. */}
+      <div className="hidden grid-cols-[minmax(0,1.3fr)_5rem_minmax(0,2.4fr)_minmax(0,2.4fr)_4rem_3.5rem] items-center gap-3 rounded-t-xl bg-gray-50 px-4 py-2 text-[10px] font-semibold uppercase tracking-wider text-gray-500 lg:grid dark:bg-gray-900/40 dark:text-gray-400">
         <span>Node</span><span>Role</span><span>CPU — in use / committed</span>
         <span>Memory — in use / committed</span>
         <span className="text-right">Disk</span><span className="text-right">Pods</span>
@@ -231,7 +271,7 @@ function NodeStrip({ nodes, loading }: { nodes: readonly AdminNode[]; loading: b
           <Link
             key={n.name}
             to="/cluster/nodes"
-            className={`group relative grid grid-cols-1 items-center gap-y-2 gap-x-3 border-t border-gray-200 px-4 py-3 transition-colors hover:bg-gray-50 lg:grid-cols-[minmax(0,1.3fr)_auto_minmax(0,2.4fr)_minmax(0,2.4fr)_auto_auto] dark:border-gray-700 dark:hover:bg-gray-700/40 ${
+            className={`group relative grid grid-cols-1 items-center gap-y-2 gap-x-3 border-t border-gray-200 px-4 py-3 transition-colors hover:bg-gray-50 lg:grid-cols-[minmax(0,1.3fr)_5rem_minmax(0,2.4fr)_minmax(0,2.4fr)_4rem_3.5rem] dark:border-gray-700 dark:hover:bg-gray-700/40 ${
               i === nodes.length - 1 ? 'rounded-b-xl' : ''
             }`}
           >
@@ -304,11 +344,19 @@ function MailTile({ live }: { live: Live | undefined }) {
 function WebDefenceTile({ live }: { live: Live | undefined }) {
   const w = live?.webDefence.data;
   if (!w) return <SectionFallback title="Web defence" to="/security/web-defense" section={live?.webDefence ?? { state: 'stale', reason: null, observedAt: null }} />;
+  const offenders = w.topOffenders ?? [];
   const cells: MatrixCell[] = [
     { k: 'Blocked · 24h', v: w.blocked24h.toLocaleString(), tone: w.blocked24h > 0 ? 'warn' : 'ok' },
-    { k: 'Critical', v: w.critical24h.toLocaleString() },
+    // Operator request: a ban count and the addresses behind it, in place of
+    // a severity tally and a rule number. Both of those describe the traffic;
+    // these two describe what has been done about it and to whom.
+    { k: 'Banned IPs', v: String(w.activeBans), tone: w.activeBans > 0 ? 'warn' : 'ok' },
     { k: 'Sources', v: String(w.distinctSources) },
-    { k: 'Top rule', v: w.topRuleId ?? '—' },
+    {
+      k: 'Top offenders',
+      v: offenders[0]?.ip ?? '—',
+      sub: offenders.length > 1 ? `+${offenders.length - 1}` : undefined,
+    },
   ];
   return (
     <MatrixTile title="Web defence" to="/security/web-defense" cells={cells} card={(
@@ -316,6 +364,10 @@ function WebDefenceTile({ live }: { live: Live | undefined }) {
         ['Requests blocked', w.blocked24h.toLocaleString()],
         ['Critical', w.critical24h.toLocaleString()],
         ['Distinct sources', String(w.distinctSources)],
+        ['Banned addresses (active)', String(w.activeBans)],
+        ...offenders.map((o) => [
+          `Offender · ${o.ip}`, `${o.hits.toLocaleString()} blocked`,
+        ] as [string, string]),
         ['Most hit rule', w.topRuleId ?? '—'],
       ]} note="Your own address may be allowlisted — a probe from here can read as a pass." />
     )} />
@@ -344,30 +396,58 @@ function TenantsTile({ summary }: { summary: Summary | undefined }) {
   );
 }
 
+/**
+ * Backups, one ROW per shim class rather than a 2×2 of mixed facts.
+ *
+ * Each class routes to its own target and can go stale alone, so the three
+ * questions an operator has — is it working, when did it last work, how much
+ * is stored — have to be answered per class. The old grid answered the second
+ * one for `tenant` only and put "Bundles" in the fourth square.
+ */
 function BackupsTile({ summary }: { summary: Summary | undefined }) {
   const b = summary?.backups.data;
   if (!b) return <SectionFallback title="Backups & DR" to="/backups" section={summary?.backups ?? { state: 'stale', reason: null, observedAt: null }} />;
-  // Built on the three shim classes, not on one blended "backups are fine"
-  // number: each routes to its own target and can go stale alone.
-  const cells: MatrixCell[] = b.classes.map((c) => ({
-    k: c.backupClass,
-    v: c.lastSuccessAt ? ago(c.lastSuccessAt) : (c.healthy ? 'target set' : '—'),
-    sub: c.lastSuccessAt ? 'ago' : undefined,
-    tone: c.healthy ? 'ok' : 'warn',
-  }));
-  cells.push({ k: 'Bundles', v: b.bundles.toLocaleString() });
+
   return (
-    <MatrixTile title="Backups & DR" to="/backups" cells={cells.slice(0, 4)} card={(
+    <Tile title="Backups & DR" to="/backups" card={(
       <HoverCard title="Backup classes" rows={[
         ...b.classes.flatMap((c) => ([
           [`${c.backupClass} — last success`, c.lastSuccessAt ? `${ago(c.lastSuccessAt)} ago` : 'never recorded'],
           [`${c.backupClass} target`, c.targetName ? `${c.targetName} · ${c.targetKind ?? '?'}` : 'unassigned'],
         ] as Array<[string, string]>)),
         ['Bundles', b.bundles.toLocaleString()],
-        ['Repository size', bytesToGb(b.repoBytes)],
+        ['Stored, all tenants', bytesToGb(b.repoBytes)],
         ['Tenants never backed up', String(b.tenantsNeverBackedUp)],
-      ]} note="Each class routes to its own target independently — one can go stale without the other two noticing." />
-    )} />
+      ]} note="Mail has no size of its own: since the repository merge it is stored inside the per-tenant repos, so it is counted in the tenant figure." />
+    )}>
+      <div className="flex flex-col divide-y divide-gray-100 dark:divide-gray-700">
+        {b.classes.map((c) => (
+          <div key={c.backupClass} className="flex items-baseline gap-2 py-1.5 first:pt-0 last:pb-0">
+            <span
+              className={`inline-block h-1.5 w-1.5 shrink-0 translate-y-[-1px] rounded-full ${
+                c.healthy ? 'bg-green-500' : c.targetName ? 'bg-amber-500' : 'bg-gray-300 dark:bg-gray-600'
+              }`}
+              title={c.healthy ? 'has a target and a successful run'
+                : c.targetName ? 'target assigned, no successful run recorded'
+                : 'no target assigned'}
+            />
+            <span className="w-12 shrink-0 text-[11px] font-semibold uppercase tracking-wide text-gray-600 dark:text-gray-400">
+              {c.backupClass}
+            </span>
+            <span className="min-w-0 flex-1 truncate font-mono text-xs tabular-nums text-gray-900 dark:text-gray-100">
+              {c.lastSuccessAt ? `${ago(c.lastSuccessAt)} ago` : 'never'}
+            </span>
+            <span className="shrink-0 whitespace-nowrap font-mono text-xs tabular-nums text-gray-500 dark:text-gray-400">
+              {c.repoBytes == null ? '—' : bytesToGb(c.repoBytes)}
+            </span>
+          </div>
+        ))}
+      </div>
+      <p className="mt-2 border-t border-dashed border-gray-200 pt-2 font-mono text-[11px] tabular-nums text-gray-500 dark:border-gray-700 dark:text-gray-400">
+        {b.bundles.toLocaleString()} bundles
+        {b.tenantsNeverBackedUp > 0 ? ` · ${b.tenantsNeverBackedUp} tenant(s) never backed up` : ''}
+      </p>
+    </Tile>
   );
 }
 

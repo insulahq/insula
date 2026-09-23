@@ -19,6 +19,7 @@
  * list the reader chooses when to open.
  */
 import { and, asc, eq, inArray, isNull, lt, sql } from 'drizzle-orm';
+import { escapeHtml } from '../action-links.js';
 import { notificationDigestItems } from '../../../db/schema.js';
 import { categoryMeta } from '../routing/effective-channels.js';
 import { CLASS_POLICY } from '../routing/classes.js';
@@ -136,23 +137,49 @@ export async function dueDigests(
   return due;
 }
 
-/** Render one digest body. Plain text: it is a list, not a document. */
 /** Items named individually in one digest body; the rest are counted. */
 export const MAX_ITEMS_RENDERED = 50;
 
-export function renderDigest(items: PendingDigest['items']): { subject: string; body: string } {
+/**
+ * Render one digest, in BOTH shapes the channels need.
+ *
+ * `body` is newline-separated, for plaintext channels. `itemsHtml` is a real
+ * `<ul>` for the HTML email, because HTML collapses the newlines `body` relies
+ * on and a twelve-item digest arrived as one paragraph run into the sentence
+ * that introduced it.
+ *
+ * Every interpolated value goes through `escapeHtml` — the same helper the
+ * action buttons use. The template receives this through a triple-stache, so
+ * escaping here is not optional.
+ */
+export function renderDigest(items: PendingDigest['items']): {
+  subject: string;
+  body: string;
+  itemsHtml: string;
+} {
   const n = items.length;
   const subject = n === 1
     ? items[0].subject
     : `${n} notifications`;
   const shown = items.slice(0, MAX_ITEMS_RENDERED);
   const lines = shown.map((i, idx) => `${idx + 1}. ${i.subject}\n   ${i.body}`);
+  const li = (subject: string, body: string): string =>
+    `<li style="margin:0 0 10px 0"><strong>${escapeHtml(subject)}</strong>`
+    + (body ? `<br/><span style="color:#555">${escapeHtml(body)}</span>` : '')
+    + '</li>';
+  const listItems = shown.map((i) => li(i.subject, i.body ?? ''));
   if (items.length > shown.length) {
     // Naming 800 notifications individually is not a digest, and the row has a
     // column limit regardless.
-    lines.push(`… and ${items.length - shown.length} more.`);
+    const more = `… and ${items.length - shown.length} more.`;
+    lines.push(more);
+    listItems.push(li(more, ''));
   }
-  return { subject, body: lines.join('\n\n') };
+  return {
+    subject,
+    body: lines.join('\n\n'),
+    itemsHtml: `<ul style="margin:0;padding-left:20px">${listItems.join('')}</ul>`,
+  };
 }
 
 export async function markSent(db: Database, ids: readonly string[], now: Date = new Date()): Promise<void> {

@@ -333,3 +333,41 @@ node. The first snapshot per mailbox pays it; later snapshots reuse unchanged su
 > DEV prerequisite: all three `backup_configurations` rows on DEV are `active = false`
 > following the S3→StorageBox retirement, and the DEV mailboxes hold 0 MB. The end-to-end
 > stage needs an active target and seeded mail; the proof-of-concept stage does not.
+
+---
+
+## Postscript — the init race this decision created (2026-09-23)
+
+Merging the two component repositories had a consequence the decision record did not
+anticipate: `files` and `mailboxes` run **in parallel** (`orchestrator.ts`,
+`Promise.allSettled`) and each one initialises the repo for itself. Under the old
+per-component layout they initialised two different repositories, so that was safe. Under
+`per-tenant` they initialise the *same* one.
+
+`restic init` is not concurrency-safe. Each run mints its own random master key, writes
+`keys/<id>`, then writes `config`. Two runs leave **two key files** and a `config` sealed by
+whichever wrote last. `deriveResticPassword` is keyed on the tenant alone, so the one
+password opens both keys; restic's `SearchKey` takes the first key it can open and then
+fails to decrypt the config:
+
+```
+Fatal: config or key <id> is damaged: ciphertext verification failed
+```
+
+Deterministic, and permanent for that repository. On the first night after the release
+**6 of 27 production tenants** hit it — five with two keys, and one that lost the race one
+step earlier and hit restic's own `repository already contains keys` guard, which the
+idempotency allowlist did not recognise. The five wrote no files and no mail that night.
+
+**Fix:** `repo-init-lock.ts` serialises `restic init` per repo URI with a Postgres advisory
+lock (cross-replica — platform-api runs 2–3 pods in HA), `ensureResticRepoInitialised` takes
+the serialiser as a **required** argument so no call site can omit it silently, and a lost
+init race is now retried rather than reported as a hard failure.
+
+**Why DEV did not catch it:** the merged layout was only ever exercised there on a single
+tenant — one fresh-repo trial. The window is ~2 s wide and only ever opens on a tenant's
+*first* merged bundle. Production ran 27 of those in one night.
+
+Repair of an already-damaged repo: delete the **older** key file (the one named in the
+error); the surviving key matches `config`. The affected repos held no data, so nothing was
+at risk in the repair.

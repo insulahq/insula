@@ -132,6 +132,13 @@ export const adminDashboardSummarySchema = z.object({
       targetName: z.string().nullable(),
       targetKind: z.string().nullable(),
       healthy: z.boolean(),
+      /**
+       * Bytes the platform holds for this class. Null where it is genuinely
+       * not a separate figure — since the per-tenant repository merge, mail
+       * lives INSIDE the tenant repos, so a "mail repo size" would either
+       * double-count the tenant total or be invented.
+       */
+      repoBytes: z.number().nullable(),
     })),
     bundles: z.number(),
     repoBytes: z.number().nullable(),
@@ -167,6 +174,21 @@ export const adminDashboardLiveSchema = z.object({
     cpu: resourceTriadSchema,
     memory: resourceTriadSchema,
     storage: resourceTriadSchema,
+    /**
+     * Where the disk actually went, in GB. Null when Longhorn could not be
+     * read — an absent breakdown must not render as a cluster holding zero.
+     *
+     * `imagesAndOther` is the remainder: container images, logs, and anything
+     * on the node that is neither a Longhorn volume nor mail. It is named as
+     * a remainder rather than as "images" because that is what it is — on
+     * production it is ~25 GB of which ~18 GB is containerd.
+     */
+    storageBreakdown: z.object({
+      tenants: z.number(),
+      mail: z.number(),
+      system: z.number(),
+      imagesAndOther: z.number(),
+    }).nullable(),
     nodeCount: z.number(),
     survivesSingleNodeLoss: z.boolean(),
     worstNode: z.string().nullable(),
@@ -184,6 +206,13 @@ export const adminDashboardLiveSchema = z.object({
   webDefence: section(z.object({
     blocked24h: z.number(), critical24h: z.number(),
     distinctSources: z.number(), activeBans: z.number(),
+    /**
+     * The addresses actually hammering the platform, worst first. An operator
+     * asked for these in place of the most-hit rule id: a rule number says
+     * what tripped, an address says who — and only the second one can be
+     * blocked, allowlisted or handed to an upstream.
+     */
+    topOffenders: z.array(z.object({ ip: z.string(), hits: z.number() })),
     topRuleId: z.string().nullable(), wafEnabled: z.boolean(),
     recent: z.array(z.object({
       severity: z.enum(['warning', 'critical']),

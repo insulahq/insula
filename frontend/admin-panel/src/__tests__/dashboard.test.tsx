@@ -33,9 +33,9 @@ function summary(over: Partial<AdminDashboardSummary> = {}): AdminDashboardSumma
     tenants: okSection({ active: 26, total: 27, routes: 45, domains: 32, provisioningInFlight: 0 }),
     backups: okSection({
       classes: [
-        { backupClass: 'system' as const, lastSuccessAt: null, targetName: 'StorageBox', targetKind: 'cifs', healthy: true },
-        { backupClass: 'tenant' as const, lastSuccessAt: new Date().toISOString(), targetName: 'StorageBox', targetKind: 'cifs', healthy: true },
-        { backupClass: 'mail' as const, lastSuccessAt: null, targetName: 'StorageBox', targetKind: 'cifs', healthy: true },
+        { backupClass: 'system' as const, lastSuccessAt: null, targetName: 'StorageBox', targetKind: 'cifs', healthy: false, repoBytes: 245760 },
+        { backupClass: 'tenant' as const, lastSuccessAt: new Date().toISOString(), targetName: 'StorageBox', targetKind: 'cifs', healthy: true, repoBytes: 64e9 },
+        { backupClass: 'mail' as const, lastSuccessAt: new Date().toISOString(), targetName: 'StorageBox', targetKind: 'cifs', healthy: true, repoBytes: null },
       ],
       bundles: 222, repoBytes: 184e9, tenantsNeverBackedUp: 0,
     }),
@@ -55,12 +55,13 @@ function live(over: Partial<AdminDashboardLive> = {}): AdminDashboardLive {
       cpu: { inUse: 0.9, committed: 6.87, total: 7.5, unit: 'cores', kind: 'reserve' as const },
       memory: { inUse: 9.69, committed: 9.79, total: 14.36, unit: 'GiB', kind: 'reserve' as const },
       storage: { inUse: 178, committed: 160, total: 540, unit: 'GB', kind: 'consume' as const },
+      storageBreakdown: { tenants: 33, mail: 38, system: 2.7, imagesAndOther: 25 },
       nodeCount: 1, survivesSingleNodeLoss: false, worstNode: 'sv1',
     }),
     nodes: okSection([]),
     mail: okSection({ sent7d: 332, queueDepth: 0, queueReachable: true, mailboxes: 72, emailDomains: 19, rateLimited7d: 0, overQuotaMailboxes: 0 }),
     clusterAlerts: okSection([]),
-    webDefence: okSection({ blocked24h: 48, critical24h: 41, distinctSources: 12, activeBans: 6, topRuleId: '930130', wafEnabled: true, recent: [] }),
+    webDefence: okSection({ blocked24h: 48, critical24h: 41, distinctSources: 12, activeBans: 6, topOffenders: [{ ip: '203.0.113.7', hits: 500 }, { ip: '203.0.113.9', hits: 48 }], topRuleId: '930130', wafEnabled: true, recent: [] }),
     ...over,
   } as AdminDashboardLive;
 }
@@ -124,8 +125,116 @@ describe('Operator console — capacity', () => {
   it('shows in-use and committed as different numbers', () => {
     show();
     // The gap is the point: 0.90 in use against 6.87 committed of 7.50.
-    expect(screen.getByText('0.90')).toBeInTheDocument();
+    // The headline now reads "0.90/7.50 cores in use", so the in-use figure is
+    // matched inside its element rather than as the element's whole text.
+    expect(screen.getByText((_t, el) => el?.textContent === '0.90/7.50')).toBeInTheDocument();
     expect(screen.getByText(/committed 92%/)).toBeInTheDocument();
+  });
+
+  it('puts free capacity on the headline row, not in a trailing sentence', () => {
+    show();
+    // Operator feedback: the "6.60 cores still free" paragraph under the bar
+    // was noise, and the number belonged beside the usage it qualifies.
+    expect(screen.getByText('0.63 free')).toBeInTheDocument();
+    expect(screen.queryByText(/still free/)).toBeNull();
+  });
+
+  it('reports storage against the DISK, and says where it went', () => {
+    // `total` used to be the sum of volume REQUESTS, which made total and
+    // committed the same number and "free" the gap between requested and
+    // written — never free disk. And the hover card could not answer the
+    // question the headline provokes: 178 of 540 GB of WHAT?
+    show();
+    expect(screen.getByText('Tenant volumes')).toBeInTheDocument();
+    expect(screen.getByText('Platform volumes')).toBeInTheDocument();
+    expect(screen.getByText('Images & other')).toBeInTheDocument();
+    // Mail is read from the platform's mailbox accounting, not Longhorn — the
+    // mail stack is on a local-path PVC Longhorn cannot see, so a
+    // Longhorn-fed line would read 0 on a cluster holding 38 GB of it.
+    expect(screen.getByText('38.0 GB')).toBeInTheDocument();
+  });
+
+  it('draws committed capacity as a HATCH, not a second flat tint', () => {
+    // The triad only works if "in use now" and "claimed but idle" look like
+    // different things. Built from the written spec as two tints of one hue,
+    // they read as a single gradient and the distinction vanished. The mockup
+    // hatches the committed band; the legend swatch reuses the same class so
+    // it cannot describe a fill the bar stopped drawing.
+    const { container } = show();
+    const seg = container.querySelector('[class*="seg-committed"]');
+    expect(seg).not.toBeNull();
+
+    const swatches = Array.from(container.querySelectorAll('[class*="swatch-committed"]'));
+    expect(swatches.length).toBeGreaterThan(0);
+
+    // Same tone suffix on both, so bar and legend move together.
+    const suffix = (c: string): string => (/(seg|swatch)-committed(-\w+)?/.exec(c)?.[2] ?? '');
+    expect(suffix(seg!.className)).toBe(suffix(swatches[0].className));
+
+    // And free is the bare track, so its swatch needs an outline to exist.
+    expect(container.querySelector('[class*="ring-gray-300"]')).not.toBeNull();
+  });
+
+  it('names banned addresses and the worst offender, not a rule id', () => {
+    // Operator feedback: CRITICAL and TOP RULE described the traffic; neither
+    // told you who to block. A rule number is not an actor.
+    //
+    // Scoped to the tile's own cells: both still appear in the hover card,
+    // deliberately — nothing was removed from the panel, it was demoted out
+    // of the four figures you see without hovering.
+    const { container } = show();
+    const cellLabels = Array.from(
+      container.querySelectorAll('div.text-\\[10px\\].uppercase'),
+    ).map((el) => el.textContent?.trim());
+
+    expect(cellLabels).toContain('Banned IPs');
+    expect(cellLabels).toContain('Top offenders');
+    expect(cellLabels).not.toContain('Top rule');
+    expect(cellLabels).not.toContain('Critical');
+    expect(screen.getByText('203.0.113.7')).toBeInTheDocument();
+  });
+
+  it('lines the NODES header up with its rows', () => {
+    // Header and rows are SEPARATE grid containers, so `auto` tracks sized to
+    // their own content — "Role" up top, a bordered badge in the row — and the
+    // columns drifted visibly apart. Same template, fixed widths, no `auto`.
+    liveFn.mockReturnValue({
+      data: { data: live({
+        nodes: okSection([{
+          name: 'sv1', role: 'server', ready: true, pressures: [], evictionsLastHour: 0,
+          diskUsedPct: 21, pods: 48, kubeletVersion: 'v1.36.2+k3s1',
+          calico: 'ok' as const, csi: 'ok' as const, ingressMode: 'default', tenantWorkloads: true,
+          cpu: { inUse: 0.9, committed: 6.87, total: 7.5, unit: 'cores', kind: 'reserve' as const },
+          memory: { inUse: 9.69, committed: 9.79, total: 14.36, unit: 'GiB', kind: 'reserve' as const },
+        }]) as AdminDashboardLive['nodes'],
+      }) }, isLoading: false,
+    });
+    const { container } = show();
+
+    const tpl = (el: Element | null): string =>
+      (el?.className ?? '').split(/\s+/).find((c) => c.includes('grid-cols-[minmax(0,1.3fr)'))?.replace(/^lg:/, '') ?? '';
+
+    const header = container.querySelector('[class*="rounded-t-xl"][class*="grid-cols-"]');
+    const row = container.querySelector('a[href="/cluster/nodes"][class*="grid-cols-"]');
+    expect(tpl(header)).not.toBe('');
+    expect(tpl(row)).not.toBe('');
+    expect(tpl(header)).toBe(tpl(row));
+    expect(tpl(header)).not.toMatch(/_auto[_\]]/);
+  });
+
+  it('answers status, last backup and size for EVERY backup class', () => {
+    // The old grid answered "last backup" for `tenant` only — system and mail
+    // were permanently blank — and spent its fourth square on a bundle count.
+    show();
+    for (const cls of ['system', 'tenant', 'mail']) {
+      expect(screen.getByText(cls)).toBeInTheDocument();
+    }
+    // A class with a target but no successful run is NOT healthy.
+    expect(screen.getByText('never')).toBeInTheDocument();
+    expect(screen.getByText('64.0 GB')).toBeInTheDocument();
+    // Mail has no size of its own since the repository merge; it must show a
+    // dash rather than repeat the tenant figure.
+    expect(screen.getAllByText('—').length).toBeGreaterThan(0);
   });
 
   it('states plainly that one node has no redundancy', () => {

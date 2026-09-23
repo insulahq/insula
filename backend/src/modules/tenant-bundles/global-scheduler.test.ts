@@ -14,12 +14,20 @@
  *    tenants ran (so operators can SEE the scheduler is alive)
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 
 // The failure-notification helper pulls in the whole notifications
 // stack — stub it so this stays a pure scheduler unit test.
 vi.mock('../notifications/events.js', () => ({
   notifyAdminBackupFailed: vi.fn(async () => {}),
+}));
+
+// The scheduler reads the platform's wall-clock zone through
+// system-settings. Mutable so most tests keep the historical UTC
+// behaviour while the zone test can drive a real offset.
+const tz = vi.hoisted(() => ({ value: 'UTC' as string | null }));
+vi.mock('../system-settings/service.js', () => ({
+  getSettings: vi.fn(async () => ({ timezone: tz.value })),
 }));
 
 import { runGlobalBundleTick } from './global-scheduler.js';
@@ -269,5 +277,64 @@ describe('runGlobalBundleTick — tenant filter SQL', () => {
     const sunday = new Date(Date.UTC(2026, 4, 31, 2, 0, 30));
     const resultSun = await runGlobalBundleTick(app2 as unknown as Parameters<typeof runGlobalBundleTick>[0], sunday);
     expect(resultSun.fired).toBe(true);
+  });
+});
+
+/**
+ * The schedule an operator types is a WALL-CLOCK time in the platform's
+ * configured zone — the same zone the platform stamps into every CronJob's
+ * `spec.timeZone`. Reading it in UTC instead put the two halves of the
+ * platform hours apart: `30 3 * * *` ran at 05:30 local on a UTC+2 cluster
+ * while the CronJobs with the identical string ran at 03:00 local.
+ */
+describe('runGlobalBundleTick — schedules are read in the platform zone', () => {
+  afterEach(() => { tz.value = 'UTC'; });
+
+  it('fires on the zone wall clock, not the UTC clock', async () => {
+    tz.value = 'Africa/Windhoek';                       // UTC+2, no DST
+    const schedule = { enabled: true, cronExpression: '13 13 * * *', lastFiredAt: null, retentionDays: 30 };
+
+    // 13:13 LOCAL == 11:13 UTC → fires.
+    const a = makeApp({ schedule, eligibleTenants: [] });
+    const hit = await runGlobalBundleTick(
+      a.app as unknown as Parameters<typeof runGlobalBundleTick>[0],
+      new Date(Date.UTC(2026, 4, 28, 11, 13, 30)),
+    );
+    expect(hit.fired).toBe(true);
+
+    // 13:13 UTC == 15:13 local → does NOT fire. This is the old behaviour.
+    const b = makeApp({ schedule, eligibleTenants: [] });
+    const miss = await runGlobalBundleTick(
+      b.app as unknown as Parameters<typeof runGlobalBundleTick>[0],
+      new Date(Date.UTC(2026, 4, 28, 13, 13, 30)),
+    );
+    expect(miss.fired).toBe(false);
+  });
+
+  it('is unchanged on a UTC cluster', async () => {
+    tz.value = 'UTC';
+    const { app } = makeApp({
+      schedule: { enabled: true, cronExpression: '13 13 * * *', lastFiredAt: null, retentionDays: 30 },
+      eligibleTenants: [],
+    });
+    const res = await runGlobalBundleTick(
+      app as unknown as Parameters<typeof runGlobalBundleTick>[0],
+      new Date(Date.UTC(2026, 4, 28, 13, 13, 30)),
+    );
+    expect(res.fired).toBe(true);
+  });
+
+  it('falls back to UTC when the zone is unset rather than not firing at all', async () => {
+    // A missing setting must not silently stop every tenant backup.
+    tz.value = null;
+    const { app } = makeApp({
+      schedule: { enabled: true, cronExpression: '13 13 * * *', lastFiredAt: null, retentionDays: 30 },
+      eligibleTenants: [],
+    });
+    const res = await runGlobalBundleTick(
+      app as unknown as Parameters<typeof runGlobalBundleTick>[0],
+      new Date(Date.UTC(2026, 4, 28, 13, 13, 30)),
+    );
+    expect(res.fired).toBe(true);
   });
 });

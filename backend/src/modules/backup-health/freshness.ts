@@ -17,7 +17,7 @@
  * cannot tell those apart, and a per-schedule threshold is one more thing to
  * configure wrong.
  */
-import { cronMatchesMinute } from '../../shared/cron-match.js';
+import { cronMatchesMinute, makeZoneShifter } from '../../shared/cron-match.js';
 
 export type FreshnessVerdict = 'fresh' | 'stale' | 'never' | 'unknown';
 
@@ -200,55 +200,9 @@ export function countScheduledFires(
   return scanScheduledFires(cronExpression, from, to, maxScanDays, timeZone).count;
 }
 
-/**
- * Offset, in ms, between UTC and `timeZone` at a given instant.
- *
- * DST-correct because Intl resolves the zone AT that instant rather than
- * applying a fixed offset. Unknown zone → 0, i.e. UTC: a single bad
- * `spec.timeZone` must not take the whole sweep down. Same
- * formatToParts approach as preferences/quiet-hours.ts — built-in, no
- * luxon/date-fns-tz dependency.
- */
-function zoneOffsetMs(at: Date, timeZone: string): number {
-  try {
-    const parts = new Intl.DateTimeFormat('en-US', {
-      timeZone,
-      hour12: false,
-      year: 'numeric', month: '2-digit', day: '2-digit',
-      hour: '2-digit', minute: '2-digit', second: '2-digit',
-    }).formatToParts(at);
-    const get = (t: string): number =>
-      Number.parseInt(parts.find((x) => x.type === t)?.value ?? '0', 10);
-    const hour = get('hour') === 24 ? 0 : get('hour');
-    const asIfUtc = Date.UTC(get('year'), get('month') - 1, get('day'), hour, get('minute'), get('second'));
-    return asIfUtc - at.getTime();
-  } catch {
-    return 0;
-  }
-}
-
-/**
- * Minute-stepping is cheap; Intl is not. The offset can only change at a DST
- * boundary, so resolving it once per UTC hour is exact and ~1000 lookups for a
- * full 45-day scan instead of ~65,000.
- */
-function makeZoneShifter(timeZone: string | null): (utcMs: number) => Date {
-  if (!timeZone || timeZone === 'UTC' || timeZone === 'Etc/UTC') {
-    return (utcMs) => new Date(utcMs);
-  }
-  let cachedHour = Number.NaN;
-  let offset = 0;
-  return (utcMs) => {
-    const hour = Math.floor(utcMs / 3_600_000);
-    if (hour !== cachedHour) {
-      cachedHour = hour;
-      offset = zoneOffsetMs(new Date(utcMs), timeZone);
-    }
-    // A Date whose UTC fields read as the zone's wall clock, which is what the
-    // UTC-based matcher needs to see.
-    return new Date(utcMs + offset);
-  };
-}
+// zoneOffsetMs + makeZoneShifter moved to shared/cron-match.ts so the
+// freshness VERDICT and the firing ENGINES read a schedule in the same
+// zone. Two copies is how they drifted apart.
 
 /** Is this a 5-field expression `cronMatchesMinute` can actually evaluate? */
 function isEvaluableCron(expr: string): boolean {

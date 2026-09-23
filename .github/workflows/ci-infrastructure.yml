@@ -57,6 +57,14 @@ on:
       - 'frontend/*/src/search/**'
       - 'frontend/*/src/App.tsx'
       - 'frontend/*/src/pages/**'
+      # no-legacy-backup-classes greps ALL of frontend/admin-panel/src, but this
+      # workflow only fires on a few of its directories — so a legacy class
+      # string added anywhere else lands unchecked. A test file did exactly
+      # that: the guard caught it only because the same commit also touched
+      # backend/src/modules/system-settings, and the follow-up that FIXED it
+      # (test file alone) never re-ran the guard at all.
+      - 'frontend/*/src/__tests__/**'
+      - 'frontend/*/src/components/backups/**'
       - '.github/workflows/ci-infrastructure.yml'
   pull_request:
     branches: [development, main]
@@ -114,6 +122,14 @@ on:
       - 'frontend/*/src/search/**'
       - 'frontend/*/src/App.tsx'
       - 'frontend/*/src/pages/**'
+      # no-legacy-backup-classes greps ALL of frontend/admin-panel/src, but this
+      # workflow only fires on a few of its directories — so a legacy class
+      # string added anywhere else lands unchecked. A test file did exactly
+      # that: the guard caught it only because the same commit also touched
+      # backend/src/modules/system-settings, and the follow-up that FIXED it
+      # (test file alone) never re-ran the guard at all.
+      - 'frontend/*/src/__tests__/**'
+      - 'frontend/*/src/components/backups/**'
       - '.github/workflows/ci-infrastructure.yml'
 
 # Least privilege (2026-07-28 security review): these workflows only read the

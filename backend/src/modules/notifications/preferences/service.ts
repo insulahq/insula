@@ -16,6 +16,7 @@ import {
   notificationCategories,
   userNotificationPreferences,
   userNotificationSettings,
+  users,
 } from '../../../db/schema.js';
 import type {
   UserNotificationPreferenceResponse,
@@ -51,11 +52,33 @@ const DEFAULT_SETTINGS: UserNotificationSettingsResponse = {
   locale: 'en',
 };
 
+/**
+ * The audience a user can actually receive.
+ *
+ * Recipients are resolved by scope at dispatch time — an `admin` scope
+ * selects admin-panel users, a `tenant` scope that tenant's users — so an
+ * admin-audience category can never reach a tenant user. Listing all 73
+ * categories to everyone meant a tenant's settings page offered switches for
+ * 44 notifications they will never be sent, including cluster, node and
+ * firewall events.
+ */
+async function audienceForUser(db: Database, userId: string): Promise<'admin' | 'tenant'> {
+  const [row] = await db
+    .select({ panel: users.panel })
+    .from(users)
+    .where(eq(users.id, userId));
+  // Default to `tenant` when the user cannot be read: showing too FEW
+  // switches is a smaller failure than showing someone else's.
+  return row?.panel === 'admin' ? 'admin' : 'tenant';
+}
+
 export async function getUserPreferences(
   db: Database,
   userId: string,
 ): Promise<UserNotificationPreferencesResponse> {
-  // 1. Load all active categories (one round-trip).
+  const audience = await audienceForUser(db, userId);
+
+  // 1. Load the active categories THIS user can be sent (one round-trip).
   const categories: CategoryRow[] = await db
     .select({
       id: notificationCategories.id,
@@ -65,7 +88,10 @@ export async function getUserPreferences(
       audience: notificationCategories.audience,
     })
     .from(notificationCategories)
-    .where(eq(notificationCategories.isActive, true))
+    .where(and(
+      eq(notificationCategories.isActive, true),
+      eq(notificationCategories.audience, audience),
+    ))
     .orderBy(asc(notificationCategories.audience), asc(notificationCategories.id));
 
   // 2. Load any user overrides for this user. ntfy is a broadcast
@@ -118,12 +144,19 @@ export async function updateUserPreferences(
 ): Promise<UserNotificationPreferencesResponse> {
   // Validate every updated category exists.
   const categoryIds = Array.from(new Set(input.updates.map((u) => u.categoryId)));
+  // Scoped to the user's own audience for the same reason the read is: a
+  // tenant writing a preference for `admin.node_event` would store a row that
+  // can never take effect, and the matrix would never show it back.
+  const audience = await audienceForUser(db, userId);
   const known = categoryIds.length === 0
     ? []
     : await db
         .select({ id: notificationCategories.id, isMandatory: notificationCategories.isMandatory })
         .from(notificationCategories)
-        .where(inArray(notificationCategories.id, categoryIds));
+        .where(and(
+          inArray(notificationCategories.id, categoryIds),
+          eq(notificationCategories.audience, audience),
+        ));
   const knownIds = new Set(known.map((k) => k.id));
   const mandatorySet = new Set(known.filter((k) => k.isMandatory).map((k) => k.id));
 

@@ -51,9 +51,9 @@ export default function Dashboard() {
   const loadingFirst = summary.isLoading && !s;
 
   return (
-    <div className="mx-auto max-w-[1340px] px-1 pb-16">
+    <div className="w-full px-1 pb-16">
       <header className="mb-3 flex flex-wrap items-baseline gap-3 border-b border-gray-200 pb-3 dark:border-gray-700">
-        <h1 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Hosting Overview</h1>
+        <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Hosting Overview</h1>
         <span className="font-mono text-xs text-gray-500 dark:text-gray-400">
           {s?.plan.data ? `${s.plan.data.name} plan` : 'loading…'}
         </span>

@@ -43,6 +43,15 @@ again, retention prunes and new backups against them are refused.
 - **Targets, Schedules & Retention** — bind the `system` class to a Remote
   Storage Target and set its schedule and retention.
 
+!!! info "Schedules are wall-clock time in the platform's timezone"
+    Every cron expression on this page is read in the timezone set under
+    **Settings → System**, which is also the timezone the platform writes into
+    each Kubernetes CronJob. The zone is named beside the field, e.g.
+    **Cron expression (Africa/Windhoek)** — so `30 3 * * *` means half past
+    three in the morning *there*, not in UTC.
+
+    Changing the platform timezone therefore moves every schedule on this page.
+
 !!! warning "Enabling WAL streaming or scheduled base backups restarts Postgres"
     The **first** enable of WAL streaming or scheduled base backups
     reconfigures the platform database's archive settings and performs a

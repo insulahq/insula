@@ -82,7 +82,34 @@ const SLO_ALERT_VARS: readonly NotificationTemplateVariable[] = [
  * Most production styling is upstream of this in the Stalwart/Roundcube
  * branding layer; the seed templates are intentionally plain.
  */
-function emailMjml(headline: string, paragraph: string, ctaText?: string, ctaUrl?: string): string {
+/**
+ * The core content of a notification, as a real list.
+ *
+ * Operator requirement: the ACTUAL content has to be visually separated from
+ * the prose describing it. Run into a sentence, a digest's twelve items
+ * collapse into a wall of text — HTML eats the newlines the plain-text build
+ * relied on, so "as of 09:00: 1. Backup failed 2. Cert expiring …" arrives as
+ * one paragraph.
+ *
+ * Pre-rendered HTML through a triple-stache, exactly like `{{{actionButtons}}}`
+ * above it. A `{{#each}}` loop would be the obvious alternative, but this
+ * renderer runs Handlebars in STRICT mode and the seed-consistency guard reads
+ * every `{{ref}}` as a top-level variable — loop-scoped `{{subject}}` fails
+ * both. The builder escapes each value with the same `escapeHtml` the action
+ * buttons use, so nothing unescaped reaches the template.
+ *
+ * Inline styles, not classes: this is an email.
+ */
+const LIST_BLOCK = `<mj-text font-size="14px" line-height="22px">{{{itemsHtml}}}</mj-text>`;
+
+function emailMjml(
+  headline: string,
+  paragraph: string,
+  ctaText?: string,
+  ctaUrl?: string,
+  /** Emit the `itemList` block under the paragraph. Digest-style bodies only. */
+  opts: { readonly list?: boolean } = {},
+): string {
   // A template that names its own call to action keeps it — "Review your
   // account" beats a generic label. Everything else gets the per-category
   // buttons the dispatcher resolves, pre-rendered as MJML so the strict
@@ -101,6 +128,7 @@ function emailMjml(headline: string, paragraph: string, ctaText?: string, ctaUrl
 {{#if greeting}}<mj-text font-size="14px" line-height="22px">{{greeting}}</mj-text>{{/if}}
 <mj-text font-size="20px" font-weight="600">${headline}</mj-text>
 <mj-text font-size="14px" line-height="22px">${paragraph}</mj-text>
+${opts.list ? LIST_BLOCK : ''}
 ${cta}
 {{#if occurredAt}}<mj-text font-size="12px" color="#999">Recorded at {{occurredAt}}.</mj-text>{{/if}}
 <mj-text font-size="12px" color="#999">This is an automated notification from {{platformName}}.</mj-text>
@@ -464,14 +492,22 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     subjectTemplate: '{{itemCount}} notifications — {{summary}}',
     bodyTemplate: emailMjml(
       'Your notification digest',
-      '{{itemCount}} notification(s) since your last digest, as of {{occurredAt}}: {{items}}',
+      // The sentence DESCRIBES; the list below IS the content. Running the
+      // items into this paragraph is what produced a wall of text.
+      '{{itemCount}} notification(s) since your last digest, as of {{occurredAt}}:',
+      undefined,
+      undefined,
+      { list: true },
     ),
     bodyFormat: 'mjml',
     variablesSchema: [
       ...COMMON_VARS,
       { name: 'itemCount', type: 'string', required: false },
       { name: 'summary', type: 'string', required: false },
+      // `items` stays for the plaintext channels, which want line breaks, not
+      // list markup. `itemList` feeds the HTML list.
       { name: 'items', type: 'string', required: false },
+      { name: 'itemsHtml', type: 'string', required: false },
     ],
   },
   {
@@ -479,7 +515,10 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: '{{itemCount}} notifications',
-    bodyTemplate: '{{itemCount}} notification(s) as of {{occurredAt}}: {{items}}',
+    // Plaintext channel: line breaks, not list markup. `{{items}}` already
+    // arrives newline-separated, and the blank line keeps the description off
+    // the content.
+    bodyTemplate: '{{itemCount}} notification(s) as of {{occurredAt}}:\n\n{{items}}',
     bodyFormat: 'plaintext',
     variablesSchema: [
       ...COMMON_VARS,

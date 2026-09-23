@@ -3,8 +3,21 @@
  *
  * Answers exactly one question: "does this cron expression fire at this
  * wall-clock minute?" — which is all a per-minute firing engine needs.
- * No next-fire computation, no timezone support (matches kube-cron's
- * controller-local-time semantics; the platform runs UTC everywhere).
+ * No next-fire computation.
+ *
+ * TIME ZONE. `cronMatchesMinute` reads the Date's UTC fields. That is the
+ * primitive, not the policy: schedules an operator types are wall-clock
+ * times in the platform's configured zone (`system_settings.timezone`),
+ * which is also what the platform writes into every CronJob's
+ * `spec.timeZone`. Firing engines MUST therefore go through
+ * `cronMatchesMinuteInZone`, or a cluster in a non-UTC zone fires its
+ * platform-side schedules at a different time than its CronJobs — the
+ * exact split this module's earlier "the platform runs UTC everywhere"
+ * assumption produced.
+ *
+ * Only the MATCH is shifted. The instant a caller then records
+ * (`last_fired_at`, `minuteStamp` in a Job name) must stay a true UTC
+ * instant, or replica claims and deterministic Job names break.
  *
  * Grammar intentionally mirrors @insula/api-contracts
  * validateCronExpression (the write-path gate): `*`, integers, `A-B`
@@ -103,6 +116,75 @@ export function cronMatchesMinute(expr: string, at: Date): boolean {
   if (domRestricted) return domMatch;
   if (dowRestricted) return dowMatch;
   return true;
+}
+
+/**
+ * Offset, in ms, between UTC and `timeZone` at a given instant.
+ *
+ * DST-correct because Intl resolves the zone AT that instant rather than
+ * applying a fixed offset. Unknown zone → 0, i.e. UTC: one bad zone string
+ * must not stop every schedule on the cluster from firing. Built-in Intl,
+ * no luxon/date-fns-tz dependency.
+ */
+function zoneOffsetMs(at: Date, timeZone: string): number {
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone,
+      hour12: false,
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+    }).formatToParts(at);
+    const get = (t: string): number =>
+      Number.parseInt(parts.find((x) => x.type === t)?.value ?? '0', 10);
+    const hour = get('hour') === 24 ? 0 : get('hour');
+    const asIfUtc = Date.UTC(get('year'), get('month') - 1, get('day'), hour, get('minute'), get('second'));
+    return asIfUtc - at.getTime();
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Build a shifter that maps a real UTC instant to a Date whose **UTC fields
+ * read as `timeZone`'s wall clock** — which is what the matcher above needs
+ * to see. The returned Date is a matching fixture, never an instant to store.
+ *
+ * Minute-stepping is cheap; Intl is not. The offset can only change at a DST
+ * boundary, so resolving it once per UTC hour is exact and turns a 45-day
+ * scan from ~65,000 Intl lookups into ~1,000.
+ */
+export function makeZoneShifter(timeZone: string | null): (utcMs: number) => Date {
+  if (!timeZone || timeZone === 'UTC' || timeZone === 'Etc/UTC') {
+    return (utcMs) => new Date(utcMs);
+  }
+  let cachedHour = Number.NaN;
+  let offset = 0;
+  return (utcMs) => {
+    const hour = Math.floor(utcMs / 3_600_000);
+    if (hour !== cachedHour) {
+      cachedHour = hour;
+      offset = zoneOffsetMs(new Date(utcMs), timeZone);
+    }
+    return new Date(utcMs + offset);
+  };
+}
+
+/**
+ * Does `expr` fire at the minute containing `at`, read in `timeZone`?
+ *
+ * This is what every firing engine should call. `at` stays the caller's real
+ * instant — only the comparison is done against the zone's wall clock.
+ *
+ * DST note: a daily schedule inside a spring-forward gap does not fire that
+ * day (the wall-clock minute does not exist), and one inside a fall-back
+ * repeat can match twice. Callers already de-duplicate on `last_fired_at` or
+ * a deterministic Job name, which covers the second case.
+ */
+export function cronMatchesMinuteInZone(expr: string, at: Date, timeZone: string | null): boolean {
+  if (!timeZone || timeZone === 'UTC' || timeZone === 'Etc/UTC') {
+    return cronMatchesMinute(expr, at);
+  }
+  return cronMatchesMinute(expr, new Date(at.getTime() + zoneOffsetMs(at, timeZone)));
 }
 
 /** Deterministic per-minute job-name suffix (UTC): YYYYMMDDHHmm. */
