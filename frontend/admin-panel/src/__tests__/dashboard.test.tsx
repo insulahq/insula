@@ -138,6 +138,27 @@ describe('Operator console — capacity', () => {
     expect(screen.queryByText(/still free/)).toBeNull();
   });
 
+  it('draws committed capacity as a HATCH, not a second flat tint', () => {
+    // The triad only works if "in use now" and "claimed but idle" look like
+    // different things. Built from the written spec as two tints of one hue,
+    // they read as a single gradient and the distinction vanished. The mockup
+    // hatches the committed band; the legend swatch reuses the same class so
+    // it cannot describe a fill the bar stopped drawing.
+    const { container } = show();
+    const seg = container.querySelector('[class*="seg-committed"]');
+    expect(seg).not.toBeNull();
+
+    const swatches = Array.from(container.querySelectorAll('[class*="swatch-committed"]'));
+    expect(swatches.length).toBeGreaterThan(0);
+
+    // Same tone suffix on both, so bar and legend move together.
+    const suffix = (c: string): string => (/(seg|swatch)-committed(-\w+)?/.exec(c)?.[2] ?? '');
+    expect(suffix(seg!.className)).toBe(suffix(swatches[0].className));
+
+    // And free is the bare track, so its swatch needs an outline to exist.
+    expect(container.querySelector('[class*="ring-gray-300"]')).not.toBeNull();
+  });
+
   it('names banned addresses and the worst offender, not a rule id', () => {
     // Operator feedback: CRITICAL and TOP RULE described the traffic; neither
     // told you who to block. A rule number is not an actor.

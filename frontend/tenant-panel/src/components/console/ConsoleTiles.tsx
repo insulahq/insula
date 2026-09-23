@@ -147,14 +147,46 @@ const fmt = (v: number, unit: string): string =>
   unit === 'cores' ? v.toFixed(2) : v >= 100 ? v.toFixed(0) : v.toFixed(1);
 
 /**
- * One definition per band, used by BOTH the bar segment and its legend
- * swatch. Declaring the colour twice is how a legend ends up describing a
- * colour the bar no longer draws.
+ * Band styling, from the design mockup.
+ *
+ * IN USE is solid; COMMITTED is HATCHED, and that is the whole point of the
+ * triad — solid means "being used right now", hatch means "claimed but idle".
+ * Built once from the written spec as two flat tints of one hue, which read
+ * as a single gradient and lost the distinction entirely.
+ *
+ * One entry per tone, used by BOTH the bar segment and its legend swatch, so
+ * a legend cannot end up describing a colour the bar no longer draws. The
+ * hatch itself lives in index.css (@layer components): it needs a light and a
+ * dark gradient at two pitches, which is more than an arbitrary class should
+ * carry four times over.
  */
-const BAR_USED = 'bg-teal-600 dark:bg-teal-400';
-const BAR_USED_TIGHT = 'bg-amber-500 dark:bg-amber-400';
-const BAR_CMT = 'bg-teal-300 dark:bg-teal-700';
-const BAR_CMT_TIGHT = 'bg-amber-300 dark:bg-amber-700';
+type BarTone = 'ok' | 'warn' | 'crit';
+
+const BAND: Record<BarTone, {
+  used: string; cmt: string; swUsed: string; swCmt: string;
+}> = {
+  ok: {
+    used: 'bg-teal-700 dark:bg-teal-400',
+    cmt: 'seg-committed',
+    swUsed: 'bg-teal-700 dark:bg-teal-400',
+    swCmt: 'swatch-committed',
+  },
+  warn: {
+    used: 'bg-amber-700 dark:bg-amber-400',
+    cmt: 'seg-committed-warn',
+    swUsed: 'bg-amber-700 dark:bg-amber-400',
+    swCmt: 'swatch-committed-warn',
+  },
+  crit: {
+    used: 'bg-red-700 dark:bg-red-400',
+    cmt: 'seg-committed-crit',
+    swUsed: 'bg-red-700 dark:bg-red-400',
+    swCmt: 'swatch-committed-crit',
+  },
+};
+
+/** The free band is the bare track, so its swatch needs an outline to exist. */
+const SW_FREE = 'bg-gray-200 ring-1 ring-inset ring-gray-300 dark:bg-gray-700 dark:ring-gray-600';
 
 function Swatch({ className, children }: { className: string; children: ReactNode }) {
   return (
@@ -182,7 +214,16 @@ export function TriadBar({ triad, label, to, vocab = 'committed' }: {
   const free = Math.max(0, total - claimed);
   const usedPct = total > 0 ? (inUse / total) * 100 : 0;
   const cmtPct = consume || total <= 0 ? 0 : Math.max(0, ((committed - inUse) / total) * 100);
-  const tight = total > 0 && claimed / total >= (vocab === 'reserved' ? 0.75 : 0.9);
+  /**
+   * Two thresholds, not one. The mockup warns at 75% of the claim; a cluster
+   * past 95% is a different conversation from one at 80%, and the mockup's
+   * own stylesheet carries a crit band for it.
+   */
+  const claimFrac = total > 0 ? claimed / total : 0;
+  const warnAt = vocab === 'reserved' ? 0.75 : 0.9;
+  const tone: BarTone = claimFrac >= 0.95 ? 'crit' : claimFrac >= warnAt ? 'warn' : 'ok';
+  const tight = tone !== 'ok';
+  const band = BAND[tone];
   /**
    * A zero usage reading against a non-zero commitment is almost always a
    * metrics source that did not answer, not a genuinely idle cluster. Printing
@@ -223,19 +264,23 @@ export function TriadBar({ triad, label, to, vocab = 'committed' }: {
         </span>
         <span className={clsx(
           'ml-auto whitespace-nowrap font-mono text-xs tabular-nums',
-          tight ? 'font-semibold text-amber-600 dark:text-amber-400' : 'text-gray-500 dark:text-gray-400',
+          tone === 'crit' ? 'font-semibold text-red-700 dark:text-red-400'
+            : tone === 'warn' ? 'font-semibold text-amber-700 dark:text-amber-400'
+            : 'text-gray-500 dark:text-gray-400',
         )}>
           {fmt(free, unit)} free
         </span>
       </div>
 
-      <div className="flex h-3 overflow-hidden rounded-md bg-gray-200 ring-1 ring-inset ring-black/5 dark:bg-gray-700 dark:ring-white/5">
+      {/* 12px tall, 6px radius, bare track showing through as "free" — the
+          mockup's proportions. */}
+      <div className="flex h-3 overflow-hidden rounded-md bg-gray-200 dark:bg-gray-700">
         <div
-          className={clsx('h-full', tight ? BAR_USED_TIGHT : BAR_USED)}
+          className={clsx('h-full', band.used)}
           style={{ width: `${Math.min(100, usedPct).toFixed(2)}%` }}
         />
         <div
-          className={clsx('h-full', tight ? BAR_CMT_TIGHT : BAR_CMT)}
+          className={clsx('h-full', band.cmt)}
           style={{ width: `${Math.min(100, cmtPct).toFixed(2)}%` }}
         />
       </div>
@@ -244,14 +289,14 @@ export function TriadBar({ triad, label, to, vocab = 'committed' }: {
           is the same class the band uses so they cannot drift apart. */}
       <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] tabular-nums text-gray-600 dark:text-gray-400">
         {usageUnknown ? null : (
-          <Swatch className={tight ? BAR_USED_TIGHT : BAR_USED}>in use {Math.round(usedPct)}%</Swatch>
+          <Swatch className={band.swUsed}>in use {Math.round(usedPct)}%</Swatch>
         )}
         {!consume && (
-          <Swatch className={tight ? BAR_CMT_TIGHT : BAR_CMT}>
+          <Swatch className={band.swCmt}>
             {vocab} {Math.round((committed / (total || 1)) * 100)}%
           </Swatch>
         )}
-        <Swatch className="bg-gray-200 dark:bg-gray-700">
+        <Swatch className={SW_FREE}>
           {consume ? 'free' : 'schedulable'} {fmt(free, unit)}
         </Swatch>
       </div>
