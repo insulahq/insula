@@ -12,7 +12,32 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+
+- **Volume fullness now covers every PVC, not just Longhorn's.** Reading from
+  the kubelet instead of the Longhorn CRs picks up `local-path` and any other
+  CSI driver — including the mail stack's 500 GiB volume, the largest on a
+  production cluster, which previously had no fullness alert at all. Volumes
+  living on a *shared* filesystem are excluded: their fill is the node's, which
+  node-health already alerts on, and counting them per volume would fan one
+  disk-pressure event out into an alarm per PVC on that node.
+
 ### Fixed
+
+- **"Volume nearly full" measured the wrong thing.** The production platform
+  database was reported at 93 % of a volume whose filesystem was 36 % used,
+  with 1.2 GiB free. The alert divided Longhorn's `status.actualSize` by the
+  volume's capacity — but `actualSize` is the disk the replica occupies on the
+  host *including every snapshot in the chain*, not how full the filesystem is.
+  Postgres recycles WAL segments by overwriting the same blocks, so each of the
+  six retained hourly snapshots pinned another copy of them: 1.8 GiB of chain
+  behind a 702 MiB filesystem holding a 124 MB database. Nothing was full and
+  nothing was wrong — the two numbers answer different questions.
+
+  The alert now reads the filesystem's own used/capacity per PVC from the
+  kubelet, which is the figure that decides whether a workload can still write
+  and the one `df` shows inside the pod. It also folds in inode fill, because a
+  volume out of inodes refuses writes while `df` still shows it half empty.
 
 - **The update banner named the version you already have.** It read
   "Platform update available: 2026.9.30 (current: 2026.9.30)" after

@@ -3,6 +3,7 @@ import type { DashboardAlert } from '@insula/api-contracts';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { countStalePodsByNode } from '../node-health/recovery.js';
+import { readPvcUsage, type PvcUsageReader } from './pvc-usage.js';
 import { alert } from './alerts.js';
 
 /**
@@ -11,10 +12,13 @@ import { alert } from './alerts.js';
  *
  * Two live here:
  *
- *   Volume fullness — Longhorn knows per-volume usage; the platform database
- *   does not. And it has to be per-volume: a cluster with 361 GB free can
- *   still hold a volume at 100%, and it is that volume's workload that stops
- *   writing. A cluster-wide percentage hides exactly the case worth alerting.
+ *   Volume fullness — the kubelet knows per-volume usage; the platform
+ *   database does not. And it has to be per-volume: a cluster with 361 GB free
+ *   can still hold a volume at 100%, and it is that volume's workload that
+ *   stops writing. A cluster-wide percentage hides exactly the case worth
+ *   alerting. See pvc-usage.ts for why this reads the FILESYSTEM rather than
+ *   Longhorn's `actualSize`, which measures the host cost of the snapshot
+ *   chain and is not a fullness figure at all.
  *
  *   Orphaned pods — Failed / Evicted / ContainerStatusUnknown pods left on a
  *   node. They hold no compute but they do hold their records, and a node
@@ -93,35 +97,39 @@ async function listVolumes(k8s: K8sClients): Promise<LonghornVolume[]> {
  * act on — which is exactly what was reported. Prefer the tenant, fall back to
  * the PVC and namespace, and keep the volume id only as a last resort.
  */
-function describeVolume(v: LonghornVolume, tenants: Map<string, TenantRef>): {
-  label: string; tenant: TenantRef | null; ns: string | null;
-} {
-  const ks = v.status?.kubernetesStatus;
-  const ns = ks?.namespace ?? null;
+interface Described { label: string; tenant: TenantRef | null; ns: string | null }
+
+function describePvc(
+  ns: string | null,
+  pvcName: string | null,
+  tenants: Map<string, TenantRef>,
+  fallback: string,
+): Described {
   const tenant = ns ? tenants.get(ns) ?? null : null;
   if (tenant) return { label: tenant.name, tenant, ns };
-  if (ks?.pvcName) return { label: `${ks.pvcName}${ns ? ` (${ns})` : ''}`, tenant: null, ns };
-  return { label: v.metadata?.name ?? '(unnamed)', tenant: null, ns };
+  if (pvcName) return { label: `${pvcName}${ns ? ` (${ns})` : ''}`, tenant: null, ns };
+  return { label: fallback, tenant: null, ns };
+}
+
+function describeVolume(v: LonghornVolume, tenants: Map<string, TenantRef>): Described {
+  const ks = v.status?.kubernetesStatus;
+  return describePvc(ks?.namespace ?? null, ks?.pvcName ?? null, tenants, v.metadata?.name ?? '(unnamed)');
 }
 
 export async function buildVolumeAlert(
   k8s: K8sClients,
   tenants: Map<string, TenantRef> = new Map(),
+  readUsage: PvcUsageReader = readPvcUsage,
 ): Promise<DashboardAlert | null> {
-  const full = (await listVolumes(k8s))
-    .map((v) => {
-      const capacity = toBytes(v.spec?.size);
-      const used = toBytes(v.status?.actualSize);
-      return {
-        ...describeVolume(v, tenants),
-        volume: v.metadata?.name ?? '(unnamed)',
-        used, capacity,
-        fraction: capacity > 0 ? used / capacity : 0,
-      };
-    })
-    // A DETACHED volume reporting 0/0 is an idle resting state, not a fault —
-    // filtering on capacity keeps those out instead of dividing by zero.
-    .filter((v) => v.capacity > 0 && v.fraction >= VOLUME_WARN_FRACTION)
+  const full = (await readUsage(k8s))
+    .map((v) => ({
+      ...describePvc(v.namespace, v.pvcName, tenants, v.pvcName),
+      pvcName: v.pvcName,
+      used: v.usedBytes,
+      capacity: v.capacityBytes,
+      fraction: v.fraction,
+    }))
+    .filter((v) => v.fraction >= VOLUME_WARN_FRACTION)
     .sort((a, b) => b.fraction - a.fraction)
     .slice(0, 5);
 
