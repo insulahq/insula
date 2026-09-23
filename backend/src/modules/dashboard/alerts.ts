@@ -67,10 +67,17 @@ export async function buildAdminAlerts(db: Database): Promise<DashboardAlert[]> 
   // Certificates — admin.cert_expiring.
   // Table and columns verified against the live schema: `ssl_certificates`
   // holds expires_at/status; there is no certificate_health table.
-  const certs = await db.execute<{ n: number; soonest: number | null; name: string | null }>(sql`
+  const certs = await db.execute<{
+    n: number; soonest: number | null; name: string | null;
+    domain_id: string | null; tenant_id: string | null;
+  }>(sql`
     SELECT COUNT(*)::int AS n,
            MIN(EXTRACT(DAY FROM (c.expires_at - NOW())))::int AS soonest,
-           MIN(d.domain_name) AS name
+           MIN(d.domain_name) AS name,
+           -- Only meaningful when exactly one certificate is expiring; the
+           -- alert checks that before using them to build a deep link.
+           MIN(d.id) AS domain_id,
+           MIN(d.tenant_id) AS tenant_id
       FROM ssl_certificates c
       LEFT JOIN domains d ON d.id = c.domain_id
      WHERE c.expires_at IS NOT NULL
@@ -86,7 +93,12 @@ export async function buildAdminAlerts(db: Database): Promise<DashboardAlert[]> 
       value: String(cert.n),
       title: Number(cert.n) === 1 ? 'Certificate expiring' : 'Certificates expiring',
       subtitle: `${cert.name ?? 'a domain'} · soonest in ${soonest} days`,
-      href: '/domains',
+      // When the alert names ONE certificate, go to that domain rather than
+      // making the operator find it in a list. Several expiring is a list
+      // problem, so the list is the right answer then.
+      href: Number(cert.n) === 1 && cert.tenant_id && cert.domain_id
+        ? `/tenants/${cert.tenant_id}/domains/${cert.domain_id}`
+        : '/domains',
       detail: [['Expiring within 14 days', String(cert.n)],
                ['Soonest', `${soonest} days`]],
       note: 'A certificate that fails to renew keeps serving until it expires — this is the last warning.',
@@ -129,8 +141,10 @@ export async function buildAdminAlerts(db: Database): Promise<DashboardAlert[]> 
   }
 
   // Tenants at a resource limit — admin.tenant_resource_saturation_*
-  const sat = await db.execute<{ tenant: string; resource: string; level: string; used_pct: number }>(sql`
-    SELECT t.name AS tenant, e.resource, e.level, e.used_pct
+  const sat = await db.execute<{
+    tenant: string; tenant_id: string; resource: string; level: string; used_pct: number;
+  }>(sql`
+    SELECT t.name AS tenant, t.id AS tenant_id, e.resource, e.level, e.used_pct
       FROM tenant_saturation_events e
       JOIN tenants t ON t.id = e.tenant_id
      WHERE e.cleared_at IS NULL
@@ -149,7 +163,12 @@ export async function buildAdminAlerts(db: Database): Promise<DashboardAlert[]> 
       value: `${worst.used_pct}%`,
       title: satRows.length === 1 ? 'Tenant at a resource limit' : 'Tenants at a resource limit',
       subtitle: `${worst.tenant} · ${worst.resource} ${worst.used_pct}%`,
-      href: '/tenants',
+      // The subtitle names a tenant; the link used to drop the operator on a
+      // list of every tenant to find it again. One affected tenant goes
+      // straight there.
+      href: new Set(satRows.map((r) => r.tenant_id)).size === 1 && worst.tenant_id
+        ? `/tenants/${worst.tenant_id}`
+        : '/tenants',
       detail: satRows.map((r) => [`${r.tenant} · ${r.resource}`, `${r.used_pct}% · ${r.level}`] as [string, string]),
       note: 'Reminders widen to 1h, then 6h, then daily while it persists.',
     }));

@@ -92,9 +92,9 @@ const STATIC_PATHS: Record<string, string> = {
   'mailbox.quota_exceeded': '/email',
   'admin.mailbox_quota_fleet': '/tenants',
   // The storage settings page is where capacity is read and nodes are added.
-  'admin.cluster_storage_capacity': '/settings/storage',
+  'admin.cluster_storage_capacity': '/cluster/storage',
   // Operational events land on the surface that owns the subsystem.
-  'admin.storage_event': '/settings/storage',
+  'admin.storage_event': '/cluster/storage',
   'admin.node_event': '/cluster/nodes',
   'admin.database_event': '/backups',
   'admin.mail_event': '/email/operations',
@@ -111,9 +111,9 @@ const STATIC_PATHS: Record<string, string> = {
   'admin.subscriptions_expiring': '/tenants',
   // The tenant lands on the page that shows the usage bars, not on a page
   // about the concept of a limit.
-  'tenant.resource_saturation_warning': '/dashboard',
-  'tenant.resource_saturation_critical': '/dashboard',
-  'tenant.resource_saturation_recovered': '/dashboard',
+  'tenant.resource_saturation_warning': '/resource-usage',
+  'tenant.resource_saturation_critical': '/resource-usage',
+  'tenant.resource_saturation_recovered': '/resource-usage',
   'tls.certificate_issued': '/domains',
   'tls.certificate_failed': '/domains',
   'tls.certificate_fallback': '/domains',
