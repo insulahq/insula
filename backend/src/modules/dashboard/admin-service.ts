@@ -84,17 +84,40 @@ export async function buildAdminSummary(
         };
       }, { logger }),
       collect('recentChanges', async () => {
-        const r = await db.execute<{ action_type: string; actor: string | null; at: string; http_status: number | null }>(sql`
-          SELECT action_type, actor_id AS actor, created_at AS at, http_status
-            FROM audit_logs
-           ORDER BY created_at DESC
+        // The audit log is mostly MACHINE bookkeeping. Over seven days on
+        // production: 1006 `snapshot-last-run`, 556 `event`, 528 `file`,
+        // 309 `auth`. Taking the six most recent rows meant the tile showed
+        // that noise, every row `create`, every row green — which is exactly
+        // the "no informational value" an operator reported.
+        //
+        // So: a human actor, a mutating method, and none of the bookkeeping
+        // resource types. What is left is the administrative change an
+        // operator console is for — a domain added, a deployment updated, a
+        // mailbox deleted, an upgrade applied.
+        const r = await db.execute<{
+          action_type: string; resource_type: string | null; actor: string | null;
+          tenant_name: string | null; at: string; http_status: number | null;
+        }>(sql`
+          SELECT a.action_type, a.resource_type, u.email AS actor,
+                 COALESCE(rt.name, t.name) AS tenant_name,
+                 a.created_at AS at, a.http_status
+            FROM audit_logs a
+            JOIN users u ON u.id = a.actor_id
+            LEFT JOIN tenants rt ON rt.id = a.resource_type
+            LEFT JOIN tenants t  ON t.id = a.tenant_id
+           WHERE a.http_method IN ('POST', 'PUT', 'PATCH', 'DELETE')
+             AND COALESCE(a.resource_type, '') NOT IN (
+               'snapshot-last-run', 'event', 'audit', 'login', 'auth', 'session',
+               'passkey', 'notification', 'file', 'email', 'resource-metric'
+             )
+           ORDER BY a.created_at DESC
            LIMIT 6
         `);
         return (r.rows ?? []).map((row) => ({
           severity: (row.http_status != null && row.http_status >= 500
             ? 'critical'
             : row.http_status != null && row.http_status >= 400 ? 'warning' : 'ok') as 'ok' | 'warning' | 'critical',
-          label: row.action_type,
+          label: describeChange(row.action_type, row.resource_type, row.tenant_name),
           actor: row.actor ?? 'system',
           at: String(row.at),
         }));
@@ -109,6 +132,33 @@ export async function buildAdminSummary(
     database: { state: 'stale', reason: 'read on the slow refresh', observedAt: null, data: null },
     updates, scheduledTasks, recentChanges,
   } as AdminDashboardSummary;
+}
+
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * "create" on its own tells an operator nothing. Name the thing.
+ *
+ * Two quirks of the existing audit rows are handled rather than papered over:
+ * `resource_type` sometimes holds a TENANT ID instead of a type (so the
+ * tenant's name is used), and the plural-stripping that produced `mailboxe`
+ * is corrected on the way out. Neither is worth a migration; both are worth
+ * not showing to a human.
+ */
+export function describeChange(
+  action: string,
+  resourceType: string | null,
+  tenantName: string | null,
+): string {
+  const verb = action.includes('.') ? action.split('.').slice(1).join(' ') : action;
+  if (resourceType && UUID_RE.test(resourceType)) {
+    return tenantName ? `${verb} · ${tenantName}` : verb;
+  }
+  const noun = (resourceType ?? '').replace(/e$/, (m, i: number, str: string) =>
+    str.endsWith('boxe') ? '' : m);
+  if (!noun) return verb;
+  return tenantName ? `${verb} ${noun} · ${tenantName}` : `${verb} ${noun}`;
 }
 
 async function buildBackupClasses(db: Database): Promise<AdminDashboardSummary['backups']['data']> {
