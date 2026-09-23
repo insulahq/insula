@@ -14,6 +14,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { PLATFORM_DEFAULT_ARCHIVE_TIMEOUT } from '@insula/api-contracts';
 import type { WalArchiveCluster } from '@insula/api-contracts';
 
 const mockApiFetch = vi.fn();
@@ -430,5 +431,41 @@ describe('WAL chip on the health card', () => {
     routeApi(OFF);
     renderWith(<CnpgBackupHealthCard />);
     expect(await screen.findByTestId('cnpg-wal-badge-disabled')).toHaveTextContent('Backups off');
+  });
+});
+
+describe('Archive timeout — the interval, not the write volume, sets the cost', () => {
+  beforeEach(() => { mockApiFetch.mockReset(); });
+
+  /**
+   * A WAL segment is a fixed 16 MB file however little it holds, so a shorter
+   * interval ships more bytes to carry the same change. On the platform
+   * database — ~10 MB of WAL an hour — 5min meant 193.8 MB/h of segments for
+   * 10.5 MB/h of real WAL, and 1min would have meant 960 MB/h. Postgres then
+   * rewrites that padding in place, where every hourly volume snapshot picks
+   * it up. Nothing pinned this list before, which is how the option survived.
+   */
+  it('does not offer a one-minute interval', async () => {
+    routeApi(ON);
+    renderWith(<PostgresBackupsSection />);
+    const sel = await screen.findByTestId('pg-archive-timeout-system-db');
+    const values = Array.from(sel.querySelectorAll('option')).map((o) => o.getAttribute('value'));
+    expect(values).not.toContain('1min');
+    expect(values).toContain('1h');
+  });
+
+  it('preselects the platform default on a cluster with no saved choice', async () => {
+    routeApi({ ...ON, state: null, effectiveArchiveTimeout: null });
+    renderWith(<PostgresBackupsSection />);
+    const sel = await screen.findByTestId('pg-archive-timeout-system-db') as HTMLSelectElement;
+    expect(sel.value).toBe(PLATFORM_DEFAULT_ARCHIVE_TIMEOUT);
+    expect(sel.value).toBe('1h');
+  });
+
+  it('shows the operator their SAVED value, not the default', async () => {
+    routeApi({ ...ON, state: { ...ON.state!, archiveTimeout: '15min' } });
+    renderWith(<PostgresBackupsSection />);
+    const sel = await screen.findByTestId('pg-archive-timeout-system-db') as HTMLSelectElement;
+    expect(sel.value).toBe('15min');
   });
 });

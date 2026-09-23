@@ -90,27 +90,26 @@ spec:
   # failover-slots are needed in the future.
   imageName: ghcr.io/cloudnative-pg/postgresql:18.3-minimal-trixie
 
-  postgresql:
-    parameters:
-      # CNPG defaults this to 5min. That is an RPO control — it forces a
-      # WAL segment switch so the archive is never more than one interval
-      # behind — but a segment is a fixed 16 MB file whether it holds
-      # 16 MB or 900 KB, and this database generates ~10 MB of WAL an
-      # HOUR. Measured on production: 10.5 MB/h of actual WAL content
-      # against 193.8 MB/h of segments shipped. An 18x amplification,
-      # ~5% of each segment real and the rest padding.
-      #
-      # It is not free padding either. Postgres recycles segments by
-      # renaming and overwriting them in place, so the same disk blocks
-      # are rewritten twelve times an hour — the worst possible input to
-      # block-level snapshots. Six retained hourly Longhorn snapshots of
-      # a 124 MB database were holding 1.8 GiB of chain, all of it WAL
-      # that had been rewritten rather than changed.
-      #
-      # 1h keeps a bounded RPO on the archive at a twelfth of the write
-      # volume. Lower it again on a cluster whose write rate actually
-      # fills segments, where the amplification disappears on its own.
-      archive_timeout: 1h
+  # archive_timeout is deliberately NOT pinned here.
+  #
+  # It is an operator control with its own UI (System Backups → Postgres →
+  # Archive timeout) whose hint calls it the recovery-point target, and this
+  # Cluster carries `kustomize.toolkit.fluxcd.io/ssa: merge` — Flux re-asserts
+  # every field the manifest DOES set. Pinning it made the UI a no-op:
+  # measured on DEV, an operator's 15min was reverted to the manifest value
+  # within 15 seconds of the next reconcile, with no error anywhere. A default
+  # that cannot be overridden is not a default.
+  #
+  # The platform default of 1h is applied ONCE at install time instead —
+  # bootstrap.sh:set_default_archive_timeout(), which patches only when the
+  # parameter is unset. CNPG's own default is 5min, and that is the wrong
+  # shape for this database: a WAL segment is a fixed 16 MB file however
+  # little it holds, and the platform DB generates ~10 MB of WAL an HOUR.
+  # Production measured 10.5 MB/h of real WAL against 193.8 MB/h of segments
+  # shipped — an 18x amplification, ~5% of each segment real. Because Postgres
+  # recycles segments by overwriting them in place, that padding was rewritten
+  # twelve times an hour and captured by every hourly Longhorn snapshot:
+  # 1.8 GiB of chain behind a 124 MB database.
 
   bootstrap:
     initdb:

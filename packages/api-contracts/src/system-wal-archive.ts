@@ -16,13 +16,26 @@ const dnsLabelSchema = z
   .max(63)
   .regex(/^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/, 'must be a lowercase DNS label');
 
+/**
+ * The platform's default WAL upload interval, applied ONCE at install time by
+ * `bootstrap.sh:set_default_archive_timeout()` and preselected in the UI.
+ *
+ * Not CNPG's 5min: a WAL segment is a fixed 16 MB file however little it
+ * holds, and the platform database generates ~10 MB of WAL an HOUR. Production
+ * measured 10.5 MB/h of real WAL against 193.8 MB/h of segments shipped — an
+ * 18x amplification whose padding Postgres then rewrites in place, which every
+ * hourly Longhorn snapshot captures. A cluster whose write rate actually fills
+ * segments should lower it; there the amplification disappears on its own.
+ */
+export const PLATFORM_DEFAULT_ARCHIVE_TIMEOUT = '1h';
+
 // Postgres archive_timeout accepted format: positive integer + unit
 // (s|min|h). Restricted to short presets at the UI; backend enforces
 // the regex below.
 export const archiveTimeoutSchema = z
   .string()
   .regex(/^[0-9]+(s|min|h)$/, 'must look like 30s / 5min / 1h')
-  .default('5min');
+  .default(PLATFORM_DEFAULT_ARCHIVE_TIMEOUT);
 
 // 6-field cron expression (CNPG ScheduledBackup uses
 // github.com/robfig/cron/v3 with seconds-precision parsing).
@@ -77,9 +90,11 @@ export type WalArchiveDisableRequest = z.infer<typeof walArchiveDisableRequestSc
 // `.status` (cluster-reported truth: last archived WAL, archiver
 // errors). When `enabled=false`, `state` is null.
 /**
- * CNPG's own `archive_timeout` default. It applies the moment the barman-cloud
- * plugin is attached and nobody set an explicit value — so it is the real
- * recovery-point window in that state, not "unset".
+ * CNPG's own `archive_timeout` default — a fact about CNPG, not a platform
+ * choice. Only a last-resort fallback now: the value actually in force is read
+ * off the Cluster CR, which CNPG's defaulting webhook always populates. Use
+ * this when the CR could not be read at all, so the card says "some interval"
+ * rather than going blank on a cluster that IS shipping WAL.
  */
 export const CNPG_DEFAULT_ARCHIVE_TIMEOUT = '5min';
 
