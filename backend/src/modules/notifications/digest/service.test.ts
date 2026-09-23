@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { isDigestible, dueDigests, renderDigest, type DigestMode } from './service.js';
+import { isDigestible, dueDigests, renderDigest, MAX_ITEMS_RENDERED, type DigestMode } from './service.js';
 
 describe('isDigestible — what may be delayed', () => {
   it('never delays anything when the user wants immediate delivery', () => {
@@ -116,5 +116,65 @@ describe('bounded reads and bodies', () => {
     const { MAX_ITEMS_PER_PASS } = await import('./service.js');
     expect(MAX_ITEMS_PER_PASS).toBeGreaterThan(0);
     expect(MAX_ITEMS_PER_PASS).toBeLessThanOrEqual(10_000);
+  });
+});
+
+/**
+ * Operator requirement: the notification's ACTUAL content must be visually
+ * separated from the prose describing it.
+ *
+ * The digest built one newline-joined string and the HTML email ran it into
+ * the sentence that introduced it — HTML collapses those newlines, so twelve
+ * items arrived as a single paragraph. HTML gets a real list; plaintext
+ * channels keep the line breaks, which is what they can actually render.
+ */
+describe('renderDigest content separation', () => {
+  const items = [
+    { id: '1', subject: 'Backup failed', body: 'Tenant acme, files component.', categoryId: 'c' },
+    { id: '2', subject: 'Certificate expiring', body: '12 days left.', categoryId: 'c' },
+  ];
+
+  it('emits a real <ul>/<li> list for HTML', () => {
+    const { itemsHtml } = renderDigest(items);
+    expect(itemsHtml).toMatch(/^<ul[^>]*>/);
+    expect(itemsHtml).toMatch(/<\/ul>$/);
+    expect(itemsHtml.match(/<li/g)).toHaveLength(2);
+    expect(itemsHtml).toContain('<strong>Backup failed</strong>');
+    expect(itemsHtml).toContain('Certificate expiring');
+  });
+
+  it('keeps line breaks for plaintext channels, with no markup', () => {
+    const { body } = renderDigest(items);
+    expect(body).toContain('\n');
+    expect(body).not.toContain('<li');
+    expect(body).not.toContain('<ul');
+  });
+
+  it('ESCAPES item text — the template takes this through a triple-stache', () => {
+    // Nothing unescaped may reach an unescaped slot. Notification bodies carry
+    // hostnames, error output and operator-entered names.
+    const { itemsHtml } = renderDigest([
+      { id: '1', subject: '<script>alert(1)</script>', body: 'a & b "c"', categoryId: 'c' },
+    ]);
+    expect(itemsHtml).not.toContain('<script>');
+    expect(itemsHtml).toContain('&lt;script&gt;');
+    expect(itemsHtml).toContain('&amp;');
+  });
+
+  it('renders the overflow line as a list item too, not loose text', () => {
+    const many = Array.from({ length: MAX_ITEMS_RENDERED + 3 }, (_, i) => ({
+      id: String(i), subject: `Item ${i}`, body: '', categoryId: 'c',
+    }));
+    const { itemsHtml, body } = renderDigest(many);
+    expect(itemsHtml.match(/<li/g)).toHaveLength(MAX_ITEMS_RENDERED + 1);
+    expect(itemsHtml).toContain('and 3 more');
+    expect(body).toContain('and 3 more');
+  });
+
+  it('omits the body span when an item has none, rather than an empty line', () => {
+    const { itemsHtml } = renderDigest([
+      { id: '1', subject: 'Just a subject', body: '', categoryId: 'c' },
+    ]);
+    expect(itemsHtml).not.toContain('<br/>');
   });
 });

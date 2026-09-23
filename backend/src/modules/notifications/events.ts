@@ -955,7 +955,10 @@ export async function notifyAdminEscalation(
 export interface DigestPayload {
   readonly itemCount: string;
   readonly summary: string;
+  /** Newline-separated, for the plaintext channels. */
   readonly items: string;
+  /** Pre-escaped `<ul>` markup, so the HTML email renders a real list. */
+  readonly itemsHtml: string;
 }
 /**
  * The periodic digest itself.
