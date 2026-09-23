@@ -90,6 +90,28 @@ spec:
   # failover-slots are needed in the future.
   imageName: ghcr.io/cloudnative-pg/postgresql:18.3-minimal-trixie
 
+  postgresql:
+    parameters:
+      # CNPG defaults this to 5min. That is an RPO control — it forces a
+      # WAL segment switch so the archive is never more than one interval
+      # behind — but a segment is a fixed 16 MB file whether it holds
+      # 16 MB or 900 KB, and this database generates ~10 MB of WAL an
+      # HOUR. Measured on production: 10.5 MB/h of actual WAL content
+      # against 193.8 MB/h of segments shipped. An 18x amplification,
+      # ~5% of each segment real and the rest padding.
+      #
+      # It is not free padding either. Postgres recycles segments by
+      # renaming and overwriting them in place, so the same disk blocks
+      # are rewritten twelve times an hour — the worst possible input to
+      # block-level snapshots. Six retained hourly Longhorn snapshots of
+      # a 124 MB database were holding 1.8 GiB of chain, all of it WAL
+      # that had been rewritten rather than changed.
+      #
+      # 1h keeps a bounded RPO on the archive at a twelfth of the write
+      # volume. Lower it again on a cluster whose write rate actually
+      # fills segments, where the amplification disappears on its own.
+      archive_timeout: 1h
+
   bootstrap:
     initdb:
       database: platform
@@ -119,20 +141,33 @@ spec:
         - "ALTER USER platform WITH SUPERUSER"
 
   storage:
-    # 2Gi base for fresh installs (Phase-2 right-size: live
-    # observation across 3 replicas shows 628 MiB used per PVC on a
-    # 10Gi allocation = 7% utilization. 2Gi gives ~3× headroom for the
-    # working set; CNPG supports ONLINE storage expansion via Cluster
-    # `spec.storage.size` edit + Longhorn handles the underlying
-    # volume resize, so growing past 2Gi when actually needed is
-    # zero-downtime).
+    # 4Gi base for fresh installs. The DATA is small and stays small —
+    # a production cluster with 27 tenants holds 124 MB across all
+    # databases, and every large table is pruned (audit_logs 180d,
+    # usage_metrics rolled hourly→daily, waf_logs, crowdsec decisions on
+    # a 7-day window). What needs the room is WAL:
     #
-    # Existing clusters with larger storage MUST be patched per-overlay
-    # because CNPG's webhook rejects any spec.storage decrease — see
-    # k8s/overlays/development/system-db-storage-patch.yaml for the
-    # 20Gi development-overlay override. Operators can right-size at any time
-    # via Settings → System DB Storage or the SystemPvcResize endpoint.
-    size: 2Gi
+    #   `wal_keep_size` 512MB is a permanent floor, and `max_wal_size`
+    #   1GB is the checkpoint trigger, so pg_wal can reach ~1.5 GB during
+    #   a write burst — a migration, a restore, a bulk import — and stays
+    #   there until archiving drains it. On a 2Gi volume (1945 MiB of ext4
+    #   once the filesystem takes its overhead) that left a few hundred MB
+    #   of margin, and the failure mode is not graceful: Postgres PANICs
+    #   when it cannot write WAL, and this cluster IS the control plane.
+    #
+    # This has bitten before — the staging WAL runaway that grew that
+    # cluster 10→20Gi. 4Gi costs 2 GiB of a 500 GiB disk and retires the
+    # whole class.
+    #
+    # CNPG supports ONLINE expansion (`spec.storage.size` edit + Longhorn
+    # resize, no pod restart), so growing further later is zero-downtime.
+    # SHRINKING is not possible — the CNPG webhook rejects any decrease,
+    # so a cluster already larger than this base must be patched per
+    # overlay or the platform Kustomization deadlocks Ready=False.
+    # Operators right-size at any time via Settings → System DB Storage
+    # (SystemPvcResize), which grows the PVC directly and so does not
+    # fight Flux over the Cluster CR.
+    size: 4Gi
     # System PVCs MUST use longhorn-system-local (or -ha when policy
     # is HA — operator flip via Apply Tier patches both numberOfReplicas
     # and nodeSelector on the live volume). The bare `longhorn` class

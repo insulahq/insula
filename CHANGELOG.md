@@ -22,6 +22,31 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   node-health already alerts on, and counting them per volume would fan one
   disk-pressure event out into an alarm per PVC on that node.
 
+### Changed
+
+- **The platform database volume is 4Gi on fresh installs, up from 2Gi.** The
+  data is small and stays small — 124 MB across every database on a 27-tenant
+  production cluster, with retention on each large table. What needed the room
+  is WAL: `wal_keep_size` holds a 512MB floor and `max_wal_size` lets pg_wal
+  reach ~1.5 GB during a write burst, which on 1945 MiB of usable ext4 left a
+  few hundred MB of margin. Postgres PANICs when it cannot write WAL, and this
+  cluster is the control plane. Existing clusters grow online via Settings →
+  System DB Storage; CNPG cannot shrink, so this is one-way.
+
+- **`archive_timeout` is 1h instead of CNPG's 5min default.** The setting
+  forces a WAL segment switch so the archive stays within one interval, but a
+  segment is a fixed 16 MB file however little it holds. Production measured
+  10.5 MB/h of actual WAL against 193.8 MB/h of segments shipped — an 18x
+  amplification, ~5% of each segment real. Because Postgres recycles segments
+  by overwriting them in place, that padding was being rewritten twelve times
+  an hour and captured by every hourly Longhorn snapshot: 1.8 GiB of chain
+  behind a 124 MB database. 1h keeps a bounded archive RPO at a twelfth of the
+  write volume.
+
+- **Every version number displays with a leading `v`** — `v2026.9.31`, not
+  `2026.9.31` — matching the tags, the release assets and the deployment
+  columns that already did.
+
 ### Fixed
 
 - **"Volume nearly full" measured the wrong thing.** The production platform
@@ -50,12 +75,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   path it takes without ever writing `latest_version`. The two now have
   separate timestamps, because they are deliberately different values —
   `available` is verified, `latest` is the raw upstream newest.
-
-### Changed
-
-- **Every version number displays with a leading `v`** — `v2026.9.31`, not
-  `2026.9.31` — matching the tags, the release assets and the deployment
-  columns that already did.
 
 ## [2026.9.31] - 2026-09-23
 
