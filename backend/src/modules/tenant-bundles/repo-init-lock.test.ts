@@ -3,10 +3,9 @@ import { makeRepoInitSerialiser } from './repo-init-lock.js';
 import type { Database } from '../../db/index.js';
 
 /**
- * Regression cover for the 2026-09-23 production incident: two components
- * sharing one per-tenant repository each ran `restic init`, leaving the repo
- * with two master keys and a config sealed by only one of them. Five tenants
- * lost a night of files + mail and would have kept failing every night.
+ * Two components sharing one per-tenant repository must not both run
+ * `restic init`: that leaves the repo with two master keys and a config sealed
+ * by only one of them, which fails every later run permanently.
  *
  * What matters here is not "a lock is taken" but the three behaviours a
  * fail-open lock must get right: it must not run the initialiser twice, it

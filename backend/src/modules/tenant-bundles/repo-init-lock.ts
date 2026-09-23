@@ -1,39 +1,33 @@
 /**
  * Cross-replica serialisation for `restic init`.
  *
- * Why this exists — production incident 2026-09-23. ADR-061 merged the
- * per-component repositories into one per tenant, so `files` and
- * `mailboxes` now resolve to the SAME repo URI. The orchestrator runs
- * those two components in parallel (`Promise.allSettled`), and each one
- * calls `ensureResticRepoInitialised` for itself. On a tenant's FIRST
- * merged bundle the repo is empty, so both branches saw "no config" and
- * both ran `restic init`.
- *
- * `restic init` is not safe to run concurrently: each run mints its own
- * random master key, writes `keys/<id>`, then writes `config`. Two runs
- * leave TWO key files and a `config` belonging to whichever wrote last.
- * `deriveResticPassword` is keyed on the tenant alone, so the one
- * password opens BOTH keys — restic's `SearchKey` takes the first key it
- * can open, then fails to decrypt a `config` sealed with the other
- * master key:
+ * THE CONSTRAINT: `restic init` is not safe to run concurrently against one
+ * repository. Each run mints its own random master key, writes `keys/<id>`,
+ * then writes `config`. Two overlapping runs leave TWO key files and a
+ * `config` sealed by whichever wrote last. Because `deriveResticPassword` is
+ * keyed on the tenant alone, the one password opens BOTH keys — restic's
+ * `SearchKey` takes the first key it can open and then cannot decrypt a
+ * `config` sealed with the other master key:
  *
  *     Fatal: config or key <id> is damaged: ciphertext verification failed
  *
- * That is permanent for the repo and deterministic on every later run.
- * Six of 27 production tenants hit it in a single night (the sixth lost
- * the race one step earlier and hit restic's own `repository already
- * contains keys` guard).
+ * That state is permanent for the repository and reproduces on every later
+ * run, so it fails a tenant's backups indefinitely rather than transiently.
  *
- * The fix is to let exactly one initialiser run per repository at a
- * time. A Postgres advisory lock — not an in-process mutex — because
- * platform-api runs 2–3 replicas in HA mode and a concurrent bundle for
- * the same tenant can land on a different pod.
+ * Overlap is reachable because ADR-061 merged the per-component repositories
+ * into one per tenant: `files` and `mailboxes` now resolve to the SAME repo
+ * URI and the orchestrator runs them in parallel. The window is only open on
+ * a tenant's FIRST merged bundle, while the repo is still empty.
  *
- * Fail-open, deliberately: if the lock cannot be taken (database
- * unreachable, lock held past the timeout) the init still runs, just
- * unserialised. A backup that refuses to start because a lock was
- * unavailable is worse than the race this guards against, and
- * `execResticInit`'s lost-race retry covers the remaining window.
+ * A Postgres advisory lock rather than an in-process mutex, because
+ * platform-api runs 2-3 replicas in HA mode and a concurrent bundle for the
+ * same tenant can land on a different pod.
+ *
+ * Fail-open, deliberately: if the lock cannot be taken (database unreachable,
+ * lock held past the timeout) the init still runs, just unserialised. A backup
+ * that refuses to start because a lock was unavailable is worse than the race
+ * this guards against, and the lost-race retry in `restic-driver.ts` covers
+ * the remaining window.
  */
 
 import { sql } from 'drizzle-orm';

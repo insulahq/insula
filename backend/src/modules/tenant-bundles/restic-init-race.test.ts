@@ -15,8 +15,8 @@ import {
  *     visible. Either another initialiser is mid-flight (wait), or the repo is
  *     genuinely half-written (report it).
  *
- * Conflating them is what failed Danllet Estate's files component on
- * 2026-09-23: the loser of an init race reported a hard failure.
+ * Conflating them makes the loser of an init race report a hard failure for a
+ * repository that is about to become perfectly usable.
  */
 
 const lostRace = (): ResticCommandError =>
