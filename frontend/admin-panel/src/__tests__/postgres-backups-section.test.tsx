@@ -445,13 +445,23 @@ describe('Archive timeout — the interval, not the write volume, sets the cost'
    * rewrites that padding in place, where every hourly volume snapshot picks
    * it up. Nothing pinned this list before, which is how the option survived.
    */
-  it('does not offer a one-minute interval', async () => {
+  it('offers nothing below five minutes', async () => {
     routeApi(ON);
     renderWith(<PostgresBackupsSection />);
     const sel = await screen.findByTestId('pg-archive-timeout-system-db');
     const values = Array.from(sel.querySelectorAll('option')).map((o) => o.getAttribute('value'));
-    expect(values).not.toContain('1min');
-    expect(values).toContain('1h');
+    expect(values).toEqual(['5min', '15min', '1h']);
+  });
+
+  it('still SHOWS an interval it no longer offers', async () => {
+    // Without an option to match, the select renders the first preset — so a
+    // cluster archiving every 30 seconds would read "Every 5 minutes" and the
+    // next Save would quietly make that true.
+    routeApi({ ...ON, state: { ...ON.state!, archiveTimeout: '30s' } });
+    renderWith(<PostgresBackupsSection />);
+    const sel = await screen.findByTestId('pg-archive-timeout-system-db') as HTMLSelectElement;
+    expect(sel.value).toBe('30s');
+    expect(sel.textContent).toMatch(/no longer recommended/);
   });
 
   it('preselects the platform default on a cluster with no saved choice', async () => {

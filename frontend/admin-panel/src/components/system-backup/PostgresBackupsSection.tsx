@@ -45,16 +45,25 @@ const CADENCE_PRESETS: Array<{ value: string; label: string }> = [
 ];
 
 /**
- * No 1min preset: a WAL segment is a fixed 16 MB file however little it holds,
- * so the shipped volume is set by the INTERVAL, not by how much was written.
- * On the platform database — ~10 MB of WAL an hour — 1min meant 960 MB/h of
- * segments to carry 10 MB of change, and Postgres rewrites that padding in
- * place where every hourly volume snapshot picks it up. The interval is a
- * recovery-point target; it should be chosen from what an operator can afford
- * to lose, not set to the smallest number on offer.
+ * Nothing below 5 minutes. A WAL segment is a fixed 16 MB file however little
+ * it holds, so the volume shipped is set by the INTERVAL, not by how much was
+ * written — and on the platform database, which produces ~10 MB of WAL an
+ * hour, the sub-5-minute end of this list was absurd:
+ *
+ *     30s   1.9 GB/h of segments   to carry 10 MB of change
+ *     1min  960 MB/h
+ *     5min  194 MB/h               (measured on production)
+ *     1h    ~16 MB/h
+ *
+ * Postgres then recycles those segments by overwriting them in place, so the
+ * padding is rewritten every interval and every hourly volume snapshot pins
+ * another copy of it. At 5min that alone put 1.8 GiB of snapshot chain behind
+ * a 124 MB database.
+ *
+ * The interval is a recovery-point target. It should be chosen from what an
+ * operator can afford to lose, not set to the smallest number on offer.
  */
 const ARCHIVE_TIMEOUT_PRESETS: Array<{ value: string; label: string }> = [
-  { value: '30s', label: 'Every 30 seconds' },
   { value: '5min', label: 'Every 5 minutes' },
   { value: '15min', label: 'Every 15 minutes' },
   { value: '1h', label: 'Every hour' },
@@ -194,6 +203,19 @@ function SettingsForm({
     CADENCE_PRESETS.some((p) => p.value === savedCadence) ? '' : savedCadence,
   );
   const [archiveTimeout, setArchiveTimeout] = useState(savedTimeout);
+  /**
+   * A cluster already set to a value the platform no longer offers must still
+   * SEE it. With no matching <option> the select falls back to rendering the
+   * first preset, so a cluster archiving every 30 seconds would read "Every 5
+   * minutes" — and the next Save would silently make that true. Show the real
+   * value, marked, and let them move off it deliberately.
+   */
+  const timeoutOptions = useMemo(
+    () => (ARCHIVE_TIMEOUT_PRESETS.some((p) => p.value === savedTimeout)
+      ? ARCHIVE_TIMEOUT_PRESETS
+      : [{ value: savedTimeout, label: `Every ${savedTimeout} (no longer recommended)` }, ...ARCHIVE_TIMEOUT_PRESETS]),
+    [savedTimeout],
+  );
   const [retentionDays, setRetentionDays] = useState(savedRetention);
 
   const enable = useEnableWalArchive();
@@ -292,7 +314,7 @@ function SettingsForm({
             className={selectCls}
             data-testid={`pg-archive-timeout-${cluster.clusterName}`}
           >
-            {ARCHIVE_TIMEOUT_PRESETS.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
+            {timeoutOptions.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
           </select>
         </Setting>
 
