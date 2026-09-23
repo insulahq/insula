@@ -16,12 +16,21 @@ import type { DashboardAlert, DashboardSection, ResourceTriad } from '@insula/ap
 /* ── hover card ──────────────────────────────────────────────────── */
 
 /**
- * Opens on whichever side has room.
+ * Opens fully ABOVE or BELOW its tile, never on top of it, and sized to its
+ * own content rather than to the tile.
  *
- * A card that always opens downward renders off-screen for any tile near the
- * bottom of the window — which is most of them once you have scrolled. So it
- * measures on open and flips; and when neither side can hold it, it caps its
- * height and scrolls rather than drawing past the edge.
+ * Two earlier mistakes, both reported from the running panels:
+ *   * it was pinned `left-3 right-3`, so it inherited the tile's width. On a
+ *     four-up grid that is a ~200px column, which is not enough to read a
+ *     label and a figure on one line.
+ *   * it sat at `calc(100% - 8px)`, i.e. overlapping the tile by 8px, so it
+ *     read as drawn OVER the card instead of attached to it.
+ *
+ * So: content width with sane bounds, a real gap, and a measured horizontal
+ * nudge so a wide card on a right-hand tile stays inside the viewport. The
+ * vertical flip stays — a card that always opens downward is off-screen for
+ * any tile near the bottom of the window, which is most of them once you have
+ * scrolled.
  */
 export function HoverCard({ title, rows, note }: {
   title: string;
@@ -37,12 +46,26 @@ export function HoverCard({ title, rows, note }: {
     if (!el || !host) return;
     const hr = host.getBoundingClientRect();
     const needed = el.scrollHeight;
-    const below = window.innerHeight - hr.bottom - 12;
-    const above = hr.top - 12;
+    const GAP = 8;
+    const below = window.innerHeight - hr.bottom - GAP;
+    const above = hr.top - GAP;
     const useAbove = below < needed && above > below;
     const room = useAbove ? above : below;
+
+    // Horizontal: start flush with the tile, then pull back if the card would
+    // leave the viewport. Measurable because the card is opacity-0 rather than
+    // hidden — it has real dimensions before it is ever shown.
+    const width = el.offsetWidth;
+    let left = 0;
+    const overflowRight = hr.left + width - (window.innerWidth - GAP);
+    if (overflowRight > 0) left = -overflowRight;
+    if (hr.left + left < GAP) left = GAP - hr.left;
+
     setStyle({
-      ...(useAbove ? { bottom: 'calc(100% - 8px)', top: 'auto' } : { top: 'calc(100% - 8px)' }),
+      left,
+      ...(useAbove
+        ? { bottom: `calc(100% + ${GAP}px)`, top: 'auto' }
+        : { top: `calc(100% + ${GAP}px)`, bottom: 'auto' }),
       ...(needed > room ? { maxHeight: Math.max(140, room), overflowY: 'auto' } : {}),
     });
   }, []);
@@ -53,7 +76,10 @@ export function HoverCard({ title, rows, note }: {
       style={style}
       onMouseEnter={place}
       className={clsx(
-        'pointer-events-none absolute left-3 right-3 z-30 rounded-xl border p-3 opacity-0 shadow-lg transition-opacity',
+        // w-max sizes to the content; the bounds stop a long note from
+        // stretching to the page width or collapsing to the tile's column.
+        'pointer-events-none absolute left-0 top-full z-30 w-max min-w-[15rem] max-w-[min(22rem,calc(100vw-1rem))]',
+        'rounded-xl border p-3 opacity-0 shadow-xl transition-opacity',
         'border-gray-300 bg-white group-hover:opacity-100 group-focus-within:opacity-100',
         'dark:border-gray-600 dark:bg-gray-800',
       )}
@@ -120,8 +146,27 @@ export function Tile({ title, to, children, card, busy }: {
 const fmt = (v: number, unit: string): string =>
   unit === 'cores' ? v.toFixed(2) : v >= 100 ? v.toFixed(0) : v.toFixed(1);
 
-export function TriadBar({ triad, label, to, note, vocab = 'committed' }: {
-  triad: ResourceTriad; label: string; to: string; note?: string;
+/**
+ * One definition per band, used by BOTH the bar segment and its legend
+ * swatch. Declaring the colour twice is how a legend ends up describing a
+ * colour the bar no longer draws.
+ */
+const BAR_USED = 'bg-teal-600 dark:bg-teal-400';
+const BAR_USED_TIGHT = 'bg-amber-500 dark:bg-amber-400';
+const BAR_CMT = 'bg-teal-300 dark:bg-teal-700';
+const BAR_CMT_TIGHT = 'bg-amber-300 dark:bg-amber-700';
+
+function Swatch({ className, children }: { className: string; children: ReactNode }) {
+  return (
+    <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
+      <span className={clsx('inline-block h-2 w-2 shrink-0 rounded-[2px]', className)} aria-hidden="true" />
+      {children}
+    </span>
+  );
+}
+
+export function TriadBar({ triad, label, to, vocab = 'committed' }: {
+  triad: ResourceTriad; label: string; to: string;
   /**
    * Operators reserve capacity on nodes; customers have apps that reserve
    * theirs. Same number, and the word decides whether the tile reads as
@@ -165,41 +210,51 @@ export function TriadBar({ triad, label, to, note, vocab = 'committed' }: {
         />
       )}
     >
-      <div className="mb-2 flex flex-wrap items-baseline gap-1.5">
-        <span className="font-mono text-2xl font-semibold tabular-nums tracking-tight text-gray-900 dark:text-gray-100">
-          {usageUnknown ? '—' : fmt(inUse, unit)}
+      {/* "X/Y unit in use" on the left, free right-aligned — the two numbers
+          an operator actually compares, on one line. */}
+      <div className="mb-2 flex items-baseline gap-2">
+        <span className="min-w-0 truncate">
+          <span className="font-mono text-2xl font-semibold tabular-nums tracking-tight text-gray-900 dark:text-gray-100">
+            {usageUnknown ? '—' : fmt(inUse, unit)}<span className="text-gray-400 dark:text-gray-500">/</span>{fmt(total, unit)}
+          </span>
+          <span className="ml-1.5 font-mono text-xs text-gray-500 dark:text-gray-400">
+            {usageUnknown ? `${unit} · usage unavailable` : `${unit} in use`}
+          </span>
         </span>
-        <span className="font-mono text-xs text-gray-500 dark:text-gray-400">
-          {usageUnknown ? `${unit} · usage unavailable` : `${unit} in use`}
-        </span>
-        <span className="ml-auto whitespace-nowrap font-mono text-xs text-gray-500 dark:text-gray-400">
-          of {fmt(total, unit)}
+        <span className={clsx(
+          'ml-auto whitespace-nowrap font-mono text-xs tabular-nums',
+          tight ? 'font-semibold text-amber-600 dark:text-amber-400' : 'text-gray-500 dark:text-gray-400',
+        )}>
+          {fmt(free, unit)} free
         </span>
       </div>
-      <div className="flex h-3 overflow-hidden rounded-md bg-gray-200 dark:bg-gray-700">
+
+      <div className="flex h-3 overflow-hidden rounded-md bg-gray-200 ring-1 ring-inset ring-black/5 dark:bg-gray-700 dark:ring-white/5">
         <div
-          className={clsx('h-full', tight ? 'bg-amber-500' : 'bg-teal-600 dark:bg-teal-400')}
+          className={clsx('h-full', tight ? BAR_USED_TIGHT : BAR_USED)}
           style={{ width: `${Math.min(100, usedPct).toFixed(2)}%` }}
         />
         <div
-          className={clsx('h-full opacity-60', tight ? 'bg-amber-300' : 'bg-teal-300 dark:bg-teal-700')}
+          className={clsx('h-full', tight ? BAR_CMT_TIGHT : BAR_CMT)}
           style={{ width: `${Math.min(100, cmtPct).toFixed(2)}%` }}
         />
       </div>
-      <div className="mt-2 flex flex-wrap gap-3 font-mono text-[11px] tabular-nums text-gray-600 dark:text-gray-400">
-        {usageUnknown ? null : <span>in use {Math.round(usedPct)}%</span>}
-        {!consume && <span>{vocab} {Math.round((committed / (total || 1)) * 100)}%</span>}
-        <span>{consume ? 'free' : 'schedulable'} {fmt(free, unit)}</span>
+
+      {/* Colour-coded legend: every band on the bar is named, and the swatch
+          is the same class the band uses so they cannot drift apart. */}
+      <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] tabular-nums text-gray-600 dark:text-gray-400">
+        {usageUnknown ? null : (
+          <Swatch className={tight ? BAR_USED_TIGHT : BAR_USED}>in use {Math.round(usedPct)}%</Swatch>
+        )}
+        {!consume && (
+          <Swatch className={tight ? BAR_CMT_TIGHT : BAR_CMT}>
+            {vocab} {Math.round((committed / (total || 1)) * 100)}%
+          </Swatch>
+        )}
+        <Swatch className="bg-gray-200 dark:bg-gray-700">
+          {consume ? 'free' : 'schedulable'} {fmt(free, unit)}
+        </Swatch>
       </div>
-      <p className="mt-2.5 border-t border-dashed border-gray-200 pt-2 text-xs text-gray-600 dark:border-gray-700 dark:text-gray-400">
-        {note ?? (consume
-          ? (tight
-              ? <><b className="text-amber-600 dark:text-amber-400">{fmt(free, unit)} {unit}</b> left. Clear space or move to a larger plan.</>
-              : <><b>{fmt(free, unit)} {unit}</b> still free.</>)
-          : (tight
-              ? <>Only <b className="text-amber-600 dark:text-amber-400">{fmt(free, unit)} {unit}</b> left to {vocab === 'reserved' ? 'reserve' : 'schedule'} — a new workload has to fit in that, not in what is idle.</>
-              : <><b>{fmt(free, unit)} {unit}</b> free for another workload.</>))}
-      </p>
     </Tile>
   );
 }
