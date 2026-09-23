@@ -492,7 +492,7 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId,
                   else if (isDeprecated) suffix = ' (deprecated)';
                   return (
                     <option key={v.id} value={v.version}>
-                      {v.version}{v.isDefault === 1 ? ' (default)' : ''}{suffix}
+                      v{v.version}{v.isDefault === 1 ? ' (default)' : ''}{suffix}
                     </option>
                   );
                 })}

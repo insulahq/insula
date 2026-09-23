@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { X, CheckCircle, Loader2, AlertTriangle } from 'lucide-react';
 import { usePostflight, useUpgradeProgress } from '@/hooks/use-platform-upgrade';
+import { formatVersion } from '@/lib/format-version';
 
 /**
  * Re-openable Task Center progress modal for a platform upgrade
@@ -41,7 +42,11 @@ export default function PlatformUpgradeProgressModal({ version, onClose }: Props
   const progQ = useUpgradeProgress(active);
   const prog = progQ.data?.data;
 
-  const target = version ?? pending ?? prog?.targetTag ?? 'the new version';
+  // Formatted only when it IS a version: the fallback is prose, and
+  // "v the new version" is worse than no prefix at all. `targetTag` arrives
+  // already prefixed (it is a git tag), which formatVersion tolerates.
+  const targetVersion = version ?? pending ?? prog?.targetTag ?? null;
+  const target = targetVersion ? formatVersion(targetVersion) : 'the new version';
   const stuck = post?.verdict === 'abort-recommended';
   // The roll is physically DONE when every version-managed Deployment is on the
   // target image (the live /progress signal — refreshes ~4s), even before the

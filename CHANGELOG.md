@@ -12,6 +12,26 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+
+- **The update banner named the version you already have.** It read
+  "Platform update available: 2026.9.30 (current: 2026.9.30)" after
+  v2026.9.31 was published. The banner rendered `latestVersion` — a lazily
+  refreshed, unverified mirror — while the "an update exists" decision was
+  computed from the cosign-verified `available`. It now shows the same
+  field it decides from.
+- **`latest_version` could sit frozen indefinitely.** Its refresh was gated
+  on `last_update_check`, which the hourly verified poller bumps on every
+  path it takes without ever writing `latest_version`. The two now have
+  separate timestamps, because they are deliberately different values —
+  `available` is verified, `latest` is the raw upstream newest.
+
+### Changed
+
+- **Every version number displays with a leading `v`** — `v2026.9.31`, not
+  `2026.9.31` — matching the tags, the release assets and the deployment
+  columns that already did.
+
 ## [2026.9.31] - 2026-09-23
 
 ### BREAKING
