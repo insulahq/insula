@@ -383,6 +383,8 @@ export interface ImapSyncJob {
   readonly id: string;
   readonly tenantId: string;
   readonly mailboxId: string;
+  /** The LOCAL mailbox this job syncs into. Null if the mailbox row is gone. */
+  readonly mailboxAddress: string | null;
   readonly sourceHost: string;
   readonly sourcePort: number;
   readonly sourceUsername: string;

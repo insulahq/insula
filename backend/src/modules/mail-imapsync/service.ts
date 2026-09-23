@@ -449,11 +449,33 @@ export function buildJobSecret(input: BuildJobSecretInput): V1Secret {
 
 // ─── DB-side service helpers ─────────────────────────────────────────────
 
-function rowToResponse(row: ImapSyncJob): ImapSyncJobResponse {
+/**
+ * Resolve the LOCAL mailbox address for a set of jobs in one query.
+ *
+ * A migration job is a pairing of two addresses, and the API returned only
+ * the source — so two jobs pulling from the same old server were
+ * indistinguishable in the list. One lookup keyed by mailboxId rather than a
+ * join on every select, because `rowToResponse` is called from five places.
+ */
+async function addressesFor(
+  db: Database,
+  mailboxIds: readonly string[],
+): Promise<Map<string, string>> {
+  const ids = [...new Set(mailboxIds)].filter(Boolean);
+  if (ids.length === 0) return new Map();
+  const rows = await db
+    .select({ id: mailboxes.id, addr: mailboxes.fullAddress })
+    .from(mailboxes)
+    .where(inArray(mailboxes.id, ids));
+  return new Map(rows.map((r) => [r.id, r.addr]));
+}
+
+function rowToResponse(row: ImapSyncJob, mailboxAddress: string | null = null): ImapSyncJobResponse {
   return {
     id: row.id,
     tenantId: row.tenantId,
     mailboxId: row.mailboxId,
+    mailboxAddress,
     sourceHost: row.sourceHost,
     sourcePort: row.sourcePort,
     sourceUsername: row.sourceUsername,
@@ -542,7 +564,11 @@ export async function createImapSyncJob(
         updatedAt: now,
       })
       .returning();
-    return rowToResponse(row as ImapSyncJob);
+    const addrs = await addressesFor(db, [(row as ImapSyncJob).mailboxId]);
+    return rowToResponse(
+      row as ImapSyncJob,
+      addrs.get((row as ImapSyncJob).mailboxId) ?? null,
+    );
   } catch (err: unknown) {
     const pgErr = err as { code?: string; message?: string };
     if (pgErr.code === '23505') {
@@ -570,7 +596,8 @@ export async function listImapSyncJobs(
     .where(eq(imapSyncJobs.tenantId, tenantId))
     .orderBy(desc(imapSyncJobs.createdAt))
     .limit(100);
-  return rows.map(rowToResponse);
+  const addrs = await addressesFor(db, rows.map((r) => r.mailboxId));
+  return rows.map((r) => rowToResponse(r, addrs.get(r.mailboxId) ?? null));
 }
 
 /**
@@ -586,7 +613,9 @@ export async function getImapSyncJob(
     .select()
     .from(imapSyncJobs)
     .where(and(eq(imapSyncJobs.id, jobId), eq(imapSyncJobs.tenantId, tenantId)));
-  return row ? rowToResponse(row as ImapSyncJob) : null;
+  if (!row) return null;
+  const addrs = await addressesFor(db, [row.mailboxId]);
+  return rowToResponse(row as ImapSyncJob, addrs.get(row.mailboxId) ?? null);
 }
 
 /**
@@ -854,12 +883,38 @@ export async function updateImapSyncJob(
   if (input.source_ssl !== undefined) updates.sourceSsl = input.source_ssl ? 1 : 0;
   if (input.options !== undefined) updates.options = input.options;
 
+  // Retargeting the destination. Without this, a migration that landed in the
+  // wrong mailbox is a delete-and-recreate, which throws away the source
+  // credentials with it.
+  //
+  // The mailbox MUST belong to the same tenant: the job id is already scoped
+  // above, but mailbox_id arrives from the client and would otherwise let one
+  // tenant point a job at another tenant's mailbox.
+  if (input.mailbox_id !== undefined && input.mailbox_id !== row.mailboxId) {
+    const [target] = await db
+      .select({ id: mailboxes.id })
+      .from(mailboxes)
+      .where(and(eq(mailboxes.id, input.mailbox_id), eq(mailboxes.tenantId, tenantId)));
+    if (!target) {
+      throw new ApiError(
+        'MAILBOX_NOT_FOUND',
+        'That destination mailbox does not exist for this tenant',
+        404,
+      );
+    }
+    updates.mailboxId = input.mailbox_id;
+  }
+
   const [updated] = await db
     .update(imapSyncJobs)
     .set(updates)
     .where(eq(imapSyncJobs.id, jobId))
     .returning();
-  return rowToResponse(updated as ImapSyncJob);
+  const addrs = await addressesFor(db, [(updated as ImapSyncJob).mailboxId]);
+  return rowToResponse(
+    updated as ImapSyncJob,
+    addrs.get((updated as ImapSyncJob).mailboxId) ?? null,
+  );
 }
 
 /**

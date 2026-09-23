@@ -750,3 +750,44 @@ describe('re-sync rebuilds the folder mapping', () => {
     expect(args[args.indexOf('--regextrans2') + 1]).toContain('{Junk}');
   });
 });
+
+/**
+ * "Each job should indicate the local destination mailbox in the title in
+ * addition to the source, and the destination should be selectable when
+ * editing a sync job."
+ *
+ * A migration is a PAIRING of two addresses. The API returned only the source,
+ * so two jobs pulling from the same old server were indistinguishable and
+ * there was no way to see which local mailbox was about to be written to.
+ * Retargeting was a delete-and-recreate, which throws the source credentials
+ * away with the job.
+ */
+describe('imapsync destination mailbox', () => {
+  it('the update contract accepts a new destination', async () => {
+    const { updateImapSyncJobSchema } = await import('@insula/api-contracts');
+    const ok = updateImapSyncJobSchema.safeParse({ mailbox_id: 'mb-2' });
+    expect(ok.success).toBe(true);
+  });
+
+  it('the update contract still refuses unknown fields', async () => {
+    // `.strict()` is what stops a typo silently writing nothing.
+    const { updateImapSyncJobSchema } = await import('@insula/api-contracts');
+    expect(updateImapSyncJobSchema.safeParse({ mailboxId: 'mb-2' }).success).toBe(false);
+  });
+
+  it('the response type carries the destination address', async () => {
+    // Pins the field name the two panels render. A rename here silently
+    // renders "(mailbox removed)" in both.
+    const mod = await import('@insula/api-contracts');
+    const sample: mod.ImapSyncJobResponse = {
+      id: 'j1', tenantId: 't1', mailboxId: 'mb-1', mailboxAddress: 'new@example.test',
+      sourceHost: 'old.example.test', sourcePort: 993, sourceUsername: 'old',
+      sourceSsl: true, options: {}, status: 'succeeded', k8sJobName: null,
+      k8sNamespace: 'mail', logTail: null, errorMessage: null,
+      messagesTotal: null, messagesTransferred: null, currentFolder: null,
+      summary: null, lastProgressAt: null, podPhase: null, podMessage: null,
+      startedAt: null, finishedAt: null, createdAt: '', updatedAt: '',
+    };
+    expect(sample.mailboxAddress).toBe('new@example.test');
+  });
+});
