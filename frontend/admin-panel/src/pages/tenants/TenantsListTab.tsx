@@ -20,6 +20,7 @@ import { useBulkSuspendTenants, useBulkReactivateTenants, useBulkDeleteTenants }
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
 import { useAllTenantMetrics, type ResourceMetrics } from '@/hooks/use-resource-metrics';
+import { formatMetricsCpu, formatMetricsBytes, isMetricValue, METRIC_UNAVAILABLE } from '@/lib/format-metrics';
 
 export default function TenantsListTab() {
   const [search, setSearch] = useState('');
@@ -437,23 +438,6 @@ export default function TenantsListTab() {
 
 // ─── Metrics Cell Helpers ────────────────────────────────────────────────────
 
-function formatMetricsCpu(value: number): string {
-  if (value >= 10) return value.toFixed(0);
-  if (value >= 1) return value.toFixed(1);
-  return value.toFixed(2);
-}
-
-function formatMetricsBytes(valueGi: number): string {
-  if (valueGi <= 0) return '0Mi';
-  if (valueGi < 1) {
-    const mi = valueGi * 1024;
-    if (mi >= 100) return `${mi.toFixed(0)}Mi`;
-    if (mi >= 10) return `${mi.toFixed(1)}Mi`;
-    return `${mi.toFixed(2)}Mi`;
-  }
-  if (valueGi >= 10) return `${valueGi.toFixed(0)}Gi`;
-  return `${valueGi.toFixed(1)}Gi`;
-}
 
 function MetricsCell({
   metrics,
@@ -490,9 +474,22 @@ function MetricsCell({
     );
   }
 
-  const resourceData = metrics[resource];
-  const inUse = resourceData.inUse;
-  const available = resourceData.available;
+  const resourceData = metrics[resource] as
+    | { inUse: number | null; reserved: number | null; available: number | null }
+    | undefined;
+  const inUse = resourceData?.inUse ?? null;
+  const available = resourceData?.available ?? null;
+
+  // No usable reading — show a dash rather than a green dot next to "—/—",
+  // which would read as "healthy, nothing used".
+  if (!isMetricValue(inUse) || !isMetricValue(available)) {
+    return (
+      <td className="hidden px-3 py-3.5 text-xs font-mono text-gray-400 dark:text-gray-500 md:table-cell">
+        <span title={`No ${resource} reading for this tenant`}>{METRIC_UNAVAILABLE}</span>
+      </td>
+    );
+  }
+
   const ratio = available > 0 ? inUse / available : 0;
 
   let dotColor: string;

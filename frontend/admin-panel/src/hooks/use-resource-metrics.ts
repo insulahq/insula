@@ -1,11 +1,24 @@
 import { useQuery } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
 
+/**
+ * Hand-written mirror of the backend's shape. The backend computes every field
+ * as a number, but this type is a CLAIM about a wire format, not a guarantee —
+ * and a null reached the tenant table and crashed the page on `.toFixed()`.
+ * The numeric fields are therefore typed nullable, so every consumer is forced
+ * to decide what a missing reading renders as.
+ */
+interface MetricTriple {
+  readonly inUse: number | null;
+  readonly reserved: number | null;
+  readonly available: number | null;
+}
+
 export interface ResourceMetrics {
   readonly tenantId: string;
-  readonly cpu: { readonly inUse: number; readonly reserved: number; readonly available: number };
-  readonly memory: { readonly inUse: number; readonly reserved: number; readonly available: number };
-  readonly storage: { readonly inUse: number; readonly reserved: number; readonly available: number };
+  readonly cpu: MetricTriple;
+  readonly memory: MetricTriple;
+  readonly storage: MetricTriple;
   readonly lastUpdatedAt: string;
 }
 
