@@ -85,9 +85,18 @@ export type DashboardAlert = z.infer<typeof dashboardAlertSchema>;
  * been reserved and cannot be handed to anything else even while idle;
  * `total` is the ceiling. The gap between the first two is the whole point —
  * production runs at 12% CPU usage and 92% CPU commitment.
+ *
+ * `inUse` is NULLABLE, and the null carries weight: it means the metrics API
+ * did not answer, which is a different claim from "nothing is running". The
+ * two used to share one value — zero — and the UI guessed between them by
+ * testing `inUse === 0 && committed > 0`. On production that guess was wrong
+ * for 23 of 27 tenants: metrics-server was answering, and they were simply
+ * using less than a millicore, so every one of them was told its CPU usage
+ * was unavailable. Producers MUST send null for "not measured" and a number,
+ * zero included, for anything they did measure.
  */
 export const resourceTriadSchema = z.object({
-  inUse: z.number(),
+  inUse: z.number().nullable(),
   committed: z.number(),
   total: z.number(),
   unit: z.string(),

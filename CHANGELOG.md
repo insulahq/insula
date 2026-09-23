@@ -76,6 +76,23 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **The tenant dashboard told almost every tenant its CPU usage was
+  unavailable.** The tile inferred "not measured" from `inUse === 0 &&
+  committed > 0`, and on production 23 of 27 tenants matched — metrics-server
+  was answering for every one of them. Two things produced the zero: real
+  tenant CPU sits between 0 and 0.5 millicores, and the backend rounded cores
+  to three decimals, which is a whole millicore, so the measurement was erased
+  before anything could display it.
+
+  `inUse` is nullable now, and only null means unmeasured. A zero is a
+  reading — an idle workload really does use none — and renders as zero. CPU
+  keeps six decimals through the API, and the tile picks its decimals from the
+  ceiling so both halves of "X/Y" agree: a 2-core tenant plan reads 0.019, a
+  7.5-core cluster still reads 0.90. Node rows show an em-dash when a node has
+  no sample, and a cluster total with any unmeasured node is unknown rather
+  than a partial sum, because a partial sum understates usage in the direction
+  that reads as healthy.
+
 - **The backups card could promise a recovery point the cluster was not
   keeping.** `effectiveArchiveTimeout` read the operator's stored intent and
   fell back to CNPG's 5min default, so a cluster whose `archive_timeout` was

@@ -401,3 +401,66 @@ describe('resource-metrics', () => {
     });
   });
 });
+
+/**
+ * The dashboard used to infer "metrics unavailable" from `inUse === 0`.
+ * Measured on production, 23 of 27 tenants hit that condition while
+ * metrics-server answered for every one of them — they were using less than a
+ * millicore, and the old `Math.round(cores * 1000) / 1000` erased it. These
+ * pin both halves: the flag that distinguishes the two, and the precision
+ * that stops a real reading becoming a zero.
+ */
+describe('usage measurement vs zero', () => {
+  const k8sWith = (podMetrics: unknown, throws = false) => ({
+    custom: {
+      listNamespacedCustomObject: async (a: { plural?: string; group?: string }) => {
+        if (a.group === 'metrics.k8s.io') {
+          if (throws) throw new Error('metrics.k8s.io is not available');
+          return podMetrics;
+        }
+        return { items: [] };
+      },
+    },
+    core: {
+      listNamespacedPod: async () => ({ items: [] }),
+      listNamespacedResourceQuota: async () => ({ items: [] }),
+      listNamespacedPersistentVolumeClaim: async () => ({ items: [] }),
+    },
+  }) as never;
+
+  const db = { execute: async () => ({ rows: [] }) } as never;
+  const limits = { cpuLimit: 2, memoryLimitGi: 2, storageLimitGi: 10 };
+
+  it('reports usageMeasured=false when the Metrics API throws', async () => {
+    const m = await collectTenantMetrics(db, k8sWith(null, true), 't1', 'tenant-x', limits);
+    expect(m.usageMeasured).toBe(false);
+    expect(m.cpu.inUse).toBe(0);
+  });
+
+  it('reports usageMeasured=true for a genuinely idle namespace', async () => {
+    // metrics-server returns "0" for an idle container — a reading, not a gap.
+    const m = await collectTenantMetrics(db, k8sWith({
+      items: [{ metadata: { labels: {} }, containers: [{ usage: { cpu: '0', memory: '2432Ki' } }] }],
+    }), 't1', 'tenant-x', limits);
+    expect(m.usageMeasured).toBe(true);
+    expect(m.cpu.inUse).toBe(0);
+  });
+
+  it('keeps sub-millicore CPU instead of rounding it to zero', async () => {
+    // The real production sample: three containers at 97863n + 104773n + 0.
+    const m = await collectTenantMetrics(db, k8sWith({
+      items: [{
+        metadata: { labels: {} },
+        containers: [
+          { usage: { cpu: '97863n', memory: '1Ki' } },
+          { usage: { cpu: '104773n', memory: '1Ki' } },
+          { usage: { cpu: '0', memory: '1Ki' } },
+        ],
+      }],
+    }), 't1', 'tenant-x', limits);
+    expect(m.usageMeasured).toBe(true);
+    // 202636n = 0.000203 cores. Math.round(x * 1000) / 1000 gave exactly 0.
+    expect(m.cpu.inUse).toBeCloseTo(0.000203, 6);
+    expect(m.cpu.inUse).toBeGreaterThan(0);
+  });
+});

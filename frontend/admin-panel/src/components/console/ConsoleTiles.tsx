@@ -143,8 +143,22 @@ export function Tile({ title, to, children, card, busy }: {
 
 /* ── triad bar ───────────────────────────────────────────────────── */
 
-const fmt = (v: number, unit: string): string =>
-  unit === 'cores' ? v.toFixed(2) : v >= 100 ? v.toFixed(0) : v.toFixed(1);
+/**
+ * Core precision is chosen from the CEILING, not from the value — so both
+ * halves of "X/Y" carry the same decimals, and a cluster tile does not grow
+ * noise digits to accommodate a tenant-sized one.
+ *
+ * Two decimals of a core is a 10-millicore quantum. On a 7.5-core cluster
+ * that is 0.13% and invisible; on a 2-core tenant plan it is 0.5%, and the
+ * whole tenant fits inside it — a namespace running Apache, MariaDB and nginx
+ * measured 0.3 to 19 millicores on production, every one of which printed as
+ * "0.00".
+ */
+const coreDecimalsFor = (total: number): number => (total < 4 ? 3 : 2);
+
+const fmt = (v: number, unit: string, coreDecimals = 2): string =>
+  unit === 'cores' ? v.toFixed(coreDecimals)
+    : v >= 100 ? v.toFixed(0) : v.toFixed(1);
 
 /**
  * Band styling, from the design mockup.
@@ -212,7 +226,16 @@ export function TriadBar({ triad, label, to, vocab = 'committed', extraRows = []
    */
   vocab?: 'committed' | 'reserved';
 }) {
-  const { inUse, committed, total, unit, kind } = triad;
+  const { inUse: measured, committed, total, unit, kind } = triad;
+  /**
+   * null is the ONLY thing that means "not measured". A zero is a reading, and
+   * an idle workload really does use zero — 23 of 27 production tenants were
+   * being told their CPU usage was unavailable while metrics-server answered
+   * for every one of them.
+   */
+  const usageUnknown = measured === null;
+  const inUse = measured ?? 0;
+  const dec = coreDecimalsFor(triad.total);
   const consume = kind === 'consume';
   // Storage is consumed, not reserved: free is limit minus what is on disk,
   // and there is no reserved band to draw.
@@ -230,13 +253,6 @@ export function TriadBar({ triad, label, to, vocab = 'committed', extraRows = []
   const tone: BarTone = claimFrac >= 0.95 ? 'crit' : claimFrac >= warnAt ? 'warn' : 'ok';
   const tight = tone !== 'ok';
   const band = BAND[tone];
-  /**
-   * A zero usage reading against a non-zero commitment is almost always a
-   * metrics source that did not answer, not a genuinely idle cluster. Printing
-   * "0.00 cores in use" states a measurement that was never taken, so the
-   * headline reads em-dash and the bar falls back to the commitment.
-   */
-  const usageUnknown = !consume && inUse === 0 && committed > 0;
 
   return (
     <Tile
@@ -246,10 +262,10 @@ export function TriadBar({ triad, label, to, vocab = 'committed', extraRows = []
         <HoverCard
           title={`${label} — where it goes`}
           rows={[
-            ['Allocatable', `${fmt(total, unit)} ${unit}`],
-            ...(consume ? [] : [['Committed', `${fmt(committed, unit)} ${unit} · ${Math.round((committed / (total || 1)) * 100)}%`] as const]),
-            ['In use', usageUnknown ? 'not reported' : `${fmt(inUse, unit)} ${unit} · ${Math.round(usedPct)}%`],
-            [consume ? 'Free' : 'Schedulable left', `${fmt(free, unit)} ${unit}`],
+            ['Allocatable', `${fmt(total, unit, dec)} ${unit}`],
+            ...(consume ? [] : [['Committed', `${fmt(committed, unit, dec)} ${unit} · ${Math.round((committed / (total || 1)) * 100)}%`] as const]),
+            ['In use', usageUnknown ? 'not reported' : `${fmt(inUse, unit, dec)} ${unit} · ${Math.round(usedPct)}%`],
+            [consume ? 'Free' : 'Schedulable left', `${fmt(free, unit, dec)} ${unit}`],
             ...extraRows,
           ]}
           note={consume
@@ -263,7 +279,7 @@ export function TriadBar({ triad, label, to, vocab = 'committed', extraRows = []
       <div className="mb-2 flex items-baseline gap-2">
         <span className="min-w-0 truncate">
           <span className="font-mono text-2xl font-semibold tabular-nums tracking-tight text-gray-900 dark:text-gray-100">
-            {usageUnknown ? '—' : fmt(inUse, unit)}<span className="text-gray-400 dark:text-gray-500">/</span>{fmt(total, unit)}
+            {usageUnknown ? '—' : fmt(inUse, unit, dec)}<span className="text-gray-400 dark:text-gray-500">/</span>{fmt(total, unit, dec)}
           </span>
           <span className="ml-1.5 font-mono text-xs text-gray-500 dark:text-gray-400">
             {usageUnknown ? `${unit} · usage unavailable` : `${unit} in use`}
@@ -275,7 +291,7 @@ export function TriadBar({ triad, label, to, vocab = 'committed', extraRows = []
             : tone === 'warn' ? 'font-semibold text-amber-700 dark:text-amber-400'
             : 'text-gray-500 dark:text-gray-400',
         )}>
-          {fmt(free, unit)} free
+          {fmt(free, unit, dec)} free
         </span>
       </div>
 
@@ -304,7 +320,7 @@ export function TriadBar({ triad, label, to, vocab = 'committed', extraRows = []
           </Swatch>
         )}
         <Swatch className={SW_FREE}>
-          {consume ? 'free' : 'schedulable'} {fmt(free, unit)}
+          {consume ? 'free' : 'schedulable'} {fmt(free, unit, dec)}
         </Swatch>
       </div>
     </Tile>
