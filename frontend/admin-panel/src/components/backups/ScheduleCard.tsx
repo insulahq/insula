@@ -17,6 +17,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Loader2, AlertTriangle, Save, Power, PowerOff, Info } from 'lucide-react';
 import { apiFetch } from '@/lib/api-client';
 import { validateCronExpression, type BackupScheduleRow } from '@insula/api-contracts';
+import { useSystemSettings } from '@/hooks/use-system-settings';
 
 // Mirror the backend bounds so the operator sees the constraint inline
 // rather than after PATCH. Keep in sync with backup-schedules.ts.
@@ -95,6 +96,13 @@ export default function ScheduleCard({
       qc.invalidateQueries({ queryKey: ['admin', 'backups', 'system', 'overview'] });
     },
   });
+
+  // The schedule is a WALL-CLOCK time in the platform's configured zone —
+  // the same zone the platform stamps into every CronJob's spec.timeZone.
+  // Showing it is not decoration: an unlabelled `30 3 * * *` reads as UTC
+  // to some operators and as local to others, and they are hours apart.
+  const { data: systemSettings } = useSystemSettings();
+  const scheduleZone = systemSettings?.data?.timezone?.trim() || '';
 
   const [cronDraft, setCronDraft] = useState('');
   const [retentionDaysDraft, setRetentionDaysDraft] = useState('');
@@ -210,7 +218,9 @@ export default function ScheduleCard({
 
       <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
         <div>
-          <label className="text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400" htmlFor={`cron-${subsystem}`}>Cron expression</label>
+          <label className="text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400" htmlFor={`cron-${subsystem}`}>
+            Cron expression{scheduleZone ? ` (${scheduleZone})` : ''}
+          </label>
           <input
             id={`cron-${subsystem}`}
             type="text"
@@ -232,7 +242,10 @@ export default function ScheduleCard({
               {cronError}
             </p>
           ) : (
-            <p className="mt-1 text-xs text-gray-500">5 fields: min hour day-of-month month day-of-week</p>
+            <p className="mt-1 text-xs text-gray-500">
+              5 fields: min hour day-of-month month day-of-week
+              {scheduleZone ? ` — wall-clock time in ${scheduleZone}` : ''}
+            </p>
           )}
         </div>
       {!hideRetention && (

@@ -12,6 +12,25 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### BREAKING
+
+- **Platform-side schedules now fire in the platform's configured timezone,
+  not UTC.** On any cluster whose **Settings → System → timezone** is not UTC,
+  every schedule under **Targets, Schedules & Retention** — tenant bundles,
+  mail snapshots and the cadence-fired backups — moves by that zone's offset
+  on first start after the upgrade. A cluster set to `Africa/Windhoek`
+  (UTC+2) running `30 3 * * *` fired at 05:30 local before and fires at 03:30
+  local after.
+
+  Nothing to migrate, but check the new times suit your maintenance window
+  before applying: the schedules themselves are unchanged, only the clock they
+  are read against. UTC clusters are unaffected.
+
+  *Why:* the platform already stamped that timezone into every Kubernetes
+  CronJob's `spec.timeZone`, so identical-looking expressions on the same page
+  fired hours apart depending on which engine ran them. The cron field now
+  names the zone it is read in.
+
 ### Changed
 
 - **k3s servers now survive a storage stall instead of restarting the control

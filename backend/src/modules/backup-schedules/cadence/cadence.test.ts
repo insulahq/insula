@@ -367,7 +367,7 @@ describe('the firing engine', () => {
 
   it('fires only on a minute the cron matches', async () => {
     const { clients, create } = fireClients();
-    const args = { namespace: 'platform', cronJobName: 'platform-secrets-backup', cron: '30 4 * * *' };
+    const args = { namespace: 'platform', cronJobName: 'platform-secrets-backup', cron: '30 4 * * *', zone: 'UTC' };
     const miss = await fireIfDue(clients, { ...args, at: new Date('2026-09-18T04:29:00Z') }, log);
     expect(miss.fired).toBe(false);
     expect(create).not.toHaveBeenCalled();
@@ -384,12 +384,52 @@ describe('the firing engine', () => {
     const { clients } = fireClients(conflict);
     const res = await fireIfDue(
       clients,
-      { namespace: 'platform', cronJobName: 'platform-secrets-backup', cron: '30 4 * * *', at: new Date('2026-09-18T04:30:00Z') },
+      { namespace: 'platform', cronJobName: 'platform-secrets-backup', cron: '30 4 * * *', at: new Date('2026-09-18T04:30:00Z'), zone: 'UTC' },
       log,
     );
     expect(res.duplicate).toBe(true);
     expect(res.fired).toBe(false);
     expect(res.errorMessage).toBe('');
+  });
+
+  it('fires on the PLATFORM ZONE wall clock, matching the CronJob it stands in for', async () => {
+    // Kubernetes fires the real CronJob in spec.timeZone; the platform-fired
+    // path has to agree, or the same string runs at two different times.
+    // 04:30 in Africa/Windhoek (UTC+2) is 02:30 UTC.
+    const { clients, create } = fireClients();
+    const args = {
+      namespace: 'platform',
+      cronJobName: 'platform-secrets-backup',
+      cron: '30 4 * * *',
+      zone: 'Africa/Windhoek',
+    };
+
+    const miss = await fireIfDue(clients, { ...args, at: new Date('2026-09-18T04:30:00Z') }, log);
+    expect(miss.fired).toBe(false);          // 06:30 local — the old UTC behaviour
+    expect(create).not.toHaveBeenCalled();
+
+    const hit = await fireIfDue(clients, { ...args, at: new Date('2026-09-18T02:30:00Z') }, log);
+    expect(hit.fired).toBe(true);            // 04:30 local
+    expect(create).toHaveBeenCalledTimes(1);
+  });
+
+  it('names the Job after the UTC instant even when the zone shifts the match', async () => {
+    // The name is the cross-replica dedup key. If it moved with the reading
+    // zone, two replicas in different zones could both create "the" Job.
+    const { clients, create } = fireClients();
+    await fireIfDue(
+      clients,
+      {
+        namespace: 'platform',
+        cronJobName: 'platform-secrets-backup',
+        cron: '30 4 * * *',
+        at: new Date('2026-09-18T02:30:00Z'),
+        zone: 'Africa/Windhoek',
+      },
+      log,
+    );
+    const body = (create.mock.calls[0][0] as { body: { metadata: { name: string } } }).body;
+    expect(body.metadata.name).toMatch(/-202609180230$/);   // UTC, not 0430
   });
 
   it('keeps the Job name inside the 63-character limit', () => {
@@ -402,7 +442,7 @@ describe('the firing engine', () => {
     const { clients, create } = fireClients();
     await fireIfDue(
       clients,
-      { namespace: 'platform', cronJobName: 'platform-secrets-backup', cron: '* * * * *', at: new Date('2026-09-18T04:30:00Z') },
+      { namespace: 'platform', cronJobName: 'platform-secrets-backup', cron: '* * * * *', at: new Date('2026-09-18T04:30:00Z'), zone: 'UTC' },
       log,
     );
     const body = (create.mock.calls[0][0] as {
