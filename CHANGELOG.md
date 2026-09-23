@@ -24,13 +24,18 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Changed
 
-- **The one-minute WAL archive interval is gone from the UI.** A WAL segment
-  is a fixed 16 MB file however little it holds, so the volume shipped is set
-  by the interval, not by how much was written. On the platform database —
-  ~10 MB of WAL an hour — one minute meant 960 MB/h of segments to carry 10 MB
-  of change, and Postgres rewrites that padding in place where every hourly
-  volume snapshot picks it up. The remaining presets are 30s / 5min / 15min /
-  1h, and the default preselection is now 1h.
+- **The sub-five-minute WAL archive intervals are gone from the UI.** A WAL
+  segment is a fixed 16 MB file however little it holds, so the volume shipped
+  is set by the interval, not by how much was written. On the platform
+  database — ~10 MB of WAL an hour — 30s meant 1.9 GB/h of segments and 1min
+  meant 960 MB/h, to carry 10 MB of change; Postgres then rewrites that
+  padding in place, where every hourly volume snapshot pins another copy. The
+  presets are now 5min / 15min / 1h, and the default preselection is 1h.
+
+  A cluster already set to a removed value still SEES it, marked "no longer
+  recommended". With no matching option the select falls back to rendering the
+  first preset, so a cluster archiving every 30 seconds would have read "Every
+  5 minutes" — and the next Save would have quietly made that true.
 
 - **The archive-timeout default moved from the Flux manifest to bootstrap.**
   It was briefly pinned in `k8s/base/database.yaml`, which silently disabled
