@@ -27,7 +27,13 @@ export async function mailboxRoutes(app: FastifyInstance): Promise<void> {
       const { limit, cursor } = parsePaginationParams(query);
       const search = typeof query.search === 'string' && query.search.length > 0 ? query.search : undefined;
 
-      const filters = [];
+      // postmaster@ is the PLATFORM's address on a tenant's domain — it exists
+      // to receive DMARC/TLS reports, has no owner to support and no quota an
+      // admin would ever change. Listing 19 of them among 53 real mailboxes
+      // just pushed the ones an operator came to find further down the page.
+      // `platform_managed` is exactly this set: every postmaster row carries
+      // it and no other row does.
+      const filters: Array<ReturnType<typeof eq>> = [eq(mailboxes.platformManaged, false)];
       if (search) {
         const pattern = `%${search}%`;
         const orExpr = or(
