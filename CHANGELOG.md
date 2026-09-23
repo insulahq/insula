@@ -12,6 +12,20 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Changed
+
+- **k3s servers now survive a storage stall instead of restarting the control
+  plane.** Kubernetes' leader-election defaults (lease 15s / renew-deadline 10s)
+  make any pause longer than 10s look like lost leadership, and losing
+  leadership exits the whole k3s process. Every k3s exit observed on the
+  production cluster has that shape. Servers now run lease 45s /
+  renew-deadline 30s / retry 5s for `kube-controller-manager`,
+  `kube-scheduler` and the embedded cloud-controller-manager, written by
+  `bootstrap.sh` and converged on existing nodes by host-migration
+  `2026.9.31/0001-k3s-leader-election`. The trade-off is failover time: a
+  genuinely dead server is taken over after ~45s instead of ~15s. Workers are
+  unaffected — `k3s agent` does not accept these keys.
+
 ### Fixed
 
 - **Concurrent `restic init` could permanently corrupt a tenant's merged backup

@@ -1849,6 +1849,61 @@ EOF
   log "Pod capacity: max-pods=500 (kubelet default 110; Calico blockSize 26 supplies the addresses)."
 }
 
+# Control-plane resilience under storage stalls.
+#
+# Kept as a constant so bootstrap.sh and the host-migration stay
+# byte-identical — the migration content-compares against exactly this text.
+LEADER_ELECTION_DROPIN='# Written by bootstrap.sh (configure_control_plane_resilience) and converged
+# on existing clusters by host-migration 2026.9.31/0001-k3s-leader-election.
+#
+# SERVER-ONLY. `k3s agent` rejects these keys, so this file must never be
+# written on a worker.
+#
+# Defaults are lease 15s / renew-deadline 10s / retry 2s. A storage stall
+# longer than the RENEW DEADLINE makes the embedded controller-manager
+# conclude it has lost leadership, and losing leadership exits the whole k3s
+# process — control plane down, every in-process scheduler with it. On a
+# single-server cluster there is no other candidate to fail over to, so the
+# exit buys nothing and costs an outage.
+#
+# 30s renew-deadline survives a stall twice the worst yet observed. The cost
+# is HA failover time: a genuinely dead server is taken over after ~45s
+# instead of ~15s, which is the right trade for a platform that has never
+# needed sub-minute control-plane failover.
+#
+# NOTE the CCM key is `kube-cloud-controller-manager-arg`, NOT
+# `cloud-controller-manager-arg` — k3s silently logs "Unknown flag ... in
+# config.yaml, skipping" for the latter and leaves the CCM on 15s. Verify a
+# change here against the Lease objects, not the config file:
+#   kubectl -n kube-system get lease kube-controller-manager \
+#     -o jsonpath="{.spec.leaseDurationSeconds}"
+kube-controller-manager-arg+:
+  - leader-elect-lease-duration=45s
+  - leader-elect-renew-deadline=30s
+  - leader-elect-retry-period=5s
+kube-scheduler-arg+:
+  - leader-elect-lease-duration=45s
+  - leader-elect-renew-deadline=30s
+  - leader-elect-retry-period=5s
+kube-cloud-controller-manager-arg+:
+  - leader-elect-lease-duration=45s
+  - leader-elect-renew-deadline=30s
+  - leader-elect-retry-period=5s
+'
+
+configure_control_plane_resilience() {
+  # Workers run `k3s agent`, which has none of these flags.
+  if [[ "$NODE_ROLE" == "worker" ]]; then
+    return 0
+  fi
+
+  local dropin=/etc/rancher/k3s/config.yaml.d/60-leader-election.yaml
+  install -d -m 0755 /etc/rancher/k3s/config.yaml.d
+  printf '%s' "$LEADER_ELECTION_DROPIN" > "$dropin"
+  chmod 0644 "$dropin"
+  log "Control-plane resilience: leader-election renew-deadline 30s (default 10s)."
+}
+
 # Kubelet graceful node shutdown. Kept as a constant so bootstrap.sh and
 # host-migration 2026.8.19/0001-graceful-node-shutdown stay byte-identical —
 # the migration content-compares against exactly this text.
@@ -10421,6 +10476,7 @@ main() {
   if [[ "$DRY_RUN" != true ]]; then
     configure_node_logging_caps
     configure_memory_protection
+    configure_control_plane_resilience
     configure_graceful_shutdown
     configure_node_net_tuning
   fi
