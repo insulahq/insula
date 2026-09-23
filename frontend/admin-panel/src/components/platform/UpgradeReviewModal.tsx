@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { X, Loader2, CheckCircle, AlertTriangle, XCircle, Server, ShieldAlert, FileText } from 'lucide-react';
 import { usePreflight, useHostMigrationsPreview, useUpgradeApply, type UpgradeGate, type UpgradeApplyData } from '@/hooks/use-platform-upgrade';
 import ChangelogModal from './ChangelogModal';
+import { formatVersion } from '@/lib/format-version';
 
 function Gate({ gate }: { gate: UpgradeGate }) {
   const icon =
@@ -81,7 +82,7 @@ export default function UpgradeReviewModal({ targetVersion, onApprove, onClose }
       <div className="w-full max-w-lg max-h-[90vh] overflow-hidden rounded-lg bg-white dark:bg-gray-800 shadow-xl flex flex-col" data-testid="upgrade-review-modal">
         <div className="flex items-center justify-between border-b border-gray-200 dark:border-gray-700 px-5 py-3">
           <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">
-            Review upgrade{resolvedTarget ? <> → <span className="font-mono">{resolvedTarget}</span></> : null}
+            Review upgrade{resolvedTarget ? <> → <span className="font-mono">{formatVersion(resolvedTarget)}</span></> : null}
           </h2>
           <button type="button" onClick={onClose} aria-label="Close" className="rounded-md p-1 text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700"><X size={18} /></button>
         </div>

@@ -80,11 +80,44 @@ describe('UpdateBanner', () => {
     vi.clearAllMocks();
   });
 
-  it('renders when update is available', () => {
+  it('renders when update is available, with leading v on both versions', () => {
     renderWithProviders(<UpdateBanner />);
     expect(screen.getByTestId('update-banner')).toBeInTheDocument();
-    expect(screen.getByText(/0\.2\.0/)).toBeInTheDocument();
-    expect(screen.getByText(/0\.1\.0/)).toBeInTheDocument();
+    expect(screen.getByText(/v0\.2\.0/)).toBeInTheDocument();
+    expect(screen.getByText(/v0\.1\.0/)).toBeInTheDocument();
+  });
+
+  it('shows the VERIFIED available version, not the unverified latest mirror', async () => {
+    // `updateAvailable` is computed from `available` (cosign-verified, written
+    // by the hourly poller). The banner rendered `latestVersion`, a lazily
+    // refreshed mirror the poller never writes — so on production it read
+    // "update available: 2026.9.30 (current: 2026.9.30)" while the verified
+    // value was 2026.9.31. Deciding from one field and captioning from another
+    // is how a banner contradicts itself.
+    const mod = await import('../hooks/use-platform-updates');
+    vi.mocked(mod.usePlatformVersion).mockReturnValue({
+      data: {
+        data: {
+          currentVersion: '2026.9.30',
+          installed: '2026.9.30',
+          latestVersion: '2026.9.30',   // stale mirror
+          available: '2026.9.31',       // verified, authoritative
+          updateAvailable: true,
+          environment: 'production',
+          autoUpdate: false,
+          lastCheckedAt: '2026-09-23T18:42:55Z',
+        },
+      },
+      isLoading: false,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof mod.usePlatformVersion>);
+
+    renderWithProviders(<UpdateBanner />);
+    const banner = screen.getByTestId('update-banner');
+    expect(banner.textContent).toContain('v2026.9.31');
+    expect(banner.textContent).toMatch(/current: v2026\.9\.30/);
+    // The old wording — available and current identical — must not reappear.
+    expect(banner.textContent).not.toMatch(/available: v2026\.9\.30/);
   });
 
   it('does not render when no update is available', async () => {

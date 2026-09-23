@@ -3,6 +3,7 @@ import { RefreshCw, X, ArrowRight } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { usePlatformVersion } from '@/hooks/use-platform-updates';
 import { useAuth } from '@/hooks/use-auth';
+import { formatVersion } from '@/lib/format-version';
 
 export default function UpdateBanner() {
   const [dismissed, setDismissed] = useState(false);
@@ -26,8 +27,17 @@ export default function UpdateBanner() {
         <div className="flex items-center gap-2 text-sm text-blue-800 dark:text-blue-200">
           <RefreshCw size={16} className="shrink-0" />
           <span>
-            Platform update available: <strong>{version.latestVersion}</strong>{' '}
-            (current: {version.currentVersion})
+            {/* `available` — the cosign-VERIFIED version the poller stored — is
+                the field `updateAvailable` is computed from, so it has to be
+                the field shown. This rendered `latestVersion`, a lazily
+                refreshed unverified mirror that the hourly poller never
+                writes, and the banner read "update available: 2026.9.30
+                (current: 2026.9.30)" while the verified value was 2026.9.31.
+                Deciding from one field and captioning from another is how a
+                banner ends up contradicting itself. */}
+            Platform update available:{' '}
+            <strong>{formatVersion(version.available ?? version.latestVersion)}</strong>{' '}
+            (current: {formatVersion(version.installed ?? version.currentVersion)})
           </span>
         </div>
 
