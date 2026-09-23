@@ -42,6 +42,14 @@ regexes = [
   # column (`secretKey = cfg.s3SecretKeyEncrypted ? decrypt(...) : ''`). The
   # generic-api-key rule matches the identifier, not any literal value.
   '''cfg\.s3SecretKeyEncrypted''',
+  # cluster-concurrency.ts's advisory-lock key — an arbitrary agreed-upon
+  # constant that MUST be committed (every replica has to pick the same number
+  # to contend on) and that unlocks nothing. generic-api-key captures the hex
+  # literal assigned to a name ending in `_KEY`. Allowlisted by value rather
+  # than by fingerprint because the line-pinned entry broke CI whenever a
+  # comment was added above the constant. A new lock key needs its own entry —
+  # that is deliberate, so each one gets looked at.
+  '''0x6f8c4e2d3a571980n''',
   # platform_config ConfigMap key NAMES referenced via configMapKeyRef — not values.
   # One pattern for both families so the v6 sibling (added with R13 dual-stack)
   # does not have to be allowlisted again as a separate literal.
