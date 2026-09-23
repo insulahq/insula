@@ -64,6 +64,7 @@ import { useTableSearch } from '@/hooks/use-table-search';
 import ErrorPanel from '@/components/ErrorPanel';
 import { describeDeploymentError } from '@/lib/describe-deployment-error';
 import { useTabParam } from '@/hooks/use-tab-param';
+import { formatMetricsCpu, formatMetricsGi } from '@/lib/format-metrics';
 
 type TabKey = 'domains' | 'applications' | 'deployments' | 'files' | 'email' | 'backups' | 'snapshots' | 'users';
 
@@ -1348,7 +1349,15 @@ function ImapSyncJobRow({ job, onCancel, cancelPending }: { readonly job: ImapSy
     <div className="rounded-md border border-gray-200 dark:border-gray-700 p-3 text-xs">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <code className="font-mono text-gray-900 dark:text-gray-100">{job.sourceUsername}@{job.sourceHost}</code>
+          {/* Both ends: a migration is a pairing, and the source alone does
+              not say which local mailbox is being written to. */}
+          <code className="font-mono text-gray-900 dark:text-gray-100">
+            {job.sourceUsername}@{job.sourceHost}
+            <span className="mx-1.5 text-gray-400 dark:text-gray-500" aria-label="into">&rarr;</span>
+            <span className="text-brand-600 dark:text-brand-400">
+              {job.mailboxAddress ?? '(mailbox removed)'}
+            </span>
+          </code>
           <span className="text-gray-400">→</span>
           <code className="font-mono text-gray-900 dark:text-gray-100">{job.mailboxId.slice(0, 8)}</code>
           <ImapSyncStatusBadge status={job.status} />
@@ -2243,23 +2252,6 @@ function ResourceLimitsCard({
 
 // ─── Metrics Display Helpers ─────────────────────────────────────────────────
 
-function formatMetricsCpu(value: number): string {
-  if (value >= 10) return value.toFixed(0);
-  if (value >= 1) return value.toFixed(1);
-  return value.toFixed(2);
-}
-
-function formatMetricsGi(valueGi: number): string {
-  if (valueGi <= 0) return '0 Mi';
-  if (valueGi < 1) {
-    const mi = valueGi * 1024;
-    if (mi >= 100) return `${mi.toFixed(0)} Mi`;
-    if (mi >= 10) return `${mi.toFixed(1)} Mi`;
-    return `${mi.toFixed(2)} Mi`;
-  }
-  if (valueGi >= 10) return `${valueGi.toFixed(0)} Gi`;
-  return `${valueGi.toFixed(1)} Gi`;
-}
 
 function MetricsUsageBlock({
   label,
@@ -2270,13 +2262,26 @@ function MetricsUsageBlock({
   unit,
 }: {
   readonly label: string;
-  readonly inUse: number;
-  readonly reserved: number;
-  readonly available: number;
-  readonly formatValue: (v: number) => string;
+  // Nullable to match the wire shape: a missing reading must render as "no
+  // data", not crash the page the way `null.toFixed()` did on the tenant list.
+  readonly inUse: number | null;
+  readonly reserved: number | null;
+  readonly available: number | null;
+  readonly formatValue: (v: number | null) => string;
   readonly unit: string;
 }) {
-  const ratio = available > 0 ? inUse / available : 0;
+  const hasReading = Number.isFinite(inUse) && Number.isFinite(available);
+  if (!hasReading) {
+    return (
+      <div className="rounded-lg border border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/50 p-3">
+        <span className="text-xs font-semibold text-gray-600 dark:text-gray-400">{label}</span>
+        <p className="mt-1.5 text-xs text-gray-400 dark:text-gray-500">No reading available</p>
+      </div>
+    );
+  }
+  const inUseNum = inUse as number;
+  const availableNum = available as number;
+  const ratio = availableNum > 0 ? inUseNum / availableNum : 0;
   const pct = Math.min(Math.max(ratio * 100, 0), 100);
 
   let barColor: string;
@@ -2294,7 +2299,7 @@ function MetricsUsageBlock({
     <div className="rounded-lg border border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/50 p-3">
       <div className="flex items-center justify-between mb-1.5">
         <span className="text-xs font-semibold text-gray-600 dark:text-gray-400">{label}</span>
-        <span className="text-xs text-gray-500 dark:text-gray-400">{formatValue(inUse)}{suffix} / {formatValue(available)}{suffix}</span>
+        <span className="text-xs text-gray-500 dark:text-gray-400">{formatValue(inUseNum)}{suffix} / {formatValue(availableNum)}{suffix}</span>
       </div>
       <div className="h-1.5 w-full rounded-full bg-gray-200 dark:bg-gray-700 mb-2">
         <div className={`h-1.5 rounded-full ${barColor}`} style={{ width: `${pct}%` }} />

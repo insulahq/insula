@@ -49,7 +49,7 @@ export async function runOnce(db: Database, now: Date = new Date()): Promise<num
 
   let sent = 0;
   for (const digest of due) {
-    const { subject, body } = renderDigest(digest.items);
+    const { subject, body, itemsHtml } = renderDigest(digest.items);
     try {
       // Dispatched through the ordinary path, so the digest itself gets a
       // template, a delivery row and a retry — it is a notification, not a
@@ -58,6 +58,7 @@ export async function runOnce(db: Database, now: Date = new Date()): Promise<num
         itemCount: String(digest.items.length),
         summary: subject,
         items: body,
+        itemsHtml,
       });
       await markSent(db, digest.items.map((i) => i.id), now);
       sent += 1;

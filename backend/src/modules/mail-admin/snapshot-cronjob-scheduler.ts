@@ -28,7 +28,8 @@ import type { Logger } from 'pino';
 import type { Database } from '../../db/index.js';
 import { eq, and, or, isNull, lt, sql } from 'drizzle-orm';
 import { backupSchedules } from '../../db/schema.js';
-import { cronMatchesMinute, minuteStamp } from '../../shared/cron-match.js';
+import { cronMatchesMinuteInZone, minuteStamp } from '../../shared/cron-match.js';
+import { resolvePlatformTimeZone } from '../system-settings/platform-timezone.js';
 import {
   reconcileMailSnapshotCronJob,
   resolveDesiredSchedule,
@@ -78,6 +79,11 @@ export function startMailSnapshotCronJobReconciler(
   // the first tick lands (the fast path no-ops until then so it can
   // never act on stale assumptions).
   let lastDesired: { schedule: string; suspended: boolean; platformFired: boolean; bound: boolean; enabled: boolean } | null = null;
+  // Platform wall-clock zone, refreshed on the reconcile tick. Read (never
+  // awaited) by fireCheck — the fire path runs every 30s and should not grow
+  // an extra async hop, and an operator changing the zone is picked up on the
+  // next reconcile like every other schedule change.
+  let zone = 'UTC';
   let ticking = false;
   let firing = false;
 
@@ -85,6 +91,7 @@ export function startMailSnapshotCronJobReconciler(
     if (cancelled || ticking) return;
     ticking = true;
     try {
+      zone = await resolvePlatformTimeZone(db, log);
       const result = await reconcileMailSnapshotCronJob(db, clients, log);
       if (result.state === 'STATE_OK' || result.state === 'STATE_NO_MAIL_TARGET') {
         lastDesired = {
@@ -181,11 +188,16 @@ export function startMailSnapshotCronJobReconciler(
     firing = true;
     try {
       const now = new Date();
-      // Most recent matching minute within the window.
+      // `zone` is the platform's wall-clock zone — the same one stamped into
+      // the CronJob's spec.timeZone, so the platform-fired path and the
+      // suspended CronJob it stands in for agree on the minute.
+      // Most recent matching minute within the window. `fireAt` is a real UTC
+      // instant: it becomes last_fired_at (the replica claim) and the Job-name
+      // suffix, so only the match is zone-shifted.
       let fireAt: Date | null = null;
       for (let back = 0; back * 60_000 <= FIRE_WINDOW_MS; back++) {
         const cand = new Date(Math.floor(now.getTime() / 60_000) * 60_000 - back * 60_000);
-        if (cronMatchesMinute(lastDesired.schedule, cand)) { fireAt = cand; break; }
+        if (cronMatchesMinuteInZone(lastDesired.schedule, cand, zone)) { fireAt = cand; break; }
       }
       if (!fireAt) return;
 

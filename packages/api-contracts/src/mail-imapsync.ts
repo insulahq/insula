@@ -52,6 +52,14 @@ export const updateImapSyncJobSchema = z
     source_password: z.string().min(1).max(1024).optional(),
     source_ssl: z.boolean().optional(),
     options: imapSyncOptionsSchema.optional(),
+    /**
+     * Retarget the job at a different LOCAL mailbox.
+     *
+     * A migration that landed in the wrong destination is otherwise a
+     * delete-and-recreate, which loses the source credentials with it. The
+     * route checks the mailbox belongs to the same tenant.
+     */
+    mailbox_id: z.string().min(1).max(36).optional(),
   })
   .strict();
 
@@ -81,6 +89,13 @@ export interface ImapSyncJobResponse {
   readonly id: string;
   readonly tenantId: string;
   readonly mailboxId: string;
+  /**
+   * The LOCAL mailbox this job syncs into. A job is a pairing of two
+   * addresses and the UI showed only the source, so two migrations from the
+   * same old server were indistinguishable. Null only if the mailbox row has
+   * gone.
+   */
+  readonly mailboxAddress: string | null;
   readonly sourceHost: string;
   readonly sourcePort: number;
   readonly sourceUsername: string;

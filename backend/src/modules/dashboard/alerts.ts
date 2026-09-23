@@ -67,10 +67,17 @@ export async function buildAdminAlerts(db: Database): Promise<DashboardAlert[]> 
   // Certificates — admin.cert_expiring.
   // Table and columns verified against the live schema: `ssl_certificates`
   // holds expires_at/status; there is no certificate_health table.
-  const certs = await db.execute<{ n: number; soonest: number | null; name: string | null }>(sql`
+  const certs = await db.execute<{
+    n: number; soonest: number | null; name: string | null;
+    domain_id: string | null; tenant_id: string | null;
+  }>(sql`
     SELECT COUNT(*)::int AS n,
            MIN(EXTRACT(DAY FROM (c.expires_at - NOW())))::int AS soonest,
-           MIN(d.domain_name) AS name
+           MIN(d.domain_name) AS name,
+           -- Only meaningful when exactly one certificate is expiring; the
+           -- alert checks that before using them to build a deep link.
+           MIN(d.id) AS domain_id,
+           MIN(d.tenant_id) AS tenant_id
       FROM ssl_certificates c
       LEFT JOIN domains d ON d.id = c.domain_id
      WHERE c.expires_at IS NOT NULL
@@ -86,7 +93,12 @@ export async function buildAdminAlerts(db: Database): Promise<DashboardAlert[]> 
       value: String(cert.n),
       title: Number(cert.n) === 1 ? 'Certificate expiring' : 'Certificates expiring',
       subtitle: `${cert.name ?? 'a domain'} · soonest in ${soonest} days`,
-      href: '/domains',
+      // When the alert names ONE certificate, go to that domain rather than
+      // making the operator find it in a list. Several expiring is a list
+      // problem, so the list is the right answer then.
+      href: Number(cert.n) === 1 && cert.tenant_id && cert.domain_id
+        ? `/tenants/${cert.tenant_id}/domains/${cert.domain_id}`
+        : '/domains',
       detail: [['Expiring within 14 days', String(cert.n)],
                ['Soonest', `${soonest} days`]],
       note: 'A certificate that fails to renew keeps serving until it expires — this is the last warning.',
@@ -119,15 +131,20 @@ export async function buildAdminAlerts(db: Database): Promise<DashboardAlert[]> 
       title: full > 0 ? 'Mailboxes over quota' : 'Mailboxes nearly full',
       subtitle: `${boxRows[0].full_address} · ${boxRows[0].pct}%`
         + (boxTotal > 1 ? ` · ${boxTotal - 1} more` : ''),
-      href: '/email/operations',
+      // /email/operations is queue and delivery tooling — it says nothing
+      // about a mailbox's quota. The accounts page is where the mailbox and
+      // its quota can actually be seen and raised.
+      href: '/tenants/email-accounts',
       detail: boxRows.map((b) => [b.full_address, `${b.used_mb} / ${b.quota_mb} MB · ${b.pct}%`] as [string, string]),
       note: 'At 100% inbound mail is rejected at RCPT TO — the sender gets a bounce.',
     }));
   }
 
   // Tenants at a resource limit — admin.tenant_resource_saturation_*
-  const sat = await db.execute<{ tenant: string; resource: string; level: string; used_pct: number }>(sql`
-    SELECT t.name AS tenant, e.resource, e.level, e.used_pct
+  const sat = await db.execute<{
+    tenant: string; tenant_id: string; resource: string; level: string; used_pct: number;
+  }>(sql`
+    SELECT t.name AS tenant, t.id AS tenant_id, e.resource, e.level, e.used_pct
       FROM tenant_saturation_events e
       JOIN tenants t ON t.id = e.tenant_id
      WHERE e.cleared_at IS NULL
@@ -146,7 +163,12 @@ export async function buildAdminAlerts(db: Database): Promise<DashboardAlert[]> 
       value: `${worst.used_pct}%`,
       title: satRows.length === 1 ? 'Tenant at a resource limit' : 'Tenants at a resource limit',
       subtitle: `${worst.tenant} · ${worst.resource} ${worst.used_pct}%`,
-      href: '/tenants',
+      // The subtitle names a tenant; the link used to drop the operator on a
+      // list of every tenant to find it again. One affected tenant goes
+      // straight there.
+      href: new Set(satRows.map((r) => r.tenant_id)).size === 1 && worst.tenant_id
+        ? `/tenants/${worst.tenant_id}`
+        : '/tenants',
       detail: satRows.map((r) => [`${r.tenant} · ${r.resource}`, `${r.used_pct}% · ${r.level}`] as [string, string]),
       note: 'Reminders widen to 1h, then 6h, then daily while it persists.',
     }));
@@ -298,6 +320,17 @@ export async function buildTenantAlerts(
   }
 
   // Domain not verified — tenant.domain_verification.
+  //
+  // This matched on `status <> 'active'` and so fired for EVERY domain a
+  // tenant owned, verified ones included: `active` is a declared label on the
+  // domain_status enum that nothing ever sets. The terminal state a verified
+  // domain actually reaches is `verified`.
+  //
+  // Named positively — the states that genuinely mean "not verified yet" —
+  // rather than as "anything but X". A new terminal label would silently
+  // re-create the false alarm under the old form; under this one it simply
+  // does not alert, which is the safer way to be wrong.
+  //
   // `status` is the enum `domain_status`. Comparing it to '' asks Postgres to
   // cast an empty string into the enum, which errors rather than returning
   // nothing — so compare as text.
@@ -306,7 +339,7 @@ export async function buildTenantAlerts(
   // next to a tile saying 0 of 6 verified — the page size posing as the total.
   const dom = await db.execute<{ domain_name: string; total: number }>(sql`
     SELECT domain_name, COUNT(*) OVER ()::int AS total FROM domains
-     WHERE tenant_id = ${tenantId} AND status::text <> 'active'
+     WHERE tenant_id = ${tenantId} AND status::text IN ('unverified', 'pending')
      LIMIT 5
   `);
   const domRows = dom.rows ?? [];

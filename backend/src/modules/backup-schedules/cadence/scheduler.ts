@@ -23,6 +23,7 @@ import type { Logger } from 'pino';
 import type { Database } from '../../../db/index.js';
 import { reconcileAllCadence, resolveFiringPlan, type CadenceClients, type CadenceOutcome } from './reconciler.js';
 import { fireIfDue, type FiringClients } from './firing.js';
+import { resolvePlatformTimeZone } from '../../system-settings/platform-timezone.js';
 
 const RECONCILE_INTERVAL_MS = 5 * 60 * 1000;
 const FIRE_INTERVAL_MS = 30 * 1000;
@@ -87,11 +88,14 @@ export function startCadenceScheduler(deps: CadenceSchedulerDeps): CadenceSchedu
       log.error({ err: err instanceof Error ? err.message : String(err) }, 'cadence: could not read the firing plan');
       return;
     }
+    // Resolved once per tick, not per target: getSettings is cached, but the
+    // zone must also be identical across every target in one sweep.
+    const zone = await resolvePlatformTimeZone(db, log);
     for (const { target, cron } of plan) {
       for (const minute of windowMinutes(now())) {
         const res = await fireIfDue(
           clients,
-          { namespace: target.namespace, cronJobName: target.name, cron, at: minute },
+          { namespace: target.namespace, cronJobName: target.name, cron, at: minute, zone },
           log,
         );
         // Stop at the first minute that matched — whether we created the Job

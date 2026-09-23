@@ -32,7 +32,8 @@
 
 import { and, eq, isNull, lt, or, sql } from 'drizzle-orm';
 import { backupSchedules, tenants, hostingPlans } from '../../db/schema.js';
-import { cronMatchesMinute } from '../../shared/cron-match.js';
+import { cronMatchesMinuteInZone } from '../../shared/cron-match.js';
+import { resolvePlatformTimeZone } from '../system-settings/platform-timezone.js';
 import { notifyAdminBackupFailed } from '../notifications/events.js';
 import type { FastifyInstance } from 'fastify';
 
@@ -49,12 +50,17 @@ const FIRE_WINDOW_MIN = 5;
  * Most recent minute within the lookback window that matches the cron,
  * or null. Full 5-field semantics via shared/cron-match.ts — a weekly
  * cron (`0 3 * * 0`) only matches on Sundays, and `A-B` ranges work.
+ *
+ * `zone` is the platform's configured wall-clock zone, the same one the
+ * platform stamps into every CronJob's `spec.timeZone`. The returned Date is
+ * a real UTC instant — it becomes `last_fired_at`, which two replicas race
+ * on — so only the MATCH is read in `zone`, never the value.
  */
-function latestMatchingMinute(cronExpr: string, now: Date): Date | null {
+function latestMatchingMinute(cronExpr: string, now: Date, zone: string): Date | null {
   const floorMinute = Math.floor(now.getTime() / 60_000) * 60_000;
   for (let back = 0; back <= FIRE_WINDOW_MIN; back++) {
     const cand = new Date(floorMinute - back * 60_000);
-    if (cronMatchesMinute(cronExpr, cand)) return cand;
+    if (cronMatchesMinuteInZone(cronExpr, cand, zone)) return cand;
   }
   return null;
 }
@@ -76,11 +82,13 @@ export async function runGlobalBundleTick(app: FastifyInstance, now: Date = new 
     );
     return { fired: false, tenantsConsidered: 0, tenantsRan: 0, errors: 0 };
   }
-  const fireAt = latestMatchingMinute(schedule.cronExpression, now);
+  const zone = await resolvePlatformTimeZone(app.db, app.log);
+  const fireAt = latestMatchingMinute(schedule.cronExpression, now, zone);
   if (!fireAt) {
     app.log.debug(
       {
         cron: schedule.cronExpression,
+        zone,
         nowUtc: now.toISOString(),
         lastFiredAtUtc: schedule.lastFiredAt?.toISOString() ?? null,
       },

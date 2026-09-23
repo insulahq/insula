@@ -10,7 +10,6 @@
 backend/src/modules/ai-editor/service.ts:generic-api-key:53
 backend/src/modules/backup-restore/shared.ts:generic-api-key:115
 backend/src/modules/backup-rclone-shim/service.ts:generic-api-key:392
-backend/src/modules/tenant-bundles/cluster-concurrency.ts:generic-api-key:78
 backend/src/modules/tenant-bundles/internal-download-route.ts:generic-api-key:161
 backend/src/modules/tenant-bundles/internal-download-route.ts:generic-api-key:242
 backend/src/modules/storage-lifecycle/prebundle.ts:generic-api-key:134
@@ -31,4 +30,6 @@ k8s/base/backend-deployment.yaml:generic-api-key:301
 # integration-all.sh suite labels + integration-cluster-trusted-proxies.sh
 # `not-a-real-token` curl placeholders are now covered by line-independent
 # allowlist regexes in .gitleaks.toml (they kept breaking this baseline on line
-# shifts) — fingerprints removed.
+# shifts) — fingerprints removed. The advisory-lock key constant in
+# cluster-concurrency.ts went the same way: a comment added above it shifted
+# its line and failed CI on an unrelated change.

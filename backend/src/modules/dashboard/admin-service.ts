@@ -4,7 +4,9 @@ import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { collect } from './section.js';
 import { buildAdminAlerts, rankAlerts } from './alerts.js';
-import { buildVolumeAlert, buildOrphanedPodAlert } from './cluster-alerts.js';
+import {
+  buildVolumeAlert, buildOrphanedPodAlert, buildOrphanedVolumeAlert, loadTenantsByNamespace,
+} from './cluster-alerts.js';
 
 interface Logger { warn?(...a: unknown[]): void }
 
@@ -82,17 +84,40 @@ export async function buildAdminSummary(
         };
       }, { logger }),
       collect('recentChanges', async () => {
-        const r = await db.execute<{ action_type: string; actor: string | null; at: string; http_status: number | null }>(sql`
-          SELECT action_type, actor_id AS actor, created_at AS at, http_status
-            FROM audit_logs
-           ORDER BY created_at DESC
+        // The audit log is mostly MACHINE bookkeeping. Over seven days on
+        // production: 1006 `snapshot-last-run`, 556 `event`, 528 `file`,
+        // 309 `auth`. Taking the six most recent rows meant the tile showed
+        // that noise, every row `create`, every row green — which is exactly
+        // the "no informational value" an operator reported.
+        //
+        // So: a human actor, a mutating method, and none of the bookkeeping
+        // resource types. What is left is the administrative change an
+        // operator console is for — a domain added, a deployment updated, a
+        // mailbox deleted, an upgrade applied.
+        const r = await db.execute<{
+          action_type: string; resource_type: string | null; actor: string | null;
+          tenant_name: string | null; at: string; http_status: number | null;
+        }>(sql`
+          SELECT a.action_type, a.resource_type, u.email AS actor,
+                 COALESCE(rt.name, t.name) AS tenant_name,
+                 a.created_at AS at, a.http_status
+            FROM audit_logs a
+            JOIN users u ON u.id = a.actor_id
+            LEFT JOIN tenants rt ON rt.id = a.resource_type
+            LEFT JOIN tenants t  ON t.id = a.tenant_id
+           WHERE a.http_method IN ('POST', 'PUT', 'PATCH', 'DELETE')
+             AND COALESCE(a.resource_type, '') NOT IN (
+               'snapshot-last-run', 'event', 'audit', 'login', 'auth', 'session',
+               'passkey', 'notification', 'file', 'email', 'resource-metric'
+             )
+           ORDER BY a.created_at DESC
            LIMIT 6
         `);
         return (r.rows ?? []).map((row) => ({
           severity: (row.http_status != null && row.http_status >= 500
             ? 'critical'
             : row.http_status != null && row.http_status >= 400 ? 'warning' : 'ok') as 'ok' | 'warning' | 'critical',
-          label: row.action_type,
+          label: describeChange(row.action_type, row.resource_type, row.tenant_name),
           actor: row.actor ?? 'system',
           at: String(row.at),
         }));
@@ -109,6 +134,33 @@ export async function buildAdminSummary(
   } as AdminDashboardSummary;
 }
 
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * "create" on its own tells an operator nothing. Name the thing.
+ *
+ * Two quirks of the existing audit rows are handled rather than papered over:
+ * `resource_type` sometimes holds a TENANT ID instead of a type (so the
+ * tenant's name is used), and the plural-stripping that produced `mailboxe`
+ * is corrected on the way out. Neither is worth a migration; both are worth
+ * not showing to a human.
+ */
+export function describeChange(
+  action: string,
+  resourceType: string | null,
+  tenantName: string | null,
+): string {
+  const verb = action.includes('.') ? action.split('.').slice(1).join(' ') : action;
+  if (resourceType && UUID_RE.test(resourceType)) {
+    return tenantName ? `${verb} · ${tenantName}` : verb;
+  }
+  const noun = (resourceType ?? '').replace(/e$/, (m, i: number, str: string) =>
+    str.endsWith('boxe') ? '' : m);
+  if (!noun) return verb;
+  return tenantName ? `${verb} ${noun} · ${tenantName}` : `${verb} ${noun}`;
+}
+
 async function buildBackupClasses(db: Database): Promise<AdminDashboardSummary['backups']['data']> {
   const assign = await db.execute<{ backup_class: string; target: string | null; kind: string | null }>(sql`
     SELECT a.backup_class, c.name AS target, c."storageType" AS kind
@@ -123,9 +175,37 @@ async function buildBackupClasses(db: Database): Promise<AdminDashboardSummary['
   `);
   const f = (fresh.rows ?? [])[0];
 
+  // ONE ROW PER REPOSITORY, not per component.
+  //
+  // Since the per-tenant repository merge, a tenant's `files` and `mailboxes`
+  // rows carry the SAME repo_uri and therefore the SAME size — summing the
+  // rows counted every merged repo twice. On production that reported 69 GB
+  // against a true 64 GB, and the gap widens as more tenants migrate.
   const repo = await db.execute<{ total: number | null }>(sql`
-    SELECT SUM(repo_total_bytes)::bigint AS total FROM tenant_restic_repo_state
+    SELECT SUM(sz)::bigint AS total FROM (
+      SELECT MAX(last_repo_size_bytes) AS sz
+        FROM tenant_restic_repo_state GROUP BY repo_uri
+    ) per_repo
   `);
+
+  // Per-class figures. Each class routes to its own target and can go stale
+  // alone, so "last backup" has to be answered per class — it used to be
+  // filled in for `tenant` only, leaving system and mail permanently blank.
+  const systemRun = await db.execute<{ newest: string | null; total: number | null }>(sql`
+    SELECT MAX(finished_at) AS newest, SUM(size_bytes)::bigint AS total
+      FROM system_backup_runs WHERE status = 'succeeded'
+  `);
+  const mailRun = await db.execute<{ newest: string | null }>(sql`
+    SELECT MAX(c.finished_at) AS newest
+      FROM backup_components c
+     WHERE c.component = 'mailboxes' AND c.status = 'completed'
+  `);
+  const sysRow = (systemRun.rows ?? [])[0];
+  const mailRow = (mailRun.rows ?? [])[0];
+
+  const repoTotal = (repo.rows ?? [])[0]?.total == null
+    ? null
+    : Number((repo.rows ?? [])[0].total);
 
   const never = await db.execute<{ n: number }>(sql`
     SELECT COUNT(*)::int AS n FROM tenants t
@@ -136,16 +216,30 @@ async function buildBackupClasses(db: Database): Promise<AdminDashboardSummary['
   return {
     classes: (['system', 'tenant', 'mail'] as const).map((cls) => {
       const a = byClass.get(cls);
+      const lastSuccessAt =
+        cls === 'tenant' ? (f?.newest ? String(f.newest) : null)
+        : cls === 'system' ? (sysRow?.newest ? String(sysRow.newest) : null)
+        : (mailRow?.newest ? String(mailRow.newest) : null);
+      const repoBytes =
+        cls === 'tenant' ? (repoTotal)
+        : cls === 'system' ? (sysRow?.total == null ? null : Number(sysRow.total))
+        // Mail has no separate size to report: since the repository merge its
+        // data sits inside the per-tenant repos, so any number here would
+        // either double-count the tenant total or be made up.
+        : null;
       return {
         backupClass: cls,
-        lastSuccessAt: cls === 'tenant' ? (f?.newest ? String(f.newest) : null) : null,
+        lastSuccessAt,
         targetName: a?.target ?? null,
         targetKind: a?.kind ?? null,
-        healthy: Boolean(a?.target),
+        // A target alone is not health. A class with a target that has never
+        // produced a successful run is exactly the case worth showing.
+        healthy: Boolean(a?.target) && lastSuccessAt !== null,
+        repoBytes,
       };
     }),
     bundles: Number(f?.bundles ?? 0),
-    repoBytes: (repo.rows ?? [])[0]?.total == null ? null : Number((repo.rows ?? [])[0].total),
+    repoBytes: repoTotal,
     tenantsNeverBackedUp: Number((never.rows ?? [])[0]?.n ?? 0),
   };
 }
@@ -291,25 +385,87 @@ export async function buildAdminLive(
     // volume actually holds. Left at zeros it rendered "0.0 GB in use of 0.0",
     // which reads as a measurement rather than as missing data.
     let storageTriad = { inUse: 0, committed: 0, total: 0, unit: 'GB', kind: 'consume' as const };
+    let storageBreakdown: {
+      tenants: number; mail: number; system: number; imagesAndOther: number;
+    } | null = null;
     try {
+      const num = (v: string | number | undefined): number =>
+        typeof v === 'number' ? v : Number(v ?? 0) || 0;
+      const gb = (bytes: number): number => Math.round((bytes / 1e9) * 10) / 10;
+
+      // TOTAL is the node's disk, not the sum of volume requests.
+      //
+      // It used to be the requests, which made `total` and `committed` the
+      // same number and "free" the gap between requested and written — never
+      // free disk. On production that reported a 160 GB cluster with 36 GB
+      // used, on a node holding 540 GB with 101 GB used.
+      //
+      // Longhorn's node diskStatus is the right source: storageMaximum is the
+      // filesystem, storageAvailable what is left on it, storageScheduled the
+      // sum of what volumes have claimed. Used = maximum - available, which
+      // counts everything on the disk including images and logs, not just
+      // what Longhorn put there.
+      const lhNodes = await k8s.custom.listNamespacedCustomObject({
+        group: 'longhorn.io', version: 'v1beta2',
+        namespace: 'longhorn-system', plural: 'nodes',
+      }) as { items?: Array<{ status?: { diskStatus?: Record<string, {
+        storageMaximum?: number; storageAvailable?: number; storageScheduled?: number;
+      }> } }> };
+
+      let max = 0, avail = 0, scheduled = 0;
+      for (const n of lhNodes.items ?? []) {
+        for (const d of Object.values(n.status?.diskStatus ?? {})) {
+          max += num(d.storageMaximum);
+          avail += num(d.storageAvailable);
+          scheduled += num(d.storageScheduled);
+        }
+      }
+      const usedBytes = Math.max(0, max - avail);
+
+      storageTriad = {
+        inUse: gb(usedBytes),
+        committed: gb(scheduled),
+        total: gb(max),
+        unit: 'GB', kind: 'consume' as const,
+      };
+
+      // Breakdown. Longhorn volumes split by namespace; mail comes from the
+      // platform's own mailbox accounting because the mail stack sits on a
+      // node-pinned local-path PVC that Longhorn cannot see at all — a "Mail"
+      // line fed from Longhorn would read 0 on a cluster holding 38 GB of it.
       const vols = await k8s.custom.listNamespacedCustomObject({
         group: 'longhorn.io', version: 'v1beta2',
         namespace: 'longhorn-system', plural: 'volumes',
-      }) as { items?: Array<{ spec?: { size?: string | number }; status?: { actualSize?: string | number } }> };
-      const num = (v: string | number | undefined): number =>
-        typeof v === 'number' ? v : Number(v ?? 0) || 0;
-      const used = (vols.items ?? []).reduce((t, v) => t + num(v.status?.actualSize), 0);
-      const req = (vols.items ?? []).reduce((t, v) => t + num(v.spec?.size), 0);
-      storageTriad = {
-        inUse: Math.round((used / 1e9) * 10) / 10,
-        committed: Math.round((req / 1e9) * 10) / 10,
-        total: Math.round((req / 1e9) * 10) / 10,
-        unit: 'GB', kind: 'consume' as const,
+      }) as { items?: Array<{
+        status?: { actualSize?: string | number; kubernetesStatus?: { namespace?: string } };
+      }> };
+
+      let tenantBytes = 0, systemBytes = 0;
+      for (const v of vols.items ?? []) {
+        const ns = v.status?.kubernetesStatus?.namespace ?? '';
+        const actual = num(v.status?.actualSize);
+        if (ns.startsWith('tenant-')) tenantBytes += actual;
+        else systemBytes += actual;
+      }
+
+      const mailRow = await db.execute<{ mb: number | string | null }>(sql`
+        SELECT COALESCE(SUM(used_mb), 0) AS mb FROM mailboxes
+      `);
+      const mailBytes = Number((mailRow.rows ?? [])[0]?.mb ?? 0) * 1024 * 1024;
+
+      storageBreakdown = {
+        tenants: gb(tenantBytes),
+        mail: gb(mailBytes),
+        system: gb(systemBytes),
+        // A remainder, and named as one: container images, logs and anything
+        // else on the disk. Clamped at zero so a mail figure that runs ahead
+        // of the disk sample cannot render a negative slice.
+        imagesAndOther: Math.max(0, gb(usedBytes - tenantBytes - systemBytes - mailBytes)),
       };
     } catch (err) {
       logger?.warn?.(
         { err: err instanceof Error ? err.message : String(err) },
-        'dashboard: Longhorn volumes unreadable — storage will read as zero',
+        'dashboard: Longhorn unreadable — storage will read as zero',
       );
     }
 
@@ -330,6 +486,7 @@ export async function buildAdminLive(
         total: sum((n) => n.memory.total), unit: 'GiB', kind: 'reserve' as const,
       },
       storage: storageTriad,
+      storageBreakdown,
       nodeCount: nodes.length,
       // One node cannot survive losing one node. Stating that plainly beats
       // rendering a headroom percentage that means nothing at n=1.
@@ -340,11 +497,18 @@ export async function buildAdminLive(
   }, { logger });
 
   const clusterAlerts = await collect('clusterAlerts', async () => {
-    const [vol, orphans] = await Promise.all([
-      buildVolumeAlert(k8s).catch(() => null),
+    // Resolved once and shared: every storage alert has to be able to name the
+    // tenant behind a volume, and "Volume nearly full" without a customer next
+    // to it is not something an operator can act on.
+    const tenantsByNs = await loadTenantsByNamespace(db).catch(() => new Map());
+    const [vol, orphanVolumes, orphanPods] = await Promise.all([
+      buildVolumeAlert(k8s, tenantsByNs).catch(() => null),
+      buildOrphanedVolumeAlert(k8s, tenantsByNs).catch(() => null),
       buildOrphanedPodAlert(k8s).catch(() => null),
     ]);
-    return rankAlerts([vol, orphans].filter((a): a is NonNullable<typeof a> => a != null));
+    return rankAlerts(
+      [vol, orphanVolumes, orphanPods].filter((a): a is NonNullable<typeof a> => a != null),
+    );
   }, { logger, timeoutMs: 4_000 });
 
   const mail = await collect('mail', async () => {
@@ -381,21 +545,51 @@ export async function buildAdminLive(
        WHERE created_at > NOW() - INTERVAL '24 hours'
     `);
     const a = (agg.rows ?? [])[0] ?? {};
-    const recent = await db.execute<{ severity: string; message: string | null; hostname: string | null; request_uri: string | null; created_at: string }>(sql`
-      SELECT severity, message, hostname, request_uri, created_at
+
+    // Who is actually hitting us, worst first. A rule id says what tripped;
+    // an address says who — and only the address can be blocked, allowlisted
+    // or reported upstream.
+    const offenders = await db.execute<{ source_ip: string; hits: number }>(sql`
+      SELECT source_ip, COUNT(*)::int AS hits
+        FROM waf_logs
+       WHERE created_at > NOW() - INTERVAL '24 hours' AND source_ip IS NOT NULL
+       GROUP BY source_ip ORDER BY hits DESC LIMIT 3
+    `);
+
+    // activeBans was hardcoded to 0, so the tile reported "no bans" on a
+    // cluster that had banned 30 addresses. CrowdSec durations are stored as
+    // short strings ('1h', '3d', '72h'); Postgres parses those as intervals,
+    // but the regex keeps an unexpected value from erroring the whole query —
+    // it counts as expired instead, which understates rather than misleads.
+    const bans = await db.execute<{ active: number }>(sql`
+      SELECT COUNT(DISTINCT source_ip)::int AS active
+        FROM crowdsec_autoban_runs
+       WHERE outcome = 'banned'
+         AND ban_duration ~ '^[0-9]+[smhd]$'
+         AND triggered_at + ban_duration::interval > NOW()
+    `);
+
+    const recent = await db.execute<{ severity: string; message: string | null; source_ip: string | null; hostname: string | null; request_uri: string | null; created_at: string }>(sql`
+      SELECT severity, message, source_ip, hostname, request_uri, created_at
         FROM waf_logs ORDER BY created_at DESC LIMIT 6
     `);
     return {
       blocked24h: Number(a.blocked ?? 0),
       critical24h: Number(a.critical ?? 0),
       distinctSources: Number(a.sources ?? 0),
-      activeBans: 0,
+      activeBans: Number((bans.rows ?? [])[0]?.active ?? 0),
+      topOffenders: (offenders.rows ?? []).map((o) => ({
+        ip: String(o.source_ip), hits: Number(o.hits),
+      })),
       topRuleId: a.top_rule == null ? null : String(a.top_rule),
       wafEnabled: true,
       recent: (recent.rows ?? []).map((r) => ({
         severity: (r.severity === 'critical' ? 'critical' : 'warning') as 'warning' | 'critical',
         label: r.message ?? r.request_uri ?? 'blocked request',
-        source: r.hostname ?? '—',
+        // The SOURCE of an attack is the address it came from. This carried
+        // the hostname — the site being attacked — under a label saying the
+        // opposite.
+        source: r.source_ip ?? r.hostname ?? '—',
         at: String(r.created_at),
       })),
     };
