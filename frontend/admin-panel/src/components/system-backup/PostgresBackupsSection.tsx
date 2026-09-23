@@ -32,6 +32,7 @@ import { useShimAssignments } from '@/hooks/use-backup-rclone-shim';
 import { useCnpgBackupHealth } from '@/hooks/use-cnpg-backup-health';
 import { apiFetch } from '@/lib/api-client';
 import { formatBytes } from '@/hooks/use-platform-storage';
+import { PLATFORM_DEFAULT_ARCHIVE_TIMEOUT } from '@insula/api-contracts';
 import type { WalArchiveCluster, CnpgBackupCatalogueResponse, WalArchiveSummary } from '@insula/api-contracts';
 
 // ── Setting vocabularies ───────────────────────────────────────────
@@ -43,16 +44,24 @@ const CADENCE_PRESETS: Array<{ value: string; label: string }> = [
   { value: '0 0 3 1 * *', label: 'Monthly, 1st at 03:00' },
 ];
 
+/**
+ * No 1min preset: a WAL segment is a fixed 16 MB file however little it holds,
+ * so the shipped volume is set by the INTERVAL, not by how much was written.
+ * On the platform database — ~10 MB of WAL an hour — 1min meant 960 MB/h of
+ * segments to carry 10 MB of change, and Postgres rewrites that padding in
+ * place where every hourly volume snapshot picks it up. The interval is a
+ * recovery-point target; it should be chosen from what an operator can afford
+ * to lose, not set to the smallest number on offer.
+ */
 const ARCHIVE_TIMEOUT_PRESETS: Array<{ value: string; label: string }> = [
   { value: '30s', label: 'Every 30 seconds' },
-  { value: '1min', label: 'Every minute' },
   { value: '5min', label: 'Every 5 minutes' },
   { value: '15min', label: 'Every 15 minutes' },
   { value: '1h', label: 'Every hour' },
 ];
 
 const DEFAULT_CADENCE = '0 0 3 * * *';
-const DEFAULT_ARCHIVE_TIMEOUT = '5min';
+const DEFAULT_ARCHIVE_TIMEOUT = PLATFORM_DEFAULT_ARCHIVE_TIMEOUT;
 const DEFAULT_RETENTION = 30;
 
 const CRON6_RE = /^(\S+\s+){5}\S+$/;

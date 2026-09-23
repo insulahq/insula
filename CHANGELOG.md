@@ -24,6 +24,23 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Changed
 
+- **The one-minute WAL archive interval is gone from the UI.** A WAL segment
+  is a fixed 16 MB file however little it holds, so the volume shipped is set
+  by the interval, not by how much was written. On the platform database —
+  ~10 MB of WAL an hour — one minute meant 960 MB/h of segments to carry 10 MB
+  of change, and Postgres rewrites that padding in place where every hourly
+  volume snapshot picks it up. The remaining presets are 30s / 5min / 15min /
+  1h, and the default preselection is now 1h.
+
+- **The archive-timeout default moved from the Flux manifest to bootstrap.**
+  It was briefly pinned in `k8s/base/database.yaml`, which silently disabled
+  the operator's own control: that Cluster carries `ssa: merge`, so Flux
+  re-asserts every field the manifest sets. Measured on DEV, an operator's
+  15min was reverted within 15 seconds of the next reconcile, with no error
+  anywhere. `bootstrap.sh:set_default_archive_timeout()` now applies 1h ONCE
+  at install time and only when the parameter is unset, so it is a default the
+  operator can actually override.
+
 - **The platform database volume is 4Gi on fresh installs, up from 2Gi.** The
   data is small and stays small — 124 MB across every database on a 27-tenant
   production cluster, with retention on each large table. What needed the room
@@ -33,21 +50,31 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   cluster is the control plane. Existing clusters grow online via Settings →
   System DB Storage; CNPG cannot shrink, so this is one-way.
 
-- **`archive_timeout` is 1h instead of CNPG's 5min default.** The setting
-  forces a WAL segment switch so the archive stays within one interval, but a
-  segment is a fixed 16 MB file however little it holds. Production measured
-  10.5 MB/h of actual WAL against 193.8 MB/h of segments shipped — an 18x
-  amplification, ~5% of each segment real. Because Postgres recycles segments
-  by overwriting them in place, that padding was being rewritten twelve times
-  an hour and captured by every hourly Longhorn snapshot: 1.8 GiB of chain
-  behind a 124 MB database. 1h keeps a bounded archive RPO at a twelfth of the
-  write volume.
+- **The platform default `archive_timeout` is 1h, not CNPG's 5min.** The
+  setting forces a WAL segment switch so the archive stays within one
+  interval, but a segment is a fixed 16 MB file however little it holds.
+  Production measured 10.5 MB/h of actual WAL against 193.8 MB/h of segments
+  shipped — an 18x amplification, ~5% of each segment real. Because Postgres
+  recycles segments by overwriting them in place, that padding was being
+  rewritten twelve times an hour and captured by every hourly Longhorn
+  snapshot: 1.8 GiB of chain behind a 124 MB database. 1h keeps a bounded
+  archive RPO at a twelfth of the write volume, and a cluster whose write rate
+  actually fills segments should lower it again — there the amplification
+  disappears on its own.
 
 - **Every version number displays with a leading `v`** — `v2026.9.31`, not
   `2026.9.31` — matching the tags, the release assets and the deployment
   columns that already did.
 
 ### Fixed
+
+- **The backups card could promise a recovery point the cluster was not
+  keeping.** `effectiveArchiveTimeout` read the operator's stored intent and
+  fell back to CNPG's 5min default, so a cluster whose `archive_timeout` was
+  set anywhere other than the enable path — by bootstrap, or by hand — showed
+  "every 5 minutes" while archiving hourly. It now reads the value off the
+  Cluster CR, which is what Postgres is running. An RPO is a data-loss
+  promise, not a label.
 
 - **"Volume nearly full" measured the wrong thing.** The production platform
   database was reported at 93 % of a volume whose filesystem was 36 % used,
