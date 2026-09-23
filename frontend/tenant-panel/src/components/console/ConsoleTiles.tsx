@@ -197,8 +197,14 @@ function Swatch({ className, children }: { className: string; children: ReactNod
   );
 }
 
-export function TriadBar({ triad, label, to, vocab = 'committed' }: {
+export function TriadBar({ triad, label, to, vocab = 'committed', extraRows = [] }: {
   triad: ResourceTriad; label: string; to: string;
+  /**
+   * Appended to the hover card under the triad's own rows. Storage uses it to
+   * say WHERE the disk went, which is the question "178 of 540 GB" provokes
+   * and cannot answer.
+   */
+  extraRows?: ReadonlyArray<readonly [string, string]>;
   /**
    * Operators reserve capacity on nodes; customers have apps that reserve
    * theirs. Same number, and the word decides whether the tile reads as
@@ -244,6 +250,7 @@ export function TriadBar({ triad, label, to, vocab = 'committed' }: {
             ...(consume ? [] : [['Committed', `${fmt(committed, unit)} ${unit} · ${Math.round((committed / (total || 1)) * 100)}%`] as const]),
             ['In use', usageUnknown ? 'not reported' : `${fmt(inUse, unit)} ${unit} · ${Math.round(usedPct)}%`],
             [consume ? 'Free' : 'Schedulable left', `${fmt(free, unit)} ${unit}`],
+            ...extraRows,
           ]}
           note={consume
             ? 'Snapshots and replicas sit on disk without being a request.'

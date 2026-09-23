@@ -55,6 +55,7 @@ function live(over: Partial<AdminDashboardLive> = {}): AdminDashboardLive {
       cpu: { inUse: 0.9, committed: 6.87, total: 7.5, unit: 'cores', kind: 'reserve' as const },
       memory: { inUse: 9.69, committed: 9.79, total: 14.36, unit: 'GiB', kind: 'reserve' as const },
       storage: { inUse: 178, committed: 160, total: 540, unit: 'GB', kind: 'consume' as const },
+      storageBreakdown: { tenants: 33, mail: 38, system: 2.7, imagesAndOther: 25 },
       nodeCount: 1, survivesSingleNodeLoss: false, worstNode: 'sv1',
     }),
     nodes: okSection([]),
@@ -136,6 +137,21 @@ describe('Operator console — capacity', () => {
     // was noise, and the number belonged beside the usage it qualifies.
     expect(screen.getByText('0.63 free')).toBeInTheDocument();
     expect(screen.queryByText(/still free/)).toBeNull();
+  });
+
+  it('reports storage against the DISK, and says where it went', () => {
+    // `total` used to be the sum of volume REQUESTS, which made total and
+    // committed the same number and "free" the gap between requested and
+    // written — never free disk. And the hover card could not answer the
+    // question the headline provokes: 178 of 540 GB of WHAT?
+    show();
+    expect(screen.getByText('Tenant volumes')).toBeInTheDocument();
+    expect(screen.getByText('Platform volumes')).toBeInTheDocument();
+    expect(screen.getByText('Images & other')).toBeInTheDocument();
+    // Mail is read from the platform's mailbox accounting, not Longhorn — the
+    // mail stack is on a local-path PVC Longhorn cannot see, so a
+    // Longhorn-fed line would read 0 on a cluster holding 38 GB of it.
+    expect(screen.getByText('38.0 GB')).toBeInTheDocument();
   });
 
   it('draws committed capacity as a HATCH, not a second flat tint', () => {
