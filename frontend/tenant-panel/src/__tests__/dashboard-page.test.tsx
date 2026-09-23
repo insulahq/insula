@@ -88,10 +88,55 @@ describe('Hosting overview — conditional alerts', () => {
 describe('Hosting overview — plan', () => {
   it('shows in use and reserved as different figures', () => {
     show();
-    // 0.02 in use against 0.50 reserved of 2.00 — the gap is the point. The
-    // headline now reads "0.02/2.00 cores in use", so match within the element.
-    expect(screen.getByText((_t, el) => el?.textContent === '0.02/2.00')).toBeInTheDocument();
+    // 0.02 in use against 0.50 reserved of 2.00 — the gap is the point.
+    // A 2-core ceiling gets three decimals on BOTH halves: two is a
+    // 10-millicore quantum and the whole tenant fits inside it.
+    expect(screen.getByText((_t, el) => el?.textContent === '0.020/2.000')).toBeInTheDocument();
     expect(screen.getByText(/reserved 25%/)).toBeInTheDocument();
+  });
+
+  /**
+   * The bug this pins: the tile inferred "usage unavailable" from
+   * `inUse === 0 && committed > 0`. Measured on production, 23 of 27 tenants
+   * hit that — metrics-server was answering for every one of them, and they
+   * were simply using less than a millicore. Only a null means unmeasured now.
+   */
+  it('shows a measured ZERO as zero, not as unavailable', () => {
+    liveFn.mockReturnValue({
+      data: { data: live({ resources: ok({
+        cpu: { inUse: 0, committed: 0.5, total: 2, unit: 'cores', kind: 'reserve' as const },
+        memory: { inUse: 0.4, committed: 1.5, total: 2, unit: 'GiB', kind: 'reserve' as const },
+        storage: { inUse: 1, committed: 1, total: 10, unit: 'GiB', kind: 'consume' as const },
+      }) }) }, isLoading: false,
+    });
+    show();
+    expect(screen.getByText((_t, el) => el?.textContent === '0.000/2.000')).toBeInTheDocument();
+    expect(screen.queryByText(/usage unavailable/)).not.toBeInTheDocument();
+  });
+
+  it('says unavailable only when the metrics API did not answer', () => {
+    liveFn.mockReturnValue({
+      data: { data: live({ resources: ok({
+        cpu: { inUse: null, committed: 0.5, total: 2, unit: 'cores', kind: 'reserve' as const },
+        memory: { inUse: null, committed: 1.5, total: 2, unit: 'GiB', kind: 'reserve' as const },
+        storage: { inUse: 1, committed: 1, total: 10, unit: 'GiB', kind: 'consume' as const },
+      }) }) }, isLoading: false,
+    });
+    show();
+    expect(screen.getAllByText(/usage unavailable/).length).toBeGreaterThan(0);
+  });
+
+  it('keeps a sub-millicore reading visible instead of collapsing it to zero', () => {
+    // The real production shape: three containers totalling 0.019 cores.
+    liveFn.mockReturnValue({
+      data: { data: live({ resources: ok({
+        cpu: { inUse: 0.019, committed: 0.75, total: 2, unit: 'cores', kind: 'reserve' as const },
+        memory: { inUse: 0.4, committed: 1.5, total: 2, unit: 'GiB', kind: 'reserve' as const },
+        storage: { inUse: 1, committed: 1, total: 10, unit: 'GiB', kind: 'consume' as const },
+      }) }) }, isLoading: false,
+    });
+    show();
+    expect(screen.getByText((_t, el) => el?.textContent === '0.019/2.000')).toBeInTheDocument();
   });
 
   it('flags a tight plan on the headline rather than in a sentence below', () => {

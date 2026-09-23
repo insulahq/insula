@@ -10,6 +10,17 @@ const CACHE_KEY_PREFIX = 'metrics:';
 const CACHE_TTL = 7200; // 2 hours (auto-expire even if refresh fails)
 
 export interface ResourceMetrics {
+  /**
+   * Did the Metrics API answer at all?
+   *
+   * `cpu.inUse`/`memory.inUse` are ZERO both when a tenant is idle and when
+   * the metrics read failed, and the dashboard was inferring "unavailable"
+   * from the zero. That inference was wrong on 23 of 27 production tenants:
+   * metrics-server was answering, the tenants were simply using less than a
+   * millicore. Consumers that need to tell the two apart must read this, not
+   * test the number.
+   */
+  readonly usageMeasured: boolean;
   readonly tenantId: string;
   readonly cpu: { readonly inUse: number; readonly reserved: number; readonly available: number };
   readonly memory: { readonly inUse: number; readonly reserved: number; readonly available: number }; // in Gi
@@ -65,6 +76,7 @@ export async function collectTenantMetrics(
   // 1. Actual usage from Metrics API — exclude system pods
   let cpuInUse = 0;
   let memoryInUse = 0;
+  let usageMeasured = true;
 
   try {
     const metricsResult = await k8s.custom.listNamespacedCustomObject({
@@ -88,6 +100,10 @@ export async function collectTenantMetrics(
       }
     }
   } catch (err) {
+    // NOT a zero reading. Leaving the counters at 0 and saying nothing is how
+    // "no data" came to render as "idle" — and then, downstream, as
+    // "unavailable" for every genuinely idle tenant too.
+    usageMeasured = false;
     console.warn(`[metrics] Failed to get metrics for ${namespace}:`, err instanceof Error ? err.message : String(err));
   }
 
@@ -208,8 +224,13 @@ export async function collectTenantMetrics(
 
   const metrics: ResourceMetrics = {
     tenantId,
+    usageMeasured,
     cpu: {
-      inUse: Math.round(cpuInUse * 1000) / 1000,
+      // SIX decimals, not three. Three is a whole millicore, and real tenant
+      // usage lives below it: measured across production, 23 of 27 tenants sat
+      // between 0 and 0.5 millicores, so rounding to millicores collapsed the
+      // measurement to exactly 0 before anything could display it.
+      inUse: Math.round(cpuInUse * 1_000_000) / 1_000_000,
       reserved: Math.round(cpuReserved * 1000) / 1000,
       available: planLimits.cpuLimit,
     },

@@ -208,15 +208,18 @@ export default function Dashboard() {
 
 /* ── node strip ──────────────────────────────────────────────────── */
 
-function MiniTriad({ label, inUse, committed, total, unit }: {
-  label: string; inUse: number; committed: number; total: number; unit: string;
+function MiniTriad({ label, inUse: measured, committed, total, unit }: {
+  label: string; inUse: number | null; committed: number; total: number; unit: string;
 }) {
   const pct = total > 0 ? (committed / total) * 100 : 0;
+  // null = the node had no metrics sample. An em-dash says so; 0.00 would
+  // claim the node is idle, which is the opposite of "we do not know".
+  const inUse = measured ?? 0;
   return (
     <div className="min-w-0">
       <div className="mb-1 flex flex-wrap items-baseline gap-x-2 font-mono text-[11px] tabular-nums text-gray-600 dark:text-gray-400">
         <span className="whitespace-nowrap">
-          <span className="text-gray-900 dark:text-gray-100">{inUse.toFixed(2)}</span> / {committed.toFixed(2)}
+          <span className="text-gray-900 dark:text-gray-100">{measured === null ? '—' : inUse.toFixed(2)}</span> / {committed.toFixed(2)}
         </span>
         <span className="min-w-0 truncate opacity-60">of {total.toFixed(2)} {unit}</span>
         <span className="ml-auto whitespace-nowrap">{Math.round(pct)}%</span>
@@ -293,8 +296,8 @@ function NodeStrip({ nodes, loading }: { nodes: readonly AdminNode[]; loading: b
             <HoverCard
               title={`${n.name} — node detail`}
               rows={[
-                ['CPU in use / committed', `${n.cpu.inUse.toFixed(2)} / ${n.cpu.committed.toFixed(2)} of ${n.cpu.total.toFixed(2)}`],
-                ['Memory in use / committed', `${n.memory.inUse.toFixed(2)} / ${n.memory.committed.toFixed(2)} of ${n.memory.total.toFixed(2)} GiB`],
+                ['CPU in use / committed', `${n.cpu.inUse === null ? 'not reported' : n.cpu.inUse.toFixed(2)} / ${n.cpu.committed.toFixed(2)} of ${n.cpu.total.toFixed(2)}`],
+                ['Memory in use / committed', `${n.memory.inUse === null ? 'not reported' : n.memory.inUse.toFixed(2)} / ${n.memory.committed.toFixed(2)} of ${n.memory.total.toFixed(2)} GiB`],
                 ['Schedulable CPU left', `${Math.max(0, n.cpu.total - n.cpu.committed).toFixed(2)} cores`],
                 ['Pods scheduled', String(n.pods)],
                 ['Disk used', n.diskUsedPct == null ? '—' : `${Math.round(n.diskUsedPct)}%`],
