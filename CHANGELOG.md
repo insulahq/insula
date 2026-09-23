@@ -31,8 +31,56 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   fired hours apart depending on which engine ran them. The cron field now
   names the zone it is read in.
 
+### Added
+
+- **Orphaned volumes now have a card on the operator console.** A Longhorn
+  volume whose PVC has gone is invisible everywhere else — not in
+  `kubectl get pvc`, not on the tenant's usage page, and listed beside live
+  ones on the cluster storage page — while still holding its full allocation
+  on disk. The card names the tenant, the age since the PVC went away, and
+  the disk that can be reclaimed.
+- **The Storage tile explains where the disk went**: tenant volumes, mail,
+  platform volumes, and a remainder for container images and logs.
+- **Web defence reports who, not just what.** The tile now shows the number of
+  actively banned addresses and the top offenders by blocked requests, in
+  place of a severity tally and a rule id.
+- **A mailbox migration can be retargeted.** The destination mailbox is
+  selectable when editing a sync job; previously a migration that landed in
+  the wrong mailbox meant delete-and-recreate, which discarded the source
+  credentials with it.
+
 ### Changed
 
+- **Both dashboards use the full width of the screen**, and their headings
+  match the size every other page uses.
+- **Capacity bars follow the design mockup.** Committed capacity is drawn as a
+  hatch rather than a second flat tint — solid means "in use now", hatch means
+  "claimed but idle", and two tints of one colour read as a single gradient.
+  The legend is colour-coded to the bands, and the headline reads
+  "X/Y in use" with free right-aligned.
+- **Hover cards open above or below their tile instead of over it**, sized to
+  their own content rather than to the tile's column.
+- **The NODES table columns line up with their headings.**
+- **Backups & DR answers status, last backup and stored size for every class**
+  — system, mail and tenant — instead of answering "last backup" for tenants
+  only. A class whose target has never produced a successful run no longer
+  shows as healthy.
+- **The Recent changes tile shows changes.** It was fed the raw audit log,
+  which is overwhelmingly machine bookkeeping, and labelled every row with a
+  bare action type — so it read "create", green, forever. It now lists
+  administrative changes by a real person and names what changed.
+- **Digest emails put their content in a list.** The items ran into the
+  sentence introducing them, and HTML collapsed the line breaks the
+  plain-text build relied on, so a twelve-item digest arrived as one
+  paragraph. Plain-text channels keep line breaks.
+- **Mailbox migration jobs name both ends** — `old@server → new@example.test`
+  — so two migrations from the same source are distinguishable.
+- **The tenant notification settings page lists only notifications a tenant
+  can receive.** It offered switches for 44 admin-only categories, including
+  cluster, node and firewall events, that are never dispatched to tenants.
+- **postmaster@ addresses no longer appear in the email accounts list.** They
+  are the platform's own report-intake addresses, with no owner and no quota
+  an administrator would change.
 - **k3s servers now survive a storage stall instead of restarting the control
   plane.** Kubernetes' leader-election defaults (lease 15s / renew-deadline 10s)
   make any pause longer than 10s look like lost leadership, and losing
@@ -47,6 +95,31 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **The admin Tenants page could white-screen** with
+  `Cannot read properties of null (reading 'toFixed')` when a resource metric
+  arrived null. A table cell now degrades to a dash.
+- **"Domain not verified" fired for every tenant that owned a domain**,
+  verified ones included. The check matched any status other than `active` —
+  a state the product never actually sets.
+- **Cluster storage reported the wrong total.** It measured the sum of volume
+  requests rather than the disk, so "free" meant requested-minus-written and
+  everything on the node that was not a Longhorn volume — container images
+  included — was invisible.
+- **The backup repository total counted merged repositories twice.** Since the
+  per-tenant merge a tenant's file and mailbox rows share one repository, and
+  the total summed the rows.
+- **Web defence reported zero active bans** on clusters that had banned
+  addresses; the figure was never wired up.
+- **"Volume nearly full" now names the tenant** and links to it, instead of
+  naming a Longhorn volume id and linking to a page that says nothing about
+  who owns one.
+- **Two notification links pointed at pages that do not exist** —
+  `/settings/storage` and `/dashboard` — so storage-capacity, storage-event
+  and tenant resource-saturation notifications led nowhere.
+- **"Mailboxes almost full" linked to mail operations**, which says nothing
+  about a quota. It now opens the email accounts list.
+- Alerts that name a single subject — an expiring certificate, a tenant at a
+  resource limit — link to that subject rather than to a list.
 - **Concurrent `restic init` could permanently corrupt a tenant's merged backup
   repository.** After the per-tenant repository merge, the `files` and
   `mailboxes` components — which run in parallel — both initialised the *same*
