@@ -70,6 +70,8 @@ import { sql } from 'drizzle-orm';
 //   0x7e3a4109           webmail-settings/service.ts        — mail hostname write serialisation
 // pg_advisory_xact_lock(int, int) — two-arg form (distinct lock class):
 //   hashtextextended(name)  system-backup/wal-archive.ts     — per-cluster wal-archive enable
+// hashtextextended-derived bigint keys (namespaced by their input string):
+//   'restic-init:<repoUri>'  tenant-bundles/repo-init-lock.ts — one `restic init` per repo
 //
 // When adding a new advisory lock: append your key here and pick a
 // value that's unrelated to the existing ones. Verified stable across
