@@ -9400,7 +9400,7 @@ apply_platform_manifests() {
   #   production → overlays/production
   # The old `staging → development` remap (W1, from the pre-ADR-053 model where
   # staging tracked the development BRANCH) applied the dev overlay's 20Gi
-  # system-db patch, but Flux's staging overlay wants the 2Gi base → CNPG
+  # system-db patch, but Flux's staging overlay wanted the 2Gi base of the time → CNPG
   # rejects the shrink → the platform Kustomization deadlocks Ready=False
   # ("can't shrink existing storage from 20Gi to 2Gi"). Observed on the first
   # ADR-053 staging re-bootstrap.
