@@ -313,11 +313,19 @@ function MailTile({ live }: { live: Live | undefined }) {
 function WebDefenceTile({ live }: { live: Live | undefined }) {
   const w = live?.webDefence.data;
   if (!w) return <SectionFallback title="Web defence" to="/security/web-defense" section={live?.webDefence ?? { state: 'stale', reason: null, observedAt: null }} />;
+  const offenders = w.topOffenders ?? [];
   const cells: MatrixCell[] = [
     { k: 'Blocked · 24h', v: w.blocked24h.toLocaleString(), tone: w.blocked24h > 0 ? 'warn' : 'ok' },
-    { k: 'Critical', v: w.critical24h.toLocaleString() },
+    // Operator request: a ban count and the addresses behind it, in place of
+    // a severity tally and a rule number. Both of those describe the traffic;
+    // these two describe what has been done about it and to whom.
+    { k: 'Banned IPs', v: String(w.activeBans), tone: w.activeBans > 0 ? 'warn' : 'ok' },
     { k: 'Sources', v: String(w.distinctSources) },
-    { k: 'Top rule', v: w.topRuleId ?? '—' },
+    {
+      k: 'Top offenders',
+      v: offenders[0]?.ip ?? '—',
+      sub: offenders.length > 1 ? `+${offenders.length - 1}` : undefined,
+    },
   ];
   return (
     <MatrixTile title="Web defence" to="/security/web-defense" cells={cells} card={(
@@ -325,6 +333,10 @@ function WebDefenceTile({ live }: { live: Live | undefined }) {
         ['Requests blocked', w.blocked24h.toLocaleString()],
         ['Critical', w.critical24h.toLocaleString()],
         ['Distinct sources', String(w.distinctSources)],
+        ['Banned addresses (active)', String(w.activeBans)],
+        ...offenders.map((o) => [
+          `Offender · ${o.ip}`, `${o.hits.toLocaleString()} blocked`,
+        ] as [string, string]),
         ['Most hit rule', w.topRuleId ?? '—'],
       ]} note="Your own address may be allowlisted — a probe from here can read as a pass." />
     )} />

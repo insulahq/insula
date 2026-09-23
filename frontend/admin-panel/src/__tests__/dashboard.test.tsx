@@ -60,7 +60,7 @@ function live(over: Partial<AdminDashboardLive> = {}): AdminDashboardLive {
     nodes: okSection([]),
     mail: okSection({ sent7d: 332, queueDepth: 0, queueReachable: true, mailboxes: 72, emailDomains: 19, rateLimited7d: 0, overQuotaMailboxes: 0 }),
     clusterAlerts: okSection([]),
-    webDefence: okSection({ blocked24h: 48, critical24h: 41, distinctSources: 12, activeBans: 6, topRuleId: '930130', wafEnabled: true, recent: [] }),
+    webDefence: okSection({ blocked24h: 48, critical24h: 41, distinctSources: 12, activeBans: 6, topOffenders: [{ ip: '203.0.113.7', hits: 500 }, { ip: '203.0.113.9', hits: 48 }], topRuleId: '930130', wafEnabled: true, recent: [] }),
     ...over,
   } as AdminDashboardLive;
 }
@@ -136,6 +136,25 @@ describe('Operator console — capacity', () => {
     // was noise, and the number belonged beside the usage it qualifies.
     expect(screen.getByText('0.63 free')).toBeInTheDocument();
     expect(screen.queryByText(/still free/)).toBeNull();
+  });
+
+  it('names banned addresses and the worst offender, not a rule id', () => {
+    // Operator feedback: CRITICAL and TOP RULE described the traffic; neither
+    // told you who to block. A rule number is not an actor.
+    //
+    // Scoped to the tile's own cells: both still appear in the hover card,
+    // deliberately — nothing was removed from the panel, it was demoted out
+    // of the four figures you see without hovering.
+    const { container } = show();
+    const cellLabels = Array.from(
+      container.querySelectorAll('div.text-\\[10px\\].uppercase'),
+    ).map((el) => el.textContent?.trim());
+
+    expect(cellLabels).toContain('Banned IPs');
+    expect(cellLabels).toContain('Top offenders');
+    expect(cellLabels).not.toContain('Top rule');
+    expect(cellLabels).not.toContain('Critical');
+    expect(screen.getByText('203.0.113.7')).toBeInTheDocument();
   });
 
   it('lines the NODES header up with its rows', () => {

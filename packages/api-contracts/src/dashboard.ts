@@ -184,6 +184,13 @@ export const adminDashboardLiveSchema = z.object({
   webDefence: section(z.object({
     blocked24h: z.number(), critical24h: z.number(),
     distinctSources: z.number(), activeBans: z.number(),
+    /**
+     * The addresses actually hammering the platform, worst first. An operator
+     * asked for these in place of the most-hit rule id: a rule number says
+     * what tripped, an address says who — and only the second one can be
+     * blocked, allowlisted or handed to an upstream.
+     */
+    topOffenders: z.array(z.object({ ip: z.string(), hits: z.number() })),
     topRuleId: z.string().nullable(), wafEnabled: z.boolean(),
     recent: z.array(z.object({
       severity: z.enum(['warning', 'critical']),
