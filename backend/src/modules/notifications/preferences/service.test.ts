@@ -94,15 +94,22 @@ describe('updateUserPreferences', () => {
       from: () => ({
         where: () => {
           knownCalls++;
-          // known categories
+          // Preferences are scoped to the user's own audience, so the first
+          // read is the user row that decides it. A tenant offered switches
+          // for admin-only categories can never be sent any of them.
           if (knownCalls === 1) {
+            return Promise.resolve([{ panel: 'tenant' }]);
+          }
+          // known categories
+          if (knownCalls === 2) {
             return Promise.resolve([
               { id: 'cat.m', isMandatory: true },
               { id: 'cat.a', isMandatory: false },
             ]);
           }
-          // categories list inside getUserPreferences
-          if (knownCalls === 2) {
+          // categories list inside getUserPreferences (after its own
+          // audience lookup, which lands on the fall-through below)
+          if (knownCalls === 4) {
             return {
               orderBy: () => Promise.resolve([
                 mkCategory('cat.m', { mandatory: true }),
@@ -191,5 +198,91 @@ describe('updateUserSettings', () => {
     expect(r.locale).toBe('fr');
     expect(r.quietHoursStart).toBe('22:00');
     expect(insert).toHaveBeenCalled();
+  });
+});
+
+/**
+ * "Why does the tenant panel NOTIFICATION SETTINGS page show ALL
+ * NOTIFICATIONS, even those meant for platform admins?"
+ *
+ * Because the matrix loaded every active category. Recipients are resolved by
+ * scope at dispatch — an `admin` scope selects admin-panel users, a `tenant`
+ * scope that tenant's users — so an admin-audience category can never reach a
+ * tenant user. The page was offering switches for 44 notifications that would
+ * never be sent, including cluster, node and firewall events.
+ */
+describe('preferences are scoped to the user audience', () => {
+  function dbFor(panel: string, categories: unknown[]) {
+    const calls: Array<Record<string, unknown>> = [];
+    const select = vi.fn().mockImplementation(() => ({
+      from: () => ({
+        where: (cond: unknown) => {
+          calls.push({ cond });
+          // 1st: the user row. 2nd: categories. 3rd: prefs.
+          if (calls.length === 1) return Promise.resolve([{ panel }]);
+          return {
+            orderBy: () => Promise.resolve(calls.length === 2 ? categories : []),
+            then: (resolve: (v: unknown) => void) => resolve([]),
+          };
+        },
+      }),
+    }));
+    return { db: { select } as unknown as Db, calls };
+  }
+
+  it('a tenant user sees only tenant categories', async () => {
+    const { db } = dbFor('tenant', [mkCategory('tenant.thing', { audience: 'tenant' })]);
+    const r = await getUserPreferences(db, 'u1');
+    expect(r.preferences.length).toBeGreaterThan(0);
+    expect(r.preferences.every((p) => p.categoryId.startsWith('tenant.'))).toBe(true);
+  });
+
+  it('filters in the QUERY, not after the fact', async () => {
+    // Filtering in JS would still ship every category id to a tenant over the
+    // wire. The audience has to be part of the WHERE.
+    const render = (q: unknown): string => {
+      let out = '';
+      const walk = (chunks: unknown[]): void => {
+        for (const c of chunks) {
+          if (c && typeof c === 'object' && 'queryChunks' in c) {
+            walk((c as { queryChunks: unknown[] }).queryChunks);
+            continue;
+          }
+          if (c && typeof c === 'object' && 'value' in c) {
+            const v = (c as { value: unknown }).value;
+            if (Array.isArray(v)) out += v.join(' ');
+            else if (typeof v === 'string') out += v;
+          }
+        }
+      };
+      if (q && typeof q === 'object' && 'queryChunks' in q) {
+        walk((q as { queryChunks: unknown[] }).queryChunks);
+      }
+      return out;
+    };
+    const { db, calls } = dbFor('tenant', [mkCategory('tenant.thing')]);
+    await getUserPreferences(db, 'u1');
+    expect(calls.length).toBeGreaterThanOrEqual(2);
+    expect(render(calls[1].cond)).toContain('tenant');
+  });
+
+  it('an unreadable user row degrades to the NARROWER audience', async () => {
+    // Showing too few switches is a smaller failure than showing an operator's.
+    let n = 0;
+    const select = vi.fn().mockImplementation(() => ({
+      from: () => ({
+        where: () => {
+          n += 1;
+          if (n === 1) return Promise.resolve([]); // no user row
+          return {
+            orderBy: () => Promise.resolve([mkCategory('tenant.thing')]),
+            then: (resolve: (v: unknown) => void) => resolve([]),
+          };
+        },
+      }),
+    }));
+    const db = { select } as unknown as Db;
+    const r = await getUserPreferences(db, 'u1');
+    expect(r.preferences.every((p) => p.categoryId.startsWith('tenant.'))).toBe(true);
   });
 });
