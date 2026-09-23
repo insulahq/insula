@@ -84,6 +84,7 @@ import {
 } from '../restic-driver.js';
 import { notifyResticFailure } from '../restic-failure-notify.js';
 import { resolveBundleRepoLayout } from '../repo-layout.js';
+import { makeRepoInitSerialiser } from '../repo-init-lock.js';
 import { resolvePlatformImage } from '../../../shared/platform-images.js';
 
 /**
@@ -408,7 +409,17 @@ export async function captureFilesComponent(
     },
   };
   try {
-    await ensureResticRepoInitialised({ target, passwordHex, repoUri, log: lockLog });
+    // `serialise`: `files` and `mailboxes` share ONE repository under the
+    // per-tenant layout and run in parallel, so their inits must not
+    // overlap — concurrent `restic init` corrupts the repo permanently
+    // (repo-init-lock.ts).
+    await ensureResticRepoInitialised({
+      target,
+      passwordHex,
+      repoUri,
+      serialise: makeRepoInitSerialiser(opts.db, lockLog),
+      log: lockLog,
+    });
   } catch (err) {
     // Repo init runs in-process, before any Job exists — so a destination that
     // cannot be initialised (bad credentials, unreachable bucket) fails here

@@ -12,6 +12,21 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+
+- **Concurrent `restic init` could permanently corrupt a tenant's merged backup
+  repository.** After the per-tenant repository merge, the `files` and
+  `mailboxes` components — which run in parallel — both initialised the *same*
+  repository on a tenant's first merged bundle. Two `restic init` runs leave two
+  master keys and a `config` sealed by only one of them, after which every later
+  run fails with `config or key <id> is damaged: ciphertext verification failed`.
+  Six of 27 production tenants hit this on the first night; five captured no files
+  and no mail. `restic init` is now serialised per repository with a Postgres
+  advisory lock (cross-replica, fail-open), the serialiser is a **required**
+  argument so no call site can omit it, and losing an init race is retried instead
+  of reported as a failure. An already-damaged repository is repaired by deleting
+  the older of its two key files.
+
 ## [2026.9.30] - 2026-09-22
 
 ### BREAKING

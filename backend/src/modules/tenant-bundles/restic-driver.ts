@@ -709,6 +709,12 @@ export async function runResticBackup(args: RunResticBackupArgs): Promise<Restic
       target: args.target,
       passwordHex: args.passwordHex,
       repoUri,
+      // No database handle reaches this module (see the header
+      // contract), and no live component uses this `--stdin` path any
+      // more — `files` and `mailboxes` both run restic inside their own
+      // capture Job and initialise via the serialised component path.
+      // If this route is ever revived, thread a real serialiser in.
+      serialise: NO_REPO_INIT_SERIALISATION,
     });
 
     const child = spawnRestic(cliArgs, env);
@@ -1857,6 +1863,32 @@ export async function addResticKey(args: AddResticKeyArgs): Promise<void> {
 // ─── Repo initialisation (Phase 1 piece #7) ─────────────────────────────────
 
 /**
+ * Serialises `restic init` for one repository.
+ *
+ * Implemented by `repo-init-lock.ts` (Postgres advisory lock) — the
+ * indirection keeps this module free of a database dependency, which
+ * the header contract above promises.
+ */
+export type RepoInitSerialiser = <T>(repoUri: string, run: () => Promise<T>) => Promise<T>;
+
+/**
+ * Opt OUT of init serialisation. Only for call sites with no database
+ * handle. `serialise` is a REQUIRED argument so that choosing this is
+ * visible in the diff rather than an omission nobody notices.
+ */
+export const NO_REPO_INIT_SERIALISATION: RepoInitSerialiser = (_repoUri, run) => run();
+
+/**
+ * How many times to re-attempt init after losing an init race, and how
+ * long to wait between attempts. The winner writes `config` within
+ * milliseconds of its key file, so one retry almost always suffices;
+ * three bounds a genuinely broken repo (keys present, config missing)
+ * to ~3s before it is reported.
+ */
+const INIT_RACE_RETRIES = 3;
+const INIT_RACE_DELAY_MS = 1_000;
+
+/**
  * Run `restic init` if the repo doesn't exist yet. Idempotent:
  * restic returns exit 0 with "config file already exists" when the
  * repo is already present, and we treat any "already exists" stderr
@@ -1868,21 +1900,90 @@ export async function addResticKey(args: AddResticKeyArgs): Promise<void> {
  * the subprocess's stdin, which makes our pipe write throw EPIPE on
  * a Socket with no error listener — and Node's default behaviour is
  * to crash the entire process.
+ *
+ * `serialise` is mandatory: concurrent `restic init` on one repo
+ * corrupts it permanently (see repo-init-lock.ts for the incident).
  */
 export async function ensureResticRepoInitialised(args: {
   target: BackupTarget;
   passwordHex: string;
   repoUri: string;
+  serialise: RepoInitSerialiser;
   log?: { warn: (msg: string) => void };
 }): Promise<void> {
-  return withStaleLockRetry(
-    {
-      label: 'restic init',
-      unlock: { target: args.target, repoUri: args.repoUri, passwordHex: args.passwordHex },
-      log: args.log,
-    },
-    () => execResticInit(args),
+  return args.serialise(args.repoUri, () =>
+    withStaleLockRetry(
+      {
+        label: 'restic init',
+        unlock: { target: args.target, repoUri: args.repoUri, passwordHex: args.passwordHex },
+        log: args.log,
+      },
+      () => execResticInitAwaitingRace(args),
+    ),
   );
+}
+
+/**
+ * Did this `restic init` fail because ANOTHER initialiser got there first?
+ *
+ * restic refuses to re-initialise a repo whose `config` it cannot stat
+ * but whose `keys/` is non-empty — its own guard against clobbering a
+ * repository when the backend fails to report the config file:
+ *
+ *     Fatal: create key in repository at <repo> failed: repository already contains keys
+ *
+ * From the loser's side of an init race that is exactly what it sees:
+ * the winner has written its key but not yet its `config`. Distinct from
+ * "already initialized"/"config file already exists", which `execResticInit`
+ * treats as plain success — there the config IS visible and there is
+ * nothing to wait for.
+ */
+export function isResticInitLostRace(err: unknown): boolean {
+  return err instanceof ResticCommandError && /already contains keys/i.test(err.stderr);
+}
+
+/**
+ * Run an init, re-attempting while another initialiser is mid-flight.
+ *
+ * Retrying IS the check: once the winner's `config` lands, `restic init`
+ * reports "already initialized" and returns success. A repo that still
+ * has keys and no config after every attempt is genuinely broken, and
+ * that is reported rather than swallowed.
+ *
+ * `sleep` is injectable so tests do not spend the real delay.
+ */
+export async function retryWhileInitRaceLost<T>(
+  run: () => Promise<T>,
+  opts: {
+    attempts?: number;
+    delayMs?: number;
+    log?: { warn: (msg: string) => void };
+    sleep?: (ms: number) => Promise<void>;
+  } = {},
+): Promise<T> {
+  const attempts = opts.attempts ?? INIT_RACE_RETRIES;
+  const delayMs = opts.delayMs ?? INIT_RACE_DELAY_MS;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await run();
+    } catch (err) {
+      if (!isResticInitLostRace(err) || attempt >= attempts) throw err;
+      opts.log?.warn(
+        `restic init: another initialiser holds this repository — re-checking in ${delayMs}ms (attempt ${attempt + 1}/${attempts})`,
+      );
+      await sleep(delayMs);
+    }
+  }
+}
+
+async function execResticInitAwaitingRace(args: {
+  target: BackupTarget;
+  passwordHex: string;
+  repoUri: string;
+  log?: { warn: (msg: string) => void };
+}): Promise<void> {
+  return retryWhileInitRaceLost(() => execResticInit(args), { log: args.log });
 }
 
 async function execResticInit(args: {
