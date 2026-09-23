@@ -293,25 +293,87 @@ export async function buildAdminLive(
     // volume actually holds. Left at zeros it rendered "0.0 GB in use of 0.0",
     // which reads as a measurement rather than as missing data.
     let storageTriad = { inUse: 0, committed: 0, total: 0, unit: 'GB', kind: 'consume' as const };
+    let storageBreakdown: {
+      tenants: number; mail: number; system: number; imagesAndOther: number;
+    } | null = null;
     try {
+      const num = (v: string | number | undefined): number =>
+        typeof v === 'number' ? v : Number(v ?? 0) || 0;
+      const gb = (bytes: number): number => Math.round((bytes / 1e9) * 10) / 10;
+
+      // TOTAL is the node's disk, not the sum of volume requests.
+      //
+      // It used to be the requests, which made `total` and `committed` the
+      // same number and "free" the gap between requested and written — never
+      // free disk. On production that reported a 160 GB cluster with 36 GB
+      // used, on a node holding 540 GB with 101 GB used.
+      //
+      // Longhorn's node diskStatus is the right source: storageMaximum is the
+      // filesystem, storageAvailable what is left on it, storageScheduled the
+      // sum of what volumes have claimed. Used = maximum - available, which
+      // counts everything on the disk including images and logs, not just
+      // what Longhorn put there.
+      const lhNodes = await k8s.custom.listNamespacedCustomObject({
+        group: 'longhorn.io', version: 'v1beta2',
+        namespace: 'longhorn-system', plural: 'nodes',
+      }) as { items?: Array<{ status?: { diskStatus?: Record<string, {
+        storageMaximum?: number; storageAvailable?: number; storageScheduled?: number;
+      }> } }> };
+
+      let max = 0, avail = 0, scheduled = 0;
+      for (const n of lhNodes.items ?? []) {
+        for (const d of Object.values(n.status?.diskStatus ?? {})) {
+          max += num(d.storageMaximum);
+          avail += num(d.storageAvailable);
+          scheduled += num(d.storageScheduled);
+        }
+      }
+      const usedBytes = Math.max(0, max - avail);
+
+      storageTriad = {
+        inUse: gb(usedBytes),
+        committed: gb(scheduled),
+        total: gb(max),
+        unit: 'GB', kind: 'consume' as const,
+      };
+
+      // Breakdown. Longhorn volumes split by namespace; mail comes from the
+      // platform's own mailbox accounting because the mail stack sits on a
+      // node-pinned local-path PVC that Longhorn cannot see at all — a "Mail"
+      // line fed from Longhorn would read 0 on a cluster holding 38 GB of it.
       const vols = await k8s.custom.listNamespacedCustomObject({
         group: 'longhorn.io', version: 'v1beta2',
         namespace: 'longhorn-system', plural: 'volumes',
-      }) as { items?: Array<{ spec?: { size?: string | number }; status?: { actualSize?: string | number } }> };
-      const num = (v: string | number | undefined): number =>
-        typeof v === 'number' ? v : Number(v ?? 0) || 0;
-      const used = (vols.items ?? []).reduce((t, v) => t + num(v.status?.actualSize), 0);
-      const req = (vols.items ?? []).reduce((t, v) => t + num(v.spec?.size), 0);
-      storageTriad = {
-        inUse: Math.round((used / 1e9) * 10) / 10,
-        committed: Math.round((req / 1e9) * 10) / 10,
-        total: Math.round((req / 1e9) * 10) / 10,
-        unit: 'GB', kind: 'consume' as const,
+      }) as { items?: Array<{
+        status?: { actualSize?: string | number; kubernetesStatus?: { namespace?: string } };
+      }> };
+
+      let tenantBytes = 0, systemBytes = 0;
+      for (const v of vols.items ?? []) {
+        const ns = v.status?.kubernetesStatus?.namespace ?? '';
+        const actual = num(v.status?.actualSize);
+        if (ns.startsWith('tenant-')) tenantBytes += actual;
+        else systemBytes += actual;
+      }
+
+      const mailRow = await db.execute<{ mb: number | string | null }>(sql`
+        SELECT COALESCE(SUM(used_mb), 0) AS mb FROM mailboxes
+      `);
+      const mailBytes = Number((mailRow.rows ?? [])[0]?.mb ?? 0) * 1024 * 1024;
+
+      storageBreakdown = {
+        tenants: gb(tenantBytes),
+        mail: gb(mailBytes),
+        system: gb(systemBytes),
+        // A remainder, and named as one: container images, logs and anything
+        // else on the disk. Clamped at zero so a mail figure that runs ahead
+        // of the disk sample cannot render a negative slice.
+        imagesAndOther: Math.max(0, gb(usedBytes - tenantBytes - systemBytes - mailBytes)),
       };
     } catch (err) {
       logger?.warn?.(
         { err: err instanceof Error ? err.message : String(err) },
-        'dashboard: Longhorn volumes unreadable — storage will read as zero',
+        'dashboard: Longhorn unreadable — storage will read as zero',
       );
     }
 
@@ -332,6 +394,7 @@ export async function buildAdminLive(
         total: sum((n) => n.memory.total), unit: 'GiB', kind: 'reserve' as const,
       },
       storage: storageTriad,
+      storageBreakdown,
       nodeCount: nodes.length,
       // One node cannot survive losing one node. Stating that plainly beats
       // rendering a headroom percentage that means nothing at n=1.

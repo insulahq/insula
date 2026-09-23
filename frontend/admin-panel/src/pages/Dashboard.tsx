@@ -25,6 +25,32 @@ import {
   type MatrixCell,
 } from '@/components/console/ConsoleTiles';
 
+/**
+ * Where the disk went, for the Storage tile's hover card.
+ *
+ * "Images & other" is a REMAINDER — container images, logs, and anything on
+ * the node that is neither a Longhorn volume nor mail. Labelling it as the
+ * remainder is the honest framing: on production it is ~25 GB of which ~18 GB
+ * is containerd, and pretending to measure the rest precisely would be a
+ * bigger claim than the data supports.
+ *
+ * Mail comes from the platform's mailbox accounting rather than Longhorn,
+ * because the mail stack lives on a node-pinned local-path PVC that Longhorn
+ * cannot see — a Longhorn-fed line would read 0 on a cluster holding 38 GB.
+ */
+function storageRows(
+  b: { tenants: number; mail: number; system: number; imagesAndOther: number } | null,
+): ReadonlyArray<readonly [string, string]> {
+  if (!b) return [];
+  const gb = (n: number): string => `${n.toFixed(1)} GB`;
+  return [
+    ['Tenant volumes', gb(b.tenants)],
+    ['Mail', gb(b.mail)],
+    ['Platform volumes', gb(b.system)],
+    ['Images & other', gb(b.imagesAndOther)],
+  ];
+}
+
 function SectionHead({ title, count }: { title: string; count?: string }) {
   return (
     <div className="mt-6 mb-2.5 flex items-center gap-2.5">
@@ -105,7 +131,12 @@ export default function Dashboard() {
           <>
             <TriadBar triad={l.cluster.data.cpu} label="CPU" to="/cluster/nodes" />
             <TriadBar triad={l.cluster.data.memory} label="Memory" to="/cluster/nodes" />
-            <TriadBar triad={l.cluster.data.storage} label="Storage" to="/cluster/storage" />
+            <TriadBar
+              triad={l.cluster.data.storage}
+              label="Storage"
+              to="/cluster/storage"
+              extraRows={storageRows(l.cluster.data.storageBreakdown)}
+            />
           </>
         ) : (
           <SectionFallback title="Cluster capacity" to="/cluster/nodes" section={l?.cluster ?? { state: 'stale', reason: null, observedAt: null }} />

@@ -167,6 +167,21 @@ export const adminDashboardLiveSchema = z.object({
     cpu: resourceTriadSchema,
     memory: resourceTriadSchema,
     storage: resourceTriadSchema,
+    /**
+     * Where the disk actually went, in GB. Null when Longhorn could not be
+     * read — an absent breakdown must not render as a cluster holding zero.
+     *
+     * `imagesAndOther` is the remainder: container images, logs, and anything
+     * on the node that is neither a Longhorn volume nor mail. It is named as
+     * a remainder rather than as "images" because that is what it is — on
+     * production it is ~25 GB of which ~18 GB is containerd.
+     */
+    storageBreakdown: z.object({
+      tenants: z.number(),
+      mail: z.number(),
+      system: z.number(),
+      imagesAndOther: z.number(),
+    }).nullable(),
     nodeCount: z.number(),
     survivesSingleNodeLoss: z.boolean(),
     worstNode: z.string().nullable(),
