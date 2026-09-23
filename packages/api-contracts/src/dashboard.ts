@@ -132,6 +132,13 @@ export const adminDashboardSummarySchema = z.object({
       targetName: z.string().nullable(),
       targetKind: z.string().nullable(),
       healthy: z.boolean(),
+      /**
+       * Bytes the platform holds for this class. Null where it is genuinely
+       * not a separate figure — since the per-tenant repository merge, mail
+       * lives INSIDE the tenant repos, so a "mail repo size" would either
+       * double-count the tenant total or be invented.
+       */
+      repoBytes: z.number().nullable(),
     })),
     bundles: z.number(),
     repoBytes: z.number().nullable(),

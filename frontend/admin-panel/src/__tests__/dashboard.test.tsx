@@ -33,9 +33,9 @@ function summary(over: Partial<AdminDashboardSummary> = {}): AdminDashboardSumma
     tenants: okSection({ active: 26, total: 27, routes: 45, domains: 32, provisioningInFlight: 0 }),
     backups: okSection({
       classes: [
-        { backupClass: 'system' as const, lastSuccessAt: null, targetName: 'StorageBox', targetKind: 'cifs', healthy: true },
-        { backupClass: 'tenant' as const, lastSuccessAt: new Date().toISOString(), targetName: 'StorageBox', targetKind: 'cifs', healthy: true },
-        { backupClass: 'mail' as const, lastSuccessAt: null, targetName: 'StorageBox', targetKind: 'cifs', healthy: true },
+        { backupClass: 'system' as const, lastSuccessAt: null, targetName: 'StorageBox', targetKind: 'cifs', healthy: false, repoBytes: 245760 },
+        { backupClass: 'tenant' as const, lastSuccessAt: new Date().toISOString(), targetName: 'StorageBox', targetKind: 'cifs', healthy: true, repoBytes: 64e9 },
+        { backupClass: 'mail' as const, lastSuccessAt: new Date().toISOString(), targetName: 'StorageBox', targetKind: 'cifs', healthy: true, repoBytes: null },
       ],
       bundles: 222, repoBytes: 184e9, tenantsNeverBackedUp: 0,
     }),
@@ -220,6 +220,21 @@ describe('Operator console — capacity', () => {
     expect(tpl(row)).not.toBe('');
     expect(tpl(header)).toBe(tpl(row));
     expect(tpl(header)).not.toMatch(/_auto[_\]]/);
+  });
+
+  it('answers status, last backup and size for EVERY backup class', () => {
+    // The old grid answered "last backup" for `tenant` only — system and mail
+    // were permanently blank — and spent its fourth square on a bundle count.
+    show();
+    for (const cls of ['system', 'tenant', 'mail']) {
+      expect(screen.getByText(cls)).toBeInTheDocument();
+    }
+    // A class with a target but no successful run is NOT healthy.
+    expect(screen.getByText('never')).toBeInTheDocument();
+    expect(screen.getByText('64.0 GB')).toBeInTheDocument();
+    // Mail has no size of its own since the repository merge; it must show a
+    // dash rather than repeat the tenant figure.
+    expect(screen.getAllByText('—').length).toBeGreaterThan(0);
   });
 
   it('states plainly that one node has no redundancy', () => {

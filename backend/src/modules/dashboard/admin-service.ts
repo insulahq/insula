@@ -125,9 +125,37 @@ async function buildBackupClasses(db: Database): Promise<AdminDashboardSummary['
   `);
   const f = (fresh.rows ?? [])[0];
 
+  // ONE ROW PER REPOSITORY, not per component.
+  //
+  // Since the per-tenant repository merge, a tenant's `files` and `mailboxes`
+  // rows carry the SAME repo_uri and therefore the SAME size — summing the
+  // rows counted every merged repo twice. On production that reported 69 GB
+  // against a true 64 GB, and the gap widens as more tenants migrate.
   const repo = await db.execute<{ total: number | null }>(sql`
-    SELECT SUM(repo_total_bytes)::bigint AS total FROM tenant_restic_repo_state
+    SELECT SUM(sz)::bigint AS total FROM (
+      SELECT MAX(last_repo_size_bytes) AS sz
+        FROM tenant_restic_repo_state GROUP BY repo_uri
+    ) per_repo
   `);
+
+  // Per-class figures. Each class routes to its own target and can go stale
+  // alone, so "last backup" has to be answered per class — it used to be
+  // filled in for `tenant` only, leaving system and mail permanently blank.
+  const systemRun = await db.execute<{ newest: string | null; total: number | null }>(sql`
+    SELECT MAX(finished_at) AS newest, SUM(size_bytes)::bigint AS total
+      FROM system_backup_runs WHERE status = 'succeeded'
+  `);
+  const mailRun = await db.execute<{ newest: string | null }>(sql`
+    SELECT MAX(c.finished_at) AS newest
+      FROM backup_components c
+     WHERE c.component = 'mailboxes' AND c.status = 'completed'
+  `);
+  const sysRow = (systemRun.rows ?? [])[0];
+  const mailRow = (mailRun.rows ?? [])[0];
+
+  const repoTotal = (repo.rows ?? [])[0]?.total == null
+    ? null
+    : Number((repo.rows ?? [])[0].total);
 
   const never = await db.execute<{ n: number }>(sql`
     SELECT COUNT(*)::int AS n FROM tenants t
@@ -138,16 +166,30 @@ async function buildBackupClasses(db: Database): Promise<AdminDashboardSummary['
   return {
     classes: (['system', 'tenant', 'mail'] as const).map((cls) => {
       const a = byClass.get(cls);
+      const lastSuccessAt =
+        cls === 'tenant' ? (f?.newest ? String(f.newest) : null)
+        : cls === 'system' ? (sysRow?.newest ? String(sysRow.newest) : null)
+        : (mailRow?.newest ? String(mailRow.newest) : null);
+      const repoBytes =
+        cls === 'tenant' ? (repoTotal)
+        : cls === 'system' ? (sysRow?.total == null ? null : Number(sysRow.total))
+        // Mail has no separate size to report: since the repository merge its
+        // data sits inside the per-tenant repos, so any number here would
+        // either double-count the tenant total or be made up.
+        : null;
       return {
         backupClass: cls,
-        lastSuccessAt: cls === 'tenant' ? (f?.newest ? String(f.newest) : null) : null,
+        lastSuccessAt,
         targetName: a?.target ?? null,
         targetKind: a?.kind ?? null,
-        healthy: Boolean(a?.target),
+        // A target alone is not health. A class with a target that has never
+        // produced a successful run is exactly the case worth showing.
+        healthy: Boolean(a?.target) && lastSuccessAt !== null,
+        repoBytes,
       };
     }),
     bundles: Number(f?.bundles ?? 0),
-    repoBytes: (repo.rows ?? [])[0]?.total == null ? null : Number((repo.rows ?? [])[0].total),
+    repoBytes: repoTotal,
     tenantsNeverBackedUp: Number((never.rows ?? [])[0]?.n ?? 0),
   };
 }

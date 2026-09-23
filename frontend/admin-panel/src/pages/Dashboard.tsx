@@ -396,30 +396,58 @@ function TenantsTile({ summary }: { summary: Summary | undefined }) {
   );
 }
 
+/**
+ * Backups, one ROW per shim class rather than a 2×2 of mixed facts.
+ *
+ * Each class routes to its own target and can go stale alone, so the three
+ * questions an operator has — is it working, when did it last work, how much
+ * is stored — have to be answered per class. The old grid answered the second
+ * one for `tenant` only and put "Bundles" in the fourth square.
+ */
 function BackupsTile({ summary }: { summary: Summary | undefined }) {
   const b = summary?.backups.data;
   if (!b) return <SectionFallback title="Backups & DR" to="/backups" section={summary?.backups ?? { state: 'stale', reason: null, observedAt: null }} />;
-  // Built on the three shim classes, not on one blended "backups are fine"
-  // number: each routes to its own target and can go stale alone.
-  const cells: MatrixCell[] = b.classes.map((c) => ({
-    k: c.backupClass,
-    v: c.lastSuccessAt ? ago(c.lastSuccessAt) : (c.healthy ? 'target set' : '—'),
-    sub: c.lastSuccessAt ? 'ago' : undefined,
-    tone: c.healthy ? 'ok' : 'warn',
-  }));
-  cells.push({ k: 'Bundles', v: b.bundles.toLocaleString() });
+
   return (
-    <MatrixTile title="Backups & DR" to="/backups" cells={cells.slice(0, 4)} card={(
+    <Tile title="Backups & DR" to="/backups" card={(
       <HoverCard title="Backup classes" rows={[
         ...b.classes.flatMap((c) => ([
           [`${c.backupClass} — last success`, c.lastSuccessAt ? `${ago(c.lastSuccessAt)} ago` : 'never recorded'],
           [`${c.backupClass} target`, c.targetName ? `${c.targetName} · ${c.targetKind ?? '?'}` : 'unassigned'],
         ] as Array<[string, string]>)),
         ['Bundles', b.bundles.toLocaleString()],
-        ['Repository size', bytesToGb(b.repoBytes)],
+        ['Stored, all tenants', bytesToGb(b.repoBytes)],
         ['Tenants never backed up', String(b.tenantsNeverBackedUp)],
-      ]} note="Each class routes to its own target independently — one can go stale without the other two noticing." />
-    )} />
+      ]} note="Mail has no size of its own: since the repository merge it is stored inside the per-tenant repos, so it is counted in the tenant figure." />
+    )}>
+      <div className="flex flex-col divide-y divide-gray-100 dark:divide-gray-700">
+        {b.classes.map((c) => (
+          <div key={c.backupClass} className="flex items-baseline gap-2 py-1.5 first:pt-0 last:pb-0">
+            <span
+              className={`inline-block h-1.5 w-1.5 shrink-0 translate-y-[-1px] rounded-full ${
+                c.healthy ? 'bg-green-500' : c.targetName ? 'bg-amber-500' : 'bg-gray-300 dark:bg-gray-600'
+              }`}
+              title={c.healthy ? 'has a target and a successful run'
+                : c.targetName ? 'target assigned, no successful run recorded'
+                : 'no target assigned'}
+            />
+            <span className="w-12 shrink-0 text-[11px] font-semibold uppercase tracking-wide text-gray-600 dark:text-gray-400">
+              {c.backupClass}
+            </span>
+            <span className="min-w-0 flex-1 truncate font-mono text-xs tabular-nums text-gray-900 dark:text-gray-100">
+              {c.lastSuccessAt ? `${ago(c.lastSuccessAt)} ago` : 'never'}
+            </span>
+            <span className="shrink-0 whitespace-nowrap font-mono text-xs tabular-nums text-gray-500 dark:text-gray-400">
+              {c.repoBytes == null ? '—' : bytesToGb(c.repoBytes)}
+            </span>
+          </div>
+        ))}
+      </div>
+      <p className="mt-2 border-t border-dashed border-gray-200 pt-2 font-mono text-[11px] tabular-nums text-gray-500 dark:border-gray-700 dark:text-gray-400">
+        {b.bundles.toLocaleString()} bundles
+        {b.tenantsNeverBackedUp > 0 ? ` · ${b.tenantsNeverBackedUp} tenant(s) never backed up` : ''}
+      </p>
+    </Tile>
   );
 }
 
