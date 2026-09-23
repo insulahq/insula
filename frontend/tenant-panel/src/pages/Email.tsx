@@ -2328,6 +2328,7 @@ function ImapSyncPanel({
         <ImapSyncJobRow
           key={j.id}
           job={j}
+          mailboxes={mailboxes}
           onCancel={() => cancel.mutate(j.id)}
           cancelPending={cancel.isPending}
           onPurge={() => purge.mutate(j.id)}
@@ -2352,8 +2353,11 @@ function ImapSyncJobRow({
   resyncPending,
   onUpdate,
   updatePending,
+  mailboxes,
 }: {
   readonly job: ImapSyncJob;
+  /** For retargeting the destination — see the selector in the edit form. */
+  readonly mailboxes: readonly { id: string; fullAddress: string }[];
   readonly onCancel: () => void;
   readonly cancelPending: boolean;
   readonly onPurge: () => void;
@@ -2382,7 +2386,16 @@ function ImapSyncJobRow({
     <div className="rounded-md border border-gray-200 dark:border-gray-700 p-3 text-xs" data-testid={`imapsync-job-${job.id}`}>
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <code className="font-mono text-gray-900 dark:text-gray-100">{job.sourceUsername}@{job.sourceHost}</code>
+          {/* A migration is a PAIRING. Showing only the source made two jobs
+              pulling from the same old server indistinguishable, and gave no
+              way to tell which local mailbox was about to be written to. */}
+          <code className="font-mono text-gray-900 dark:text-gray-100">
+            {job.sourceUsername}@{job.sourceHost}
+            <span className="mx-1.5 text-gray-400 dark:text-gray-500" aria-label="into">&rarr;</span>
+            <span className="text-brand-600 dark:text-brand-400">
+              {job.mailboxAddress ?? '(mailbox removed)'}
+            </span>
+          </code>
           <ImapSyncStatusBadge status={job.status} />
         </div>
         <div className="flex items-center gap-1">
@@ -2452,6 +2465,8 @@ function ImapSyncJobRow({
             if (pass) input.source_password = pass;
             const ssl = fd.get('source_ssl') === 'on';
             if (ssl !== job.sourceSsl) input.source_ssl = ssl;
+            const dest = String(fd.get('mailbox_id') ?? '');
+            if (dest && dest !== job.mailboxId) input.mailbox_id = dest;
             const opts: Record<string, boolean> = {};
             opts.automap = fd.get('automap') === 'on';
             opts.dryRun = fd.get('dry_run') === 'on';
@@ -2476,6 +2491,27 @@ function ImapSyncJobRow({
             <label className="space-y-1">
               <span className="block text-gray-500 dark:text-gray-400">New password (leave empty to keep)</span>
               <input name="source_password" type="password" className={INPUT_CLASS} autoComplete="new-password" placeholder="(unchanged)" />
+            </label>
+            {/* Retargeting, rather than delete-and-recreate — which throws the
+                source credentials away along with the job. */}
+            <label className="col-span-2 space-y-1">
+              <span className="block text-gray-500 dark:text-gray-400">Destination mailbox</span>
+              <select
+                name="mailbox_id"
+                defaultValue={job.mailboxId}
+                className={INPUT_CLASS}
+                data-testid={`imapsync-dest-${job.id}`}
+              >
+                {/* The job's current mailbox may no longer be in the list (deleted,
+                    or renamed) — keep it selectable so saving does not silently
+                    move the job somewhere else. */}
+                {!mailboxes.some((m) => m.id === job.mailboxId) && (
+                  <option value={job.mailboxId}>{job.mailboxAddress ?? '(current mailbox)'}</option>
+                )}
+                {mailboxes.map((m) => (
+                  <option key={m.id} value={m.id}>{m.fullAddress}</option>
+                ))}
+              </select>
             </label>
           </div>
           <div className="flex items-center gap-4 pt-1">

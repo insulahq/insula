@@ -1349,7 +1349,15 @@ function ImapSyncJobRow({ job, onCancel, cancelPending }: { readonly job: ImapSy
     <div className="rounded-md border border-gray-200 dark:border-gray-700 p-3 text-xs">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <code className="font-mono text-gray-900 dark:text-gray-100">{job.sourceUsername}@{job.sourceHost}</code>
+          {/* Both ends: a migration is a pairing, and the source alone does
+              not say which local mailbox is being written to. */}
+          <code className="font-mono text-gray-900 dark:text-gray-100">
+            {job.sourceUsername}@{job.sourceHost}
+            <span className="mx-1.5 text-gray-400 dark:text-gray-500" aria-label="into">&rarr;</span>
+            <span className="text-brand-600 dark:text-brand-400">
+              {job.mailboxAddress ?? '(mailbox removed)'}
+            </span>
+          </code>
           <span className="text-gray-400">→</span>
           <code className="font-mono text-gray-900 dark:text-gray-100">{job.mailboxId.slice(0, 8)}</code>
           <ImapSyncStatusBadge status={job.status} />
