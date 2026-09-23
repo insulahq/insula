@@ -88,15 +88,21 @@ describe('Hosting overview — conditional alerts', () => {
 describe('Hosting overview — plan', () => {
   it('shows in use and reserved as different figures', () => {
     show();
-    // 0.02 in use against 0.50 reserved of 2.00 — the gap is the point.
-    expect(screen.getByText('0.02')).toBeInTheDocument();
+    // 0.02 in use against 0.50 reserved of 2.00 — the gap is the point. The
+    // headline now reads "0.02/2.00 cores in use", so match within the element.
+    expect(screen.getByText((_t, el) => el?.textContent === '0.02/2.00')).toBeInTheDocument();
     expect(screen.getByText(/reserved 25%/)).toBeInTheDocument();
   });
 
-  it('warns when little is left to reserve, and says what that means', () => {
+  it('flags a tight plan on the headline rather than in a sentence below', () => {
     show();
-    // Memory: 1.5 of 2 reserved = 75%, which is the tight threshold.
-    expect(screen.getByText(/has to fit in that, not in what is idle/i)).toBeInTheDocument();
+    // Memory: 1.5 of 2 reserved = 75%, the tight threshold. The explanatory
+    // paragraph was removed on operator feedback; the remaining free figure
+    // carries the warning colour instead.
+    const free = screen.getByText('0.5 free');
+    expect(free).toBeInTheDocument();
+    expect(free.className).toMatch(/amber/);
+    expect(screen.queryByText(/has to fit in that, not in what is idle/i)).toBeNull();
   });
 
   it('treats storage as consumed, not reserved — no reserved band', () => {

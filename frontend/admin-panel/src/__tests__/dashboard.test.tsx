@@ -124,8 +124,46 @@ describe('Operator console — capacity', () => {
   it('shows in-use and committed as different numbers', () => {
     show();
     // The gap is the point: 0.90 in use against 6.87 committed of 7.50.
-    expect(screen.getByText('0.90')).toBeInTheDocument();
+    // The headline now reads "0.90/7.50 cores in use", so the in-use figure is
+    // matched inside its element rather than as the element's whole text.
+    expect(screen.getByText((_t, el) => el?.textContent === '0.90/7.50')).toBeInTheDocument();
     expect(screen.getByText(/committed 92%/)).toBeInTheDocument();
+  });
+
+  it('puts free capacity on the headline row, not in a trailing sentence', () => {
+    show();
+    // Operator feedback: the "6.60 cores still free" paragraph under the bar
+    // was noise, and the number belonged beside the usage it qualifies.
+    expect(screen.getByText('0.63 free')).toBeInTheDocument();
+    expect(screen.queryByText(/still free/)).toBeNull();
+  });
+
+  it('lines the NODES header up with its rows', () => {
+    // Header and rows are SEPARATE grid containers, so `auto` tracks sized to
+    // their own content — "Role" up top, a bordered badge in the row — and the
+    // columns drifted visibly apart. Same template, fixed widths, no `auto`.
+    liveFn.mockReturnValue({
+      data: { data: live({
+        nodes: okSection([{
+          name: 'sv1', role: 'server', ready: true, pressures: [], evictionsLastHour: 0,
+          diskUsedPct: 21, pods: 48, kubeletVersion: 'v1.36.2+k3s1',
+          calico: 'ok' as const, csi: 'ok' as const, ingressMode: 'default', tenantWorkloads: true,
+          cpu: { inUse: 0.9, committed: 6.87, total: 7.5, unit: 'cores', kind: 'reserve' as const },
+          memory: { inUse: 9.69, committed: 9.79, total: 14.36, unit: 'GiB', kind: 'reserve' as const },
+        }]) as AdminDashboardLive['nodes'],
+      }) }, isLoading: false,
+    });
+    const { container } = show();
+
+    const tpl = (el: Element | null): string =>
+      (el?.className ?? '').split(/\s+/).find((c) => c.includes('grid-cols-[minmax(0,1.3fr)'))?.replace(/^lg:/, '') ?? '';
+
+    const header = container.querySelector('[class*="rounded-t-xl"][class*="grid-cols-"]');
+    const row = container.querySelector('a[href="/cluster/nodes"][class*="grid-cols-"]');
+    expect(tpl(header)).not.toBe('');
+    expect(tpl(row)).not.toBe('');
+    expect(tpl(header)).toBe(tpl(row));
+    expect(tpl(header)).not.toMatch(/_auto[_\]]/);
   });
 
   it('states plainly that one node has no redundancy', () => {

@@ -66,9 +66,9 @@ export default function Dashboard() {
   const loadingFirst = summary.isLoading && !s;
 
   return (
-    <div className="mx-auto max-w-[1340px] px-1 pb-16">
+    <div className="w-full px-1 pb-16">
       <header className="mb-3 flex flex-wrap items-baseline gap-3 border-b border-gray-200 pb-3 dark:border-gray-700">
-        <h1 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Operator Console</h1>
+        <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Operator Console</h1>
         <span className="font-mono text-xs text-gray-500 dark:text-gray-400">
           {s ? `updated ${ago(s.generatedAt)} ago` : 'loading…'}
         </span>
@@ -201,6 +201,7 @@ function MiniTriad({ label, inUse, committed, total, unit }: {
   );
 }
 
+
 function NodeStrip({ nodes, loading }: { nodes: readonly AdminNode[]; loading: boolean }) {
   if (loading) {
     return (
@@ -220,7 +221,15 @@ function NodeStrip({ nodes, loading }: { nodes: readonly AdminNode[]; loading: b
     // NOT overflow-hidden: that clips the last row's hover card. Corners are
     // kept by rounding the first and last rows instead.
     <div className="rounded-xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800">
-      <div className="hidden grid-cols-[minmax(0,1.3fr)_auto_minmax(0,2.4fr)_minmax(0,2.4fr)_auto_auto] items-center gap-3 rounded-t-xl bg-gray-50 px-4 py-2 text-[10px] font-semibold uppercase tracking-wider text-gray-500 lg:grid dark:bg-gray-900/40 dark:text-gray-400">
+      {/* NODE COLUMN TEMPLATE — must stay byte-identical to the row template
+          below (minus the lg: prefix). The header and each row are separate
+          grid containers, so `auto` tracks sized to their own content — the
+          word "Role" up here, a bordered badge down there — and the columns
+          drifted apart. Fixed widths resolve the same everywhere. Spelled
+          out twice on purpose: Tailwind only emits CSS for class names it
+          can see literally in the source. dashboard-node-grid.test.ts pins
+          the two copies together. */}
+      <div className="hidden grid-cols-[minmax(0,1.3fr)_5rem_minmax(0,2.4fr)_minmax(0,2.4fr)_4rem_3.5rem] items-center gap-3 rounded-t-xl bg-gray-50 px-4 py-2 text-[10px] font-semibold uppercase tracking-wider text-gray-500 lg:grid dark:bg-gray-900/40 dark:text-gray-400">
         <span>Node</span><span>Role</span><span>CPU — in use / committed</span>
         <span>Memory — in use / committed</span>
         <span className="text-right">Disk</span><span className="text-right">Pods</span>
@@ -231,7 +240,7 @@ function NodeStrip({ nodes, loading }: { nodes: readonly AdminNode[]; loading: b
           <Link
             key={n.name}
             to="/cluster/nodes"
-            className={`group relative grid grid-cols-1 items-center gap-y-2 gap-x-3 border-t border-gray-200 px-4 py-3 transition-colors hover:bg-gray-50 lg:grid-cols-[minmax(0,1.3fr)_auto_minmax(0,2.4fr)_minmax(0,2.4fr)_auto_auto] dark:border-gray-700 dark:hover:bg-gray-700/40 ${
+            className={`group relative grid grid-cols-1 items-center gap-y-2 gap-x-3 border-t border-gray-200 px-4 py-3 transition-colors hover:bg-gray-50 lg:grid-cols-[minmax(0,1.3fr)_5rem_minmax(0,2.4fr)_minmax(0,2.4fr)_4rem_3.5rem] dark:border-gray-700 dark:hover:bg-gray-700/40 ${
               i === nodes.length - 1 ? 'rounded-b-xl' : ''
             }`}
           >
