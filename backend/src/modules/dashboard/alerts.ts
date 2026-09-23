@@ -119,7 +119,10 @@ export async function buildAdminAlerts(db: Database): Promise<DashboardAlert[]> 
       title: full > 0 ? 'Mailboxes over quota' : 'Mailboxes nearly full',
       subtitle: `${boxRows[0].full_address} · ${boxRows[0].pct}%`
         + (boxTotal > 1 ? ` · ${boxTotal - 1} more` : ''),
-      href: '/email/operations',
+      // /email/operations is queue and delivery tooling — it says nothing
+      // about a mailbox's quota. The accounts page is where the mailbox and
+      // its quota can actually be seen and raised.
+      href: '/tenants/email-accounts',
       detail: boxRows.map((b) => [b.full_address, `${b.used_mb} / ${b.quota_mb} MB · ${b.pct}%`] as [string, string]),
       note: 'At 100% inbound mail is rejected at RCPT TO — the sender gets a bounce.',
     }));
@@ -298,6 +301,17 @@ export async function buildTenantAlerts(
   }
 
   // Domain not verified — tenant.domain_verification.
+  //
+  // This matched on `status <> 'active'` and so fired for EVERY domain a
+  // tenant owned, verified ones included: `active` is a declared label on the
+  // domain_status enum that nothing ever sets. The terminal state a verified
+  // domain actually reaches is `verified`.
+  //
+  // Named positively — the states that genuinely mean "not verified yet" —
+  // rather than as "anything but X". A new terminal label would silently
+  // re-create the false alarm under the old form; under this one it simply
+  // does not alert, which is the safer way to be wrong.
+  //
   // `status` is the enum `domain_status`. Comparing it to '' asks Postgres to
   // cast an empty string into the enum, which errors rather than returning
   // nothing — so compare as text.
@@ -306,7 +320,7 @@ export async function buildTenantAlerts(
   // next to a tile saying 0 of 6 verified — the page size posing as the total.
   const dom = await db.execute<{ domain_name: string; total: number }>(sql`
     SELECT domain_name, COUNT(*) OVER ()::int AS total FROM domains
-     WHERE tenant_id = ${tenantId} AND status::text <> 'active'
+     WHERE tenant_id = ${tenantId} AND status::text IN ('unverified', 'pending')
      LIMIT 5
   `);
   const domRows = dom.rows ?? [];

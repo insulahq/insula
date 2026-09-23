@@ -4,7 +4,9 @@ import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { collect } from './section.js';
 import { buildAdminAlerts, rankAlerts } from './alerts.js';
-import { buildVolumeAlert, buildOrphanedPodAlert } from './cluster-alerts.js';
+import {
+  buildVolumeAlert, buildOrphanedPodAlert, buildOrphanedVolumeAlert, loadTenantsByNamespace,
+} from './cluster-alerts.js';
 
 interface Logger { warn?(...a: unknown[]): void }
 
@@ -340,11 +342,18 @@ export async function buildAdminLive(
   }, { logger });
 
   const clusterAlerts = await collect('clusterAlerts', async () => {
-    const [vol, orphans] = await Promise.all([
-      buildVolumeAlert(k8s).catch(() => null),
+    // Resolved once and shared: every storage alert has to be able to name the
+    // tenant behind a volume, and "Volume nearly full" without a customer next
+    // to it is not something an operator can act on.
+    const tenantsByNs = await loadTenantsByNamespace(db).catch(() => new Map());
+    const [vol, orphanVolumes, orphanPods] = await Promise.all([
+      buildVolumeAlert(k8s, tenantsByNs).catch(() => null),
+      buildOrphanedVolumeAlert(k8s, tenantsByNs).catch(() => null),
       buildOrphanedPodAlert(k8s).catch(() => null),
     ]);
-    return rankAlerts([vol, orphans].filter((a): a is NonNullable<typeof a> => a != null));
+    return rankAlerts(
+      [vol, orphanVolumes, orphanPods].filter((a): a is NonNullable<typeof a> => a != null),
+    );
   }, { logger, timeoutMs: 4_000 });
 
   const mail = await collect('mail', async () => {

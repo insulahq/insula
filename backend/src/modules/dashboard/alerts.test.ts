@@ -85,3 +85,55 @@ describe('rankAlerts', () => {
     expect(out.map((a) => a.value)).toEqual(['94%', '9%']);
   });
 });
+
+/**
+ * "Tenant dashboard always shows DOMAIN NOT VERIFIED although the domain IS
+ * verified."
+ *
+ * The predicate was `status <> 'active'`. `active` is a declared label on the
+ * domain_status enum that nothing in the product ever sets — every verified
+ * domain sits at `verified` — so the alert matched all of them and fired on
+ * every tenant that owned a domain at all.
+ *
+ * It is stated positively now: the states that genuinely mean "not verified
+ * yet". Under the old negative form, adding any new terminal label would
+ * quietly recreate the false alarm.
+ */
+describe('domain-verification alert predicate', () => {
+  function renderSql(q: unknown): string {
+    let out = '';
+    const walk = (chunks: unknown[]): void => {
+      for (const c of chunks) {
+        if (c && typeof c === 'object' && 'queryChunks' in c) {
+          walk((c as { queryChunks: unknown[] }).queryChunks);
+          continue;
+        }
+        if (c && typeof c === 'object' && 'value' in c) {
+          const v = (c as { value: unknown }).value;
+          if (Array.isArray(v) && typeof v[0] === 'string') out += v[0];
+          else if (typeof v === 'string') out += v;
+        }
+      }
+    };
+    if (q && typeof q === 'object' && 'queryChunks' in q) {
+      walk((q as { queryChunks: unknown[] }).queryChunks);
+    }
+    return out;
+  }
+
+  it('matches only the not-yet-verified states, and never "anything but active"', async () => {
+    const { buildTenantAlerts } = await import('./alerts.js');
+    const seen: string[] = [];
+    const db = {
+      execute: async (q: unknown) => { seen.push(renderSql(q)); return { rows: [] }; },
+    } as unknown as Parameters<typeof buildTenantAlerts>[0];
+
+    await buildTenantAlerts(db, 'ten_1');
+
+    const domainQuery = seen.find((q) => /FROM domains/i.test(q));
+    expect(domainQuery).toBeDefined();
+    expect(domainQuery).toMatch(/IN \('unverified', 'pending'\)/);
+    // The exact shape that produced the false alarm.
+    expect(domainQuery).not.toMatch(/<>\s*'active'/);
+  });
+});
