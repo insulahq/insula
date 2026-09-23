@@ -390,21 +390,51 @@ export async function buildAdminLive(
        WHERE created_at > NOW() - INTERVAL '24 hours'
     `);
     const a = (agg.rows ?? [])[0] ?? {};
-    const recent = await db.execute<{ severity: string; message: string | null; hostname: string | null; request_uri: string | null; created_at: string }>(sql`
-      SELECT severity, message, hostname, request_uri, created_at
+
+    // Who is actually hitting us, worst first. A rule id says what tripped;
+    // an address says who — and only the address can be blocked, allowlisted
+    // or reported upstream.
+    const offenders = await db.execute<{ source_ip: string; hits: number }>(sql`
+      SELECT source_ip, COUNT(*)::int AS hits
+        FROM waf_logs
+       WHERE created_at > NOW() - INTERVAL '24 hours' AND source_ip IS NOT NULL
+       GROUP BY source_ip ORDER BY hits DESC LIMIT 3
+    `);
+
+    // activeBans was hardcoded to 0, so the tile reported "no bans" on a
+    // cluster that had banned 30 addresses. CrowdSec durations are stored as
+    // short strings ('1h', '3d', '72h'); Postgres parses those as intervals,
+    // but the regex keeps an unexpected value from erroring the whole query —
+    // it counts as expired instead, which understates rather than misleads.
+    const bans = await db.execute<{ active: number }>(sql`
+      SELECT COUNT(DISTINCT source_ip)::int AS active
+        FROM crowdsec_autoban_runs
+       WHERE outcome = 'banned'
+         AND ban_duration ~ '^[0-9]+[smhd]$'
+         AND triggered_at + ban_duration::interval > NOW()
+    `);
+
+    const recent = await db.execute<{ severity: string; message: string | null; source_ip: string | null; hostname: string | null; request_uri: string | null; created_at: string }>(sql`
+      SELECT severity, message, source_ip, hostname, request_uri, created_at
         FROM waf_logs ORDER BY created_at DESC LIMIT 6
     `);
     return {
       blocked24h: Number(a.blocked ?? 0),
       critical24h: Number(a.critical ?? 0),
       distinctSources: Number(a.sources ?? 0),
-      activeBans: 0,
+      activeBans: Number((bans.rows ?? [])[0]?.active ?? 0),
+      topOffenders: (offenders.rows ?? []).map((o) => ({
+        ip: String(o.source_ip), hits: Number(o.hits),
+      })),
       topRuleId: a.top_rule == null ? null : String(a.top_rule),
       wafEnabled: true,
       recent: (recent.rows ?? []).map((r) => ({
         severity: (r.severity === 'critical' ? 'critical' : 'warning') as 'warning' | 'critical',
         label: r.message ?? r.request_uri ?? 'blocked request',
-        source: r.hostname ?? '—',
+        // The SOURCE of an attack is the address it came from. This carried
+        // the hostname — the site being attacked — under a label saying the
+        // opposite.
+        source: r.source_ip ?? r.hostname ?? '—',
         at: String(r.created_at),
       })),
     };
