@@ -14,12 +14,16 @@ import { MemoryRouter } from 'react-router-dom';
 
 const settings: { timezone: string | null } = { timezone: 'Africa/Windhoek' };
 
+// The fixture drives the `mail` card rather than `tenant_bundle`: the zone
+// label lives in ScheduleCard and is identical for every subsystem, and
+// `tenant_bundle` is a legacy backup_class string that ci-no-legacy-backup-
+// classes.sh greps for. Keeping it out of the fixture leaves that guard tight.
 const apiFetch = vi.fn(async (url: string) => {
   if (url.includes('/system-settings')) return { data: { ...settings } };
   if (url.includes('/backups/schedules/')) {
     return {
       data: {
-        subsystem: 'tenant_bundle', enabled: true, cronExpression: '30 3 * * *',
+        subsystem: 'mail', enabled: true, cronExpression: '30 3 * * *',
         retentionDays: 30, retentionCount: null, gateSatisfied: true,
       },
     };
@@ -35,7 +39,7 @@ function mount() {
   return render(
     <QueryClientProvider client={qc}>
       <MemoryRouter>
-        <ScheduleCard subsystem="tenant_bundle" title="Tenant bundles" description="" />
+        <ScheduleCard subsystem="mail" title="Mail snapshots" description="" />
       </MemoryRouter>
     </QueryClientProvider>,
   );
@@ -46,7 +50,7 @@ describe('ScheduleCard — schedule timezone', () => {
 
   it('names the zone beside the cron field', async () => {
     mount();
-    await waitFor(() => expect(screen.getByTestId('schedule-cron-tenant_bundle')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('schedule-cron-mail')).toBeInTheDocument());
     await waitFor(() => expect(screen.getByText(/Cron expression \(Africa\/Windhoek\)/)).toBeInTheDocument());
   });
 
@@ -62,7 +66,7 @@ describe('ScheduleCard — schedule timezone', () => {
     // bug and tells the operator nothing.
     settings.timezone = null;
     mount();
-    await waitFor(() => expect(screen.getByTestId('schedule-cron-tenant_bundle')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('schedule-cron-mail')).toBeInTheDocument());
     await waitFor(() => expect(screen.getByText(/^Cron expression$/)).toBeInTheDocument());
     expect(screen.queryByText(/wall-clock time in/)).toBeNull();
   });
