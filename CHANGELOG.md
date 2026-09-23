@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.9.31] - 2026-09-23
+
 ### BREAKING
 
 - **Platform-side schedules now fire in the platform's configured timezone,
