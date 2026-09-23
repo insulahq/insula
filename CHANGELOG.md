@@ -38,8 +38,11 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   re-asserts every field the manifest sets. Measured on DEV, an operator's
   15min was reverted within 15 seconds of the next reconcile, with no error
   anywhere. `bootstrap.sh:set_default_archive_timeout()` now applies 1h ONCE
-  at install time and only when the parameter is unset, so it is a default the
-  operator can actually override.
+  at install time and only when nobody has chosen an interval, so it is a
+  default the operator can actually override. "Nobody has chosen" cannot mean
+  "unset": CNPG's webhook writes its own default into the spec at creation, so
+  a presence check would have skipped on the very fresh installs the function
+  exists for.
 
 - **The platform database volume is 4Gi on fresh installs, up from 2Gi.** The
   data is small and stays small — 124 MB across every database on a 27-tenant

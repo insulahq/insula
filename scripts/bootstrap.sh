@@ -7900,10 +7900,26 @@ wait_for_admission_webhooks() {
 # operator's own UI choice (System Backups -> Postgres -> Archive timeout)
 # within one reconcile. Install-time default, operator-owned thereafter.
 #
-# Idempotent by construction: patches ONLY when the parameter is absent, so a
-# re-bootstrap never overwrites a value the operator has since chosen.
+# "Unset" is NOT the test. CNPG's defaulting webhook WRITES its own default
+# into spec.postgresql.parameters the moment the Cluster is created, so the
+# field is never absent on a live cluster and a presence check would make this
+# function dead code — it would skip on the fresh installs it exists for.
+# Verified on both clusters: production carried archive_timeout=5min in its
+# spec with no manifest ever setting it.
+#
+# So the condition is "absent, or still CNPG's default" — i.e. nobody has
+# chosen. Any other value is an operator decision and is left alone, which
+# covers every re-bootstrap of a cluster whose interval was set through the UI.
+#
+# Known limitation, stated rather than papered over: an operator who
+# deliberately selects 5min is indistinguishable at the CR level from one who
+# never chose, so a LATER re-bootstrap would move them to 1h. The function logs
+# which branch it took.
 set_default_archive_timeout() {
   local default_timeout="1h"
+  # CNPG's own default. Must track CNPG_DEFAULT_ARCHIVE_TIMEOUT in
+  # packages/api-contracts/src/system-wal-archive.ts.
+  local cnpg_default="5min"
 
   if ! kctl get cluster.postgresql.cnpg.io -n platform system-db >/dev/null 2>&1; then
     log "  system-db Cluster not present — skipping archive_timeout default."
@@ -7914,8 +7930,8 @@ set_default_archive_timeout() {
   current=$(kctl get cluster.postgresql.cnpg.io -n platform system-db \
     -o jsonpath='{.spec.postgresql.parameters.archive_timeout}' 2>/dev/null || echo "")
 
-  if [[ -n "$current" ]]; then
-    log "  archive_timeout already set to ${current} — leaving it alone."
+  if [[ -n "$current" && "$current" != "$cnpg_default" ]]; then
+    log "  archive_timeout is ${current} — an explicit choice, leaving it alone."
     return 0
   fi
 
