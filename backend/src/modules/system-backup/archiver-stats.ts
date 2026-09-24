@@ -26,16 +26,24 @@ import type { Database } from '../../db/index.js';
 /**
  * The archive_timeout actually in force.
  *
- * The operator's explicit value when they set one, otherwise CNPG's own default
- * — which is what applies the moment the barman-cloud plugin is attached. A
- * blank here would hide the fact that WAL is being uploaded on SOME interval.
+ * Read off the Cluster CR first, because that is the value Postgres is running
+ * — CNPG's defaulting webhook populates `spec.postgresql.parameters` whether or
+ * not anyone set it, and bootstrap writes the platform default there at install
+ * time without ever touching the state row. Preferring the operator's stored
+ * intent instead would have the card promise a 5-minute recovery point on a
+ * cluster archiving hourly, and an RPO is a data-loss promise, not a label.
+ *
+ * The state row is the fallback for a cluster whose CR could not be read, and
+ * CNPG's own default the fallback after that: a blank here would hide the fact
+ * that WAL is being uploaded on SOME interval.
  */
 export function effectiveArchiveTimeout(
   pluginAttached: boolean,
   archiveTimeout: string | null | undefined,
+  clusterParameter?: string | null,
 ): string | null {
   if (!pluginAttached) return null;
-  return archiveTimeout ?? CNPG_DEFAULT_ARCHIVE_TIMEOUT;
+  return clusterParameter ?? archiveTimeout ?? CNPG_DEFAULT_ARCHIVE_TIMEOUT;
 }
 
 export interface ArchiverStats {

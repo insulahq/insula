@@ -190,9 +190,13 @@ export async function buildTenantLive(
   const resources = await collect('resources', async () => {
     const { collectTenantMetrics } = await import('../metrics/resource-metrics.js');
     const m = await collectTenantMetrics(db, k8s, tenantId, namespace, planLimits);
+    // null, not the zero the counters hold, when the Metrics API did not
+    // answer — the tile draws "usage unavailable" from THIS and nothing else,
+    // so an idle tenant reads as idle instead of as broken.
+    const used = (v: number): number | null => (m.usageMeasured ? v : null);
     return {
-      cpu: { inUse: m.cpu.inUse, committed: m.cpu.reserved, total: m.cpu.available, unit: 'cores', kind: 'reserve' as const },
-      memory: { inUse: m.memory.inUse, committed: m.memory.reserved, total: m.memory.available, unit: 'GiB', kind: 'reserve' as const },
+      cpu: { inUse: used(m.cpu.inUse), committed: m.cpu.reserved, total: m.cpu.available, unit: 'cores', kind: 'reserve' as const },
+      memory: { inUse: used(m.memory.inUse), committed: m.memory.reserved, total: m.memory.available, unit: 'GiB', kind: 'reserve' as const },
       // Disk is CONSUMED, not reserved: a tenant's free storage is the limit
       // minus what is on disk, and there is no reserved band to show.
       storage: { inUse: m.storage.inUse, committed: m.storage.inUse, total: m.storage.available, unit: 'GiB', kind: 'consume' as const },

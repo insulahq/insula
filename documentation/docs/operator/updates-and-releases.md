@@ -16,10 +16,17 @@ leading zeros on the month. Every running cluster reports three versions:
 - **Installed** — the release this cluster is pinned to.
 - **Running** — the build actually serving you (installed version + a short
   commit suffix, e.g. `2026.6.5-310a877`).
-- **Available** — the newest release the cluster has seen.
+- **Available** — the newest release the cluster has seen, verified against the
+  platform's signing key before it is offered.
 
 You can read the running version in the admin sidebar (under the title) and the
-full spine on **Platform Settings → Upgrades**.
+full spine on **Platform Settings → Upgrades**. Versions display with a leading
+`v` throughout the panel, matching the git tags and release assets — `v2026.6.5`,
+not `2026.6.5`.
+
+The "platform update available" banner names the version you can move **to**,
+with the one you are on beside it: *Platform update available: v2026.6.6
+(current: v2026.6.5)*.
 
 ## How an update reaches a cluster (the pull model)
 

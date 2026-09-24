@@ -17,11 +17,13 @@
  *
  * Fed by exactly two endpoints — see use-operator-console.ts for why.
  */
+import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import type { AdminNode, DashboardAlert } from '@insula/api-contracts';
+import type { AdminNode, DashboardAlert, DashboardAlertAction } from '@insula/api-contracts';
+import OrphanedVolumesModal from '@/components/OrphanedVolumesModal';
 import { useConsoleSummary, useConsoleLive } from '@/hooks/use-operator-console';
 import {
-  AlertBand, HoverCard, MatrixTile, SectionFallback, Tile, TileSkeleton, TriadBar,
+  AlertBand, HoverCard, MatrixTile, RefreshButton, SectionFallback, Tile, TileSkeleton, TriadBar,
   type MatrixCell,
 } from '@/components/console/ConsoleTiles';
 
@@ -51,15 +53,20 @@ function storageRows(
   ];
 }
 
-function SectionHead({ title, count }: { title: string; count?: string }) {
+/**
+ * A section label and nothing else.
+ *
+ * Both the trailing rule and the count beside the title were removed on
+ * operator feedback: the rules drew the eye along every heading on a page read
+ * during incidents, and the counts repeated a number the section itself
+ * already shows — "3 open" above three visible chips, "2 nodes" above two
+ * visible nodes. A heading is a name.
+ */
+function SectionHead({ title }: { title: string }) {
   return (
-    <div className="mt-6 mb-2.5 flex items-center gap-2.5">
-      <h2 className="whitespace-nowrap text-[11px] font-bold uppercase tracking-widest text-gray-500 dark:text-gray-400">
-        {title}
-      </h2>
-      {count ? <span className="font-mono text-[11px] text-gray-400 dark:text-gray-500">{count}</span> : null}
-      <span className="h-px flex-1 bg-gray-200 dark:bg-gray-700" />
-    </div>
+    <h2 className="mt-6 mb-2.5 text-[11px] font-bold uppercase tracking-widest text-gray-500 dark:text-gray-400">
+      {title}
+    </h2>
   );
 }
 
@@ -91,13 +98,25 @@ export default function Dashboard() {
 
   const loadingFirst = summary.isLoading && !s;
 
+  /**
+   * Alerts that open something here rather than navigating. The orphaned-volume
+   * chip is one: the management modal already lists each volume with snapshot
+   * and delete beside it, so sending the operator to the storage page to find
+   * the button that opens it is a step with nothing in it.
+   */
+  const [openAction, setOpenAction] = useState<DashboardAlertAction | null>(null);
+
   return (
     <div className="w-full px-1 pb-16">
-      <header className="mb-3 flex flex-wrap items-baseline gap-3 border-b border-gray-200 pb-3 dark:border-gray-700">
+      <header className="mb-4 flex flex-wrap items-center gap-3">
         <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Operator Console</h1>
         <span className="font-mono text-xs text-gray-500 dark:text-gray-400">
           {s ? `updated ${ago(s.generatedAt)} ago` : 'loading…'}
         </span>
+        <RefreshButton
+          busy={summary.isFetching || live.isFetching}
+          onClick={() => { void summary.refetch(); void live.refetch(); }}
+        />
       </header>
 
       {/* ── attention: conditional, and absent when empty ──────────── */}
@@ -110,8 +129,8 @@ export default function Dashboard() {
         </>
       ) : alerts.length > 0 ? (
         <>
-          <SectionHead title="Needs attention" count={`${alerts.length} open`} />
-          <AlertBand alerts={alerts} />
+          <SectionHead title="Needs attention" />
+          <AlertBand alerts={alerts} onAction={(action) => setOpenAction(action)} />
         </>
       ) : (
         <>
@@ -123,7 +142,7 @@ export default function Dashboard() {
       )}
 
       {/* ── cluster capacity ───────────────────────────────────────── */}
-      <SectionHead title="Cluster capacity" count="in use · committed · schedulable" />
+      <SectionHead title="Cluster capacity" />
       <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
         {live.isLoading && !l ? (
           <><TileSkeleton /><TileSkeleton /><TileSkeleton /></>
@@ -167,10 +186,7 @@ export default function Dashboard() {
       ) : null}
 
       {/* ── nodes ──────────────────────────────────────────────────── */}
-      <SectionHead
-        title="Nodes"
-        count={l?.nodes.data ? `${l.nodes.data.length} node${l.nodes.data.length === 1 ? '' : 's'}` : undefined}
-      />
+      <SectionHead title="Nodes" />
       <NodeStrip nodes={l?.nodes.data ?? []} loading={live.isLoading && !l} />
 
       {/* ── platform ───────────────────────────────────────────────── */}
@@ -202,21 +218,28 @@ export default function Dashboard() {
           </>
         )}
       </div>
+
+      {openAction === 'orphaned-volumes' && (
+        <OrphanedVolumesModal onClose={() => setOpenAction(null)} />
+      )}
     </div>
   );
 }
 
 /* ── node strip ──────────────────────────────────────────────────── */
 
-function MiniTriad({ label, inUse, committed, total, unit }: {
-  label: string; inUse: number; committed: number; total: number; unit: string;
+function MiniTriad({ label, inUse: measured, committed, total, unit }: {
+  label: string; inUse: number | null; committed: number; total: number; unit: string;
 }) {
   const pct = total > 0 ? (committed / total) * 100 : 0;
+  // null = the node had no metrics sample. An em-dash says so; 0.00 would
+  // claim the node is idle, which is the opposite of "we do not know".
+  const inUse = measured ?? 0;
   return (
     <div className="min-w-0">
       <div className="mb-1 flex flex-wrap items-baseline gap-x-2 font-mono text-[11px] tabular-nums text-gray-600 dark:text-gray-400">
         <span className="whitespace-nowrap">
-          <span className="text-gray-900 dark:text-gray-100">{inUse.toFixed(2)}</span> / {committed.toFixed(2)}
+          <span className="text-gray-900 dark:text-gray-100">{measured === null ? '—' : inUse.toFixed(2)}</span> / {committed.toFixed(2)}
         </span>
         <span className="min-w-0 truncate opacity-60">of {total.toFixed(2)} {unit}</span>
         <span className="ml-auto whitespace-nowrap">{Math.round(pct)}%</span>
@@ -293,8 +316,8 @@ function NodeStrip({ nodes, loading }: { nodes: readonly AdminNode[]; loading: b
             <HoverCard
               title={`${n.name} — node detail`}
               rows={[
-                ['CPU in use / committed', `${n.cpu.inUse.toFixed(2)} / ${n.cpu.committed.toFixed(2)} of ${n.cpu.total.toFixed(2)}`],
-                ['Memory in use / committed', `${n.memory.inUse.toFixed(2)} / ${n.memory.committed.toFixed(2)} of ${n.memory.total.toFixed(2)} GiB`],
+                ['CPU in use / committed', `${n.cpu.inUse === null ? 'not reported' : n.cpu.inUse.toFixed(2)} / ${n.cpu.committed.toFixed(2)} of ${n.cpu.total.toFixed(2)}`],
+                ['Memory in use / committed', `${n.memory.inUse === null ? 'not reported' : n.memory.inUse.toFixed(2)} / ${n.memory.committed.toFixed(2)} of ${n.memory.total.toFixed(2)} GiB`],
                 ['Schedulable CPU left', `${Math.max(0, n.cpu.total - n.cpu.committed).toFixed(2)} cores`],
                 ['Pods scheduled', String(n.pods)],
                 ['Disk used', n.diskUsedPct == null ? '—' : `${Math.round(n.diskUsedPct)}%`],

@@ -28,7 +28,7 @@ import {
 import type { Database } from '../../db/index.js';
 
 describe('effectiveArchiveTimeout', () => {
-  it("reports CNPG's default when the plugin is attached and nobody chose a value", () => {
+  it("reports CNPG's default when the plugin is attached and nothing else is known", () => {
     // The state production was in: archiving every 5 minutes with no explicit
     // setting. Reporting null there would have hidden that WAL was moving at
     // all, which is how the old panel came to claim archiving was off.
@@ -38,6 +38,27 @@ describe('effectiveArchiveTimeout', () => {
 
   it("reports the operator's value when they chose one", () => {
     expect(effectiveArchiveTimeout(true, '60s')).toBe('60s');
+  });
+
+  it('prefers the CLUSTER parameter over the stored intent', () => {
+    // bootstrap writes the platform default straight onto the Cluster CR and
+    // never touches the state row, so a cluster can be archiving hourly with
+    // no state row at all. Falling back to CNPG's 5min there would have the
+    // card promise a five-minute recovery point on an hourly archive — and an
+    // RPO is a data-loss promise, not a label.
+    expect(effectiveArchiveTimeout(true, null, '1h')).toBe('1h');
+    expect(effectiveArchiveTimeout(true, undefined, '1h')).toBe('1h');
+  });
+
+  it('believes the cluster over a stale state row', () => {
+    // They disagree whenever the CR was changed outside the enable path. The
+    // CR is what Postgres is running.
+    expect(effectiveArchiveTimeout(true, '5min', '1h')).toBe('1h');
+  });
+
+  it('falls back to the stored value when the CR could not be read', () => {
+    expect(effectiveArchiveTimeout(true, '15min', null)).toBe('15min');
+    expect(effectiveArchiveTimeout(true, '15min', undefined)).toBe('15min');
   });
 
   it('reports nothing when the plugin entry is gone — nothing is being archived', () => {

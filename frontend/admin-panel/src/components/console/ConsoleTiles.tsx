@@ -1,7 +1,8 @@
 import { useCallback, useRef, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
+import { RefreshCw } from 'lucide-react';
 import clsx from 'clsx';
-import type { DashboardAlert, DashboardSection, ResourceTriad } from '@insula/api-contracts';
+import type { DashboardAlert, DashboardAlertAction, DashboardSection, ResourceTriad } from '@insula/api-contracts';
 
 /**
  * The console's tile vocabulary.
@@ -141,10 +142,60 @@ export function Tile({ title, to, children, card, busy }: {
   );
 }
 
+/* ── refresh ─────────────────────────────────────────────────────── */
+
+/**
+ * Re-read the dashboard now.
+ *
+ * Both consoles poll on their own, so this is not the only way the numbers
+ * move — it is for the moment after you changed something and want to see it
+ * land, rather than waiting out an interval you cannot see.
+ *
+ * Disabled while a fetch is in flight, because a second click cannot make the
+ * first one finish sooner and a spinner that restarts reads as progress.
+ */
+export function RefreshButton({ onClick, busy }: {
+  onClick: () => void;
+  busy?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={busy}
+      aria-label="Refresh"
+      className={clsx(
+        'ml-auto inline-flex shrink-0 items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-medium transition-colors',
+        'border-gray-300 bg-white text-gray-700 hover:bg-gray-50',
+        'dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700',
+        busy && 'cursor-not-allowed opacity-60',
+      )}
+      data-testid="dashboard-refresh"
+    >
+      <RefreshCw size={13} className={busy ? 'animate-spin' : undefined} />
+      Refresh
+    </button>
+  );
+}
+
 /* ── triad bar ───────────────────────────────────────────────────── */
 
-const fmt = (v: number, unit: string): string =>
-  unit === 'cores' ? v.toFixed(2) : v >= 100 ? v.toFixed(0) : v.toFixed(1);
+/**
+ * Core precision is chosen from the CEILING, not from the value — so both
+ * halves of "X/Y" carry the same decimals, and a cluster tile does not grow
+ * noise digits to accommodate a tenant-sized one.
+ *
+ * Two decimals of a core is a 10-millicore quantum. On a 7.5-core cluster
+ * that is 0.13% and invisible; on a 2-core tenant plan it is 0.5%, and the
+ * whole tenant fits inside it — a namespace running Apache, MariaDB and nginx
+ * measured 0.3 to 19 millicores on production, every one of which printed as
+ * "0.00".
+ */
+const coreDecimalsFor = (total: number): number => (total < 4 ? 3 : 2);
+
+const fmt = (v: number, unit: string, coreDecimals = 2): string =>
+  unit === 'cores' ? v.toFixed(coreDecimals)
+    : v >= 100 ? v.toFixed(0) : v.toFixed(1);
 
 /**
  * Band styling, from the design mockup.
@@ -212,7 +263,16 @@ export function TriadBar({ triad, label, to, vocab = 'committed', extraRows = []
    */
   vocab?: 'committed' | 'reserved';
 }) {
-  const { inUse, committed, total, unit, kind } = triad;
+  const { inUse: measured, committed, total, unit, kind } = triad;
+  /**
+   * null is the ONLY thing that means "not measured". A zero is a reading, and
+   * an idle workload really does use zero — 23 of 27 production tenants were
+   * being told their CPU usage was unavailable while metrics-server answered
+   * for every one of them.
+   */
+  const usageUnknown = measured === null;
+  const inUse = measured ?? 0;
+  const dec = coreDecimalsFor(triad.total);
   const consume = kind === 'consume';
   // Storage is consumed, not reserved: free is limit minus what is on disk,
   // and there is no reserved band to draw.
@@ -230,13 +290,6 @@ export function TriadBar({ triad, label, to, vocab = 'committed', extraRows = []
   const tone: BarTone = claimFrac >= 0.95 ? 'crit' : claimFrac >= warnAt ? 'warn' : 'ok';
   const tight = tone !== 'ok';
   const band = BAND[tone];
-  /**
-   * A zero usage reading against a non-zero commitment is almost always a
-   * metrics source that did not answer, not a genuinely idle cluster. Printing
-   * "0.00 cores in use" states a measurement that was never taken, so the
-   * headline reads em-dash and the bar falls back to the commitment.
-   */
-  const usageUnknown = !consume && inUse === 0 && committed > 0;
 
   return (
     <Tile
@@ -246,10 +299,10 @@ export function TriadBar({ triad, label, to, vocab = 'committed', extraRows = []
         <HoverCard
           title={`${label} — where it goes`}
           rows={[
-            ['Allocatable', `${fmt(total, unit)} ${unit}`],
-            ...(consume ? [] : [['Committed', `${fmt(committed, unit)} ${unit} · ${Math.round((committed / (total || 1)) * 100)}%`] as const]),
-            ['In use', usageUnknown ? 'not reported' : `${fmt(inUse, unit)} ${unit} · ${Math.round(usedPct)}%`],
-            [consume ? 'Free' : 'Schedulable left', `${fmt(free, unit)} ${unit}`],
+            ['Allocatable', `${fmt(total, unit, dec)} ${unit}`],
+            ...(consume ? [] : [['Committed', `${fmt(committed, unit, dec)} ${unit} · ${Math.round((committed / (total || 1)) * 100)}%`] as const]),
+            ['In use', usageUnknown ? 'not reported' : `${fmt(inUse, unit, dec)} ${unit} · ${Math.round(usedPct)}%`],
+            [consume ? 'Free' : 'Schedulable left', `${fmt(free, unit, dec)} ${unit}`],
             ...extraRows,
           ]}
           note={consume
@@ -263,7 +316,7 @@ export function TriadBar({ triad, label, to, vocab = 'committed', extraRows = []
       <div className="mb-2 flex items-baseline gap-2">
         <span className="min-w-0 truncate">
           <span className="font-mono text-2xl font-semibold tabular-nums tracking-tight text-gray-900 dark:text-gray-100">
-            {usageUnknown ? '—' : fmt(inUse, unit)}<span className="text-gray-400 dark:text-gray-500">/</span>{fmt(total, unit)}
+            {usageUnknown ? '—' : fmt(inUse, unit, dec)}<span className="text-gray-400 dark:text-gray-500">/</span>{fmt(total, unit, dec)}
           </span>
           <span className="ml-1.5 font-mono text-xs text-gray-500 dark:text-gray-400">
             {usageUnknown ? `${unit} · usage unavailable` : `${unit} in use`}
@@ -275,7 +328,7 @@ export function TriadBar({ triad, label, to, vocab = 'committed', extraRows = []
             : tone === 'warn' ? 'font-semibold text-amber-700 dark:text-amber-400'
             : 'text-gray-500 dark:text-gray-400',
         )}>
-          {fmt(free, unit)} free
+          {fmt(free, unit, dec)} free
         </span>
       </div>
 
@@ -304,7 +357,7 @@ export function TriadBar({ triad, label, to, vocab = 'committed', extraRows = []
           </Swatch>
         )}
         <Swatch className={SW_FREE}>
-          {consume ? 'free' : 'schedulable'} {fmt(free, unit)}
+          {consume ? 'free' : 'schedulable'} {fmt(free, unit, dec)}
         </Swatch>
       </div>
     </Tile>
@@ -353,38 +406,68 @@ export function MatrixTile({ title, to, cells, card }: {
  * a region that is usually blank is a region operators learn to skip, and
  * that is the one region that must never be skipped.
  */
-export function AlertBand({ alerts }: { alerts: readonly DashboardAlert[] }) {
+/**
+ * `onAction` lets a page handle an alert in place instead of navigating.
+ *
+ * An alert carrying `action` renders as a BUTTON when the page supplies a
+ * handler for it, and as the usual link otherwise — so a surface that does not
+ * implement the action still goes somewhere, and `href` never becomes dead
+ * weight on the contract.
+ */
+export function AlertBand({ alerts, onAction }: {
+  alerts: readonly DashboardAlert[];
+  onAction?: (action: DashboardAlertAction, alert: DashboardAlert) => void;
+}) {
   if (alerts.length === 0) return null;
+  const chipClass = (a: DashboardAlert): string => clsx(
+    'group relative block w-full rounded-xl border border-l-4 p-3 text-left transition-all hover:shadow-md',
+    a.severity === 'critical'
+      ? 'border-red-500 bg-red-50 dark:bg-red-950/40'
+      : 'border-amber-500 bg-amber-50 dark:bg-amber-950/40',
+  );
+  const body = (a: DashboardAlert): ReactNode => (
+    <>
+      <div className={clsx(
+        'font-mono text-xl font-bold tabular-nums',
+        a.severity === 'critical' ? 'text-red-700 dark:text-red-300' : 'text-amber-700 dark:text-amber-300',
+      )}>
+        {a.value}
+      </div>
+      <div className={clsx(
+        'mt-1 line-clamp-2 text-xs font-semibold',
+        a.severity === 'critical' ? 'text-red-700 dark:text-red-300' : 'text-amber-700 dark:text-amber-300',
+      )}>
+        {a.title}
+      </div>
+      <div className="mt-0.5 line-clamp-2 text-[11px] text-gray-600 dark:text-gray-400">{a.subtitle}</div>
+      <HoverCard title={a.title} rows={a.detail} note={a.note} />
+    </>
+  );
   return (
     <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 xl:grid-cols-4">
-      {alerts.map((a) => (
-        <Link
-          key={`${a.categoryId}:${a.title}`}
-          to={a.href}
-          className={clsx(
-            'group relative block rounded-xl border border-l-4 p-3 transition-all hover:shadow-md',
-            a.severity === 'critical'
-              ? 'border-red-500 bg-red-50 dark:bg-red-950/40'
-              : 'border-amber-500 bg-amber-50 dark:bg-amber-950/40',
-          )}
-          data-testid="alert-chip"
-        >
-          <div className={clsx(
-            'font-mono text-xl font-bold tabular-nums',
-            a.severity === 'critical' ? 'text-red-700 dark:text-red-300' : 'text-amber-700 dark:text-amber-300',
-          )}>
-            {a.value}
-          </div>
-          <div className={clsx(
-            'mt-1 line-clamp-2 text-xs font-semibold',
-            a.severity === 'critical' ? 'text-red-700 dark:text-red-300' : 'text-amber-700 dark:text-amber-300',
-          )}>
-            {a.title}
-          </div>
-          <div className="mt-0.5 line-clamp-2 text-[11px] text-gray-600 dark:text-gray-400">{a.subtitle}</div>
-          <HoverCard title={a.title} rows={a.detail} note={a.note} />
-        </Link>
-      ))}
+      {alerts.map((a) => {
+        const handled = a.action && onAction ? a.action : null;
+        return handled ? (
+          <button
+            key={`${a.categoryId}:${a.title}`}
+            type="button"
+            onClick={() => onAction?.(handled, a)}
+            className={chipClass(a)}
+            data-testid="alert-chip"
+          >
+            {body(a)}
+          </button>
+        ) : (
+          <Link
+            key={`${a.categoryId}:${a.title}`}
+            to={a.href}
+            className={chipClass(a)}
+            data-testid="alert-chip"
+          >
+            {body(a)}
+          </Link>
+        );
+      })}
     </div>
   );
 }

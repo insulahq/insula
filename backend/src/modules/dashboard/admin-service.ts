@@ -356,12 +356,15 @@ export async function buildAdminLive(
         cpu: {
           // Requests are what the scheduler honours; usage is what is really
           // happening. The gap between them is the whole point of the tile.
-          inUse: Math.round((u?.cpu ?? 0) * 1000) / 1000,
+          // null when this node has no metrics sample: `?? 0` made an
+          // unmeasured node indistinguishable from a silent one, and the tile
+          // then had to guess which it was looking at.
+          inUse: u ? Math.round(u.cpu * 1_000_000) / 1_000_000 : null,
           committed: Math.round(req.cpuReq * 1000) / 1000,
           total: cpuToCores(n.status?.allocatable?.cpu), unit: 'cores', kind: 'reserve',
         },
         memory: {
-          inUse: Math.round((u?.mem ?? 0) * 100) / 100,
+          inUse: u ? Math.round(u.mem * 100) / 100 : null,
           committed: Math.round(req.memReq * 100) / 100,
           total: Math.round(memToGiB(n.status?.allocatable?.memory) * 100) / 100,
           unit: 'GiB', kind: 'reserve',
@@ -473,15 +476,30 @@ export async function buildAdminLive(
       Math.round(nodes.reduce((s, n) => s + f(n), 0) * 100) / 100;
     const cpuTotal = sum((n) => n.cpu.total);
     const cpuReq = sum((n) => n.cpu.committed);
+    /**
+     * One unmeasured node makes the CLUSTER figure unknown, not smaller.
+     * Summing the nodes that did answer and presenting the result as the
+     * cluster's usage understates it by exactly the part nobody measured —
+     * and understated usage is the direction that reads as healthy.
+     */
+    const sumUsage = (pick: (n: AdminNode) => number | null): number | null => {
+      let acc = 0;
+      for (const n of nodes) {
+        const v = pick(n);
+        if (v === null) return null;
+        acc += v;
+      }
+      return acc;
+    };
     const biggest = nodes.reduce<AdminNode | null>(
       (a, b) => (a === null || b.cpu.total > a.cpu.total ? b : a), null);
     return {
       cpu: {
-        inUse: sum((n) => n.cpu.inUse), committed: cpuReq,
+        inUse: sumUsage((n) => n.cpu.inUse), committed: cpuReq,
         total: cpuTotal, unit: 'cores', kind: 'reserve' as const,
       },
       memory: {
-        inUse: sum((n) => n.memory.inUse),
+        inUse: sumUsage((n) => n.memory.inUse),
         committed: sum((n) => n.memory.committed),
         total: sum((n) => n.memory.total), unit: 'GiB', kind: 'reserve' as const,
       },

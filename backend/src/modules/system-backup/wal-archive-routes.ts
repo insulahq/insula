@@ -136,10 +136,15 @@ export async function systemBackupWalArchiveRoutes(app: FastifyInstance): Promis
         cr?.spec?.plugins?.some((p) => p.name === BARMAN_PLUGIN_NAME),
       );
       const dbEnabled = state !== undefined;
-      // `archive_timeout` is written by the combined enable path; its presence
-      // means the operator has chosen an upload interval rather than inheriting
-      // CNPG's default.
-      const archiveTimeoutInForce = effectiveArchiveTimeout(crHasBackup, state?.archiveTimeout);
+      // The CR's own parameter is what Postgres runs — bootstrap writes the
+      // platform default straight there at install time and never touches the
+      // state row, so a state-row-only read would report CNPG's 5min on a
+      // cluster archiving hourly.
+      const archiveTimeoutInForce = effectiveArchiveTimeout(
+        crHasBackup,
+        state?.archiveTimeout,
+        cr?.spec?.postgresql?.parameters?.archive_timeout,
+      );
       const baseBackupStatus = sb
         ? {
             lastScheduleTime: sb.status?.lastScheduleTime ?? null,
