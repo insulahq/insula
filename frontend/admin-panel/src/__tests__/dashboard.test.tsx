@@ -333,3 +333,57 @@ describe('Operator console — alerts that open something in place', () => {
     expect(chip.getAttribute('href')).toBe('/cluster/storage');
   });
 });
+
+
+/**
+ * Operator feedback on the console chrome: the rules beside and under every
+ * heading drew the eye along the page during exactly the reads that matter,
+ * the counts beside a heading repeated what the section already showed, and
+ * there was no way to re-read the page without waiting out a poll interval you
+ * cannot see.
+ */
+describe('Operator console — chrome', () => {
+  it('gives headings a name and nothing else', () => {
+    show();
+    expect(screen.getByText('Cluster capacity')).toBeInTheDocument();
+    // The legend that used to sit beside it, and the open-count beside
+    // "Needs attention".
+    expect(screen.queryByText(/in use · committed · schedulable/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/\d+ open/)).not.toBeInTheDocument();
+  });
+
+  it('draws no rule beside or under a heading', () => {
+    const { container } = render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <MemoryRouter><Dashboard /></MemoryRouter>
+      </QueryClientProvider>,
+    );
+    // The trailing rule was a flex-filling 1px span; the one under the title
+    // was a border on <header>.
+    expect(container.querySelector('.h-px.flex-1')).toBeNull();
+    expect(container.querySelector('header')!.className).not.toMatch(/border-b/);
+  });
+
+  it('refreshes both polls on demand, in line with the title', () => {
+    const summaryRefetch = vi.fn();
+    const liveRefetch = vi.fn();
+    summaryFn.mockReturnValue({ data: { data: summary() }, isLoading: false, isFetching: false, refetch: summaryRefetch });
+    liveFn.mockReturnValue({ data: { data: live() }, isLoading: false, isFetching: false, refetch: liveRefetch });
+    show();
+    const btn = screen.getByTestId('dashboard-refresh');
+    // Beside the h1, not stranded in a section below it.
+    expect(btn.closest('header')).not.toBeNull();
+    fireEvent.click(btn);
+    // BOTH: the console is fed by two endpoints and a half-refresh would leave
+    // the capacity tiles stale beside fresh alerts.
+    expect(summaryRefetch).toHaveBeenCalledTimes(1);
+    expect(liveRefetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('disables the refresh while a fetch is already in flight', () => {
+    summaryFn.mockReturnValue({ data: { data: summary() }, isLoading: false, isFetching: true, refetch: vi.fn() });
+    liveFn.mockReturnValue({ data: { data: live() }, isLoading: false, isFetching: false, refetch: vi.fn() });
+    show();
+    expect(screen.getByTestId('dashboard-refresh')).toBeDisabled();
+  });
+});

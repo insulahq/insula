@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -184,5 +184,38 @@ describe('Hosting overview — degraded sections', () => {
     show();
     expect(screen.getByText(/could not be read/i)).toBeInTheDocument();
     expect(screen.getByText(/metrics did not answer/i)).toBeInTheDocument();
+  });
+});
+
+
+/** Same chrome pass as the operator console — see that file for the reasoning. */
+describe('Hosting overview — chrome', () => {
+  it('gives headings a name and nothing else', () => {
+    show();
+    expect(screen.getByText('Your plan')).toBeInTheDocument();
+    expect(screen.queryByText(/in use · reserved by your apps · free/)).not.toBeInTheDocument();
+  });
+
+  it('draws no rule beside or under a heading', () => {
+    const { container } = render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <MemoryRouter><Dashboard /></MemoryRouter>
+      </QueryClientProvider>,
+    );
+    expect(container.querySelector('.h-px.flex-1')).toBeNull();
+    expect(container.querySelector('header')!.className).not.toMatch(/border-b/);
+  });
+
+  it('refreshes both polls on demand, in line with the title', () => {
+    const summaryRefetch = vi.fn();
+    const liveRefetch = vi.fn();
+    summaryFn.mockReturnValue({ data: { data: summary() }, isLoading: false, isFetching: false, refetch: summaryRefetch });
+    liveFn.mockReturnValue({ data: { data: live() }, isLoading: false, isFetching: false, refetch: liveRefetch });
+    show();
+    const btn = screen.getByTestId('dashboard-refresh');
+    expect(btn.closest('header')).not.toBeNull();
+    fireEvent.click(btn);
+    expect(summaryRefetch).toHaveBeenCalledTimes(1);
+    expect(liveRefetch).toHaveBeenCalledTimes(1);
   });
 });

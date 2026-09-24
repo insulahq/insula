@@ -24,6 +24,16 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Changed
 
+- **Dashboard chrome: headings are names, and there is a Refresh button.** The
+  1px rules beside every section heading and under the page title are gone —
+  they drew the eye along a page that gets read during incidents. So are the
+  counts and legends beside headings ("3 open" above three visible chips,
+  "2 nodes" above two visible nodes, "in use · committed · schedulable" above
+  a bar that is already labelled). Both consoles gained a small Refresh in
+  line with the title, which re-reads BOTH of the endpoints feeding the page —
+  a half-refresh would leave the capacity tiles stale beside fresh alerts —
+  and disables itself while a fetch is in flight.
+
 - **The orphaned-volumes card opens the management modal.** It used to
   navigate to the storage page, where the operator then had to find the button
   that opens the modal — and the modal is the thing that answers the question,
