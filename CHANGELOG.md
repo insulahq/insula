@@ -62,8 +62,10 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   is WAL: `wal_keep_size` holds a 512MB floor and `max_wal_size` lets pg_wal
   reach ~1.5 GB during a write burst, which on 1945 MiB of usable ext4 left a
   few hundred MB of margin. Postgres PANICs when it cannot write WAL, and this
-  cluster is the control plane. Existing clusters grow online via Settings →
-  System DB Storage; CNPG cannot shrink, so this is one-way.
+  cluster is the control plane. Existing clusters pick the new size up from
+  Flux, online and without a restart (measured: ~18 seconds, no pod restart);
+  `POST /api/v1/admin/system/pvc/storage` grows it further. CNPG cannot shrink,
+  so this is one-way.
 
 - **The platform default `archive_timeout` is 1h, not CNPG's 5min.** The
   setting forces a WAL segment switch so the archive stays within one

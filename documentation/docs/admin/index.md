@@ -112,6 +112,11 @@ got room?"** — and links you to the fix. Every tile is clickable and takes
 you to the page that acts on it, and hovering a tile opens a card with the
 detail behind the number.
 
+A small **Refresh** sits at the top right, in line with the page title. Both
+of the requests feeding the page are re-read together — refreshing one would
+leave the capacity tiles stale beside fresh warnings — and it greys out while
+a fetch is in flight.
+
 ### Needs attention
 
 The first section **only appears when something is wrong**. When the
@@ -125,6 +130,18 @@ is what stops a workload writing), orphaned pods left on a node, failed
 lifecycle transitions, backups that are failing or have never run, and
 certificates close to expiry. Each entry links to the tenant, volume or
 page that resolves it.
+
+Two details worth knowing:
+
+- **"Volume nearly full" is measured inside the volume** — the used and free
+  space its filesystem reports, which is what decides whether the workload can
+  still write. It is not the space the volume occupies on the host; a volume
+  with hourly snapshots can hold several times its own contents there without
+  being anywhere near full. Inode exhaustion counts too: a volume out of
+  inodes refuses writes while it still looks half empty.
+- **"Orphaned volume" opens the management list in place** rather than sending
+  you to the Storage page to find the button. Each volume is listed with its
+  size, how long its claim has been gone, and snapshot and delete beside it.
 
 ### Cluster capacity
 
@@ -144,10 +161,21 @@ that completely.
 Storage is the exception — it is consumed rather than reserved, so it
 reads as used against total.
 
+**In use** can read as *usage unavailable*, and that means exactly one thing:
+the metrics service did not answer. A measured **zero** is shown as zero — an
+idle workload really does use none, and calling that "unavailable" would hide
+the difference between a quiet cluster and a blind one. A node with no sample
+shows an em-dash in its row, and a cluster figure missing any node reads as
+unknown rather than as the sum of the nodes that did answer, which would
+understate usage in the direction that looks healthy.
+
 Underneath, a **Failover** line says in plain words whether the cluster
 would survive losing its busiest node.
 
 ### Nodes
+
+Section headings are names only — no counts or legends beside them, and no
+rules running off to the page edge. The number is in the section itself.
 
 One row per node with the same in-use / committed / available breakdown, so
 you can see which node is carrying the cluster. Hovering a row opens its
