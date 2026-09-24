@@ -93,6 +93,21 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **The platform database's volume had no panel control for four months.**
+  `SystemStorageCard` — the card that shows the volume and grows it — was
+  mounted on the old System Backup page's *storage* tab, and the import and the
+  mount were both deleted when that page was consolidated in May. Nothing
+  failed: the card kept compiling, its routes kept answering, the bundler
+  dropped it silently, and the only way to resize was the API. It is back, on
+  **System Backups → Snapshots**, beside the released-PV card it belongs with.
+
+  A new CI guard makes the class of failure impossible to repeat: every
+  component under a panel's `components/` must be referenced by something else
+  in that panel. A unit test could not have caught this — the regression is the
+  *absence* of a reference, with nothing left to assert on. The guard found
+  three further components that nothing imports; they are listed explicitly as
+  awaiting triage rather than left to hide.
+
 - **The tenant dashboard told almost every tenant its CPU usage was
   unavailable.** The tile inferred "not measured" from `inUse === 0 &&
   committed > 0`, and on production 23 of 27 tenants matched — metrics-server
