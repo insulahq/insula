@@ -58,6 +58,10 @@ After signing in you land on the **Dashboard** — what your account is using,
 and anything that needs you. Every tile is clickable and opens the page that
 acts on it; hovering one shows the detail behind the number.
 
+A small **Refresh** sits at the top right, in line with the page title, and
+re-reads the whole page at once. Section headings are names only — the counts
+that used to sit beside them said what the section below already showed.
+
 ### Needs your attention
 
 This section **only appears when something needs you** — when everything is
@@ -82,6 +86,12 @@ that raw usage figures never show.
 
 Storage is consumed rather than reserved, so it simply reads as used against
 your limit.
+
+CPU is shown to the millicore, because that is the scale small applications
+actually run at — a site idling at a few thousandths of a core would otherwise
+round away to nothing. If it reads **usage unavailable**, the platform's
+metrics service did not answer; a genuine zero is shown as zero, which is
+simply what an idle application uses.
 
 ### The rest of the page
 

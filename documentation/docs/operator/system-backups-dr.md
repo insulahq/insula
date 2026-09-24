@@ -55,13 +55,32 @@ platform database, as one switch and three settings:
 |---|---|
 | **Offsite backups on / off** | Turns the whole thing on: full copies *and* the write-ahead log. They cannot be separated — a full copy is only restorable together with the log written while it ran. |
 | **Base backup cadence** | How often a full copy is taken. |
-| **Archive timeout** | How often the write-ahead log is shipped. This is your recovery-point target: lose the server and you lose at most this much work. |
+| **Archive timeout** | How often the write-ahead log is shipped. This is your recovery-point target: lose the server and you lose at most this much work. Choose from **every 5 minutes**, **15 minutes** or **hourly**; new installs default to hourly. |
 | **Retention** | How long copies *and* log are kept. Keep it at least twice the cadence, or the last full copy is deleted before the next one is taken and there is nothing left to restore onto — the panel warns you if you go below that. |
 
 Below the settings the same card reports what the archive actually holds: the
 window you can restore to, when the last and next base backups run, when the log
 was last shipped and how often that succeeds, and how much storage the copies and
-the log use at the target.
+the log use at the target. The interval it reports is the one Postgres is
+actually running, not the one last saved here — they differ if the cluster was
+configured at install or by hand.
+
+!!! warning "Shorter is not better — a log segment is a fixed 16 MB file"
+    The log ships in fixed 16 MB segments whichever interval you pick, so the
+    volume shipped is set by the *interval*, not by how much was written. The
+    platform database produces roughly 10 MB of log an hour, which at every 5
+    minutes measured as **194 MB/h of segments to carry 10 MB of change** on a
+    production cluster — about 5% of each segment real, the rest padding. It is
+    not free padding either: Postgres reuses segment files in place, so hourly
+    volume snapshots each pin another copy, and six of them held 1.8 GiB behind
+    a 124 MB database.
+
+    Pick the interval from how much work you can afford to lose, not from the
+    smallest number offered. Sub-5-minute intervals are no longer offered for
+    that reason; a cluster still set to one keeps it, marked *no longer
+    recommended*, until you change it. A busy database whose segments genuinely
+    fill can go shorter — there the padding, and the amplification with it,
+    disappears on its own.
 
 ### Timing the other system backups
 
