@@ -23,7 +23,7 @@ import type { AdminNode, DashboardAlert, DashboardAlertAction } from '@insula/ap
 import OrphanedVolumesModal from '@/components/OrphanedVolumesModal';
 import { useConsoleSummary, useConsoleLive } from '@/hooks/use-operator-console';
 import {
-  AlertBand, HoverCard, MatrixTile, SectionFallback, Tile, TileSkeleton, TriadBar,
+  AlertBand, HoverCard, MatrixTile, RefreshButton, SectionFallback, Tile, TileSkeleton, TriadBar,
   type MatrixCell,
 } from '@/components/console/ConsoleTiles';
 
@@ -53,15 +53,20 @@ function storageRows(
   ];
 }
 
-function SectionHead({ title, count }: { title: string; count?: string }) {
+/**
+ * A section label and nothing else.
+ *
+ * Both the trailing rule and the count beside the title were removed on
+ * operator feedback: the rules drew the eye along every heading on a page read
+ * during incidents, and the counts repeated a number the section itself
+ * already shows — "3 open" above three visible chips, "2 nodes" above two
+ * visible nodes. A heading is a name.
+ */
+function SectionHead({ title }: { title: string }) {
   return (
-    <div className="mt-6 mb-2.5 flex items-center gap-2.5">
-      <h2 className="whitespace-nowrap text-[11px] font-bold uppercase tracking-widest text-gray-500 dark:text-gray-400">
-        {title}
-      </h2>
-      {count ? <span className="font-mono text-[11px] text-gray-400 dark:text-gray-500">{count}</span> : null}
-      <span className="h-px flex-1 bg-gray-200 dark:bg-gray-700" />
-    </div>
+    <h2 className="mt-6 mb-2.5 text-[11px] font-bold uppercase tracking-widest text-gray-500 dark:text-gray-400">
+      {title}
+    </h2>
   );
 }
 
@@ -103,11 +108,15 @@ export default function Dashboard() {
 
   return (
     <div className="w-full px-1 pb-16">
-      <header className="mb-3 flex flex-wrap items-baseline gap-3 border-b border-gray-200 pb-3 dark:border-gray-700">
+      <header className="mb-4 flex flex-wrap items-center gap-3">
         <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Operator Console</h1>
         <span className="font-mono text-xs text-gray-500 dark:text-gray-400">
           {s ? `updated ${ago(s.generatedAt)} ago` : 'loading…'}
         </span>
+        <RefreshButton
+          busy={summary.isFetching || live.isFetching}
+          onClick={() => { void summary.refetch(); void live.refetch(); }}
+        />
       </header>
 
       {/* ── attention: conditional, and absent when empty ──────────── */}
@@ -120,7 +129,7 @@ export default function Dashboard() {
         </>
       ) : alerts.length > 0 ? (
         <>
-          <SectionHead title="Needs attention" count={`${alerts.length} open`} />
+          <SectionHead title="Needs attention" />
           <AlertBand alerts={alerts} onAction={(action) => setOpenAction(action)} />
         </>
       ) : (
@@ -133,7 +142,7 @@ export default function Dashboard() {
       )}
 
       {/* ── cluster capacity ───────────────────────────────────────── */}
-      <SectionHead title="Cluster capacity" count="in use · committed · schedulable" />
+      <SectionHead title="Cluster capacity" />
       <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
         {live.isLoading && !l ? (
           <><TileSkeleton /><TileSkeleton /><TileSkeleton /></>
@@ -177,10 +186,7 @@ export default function Dashboard() {
       ) : null}
 
       {/* ── nodes ──────────────────────────────────────────────────── */}
-      <SectionHead
-        title="Nodes"
-        count={l?.nodes.data ? `${l.nodes.data.length} node${l.nodes.data.length === 1 ? '' : 's'}` : undefined}
-      />
+      <SectionHead title="Nodes" />
       <NodeStrip nodes={l?.nodes.data ?? []} loading={live.isLoading && !l} />
 
       {/* ── platform ───────────────────────────────────────────────── */}

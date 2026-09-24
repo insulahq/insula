@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
+import { RefreshCw } from 'lucide-react';
 import clsx from 'clsx';
 import type { DashboardAlert, DashboardAlertAction, DashboardSection, ResourceTriad } from '@insula/api-contracts';
 
@@ -138,6 +139,42 @@ export function Tile({ title, to, children, card, busy }: {
       {children}
       {card}
     </Link>
+  );
+}
+
+/* ── refresh ─────────────────────────────────────────────────────── */
+
+/**
+ * Re-read the dashboard now.
+ *
+ * Both consoles poll on their own, so this is not the only way the numbers
+ * move — it is for the moment after you changed something and want to see it
+ * land, rather than waiting out an interval you cannot see.
+ *
+ * Disabled while a fetch is in flight, because a second click cannot make the
+ * first one finish sooner and a spinner that restarts reads as progress.
+ */
+export function RefreshButton({ onClick, busy }: {
+  onClick: () => void;
+  busy?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={busy}
+      aria-label="Refresh"
+      className={clsx(
+        'ml-auto inline-flex shrink-0 items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-medium transition-colors',
+        'border-gray-300 bg-white text-gray-700 hover:bg-gray-50',
+        'dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700',
+        busy && 'cursor-not-allowed opacity-60',
+      )}
+      data-testid="dashboard-refresh"
+    >
+      <RefreshCw size={13} className={busy ? 'animate-spin' : undefined} />
+      Refresh
+    </button>
   );
 }
 
