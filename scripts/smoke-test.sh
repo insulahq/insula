@@ -30,6 +30,15 @@ _CALLER_ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 # fallback below needs to tell "the caller pinned a mail host" apart from
 # "nobody said, so we defaulted to the local apex".
 _CALLER_MAIL_HOST="${MAIL_HOST:-}"
+# Mail PORT pins, captured for the same reason as the host below: .env.local
+# sets PORT_MAIL_* to the local DinD published ports, and the remote-mode block
+# read those instead of the caller's pins — so a remote run probed :2020-:2023
+# and reported seven failures against a cluster serving mail perfectly on the
+# standard ports.
+_CALLER_MAIL_PORT_SMTP="${MAIL_PORT_SMTP:-}"
+_CALLER_MAIL_PORT_SUBMISSION="${MAIL_PORT_SUBMISSION:-}"
+_CALLER_MAIL_PORT_IMAP="${MAIL_PORT_IMAP:-}"
+_CALLER_MAIL_PORT_IMAPS="${MAIL_PORT_IMAPS:-}"
 if [[ -f "$ENV_FILE" ]]; then
   set -a
   # shellcheck source=/dev/null
@@ -539,10 +548,14 @@ if [[ "$MAIL_TESTS_ENABLED" == "1" ]]; then
   # above already claimed the host came from API_URL; now it actually does.
   if [[ "$MAIL_PROBE_MODE" == "k3s" ]] && [[ ! "$API_URL" =~ ^https?://(localhost|127\.0\.0\.1|\[?::1\]?)([:/]|$) ]]; then
     MAIL_PROBE_MODE=host
-    MAIL_PORT_SMTP="${PORT_MAIL_SMTP:-25}"
-    MAIL_PORT_SUBMISSION="${PORT_MAIL_SUBMISSION:-587}"
-    MAIL_PORT_IMAP="${PORT_MAIL_IMAP:-143}"
-    MAIL_PORT_IMAPS="${PORT_MAIL_IMAPS:-993}"
+    # The CALLER's pin, then the standard port — never PORT_MAIL_*, which is
+    # .env.local's local-DinD publish mapping and means nothing on a remote
+    # cluster. Reading it here is what made the "unless the caller pinned them"
+    # promise above untrue.
+    MAIL_PORT_SMTP="${_CALLER_MAIL_PORT_SMTP:-25}"
+    MAIL_PORT_SUBMISSION="${_CALLER_MAIL_PORT_SUBMISSION:-587}"
+    MAIL_PORT_IMAP="${_CALLER_MAIL_PORT_IMAP:-143}"
+    MAIL_PORT_IMAPS="${_CALLER_MAIL_PORT_IMAPS:-993}"
     if [[ -z "$_CALLER_MAIL_HOST" ]]; then
       MAIL_HOST="$(mail_host_from_api_url "$API_URL")"
     fi
