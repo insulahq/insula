@@ -60,6 +60,20 @@ function section<T extends z.ZodTypeAny>(data: T) {
 // is a tile nothing can ever produce, which is how the first draft of this
 // dashboard grew a "low free memory" warning that no code path could fire.
 
+/**
+ * An in-page action an alert can trigger INSTEAD of navigating.
+ *
+ * `categoryId` cannot carry this: the volume-fullness and orphaned-volume
+ * alerts share `admin.cluster_storage_capacity`, and `href` is shared too, so
+ * neither discriminates. A named token does, and a closed enum makes a typo a
+ * compile error rather than a chip that silently navigates.
+ *
+ * `href` stays populated alongside it as the fallback — a surface that does not
+ * implement the action still has somewhere to go.
+ */
+export const dashboardAlertActionSchema = z.enum(['orphaned-volumes']);
+export type DashboardAlertAction = z.infer<typeof dashboardAlertActionSchema>;
+
 export const dashboardAlertSchema = z.object({
   /** The notification category this alert corresponds to. */
   categoryId: z.string().min(1),
@@ -71,6 +85,12 @@ export const dashboardAlertSchema = z.object({
   subtitle: z.string(),
   /** Panel-relative path this tile opens. */
   href: z.string().min(1),
+  /**
+   * Open something in place instead of following `href`. `nullish` rather than
+   * defaulted so the dozen existing `alert({...})` call sites stay untouched;
+   * consumers test truthiness, which covers both absent and null.
+   */
+  action: dashboardAlertActionSchema.nullish(),
   /** Label/value pairs for the hover card. */
   detail: z.array(z.tuple([z.string(), z.string()])).default([]),
   /** Closing line: what to do, or why it is not as bad as it looks. */
@@ -85,9 +105,18 @@ export type DashboardAlert = z.infer<typeof dashboardAlertSchema>;
  * been reserved and cannot be handed to anything else even while idle;
  * `total` is the ceiling. The gap between the first two is the whole point —
  * production runs at 12% CPU usage and 92% CPU commitment.
+ *
+ * `inUse` is NULLABLE, and the null carries weight: it means the metrics API
+ * did not answer, which is a different claim from "nothing is running". The
+ * two used to share one value — zero — and the UI guessed between them by
+ * testing `inUse === 0 && committed > 0`. On production that guess was wrong
+ * for 23 of 27 tenants: metrics-server was answering, and they were simply
+ * using less than a millicore, so every one of them was told its CPU usage
+ * was unavailable. Producers MUST send null for "not measured" and a number,
+ * zero included, for anything they did measure.
  */
 export const resourceTriadSchema = z.object({
-  inUse: z.number(),
+  inUse: z.number().nullable(),
   committed: z.number(),
   total: z.number(),
   unit: z.string(),

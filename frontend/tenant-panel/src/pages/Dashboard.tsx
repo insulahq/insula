@@ -17,17 +17,24 @@ import type { TenantSite } from '@insula/api-contracts';
 import { useTenantContext } from '@/hooks/use-tenant-context';
 import { useOverviewSummary, useOverviewLive } from '@/hooks/use-hosting-overview';
 import {
-  AlertBand, HoverCard, MatrixTile, SectionFallback, Tile, TileSkeleton, TriadBar,
+  AlertBand, HoverCard, MatrixTile, RefreshButton, SectionFallback, Tile, TileSkeleton, TriadBar,
   type MatrixCell,
 } from '@/components/console/ConsoleTiles';
 
-function SectionHead({ title, count }: { title: string; count?: string }) {
+/**
+ * A section label and nothing else.
+ *
+ * Both the trailing rule and the count beside the title were removed on
+ * operator feedback: the rules drew the eye along every heading on a page read
+ * during incidents, and the counts repeated a number the section itself
+ * already shows — "3 open" above three visible chips, "2 nodes" above two
+ * visible nodes. A heading is a name.
+ */
+function SectionHead({ title }: { title: string }) {
   return (
-    <div className="mt-6 mb-2.5 flex items-center gap-2.5">
-      <h2 className="whitespace-nowrap text-[11px] font-bold uppercase tracking-widest text-gray-500 dark:text-gray-400">{title}</h2>
-      {count ? <span className="font-mono text-[11px] text-gray-400 dark:text-gray-500">{count}</span> : null}
-      <span className="h-px flex-1 bg-gray-200 dark:bg-gray-700" />
-    </div>
+    <h2 className="mt-6 mb-2.5 text-[11px] font-bold uppercase tracking-widest text-gray-500 dark:text-gray-400">
+      {title}
+    </h2>
   );
 }
 
@@ -52,11 +59,15 @@ export default function Dashboard() {
 
   return (
     <div className="w-full px-1 pb-16">
-      <header className="mb-3 flex flex-wrap items-baseline gap-3 border-b border-gray-200 pb-3 dark:border-gray-700">
+      <header className="mb-4 flex flex-wrap items-center gap-3">
         <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Hosting Overview</h1>
         <span className="font-mono text-xs text-gray-500 dark:text-gray-400">
           {s?.plan.data ? `${s.plan.data.name} plan` : 'loading…'}
         </span>
+        <RefreshButton
+          busy={summary.isFetching || live.isFetching}
+          onClick={() => { void summary.refetch(); void live.refetch(); }}
+        />
       </header>
 
       {/* ── needs your attention: absent when there is nothing ─────── */}
@@ -69,7 +80,7 @@ export default function Dashboard() {
         </>
       ) : alerts.length > 0 ? (
         <>
-          <SectionHead title="Needs your attention" count={String(alerts.length)} />
+          <SectionHead title="Needs your attention" />
           <AlertBand alerts={alerts} />
         </>
       ) : (
@@ -82,7 +93,7 @@ export default function Dashboard() {
       )}
 
       {/* ── your plan ──────────────────────────────────────────────── */}
-      <SectionHead title="Your plan" count="in use · reserved by your apps · free" />
+      <SectionHead title="Your plan" />
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
         {live.isLoading && !l ? (
           <><TileSkeleton /><TileSkeleton /><TileSkeleton /><TileSkeleton /></>
@@ -103,10 +114,7 @@ export default function Dashboard() {
       </div>
 
       {/* ── sites ──────────────────────────────────────────────────── */}
-      <SectionHead
-        title="Sites & applications"
-        count={l?.sites.data ? `${l.sites.data.length} site${l.sites.data.length === 1 ? '' : 's'}` : undefined}
-      />
+      <SectionHead title="Sites & applications" />
       <SiteStrip sites={l?.sites.data ?? []} loading={live.isLoading && !l} />
 
       {/* ── services ───────────────────────────────────────────────── */}

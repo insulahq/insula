@@ -8,6 +8,7 @@ import DeployedImagesModal from '@/components/platform/DeployedImagesModal';
 import UpgradeReviewModal from '@/components/platform/UpgradeReviewModal';
 import PlatformUpgradeProgressModal from '@/components/PlatformUpgradeProgressModal';
 import HostMigrationsCard from '@/components/platform/HostMigrationsCard';
+import { formatVersion } from '@/lib/format-version';
 
 /**
  * Platform → Updates (single consolidated page). The version card carries the
@@ -102,7 +103,7 @@ export default function UpgradesPage() {
             <dl className="grid grid-cols-2 gap-4 sm:grid-cols-4">
               <div>
                 <dt className="text-xs text-gray-500 dark:text-gray-400">Installed</dt>
-                <dd className="mt-0.5 text-sm font-mono font-semibold text-gray-900 dark:text-gray-100" data-testid="current-version">{v.installed ?? v.currentVersion ?? 'unknown'}</dd>
+                <dd className="mt-0.5 text-sm font-mono font-semibold text-gray-900 dark:text-gray-100" data-testid="current-version">{formatVersion(v.installed ?? v.currentVersion)}</dd>
               </div>
               <div>
                 <dt className="text-xs text-gray-500 dark:text-gray-400">Available</dt>
@@ -110,7 +111,7 @@ export default function UpgradesPage() {
                     `latestVersion` is often null on production. Green when a newer
                     release is available. */}
                 <dd className={`mt-0.5 text-sm font-mono font-semibold ${v.updateAvailable ? 'text-green-600 dark:text-green-400' : 'text-gray-900 dark:text-gray-100'}`} data-testid="latest-version">
-                  {v.available ?? v.latestVersion ?? (
+                  {v.available || v.latestVersion ? formatVersion(v.available ?? v.latestVersion) : (
                     v.latestSource === 'unreachable'
                       ? <span className="font-sans font-normal text-amber-700 dark:text-amber-300">GitHub unreachable</span>
                       : <span className="font-sans font-normal text-gray-500 dark:text-gray-400">no releases published</span>

@@ -102,11 +102,27 @@ before relying on it.
 
     Orphaned volumes also surface where you are already looking:
 
-    - the **dashboard** shows a card with the count whenever any exist —
-      and nothing at all when there are none — which opens this same
-      management list;
+    - the **dashboard** raises an entry under *Needs attention* whenever any
+      exist — and nothing at all when there are none — headlined with the
+      disk it would reclaim rather than a count, since that is the number
+      worth acting on. Clicking it opens this same management list in
+      place, without a detour through this page;
     - a **tenant's detail page** lists the orphaned volumes that can still
       be attributed to that tenant, alongside its live PVCs.
+
+!!! note "The platform database's own volume"
+    The platform database is installed on a **4 GiB** volume. Its data is small
+    — a 27-tenant production cluster holds around 124 MB across every database
+    — but the write-ahead log needs headroom it cannot be denied: Postgres stops
+    dead if it cannot write the log, and this is the database the platform runs
+    on. It grows on its own when a release raises the installed default, and
+    further on request via the platform API
+    (`POST /api/v1/admin/system/pvc/storage`) — either way online, with no
+    restart. Growing is **one-way**: the database operator refuses to shrink a
+    volume, so a reduction means restoring into a fresh, smaller cluster.
+
+    There is no panel control for this yet — the card exists in the code but is
+    not wired to a page, so the API is currently the only route.
 
 !!! info "Snapshots, backups, and reclaim"
     Storage-lifecycle housekeeping (snapshot scheduling, orphan reclaim)

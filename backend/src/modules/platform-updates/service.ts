@@ -171,9 +171,21 @@ export async function getVersionInfo(db: Database): Promise<PlatformVersionRespo
   let latestVersion = await getSetting(db, 'latest_version');
   let latestSource: LatestSource = (await getSetting(db, 'latest_source')) as LatestSource | null ?? 'none';
 
-  // Re-check upstream at most every 5 minutes
+  // Re-check upstream at most every 5 minutes.
+  //
+  // Gated on its OWN timestamp, not on `last_update_check`. The hourly
+  // verified poller bumps `last_update_check` on every path it takes — and
+  // never writes `latest_version` — so sharing the key let the poller suppress
+  // this refresh indefinitely. `latest_version` sat frozen at an old release
+  // while `available_version` moved on, which is exactly what made the update
+  // banner say "2026.9.30 available (current: 2026.9.30)".
+  //
+  // They are deliberately different values: `available` is cosign-VERIFIED,
+  // `latest` is the raw upstream newest and may include a release that fails
+  // verification. Keeping two timestamps keeps two meanings.
+  const latestCheckedAt = await getSetting(db, 'latest_version_checked_at');
   const fiveMinutesAgo = Date.now() - 5 * 60 * 1000;
-  const lastCheck = lastCheckedAt ? new Date(lastCheckedAt).getTime() : 0;
+  const lastCheck = latestCheckedAt ? new Date(latestCheckedAt).getTime() : 0;
 
   if (lastCheck < fiveMinutesAgo) {
     const resolved = await resolveLatestVersion();
@@ -185,7 +197,11 @@ export async function getVersionInfo(db: Database): Promise<PlatformVersionRespo
       await setSetting(db, 'latest_source', resolved.source);
       if (resolved.version) await setSetting(db, 'latest_version', resolved.version);
     }
-    await setSetting(db, 'last_update_check', new Date().toISOString());
+    const now = new Date().toISOString();
+    await setSetting(db, 'latest_version_checked_at', now);
+    // Still bumped so "last checked" in the UI reflects this read too — the
+    // poller is not the only thing that talks to GitHub.
+    await setSetting(db, 'last_update_check', now);
   }
 
   // The cosign-VERIFIED available version (W11 poller) is authoritative for the

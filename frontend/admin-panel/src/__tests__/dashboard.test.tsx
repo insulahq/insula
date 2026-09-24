@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -274,5 +274,116 @@ describe('Operator console — backups by class', () => {
     for (const cls of ['system', 'tenant', 'mail']) {
       expect(screen.getByText(cls)).toBeInTheDocument();
     }
+  });
+});
+
+/**
+ * Operator report: the orphaned-volumes card navigated to the storage page,
+ * where they then had to find the button that opens the management modal. The
+ * modal is the thing that answers the question — it lists each volume with
+ * snapshot and delete beside it — so the card opens it directly.
+ *
+ * `categoryId` cannot carry that intent: the volume-fullness and
+ * orphaned-volume alerts share `admin.cluster_storage_capacity`, and so does
+ * `href`. The alert names its own action.
+ */
+describe('Operator console — alerts that open something in place', () => {
+  const ORPHAN = {
+    categoryId: 'admin.cluster_storage_capacity', severity: 'warning' as const, value: '4 GiB',
+    title: 'Orphaned volume', subtitle: 'Acme Trading · PVC gone 20d ago',
+    href: '/cluster/storage', action: 'orphaned-volumes' as const,
+    detail: [['Acme Trading', '4 GiB on disk']] as Array<[string, string]>, note: null,
+  };
+
+  beforeEach(() => {
+    summaryFn.mockReturnValue({ data: { data: summary() }, isLoading: false });
+  });
+
+  it('renders the orphaned-volume alert as a button, not a link', () => {
+    liveFn.mockReturnValue({
+      data: { data: live({ clusterAlerts: okSection([ORPHAN]) }) }, isLoading: false,
+    });
+    show();
+    const chip = screen.getByTestId('alert-chip');
+    expect(chip.tagName).toBe('BUTTON');
+    // A link would still be here if the action were ignored.
+    expect(chip.getAttribute('href')).toBeNull();
+  });
+
+  it('opens the management modal when clicked', async () => {
+    liveFn.mockReturnValue({
+      data: { data: live({ clusterAlerts: okSection([ORPHAN]) }) }, isLoading: false,
+    });
+    show();
+    expect(screen.queryByText(/Manage Orphaned Volumes/i)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('alert-chip'));
+    await waitFor(() => expect(screen.getByText(/Manage Orphaned Volumes/i)).toBeInTheDocument());
+  });
+
+  it('leaves an alert with no action as a link', () => {
+    // The fullness alert shares the same categoryId and href, so this is the
+    // case that would break if the discriminator were either of those.
+    liveFn.mockReturnValue({
+      data: { data: live({ clusterAlerts: okSection([{ ...ORPHAN, action: null, title: 'Volume nearly full' }]) }) },
+      isLoading: false,
+    });
+    show();
+    const chip = screen.getByTestId('alert-chip');
+    expect(chip.tagName).toBe('A');
+    expect(chip.getAttribute('href')).toBe('/cluster/storage');
+  });
+});
+
+
+/**
+ * Operator feedback on the console chrome: the rules beside and under every
+ * heading drew the eye along the page during exactly the reads that matter,
+ * the counts beside a heading repeated what the section already showed, and
+ * there was no way to re-read the page without waiting out a poll interval you
+ * cannot see.
+ */
+describe('Operator console — chrome', () => {
+  it('gives headings a name and nothing else', () => {
+    show();
+    expect(screen.getByText('Cluster capacity')).toBeInTheDocument();
+    // The legend that used to sit beside it, and the open-count beside
+    // "Needs attention".
+    expect(screen.queryByText(/in use · committed · schedulable/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/\d+ open/)).not.toBeInTheDocument();
+  });
+
+  it('draws no rule beside or under a heading', () => {
+    const { container } = render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <MemoryRouter><Dashboard /></MemoryRouter>
+      </QueryClientProvider>,
+    );
+    // The trailing rule was a flex-filling 1px span; the one under the title
+    // was a border on <header>.
+    expect(container.querySelector('.h-px.flex-1')).toBeNull();
+    expect(container.querySelector('header')!.className).not.toMatch(/border-b/);
+  });
+
+  it('refreshes both polls on demand, in line with the title', () => {
+    const summaryRefetch = vi.fn();
+    const liveRefetch = vi.fn();
+    summaryFn.mockReturnValue({ data: { data: summary() }, isLoading: false, isFetching: false, refetch: summaryRefetch });
+    liveFn.mockReturnValue({ data: { data: live() }, isLoading: false, isFetching: false, refetch: liveRefetch });
+    show();
+    const btn = screen.getByTestId('dashboard-refresh');
+    // Beside the h1, not stranded in a section below it.
+    expect(btn.closest('header')).not.toBeNull();
+    fireEvent.click(btn);
+    // BOTH: the console is fed by two endpoints and a half-refresh would leave
+    // the capacity tiles stale beside fresh alerts.
+    expect(summaryRefetch).toHaveBeenCalledTimes(1);
+    expect(liveRefetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('disables the refresh while a fetch is already in flight', () => {
+    summaryFn.mockReturnValue({ data: { data: summary() }, isLoading: false, isFetching: true, refetch: vi.fn() });
+    liveFn.mockReturnValue({ data: { data: live() }, isLoading: false, isFetching: false, refetch: vi.fn() });
+    show();
+    expect(screen.getByTestId('dashboard-refresh')).toBeDisabled();
   });
 });

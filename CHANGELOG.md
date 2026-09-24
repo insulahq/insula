@@ -12,6 +12,154 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+
+- **Volume fullness now covers every PVC, not just Longhorn's.** Reading from
+  the kubelet instead of the Longhorn CRs picks up `local-path` and any other
+  CSI driver — including the mail stack's 500 GiB volume, the largest on a
+  production cluster, which previously had no fullness alert at all. Volumes
+  living on a *shared* filesystem are excluded: their fill is the node's, which
+  node-health already alerts on, and counting them per volume would fan one
+  disk-pressure event out into an alarm per PVC on that node.
+
+### Changed
+
+- **Dashboard chrome: headings are names, and there is a Refresh button.** The
+  1px rules beside every section heading and under the page title are gone —
+  they drew the eye along a page that gets read during incidents. So are the
+  counts and legends beside headings ("3 open" above three visible chips,
+  "2 nodes" above two visible nodes, "in use · committed · schedulable" above
+  a bar that is already labelled). Both consoles gained a small Refresh in
+  line with the title, which re-reads BOTH of the endpoints feeding the page —
+  a half-refresh would leave the capacity tiles stale beside fresh alerts —
+  and disables itself while a fetch is in flight.
+
+- **The orphaned-volumes card opens the management modal.** It used to
+  navigate to the storage page, where the operator then had to find the button
+  that opens the modal — and the modal is the thing that answers the question,
+  listing each volume with snapshot and delete beside it. Alerts can now name
+  an in-page action; `categoryId` could not carry it, because the
+  volume-fullness and orphaned-volume alerts share
+  `admin.cluster_storage_capacity`, and they share `href` too. `href` stays as
+  the fallback for any surface that does not implement the action.
+
+- **The sub-five-minute WAL archive intervals are gone from the UI.** A WAL
+  segment is a fixed 16 MB file however little it holds, so the volume shipped
+  is set by the interval, not by how much was written. On the platform
+  database — ~10 MB of WAL an hour — 30s meant 1.9 GB/h of segments and 1min
+  meant 960 MB/h, to carry 10 MB of change; Postgres then rewrites that
+  padding in place, where every hourly volume snapshot pins another copy. The
+  presets are now 5min / 15min / 1h, and the default preselection is 1h.
+
+  A cluster already set to a removed value still SEES it, marked "no longer
+  recommended". With no matching option the select falls back to rendering the
+  first preset, so a cluster archiving every 30 seconds would have read "Every
+  5 minutes" — and the next Save would have quietly made that true.
+
+- **The platform database volume is 4Gi on fresh installs, up from 2Gi.** The
+  data is small and stays small — 124 MB across every database on a 27-tenant
+  production cluster, with retention on each large table. What needed the room
+  is WAL: `wal_keep_size` holds a 512MB floor and `max_wal_size` lets pg_wal
+  reach ~1.5 GB during a write burst, which on 1945 MiB of usable ext4 left a
+  few hundred MB of margin. Postgres PANICs when it cannot write WAL, and this
+  cluster is the control plane. Existing clusters pick the new size up from
+  Flux, online and without a restart (measured: ~18 seconds, no pod restart);
+  `POST /api/v1/admin/system/pvc/storage` grows it further. CNPG cannot shrink,
+  so this is one-way.
+
+- **The platform default `archive_timeout` is 1h, not CNPG's 5min.** The
+  setting forces a WAL segment switch so the archive stays within one
+  interval, but a segment is a fixed 16 MB file however little it holds.
+  Production measured 10.5 MB/h of actual WAL against 193.8 MB/h of segments
+  shipped — an 18x amplification, ~5% of each segment real. Because Postgres
+  recycles segments by overwriting them in place, that padding was being
+  rewritten twelve times an hour and captured by every hourly Longhorn
+  snapshot: 1.8 GiB of chain behind a 124 MB database. 1h keeps a bounded
+  archive RPO at a twelfth of the write volume, and a cluster whose write rate
+  actually fills segments should lower it again — there the amplification
+  disappears on its own.
+
+  **Fresh installs only, and the operator still owns it.** `bootstrap.sh`
+  applies the default once at install time, and only when nobody has chosen an
+  interval. It is deliberately NOT pinned in `k8s/base/database.yaml`: that
+  Cluster carries `ssa: merge`, so Flux re-asserts every field the manifest
+  sets — pinning it there reverted an operator's own choice from System
+  Backups within one reconcile, with no error anywhere. Existing clusters keep
+  whatever interval they have; change it in the UI.
+
+- **Every version number displays with a leading `v`** — `v2026.9.31`, not
+  `2026.9.31` — matching the tags, the release assets and the deployment
+  columns that already did.
+
+### Fixed
+
+- **The platform database's volume had no panel control for four months.**
+  `SystemStorageCard` — the card that shows the volume and grows it — was
+  mounted on the old System Backup page's *storage* tab, and the import and the
+  mount were both deleted when that page was consolidated in May. Nothing
+  failed: the card kept compiling, its routes kept answering, the bundler
+  dropped it silently, and the only way to resize was the API. It is back, on
+  **System Backups → Snapshots**, beside the released-PV card it belongs with.
+
+  A new CI guard makes the class of failure impossible to repeat: every
+  component under a panel's `components/` must be referenced by something else
+  in that panel. A unit test could not have caught this — the regression is the
+  *absence* of a reference, with nothing left to assert on. The guard found
+  three further components that nothing imports; they are listed explicitly as
+  awaiting triage rather than left to hide.
+
+- **The tenant dashboard told almost every tenant its CPU usage was
+  unavailable.** The tile inferred "not measured" from `inUse === 0 &&
+  committed > 0`, and on production 23 of 27 tenants matched — metrics-server
+  was answering for every one of them. Two things produced the zero: real
+  tenant CPU sits between 0 and 0.5 millicores, and the backend rounded cores
+  to three decimals, which is a whole millicore, so the measurement was erased
+  before anything could display it.
+
+  `inUse` is nullable now, and only null means unmeasured. A zero is a
+  reading — an idle workload really does use none — and renders as zero. CPU
+  keeps six decimals through the API, and the tile picks its decimals from the
+  ceiling so both halves of "X/Y" agree: a 2-core tenant plan reads 0.019, a
+  7.5-core cluster still reads 0.90. Node rows show an em-dash when a node has
+  no sample, and a cluster total with any unmeasured node is unknown rather
+  than a partial sum, because a partial sum understates usage in the direction
+  that reads as healthy.
+
+- **The backups card could promise a recovery point the cluster was not
+  keeping.** `effectiveArchiveTimeout` read the operator's stored intent and
+  fell back to CNPG's 5min default, so a cluster whose `archive_timeout` was
+  set anywhere other than the enable path — by bootstrap, or by hand — showed
+  "every 5 minutes" while archiving hourly. It now reads the value off the
+  Cluster CR, which is what Postgres is running. An RPO is a data-loss
+  promise, not a label.
+
+- **"Volume nearly full" measured the wrong thing.** The production platform
+  database was reported at 93 % of a volume whose filesystem was 36 % used,
+  with 1.2 GiB free. The alert divided Longhorn's `status.actualSize` by the
+  volume's capacity — but `actualSize` is the disk the replica occupies on the
+  host *including every snapshot in the chain*, not how full the filesystem is.
+  Postgres recycles WAL segments by overwriting the same blocks, so each of the
+  six retained hourly snapshots pinned another copy of them: 1.8 GiB of chain
+  behind a 702 MiB filesystem holding a 124 MB database. Nothing was full and
+  nothing was wrong — the two numbers answer different questions.
+
+  The alert now reads the filesystem's own used/capacity per PVC from the
+  kubelet, which is the figure that decides whether a workload can still write
+  and the one `df` shows inside the pod. It also folds in inode fill, because a
+  volume out of inodes refuses writes while `df` still shows it half empty.
+
+- **The update banner named the version you already have.** It read
+  "Platform update available: 2026.9.30 (current: 2026.9.30)" after
+  v2026.9.31 was published. The banner rendered `latestVersion` — a lazily
+  refreshed, unverified mirror — while the "an update exists" decision was
+  computed from the cosign-verified `available`. It now shows the same
+  field it decides from.
+- **`latest_version` could sit frozen indefinitely.** Its refresh was gated
+  on `last_update_check`, which the hourly verified poller bumps on every
+  path it takes without ever writing `latest_version`. The two now have
+  separate timestamps, because they are deliberately different values —
+  `available` is verified, `latest` is the raw upstream newest.
+
 ## [2026.9.31] - 2026-09-23
 
 ### BREAKING

@@ -7881,6 +7881,70 @@ wait_for_admission_webhooks() {
 # Skipped when:
 #   - mail-secrets does not exist (mail stack not deployed)
 #   - platform postgres Cluster is not Ready within 300s
+# ── Platform default: archive_timeout on the system-db Cluster ────────
+#
+# CNPG defaults archive_timeout to 5min. That is an RPO control — it forces a
+# WAL segment switch so the archive is never more than one interval behind —
+# but a segment is a fixed 16 MB file whether it holds 16 MB or 900 KB, and the
+# platform database generates roughly 10 MB of WAL an HOUR. Production measured
+# 10.5 MB/h of real WAL against 193.8 MB/h of segments shipped: an 18x
+# amplification, about 5% of each segment data and the rest padding. Postgres
+# recycles segments by renaming and overwriting them in place, so that padding
+# is rewritten twelve times an hour — the worst possible input to block-level
+# snapshots. Six retained hourly Longhorn snapshots of a 124 MB database were
+# holding 1.8 GiB of chain, nearly all of it WAL rewritten rather than changed.
+#
+# Applied HERE and not in k8s/base/database.yaml on purpose. That Cluster
+# carries `kustomize.toolkit.fluxcd.io/ssa: merge`, so Flux re-asserts every
+# field the manifest sets — pinning archive_timeout there silently reverted the
+# operator's own UI choice (System Backups -> Postgres -> Archive timeout)
+# within one reconcile. Install-time default, operator-owned thereafter.
+#
+# "Unset" is NOT the test. CNPG's defaulting webhook WRITES its own default
+# into spec.postgresql.parameters the moment the Cluster is created, so the
+# field is never absent on a live cluster and a presence check would make this
+# function dead code — it would skip on the fresh installs it exists for.
+# Verified on both clusters: production carried archive_timeout=5min in its
+# spec with no manifest ever setting it.
+#
+# So the condition is "absent, or still CNPG's default" — i.e. nobody has
+# chosen. Any other value is an operator decision and is left alone, which
+# covers every re-bootstrap of a cluster whose interval was set through the UI.
+#
+# Known limitation, stated rather than papered over: an operator who
+# deliberately selects 5min is indistinguishable at the CR level from one who
+# never chose, so a LATER re-bootstrap would move them to 1h. The function logs
+# which branch it took.
+set_default_archive_timeout() {
+  local default_timeout="1h"
+  # CNPG's own default. Must track CNPG_DEFAULT_ARCHIVE_TIMEOUT in
+  # packages/api-contracts/src/system-wal-archive.ts.
+  local cnpg_default="5min"
+
+  if ! kctl get cluster.postgresql.cnpg.io -n platform system-db >/dev/null 2>&1; then
+    log "  system-db Cluster not present — skipping archive_timeout default."
+    return 0
+  fi
+
+  local current
+  current=$(kctl get cluster.postgresql.cnpg.io -n platform system-db \
+    -o jsonpath='{.spec.postgresql.parameters.archive_timeout}' 2>/dev/null || echo "")
+
+  if [[ -n "$current" && "$current" != "$cnpg_default" ]]; then
+    log "  archive_timeout is ${current} — an explicit choice, leaving it alone."
+    return 0
+  fi
+
+  log "  Setting platform default archive_timeout=${default_timeout} on system-db..."
+  if kctl patch cluster.postgresql.cnpg.io -n platform system-db --type=merge \
+       -p "{\"spec\":{\"postgresql\":{\"parameters\":{\"archive_timeout\":\"${default_timeout}\"}}}}" \
+       >/dev/null 2>&1; then
+    log "  archive_timeout=${default_timeout} applied (reload only — no restart)."
+  else
+    warn "  Could not set archive_timeout — CNPG default (5min) stays in force."
+  fi
+}
+
 create_roundcube_db() {
   log ""
   log "── Roundcube DB provisioning ──"
@@ -9400,7 +9464,7 @@ apply_platform_manifests() {
   #   production → overlays/production
   # The old `staging → development` remap (W1, from the pre-ADR-053 model where
   # staging tracked the development BRANCH) applied the dev overlay's 20Gi
-  # system-db patch, but Flux's staging overlay wants the 2Gi base → CNPG
+  # system-db patch, but Flux's staging overlay wanted the 2Gi base of the time → CNPG
   # rejects the shrink → the platform Kustomization deadlocks Ready=False
   # ("can't shrink existing storage from 20Gi to 2Gi"). Observed on the first
   # ADR-053 staging re-bootstrap.
@@ -10612,6 +10676,10 @@ main() {
     # Runs after Stalwart bootstrap so platform CNPG is up + Roundcube
     # secrets exist. Idempotent — DO BLOCK skips if role/db already exist.
     create_roundcube_db
+    # Install-time default only; the operator owns it afterwards via the
+    # System Backups UI. See the function header for why it is not in the
+    # Flux-managed manifest.
+    set_default_archive_timeout
     harden_database_connect_acls
     # Cut 3: Stalwart master user (Roundcube SSO impersonator).
     # Runs after bootstrap_stalwart_v016 (so Stalwart is up + the recovery

@@ -195,7 +195,7 @@ function AppGroup({
           <span className="text-gray-500 dark:text-gray-400">{group.deployments.length} deployment{group.deployments.length !== 1 ? 's' : ''}</span>
           {group.latestVersion && (
             <span className="rounded-md bg-gray-100 dark:bg-gray-700 px-2 py-0.5 font-mono text-gray-700 dark:text-gray-300">
-              latest: {group.latestVersion}
+              latest: v{group.latestVersion}
             </span>
           )}
         </div>

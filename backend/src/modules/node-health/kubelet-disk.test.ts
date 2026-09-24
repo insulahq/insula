@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeNodeDiskPct } from './kubelet-disk.js';
+import { computeNodeDiskPct, computePvcFillFraction } from './kubelet-disk.js';
 
 describe('computeNodeDiskPct', () => {
   it('returns byte-fill percentage', () => {
@@ -38,5 +38,29 @@ describe('computeNodeDiskPct', () => {
       usedBytes: 40, capacityBytes: 100,
       inodesUsed: 5, inodes: 0,
     })).toBe(40);
+  });
+});
+
+describe('computePvcFillFraction', () => {
+  const stats = (over: Partial<Parameters<typeof computePvcFillFraction>[0]> = {}) => ({
+    namespace: 'platform', pvcName: 'system-db-1',
+    usedBytes: 50, capacityBytes: 100, inodesUsed: null, inodes: null,
+    ...over,
+  });
+
+  it('is the byte fill when only bytes are measurable', () => {
+    expect(computePvcFillFraction(stats())).toBeCloseTo(0.5);
+  });
+
+  it('takes the WORSE of bytes and inodes', () => {
+    // A volume out of inodes refuses writes while df still shows it half
+    // empty — reporting the byte figure alone would call that healthy.
+    expect(computePvcFillFraction(stats({ inodesUsed: 97, inodes: 100 }))).toBeCloseTo(0.97);
+    expect(computePvcFillFraction(stats({ usedBytes: 99, inodesUsed: 1, inodes: 100 }))).toBeCloseTo(0.99);
+  });
+
+  it('returns null rather than a comfortable zero when nothing is measurable', () => {
+    expect(computePvcFillFraction(undefined)).toBeNull();
+    expect(computePvcFillFraction(stats({ capacityBytes: 0 }))).toBeNull();
   });
 });
