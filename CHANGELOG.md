@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.9.32] - 2026-09-24
+
 ### Added
 
 - **Volume fullness now covers every PVC, not just Longhorn's.** Reading from
