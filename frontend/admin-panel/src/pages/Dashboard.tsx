@@ -17,8 +17,10 @@
  *
  * Fed by exactly two endpoints — see use-operator-console.ts for why.
  */
+import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import type { AdminNode, DashboardAlert } from '@insula/api-contracts';
+import type { AdminNode, DashboardAlert, DashboardAlertAction } from '@insula/api-contracts';
+import OrphanedVolumesModal from '@/components/OrphanedVolumesModal';
 import { useConsoleSummary, useConsoleLive } from '@/hooks/use-operator-console';
 import {
   AlertBand, HoverCard, MatrixTile, SectionFallback, Tile, TileSkeleton, TriadBar,
@@ -91,6 +93,14 @@ export default function Dashboard() {
 
   const loadingFirst = summary.isLoading && !s;
 
+  /**
+   * Alerts that open something here rather than navigating. The orphaned-volume
+   * chip is one: the management modal already lists each volume with snapshot
+   * and delete beside it, so sending the operator to the storage page to find
+   * the button that opens it is a step with nothing in it.
+   */
+  const [openAction, setOpenAction] = useState<DashboardAlertAction | null>(null);
+
   return (
     <div className="w-full px-1 pb-16">
       <header className="mb-3 flex flex-wrap items-baseline gap-3 border-b border-gray-200 pb-3 dark:border-gray-700">
@@ -111,7 +121,7 @@ export default function Dashboard() {
       ) : alerts.length > 0 ? (
         <>
           <SectionHead title="Needs attention" count={`${alerts.length} open`} />
-          <AlertBand alerts={alerts} />
+          <AlertBand alerts={alerts} onAction={(action) => setOpenAction(action)} />
         </>
       ) : (
         <>
@@ -202,6 +212,10 @@ export default function Dashboard() {
           </>
         )}
       </div>
+
+      {openAction === 'orphaned-volumes' && (
+        <OrphanedVolumesModal onClose={() => setOpenAction(null)} />
+      )}
     </div>
   );
 }

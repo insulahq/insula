@@ -1,7 +1,7 @@
 import { useCallback, useRef, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import clsx from 'clsx';
-import type { DashboardAlert, DashboardSection, ResourceTriad } from '@insula/api-contracts';
+import type { DashboardAlert, DashboardAlertAction, DashboardSection, ResourceTriad } from '@insula/api-contracts';
 
 /**
  * The console's tile vocabulary.
@@ -369,38 +369,68 @@ export function MatrixTile({ title, to, cells, card }: {
  * a region that is usually blank is a region operators learn to skip, and
  * that is the one region that must never be skipped.
  */
-export function AlertBand({ alerts }: { alerts: readonly DashboardAlert[] }) {
+/**
+ * `onAction` lets a page handle an alert in place instead of navigating.
+ *
+ * An alert carrying `action` renders as a BUTTON when the page supplies a
+ * handler for it, and as the usual link otherwise — so a surface that does not
+ * implement the action still goes somewhere, and `href` never becomes dead
+ * weight on the contract.
+ */
+export function AlertBand({ alerts, onAction }: {
+  alerts: readonly DashboardAlert[];
+  onAction?: (action: DashboardAlertAction, alert: DashboardAlert) => void;
+}) {
   if (alerts.length === 0) return null;
+  const chipClass = (a: DashboardAlert): string => clsx(
+    'group relative block w-full rounded-xl border border-l-4 p-3 text-left transition-all hover:shadow-md',
+    a.severity === 'critical'
+      ? 'border-red-500 bg-red-50 dark:bg-red-950/40'
+      : 'border-amber-500 bg-amber-50 dark:bg-amber-950/40',
+  );
+  const body = (a: DashboardAlert): ReactNode => (
+    <>
+      <div className={clsx(
+        'font-mono text-xl font-bold tabular-nums',
+        a.severity === 'critical' ? 'text-red-700 dark:text-red-300' : 'text-amber-700 dark:text-amber-300',
+      )}>
+        {a.value}
+      </div>
+      <div className={clsx(
+        'mt-1 line-clamp-2 text-xs font-semibold',
+        a.severity === 'critical' ? 'text-red-700 dark:text-red-300' : 'text-amber-700 dark:text-amber-300',
+      )}>
+        {a.title}
+      </div>
+      <div className="mt-0.5 line-clamp-2 text-[11px] text-gray-600 dark:text-gray-400">{a.subtitle}</div>
+      <HoverCard title={a.title} rows={a.detail} note={a.note} />
+    </>
+  );
   return (
     <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 xl:grid-cols-4">
-      {alerts.map((a) => (
-        <Link
-          key={`${a.categoryId}:${a.title}`}
-          to={a.href}
-          className={clsx(
-            'group relative block rounded-xl border border-l-4 p-3 transition-all hover:shadow-md',
-            a.severity === 'critical'
-              ? 'border-red-500 bg-red-50 dark:bg-red-950/40'
-              : 'border-amber-500 bg-amber-50 dark:bg-amber-950/40',
-          )}
-          data-testid="alert-chip"
-        >
-          <div className={clsx(
-            'font-mono text-xl font-bold tabular-nums',
-            a.severity === 'critical' ? 'text-red-700 dark:text-red-300' : 'text-amber-700 dark:text-amber-300',
-          )}>
-            {a.value}
-          </div>
-          <div className={clsx(
-            'mt-1 line-clamp-2 text-xs font-semibold',
-            a.severity === 'critical' ? 'text-red-700 dark:text-red-300' : 'text-amber-700 dark:text-amber-300',
-          )}>
-            {a.title}
-          </div>
-          <div className="mt-0.5 line-clamp-2 text-[11px] text-gray-600 dark:text-gray-400">{a.subtitle}</div>
-          <HoverCard title={a.title} rows={a.detail} note={a.note} />
-        </Link>
-      ))}
+      {alerts.map((a) => {
+        const handled = a.action && onAction ? a.action : null;
+        return handled ? (
+          <button
+            key={`${a.categoryId}:${a.title}`}
+            type="button"
+            onClick={() => onAction?.(handled, a)}
+            className={chipClass(a)}
+            data-testid="alert-chip"
+          >
+            {body(a)}
+          </button>
+        ) : (
+          <Link
+            key={`${a.categoryId}:${a.title}`}
+            to={a.href}
+            className={chipClass(a)}
+            data-testid="alert-chip"
+          >
+            {body(a)}
+          </Link>
+        );
+      })}
     </div>
   );
 }

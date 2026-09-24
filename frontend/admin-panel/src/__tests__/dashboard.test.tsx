@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -274,5 +274,62 @@ describe('Operator console — backups by class', () => {
     for (const cls of ['system', 'tenant', 'mail']) {
       expect(screen.getByText(cls)).toBeInTheDocument();
     }
+  });
+});
+
+/**
+ * Operator report: the orphaned-volumes card navigated to the storage page,
+ * where they then had to find the button that opens the management modal. The
+ * modal is the thing that answers the question — it lists each volume with
+ * snapshot and delete beside it — so the card opens it directly.
+ *
+ * `categoryId` cannot carry that intent: the volume-fullness and
+ * orphaned-volume alerts share `admin.cluster_storage_capacity`, and so does
+ * `href`. The alert names its own action.
+ */
+describe('Operator console — alerts that open something in place', () => {
+  const ORPHAN = {
+    categoryId: 'admin.cluster_storage_capacity', severity: 'warning' as const, value: '4 GiB',
+    title: 'Orphaned volume', subtitle: 'Acme Trading · PVC gone 20d ago',
+    href: '/cluster/storage', action: 'orphaned-volumes' as const,
+    detail: [['Acme Trading', '4 GiB on disk']] as Array<[string, string]>, note: null,
+  };
+
+  beforeEach(() => {
+    summaryFn.mockReturnValue({ data: { data: summary() }, isLoading: false });
+  });
+
+  it('renders the orphaned-volume alert as a button, not a link', () => {
+    liveFn.mockReturnValue({
+      data: { data: live({ clusterAlerts: okSection([ORPHAN]) }) }, isLoading: false,
+    });
+    show();
+    const chip = screen.getByTestId('alert-chip');
+    expect(chip.tagName).toBe('BUTTON');
+    // A link would still be here if the action were ignored.
+    expect(chip.getAttribute('href')).toBeNull();
+  });
+
+  it('opens the management modal when clicked', async () => {
+    liveFn.mockReturnValue({
+      data: { data: live({ clusterAlerts: okSection([ORPHAN]) }) }, isLoading: false,
+    });
+    show();
+    expect(screen.queryByText(/Manage Orphaned Volumes/i)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('alert-chip'));
+    await waitFor(() => expect(screen.getByText(/Manage Orphaned Volumes/i)).toBeInTheDocument());
+  });
+
+  it('leaves an alert with no action as a link', () => {
+    // The fullness alert shares the same categoryId and href, so this is the
+    // case that would break if the discriminator were either of those.
+    liveFn.mockReturnValue({
+      data: { data: live({ clusterAlerts: okSection([{ ...ORPHAN, action: null, title: 'Volume nearly full' }]) }) },
+      isLoading: false,
+    });
+    show();
+    const chip = screen.getByTestId('alert-chip');
+    expect(chip.tagName).toBe('A');
+    expect(chip.getAttribute('href')).toBe('/cluster/storage');
   });
 });

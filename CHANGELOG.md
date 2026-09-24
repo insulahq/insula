@@ -24,6 +24,15 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Changed
 
+- **The orphaned-volumes card opens the management modal.** It used to
+  navigate to the storage page, where the operator then had to find the button
+  that opens the modal — and the modal is the thing that answers the question,
+  listing each volume with snapshot and delete beside it. Alerts can now name
+  an in-page action; `categoryId` could not carry it, because the
+  volume-fullness and orphaned-volume alerts share
+  `admin.cluster_storage_capacity`, and they share `href` too. `href` stays as
+  the fallback for any surface that does not implement the action.
+
 - **The sub-five-minute WAL archive intervals are gone from the UI.** A WAL
   segment is a fixed 16 MB file however little it holds, so the volume shipped
   is set by the interval, not by how much was written. On the platform

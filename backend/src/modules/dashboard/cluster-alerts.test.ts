@@ -156,6 +156,15 @@ describe('orphaned-volume alert', () => {
     },
   };
 
+  it('names the action that opens the management modal, and keeps a fallback href', async () => {
+    // The modal lists each volume with snapshot and delete beside it; the
+    // storage page only has the button that opens it. `categoryId` cannot
+    // carry the distinction — the fullness alert shares it, and so does href.
+    const a = await buildOrphanedVolumeAlert(k8sWith([orphan]), tenants);
+    expect(a!.action).toBe('orphaned-volumes');
+    expect(a!.href).toBe('/cluster/storage');
+  });
+
   it('fires for a volume whose PVC is gone', async () => {
     const a = await buildOrphanedVolumeAlert(k8sWith([orphan]), tenants);
     expect(a).not.toBeNull();

@@ -60,6 +60,20 @@ function section<T extends z.ZodTypeAny>(data: T) {
 // is a tile nothing can ever produce, which is how the first draft of this
 // dashboard grew a "low free memory" warning that no code path could fire.
 
+/**
+ * An in-page action an alert can trigger INSTEAD of navigating.
+ *
+ * `categoryId` cannot carry this: the volume-fullness and orphaned-volume
+ * alerts share `admin.cluster_storage_capacity`, and `href` is shared too, so
+ * neither discriminates. A named token does, and a closed enum makes a typo a
+ * compile error rather than a chip that silently navigates.
+ *
+ * `href` stays populated alongside it as the fallback — a surface that does not
+ * implement the action still has somewhere to go.
+ */
+export const dashboardAlertActionSchema = z.enum(['orphaned-volumes']);
+export type DashboardAlertAction = z.infer<typeof dashboardAlertActionSchema>;
+
 export const dashboardAlertSchema = z.object({
   /** The notification category this alert corresponds to. */
   categoryId: z.string().min(1),
@@ -71,6 +85,12 @@ export const dashboardAlertSchema = z.object({
   subtitle: z.string(),
   /** Panel-relative path this tile opens. */
   href: z.string().min(1),
+  /**
+   * Open something in place instead of following `href`. `nullish` rather than
+   * defaulted so the dozen existing `alert({...})` call sites stay untouched;
+   * consumers test truthiness, which covers both absent and null.
+   */
+  action: dashboardAlertActionSchema.nullish(),
   /** Label/value pairs for the hover card. */
   detail: z.array(z.tuple([z.string(), z.string()])).default([]),
   /** Closing line: what to do, or why it is not as bad as it looks. */
