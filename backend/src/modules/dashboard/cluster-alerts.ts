@@ -205,6 +205,11 @@ export async function buildOrphanedVolumeAlert(
     subtitle: worst.ageDays == null
       ? `${worst.label} · PVC gone`
       : `${worst.label} · PVC gone ${worst.ageDays}d ago`,
+    // The management modal already lists these with snapshot and delete
+    // beside each one. Navigating to the storage page instead leaves the
+    // operator hunting for the button that opens it — so open it directly,
+    // and keep the page as the fallback for any surface that cannot.
+    action: 'orphaned-volumes',
     href: '/cluster/storage',
     detail: orphans.slice(0, 5).map((o) => [
       o.pvc ? `${o.label} · ${o.pvc}` : o.label,
