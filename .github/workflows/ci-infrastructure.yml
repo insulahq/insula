@@ -16,6 +16,12 @@ on:
       # frontend-api-types-guard reads the panels' hooks; without this it would
       # never run on the files it checks (the #391 lesson).
       - 'frontend/*/src/hooks/**'
+      # dead-component-guard needs BOTH halves of the reachability question: the
+      # components it checks, and whatever references them. The regression it
+      # exists for was a PAGE edit that left the component file untouched, so a
+      # filter covering only components/ would have missed exactly that case.
+      # pages/** is already listed below for other guards.
+      - 'frontend/*/src/components/**'
       # notification-template-coverage-guard reads the seed + template data.
       # Without this path the guard never fires on the module it protects: the
       # (category x channel) matrix was edited across four PRs and the guard
@@ -78,6 +84,12 @@ on:
       # frontend-api-types-guard reads the panels' hooks; without this it would
       # never run on the files it checks (the #391 lesson).
       - 'frontend/*/src/hooks/**'
+      # dead-component-guard needs BOTH halves of the reachability question: the
+      # components it checks, and whatever references them. The regression it
+      # exists for was a PAGE edit that left the component file untouched, so a
+      # filter covering only components/ would have missed exactly that case.
+      # pages/** is already listed below for other guards.
+      - 'frontend/*/src/components/**'
       # notification-template-coverage-guard reads the seed + template data.
       # Without this path the guard never fires on the module it protects: the
       # (category x channel) matrix was edited across four PRs and the guard
@@ -462,6 +474,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Verify the api-contracts ratchet has not regressed
         run: ./scripts/ci-frontend-api-types-check.sh
+
+  dead-component-guard:
+    name: Every panel component is reachable from the product
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Verify no panel component is imported by nothing
+        run: ./scripts/ci-no-dead-components.sh
 
   platform-netpol-reachability-guard:
     name: Every routed platform Service is reachable through the NetworkPolicy

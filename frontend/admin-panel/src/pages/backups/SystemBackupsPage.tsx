@@ -29,6 +29,7 @@ import { KeyRound, RotateCw, PlayCircle, Loader2, CheckCircle2, AlertCircle } fr
 import BackupClassPage from './BackupClassPage';
 import SystemSnapshotsSection from '@/components/SystemSnapshotsSection';
 import ReleasedSystemPvsCard from '@/components/backups/ReleasedSystemPvsCard';
+import SystemStorageCard from '@/components/SystemStorageCard';
 import { CnpgBackupHealthCard } from '@/components/CnpgBackupHealthCard';
 import SystemBackupListSection from '@/components/system-backup/SystemBackupListSection';
 import BarmanRestoreWizard from '@/components/backups/BarmanRestoreWizard';
@@ -75,6 +76,14 @@ export default function SystemBackupsPage() {
                 PVs pin Longhorn scheduling budget; renders only when
                 any exist. */}
             <ReleasedSystemPvsCard />
+            {/* The platform database's own volume size. This card was mounted
+                on the old SystemBackupPage's `storage` tab and was dropped —
+                import and all — when that page was consolidated into this one,
+                leaving `GET/POST /admin/system/pvc/storage` live with no caller
+                and no way to grow the volume outside the API. It belongs on
+                this tab: everything here is system-PVC state, and the released
+                PVs above are already a capacity concern. */}
+            <SystemStorageCard />
           </div>
         }
         backupsTab={
