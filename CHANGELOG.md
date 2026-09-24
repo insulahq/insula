@@ -56,18 +56,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   first preset, so a cluster archiving every 30 seconds would have read "Every
   5 minutes" — and the next Save would have quietly made that true.
 
-- **The archive-timeout default moved from the Flux manifest to bootstrap.**
-  It was briefly pinned in `k8s/base/database.yaml`, which silently disabled
-  the operator's own control: that Cluster carries `ssa: merge`, so Flux
-  re-asserts every field the manifest sets. Measured on DEV, an operator's
-  15min was reverted within 15 seconds of the next reconcile, with no error
-  anywhere. `bootstrap.sh:set_default_archive_timeout()` now applies 1h ONCE
-  at install time and only when nobody has chosen an interval, so it is a
-  default the operator can actually override. "Nobody has chosen" cannot mean
-  "unset": CNPG's webhook writes its own default into the spec at creation, so
-  a presence check would have skipped on the very fresh installs the function
-  exists for.
-
 - **The platform database volume is 4Gi on fresh installs, up from 2Gi.** The
   data is small and stays small — 124 MB across every database on a 27-tenant
   production cluster, with retention on each large table. What needed the room
@@ -88,6 +76,14 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   archive RPO at a twelfth of the write volume, and a cluster whose write rate
   actually fills segments should lower it again — there the amplification
   disappears on its own.
+
+  **Fresh installs only, and the operator still owns it.** `bootstrap.sh`
+  applies the default once at install time, and only when nobody has chosen an
+  interval. It is deliberately NOT pinned in `k8s/base/database.yaml`: that
+  Cluster carries `ssa: merge`, so Flux re-asserts every field the manifest
+  sets — pinning it there reverted an operator's own choice from System
+  Backups within one reconcile, with no error anywhere. Existing clusters keep
+  whatever interval they have; change it in the UI.
 
 - **Every version number displays with a leading `v`** — `v2026.9.31`, not
   `2026.9.31` — matching the tags, the release assets and the deployment
