@@ -115,12 +115,18 @@ export async function buildAdminAlerts(db: Database): Promise<DashboardAlert[]> 
   const downWork = await db.execute<{
     total: number; tenant_id: string; tenant_name: string; workload: string;
     reason: string; down_minutes: number; heal_attempts: number; healed: number;
+    heal_failed: number;
   }>(sql`
     SELECT COUNT(*) OVER ()::int AS total,
            e.tenant_id, t.name AS tenant_name, e.workload, e.reason,
            FLOOR(EXTRACT(EPOCH FROM (now() - e.first_seen_at)) / 60)::int AS down_minutes,
            e.heal_attempts,
-           (e.healed_at IS NOT NULL)::int AS healed
+           (e.healed_at IS NOT NULL)::int AS healed,
+           -- heal_attempts is incremented when an attempt is CLAIMED, so it
+           -- counts in-flight attempts too. Only a failure writes
+           -- last_heal_error, so that is the field that can honestly say
+           -- "tried and failed" -- decide and caption from the same field.
+           (e.last_heal_error IS NOT NULL)::int AS heal_failed
       FROM tenant_workload_health_events e
       JOIN tenants t ON t.id = e.tenant_id
      WHERE e.cleared_at IS NULL
@@ -133,7 +139,8 @@ export async function buildAdminAlerts(db: Database): Promise<DashboardAlert[]> 
   if (downRows.length > 0) {
     const w = downRows[0];
     const downTotal = Number(w.total ?? downRows.length);
-    const triedAndFailed = downRows.filter((r) => Number(r.heal_attempts) > 0).length;
+    const triedAndFailed = downRows.filter((r) => Number(r.heal_failed) === 1).length;
+    const healing = downRows.filter((r) => Number(r.heal_failed) === 0 && Number(r.heal_attempts) > 0).length;
     out.push(alert({
       categoryId: 'admin.tenant_workloads_down',
       severity: 'critical',
@@ -146,12 +153,16 @@ export async function buildAdminAlerts(db: Database): Promise<DashboardAlert[]> 
       detail: downRows.map((r) => [
         `${r.tenant_name} / ${r.workload}`,
         `${r.down_minutes} min · ${r.reason}`
-        + (Number(r.heal_attempts) > 0 ? ` · ${r.heal_attempts} heal attempt(s) failed` : ' · heal pending'),
+        + (Number(r.heal_failed) === 1
+          ? ` · ${r.heal_attempts} heal attempt(s) failed`
+          : Number(r.heal_attempts) > 0 ? ` · heal attempt ${r.heal_attempts} in progress` : ' · heal pending'),
       ] as [string, string]),
       note: triedAndFailed > 0
         ? 'Automatic recovery has already been tried and failed on '
           + `${triedAndFailed} of these — they need a human. The tenant's site is down right now.`
-        : 'Automatic recovery is still in progress. If these clear on their own, no action is needed.',
+        : healing > 0
+          ? 'Automatic recovery is running right now. If these clear on their own, no action is needed.'
+          : 'Automatic recovery has not started yet — it begins once the outage outlives the grace window.',
     }));
   }
 
@@ -287,10 +298,16 @@ export async function buildTenantAlerts(
   // Same episode table as the admin tile. The tenant gets the honest answer to
   // "why is my site down" the moment they look, plus the fact that the operator
   // already knows — which is the difference between a support ticket and none.
-  const downWork = await db.execute<{ workload: string; down_minutes: number; reason: string; heal_attempts: number }>(sql`
+  const downWork = await db.execute<{
+    workload: string; down_minutes: number; reason: string;
+    heal_attempts: number; heal_failed: number;
+  }>(sql`
     SELECT workload,
            FLOOR(EXTRACT(EPOCH FROM (now() - first_seen_at)) / 60)::int AS down_minutes,
-           reason, heal_attempts
+           reason, heal_attempts,
+           -- See the admin card: heal_attempts counts CLAIMED attempts, so only
+           -- last_heal_error can say an attempt actually failed.
+           (last_heal_error IS NOT NULL)::int AS heal_failed
       FROM tenant_workload_health_events
      WHERE tenant_id = ${tenantId}
        AND cleared_at IS NULL
@@ -313,7 +330,7 @@ export async function buildTenantAlerts(
       // the operator's to act on, and a tenant reading "ResourceQuota refused to
       // admit the pod" learns only that something is wrong in a language they
       // cannot use.
-      note: Number(d.heal_attempts) > 0
+      note: Number(d.heal_failed) === 1
         ? 'Automatic restart did not succeed and our operators have been alerted — you do not need to report this.'
         : 'The platform is trying to restart it automatically.',
     }));
