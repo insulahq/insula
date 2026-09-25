@@ -114,7 +114,7 @@ const SUBJECT_VARS = new Set([
   // `workload` is the Deployment whose pods are gone ("moodle", "my-mariadb").
   // It is the same class of subject as `deploymentName`, which is already here;
   // the tenant-facing copy uses `workload` because "deployment" is Kubernetes
-  // vocabulary and the panel calls these applications. Added 2026-09-25 with
+  // vocabulary and the panel calls these applications. Added with
   // admin.tenant_workloads_down / tenant.workloads_down.
   "workload",
 ]);

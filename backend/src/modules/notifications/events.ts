@@ -660,7 +660,7 @@ export interface AdminTenantWorkloadsDownPayload {
  * A tenant is down and automatic recovery could not fix it.
  *
  * This is the alert whose absence let a production tenant stay down for 18h38m
- * on 2026-09-25: the PVC was Bound, the Longhorn volume `attached/healthy`, the
+ * once: the PVC was Bound, the Longhorn volume `attached/healthy`, the
  * node Ready, nothing OOM-killed, namespace-integrity clean (it audits only
  * MISSING objects) — and the storage-lifecycle module emitted no notifications
  * at all. 571 consecutive kubelet mount rejections, and nobody was told.

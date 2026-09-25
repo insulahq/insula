@@ -3,7 +3,7 @@ import { classifyUnavailability, isHealable, type HealReason } from './workload-
 
 /**
  * Message fixtures are the VERBATIM text production emitted during the
- * 2026-09-25 outage, copied out of the k3s journal on cluster.example.test.
+ * outage described above, copied out of a real k3s journal.
  * Classifying kubelet-speak from memory is how you get a matcher that reads
  * plausibly and matches nothing — cf. parsing a format from docs rather than
  * from what the tool actually prints.

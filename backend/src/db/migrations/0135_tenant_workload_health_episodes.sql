@@ -3,7 +3,7 @@
 -- What was wrong
 -- --------------
 -- Nothing in the platform watched whether a tenant's workloads were actually
--- RUNNING. On 2026-09-25 a production tenant sat with all four Deployments at
+-- RUNNING. A production tenant once sat with all four Deployments at
 -- `spec.replicas=1` and `availableReplicas=0` for 18h38m — 571 consecutive
 -- kubelet `MountDevice failed … globalmount: file exists` rejections after a
 -- host I/O stall shut its XFS log down — and every existing check passed:

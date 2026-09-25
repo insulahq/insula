@@ -2552,7 +2552,7 @@ async function waitForVolumeAttached(
  * journal and writes the unmount record) and Longhorn's subsequent detach both
  * complete AFTERWARDS.
  *
- * Measured on production 2026-09-25, all UTC:
+ * Measured on a real cluster (times relative, all UTC):
  *
  *   21:34:43  op created
  *   21:34:45  kernel: XFS (sdx): Unmounting Filesystem …     ← umount STARTS
