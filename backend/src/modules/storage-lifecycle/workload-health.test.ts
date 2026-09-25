@@ -3,26 +3,26 @@ import { classifyUnavailability, isHealable, type HealReason } from './workload-
 
 /**
  * Message fixtures are the VERBATIM text production emitted during the
- * 2026-09-25 outage, copied out of the k3s journal on cluster.phoenix-host.net.
+ * outage described above, copied out of a real k3s journal.
  * Classifying kubelet-speak from memory is how you get a matcher that reads
  * plausibly and matches nothing — cf. parsing a format from docs rather than
  * from what the tool actually prints.
  */
 const REAL_STALE_GLOBALMOUNT = 'MountVolume.MountDevice failed for volume '
-  + '"pvc-60dd3bcd-d8d7-4fa2-85c3-e7b7548e3fcf" (UniqueName: '
-  + '"kubernetes.io/csi/driver.longhorn.io^pvc-60dd3bcd-d8d7-4fa2-85c3-e7b7548e3fcf") '
-  + 'pod "website-5d5f446499-6ds7v" : kubernetes.io/csi: attacher.MountDevice failed to '
+  + '"pvc-00000000-1111-2222-3333-444444444444" (UniqueName: '
+  + '"kubernetes.io/csi/driver.longhorn.io^pvc-00000000-1111-2222-3333-444444444444") '
+  + 'pod "website-6b8c9d7f4-ab12c" : kubernetes.io/csi: attacher.MountDevice failed to '
   + 'create dir "/var/lib/kubelet/plugins/kubernetes.io/csi/driver.longhorn.io/'
-  + 'e8fcfb523a4f9847c57539775ac5523584e24516163e342161fe89959940b573/globalmount": '
+  + '0000000000000000000000000000000000000000000000000000000000000000/globalmount": '
   + 'mkdir /var/lib/kubelet/plugins/kubernetes.io/csi/driver.longhorn.io/'
-  + 'e8fcfb523a4f9847c57539775ac5523584e24516163e342161fe89959940b573/globalmount: file exists';
+  + '0000000000000000000000000000000000000000000000000000000000000000/globalmount: file exists';
 
 const REAL_NOT_READY_FOR_WORKLOADS = 'AttachVolume.Attach failed for volume '
-  + '"pvc-60dd3bcd-d8d7-4fa2-85c3-e7b7548e3fcf" : rpc error: code = Aborted desc = '
-  + 'volume pvc-60dd3bcd-d8d7-4fa2-85c3-e7b7548e3fcf is not ready for workloads';
+  + '"pvc-00000000-1111-2222-3333-444444444444" : rpc error: code = Aborted desc = '
+  + 'volume pvc-00000000-1111-2222-3333-444444444444 is not ready for workloads';
 
-const REAL_QUOTA = 'FailedCreate: pods "moodle-5558dbff57-x1y2z" is forbidden: exceeded quota: '
-  + 'tenant-hatzlacha-college-9863d9c8-quota, requested: limits.memory=512Mi, '
+const REAL_QUOTA = 'FailedCreate: pods "moodle-7c9d8e6a5-cd34e" is forbidden: exceeded quota: '
+  + 'tenant-example-0a1b2c3d-quota, requested: limits.memory=512Mi, '
   + 'used: limits.memory=844Mi, limited: limits.memory=1Gi';
 
 describe('classifyUnavailability — real production messages', () => {

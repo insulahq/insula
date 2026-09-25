@@ -4,7 +4,7 @@
  * WHY THIS EXISTS
  * ---------------
  * Nothing in the platform watched whether a tenant's workloads were actually
- * RUNNING. On 2026-09-25 a production tenant had all four Deployments at
+ * RUNNING. A production tenant once had all four Deployments at
  * `spec.replicas=1` / `availableReplicas=0` for 18h38m and every existing check
  * passed:
  *
