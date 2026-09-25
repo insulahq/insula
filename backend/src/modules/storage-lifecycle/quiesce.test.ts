@@ -24,6 +24,17 @@ function mockK8s(opts: {
   // to model a pod that doesn't mount it (e.g. a cert-manager solver pod).
   pods?: Array<{ name: string; mountsPvc?: boolean }>;
   podsAfterDrainCalls?: number;
+  /**
+   * Deployments that are scaled up but NEVER become available — the shape a
+   * quota-rejected or unmountable restore actually has. `unquiesce` now reads
+   * Deployment STATUS rather than trusting that the scale PATCH returning 2xx
+   * means a pod runs, so the mock has to model status at all.
+   */
+  neverAvailable?: readonly string[];
+  /** Deployments whose ReplicaSet refuses to create pods (reason → message). */
+  replicaFailure?: Record<string, string>;
+  /** Deployments that 404 on read (deleted by the op itself). */
+  missing?: readonly string[];
 } = {}) {
   const scaleCalls: Array<{ name: string; replicas: number }> = [];
   const cronPatchCalls: Array<{ name: string; suspend: boolean }> = [];
@@ -55,6 +66,36 @@ function mockK8s(opts: {
         }),
       },
       apps: {
+        // Status reader used by unquiesce's "did it actually come back up?"
+        // check. Default: whatever replicas were last requested are available,
+        // i.e. the happy path. `neverAvailable` / `replicaFailure` model the
+        // failures that used to be reported as success.
+        readNamespacedDeployment: vi.fn().mockImplementation(async (args: { name: string }) => {
+          if ((opts.missing ?? []).includes(args.name)) {
+            throw new Error(`HTTP 404: deployments.apps "${args.name}" not found`);
+          }
+          const lastScale = [...scaleReplicaCalls].reverse().find((c) => c.name === args.name);
+          // A test that stubs scaleDeploymentReplicas with mockImplementationOnce
+          // bypasses our recorder, so there is no desired count to read back.
+          // Those are ordering / failure-visibility tests that assume a healthy
+          // restore, so report the workload as satisfied rather than polling
+          // until the test times out. Availability failures are modelled
+          // explicitly via `neverAvailable` / `replicaFailure`.
+          const recorded = lastScale?.replicas ?? deploymentMap.get(args.name)?.replicas;
+          const rf = opts.replicaFailure?.[args.name];
+          const unavailable = (opts.neverAvailable ?? []).includes(args.name) || Boolean(rf);
+          const desired = recorded ?? Number.MAX_SAFE_INTEGER;
+          const available = unavailable ? 0 : desired;
+          return {
+            spec: { replicas: desired },
+            status: {
+              availableReplicas: available,
+              conditions: rf
+                ? [{ type: 'ReplicaFailure', status: 'True', reason: 'FailedCreate', message: rf }]
+                : [],
+            },
+          };
+        }),
         listNamespacedDeployment: vi.fn().mockResolvedValue({
           items: (opts.deployments ?? []).map((d) => ({
             metadata: { name: d.name },
@@ -352,5 +393,106 @@ describe('clearQuiesceHold', () => {
     const m = mockK8s();
     await clearQuiesceHold(m.tenant, 'ns', 'website');
     expect(m.holdCalls).toEqual([{ name: 'website', held: false }]);
+  });
+});
+
+// ── outcome verification ────────────────────────────────────────────────
+//
+// The bug these cover: unquiesce verified its WRITE, not the OUTCOME. A PATCH to
+// the /scale subresource returning 200 only changes the Deployment's spec —
+// whether a POD ever runs is decided afterwards by the ReplicaSet, and that is
+// where a restore actually fails (ResourceQuota is enforced at pod CREATE, and a
+// still-terminating pod counts against it). unquiesce then cleared the
+// quiesce-hold, which is the only marker watchdog Leg B can find, so the tenant
+// was left down with the op already terminal — invisible to every recovery path.
+// Reported as "after fsck the previously running workloads are not started again".
+describe('unquiesce — verifies the workload is RUNNING, not merely requested', () => {
+  // Short waits: the production default is 5 min, which the poll loop would
+  // honour and blow the test timeout.
+  const fast = { availableTimeoutMs: 100 };
+
+  it('throws when a scaled-up workload never becomes available', async () => {
+    const m = mockK8s({ deployments: [{ name: 'wp', replicas: 1 }], neverAvailable: ['wp'] });
+    await expect(unquiesce(m.tenant, 'ns', {
+      deployments: [{ name: 'wp', replicas: 1 }], cronJobs: [],
+    }, fast)).rejects.toThrow(/could not be restored/);
+  });
+
+  it('KEEPS the hold when the workload never becomes available', async () => {
+    const m = mockK8s({ deployments: [{ name: 'wp', replicas: 1 }], neverAvailable: ['wp'] });
+    await expect(unquiesce(m.tenant, 'ns', {
+      deployments: [{ name: 'wp', replicas: 1 }], cronJobs: [],
+    }, fast)).rejects.toThrow();
+    // The scale-up itself SUCCEEDED here — this is precisely the case the old
+    // code cleared the hold for.
+    expect(scaleReplicaCalls).toContainEqual({ namespace: 'ns', name: 'wp', replicas: 1 });
+    expect(m.holdCalls).not.toContainEqual({ name: 'wp', held: false });
+  });
+
+  it('names a ResourceQuota rejection in the error instead of a bare timeout', async () => {
+    const m = mockK8s({
+      deployments: [{ name: 'wp', replicas: 1 }],
+      replicaFailure: { wp: 'pods "wp-abc" is forbidden: exceeded quota: tenant-quota, requested: limits.memory=512Mi, used: limits.memory=844Mi, limited: limits.memory=1Gi' },
+    });
+    await expect(unquiesce(m.tenant, 'ns', {
+      deployments: [{ name: 'wp', replicas: 1 }], cronJobs: [],
+    }, fast)).rejects.toThrow(/exceeded quota/);
+  });
+
+  it('a ReplicaFailure fails fast rather than waiting out the deadline', async () => {
+    const m = mockK8s({
+      deployments: [{ name: 'wp', replicas: 1 }],
+      replicaFailure: { wp: 'FailedCreate: exceeded quota' },
+    });
+    const started = Date.now();
+    await expect(unquiesce(m.tenant, 'ns', {
+      deployments: [{ name: 'wp', replicas: 1 }], cronJobs: [],
+    }, { availableTimeoutMs: 60_000 })).rejects.toThrow(/exceeded quota/);
+    // Pods are being refused outright; waiting the full 60s only delays the report.
+    expect(Date.now() - started).toBeLessThan(10_000);
+  });
+
+  it('clears the hold once the workload IS available', async () => {
+    const m = mockK8s({ deployments: [{ name: 'wp', replicas: 2 }] });
+    await expect(unquiesce(m.tenant, 'ns', {
+      deployments: [{ name: 'wp', replicas: 2 }], cronJobs: [],
+    }, fast)).resolves.not.toThrow();
+    expect(m.holdCalls).toContainEqual({ name: 'wp', held: false });
+  });
+
+  it('a Deployment that 404s on status read counts as gone, not as down', async () => {
+    const m = mockK8s({ deployments: [{ name: 'wp', replicas: 1 }], missing: ['wp'] });
+    await expect(unquiesce(m.tenant, 'ns', {
+      deployments: [{ name: 'wp', replicas: 1 }], cronJobs: [],
+    }, fast)).resolves.not.toThrow();
+    // The op removed it; the (now moot) hold is cleared rather than stranded.
+    expect(m.holdCalls).toContainEqual({ name: 'wp', held: false });
+  });
+
+  it('one unavailable workload does not stop the others being confirmed', async () => {
+    const m = mockK8s({
+      deployments: [{ name: 'broken', replicas: 1 }, { name: 'fine', replicas: 1 }],
+      neverAvailable: ['broken'],
+    });
+    await expect(unquiesce(m.tenant, 'ns', {
+      deployments: [{ name: 'broken', replicas: 1 }, { name: 'fine', replicas: 1 }],
+      cronJobs: [{ name: 'wp-cron', wasSuspended: false }],
+    }, fast)).rejects.toThrow(/broken/);
+    // The healthy one is confirmed and released; CronJobs still unsuspended.
+    expect(m.holdCalls).toContainEqual({ name: 'fine', held: false });
+    expect(m.holdCalls).not.toContainEqual({ name: 'broken', held: false });
+    expect(m.cronPatchCalls).toContainEqual({ name: 'wp-cron', suspend: false });
+  });
+
+  it('issues every scale-up before waiting, so N workloads cost the slowest not the sum', async () => {
+    const m = mockK8s({
+      deployments: [{ name: 'a', replicas: 1 }, { name: 'b', replicas: 1 }, { name: 'c', replicas: 1 }],
+    });
+    await unquiesce(m.tenant, 'ns', {
+      deployments: [{ name: 'a', replicas: 1 }, { name: 'b', replicas: 1 }, { name: 'c', replicas: 1 }],
+      cronJobs: [],
+    }, fast);
+    // All three scale calls land before any status read resolves the wait.
+    expect(scaleReplicaCalls.map((c) => c.name)).toEqual(['a', 'b', 'c']);
   });
 });

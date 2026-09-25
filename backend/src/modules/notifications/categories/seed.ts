@@ -875,6 +875,18 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
     gdprBasis: 'legitimate_interest',
   },
   {
+    id: 'admin.tenant_workloads_down',
+    cls: 'availability',
+    reportsOn: 'compute',
+    displayName: 'Tenant workloads down, auto-heal failed',
+    description: "A tenant's workloads have been unavailable past the grace window and the platform's automatic recovery could not bring them back. Nothing else detects this: namespace-integrity audits only MISSING objects, so a tenant whose namespace, PVC, quota and NetworkPolicy all exist can be completely down while every component reports healthy. One production tenant sat like that for 18h38m before this category existed. The notification names the workload, the reason, and how many heal attempts were made.",
+    audience: 'admin',
+    defaultSeverity: 'critical',
+    defaultChannels: ALL_NOTIFICATION_CHANNELS,
+    isMandatory: false,
+    gdprBasis: 'legitimate_interest',
+  },
+  {
     id: 'admin.tenant_integrity',
     cls: 'incident',
     reportsOn: null,
@@ -929,6 +941,29 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
     gdprBasis: 'legitimate_interest',
     rateLimitWindowS: 3600,
     rateLimitMax: 20,
+  },
+  {
+    id: 'tenant.workloads_down',
+    cls: 'availability',
+    reportsOn: 'compute',
+    displayName: 'Your site is not running',
+    description: 'One or more of your applications has stopped running and the platform could not restart it automatically. Your site or database may be unreachable until it is fixed. The platform operator is alerted at the same time and does not need to be contacted.',
+    audience: 'tenant',
+    defaultSeverity: 'critical',
+    // Every channel, like every other source. A narrower default was tried here
+    // first — the reasoning being that the operator is the one who can act, so
+    // emailing and pushing the tenant too is three messages for one event, two
+    // of them to someone who can only wait. That is a real argument, but it is
+    // not this file's to make: the standing operator decision is that every
+    // source starts with every channel and is narrowed in Settings →
+    // Notifications, and `default-channels.test.ts` enforces it precisely so a
+    // channel added later is on by default everywhere instead of being silently
+    // off on one source (which is what happened to ntfy on all fifty sources).
+    // An operator who wants workload outages to be admin-only turns email and
+    // ntfy off for THIS source, in one place, and it stays off.
+    defaultChannels: ALL_NOTIFICATION_CHANNELS,
+    isMandatory: false,
+    gdprBasis: 'contract',
   },
   {
     id: 'tenant.resource_saturation_warning',

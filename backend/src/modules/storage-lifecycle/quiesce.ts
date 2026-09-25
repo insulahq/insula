@@ -339,32 +339,206 @@ function isGone(err: unknown): boolean {
  * loop always completes first: one unrestorable workload must not stop the
  * rest of the namespace from coming back.
  */
+/**
+ * How long a restored workload gets to actually become available before the
+ * restore is called a failure.
+ *
+ * Generous because the honest path can be slow: after a quiesce the Longhorn
+ * volume has to re-attach, and kubelet's CSI attach backs off exponentially
+ * (0.5s → 1s → 2s → 4s → 8s → 16s) against Longhorn's
+ * `Aborted: volume is not ready for workloads` while the previous detach
+ * settles. Measured on production: 11s in one cycle, 19s in another. An image
+ * pull on a cold node is slower still.
+ */
+const RESTORE_AVAILABLE_TIMEOUT_MS = 5 * 60 * 1000;
+const RESTORE_POLL_MS = 3000;
+
+interface DeploymentStatusView {
+  readonly desired: number;
+  readonly available: number;
+  /** ReplicaSet-level refusal to create pods at all — quota is the common one. */
+  readonly replicaFailure: string | null;
+}
+
+async function readDeploymentStatus(
+  k8s: K8sClients,
+  namespace: string,
+  name: string,
+): Promise<DeploymentStatusView | null> {
+  try {
+    const dep = await (k8s.apps as unknown as {
+      readNamespacedDeployment: (a: { name: string; namespace: string }) => Promise<{
+        spec?: { replicas?: number };
+        status?: { availableReplicas?: number; conditions?: Array<{ type?: string; status?: string; reason?: string; message?: string }> };
+      }>;
+    }).readNamespacedDeployment({ name, namespace });
+    const cond = (dep.status?.conditions ?? []).find(
+      (c) => c.type === 'ReplicaFailure' && c.status === 'True',
+    );
+    return {
+      desired: dep.spec?.replicas ?? 0,
+      available: dep.status?.availableReplicas ?? 0,
+      replicaFailure: cond ? `${cond.reason ?? 'ReplicaFailure'}: ${(cond.message ?? '').slice(0, 300)}` : null,
+    };
+  } catch (err) {
+    if (isGone(err)) return null;
+    throw err;
+  }
+}
+
+/**
+ * Wait until every named Deployment has at least its target available replicas.
+ *
+ * ★ THIS IS THE FIX FOR "it doesn't scale them back up". `unquiesce` used to
+ * verify its WRITE and not the OUTCOME: a PATCH to the `/scale` subresource
+ * returning 200 only means the Deployment's spec changed. Whether a POD ever
+ * runs is decided later, by the ReplicaSet, and that is where it fails:
+ *
+ *   • ResourceQuota is enforced at POD CREATE, not at scale. A terminating pod
+ *     still counts against the quota, so a tenant near its memory ceiling
+ *     routinely cannot fit its replacements yet — the production tenant that
+ *     triggered this work sits at 844Mi of a 1Gi `limits.memory` quota, i.e.
+ *     180Mi of headroom for a 4-workload restore. The ReplicaSet records
+ *     `ReplicaFailure: FailedCreate: exceeded quota`, the Deployment stays at
+ *     `availableReplicas: 0`, and the old code had already reported success.
+ *   • the Longhorn volume may refuse to attach (`not ready for workloads`).
+ *   • a stale CSI staging dir makes every mount fail forever
+ *     (`mkdir …/globalmount: file exists`) — 18h38m of that is what started
+ *     this.
+ *
+ * Because the old code then CLEARED the quiesce-hold annotation, the tenant was
+ * left down with no marker any recovery path could see: the op row was terminal
+ * so watchdog Leg A skipped it, and the annotation was gone so Leg B could not
+ * find it either. Keeping the hold on an unverified restore is what makes the
+ * watchdog able to own it.
+ *
+ * One shared deadline across all workloads, and the scale-ups are issued before
+ * any waiting, so a 4-workload namespace takes as long as the slowest — not the
+ * sum.
+ */
+async function waitForRestored(
+  k8s: K8sClients,
+  namespace: string,
+  targets: ReadonlyArray<{ name: string; replicas: number }>,
+  timeoutMs: number,
+): Promise<{ restored: Set<string>; gone: Set<string>; failures: Map<string, string> }> {
+  const restored = new Set<string>();
+  const gone = new Set<string>();
+  const failures = new Map<string, string>();
+  if (targets.length === 0) return { restored, gone, failures };
+
+  const deadline = Date.now() + timeoutMs;
+  let pending = targets.filter((t) => t.replicas > 0);
+  // replicas === 0 targets need no pod; nothing to wait for.
+  for (const t of targets) if (t.replicas <= 0) restored.add(t.name);
+
+  while (pending.length > 0) {
+    const still: typeof pending = [];
+    for (const t of pending) {
+      let view: DeploymentStatusView | null;
+      try {
+        view = await readDeploymentStatus(k8s, namespace, t.name);
+      } catch (err) {
+        failures.set(t.name, `status read failed: ${err instanceof Error ? err.message : String(err)}`);
+        continue;
+      }
+      if (view === null) { gone.add(t.name); continue; }
+      if (view.available >= t.replicas) { restored.add(t.name); continue; }
+      // A ReplicaFailure is terminal for this attempt — pods are being refused
+      // outright, so waiting out the deadline only delays the report. Name the
+      // reason: "exceeded quota" and "volume not ready" need different fixes.
+      if (view.replicaFailure) {
+        failures.set(t.name, `${view.available}/${t.replicas} available — ${view.replicaFailure}`);
+        continue;
+      }
+      still.push(t);
+    }
+    pending = still;
+    if (pending.length === 0) break;
+    if (Date.now() >= deadline) {
+      for (const t of pending) {
+        const view = await readDeploymentStatus(k8s, namespace, t.name).catch(() => null);
+        failures.set(
+          t.name,
+          `${view?.available ?? 0}/${t.replicas} available after ${Math.round(timeoutMs / 1000)}s`
+          + (view?.replicaFailure ? ` — ${view.replicaFailure}` : ''),
+        );
+      }
+      break;
+    }
+    await new Promise((r) => setTimeout(r, RESTORE_POLL_MS));
+  }
+  return { restored, gone, failures };
+}
+
+/**
+ * Restore pre-quiesce replica counts and unsuspend CronJobs.
+ *
+ * ORDER IS LOAD-BEARING — scale up FIRST, confirm the workload is actually
+ * AVAILABLE SECOND, drop the hold annotation THIRD.
+ *
+ * The hold annotation (`insula.host/storage-quiesced`) is the ONLY marker
+ * quiesce-watchdog Leg B uses to find namespaces stranded at 0 replicas. An
+ * earlier revision cleared it before the scale-up, so a scale-up that failed
+ * left the tenant DOWN with the evidence already erased. That was fixed by
+ * reordering — but the check was still "did the PATCH return 2xx", which a
+ * quota-rejected or attach-blocked restore passes while no pod ever runs. The
+ * hold is now held until `availableReplicas` actually reaches the target, so
+ * "restored" means running, not requested. See `waitForRestored`.
+ *
+ * Failures are not swallowed. The old `catch { /* gone — ignore *\/ }` assumed
+ * the only possible cause was a deleted Deployment, but it equally absorbed a
+ * 409 conflict, a 5xx, a transient network error, and a ResourceQuota
+ * rejection.
+ *
+ * Throws if any workload could not be restored, so the caller marks the op
+ * FAILED rather than reporting success over a tenant that is still down. Every
+ * workload is attempted first: one unrestorable workload must not stop the rest
+ * of the namespace from coming back.
+ */
 export async function unquiesce(
   k8s: K8sClients,
   namespace: string,
   snap: QuiesceSnapshot,
+  opts: { availableTimeoutMs?: number } = {},
 ): Promise<void> {
   const failures: string[] = [];
-
+  // ── PHASE 1: issue every scale-up before waiting on any of them ──
+  const scaled: Array<{ name: string; replicas: number }> = [];
+  const goneEarly = new Set<string>();
   for (const d of snap.deployments) {
-    if (d.replicas > 0) {
-      try {
-        await scaleDeployment(k8s, namespace, d.name, d.replicas);
-      } catch (err) {
-        if (!isGone(err)) {
-          const msg = err instanceof Error ? err.message : String(err);
-          console.error(
-            `[unquiesce] ${namespace}/${d.name} scale->${d.replicas} FAILED: ${msg} — leaving the quiesce-hold in place so the watchdog retries`,
-          );
-          failures.push(`${d.name}->${d.replicas}: ${msg}`);
-          // Deliberately do NOT clear the hold: it is the watchdog's handle.
-          continue;
-        }
-        // 404 — the op removed it. Fall through and clear the (now moot) hold.
-      }
+    if (d.replicas <= 0) { goneEarly.add(d.name); continue; }
+    try {
+      await scaleDeployment(k8s, namespace, d.name, d.replicas);
+      scaled.push(d);
+    } catch (err) {
+      if (isGone(err)) { goneEarly.add(d.name); continue; }
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(
+        `[unquiesce] ${namespace}/${d.name} scale->${d.replicas} FAILED: ${msg} — leaving the quiesce-hold in place so the watchdog retries`,
+      );
+      failures.push(`${d.name}->${d.replicas}: ${msg}`);
     }
-    // Only once the workload is back (or provably gone) is it safe to drop the
-    // hold, which re-enables reactive ensureFileManagerRunning auto-start.
+  }
+
+  // ── PHASE 2: confirm they are actually RUNNING, not merely requested ──
+  const { restored, gone, failures: notAvailable } = await waitForRestored(
+    k8s,
+    namespace,
+    scaled,
+    opts.availableTimeoutMs ?? RESTORE_AVAILABLE_TIMEOUT_MS,
+  );
+  for (const [name, why] of notAvailable) {
+    console.error(
+      `[unquiesce] ${namespace}/${name} scaled but NEVER BECAME AVAILABLE: ${why} — leaving the quiesce-hold in place so the watchdog retries`,
+    );
+    failures.push(`${name}: ${why}`);
+  }
+
+  // ── PHASE 3: drop the hold only where the workload is back or provably gone ──
+  for (const d of snap.deployments) {
+    const ok = restored.has(d.name) || gone.has(d.name) || goneEarly.has(d.name);
+    if (!ok) continue; // Deliberately keep the hold: it is the watchdog's handle.
     try { await setQuiesceHold(k8s, namespace, d.name, false); } catch { /* gone — ignore */ }
   }
 

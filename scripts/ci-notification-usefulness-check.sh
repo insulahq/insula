@@ -111,6 +111,12 @@ const SUBJECT_VARS = new Set([
   // two is that the platform could not read any certificate, so naming one
   // would be the false claim they exist to replace.
   "dependency",
+  // `workload` is the Deployment whose pods are gone ("moodle", "my-mariadb").
+  // It is the same class of subject as `deploymentName`, which is already here;
+  // the tenant-facing copy uses `workload` because "deployment" is Kubernetes
+  // vocabulary and the panel calls these applications. Added 2026-09-25 with
+  // admin.tenant_workloads_down / tenant.workloads_down.
+  "workload",
 ]);
 // NOT in that list, deliberately: `userName`, `contactName` and `greeting`.
 // They name the RECIPIENT, not the subject, and the shared email wrapper

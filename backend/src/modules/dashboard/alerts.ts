@@ -105,6 +105,56 @@ export async function buildAdminAlerts(db: Database): Promise<DashboardAlert[]> 
     }));
   }
 
+  // Tenant workloads down and auto-heal failed — admin.tenant_workloads_down.
+  //
+  // Reads the SAME episode table the reconciler writes and the tenant panel
+  // renders, so the two consoles cannot disagree about whether a tenant is up.
+  // Gated on the grace window AND on auto-heal having been attempted: a tile
+  // that lights up during a 20-second rollout is a tile operators learn to
+  // ignore.
+  const downWork = await db.execute<{
+    total: number; tenant_id: string; tenant_name: string; workload: string;
+    reason: string; down_minutes: number; heal_attempts: number; healed: number;
+  }>(sql`
+    SELECT COUNT(*) OVER ()::int AS total,
+           e.tenant_id, t.name AS tenant_name, e.workload, e.reason,
+           FLOOR(EXTRACT(EPOCH FROM (now() - e.first_seen_at)) / 60)::int AS down_minutes,
+           e.heal_attempts,
+           (e.healed_at IS NOT NULL)::int AS healed
+      FROM tenant_workload_health_events e
+      JOIN tenants t ON t.id = e.tenant_id
+     WHERE e.cleared_at IS NULL
+       AND t.status = 'active'
+       AND e.first_seen_at < now() - INTERVAL '8 minutes'
+     ORDER BY e.first_seen_at ASC
+     LIMIT 5
+  `);
+  const downRows = downWork.rows ?? [];
+  if (downRows.length > 0) {
+    const w = downRows[0];
+    const downTotal = Number(w.total ?? downRows.length);
+    const triedAndFailed = downRows.filter((r) => Number(r.heal_attempts) > 0).length;
+    out.push(alert({
+      categoryId: 'admin.tenant_workloads_down',
+      severity: 'critical',
+      value: String(downTotal),
+      title: downTotal === 1 ? 'Tenant workload down' : 'Tenant workloads down',
+      subtitle: `${w.tenant_name} · ${w.workload} · ${w.down_minutes} min`
+        + (downTotal > 1 ? ` · ${downTotal - 1} more` : ''),
+      // One subject → deep-link to that tenant. Several is a list problem.
+      href: downTotal === 1 ? `/tenants/${w.tenant_id}` : '/tenants',
+      detail: downRows.map((r) => [
+        `${r.tenant_name} / ${r.workload}`,
+        `${r.down_minutes} min · ${r.reason}`
+        + (Number(r.heal_attempts) > 0 ? ` · ${r.heal_attempts} heal attempt(s) failed` : ' · heal pending'),
+      ] as [string, string]),
+      note: triedAndFailed > 0
+        ? 'Automatic recovery has already been tried and failed on '
+          + `${triedAndFailed} of these — they need a human. The tenant's site is down right now.`
+        : 'Automatic recovery is still in progress. If these clear on their own, no action is needed.',
+    }));
+  }
+
   // Mailboxes at or above quota — admin.mailbox_quota_fleet.
   // Per-mailbox storage, which is the number that actually refuses mail;
   // the COUNT of mailboxes against a plan limit is not an alert and has no
@@ -229,6 +279,43 @@ export async function buildTenantAlerts(
       note: r.resource === 'storage'
         ? 'Writes are refused at 95%. Clearing old uploads or logs is usually the quickest win.'
         : 'A new app must fit in what is left, not in what is currently idle.',
+    }));
+  }
+
+  // An application of theirs is not running — tenant.workloads_down.
+  //
+  // Same episode table as the admin tile. The tenant gets the honest answer to
+  // "why is my site down" the moment they look, plus the fact that the operator
+  // already knows — which is the difference between a support ticket and none.
+  const downWork = await db.execute<{ workload: string; down_minutes: number; reason: string; heal_attempts: number }>(sql`
+    SELECT workload,
+           FLOOR(EXTRACT(EPOCH FROM (now() - first_seen_at)) / 60)::int AS down_minutes,
+           reason, heal_attempts
+      FROM tenant_workload_health_events
+     WHERE tenant_id = ${tenantId}
+       AND cleared_at IS NULL
+       AND first_seen_at < now() - INTERVAL '8 minutes'
+     ORDER BY first_seen_at ASC
+     LIMIT 3
+  `);
+  const downRows = downWork.rows ?? [];
+  if (downRows.length > 0) {
+    const d = downRows[0];
+    out.push(alert({
+      categoryId: 'tenant.workloads_down',
+      severity: 'critical',
+      value: String(downRows.length),
+      title: downRows.length === 1 ? 'An application is not running' : 'Applications are not running',
+      subtitle: `${d.workload} · down ${d.down_minutes} min`,
+      href: '/applications',
+      detail: downRows.map((r) => [r.workload, `down ${r.down_minutes} min`] as [string, string]),
+      // Deliberately says nothing about quotas, nodes or volumes: the causes are
+      // the operator's to act on, and a tenant reading "ResourceQuota refused to
+      // admit the pod" learns only that something is wrong in a language they
+      // cannot use.
+      note: Number(d.heal_attempts) > 0
+        ? 'Automatic restart did not succeed and our operators have been alerted — you do not need to report this.'
+        : 'The platform is trying to restart it automatically.',
     }));
   }
 
