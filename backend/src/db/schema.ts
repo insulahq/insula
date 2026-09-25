@@ -4417,6 +4417,55 @@ export const tenantSaturationEvents = pgTable('tenant_saturation_events', {
   index('tenant_saturation_events_open_idx').on(table.tenantId),
 ]);
 
+/**
+ * Tenant workload availability episodes + the auto-heal audit trail
+ * (migration 0135).
+ *
+ * The observation nothing else made: a Deployment with `spec.replicas > 0` and
+ * `availableReplicas < spec.replicas`. A production tenant sat exactly there
+ * for 18h38m while namespace-integrity (which audits only MISSING objects), the
+ * Bound PVC, the `attached/healthy` Longhorn volume and the Ready node all read
+ * clean. Both dashboards render from THIS table so the two panels cannot
+ * disagree about whether a tenant is up.
+ *
+ * `firstSeenAt` is the hysteresis — the row is written on first observation, but
+ * neither the healer nor the dashboards act until the condition outlives the
+ * grace window. A rollout, an image pull and a node reboot all look like "down"
+ * for a few seconds and none of them is a fault.
+ */
+export const tenantWorkloadHealthEvents = pgTable('tenant_workload_health_events', {
+  tenantId: varchar('tenant_id', { length: 36 })
+    .notNull()
+    .references(() => tenants.id, { onDelete: 'cascade' }),
+  /** Deployment name. Tenant namespaces are single-tenant, so this is unique. */
+  workload: varchar('workload', { length: 253 }).notNull(),
+  namespace: varchar('namespace', { length: 63 }).notNull(),
+  desiredReplicas: integer('desired_replicas').notNull(),
+  availableReplicas: integer('available_replicas').notNull().default(0),
+  /** volume_attach | quota_rejected | unschedulable | image | crash | unknown */
+  reason: varchar('reason', { length: 32 }).notNull().default('unknown'),
+  /** The kubelet/ReplicaSet message `reason` was derived from, truncated. */
+  detail: text('detail'),
+  firstSeenAt: timestamp('first_seen_at', { withTimezone: true }).notNull().defaultNow(),
+  lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull().defaultNow(),
+  healAttempts: integer('heal_attempts').notNull().default(0),
+  lastHealAt: timestamp('last_heal_at', { withTimezone: true }),
+  lastHealError: text('last_heal_error'),
+  /** Set when a heal attempt was followed by the workload coming back. */
+  healedAt: timestamp('healed_at', { withTimezone: true }),
+  lastNotifiedAt: timestamp('last_notified_at', { withTimezone: true }),
+  notifyCount: integer('notify_count').notNull().default(0),
+  /** Set when the workload is available again, however it recovered. */
+  clearedAt: timestamp('cleared_at', { withTimezone: true }),
+}, (table) => [
+  primaryKey({ columns: [table.tenantId, table.workload] }),
+  index('tenant_workload_health_open_idx').on(table.tenantId),
+  index('tenant_workload_health_first_seen_idx').on(table.firstSeenAt),
+]);
+
+export type TenantWorkloadHealthEvent = typeof tenantWorkloadHealthEvents.$inferSelect;
+export type NewTenantWorkloadHealthEvent = typeof tenantWorkloadHealthEvents.$inferInsert;
+
 export type TenantSaturationEvent = typeof tenantSaturationEvents.$inferSelect;
 export type NewTenantSaturationEvent = typeof tenantSaturationEvents.$inferInsert;
 

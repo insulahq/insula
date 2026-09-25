@@ -34,6 +34,13 @@ const INTEGRITY_INTERVAL_MS = 30 * 60 * 1000;
 // workloads left at 0 replicas. 15 min
 // bounds how long a stranded tenant site can stay down unnoticed.
 const QUIESCE_WATCHDOG_INTERVAL_MS = 15 * 60 * 1000;
+// Workload-health reconciler: the only check that asks whether a tenant's
+// workloads are actually RUNNING, auto-heals the ones that are not, and alerts
+// the operator when it cannot. 5 min, because the failure it exists to catch ran
+// for 18h38m unnoticed on production — every other check passed while the tenant
+// was completely down. Detection is bounded by this interval plus the reconciler
+// grace window, so ~13 min worst case instead of "until a human notices".
+const WORKLOAD_HEALTH_INTERVAL_MS = 5 * 60 * 1000;
 const INITIAL_DELAY_MS = 2 * 60 * 1000; // 2 min after startup
 
 /**
@@ -318,12 +325,36 @@ export function startStorageLifecycleScheduler(
     if (!stopped) quiesceWatchdogTimer = setTimeout(runQuiesceWatchdog, QUIESCE_WATCHDOG_INTERVAL_MS);
   };
 
+  // Workload-health reconciler — detect tenants whose workloads are not
+  // running, re-stage the volume to heal them, alert when that fails.
+  // See workload-health.ts.
+  let workloadHealthTimer: NodeJS.Timeout | null = null;
+  const runWorkloadHealth = async () => {
+    if (stopped) return;
+    try {
+      const { reconcileTenantWorkloadHealth } = await import('./workload-health.js');
+      const r = await reconcileTenantWorkloadHealth(db, k8s);
+      // Log only when something happened — a quiet fleet must stay quiet, or the
+      // one tick that matters is invisible in the noise.
+      if (r.observedDown > 0 || r.episodesCleared > 0 || r.alerted > 0) {
+        console.log(
+          `[workload-health] down=${r.observedDown} opened=${r.episodesOpened} cleared=${r.episodesCleared} `
+          + `healAttempted=${r.healAttempted} healed=${r.healed} alerted=${r.alerted}`,
+        );
+      }
+    } catch (err) {
+      console.error('[workload-health] reconcile failed:', (err as Error).message);
+    }
+    if (!stopped) workloadHealthTimer = setTimeout(runWorkloadHealth, WORKLOAD_HEALTH_INTERVAL_MS);
+  };
+
   expiryTimer = setTimeout(runExpiry, INITIAL_DELAY_MS);
   auditTimer = setTimeout(runAudit, INITIAL_DELAY_MS + 30_000);
   lifecycleTimer = setTimeout(runLifecycle, INITIAL_DELAY_MS + 60_000);
   integrityTimer = setTimeout(runIntegrity, INITIAL_DELAY_MS + 90_000);
   orphanSecretTimer = setTimeout(runOrphanSecretSweep, INITIAL_DELAY_MS + 120_000);
   quiesceWatchdogTimer = setTimeout(runQuiesceWatchdog, INITIAL_DELAY_MS + 150_000);
+  workloadHealthTimer = setTimeout(runWorkloadHealth, INITIAL_DELAY_MS + 180_000);
 
   return {
     stop: () => {
@@ -334,6 +365,7 @@ export function startStorageLifecycleScheduler(
       if (integrityTimer) clearTimeout(integrityTimer);
       if (orphanSecretTimer) clearTimeout(orphanSecretTimer);
       if (quiesceWatchdogTimer) clearTimeout(quiesceWatchdogTimer);
+      if (workloadHealthTimer) clearTimeout(workloadHealthTimer);
     },
   };
 }
