@@ -18,7 +18,7 @@ data:
   public-url: "https://admin.${DOMAIN}"
   cors-origins: "https://admin.${DOMAIN},https://tenant.${DOMAIN}"
   # Per-tenant sidecar image — pull from GHCR on real clusters.
-  file-manager-image: "ghcr.io/insulahq/insula/file-manager:80a71f8@sha256:4326aa1f470d4aaa1d8409cd59f696a8d0e8f131ee18ffade3d96024d509e22d"
+  file-manager-image: "ghcr.io/insulahq/insula/file-manager:aa51607@sha256:f1fb1d2f954e3214d9a9f14470f501034af54885101fb59ee3f3bc45d015b11e"
   # Mail-archive checkpoint binary. CI-MANAGED — rewritten by
   # .github/scripts/pin-config-image.sh from ci-rocksdb-secondary-checkpoint.yml
   # after every push to development. Do not hand-edit; the next build overwrites
