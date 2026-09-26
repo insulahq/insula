@@ -33,11 +33,22 @@ Each plan has these fields:
 | **CPU Limit (cores)** | Max CPU the tenant's workloads may use. |
 | **Memory Limit (GB)** | Max memory. |
 | **Storage Limit (GB)** | Max persistent storage. |
-| **Max Sub-Users** | How many additional logins the tenant may create. |
-| **Max Mailboxes** | How many mailboxes the tenant may create. |
+| **Max Sub-Users** | How many additional logins the tenant may create. **0** means none. |
+| **Max Mailboxes** | How many mailboxes the tenant may create. **0** disables email for every tenant on the plan — see below. |
 | **Bandwidth (GB/month)** | Monthly served-traffic allowance (default 100 GB). See [the monthly bandwidth cap](#the-monthly-bandwidth-cap) below. |
 | **Weekly AI Budget (cents)** | The tenant's weekly spend cap for AI-assisted file editing (below). Shown live as a per-week currency figure. |
 | **Description** | Optional free text. |
+
+!!! warning "Setting Max Mailboxes to 0 switches email off for the whole plan"
+
+    A plan with 0 mailboxes grants no email at all. Every tenant on it keeps
+    the mailboxes they already have — the limit bounds new ones — but none can
+    be created, and email cannot be enabled on a domain that does not already
+    have it. The field warns you when you type 0, because the change reaches
+    every tenant on the plan at once.
+
+    The field is also **required**. Leaving it empty used to submit 0 silently,
+    which is the same thing by accident.
 
 The currency that prices are shown in comes from
 [Platform → Limits & Regional](platform-settings.md).

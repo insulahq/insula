@@ -96,7 +96,14 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId,
   // ─── Min resource validation against user input ───────────────────────────
   const resourceError = useMemo(() => {
     if (!selectedImageId) return null;
-    const effectiveMinCpu = minCpu ?? '0.05';
+    // Fallback for a catalog entry that declares no CPU minimum. Must match
+    // DEFAULT_MIN_CPU in backend/src/modules/deployments/resource-allocator.ts
+    // ('10m'), which is what allocateResources actually enforces. Three
+    // different fallbacks used to coexist — 0.05 here, 0.1 in the API's
+    // advertised bound, 50m in the allocator — so the panel refused values
+    // the backend would have accepted, and advertised a floor that was not
+    // the real one.
+    const effectiveMinCpu = minCpu ?? '0.01';
     const effectiveMinMemory = minMemory ?? '64Mi';
 
     const parseCpuValue = (v: string): number => {

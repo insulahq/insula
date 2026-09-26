@@ -45,7 +45,29 @@ export interface AllocationOptions {
   readonly defaultMinMemory?: string;
 }
 
-const DEFAULT_MIN_CPU = '50m';
+/**
+ * Per-component floor used when a catalog component declares no minimum
+ * of its own.
+ *
+ * ★ CPU is COMPRESSIBLE and the platform sets no `limits.cpu` on tenant
+ * pods, so a request is a scheduling reservation and a CFS share weight —
+ * never a cap. Overshooting it costs nothing at runtime (the pod bursts
+ * freely on an idle node) but it is subtracted from node allocatable at
+ * *scheduling* time, whether or not the pod ever uses it.
+ *
+ * 50m was too coarse for that. Measured on a production cluster: sixteen
+ * idle static sites each reserved 100m and used 0m, the node sat at 98% of
+ * allocatable CPU requests against 17% actual use, and pods stopped fitting.
+ * 10m lets
+ * an operator right-size a genuinely idle workload; a busy one still bursts
+ * to whatever the node has.
+ *
+ * MEMORY is deliberately NOT lowered alongside it. Tenant pods run
+ * request == limit (Guaranteed QoS), so a memory request IS the ceiling —
+ * lowering it takes real memory away and buys an OOM kill. Different
+ * resource, different rule. Do not "align" these two for symmetry.
+ */
+export const DEFAULT_MIN_CPU = '10m';
 const DEFAULT_MIN_MEMORY = '64Mi';
 
 export interface PerComponentMinimum {

@@ -91,6 +91,31 @@ const JOB_TEMPLATE_ANNOTATIONS: Readonly<Record<string, string>> = {
   [ANNOTATION_DISPLAY_NAME]: 'etcd snapshot via shim',
 };
 
+/**
+ * Scheduling priority for the Pods this CronJob creates (ADR-062).
+ *
+ * Every other platform CronJob receives `platform-maintenance` from the blanket
+ * kustomize patch in k8s/base. This one cannot: it is seed-then-disown, so the
+ * manifest reaches fresh installs ONLY and every existing cluster would keep
+ * `platform-critical` — the rank that let a maintenance Job preempt a tenant's
+ * running application. Caught on DEV: the rendered overlay showed
+ * `platform-maintenance` and the live object still read `platform-critical`.
+ *
+ * Converged here for the same reason the retention count and the job-template
+ * labels are: disowning this object from Flux also disowned it from the
+ * manifest that carries them.
+ */
+export const ETCD_CRONJOB_PRIORITY_CLASS = 'platform-maintenance';
+const PRIORITY_CLASS_POINTER = '/spec/jobTemplate/spec/template/spec/priorityClassName';
+
+/**
+ * The priority class to write, or null when the live object already carries it.
+ */
+export function desiredPriorityClass(live: CronJobView): string | null {
+  const current = live.spec?.jobTemplate?.spec?.template?.spec?.priorityClassName;
+  return current === ETCD_CRONJOB_PRIORITY_CLASS ? null : ETCD_CRONJOB_PRIORITY_CLASS;
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -123,6 +148,7 @@ interface CronJobView {
         template?: {
           spec?: {
             containers?: Array<{ env?: Array<{ name?: string; value?: string }>; args?: string[] }>;
+            priorityClassName?: string;
           };
         };
       };
@@ -389,6 +415,13 @@ export async function reconcileEtcdCronJob(
   // watcher forever.
   // Repair the upload script itself if this cluster still carries the version
   // whose checksum and count lines silently evaluated to the shell's PID.
+  // Scheduling priority. Same seed-then-disown reason as the retention count
+  // above: the blanket kustomize patch that moves every other platform CronJob
+  // to platform-maintenance cannot reach this object on an existing cluster.
+  const desiredPc = desiredPriorityClass(live);
+  if (desiredPc) {
+    ops.push({ op: 'add', path: PRIORITY_CLASS_POINTER, value: desiredPc });
+  }
   const scriptRepair = findScriptRepair(live);
   if (scriptRepair) {
     ops.push({ op: 'replace', path: scriptRepair.path, value: scriptRepair.value });

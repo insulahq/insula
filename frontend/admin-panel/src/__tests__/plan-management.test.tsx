@@ -111,4 +111,61 @@ describe('PlansPage', () => {
     expect(screen.getByText('starter')).toBeInTheDocument();
     expect(screen.getByText('$5.00/mo')).toBeInTheDocument();
   });
+  // ── A plan with no mail ──────────────────────────────────────────
+  //
+  // The input carried min={1} while the contract accepted min(0), so a plan
+  // that grants no mailboxes could not be expressed here at all — the same
+  // asymmetry the per-tenant override had.
+
+  const openAddForm = async () => {
+    mockApiFetch.mockResolvedValue({ data: [] });
+    render(<PlansPage />, { wrapper: createWrapper() });
+    await waitFor(() => {
+      expect(screen.getByTestId('add-plan-button')).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByTestId('add-plan-button'));
+  };
+
+  it('lets Max Mailboxes go to 0', async () => {
+    await openAddForm();
+    const input = screen.getByTestId('plan-max-mailboxes-input') as HTMLInputElement;
+    expect(input.min).toBe('0');
+    fireEvent.change(input, { target: { value: '0' } });
+    expect(input.value).toBe('0');
+    expect(input.checkValidity()).toBe(true);
+  });
+
+  it('warns that a plan at 0 reaches every tenant on it', async () => {
+    await openAddForm();
+    fireEvent.change(screen.getByTestId('plan-max-mailboxes-input'), { target: { value: '0' } });
+    expect(screen.getByTestId('plan-zero-mailboxes-hint').textContent)
+      .toMatch(/every tenant on this plan/i);
+  });
+
+  it('does not warn at a non-zero value', async () => {
+    await openAddForm();
+    fireEvent.change(screen.getByTestId('plan-max-mailboxes-input'), { target: { value: '25' } });
+    expect(screen.queryByTestId('plan-zero-mailboxes-hint')).toBeNull();
+  });
+
+  // `Number('')` is 0. Now that 0 means "no mail", an empty box would take
+  // mail away from every tenant on the plan — so the field must be required
+  // rather than quietly defaulting.
+  it('refuses to submit Max Mailboxes empty rather than sending 0', async () => {
+    await openAddForm();
+    const input = screen.getByTestId('plan-max-mailboxes-input') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: '' } });
+    expect(input.required).toBe(true);
+    expect(input.checkValidity()).toBe(false);
+  });
+
+  it('applies the same guard to Max Sub-Users', async () => {
+    await openAddForm();
+    const input = screen.getByTestId('plan-max-sub-users-input') as HTMLInputElement;
+    expect(input.min).toBe('0');
+    fireEvent.change(input, { target: { value: '0' } });
+    expect(input.checkValidity()).toBe(true);
+    fireEvent.change(input, { target: { value: '' } });
+    expect(input.checkValidity()).toBe(false);
+  });
 });

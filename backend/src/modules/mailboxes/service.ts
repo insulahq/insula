@@ -222,16 +222,23 @@ export async function createMailbox(
     // mailbox page already renders the used/quota bar. Mailing someone about
     // the click they just watched fail is noise — see the note in
     // notifications/events.ts where the emitter used to live.
+    // A limit of 0 is not "you ran out" — mail is switched off for this
+    // tenant. Saying "limit reached" there sends the tenant hunting for a
+    // mailbox to delete, and there is none.
     throw new ApiError(
       'CLIENT_MAILBOX_LIMIT_REACHED',
-      `Mailbox limit (${effective.limit}) reached for this account`,
+      effective.limit === 0
+        ? 'Email hosting is disabled for this account'
+        : `Mailbox limit (${effective.limit}) reached for this account`,
       409,
       {
         limit: effective.limit,
         current: currentCount,
         source: effective.source,
       },
-      'Upgrade your plan or request a per-tenant override from your administrator',
+      effective.limit === 0
+        ? 'Ask your administrator to allocate mailboxes to this account'
+        : 'Upgrade your plan or request a per-tenant override from your administrator',
     );
   }
 

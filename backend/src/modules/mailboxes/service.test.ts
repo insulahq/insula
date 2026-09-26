@@ -214,6 +214,56 @@ describe('createMailbox', () => {
     });
   });
 
+  // An override of 0 is "mail off for this tenant", not "plan default".
+  // The old resolver read 0 as unset and handed back the plan's allowance,
+  // so the create SUCCEEDED on a tenant the operator had just disabled.
+  it('refuses every mailbox when the tenant override is 0, even with none created', async () => {
+    const emailDomain = { id: 'ed1', tenantId: 'c1', domainId: 'd1' };
+    const domain = { domainName: 'example.com' };
+    const planRow = { planLimit: 50, override: 0 };
+    const countResult = { count: 0 };
+
+    selectResults = [[emailDomain], [domain], [planRow], [countResult]];
+    const db = createMockDb();
+
+    await expect(
+      createMailbox(db as never, 'c1', 'ed1', { local_part: 'test', quota_mb: 1024, mailbox_type: 'mailbox' }),
+    ).rejects.toMatchObject({
+      code: 'CLIENT_MAILBOX_LIMIT_REACHED',
+      status: 409,
+      // The limit reported is 0 and attributed to the override — NOT the
+      // plan's 50, which is what the caller used to be told.
+      details: { limit: 0, current: 0, source: 'tenant_override' },
+      // "limit reached" would send the tenant hunting for a mailbox to
+      // delete; there is none.
+      message: 'Email hosting is disabled for this account',
+    });
+  });
+
+  // Platform-managed intake mailboxes (dmarc@ / postmaster@) are created BY
+  // the reconciler, not by the tenant, and already bypass the count cap.
+  // Disabling mail must not start the 5-minutely rejection loop again.
+  it('still allows a platform-managed mailbox when the override is 0', async () => {
+    const emailDomain = { id: 'ed1', tenantId: 'c1', domainId: 'd1' };
+    const domain = { domainName: 'example.com' };
+    selectResults = [
+      [emailDomain], [domain], [{ planLimit: 50, override: 0 }], [{ count: 0 }],
+      [], [{ planLimit: 5120, override: null }],
+      [{ id: 'mb-new', fullAddress: 'postmaster@example.com' }],
+    ];
+    const db = createMockDb();
+
+    await expect(
+      createMailbox(
+        db as never,
+        'c1',
+        'ed1',
+        { local_part: 'postmaster', quota_mb: 50, mailbox_type: 'mailbox' },
+        { platformManaged: true },
+      ),
+    ).resolves.toBeDefined();
+  });
+
   it('stamps last_reaped_at on a platform mailbox, so the reaper cannot loop', async () => {
     // The loop guard, asserted where it actually happens. The 30-day reap
     // deletes and recreates these mailboxes; if the recreate left

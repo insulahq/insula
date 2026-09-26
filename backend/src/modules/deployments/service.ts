@@ -1265,7 +1265,12 @@ export async function getResourceAvailability(
   const [entry] = await db.select().from(catalogEntries).where(eq(catalogEntries.id, deployment.catalogEntryId ?? ''));
   const resources = parseJsonField<{ minimum?: { cpu?: string; memory?: string }; recommended?: { cpu?: string; memory?: string } }>(entry?.resources);
 
-  const minCpu = resources?.minimum?.cpu ?? '0.1';
+  // The Min this advertises to the panel must be the floor the allocator
+  // actually enforces, or the UI refuses values the backend would accept
+  // (it read '0.1' while allocateResources enforced '50m' — two different
+  // numbers for one rule, and the stricter one was the cosmetic one).
+  const { DEFAULT_MIN_CPU } = await import('./resource-allocator.js');
+  const minCpu = resources?.minimum?.cpu ?? DEFAULT_MIN_CPU;
   const minMemory = resources?.minimum?.memory ?? '64Mi';
 
   return {

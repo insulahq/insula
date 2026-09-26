@@ -43,10 +43,14 @@ describe('computeTenantMailboxLimit', () => {
     });
   });
 
-  it('falls back to the plan limit when override is zero', () => {
+  // Was "falls back to the plan limit when override is zero". An operator
+  // setting the override to 0 is disabling mail for the tenant; reading it
+  // as "unset" handed them the plan's full allowance instead, so the UI
+  // accepted the change and nothing happened.
+  it('treats a zero override as a real limit of zero, not as unset', () => {
     expect(limit.computeTenantMailboxLimit({ planLimit: 25, override: 0 })).toEqual({
-      limit: 25,
-      source: 'plan',
+      limit: 0,
+      source: 'tenant_override',
     });
   });
 
@@ -61,6 +65,25 @@ describe('computeTenantMailboxLimit', () => {
     expect(limit.computeTenantMailboxLimit({ planLimit: 100, override: 10 })).toEqual({
       limit: 10,
       source: 'tenant_override',
+    });
+  });
+
+  // A plan of 0 needs no override to mean "no mail" — the plan-level
+  // max_mailboxes has always accepted 0 and must survive the plan branch.
+  it('honours a plan limit of zero when there is no override', () => {
+    expect(limit.computeTenantMailboxLimit({ planLimit: 0, override: null })).toEqual({
+      limit: 0,
+      source: 'plan',
+    });
+  });
+
+  // The zero case must NOT bleed into the per-mailbox SIZE cap: a 0 MB
+  // mailbox is not a thing an operator can want, and the contract's min is
+  // 50 MB, so 0 there still means "unset".
+  it('leaves the SIZE cap inheriting on zero (deliberately asymmetric)', () => {
+    expect(limit.computeTenantMailboxSizeLimit({ planLimit: 1024, override: 0 })).toEqual({
+      limit: 1024,
+      source: 'plan',
     });
   });
 });
