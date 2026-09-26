@@ -124,14 +124,14 @@ platform is healthy it is absent entirely — not an empty box, not a row of
 green ticks. A row of warnings that is usually blank is a row people learn
 to skip past, and this is the one row that must never be skipped.
 
-What can raise it: a tenant over its storage, a mailbox that is nearly full
-(which is what actually starts refusing mail), a volume nearly full (which
-is what stops a workload writing), orphaned pods left on a node, failed
-lifecycle transitions, backups that are failing or have never run, and
-certificates close to expiry. Each entry links to the tenant, volume or
-page that resolves it.
+What can raise it: a tenant whose workloads are not running, a tenant over its
+storage, a mailbox that is nearly full (which is what actually starts refusing
+mail), a volume nearly full (which is what stops a workload writing), orphaned
+pods left on a node, failed lifecycle transitions, backups that are failing or
+have never run, and certificates close to expiry. Each entry links to the
+tenant, volume or page that resolves it.
 
-Two details worth knowing:
+Three details worth knowing:
 
 - **"Volume nearly full" is measured inside the volume** — the used and free
   space its filesystem reports, which is what decides whether the workload can
@@ -142,6 +142,20 @@ Two details worth knowing:
 - **"Orphaned volume" opens the management list in place** rather than sending
   you to the Storage page to find the button. Each volume is listed with its
   size, how long its claim has been gone, and snapshot and delete beside it.
+- **"Tenant workload down" means the platform already tried.** A tenant's
+  application can be completely unreachable while every component around it
+  reports healthy — the namespace exists, the volume is attached, the node is
+  Ready, nothing has been OOM-killed. So the platform watches the only thing
+  that actually answers the question: whether each workload has the replicas its
+  own spec asks for. A workload short of them for more than eight minutes opens
+  an episode, and the platform attempts recovery itself before telling you (see
+  [Workloads that stop running](../operator/monitoring.md#workloads-that-stop-running)).
+
+    The card only appears once the outage has outlived that grace window, so a
+    rolling update or a cold image pull never raises it. The hover card says how
+    long each workload has been down, the cause, and whether automatic recovery
+    has been tried, is running, or has failed — which is the difference between
+    "wait" and "this needs you". The closing line says which it is.
 
 ### Cluster capacity
 

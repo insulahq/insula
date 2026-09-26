@@ -12,6 +12,107 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+
+- **The platform now notices when a tenant's workloads are not running, and
+  tries to fix it.** Nothing watched this before. A tenant's applications can be
+  completely unreachable while every component around them reports healthy — the
+  namespace present, the volume `Bound` and `attached`, the node `Ready`, nothing
+  OOM-killed, no volume full — because namespace integrity only audits whether
+  the objects *exist*. One production tenant sat like that for over eighteen
+  hours: a stale CSI staging directory made every mount fail, 571 times, on a
+  backoff the kubelet never escapes, and no check in the platform was looking at
+  the only question that answers it — whether each workload has the replicas its
+  own spec asks for.
+
+  A reconciler now compares exactly that, every five minutes. A workload short of
+  its replicas for more than eight minutes opens an episode; the window is there
+  because a rolling update, a cold image pull and a volume re-attaching all look
+  like "down" for a few seconds and none of them is a fault.
+
+  Past the window the platform attempts recovery itself: a controlled re-stage of
+  the tenant's volume — scale every consumer to zero, wait for a full detach, scale
+  back up and confirm the replicas return. That clears a stuck mount the kubelet
+  cannot repair and a volume wedged mid-attach, and it lets a still-terminating pod
+  release the memory it holds against the namespace quota. Bounded to three
+  attempts backing off 10/40/160 minutes, and **gated on the cause**: the tenant
+  volume is single-writer, so re-staging briefly takes down that namespace's
+  healthy workloads too. Worth it for a stuck mount; worth nothing for an image
+  that cannot be pulled, a container crash-looping, or a pod no node can schedule —
+  each returns in the same state, so those are reported immediately with no
+  disruption attempted.
+
+  A recovery attempt is a real storage operation (`autoheal`) holding the tenant's
+  storage lock, so an operator resize or restore started at the same moment is
+  refused with a conflict instead of colliding on the same volume.
+
+- **`Tenant workloads down, auto-heal failed` — a new admin alert, and a card on
+  both consoles.** The alert fires only after recovery has been tried and failed:
+  alerting earlier teaches people to ignore it, and alerting without saying
+  whether it tried sends them to look in the wrong place. It names the workload,
+  the cause in plain language, the number of attempts, the last error, and what to
+  do about that specific cause. Delivered out-of-band by design — an availability
+  alert must not depend only on the panel it reports on — so it does not appear in
+  the in-app bell; the dashboard card is its in-panel surface. Both consoles render
+  from the same episode table, so they cannot disagree about whether a tenant is
+  up, and the tenant's copy says what they can act on: automatic restart did not
+  succeed, operators are already alerted, no need to report it.
+
+### Fixed
+
+- **A restore now verifies that the workloads actually came back.** `unquiesce`
+  checked that its `/scale` request returned 200, which only means the Deployment's
+  spec changed — whether a pod runs is decided afterwards by the ReplicaSet, and
+  that is where restores fail. ResourceQuota is enforced at pod creation and a
+  still-terminating pod still counts against it, so restoring a tenant near its
+  memory ceiling routinely cannot fit its replacements yet. The old code reported
+  success and then cleared the quiesce-hold — the one marker the watchdog uses to
+  find stranded tenants — leaving the tenant down with the operation already
+  terminal and invisible to every recovery path. It now waits for the replicas to
+  become available, names a quota rejection or an attach failure in the error
+  rather than a bare timeout, and keeps the hold on anything it could not restore.
+
+- **A dry-run filesystem check no longer reports a healthy volume as damaged.**
+  `xfs_repair -n` cannot replay a journal, so against an unflushed one it always
+  reports the free-block counter as inconsistent and exits 1. The check ran about
+  four seconds after the unmount began — before the journal was on disk — and the
+  exit code was read with `e2fsck`'s meaning, where 1 indicates corrected errors.
+  For `xfs_repair -n` it means "would have made changes". The check now waits for
+  the volume to reach `detached` first, and verdicts are three-state: a dirty
+  journal is reported as **inconclusive** with an instruction to re-check, not as
+  damage. Damage detection is anchored to what the tools print when structure is
+  actually broken — the previous keyword sweep would have matched `xfs_repair`'s
+  own advisory text, and `- moving disconnected inodes to lost+found ...` turns out
+  to be a phase-6 header printed unconditionally on healthy filesystems.
+
+- **A read-only diagnostic no longer takes away the remedy.** A filesystem *check*
+  that reported errors left the tenant in `failed`, and that state gates every
+  storage operation — including the *repair* that would fix it, and resize, restore,
+  suspend, resume and archive besides. The verdict now lives on the operation
+  record; the tenant is only left `failed` when its workloads are genuinely still
+  down, which is the state the recovery valve exists for. A clean verdict also
+  survives a failed restore instead of being overwritten by it: the two are
+  independent facts and are recorded as two facts.
+
+- **Recovering a tenant parked at zero replicas no longer guesses which operation
+  parked it.** The hold marker now records the replica count the workload had, in
+  the same patch that sets the hold, so recovery restores the right workload to the
+  right number instead of inferring it from the tenant's most recent operation
+  snapshot — which can predate workloads added since, list workloads since deleted,
+  or belong to an unrelated operation. Where that record is absent, candidate
+  snapshots are validated against the workloads actually stranded, and one covering
+  only some of them is refused rather than used to restore a subset. Relatedly, a
+  snapshot entry of zero no longer releases a live hold: that erased the only
+  marker saying a workload had been scaled down, without bringing it back, leaving
+  the tenant indistinguishable from a deliberately idle one.
+
+- **Operator alerts no longer contradict themselves.** The dashboard cards
+  described an in-flight recovery attempt as one that had already failed, because
+  both read a counter incremented when an attempt is *claimed*. And the alert's
+  plain-language cause was re-derived from a stored diagnostic that is truncated at
+  1000 characters, so for a long message list it could name a different cause than
+  the one the episode was actually classified as.
+
 ## [2026.9.32] - 2026-09-24
 
 ### Added
