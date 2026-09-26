@@ -54,7 +54,10 @@
 import { sql } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
-import { STORAGE_QUIESCED_ANNOTATION } from '../../shared/scale-deployment.js';
+import {
+  STORAGE_QUIESCED_ANNOTATION,
+  STORAGE_PREQUIESCE_REPLICAS_ANNOTATION,
+} from '../../shared/scale-deployment.js';
 import type { QuiesceSnapshot } from './quiesce.js';
 
 /**
@@ -240,6 +243,28 @@ interface DeploymentView {
   available: number;
   replicaFailure: string | null;
   held: boolean;
+  /**
+   * Replica count recorded when quiesce scaled this Deployment down, read off
+   * the hold annotation. `null` on a workload quiesced by a release that did not
+   * yet stamp it — the heal then falls back to a validated op snapshot.
+   */
+  preQuiesceReplicas: number | null;
+}
+
+/**
+ * Parse the pre-quiesce replica annotation defensively.
+ *
+ * It is operator-visible and hand-editable, so it can be absent, empty, "abc",
+ * "-1" or "1e9". Anything that is not a plain non-negative integer is treated as
+ * ABSENT rather than coerced — a restore to `NaN` or to a wild number is worse
+ * than falling back to the op snapshot. 0 is rejected too: quiesce only stamps
+ * Deployments it scaled down FROM a positive count, so 0 means the annotation is
+ * not trustworthy.
+ */
+export function parsePreQuiesceReplicas(raw: string | undefined): number | null {
+  if (!raw || !/^[0-9]{1,4}$/.test(raw)) return null;
+  const n = Number(raw);
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
 }
 
 async function listTenantDeployments(k8s: K8sClients): Promise<DeploymentView[]> {
@@ -266,6 +291,9 @@ async function listTenantDeployments(k8s: K8sClients): Promise<DeploymentView[]>
       available: d.status?.availableReplicas ?? 0,
       replicaFailure: cond ? `${cond.reason ?? 'ReplicaFailure'}: ${(cond.message ?? '').slice(0, 300)}` : null,
       held: d.metadata?.annotations?.[STORAGE_QUIESCED_ANNOTATION] === 'true',
+      preQuiesceReplicas: parsePreQuiesceReplicas(
+        d.metadata?.annotations?.[STORAGE_PREQUIESCE_REPLICAS_ANNOTATION],
+      ),
     });
   }
   return out;
@@ -401,41 +429,103 @@ async function healNamespace(
 
   try {
     // A namespace parked at 0 by an unfinished storage op cannot be healed by
-    // quiesce→unquiesce: `quiesce` captures the CURRENT replica counts, which are
-    // all 0, so the restore would faithfully put it back to 0. The intended counts
-    // live on the operation row that scaled it down, which is what
-    // unquiesceBestEffort reads.
+    // quiesce -> unquiesce: `quiesce` captures the CURRENT replica counts, which
+    // are all 0, so the restore would faithfully put it back to 0. The intended
+    // counts have to come from whatever recorded them BEFORE the scale-down.
     if (strandedAtZero) {
-      const op = await db.execute<{ id: string }>(sql`
-        SELECT id FROM storage_operations
-         WHERE tenant_id = ${tenantId}
-           AND id <> ${opId}
-           AND params -> 'quiesceSnapshot' IS NOT NULL
-         ORDER BY created_at DESC
-         LIMIT 1
-      `);
-      const sourceOpId = (op.rows ?? [])[0]?.id;
-      if (!sourceOpId) {
-        // No snapshot anywhere to restore from. Dropping the holds at least
-        // re-enables reactive auto-start; the replica counts are simply not
-        // recoverable automatically, and the caller turns this into an alert.
-        const { clearQuiesceHold } = await import('./quiesce.js');
-        await clearQuiesceHold(k8s, namespace);
-        throw new Error(
-          `${namespace} is held at 0 replicas but no storage operation carries a replica snapshot to restore from — `
-          + 'holds cleared so auto-start works again, but the intended replica counts cannot be recovered automatically',
-        );
+      // ── Work out what THIS tenant's workloads should be running ──
+      //
+      // Preferred source: the pre-quiesce replica count stamped on each held
+      // Deployment by the quiesce that scaled it down. It is local to the
+      // namespace, per-workload, and cannot name a workload that belongs to
+      // another tenant or no longer exists.
+      const here = (await listTenantDeployments(k8s)).filter((d) => d.namespace === namespace);
+      const stranded = here.filter((d) => d.desired === 0 && d.held);
+      if (stranded.length === 0) {
+        // Raced with something that already restored it. Not a failure.
+        await releaseTenant(false, null);
+        return;
       }
-      await unquiesceBestEffort(db, k8s, sourceOpId, namespace, null);
-      // unquiesceBestEffort swallows by design, so prove the outcome here rather
-      // than trusting it: a heal that reports success over a still-down tenant is
-      // the bug this whole change set is about.
+      const annotated = stranded.filter((d) => d.preQuiesceReplicas !== null);
+
+      let snapshot: QuiesceSnapshot | null = null;
+      let source = '';
+      if (annotated.length === stranded.length) {
+        snapshot = {
+          deployments: annotated.map((d) => ({ name: d.name, replicas: d.preQuiesceReplicas as number })),
+          cronJobs: [],
+        };
+        source = 'the pre-quiesce replica annotations on the held Deployments';
+      } else {
+        // ── Fallback for workloads quiesced before the annotation existed ──
+        //
+        // Historical behaviour was "take the tenant's most recent operation that
+        // carries a snapshot". That op is not necessarily the one that stranded
+        // this tenant: it can predate workloads added since, list workloads since
+        // deleted, or be an unrelated earlier operation. So candidates are now
+        // VALIDATED against the workloads actually stranded right now, newest
+        // first, and the first one that covers them all wins. An op that covers
+        // only some of them is rejected outright rather than used to restore a
+        // subset — a partial restore leaves the tenant down while reporting
+        // success, which is the failure mode this whole reconciler exists for.
+        const strandedNames = new Set(stranded.map((d) => d.name));
+        const cands = await db.execute<{ id: string; snap: unknown }>(sql`
+          SELECT id, params -> 'quiesceSnapshot' AS snap
+            FROM storage_operations
+           WHERE tenant_id = ${tenantId}
+             AND id <> ${opId}
+             AND params -> 'quiesceSnapshot' IS NOT NULL
+           ORDER BY created_at DESC
+           LIMIT 20
+        `);
+        const rejected: string[] = [];
+        for (const row of cands.rows ?? []) {
+          const snap = row.snap as QuiesceSnapshot | null;
+          const deps = (snap?.deployments ?? []).filter((d) => d.replicas > 0);
+          const covered = [...strandedNames].every((n) => deps.some((d) => d.name === n));
+          if (!covered) {
+            const missing = [...strandedNames].filter((n) => !deps.some((d) => d.name === n));
+            rejected.push(`${row.id.slice(0, 8)} (missing ${missing.join(',')})`);
+            continue;
+          }
+          // Restore ONLY the stranded workloads. Replaying the whole snapshot
+          // could scale up a workload the operator has since deliberately set to
+          // 0, or one that no longer exists.
+          snapshot = {
+            deployments: deps.filter((d) => strandedNames.has(d.name)),
+            cronJobs: [],
+          };
+          source = `storage operation ${row.id.slice(0, 8)} (validated against the stranded workloads)`;
+          break;
+        }
+        if (!snapshot) {
+          // Nothing trustworthy to restore from. Dropping the holds at least
+          // re-enables reactive auto-start; the counts are not recoverable
+          // automatically, and the caller turns this into an operator alert.
+          const { clearQuiesceHold } = await import('./quiesce.js');
+          await clearQuiesceHold(k8s, namespace);
+          throw new Error(
+            `${namespace} is held at 0 replicas (${[...strandedNames].join(', ')}) and nothing records what it should be running: `
+            + `no pre-quiesce replica annotation, and ${(cands.rows ?? []).length} recent operation snapshot(s) did not cover it`
+            + `${rejected.length ? ` — rejected ${rejected.join('; ')}` : ''}. `
+            + 'Holds cleared so auto-start works again; the intended replica counts need an operator.',
+          );
+        }
+      }
+
+      console.warn(
+        `[workload-health] ${namespace}: restoring ${snapshot.deployments.map((d) => `${d.name}->${d.replicas}`).join(', ')} from ${source}`,
+      );
+      // unquiesce (not unquiesceBestEffort) so a failure to come back up THROWS
+      // and the caller records it, rather than being swallowed.
+      await unquiesce(k8s, namespace, snapshot);
+      // Prove the outcome against the cluster rather than trusting the call.
       const stillDown = (await listTenantDeployments(k8s))
         .filter((d) => d.namespace === namespace)
         .filter((d) => (d.desired === 0 && d.held) || (d.desired > 0 && d.available < d.desired));
       if (stillDown.length > 0) {
         throw new Error(
-          `${namespace} still has ${stillDown.length} workload(s) down after restoring from op ${sourceOpId}: `
+          `${namespace} still has ${stillDown.length} workload(s) down after restoring from ${source}: `
           + stillDown.map((d) => `${d.name} ${d.available}/${d.desired}${d.held ? ' (held)' : ''}`).join(', '),
         );
       }
@@ -678,13 +768,19 @@ export async function reconcileTenantWorkloadHealth(
       // Claim the attempt. A single conditional UPDATE across every open
       // episode in this namespace, so exactly one api replica proceeds and the
       // backoff is enforced in the database rather than in each process.
+      //
+      // Scoped by tenant_id AND namespace. `tenants_namespace_unique` makes the
+      // namespace sufficient today, but a heal SCALES WORKLOADS TO ZERO — it is
+      // not a statement to leave resting on one uniqueness index in another
+      // table. Both columns are on the row; use both.
       const backoffSec = Math.round(
         (HEAL_BACKOFF_BASE_MS * Math.pow(4, row.heal_attempts)) / 1000,
       );
       const claim = await db.execute(sql`
         UPDATE tenant_workload_health_events
            SET heal_attempts = heal_attempts + 1, last_heal_at = now()
-         WHERE namespace = ${row.namespace}
+         WHERE tenant_id = ${row.tenant_id}
+           AND namespace = ${row.namespace}
            AND cleared_at IS NULL
            AND heal_attempts < ${MAX_HEAL_ATTEMPTS}
            AND (last_heal_at IS NULL OR last_heal_at < now() - ${`${backoffSec} seconds`}::interval)
@@ -706,7 +802,8 @@ export async function reconcileTenantWorkloadHealth(
           await db.execute(sql`
             UPDATE tenant_workload_health_events
                SET healed_at = now(), cleared_at = now(), last_heal_error = NULL
-             WHERE namespace = ${row.namespace} AND cleared_at IS NULL
+             WHERE tenant_id = ${row.tenant_id}
+               AND namespace = ${row.namespace} AND cleared_at IS NULL
           `);
           healedNamespaces.add(row.namespace);
           healed += 1;
@@ -718,7 +815,8 @@ export async function reconcileTenantWorkloadHealth(
           await db.execute(sql`
             UPDATE tenant_workload_health_events
                SET last_heal_error = ${msg.slice(0, 2000)}
-             WHERE namespace = ${row.namespace} AND cleared_at IS NULL
+             WHERE tenant_id = ${row.tenant_id}
+               AND namespace = ${row.namespace} AND cleared_at IS NULL
           `);
           console.error(`[workload-health] ${row.namespace} auto-heal FAILED: ${msg}`);
         }

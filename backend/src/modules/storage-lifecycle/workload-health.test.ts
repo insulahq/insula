@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { classifyUnavailability, isHealable, labelForReason, type HealReason } from './workload-health.js';
+import {
+  classifyUnavailability, isHealable, labelForReason, parsePreQuiesceReplicas,
+  type HealReason,
+} from './workload-health.js';
 
 /**
  * Message fixtures are the VERBATIM text production emitted during the
@@ -166,5 +169,44 @@ describe('labelForReason — total, and never re-derived from truncated detail',
     expect(labelForReason('image')).toBe(labelForReason('image'));
     expect(short.reason).toBe('image');
     expect(buried.detail!.length).toBeLessThanOrEqual(1000);
+  });
+});
+
+// ── the pre-quiesce replica annotation ──────────────────────────────────
+//
+// It is operator-visible and hand-editable, so it is untrusted input. A restore
+// driven by a coerced value is worse than falling back to a validated operation
+// snapshot: it would scale a tenant to NaN, to 0, or to something wild.
+describe('parsePreQuiesceReplicas — untrusted annotation input', () => {
+  it('accepts a plain positive integer', () => {
+    expect(parsePreQuiesceReplicas('1')).toBe(1);
+    expect(parsePreQuiesceReplicas('3')).toBe(3);
+    expect(parsePreQuiesceReplicas('12')).toBe(12);
+  });
+
+  it('treats absent or empty as absent, not as zero', () => {
+    expect(parsePreQuiesceReplicas(undefined)).toBeNull();
+    expect(parsePreQuiesceReplicas('')).toBeNull();
+  });
+
+  it('rejects 0 — quiesce only stamps workloads it scaled down FROM a positive count', () => {
+    expect(parsePreQuiesceReplicas('0')).toBeNull();
+    expect(parsePreQuiesceReplicas('00')).toBeNull();
+  });
+
+  it('rejects everything that is not a plain integer rather than coercing it', () => {
+    for (const bad of ['abc', '-1', '1e9', '1.5', ' 2', '2 ', '+2', 'Infinity', 'NaN', '0x10', '99999']) {
+      expect(parsePreQuiesceReplicas(bad)).toBeNull();
+    }
+  });
+
+  it('never returns NaN or a non-integer for any input', () => {
+    for (const v of ['1', 'x', '', '-3', '2.2', undefined]) {
+      const r = parsePreQuiesceReplicas(v as string | undefined);
+      if (r !== null) {
+        expect(Number.isSafeInteger(r)).toBe(true);
+        expect(r).toBeGreaterThan(0);
+      }
+    }
   });
 });

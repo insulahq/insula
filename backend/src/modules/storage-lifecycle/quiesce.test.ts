@@ -8,6 +8,7 @@ const { scaleReplicaCalls } = vi.hoisted(() => ({
 }));
 vi.mock('../../shared/scale-deployment.js', () => ({
   STORAGE_QUIESCED_ANNOTATION: 'insula.host/storage-quiesced',
+  STORAGE_PREQUIESCE_REPLICAS_ANNOTATION: 'insula.host/pre-quiesce-replicas',
   scaleDeploymentReplicas: vi.fn(async (namespace: string, name: string, replicas: number) => {
     scaleReplicaCalls.push({ namespace, name, replicas });
   }),
@@ -39,6 +40,9 @@ function mockK8s(opts: {
   const scaleCalls: Array<{ name: string; replicas: number }> = [];
   const cronPatchCalls: Array<{ name: string; suspend: boolean }> = [];
   const holdCalls: Array<{ name: string; held: boolean }> = [];
+  // The pre-quiesce replica count rides in the SAME annotation patch as the hold,
+  // so the mock records both to prove they cannot drift apart.
+  const replicaAnnotationCalls: Array<{ name: string; value: string | null }> = [];
   let podsRemaining = opts.pods ?? [];
   let listPodsCallCount = 0;
   const deploymentMap = new Map((opts.deployments ?? []).map((d) => [d.name, d]));
@@ -47,6 +51,7 @@ function mockK8s(opts: {
     scaleCalls,
     cronPatchCalls,
     holdCalls,
+    replicaAnnotationCalls,
     tenant: {
       core: {
         listNamespacedPod: vi.fn().mockImplementation(async () => {
@@ -113,6 +118,12 @@ function mockK8s(opts: {
           const ann = args.body?.metadata?.annotations;
           if (ann && 'insula.host/storage-quiesced' in ann) {
             holdCalls.push({ name: args.name, held: ann['insula.host/storage-quiesced'] === 'true' });
+          }
+          if (ann && 'insula.host/pre-quiesce-replicas' in ann) {
+            replicaAnnotationCalls.push({
+              name: args.name,
+              value: (ann['insula.host/pre-quiesce-replicas'] ?? null) as string | null,
+            });
           }
           if (args.body?.spec?.replicas !== undefined) scaleCalls.push({ name: args.name, replicas: args.body.spec.replicas });
         }),
@@ -494,5 +505,56 @@ describe('unquiesce — verifies the workload is RUNNING, not merely requested',
     }, fast);
     // All three scale calls land before any status read resolves the wait.
     expect(scaleReplicaCalls.map((c) => c.name)).toEqual(['a', 'b', 'c']);
+  });
+});
+
+// ── the pre-quiesce replica marker ──────────────────────────────────────
+//
+// Recovering a tenant stranded at 0 used to mean guessing which storage
+// operation stranded it — "the most recent one carrying a snapshot" — which can
+// predate workloads added since, list workloads since deleted, or be an
+// unrelated earlier op. The count now rides on the Deployment itself, stamped by
+// the same patch that sets the hold, so recovery is local and unambiguous.
+describe('quiesce — records what it scaled each workload down FROM', () => {
+  it('stamps the pre-quiesce replica count alongside the hold', async () => {
+    const m = mockK8s({ deployments: [{ name: 'wp', replicas: 3 }, { name: 'db', replicas: 1 }] });
+    await quiesce(m.tenant, 'ns');
+    expect(m.replicaAnnotationCalls).toEqual(
+      expect.arrayContaining([{ name: 'wp', value: '3' }, { name: 'db', value: '1' }]),
+    );
+  });
+
+  it('sets the count in the SAME patch as the hold, so they cannot drift', async () => {
+    const m = mockK8s({ deployments: [{ name: 'wp', replicas: 2 }] });
+    await quiesce(m.tenant, 'ns');
+    // One annotation patch carried both facts: equal counts, same order.
+    expect(m.holdCalls.filter((h) => h.name === 'wp' && h.held)).toHaveLength(1);
+    expect(m.replicaAnnotationCalls.filter((r) => r.name === 'wp' && r.value === '2')).toHaveLength(1);
+  });
+
+  it('does NOT stamp a workload it never scaled (already at 0)', async () => {
+    const m = mockK8s({ deployments: [{ name: 'idle', replicas: 0 }] });
+    await quiesce(m.tenant, 'ns');
+    expect(m.replicaAnnotationCalls.some((r) => r.name === 'idle')).toBe(false);
+    expect(m.holdCalls.some((h) => h.name === 'idle')).toBe(false);
+  });
+
+  it('unquiesce clears the count together with the hold', async () => {
+    const m = mockK8s({ deployments: [{ name: 'wp', replicas: 1 }] });
+    await unquiesce(m.tenant, 'ns', {
+      deployments: [{ name: 'wp', replicas: 1 }], cronJobs: [],
+    }, { availableTimeoutMs: 100 });
+    expect(m.holdCalls).toContainEqual({ name: 'wp', held: false });
+    // A stale count left behind would later be read as "restore me to N".
+    expect(m.replicaAnnotationCalls).toContainEqual({ name: 'wp', value: null });
+  });
+
+  it('a workload that could NOT be restored keeps both hold and count', async () => {
+    const m = mockK8s({ deployments: [{ name: 'wp', replicas: 1 }], neverAvailable: ['wp'] });
+    await expect(unquiesce(m.tenant, 'ns', {
+      deployments: [{ name: 'wp', replicas: 1 }], cronJobs: [],
+    }, { availableTimeoutMs: 100 })).rejects.toThrow();
+    expect(m.holdCalls).not.toContainEqual({ name: 'wp', held: false });
+    expect(m.replicaAnnotationCalls).not.toContainEqual({ name: 'wp', value: null });
   });
 });

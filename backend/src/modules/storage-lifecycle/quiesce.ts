@@ -1,6 +1,10 @@
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { STRATEGIC_MERGE_PATCH, MERGE_PATCH } from '../../shared/k8s-patch.js';
-import { scaleDeploymentReplicas, STORAGE_QUIESCED_ANNOTATION } from '../../shared/scale-deployment.js';
+import {
+  scaleDeploymentReplicas,
+  STORAGE_QUIESCED_ANNOTATION,
+  STORAGE_PREQUIESCE_REPLICAS_ANNOTATION,
+} from '../../shared/scale-deployment.js';
 
 // Deployment scaling goes through scaleDeploymentReplicas (raw /scale patch) —
 // the typed SDK `patchNamespacedDeployment` serializer DROPS `replicas: 0`,
@@ -22,9 +26,24 @@ async function scaleDeployment(_k8s: K8sClients, namespace: string, name: string
  * back to 1 within ~2s of quiesce scaling it to 0 — fighting quiesce and
  * hanging waitForQuiesced. RFC-7396 merge so `null` deletes the annotation.
  */
-async function setQuiesceHold(k8s: K8sClients, namespace: string, name: string, held: boolean): Promise<void> {
+async function setQuiesceHold(
+  k8s: K8sClients,
+  namespace: string,
+  name: string,
+  held: boolean,
+  // The replica count being scaled AWAY from. Recorded next to the hold in the
+  // same patch so the two facts can never disagree, and so a tenant stranded at
+  // 0 can be restored from the Deployment itself instead of from a guess about
+  // which storage operation stranded it. Omitted on release (both are cleared).
+  preQuiesceReplicas?: number,
+): Promise<void> {
+  const annotations: Record<string, string | null> = {
+    [STORAGE_QUIESCED_ANNOTATION]: held ? 'true' : null,
+    [STORAGE_PREQUIESCE_REPLICAS_ANNOTATION]:
+      held && preQuiesceReplicas !== undefined ? String(preQuiesceReplicas) : null,
+  };
   await (k8s.apps as unknown as DeploymentPatcher).patchNamespacedDeployment(
-    { name, namespace, body: { metadata: { annotations: { [STORAGE_QUIESCED_ANNOTATION]: held ? 'true' : null } } } },
+    { name, namespace, body: { metadata: { annotations } } },
     MERGE_PATCH,
   );
 }
@@ -153,8 +172,10 @@ export async function quiesce(
   for (const d of deployments) {
     if (d.replicas > 0) {
       // Hold BEFORE scaling so a racing ensureFileManagerRunning can't slip a
-      // scale-to-1 in between the scale-down and the annotation.
-      await setQuiesceHold(k8s, namespace, d.name, true);
+      // scale-to-1 in between the scale-down and the annotation. The pre-quiesce
+      // count goes on in the SAME patch, so a crash between the two can never
+      // leave a hold whose replica count is unknown.
+      await setQuiesceHold(k8s, namespace, d.name, true, d.replicas);
       await scaleDeployment(k8s, namespace, d.name, 0);
     }
   }
