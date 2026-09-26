@@ -88,6 +88,49 @@ export function assessNode(n: NodeReservation): { severity: 'warning' | 'critica
 const fmtCores = (millis: number): string => (millis / 1000).toFixed(2);
 
 /**
+ * The same figures the tile shows, shaped for the notification templates.
+ *
+ * Built from ONE assessment so the tile and the email can never disagree —
+ * a banner that fires on one field and prints another is how an operator
+ * ends up chasing a number nobody measured.
+ */
+export interface CpuReservationNotice {
+  readonly nodeName: string;
+  readonly reservedPct: string;
+  readonly usedPct: string;
+  readonly freeCores: string;
+  readonly slackSummary: string;
+  readonly recommendedAction: string;
+}
+
+export function buildCpuReservationNotice(
+  nodes: readonly NodeReservation[],
+  pods: readonly PodReservation[],
+): CpuReservationNotice | null {
+  const assessed = nodes
+    .map((n) => ({ node: n, verdict: assessNode(n) }))
+    .filter((x): x is { node: NodeReservation; verdict: NonNullable<ReturnType<typeof assessNode>> } => x.verdict !== null)
+    .sort((a, b) => b.verdict.reservedPct - a.verdict.reservedPct);
+  if (assessed.length === 0) return null;
+  const { node, verdict } = assessed[0];
+  const slack = pods
+    .map(reclaimableMillis)
+    .filter((m) => m >= MIN_RECLAIMABLE_MILLICORES);
+  const total = slack.reduce((a, b) => a + b, 0);
+  return {
+    nodeName: node.name,
+    reservedPct: String(verdict.reservedPct),
+    usedPct: String(verdict.usedPct),
+    freeCores: fmtCores(node.allocatableMillis - node.requestedMillis),
+    slackSummary: total > 0
+      ? `${fmtCores(total)} cores are reserved by ${slack.length} pods that are not using them.`
+      : '',
+    recommendedAction: 'Review the per-tenant dry run under Cluster → CPU scheduling to see what'
+      + ' right-sizing would free, before changing anything.',
+  };
+}
+
+/**
  * Build the finding, or null when no node shows the gap.
  *
  * Pure so the thresholds and the wording are testable without a cluster — the

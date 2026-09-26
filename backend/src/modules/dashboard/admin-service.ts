@@ -7,7 +7,7 @@ import { buildAdminAlerts, rankAlerts } from './alerts.js';
 import {
   buildVolumeAlert, buildOrphanedPodAlert, buildOrphanedVolumeAlert, loadTenantsByNamespace,
 } from './cluster-alerts.js';
-import { readCpuReservation, buildCpuReservationAlert } from './cpu-reservation.js';
+import { readCpuReservation, buildCpuReservationAlert, buildCpuReservationNotice } from './cpu-reservation.js';
 
 interface Logger { warn?(...a: unknown[]): void }
 
@@ -528,7 +528,22 @@ export async function buildAdminLive(
       // makes a mostly-idle node refuse work, and whose symptoms always show
       // up somewhere else.
       readCpuReservation(k8s, logger)
-        .then(({ nodes, pods }) => buildCpuReservationAlert(nodes, pods))
+        .then(async ({ nodes, pods }) => {
+          const a = buildCpuReservationAlert(nodes, pods);
+          // Emit as well as render. The condition this reports went entirely
+          // unalerted through a real incident — the tile alone would repeat
+          // that for anyone not looking at the dashboard. dedupeKey is the
+          // node, so a standing condition is one alarm, not one per tick.
+          const notice = buildCpuReservationNotice(nodes, pods);
+          if (notice) {
+            const { notifyAdminCpuReservation } = await import('../notifications/events.js');
+            await notifyAdminCpuReservation(
+              db, { ...notice, occurredAt: new Date().toISOString() },
+              `cpu-reservation:${notice.nodeName}`,
+            ).catch(() => undefined);
+          }
+          return a;
+        })
         .catch(() => null),
     ]);
     return rankAlerts(

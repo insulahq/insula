@@ -1155,6 +1155,36 @@ export async function notifyAdminClusterCapacity(
   await dispatchSafe(db, 'admin.cluster_storage_capacity', { kind: 'admin' }, payload, undefined, { dedupeKey });
 }
 
+export interface AdminCpuReservationPayload {
+  readonly nodeName: string;
+  readonly reservedPct: string;
+  readonly usedPct: string;
+  readonly freeCores: string;
+  readonly slackSummary: string;
+  readonly recommendedAction: string;
+  readonly occurredAt: string;
+}
+/**
+ * A node is reserved-full while running idle (ADR-062).
+ *
+ * The condition this reports went unalerted through a real incident: a tenant
+ * lost ~90 seconds of service every ten minutes for over half an hour, and
+ * every notification the platform could have sent was about something else.
+ * Nothing watched the reserved-versus-used gap at all.
+ *
+ * Deliberately NOT fired on high reservation alone — a node that is reserved
+ * AND busy is correctly provisioned, and alerting there would train operators
+ * to dismiss this. `dedupeKey` is the node, so a persistent condition is one
+ * ongoing alarm rather than one per reconcile tick.
+ */
+export async function notifyAdminCpuReservation(
+  db: Database,
+  payload: AdminCpuReservationPayload,
+  dedupeKey?: string,
+): Promise<void> {
+  await dispatchSafe(db, 'admin.cluster_cpu_reservation', { kind: 'admin' }, payload, undefined, { dedupeKey });
+}
+
 export interface AdminMailboxQuotaFleetPayload {
   readonly mailboxCount: string;
   readonly tenantCount: string;
