@@ -36,6 +36,11 @@ function mockK8s(opts: {
   replicaFailure?: Record<string, string>;
   /** Deployments that 404 on read (deleted by the op itself). */
   missing?: readonly string[];
+  /**
+   * Deployments that are STILL HELD at 0 with a recorded pre-quiesce count —
+   * the shape a stale snapshot must not silently release. name -> count.
+   */
+  heldWithCount?: Record<string, number>;
 } = {}) {
   const scaleCalls: Array<{ name: string; replicas: number }> = [];
   const cronPatchCalls: Array<{ name: string; suspend: boolean }> = [];
@@ -92,7 +97,17 @@ function mockK8s(opts: {
           const desired = recorded ?? Number.MAX_SAFE_INTEGER;
           const available = unavailable ? 0 : desired;
           return {
-            spec: { replicas: desired },
+            metadata: {
+              annotations: {
+                ...((opts.heldWithCount ?? {})[args.name] !== undefined
+                  ? {
+                    'insula.host/storage-quiesced': 'true',
+                    'insula.host/pre-quiesce-replicas': String((opts.heldWithCount ?? {})[args.name]),
+                  }
+                  : {}),
+              },
+            },
+            spec: { replicas: (opts.heldWithCount ?? {})[args.name] !== undefined ? 0 : desired },
             status: {
               availableReplicas: available,
               conditions: rf
@@ -556,5 +571,57 @@ describe('quiesce — records what it scaled each workload down FROM', () => {
     }, { availableTimeoutMs: 100 })).rejects.toThrow();
     expect(m.holdCalls).not.toContainEqual({ name: 'wp', held: false });
     expect(m.replicaAnnotationCalls).not.toContainEqual({ name: 'wp', value: null });
+  });
+});
+
+// ── a stale snapshot must not release a live hold ────────────────────────
+//
+// `replicas: 0` in a snapshot was treated as "nothing to restore", and phase 3
+// then cleared the hold — erasing the only marker saying the workload was scaled
+// down, WITHOUT bringing it back. The tenant then looks deliberately idle to
+// every recovery path. Reachable whenever the snapshot is stale for that
+// workload, which is exactly what quiesce-watchdog Leg B replays when it
+// restores from the tenant's most-recent operation instead of the one that
+// stranded it.
+describe('unquiesce — a snapshot entry of 0 is not proof there is nothing to restore', () => {
+  const fast = { availableTimeoutMs: 100 };
+
+  it('restores from the pre-quiesce annotation when the snapshot disagrees', async () => {
+    const m = mockK8s({ deployments: [{ name: 'wp', replicas: 0 }], heldWithCount: { wp: 3 } });
+    await unquiesce(m.tenant, 'ns', {
+      deployments: [{ name: 'wp', replicas: 0 }], cronJobs: [],
+    }, fast);
+    // Scaled to the ANNOTATION's count, not left at the snapshot's 0.
+    expect(scaleReplicaCalls).toContainEqual({ namespace: 'ns', name: 'wp', replicas: 3 });
+  });
+
+  it('clears the hold only AFTER restoring from the annotation', async () => {
+    const m = mockK8s({ deployments: [{ name: 'wp', replicas: 0 }], heldWithCount: { wp: 2 } });
+    await unquiesce(m.tenant, 'ns', {
+      deployments: [{ name: 'wp', replicas: 0 }], cronJobs: [],
+    }, fast);
+    expect(scaleReplicaCalls).toContainEqual({ namespace: 'ns', name: 'wp', replicas: 2 });
+    expect(m.holdCalls).toContainEqual({ name: 'wp', held: false });
+  });
+
+  it('a genuinely idle workload (0 in snapshot, NOT held) is still left alone', async () => {
+    const m = mockK8s({ deployments: [{ name: 'idle', replicas: 0 }] });
+    await unquiesce(m.tenant, 'ns', {
+      deployments: [{ name: 'idle', replicas: 0 }], cronJobs: [],
+    }, fast);
+    // No scale-up: an operator's deliberate 0 must not be overridden.
+    expect(scaleReplicaCalls.some((c) => c.name === 'idle')).toBe(false);
+  });
+
+  it('keeps the hold when the annotation-driven restore itself fails', async () => {
+    const m = mockK8s({
+      deployments: [{ name: 'wp', replicas: 0 }],
+      heldWithCount: { wp: 1 },
+      neverAvailable: ['wp'],
+    });
+    await expect(unquiesce(m.tenant, 'ns', {
+      deployments: [{ name: 'wp', replicas: 0 }], cronJobs: [],
+    }, fast)).rejects.toThrow();
+    expect(m.holdCalls).not.toContainEqual({ name: 'wp', held: false });
   });
 });

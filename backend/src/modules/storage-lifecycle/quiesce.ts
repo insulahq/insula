@@ -379,6 +379,10 @@ interface DeploymentStatusView {
   readonly available: number;
   /** ReplicaSet-level refusal to create pods at all — quota is the common one. */
   readonly replicaFailure: string | null;
+  /** Still held by a quiesce? */
+  readonly held: boolean;
+  /** Count recorded when quiesce scaled it down, or null if never stamped. */
+  readonly preQuiesceReplicas: number | null;
 }
 
 async function readDeploymentStatus(
@@ -389,6 +393,7 @@ async function readDeploymentStatus(
   try {
     const dep = await (k8s.apps as unknown as {
       readNamespacedDeployment: (a: { name: string; namespace: string }) => Promise<{
+        metadata?: { annotations?: Record<string, string> };
         spec?: { replicas?: number };
         status?: { availableReplicas?: number; conditions?: Array<{ type?: string; status?: string; reason?: string; message?: string }> };
       }>;
@@ -396,10 +401,15 @@ async function readDeploymentStatus(
     const cond = (dep.status?.conditions ?? []).find(
       (c) => c.type === 'ReplicaFailure' && c.status === 'True',
     );
+    const ann = dep.metadata?.annotations ?? {};
+    const rawCount = ann[STORAGE_PREQUIESCE_REPLICAS_ANNOTATION];
+    const parsed = rawCount && /^[0-9]{1,4}$/.test(rawCount) ? Number(rawCount) : NaN;
     return {
       desired: dep.spec?.replicas ?? 0,
       available: dep.status?.availableReplicas ?? 0,
       replicaFailure: cond ? `${cond.reason ?? 'ReplicaFailure'}: ${(cond.message ?? '').slice(0, 300)}` : null,
+      held: ann[STORAGE_QUIESCED_ANNOTATION] === 'true',
+      preQuiesceReplicas: Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null,
     };
   } catch (err) {
     if (isGone(err)) return null;
@@ -528,7 +538,41 @@ export async function unquiesce(
   const scaled: Array<{ name: string; replicas: number }> = [];
   const goneEarly = new Set<string>();
   for (const d of snap.deployments) {
-    if (d.replicas <= 0) { goneEarly.add(d.name); continue; }
+    if (d.replicas <= 0) {
+      // ★ A snapshot entry of 0 is not proof there is nothing to restore.
+      //
+      // Treating it as "nothing to do" and then clearing the hold in phase 3
+      // ERASES the only marker that says this workload was scaled down — and it
+      // does so without bringing it back. The tenant stays at 0 replicas with no
+      // hold, which makes it indistinguishable from a deliberately idle workload
+      // to every recovery path including the workload-health reconciler.
+      //
+      // This is reachable whenever the snapshot is STALE for the workload: an
+      // operation captured before it was scaled up, or quiesce-watchdog Leg B
+      // restoring from the tenant's most-recent operation rather than the one
+      // that actually stranded it. The pre-quiesce annotation on the Deployment
+      // records what quiesce scaled it down FROM, so prefer it over a snapshot
+      // that disagrees.
+      const view = await readDeploymentStatus(k8s, namespace, d.name).catch(() => null);
+      if (view && view.held && view.preQuiesceReplicas !== null && view.desired === 0) {
+        console.warn(
+          `[unquiesce] ${namespace}/${d.name}: snapshot says 0 but the workload is still HELD with a recorded `
+          + `pre-quiesce count of ${view.preQuiesceReplicas} — restoring from the annotation, not the stale snapshot`,
+        );
+        try {
+          await scaleDeployment(k8s, namespace, d.name, view.preQuiesceReplicas);
+          scaled.push({ name: d.name, replicas: view.preQuiesceReplicas });
+        } catch (err) {
+          if (isGone(err)) { goneEarly.add(d.name); continue; }
+          const msg = err instanceof Error ? err.message : String(err);
+          console.error(`[unquiesce] ${namespace}/${d.name} scale->${view.preQuiesceReplicas} FAILED: ${msg}`);
+          failures.push(`${d.name}->${view.preQuiesceReplicas}: ${msg}`);
+        }
+        continue;
+      }
+      goneEarly.add(d.name);
+      continue;
+    }
     try {
       await scaleDeployment(k8s, namespace, d.name, d.replicas);
       scaled.push(d);
