@@ -142,7 +142,14 @@ for (const m of EVENTS_SRC.matchAll(/const (\w+) = \{([\s\S]*?)\} as const;/g)) 
 }
 
 const supplied = new Map();
-for (const m of EVENTS_SRC.matchAll(/export async function (\w+)\(([\s\S]*?)\): Promise<void> \{([\s\S]*?)\n\}/g)) {
+// Return type is `Promise<...>`, not specifically `Promise<void>`: the two
+// workload-down emitters return `Promise<{ ok, error? }>` so their caller can
+// tell whether the alert actually dispatched and hand back its rate-limit ladder
+// slot if it did not. Anchoring on `Promise<void>` silently skipped them, and a
+// skipped emitter is worse than a missing one here — the parser then attributed
+// their payload to the NEXT category in file order, reporting a phantom contract
+// break on admin.node_down.
+for (const m of EVENTS_SRC.matchAll(/export async function (\w+)\(([\s\S]*?)\): Promise<[^>]*> \{([\s\S]*?)\n\}/g)) {
   const payloadType = (m[2].match(/payload:\s*(\w+Payload)/) || [])[1];
   // What is SUPPLIED is what the dispatch call actually passes. When a helper
   // maps its domain payload into a different shape inline — e.g. the four mail
@@ -152,7 +159,11 @@ for (const m of EVENTS_SRC.matchAll(/export async function (\w+)\(([\s\S]*?)\): 
   // NB: the scope argument is itself an object literal containing a comma,
   // so a comma-delimited segment match walks straight past the payload. Anchor
   // on the CLOSING brace of the scope argument instead.
-  const literal = m[3].match(/dispatchSafe\([\s\S]*?\},\s*\{([\s\S]*?)\n\s*\},/);
+  // BOTH dispatch helpers: `dispatchSafe` (never throws, swallows silently) and
+  // `dispatchReporting` (reports success so a caller can retry). Matching only
+  // the first meant any category emitted through the second fell out of the
+  // contract check entirely.
+  const literal = m[3].match(/dispatch(?:Safe|Reporting)\([\s\S]*?\},\s*\{([\s\S]*?)\n\s*\},/);
   // Both spellings a payload key can take: `name: value` and the ES2015
   // shorthand `name,`. Only the first was matched until 2026-09-17, when a new
   // emitter written with shorthand had three of its variables reported as

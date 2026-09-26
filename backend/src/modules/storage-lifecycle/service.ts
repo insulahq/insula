@@ -2577,17 +2577,40 @@ async function waitForVolumeDetached(
 ): Promise<void> {
   const start = Date.now();
   let lastState = 'unknown';
+  let lastError: string | null = null;
   while (Date.now() - start < timeoutMs) {
-    const lhVol = await (k8s.custom as unknown as {
-      getNamespacedCustomObject: (a: {
-        group: string; version: string; namespace: string; plural: string; name: string;
-      }) => Promise<{ status?: { state?: string; currentNodeID?: string } }>;
-    }).getNamespacedCustomObject({
-      group: 'longhorn.io', version: 'v1beta2',
-      namespace: 'longhorn-system', plural: 'volumes', name: volumeName,
-    }).catch(() => null);
-    // No CR → nothing is attached. Treat as detached rather than timing out.
-    if (lhVol === null) return;
+    let lhVol: { status?: { state?: string; currentNodeID?: string } } | null = null;
+    let absent = false;
+    try {
+      lhVol = await (k8s.custom as unknown as {
+        getNamespacedCustomObject: (a: {
+          group: string; version: string; namespace: string; plural: string; name: string;
+        }) => Promise<{ status?: { state?: string; currentNodeID?: string } }>;
+      }).getNamespacedCustomObject({
+        group: 'longhorn.io', version: 'v1beta2',
+        namespace: 'longhorn-system', plural: 'volumes', name: volumeName,
+      });
+    } catch (err) {
+      // ★ FAIL CLOSED. An earlier revision did `.catch(() => null)` and treated
+      // ANY error as "already detached" — which silently reintroduces the exact
+      // race this function exists to close: one API-server 5xx, timeout or RBAC
+      // hiccup at the wrong poll iteration and the caller proceeds to read a
+      // device whose journal has not been flushed. Only a genuine "the CR is
+      // gone" counts as detached; everything else keeps polling and, if it never
+      // clears, times out loudly.
+      const e = err as { statusCode?: number; code?: number; response?: { statusCode?: number } } | null;
+      const status = e?.statusCode ?? e?.code ?? e?.response?.statusCode;
+      const msg = err instanceof Error ? err.message : String(err);
+      absent = status === 404 || /HTTP 404\b|\bnot found\b/i.test(msg);
+      if (!absent) {
+        lastError = msg;
+        await new Promise((r) => setTimeout(r, 2000));
+        continue;
+      }
+    }
+    // No CR at all → nothing is attached, which is detached by any reading.
+    if (absent || lhVol === null) return;
+    lastError = null;
     lastState = lhVol.status?.state ?? 'unknown';
     // `detaching` is explicitly NOT good enough: that is precisely the window
     // the old code ran the check in.
@@ -2595,8 +2618,9 @@ async function waitForVolumeDetached(
     await new Promise((r) => setTimeout(r, 2000));
   }
   throw new Error(
-    `Longhorn volume ${volumeName} did not reach 'detached' within ${timeoutMs}ms (last state: '${lastState}') `
-    + '— refusing to run a filesystem check against a volume that may still have an unflushed journal',
+    `Longhorn volume ${volumeName} did not reach 'detached' within ${timeoutMs}ms (last state: '${lastState}')`
+    + (lastError ? ` — last read error: ${lastError}` : '')
+    + ' — refusing to operate on a volume that may still have an unflushed journal',
   );
 }
 

@@ -1,6 +1,10 @@
 import { sql } from 'drizzle-orm';
 import type { DashboardAlert } from '@insula/api-contracts';
 import { ALL_CATEGORIES } from '../notifications/categories/seed.js';
+// The grace window and the heal gate are OWNED by the reconciler. Importing them
+// keeps the two consoles from drifting away from the state machine that writes
+// the rows they render — the whole point of both panels reading one table.
+import { GRACE_INTERVAL_SQL, isHealable, type HealReason } from '../storage-lifecycle/workload-health.js';
 import type { Database } from '../../db/index.js';
 
 /**
@@ -131,7 +135,12 @@ export async function buildAdminAlerts(db: Database): Promise<DashboardAlert[]> 
       JOIN tenants t ON t.id = e.tenant_id
      WHERE e.cleared_at IS NULL
        AND t.status = 'active'
-       AND e.first_seen_at < now() - INTERVAL '8 minutes'
+       -- An operator running their own resize / restore / fsck quiesces the
+       -- namespace on purpose. The reconciler stops refreshing the episode for
+       -- the duration, so without this the operator watches a stale
+       -- "auto-heal failed" tile age through their whole maintenance window.
+       AND t.active_storage_op_id IS NULL
+       AND e.first_seen_at < now() - ${GRACE_INTERVAL_SQL}::interval
      ORDER BY e.first_seen_at ASC
      LIMIT 5
   `);
@@ -139,8 +148,11 @@ export async function buildAdminAlerts(db: Database): Promise<DashboardAlert[]> 
   if (downRows.length > 0) {
     const w = downRows[0];
     const downTotal = Number(w.total ?? downRows.length);
-    const triedAndFailed = downRows.filter((r) => Number(r.heal_failed) === 1).length;
+    const triedAndFailed = downRows.filter(
+      (r) => Number(r.heal_failed) === 1 && Number(r.heal_attempts) > 0,
+    ).length;
     const healing = downRows.filter((r) => Number(r.heal_failed) === 0 && Number(r.heal_attempts) > 0).length;
+    const notHealable = downRows.filter((r) => !isHealable(r.reason as HealReason)).length;
     out.push(alert({
       categoryId: 'admin.tenant_workloads_down',
       severity: 'critical',
@@ -153,16 +165,27 @@ export async function buildAdminAlerts(db: Database): Promise<DashboardAlert[]> 
       detail: downRows.map((r) => [
         `${r.tenant_name} / ${r.workload}`,
         `${r.down_minutes} min · ${r.reason}`
-        + (Number(r.heal_failed) === 1
+        // Require BOTH a recorded failure and a counted attempt before saying
+        // "failed" — the two columns describe the same episode and a caption
+        // that trusts only one of them can render "0 heal attempt(s) failed".
+        + (Number(r.heal_failed) === 1 && Number(r.heal_attempts) > 0
           ? ` · ${r.heal_attempts} heal attempt(s) failed`
           : Number(r.heal_attempts) > 0 ? ` · heal attempt ${r.heal_attempts} in progress` : ' · heal pending'),
       ] as [string, string]),
-      note: triedAndFailed > 0
-        ? 'Automatic recovery has already been tried and failed on '
-          + `${triedAndFailed} of these — they need a human. The tenant's site is down right now.`
-        : healing > 0
-          ? 'Automatic recovery is running right now. If these clear on their own, no action is needed.'
-          : 'Automatic recovery has not started yet — it begins once the outage outlives the grace window.',
+      // `notHealable` rows will NEVER be auto-healed — a bad image, a
+      // crash-loop and an unschedulable pod all come back identical, so the
+      // reconciler deliberately does not try. Promising recovery that is never
+      // coming is worse than saying nothing.
+      note: notHealable === downRows.length
+        ? 'Automatic recovery cannot fix these causes — they need a human. The tenant is down right now.'
+        : triedAndFailed > 0
+          ? 'Automatic recovery has already been tried and failed on '
+            + `${triedAndFailed} of these — they need a human. The tenant's site is down right now.`
+          : healing > 0
+            ? 'Automatic recovery is running right now. If these clear on their own, no action is needed.'
+            : notHealable > 0
+              ? `${notHealable} of these cannot be auto-healed and need a human; the rest start once the outage outlives the grace window.`
+              : 'Automatic recovery has not started yet — it begins once the outage outlives the grace window.',
     }));
   }
 
@@ -299,30 +322,39 @@ export async function buildTenantAlerts(
   // "why is my site down" the moment they look, plus the fact that the operator
   // already knows — which is the difference between a support ticket and none.
   const downWork = await db.execute<{
-    workload: string; down_minutes: number; reason: string;
+    total: number; workload: string; down_minutes: number; reason: string;
     heal_attempts: number; heal_failed: number;
   }>(sql`
-    SELECT workload,
-           FLOOR(EXTRACT(EPOCH FROM (now() - first_seen_at)) / 60)::int AS down_minutes,
-           reason, heal_attempts,
+    SELECT
+           -- COUNT(*) OVER () BEFORE the LIMIT clips the rows. Deriving the
+           -- badge from downRows.length would report "3" for a tenant with six
+           -- workloads down, which reads as partial data loss rather than a
+           -- page size.
+           COUNT(*) OVER ()::int AS total,
+           e.workload,
+           FLOOR(EXTRACT(EPOCH FROM (now() - e.first_seen_at)) / 60)::int AS down_minutes,
+           e.reason, e.heal_attempts,
            -- See the admin card: heal_attempts counts CLAIMED attempts, so only
            -- last_heal_error can say an attempt actually failed.
-           (last_heal_error IS NOT NULL)::int AS heal_failed
-      FROM tenant_workload_health_events
-     WHERE tenant_id = ${tenantId}
-       AND cleared_at IS NULL
-       AND first_seen_at < now() - INTERVAL '8 minutes'
-     ORDER BY first_seen_at ASC
+           (e.last_heal_error IS NOT NULL)::int AS heal_failed
+      FROM tenant_workload_health_events e
+      JOIN tenants t ON t.id = e.tenant_id
+     WHERE e.tenant_id = ${tenantId}
+       AND e.cleared_at IS NULL
+       AND t.active_storage_op_id IS NULL
+       AND e.first_seen_at < now() - ${GRACE_INTERVAL_SQL}::interval
+     ORDER BY e.first_seen_at ASC
      LIMIT 3
   `);
   const downRows = downWork.rows ?? [];
   if (downRows.length > 0) {
     const d = downRows[0];
+    const downTotal = Number(d.total ?? downRows.length);
     out.push(alert({
       categoryId: 'tenant.workloads_down',
       severity: 'critical',
-      value: String(downRows.length),
-      title: downRows.length === 1 ? 'An application is not running' : 'Applications are not running',
+      value: String(downTotal),
+      title: downTotal === 1 ? 'An application is not running' : 'Applications are not running',
       subtitle: `${d.workload} · down ${d.down_minutes} min`,
       href: '/applications',
       detail: downRows.map((r) => [r.workload, `down ${r.down_minutes} min`] as [string, string]),
@@ -330,9 +362,14 @@ export async function buildTenantAlerts(
       // the operator's to act on, and a tenant reading "ResourceQuota refused to
       // admit the pod" learns only that something is wrong in a language they
       // cannot use.
-      note: Number(d.heal_failed) === 1
-        ? 'Automatic restart did not succeed and our operators have been alerted — you do not need to report this.'
-        : 'The platform is trying to restart it automatically.',
+      note: !isHealable(d.reason as HealReason)
+        // Still no jargon: the tenant does not need to know it was a quota, an
+        // image or a node — only that waiting will not fix it and that somebody
+        // who can fix it already knows.
+        ? 'This needs one of our operators, who have already been alerted — you do not need to report it.'
+        : Number(d.heal_failed) === 1 && Number(d.heal_attempts) > 0
+          ? 'Automatic restart did not succeed and our operators have been alerted — you do not need to report this.'
+          : 'The platform is trying to restart it automatically.',
     }));
   }
 

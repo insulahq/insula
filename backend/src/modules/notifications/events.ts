@@ -614,6 +614,43 @@ export async function notifyAdminWalArchiveAutoDisabled(
   await dispatchSafe(db, 'admin.wal_archive_auto_disabled', { kind: 'admin' }, payload, undefined, { dedupeKey });
 }
 
+/**
+ * Like `dispatchSafe`, but tells the caller whether the event actually went out.
+ *
+ * `dispatchSafe`'s body is `try { await emitEvent(...) } catch { }` — a bare,
+ * UNLOGGED swallow, kept for a legacy contract that event helpers never throw.
+ * That is tolerable for an ambient notification and not tolerable for an alert
+ * whose entire purpose is that somebody finally gets told a tenant is down: a
+ * template-rendering bug or a DB error on the notification tables would be
+ * invisible, and the caller's rate-limit ladder slot would already be spent, so
+ * the next attempt is deferred by up to a day.
+ *
+ * Still never throws — the caller decides what a failure means.
+ */
+async function dispatchReporting(
+  db: Database,
+  categoryId: string,
+  scope: Parameters<typeof emitEvent>[1]['scope'],
+  variables: object,
+  tenantId?: string,
+  extraOpts?: { readonly dedupeKey?: string },
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    await emitEvent(db, {
+      categoryId,
+      scope,
+      variables: { ...variables } as Record<string, unknown>,
+      tenantId,
+      dedupeKey: extraOpts?.dedupeKey,
+    });
+    return { ok: true };
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    console.error(`[notifications] dispatch of '${categoryId}' FAILED: ${error}`);
+    return { ok: false, error };
+  }
+}
+
 export interface TenantWorkloadsDownPayload {
   /** Deployment name, as the tenant would recognise it (e.g. "moodle"). */
   readonly workload: string;
@@ -637,8 +674,8 @@ export async function notifyTenantWorkloadsDown(
   tenantId: string,
   payload: TenantWorkloadsDownPayload,
   dedupeKey?: string,
-): Promise<void> {
-  await dispatchSafe(db, 'tenant.workloads_down', { kind: 'tenant', tenantId }, payload, tenantId, { dedupeKey });
+): Promise<{ ok: boolean; error?: string }> {
+  return dispatchReporting(db, 'tenant.workloads_down', { kind: 'tenant', tenantId }, payload, tenantId, { dedupeKey });
 }
 
 export interface AdminTenantWorkloadsDownPayload {
@@ -673,8 +710,8 @@ export async function notifyAdminTenantWorkloadsDown(
   db: Database,
   payload: AdminTenantWorkloadsDownPayload,
   dedupeKey?: string,
-): Promise<void> {
-  await dispatchSafe(db, 'admin.tenant_workloads_down', { kind: 'admin' }, payload, undefined, { dedupeKey });
+): Promise<{ ok: boolean; error?: string }> {
+  return dispatchReporting(db, 'admin.tenant_workloads_down', { kind: 'admin' }, payload, undefined, { dedupeKey });
 }
 
 export interface AdminNodeDownPayload {
