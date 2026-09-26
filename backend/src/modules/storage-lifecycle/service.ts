@@ -122,6 +122,20 @@ async function loadPersistedQuiesceSnapshot(db: Database, opId: string): Promise
 }
 
 /**
+ * Availability budget for the two valves that run INSIDE an HTTP request
+ * (`clear-failed` and `cancel`).
+ *
+ * `unquiesce` now waits for the workloads to actually become available, and its
+ * default budget is 5 minutes — correct for a background orchestrator, and a
+ * hung request plus a proxy timeout for an operator who just clicked a button.
+ * These two get a short budget instead: the valve does what it can within a
+ * few seconds, reports honestly, and anything slower is owned by the
+ * workload-health reconciler, which sweeps every 5 minutes and sees exactly the
+ * same state (the quiesce-hold is kept on whatever did not come back).
+ */
+const INTERACTIVE_RESTORE_TIMEOUT_MS = 30_000;
+
+/**
  * Failure-path unquiesce that survives `quiesce()` throwing MID-scale-down.
  *
  * Every orchestrator holds `quiesceSnap` in a local that is only assigned
@@ -138,10 +152,11 @@ export async function unquiesceBestEffort(
   opId: string,
   namespace: string,
   localSnap: QuiesceSnapshot | null,
+  opts: { availableTimeoutMs?: number } = {},
 ): Promise<void> {
   const snap = localSnap ?? await loadPersistedQuiesceSnapshot(db, opId);
   if (snap) {
-    await unquiesce(k8s, namespace, snap).catch((err) => {
+    await unquiesce(k8s, namespace, snap, opts).catch((err) => {
       console.warn(`[storage-lifecycle] failure-path unquiesce for op ${opId} (${namespace}) failed: ${err instanceof Error ? err.message : String(err)}`);
     });
     return;
@@ -1510,7 +1525,9 @@ export async function clearFailedStorageState(
       .orderBy(desc(storageOperations.createdAt))
       .limit(1);
     if (lastFailedOp) {
-      await unquiesceBestEffort(db, k8s, lastFailedOp.id, c.namespace, null);
+      await unquiesceBestEffort(db, k8s, lastFailedOp.id, c.namespace, null, {
+        availableTimeoutMs: INTERACTIVE_RESTORE_TIMEOUT_MS,
+      });
     } else {
       const { clearQuiesceHold } = await import('./quiesce.js');
       await clearQuiesceHold(k8s, c.namespace);
@@ -1579,7 +1596,9 @@ export async function cancelStorageOperation(
     const [op] = await ctx.db.select({ params: storageOperations.params }).from(storageOperations).where(eq(storageOperations.id, c.activeOpId));
     const snap = (op?.params as { quiesceSnapshot?: QuiesceSnapshot } | null)?.quiesceSnapshot;
     if (snap) {
-      await unquiesce(ctx.k8s, c.namespace, snap).catch((err) => {
+      await unquiesce(ctx.k8s, c.namespace, snap, {
+        availableTimeoutMs: INTERACTIVE_RESTORE_TIMEOUT_MS,
+      }).catch((err) => {
         console.warn(`[storage-lifecycle] cancel unquiesce failed for ${tenantId}: ${err instanceof Error ? err.message : String(err)}`);
       });
     }
@@ -2273,6 +2292,14 @@ async function runFsckOp(
     // running fsck. Frontend stays as blockdev (default) so the
     // device file appears; nothing mounts the filesystem (xfs_repair/
     // e2fsck require unmounted), so it's safe to operate.
+    // Wait for the filesystem to be genuinely unmounted (Longhorn 'detached')
+    // before touching the device. waitForQuiesced only proves the POD objects
+    // are gone; the umount that flushes the journal happens after. Running
+    // xfs_repair -n before it completes produces a spurious "errors found" —
+    // see waitForVolumeDetached for the measured timeline.
+    await progress('quiescing', 20, 'Waiting for the volume to detach (flushes the filesystem journal)');
+    await waitForVolumeDetached(ctx.k8s, located.volumeName);
+
     await progress('quiescing', 25, `Attaching volume to ${located.nodeName} for fsck`);
     await attachLonghornVolume(ctx.k8s, located.volumeName, located.nodeName);
     await waitForVolumeAttached(ctx.k8s, located.volumeName, located.nodeName);
@@ -2295,44 +2322,76 @@ async function runFsckOp(
     // the PVC a real consumer.
     await detachLonghornVolume(ctx.k8s, located.volumeName).catch(() => {});
 
+    // ── RESTORE LEG ──
+    // Deliberately NOT allowed to destroy the filesystem verdict we just paid
+    // for. Previously an unquiesce throw fell into the outer catch, which
+    // overwrote the op with the restore error — so a CLEAN filesystem whose
+    // workloads failed to come back was reported to the operator as "fsck
+    // failed", with no filesystem verdict anywhere and the wrong thing to go
+    // and look at. The two facts are independent and are now recorded as two
+    // facts.
     await progress('unquiescing', 85, 'Scaling workloads back up');
-    if (quiesceSnap) await unquiesce(ctx.k8s, namespace, quiesceSnap);
-    // fsck used hostPath /dev/longhorn/<vol> instead of PVC mount, so
-    // Longhorn detached the volume during quiesce and has no reason
-    // to re-attach unless a Pod actually consumes the PVC. If
-    // unquiesce restored zero workloads (e.g. file-manager was 0
-    // before fsck — its idle default — and the tenant deployment is
-    // also 0), the volume is left dangling. Bump file-manager to 1
-    // so the PVC has a consumer; idle-cleanup will scale it back down
-    // after the inactivity window. Best-effort — failure here doesn't
-    // invalidate the fsck result.
-    await ensureVolumeReattached(ctx.k8s, namespace).catch((err) => {
-      console.warn(`[storage-lifecycle] fsck post-attach (op ${opId}):`, err);
-    });
-
-    // Persist the captured output. Clean → progressMessage; dirty →
-    // both progressMessage (summary) AND lastError (full output) so
-    // the UI's ErrorPanel can surface it without losing the data.
-    const summary = `${result.fsType} ${result.dryRun ? 'check' : 'repair'} exit=${result.exitCode} ${result.clean ? 'CLEAN' : 'ERRORS FOUND'}`;
-    if (result.clean) {
-      await updateOp(ctx.db, opId, {
-        state: 'idle',
-        progressPct: 100,
-        progressMessage: `${summary}\n\n${result.output}`.slice(0, 8000),
-        completedAt: new Date(),
+    let restoreError: string | null = null;
+    try {
+      if (quiesceSnap) await unquiesce(ctx.k8s, namespace, quiesceSnap);
+      // fsck used hostPath /dev/longhorn/<vol> instead of PVC mount, so
+      // Longhorn detached the volume during quiesce and has no reason
+      // to re-attach unless a Pod actually consumes the PVC. If
+      // unquiesce restored zero workloads (e.g. file-manager was 0
+      // before fsck — its idle default — and the tenant deployment is
+      // also 0), the volume is left dangling. Bump file-manager to 1
+      // so the PVC has a consumer; idle-cleanup will scale it back down
+      // after the inactivity window. Best-effort — failure here doesn't
+      // invalidate the fsck result.
+      await ensureVolumeReattached(ctx.k8s, namespace).catch((err) => {
+        console.warn(`[storage-lifecycle] fsck post-attach (op ${opId}):`, err);
       });
-    } else {
-      await updateOp(ctx.db, opId, {
-        state: 'failed',
-        progressPct: 100,
-        progressMessage: summary,
-        lastError: result.output.slice(0, 16000),
-        completedAt: new Date(),
-      });
+    } catch (err) {
+      restoreError = err instanceof Error ? err.message : String(err);
+      console.error(`[storage-lifecycle] fsck op ${opId}: filesystem verdict '${result.verdict}' but the restore FAILED: ${restoreError}`);
+      // One more try, then leave it to the workload-health reconciler, which
+      // sweeps every 5 min and can re-stage the volume.
+      await unquiesceBestEffort(ctx.db, ctx.k8s, opId, namespace, quiesceSnap);
     }
 
+    // Persist the captured output. The summary is computed by the classifier so
+    // the exit-code semantics live in exactly one place — see classifyFsckOutput
+    // for why `xfs_repair -n` exit 1 is not a corruption signal.
+    const parts = [result.summary];
+    if (restoreError) {
+      parts.push(
+        `RESTORE FAILED after the check: ${restoreError}`,
+        'The filesystem verdict above still stands — this is a separate failure.',
+      );
+    }
+    const summary = parts.join('\n\n');
+    // `errors` is the only verdict that is a filesystem problem. A failed
+    // restore is an availability problem. Either makes the op red, but they
+    // point the operator at different things.
+    const opFailed = result.verdict === 'errors' || restoreError !== null;
+    await updateOp(ctx.db, opId, {
+      state: opFailed ? 'failed' : 'idle',
+      progressPct: 100,
+      progressMessage: opFailed ? summary : `${summary}\n\n${result.output}`.slice(0, 8000),
+      lastError: opFailed
+        ? [restoreError ? `restore: ${restoreError}` : null, result.output]
+          .filter(Boolean).join('\n\n').slice(0, 16000)
+        : null,
+      completedAt: new Date(),
+    });
+
+    // ★ The tenant's storage LIFECYCLE state is not the filesystem verdict.
+    //
+    // `mustBeIdle` requires strictly 'idle', and it gates startFsck itself — so
+    // leaving the tenant 'failed' because a read-only CHECK found something
+    // locks the operator out of the REPAIR that would fix it, and out of
+    // resize / restore / suspend / resume / archive as well. A diagnostic must
+    // never take away the remedy. The verdict lives on the op row (which shows
+    // red in the UI and the task-tracker chip); the tenant only stays 'failed'
+    // when its workloads are genuinely still down, because that is the state
+    // the watchdog and the clear-failed valve are for.
     const cId = await currentTenantId(ctx.db, opId);
-    if (cId) await markTenantState(ctx.db, cId, result.clean ? 'idle' : 'failed', null);
+    if (cId) await markTenantState(ctx.db, cId, restoreError ? 'failed' : 'idle', null);
   } catch (err) {
     const persisted = formatLifecycleError(err, 'pvc');
     await updateOp(ctx.db, opId, {
@@ -2432,6 +2491,30 @@ async function detachLonghornVolumeByPvc(
 }
 
 /**
+ * `waitForVolumeDetached` addressed by PVC rather than PV name.
+ *
+ * Exported for the workload-health reconciler, whose auto-heal is "re-stage the
+ * volume": it knows the tenant namespace and therefore the PVC, and must not
+ * duplicate the PVC → `spec.volumeName` → Longhorn-volume resolution.
+ *
+ * A PVC with no bound volume is treated as detached — there is nothing attached
+ * to wait for, and throwing here would abort a heal over a tenant that simply
+ * has no storage yet.
+ */
+export async function waitForVolumeDetachedByPvc(
+  k8s: K8sClients,
+  namespace: string,
+  pvcName: string,
+  timeoutMs = 120_000,
+): Promise<void> {
+  const pvc = await k8s.core.readNamespacedPersistentVolumeClaim({ name: pvcName, namespace })
+    .catch(() => null);
+  const volumeName = (pvc as { spec?: { volumeName?: string } } | null)?.spec?.volumeName;
+  if (!volumeName) return;
+  await waitForVolumeDetached(k8s, volumeName, timeoutMs);
+}
+
+/**
  * Wait for Longhorn to report state=attached on the expected node.
  * Times out after 60s — Longhorn typically attaches in 5-15s.
  */
@@ -2457,6 +2540,88 @@ async function waitForVolumeAttached(
     await new Promise((r) => setTimeout(r, 2000));
   }
   throw new Error(`Longhorn volume ${volumeName} did not attach to ${expectedNode} within ${timeoutMs}ms`);
+}
+
+/**
+ * Wait until Longhorn reports the volume DETACHED.
+ *
+ * ★ This is what makes a dry-run fsck trustworthy. `waitForQuiesced` returns as
+ * soon as no pod that mounts the PVC is left in the API — but the pod object
+ * disappearing is not the filesystem being unmounted. kubelet's
+ * `NodeUnstageVolume` (the actual `umount`, which is what flushes the XFS
+ * journal and writes the unmount record) and Longhorn's subsequent detach both
+ * complete AFTERWARDS.
+ *
+ * Measured on a real cluster (times relative, all UTC):
+ *
+ *   21:34:43  op created
+ *   21:34:45  kernel: XFS (sdx): Unmounting Filesystem …     ← umount STARTS
+ *   21:34:45.956  platform-api patches the fsck attach ticket ← same second
+ *   21:34:49  xfs_repair -n runs                             ← ~4s after
+ *   21:34:50→53  kubelet's CSI DetachVolume still in flight
+ *   21:35:14  remount: "Starting recovery" → "Ending recovery" ← log WAS dirty
+ *
+ * So the check read a filesystem with an unflushed journal, and `xfs_repair -n`
+ * cannot replay a log — it reported the free-block counter as inconsistent,
+ * exited 1, and the tenant was marked `failed` over a healthy filesystem.
+ * Waiting for `detached` means the umount has completed and the journal is on
+ * disk before anything reads the device.
+ *
+ * Tolerates the volume having no CR at all (already fully gone) — that is
+ * detached by any reasonable reading.
+ */
+async function waitForVolumeDetached(
+  k8s: K8sClients,
+  volumeName: string,
+  timeoutMs = 120_000,
+): Promise<void> {
+  const start = Date.now();
+  let lastState = 'unknown';
+  let lastError: string | null = null;
+  while (Date.now() - start < timeoutMs) {
+    let lhVol: { status?: { state?: string; currentNodeID?: string } } | null = null;
+    let absent = false;
+    try {
+      lhVol = await (k8s.custom as unknown as {
+        getNamespacedCustomObject: (a: {
+          group: string; version: string; namespace: string; plural: string; name: string;
+        }) => Promise<{ status?: { state?: string; currentNodeID?: string } }>;
+      }).getNamespacedCustomObject({
+        group: 'longhorn.io', version: 'v1beta2',
+        namespace: 'longhorn-system', plural: 'volumes', name: volumeName,
+      });
+    } catch (err) {
+      // ★ FAIL CLOSED. An earlier revision did `.catch(() => null)` and treated
+      // ANY error as "already detached" — which silently reintroduces the exact
+      // race this function exists to close: one API-server 5xx, timeout or RBAC
+      // hiccup at the wrong poll iteration and the caller proceeds to read a
+      // device whose journal has not been flushed. Only a genuine "the CR is
+      // gone" counts as detached; everything else keeps polling and, if it never
+      // clears, times out loudly.
+      const e = err as { statusCode?: number; code?: number; response?: { statusCode?: number } } | null;
+      const status = e?.statusCode ?? e?.code ?? e?.response?.statusCode;
+      const msg = err instanceof Error ? err.message : String(err);
+      absent = status === 404 || /HTTP 404\b|\bnot found\b/i.test(msg);
+      if (!absent) {
+        lastError = msg;
+        await new Promise((r) => setTimeout(r, 2000));
+        continue;
+      }
+    }
+    // No CR at all → nothing is attached, which is detached by any reading.
+    if (absent || lhVol === null) return;
+    lastError = null;
+    lastState = lhVol.status?.state ?? 'unknown';
+    // `detaching` is explicitly NOT good enough: that is precisely the window
+    // the old code ran the check in.
+    if (lastState === 'detached') return;
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+  throw new Error(
+    `Longhorn volume ${volumeName} did not reach 'detached' within ${timeoutMs}ms (last state: '${lastState}')`
+    + (lastError ? ` — last read error: ${lastError}` : '')
+    + ' — refusing to operate on a volume that may still have an unflushed journal',
+  );
 }
 
 /**

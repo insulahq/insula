@@ -209,11 +209,11 @@ patches:
 
 images:
   - name: ghcr.io/insulahq/insula/backend
-    newTag: "20260924223317-0df1549" # {"$imagepolicy": "flux-system:backend:tag"}
+    newTag: "20260926130445-47e2b8f" # {"$imagepolicy": "flux-system:backend:tag"}
   - name: ghcr.io/insulahq/insula/admin-panel
-    newTag: "20260924223314-0df1549" # {"$imagepolicy": "flux-system:admin-panel:tag"}
+    newTag: "20260926130443-47e2b8f" # {"$imagepolicy": "flux-system:admin-panel:tag"}
   - name: ghcr.io/insulahq/insula/tenant-panel
-    newTag: "20260924223311-0df1549" # {"$imagepolicy": "flux-system:tenant-panel:tag"}
+    newTag: "20260926130448-47e2b8f" # {"$imagepolicy": "flux-system:tenant-panel:tag"}
   # Internal DaemonSet/sidecar images — pinned to an immutable <timestamp>-<sha>
   # tag by each image's OWN build workflow (.github/workflows/ci-*.yml →
   # .github/scripts/pin-image-tag.sh) AFTER the push completes, so Flux only
@@ -222,14 +222,14 @@ images:
   # "latest" here is the pre-first-pin placeholder (matches the base tag); the
   # next build of each image rewrites it.
   - name: ghcr.io/insulahq/insula/security-probe
-    newTag: "20260915110148-80a71f8"
+    newTag: "20260926013802-aa51607"
   - name: ghcr.io/insulahq/insula/firewall-reconciler
-    newTag: "20260915110152-80a71f8"
+    newTag: "20260926013826-aa51607"
   - name: ghcr.io/insulahq/insula/host-config-reconciler
-    newTag: "20260915110333-80a71f8"
+    newTag: "20260926013755-aa51607"
   - name: ghcr.io/insulahq/insula/backup-rclone
-    newTag: "20260915110158-80a71f8"
+    newTag: "20260926013729-aa51607"
   - name: ghcr.io/insulahq/insula/sftp-gateway
-    newTag: "20260915110139-80a71f8"
+    newTag: "20260926013638-aa51607"
   - name: ghcr.io/insulahq/insula/tenant-backup-tools
-    newTag: "20260922223323-c06879a"
+    newTag: "20260926013633-aa51607"

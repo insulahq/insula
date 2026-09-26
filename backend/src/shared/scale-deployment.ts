@@ -14,6 +14,24 @@ import { request as httpsRequest } from 'node:https';
 export const STORAGE_QUIESCED_ANNOTATION = 'insula.host/storage-quiesced';
 
 /**
+ * The replica count a Deployment had immediately BEFORE quiesce scaled it to 0.
+ *
+ * Stamped alongside the hold, by the same patch that sets it. The marker that
+ * records "I scaled this down" must also record "to what" — otherwise recovering
+ * a tenant stranded at 0 means hunting for the storage_operations row that
+ * probably caused it, and the most recent op carrying a snapshot is not
+ * necessarily that op: it can predate workloads added since, list workloads
+ * since deleted, or belong to an unrelated earlier operation entirely.
+ *
+ * With the count on the Deployment, recovery is local and unambiguous — right
+ * tenant, right workload, right number — and it survives the op row being
+ * garbage-collected or the tenant's workload set changing.
+ *
+ * Cleared by the same patch that clears the hold.
+ */
+export const STORAGE_PREQUIESCE_REPLICAS_ANNOTATION = 'insula.host/pre-quiesce-replicas';
+
+/**
  * Reliable Deployment scaling — scale-to-0 was a silent no-op via the SDK.
  *
  * Two SDK paths both FAILED to scale a Deployment to 0 (proven live on

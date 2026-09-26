@@ -28,19 +28,60 @@ import { PLATFORM_TENANT_OPS_NS, STORAGE_OPS_PRIORITY_CLASS } from './platform-n
  * service.ts owns those.
  */
 
+/**
+ * What the run actually established.
+ *
+ * `inconclusive` exists because `xfs_repair -n` CANNOT replay a dirty log —
+ * `-n` is read-only by definition — so against an unflushed journal it always
+ * reports the superblock's free-block counter as stale and exits 1. That is not
+ * corruption, and the tool says so itself in the output we store:
+ *
+ *   ALERT: The filesystem has valuable metadata changes in a log which is being
+ *   ignored because the -n option was used. Expect spurious inconsistencies
+ *   which may be resolved by first mounting the filesystem to replay the log.
+ *
+ * Production proof that the distinction is real: two dry runs, same code, same
+ * flags. The one that printed `zero_log: head block 176 tail block 176` (clean
+ * log) exited 0 CLEAN. The one that printed `head block 79392 tail block 79376`
+ * (16 blocks unflushed) exited 1 with exactly one "finding" —
+ * `sb_fdblocks 1019986, counted 1052976` — while phases 3, 4, 6 and 7 were
+ * completely clean. The filesystem was fine: the very next mount replayed the
+ * log (`Starting recovery` → `Ending recovery`) and logged nothing since.
+ * Reporting that as ERRORS FOUND wedged the tenant in `failed`.
+ */
+export type FsckVerdict = 'clean' | 'errors' | 'inconclusive';
+
 export interface FsckResult {
   /** Detected filesystem type the run targeted (xfs | ext4 | other). */
   readonly fsType: string;
   /** Whether this was a dry run (-n) or a repair run. */
   readonly dryRun: boolean;
-  /** Pod's exit code (0 = clean / no errors found, 1 on e2fsck = errors
-   *  corrected, 2+ = errors couldn't be fixed). */
+  /**
+   * Pod's exit code. The scale is TOOL-SPECIFIC and must not be shared:
+   *   • `xfs_repair -n`: 0 = nothing to do, **1 = "would have made changes"**,
+   *     2+ = could not complete. Exit 1 is the normal result for a stale
+   *     counter or an unreplayed log and is NOT a corruption signal.
+   *   • `xfs_repair` (repair mode): 0 = repaired/clean, non-zero = failed.
+   *   • `e2fsck`: 0 = clean, 1 = errors CORRECTED, 2 = corrected + reboot,
+   *     4 = errors left UNcorrected, 8+ = operational error.
+   * Treat `verdict` as the answer; this is the raw evidence behind it.
+   */
   readonly exitCode: number;
   /** Combined stdout+stderr from the fsck tool, capped to MAX_OUTPUT_BYTES. */
   readonly output: string;
-  /** True iff the tool reported a clean filesystem (exit 0 + no
-   *  ERROR/CORRUPT keyword in the output). */
+  /** True iff the run positively established a healthy filesystem. */
   readonly clean: boolean;
+  /** Tri-state classification — see FsckVerdict. */
+  readonly verdict: FsckVerdict;
+  /**
+   * The journal had un-replayed records when the tool read the device, so any
+   * inconsistency it reported is unreliable. The orchestrator must let the
+   * filesystem mount (which replays the log) and re-check rather than declaring
+   * damage.
+   */
+  readonly logDirty: boolean;
+  /** One line naming what was established, for progressMessage / alerts. */
+  readonly summary: string;
 }
 
 // Image must contain xfs_repair (xfsprogs) and e2fsck (e2fsprogs).
@@ -252,18 +293,127 @@ export async function runFsck(k8s: K8sClients, opts: FsckOpts): Promise<FsckResu
     }).deleteNamespacedJob({ name: jobName, namespace: jobNamespace, propagationPolicy: 'Background' });
   } catch { /* fine */ }
 
-  // "clean" heuristic: exit 0 AND no obvious error keyword.
-  const lower = output.toLowerCase();
-  const dirty = /error|corrupt|bad superblock|cannot|fail/.test(lower);
-  const clean = finalExitCode === 0 && !dirty;
+  const classified = classifyFsckOutput(opts.fsType, opts.dryRun, finalExitCode, output);
 
   return {
     fsType: opts.fsType.toLowerCase(),
     dryRun: opts.dryRun,
     exitCode: finalExitCode,
     output: output.slice(0, MAX_OUTPUT_BYTES),
-    clean,
+    ...classified,
   };
+}
+
+/**
+ * Markers that mean the tool found REAL damage — not merely that it would have
+ * written something.
+ *
+ * The previous heuristic was `/error|corrupt|bad superblock|cannot|fail/` over
+ * the whole lowercased output, which is a false-positive generator independent
+ * of the exit code: `xfs_repair`'s own dirty-log ALERT, a `Failing async write`
+ * line, or any sentence containing "cannot" flipped a healthy filesystem to
+ * dirty. These patterns are anchored to the specific things xfs_repair and
+ * e2fsck print when structure is actually broken.
+ */
+const XFS_DAMAGE = [
+  /bad (?:magic number|superblock)/i,
+  /corrupt/i,
+  // NOT `/moving .* to lost\+found/` and NOT `/disconnected inode/` bare:
+  // `        - moving disconnected inodes to lost+found ...` is a phase-6
+  // HEADER that xfs_repair prints unconditionally — it is present verbatim in
+  // the captured CLEAN production run. Matching it would mark every XFS volume
+  // damaged, which is the exact false-positive class this rewrite removes. The
+  // real finding always names the inode NUMBER.
+  /disconnected (?:dir )?inode \d+/i,
+  /\bbad (?:inode|directory|agf|agi|agfl)\b/i,
+  /entry .* points to (?:free|non-existent) inode/i,
+  /would (?:have )?(?:clear|junk|reset|fix|rebuild|destroy)/i,
+];
+const EXT_DAMAGE = [
+  /bad (?:magic number|superblock)/i,
+  /corrupt/i,
+  /\bdeleted inode\b/i,
+  /unattached inode/i,
+  /inode .* (?:is|has) (?:a )?(?:bad|illegal|invalid)/i,
+  /\bfix\? yes\b/i,
+];
+
+/**
+ * `xfs_repair -n` prints this when the log holds records it is not allowed to
+ * replay. Everything it reports afterwards is derived from a stale view.
+ */
+const XFS_DIRTY_LOG = /valuable metadata changes in a log which is being ignored/i;
+/** head != tail in the zero_log line is the same fact, stated numerically. */
+const XFS_ZERO_LOG = /zero_log:\s*head block (\d+) tail block (\d+)/i;
+
+/**
+ * Turn (tool, mode, exit code, output) into a verdict.
+ *
+ * Exported so unit tests can pin the semantics against real captured output
+ * without spinning up a Job — the whole point of the tri-state is that it is
+ * decided here, once, rather than re-derived by each caller from an exit code
+ * whose meaning depends on which tool ran.
+ */
+export function classifyFsckOutput(
+  fsType: string,
+  dryRun: boolean,
+  exitCode: number,
+  output: string,
+): { clean: boolean; verdict: FsckVerdict; logDirty: boolean; summary: string } {
+  const isXfs = fsType.toLowerCase() === 'xfs';
+  const mode = dryRun ? 'check' : 'repair';
+
+  let logDirty = XFS_DIRTY_LOG.test(output);
+  const zl = XFS_ZERO_LOG.exec(output);
+  if (zl && zl[1] !== zl[2]) logDirty = true;
+
+  const damaged = (isXfs ? XFS_DAMAGE : EXT_DAMAGE).some((re) => re.test(output));
+
+  // The tool could not even run (missing device, unsupported fs, install
+  // failure). Our own wrapper uses 64/65; xfs_repair uses 2+, e2fsck 8+.
+  const operational = exitCode >= 2 && !damaged && !logDirty;
+
+  let verdict: FsckVerdict;
+  if (damaged) {
+    verdict = 'errors';
+  } else if (exitCode === 0) {
+    verdict = 'clean';
+  } else if (isXfs && dryRun && logDirty) {
+    // The defining case: exit 1 caused by an unreplayed journal.
+    verdict = 'inconclusive';
+  } else if (operational) {
+    verdict = 'errors';
+  } else if (isXfs && dryRun) {
+    // Exit 1, clean log, no damage markers — a stale counter xfs_repair would
+    // rewrite. Worth telling the operator, but not damage and not a failure.
+    verdict = 'inconclusive';
+  } else if (isXfs) {
+    // xfs_repair in REPAIR mode: 0 = repaired/clean, anything else = it did not
+    // finish. This branch used to fall through to the e2fsck rule below, which
+    // maps exit 1-2 to 'clean' — so a repair xfs_repair itself said had not
+    // succeeded was reported to the operator as a healthy filesystem, directly
+    // contradicting the exit-code contract documented on FsckResult.
+    verdict = 'errors';
+  } else {
+    // e2fsck exit 1/2 in repair mode means it CORRECTED things: the filesystem
+    // is now consistent, which is a success with a story attached. Exit 4+ means
+    // errors were left UNcorrected.
+    verdict = !dryRun && exitCode <= 2 ? 'clean' : 'errors';
+  }
+
+  const clean = verdict === 'clean';
+  const label = verdict === 'clean' ? 'CLEAN'
+    : verdict === 'inconclusive' ? 'INCONCLUSIVE'
+      : 'ERRORS FOUND';
+  let summary = `${fsType.toLowerCase()} ${mode} exit=${exitCode} ${label}`;
+  if (verdict === 'inconclusive' && logDirty) {
+    summary += ' — the journal had un-replayed records, so the reported'
+      + ' inconsistency is not evidence of damage; the volume was re-mounted'
+      + ' (which replays the log). Re-run the check to get a real verdict.';
+  } else if (verdict === 'inconclusive') {
+    summary += ' — no damage markers, only counters the tool would rewrite.';
+  }
+  return { clean, verdict, logDirty, summary };
 }
 
 async function readPodLogs(k8s: K8sClients, namespace: string, jobName: string): Promise<string> {
