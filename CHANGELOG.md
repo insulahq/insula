@@ -39,10 +39,14 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   ones — and the platform's own `dmarc@`/`postmaster@` intake mailboxes are
   unaffected, as they already were.
 
-  Two neighbours fixed alongside it. The tenant dashboard read its mailbox and
+  Three neighbours fixed alongside it. The tenant dashboard read its mailbox and
   daily-send ceilings from the **plan only**, ignoring the per-tenant override
   it was already being enforced against, so any tenant with an override saw a
-  number the API disagreed with. And an override field switched to *Custom* but
+  number the API disagreed with. The same fraction's **numerator** counted rows
+  the cap does not: the platform's own `dmarc@`/`postmaster@` intake mailboxes
+  were charged to the tenant's visible count while being exempt from the limit,
+  so the dashboard read "6 / 10" where the Email page read "5 / 10" for one
+  tenant. And an override field switched to *Custom* but
   left **empty** submitted 0 rather than "no override" — harmless while 0 was
   rejected, a silent mail-off once it is not. A blank field now means "inherit
   the plan", for every limit on that form.

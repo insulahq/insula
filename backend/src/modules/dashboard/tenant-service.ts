@@ -58,7 +58,15 @@ export async function buildTenantSummary(
     collect('mail', async () => {
       const r = await db.execute<Record<string, number | string | null>>(sql`
         SELECT
-          (SELECT COUNT(*)::int FROM mailboxes WHERE tenant_id = ${tenantId} AND status = 'active') AS boxes,
+          -- platform_managed excluded so this numerator counts the same rows
+          -- the limit below is enforced against (getTenantMailboxCount in
+          -- mailboxes/limit.ts). It did not, so the dashboard read "6 / 10"
+          -- where the Email page's meter read "5 / 10" for the same tenant —
+          -- the two dmarc@/postmaster@ intake mailboxes the PLATFORM creates
+          -- were being charged to the tenant's visible count but not to the cap.
+          (SELECT COUNT(*)::int FROM mailboxes
+            WHERE tenant_id = ${tenantId} AND status = 'active'
+              AND platform_managed = FALSE) AS boxes,
           -- The per-tenant override wins over the plan, and 0 is a real
           -- value (mail off), so COALESCE on the override FIRST rather
           -- than reading the plan alone. Reading only the plan made the
