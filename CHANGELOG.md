@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.9.33] - 2026-09-26
+
 ### Added
 
 - **The platform now notices when a tenant's workloads are not running, and
