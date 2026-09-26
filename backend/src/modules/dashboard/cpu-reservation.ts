@@ -218,12 +218,27 @@ export function podRequestMillis(spec: {
   return Math.max(main, init);
 }
 
+/**
+ * KNOWN, NOT FIXED HERE: `buildAdminLive`'s `nodesSection` already performs
+ * its own listNode + listPodForAllNamespaces + node-metrics read, so a single
+ * dashboard load issues two full cluster-wide pod listings. Consolidating
+ * them means restructuring how those `collect()` sections share state, which
+ * is a bigger change than this read-only release should carry. Tracked as a
+ * follow-up; the reads inside THIS function are at least concurrent.
+ */
 export async function readCpuReservation(
   k8s: K8sClients,
   log?: { warn?: (o: unknown, m: string) => void },
 ): Promise<{ nodes: NodeReservation[]; pods: PodReservation[] }> {
-  const nodeList = (await k8s.core.listNode()) as unknown as { items?: RawNode[] };
-  const podList = (await k8s.core.listPodForAllNamespaces()) as unknown as {
+  // Two independent cluster-wide reads — issued together rather than in
+  // series. This function is called once per dashboard load and again per
+  // preview load, so its latency is paid on an operator-facing path.
+  const [nodeListRaw, podListRaw] = await Promise.all([
+    k8s.core.listNode(),
+    k8s.core.listPodForAllNamespaces(),
+  ]);
+  const nodeList = nodeListRaw as unknown as { items?: RawNode[] };
+  const podList = podListRaw as unknown as {
     items?: Array<{
       metadata?: { name?: string; namespace?: string };
       status?: { phase?: string };
@@ -257,15 +272,19 @@ export async function readCpuReservation(
   const usedByNode = new Map<string, number>();
   const usedByPod = new Map<string, number>();
   try {
-    const nm = await k8s.custom.listClusterCustomObject({
-      group: 'metrics.k8s.io', version: 'v1beta1', plural: 'nodes',
-    }) as { items?: Array<{ metadata?: { name?: string }; usage?: { cpu?: string } }> };
+    const [nmRaw, pmRaw] = await Promise.all([
+      k8s.custom.listClusterCustomObject({
+        group: 'metrics.k8s.io', version: 'v1beta1', plural: 'nodes',
+      }),
+      k8s.custom.listClusterCustomObject({
+        group: 'metrics.k8s.io', version: 'v1beta1', plural: 'pods',
+      }),
+    ]);
+    const nm = nmRaw as { items?: Array<{ metadata?: { name?: string }; usage?: { cpu?: string } }> };
     for (const m of nm.items ?? []) {
       if (m.metadata?.name) usedByNode.set(m.metadata.name, cpuToMillis(m.usage?.cpu));
     }
-    const pm = await k8s.custom.listClusterCustomObject({
-      group: 'metrics.k8s.io', version: 'v1beta1', plural: 'pods',
-    }) as {
+    const pm = pmRaw as {
       items?: Array<{
         metadata?: { name?: string; namespace?: string };
         containers?: Array<{ usage?: { cpu?: string } }>;

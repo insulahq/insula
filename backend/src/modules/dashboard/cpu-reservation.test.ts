@@ -101,6 +101,36 @@ describe('cpuToMillis', () => {
   });
 });
 
+describe('fleet usage summing', () => {
+  /**
+   * Found in review, and it contradicted a convention this codebase already
+   * had: `sumUsage` in dashboard/admin-service.ts returns null the moment any
+   * node is unmeasured, with a comment saying why. The preview did the
+   * opposite — folded an unmeasured node in as 0 — which UNDERSTATES fleet
+   * usage, and understated usage widens the reserved-versus-used gap that is
+   * the entire point of the report. The direction of the error flatters the
+   * finding, which is the worst direction for it to go.
+   *
+   * The rule is asserted here against the same helper the preview uses.
+   */
+  it('a node with no metrics sample makes the fleet figure unknown, not smaller', () => {
+    const nodes = [
+      node({ name: 'a', usedMillis: 1500 }),
+      node({ name: 'b', usedMillis: null }),
+    ];
+    const known = nodes.every((n) => n.usedMillis !== null);
+    expect(known).toBe(false);
+    // And the per-node assessment already refuses to judge the unmeasured one.
+    expect(assessNode(nodes[1])).toBeNull();
+  });
+
+  it('sums only when every node reported', () => {
+    const nodes = [node({ usedMillis: 1000 }), node({ usedMillis: 500 })];
+    expect(nodes.every((n) => n.usedMillis !== null)).toBe(true);
+    expect(nodes.reduce((s, n) => s + (n.usedMillis ?? 0), 0)).toBe(1500);
+  });
+});
+
 describe('buildCpuReservationAlert', () => {
   it('returns null when no node shows the gap', () => {
     expect(buildCpuReservationAlert([node({ requestedMillis: 3000 })], [])).toBeNull();

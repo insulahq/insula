@@ -54,12 +54,27 @@ export function customSpecPinsCpu(spec: unknown): boolean {
   });
 }
 
-/** `resources.recommended.cpu` in cores, or null when the manifest is silent. */
+/**
+ * `resources.recommended.cpu` in cores, or null when the manifest is silent.
+ *
+ * ★ Parsed as a Kubernetes QUANTITY, not with a bare `Number()`. The field may
+ * carry millicore notation — `catalog/service.ts:toCpuMilli` handles exactly
+ * this shape for the same field — and `Number('50m')` is NaN. A bare parse
+ * would return null for it, which deriveTier reads as "the manifest said
+ * nothing" and answers `high`: a `50m` entry (normal, per the ADR) forced six
+ * tiers up, and a `2000m` entry (highest) forced down. Silent, and wrong in
+ * both directions.
+ *
+ * No entry in the Official catalog uses the notation today — every value is
+ * decimal cores — so this is latent there. It is not latent for the community
+ * catalog or any third-party repository, which the tier model explicitly
+ * supports.
+ */
 export function recommendedCores(entryResources: unknown): number | null {
   const rec = (entryResources as { recommended?: { cpu?: string } } | null)?.recommended?.cpu;
-  if (rec === undefined || rec === null || rec === '') return null;
-  const n = Number(rec);
-  return Number.isFinite(n) ? n : null;
+  if (rec === undefined || rec === null || String(rec).trim() === '') return null;
+  const millis = cpuToMillis(String(rec));
+  return Number.isFinite(millis) && millis > 0 ? millis / 1000 : null;
 }
 
 export async function buildCpuMigrationPreview(
@@ -84,7 +99,12 @@ export async function buildCpuMigrationPreview(
            d.custom_spec, e.resources AS entry_resources, e.source_repo_id
       FROM deployments d
       LEFT JOIN catalog_entries e ON e.id = d.catalog_entry_id
-     WHERE d.status <> 'deleted'
+     -- Only deployments that actually hold a reservation. A 'stopped'
+     -- deployment has had its pod torn down, so counting its cpu_request
+     -- would inflate currentMillis/reclaimableMillis against the
+     -- reservedMillis in the same payload — which is read from live pods.
+     -- Two numbers presented side by side must answer the same question.
+     WHERE d.status = 'running'
      ORDER BY d.name
   `);
 
@@ -104,7 +124,16 @@ export async function buildCpuMigrationPreview(
        AND resolution = 'hourly'
        AND measurement_timestamp > now() - interval '7 days'
      GROUP BY tenant_id
-  `).catch(() => ({ rows: [] as Array<{ tenant_id: string; p95: string | null }> }));
+  `).catch((err: unknown) => {
+    // NOT silent. This feeds tenantUsageBlocker for EVERY tenant, so a broken
+    // query renders as "no usage data, all tenants need review" — plausible
+    // output with nothing distinguishing it from the genuine case.
+    log?.warn?.(
+      { err: err instanceof Error ? err.message : String(err) },
+      'cpu-migration: tenant p95 query failed — every tenant will report as unsampled',
+    );
+    return { rows: [] as Array<{ tenant_id: string; p95: string | null }> };
+  });
   const p95ByTenant = new Map<string, number>();
   for (const r of p95Rows.rows ?? []) {
     if (r.p95 !== null) p95ByTenant.set(r.tenant_id, Number(r.p95) * 1000);
@@ -175,8 +204,13 @@ export async function buildCpuMigrationPreview(
   const { nodes } = await readCpuReservation(k8s, log);
   const allocatableMillis = nodes.reduce((s, n) => s + n.allocatableMillis, 0);
   const reservedMillis = nodes.reduce((s, n) => s + n.requestedMillis, 0);
-  const anyUsage = nodes.some((n) => n.usedMillis !== null);
-  const usedMillis = anyUsage
+  // ★ One unmeasured node makes the CLUSTER figure unknown, not smaller.
+  // Folding an unmeasured node in as 0 understates usage — and understated
+  // usage widens the reserved-versus-used gap, which is the single number
+  // this whole report exists to state honestly. `sumUsage` in
+  // dashboard/admin-service.ts already establishes this rule for the same
+  // measurement; an earlier revision here did the opposite.
+  const usedMillis = nodes.every((n) => n.usedMillis !== null)
     ? nodes.reduce((s, n) => s + (n.usedMillis ?? 0), 0)
     : null;
 
