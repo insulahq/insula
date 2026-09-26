@@ -234,6 +234,17 @@ different, open the **Resource Limits** card and click edit. Each field
 has a "custom" toggle: leave it off to follow the plan, or turn it on to
 set a tenant-specific value.
 
+**Turning email off for one tenant.** Set **Max Mailboxes** to `0`. The tenant
+keeps the mailboxes they already have, but no new one can be created and email
+cannot be enabled on a further domain — their panel says so plainly instead of
+offering a button that fails. This is narrower than suspending the tenant,
+which also stops their websites and databases. **Max Sub-Users** accepts `0` the
+same way.
+
+    A custom field left **empty** is treated as "no override" and falls back to
+    the plan, rather than as zero. If you mean zero, type `0` — the form tells
+    you what it will do.
+
 - **Growing storage** happens online — the platform resizes the volume
   and surfaces a progress modal.
 - **Shrinking storage** is destructive (snapshot → drop volume → recreate

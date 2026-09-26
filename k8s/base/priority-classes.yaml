@@ -24,6 +24,31 @@
 #     namespace. Above tenant tiers because these are recovery
 #     actions — losing them mid-flight risks data integrity.
 #
+#   platform-maintenance      (priority 9000)
+#     Scheduled maintenance work: every CronJob-spawned Pod (backups,
+#     snapshots, reconcilers, pollers). One rank BELOW platform-critical,
+#     well above every tenant tier.
+#
+#     Why a separate class rather than leaving CronJobs on
+#     platform-critical: under real memory pressure the kubelet evicts by
+#     ascending priority, and a backup Job losing its slot is cheaper than
+#     the API or the mail server losing theirs. A CronJob re-runs on its
+#     next tick. So maintenance should rank below services — but still
+#     above tenants, because platform work must never be blocked by a
+#     tenant workload.
+#
+#     ★ preemptionPolicy stays PreemptLowerPriority — deliberately.
+#     `Never` was considered and rejected: it would let a running tenant
+#     pod indefinitely block platform maintenance on a node whose CPU is
+#     fully RESERVED, inverting the very hierarchy these classes exist to
+#     express. Routine preemption is a symptom of an impossible ledger,
+#     not of the policy: on a measured production cluster, tenant plans summed
+#     to 8.9 cores of CPU ceiling on a node with 7.5 allocatable and 2.6 already
+#     held by platform pods — 1.8x oversold, with no admission control on the
+#     tenant-create/plan-assign path. Fix the ledger and preemption goes
+#     back to being the rare safety valve it is meant to be. Do not
+#     re-litigate this by weakening the policy.
+#
 #   platform-critical         (priority 10000)
 #     The platform's long-running system workloads (platform-api,
 #     panels, CNPG system-db, mail, webmail, monitoring, …). Without
@@ -66,6 +91,15 @@ metadata:
 value: 1000
 globalDefault: false
 description: "Short-lived storage-lifecycle Jobs (fsck / snapshot / restore) running in the platform-tenant-ops namespace."
+preemptionPolicy: PreemptLowerPriority
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: platform-maintenance
+value: 9000
+globalDefault: false
+description: "Scheduled maintenance Pods (CronJob-spawned backups, snapshots, reconcilers). One rank below platform-critical for kubelet eviction; still outranks every tenant workload."
 preemptionPolicy: PreemptLowerPriority
 ---
 apiVersion: scheduling.k8s.io/v1

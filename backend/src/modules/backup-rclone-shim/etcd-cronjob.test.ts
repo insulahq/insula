@@ -69,6 +69,7 @@ function fakeBatch(
     /** false ⇒ the job template carries NO backup-health labels — the state
      *  every existing cluster was in before the reconciler converged them. */
     jobTemplateLabels?: boolean;
+  priorityClass?: false;
   } = {},
 ) {
   const reconcileAnno =
@@ -99,17 +100,25 @@ function fakeBatch(
           },
         };
       spec.jobTemplate = { ...jobTemplateMeta };
+      // ADR-062: a CONVERGED live object now also carries the maintenance
+      // priority class, which this reconciler writes because the blanket
+      // kustomize patch cannot reach a seed-then-disown object on an existing
+      // cluster. It is set INDEPENDENTLY of the prefix env: several cases below
+      // deliberately have no prefix env and still assert "no drift → no patch",
+      // so a fixture that only gains the class alongside a container would not
+      // actually be settled. `priorityClass: false` expresses the un-converged
+      // cluster the reconciler has to fix.
+      const podSpec: Record<string, unknown> = opts.priorityClass === false
+        ? {}
+        : { priorityClassName: 'platform-maintenance' };
       if (opts.prefixEnv !== undefined) {
+        podSpec.containers = [
+          { name: 'rclone', env: [{ name: 'SHIM_PREFIX', value: opts.prefixEnv }] },
+        ];
+      }
+      if (Object.keys(podSpec).length > 0) {
         Object.assign(spec.jobTemplate as Record<string, unknown>, {
-          spec: {
-            template: {
-              spec: {
-                containers: [
-                  { name: 'rclone', env: [{ name: 'SHIM_PREFIX', value: opts.prefixEnv }] },
-                ],
-              },
-            },
-          },
+          spec: { template: { spec: podSpec } },
         });
       }
       return { metadata: { annotations }, spec };
@@ -245,6 +254,29 @@ describe('reconcileEtcdCronJob', () => {
     const body = (batch.patchNamespacedCronJob.mock.calls[0][0] as { body: unknown }).body;
     expect(body).toEqual([
       { op: 'replace', path: SHIM_PREFIX_PATH, value: 'etcd/cid-123' },
+    ]);
+  });
+
+  // ADR-062. The blanket kustomize patch that moves every platform CronJob to
+  // platform-maintenance cannot reach this one: it is seed-then-disown, so the
+  // manifest lands on fresh installs only. Caught on DEV — the rendered overlay
+  // said platform-maintenance while the live object still said
+  // platform-critical, alone among the eight. Asserting the OP here, not just
+  // the helper that computes it, because a value the reconciler never patches
+  // in is a value that never reaches the cluster.
+  it('writes the maintenance priority class onto a cluster that still lacks it', async () => {
+    const db = fakeDb([{ enabled: 1 }], 'cid-123');
+    const batch = fakeBatch({ live: false, prefixEnv: 'etcd/cid-123', priorityClass: false });
+    const r = await reconcileEtcdCronJob(db, { batch } as never, silentLog());
+
+    expect(r.patched).toBe(true);
+    const body = (batch.patchNamespacedCronJob.mock.calls[0][0] as { body: unknown }).body;
+    expect(body).toEqual([
+      {
+        op: 'add',
+        path: '/spec/jobTemplate/spec/template/spec/priorityClassName',
+        value: 'platform-maintenance',
+      },
     ]);
   });
 

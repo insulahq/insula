@@ -120,20 +120,31 @@ function PlanForm({ onClose, initial }: { readonly onClose: () => void; readonly
         <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Memory Limit (GB)</label><input type="text" className={INPUT_CLASS} value={form.memory_limit} onChange={(e) => setForm({ ...form, memory_limit: e.target.value })} required /></div>
         <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Storage Limit (GB)</label><input type="text" className={INPUT_CLASS} value={form.storage_limit} onChange={(e) => setForm({ ...form, storage_limit: e.target.value })} required /></div>
         <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Bandwidth (GB/mo)</label><input type="number" min="1" step="1" className={INPUT_CLASS} value={form.bandwidth_gb_limit} onChange={(e) => setForm({ ...form, bandwidth_gb_limit: e.target.value })} required /></div>
-        <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Max Sub-Users</label><input type="number" className={INPUT_CLASS} value={form.max_sub_users} onChange={(e) => setForm({ ...form, max_sub_users: e.target.value })} /></div>
+        <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Max Sub-Users</label><input type="number" className={INPUT_CLASS} min={0} max={100} required value={form.max_sub_users} onChange={(e) => setForm({ ...form, max_sub_users: e.target.value })} data-testid="plan-max-sub-users-input" /></div>
       </div>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">
         <div>
           <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Max Mailboxes</label>
+          {/* min 0, not 1: a plan with no mail is a real product, and the
+              contract has always allowed it. `required` matters because an
+              empty box submits Number('') === 0 — which would silently take
+              mail away from EVERY tenant on the plan. */}
           <input
             type="number"
             className={INPUT_CLASS}
-            min={1}
+            min={0}
             max={10000}
+            required
             value={form.max_mailboxes}
             onChange={(e) => setForm({ ...form, max_mailboxes: e.target.value })}
             data-testid="plan-max-mailboxes-input"
           />
+          {form.max_mailboxes.trim() === '0' && (
+            <p className="mt-1 text-xs text-amber-600 dark:text-amber-400" data-testid="plan-zero-mailboxes-hint">
+              0 disables email for every tenant on this plan. Existing mailboxes keep
+              working; no new ones can be created.
+            </p>
+          )}
         </div>
         <div>
           <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Max Mailbox Size (MB)</label>

@@ -407,6 +407,68 @@ describe('Email Page', () => {
     expect(screen.queryByTestId('email-enable-card')).not.toBeInTheDocument();
   });
 
+  // ── Mail disabled: effective mailbox allowance of 0 ───────────────
+  //
+  // NOTE: this file installs no beforeEach reset, so every mock set by an
+  // earlier test leaks into this one. Each case below sets all three mocks
+  // it depends on, and restores the usage default on the way out.
+
+  const USAGE_DEFAULT = {
+    data: { data: { limit: 50, current: 0, remaining: 50, source: 'plan' } },
+    isLoading: false,
+  } as unknown as ReturnType<typeof useMailboxUsage>;
+
+  it('replaces the Enable Email card with a disabled notice at allowance 0', () => {
+    mockedUseEmailDomains.mockReturnValue({
+      data: { data: [] },
+      isLoading: false,
+    } as unknown as ReturnType<typeof useEmailDomains>);
+    mockedUseDomains.mockReturnValue({
+      data: { data: [{ id: 'd1', domainName: 'first.com', dnsMode: 'primary' }] },
+      isLoading: false,
+    } as unknown as ReturnType<typeof useDomains>);
+    mockedUseMailboxUsage.mockReturnValue({
+      data: { data: { limit: 0, current: 0, remaining: 0, source: 'tenant_override' } },
+      isLoading: false,
+    } as unknown as ReturnType<typeof useMailboxUsage>);
+
+    renderWithProviders(<Email />);
+
+    // The button would only produce a 409 the tenant cannot act on.
+    expect(screen.queryByTestId('email-enable-card')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('enable-email-row-d1')).not.toBeInTheDocument();
+    expect(screen.getByTestId('email-disabled-card')).toBeInTheDocument();
+    expect(
+      screen.getByText('Email hosting is disabled for this account'),
+    ).toBeInTheDocument();
+
+    mockedUseMailboxUsage.mockReturnValue(USAGE_DEFAULT);
+  });
+
+  // Guards the "still loading" arm: an undefined limit must not read as 0,
+  // or the card would flash "disabled" on every page load.
+  it('keeps the Enable Email card while the usage query is still in flight', () => {
+    mockedUseEmailDomains.mockReturnValue({
+      data: { data: [] },
+      isLoading: false,
+    } as unknown as ReturnType<typeof useEmailDomains>);
+    mockedUseDomains.mockReturnValue({
+      data: { data: [{ id: 'd1', domainName: 'first.com', dnsMode: 'primary' }] },
+      isLoading: false,
+    } as unknown as ReturnType<typeof useDomains>);
+    mockedUseMailboxUsage.mockReturnValue({
+      data: undefined,
+      isLoading: true,
+    } as unknown as ReturnType<typeof useMailboxUsage>);
+
+    renderWithProviders(<Email />);
+
+    expect(screen.getByTestId('email-enable-card')).toBeInTheDocument();
+    expect(screen.queryByTestId('email-disabled-card')).not.toBeInTheDocument();
+
+    mockedUseMailboxUsage.mockReturnValue(USAGE_DEFAULT);
+  });
+
   // ── Round-4 Phase 1: top-level domain selector ────────────────────
 
   it('shows a label (no dropdown) when only one email domain is enabled', () => {
@@ -809,6 +871,47 @@ describe('mailbox usage meter colour', () => {
     usageAt(10, 10);
     renderWithProviders(<Email />);
     expect(screen.getByText(/reached the mailbox limit/i)).toBeTruthy();
+  });
+});
+
+// An allowance of 0 is a hard stop, and the meter has to say so. It did not:
+// pct is computed as current/limit, which is undefined at limit 0, so the old
+// code substituted 0 — `atLimit` was false and the tenant saw an empty bar
+// with no message at all, reading as "plenty of room".
+describe('mailbox usage meter at an allowance of 0', () => {
+  const usageAt = (current: number, limit: number) => {
+    mockedUseMailboxUsage.mockReturnValue({
+      data: { data: { limit, current, remaining: 0, source: 'tenant_override' } },
+      isLoading: false,
+    } as never);
+  };
+
+  it('explains the 0 instead of rendering a silent empty bar', () => {
+    usageAt(0, 0);
+    renderWithProviders(<Email />);
+    const card = screen.getByTestId('mailbox-usage-bar');
+    expect(card.textContent).toMatch(/email hosting is disabled/i);
+  });
+
+  it('does not ALSO claim the plan limit was reached', () => {
+    // Both messages firing would contradict each other.
+    usageAt(0, 0);
+    renderWithProviders(<Email />);
+    expect(screen.queryByText(/reached the mailbox limit/i)).toBeNull();
+  });
+
+  // The cap bounds NEW mailboxes; it does not delete the ones already there.
+  // Telling a tenant with five working mailboxes that "email hosting is
+  // disabled" would be false.
+  it('says "no new ones" — not "disabled" — when mailboxes already exist', () => {
+    usageAt(5, 0);
+    renderWithProviders(<Email />);
+    const card = screen.getByTestId('mailbox-usage-bar');
+    expect(card.textContent).toMatch(/no new ones can be created/i);
+    expect(card.textContent).toMatch(/keep working/i);
+    expect(card.textContent).not.toMatch(/email hosting is disabled/i);
+    // And the count it shows is the real one, against a denominator of 0.
+    expect(card.textContent).toMatch(/5\s*\/\s*0/);
   });
 });
 

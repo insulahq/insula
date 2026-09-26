@@ -73,4 +73,32 @@ describe('updateTenantSchema', () => {
     expect(updateTenantSchema.safeParse({ status: 'cancelled' }).success).toBe(false);
     expect(updateTenantSchema.safeParse({ status: 'invalid' }).success).toBe(false);
   });
+
+  // The mailbox override used to be min(1), so an operator disabling mail
+  // for one tenant got a validation error with no alternative short of
+  // suspending the whole tenant. 0 is the way to say "no mailboxes".
+  it('accepts max_mailboxes_override = 0 (mail off for this tenant)', () => {
+    expect(updateTenantSchema.safeParse({ max_mailboxes_override: 0 }).success).toBe(true);
+  });
+
+  it('still rejects a negative max_mailboxes_override', () => {
+    expect(updateTenantSchema.safeParse({ max_mailboxes_override: -1 }).success).toBe(false);
+  });
+
+  it('keeps null meaning "inherit the plan" for max_mailboxes_override', () => {
+    expect(updateTenantSchema.safeParse({ max_mailboxes_override: null }).success).toBe(true);
+  });
+
+  // Same asymmetry, same fix: hosting_plans.max_sub_users has always
+  // allowed 0 while the per-tenant override did not.
+  it('accepts max_sub_users_override = 0 and rejects negatives', () => {
+    expect(updateTenantSchema.safeParse({ max_sub_users_override: 0 }).success).toBe(true);
+    expect(updateTenantSchema.safeParse({ max_sub_users_override: -1 }).success).toBe(false);
+  });
+
+  // The per-mailbox SIZE cap is deliberately NOT part of this change: a
+  // 0 MB mailbox is meaningless, and its floor is 50 MB.
+  it('still rejects max_mailbox_size_mb_override = 0', () => {
+    expect(updateTenantSchema.safeParse({ max_mailbox_size_mb_override: 0 }).success).toBe(false);
+  });
 });

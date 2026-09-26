@@ -58,8 +58,21 @@ export async function buildTenantSummary(
     collect('mail', async () => {
       const r = await db.execute<Record<string, number | string | null>>(sql`
         SELECT
-          (SELECT COUNT(*)::int FROM mailboxes WHERE tenant_id = ${tenantId} AND status = 'active') AS boxes,
-          (SELECT COALESCE(p.max_mailboxes, 0)::int FROM tenants t
+          -- platform_managed excluded so this numerator counts the same rows
+          -- the limit below is enforced against (getTenantMailboxCount in
+          -- mailboxes/limit.ts). It did not, so the dashboard read "6 / 10"
+          -- where the Email page's meter read "5 / 10" for the same tenant —
+          -- the two dmarc@/postmaster@ intake mailboxes the PLATFORM creates
+          -- were being charged to the tenant's visible count but not to the cap.
+          (SELECT COUNT(*)::int FROM mailboxes
+            WHERE tenant_id = ${tenantId} AND status = 'active'
+              AND platform_managed = FALSE) AS boxes,
+          -- The per-tenant override wins over the plan, and 0 is a real
+          -- value (mail off), so COALESCE on the override FIRST rather
+          -- than reading the plan alone. Reading only the plan made the
+          -- tenant's own dashboard contradict the limit actually enforced
+          -- on mailbox create — see mailboxes/limit.ts.
+          (SELECT COALESCE(t.max_mailboxes_override, p.max_mailboxes, 0)::int FROM tenants t
              LEFT JOIN hosting_plans p ON p.id = t.plan_id WHERE t.id = ${tenantId}) AS max_boxes,
           (SELECT COALESCE(SUM(used_mb), 0)::float8 FROM mailboxes
             WHERE tenant_id = ${tenantId} AND status = 'active') AS used_mb,
@@ -67,7 +80,9 @@ export async function buildTenantSummary(
             WHERE tenant_id = ${tenantId} AND status = 'active') AS quota_mb,
           (SELECT COALESCE(SUM(sent_count), 0)::int FROM email_send_counters
             WHERE tenant_id = ${tenantId} AND bucket_start > date_trunc('day', NOW())) AS sent_today,
-          (SELECT COALESCE(p.email_daily_send_limit, 0)::int FROM tenants t
+          -- Same override-first rule as max_boxes above: the enforced
+          -- daily cap is tenants.email_send_rate_limit_daily when set.
+          (SELECT COALESCE(t.email_send_rate_limit_daily, p.email_daily_send_limit, 0)::int FROM tenants t
              LEFT JOIN hosting_plans p ON p.id = t.plan_id WHERE t.id = ${tenantId}) AS daily_limit
       `);
       const x = (r.rows ?? [])[0] ?? {};

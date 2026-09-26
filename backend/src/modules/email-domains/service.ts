@@ -7,6 +7,7 @@ import { notifyTenantEmailBootstrapped } from '../notifications/events.js';
 import { mailLogger } from '../../shared/mail-logger.js';
 import { assertTenantActive } from '../tenants/guards.js';
 import { getTenantById } from '../tenants/service.js';
+import { getTenantMailboxLimit } from '../mailboxes/limit.js';
 
 const log = mailLogger().child({ module: 'email-domains' });
 // canManageDnsZone / getActiveServersForDomain are not imported here:
@@ -116,6 +117,27 @@ export async function enableEmailForDomain(
 
   if (existing && existing.stalwartDomainId) {
     return { ...existing, domainName: domain.domainName };
+  }
+
+  // A tenant whose effective mailbox allowance is 0 has mail switched off
+  // (tenants.max_mailboxes_override = 0, or a plan with max_mailboxes = 0).
+  // Enabling email on a domain would publish MX/SPF/DMARC/autoconfig records
+  // and register the domain in Stalwart for an account that cannot then
+  // create a single mailbox — mail would be advertised in DNS and bounce.
+  // Only NEW enables are refused: `existing` without a stalwartDomainId is a
+  // half-finished enable that was authorised when it started, and blocking
+  // the retry would strand it.
+  if (!existing) {
+    const mailboxLimit = await getTenantMailboxLimit(db, tenantId);
+    if (mailboxLimit.limit === 0) {
+      throw new ApiError(
+        'CLIENT_MAILBOX_LIMIT_REACHED',
+        'Email hosting is disabled for this account',
+        409,
+        { limit: 0, source: mailboxLimit.source },
+        'Ask your administrator to allocate mailboxes to this account',
+      );
+    }
   }
 
   // M13: dkimSelector / dkimPrivateKeyEncrypted / dkimPublicKey columns
