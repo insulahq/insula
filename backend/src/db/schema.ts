@@ -58,6 +58,11 @@ export const storageOperationTypeEnum = pgEnum('storage_operation_type', [
   // e2fsck -n) and repair (without -n). Both run via the
   // storage-lifecycle quiesce orchestrator.
   'fsck',
+  // 0136: a workload-health auto-heal. Recorded as a real operation so
+  // mustBeIdle blocks concurrent operator ops on the same RWO volume, so
+  // quiesce-watchdog Leg B does not fire mid-heal, and so Leg A can recover the
+  // tenant if the process dies partway through.
+  'autoheal',
 ]);
 export const storageSnapshotKindEnum = pgEnum('storage_snapshot_kind', [
   'manual', 'pre-resize', 'pre-suspend', 'pre-archive', 'scheduled', 'pre-restore',

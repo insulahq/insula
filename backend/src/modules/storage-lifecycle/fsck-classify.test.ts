@@ -109,3 +109,44 @@ describe('classifyFsckOutput — e2fsck exit codes are not xfs exit codes', () =
     expect(r.verdict).toBe('errors');
   });
 });
+
+// ── xfs REPAIR mode ─────────────────────────────────────────────────────
+//
+// The exit-code scales are tool-specific and must not be shared. An earlier
+// revision let xfs repair-mode fall through to the e2fsck rule (exit 1-2 =
+// "errors corrected" = clean), so a repair xfs_repair itself said had not
+// finished was reported to the operator as a healthy filesystem — and the op was
+// marked succeeded. Every fixture here is `isXfs && !dryRun`, which had no
+// coverage at all.
+describe('classifyFsckOutput — xfs repair mode does not borrow e2fsck exit codes', () => {
+  it('exit 0 in repair mode is clean', () => {
+    const r = classifyFsckOutput('xfs', false, 0, CLEAN_OUTPUT.replace('dryRun=true', 'dryRun=false'));
+    expect(r.verdict).toBe('clean');
+    expect(r.clean).toBe(true);
+  });
+
+  it('exit 1 in repair mode is NOT clean — xfs_repair did not finish', () => {
+    const r = classifyFsckOutput('xfs', false, 1, CLEAN_OUTPUT.replace('dryRun=true', 'dryRun=false'));
+    expect(r.verdict).toBe('errors');
+    expect(r.clean).toBe(false);
+    expect(r.summary).toMatch(/ERRORS FOUND/);
+  });
+
+  it('exit 2 in repair mode is NOT clean', () => {
+    const r = classifyFsckOutput('xfs', false, 2, CLEAN_OUTPUT.replace('dryRun=true', 'dryRun=false'));
+    expect(r.verdict).toBe('errors');
+  });
+
+  it('a dirty log in REPAIR mode is not excused — repair mode can replay it', () => {
+    // `inconclusive` is a dry-run concession: -n cannot replay a log. A real
+    // repair can, so a non-zero exit there is a genuine failure.
+    const r = classifyFsckOutput('xfs', false, 1, DIRTY_LOG_OUTPUT.replace('dryRun=true', 'dryRun=false'));
+    expect(r.verdict).toBe('errors');
+    expect(r.verdict).not.toBe('inconclusive');
+  });
+
+  it('repair mode still reports a genuinely repaired filesystem as clean', () => {
+    const r = classifyFsckOutput('xfs', false, 0, `${CLEAN_OUTPUT}\ndone`);
+    expect(r.verdict).toBe('clean');
+  });
+});

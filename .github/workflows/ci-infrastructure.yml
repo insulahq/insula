@@ -877,6 +877,18 @@ jobs:
         # console. Harmless-looking because the generated YAML stayed
         # valid, which is why it shipped for months.
         run: ./scripts/ci-heredoc-expansion-check.sh
+      - name: Verify no backticks inside unquoted heredocs
+        # scripts/ci-heredoc-backtick-check.sh existed but was wired into NO
+        # workflow, so it had never run in CI — an unexecuted guard reads exactly
+        # like a passing one. Wired here alongside its sibling.
+        run: ./scripts/ci-heredoc-backtick-check.sh
+      - name: Verify no backticks inside sql`` template literals
+        # A backtick in a SQL comment inside sql`` CLOSES the template literal.
+        # The SQL still reads correctly and tsc blames an unrelated line, so it
+        # is easy to mis-diagnose; it happened twice while writing the
+        # workload-health reconciler. The heredoc guards above cover the shell
+        # form of the same mistake and cannot see the TypeScript one.
+        run: ./scripts/ci-sql-template-backtick-check.sh
 
   task-helper-coverage:
     name: Task Tracker helper coverage

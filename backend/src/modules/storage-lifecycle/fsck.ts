@@ -387,9 +387,17 @@ export function classifyFsckOutput(
     // Exit 1, clean log, no damage markers — a stale counter xfs_repair would
     // rewrite. Worth telling the operator, but not damage and not a failure.
     verdict = 'inconclusive';
+  } else if (isXfs) {
+    // xfs_repair in REPAIR mode: 0 = repaired/clean, anything else = it did not
+    // finish. This branch used to fall through to the e2fsck rule below, which
+    // maps exit 1-2 to 'clean' — so a repair xfs_repair itself said had not
+    // succeeded was reported to the operator as a healthy filesystem, directly
+    // contradicting the exit-code contract documented on FsckResult.
+    verdict = 'errors';
   } else {
     // e2fsck exit 1/2 in repair mode means it CORRECTED things: the filesystem
-    // is now consistent, which is a success with a story attached.
+    // is now consistent, which is a success with a story attached. Exit 4+ means
+    // errors were left UNcorrected.
     verdict = !dryRun && exitCode <= 2 ? 'clean' : 'errors';
   }
 

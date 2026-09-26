@@ -55,6 +55,7 @@ import { sql } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { STORAGE_QUIESCED_ANNOTATION } from '../../shared/scale-deployment.js';
+import type { QuiesceSnapshot } from './quiesce.js';
 
 /**
  * How long a workload may be unavailable before it counts as an outage.
@@ -64,7 +65,18 @@ import { STORAGE_QUIESCED_ANNOTATION } from '../../shared/scale-deployment.js';
  * a cold image pull, a rolling update. Short enough that an operator hears about
  * a real outage in minutes rather than hours.
  */
-const GRACE_MS = 8 * 60 * 1000;
+export const GRACE_MS = 8 * 60 * 1000;
+
+/**
+ * The same window as a Postgres interval literal, for the dashboard queries.
+ *
+ * Both dashboard cards read this table and independently gate on the grace
+ * window. They used to hardcode `INTERVAL '8 minutes'`, so changing GRACE_MS
+ * would silently desynchronise the panels from the reconciler that owns the
+ * state — and the whole point of the shared table is that the two consoles
+ * cannot disagree about whether a tenant is up.
+ */
+export const GRACE_INTERVAL_SQL = `${Math.round(GRACE_MS / 1000)} seconds`;
 
 /** Heal attempts before we stop trying and leave it to the operator. */
 const MAX_HEAL_ATTEMPTS = 3;
@@ -74,6 +86,16 @@ const HEAL_BACKOFF_BASE_MS = 10 * 60 * 1000;
 
 /** Re-alert ladder for a sustained, unhealed outage: 1h → 6h → daily. */
 const NOTIFY_LADDER_MS = [60 * 60 * 1000, 6 * 60 * 60 * 1000, 24 * 60 * 60 * 1000];
+
+/**
+ * How long a workload must stay healthy before a new outage counts as a NEW
+ * episode rather than a continuation.
+ *
+ * Shorter than this and the counters carry over, so a flapping workload still
+ * marches up the heal-attempt budget and the notify ladder.
+ */
+const FLAP_QUIET_MS = 60 * 60 * 1000;
+const FLAP_QUIET_SQL = `${Math.round(FLAP_QUIET_MS / 1000)} seconds`;
 
 /** Cleared episodes are a short audit tail. */
 const CLEARED_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
@@ -297,59 +319,152 @@ async function healNamespace(
 ): Promise<void> {
   const { quiesce, unquiesce, waitForQuiesced } = await import('./quiesce.js');
   const { waitForVolumeDetachedByPvc, unquiesceBestEffort } = await import('./service.js');
+  const { randomUUID } = await import('node:crypto');
+  const opId = randomUUID();
 
-  // A namespace parked at 0 by an unfinished storage op cannot be healed by
-  // quiesce→unquiesce: `quiesce` captures the CURRENT replica counts, which are
-  // all 0, so the restore would faithfully put it back to 0. The intended counts
-  // live on the operation row that scaled it down, which is what
-  // unquiesceBestEffort reads.
-  if (strandedAtZero) {
-    const op = await db.execute<{ id: string }>(sql`
-      SELECT id FROM storage_operations
-       WHERE tenant_id = ${tenantId}
-       ORDER BY created_at DESC
-       LIMIT 1
+  // ── Register the heal as a REAL storage operation, and CLAIM the tenant ──
+  //
+  // A heal performs the same destructive quiesce cycle as a resize or an fsck,
+  // so it has to be visible to the machinery that guards those:
+  //   * `mustBeIdle()` gates resize / restore / fsck / suspend / resume /
+  //     archive on `storage_lifecycle_state = 'idle'`. Without this claim an
+  //     operator could start a DESTRUCTIVE resize — which deletes and recreates
+  //     the PVC — while the heal was mid-cycle on the same RWO volume.
+  //   * quiesce-watchdog Leg B hunts for hold-annotated Deployments on active
+  //     tenants with `active_storage_op_id IS NULL`, which is precisely what a
+  //     heal in progress used to look like. It would fire concurrently and
+  //     restore from an unrelated stale snapshot while we were scaling down.
+  //   * Leg A recovers non-terminal op rows older than 6h, so if this process
+  //     dies mid-heal the tenant still gets its workloads back.
+  //
+  // The tenant claim is a conditional UPDATE, so it doubles as the cross-process
+  // mutual exclusion: if anything else already owns the tenant we abort before
+  // touching a single Deployment.
+  await db.execute(sql`
+    INSERT INTO storage_operations (id, tenant_id, op_type, state, progress_pct, progress_message, params)
+    VALUES (${opId}, ${tenantId}, 'autoheal', 'quiescing', 0,
+            ${strandedAtZero
+              ? 'Auto-heal: restoring workloads stranded at 0 replicas'
+              : 'Auto-heal: re-staging the tenant volume'},
+            ${JSON.stringify({ autoHeal: true, strandedAtZero })}::jsonb)
+  `);
+  const claim = await db.execute(sql`
+    UPDATE tenants
+       SET active_storage_op_id = ${opId}, storage_lifecycle_state = 'quiescing'
+     WHERE id = ${tenantId} AND active_storage_op_id IS NULL
+  `);
+  if ((claim.rowCount ?? 0) === 0) {
+    await db.execute(sql`
+      UPDATE storage_operations
+         SET state = 'failed', completed_at = now(),
+             last_error = 'Aborted before touching anything: another storage operation owns this tenant'
+       WHERE id = ${opId}
     `);
-    const opId = (op.rows ?? [])[0]?.id;
-    if (!opId) {
-      // No op ever recorded — the holds are the only thing keeping the tenant
-      // down, so dropping them lets the reactive auto-start work again.
-      const { clearQuiesceHold } = await import('./quiesce.js');
-      await clearQuiesceHold(k8s, namespace);
-      throw new Error(
-        `${namespace} is held at 0 replicas but has no storage_operations row to restore from — `
-        + 'holds cleared; the intended replica counts are not recoverable automatically',
-      );
-    }
-    await unquiesceBestEffort(db, k8s, opId, namespace, null);
-    // unquiesceBestEffort swallows by design, so prove the outcome here rather
-    // than trusting it: a heal that reports success over a still-down tenant is
-    // the bug this whole change set is about.
-    const stillHeld = (await listTenantDeployments(k8s))
-      .filter((d) => d.namespace === namespace)
-      .filter((d) => (d.desired === 0 && d.held) || (d.desired > 0 && d.available < d.desired));
-    if (stillHeld.length > 0) {
-      throw new Error(
-        `${namespace} still has ${stillHeld.length} workload(s) down after restoring from op ${opId}: `
-        + stillHeld.map((d) => `${d.name} ${d.available}/${d.desired}${d.held ? ' (held)' : ''}`).join(', '),
-      );
-    }
-    return;
+    throw new Error(
+      `${namespace}: another storage operation claimed the tenant before the heal started — skipping`,
+    );
   }
 
-  const snap = await quiesce(k8s, namespace);
+  const releaseTenant = async (failed: boolean, err: string | null): Promise<void> => {
+    await db.execute(sql`
+      UPDATE storage_operations
+         SET state = ${failed ? 'failed' : 'idle'}, progress_pct = 100, completed_at = now(),
+             last_error = ${err}
+       WHERE id = ${opId}
+    `);
+    // Only release the pointer if it is still OURS — never clobber a newer op.
+    await db.execute(sql`
+      UPDATE tenants
+         SET active_storage_op_id = NULL,
+             storage_lifecycle_state = ${failed ? 'failed' : 'idle'}
+       WHERE id = ${tenantId} AND active_storage_op_id = ${opId}
+    `);
+  };
+
   try {
-    await waitForQuiesced(k8s, namespace);
-    // The step kubelet never takes on its own: let the volume go fully
-    // detached, which releases the staging directory and the attachment
-    // tickets, and flushes the filesystem journal.
-    await waitForVolumeDetachedByPvc(k8s, namespace, pvcName);
-  } finally {
-    // Always attempt the restore, even if the detach wait timed out — leaving a
-    // tenant we just scaled down at 0 would turn a partial outage into a total
-    // one. unquiesce verifies availability and keeps the quiesce-hold on
-    // anything it could not restore, so the next tick still owns it.
-    await unquiesce(k8s, namespace, snap);
+    // A namespace parked at 0 by an unfinished storage op cannot be healed by
+    // quiesce→unquiesce: `quiesce` captures the CURRENT replica counts, which are
+    // all 0, so the restore would faithfully put it back to 0. The intended counts
+    // live on the operation row that scaled it down, which is what
+    // unquiesceBestEffort reads.
+    if (strandedAtZero) {
+      const op = await db.execute<{ id: string }>(sql`
+        SELECT id FROM storage_operations
+         WHERE tenant_id = ${tenantId}
+           AND id <> ${opId}
+           AND params -> 'quiesceSnapshot' IS NOT NULL
+         ORDER BY created_at DESC
+         LIMIT 1
+      `);
+      const sourceOpId = (op.rows ?? [])[0]?.id;
+      if (!sourceOpId) {
+        // No snapshot anywhere to restore from. Dropping the holds at least
+        // re-enables reactive auto-start; the replica counts are simply not
+        // recoverable automatically, and the caller turns this into an alert.
+        const { clearQuiesceHold } = await import('./quiesce.js');
+        await clearQuiesceHold(k8s, namespace);
+        throw new Error(
+          `${namespace} is held at 0 replicas but no storage operation carries a replica snapshot to restore from — `
+          + 'holds cleared so auto-start works again, but the intended replica counts cannot be recovered automatically',
+        );
+      }
+      await unquiesceBestEffort(db, k8s, sourceOpId, namespace, null);
+      // unquiesceBestEffort swallows by design, so prove the outcome here rather
+      // than trusting it: a heal that reports success over a still-down tenant is
+      // the bug this whole change set is about.
+      const stillDown = (await listTenantDeployments(k8s))
+        .filter((d) => d.namespace === namespace)
+        .filter((d) => (d.desired === 0 && d.held) || (d.desired > 0 && d.available < d.desired));
+      if (stillDown.length > 0) {
+        throw new Error(
+          `${namespace} still has ${stillDown.length} workload(s) down after restoring from op ${sourceOpId}: `
+          + stillDown.map((d) => `${d.name} ${d.available}/${d.desired}${d.held ? ' (held)' : ''}`).join(', '),
+        );
+      }
+      await releaseTenant(false, null);
+      return;
+    }
+
+    // ── The re-stage cycle ──
+    // `quiesce` is given the persist callback for the same reason every other
+    // orchestrator gives it one: it writes the pre-quiesce replica counts to the
+    // op row BEFORE scaling anything, so a throw PART WAY through the scale-down
+    // loop (a 409, a 5xx, a network blip on the third of four Deployments) still
+    // leaves a complete snapshot on disk for the failure path — and for Leg A —
+    // to restore from. Without it, a mid-loop throw meant the local snapshot was
+    // never assigned and nothing restored the workloads at all.
+    let snap: QuiesceSnapshot | null = null;
+    try {
+      snap = await quiesce(k8s, namespace, async (captured) => {
+        await db.execute(sql`
+          UPDATE storage_operations
+             SET params = params || ${JSON.stringify({ quiesceSnapshot: captured })}::jsonb
+           WHERE id = ${opId}
+        `);
+      });
+      await waitForQuiesced(k8s, namespace);
+      // The step kubelet never takes on its own: let the volume go fully
+      // detached, which releases the staging directory and the attachment
+      // tickets, and flushes the filesystem journal.
+      await waitForVolumeDetachedByPvc(k8s, namespace, pvcName);
+      await unquiesce(k8s, namespace, snap);
+    } catch (err) {
+      // Restore on EVERY failure path, including a throw from inside quiesce
+      // itself, falling back to the op-persisted snapshot when the local is
+      // still null. Leaving a namespace we just scaled down at 0 would turn a
+      // partial outage into a total one.
+      const primary = err instanceof Error ? err.message : String(err);
+      await unquiesceBestEffort(db, k8s, opId, namespace, snap);
+      // Re-throw the ORIGINAL cause: a `finally`-based restore would let a
+      // secondary error from the restore mask "never reached detached", and the
+      // operator-facing recommendation is derived from the cause.
+      throw new Error(primary);
+    }
+    await releaseTenant(false, null);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await releaseTenant(true, msg.slice(0, 2000));
+    throw err;
   }
 }
 
@@ -409,12 +524,20 @@ export async function reconcileTenantWorkloadHealth(
       // Healthy → close any open episode. Done for EVERY tenant, including
       // ineligible ones: a suspended tenant that comes back up should not keep
       // a stale open episode that both dashboards would render.
-      const res = await db.execute(sql`
-        UPDATE tenant_workload_health_events
-           SET cleared_at = now(), available_replicas = ${d.available}
-         WHERE tenant_id = ${tenant.id} AND workload = ${d.name} AND cleared_at IS NULL
-      `);
-      if ((res.rowCount ?? 0) > 0) episodesCleared += 1;
+      //
+      // Wrapped because an unhandled throw here escapes the whole reconcile and
+      // every LATER tenant in the list goes unprocessed for this tick. One
+      // tenant's transient DB error must not blind the sweep to the rest.
+      try {
+        const res = await db.execute(sql`
+          UPDATE tenant_workload_health_events
+             SET cleared_at = now(), available_replicas = ${d.available}
+           WHERE tenant_id = ${tenant.id} AND workload = ${d.name} AND cleared_at IS NULL
+        `);
+        if ((res.rowCount ?? 0) > 0) episodesCleared += 1;
+      } catch (err) {
+        console.warn(`[workload-health] clearing episode ${d.namespace}/${d.name} failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
       continue;
     }
 
@@ -441,6 +564,8 @@ export async function reconcileTenantWorkloadHealth(
         : classifyUnavailability(d.replicaFailure, podMsgs);
       // Open or refresh. `first_seen_at` is left alone on conflict — it is the
       // hysteresis clock and must measure the OUTAGE, not the last tick.
+      // Same isolation as the clear path: one tenant must not abort the sweep.
+      try {
       const ins = await db.execute(sql`
         INSERT INTO tenant_workload_health_events
           (tenant_id, workload, namespace, desired_replicas, available_replicas, reason, detail)
@@ -451,22 +576,53 @@ export async function reconcileTenantWorkloadHealth(
                available_replicas = EXCLUDED.available_replicas,
                reason = EXCLUDED.reason,
                detail = EXCLUDED.detail,
-               -- A workload that went down again after being cleared starts a
-               -- NEW episode: reopen and restart the clock and the counters,
-               -- otherwise an old cleared row makes a fresh outage look like it
-               -- has already exhausted its heal attempts.
-               first_seen_at = CASE WHEN tenant_workload_health_events.cleared_at IS NOT NULL
+               -- A workload that went down again shortly after being "healed" is
+               -- FLAPPING, not recovered. Resetting the counters on every reopen
+               -- meant such a tenant could cycle down/up indefinitely without ever
+               -- reaching MAX_HEAL_ATTEMPTS or the notify ladder — continuous real
+               -- instability that never alerted. Only a reopen after a decent
+               -- quiet period counts as a fresh incident; a fast re-break
+               -- CONTINUES the previous episode and keeps its counters.
+               --
+               -- NULL semantics are load-bearing and deliberate: for a row that
+               -- is still OPEN, cleared_at IS NULL, so the comparison against
+               -- now() minus the interval is NULL, the CASE takes the ELSE, and a
+               -- plain refresh
+               -- leaves every counter and the clock untouched. Three states, one
+               -- comparison: open -> keep, recently closed -> keep, long closed
+               -- -> reset.
+               first_seen_at = CASE WHEN tenant_workload_health_events.cleared_at
+                                         < now() - ${FLAP_QUIET_SQL}::interval
                                     THEN now() ELSE tenant_workload_health_events.first_seen_at END,
-               heal_attempts = CASE WHEN tenant_workload_health_events.cleared_at IS NOT NULL
+               heal_attempts = CASE WHEN tenant_workload_health_events.cleared_at
+                                         < now() - ${FLAP_QUIET_SQL}::interval
                                     THEN 0 ELSE tenant_workload_health_events.heal_attempts END,
-               notify_count = CASE WHEN tenant_workload_health_events.cleared_at IS NOT NULL
+               notify_count = CASE WHEN tenant_workload_health_events.cleared_at
+                                        < now() - ${FLAP_QUIET_SQL}::interval
                                    THEN 0 ELSE tenant_workload_health_events.notify_count END,
-               last_notified_at = CASE WHEN tenant_workload_health_events.cleared_at IS NOT NULL
+               last_notified_at = CASE WHEN tenant_workload_health_events.cleared_at
+                                         < now() - ${FLAP_QUIET_SQL}::interval
                                        THEN NULL ELSE tenant_workload_health_events.last_notified_at END,
+               -- A REOPENED episode has not been healed at all, so the previous
+               -- episode's heal outcome must not survive into it. Observed on DEV:
+               -- a reopened row kept last_heal_error from the prior outage while
+               -- heal_attempts was correctly reset to 0, and the dashboard card --
+               -- which decides "tried and failed" from last_heal_error -- rendered
+               -- "0 heal attempt(s) failed". Reset the pair together or the two
+               -- fields disagree about the same episode.
+               last_heal_error = CASE WHEN tenant_workload_health_events.cleared_at
+                                         < now() - ${FLAP_QUIET_SQL}::interval
+                                      THEN NULL ELSE tenant_workload_health_events.last_heal_error END,
+               last_heal_at = CASE WHEN tenant_workload_health_events.cleared_at
+                                         < now() - ${FLAP_QUIET_SQL}::interval
+                                   THEN NULL ELSE tenant_workload_health_events.last_heal_at END,
                healed_at = NULL,
                cleared_at = NULL
       `);
       if ((ins.rowCount ?? 0) > 0) episodesOpened += 1;
+      } catch (err) {
+        console.warn(`[workload-health] recording episode ${namespace}/${d.name} failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
   }
 
@@ -586,7 +742,7 @@ export async function reconcileTenantWorkloadHealth(
     // deduplicates nothing, which is how saturation alerts once fired hourly
     // forever.
     const episodeKey = `workloads-down:${row.tenant_id}:${row.workload}:${downSince}`;
-    await notifyAdminTenantWorkloadsDown(db, {
+    const adminSent = await notifyAdminTenantWorkloadsDown(db, {
       tenantName: row.tenant_name,
       namespace: row.namespace,
       workload: row.workload,
@@ -599,11 +755,37 @@ export async function reconcileTenantWorkloadHealth(
       lastHealError: row.last_heal_error ?? undefined,
       recommendedAction: recommendedAction(effReason),
     }, `${episodeKey}:admin:${row.notify_count}`);
-    await notifyTenantWorkloadsDown(db, row.tenant_id, {
+    const tenantSent = await notifyTenantWorkloadsDown(db, row.tenant_id, {
       workload: row.workload,
       downSince,
       reasonLabel: label,
     }, `${episodeKey}:tenant:${row.notify_count}`);
+
+    // The ADMIN copy is the one that matters: it is the alert whose absence let a
+    // tenant stay down for 18 hours. If it did not go out, GIVE THE LADDER SLOT
+    // BACK so the next tick retries in 5 minutes instead of deferring by the
+    // ladder step (1h → 6h → daily) over a delivery that never happened.
+    if (!adminSent.ok) {
+      await db.execute(sql`
+        UPDATE tenant_workload_health_events
+           SET last_notified_at = ${row.last_notified_at},
+               notify_count = ${row.notify_count}
+         WHERE tenant_id = ${row.tenant_id} AND workload = ${row.workload}
+           AND cleared_at IS NULL
+      `);
+      console.error(
+        `[workload-health] ADMIN alert for ${row.namespace}/${row.workload} did NOT dispatch `
+        + `(${adminSent.error ?? 'unknown'}) — ladder slot released, retrying next tick`,
+      );
+      continue;
+    }
+    if (!tenantSent.ok) {
+      // The tenant copy is informational and its address may simply be
+      // undeliverable; do not hold the admin ladder back for it.
+      console.warn(
+        `[workload-health] tenant copy for ${row.namespace}/${row.workload} did not dispatch: ${tenantSent.error ?? 'unknown'}`,
+      );
+    }
     alerted += 1;
   }
 

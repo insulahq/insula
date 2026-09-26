@@ -1,0 +1,30 @@
+-- A workload-health auto-heal is a real storage operation, and has to be
+-- recorded as one.
+--
+-- The reconciler in workload-health.ts heals a stranded tenant by scaling every
+-- PVC consumer to 0, waiting for Longhorn to detach, and scaling back up. That
+-- is the same destructive quiesce cycle a resize or an fsck performs, but the
+-- first implementation ran it WITHOUT writing a storage_operations row and
+-- without claiming tenants.active_storage_op_id. Three things went wrong as a
+-- result:
+--
+--   1. `mustBeIdle()` — checked by resize, restore, fsck, suspend, resume and
+--      archive — could not see the heal, so an operator could start a
+--      DESTRUCTIVE resize (which deletes and recreates the PVC) while the heal
+--      was mid-cycle on the same RWO volume.
+--   2. quiesce-watchdog Leg B looks for hold-annotated Deployments on active
+--      tenants with `active_storage_op_id IS NULL` — exactly the signature a
+--      heal in progress produced — so it could fire concurrently and scale
+--      things back up from an unrelated stale snapshot while the heal was
+--      scaling them down.
+--   3. If the process died mid-heal there was no non-terminal op row for Leg A
+--      to find, so nothing would ever restore the workloads.
+--
+-- Giving the heal its own op_type fixes all three by making it visible to the
+-- machinery that already exists, and keeps it distinguishable from an
+-- operator-initiated op in the operations list and the task-tracker chip.
+--
+-- ADD VALUE IF NOT EXISTS is idempotent, so this is replay-safe. The value is
+-- deliberately not USED in this migration — Postgres forbids using a new enum
+-- label in the same transaction that adds it.
+ALTER TYPE storage_operation_type ADD VALUE IF NOT EXISTS 'autoheal';
