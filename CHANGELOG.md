@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.9.34] - 2026-09-26
+
 ### Fixed
 
 - **A two-minutely maintenance job could evict a tenant's website.** Every
