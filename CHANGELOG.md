@@ -28,8 +28,10 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
   With mail off, the tenant panel says so rather than offering buttons that
   cannot work: the *Enable Email* card is replaced by a short explanation, and
-  the mailbox usage meter reads "0 mailboxes — email hosting is disabled"
-  instead of rendering an empty bar with no message. The API refuses both the
+  the mailbox usage meter explains the 0 instead of rendering an empty bar
+  with no message — it reads "5 / 0" for a tenant that still has five
+  mailboxes, and says those keep working while no new ones can be created,
+  rather than claiming email is off over five live accounts. The API refuses both the
   mailbox create and a new *enable email on a domain* with
   `Email hosting is disabled for this account`, the second of which also stops
   the platform publishing MX/SPF/DMARC records for an account that could never

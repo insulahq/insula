@@ -347,6 +347,75 @@ describe('TenantDetail resource limits — plan defaults', () => {
     expect(cpu.disabled).toBe(true);
   });
 
+  // ── An allowance of 0 ────────────────────────────────────────────
+  //
+  // Disabling mail for one tenant had no expression in this form: the
+  // contract's min was 1, so Save returned a validation error and the only
+  // remaining lever was suspending the whole tenant.
+
+  it('sends max_mailboxes_override: 0 when the operator types 0', async () => {
+    renderTenantDetail();
+    fireEvent.click(await screen.findByTestId('edit-limits-button'));
+    fireEvent.click(screen.getByTestId('toggle-max-mailboxes'));   // → Custom
+    fireEvent.change(screen.getByTestId('value-max-mailboxes'), { target: { value: '0' } });
+
+    // The operator is told what 0 does before they commit to it.
+    expect(screen.getByTestId('zero-hint-max-mailboxes').textContent)
+      .toMatch(/disables email for this tenant/i);
+
+    fireEvent.click(screen.getByTestId('save-limits-button'));
+
+    await waitFor(() => {
+      const patch = mockApiFetch.mock.calls.find(
+        ([, opts]) => (opts as { method?: string } | undefined)?.method === 'PATCH',
+      );
+      expect(patch, 'a PATCH should have been sent').toBeTruthy();
+      const body = JSON.parse((patch![1] as { body: string }).body);
+      expect(body.max_mailboxes_override).toBe(0);
+    });
+  });
+
+  // `Number('')` is 0. While 0 was rejected by the contract this was a
+  // harmless validation error; now that 0 means "mail off", a field the
+  // operator flipped to Custom and left blank would silently disable mail.
+  it('sends null — NOT 0 — for a Custom field left empty', async () => {
+    renderTenantDetail();
+    fireEvent.click(await screen.findByTestId('edit-limits-button'));
+    fireEvent.click(screen.getByTestId('toggle-max-mailboxes'));   // → Custom
+    fireEvent.change(screen.getByTestId('value-max-mailboxes'), { target: { value: '' } });
+
+    // No hint either: an empty box is not a zero.
+    expect(screen.queryByTestId('zero-hint-max-mailboxes')).toBeNull();
+
+    fireEvent.click(screen.getByTestId('save-limits-button'));
+
+    await waitFor(() => {
+      const patch = mockApiFetch.mock.calls.find(
+        ([, opts]) => (opts as { method?: string } | undefined)?.method === 'PATCH',
+      );
+      expect(patch, 'a PATCH should have been sent').toBeTruthy();
+      const body = JSON.parse((patch![1] as { body: string }).body);
+      expect(body.max_mailboxes_override).toBeNull();
+    });
+  });
+
+  // Whitespace is not a number either.
+  it('treats a whitespace-only Custom field as no override', async () => {
+    renderTenantDetail();
+    fireEvent.click(await screen.findByTestId('edit-limits-button'));
+    fireEvent.click(screen.getByTestId('toggle-max-mailboxes'));
+    fireEvent.change(screen.getByTestId('value-max-mailboxes'), { target: { value: '   ' } });
+    fireEvent.click(screen.getByTestId('save-limits-button'));
+
+    await waitFor(() => {
+      const patch = mockApiFetch.mock.calls.find(
+        ([, opts]) => (opts as { method?: string } | undefined)?.method === 'PATCH',
+      );
+      const body = JSON.parse((patch![1] as { body: string }).body);
+      expect(body.max_mailboxes_override).toBeNull();
+    });
+  });
+
   // Covers a FRESH mount on the new plan. It does NOT exercise the key-based
   // remount of a card that was already on screen — that path is correct by
   // React key semantics but is not asserted here; driving it needs the

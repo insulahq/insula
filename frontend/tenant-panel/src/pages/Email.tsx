@@ -691,10 +691,18 @@ function MailboxUsageBar({ tenantId }: { readonly tenantId: string }) {
           style={{ width: `${Math.min(100, pct)}%` }}
         />
       </div>
+      {/* A tenant can sit at an allowance of 0 with mailboxes still in it —
+          the cap bounds NEW mailboxes, it does not delete existing ones. The
+          meter reads "5 / 0" there, which is accurate, and saying "email
+          hosting is disabled" over five working mailboxes would not be. */}
       {mailDisabled && (
         <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
-          Your account is allocated 0 mailboxes — email hosting is disabled. Contact your
-          administrator if you need email.
+          {usage.current > 0
+            ? 'Your account is allocated 0 mailboxes, so no new ones can be created. '
+              + 'The mailboxes you already have keep working. Contact your administrator '
+              + 'to change this.'
+            : 'Your account is allocated 0 mailboxes — email hosting is disabled. '
+              + 'Contact your administrator if you need email.'}
         </p>
       )}
       {atLimit && (

@@ -874,6 +874,47 @@ describe('mailbox usage meter colour', () => {
   });
 });
 
+// An allowance of 0 is a hard stop, and the meter has to say so. It did not:
+// pct is computed as current/limit, which is undefined at limit 0, so the old
+// code substituted 0 — `atLimit` was false and the tenant saw an empty bar
+// with no message at all, reading as "plenty of room".
+describe('mailbox usage meter at an allowance of 0', () => {
+  const usageAt = (current: number, limit: number) => {
+    mockedUseMailboxUsage.mockReturnValue({
+      data: { data: { limit, current, remaining: 0, source: 'tenant_override' } },
+      isLoading: false,
+    } as never);
+  };
+
+  it('explains the 0 instead of rendering a silent empty bar', () => {
+    usageAt(0, 0);
+    renderWithProviders(<Email />);
+    const card = screen.getByTestId('mailbox-usage-bar');
+    expect(card.textContent).toMatch(/email hosting is disabled/i);
+  });
+
+  it('does not ALSO claim the plan limit was reached', () => {
+    // Both messages firing would contradict each other.
+    usageAt(0, 0);
+    renderWithProviders(<Email />);
+    expect(screen.queryByText(/reached the mailbox limit/i)).toBeNull();
+  });
+
+  // The cap bounds NEW mailboxes; it does not delete the ones already there.
+  // Telling a tenant with five working mailboxes that "email hosting is
+  // disabled" would be false.
+  it('says "no new ones" — not "disabled" — when mailboxes already exist', () => {
+    usageAt(5, 0);
+    renderWithProviders(<Email />);
+    const card = screen.getByTestId('mailbox-usage-bar');
+    expect(card.textContent).toMatch(/no new ones can be created/i);
+    expect(card.textContent).toMatch(/keep working/i);
+    expect(card.textContent).not.toMatch(/email hosting is disabled/i);
+    // And the count it shows is the real one, against a denominator of 0.
+    expect(card.textContent).toMatch(/5\s*\/\s*0/);
+  });
+});
+
 
 // ─── starting a migration ─────────────────────────────────────────────────
 //

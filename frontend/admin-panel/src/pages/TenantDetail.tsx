@@ -1968,11 +1968,17 @@ function ResourceLimitsCard({
               value={isCustom ? value : (planDefault ?? '')}
               onChange={(e) => setValue(e.target.value)}
               disabled={!isCustom}
+              data-testid={`value-${label.toLowerCase().replace(/\s/g, '-')}`}
             />
             <span className="text-xs text-gray-500 dark:text-gray-400 whitespace-nowrap">{unit}</span>
           </div>
           {zeroHint && isCustom && value.trim() === '0' && (
-            <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">{zeroHint}</p>
+            <p
+              className="mt-1 text-xs text-amber-600 dark:text-amber-400"
+              data-testid={`zero-hint-${label.toLowerCase().replace(/\s/g, '-')}`}
+            >
+              {zeroHint}
+            </p>
           )}
         </div>
       ) : (
