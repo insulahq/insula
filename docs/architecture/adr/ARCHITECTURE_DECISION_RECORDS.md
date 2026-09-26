@@ -2699,3 +2699,33 @@ bundle from `meta.json`, legacy bundles stay restorable until they expire, with 
 admin action to drop the legacy mail repos early (safe because mail loss protection is the
 independent whole-store snapshot, taken every 10 minutes). Rejected: a persistent staging
 mirror of the mail pool and the incremental IMAP fetch it would enable.
+
+## ADR-062: CPU is a share, not a reservation — tier requests, a burst ceiling, honest panels
+
+See [ADR-062-cpu-as-a-share-not-a-reservation.md](ADR-062-cpu-as-a-share-not-a-reservation.md).
+
+Proposed (2026-09-26): a production tenant's Moodle pod was preempted and recreated every
+ten minutes for over half an hour — ~90 s of downtime per cycle, up to 38 quota-rejection
+events, and an operator-facing message about memory on a tenant using 257Mi of the 912Mi it
+reserved. Nothing was short of memory and nothing was OOM-killed. The node was at **98% of
+allocatable CPU requests while running at 20% actual CPU**, tenant workloads sit at priority
+0, and a `traefik-plugin-guard` Job asking for **10m** was evicting a 250m/512Mi pod to
+claim a slot on an 80%-idle machine. Underneath: plans sell 8.90 cores of tenant ceiling
+against 7.50 allocatable (2.60 already held by platform pods), with no admission control —
+the headroom gate sums `resource_quotas`, a table with 0 rows, and is wired only to an
+endpoint that is not how capacity is sold. Decision: a tenant CPU request becomes a **tier**
+(Normal 5m / High 30m / Highest 100m) chosen in `cpu.weight` space — measured on the node,
+everything ≤25m collapses to weight 1, so a ladder of "very small numbers" would be theatre;
+noisy neighbours are bounded by a **LimitRange default plus `limits.cpu` on the quota**
+(the pattern the platform's own components already use at 10–50× request-to-limit), not by
+inflating requests; and the panels stop conflating reserved with consumed — the
+`kind: 'reserve' | 'consume'` discriminator already in the contract is finally rendered.
+CPU limits at the request level and `preemptionPolicy: Never` are both rejected, with
+reasons. Rollout is staged for **adoption**, not only safety — an opt-in migration that
+defaults to off is never applied, and the operator who needs it most is the one whose panel
+currently hides the problem. R1 ships diagnosis only (honest reserve-vs-consume figures plus
+a per-tenant dry run) and changes nothing; R2 adds the mechanism, opt-in per tenant, ordered
+biggest-over-reserver-first because each migration *frees* CPU and eases the next; R3 makes
+tiered the default for fresh installs. The grandfather-or-re-plan question dissolves: a
+share cannot be oversold and a burst ceiling is meant to be, so admission control gates the
+request ledger and memory — never the sum of ceilings.
