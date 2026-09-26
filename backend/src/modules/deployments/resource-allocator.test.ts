@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   allocateResources,
   InsufficientResourceBudgetError,
+  DEFAULT_MIN_CPU,
   type AllocatorComponentInput,
 } from './resource-allocator.js';
 
@@ -37,21 +38,66 @@ describe('allocateResources', () => {
     for (const m of mems) expect(m).toBeGreaterThanOrEqual(256);
   });
 
+  // ── the floor is what an operator can right-size DOWN to ────────────
+  //
+  // CPU is compressible and tenant pods carry no `limits.cpu`, so a request
+  // is a scheduling reservation, not a cap. A 50m-per-component floor made
+  // idle workloads un-shrinkable: sixteen production static sites each
+  // reserved 100m and used 0m while the node sat at 98% of allocatable CPU
+  // requests against 17% real use.
+
+  it('exports the floor the API advertises, so the two cannot drift', () => {
+    // getResourceBounds imports this rather than hardcoding its own number.
+    // It previously advertised '0.1' while the allocator enforced '50m'.
+    expect(DEFAULT_MIN_CPU).toBe('10m');
+  });
+
+  it('allocates a budget that the old 50m floor would have rejected', () => {
+    // 2 components x 50m = 100m of floor; a 60m budget used to throw.
+    const out = allocateResources({ cpu: '60m', memory: '256Mi' }, [
+      { name: 'web', resourceShare: { weight: 50 } },
+      { name: 'db', resourceShare: { weight: 50 } },
+    ]);
+    const total = [...out.values()].reduce((a, v) => a + parseInt(v.cpu, 10), 0);
+    expect(total).toBe(60);
+    for (const v of out.values()) expect(parseInt(v.cpu, 10)).toBeGreaterThanOrEqual(10);
+  });
+
+  it('still refuses a budget below the sum of the new floors', () => {
+    // The floor is lower, not gone: 3 x 10m = 30m, and 20m cannot cover it.
+    expect(() => allocateResources({ cpu: '20m', memory: '256Mi' }, [
+      { name: 'a' }, { name: 'b' }, { name: 'c' },
+    ])).toThrow(/INSUFFICIENT|minimum/i);
+  });
+
+  // Memory deliberately did NOT move: tenant pods run request == limit, so a
+  // memory request IS the ceiling and lowering it buys an OOM kill.
+  it('leaves the memory floor at 64Mi', () => {
+    const out = allocateResources({ cpu: '1', memory: '256Mi' }, [
+      { name: 'a' }, { name: 'b' }, { name: 'c' }, { name: 'd' },
+    ]);
+    for (const v of out.values()) expect(parseInt(v.memory, 10)).toBeGreaterThanOrEqual(64);
+  });
+
   it('weighted split: weights distribute the budget above per-component minimums', () => {
-    // Default min is 50m/64Mi per component. With 4 components:
-    //   CPU min sum = 200m, remaining 800m distributed by weight
+    // Default min is 10m CPU / 64Mi memory per component. With 4 components:
+    //   CPU min sum =  40m, remaining 960m distributed by weight
     //   Mem min sum = 256Mi, remaining 768Mi distributed by weight
+    //
+    // The CPU floor dropped 50m → 10m (see DEFAULT_MIN_CPU) so MORE of the
+    // budget is distributed by weight and less is reserved as a floor —
+    // which is the point of the change. Memory is untouched.
     const out = allocateResources({ cpu: '1', memory: '1Gi' }, [
       { name: 'web', resourceShare: { weight: 50 } },
       { name: 'db', resourceShare: { weight: 35 } },
       { name: 'cache', resourceShare: { weight: 10 } },
       { name: 'cron', resourceShare: { weight: 5 } },
     ]);
-    // CPU: 50 + (800 * weight / 100)
-    expect(out.get('web')!.cpu).toBe('450m');
-    expect(out.get('db')!.cpu).toBe('330m');
-    expect(out.get('cache')!.cpu).toBe('130m');
-    expect(out.get('cron')!.cpu).toBe('90m');
+    // CPU: 10 + (960 * weight / 100)  →  490 + 346 + 106 + 58 = 1000m exactly
+    expect(out.get('web')!.cpu).toBe('490m');
+    expect(out.get('db')!.cpu).toBe('346m');
+    expect(out.get('cache')!.cpu).toBe('106m');
+    expect(out.get('cron')!.cpu).toBe('58m');
     // Mem: 64 + (768 * weight / 100), remainder 2 → web
     expect(out.get('web')!.memory).toBe('450Mi');
     expect(out.get('db')!.memory).toBe('332Mi');
