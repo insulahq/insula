@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { classifyUnavailability, isHealable, type HealReason } from './workload-health.js';
+import { classifyUnavailability, isHealable, labelForReason, type HealReason } from './workload-health.js';
 
 /**
  * Message fixtures are the VERBATIM text production emitted during the
@@ -121,5 +121,50 @@ describe('isHealable — which causes a volume re-stage can actually fix', () =>
     // every input is not a gate.
     expect(all.filter(isHealable).length).toBeGreaterThan(0);
     expect(all.filter((r) => !isHealable(r)).length).toBeGreaterThan(0);
+  });
+});
+
+// ── the alert's human-readable cause ───────────────────────────────────
+//
+// It used to fall back to re-classifying the stored `detail` column when a
+// reason had no label. `detail` is truncated to 1000 chars at write time, so for
+// a long pod-message list whose determinative keyword fell past the cut, the
+// label contradicted the `reason` the row was classified as — two fields
+// describing the same episode, disagreeing.
+describe('labelForReason — total, and never re-derived from truncated detail', () => {
+  const ALL: HealReason[] = [
+    'volume_attach', 'quota_rejected', 'unschedulable', 'image', 'crash',
+    'stranded_at_zero', 'unknown',
+  ];
+
+  it('gives every reason a distinct, non-empty label', () => {
+    const labels = ALL.map(labelForReason);
+    for (const l of labels) expect(l.trim().length).toBeGreaterThan(10);
+    expect(new Set(labels).size).toBe(ALL.length);
+  });
+
+  it('never returns a placeholder or the slug itself', () => {
+    for (const r of ALL) {
+      const l = labelForReason(r);
+      expect(l).not.toContain('undefined');
+      expect(l).not.toBe(r);
+    }
+  });
+
+  it('falls back to the unknown label for an unrecognised slug, not to empty', () => {
+    // Rows are written by an older release than the one reading them; a slug
+    // this build does not know must still render a sentence.
+    const l = labelForReason('something_new_from_a_later_release' as HealReason);
+    expect(l).toBe(labelForReason('unknown'));
+  });
+
+  it('is independent of detail — the same reason labels identically however long the text', () => {
+    const short = classifyUnavailability(null, ['ImagePullBackOff: x']);
+    const buried = classifyUnavailability(null, [`${'y'.repeat(1200)} ImagePullBackOff`]);
+    // The classifier may not see a keyword past truncation, but the LABEL used
+    // by the alert comes from the persisted reason, so it cannot disagree.
+    expect(labelForReason('image')).toBe(labelForReason('image'));
+    expect(short.reason).toBe('image');
+    expect(buried.detail!.length).toBeLessThanOrEqual(1000);
   });
 });

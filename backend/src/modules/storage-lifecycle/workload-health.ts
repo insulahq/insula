@@ -158,12 +158,30 @@ export function classifyUnavailability(
   return { reason: 'unknown', detail, label: 'the pod did not become ready' };
 }
 
-/** Plain-language cause for a reason slug that did not come from cluster text. */
-function labelForReason(reason: HealReason): string | null {
-  if (reason === 'stranded_at_zero') {
-    return 'a storage operation scaled it down and never brought it back up';
-  }
-  return null;
+/**
+ * Plain-language cause for a persisted reason slug.
+ *
+ * TOTAL over HealReason, deliberately. The alert used to fall back to
+ * re-classifying the stored `detail` column when this returned null — but
+ * `detail` is truncated to 1000 chars at write time, so for a long pod-message
+ * list whose determinative keyword falls past the cut the label disagreed with
+ * the `reason` the row was actually classified as. The reason is decided once,
+ * on the full text, and persisted; the label must be derived from THAT and
+ * nothing else. A `Record` rather than a switch so adding a HealReason is a
+ * compile error here instead of a silently missing label.
+ */
+const REASON_LABELS: Record<HealReason, string> = {
+  volume_attach: 'the storage volume would not attach or mount',
+  quota_rejected: 'the namespace ResourceQuota refused to admit the pod',
+  unschedulable: 'no node could accept the pod',
+  image: 'the container image could not be pulled',
+  crash: 'the container keeps crashing on startup',
+  stranded_at_zero: 'a storage operation scaled it down and never brought it back up',
+  unknown: 'the pod did not become ready',
+};
+
+export function labelForReason(reason: HealReason): string {
+  return REASON_LABELS[reason] ?? REASON_LABELS.unknown;
 }
 
 /**
@@ -733,8 +751,9 @@ export async function reconcileTenantWorkloadHealth(
     if ((notifyClaim.rowCount ?? 0) === 0) continue; // another replica sent it, or not due yet
 
     const effReason = (row.reason as HealReason) || 'unknown';
-    const label = labelForReason(effReason)
-      ?? classifyUnavailability(null, [row.detail ?? '']).label;
+    // Derived from the PERSISTED reason, never re-parsed from the truncated
+    // `detail` column — see REASON_LABELS.
+    const label = labelForReason(effReason);
     const { notifyAdminTenantWorkloadsDown, notifyTenantWorkloadsDown } = await import('../notifications/events.js');
     const downSince = new Date(row.first_seen_at).toISOString();
     // dedupeKey keyed on the EPISODE (tenant × workload × first_seen), never on
