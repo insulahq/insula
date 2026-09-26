@@ -286,9 +286,18 @@ function EnableEmailCard({
   readonly enabledDomainIds?: readonly string[];
 }) {
   const { data: domainsRes, isLoading: domainsLoading } = useDomains(tenantId);
+  const { data: usageRes } = useMailboxUsage(tenantId);
   const enable = useEnableEmailDomain(tenantId);
   const [submittingId, setSubmittingId] = useState<string | null>(null);
   const [errorId, setErrorId] = useState<string | null>(null);
+
+  // An effective mailbox allowance of 0 means the administrator has
+  // switched mail off for this account. The backend refuses the enable
+  // (409), so offering the button would only produce an error the tenant
+  // cannot act on. Say why instead. Undefined while the query is in
+  // flight — only a real 0 disables the card.
+  const mailboxAllowance = usageRes?.data.limit;
+  const mailDisabled = mailboxAllowance === 0;
 
   const allDomains = domainsRes?.data ?? [];
   // Filter out domains that already have an email_domains row. Use a
@@ -319,6 +328,30 @@ function EnableEmailCard({
   // multi-domain case where every domain already has email enabled.
   if (!domainsLoading && eligibleDomains.length === 0 && allDomains.length > 0) {
     return null;
+  }
+
+  if (mailDisabled) {
+    return (
+      <div
+        className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-8 shadow-sm"
+        data-testid="email-disabled-card"
+      >
+        <div className="flex items-start gap-4">
+          <div className="rounded-xl bg-gray-100 dark:bg-gray-700/50 p-3">
+            <Mail size={28} className="text-gray-400 dark:text-gray-500" />
+          </div>
+          <div className="flex-1">
+            <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+              Email hosting is disabled for this account
+            </h2>
+            <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+              Your account is allocated 0 mailboxes, so email cannot be enabled for
+              your domains. Contact your administrator if you need email hosting.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -618,9 +651,14 @@ function MailboxUsageBar({ tenantId }: { readonly tenantId: string }) {
   const { data } = useMailboxUsage(tenantId);
   const usage = data?.data;
   if (!usage) return null;
-  const pct = usage.limit > 0 ? (usage.current / usage.limit) * 100 : 0;
-  const nearLimit = pct >= 80;
-  const atLimit = pct >= 100;
+  // limit 0 = mail switched off for this account. Deriving `atLimit` from
+  // pct alone made that case render as 0% used with NO message — a hard
+  // stop that read as "plenty of room". Decide from the limit, not from a
+  // percentage that is undefined when the denominator is zero.
+  const mailDisabled = usage.limit === 0;
+  const pct = usage.limit > 0 ? (usage.current / usage.limit) * 100 : 100;
+  const nearLimit = !mailDisabled && pct >= 80;
+  const atLimit = !mailDisabled && pct >= 100;
   // Always the default brand colour, including at and over the limit —
   // operator decision. Reaching a plan limit is an ordinary fact
   // about a plan, not a fault: the tenant is not broken, and nothing is
@@ -653,6 +691,12 @@ function MailboxUsageBar({ tenantId }: { readonly tenantId: string }) {
           style={{ width: `${Math.min(100, pct)}%` }}
         />
       </div>
+      {mailDisabled && (
+        <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
+          Your account is allocated 0 mailboxes — email hosting is disabled. Contact your
+          administrator if you need email.
+        </p>
+      )}
       {atLimit && (
         <p className="mt-2 text-xs text-red-600 dark:text-red-400">
           You have reached the mailbox limit for your plan. Remove an existing mailbox or

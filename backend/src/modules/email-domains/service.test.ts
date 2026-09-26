@@ -41,6 +41,14 @@ vi.mock('../notifications/events.js', () => ({
   notifyTenantEmailBootstrapped: vi.fn().mockResolvedValue(undefined),
 }));
 
+// enableEmailForDomain refuses a NEW enable when the tenant's effective
+// mailbox allowance is 0. Default to a normal plan allowance so every
+// pre-existing test keeps exercising the enable path; the disabled case
+// overrides this per-test.
+vi.mock('../mailboxes/limit.js', () => ({
+  getTenantMailboxLimit: vi.fn().mockResolvedValue({ limit: 50, source: 'plan' }),
+}));
+
 // Mock webmail-settings so getMailServerHostname resolves without a real DB
 vi.mock('../webmail-settings/service.js', () => ({
   getMailServerHostname: vi.fn().mockResolvedValue('mail.example.com'),
@@ -249,6 +257,53 @@ describe('enableEmailForDomain', () => {
     const lastArg = provisionSpy.mock.calls.at(-1)?.[7];
     expect(lastArg).toEqual({ webmailEnabled: true });
   });
+
+  // A tenant allocated 0 mailboxes has mail switched off. Enabling email on
+  // a domain would publish MX/SPF/DMARC and register the domain in Stalwart
+  // for an account that cannot create a single mailbox — DNS would advertise
+  // mail that bounces.
+  it('refuses a NEW enable when the tenant mailbox allowance is 0', async () => {
+    const { getTenantMailboxLimit } = await import('../mailboxes/limit.js');
+    vi.mocked(getTenantMailboxLimit).mockResolvedValueOnce({ limit: 0, source: 'tenant_override' });
+    // These module mocks are shared across the whole file and are NOT reset
+    // between tests, so their call history is a lifetime counter, not the
+    // state of this test. Clear before asserting "never called".
+    const { provisionEmailDns } = await import('./dns-provisioning.js');
+    vi.mocked(provisionEmailDns).mockClear();
+
+    const db = createMockDb();
+    await expect(
+      enableEmailForDomain(db, 'c1', 'd1', {}, '0'.repeat(64)),
+    ).rejects.toMatchObject({
+      code: 'CLIENT_MAILBOX_LIMIT_REACHED',
+      status: 409,
+      message: 'Email hosting is disabled for this account',
+    });
+
+    // Nothing was written and no DNS was published — the refusal has to
+    // happen BEFORE the side effects, or a disabled tenant still ends up
+    // with mail records in its zone.
+    expect((db as any)._mocks.insertFn).not.toHaveBeenCalled();
+    expect(vi.mocked(provisionEmailDns)).not.toHaveBeenCalled();
+  });
+
+  // A row that exists without a stalwartDomainId is a half-finished enable
+  // that was authorised when it started. Blocking the retry would strand it
+  // with DB state and no Stalwart domain, forever.
+  it('still completes an in-flight enable (existing row, no stalwartDomainId) at allowance 0', async () => {
+    const { getTenantMailboxLimit } = await import('../mailboxes/limit.js');
+    vi.mocked(getTenantMailboxLimit).mockResolvedValue({ limit: 0, source: 'tenant_override' });
+
+    const db = createMockDb({
+      emailDomainResult: [{ ...EMAIL_DOMAIN, stalwartDomainId: null }],
+    });
+    await expect(
+      enableEmailForDomain(db, 'c1', 'd1', {}, '0'.repeat(64)),
+    ).resolves.toBeDefined();
+
+    vi.mocked(getTenantMailboxLimit).mockResolvedValue({ limit: 50, source: 'plan' });
+  });
+
 });
 
 describe('isMailStackUnconfigured', () => {

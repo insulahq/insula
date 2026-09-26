@@ -1831,20 +1831,33 @@ function ResourceLimitsCard({
     setEditing(true);
   };
 
+  // An override field toggled to "Custom" but left EMPTY must not become 0.
+  // `Number('')` is 0, and 0 is now a meaningful value for several of these
+  // limits (0 mailboxes = mail off, 0 sends/hour = outbound off), so a blank
+  // box would silently switch a tenant's mail off. Blank means "no override":
+  // send null and let the plan apply.
+  const overrideValue = (isCustom: boolean, raw: string): number | null => {
+    if (!isCustom) return null;
+    const trimmed = raw.trim();
+    if (trimmed === '') return null;
+    const n = Number(trimmed);
+    return Number.isFinite(n) ? n : null;
+  };
+
   const handleSave = async (e: FormEvent) => {
     e.preventDefault();
     try {
       const result = await updateTenant.mutateAsync({
-        cpu_limit_override: cpuCustom ? Number(cpuOverride) : null,
-        memory_limit_override: memCustom ? Number(memOverride) : null,
-        storage_limit_override: storageCustom ? Number(storageOverride) : null,
-        bandwidth_limit_override: bandwidthCustom ? Number(bandwidthOverride) : null,
-        max_sub_users_override: subUsersCustom ? Number(subUsersOverride) : null,
-        max_mailboxes_override: mailboxesCustom ? Number(mailboxesOverride) : null,
-        max_mailbox_size_mb_override: mailboxSizeCustom ? Number(mailboxSizeOverride) : null,
-        monthly_price_override: priceCustom ? Number(priceOverride) : null,
-        email_send_rate_limit: mailHourlyCustom ? Number(mailHourlyOverride) : null,
-        email_send_rate_limit_daily: mailDailyCustom ? Number(mailDailyOverride) : null,
+        cpu_limit_override: overrideValue(cpuCustom, cpuOverride),
+        memory_limit_override: overrideValue(memCustom, memOverride),
+        storage_limit_override: overrideValue(storageCustom, storageOverride),
+        bandwidth_limit_override: overrideValue(bandwidthCustom, bandwidthOverride),
+        max_sub_users_override: overrideValue(subUsersCustom, subUsersOverride),
+        max_mailboxes_override: overrideValue(mailboxesCustom, mailboxesOverride),
+        max_mailbox_size_mb_override: overrideValue(mailboxSizeCustom, mailboxSizeOverride),
+        monthly_price_override: overrideValue(priceCustom, priceOverride),
+        email_send_rate_limit: overrideValue(mailHourlyCustom, mailHourlyOverride),
+        email_send_rate_limit_daily: overrideValue(mailDailyCustom, mailDailyOverride),
         allow_custom_containers_override: allowCcCustom ? allowCcOverride : null,
       });
       // If the PATCH grew storage online, the backend kicked off a
@@ -1879,14 +1892,14 @@ function ResourceLimitsCard({
       // shrink orchestrator). Same payload as the original save attempt
       // — values are still in state because the form was kept open.
       const result = await updateTenant.mutateAsync({
-        cpu_limit_override: cpuCustom ? Number(cpuOverride) : null,
-        memory_limit_override: memCustom ? Number(memOverride) : null,
-        storage_limit_override: storageCustom ? Number(storageOverride) : null,
-        bandwidth_limit_override: bandwidthCustom ? Number(bandwidthOverride) : null,
-        max_sub_users_override: subUsersCustom ? Number(subUsersOverride) : null,
-        max_mailboxes_override: mailboxesCustom ? Number(mailboxesOverride) : null,
-        max_mailbox_size_mb_override: mailboxSizeCustom ? Number(mailboxSizeOverride) : null,
-        monthly_price_override: priceCustom ? Number(priceOverride) : null,
+        cpu_limit_override: overrideValue(cpuCustom, cpuOverride),
+        memory_limit_override: overrideValue(memCustom, memOverride),
+        storage_limit_override: overrideValue(storageCustom, storageOverride),
+        bandwidth_limit_override: overrideValue(bandwidthCustom, bandwidthOverride),
+        max_sub_users_override: overrideValue(subUsersCustom, subUsersOverride),
+        max_mailboxes_override: overrideValue(mailboxesCustom, mailboxesOverride),
+        max_mailbox_size_mb_override: overrideValue(mailboxSizeCustom, mailboxSizeOverride),
+        monthly_price_override: overrideValue(priceCustom, priceOverride),
         allow_custom_containers_override: allowCcCustom ? allowCcOverride : null,
         confirm_destructive_shrink: true,
       });
@@ -1925,6 +1938,10 @@ function ResourceLimitsCard({
     planDefault: string | number | undefined,
     inputType: string = 'number',
     step: string = '0.01',
+    // Rendered under the input while editing a CUSTOM value of 0. Spells out
+    // what 0 does — an operator setting a limit to 0 should not have to guess
+    // whether it means "none" or "inherit the plan".
+    zeroHint?: string,
   ) => (
     <div>
       <div className="flex items-center justify-between mb-1">
@@ -1942,16 +1959,21 @@ function ResourceLimitsCard({
         )}
       </div>
       {editing ? (
-        <div className="flex items-center gap-2">
-          <input
-            type={inputType}
-            step={step}
-            className={`${INPUT_CLS} ${!isCustom ? 'bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-500' : ''}`}
-            value={isCustom ? value : (planDefault ?? '')}
-            onChange={(e) => setValue(e.target.value)}
-            disabled={!isCustom}
-          />
-          <span className="text-xs text-gray-500 dark:text-gray-400 whitespace-nowrap">{unit}</span>
+        <div>
+          <div className="flex items-center gap-2">
+            <input
+              type={inputType}
+              step={step}
+              className={`${INPUT_CLS} ${!isCustom ? 'bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-500' : ''}`}
+              value={isCustom ? value : (planDefault ?? '')}
+              onChange={(e) => setValue(e.target.value)}
+              disabled={!isCustom}
+            />
+            <span className="text-xs text-gray-500 dark:text-gray-400 whitespace-nowrap">{unit}</span>
+          </div>
+          {zeroHint && isCustom && value.trim() === '0' && (
+            <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">{zeroHint}</p>
+          )}
         </div>
       ) : (
         <div className="flex items-center gap-2">
@@ -2040,8 +2062,8 @@ function ResourceLimitsCard({
           {renderField('Memory Limit', 'GB', effectiveMem, memCustom, setMemCustom, memOverride, setMemOverride, tenant.memoryLimitOverride != null, plan?.memoryLimit, 'number', '0.5')}
           {renderField('Storage Limit', 'GB', effectiveStorage, storageCustom, setStorageCustom, storageOverride, setStorageOverride, tenant.storageLimitOverride != null, plan?.storageLimit, 'number', '1')}
           {renderField('Bandwidth', 'GB/mo', effectiveBandwidth, bandwidthCustom, setBandwidthCustom, bandwidthOverride, setBandwidthOverride, tenant.bandwidthLimitOverride != null, plan?.bandwidthGbLimit, 'number', '1')}
-          {renderField('Max Sub-Users', '', effectiveSubUsers, subUsersCustom, setSubUsersCustom, subUsersOverride, setSubUsersOverride, tenant.maxSubUsersOverride != null, plan?.maxSubUsers, 'number', '1')}
-          {renderField('Max Mailboxes', '', effectiveMailboxes, mailboxesCustom, setMailboxesCustom, mailboxesOverride, setMailboxesOverride, tenant.maxMailboxesOverride != null, plan?.maxMailboxes, 'number', '1')}
+          {renderField('Max Sub-Users', '', effectiveSubUsers, subUsersCustom, setSubUsersCustom, subUsersOverride, setSubUsersOverride, tenant.maxSubUsersOverride != null, plan?.maxSubUsers, 'number', '1', '0 prevents this tenant from creating any sub-user. Existing sub-users keep their access.')}
+          {renderField('Max Mailboxes', '', effectiveMailboxes, mailboxesCustom, setMailboxesCustom, mailboxesOverride, setMailboxesOverride, tenant.maxMailboxesOverride != null, plan?.maxMailboxes, 'number', '1', '0 disables email for this tenant: no new mailbox, and email cannot be enabled on a new domain. Existing mailboxes keep working.')}
           {renderField('Max Mailbox Size', 'MB', effectiveMailboxSize, mailboxSizeCustom, setMailboxSizeCustom, mailboxSizeOverride, setMailboxSizeOverride, tenant.maxMailboxSizeMbOverride != null, plan?.maxMailboxSizeMb, 'number', '1')}
           {renderField('Monthly Price', currency, effectivePrice, priceCustom, setPriceCustom, priceOverride, setPriceOverride, tenant.monthlyPriceOverride != null, plan?.monthlyPriceUsd, 'number', '0.01')}
           {renderField('Email Sends / Hour', 'msgs', effectiveMailHourly, mailHourlyCustom, setMailHourlyCustom, mailHourlyOverride, setMailHourlyOverride, tenant.emailSendRateLimit != null, plan?.emailHourlySendLimit, 'number', '1')}

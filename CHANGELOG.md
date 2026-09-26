@@ -12,6 +12,43 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+
+- **Setting a tenant's mailbox allowance to 0 now switches mail off, instead of
+  refusing the edit.** Disabling email for one tenant had no expression in the
+  UI: the per-tenant **Max Mailboxes** override rejected 0 with a validation
+  error, and the only remaining lever — suspending the tenant — stops their
+  websites and databases too. The plan-level `max_mailboxes` had always accepted
+  0; only the per-tenant override did not.
+
+  Underneath, 0 would not have worked anyway. The resolver treated any override
+  of 0 as "not set" and fell through to the plan's allowance, so an operator who
+  got a 0 past the form would have watched the setting save and change nothing.
+  Only `null` means "inherit the plan" now; 0 means zero.
+
+  With mail off, the tenant panel says so rather than offering buttons that
+  cannot work: the *Enable Email* card is replaced by a short explanation, and
+  the mailbox usage meter reads "0 mailboxes — email hosting is disabled"
+  instead of rendering an empty bar with no message. The API refuses both the
+  mailbox create and a new *enable email on a domain* with
+  `Email hosting is disabled for this account`, the second of which also stops
+  the platform publishing MX/SPF/DMARC records for an account that could never
+  receive on them. Mailboxes that already exist keep working — this bounds new
+  ones — and the platform's own `dmarc@`/`postmaster@` intake mailboxes are
+  unaffected, as they already were.
+
+  Two neighbours fixed alongside it. The tenant dashboard read its mailbox and
+  daily-send ceilings from the **plan only**, ignoring the per-tenant override
+  it was already being enforced against, so any tenant with an override saw a
+  number the API disagreed with. And an override field switched to *Custom* but
+  left **empty** submitted 0 rather than "no override" — harmless while 0 was
+  rejected, a silent mail-off once it is not. A blank field now means "inherit
+  the plan", for every limit on that form.
+
+- **The per-tenant sub-user override accepts 0 too**, for the same reason: the
+  plan-level `max_sub_users` always has, and the code that reads the override
+  already honoured 0 correctly — only the contract rejected it.
+
 ## [2026.9.33] - 2026-09-26
 
 ### Added

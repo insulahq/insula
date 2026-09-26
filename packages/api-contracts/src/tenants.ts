@@ -91,10 +91,16 @@ export const updateTenantSchema = z.object({
   storage_limit_override: z.number().min(1).max(10000).nullable().optional(),
   /** Per-tenant monthly bandwidth cap override (GB). null = inherit plan. */
   bandwidth_limit_override: z.number().int().min(1).max(1_000_000).nullable().optional(),
-  max_sub_users_override: z.number().int().min(1).max(100).nullable().optional(),
+  // null = inherit from the plan's max_sub_users. 0 = no sub-users.
+  // The plan-level field has always allowed 0; the override rejecting it
+  // was an asymmetry, not a policy.
+  max_sub_users_override: z.number().int().min(0).max(100).nullable().optional(),
   // Per-tenant mailbox count override. null = inherit from the plan's
-  // max_mailboxes. Min 1 (blocking via 0 is handled by tenant.status).
-  max_mailboxes_override: z.number().int().min(1).max(10000).nullable().optional(),
+  // max_mailboxes. 0 = mail off for this tenant: no mailbox can be
+  // created and email cannot be enabled on a new domain. Suspending the
+  // tenant (tenant.status) is the bigger hammer — it stops everything,
+  // not just mail — so 0 has to be expressible here.
+  max_mailboxes_override: z.number().int().min(0).max(10000).nullable().optional(),
   // Per-tenant max mailbox SIZE override (MB). null = inherit from the
   // plan's max_mailbox_size_mb.
   max_mailbox_size_mb_override: z.number().int().min(50).max(102400).nullable().optional(),

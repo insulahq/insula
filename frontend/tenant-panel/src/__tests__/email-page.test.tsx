@@ -407,6 +407,68 @@ describe('Email Page', () => {
     expect(screen.queryByTestId('email-enable-card')).not.toBeInTheDocument();
   });
 
+  // ── Mail disabled: effective mailbox allowance of 0 ───────────────
+  //
+  // NOTE: this file installs no beforeEach reset, so every mock set by an
+  // earlier test leaks into this one. Each case below sets all three mocks
+  // it depends on, and restores the usage default on the way out.
+
+  const USAGE_DEFAULT = {
+    data: { data: { limit: 50, current: 0, remaining: 50, source: 'plan' } },
+    isLoading: false,
+  } as unknown as ReturnType<typeof useMailboxUsage>;
+
+  it('replaces the Enable Email card with a disabled notice at allowance 0', () => {
+    mockedUseEmailDomains.mockReturnValue({
+      data: { data: [] },
+      isLoading: false,
+    } as unknown as ReturnType<typeof useEmailDomains>);
+    mockedUseDomains.mockReturnValue({
+      data: { data: [{ id: 'd1', domainName: 'first.com', dnsMode: 'primary' }] },
+      isLoading: false,
+    } as unknown as ReturnType<typeof useDomains>);
+    mockedUseMailboxUsage.mockReturnValue({
+      data: { data: { limit: 0, current: 0, remaining: 0, source: 'tenant_override' } },
+      isLoading: false,
+    } as unknown as ReturnType<typeof useMailboxUsage>);
+
+    renderWithProviders(<Email />);
+
+    // The button would only produce a 409 the tenant cannot act on.
+    expect(screen.queryByTestId('email-enable-card')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('enable-email-row-d1')).not.toBeInTheDocument();
+    expect(screen.getByTestId('email-disabled-card')).toBeInTheDocument();
+    expect(
+      screen.getByText('Email hosting is disabled for this account'),
+    ).toBeInTheDocument();
+
+    mockedUseMailboxUsage.mockReturnValue(USAGE_DEFAULT);
+  });
+
+  // Guards the "still loading" arm: an undefined limit must not read as 0,
+  // or the card would flash "disabled" on every page load.
+  it('keeps the Enable Email card while the usage query is still in flight', () => {
+    mockedUseEmailDomains.mockReturnValue({
+      data: { data: [] },
+      isLoading: false,
+    } as unknown as ReturnType<typeof useEmailDomains>);
+    mockedUseDomains.mockReturnValue({
+      data: { data: [{ id: 'd1', domainName: 'first.com', dnsMode: 'primary' }] },
+      isLoading: false,
+    } as unknown as ReturnType<typeof useDomains>);
+    mockedUseMailboxUsage.mockReturnValue({
+      data: undefined,
+      isLoading: true,
+    } as unknown as ReturnType<typeof useMailboxUsage>);
+
+    renderWithProviders(<Email />);
+
+    expect(screen.getByTestId('email-enable-card')).toBeInTheDocument();
+    expect(screen.queryByTestId('email-disabled-card')).not.toBeInTheDocument();
+
+    mockedUseMailboxUsage.mockReturnValue(USAGE_DEFAULT);
+  });
+
   // ── Round-4 Phase 1: top-level domain selector ────────────────────
 
   it('shows a label (no dropdown) when only one email domain is enabled', () => {

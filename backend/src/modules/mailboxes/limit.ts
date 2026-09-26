@@ -7,8 +7,12 @@
  * with an optional per-tenant override
  * (tenants.max_mailboxes_override).
  *
- *   null or <= 0 override → inherit from plan
- *   numeric override > 0  → use override (may be higher or lower)
+ *   null override      → inherit from plan
+ *   override >= 0      → use override (may be higher or lower, and 0
+ *                        is a real answer: mail off for this tenant)
+ *   negative override  → inherit from plan (defensive; the column has
+ *                        no CHECK constraint and the contract rejects
+ *                        negatives, so this is unreachable data)
  *
  * `getTenantMailboxCount` sums mailboxes across ALL the tenant's
  * email domains — not per-domain — so a tenant with 3 domains and
@@ -33,12 +37,17 @@ export interface ComputeLimitInput {
 }
 
 /**
- * Pure function — decide the effective mailbox limit given the
- * plan limit and an optional per-tenant override. Zero, negative,
- * and null overrides fall through to the plan limit.
+ * Pure function — decide the effective mailbox limit given the plan
+ * limit and an optional per-tenant override.
+ *
+ * ★ An override of 0 means ZERO, not "unset". Operators disable mail for
+ * a single tenant by setting the override to 0; reading that as "inherit
+ * the plan" silently handed the tenant the plan's full allowance, so the
+ * UI accepted the setting and nothing changed. Only `null` inherits.
+ * (Negatives still inherit — see the note at the top of the file.)
  */
 export function computeTenantMailboxLimit(input: ComputeLimitInput): EffectiveMailboxLimit {
-  if (typeof input.override === 'number' && input.override > 0) {
+  if (typeof input.override === 'number' && input.override >= 0) {
     return { limit: input.override, source: 'tenant_override' };
   }
   return { limit: input.planLimit, source: 'plan' };
@@ -103,10 +112,15 @@ export async function getTenantMailboxLimit(
 // Sibling of the count cap above. The platform caps an INDIVIDUAL
 // mailbox's size (quota_mb) via the hosting plan
 // (hosting_plans.max_mailbox_size_mb), with an optional per-tenant
-// override (tenants.max_mailbox_size_mb_override). Same precedence:
+// override (tenants.max_mailbox_size_mb_override). Precedence:
 //
 //   null or <= 0 override → inherit from plan
 //   numeric override > 0  → use override (may be higher or lower)
+//
+// ★ Deliberately NOT the same rule as the COUNT cap above, which treats 0
+// as a real limit. A 0-byte mailbox is not a thing an operator can want;
+// "no mail for this tenant" is expressed by the count cap. Don't align
+// these two for symmetry's sake.
 //
 // This bounds each mailbox individually; it does NOT make total mail
 // storage count against the subscription storage_limit.
