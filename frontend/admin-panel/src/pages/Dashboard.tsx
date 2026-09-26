@@ -242,7 +242,14 @@ function MiniTriad({ label, inUse: measured, committed, total, unit }: {
           <span className="text-gray-900 dark:text-gray-100">{measured === null ? '—' : inUse.toFixed(2)}</span> / {committed.toFixed(2)}
         </span>
         <span className="min-w-0 truncate opacity-60">of {total.toFixed(2)} {unit}</span>
-        <span className="ml-auto whitespace-nowrap">{Math.round(pct)}%</span>
+        {/* The percentage is committed/total — a RESERVATION, not utilisation.
+            Unlabelled it reads as "the node is 96% busy", which is the single
+            misreading this strip can produce: a node can sit at 96% reserved
+            and 12% used, refuse new work, and look identical to one that is
+            genuinely saturated. The word is the whole fix. */}
+        <span className="ml-auto whitespace-nowrap">
+          {Math.round(pct)}%<span className="ml-1 opacity-60">reserved</span>
+        </span>
       </div>
       <div className="flex h-1.5 overflow-hidden rounded bg-gray-200 dark:bg-gray-700">
         <div className={pct >= 90 ? 'bg-amber-500' : 'bg-teal-600 dark:bg-teal-400'}
@@ -284,7 +291,7 @@ function NodeStrip({ nodes, loading }: { nodes: readonly AdminNode[]; loading: b
           can see literally in the source. dashboard-node-grid.test.ts pins
           the two copies together. */}
       <div className="hidden grid-cols-[minmax(0,1.3fr)_5rem_minmax(0,2.4fr)_minmax(0,2.4fr)_4rem_3.5rem] items-center gap-3 rounded-t-xl bg-gray-50 px-4 py-2 text-[10px] font-semibold uppercase tracking-wider text-gray-500 lg:grid dark:bg-gray-900/40 dark:text-gray-400">
-        <span>Node</span><span>Role</span><span>CPU — in use / committed</span>
+        <span>Node</span><span>Role</span><span>CPU — in use / reserved</span>
         <span>Memory — in use / committed</span>
         <span className="text-right">Disk</span><span className="text-right">Pods</span>
       </div>
