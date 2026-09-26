@@ -68,8 +68,16 @@ This section **only appears when something needs you** — when everything is
 fine it is not there at all. It covers the things that actually interrupt
 service: a mailbox nearly full (which is what starts refusing mail), disk
 nearly full, a certificate that failed to renew, a backup that did not run,
-an application that is not starting, and bandwidth close to your cycle
+an application that is not running, and bandwidth close to your cycle
 allowance.
+
+**If an application is not running, you do not need to report it.** The platform
+notices by itself, waits a few minutes in case it is only a restart, then tries to
+bring the application back. The card tells you which of those is happening: that
+the platform is still trying, or that it could not fix it — and in that second
+case our operators were alerted at the same moment you were, with the technical
+detail they need. It is worth contacting support only if you have extra context,
+such as a change you made just before it stopped.
 
 ### Your plan
 

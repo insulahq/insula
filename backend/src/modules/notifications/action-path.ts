@@ -100,6 +100,13 @@ const STATIC_PATHS: Record<string, string> = {
   'admin.mail_event': '/email/operations',
   'admin.platform_event': '/platform/updates',
   'admin.tenant_integrity': '/tenants',
+  // The tenant detail page is where the operator sees the workload list, the
+  // storage-lifecycle state and the Clear failed state valve — i.e. everything
+  // this alert is about. The generic /tenants list would make them search for
+  // the tenant the alert already named.
+  'admin.tenant_workloads_down': '/tenants',
+  // Tenant side: the page that lists their applications and shows which is down.
+  'tenant.workloads_down': '/applications',
   'tenant.domain_verification': '/domains',
   'tenant.backup_event': '/backups',
   'tenant.mail_event': '/email',

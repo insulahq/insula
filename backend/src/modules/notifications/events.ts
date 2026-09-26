@@ -614,6 +614,106 @@ export async function notifyAdminWalArchiveAutoDisabled(
   await dispatchSafe(db, 'admin.wal_archive_auto_disabled', { kind: 'admin' }, payload, undefined, { dedupeKey });
 }
 
+/**
+ * Like `dispatchSafe`, but tells the caller whether the event actually went out.
+ *
+ * `dispatchSafe`'s body is `try { await emitEvent(...) } catch { }` — a bare,
+ * UNLOGGED swallow, kept for a legacy contract that event helpers never throw.
+ * That is tolerable for an ambient notification and not tolerable for an alert
+ * whose entire purpose is that somebody finally gets told a tenant is down: a
+ * template-rendering bug or a DB error on the notification tables would be
+ * invisible, and the caller's rate-limit ladder slot would already be spent, so
+ * the next attempt is deferred by up to a day.
+ *
+ * Still never throws — the caller decides what a failure means.
+ */
+async function dispatchReporting(
+  db: Database,
+  categoryId: string,
+  scope: Parameters<typeof emitEvent>[1]['scope'],
+  variables: object,
+  tenantId?: string,
+  extraOpts?: { readonly dedupeKey?: string },
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    await emitEvent(db, {
+      categoryId,
+      scope,
+      variables: { ...variables } as Record<string, unknown>,
+      tenantId,
+      dedupeKey: extraOpts?.dedupeKey,
+    });
+    return { ok: true };
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    console.error(`[notifications] dispatch of '${categoryId}' FAILED: ${error}`);
+    return { ok: false, error };
+  }
+}
+
+export interface TenantWorkloadsDownPayload {
+  /** Deployment name, as the tenant would recognise it (e.g. "moodle"). */
+  readonly workload: string;
+  readonly downSince: string;
+  /** Plain-language cause, already translated out of kubelet-speak. */
+  readonly reasonLabel: string;
+}
+/**
+ * The tenant's own copy of "your site is not running". in-app only by default
+ * (see the category seed): the operator is the one who can act, and they are
+ * alerted on every channel by notifyAdminTenantWorkloadsDown at the same time.
+ *
+ * dedupeKey is per (tenant x workload x episode-start), so a multi-hour outage
+ * announces itself once rather than on every 5-minute reconcile tick — the
+ * mistake `tenant_saturation_events` was created to fix, where the dedupe key
+ * embedded the current hour and the loop period was also an hour, so nothing
+ * ever deduplicated.
+ */
+export async function notifyTenantWorkloadsDown(
+  db: Database,
+  tenantId: string,
+  payload: TenantWorkloadsDownPayload,
+  dedupeKey?: string,
+): Promise<{ ok: boolean; error?: string }> {
+  return dispatchReporting(db, 'tenant.workloads_down', { kind: 'tenant', tenantId }, payload, tenantId, { dedupeKey });
+}
+
+export interface AdminTenantWorkloadsDownPayload {
+  readonly tenantName: string;
+  readonly namespace: string;
+  readonly workload: string;
+  readonly downSince: string;
+  readonly downMinutes: string;
+  /** volume_attach | quota_rejected | unschedulable | image | crash | unknown */
+  readonly reason: string;
+  readonly reasonLabel: string;
+  /** The kubelet / ReplicaSet message, truncated. */
+  readonly detail?: string;
+  readonly healAttempts: string;
+  readonly lastHealError?: string;
+  readonly recommendedAction: string;
+}
+/**
+ * A tenant is down and automatic recovery could not fix it.
+ *
+ * This is the alert whose absence let a production tenant stay down for 18h38m
+ * once: the PVC was Bound, the Longhorn volume `attached/healthy`, the
+ * node Ready, nothing OOM-killed, namespace-integrity clean (it audits only
+ * MISSING objects) — and the storage-lifecycle module emitted no notifications
+ * at all. 571 consecutive kubelet mount rejections, and nobody was told.
+ *
+ * It fires only AFTER auto-heal has been tried and failed, so it always carries
+ * `healAttempts` — an alert that cannot distinguish "we tried and could not fix
+ * it" from "nothing ever ran" sends the operator to look in the wrong place.
+ */
+export async function notifyAdminTenantWorkloadsDown(
+  db: Database,
+  payload: AdminTenantWorkloadsDownPayload,
+  dedupeKey?: string,
+): Promise<{ ok: boolean; error?: string }> {
+  return dispatchReporting(db, 'admin.tenant_workloads_down', { kind: 'admin' }, payload, undefined, { dedupeKey });
+}
+
 export interface AdminNodeDownPayload {
   readonly nodeName: string;
 }

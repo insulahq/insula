@@ -144,6 +144,83 @@ message says so.
     shutdown are *completed*, not failed, and most of them live in tenant
     namespaces — so that action will not clear them. Use the Pods tab for those.
 
+## Workloads that stop running
+
+A tenant's applications can be completely unreachable while every component
+around them reports healthy. The namespace exists, the storage volume is `Bound`
+and `attached`, the node is `Ready`, nothing has been OOM-killed, no volume is
+full — and the tenant's site serves nothing. Namespace integrity only audits
+whether the objects are *present*, so it finds nothing to say.
+
+The platform therefore watches the one thing that answers the question directly:
+**does each workload have the replicas its own spec asks for?** A reconciler
+sweeps every tenant every five minutes and compares them.
+
+### The grace window
+
+A workload short of its replicas opens an *episode*, but nothing acts on it for
+**eight minutes**. A rolling update, a cold image pull and a storage volume
+re-attaching all look exactly like "down" for a few seconds, and none of them is
+a fault. Only an outage that outlives the window is treated as one — which is
+also why the dashboard card stays absent during routine churn.
+
+### Automatic recovery, and what it will not attempt
+
+Past the window the platform tries to fix it before telling you. The action is a
+controlled re-stage of the tenant's storage: scale every consumer of the volume
+to zero, wait for it to detach fully, then scale back up and confirm the replicas
+actually return. That clears the two faults it can clear — a stuck mount whose
+staging directory the kubelet retries forever without ever repairing, and a
+volume wedged mid-attach — and it lets a still-terminating pod release the memory
+it is holding against the namespace quota, which is a common reason a restore
+cannot fit yet.
+
+It is bounded: at most three attempts, backing off 10 minutes, 40 minutes, then
+160 minutes.
+
+It is also **gated on the cause**, because the tenant's volume is single-writer:
+re-staging it means briefly taking down the workloads in that namespace that are
+still healthy. That price is worth paying to clear a stuck mount. It buys nothing
+for a container image that cannot be pulled, a container crash-looping on
+startup, or a pod no node can schedule — each of those comes back in exactly the
+same state. Those causes are reported to you immediately instead, with no
+disruption attempted.
+
+A recovery attempt is a real storage operation: it appears in the tenant's
+operations list as `autoheal`, and it holds the tenant's storage lock while it
+runs, so an operator resize or restore started at the same moment is refused with
+a clear conflict rather than colliding with it on the same volume.
+
+### When recovery fails
+
+Only then are you alerted — `Tenant workloads down, auto-heal failed`, on every
+out-of-band channel. Alerting before the platform has tried teaches people to
+ignore the alert; alerting without saying whether it tried sends them to look in
+the wrong place. The notification names the workload, the cause in plain language,
+how many recovery attempts were made, the error from the last one, and what to go
+and do about that specific cause.
+
+The tenant is told too, in their own panel, in terms they can use: their
+application is not running, automatic restart did not succeed, and operators have
+already been alerted — so they do not need to report it.
+
+### Recovering a tenant parked at zero replicas
+
+If a storage operation scales a tenant down and never brings it back, the
+platform can restore it without guessing. When a workload is scaled to zero for
+an operation, the replica count it had is recorded on the workload itself, next to
+the marker saying it is being held. Recovery reads that back, so it restores the
+right workload to the right number — it does not have to infer which past
+operation was responsible, which is a guess that gets worse the longer ago it was.
+
+If that record is missing — a workload parked by an older release — the platform
+falls back to the replica snapshot stored on the tenant's operations, but only
+after checking that the snapshot actually covers the workloads currently stranded.
+A snapshot covering only some of them is refused rather than used to restore a
+subset, because a partial restore leaves the tenant down while reporting success.
+If nothing covers them, the holds are released so normal auto-start works again
+and you are told what could not be recovered and why.
+
 ## Node health and recovery actions
 
 The **Node Health** tab is the one to watch. A 5-minute reconciler tracks, per
@@ -237,6 +314,12 @@ families:
   appearing on a DNS blocklist, and certificate expiry all reach you as
   notifications, not just as panel banners
   ([mail operations](mail-operations.md)).
+- **Tenant workloads down** — a tenant's applications have been unavailable past
+  the grace window *and* automatic recovery could not bring them back. Sent
+  out-of-band by design: an availability alert must never depend only on the
+  panel it is reporting on, so it does not appear in the in-app bell — the
+  dashboard card is its in-panel surface. See
+  [Workloads that stop running](#workloads-that-stop-running).
 
 Each source can be enabled, disabled, and routed independently. Email is sent
 asynchronously, so a slow relay never blocks the platform.

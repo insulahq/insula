@@ -1991,6 +1991,97 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     bodyFormat: 'plaintext',
     variablesSchema: SLO_ALERT_VARS,
   },
+  // ── tenant workloads down / auto-heal failed ──────────────────────
+  // `detail` and `lastHealError` are referenced ONLY inside {{#if}}. A bare
+  // {{x}} for a variable the dispatcher did not pass THROWS under Handlebars
+  // strict mode and the send is dropped silently, so an optional variable that
+  // is not guarded turns a delivered alert into no alert at all.
+  {
+    categoryId: 'admin.tenant_workloads_down',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: '{{tenantName}} is DOWN — automatic recovery failed',
+    bodyTemplate: emailMjml(
+      'Tenant workloads down',
+      'Workload {{workload}} in {{namespace}} ({{tenantName}}) has had no available replicas since '
+        + '{{downSince}} — {{downMinutes}} minutes. Cause: {{reasonLabel}} [{{reason}}]. '
+        + 'The platform attempted automatic recovery {{healAttempts}} time(s) and could not bring it back.'
+        + '{{#if lastHealError}} Last recovery error: {{lastHealError}}{{/if}}'
+        + '{{#if detail}} Cluster reported: {{detail}}{{/if}} '
+        + '{{recommendedAction}}',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'namespace', type: 'string', required: true },
+      { name: 'workload', type: 'string', required: true },
+      { name: 'downSince', type: 'string', required: true },
+      { name: 'downMinutes', type: 'string', required: true },
+      { name: 'reason', type: 'string', required: true },
+      { name: 'reasonLabel', type: 'string', required: true },
+      { name: 'healAttempts', type: 'string', required: true },
+      { name: 'recommendedAction', type: 'string', required: true },
+      { name: 'detail', type: 'string', required: false },
+      { name: 'lastHealError', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'admin.tenant_workloads_down',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: '{{tenantName}} is down — auto-heal failed',
+    bodyTemplate: '{{workload}} has had no available replicas for {{downMinutes}} min ({{reasonLabel}} / {{reason}}). '
+      + 'Auto-heal tried {{healAttempts}}x and failed.{{#if lastHealError}} {{lastHealError}}{{/if}} {{recommendedAction}}',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'namespace', type: 'string', required: true },
+      { name: 'workload', type: 'string', required: true },
+      { name: 'downSince', type: 'string', required: true },
+      { name: 'downMinutes', type: 'string', required: true },
+      { name: 'reason', type: 'string', required: true },
+      { name: 'reasonLabel', type: 'string', required: true },
+      { name: 'healAttempts', type: 'string', required: true },
+      { name: 'recommendedAction', type: 'string', required: true },
+      { name: 'detail', type: 'string', required: false },
+      { name: 'lastHealError', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'tenant.workloads_down',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: 'Your application {{workload}} is not running',
+    bodyTemplate: emailMjml(
+      'Your application is not running',
+      '{{workload}} has not been running since {{downSince}}. Cause: {{reasonLabel}}. '
+        + 'We could not restart it automatically, so your site or database may be unreachable. '
+        + 'Our operators have been alerted at the same time as you and are already on it — '
+        + 'you do not need to report it.',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'workload', type: 'string', required: true },
+      { name: 'downSince', type: 'string', required: true },
+      { name: 'reasonLabel', type: 'string', required: true },
+    ],
+  },
+  {
+    categoryId: 'tenant.workloads_down',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: '{{workload}} is not running',
+    bodyTemplate: '{{workload}} has not been running since {{downSince}} ({{reasonLabel}}). '
+      + 'Automatic restart did not succeed. Our operators are alerted and working on it.',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'workload', type: 'string', required: true },
+      { name: 'downSince', type: 'string', required: true },
+      { name: 'reasonLabel', type: 'string', required: true },
+    ],
+  },
   {
     categoryId: 'admin.wal_archive_failing',
     channel: 'email',
