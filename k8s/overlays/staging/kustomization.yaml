@@ -50,7 +50,7 @@ patches:
     patch: |-
       - op: add
         path: /spec/jobTemplate/spec/template/spec/priorityClassName
-        value: platform-critical
+        value: platform-maintenance
   # Same affinity patch the dev overlay carries (development/kustomization.yaml):
   # dex is overlay-only, so it can't ride the shared system-node-affinity
   # component (which ../production pulls in but must exclude dex from). Inlined

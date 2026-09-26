@@ -95,7 +95,7 @@ patches:
     patch: |-
       - op: add
         path: /spec/jobTemplate/spec/template/spec/priorityClassName
-        value: platform-critical
+        value: platform-maintenance
   # Release version → platform-version ConfigMap (stamped by cut-release.sh).
   # staging bases on this overlay and inherits it, so platform-ops on staging
   # targets the RC the cluster is actually running.
