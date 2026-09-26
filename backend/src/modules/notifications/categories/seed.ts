@@ -803,6 +803,18 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
     gdprBasis: 'legitimate_interest',
   },
   {
+    id: 'admin.cluster_cpu_reservation',
+    cls: 'action',
+    reportsOn: null,
+    displayName: 'CPU reserved but not used',
+    description: 'A node is close to fully RESERVED on CPU while running far below that in actual use. Kubernetes schedules on reservations, so the node can refuse new work while almost idle — and the refusal surfaces as something else: a quota message, or a pod evicted to make room for a routine job. Reports the gap, the schedulable remainder, and the pods holding the most unused reservation. Does not fire on a genuinely busy node, which is a capacity conversation rather than a sizing one.',
+    audience: 'admin',
+    defaultSeverity: 'warning',
+    defaultChannels: ALL_NOTIFICATION_CHANNELS,
+    isMandatory: false,
+    gdprBasis: 'legitimate_interest',
+  },
+  {
     id: 'admin.mailbox_quota_fleet',
     cls: 'action',
     reportsOn: null,

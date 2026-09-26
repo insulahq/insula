@@ -7,6 +7,7 @@ import { buildAdminAlerts, rankAlerts } from './alerts.js';
 import {
   buildVolumeAlert, buildOrphanedPodAlert, buildOrphanedVolumeAlert, loadTenantsByNamespace,
 } from './cluster-alerts.js';
+import { readCpuReservation, buildCpuReservationAlert } from './cpu-reservation.js';
 
 interface Logger { warn?(...a: unknown[]): void }
 
@@ -519,13 +520,20 @@ export async function buildAdminLive(
     // tenant behind a volume, and "Volume nearly full" without a customer next
     // to it is not something an operator can act on.
     const tenantsByNs = await loadTenantsByNamespace(db).catch(() => new Map());
-    const [vol, orphanVolumes, orphanPods] = await Promise.all([
+    const [vol, orphanVolumes, orphanPods, cpuReservation] = await Promise.all([
       buildVolumeAlert(k8s, tenantsByNs).catch(() => null),
       buildOrphanedVolumeAlert(k8s, tenantsByNs).catch(() => null),
       buildOrphanedPodAlert(k8s).catch(() => null),
+      // ADR-062 R1. Reads the node's reserved-vs-used gap — the condition that
+      // makes a mostly-idle node refuse work, and whose symptoms always show
+      // up somewhere else.
+      readCpuReservation(k8s, logger)
+        .then(({ nodes, pods }) => buildCpuReservationAlert(nodes, pods))
+        .catch(() => null),
     ]);
     return rankAlerts(
-      [vol, orphanVolumes, orphanPods].filter((a): a is NonNullable<typeof a> => a != null),
+      [vol, orphanVolumes, orphanPods, cpuReservation]
+        .filter((a): a is NonNullable<typeof a> => a != null),
     );
   }, { logger, timeoutMs: 4_000 });
 
