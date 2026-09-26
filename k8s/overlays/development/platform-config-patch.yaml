@@ -37,7 +37,7 @@ data:
   tenant-backup-tools-image: "ghcr.io/insulahq/insula/tenant-backup-tools:c06879a@sha256:3d1378061f74d716975a0c91a5fea0017ad0a915e7af9103c07ae997a6a1faa4"
   migration-tools-image: "ghcr.io/insulahq/insula/migration-tools:80a71f8@sha256:081b87808d7a07eeeea359a32ee038c60184acd459f3bdfc565f5fc3056efc5c"
   claim-validator-image: "ghcr.io/insulahq/insula/claim-validator:80a71f8@sha256:2f5a30ad85ed6870c4f1f0961d525f63a58d25c039cb5c668a98679289775715"
-  node-terminal-image: "ghcr.io/insulahq/insula/node-terminal:80a71f8@sha256:2207de07fe9cf0d8f33ad163578acbaefd7542f16bba43b87b511677c5f607e7"
+  node-terminal-image: "ghcr.io/insulahq/insula/node-terminal:aa51607@sha256:3c993a6b880e46a25f0302a09c25a9c3ebf498db3deca7bd29cd3d825d44a712"
   # Longhorn dashboard URL for the Storage Configuration iframe.
   # path route on the admin host (same-origin) — the
   # longhorn.<apex> subdomain was removed.
