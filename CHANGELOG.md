@@ -14,6 +14,37 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **A two-minutely maintenance job could evict a tenant's website.** Every
+  platform CronJob ran at the same scheduling priority as the API, the database
+  and the mail server, so when the node had no room a routine job was allowed to
+  throw a tenant's application off it to make space. On one cluster a guard job
+  asking for a hundredth of a core did exactly that to a Moodle site seven times
+  in thirty-five minutes — each time costing the site about ninety seconds, and
+  each time reported to the operator as a *memory* error on a tenant using barely
+  a quarter of the memory it was charged for.
+
+  Nothing was actually short of memory, and nothing was short of CPU either: the
+  machine was running at 20% while its books said 98%. Kubernetes places work by
+  what pods *reserve*, not by what they use, and the reservations had drifted far
+  above reality — 45 pods were holding nearly six cores they never touched.
+
+  Maintenance work now has its own rank, below the platform's own services and
+  still above every tenant. It keeps the right to claim space when it genuinely
+  must — a backup that can never run is its own kind of failure — but the
+  situation that made it routine is addressed separately, below and in ADR-062.
+
+- **An idle application could not be made smaller.** Three different parts of the
+  platform disagreed about the minimum CPU an application could be given — the
+  panel offered one number, the deploy dialog a second, and the code that actually
+  decides enforced a third. So the form refused values the platform would have
+  accepted, and the figure it showed as the minimum was not the real one. They are
+  now one number, and it is lower: an idle site can be right-sized down instead of
+  holding a tenth of a core it never uses.
+
+  Memory is deliberately unchanged. A memory request is a real ceiling — lowering
+  it takes memory away — whereas a CPU request only reserves a place in the queue
+  and never caps anything. The two behave differently and now get different rules.
+
 - **Setting a tenant's mailbox allowance to 0 now switches mail off, instead of
   refusing the edit.** Disabling email for one tenant had no expression in the
   UI: the per-tenant **Max Mailboxes** override rejected 0 with a validation
