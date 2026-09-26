@@ -23,6 +23,14 @@ tabs:
     **Settings & DNS** tab shows exactly which records are needed and whether
     the platform publishes them for you (see [DNS for mail](#dns-for-mail)).
 
+!!! info "If your plan includes no mailboxes"
+    When your account is allocated **0 mailboxes**, the page says so instead of
+    offering an *Enable Email* button that cannot work. Any mailboxes you
+    already have keep running and receiving — the allocation bounds new ones —
+    but you cannot create another or enable email on a further domain until
+    your administrator raises it. The mailbox usage meter shows the same thing
+    (for example `5 / 0`: five mailboxes in place, no room for a sixth).
+
 ## Mailboxes
 
 A **mailbox** is a real inbox with its own address and password.
