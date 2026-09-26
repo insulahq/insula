@@ -47,6 +47,12 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   rejected, a silent mail-off once it is not. A blank field now means "inherit
   the plan", for every limit on that form.
 
+- **The same 0 is now expressible on a plan.** The **Max Mailboxes** field in
+  the plan editor carried a minimum of 1 while the API had always accepted 0,
+  so a plan that grants no mail could not be created here either. It also now
+  warns that 0 on a plan reaches *every* tenant on it, and — like the tenant
+  form — refuses to submit empty rather than quietly sending 0.
+
 - **The per-tenant sub-user override accepts 0 too**, for the same reason: the
   plan-level `max_sub_users` always has, and the code that reads the override
   already honoured 0 correctly — only the contract rejected it.
