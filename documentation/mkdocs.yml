@@ -90,6 +90,7 @@ nav:
   - Operator guide:
       - operator/index.md
       - Nodes & cluster: operator/nodes-and-cluster.md
+      - CPU & capacity: operator/cpu-and-capacity.md
       - High availability: operator/high-availability.md
       - Updates & releases: operator/updates-and-releases.md
       - Backup targets: operator/backup-targets.md

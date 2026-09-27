@@ -858,6 +858,60 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     ],
   },
 
+  // ── admin.cluster_cpu_reservation ──────────────────────────────────
+  //
+  // Both numbers in the subject, always. The whole reason this category
+  // exists is that a panel showing one of them — reserved — and calling it
+  // usage sent an operator looking for a memory problem that was not there.
+  // Every variable is optional: a bare {{x}} with nothing bound THROWS at
+  // render time and the delivery is dropped, so a missing value must degrade
+  // to an empty string rather than to silence.
+  {
+    categoryId: 'admin.cluster_cpu_reservation',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: 'CPU on {{nodeName}} is {{reservedPct}}% reserved but {{usedPct}}% used',
+    bodyTemplate: emailMjml(
+      'CPU reserved but not used',
+      '{{nodeName}} has {{reservedPct}}% of its schedulable CPU reserved while running at '
+      + '{{usedPct}}%, leaving {{freeCores}} cores that can be scheduled onto. '
+      + '{{slackSummary}} As of {{occurredAt}}. '
+      + 'Kubernetes places work by what pods reserve, not by what they use, so a node in this '
+      + 'state refuses new work while running almost idle — and the refusal usually surfaces as '
+      + 'something else: a quota message, or a pod evicted to make room for a routine job. '
+      + '{{recommendedAction}}',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'nodeName', type: 'string', required: false },
+      { name: 'reservedPct', type: 'string', required: false },
+      { name: 'usedPct', type: 'string', required: false },
+      { name: 'freeCores', type: 'string', required: false },
+      { name: 'slackSummary', type: 'string', required: false },
+      { name: 'recommendedAction', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'admin.cluster_cpu_reservation',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: 'CPU {{reservedPct}}% reserved, {{usedPct}}% used on {{nodeName}}',
+    bodyTemplate: '{{freeCores}} cores schedulable. {{slackSummary}} As of {{occurredAt}}. '
+      + 'Scheduling uses reservations, not usage — the node can refuse work while idle. '
+      + '{{recommendedAction}}',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'nodeName', type: 'string', required: false },
+      { name: 'reservedPct', type: 'string', required: false },
+      { name: 'usedPct', type: 'string', required: false },
+      { name: 'freeCores', type: 'string', required: false },
+      { name: 'slackSummary', type: 'string', required: false },
+      { name: 'recommendedAction', type: 'string', required: false },
+    ],
+  },
+
   // ── tenant.resource_saturation_* ───────────────────────────────────
   {
     categoryId: 'tenant.resource_saturation_warning',

@@ -93,6 +93,7 @@ const STATIC_PATHS: Record<string, string> = {
   'admin.mailbox_quota_fleet': '/tenants',
   // The storage settings page is where capacity is read and nodes are added.
   'admin.cluster_storage_capacity': '/cluster/storage',
+  'admin.cluster_cpu_reservation': '/cluster/cpu-scheduling',
   // Operational events land on the surface that owns the subsystem.
   'admin.storage_event': '/cluster/storage',
   'admin.node_event': '/cluster/nodes',

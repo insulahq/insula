@@ -223,9 +223,21 @@ Conflating them is why "0.13 cores free" read as an emergency on a machine at 20
 - **Admin panel** shows both, separately: *reserved vs allocatable* (the scheduling ledger,
   the number that causes preemption) and *actual vs capacity* (utilisation).
 
-`packages/api-contracts/src/dashboard.ts:124` already declares
-`kind: z.enum(['reserve','consume'])` and **nothing branches on it**. The distinction was
-modelled and never rendered; this wires it.
+`packages/api-contracts/src/dashboard.ts:124` declares
+`kind: z.enum(['reserve','consume'])`, and the console tiles in **both** panels
+(`components/console/ConsoleTiles.tsx:276`) already honour it correctly: a `consume` triad
+hides the reservation band, relabels "Schedulable left" to "Free", and carries an accurate
+note. That half is built.
+
+*(An earlier revision of this ADR claimed nothing branched on `kind`. That was wrong — it
+came from a truncated grep. The distinction is modelled AND rendered in the tile vocabulary;
+what follows is the remainder.)*
+
+What is left is narrower. The admin dashboard's node strip uses a different component,
+`MiniTriad`, which takes no `kind` and prints a bare percentage computed from `committed`.
+Both node resources are `reserve`, so there is no wrong-band bug — but an unlabelled `82%`
+next to `1.12 / 2.88` invites exactly the reading this ADR exists to prevent, and it is the
+figure an operator quotes when they say the node is nearly full.
 
 Windowed peak, not instantaneous, is the tenant-facing number — instantaneous CPU on a
 bursty PHP workload is noise. VictoriaMetrics (`monitoring/vmsingle`) holds the history;
