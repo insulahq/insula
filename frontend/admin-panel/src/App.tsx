@@ -35,6 +35,7 @@ const Placeholder = lazy(() => import('@/pages/Placeholder'));
 // Cluster group (operations / infrastructure)
 const NodesPage = lazy(() => import('@/pages/cluster/NodesPage'));
 const StoragePage = lazy(() => import('@/pages/cluster/StoragePage'));
+const CpuSchedulingPage = lazy(() => import('@/pages/cluster/CpuSchedulingPage'));
 const ClusterPoliciesPage = lazy(() => import('@/pages/cluster/ClusterPoliciesPage'));
 const NetworkingPage = lazy(() => import('@/pages/cluster/NetworkingPage'));
 const IngressTlsPage = lazy(() => import('@/pages/cluster/IngressTlsPage'));
@@ -152,6 +153,7 @@ export default function App() {
             <Route path="cluster" element={<Navigate to="/cluster/nodes" replace />} />
             <Route path="cluster/nodes" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><NodesPage /></ProtectedRoute>} />
             <Route path="cluster/storage" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><StoragePage /></ProtectedRoute>} />
+            <Route path="cluster/cpu-scheduling" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><CpuSchedulingPage /></ProtectedRoute>} />
             <Route path="cluster/cluster-policies" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><ClusterPoliciesPage /></ProtectedRoute>} />
             <Route path="cluster/networking" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><NetworkingPage /></ProtectedRoute>} />
             <Route path="cluster/ingress-tls" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><IngressTlsPage /></ProtectedRoute>} />

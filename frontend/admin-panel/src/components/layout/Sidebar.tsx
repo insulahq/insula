@@ -156,6 +156,7 @@ const navItems: ReadonlyArray<NavItem> = [
     children: [
       { kind: 'item', to: '/cluster/nodes',             icon: Server,             label: 'Nodes' },
       { kind: 'item', to: '/cluster/storage',           icon: HardDrive,          label: 'Storage' },
+      { kind: 'item', to: '/cluster/cpu-scheduling',    icon: Cpu,                label: 'CPU Scheduling' },
       { kind: 'item', to: '/cluster/cluster-policies',  icon: SlidersHorizontal,  label: 'Cluster Policies' },
       { kind: 'item', to: '/cluster/networking',        icon: Network,            label: 'Networking' },
       { kind: 'item', to: '/cluster/ingress-tls',       icon: Globe,              label: 'Ingress & TLS' },

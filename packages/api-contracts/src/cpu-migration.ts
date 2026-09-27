@@ -63,6 +63,24 @@ export const cpuMigrationTenantSchema = z.object({
   currentMillis: z.number(),
   /** Sum after re-tiering, millicores. */
   proposedMillis: z.number(),
+  /**
+   * Millicores this tenant hands back — the sum of PER-DEPLOYMENT floors, the
+   * same operation the cluster-wide `reclaimableMillis` is built from.
+   *
+   * Sent rather than derived in the UI on purpose. Flooring the tenant's
+   * summed difference instead gives a different number whenever one
+   * deployment's tier lands above its current request: A 500m→30m and B
+   * 10m→30m is 470 by the aggregate's rule and 450 by the summed-then-floored
+   * one. Two independent computations of "freed" is a divergence waiting to
+   * happen on the one page whose value is being trustworthy.
+   */
+  reclaimableMillis: z.number(),
+  /**
+   * Millicores this tenant would GAIN, where a tier lands above the current
+   * request. Zero for almost every tenant, but folding it into the freed
+   * figure would render a net increase identically to no change.
+   */
+  increasedMillis: z.number(),
   /** Tenant-wide burst ceiling the plan would grant, in cores. */
   proposedCeilingCores: z.number(),
   /**

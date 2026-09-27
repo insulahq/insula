@@ -166,7 +166,7 @@ export function buildCpuReservationAlert(
     // misreading this finding exists to prevent.
     subtitle: `${worst.node.name} · ${worst.verdict.reservedPct}% reserved, ${worst.verdict.usedPct}% actually in use`
       + ` · ${fmtCores(free)} of ${fmtCores(worst.node.allocatableMillis)} cores schedulable`,
-    href: '/cluster/nodes',
+    href: '/cluster/cpu-scheduling',
     detail: [
       ['Reserved', `${fmtCores(worst.node.requestedMillis)} cores (${worst.verdict.reservedPct}%)`],
       ['Actually used', `${fmtCores(worst.node.usedMillis ?? 0)} cores (${worst.verdict.usedPct}%)`],

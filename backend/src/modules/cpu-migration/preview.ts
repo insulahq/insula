@@ -159,6 +159,8 @@ export async function buildCpuMigrationPreview(
     const p95 = p95ByTenant.has(t.id) ? p95ByTenant.get(t.id)! : null;
     const tenantBlocker = tenantUsageBlocker(p95, ceiling);
 
+    let tenantReclaim = 0;
+    let tenantIncrease = 0;
     const deployments: CpuMigrationDeployment[] = (byTenant.get(t.id) ?? []).map((d) => {
       const currentMillis = cpuToMillis(d.cpu_request ?? undefined);
       const tier = d.source === 'custom'
@@ -168,7 +170,13 @@ export async function buildCpuMigrationPreview(
         ? 'high' as const
         : deriveTier(recommendedCores(d.entry_resources));
       const proposedMillis = tierMillis(tier);
-      reclaimable += reclaimFor(currentMillis, proposedMillis);
+      // Accumulated per DEPLOYMENT, then summed — the tenant row and the
+      // cluster headline are therefore the same operation at two scopes, and
+      // the columns add up to the total by construction rather than by luck.
+      const freed = reclaimFor(currentMillis, proposedMillis);
+      tenantReclaim += freed;
+      tenantIncrease += Math.max(0, proposedMillis - currentMillis);
+      reclaimable += freed;
       return {
         id: d.id,
         name: d.name,
@@ -191,6 +199,8 @@ export async function buildCpuMigrationPreview(
       planCode: t.plan_code,
       currentMillis: deployments.reduce((s, d) => s + d.currentMillis, 0),
       proposedMillis: deployments.reduce((s, d) => s + d.proposedMillis, 0),
+      reclaimableMillis: tenantReclaim,
+      increasedMillis: tenantIncrease,
       proposedCeilingCores: ceiling,
       observedP95Millis: p95,
       tenantBlocker,
