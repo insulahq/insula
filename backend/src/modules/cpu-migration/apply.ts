@@ -27,6 +27,8 @@ export interface MigrationEffects {
    * Kubernetes would roll nothing.
    */
   readonly recreatePods: (deploymentId: string) => Promise<void>;
+  /** Raise requests.cpu so a replacement pod fits beside the one it replaces. */
+  readonly widenQuotaHeadroom: () => Promise<void>;
   readonly ensureLimitRange: (tier: CpuTier, burstCores: number) => Promise<void>;
   /** Verified, not assumed, before the quota gains limits.cpu. */
   readonly limitRangeExists: () => Promise<boolean>;
@@ -133,6 +135,10 @@ export async function runTenantCpuMigration(
     // — so one of them gets forgotten.
     try {
     switch (step.kind) {
+      case 'widen_quota_headroom':
+        await fx.widenQuotaHeadroom();
+        break;
+
       case 'ensure_limit_range':
         await fx.ensureLimitRange(input.tier, input.burstCores);
         break;
@@ -170,7 +176,10 @@ export async function runTenantCpuMigration(
       case 'recreate_stragglers': {
         const stragglers = (await fx.readPodCpuLimits()).filter(
           (p) => p.priorityClassName === fx.quotaScopePriorityClass
-            && p.containersWithoutCpuLimit.length > 0,
+            && p.containersWithoutCpuLimit.length > 0
+            // Never delete a pod nothing will bring back. verify_limits_ready
+            // then refuses and names it, which is the recoverable outcome.
+            && p.hasController,
         );
         if (stragglers.length > 0) {
           await fx.deletePods(stragglers.map((p) => p.podName));

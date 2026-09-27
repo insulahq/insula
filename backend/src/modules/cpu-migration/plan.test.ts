@@ -26,7 +26,9 @@ describe('buildMigrationPlan', () => {
   it('brackets the re-tiers with the LimitRange first and the quota last', () => {
     const p = buildMigrationPlan({ namespace: 'tenant-a', deployments: [dep()], defaultTier: 'high' });
     const kinds = p.steps.map((s) => s.kind);
-    expect(kinds[0]).toBe('ensure_limit_range');
+    // Quota room first, THEN the LimitRange — a replacement pod has to fit
+    // beside the one it replaces before anything is replaced.
+    expect(kinds.slice(0, 2)).toEqual(['widen_quota_headroom', 'ensure_limit_range']);
     expect(kinds.slice(-4)).toEqual([
       'recreate_stragglers', 'verify_limits_ready', 'apply_quota_limits', 'mark_tiered',
     ]);
@@ -157,7 +159,7 @@ describe('buildMigrationPlan', () => {
   it('still runs the bracketing steps for a tenant with no deployments', () => {
     const p = buildMigrationPlan({ namespace: 'tenant-a', deployments: [], defaultTier: 'high' });
     expect(p.steps.map((s) => s.kind)).toEqual([
-      'ensure_limit_range', 'recreate_stragglers',
+      'widen_quota_headroom', 'ensure_limit_range', 'recreate_stragglers',
       'verify_limits_ready', 'apply_quota_limits', 'mark_tiered',
     ]);
   });
@@ -170,5 +172,30 @@ describe('buildMigrationPlan', () => {
     const step = p.steps.find((s) => s.kind === 'retier_deployment');
     expect(step?.fromCpuRequest).toBe('0.25');
     expect(step?.toCpuRequest).toBe('5m');
+  });
+
+  /**
+   * ★ Re-running after a partial failure. A stopped or failed migration
+   * leaves some workloads re-tiered and some not; the operator's natural next
+   * move is to press Migrate again.
+   *
+   * The already-done ones must not be re-tiered (nothing to change) but must
+   * still be RECREATED if they could be carrying pods from before the
+   * LimitRange, and the untouched ones must still re-tier. Getting this wrong
+   * either churns pods for nothing or leaves the tenant permanently stuck.
+   */
+  it('resumes cleanly over a partially migrated tenant', () => {
+    const p = buildMigrationPlan({
+      namespace: 'tenant-a', defaultTier: 'high',
+      deployments: [
+        dep({ id: 'done', name: 'done', currentCpuRequest: '30m', proposedTier: 'high' }),
+        dep({ id: 'todo', name: 'todo', currentCpuRequest: '1', proposedTier: 'high' }),
+      ],
+    });
+    const byKind = (k: string) => p.steps.filter((s) => s.kind === k).map((s) => s.deploymentName);
+    expect(byKind('retier_deployment')).toEqual(['todo']);
+    expect(byKind('recreate_deployment')).toEqual(['done']);
+    // Only the outstanding work counts toward what this run hands back.
+    expect(p.totalFreesMillis).toBe(970);
   });
 });

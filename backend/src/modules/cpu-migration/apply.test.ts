@@ -12,14 +12,21 @@ const dep = (o: Partial<DeploymentToRetier> = {}): DeploymentToRetier => ({
 
 function effects(over: Partial<MigrationEffects> = {}) {
   const calls: string[] = [];
+  // A clock that ADVANCES. A frozen one (now: () => 0) is not a simplification
+  // here — the health gate now rides out a transient failure for a grace
+  // period, so with time standing still a persistent failure never ages past
+  // it and the loop spins forever. The fake has to be able to reach the
+  // deadline the code is written against.
+  let t = 0;
   const fx: MigrationEffects = {
     retier: vi.fn(async (id) => { calls.push(`retier:${id}`); }),
     recreatePods: vi.fn(async (id) => { calls.push(`recreate:${id}`); }),
+    widenQuotaHeadroom: vi.fn(async () => { calls.push('widen'); }),
     ensureLimitRange: vi.fn(async () => { calls.push('limitrange'); }),
     limitRangeExists: vi.fn(async () => true),
     readWorkloads: vi.fn(async () => healthy),
     readPodCpuLimits: vi.fn(async () => [
-      { podName: 'app-1', containersWithoutCpuLimit: [], priorityClassName: 'tenant-default' },
+      { podName: 'app-1', containersWithoutCpuLimit: [], priorityClassName: 'tenant-default' , hasController: true },
     ]),
     deletePods: vi.fn(async (names: readonly string[]) => { calls.push(`delete:${names.join('+')}`); }),
     quotaScopePriorityClass: 'tenant-default',
@@ -27,8 +34,8 @@ function effects(over: Partial<MigrationEffects> = {}) {
     markTiered: vi.fn(async () => { calls.push('tiered'); }),
     report: vi.fn(async () => {}),
     stopRequested: vi.fn(async () => false),
-    sleep: vi.fn(async () => {}),
-    now: () => 0,
+    sleep: vi.fn(async (ms: number) => { t += ms; }),
+    now: () => t,
     ...over,
   };
   return { fx, calls };
@@ -43,7 +50,7 @@ describe('runTenantCpuMigration', () => {
     });
     expect(r.status).toBe('completed');
     expect(r).toMatchObject({ freedMillis: 245 }); // 250 - 5
-    expect(calls).toEqual(['limitrange', 'retier:d1', 'quota', 'tiered']);
+    expect(calls).toEqual(['widen', 'limitrange', 'retier:d1', 'quota', 'tiered']);
   });
 
   /**
@@ -115,7 +122,7 @@ describe('runTenantCpuMigration', () => {
   it('refuses the quota ceiling when a pod still has no CPU limit', async () => {
     const { fx, calls } = effects({
       readPodCpuLimits: vi.fn(async () => [
-        { podName: 'old-1', containersWithoutCpuLimit: ['web'], priorityClassName: 'tenant-default' },
+        { podName: 'old-1', containersWithoutCpuLimit: ['web'], priorityClassName: 'tenant-default' , hasController: true },
       ]),
     });
     const r = await runTenantCpuMigration(fx, {
@@ -147,7 +154,7 @@ describe('runTenantCpuMigration', () => {
       namespace: 'tenant-a', tier: 'normal', burstCores: 1, deployments: [],
     });
     expect(r.status).toBe('completed');
-    expect(calls).toEqual(['limitrange', 'quota', 'tiered']);
+    expect(calls).toEqual(['widen', 'limitrange', 'quota', 'tiered']);
   });
 
   // The quota's requests.cpu is the sum of the tiers actually applied, so a
@@ -236,8 +243,8 @@ describe('runTenantCpuMigration', () => {
         seen += 1;
         // First read: an orphan with no limit. After the delete: clean.
         return seen === 1
-          ? [{ podName: 'ghost-1', containersWithoutCpuLimit: ['db'], priorityClassName: 'tenant-default' }]
-          : [{ podName: 'ghost-2', containersWithoutCpuLimit: [], priorityClassName: 'tenant-default' }];
+          ? [{ podName: 'ghost-1', containersWithoutCpuLimit: ['db'], priorityClassName: 'tenant-default' , hasController: true }]
+          : [{ podName: 'ghost-2', containersWithoutCpuLimit: [], priorityClassName: 'tenant-default' , hasController: true }];
       }),
     });
     const r = await runTenantCpuMigration(fx, {
@@ -261,7 +268,7 @@ describe('runTenantCpuMigration', () => {
   it('leaves out-of-scope pods alone even when they lack a ceiling', async () => {
     const { fx, calls } = effects({
       readPodCpuLimits: vi.fn(async () => [
-        { podName: 'file-manager-1', containersWithoutCpuLimit: ['fm'], priorityClassName: 'platform-tenant-overhead' },
+        { podName: 'file-manager-1', containersWithoutCpuLimit: ['fm'], priorityClassName: 'platform-tenant-overhead' , hasController: true },
       ]),
     });
     const r = await runTenantCpuMigration(fx, {
@@ -269,5 +276,73 @@ describe('runTenantCpuMigration', () => {
     });
     expect(r.status).toBe('completed');
     expect(calls.some((c) => c.startsWith('delete:'))).toBe(false);
+  });
+
+  /**
+   * ★ Refuse rather than destroy. The sweep DELETES pods; a pod with no
+   * controller is not recreated by anything, so deleting it is permanent
+   * loss of that workload. Production has none today, but the failure mode
+   * is unrecoverable while refusing to migrate is not.
+   */
+  it('never deletes a pod that nothing would recreate', async () => {
+    const { fx, calls } = effects({
+      readPodCpuLimits: vi.fn(async () => [
+        { podName: 'orphan', containersWithoutCpuLimit: ['c'], priorityClassName: 'tenant-default', hasController: false },
+      ]),
+    });
+    const r = await runTenantCpuMigration(fx, {
+      namespace: 'tenant-a', tier: 'normal', burstCores: 2, deployments: [dep()],
+    });
+    expect(calls.some((c) => c.startsWith('delete:'))).toBe(false);
+    // …and it stops short of the ceiling, naming the pod.
+    expect(r.status).toBe('failed');
+    expect(r).toMatchObject({ reason: expect.stringContaining('orphan') });
+    expect(calls).not.toContain('quota');
+  });
+
+  /**
+   * ★ The order that keeps a tight cluster safe. On a node at 98% reserved,
+   * a re-tier REDUCES the request, so the replacement pod is smaller than
+   * the one it replaces and always fits. The no-gain recreations, which surge
+   * at the SAME size, come after — by which point the re-tiers have freed
+   * room for them. Reversing this spends the scarcest moment on the pods that
+   * need the most headroom.
+   */
+  it('frees room with the shrinking pods before surging the same-size ones', async () => {
+    const { fx, calls } = effects();
+    await runTenantCpuMigration(fx, {
+      namespace: 'tenant-a', tier: 'normal', burstCores: 2,
+      deployments: [
+        dep({ id: 'same', name: 'same', currentCpuRequest: '5m', proposedTier: 'normal' }),
+        dep({ id: 'big', name: 'big', currentCpuRequest: '2', proposedTier: 'normal' }),
+      ],
+    });
+    expect(calls.indexOf('retier:big')).toBeLessThan(calls.indexOf('recreate:same'));
+  });
+
+  /**
+   * ★ The quota is widened BEFORE any pod is touched. A Terminating pod holds
+   * its full reservation for its grace period, and the legacy quota has zero
+   * slack, so without this the very first replacement is refused by the
+   * tenant's own quota — with the old pod already deleted.
+   */
+  it('makes quota room before the first pod is replaced', async () => {
+    const { fx, calls } = effects();
+    await runTenantCpuMigration(fx, {
+      namespace: 'tenant-a', tier: 'normal', burstCores: 2, deployments: [dep()],
+    });
+    expect(calls[0]).toBe('widen');
+    expect(calls.indexOf('widen')).toBeLessThan(calls.indexOf('retier:d1'));
+  });
+
+  it('reports a failure to widen rather than replacing pods anyway', async () => {
+    const { fx, calls } = effects({
+      widenQuotaHeadroom: vi.fn(async () => { throw new Error('quota patch denied'); }),
+    });
+    const r = await runTenantCpuMigration(fx, {
+      namespace: 'tenant-a', tier: 'normal', burstCores: 2, deployments: [dep()],
+    });
+    expect(r.status).toBe('failed');
+    expect(calls.some((c) => c.startsWith('retier:'))).toBe(false);
   });
 });

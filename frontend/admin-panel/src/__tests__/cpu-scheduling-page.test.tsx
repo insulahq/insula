@@ -34,6 +34,7 @@ const tenant = (o: Partial<CpuMigrationPreview['tenants'][number]> = {}) => ({
   tenantBlocker: null,
   migratesCleanly: true,
   schedulingMode: 'legacy' as const,
+  migrationRunning: false,
   deployments: [
     { id: 'd1', name: 'moodle', currentMillis: 500, proposedMillis: 30, proposedTier: 'high' as const, blocker: null },
     { id: 'd2', name: 'my-mariadb', currentMillis: 250, proposedMillis: 30, proposedTier: 'high' as const, blocker: null },
@@ -270,5 +271,27 @@ describe('CpuSchedulingPage', () => {
     await userEvent.click(screen.getByTestId('cpu-migration-tenant-t1'));
     expect(screen.queryByTestId('cpu-ack-t1')).toBeNull();
     expect(screen.getByTestId('cpu-migrate-t1')).toBeEnabled();
+  });
+
+  /**
+   * ★ Stop must be reachable from any tab, not only the one that started the
+   * run. The button used to render on the local mutation's pending flag, so
+   * a reload, a second admin, or a dropped connection made the one safety
+   * valve vanish while the migration carried on server-side.
+   */
+  it('offers Stop for a run this tab did not start', async () => {
+    ok(preview({ tenants: [tenant({ migrationRunning: true })] }));
+    render(<CpuSchedulingPage />);
+    await userEvent.click(screen.getByTestId('cpu-migration-tenant-t1'));
+    expect(screen.getByTestId('cpu-stop-t1')).toBeInTheDocument();
+    // …and it must not invite a second, concurrent run.
+    expect(screen.getByTestId('cpu-migrate-t1')).toBeDisabled();
+  });
+
+  it('shows no Stop when nothing is running', async () => {
+    ok(preview({ tenants: [tenant()] }));
+    render(<CpuSchedulingPage />);
+    await userEvent.click(screen.getByTestId('cpu-migration-tenant-t1'));
+    expect(screen.queryByTestId('cpu-stop-t1')).toBeNull();
   });
 });

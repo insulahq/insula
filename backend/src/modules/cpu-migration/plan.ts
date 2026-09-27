@@ -34,6 +34,22 @@ export interface DeploymentToRetier {
 }
 
 export type MigrationStepKind =
+  /**
+   * ★ FIRST, before any pod is touched.
+   *
+   * The legacy quota is provisioned with ZERO slack — `requests.cpu` is
+   * exactly the tenant's plan allowance. Replacing a pod deletes it, and a
+   * Terminating pod holds its full reservation for its grace period, so for
+   * ~30s the old and new pod together exceed that quota and the ReplicaSet
+   * is refused. The migration would then have caused precisely the outage
+   * ADR-062 was written to prevent.
+   *
+   * Widening the quota first is purely permissive: it cannot break anything,
+   * it removes the cause rather than tolerating it, and the final step
+   * tightens `requests.cpu` back down to the tiered figure once the pods are
+   * smaller.
+   */
+  | 'widen_quota_headroom'
   | 'ensure_limit_range'
   | 'retier_deployment'
   /**
@@ -176,6 +192,10 @@ export function buildMigrationPlan(input: BuildPlanInput): MigrationPlan {
   retiers.sort((a, b) => (b.freesMillis ?? 0) - (a.freesMillis ?? 0));
 
   const steps: MigrationStep[] = [
+    {
+      kind: 'widen_quota_headroom',
+      label: 'Make room in the namespace quota for a pod replacement',
+    },
     {
       kind: 'ensure_limit_range',
       label: 'Create the namespace CPU LimitRange',

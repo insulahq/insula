@@ -48,6 +48,7 @@ function effects(over: Partial<RevertEffects> = {}) {
     restore: vi.fn(async (id) => { calls.push(`restore:${id}`); }),
     removeQuotaLimits: vi.fn(async () => { calls.push('quota-off'); }),
     removeLimitRange: vi.fn(async () => { calls.push('limitrange-off'); }),
+    rollPodsStillCapped: vi.fn(async () => { calls.push('uncap'); return 2; }),
     markLegacy: vi.fn(async () => { calls.push('legacy'); }),
     report: vi.fn(async () => {}),
     ...over,
@@ -70,12 +71,35 @@ describe('runTenantCpuRevert', () => {
     expect(calls.indexOf('quota-off')).toBeLessThan(calls.indexOf('restore:a'));
   });
 
-  // …and the LimitRange comes off LAST, so pods recreated during the restore
-  // still inherit a ceiling instead of briefly having none.
-  it('removes the LimitRange only after the restores', async () => {
+  /**
+   * ★ The LimitRange comes off BEFORE the restores, not after.
+   *
+   * An earlier version removed it last, reasoning that pods recreated
+   * mid-revert should still inherit "a sane ceiling". That was backwards:
+   * reverting means returning to legacy, where there is NO ceiling — and a
+   * LimitRange default is baked into a pod at ADMISSION, so any pod created
+   * while it still existed would keep that cap for life, after a revert that
+   * reported success.
+   */
+  it('removes the LimitRange before recreating anything', async () => {
     const { fx, calls } = effects();
     await runTenantCpuRevert(fx, buildRevertPlan([d({ id: 'a' })]));
-    expect(calls).toEqual(['quota-off', 'restore:a', 'limitrange-off', 'legacy']);
+    expect(calls).toEqual(['quota-off', 'limitrange-off', 'restore:a', 'uncap', 'legacy']);
+  });
+
+  /**
+   * ★ A deployment that was RECREATED rather than re-tiered has no stored
+   * baseline, so nothing restores it — yet its pods were admitted under the
+   * LimitRange and carry a ceiling. Without a sweep it stays throttled
+   * forever behind a "clean" revert, and the result would not mention it.
+   */
+  it('releases pods that no restore would have touched, and counts them', async () => {
+    const { fx, calls } = effects();
+    const r = await runTenantCpuRevert(fx, buildRevertPlan([
+      d({ id: 'never-migrated', cpuRequestPreMigration: null }),
+    ]));
+    expect(calls).toContain('uncap');
+    expect(r).toMatchObject({ status: 'completed', restored: 0, uncapped: 2 });
   });
 
   it('reports how far it got when a restore throws', async () => {
@@ -105,6 +129,6 @@ describe('runTenantCpuRevert', () => {
     const { fx, calls } = effects();
     const r = await runTenantCpuRevert(fx, buildRevertPlan([d({ cpuRequestPreMigration: null })]));
     expect(r.status).toBe('completed');
-    expect(calls).toEqual(['quota-off', 'limitrange-off', 'legacy']);
+    expect(calls).toEqual(['quota-off', 'limitrange-off', 'uncap', 'legacy']);
   });
 });

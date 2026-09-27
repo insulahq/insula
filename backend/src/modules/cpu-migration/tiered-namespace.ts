@@ -50,17 +50,52 @@ export interface TieredQuotaInput {
   /** One entry per container the tenant runs; sums to requests.cpu. */
   readonly tiers: readonly CpuTier[];
   readonly burstCores: number;
-  readonly memoryGi: number;
+  /**
+   * What the namespace's in-scope pods ACTUALLY request right now, in
+   * millicores, read from the live quota's `status.used`.
+   *
+   * ★ Without this the quota freezes the tenant. Verified on a cluster:
+   * Kubernetes ACCEPTS a ResourceQuota whose `hard` is below current `used`
+   * — it does not reject the update — and then refuses every subsequent pod,
+   * including a 5m one ("exceeded quota … used: 300m, limited: 30m"). The
+   * tier sum covers only the deployments the migration re-tiered; a
+   * CPU-pinning custom container or a compose stack keeps its original,
+   * larger request and still counts against the quota. Any tenant with one
+   * would have had its namespace frozen by its own migration.
+   */
+  readonly liveUsedMillis: number;
+  /**
+   * The largest single in-scope pod's CPU request, in millicores.
+   *
+   * Surge room. A rolling update runs the old and new pod together, so a
+   * quota sized exactly to steady state blocks the tenant's next deploy —
+   * the namespace would not be frozen, but nothing could ever roll.
+   */
+  readonly largestPodMillis: number;
 }
 
 export function buildTieredQuotaHard(input: TieredQuotaInput): Record<string, string> {
   const summed = input.tiers.reduce((s, t) => s + tierMillis(t), 0);
-  const requestMillis = Math.max(MIN_QUOTA_REQUEST_MILLIS, summed);
+  // Never below what the namespace already holds, and never without room for
+  // one more copy of its biggest workload.
+  const surge = Math.max(input.largestPodMillis, tierMillis('highest'));
+  const requestMillis = Math.max(
+    MIN_QUOTA_REQUEST_MILLIS,
+    Math.max(summed, input.liveUsedMillis) + surge,
+  );
+  /**
+   * ★ CPU ONLY. Memory is deliberately absent from this patch.
+   *
+   * An earlier version copied the live quota's memory across, parsing it out
+   * of `limits.memory` with a `Gi`-suffix strip. Every writer uses `Gi`
+   * today, so it worked — but a value in `Mi` would have parsed to NaN, been
+   * coalesced to 0, and written `0Gi`, freezing the namespace on MEMORY
+   * during a CPU migration. Re-stating a value we have no reason to change
+   * bought nothing and risked that; a merge patch simply leaves it alone.
+   */
   return {
     'requests.cpu': `${requestMillis}m`,
     'limits.cpu': `${round2(input.burstCores * QUOTA_LIMITS_CPU_BACKSTOP)}`,
-    'requests.memory': `${input.memoryGi}Gi`,
-    'limits.memory': `${input.memoryGi}Gi`,
   };
 }
 
@@ -69,6 +104,21 @@ export interface LimitRangeInput {
   /** The tenant's default tier — what an undeclared container requests. */
   readonly tier: CpuTier;
   readonly burstCores: number;
+  /**
+   * The largest CPU any in-scope container already declares, in millicores.
+   *
+   * ★ `max` must never invalidate a pod that is already running. Verified on
+   * a cluster: a LimitRange `max.cpu` rejects a container REQUESTING more
+   * than it — "must be less than or equal to cpu limit of 1" — so installing
+   * one at the burst ceiling would make an existing larger workload
+   * unschedulable, and the straggler sweep would delete such a pod and then
+   * be unable to recreate it. An outage caused by the migration itself.
+   *
+   * The policy bound is `default` (what an undeclared container gets); `max`
+   * only stops a NEW declaration going higher, so raising it to cover what
+   * already exists costs nothing and prevents that.
+   */
+  readonly largestDeclaredMillis: number;
 }
 
 export function buildTenantLimitRange(input: LimitRangeInput): {
@@ -76,6 +126,8 @@ export function buildTenantLimitRange(input: LimitRangeInput): {
   spec: { limits: ReadonlyArray<Record<string, unknown>> };
 } {
   const ceiling = `${round2(input.burstCores)}`;
+  const maxMillis = Math.max(Math.round(input.burstCores * 1000), input.largestDeclaredMillis);
+  const maxCpu = `${round2(maxMillis / 1000)}`;
   return {
     metadata: { name: `${input.namespace}-cpu`, namespace: input.namespace },
     spec: {
@@ -89,7 +141,8 @@ export function buildTenantLimitRange(input: LimitRangeInput): {
         // would collide with the Guaranteed request==limit model tenant pods
         // already use, and memory is incompressible — see ADR-062.
         default: { cpu: ceiling },
-        max: { cpu: ceiling },
+        // >= ceiling, and never below what a container already declares.
+        max: { cpu: maxCpu },
       }],
     },
   };
@@ -110,6 +163,18 @@ export interface PodCpuLimitFact {
    * happens to be running.
    */
   readonly priorityClassName: string | null;
+  /**
+   * Does something own this pod that will recreate it?
+   *
+   * ★ The straggler sweep DELETES pods. A pod with no controller is not
+   * recreated by anything — deleting it destroys the workload. Production
+   * has none today (checked: 0 bare pods across 37 tenant pods), but "none
+   * today" is not a guarantee, and the failure mode is permanent data-plane
+   * loss rather than a retryable error. So the sweep skips them and the
+   * readiness check refuses instead, naming the pod: refusing to migrate is
+   * recoverable, deleting something nothing recreates is not.
+   */
+  readonly hasController: boolean;
 }
 
 export interface LimitsCpuReadiness {

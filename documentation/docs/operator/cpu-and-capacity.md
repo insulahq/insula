@@ -76,6 +76,22 @@ While it runs you get a **Stop after this step** button. It is not a cancel:
 the run finishes the step it is on and puts the tools down between steps, so
 the tenant is never left half-way through a single change.
 
+!!! warning "Migrating restarts the tenant's applications"
+    Every re-tiered application is **rolled**: Kubernetes starts the new pod
+    before retiring the old one, so a healthy app stays reachable throughout.
+    Two things are worth knowing anyway:
+
+    - An app that cannot be re-tiered cleanly but still has to pick up the new
+      ceiling — most often one already sized exactly at a tier value — is
+      rolled the same way, so it too stays up.
+    - A pod that the platform cannot match to any application (for example a
+      deployment marked stopped in the database whose pod is still running) is
+      **deleted** so its replacement inherits the ceiling. Whatever owns it
+      recreates it, but a single-replica workload is briefly unavailable.
+
+    Migrate one tenant at a time and watch it, which is what the per-tenant
+    button is for.
+
 !!! tip "Stopping part-way is safe"
     A stopped or failed migration leaves the tenant on the **old** model with
     some applications already re-tiered. That state is stable and serviceable

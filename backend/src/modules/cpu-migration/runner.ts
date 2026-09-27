@@ -164,19 +164,67 @@ export async function startTenantCpuMigration(
    * reach this: `schedulingMode` stays `legacy` until the very last step, so
    * a page reload mid-run shows an ordinary enabled Migrate button.
    */
-  const running = await db.select({ id: tasks.id }).from(tasks).where(and(
-    eq(tasks.kind, TASK_KIND),
-    eq(tasks.refId, tenantId),
-    inArray(tasks.status, ['running', 'queued']),
-  ));
-  if (running.length > 0) {
-    throw new ApiError(
-      'CPU_MIGRATION_IN_PROGRESS',
-      'A CPU migration is already running for this tenant',
-      409,
-      { tenant_id: tenantId, task_id: running[0].id },
+  /**
+   * ★ Atomic, not check-then-act.
+   *
+   * A plain SELECT followed by tasks.start() is a race, and tasks.start()
+   * does not close it: its ON CONFLICT clause UPSERTs, resetting an
+   * already-running row to `running` and handing back the same id rather
+   * than refusing. Two applies for one tenant would then run two
+   * unsynchronised loops over one namespace, interleaving re-tiers, pod
+   * replacements and quota patches — and whichever finished last would
+   * overwrite the other's terminal status.
+   *
+   * The advisory lock is taken inside the transaction that performs the
+   * check, so the window between deciding and claiming does not exist. It is
+   * released when the transaction ends; the `tasks` row is what holds the
+   * claim for the run itself.
+   */
+  await db.transaction(async (tx) => {
+    const got = await tx.execute<{ locked: boolean }>(
+      sql`SELECT pg_try_advisory_xact_lock(hashtext(${`cpu_migration:${tenantId}`})) AS locked`,
     );
-  }
+    if (got.rows?.[0]?.locked !== true) {
+      throw new ApiError(
+        'CPU_MIGRATION_IN_PROGRESS',
+        'A CPU migration is already starting for this tenant',
+        409,
+        { tenant_id: tenantId },
+      );
+    }
+    const running = await tx.execute<{ id: string; stale: boolean }>(sql`
+      SELECT id, (updated_at < NOW() - INTERVAL '15 minutes') AS stale
+        FROM tasks
+       WHERE kind = ${TASK_KIND} AND ref_id = ${tenantId}
+         AND status IN ('running', 'queued')
+    `);
+    // A run that has not reported progress in 15 minutes is not running — the
+    // process died. Every step reports before it starts and the longest is
+    // bounded by the health timeout, so silence that long means nobody is
+    // driving it. Without this a crash costs the tenant 24 hours, until the
+    // orphan reaper.
+    const live = (running.rows ?? []).filter((r) => !r.stale);
+    if (live.length > 0) {
+      throw new ApiError(
+        'CPU_MIGRATION_IN_PROGRESS',
+        'A CPU migration is already running for this tenant',
+        409,
+        { tenant_id: tenantId, task_id: live[0].id },
+      );
+    }
+    // Claimed inside the same lock, so a second caller sees `running`.
+    await taskService.start(tx as unknown as Database, {
+      kind: TASK_KIND,
+      refId: tenantId,
+      scope: 'admin',
+      userId,
+      tenantId,
+      label: toSafeText('CPU tier migration'),
+      target: { type: 'route', href: `/tenants/${tenantId}` },
+      details: { tenantId, namespace: ctx.namespace },
+      progressPct: 0,
+    });
+  });
 
   const { deployments: deps, blocked } = await describeDeployments(db, tenantId);
 
@@ -206,17 +254,11 @@ export async function startTenantCpuMigration(
     );
   }
 
-  const { id: taskId } = await taskService.start(db, {
-    kind: TASK_KIND,
-    refId: tenantId,
-    scope: 'admin',
-    userId,
-    tenantId,
-    label: toSafeText('CPU tier migration'),
-    target: { type: 'route', href: `/tenants/${tenantId}` },
-    details: { tenantId, namespace: ctx.namespace },
-    progressPct: 0,
-  });
+  const claimed = await db.execute<{ id: string }>(sql`
+    SELECT id FROM tasks WHERE kind = ${TASK_KIND} AND ref_id = ${tenantId} LIMIT 1
+  `);
+  const taskId = claimed.rows?.[0]?.id;
+  if (!taskId) throw new ApiError('CPU_MIGRATION_FAILED', 'Could not claim a migration task', 500, { tenant_id: tenantId });
 
   const effects: MigrationEffects = {
     retier: async (deploymentId, from, to) => {
@@ -228,14 +270,17 @@ export async function startTenantCpuMigration(
     },
     recreatePods: async (deploymentId) => {
       const row = deps.find((d) => d.id === deploymentId);
-      if (row) await fx.recreatePods(k8s, ctx.namespace, row.name);
+      if (row) await fx.recreatePods(k8s, ctx.namespace, row.name, row.proposedTier);
     },
+    widenQuotaHeadroom: () => fx.widenQuotaHeadroom(k8s, ctx.namespace, fx.QUOTA_SCOPE_PRIORITY_CLASS),
     ensureLimitRange: (tier, burst) => fx.ensureLimitRange(k8s, ctx.namespace, tier, burst),
     limitRangeExists: () => fx.limitRangeExists(k8s, ctx.namespace),
     readWorkloads: () => fx.readWorkloads(k8s, ctx.namespace),
     readPodCpuLimits: () => fx.readPodCpuLimits(k8s, ctx.namespace),
     deletePods: (names) => fx.deletePods(k8s, ctx.namespace, names),
-    applyQuotaLimits: (burst, tiers) => fx.applyQuotaLimits(k8s, ctx.namespace, burst, tiers),
+    applyQuotaLimits: (burst, tiers) => fx.applyQuotaLimits(
+      k8s, ctx.namespace, burst, tiers, fx.QUOTA_SCOPE_PRIORITY_CLASS,
+    ),
     quotaScopePriorityClass: fx.QUOTA_SCOPE_PRIORITY_CLASS,
     markTiered: () => fx.setSchedulingMode(db, tenantId, 'tiered'),
     report: async (pct, text) => taskService.progress(db, taskId, { pct, text: toSafeText(text) }),
@@ -259,15 +304,43 @@ export async function startTenantCpuMigration(
   return { taskId, outcome };
 }
 
+/**
+ * Evidence that a migration ran, whether or not it finished. Used so a
+ * half-applied tenant can still be reverted.
+ */
+async function migrationArtifacts(
+  db: Database, k8s: K8sClients, tenantId: string, namespace: string,
+): Promise<{ any: boolean; baselines: number; limitRange: boolean }> {
+  const [row] = await db.execute<{ n: string }>(sql`
+    SELECT count(*)::text AS n FROM deployments
+     WHERE tenant_id = ${tenantId} AND cpu_request_pre_migration IS NOT NULL
+  `).then((r) => r.rows ?? []);
+  const baselines = Number(row?.n ?? 0);
+  // A cluster read that fails must not be reported as "no artifacts" — that
+  // would resurrect the lock-out this exists to remove.
+  const limitRange = await fx.limitRangeExists(k8s, namespace).catch(() => true);
+  return { any: baselines > 0 || limitRange, baselines, limitRange };
+}
+
 export async function revertTenantCpuMigration(
   db: Database, k8s: K8sClients, tenantId: string,
 ): Promise<RevertOutcome> {
   const ctx = await loadTenant(db, tenantId);
-  // The mirror of ALREADY_TIERED. Without it, reverting a tenant that was
-  // never migrated still PATCHes its live quota's requests.cpu to a figure
-  // recomputed here — which is not guaranteed to equal what the provisioner
-  // originally wrote for it.
-  if (ctx.mode === 'legacy') {
+  /**
+   * ★ Refuse only when there is genuinely nothing to undo.
+   *
+   * `mark_tiered` is the LAST step, so a crash — a killed pod, an eviction,
+   * an OOM, anything that is not a caught error — leaves the tenant `legacy`
+   * with a LimitRange installed, pods re-tiered, and baselines stored.
+   * Gating revert on the mode alone made that state unrecoverable: apply was
+   * blocked by the still-"running" task and revert by NOT_TIERED, and the
+   * only thing that freed it was the orphan reaper, 24 HOURS later.
+   *
+   * So the question is not "does the flag say tiered" but "is there any
+   * evidence of a migration to undo".
+   */
+  const artifacts = await migrationArtifacts(db, k8s, tenantId, ctx.namespace);
+  if (ctx.mode === 'legacy' && !artifacts.any) {
     throw new ApiError(
       'NOT_TIERED',
       'This tenant is not on tiered CPU scheduling, so there is nothing to revert',
@@ -292,6 +365,9 @@ export async function revertTenantCpuMigration(
     },
     removeQuotaLimits: () => fx.removeQuotaLimits(k8s, ctx.namespace, ctx.legacyCores),
     removeLimitRange: () => fx.removeLimitRange(k8s, ctx.namespace),
+    rollPodsStillCapped: () => fx.rollPodsStillCapped(
+      k8s, ctx.namespace, fx.QUOTA_SCOPE_PRIORITY_CLASS,
+    ),
     markLegacy: () => fx.setSchedulingMode(db, tenantId, 'legacy'),
     report: async () => {},
   }, plan);

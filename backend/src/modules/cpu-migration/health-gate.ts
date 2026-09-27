@@ -21,6 +21,9 @@ export interface WorkloadReadiness {
   readonly failureMessage: string | null;
 }
 
+/** Longer than the 30s default termination grace, with room to spare. */
+export const DEFAULT_BROKEN_GRACE_MS = 45_000;
+
 export type GateVerdict =
   | { readonly state: 'healthy' }
   | { readonly state: 'settling'; readonly waitingOn: readonly string[] }
@@ -64,6 +67,24 @@ export interface GateOutcome {
 export interface WaitOptions {
   readonly timeoutMs: number;
   readonly pollMs: number;
+  /**
+   * How long a `broken` verdict must PERSIST before it is believed.
+   *
+   * ★ Without this the migration aborts on a failure it caused itself and
+   * that clears on its own. Replacing a pod deletes it, and a Terminating pod
+   * keeps its full CPU reservation for its whole termination grace period
+   * (30s by default). The tenant's legacy quota is provisioned with ZERO
+   * slack — `requests.cpu` is exactly the plan allowance — so for those
+   * seconds the old and the new pod together exceed it, the ReplicaSet gets
+   * a quota rejection, and Kubernetes sets ReplicaFailure=True immediately.
+   *
+   * Treating that first sighting as fatal aborted the migration with the old
+   * pod already gone: the exact outage this ADR exists to prevent, produced
+   * by the tool meant to prevent it. The condition resolves by itself once
+   * the old pod finishes terminating, so it must be given longer than a
+   * grace period before it counts.
+   */
+  readonly brokenGraceMs?: number;
   /** Injected so tests do not sleep, and so a stop request can interrupt. */
   readonly sleep: (ms: number) => Promise<void>;
   readonly now: () => number;
@@ -84,11 +105,24 @@ export async function waitForHealthy(
   opts: WaitOptions,
 ): Promise<GateOutcome> {
   const deadline = opts.now() + opts.timeoutMs;
+  const brokenGraceMs = opts.brokenGraceMs ?? DEFAULT_BROKEN_GRACE_MS;
   let verdict: GateVerdict = { state: 'settling', waitingOn: [] };
+  let brokenSince: number | null = null;
   for (;;) {
     verdict = assessWorkloads(await read());
     if (verdict.state === 'healthy') return { ok: true, verdict, timedOut: false };
-    if (verdict.state === 'broken') return { ok: false, verdict, timedOut: false };
+    if (verdict.state === 'broken') {
+      // Believed only once it has held for longer than a termination grace
+      // period — see brokenGraceMs.
+      if (brokenSince === null) brokenSince = opts.now();
+      if (opts.now() - brokenSince >= brokenGraceMs) {
+        return { ok: false, verdict, timedOut: false };
+      }
+    } else {
+      // Recovered on its own: forget it, or a blip early in a long wait
+      // would still be counted against a later, unrelated one.
+      brokenSince = null;
+    }
     if (opts.stopRequested && await opts.stopRequested()) {
       return { ok: false, verdict, timedOut: false };
     }

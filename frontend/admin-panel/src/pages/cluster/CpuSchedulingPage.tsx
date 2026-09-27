@@ -194,7 +194,10 @@ function TenantMigrationActions({ tenant }: { tenant: CpuMigrationTenant }) {
   const revert = useRevertCpuMigration();
   const stop = useStopCpuMigration();
   const [acknowledged, setAcknowledged] = useState(false);
-  const busy = apply.isPending || revert.isPending || stop.isPending;
+  // Server-side truth, so the controls are right after a reload or for a
+  // second admin — not just in the tab that pressed the button.
+  const running = tenant.migrationRunning || apply.isPending;
+  const busy = running || revert.isPending || stop.isPending;
   const tiered = tenant.schedulingMode === 'tiered';
   const needsReview = !tenant.migratesCleanly;
 
@@ -225,7 +228,7 @@ function TenantMigrationActions({ tenant }: { tenant: CpuMigrationTenant }) {
           data-testid={`cpu-migrate-${tenant.tenantId}`}
           className="rounded-md bg-brand-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-brand-700 disabled:opacity-50 dark:bg-brand-500 dark:hover:bg-brand-600"
         >
-          {apply.isPending ? 'Migrating…' : 'Migrate this tenant'}
+          {running ? 'Migrating…' : 'Migrate this tenant'}
         </button>
       )}
       {tiered && (
@@ -239,7 +242,7 @@ function TenantMigrationActions({ tenant }: { tenant: CpuMigrationTenant }) {
           {revert.isPending ? 'Reverting…' : 'Revert to legacy'}
         </button>
       )}
-      {apply.isPending && (
+      {running && (
         <button
           type="button"
           onClick={() => stop.mutate(tenant.tenantId)}

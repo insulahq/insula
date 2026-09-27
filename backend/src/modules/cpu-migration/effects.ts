@@ -16,7 +16,7 @@ import { type CpuTier } from '@insula/api-contracts';
 import { buildTenantLimitRange, buildTieredQuotaHard, type PodCpuLimitFact } from './tiered-namespace.js';
 import type { WorkloadReadiness } from './health-gate.js';
 import * as taskService from '../tasks/service.js';
-import { MERGE_PATCH } from '../../shared/k8s-patch.js';
+import { MERGE_PATCH, STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
 
 const limitRangeName = (ns: string) => `${ns}-cpu`;
 const quotaName = (ns: string) => `${ns}-quota`;
@@ -33,7 +33,10 @@ function is409(err: unknown): boolean {
 export async function ensureLimitRange(
   k8s: K8sClients, namespace: string, tier: CpuTier, burstCores: number,
 ): Promise<void> {
-  const body = buildTenantLimitRange({ namespace, tier, burstCores });
+  // Read what the namespace already declares BEFORE installing the range, so
+  // `max` cannot invalidate a pod that is running right now.
+  const largestDeclaredMillis = await largestDeclaredCpuMillis(k8s, namespace);
+  const body = buildTenantLimitRange({ namespace, tier, burstCores, largestDeclaredMillis });
   try {
     await k8s.core.createNamespacedLimitRange({ namespace, body } as never);
   } catch (err) {
@@ -42,6 +45,62 @@ export async function ensureLimitRange(
       name: limitRangeName(namespace), namespace, body,
     } as never);
   }
+}
+
+/** Parse a Kubernetes CPU quantity ("2", "300m") into millicores. */
+export function quantityToMillis(v: string | undefined | null): number {
+  if (!v) return 0;
+  const s = String(v).trim();
+  if (s.endsWith('m')) return Math.round(Number(s.slice(0, -1)) || 0);
+  const n = Number(s);
+  return Number.isFinite(n) ? Math.round(n * 1000) : 0;
+}
+
+/**
+ * The biggest CPU any live container in the namespace declares — request OR
+ * limit, whichever is larger, since a LimitRange `max` constrains both.
+ */
+export async function largestDeclaredCpuMillis(
+  k8s: K8sClients, namespace: string,
+): Promise<number> {
+  const list = await k8s.core.listNamespacedPod({ namespace }) as {
+    items?: ReadonlyArray<{
+      spec?: { containers?: ReadonlyArray<{ resources?: { requests?: Record<string, string>; limits?: Record<string, string> } }>;
+               initContainers?: ReadonlyArray<{ resources?: { requests?: Record<string, string>; limits?: Record<string, string> } }> };
+      status?: { phase?: string };
+    }>;
+  };
+  let max = 0;
+  for (const p of list.items ?? []) {
+    const phase = p.status?.phase;
+    if (phase === 'Succeeded' || phase === 'Failed') continue;
+    for (const c of [...(p.spec?.containers ?? []), ...(p.spec?.initContainers ?? [])]) {
+      max = Math.max(max, quantityToMillis(c.resources?.requests?.cpu), quantityToMillis(c.resources?.limits?.cpu));
+    }
+  }
+  return max;
+}
+
+/** What a single in-scope POD requests at most — the surge allowance. */
+export async function largestInScopePodMillis(
+  k8s: K8sClients, namespace: string, priorityClass: string,
+): Promise<number> {
+  const list = await k8s.core.listNamespacedPod({ namespace }) as {
+    items?: ReadonlyArray<{
+      spec?: { priorityClassName?: string; containers?: ReadonlyArray<{ resources?: { requests?: Record<string, string> } }> };
+      status?: { phase?: string };
+    }>;
+  };
+  let max = 0;
+  for (const p of list.items ?? []) {
+    const phase = p.status?.phase;
+    if (phase === 'Succeeded' || phase === 'Failed') continue;
+    if ((p.spec?.priorityClassName ?? null) !== priorityClass) continue;
+    const sum = (p.spec?.containers ?? [])
+      .reduce((a, c) => a + quantityToMillis(c.resources?.requests?.cpu), 0);
+    max = Math.max(max, sum);
+  }
+  return max;
 }
 
 export async function limitRangeExists(k8s: K8sClients, namespace: string): Promise<boolean> {
@@ -71,7 +130,7 @@ export async function readPodCpuLimits(
 ): Promise<PodCpuLimitFact[]> {
   const list = await k8s.core.listNamespacedPod({ namespace }) as {
     items?: ReadonlyArray<{
-      metadata?: { name?: string };
+      metadata?: { name?: string; ownerReferences?: ReadonlyArray<unknown> };
       spec?: {
         priorityClassName?: string;
         containers?: ReadonlyArray<{ name?: string; resources?: { limits?: Record<string, string> } }>;
@@ -89,6 +148,7 @@ export async function readPodCpuLimits(
     out.push({
       podName: p.metadata?.name ?? '(unnamed)',
       priorityClassName: p.spec?.priorityClassName ?? null,
+      hasController: (p.metadata?.ownerReferences?.length ?? 0) > 0,
       containersWithoutCpuLimit: all
         .filter((c) => !c.resources?.limits?.cpu)
         .map((c) => c.name ?? '(unnamed)'),
@@ -97,10 +157,29 @@ export async function readPodCpuLimits(
   return out;
 }
 
+/**
+ * Deployments AND StatefulSets.
+ *
+ * Tenant workloads are all Deployments today (checked on production: 67
+ * Deployments, 0 StatefulSets). Listing both anyway costs one API call and
+ * removes a silent failure: a StatefulSet the gate cannot see is one it never
+ * waits for, so the migration would march on through a database that never
+ * came back.
+ */
 export async function readWorkloads(
   k8s: K8sClients, namespace: string,
 ): Promise<WorkloadReadiness[]> {
-  const list = await k8s.apps.listNamespacedDeployment({ namespace }) as {
+  const [deploys, statefulSets] = await Promise.all([
+    readWorkloadList(() => k8s.apps.listNamespacedDeployment({ namespace })),
+    readWorkloadList(() => k8s.apps.listNamespacedStatefulSet({ namespace })),
+  ]);
+  return [...deploys, ...statefulSets];
+}
+
+async function readWorkloadList(
+  fetch: () => Promise<unknown>,
+): Promise<WorkloadReadiness[]> {
+  const list = await fetch() as {
     items?: ReadonlyArray<{
       metadata?: { name?: string };
       spec?: { replicas?: number };
@@ -132,17 +211,51 @@ export async function readWorkloads(
  */
 export async function applyQuotaLimits(
   k8s: K8sClients, namespace: string, burstCores: number, tiers: readonly CpuTier[],
+  priorityClass: string,
 ): Promise<void> {
   const name = quotaName(namespace);
   const live = await k8s.core.readNamespacedResourceQuota({ name, namespace } as never) as {
     spec?: { hard?: Record<string, string> };
+    status?: { used?: Record<string, string> };
   };
-  const memoryGi = Number(String(live.spec?.hard?.['limits.memory'] ?? '0Gi').replace(/Gi$/, '')) || 0;
-  const hard = buildTieredQuotaHard({ tiers, burstCores, memoryGi });
+  // Ground truth, not a projection: `status.used` is what the API server
+  // itself counts against this quota right now.
+  const liveUsedMillis = quantityToMillis(live.status?.used?.['requests.cpu']);
+  const largestPodMillis = await largestInScopePodMillis(k8s, namespace, priorityClass);
+  const hard = buildTieredQuotaHard({ tiers, burstCores, liveUsedMillis, largestPodMillis });
   // MERGE_PATCH, not the client's default json-patch: the body is a merge
   // object, and the default would be rejected as a malformed op array.
   await k8s.core.patchNamespacedResourceQuota(
     { name, namespace, body: { spec: { hard: { ...live.spec?.hard, ...hard } } } } as never,
+    MERGE_PATCH,
+  );
+}
+
+/**
+ * Raise `requests.cpu` so a replacement pod fits alongside the one it is
+ * replacing. Never lowers it — this runs before anything shrinks.
+ *
+ * Only `requests.cpu` moves; `limits.cpu` is NOT added here. Adding it before
+ * the pods carry limits is the armed trap assessLimitsCpuReadiness exists to
+ * prevent, so the ceiling still waits for the end.
+ */
+export async function widenQuotaHeadroom(
+  k8s: K8sClients, namespace: string, priorityClass: string,
+): Promise<void> {
+  const name = quotaName(namespace);
+  const live = await k8s.core.readNamespacedResourceQuota({ name, namespace } as never) as {
+    spec?: { hard?: Record<string, string> };
+    status?: { used?: Record<string, string> };
+  };
+  const currentHard = quantityToMillis(live.spec?.hard?.['requests.cpu']);
+  const used = quantityToMillis(live.status?.used?.['requests.cpu']);
+  const largestPod = await largestInScopePodMillis(k8s, namespace, priorityClass);
+  // Room for the biggest single pod to exist twice over, on top of what is
+  // already held — one replacement in flight, with margin.
+  const wanted = used + Math.max(largestPod, 100);
+  if (wanted <= currentHard) return; // already roomy enough; do not touch it
+  await k8s.core.patchNamespacedResourceQuota(
+    { name, namespace, body: { spec: { hard: { 'requests.cpu': `${wanted}m` } } } } as never,
     MERGE_PATCH,
   );
 }
@@ -152,32 +265,112 @@ export async function removeQuotaLimits(
   k8s: K8sClients, namespace: string, legacyCpuCores: number,
 ): Promise<void> {
   const name = quotaName(namespace);
+  // The same freeze applies in reverse. A revert RESTORES larger requests, so
+  // `used` climbs as it runs; writing the legacy figure blindly can land
+  // below it and leave the tenant unable to create a pod — during the
+  // operation whose whole purpose is to put things back.
+  const live = await k8s.core.readNamespacedResourceQuota({ name, namespace } as never) as {
+    status?: { used?: Record<string, string> };
+  };
+  const usedMillis = quantityToMillis(live.status?.used?.['requests.cpu']);
+  const legacyMillis = Math.round(legacyCpuCores * 1000);
+  const restored = Math.max(legacyMillis, usedMillis);
   await k8s.core.patchNamespacedResourceQuota(
     {
       name, namespace,
       // null DELETES a key under RFC 7396 — the only way to drop limits.cpu
       // without rewriting the whole object, whose scopeSelector is immutable.
-      body: { spec: { hard: { 'limits.cpu': null, 'requests.cpu': String(legacyCpuCores) } } },
+      body: { spec: { hard: { 'limits.cpu': null, 'requests.cpu': `${restored}m` } } },
     } as never,
     MERGE_PATCH,
   );
 }
 
-/** Replace a deployment's pods without changing its spec. */
+/**
+ * Re-admit a deployment's pods WITHOUT changing what they ask for.
+ *
+ * ★ A rolling update, not a delete, and on a tight node that is the whole
+ * difference between safe and an outage.
+ *
+ * Deleting the pod frees its request and then asks the ReplicaSet for a new
+ * one — a single-replica tenant app is DOWN for the gap, and if the
+ * replacement cannot be scheduled it stays down. Production runs at 98%
+ * reserved with ~0.2 cores spare, so "cannot be scheduled" is a live
+ * possibility, and the tenants being migrated are mostly single-replica
+ * websites.
+ *
+ * Bumping a pod-template annotation instead makes Kubernetes roll the
+ * deployment: the new pod is created FIRST and the old one is kept until it
+ * is Ready. If the new pod cannot schedule, the rollout stalls with the old
+ * pod still serving — the migration fails, the tenant stays up. That is the
+ * failure we want.
+ *
+ * The annotation value is the TIER, not a timestamp, so re-running is a
+ * genuine no-op rather than a fresh rollout each time.
+ */
 export async function recreatePods(
-  k8s: K8sClients, namespace: string, appLabel: string,
+  k8s: K8sClients, namespace: string, deploymentName: string, tier: CpuTier,
 ): Promise<void> {
-  const list = await k8s.core.listNamespacedPod({
-    namespace, labelSelector: `app=${appLabel}`,
-  }) as { items?: ReadonlyArray<{ metadata?: { name?: string } }> };
-  for (const p of list.items ?? []) {
-    if (!p.metadata?.name) continue;
-    try {
-      await k8s.core.deleteNamespacedPod({ name: p.metadata.name, namespace });
-    } catch (err) {
-      if (!is404(err)) throw err;
-    }
+  await k8s.apps.patchNamespacedDeployment(
+    {
+      name: deploymentName,
+      namespace,
+      body: {
+        spec: {
+          template: {
+            metadata: { annotations: { 'insula.host/cpu-tier': tier } },
+          },
+        },
+      },
+    } as never,
+    STRATEGIC_MERGE_PATCH,
+  );
+}
+
+/**
+ * Roll every Deployment whose pods still declare a CPU limit, by clearing the
+ * tier annotation. Returns how many were rolled.
+ *
+ * Called on revert AFTER the LimitRange is gone, so the replacement pods are
+ * admitted with no ceiling at all — which is what legacy means.
+ */
+export async function rollPodsStillCapped(
+  k8s: K8sClients, namespace: string, priorityClass: string,
+): Promise<number> {
+  const pods = await readPodCpuLimits(k8s, namespace);
+  const capped = new Set<string>();
+  for (const p of pods) {
+    if (p.priorityClassName !== priorityClass) continue;
+    // A pod with NO uncapped container is one every container of which
+    // carries a limit — i.e. it was admitted under the LimitRange.
+    if (p.containersWithoutCpuLimit.length === 0) capped.add(p.podName);
   }
+  if (capped.size === 0) return 0;
+
+  const list = await k8s.apps.listNamespacedDeployment({ namespace }) as {
+    items?: ReadonlyArray<{ metadata?: { name?: string; annotations?: Record<string, string>;
+      labels?: Record<string, string> }; spec?: { template?: { metadata?: { annotations?: Record<string, string> } } } }>;
+  };
+  let rolled = 0;
+  for (const d of list.items ?? []) {
+    const name = d.metadata?.name;
+    if (!name) continue;
+    const ann = d.spec?.template?.metadata?.annotations ?? {};
+    // Only those this migration marked. Anything else declaring a CPU limit
+    // did so on its own and is not ours to restart.
+    if (!('insula.host/cpu-tier' in ann)) continue;
+    await k8s.apps.patchNamespacedDeployment(
+      {
+        name, namespace,
+        // null deletes the key under a strategic merge patch, which changes
+        // the pod template and rolls the deployment.
+        body: { spec: { template: { metadata: { annotations: { 'insula.host/cpu-tier': null } } } } },
+      } as never,
+      STRATEGIC_MERGE_PATCH,
+    );
+    rolled += 1;
+  }
+  return rolled;
 }
 
 /** Delete named pods; their controller recreates them under the LimitRange. */

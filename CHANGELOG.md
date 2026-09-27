@@ -56,6 +56,14 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   application that pins its own CPU, a compose stack whose per-service CPU
   cannot be mapped back, or a tenant with no usage history to size against.
 
+  **What a tenant sees.** Applications are rolled, not stopped and started:
+  the replacement pod is created before the old one is retired, so a healthy
+  app stays reachable — and on a cluster with little room to spare, a
+  replacement that cannot be scheduled leaves the old pod serving rather than
+  taking the app down. The exception is a pod the platform cannot match to
+  any application, which is replaced directly; whatever owns it brings it
+  back, but a single-replica workload is briefly unavailable.
+
 ### Changed
 
 - **The cluster-headroom quota check now advises instead of refusing.**

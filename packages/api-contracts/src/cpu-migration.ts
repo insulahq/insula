@@ -99,6 +99,16 @@ export const cpuMigrationTenantSchema = z.object({
    * tenant from a migrated one and would offer to migrate it again.
    */
   schedulingMode: z.enum(['legacy', 'tiered']),
+  /**
+   * Is a migration running for this tenant RIGHT NOW, according to the
+   * server?
+   *
+   * The Stop button used to render only while the browser's own mutation was
+   * pending, so a reload, a second admin, or a dropped connection made the
+   * one safety valve disappear while the run continued server-side. Whether
+   * something is running is a fact about the cluster, not about this tab.
+   */
+  migrationRunning: z.boolean(),
   deployments: z.array(cpuMigrationDeploymentSchema),
 });
 export type CpuMigrationTenant = z.infer<typeof cpuMigrationTenantSchema>;

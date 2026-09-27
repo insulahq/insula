@@ -63,15 +63,60 @@ describe('waitForHealthy', () => {
     expect(read).toHaveBeenCalledTimes(2);
   });
 
-  it('stops immediately on a failure without waiting out the timeout', async () => {
+  /**
+   * ★ A failure must PERSIST before it is believed. Replacing a pod leaves it
+   * Terminating while still holding its full CPU reservation for the grace
+   * period, and the tenant's legacy quota has zero slack — so the ReplicaSet
+   * gets a transient quota rejection that clears on its own. Aborting on the
+   * first sighting killed the migration with the old pod already deleted.
+   */
+  it('rides out a failure that clears within a termination grace period', async () => {
+    const c = clock();
+    let n = 0;
+    const r = await waitForHealthy(
+      async () => {
+        n += 1;
+        return n <= 2
+          ? [w({ readyReplicas: 0, failureMessage: 'exceeded quota' })]
+          : [w()];
+      },
+      { timeoutMs: 600_000, pollMs: 1000, now: c.now, sleep: async (ms) => { c.advance(ms); },
+        brokenGraceMs: 45_000 },
+    );
+    expect(r.ok).toBe(true);
+  });
+
+  it('reports a failure that outlasts the grace period', async () => {
     const c = clock();
     const r = await waitForHealthy(
       async () => [w({ readyReplicas: 0, failureMessage: 'exceeded quota' })],
-      { timeoutMs: 600_000, pollMs: 100, now: c.now, sleep: async (ms) => { c.advance(ms); } },
+      { timeoutMs: 600_000, pollMs: 5000, now: c.now, sleep: async (ms) => { c.advance(ms); },
+        brokenGraceMs: 45_000 },
     );
     expect(r.ok).toBe(false);
     expect(r.timedOut).toBe(false);
-    expect(c.now()).toBe(0); // never slept
+    expect(r.verdict.state).toBe('broken');
+    // It waited, rather than aborting on sight.
+    expect(c.now()).toBeGreaterThanOrEqual(45_000);
+  });
+
+  // A blip early in a long wait must not be held against a later, unrelated
+  // one — otherwise two transients 10 minutes apart add up to a false abort.
+  it('forgets a failure that recovered before the grace expired', async () => {
+    const c = clock();
+    const seq = ['broken', 'ok', 'ok', 'broken', 'ok'];
+    let i = 0;
+    const r = await waitForHealthy(
+      async () => {
+        const state = seq[Math.min(i, seq.length - 1)]; i += 1;
+        return state === 'broken'
+          ? [w({ readyReplicas: 0, failureMessage: 'exceeded quota' })]
+          : [w()];
+      },
+      { timeoutMs: 600_000, pollMs: 40_000, now: c.now, sleep: async (ms) => { c.advance(ms); },
+        brokenGraceMs: 45_000 },
+    );
+    expect(r.ok).toBe(true);
   });
 
   /**

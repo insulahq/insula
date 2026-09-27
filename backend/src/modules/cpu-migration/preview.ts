@@ -97,6 +97,16 @@ export async function buildCpuMigrationPreview(
      ORDER BY t.name
   `);
 
+  // Same 15-minute staleness rule the apply guard uses: a run that has not
+  // reported in that long is a dead process, not an active migration, and
+  // showing a Stop button for it would be a lie.
+  const runningRows = await db.execute<{ ref_id: string }>(sql`
+    SELECT ref_id FROM tasks
+     WHERE kind = 'cpu_migration' AND status IN ('running', 'queued')
+       AND updated_at >= NOW() - INTERVAL '15 minutes'
+  `).catch(() => ({ rows: [] as Array<{ ref_id: string }> }));
+  const runningTenantIds = new Set((runningRows.rows ?? []).map((r) => r.ref_id));
+
   const deploymentRows = await db.execute<DeploymentRow>(sql`
     SELECT d.id, d.name, d.tenant_id, d.cpu_request, d.source,
            d.custom_spec, e.resources AS entry_resources, e.source_repo_id
@@ -199,6 +209,7 @@ export async function buildCpuMigrationPreview(
       tenantBlocker,
       migratesCleanly: tenantBlocker === null && deployments.every((d) => d.blocker === null),
       schedulingMode: t.cpu_scheduling_mode ?? 'legacy',
+      migrationRunning: runningTenantIds.has(t.id),
       deployments,
     });
   }
