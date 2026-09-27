@@ -180,6 +180,20 @@ export async function recreatePods(
   }
 }
 
+/** Delete named pods; their controller recreates them under the LimitRange. */
+export async function deletePods(
+  k8s: K8sClients, namespace: string, podNames: readonly string[],
+): Promise<void> {
+  for (const name of podNames) {
+    try {
+      await k8s.core.deleteNamespacedPod({ name, namespace });
+    } catch (err) {
+      // Already gone is the outcome we wanted.
+      if (!is404(err)) throw err;
+    }
+  }
+}
+
 /**
  * Record the exact prior request, then change it.
  *

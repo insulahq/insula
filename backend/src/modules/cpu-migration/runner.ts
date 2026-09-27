@@ -234,6 +234,7 @@ export async function startTenantCpuMigration(
     limitRangeExists: () => fx.limitRangeExists(k8s, ctx.namespace),
     readWorkloads: () => fx.readWorkloads(k8s, ctx.namespace),
     readPodCpuLimits: () => fx.readPodCpuLimits(k8s, ctx.namespace),
+    deletePods: (names) => fx.deletePods(k8s, ctx.namespace, names),
     applyQuotaLimits: (burst, tiers) => fx.applyQuotaLimits(k8s, ctx.namespace, burst, tiers),
     quotaScopePriorityClass: fx.QUOTA_SCOPE_PRIORITY_CLASS,
     markTiered: () => fx.setSchedulingMode(db, tenantId, 'tiered'),

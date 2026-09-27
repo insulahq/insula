@@ -27,7 +27,9 @@ describe('buildMigrationPlan', () => {
     const p = buildMigrationPlan({ namespace: 'tenant-a', deployments: [dep()], defaultTier: 'high' });
     const kinds = p.steps.map((s) => s.kind);
     expect(kinds[0]).toBe('ensure_limit_range');
-    expect(kinds.slice(-3)).toEqual(['verify_limits_ready', 'apply_quota_limits', 'mark_tiered']);
+    expect(kinds.slice(-4)).toEqual([
+      'recreate_stragglers', 'verify_limits_ready', 'apply_quota_limits', 'mark_tiered',
+    ]);
   });
 
   /**
@@ -144,12 +146,20 @@ describe('buildMigrationPlan', () => {
     expect(p.skipped[0].reason).toContain('compose stack');
   });
 
-  // A tenant with nothing to re-tier still needs the LimitRange, the quota
-  // ceiling and the mode flag — otherwise it is "migrated" in name only.
+  /**
+   * A tenant with nothing to re-tier still needs the LimitRange, the quota
+   * ceiling and the mode flag — otherwise it is "migrated" in name only.
+   *
+   * And it still needs the straggler sweep: no deployments ROWS does not mean
+   * no live PODS. That is exactly the divergence that blocked the DEV run — a
+   * pod running under a row the plan does not select.
+   */
   it('still runs the bracketing steps for a tenant with no deployments', () => {
     const p = buildMigrationPlan({ namespace: 'tenant-a', deployments: [], defaultTier: 'high' });
-    expect(p.steps.map((s) => s.kind))
-      .toEqual(['ensure_limit_range', 'verify_limits_ready', 'apply_quota_limits', 'mark_tiered']);
+    expect(p.steps.map((s) => s.kind)).toEqual([
+      'ensure_limit_range', 'recreate_stragglers',
+      'verify_limits_ready', 'apply_quota_limits', 'mark_tiered',
+    ]);
   });
 
   it('records the exact prior value on each step, for revert', () => {

@@ -21,6 +21,7 @@ function effects(over: Partial<MigrationEffects> = {}) {
     readPodCpuLimits: vi.fn(async () => [
       { podName: 'app-1', containersWithoutCpuLimit: [], priorityClassName: 'tenant-default' },
     ]),
+    deletePods: vi.fn(async (names: readonly string[]) => { calls.push(`delete:${names.join('+')}`); }),
     quotaScopePriorityClass: 'tenant-default',
     applyQuotaLimits: vi.fn(async () => { calls.push('quota'); }),
     markTiered: vi.fn(async () => { calls.push('tiered'); }),
@@ -219,5 +220,54 @@ describe('runTenantCpuMigration', () => {
     expect(r.status).toBe('failed');
     expect(r).toMatchObject({ reason: expect.stringContaining('no CPU LimitRange') });
     expect(calls).not.toContain('quota');
+  });
+
+  /**
+   * ★ The gap the DEV run found. Every other step is driven by `deployments`
+   * rows; the readiness check is driven by LIVE PODS. On DEV a deployment was
+   * `stopped` in the database while its pod was 1/1 in the cluster — so the
+   * plan never touched it, it never gained a limit, and the migration could
+   * never pass. This step asks the same source the gate asks.
+   */
+  it('replaces a live pod the deployments table never mentioned', async () => {
+    let seen = 0;
+    const { fx, calls } = effects({
+      readPodCpuLimits: vi.fn(async () => {
+        seen += 1;
+        // First read: an orphan with no limit. After the delete: clean.
+        return seen === 1
+          ? [{ podName: 'ghost-1', containersWithoutCpuLimit: ['db'], priorityClassName: 'tenant-default' }]
+          : [{ podName: 'ghost-2', containersWithoutCpuLimit: [], priorityClassName: 'tenant-default' }];
+      }),
+    });
+    const r = await runTenantCpuMigration(fx, {
+      namespace: 'tenant-a', tier: 'normal', burstCores: 2, deployments: [dep()],
+    });
+    expect(r.status).toBe('completed');
+    expect(calls).toContain('delete:ghost-1');
+    expect(calls.indexOf('delete:ghost-1')).toBeLessThan(calls.indexOf('quota'));
+  });
+
+  // It must not churn pods that already comply.
+  it('deletes nothing when every in-scope pod already has a ceiling', async () => {
+    const { fx, calls } = effects();
+    await runTenantCpuMigration(fx, {
+      namespace: 'tenant-a', tier: 'normal', burstCores: 2, deployments: [dep()],
+    });
+    expect(calls.some((c) => c.startsWith('delete:'))).toBe(false);
+  });
+
+  // A platform pod outside the quota's scope is not ours to restart.
+  it('leaves out-of-scope pods alone even when they lack a ceiling', async () => {
+    const { fx, calls } = effects({
+      readPodCpuLimits: vi.fn(async () => [
+        { podName: 'file-manager-1', containersWithoutCpuLimit: ['fm'], priorityClassName: 'platform-tenant-overhead' },
+      ]),
+    });
+    const r = await runTenantCpuMigration(fx, {
+      namespace: 'tenant-a', tier: 'normal', burstCores: 2, deployments: [dep()],
+    });
+    expect(r.status).toBe('completed');
+    expect(calls.some((c) => c.startsWith('delete:'))).toBe(false);
   });
 });

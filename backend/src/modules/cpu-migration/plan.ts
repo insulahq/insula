@@ -55,6 +55,21 @@ export type MigrationStepKind =
    * over a rollout-restart annotation.
    */
   | 'recreate_deployment'
+  /**
+   * ★ Anything still without a ceiling, found from the CLUSTER.
+   *
+   * Every other step is driven by `deployments` rows. The readiness check is
+   * driven by LIVE PODS. Those two sets are not the same, and wherever they
+   * diverge the migration blocks forever: on DEV a deployment sat `stopped`
+   * in the database while its pod was 1/1 in the cluster, so nothing in the
+   * plan ever recreated it, it never gained a limit, and verify_limits_ready
+   * refused every time.
+   *
+   * Rather than guess at every way the two can drift — a stale status, an
+   * orphaned ReplicaSet, something applied by hand — this step asks the same
+   * source the gate asks, and replaces whatever is still missing a ceiling.
+   */
+  | 'recreate_stragglers'
   | 'verify_limits_ready'
   | 'apply_quota_limits'
   | 'mark_tiered';
@@ -169,6 +184,10 @@ export function buildMigrationPlan(input: BuildPlanInput): MigrationPlan {
     // After the savings: these free nothing, so doing them first would spend
     // the tight part of the migration on pod churn that buys no headroom.
     ...recreates,
+    {
+      kind: 'recreate_stragglers',
+      label: 'Replace any pod still running without a CPU ceiling',
+    },
     {
       // Between the recreations and the quota edit, ALWAYS. The quota gains
       // limits.cpu only once every pod provably carries a limit.

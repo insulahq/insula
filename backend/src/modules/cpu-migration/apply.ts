@@ -32,6 +32,8 @@ export interface MigrationEffects {
   readonly limitRangeExists: () => Promise<boolean>;
   readonly readWorkloads: () => Promise<readonly WorkloadReadiness[]>;
   readonly readPodCpuLimits: () => Promise<readonly PodCpuLimitFact[]>;
+  /** Delete these pods; their controller recreates them under the LimitRange. */
+  readonly deletePods: (podNames: readonly string[]) => Promise<void>;
   readonly applyQuotaLimits: (burstCores: number, tiers: readonly CpuTier[]) => Promise<void>;
   /** The PriorityClass the tenant quota's scopeSelector matches. */
   readonly quotaScopePriorityClass: string;
@@ -162,6 +164,37 @@ export async function runTenantCpuMigration(
           return { status: 'failed', afterStep: step.label, reason: why, stepsRun: done };
         }
         freed += step.freesMillis ?? 0;
+        break;
+      }
+
+      case 'recreate_stragglers': {
+        const stragglers = (await fx.readPodCpuLimits()).filter(
+          (p) => p.priorityClassName === fx.quotaScopePriorityClass
+            && p.containersWithoutCpuLimit.length > 0,
+        );
+        if (stragglers.length > 0) {
+          await fx.deletePods(stragglers.map((p) => p.podName));
+          const gate = await waitForHealthy(fx.readWorkloads, {
+            timeoutMs: input.healthTimeoutMs ?? DEFAULT_HEALTH_TIMEOUT_MS,
+            pollMs: input.healthPollMs ?? DEFAULT_HEALTH_POLL_MS,
+            sleep: fx.sleep,
+            now: fx.now,
+            stopRequested: fx.stopRequested,
+          });
+          if (!gate.ok) {
+            if (await fx.stopRequested()) return stopHere(step);
+            return {
+              status: 'failed',
+              afterStep: step.label,
+              reason: gate.timedOut
+                ? 'replaced pods did not become healthy in time'
+                : gate.verdict.state === 'broken'
+                  ? `${gate.verdict.workload}: ${gate.verdict.reason}`
+                  : 'workloads did not settle',
+              stepsRun: done,
+            };
+          }
+        }
         break;
       }
 
