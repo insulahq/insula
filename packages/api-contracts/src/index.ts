@@ -149,3 +149,4 @@ export * from './node-operations.js';
 export * from './tenant-health.js';
 export * from './pod-prune.js';
 export * from './search.js';
+export * from './cpu-migration.js';

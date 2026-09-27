@@ -22,7 +22,7 @@ import type { PaginationMeta } from '../../shared/response.js';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
-const DEFAULT_CATALOG_URL = 'https://github.com/insulahq/application-catalog';
+export const DEFAULT_CATALOG_URL = 'https://github.com/insulahq/application-catalog';
 const VALID_ENTRY_NAME = /^[a-z0-9][a-z0-9-]*[a-z0-9]$/;
 
 /**

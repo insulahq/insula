@@ -60,6 +60,7 @@ import { privateWorkerRoutes } from './modules/private-workers/routes.js';
 import { privateWorkerInternalRoutes } from './modules/private-workers/internal-routes.js';
 import { privateWorkerAdminRoutes } from './modules/private-workers/admin-routes.js';
 import { resourceQuotaRoutes } from './modules/resource-quotas/routes.js';
+import { cpuMigrationRoutes } from './modules/cpu-migration/routes.js';
 import { oidcRoutes } from './modules/oidc/routes.js';
 import { dnsServerRoutes } from './modules/dns-servers/routes.js';
 import { dnsApexDriftRoutes } from './modules/dns-apex-drift/routes.js';
@@ -626,6 +627,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(privateWorkerInternalRoutes, { prefix: '/api/v1' });
   await app.register(privateWorkerAdminRoutes, { prefix: '/api/v1' });
   await app.register(resourceQuotaRoutes, { prefix: '/api/v1' });
+  await app.register(cpuMigrationRoutes, { prefix: '/api/v1' });
   await app.register(storageLifecycleRoutes, { prefix: '/api/v1' });
   // R-X5: backup-rclone-shim admin surface (super_admin gate).
   // Lazy k8s client build so unit tests / CI without a kubeconfig
