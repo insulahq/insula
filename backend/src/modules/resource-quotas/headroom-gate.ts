@@ -3,7 +3,8 @@
  *
  * Before saving a quota override, this module checks whether the new limit
  * would push the sum of all tenant commitments past what the cluster can
- * carry, and refuses the write if it would.
+ * carry, and reports the verdict. It is ADVISORY: the caller records it and
+ * returns it with the write. Nothing is refused.
  *
  * WHAT IS SUMMED
  * Every non-archived tenant's EFFECTIVE ceiling, not the `resource_quotas`
@@ -24,14 +25,19 @@
  *     fail over to, so reserving a node for it would zero the budget on this
  *     platform's default deployment. See the comment at the branch itself.
  *
- * WHAT IS REFUSED is only a change that makes a breach worse. A reduction or
- * a no-op always passes, even on a cluster that is already oversubscribed —
- * otherwise the gate would block the very remediation its own error message
- * recommends.
+ * WHAT IS FLAGGED is only a change that makes a breach worse, per dimension
+ * (`worsensCpu` / `worsensMemory` / `worsensFailover`). A reduction or a no-op
+ * is never flagged, even on a cluster already past its budget: it cannot take
+ * the cluster anywhere it is not already.
  *
- * A `force=true` query param lets a super_admin commit a quota the cluster
- * cannot survive — appropriate for "I accept this risk" (testing, capacity
- * expansion in flight). Both paths emit audit-log entries.
+ * ★ Why advisory and not admission control. Overselling CPU is a deliberate,
+ * accepted position on this platform — a CPU request buys a place in the
+ * scheduler's queue and caps nothing, so "sold" and "available" are different
+ * currencies. A release briefly made this refuse; that was wrong, and the
+ * operator's own framing is the reason: they had accepted the
+ * oversubscription and wanted to SEE it. Note the fix was NOT to revert to
+ * the old behaviour — that summed an empty table, so it was silent AND wrong.
+ * Keep the number honest; let the operator decide what to do about it.
  *
  * KNOWN LIMITATION (deliberately deferred):
  * - No advisory lock around the read-compute-write sequence. Two admin
@@ -58,7 +64,8 @@ export interface QuotaGateInput {
 }
 
 export interface QuotaGateResult {
-  readonly allowed: boolean;
+  /** Does the projected total fit the budget? ADVISORY — nothing refuses on it. */
+  readonly withinBudget: boolean;
   readonly reason: string | null;
   readonly details: {
     readonly currentSumCpu: number;
@@ -69,16 +76,16 @@ export interface QuotaGateResult {
     readonly headroomMemoryGi: number;
     /**
      * How far the projected TOTAL sits past the budget. This measures the
-     * CLUSTER, not the verdict: a reduction on an oversold cluster is allowed
-     * with a positive overBy. Never decide, caption or alert from these —
-     * use the refusedBy* flags below, which are the actual reason.
+     * CLUSTER, not this patch: a reduction on an oversold cluster still
+     * reports a positive overBy. Never caption or alert from these — use the
+     * worsens* flags below, which say what THIS patch makes worse.
      */
     readonly overByCpu: number;
     readonly overByMemoryGi: number;
-    /** The dimension(s) that actually caused a refusal. */
-    readonly refusedByCpu: boolean;
-    readonly refusedByMemory: boolean;
-    readonly refusedByFailover: boolean;
+    /** The dimension(s) this patch pushes FURTHER past the budget. */
+    readonly worsensCpu: boolean;
+    readonly worsensMemory: boolean;
+    readonly worsensFailover: boolean;
     /** Which invariant was in force — the budget's meaning differs. */
     readonly isSingleServer: boolean;
     /** From getClusterFailoverHeadroom — surfaces structural over-commit. */
@@ -104,7 +111,7 @@ interface QuotaRow {
  * created OVERRIDE: a row appears only when someone edits a tenant's quota
  * through the admin endpoint. On a production cluster with 30 tenants it had
  * **zero rows**, so the sum was always 0, the projected total always fitted,
- * and the gate had never once refused anything. A guard reading a table
+ * and the gate had never once reported anything. A check reading a table
  * nothing populates is indistinguishable from no guard at all.
  *
  * A tenant's real ceiling comes from its plan, with two layers of override:
@@ -120,7 +127,7 @@ interface QuotaRow {
  * invalidate every existing row.
  *
  * Tenants in `archived` state are excluded: their workloads are torn down, so
- * counting their ceiling would refuse capacity that nothing is holding.
+ * counting their ceiling would charge for capacity that nothing is holding.
  * `pending` and `suspended` ARE counted — a pending tenant is about to be
  * provisioned and a suspended one is expected back.
  *
@@ -214,14 +221,14 @@ export async function validateQuotaFitsHeadroom(
    * one server", and on a single-server cluster the honest answer is zero:
    * there is nowhere to reschedule to. That function is right, and its test
    * pins it deliberately — but using it as a CAPACITY budget on one node
-   * means the gate refuses every request forever, because the failover
+   * means the gate flags every request forever, because the failover
    * reserve is the only node. Measured on a single-node production cluster:
    * 7.50 allocatable − 2.80 system − 7.50 reserve = −2.80, clamped to 0.
    *
    * Single-node is this platform's default deployment, so a gate that is
    * either a no-op (what it was) or a total block (what a naive read-fix
    * makes it) is no better than absent. On one server the failover invariant
-   * is vacuous, so enforce the invariant that still means something:
+   * is vacuous, so measure against the invariant that still means something:
    * do not sell more than the machine has, after the platform's own share.
    */
   const isSingleServer = headroom.servers.length <= 1;
@@ -236,63 +243,63 @@ export async function validateQuotaFitsHeadroom(
   const overByMemoryGi = Math.max(0, projectedSumMemoryGi - budgetMemoryGi);
 
   /**
-   * ★ Refuse what makes the breach WORSE — never a reduction.
+   * ★ Flag only what makes the breach WORSE — never a reduction.
    *
    * `overBy*` measures the projected TOTAL against the budget, so once the
    * other tenants alone exceed it the figure is positive for every possible
-   * value of this one. Deciding on that figure alone would refuse a tenant
-   * being lowered from 2 cores to 1 exactly as it refuses a rise to 4 — and
-   * the 409 this produces tells the operator to "lower another tenant's quota
-   * first", which is the one action it would have just made impossible. The
-   * only way out would be `?force=true` on every subsequent edit, which turns
-   * a safety gate into a nuisance and trains operators to bypass it.
+   * value of this one. Reporting on that figure alone would flag a tenant
+   * being lowered from 2 cores to 1 exactly as it flags a rise to 4, so the
+   * advisory would fire on the very action that improves matters — and an
+   * advisory that cannot tell progress from regress is noise. (While this
+   * briefly refused rather than advised, the same arithmetic was worse than
+   * noise: it blocked the remediation its own message recommended.)
    *
    * Measured on production before this shipped: 30 tenants, ceilings summing
    * to 8.90 cores against a 4.70-core single-node budget. Every quota edit on
-   * that cluster — in either direction — would have been refused on the first
-   * PATCH after upgrade.
+   * that cluster — in either direction — would have been flagged, and while
+   * this refused, blocked.
    *
-   * So each dimension is refused only when it is over budget AND this patch
-   * raises it. A reduction or a no-op always passes: it cannot take the
-   * cluster anywhere it is not already.
+   * So each dimension is flagged only when it is over budget AND this patch
+   * raises it. A reduction or a no-op never is: it cannot take the cluster
+   * anywhere it is not already.
    */
   // A dimension the patch does not name cannot be growth, whatever the
   // baseline resolves to. Deriving this from the projection instead would
   // read an UNTOUCHED dimension as a DEFAULT_CPU-sized increase whenever the
   // established value is unresolvable — e.g. a tenant whose plan row is
   // missing (nothing declares a foreign key from tenants.plan_id) — and
-  // refuse a memory-only patch while citing CPU.
+  // flag a memory-only patch while citing CPU.
   const increasesCpu = input.newCpuLimit != null && input.newCpuLimit > baselineCpu;
   const increasesMemory =
     input.newMemoryLimitGi != null && input.newMemoryLimitGi > baselineMemoryGi;
-  const refusedByCpu = overByCpu > 0 && increasesCpu;
-  const refusedByMemory = overByMemoryGi > 0 && increasesMemory;
+  const worsensCpu = overByCpu > 0 && increasesCpu;
+  const worsensMemory = overByMemoryGi > 0 && increasesMemory;
   // `headroomClamped` means the FAILOVER budget went negative. On a single
   // server that is its permanent resting state and says nothing about
   // capacity, so it must not veto there. Where it does apply it still only
   // blocks growth, for the same reason as above.
-  const refusedByFailover =
+  const worsensFailover =
     !isSingleServer && headroom.headroomClamped && (increasesCpu || increasesMemory);
-  const allowed = !refusedByCpu && !refusedByMemory && !refusedByFailover;
+  const withinBudget = !worsensCpu && !worsensMemory && !worsensFailover;
 
   let reason: string | null = null;
-  if (!allowed) {
+  if (!withinBudget) {
     const parts: string[] = [];
-    if (refusedByFailover) {
+    if (worsensFailover) {
       parts.push(
         'cluster has no failover headroom (system baseline + one-server reserve ≥ total allocatable)',
       );
     }
-    if (refusedByCpu) parts.push(`CPU over by ${overByCpu.toFixed(2)} cores`);
-    if (refusedByMemory) parts.push(`memory over by ${overByMemoryGi.toFixed(2)} GiB`);
+    if (worsensCpu) parts.push(`CPU over by ${overByCpu.toFixed(2)} cores`);
+    if (worsensMemory) parts.push(`memory over by ${overByMemoryGi.toFixed(2)} GiB`);
     const invariant = isSingleServer
-      ? 'Granting this quota would sell more than the server has'
-      : 'Granting this quota would breach single-failure survivability';
+      ? 'This quota sells more than the server has'
+      : 'This quota breaches single-failure survivability';
     reason = `${invariant}: ${parts.join('; ')}. Tenant total ${projectedSumCpu.toFixed(2)} CPU / ${projectedSumMemoryGi} GiB vs budget ${budgetCpu.toFixed(2)} CPU / ${budgetMemoryGi.toFixed(2)} GiB.`;
   }
 
   return {
-    allowed,
+    withinBudget,
     reason,
     details: {
       currentSumCpu: sumCpu,
@@ -300,15 +307,15 @@ export async function validateQuotaFitsHeadroom(
       projectedSumCpu,
       projectedSumMemoryGi,
       // The budget the decision was made against, not the failover figure —
-      // reporting one while deciding on the other is how a refusal becomes
+      // reporting one while deciding on the other is how an advisory becomes
       // impossible to explain.
       headroomCpu: budgetCpu,
       headroomMemoryGi: budgetMemoryGi,
       overByCpu,
       overByMemoryGi,
-      refusedByCpu,
-      refusedByMemory,
-      refusedByFailover,
+      worsensCpu,
+      worsensMemory,
+      worsensFailover,
       isSingleServer,
       headroomClamped: headroom.headroomClamped,
     },

@@ -33,6 +33,12 @@ const bytea = customType<{ data: Buffer; default: false }>({
 export const panelEnum = pgEnum('panel', ['admin', 'tenant']);
 export const userStatusEnum = pgEnum('user_status', ['active', 'disabled', 'pending']);
 export const regionStatusEnum = pgEnum('region_status', ['active', 'maintenance', 'offline']);
+// ADR-062. The tier IS the kernel share weight — 5m/30m/100m land on
+// cpu.weight 1/2/4. See CPU_TIER_MILLICORES in @insula/api-contracts.
+export const cpuTierEnum = pgEnum('cpu_tier', ['normal', 'high', 'highest']);
+// Per-tenant switch. Existing tenants stay 'legacy' until an operator
+// migrates them one at a time; there is no flag day.
+export const cpuSchedulingModeEnum = pgEnum('cpu_scheduling_mode', ['legacy', 'tiered']);
 export const planStatusEnum = pgEnum('plan_status', ['active', 'deprecated']);
 // Tenant lifecycle states:
 //   active     — running normally
@@ -292,7 +298,15 @@ export const hostingPlans = pgTable('hosting_plans', {
   code: varchar('code', { length: 50 }).notNull(),
   name: varchar('name', { length: 255 }).notNull(),
   description: text('description'),
+  // LEGACY (ADR-062): despite the name this feeds requests.cpu — a
+  // reservation, not a cap. Read only by legacy mode; NOT reinterpreted as a
+  // ceiling, because that would silently convert "reserve 1 core, burst
+  // freely" into "burst to 1 core" on clusters we cannot inspect.
   cpuLimit: numeric('cpu_limit', { precision: 5, scale: 2 }).notNull(),
+  // ADR-062 tiered mode. null = plan does not express it; falls through to
+  // derivation. Never means unlimited.
+  cpuTier: cpuTierEnum('cpu_tier'),
+  cpuBurstCores: numeric('cpu_burst_cores', { precision: 6, scale: 2 }),
   memoryLimit: numeric('memory_limit', { precision: 5, scale: 2 }).notNull(),
   storageLimit: numeric('storage_limit', { precision: 10, scale: 2 }).notNull(),
   // Plan-level MONTHLY data-transfer cap (GB). Metered from Traefik router
@@ -377,6 +391,13 @@ export const tenants = pgTable('tenants', {
   privateWorkerSharedSecret: varchar('private_worker_shared_secret', { length: 64 }),
   planId: varchar('plan_id', { length: 36 }).notNull(),
   cpuLimitOverride: numeric('cpu_limit_override', { precision: 5, scale: 2 }),
+  // ADR-062. Same override shape as every other plan property.
+  cpuTierOverride: cpuTierEnum('cpu_tier_override'),
+  cpuBurstCoresOverride: numeric('cpu_burst_cores_override', { precision: 6, scale: 2 }),
+  // NOT NULL DEFAULT 'legacy' — the safety property of the migration. An
+  // existing tenant cannot come out of an upgrade in tiered mode.
+  cpuSchedulingMode: cpuSchedulingModeEnum('cpu_scheduling_mode').notNull().default('legacy'),
+  cpuMigratedAt: timestamp('cpu_migrated_at', { withTimezone: true }),
   memoryLimitOverride: numeric('memory_limit_override', { precision: 5, scale: 2 }),
   storageLimitOverride: numeric('storage_limit_override', { precision: 10, scale: 2 }),
   // Per-tenant MONTHLY bandwidth cap override (GB). null = inherit
@@ -657,6 +678,10 @@ export const deployments = pgTable('deployments', {
   domainName: varchar('domain_name', { length: 255 }),
   replicaCount: integer('replica_count').notNull().default(1),
   cpuRequest: varchar('cpu_request', { length: 20 }).notNull().default('0.25'),
+  // ADR-062: the exact value cpuRequest held before tier migration, so a
+  // revert restores it rather than recomputing something similar. NULL =
+  // never migrated; cleared again on revert.
+  cpuRequestPreMigration: varchar('cpu_request_pre_migration', { length: 20 }),
   memoryRequest: varchar('memory_request', { length: 20 }).notNull().default('256Mi'),
   configuration: jsonb('configuration').$type<Record<string, unknown> | null>(),
   storagePath: varchar('storage_path', { length: 500 }),

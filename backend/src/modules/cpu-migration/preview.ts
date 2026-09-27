@@ -17,6 +17,7 @@ import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { catalogRepositories } from '../../db/schema.js';
 import { DEFAULT_CATALOG_URL } from '../catalog/service.js';
+import { describeDeployment } from './describe.js';
 import { readCpuReservation, cpuToMillis } from '../dashboard/cpu-reservation.js';
 import { deriveTier, tierMillis, ceilingCores, blockerFor, tenantUsageBlocker, reclaimFor } from './tiers.js';
 
@@ -35,6 +36,7 @@ interface TenantRow extends Record<string, unknown> {
   id: string;
   name: string;
   plan_code: string | null;
+  cpu_scheduling_mode: 'legacy' | 'tiered';
   cpu_limit: string | null;
   cpu_limit_override: string | null;
 }
@@ -89,7 +91,8 @@ export async function buildCpuMigrationPreview(
   const officialRepoId = officialRepo[0]?.id ?? null;
 
   const tenantRows = await db.execute<TenantRow>(sql`
-    SELECT t.id, t.name, p.code AS plan_code, p.cpu_limit, t.cpu_limit_override
+    SELECT t.id, t.name, p.code AS plan_code, p.cpu_limit, t.cpu_limit_override,
+           t.cpu_scheduling_mode
       FROM tenants t LEFT JOIN hosting_plans p ON p.id = t.plan_id
      ORDER BY t.name
   `);
@@ -162,34 +165,24 @@ export async function buildCpuMigrationPreview(
     let tenantReclaim = 0;
     let tenantIncrease = 0;
     const deployments: CpuMigrationDeployment[] = (byTenant.get(t.id) ?? []).map((d) => {
-      const currentMillis = cpuToMillis(d.cpu_request ?? undefined);
-      const tier = d.source === 'custom'
-        // A custom container has no catalog recommendation to derive from.
-        // `high` is the safe default: `normal` would quietly starve an app
-        // nobody sized.
-        ? 'high' as const
-        : deriveTier(recommendedCores(d.entry_resources));
-      const proposedMillis = tierMillis(tier);
+      // ★ The SAME function the apply runs on. Deriving the tier twice, once
+      // here and once in the runner, is how the operator came to approve one
+      // plan and get another — see describe.ts.
+      const f = describeDeployment(d, officialRepoId);
       // Accumulated per DEPLOYMENT, then summed — the tenant row and the
       // cluster headline are therefore the same operation at two scopes, and
       // the columns add up to the total by construction rather than by luck.
-      const freed = reclaimFor(currentMillis, proposedMillis);
+      const freed = reclaimFor(f.currentMillis, f.proposedMillis);
       tenantReclaim += freed;
-      tenantIncrease += Math.max(0, proposedMillis - currentMillis);
+      tenantIncrease += Math.max(0, f.proposedMillis - f.currentMillis);
       reclaimable += freed;
       return {
-        id: d.id,
-        name: d.name,
-        currentMillis,
-        proposedMillis,
-        proposedTier: tier,
-        blocker: blockerFor({
-          source: d.source,
-          thirdPartyCatalog: d.source === 'catalog'
-            && d.source_repo_id !== null
-            && d.source_repo_id !== officialRepoId,
-          declaresOwnResources: customSpecPinsCpu(d.custom_spec),
-        }),
+        id: f.id,
+        name: f.name,
+        currentMillis: f.currentMillis,
+        proposedMillis: f.proposedMillis,
+        proposedTier: f.proposedTier,
+        blocker: f.blocker,
       };
     });
 
@@ -205,6 +198,7 @@ export async function buildCpuMigrationPreview(
       observedP95Millis: p95,
       tenantBlocker,
       migratesCleanly: tenantBlocker === null && deployments.every((d) => d.blocker === null),
+      schedulingMode: t.cpu_scheduling_mode ?? 'legacy',
       deployments,
     });
   }

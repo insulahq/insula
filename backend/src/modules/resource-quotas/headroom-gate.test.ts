@@ -133,7 +133,7 @@ describe('validateQuotaFitsHeadroom — a cluster that is already oversold', () 
     const r = await validateQuotaFitsHeadroom(makeDb([...others, selfAt2]), k8sStub, {
       tenantId: 'me', newCpuLimit: 1, newMemoryLimitGi: 4,
     });
-    expect(r.allowed).toBe(true);
+    expect(r.withinBudget).toBe(true);
     // The overage is still REPORTED — it describes the cluster, not the verdict.
     expect(r.details.overByCpu).toBeGreaterThan(0);
   });
@@ -143,7 +143,7 @@ describe('validateQuotaFitsHeadroom — a cluster that is already oversold', () 
     const r = await validateQuotaFitsHeadroom(makeDb([...others, selfAt2]), k8sStub, {
       tenantId: 'me', newCpuLimit: 2, newMemoryLimitGi: 4,
     });
-    expect(r.allowed).toBe(true);
+    expect(r.withinBudget).toBe(true);
   });
 
   it('still refuses an INCREASE', async () => {
@@ -151,7 +151,7 @@ describe('validateQuotaFitsHeadroom — a cluster that is already oversold', () 
     const r = await validateQuotaFitsHeadroom(makeDb([...others, selfAt2]), k8sStub, {
       tenantId: 'me', newCpuLimit: 3, newMemoryLimitGi: 4,
     });
-    expect(r.allowed).toBe(false);
+    expect(r.withinBudget).toBe(false);
     expect(r.reason).toContain('CPU over by');
   });
 
@@ -163,7 +163,7 @@ describe('validateQuotaFitsHeadroom — a cluster that is already oversold', () 
       k8sStub,
       { tenantId: 'me', newCpuLimit: 1, newMemoryLimitGi: 6 },
     );
-    expect(r.allowed).toBe(false);
+    expect(r.withinBudget).toBe(false);
     expect(r.reason).toContain('memory over by');
     // CPU went DOWN — naming it in the refusal would send the operator to the
     // wrong dimension.
@@ -202,7 +202,7 @@ describe('validateQuotaFitsHeadroom — a clamped multi-server cluster', () => {
     const r = await validateQuotaFitsHeadroom(makeDb([selfAt5]), k8sStub, {
       tenantId: 'me', newCpuLimit: 1, newMemoryLimitGi: 8,
     });
-    expect(r.allowed).toBe(true);
+    expect(r.withinBudget).toBe(true);
     expect(r.details.headroomClamped).toBe(true);
   });
 
@@ -211,8 +211,8 @@ describe('validateQuotaFitsHeadroom — a clamped multi-server cluster', () => {
     const r = await validateQuotaFitsHeadroom(makeDb([selfAt5]), k8sStub, {
       tenantId: 'me', newCpuLimit: 6, newMemoryLimitGi: 8,
     });
-    expect(r.allowed).toBe(false);
-    expect(r.details.refusedByFailover).toBe(true);
+    expect(r.withinBudget).toBe(false);
+    expect(r.details.worsensFailover).toBe(true);
     expect(r.reason).toContain('no failover headroom');
   });
 });
@@ -223,7 +223,7 @@ describe('validateQuotaFitsHeadroom — the tenant row cannot be resolved', () =
     const r = await validateQuotaFitsHeadroom(makeDb([]), k8sStub, {
       tenantId: 'brand-new', newCpuLimit: 2, newMemoryLimitGi: 4,
     });
-    expect(r.allowed).toBe(false);
+    expect(r.withinBudget).toBe(false);
   });
 
   /**
@@ -238,9 +238,9 @@ describe('validateQuotaFitsHeadroom — the tenant row cannot be resolved', () =
     const r = await validateQuotaFitsHeadroom(makeDb([]), k8sStub, {
       tenantId: 'orphaned-plan', newCpuLimit: null, newMemoryLimitGi: 1,
     });
-    expect(r.details.refusedByCpu).toBe(false);
+    expect(r.details.worsensCpu).toBe(false);
     expect(r.reason).not.toContain('CPU over by');
-    expect(r.details.refusedByMemory).toBe(true);
+    expect(r.details.worsensMemory).toBe(true);
   });
 
   /**
@@ -254,7 +254,7 @@ describe('validateQuotaFitsHeadroom — the tenant row cannot be resolved', () =
     const r = await validateQuotaFitsHeadroom(db, k8sStub, {
       tenantId: 'new-on-a-plan', newCpuLimit: 2, newMemoryLimitGi: 4,
     });
-    expect(r.allowed).toBe(true);
+    expect(r.withinBudget).toBe(true);
   });
 });
 
@@ -285,7 +285,7 @@ describe('validateQuotaFitsHeadroom — single-server clusters', () => {
     const r = await validateQuotaFitsHeadroom(db, k8sStub, {
       tenantId: 'new', newCpuLimit: 2, newMemoryLimitGi: 2,
     });
-    expect(r.allowed).toBe(true);
+    expect(r.withinBudget).toBe(true);
     expect(r.details.headroomCpu).toBeCloseTo(4.7, 5);
   });
 
@@ -295,9 +295,9 @@ describe('validateQuotaFitsHeadroom — single-server clusters', () => {
     const r = await validateQuotaFitsHeadroom(db, k8sStub, {
       tenantId: 'new', newCpuLimit: 2, newMemoryLimitGi: 2,
     });
-    expect(r.allowed).toBe(false);
+    expect(r.withinBudget).toBe(false);
     // Named for what it actually enforces here, not for failover.
-    expect(r.reason).toContain('sell more than the server has');
+    expect(r.reason).toContain('sells more than the server has');
     expect(r.reason).not.toContain('single-failure survivability');
     expect(r.details.overByCpu).toBeCloseTo(1.3, 5);
   });
@@ -310,7 +310,7 @@ describe('validateQuotaFitsHeadroom — single-server clusters', () => {
       tenantId: 'new', newCpuLimit: 1, newMemoryLimitGi: 1,
     });
     expect(r.details.headroomClamped).toBe(true);
-    expect(r.allowed).toBe(true);
+    expect(r.withinBudget).toBe(true);
   });
 
   // On a real multi-server cluster the failover invariant still governs.
@@ -319,7 +319,7 @@ describe('validateQuotaFitsHeadroom — single-server clusters', () => {
     const r = await validateQuotaFitsHeadroom(makeDb([]), k8sStub, {
       tenantId: 'new', newCpuLimit: 1, newMemoryLimitGi: 1,
     });
-    expect(r.allowed).toBe(false);
+    expect(r.withinBudget).toBe(false);
     expect(r.reason).toContain('no failover headroom');
   });
 });
@@ -338,7 +338,7 @@ describe('validateQuotaFitsHeadroom — ceilings that come from the plan', () =>
       tenantId: 'new', newCpuLimit: 5, newMemoryLimitGi: 4,
     });
     expect(r.details.currentSumCpu).toBe(4);
-    expect(r.allowed).toBe(false);
+    expect(r.withinBudget).toBe(false);
     expect(r.details.overByCpu).toBe(1);
   });
 
@@ -349,7 +349,7 @@ describe('validateQuotaFitsHeadroom — ceilings that come from the plan', () =>
     const r = await validateQuotaFitsHeadroom(makeDb([]), k8sStub, {
       tenantId: 'new', newCpuLimit: 5, newMemoryLimitGi: 4,
     });
-    expect(r.allowed).toBe(true);
+    expect(r.withinBudget).toBe(true);
     expect(r.details.currentSumCpu).toBe(0);
   });
 
@@ -374,7 +374,7 @@ describe('validateQuotaFitsHeadroom — basic accept/reject decisions', () => {
       newCpuLimit: 4,
       newMemoryLimitGi: 8,
     });
-    expect(r.allowed).toBe(true);
+    expect(r.withinBudget).toBe(true);
     expect(r.reason).toBeNull();
     expect(r.details.projectedSumCpu).toBe(4);
     expect(r.details.headroomCpu).toBe(8);
@@ -391,7 +391,7 @@ describe('validateQuotaFitsHeadroom — basic accept/reject decisions', () => {
       newCpuLimit: 4,
       newMemoryLimitGi: 4,
     });
-    expect(r.allowed).toBe(false);
+    expect(r.withinBudget).toBe(false);
     expect(r.reason).toContain('CPU over by 2');
     expect(r.details.overByCpu).toBe(2);
   });
@@ -404,7 +404,7 @@ describe('validateQuotaFitsHeadroom — basic accept/reject decisions', () => {
       newCpuLimit: 4,
       newMemoryLimitGi: 16,
     });
-    expect(r.allowed).toBe(false);
+    expect(r.withinBudget).toBe(false);
     expect(r.reason).toContain('memory over by 8');
     expect(r.details.overByMemoryGi).toBe(8);
   });
@@ -421,7 +421,7 @@ describe('validateQuotaFitsHeadroom — basic accept/reject decisions', () => {
       newCpuLimit: 0.1,
       newMemoryLimitGi: 0.1,
     });
-    expect(r.allowed).toBe(false);
+    expect(r.withinBudget).toBe(false);
     expect(r.reason).toContain('no failover headroom');
     expect(r.details.headroomClamped).toBe(true);
   });
@@ -437,7 +437,7 @@ describe('validateQuotaFitsHeadroom — basic accept/reject decisions', () => {
       newCpuLimit: 5,
       newMemoryLimitGi: 8,
     });
-    expect(r.allowed).toBe(false);
+    expect(r.withinBudget).toBe(false);
     expect(r.reason).toContain('no failover headroom');
     expect(r.reason).toContain('CPU over by 5');
     expect(r.reason).toContain('memory over by 8');
@@ -460,7 +460,7 @@ describe('validateQuotaFitsHeadroom — sum across tenants', () => {
     });
     expect(r.details.currentSumCpu).toBe(4); // 2 + 2 from NULL defaults
     expect(r.details.projectedSumCpu).toBe(9); // 4 + 5
-    expect(r.allowed).toBe(false);
+    expect(r.withinBudget).toBe(false);
   });
 
   it('excludes the patch-target tenant from the current sum (avoids double counting their old quota)', async () => {
@@ -478,7 +478,7 @@ describe('validateQuotaFitsHeadroom — sum across tenants', () => {
     });
     expect(r.details.currentSumCpu).toBe(0); // self excluded
     expect(r.details.projectedSumCpu).toBe(8);
-    expect(r.allowed).toBe(true);
+    expect(r.withinBudget).toBe(true);
   });
 
   it('falls back to existing DB value when the patch leaves a field unset (null)', async () => {
@@ -495,7 +495,7 @@ describe('validateQuotaFitsHeadroom — sum across tenants', () => {
     });
     expect(r.details.projectedSumCpu).toBe(4); // existing kept
     expect(r.details.projectedSumMemoryGi).toBe(12); // new memory limit
-    expect(r.allowed).toBe(true);
+    expect(r.withinBudget).toBe(true);
   });
 });
 
@@ -508,7 +508,7 @@ describe('validateQuotaFitsHeadroom — boundary cases', () => {
       newCpuLimit: 8,
       newMemoryLimitGi: 16,
     });
-    expect(r.allowed).toBe(true);
+    expect(r.withinBudget).toBe(true);
     expect(r.details.overByCpu).toBe(0);
     expect(r.details.overByMemoryGi).toBe(0);
   });
@@ -521,7 +521,7 @@ describe('validateQuotaFitsHeadroom — boundary cases', () => {
       newCpuLimit: 8.01,
       newMemoryLimitGi: 16,
     });
-    expect(r.allowed).toBe(false);
+    expect(r.withinBudget).toBe(false);
     expect(r.details.overByCpu).toBeCloseTo(0.01, 6);
   });
 });

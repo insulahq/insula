@@ -12,6 +12,77 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+
+- **A tenant's CPU can now be a share of the machine instead of a reservation
+  of it (ADR-062, opt-in per tenant).** The previous release made the gap
+  visible: a cluster can refuse new work while running at a fraction of its
+  capacity, because Kubernetes places pods by what they *reserve*, not what
+  they use. This release adds the mechanism to close it, and deliberately
+  does not switch anyone over.
+
+  Under the tier model a workload asks for a **share** — Normal, High or
+  Highest — rather than a core count. The three tiers are 5m / 30m / 100m,
+  chosen because those are the values the kernel actually distinguishes: they
+  land on share weights of 1, 2 and 4. Under contention a High workload gets
+  twice the CPU of a Normal one; on an idle node both burst freely. Sixteen
+  idle static sites reserve 80m between them instead of 1.6 cores.
+
+  A noisy neighbour is bounded by a **burst ceiling** instead of by its
+  request. Hitting it throttles the process — CPU is compressible, so it is
+  slowed, never killed and never evicted. The ceiling is generous by
+  construction (`max(1, old limit x 2)`), because the old number never capped
+  anything: a tenant that "had" 0.1 cores could always burst to the whole
+  node, and is now bounded at 1.
+
+  **Memory is deliberately untouched.** A memory request is a real ceiling and
+  lowering one buys an OOM kill. CPU is compressible and memory is not; the
+  two get different rules on purpose.
+
+  Migration is **per tenant, from that tenant's own row**, with the dry run in
+  front of it — there is no "migrate everything" button, and no endpoint
+  behind one. Each tenant is migrated one workload at a time, waiting for the
+  cluster to settle between each, and it can be stopped after any step. Every
+  migration hands CPU back, so each one makes the next safer; the biggest
+  over-reserver is migrated first for that reason, rather than saved for last.
+
+  Stopping or failing partway is a safe resting state, not a broken one: the
+  tenant stays on the old model until the final step, and a smaller request is
+  always easier to schedule than the one it replaced. **Revert restores the
+  exact prior value**, character for character, from a baseline recorded
+  before anything changed — never a recomputed equivalent.
+
+  Tenants that need a human decision are named rather than guessed at: an
+  application that pins its own CPU, a compose stack whose per-service CPU
+  cannot be mapped back, or a tenant with no usage history to size against.
+
+### Changed
+
+- **The cluster-headroom quota check now advises instead of refusing.**
+  v2026.9.35 repaired this check — it had been summing a table that is empty
+  on any cluster where nobody has hand-edited a quota, so it had never refused
+  anything — and in doing so turned it into admission control. That was the
+  wrong call: overselling CPU is a deliberate, accepted position on this
+  platform, because a CPU request reserves a place in the scheduler's queue
+  and does not cap anything. What was wanted was *visibility* into the gap,
+  not a barrier across it.
+
+  The measurement stays, because it is the honest number and it was worth
+  having. Saving a quota that exceeds what the cluster can carry now succeeds
+  and tells you so: the verdict is written to the audit log as
+  `resource_quota.update.over_headroom` and returned alongside the saved quota
+  as `headroomAdvisory`. Nothing is refused, in either direction.
+
+  No notification is raised per edit. A cluster that is past its budget is
+  past it continuously, so alerting on each save would turn one standing
+  condition into an endless stream of alarms; that condition is already
+  reported once, deduped per node, by the CPU-reservation finding on the
+  dashboard.
+
+  `?force=true` is still accepted and now does nothing — there is no longer
+  anything to force. Scripts written against the refusing version keep working
+  unchanged.
+
 ## [2026.9.35] - 2026-09-27
 
 ### Added
