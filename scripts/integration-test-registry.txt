@@ -66,6 +66,7 @@ manual        integration-platform-upgrade.sh                          # DESTRUC
 manual        integration-tenant-bundles-files-browse-restore-e2e.sh  # chain root
 manual        integration-tenant-bundles-jmap-full-e2e.sh             # canonical jmap bundle E2E
 manual        integration-tenant-bundles-mailbox-engine.sh            # L1 seed harness
+manual        integration-cpu-tier-migration.sh                       # ADR-062 R2: migrates ONE tenant to tiered CPU scheduling on a live cluster and reverts it. Asserts CLUSTER state, not the API's self-report — LimitRange shape, limits.cpu on the quota, every in-scope pod carrying a limit, workloads actually Ready — then that revert restores cpu_request CHARACTER FOR CHARACTER and clears the baselines. Also covers the NOT_TIERED and CPU_MIGRATION_NEEDS_REVIEW guards. Takes TID + NS so it cannot be auto-wired. ABORTS rather than continuing if the apply does not complete: the later checks would otherwise pass by absence.
 suite        integration-bundle-coverage.sh
 suite        integration-backups-ui.sh
 suite        integration-waf-deploy-surfaces.sh                      # WAF lets deploy payloads through, blocks attacks
