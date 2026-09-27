@@ -173,6 +173,12 @@ export const cpuRevertResultSchema = z.object({
    * one came back with a number nobody chose.
    */
   unrestorable: z.number(),
+  /**
+   * Pods rolled only to shed a CPU ceiling. A LimitRange default is baked in
+   * at admission, so removing the range does not release a running pod —
+   * these had no stored baseline and no restore would have touched them.
+   */
+  uncapped: z.number(),
   reason: z.string().nullable(),
 });
 export type CpuRevertResult = z.infer<typeof cpuRevertResultSchema>;

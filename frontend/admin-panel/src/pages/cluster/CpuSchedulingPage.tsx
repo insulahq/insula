@@ -212,7 +212,9 @@ function TenantMigrationActions({ tenant }: { tenant: CpuMigrationTenant }) {
         : `${run.status}: ${run.reason ?? run.step ?? 'see the task list'}` }
     : reverted
       ? { bad: reverted.status !== 'completed', text: reverted.status === 'completed'
-          ? `Reverted ${reverted.restored} application(s)${reverted.unrestorable > 0 ? ` — ${reverted.unrestorable} could not be restored` : ''}`
+          ? `Reverted ${reverted.restored} application(s)`
+            + (reverted.uncapped > 0 ? `, released ${reverted.uncapped} from the ceiling` : '')
+            + (reverted.unrestorable > 0 ? ` — ${reverted.unrestorable} could not be restored` : '')
           : `revert failed: ${reverted.reason ?? 'unknown'}` }
       : apply.isError || revert.isError
         ? { bad: true, text: 'The request failed. Check the task list for detail.' }

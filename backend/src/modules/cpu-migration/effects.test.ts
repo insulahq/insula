@@ -13,10 +13,14 @@ import {
  */
 
 const pod = (o: {
-  name: string; prio?: string | null; owned?: boolean; phase?: string;
+  name: string; prio?: string | null; owned?: boolean; phase?: string; terminating?: boolean;
   containers?: Array<{ req?: string; lim?: string; name?: string }>;
 }) => ({
-  metadata: { name: o.name, ownerReferences: o.owned === false ? [] : [{ kind: 'ReplicaSet' }] },
+  metadata: {
+    name: o.name,
+    ownerReferences: o.owned === false ? [] : [{ kind: 'ReplicaSet' }],
+    ...(o.terminating ? { deletionTimestamp: '2020-01-01T00:00:00Z' } : {}),
+  },
   spec: {
     priorityClassName: o.prio === null ? undefined : (o.prio ?? 'tenant-default'),
     containers: (o.containers ?? []).map((c, i) => ({
@@ -100,6 +104,22 @@ describe('readPodCpuLimits', () => {
       { podName: 'orphan', priorityClassName: 'tenant-default', hasController: false, containersWithoutCpuLimit: ['web'] },
       { podName: 'fine', priorityClassName: 'tenant-default', hasController: true, containersWithoutCpuLimit: [] },
     ]);
+  });
+
+  /**
+   * ★ A TERMINATING pod reports phase "Running". The end-to-end run caught
+   * this: the sweep replaced a limitless pod, the replacement came up with
+   * its ceiling, and the check still refused — counting the pod being
+   * replaced, mid-termination. It blocked on the corpse of the problem it
+   * had just fixed.
+   */
+  it('ignores a pod that is on its way out', async () => {
+    const k = k8sWith([
+      pod({ name: 'dying', terminating: true, containers: [{ name: 'web', req: '200m' }] }),
+      pod({ name: 'fresh', containers: [{ name: 'web', req: '5m', lim: '4' }] }),
+    ]);
+    const out = await readPodCpuLimits(k, 'ns');
+    expect(out.map((p) => p.podName)).toEqual(['fresh']);
   });
 
   // A finished pod cannot be refused by a quota it no longer needs.

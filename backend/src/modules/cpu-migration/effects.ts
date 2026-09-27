@@ -130,7 +130,7 @@ export async function readPodCpuLimits(
 ): Promise<PodCpuLimitFact[]> {
   const list = await k8s.core.listNamespacedPod({ namespace }) as {
     items?: ReadonlyArray<{
-      metadata?: { name?: string; ownerReferences?: ReadonlyArray<unknown> };
+      metadata?: { name?: string; ownerReferences?: ReadonlyArray<unknown>; deletionTimestamp?: string };
       spec?: {
         priorityClassName?: string;
         containers?: ReadonlyArray<{ name?: string; resources?: { limits?: Record<string, string> } }>;
@@ -144,6 +144,20 @@ export async function readPodCpuLimits(
     // A finished pod cannot be refused by a quota it no longer needs.
     const phase = p.status?.phase;
     if (phase === 'Succeeded' || phase === 'Failed') continue;
+    /**
+     * ★ A TERMINATING pod still reports phase "Running".
+     *
+     * Found by the end-to-end run: the straggler sweep replaced a limitless
+     * pod correctly, the replacement came up carrying its ceiling — and the
+     * readiness check still refused, because the pod being replaced was
+     * mid-termination and counted as one more pod without a limit. The
+     * migration blocked on the corpse of the problem it had just fixed.
+     *
+     * A pod with a deletionTimestamp is leaving and will never be admitted
+     * again, so it cannot be the reason a future pod is refused. It is the
+     * question the check asks, so it is the pod the check must ignore.
+     */
+    if (p.metadata?.deletionTimestamp) continue;
     const all = [...(p.spec?.containers ?? []), ...(p.spec?.initContainers ?? [])];
     out.push({
       podName: p.metadata?.name ?? '(unnamed)',

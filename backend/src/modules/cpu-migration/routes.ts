@@ -83,6 +83,9 @@ export async function cpuMigrationRoutes(app: FastifyInstance): Promise<void> {
       status: outcome.status,
       restored: outcome.restored,
       unrestorable: outcome.status === 'completed' ? outcome.unrestorable : 0,
+      // Pods rolled purely to shed a ceiling they were admitted with. Worth
+      // reporting: they are the ones no restore would have touched.
+      uncapped: outcome.status === 'completed' ? outcome.uncapped : 0,
       reason: outcome.status === 'failed' ? outcome.reason : null,
     });
   });
