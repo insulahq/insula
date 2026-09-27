@@ -30,7 +30,25 @@ T=$(curl -sk -X POST "$API/api/v1/auth/login" -H 'Content-Type: application/json
 A=(-sk -H "Authorization: Bearer $T" -H 'Content-Type: application/json')
 ok "authenticated"
 
-echo "════ 0. baseline — record the exact requests we must get back"
+# ★ Start from a KNOWN state. A previous run that failed part-way leaves the
+# tenant half-migrated, and every assertion below then measures against a
+# polluted baseline — "restored character for character" compares to whatever
+# the last failure left behind, and the NOT_TIERED check sees artifacts and
+# correctly returns 200. Three of four failures in one run were this, not the
+# product. Reset first, then record.
+echo "════ 0. reset to a known-clean baseline, then record it"
+curl "${A[@]}" -o /dev/null -X POST "$API/api/v1/admin/cpu-migration/tenants/$TID/revert" 2>/dev/null
+for _ in $(seq 1 30); do
+  M=$(psql "SELECT cpu_scheduling_mode FROM tenants WHERE id='$TID';")
+  B=$(psql "SELECT count(*) FROM deployments WHERE tenant_id='$TID' AND cpu_request_pre_migration IS NOT NULL;")
+  LR=$(kc "-n $NS get limitrange -o name" | wc -l)
+  [ "$M" = "legacy" ] && [ "${B:-1}" = "0" ] && [ "${LR:-1}" = "0" ] && break
+  sleep 4
+done
+[ "$M" = "legacy" ] && [ "${B:-1}" = "0" ] && [ "${LR:-1}" = "0" ] \
+  && ok "tenant reset to clean legacy state" \
+  || bad "could not reach a clean baseline" "mode=$M baselines=$B limitranges=$LR"
+
 BEFORE=$(psql "SELECT name||'='||cpu_request FROM deployments WHERE tenant_id='$TID' AND status<>'deleted' ORDER BY name;" | tr '\n' ' ')
 echo "     before: $BEFORE"
 MODE0=$(psql "SELECT cpu_scheduling_mode FROM tenants WHERE id='$TID';")
@@ -139,6 +157,25 @@ MODE2=$(psql "SELECT cpu_scheduling_mode FROM tenants WHERE id='$TID';")
 [ "$MODE2" = "legacy" ] && ok "tenant is back to legacy" || bad "mode is '$MODE2'"
 LEFT=$(psql "SELECT count(*) FROM deployments WHERE tenant_id='$TID' AND cpu_request_pre_migration IS NOT NULL;")
 [ "${LEFT:-1}" = "0" ] && ok "baselines cleared, so a re-migration stores a fresh one" || bad "$LEFT baseline(s) left behind"
+CAPPED=$(kc "-n $NS get pods -o json" | python3 -c '
+import sys,json
+try: items=json.load(sys.stdin).get("items",[])
+except Exception: print("PARSE"); sys.exit()
+bad=[]
+for p in items:
+  if p["metadata"].get("deletionTimestamp"): continue
+  if p.get("status",{}).get("phase") in ("Succeeded","Failed"): continue
+  if (p.get("spec",{}).get("priorityClassName") or "") != "tenant-default": continue
+  for c in p["spec"].get("containers",[]):
+    if (c.get("resources",{}).get("limits",{}) or {}).get("cpu"):
+      bad.append(p["metadata"]["name"])
+print(",".join(sorted(set(bad))) if bad else "NONE")')
+# A LimitRange default is baked in at ADMISSION, so removing the range does
+# not release a running pod. If any pod keeps a ceiling here, the tenant is
+# still throttled after a revert that reported success.
+[ "$CAPPED" = "NONE" ] && ok "no pod is left holding a platform ceiling" \
+  || bad "still capped after revert: $CAPPED" ""
+
 LR2=$(kc "-n $NS get limitrange $NS-cpu -o name")
 [ -z "$LR2" ] && ok "LimitRange removed" || bad "LimitRange still present: $LR2"
 QH2=$(kc "-n $NS get resourcequota $NS-quota -o jsonpath='{.spec.hard.limits\.cpu}'")

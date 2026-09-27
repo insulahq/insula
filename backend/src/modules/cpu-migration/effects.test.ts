@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
+  rollPodsStillCapped,
   quantityToMillis, largestDeclaredCpuMillis, largestInScopePodMillis,
   readPodCpuLimits, readWorkloads, widenQuotaHeadroom, removeQuotaLimits,
 } from './effects.js';
@@ -229,5 +230,76 @@ describe('removeQuotaLimits', () => {
     expect(body.body.spec.hard['requests.cpu']).toBe('1500m');
     // null DELETES the key under RFC 7396 — this is how the ceiling comes off.
     expect(body.body.spec.hard['limits.cpu']).toBeNull();
+  });
+});
+
+describe('rollPodsStillCapped', () => {
+  const scene = (opts: {
+    templateLimit?: string; podLimit?: string; annotated?: boolean;
+  }) => {
+    const patch = vi.fn(async () => ({}));
+    const del = vi.fn(async () => ({}));
+    const podItem = {
+      metadata: { name: 'app-1' },
+      status: { phase: 'Running' },
+      spec: {
+        priorityClassName: 'tenant-default',
+        containers: [{ name: 'c', resources: { limits: opts.podLimit ? { cpu: opts.podLimit } : {} } }],
+      },
+    };
+    const k = {
+      core: {
+        listNamespacedPod: vi.fn(async () => ({ items: [podItem] })),
+        deleteNamespacedPod: del,
+      },
+      apps: {
+        listNamespacedDeployment: vi.fn(async () => ({
+          items: [{
+            metadata: { name: 'app' },
+            spec: { template: {
+              metadata: { annotations: opts.annotated ? { 'insula.host/cpu-tier': 'high' } : {} },
+              spec: { containers: [{ resources: { limits: opts.templateLimit ? { cpu: opts.templateLimit } : {} } }] },
+            } },
+          }],
+        })),
+        patchNamespacedDeployment: patch,
+      },
+    } as never;
+    return { k, patch, del };
+  };
+
+  /**
+   * ★ Observed on DEV. A straggler pod is DELETED rather than annotated, so
+   * rolling only annotated deployments left its replacement carrying a hard
+   * CPU cap for life — after a revert that reported success and counted
+   * zero. The reliable test needs no marker: template says no limit, pod has
+   * one, therefore the LimitRange put it there.
+   */
+  it('releases a pod capped by the LimitRange even with no marker to go on', async () => {
+    const { k, del } = scene({ podLimit: '4' });
+    expect(await rollPodsStillCapped(k, 'ns', 'tenant-default')).toBe(1);
+    expect(del).toHaveBeenCalled();
+  });
+
+  it('rolls rather than deletes when there is a marker to clear', async () => {
+    const { k, patch, del } = scene({ podLimit: '4', annotated: true });
+    expect(await rollPodsStillCapped(k, 'ns', 'tenant-default')).toBe(1);
+    expect(patch).toHaveBeenCalled();
+    expect(del).not.toHaveBeenCalled();
+  });
+
+  // A ceiling the TENANT declared is not ours to remove.
+  it('leaves a limit the deployment declares for itself alone', async () => {
+    const { k, patch, del } = scene({ templateLimit: '2', podLimit: '2' });
+    expect(await rollPodsStillCapped(k, 'ns', 'tenant-default')).toBe(0);
+    expect(patch).not.toHaveBeenCalled();
+    expect(del).not.toHaveBeenCalled();
+  });
+
+  it('does nothing when no pod is capped', async () => {
+    const { k, patch, del } = scene({});
+    expect(await rollPodsStillCapped(k, 'ns', 'tenant-default')).toBe(0);
+    expect(patch).not.toHaveBeenCalled();
+    expect(del).not.toHaveBeenCalled();
   });
 });

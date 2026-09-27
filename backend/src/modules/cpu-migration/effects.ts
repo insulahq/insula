@@ -342,46 +342,89 @@ export async function recreatePods(
 }
 
 /**
- * Roll every Deployment whose pods still declare a CPU limit, by clearing the
- * tier annotation. Returns how many were rolled.
+ * Release every workload still carrying a ceiling the PLATFORM gave it.
  *
- * Called on revert AFTER the LimitRange is gone, so the replacement pods are
- * admitted with no ceiling at all — which is what legacy means.
+ * ★ Ground truth, not bookkeeping. An earlier version rolled only
+ * deployments carrying our tier annotation — but a straggler pod is DELETED
+ * rather than annotated, so its replacement kept a hard CPU cap for life
+ * after a revert that reported success and counted zero. Observed on DEV
+ * exactly that way.
+ *
+ * The reliable test needs no marker: if a Deployment's pod TEMPLATE declares
+ * no CPU limit but its running pods have one, that limit was injected by the
+ * LimitRange at admission and is ours to remove. If the template declares
+ * one, the tenant chose it and it is not ours to touch.
+ *
+ * Must run AFTER the LimitRange is gone, or the replacements are admitted
+ * with the very ceiling being removed.
  */
 export async function rollPodsStillCapped(
   k8s: K8sClients, namespace: string, priorityClass: string,
 ): Promise<number> {
   const pods = await readPodCpuLimits(k8s, namespace);
-  const capped = new Set<string>();
-  for (const p of pods) {
-    if (p.priorityClassName !== priorityClass) continue;
-    // A pod with NO uncapped container is one every container of which
-    // carries a limit — i.e. it was admitted under the LimitRange.
-    if (p.containersWithoutCpuLimit.length === 0) capped.add(p.podName);
-  }
-  if (capped.size === 0) return 0;
+  const anyCapped = pods.some(
+    (p) => p.priorityClassName === priorityClass && p.containersWithoutCpuLimit.length === 0,
+  );
+  if (!anyCapped) return 0;
 
   const list = await k8s.apps.listNamespacedDeployment({ namespace }) as {
-    items?: ReadonlyArray<{ metadata?: { name?: string; annotations?: Record<string, string>;
-      labels?: Record<string, string> }; spec?: { template?: { metadata?: { annotations?: Record<string, string> } } } }>;
+    items?: ReadonlyArray<{
+      metadata?: { name?: string };
+      spec?: { template?: {
+        metadata?: { annotations?: Record<string, string> };
+        spec?: { containers?: ReadonlyArray<{ resources?: { limits?: Record<string, string> } }> };
+      } };
+    }>;
   };
+
   let rolled = 0;
   for (const d of list.items ?? []) {
     const name = d.metadata?.name;
     if (!name) continue;
-    const ann = d.spec?.template?.metadata?.annotations ?? {};
-    // Only those this migration marked. Anything else declaring a CPU limit
-    // did so on its own and is not ours to restart.
-    if (!('insula.host/cpu-tier' in ann)) continue;
-    await k8s.apps.patchNamespacedDeployment(
-      {
-        name, namespace,
-        // null deletes the key under a strategic merge patch, which changes
-        // the pod template and rolls the deployment.
-        body: { spec: { template: { metadata: { annotations: { 'insula.host/cpu-tier': null } } } } },
-      } as never,
-      STRATEGIC_MERGE_PATCH,
-    );
+    const tpl = d.spec?.template;
+    const templateDeclaresLimit = (tpl?.spec?.containers ?? [])
+      .some((c) => Boolean(c.resources?.limits?.cpu));
+    if (templateDeclaresLimit) continue; // the tenant's own ceiling
+
+    const live = await k8s.core.listNamespacedPod({
+      namespace, labelSelector: `app=${name}`,
+    }) as { items?: ReadonlyArray<{
+      metadata?: { name?: string; deletionTimestamp?: string };
+      status?: { phase?: string };
+      spec?: { priorityClassName?: string; containers?: ReadonlyArray<{ resources?: { limits?: Record<string, string> } }> };
+    }> };
+    const capped = (live.items ?? []).filter((p) => {
+      if (p.metadata?.deletionTimestamp) return false;
+      if (p.status?.phase === 'Succeeded' || p.status?.phase === 'Failed') return false;
+      if ((p.spec?.priorityClassName ?? null) !== priorityClass) return false;
+      return (p.spec?.containers ?? []).some((c) => Boolean(c.resources?.limits?.cpu));
+    });
+    if (capped.length === 0) continue;
+
+    const annotated = 'insula.host/cpu-tier' in (tpl?.metadata?.annotations ?? {});
+    if (annotated) {
+      // Clearing the marker changes the template, so Kubernetes ROLLS it —
+      // the replacement is up before the old pod goes, no downtime.
+      await k8s.apps.patchNamespacedDeployment(
+        {
+          name, namespace,
+          body: { spec: { template: { metadata: { annotations: { 'insula.host/cpu-tier': null } } } } },
+        } as never,
+        STRATEGIC_MERGE_PATCH,
+      );
+    } else {
+      // Nothing to change in the template, so there is nothing to roll:
+      // replace the pods directly. The ceiling is already gone from the
+      // namespace, so what comes back has none.
+      for (const p of capped) {
+        if (!p.metadata?.name) continue;
+        try {
+          await k8s.core.deleteNamespacedPod({ name: p.metadata.name, namespace });
+        } catch (err) {
+          if (!is404(err)) throw err;
+        }
+      }
+    }
     rolled += 1;
   }
   return rolled;
