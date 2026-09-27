@@ -90,18 +90,22 @@ make_tenant() {  # $1 = short label -> echoes tenant id
 ns_of(){ psql "SELECT kubernetes_namespace FROM tenants WHERE id='$1';"; }
 
 deploy_app() {  # $1 tenant  $2 name  $3 cpu_request
-  local entry
-  entry=$(curl "${A[@]}" "$API/api/v1/catalog/entries?limit=100" | python3 -c '
+  # /api/v1/catalog — NOT /catalog/entries, which 404s. A guessed path here
+  # returns nothing, the fixture quietly has no workload, and every
+  # assertion downstream then passes against an empty namespace. That is how
+  # the first run of this harness reported three green checks for tests that
+  # never ran.
+  local entry resp id
+  entry=$(curl "${A[@]}" "$API/api/v1/catalog?limit=100" | python3 -c '
 import sys,json
-d=json.load(sys.stdin)["data"]
-# A single-container runtime keeps the arithmetic legible.
-for e in d:
-  if (e.get("code") or "").startswith("static") or (e.get("entryType") or e.get("entry_type"))=="static":
-    print(e["id"]); break
-else: print(d[0]["id"])' 2>/dev/null)
-  curl "${A[@]}" -X POST "$API/api/v1/tenants/$1/deployments" \
-    -d "{\"catalog_entry_id\":\"$entry\",\"name\":\"$2\",\"cpu_request\":\"$3\",\"memory_request\":\"256Mi\"}" \
-    | python3 -c 'import sys,json;print(json.load(sys.stdin).get("data",{}).get("id",""))' 2>/dev/null
+d=json.load(sys.stdin).get("data",[])
+print(d[0]["id"] if d else "")' 2>/dev/null)
+  if [ -z "$entry" ]; then bad "fixture: no catalog entry available" ""; return 1; fi
+  resp=$(curl "${A[@]}" -X POST "$API/api/v1/tenants/$1/deployments" \
+    -d "{\"catalog_entry_id\":\"$entry\",\"name\":\"$2\",\"cpu_request\":\"$3\",\"memory_request\":\"256Mi\"}")
+  id=$(echo "$resp" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("data",{}).get("id",""))' 2>/dev/null)
+  if [ -z "$id" ]; then bad "fixture: deployment create failed" "$(echo "$resp" | head -c 220)"; return 1; fi
+  echo "$id"
 }
 
 wait_ready() {  # $1 namespace
@@ -132,6 +136,15 @@ if [ -n "$TA" ]; then
   sleep 8; wait_ready "$NSA"
   USED=$(kc "-n $NSA get resourcequota $NSA-quota -o jsonpath='{.status.used.requests\.cpu}'")
   note "tenant $NSA  used=${USED}"
+  # A zero here means the fixture has no running pod, and every assertion
+  # below would then pass against an empty namespace — the failure mode this
+  # whole harness exists to avoid.
+  if [ -z "$USED" ] || [ "$USED" = "0" ]; then
+    bad "fixture A has no running workload — the zero-slack case cannot be tested" "used=$USED"
+    TA=""
+  fi
+fi
+if [ -n "$TA" ]; then
   # Tighten the quota to EXACTLY what is in use: zero room for a replacement.
   kc "-n $NSA patch resourcequota $NSA-quota --type=merge -p '{\"spec\":{\"hard\":{\"requests.cpu\":\"'"$USED"'\"}}}'" >/dev/null
   HARD=$(kc "-n $NSA get resourcequota $NSA-quota -o jsonpath='{.spec.hard.requests\.cpu}'")
@@ -166,6 +179,9 @@ for t in d['tenants']:
       print(x['proposedMillis']); break
     break" 2>/dev/null)
   note "proposed tier for attier-app = ${TIER}m"
+  if [ -z "$TIER" ]; then
+    bad "fixture B: could not read a proposed tier from the dry run" "the at-tier case did not run"
+  fi
   if [ -n "$TIER" ]; then
     curl "${A[@]}" -X PATCH "$API/api/v1/tenants/$TB/deployments/$DB_ID/resources" -d "{\"cpu_request\":\"${TIER}m\"}" >/dev/null 2>&1
     sleep 8; wait_ready "$NSB"

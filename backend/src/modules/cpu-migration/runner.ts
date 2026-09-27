@@ -165,6 +165,15 @@ export async function startTenantCpuMigration(
    * a page reload mid-run shows an ordinary enabled Migrate button.
    */
   /**
+   * ★ Claimed only AFTER the tenant has passed every check.
+   *
+   * The claim used to come first, so a refusal — a flagged tenant without an
+   * acknowledgement being the common one — threw with the task already
+   * marked `running`. The next attempt, including the acknowledged retry the
+   * error message invites, was then refused with CPU_MIGRATION_IN_PROGRESS
+   * until the 15-minute staleness window expired. Found by the edge-case
+   * harness on its first run.
+   *
    * ★ Atomic, not check-then-act.
    *
    * A plain SELECT followed by tasks.start() is a race, and tasks.start()
@@ -180,6 +189,35 @@ export async function startTenantCpuMigration(
    * released when the transaction ends; the `tasks` row is what holds the
    * claim for the run itself.
    */
+  const { deployments: deps, blocked } = await describeDeployments(db, tenantId);
+
+  /**
+   * ★ Enforce the review the dry run asked for.
+   *
+   * The page flags a tenant whose applications the platform cannot size
+   * safely — a bring-your-own image that pins its own CPU, a manifest from a
+   * catalog we do not publish — and a tenant whose MEASURED load already
+   * exceeds the ceiling its plan would grant, which would migrate it
+   * straight into throttling. Those flags were computed, displayed, and then
+   * not checked here at all: `acknowledgeBlockers` was parsed and discarded,
+   * so the whole per-tenant review was advisory in the UI and absent on the
+   * server.
+   */
+  const usageBlocker = tenantUsageBlocker(await readTenantP95Millis(db, tenantId), ctx.burstCores);
+  if (!acknowledgeBlockers && (blocked.length > 0 || usageBlocker)) {
+    const reasons = [
+      ...blocked.map((b) => `${b.name}: ${b.blocker}`),
+      ...(usageBlocker ? [`tenant: ${usageBlocker}`] : []),
+    ];
+    throw new ApiError(
+      'CPU_MIGRATION_NEEDS_REVIEW',
+      `This tenant needs a decision before migrating: ${reasons.join('; ')}`,
+      409,
+      { tenant_id: tenantId, blockers: reasons },
+    );
+  }
+
+
   await db.transaction(async (tx) => {
     const got = await tx.execute<{ locked: boolean }>(
       sql`SELECT pg_try_advisory_xact_lock(hashtext(${`cpu_migration:${tenantId}`})) AS locked`,
@@ -226,34 +264,6 @@ export async function startTenantCpuMigration(
     });
   });
 
-  const { deployments: deps, blocked } = await describeDeployments(db, tenantId);
-
-  /**
-   * ★ Enforce the review the dry run asked for.
-   *
-   * The page flags a tenant whose applications the platform cannot size
-   * safely — a bring-your-own image that pins its own CPU, a manifest from a
-   * catalog we do not publish — and a tenant whose MEASURED load already
-   * exceeds the ceiling its plan would grant, which would migrate it
-   * straight into throttling. Those flags were computed, displayed, and then
-   * not checked here at all: `acknowledgeBlockers` was parsed and discarded,
-   * so the whole per-tenant review was advisory in the UI and absent on the
-   * server.
-   */
-  const usageBlocker = tenantUsageBlocker(await readTenantP95Millis(db, tenantId), ctx.burstCores);
-  if (!acknowledgeBlockers && (blocked.length > 0 || usageBlocker)) {
-    const reasons = [
-      ...blocked.map((b) => `${b.name}: ${b.blocker}`),
-      ...(usageBlocker ? [`tenant: ${usageBlocker}`] : []),
-    ];
-    throw new ApiError(
-      'CPU_MIGRATION_NEEDS_REVIEW',
-      `This tenant needs a decision before migrating: ${reasons.join('; ')}`,
-      409,
-      { tenant_id: tenantId, blockers: reasons },
-    );
-  }
-
   const claimed = await db.execute<{ id: string }>(sql`
     SELECT id FROM tasks WHERE kind = ${TASK_KIND} AND ref_id = ${tenantId} LIMIT 1
   `);
@@ -289,12 +299,25 @@ export async function startTenantCpuMigration(
     now: () => Date.now(),
   };
 
-  const outcome = await runTenantCpuMigration(effects, {
-    namespace: ctx.namespace,
-    deployments: deps,
-    tier: ctx.tier ?? 'high',
-    burstCores: ctx.burstCores,
-  });
+  // Belt and braces: the claim is live from here, so ANY escape must release
+  // it. Reordering the checks above removes the known path; this covers the
+  // ones nobody has thought of yet, because a leaked claim locks the tenant
+  // out of its own recovery.
+  let outcome: MigrationOutcome;
+  try {
+    outcome = await runTenantCpuMigration(effects, {
+      namespace: ctx.namespace,
+      deployments: deps,
+      tier: ctx.tier ?? 'high',
+      burstCores: ctx.burstCores,
+    });
+  } catch (err) {
+    await taskService.finish(db, taskId, {
+      status: 'failed',
+      error: err instanceof Error ? err.message : String(err),
+    }).catch(() => undefined);
+    throw err;
+  }
 
   await taskService.finish(db, taskId, {
     status: outcome.status === 'completed' ? 'succeeded'
