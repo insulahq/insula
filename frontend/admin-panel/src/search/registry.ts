@@ -158,6 +158,12 @@ export const ADMIN_SEARCH_REGISTRY: readonly RegistryEntry[] = [
     roles: ['super_admin', 'admin'], keywords: ['servers', 'workers', 'machines', 'drain', 'cordon', 'k3s'] },
   { id: 'cluster.storage', label: 'Storage', group: 'Cluster', to: '/cluster/storage',
     roles: ['super_admin', 'admin'], keywords: ['longhorn', 'pvc', 'volumes', 'replicas', 'disks'] },
+  { id: 'cluster.cpu-scheduling', label: 'CPU Scheduling', group: 'Cluster', to: '/cluster/cpu-scheduling',
+    roles: ['super_admin', 'admin'],
+    // An operator hunting this is far more likely to type the SYMPTOM than
+    // the feature name — "why won't this schedule", "reserved", "preempted".
+    keywords: ['reserved', 'requests', 'tiers', 'burst', 'preemption', 'preempted',
+      'oversubscribed', 'right-size', 'allocatable', 'millicores', 'quota', 'capacity'] },
   { id: 'cluster.policies', label: 'Cluster Policies', group: 'Cluster', to: '/cluster/cluster-policies',
     roles: ['super_admin', 'admin'], keywords: ['quotas', 'limits', 'priority', 'scheduling', 'ha'] },
   { id: 'cluster.networking', label: 'Networking', group: 'Cluster', to: '/cluster/networking',
