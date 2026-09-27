@@ -12,6 +12,67 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+
+- **A cluster can now see how much of its CPU is reserved but never used.** The
+  previous release fixed the symptom of a full-on-paper cluster — a maintenance
+  job evicting a tenant's website — but left the cause unmeasured and invisible.
+  There was no screen anywhere that put the two numbers side by side, so an
+  operator seeing "no node has enough CPU" had no way to find out that the node
+  was, in fact, nearly idle.
+
+  **Cluster → CPU Scheduling** now states both: what the cluster has *reserved*
+  and what it is *actually using*, and per tenant, what each one is holding
+  versus what it has been observed to need. On the cluster that produced the
+  eviction the two figures are 96% and 12%.
+
+  The page is a **dry run and changes nothing.** It shows what the tier model in
+  ADR-062 would do if applied — which tenants would migrate cleanly, how much
+  each would give back, and, for the ones that would not, the specific reason:
+  an application that pins its own CPU, or a tenant with no usage history to
+  size against. A tenant that would end up with a *larger* reservation is shown
+  as such rather than being quietly averaged into the total.
+
+  Two deliberate choices about honesty. A node that does not report usage is
+  rendered as "not reported by every node", never as 0% — a zero there would
+  read as a perfectly idle cluster and exaggerate the very gap this page exists
+  to report. And the page is reachable from the navigation **always**, not only
+  when a cluster is already in trouble: the dashboard alarm still fires only on
+  the gap, because that is the right rule for an alarm, but a cluster at 40%
+  reserved should be able to find this before it becomes the cluster at 96%.
+
+### Fixed
+
+- **The guard against overselling the cluster had never refused anything.**
+  Saving a tenant CPU/memory quota is supposed to be checked against what the
+  cluster can actually carry. The check was summing the wrong table: quota rows
+  are created *lazily*, only when an operator edits that particular tenant, so
+  on a cluster with thirty tenants and no manual edits the table held **zero
+  rows**. The gate added up nothing, concluded that everything fit, and passed.
+  It had been installed, and inert, the whole time. It now sums every tenant's
+  effective ceiling — the per-tenant quota if one exists, otherwise the tenant's
+  plan override, otherwise the plan — across every account that is not archived.
+
+  Two things had to be right for the repair not to be worse than the bug.
+
+  **It must not lock the operator out.** The check compares the *total* against
+  the budget, so on a cluster whose tenants already add up to more than it can
+  carry, that comparison fails for every possible new value — including a
+  smaller one. Lowering a tenant from 2 cores to 1 would have been refused
+  exactly like raising it to 4, while the refusal advised lowering another
+  tenant's quota first. It now refuses only a change that makes a breach
+  worse, and only in the dimension that grows: reductions and no-ops always
+  pass.
+
+  **And the budget must suit the cluster.** Repairing only the read would have
+  replaced a guard that never fires with one that never passes. The budget it compares against reserves one whole server for
+  failover, which is correct on a cluster that has somewhere to fail over *to* —
+  but on a single-server cluster, this platform's default deployment, the
+  reserve is the only machine, so the budget is permanently zero and every quota
+  would have been refused. On one server the gate now enforces the invariant
+  that still means something there (do not sell more than the machine has, after
+  the platform's own share), and says which of the two it is refusing on.
+
 ## [2026.9.34] - 2026-09-26
 
 ### Fixed

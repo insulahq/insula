@@ -85,6 +85,10 @@ export async function resourceQuotaRoutes(app: FastifyInstance): Promise<void> {
           resourceId: tenantId,
           changes: {
             reason: 'cluster_headroom_exceeded',
+            // The human-readable verdict, so a later reader does not have to
+            // infer which dimension blocked it from figures that describe the
+            // whole cluster.
+            refusalReason: gate.reason,
             attempt: { newCpuLimit, newMemoryLimitGi },
             details: gate.details,
           },
@@ -135,6 +139,7 @@ export async function resourceQuotaRoutes(app: FastifyInstance): Promise<void> {
           resourceId: tenantId,
           changes: {
             reason: 'super_admin_override_cluster_headroom',
+            refusalReason: gate.reason,
             patch: { newCpuLimit, newMemoryLimitGi },
             details: gate.details,
           },
@@ -150,10 +155,24 @@ export async function resourceQuotaRoutes(app: FastifyInstance): Promise<void> {
           .select({ id: users.id })
           .from(users)
           .where(inArray(users.roleName, ['super_admin', 'admin']));
+        // Caption from the VERDICT, not from the measurement. overByCpu /
+        // overByMemoryGi describe how far the cluster TOTAL sits past budget
+        // and stay positive for a dimension that is being reduced — so
+        // reporting them here once announced "CPU +3.30 cores overridden" to
+        // every admin for a patch that LOWERED that tenant's CPU. The
+        // refusedBy* flags are the reason the gate actually gave.
         const overage: string[] = [];
-        if (gate.details.overByCpu > 0) overage.push(`CPU +${gate.details.overByCpu.toFixed(2)} cores`);
-        if (gate.details.overByMemoryGi > 0) overage.push(`memory +${gate.details.overByMemoryGi.toFixed(2)} GiB`);
-        const overageStr = overage.length > 0 ? overage.join(', ') : 'cluster headroom clamped';
+        if (gate.details.refusedByCpu) overage.push(`CPU +${gate.details.overByCpu.toFixed(2)} cores`);
+        if (gate.details.refusedByMemory) overage.push(`memory +${gate.details.overByMemoryGi.toFixed(2)} GiB`);
+        const overageStr = overage.length > 0
+          ? overage.join(', ')
+          : 'cluster headroom clamped';
+        // The consequence differs by cluster shape, and stating the failover
+        // one on a single-server cluster is simply false — there is no
+        // single-server loss to survive.
+        const consequence = gate.details.isSingleServer
+          ? 'Tenant ceilings now exceed what this server can provide; the cluster is oversubscribed until quotas come back inside it or a server is added.'
+          : 'The cluster will NOT survive single-server loss until quotas come back inside headroom or a server is added.';
         // Dispatched, not inserted: a row per admin with no category reached no
         // template, no email, no preference gate and no delivery audit — for
         // an event that says the cluster will not survive losing a server.
@@ -163,7 +182,7 @@ export async function resourceQuotaRoutes(app: FastifyInstance): Promise<void> {
           objectLabel: `tenant ${tenantId}`,
           detail: `super_admin "${userSub}" used ?force=true on a quota patch — ${overageStr} past safe headroom. Tenant total ${gate.details.projectedSumCpu.toFixed(2)} CPU / ${gate.details.projectedSumMemoryGi.toFixed(2)} GiB vs available ${gate.details.headroomCpu.toFixed(2)} CPU / ${gate.details.headroomMemoryGi.toFixed(2)} GiB.`,
           severityLabel: 'headroom overridden',
-          recommendedAction: 'The cluster will NOT survive single-server loss until quotas come back inside headroom or a server is added.',
+          recommendedAction: consequence,
         }, `quota-force:${tenantId}:${new Date().toISOString().slice(0, 13)}`).catch(() => undefined);
       }
     }
