@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.9.35] - 2026-09-27
+
 ### Added
 
 - **A cluster can now see how much of its CPU is reserved but never used.** The
