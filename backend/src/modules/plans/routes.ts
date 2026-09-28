@@ -55,6 +55,12 @@ export async function planRoutes(app: FastifyInstance) {
       name: parsed.data.name,
       description: (body.description as string) ?? null,
       cpuLimit: parsed.data.cpu_limit,
+      // ADR-062. Omitted -> NULL, which falls through to the derived
+      // default; a plan is not required to express a tier.
+      ...(parsed.data.cpu_tier !== undefined ? { cpuTier: parsed.data.cpu_tier } : {}),
+      ...(parsed.data.cpu_burst_cores !== undefined
+        ? { cpuBurstCores: parsed.data.cpu_burst_cores === null ? null : String(parsed.data.cpu_burst_cores) }
+        : {}),
       memoryLimit: parsed.data.memory_limit,
       storageLimit: parsed.data.storage_limit,
       monthlyPriceUsd: parsed.data.monthly_price_usd,
@@ -114,6 +120,15 @@ export async function planRoutes(app: FastifyInstance) {
     if (parsed.data.name !== undefined) updateValues.name = parsed.data.name;
     if (body.description !== undefined) updateValues.description = body.description;
     if (parsed.data.cpu_limit !== undefined) updateValues.cpuLimit = parsed.data.cpu_limit;
+    // ADR-062. `numeric` columns take a string; passing a JS number writes
+    // something the driver stringifies differently from every other numeric
+    // on this table.
+    if (parsed.data.cpu_tier !== undefined) updateValues.cpuTier = parsed.data.cpu_tier;
+    if (parsed.data.cpu_burst_cores !== undefined) {
+      updateValues.cpuBurstCores = parsed.data.cpu_burst_cores === null
+        ? null
+        : String(parsed.data.cpu_burst_cores);
+    }
     if (parsed.data.memory_limit !== undefined) updateValues.memoryLimit = parsed.data.memory_limit;
     if (parsed.data.storage_limit !== undefined) updateValues.storageLimit = parsed.data.storage_limit;
     if (parsed.data.bandwidth_gb_limit !== undefined) updateValues.bandwidthGbLimit = parsed.data.bandwidth_gb_limit;

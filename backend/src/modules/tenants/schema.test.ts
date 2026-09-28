@@ -17,6 +17,46 @@ describe('createTenantSchema', () => {
     region_id: '550e8400-e29b-41d4-a716-446655440001',
   };
 
+  /**
+   * The per-tenant limit overrides live on updateTenantSchema, not here. Zod
+   * strips undeclared keys by default, so a create carrying one used to
+   * return 201 with the field discarded and the tenant on its PLAN's limits.
+   * integration-burstable-qos.sh announced "Starter plan + 2-CPU override"
+   * and produced a 0.25-core tenant for as long as it existed.
+   *
+   * Refusing is the kinder failure: every caller making that mistake learns
+   * at once, instead of each discovering later that the quota does not match
+   * what they asked for.
+   */
+  it('REFUSES a limit override instead of silently dropping it', () => {
+    const r = createTenantSchema.safeParse({ ...validInput, cpu_limit_override: 2 });
+    expect(r.success).toBe(false);
+    if (!r.success) {
+      expect(JSON.stringify(r.error.issues)).toContain('cpu_limit_override');
+    }
+  });
+
+  it('refuses any unrecognised key, not just the ones we know about', () => {
+    expect(createTenantSchema.safeParse({ ...validInput, wat: 1 }).success).toBe(false);
+  });
+
+  // The overrides remain settable — on the schema that declares them.
+  it('still accepts the same override on an update', () => {
+    expect(updateTenantSchema.safeParse({ cpu_limit_override: 2 }).success).toBe(true);
+  });
+
+  // Every field the admin panel's create modal sends must still pass, or
+  // strictness breaks tenant creation in the UI.
+  it('accepts every field the create modal sends', () => {
+    const r = createTenantSchema.safeParse({
+      ...validInput,
+      secondary_email: 'billing@acme.com',
+      node_name: 'worker-1',
+      storage_tier: 'local',
+    });
+    expect(r.success).toBe(true);
+  });
+
   it('should accept valid input', () => {
     const result = createTenantSchema.safeParse(validInput);
     expect(result.success).toBe(true);

@@ -46,8 +46,12 @@ rules:
   - apiGroups: [""]
     resources: ["namespaces"]
     verbs: ["get", "list", "create", "patch", "delete"]
+  # limitranges (ADR-062): the tier model gives every tenant container a CPU
+  # request and a burst ceiling from a namespace LimitRange. Without this the
+  # migration fails at its FIRST step with a 403 — found by the DEV end-to-end
+  # run, not by any unit test, because the k8s client is mocked in those.
   - apiGroups: [""]
-    resources: ["pods", "services", "configmaps", "secrets", "persistentvolumeclaims", "resourcequotas"]
+    resources: ["pods", "services", "configmaps", "secrets", "persistentvolumeclaims", "resourcequotas", "limitranges"]
     verbs: ["*"]
   # Cluster-scoped PV access — listing is needed for storage inventory,
   # delete for the deprovision flow's Released-PV cleanup

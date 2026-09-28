@@ -93,6 +93,22 @@ export const cpuMigrationTenantSchema = z.object({
   tenantBlocker: cpuMigrationBlockerSchema.nullable(),
   /** True when every deployment migrates without a human decision. */
   migratesCleanly: z.boolean(),
+  /**
+   * Which model this tenant is actually on right now. The dry run describes
+   * what WOULD happen; without this the panel cannot tell an un-migrated
+   * tenant from a migrated one and would offer to migrate it again.
+   */
+  schedulingMode: z.enum(['legacy', 'tiered']),
+  /**
+   * Is a migration running for this tenant RIGHT NOW, according to the
+   * server?
+   *
+   * The Stop button used to render only while the browser's own mutation was
+   * pending, so a reload, a second admin, or a dropped connection made the
+   * one safety valve disappear while the run continued server-side. Whether
+   * something is running is a fact about the cluster, not about this tab.
+   */
+  migrationRunning: z.boolean(),
   deployments: z.array(cpuMigrationDeploymentSchema),
 });
 export type CpuMigrationTenant = z.infer<typeof cpuMigrationTenantSchema>;
@@ -111,3 +127,58 @@ export const cpuMigrationPreviewSchema = z.object({
   needsReviewCount: z.number(),
 });
 export type CpuMigrationPreview = z.infer<typeof cpuMigrationPreviewSchema>;
+
+// ─── R2: applying the migration ─────────────────────────────────────────────
+
+/**
+ * Per-tenant, never fleet-wide. A single "migrate everything" button would be
+ * a flag day across every tenant on an unknown cluster, which is exactly what
+ * ADR-062 rules out — the operator moves one tenant, watches it, moves the
+ * next.
+ */
+export const cpuMigrationApplySchema = z.object({
+  /**
+   * Proceed even though the dry run flagged this tenant for review. The
+   * blockers stay reported; this records that a human looked and decided.
+   */
+  acknowledgeBlockers: z.boolean().optional().default(false),
+}).strict();
+export type CpuMigrationApplyInput = z.infer<typeof cpuMigrationApplySchema>;
+
+export const cpuMigrationRunStatusSchema = z.enum([
+  'running', 'completed', 'stopped', 'failed',
+]);
+export type CpuMigrationRunStatus = z.infer<typeof cpuMigrationRunStatusSchema>;
+
+export const cpuMigrationRunSchema = z.object({
+  taskId: z.string(),
+  tenantId: z.string(),
+  status: cpuMigrationRunStatusSchema,
+  /** Human-readable step currently running, or the one it stopped after. */
+  step: z.string().nullable(),
+  progressPct: z.number().nullable(),
+  /** Millicores handed back so far. Only meaningful once completed. */
+  freedMillis: z.number().nullable(),
+  reason: z.string().nullable(),
+});
+export type CpuMigrationRun = z.infer<typeof cpuMigrationRunSchema>;
+
+export const cpuRevertResultSchema = z.object({
+  tenantId: z.string(),
+  status: z.enum(['completed', 'failed']),
+  restored: z.number(),
+  /**
+   * Migrated deployments whose stored baseline could not be honoured. Named
+   * rather than silently skipped — an operator must not discover later that
+   * one came back with a number nobody chose.
+   */
+  unrestorable: z.number(),
+  /**
+   * Pods rolled only to shed a CPU ceiling. A LimitRange default is baked in
+   * at admission, so removing the range does not release a running pod —
+   * these had no stored baseline and no restore would have touched them.
+   */
+  uncapped: z.number(),
+  reason: z.string().nullable(),
+});
+export type CpuRevertResult = z.infer<typeof cpuRevertResultSchema>;

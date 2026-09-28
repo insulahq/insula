@@ -28,9 +28,10 @@ vi.mock('./headroom-gate.js', () => ({
   validateQuotaFitsHeadroom: (...a: unknown[]) => mockGate(...a),
 }));
 
-// The force-override path fans a notification out to every admin. Capture it
-// rather than letting the real dispatcher run.
+// Captured so the tests can assert nothing is dispatched. There is no
+// force-override path any more; the advisory deliberately notifies nobody.
 const notifySpy = vi.fn().mockResolvedValue(undefined);
+const audited: unknown[] = [];
 vi.mock('../notifications/events.js', () => ({
   notifyAdminOperationalEvent: (...a: unknown[]) => notifySpy(...a),
 }));
@@ -38,7 +39,7 @@ vi.mock('../notifications/events.js', () => ({
 // `details` is merged, not replaced — a test overriding one field must still
 // get a complete shape, or the route reads undefined and 500s.
 const gateResult = ({ details, ...rest }: Record<string, unknown> = {}) => ({
-  allowed: true,
+  withinBudget: true,
   reason: null,
   ...rest,
   details: {
@@ -46,7 +47,7 @@ const gateResult = ({ details, ...rest }: Record<string, unknown> = {}) => ({
     projectedSumCpu: 4, projectedSumMemoryGi: 4,
     headroomCpu: 100, headroomMemoryGi: 100,
     overByCpu: 0, overByMemoryGi: 0,
-    refusedByCpu: false, refusedByMemory: false, refusedByFailover: false,
+    worsensCpu: false, worsensMemory: false, worsensFailover: false,
     isSingleServer: false, headroomClamped: false,
     ...(details as Record<string, unknown> ?? {}),
   },
@@ -70,11 +71,10 @@ describe('resource-quota routes', () => {
     await app.register(fastifyJwt, { secret: 'test-secret-key-for-testing-only' });
     registerAuth(app);
     app.setErrorHandler(errorHandler);
-    // Stub db.insert(auditLogs).values(...) — the route emits audit
-    // entries on success/refuse/override. The stub just resolves.
+    // Stub db.insert(auditLogs).values(...) — the route emits an audit entry
+    // on every real change, plus `…over_headroom` when the advisory fires. The stub just resolves.
     app.decorate('db', {
-      insert: () => ({ values: () => Promise.resolve() }),
-      // The force-override path reads the admin list to fan a notification out.
+      insert: () => ({ values: (v: unknown) => { audited.push(v); return Promise.resolve(); } }),
       select: () => ({ from: () => ({ where: () => Promise.resolve([{ id: 'admin-1' }]) }) }),
     });
     // KUBECONFIG_PATH is read from app.config; nothing else needs it
@@ -90,6 +90,7 @@ describe('resource-quota routes', () => {
   beforeEach(() => {
     mockGate.mockResolvedValue(gateResult());
     notifySpy.mockClear();
+    audited.length = 0;
   });
 
   afterAll(async () => {
@@ -127,71 +128,93 @@ describe('resource-quota routes', () => {
     expect(res.statusCode).toBe(403);
   });
 
-  // ─── The headroom gate ───────────────────────────────────────────────────
+  // ─── The headroom advisory ───────────────────────────────────────────────
+  //
+  // This endpoint used to 409 an over-budget quota. It does not any more:
+  // oversubscription is an accepted position here, and the operator asked for
+  // visibility, not a gate. What must survive is the MEASUREMENT — silently
+  // dropping the verdict would be the original bug (a guard that says
+  // nothing) wearing different clothes.
 
-  it('refuses an over-budget patch with 409 CLUSTER_HEADROOM_EXCEEDED', async () => {
-    mockGate.mockResolvedValue(gateResult({
-      allowed: false,
-      reason: 'Granting this quota would sell more than the server has: CPU over by 2.00 cores.',
-      details: { overByCpu: 2, refusedByCpu: true, isSingleServer: true, headroomClamped: true },
-    }));
+  const overBudget = () => mockGate.mockResolvedValue(gateResult({
+    withinBudget: false,
+    reason: 'This quota sells more than the server has: CPU over by 4.10 cores.',
+    details: { overByCpu: 4.1, worsensCpu: true, isSingleServer: true, headroomClamped: true },
+  }));
+  const auditKinds = () => audited.map((a) => (a as { actionType: string }).actionType);
+
+  it('ACCEPTS an over-budget quota instead of refusing it', async () => {
+    overBudget();
     const res = await app.inject({
       method: 'PATCH',
       url: '/api/v1/tenants/c1/resource-quota',
       headers: { authorization: `Bearer ${adminToken}` },
       payload: { cpu_cores_limit: 99 },
     });
-    expect(res.statusCode).toBe(409);
-    expect(res.json().error.code).toBe('CLUSTER_HEADROOM_EXCEEDED');
+    expect(res.statusCode).toBe(200);
+  });
+
+  it('returns the verdict with the write, so an API caller sees it', async () => {
+    overBudget();
+    const res = await app.inject({
+      method: 'PATCH',
+      url: '/api/v1/tenants/c1/resource-quota',
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: { cpu_cores_limit: 99 },
+    });
+    expect(res.json().data.headroomAdvisory).toContain('sells more than the server has');
+  });
+
+  it('records the breach in the audit trail', async () => {
+    overBudget();
+    await app.inject({
+      method: 'PATCH',
+      url: '/api/v1/tenants/c1/resource-quota',
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: { cpu_cores_limit: 99 },
+    });
+    expect(auditKinds()).toContain('resource_quota.update.over_headroom');
   });
 
   /**
-   * ★ The override alert must name the dimension that was actually refused.
-   * overByCpu measures the CLUSTER total and stays positive for a dimension
-   * being REDUCED — captioning from it announced "CPU +3.30 cores overridden"
-   * to every admin for a patch that lowered that tenant's CPU.
+   * ★ The anti-storm property. This cluster is PERMANENTLY past its budget, so
+   * a notification per edit would fan one standing condition out as an endless
+   * stream of alarms. The condition is reported once, deduped per node, by the
+   * CPU-reservation finding instead.
    */
-  it('names only the refused dimension in the force-override alert', async () => {
-    mockGate.mockResolvedValue(gateResult({
-      allowed: false,
-      reason: 'memory over by 4.00 GiB',
-      details: {
-        // CPU is over cluster-wide but this patch LOWERS it — not the cause.
-        overByCpu: 3.3, refusedByCpu: false,
-        overByMemoryGi: 4, refusedByMemory: true,
-        isSingleServer: false,
-      },
-    }));
-    const res = await app.inject({
+  it('does not notify anyone — a standing condition is not a per-edit alarm', async () => {
+    overBudget();
+    await app.inject({
       method: 'PATCH',
-      url: '/api/v1/tenants/c1/resource-quota?force=true',
+      url: '/api/v1/tenants/c1/resource-quota',
       headers: { authorization: `Bearer ${adminToken}` },
-      payload: { cpu_cores_limit: 1, memory_gb_limit: 8 },
+      payload: { cpu_cores_limit: 99 },
     });
-    expect(res.statusCode).toBe(200);
-    expect(notifySpy).toHaveBeenCalled();
-    const detail = String((notifySpy.mock.calls[0][2] as { detail: string }).detail);
-    expect(detail).toContain('memory +4.00 GiB');
-    expect(detail).not.toContain('CPU +');
+    expect(notifySpy).not.toHaveBeenCalled();
   });
 
-  // The consequence stated must be true of THIS cluster: there is no
-  // single-server loss to survive on a single-server cluster.
-  it('states a consequence that matches the cluster shape', async () => {
-    mockGate.mockResolvedValue(gateResult({
-      allowed: false,
-      reason: 'CPU over by 2.00 cores',
-      details: { overByCpu: 2, refusedByCpu: true, isSingleServer: true, headroomClamped: true },
-    }));
-    await app.inject({
+  it('says nothing when the quota fits', async () => {
+    const res = await app.inject({
+      method: 'PATCH',
+      url: '/api/v1/tenants/c1/resource-quota',
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: { cpu_cores_limit: 1 },
+    });
+    expect(res.json().data.headroomAdvisory).toBeNull();
+    expect(auditKinds()).not.toContain('resource_quota.update.over_headroom');
+  });
+
+  // Scripts written against the refusing version pass ?force=true. It must not
+  // become an error now that there is nothing to force.
+  it('still accepts a legacy ?force=true without complaint', async () => {
+    overBudget();
+    const res = await app.inject({
       method: 'PATCH',
       url: '/api/v1/tenants/c1/resource-quota?force=true',
       headers: { authorization: `Bearer ${adminToken}` },
       payload: { cpu_cores_limit: 99 },
     });
-    const action = String((notifySpy.mock.calls[0][2] as { recommendedAction: string }).recommendedAction);
-    expect(action).toContain('oversubscribed');
-    expect(action).not.toContain('survive single-server loss');
+    expect(res.statusCode).toBe(200);
   });
 
   it('PATCH resource-quota should update for admin', async () => {

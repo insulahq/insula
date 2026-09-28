@@ -5,7 +5,7 @@
  * Detects CrashLoopBackOff, OOMKilled, ImagePullBackOff.
  */
 
-import { eq, inArray } from 'drizzle-orm';
+import { eq, inArray, or, and, lt } from 'drizzle-orm';
 import { deployments, catalogEntries, tenants } from '../../db/schema.js';
 import { getDeploymentStatus } from './k8s-deployer.js';
 import type { DeployComponentInput } from './k8s-deployer.js';
@@ -25,6 +25,13 @@ export interface ReconcileResult {
 
 /** Max time a deployment can stay in pending/deploying before escalating to failed */
 const STALE_TIMEOUT_MS = 60 * 60 * 1000; // 60 minutes
+
+/**
+ * How long a `stopped` row must sit untouched before the reconciler will
+ * re-examine it. Comfortably longer than the gap between writing the status
+ * and scaling the workload down, so a stop in progress is never undone.
+ */
+const STOPPED_RECHECK_MS = 10 * 60 * 1000; // 10 minutes
 
 // ─── Map K8s phase to DB status ─────────────────────────────────────────────
 
@@ -136,10 +143,35 @@ export async function reconcileDeploymentStatuses(
   // without manual intervention. Without this, once a row is marked
   // failed the reconciler ignores it forever and the UI shows it as
   // broken even though the pods are healthy.
+  //
+  // ★ And `stopped`, for exactly the same reason, but only once it has gone
+  // STALE.
+  //
+  // Excluding it made the status a one-way door: a row marked stopped was
+  // never looked at again, so a deployment whose pods came back stayed
+  // "stopped" forever. Observed on a test cluster — replicas=1, readyReplicas=1,
+  // database still stopped — which is not a cosmetic disagreement. Everything
+  // that asks "what is live?" by filtering `status = 'running'` skips that
+  // workload while it consumes real CPU and memory: the CPU-tier dry run and
+  // migration (ADR-062) and the deployments list API among them.
+  //
+  // The grace window matters. `updateDeployment` writes status='stopped'
+  // BEFORE it scales the workload to zero, so for the moment in between the
+  // pods are still Ready and a reconciler tick would read that as `running`
+  // and undo a stop in progress. A row that has not been touched for
+  // STOPPED_RECHECK_MS cannot be one of those. A deliberately stopped
+  // deployment sits at replicas=0, which the phase logic reports as
+  // `stopped` anyway, so this heals drift without ever overriding intent.
   const activeDeployments = await db
     .select()
     .from(deployments)
-    .where(inArray(deployments.status, ['running', 'pending', 'deploying', 'failed']));
+    .where(or(
+      inArray(deployments.status, ['running', 'pending', 'deploying', 'failed']),
+      and(
+        eq(deployments.status, 'stopped'),
+        lt(deployments.updatedAt, new Date(Date.now() - STOPPED_RECHECK_MS)),
+      ),
+    ));
 
   if (activeDeployments.length === 0) {
     return { checked: 0, updated: 0, errors: [] };

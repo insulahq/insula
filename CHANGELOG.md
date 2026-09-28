@@ -12,6 +12,132 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+
+- **Creating a tenant no longer discards fields it does not recognise.** The
+  per-tenant CPU and memory overrides can only be set when *updating* a
+  tenant, never when creating one — but a create carrying them returned
+  success with those fields silently dropped, and the tenant quietly took its
+  plan's limits instead. Nothing in the response said so. The platform's own
+  burstable-QoS test suite had been announcing "Starter plan + 2-CPU
+  override" and creating a quarter-core tenant for as long as it had existed,
+  then measuring its conclusions against a budget that tenant never had.
+
+  Unrecognised fields are now refused outright. That is the kinder failure:
+  everyone making the mistake finds out at once, instead of each discovering
+  later that a tenant's quota does not match what they asked for. Setting the
+  overrides still works — on the update call, where they have always been
+  defined.
+
+- **A stopped application that comes back is no longer stopped forever.** The
+  reconciler that keeps the platform's view of a deployment in step with the
+  cluster skipped anything marked stopped, which made that status a one-way
+  door: if the workload returned, nothing ever looked again. One was found
+  running with its full complement of pods while the platform still recorded
+  it as stopped — and every feature that answers "what is running here?" by
+  trusting that record skipped it, while it consumed real CPU and memory.
+
+  Stopped deployments are now re-examined, but only after they have sat
+  untouched for a while. Stopping one writes the new status a moment before
+  the workload is actually wound down, and without that delay a reconciler
+  running in the gap would see live pods and undo the stop. A deployment
+  deliberately left stopped stays stopped; only a disagreement with reality
+  is corrected.
+
+### Added
+
+- **A tenant's CPU can now be a share of the machine instead of a reservation
+  of it (ADR-062, opt-in per tenant).** The previous release made the gap
+  visible: a cluster can refuse new work while running at a fraction of its
+  capacity, because Kubernetes places pods by what they *reserve*, not what
+  they use. This release adds the mechanism to close it, and deliberately
+  does not switch anyone over.
+
+  Under the tier model a workload asks for a **share** — Normal, High or
+  Highest — rather than a core count. The three tiers are 5m / 30m / 100m,
+  chosen because those are the values the kernel actually distinguishes: they
+  land on share weights of 1, 2 and 4. Under contention a High workload gets
+  twice the CPU of a Normal one; on an idle node both burst freely. Sixteen
+  idle static sites reserve 80m between them instead of 1.6 cores.
+
+  A noisy neighbour is bounded by a **burst ceiling** instead of by its
+  request. Hitting it throttles the process — CPU is compressible, so it is
+  slowed, never killed and never evicted. The ceiling is generous by
+  construction (`max(1, old limit x 2)`), because the old number never capped
+  anything: a tenant that "had" 0.1 cores could always burst to the whole
+  node, and is now bounded at 1.
+
+  **Memory is deliberately untouched.** A memory request is a real ceiling and
+  lowering one buys an OOM kill. CPU is compressible and memory is not; the
+  two get different rules on purpose.
+
+  Migration is **per tenant, from that tenant's own row**, with the dry run in
+  front of it — there is no "migrate everything" button, and no endpoint
+  behind one. Each tenant is migrated one workload at a time, waiting for the
+  cluster to settle between each, and it can be stopped after any step. Every
+  migration hands CPU back, so each one makes the next safer; the biggest
+  over-reserver is migrated first for that reason, rather than saved for last.
+
+  Stopping or failing partway is a safe resting state, not a broken one: the
+  tenant stays on the old model until the final step, and a smaller request is
+  always easier to schedule than the one it replaced. **Revert restores the
+  exact prior value**, character for character, from a baseline recorded
+  before anything changed — never a recomputed equivalent.
+
+  Tenants that need a human decision are named rather than guessed at: an
+  application that pins its own CPU, a compose stack whose per-service CPU
+  cannot be mapped back, or a tenant with no usage history to size against.
+
+  **What a tenant sees.** Applications are rolled, not stopped and started:
+  the replacement pod is created before the old one is retired, so a healthy
+  app stays reachable — and on a cluster with little room to spare, a
+  replacement that cannot be scheduled leaves the old pod serving rather than
+  taking the app down. The exception is a pod the platform cannot match to
+  any application, which is replaced directly; whatever owns it brings it
+  back, but a single-replica workload is briefly unavailable.
+
+### Changed
+
+- **CPU tiers can now be configured, not only applied.** The previous release
+  added the tier model but no way to set it: an operator could migrate a
+  tenant and accept whatever the platform derived, and that was all. A plan
+  now sells a **CPU tier** and a **burst ceiling**, and either can be
+  overridden per tenant — the same shape as memory, storage and mailboxes.
+
+  Both controls default to *inherit*, and a blank one stays blank. A plan that
+  has never named a tier does not acquire one because somebody opened the form
+  to change its price, and an empty ceiling means "inherit", never zero cores.
+
+  They appear for every tenant, including those still on the old model,
+  because the decision of what a tenant *will* get has to be made before
+  migrating it. For those tenants the form says so outright rather than
+  leaving a control that appears to work and changes nothing.
+
+- **The cluster-headroom quota check now advises instead of refusing.**
+  v2026.9.35 repaired this check — it had been summing a table that is empty
+  on any cluster where nobody has hand-edited a quota, so it had never refused
+  anything — and in doing so turned it into admission control. That was the
+  wrong call: overselling CPU is a deliberate, accepted position on this
+  platform, because a CPU request reserves a place in the scheduler's queue
+  and does not cap anything. What was wanted was *visibility* into the gap,
+  not a barrier across it.
+
+  The measurement stays, because it is the honest number and it was worth
+  having. Saving a quota that exceeds what the cluster can carry now succeeds
+  and tells you so: the verdict is written to the audit log as
+  `resource_quota.update.over_headroom` and returned alongside the saved quota
+  as `headroomAdvisory`. Nothing is refused, in either direction.
+
+  No notification is raised per edit. A cluster that is past its budget is
+  past it continuously, so alerting on each save would turn one standing
+  condition into an endless stream of alarms; that condition is already
+  reported once, deduped per node, by the CPU-reservation finding on the
+  dashboard.
+
+  `?force=true` is still accepted and now does nothing — there is no longer
+  anything to force. Scripts written against the refusing version keep working
+  unchanged.
+
 ## [2026.9.35] - 2026-09-27
 
 ### Added

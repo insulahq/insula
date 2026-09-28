@@ -1,7 +1,9 @@
-import { render, screen } from '@testing-library/react';
+import { render as rtlRender, screen } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { CpuMigrationPreview } from '@insula/api-contracts';
+import type React from 'react';
 import CpuSchedulingPage from '../pages/cluster/CpuSchedulingPage';
 
 const mockPreview = vi.fn();
@@ -31,12 +33,25 @@ const tenant = (o: Partial<CpuMigrationPreview['tenants'][number]> = {}) => ({
   observedP95Millis: 65,
   tenantBlocker: null,
   migratesCleanly: true,
+  schedulingMode: 'legacy' as const,
+  migrationRunning: false,
   deployments: [
     { id: 'd1', name: 'moodle', currentMillis: 500, proposedMillis: 30, proposedTier: 'high' as const, blocker: null },
     { id: 'd2', name: 'my-mariadb', currentMillis: 250, proposedMillis: 30, proposedTier: 'high' as const, blocker: null },
   ],
   ...o,
 });
+
+/**
+ * The expanded row carries real mutation hooks (migrate / revert / stop), so
+ * the page needs a live QueryClient. Wrapping rather than mocking them keeps
+ * the controls genuinely exercised — a mocked hook would let the buttons
+ * render even if they were wired to nothing.
+ */
+const render = (ui: React.ReactElement) => {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  return rtlRender(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>);
+};
 
 const ok = (p: CpuMigrationPreview) =>
   mockPreview.mockReturnValue({ data: { data: p }, isLoading: false, error: null });
@@ -191,11 +206,92 @@ describe('CpuSchedulingPage', () => {
     expect(screen.getByTestId('cpu-scheduling-error')).toBeInTheDocument();
   });
 
-  // The page is a dry run. If it ever grows an apply button that should be a
-  // deliberate decision, not something that arrives unnoticed.
-  it('says plainly that it changes nothing', () => {
+  /**
+   * The header must describe what the page actually does. It claimed "dry run
+   * — changes nothing" for as long as that was true; now that each row can
+   * migrate a tenant, the label says the figures are a preview and names what
+   * makes something happen. A page asserting its own inertness while carrying
+   * an apply button is worse than no label.
+   */
+  it('describes itself honestly now that it can act', () => {
     ok(preview());
     render(<CpuSchedulingPage />);
-    expect(screen.getByText(/dry run — changes nothing/i)).toBeInTheDocument();
+    expect(screen.getByText(/nothing changes until you migrate a tenant/i)).toBeInTheDocument();
+    expect(screen.queryByText(/dry run — changes nothing/i)).toBeNull();
+  });
+
+  // ─── R2 controls ───────────────────────────────────────────────────────
+
+  /**
+   * ★ There is no bulk control, and there must not be one. Migration
+   * recreates pods; doing that for every tenant from a single click is the
+   * flag day ADR-062 exists to avoid. The action lives inside one tenant's
+   * own expanded row.
+   */
+  it('offers migration per tenant and nowhere globally', async () => {
+    ok(preview({ tenants: [tenant()] }));
+    render(<CpuSchedulingPage />);
+    expect(screen.queryByText(/migrate all/i)).toBeNull();
+    expect(screen.queryByTestId('cpu-migrate-t1')).toBeNull(); // collapsed
+    await userEvent.click(screen.getByTestId('cpu-migration-tenant-t1'));
+    expect(screen.getByTestId('cpu-migrate-t1')).toBeInTheDocument();
+  });
+
+  // A tenant already tiered must be offered the way BACK, not a second run.
+  it('offers revert instead of migrate once a tenant is tiered', async () => {
+    ok(preview({ tenants: [tenant({ schedulingMode: 'tiered' })] }));
+    render(<CpuSchedulingPage />);
+    await userEvent.click(screen.getByTestId('cpu-migration-tenant-t1'));
+    expect(screen.getByTestId('cpu-revert-t1')).toBeInTheDocument();
+    expect(screen.queryByTestId('cpu-migrate-t1')).toBeNull();
+  });
+
+  /**
+   * ★ A flagged tenant must be BLOCKED by the flag, not merely warned about.
+   * The server refuses one without an explicit acknowledgement, so a caption
+   * beside a still-clickable button would only produce a 409 the operator
+   * cannot get past — and an enabled button implies approval was not needed.
+   */
+  it('disables migration for a flagged tenant until it is acknowledged', async () => {
+    ok(preview({
+      tenants: [tenant({ migratesCleanly: false, tenantBlocker: 'no_usage_data', observedP95Millis: null })],
+    }));
+    render(<CpuSchedulingPage />);
+    await userEvent.click(screen.getByTestId('cpu-migration-tenant-t1'));
+    expect(screen.getByTestId('cpu-migrate-t1')).toBeDisabled();
+
+    await userEvent.click(screen.getByTestId('cpu-ack-t1'));
+    expect(screen.getByTestId('cpu-migrate-t1')).toBeEnabled();
+  });
+
+  // A clean tenant needs no ceremony — the checkbox must not appear for it.
+  it('asks for no acknowledgement when the tenant migrates cleanly', async () => {
+    ok(preview({ tenants: [tenant()] }));
+    render(<CpuSchedulingPage />);
+    await userEvent.click(screen.getByTestId('cpu-migration-tenant-t1'));
+    expect(screen.queryByTestId('cpu-ack-t1')).toBeNull();
+    expect(screen.getByTestId('cpu-migrate-t1')).toBeEnabled();
+  });
+
+  /**
+   * ★ Stop must be reachable from any tab, not only the one that started the
+   * run. The button used to render on the local mutation's pending flag, so
+   * a reload, a second admin, or a dropped connection made the one safety
+   * valve vanish while the migration carried on server-side.
+   */
+  it('offers Stop for a run this tab did not start', async () => {
+    ok(preview({ tenants: [tenant({ migrationRunning: true })] }));
+    render(<CpuSchedulingPage />);
+    await userEvent.click(screen.getByTestId('cpu-migration-tenant-t1'));
+    expect(screen.getByTestId('cpu-stop-t1')).toBeInTheDocument();
+    // …and it must not invite a second, concurrent run.
+    expect(screen.getByTestId('cpu-migrate-t1')).toBeDisabled();
+  });
+
+  it('shows no Stop when nothing is running', async () => {
+    ok(preview({ tenants: [tenant()] }));
+    render(<CpuSchedulingPage />);
+    await userEvent.click(screen.getByTestId('cpu-migration-tenant-t1'));
+    expect(screen.queryByTestId('cpu-stop-t1')).toBeNull();
   });
 });

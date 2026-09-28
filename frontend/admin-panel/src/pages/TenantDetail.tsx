@@ -1783,6 +1783,11 @@ function ResourceLimitsCard({
   } | null>(null);
 
   const effectiveCpu = tenant.cpuLimitOverride ?? plan?.cpuLimit ?? '—';
+  // ADR-062. '' means inherit — the plan's tier, or the derived default when
+  // the plan does not express one either.
+  const [cpuTierOverride, setCpuTierOverride] = useState<string>('');
+  const [burstCustom, setBurstCustom] = useState(false);
+  const [burstOverride, setBurstOverride] = useState('');
   const effectiveMem = tenant.memoryLimitOverride ?? plan?.memoryLimit ?? '—';
   const effectiveStorage = tenant.storageLimitOverride ?? plan?.storageLimit ?? '—';
   const effectiveBandwidth = tenant.bandwidthLimitOverride ?? plan?.bandwidthGbLimit ?? '—';
@@ -1812,6 +1817,10 @@ function ResourceLimitsCard({
     setMailboxSizeCustom(hasMailboxSize);
     setPriceCustom(hasPrice);
     setCpuOverride(hasCpu ? String(tenant.cpuLimitOverride) : (plan?.cpuLimit ?? ''));
+    setCpuTierOverride(tenant.cpuTierOverride ?? '');
+    const hasBurst = tenant.cpuBurstCoresOverride != null;
+    setBurstCustom(hasBurst);
+    setBurstOverride(hasBurst ? String(tenant.cpuBurstCoresOverride) : (plan?.cpuBurstCores ?? ''));
     setMemOverride(hasMem ? String(tenant.memoryLimitOverride) : (plan?.memoryLimit ?? ''));
     setStorageOverride(hasStorage ? String(tenant.storageLimitOverride) : (plan?.storageLimit ?? ''));
     setBandwidthOverride(hasBandwidth ? String(tenant.bandwidthLimitOverride) : String(plan?.bandwidthGbLimit ?? ''));
@@ -1836,6 +1845,14 @@ function ResourceLimitsCard({
   // limits (0 mailboxes = mail off, 0 sends/hour = outbound off), so a blank
   // box would silently switch a tenant's mail off. Blank means "no override":
   // send null and let the plan apply.
+  /**
+   * '' (inherit) or one of the three tiers. Anything else is treated as
+   * inherit rather than asserted into the union — a stray value must not
+   * reach the API as a tier the platform does not have.
+   */
+  const asTierOverride = (v: string): 'normal' | 'high' | 'highest' | null =>
+    (v === 'normal' || v === 'high' || v === 'highest') ? v : null;
+
   const overrideValue = (isCustom: boolean, raw: string): number | null => {
     if (!isCustom) return null;
     const trimmed = raw.trim();
@@ -1849,6 +1866,8 @@ function ResourceLimitsCard({
     try {
       const result = await updateTenant.mutateAsync({
         cpu_limit_override: overrideValue(cpuCustom, cpuOverride),
+        cpu_tier_override: asTierOverride(cpuTierOverride),
+        cpu_burst_cores_override: overrideValue(burstCustom, burstOverride),
         memory_limit_override: overrideValue(memCustom, memOverride),
         storage_limit_override: overrideValue(storageCustom, storageOverride),
         bandwidth_limit_override: overrideValue(bandwidthCustom, bandwidthOverride),
@@ -1893,6 +1912,8 @@ function ResourceLimitsCard({
       // — values are still in state because the form was kept open.
       const result = await updateTenant.mutateAsync({
         cpu_limit_override: overrideValue(cpuCustom, cpuOverride),
+        cpu_tier_override: asTierOverride(cpuTierOverride),
+        cpu_burst_cores_override: overrideValue(burstCustom, burstOverride),
         memory_limit_override: overrideValue(memCustom, memOverride),
         storage_limit_override: overrideValue(storageCustom, storageOverride),
         bandwidth_limit_override: overrideValue(bandwidthCustom, bandwidthOverride),
@@ -2065,6 +2086,54 @@ function ResourceLimitsCard({
       <form onSubmit={handleSave}>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-6">
           {renderField('CPU Limit', 'cores', effectiveCpu, cpuCustom, setCpuCustom, cpuOverride, setCpuOverride, tenant.cpuLimitOverride != null, plan?.cpuLimit, 'number', '0.25')}
+          {/* ADR-062. Shown for every tenant, not only migrated ones: an
+              operator has to be able to decide what a tenant WILL get before
+              migrating it. A legacy tenant ignores both values — said plainly
+              below, rather than leaving someone to infer it from a control
+              that appears to do nothing.
+
+              ★ Branches on `editing`, like every other field on this card.
+              An unconditional <select> bound to state that is only populated
+              by startEditing() reads as "Inherit" for a tenant that HAS an
+              override until someone clicks Edit — and keeps showing a value
+              the operator just CANCELLED. View mode must render from the
+              props, never from edit state. */}
+          <div className="sm:col-span-2">
+            <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">CPU tier</label>
+            {editing ? (
+              <select
+                className="mt-1 block w-full rounded-md border-gray-300 text-sm shadow-sm dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
+                value={cpuTierOverride}
+                onChange={(e) => setCpuTierOverride(e.target.value)}
+                data-testid="tenant-cpu-tier"
+              >
+                <option value="">Inherit from plan{plan?.cpuTier ? ` (${plan.cpuTier})` : ''}</option>
+                <option value="normal">Normal — 1x share</option>
+                <option value="high">High — 2x share</option>
+                <option value="highest">Highest — 4x share</option>
+              </select>
+            ) : (
+              <p className="mt-1 text-sm text-gray-900 dark:text-gray-100" data-testid="tenant-cpu-tier-value">
+                {tenant.cpuTierOverride
+                  ?? (plan?.cpuTier ? `${plan.cpuTier} (from plan)` : 'derived automatically')}
+              </p>
+            )}
+            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400" data-testid="tenant-cpu-tier-note">
+              {tenant.cpuSchedulingMode === 'tiered'
+                ? 'Saved changes do not reach the cluster on their own: a tenant already on tiers keeps its current namespace settings until it is reverted and migrated again.'
+                : 'Saved, but not in effect: this tenant still uses the legacy CPU limit. It applies once you migrate it under Cluster → CPU Scheduling.'}
+            </p>
+          </div>
+          {/* Gated exactly like the tier — read only in tiered mode — so it
+              carries the same caveat. Without it, an operator could read the
+              tier's warning, see none here, and reasonably conclude this one
+              takes effect. */}
+          {renderField('Burst ceiling', 'cores', tenant.cpuBurstCoresOverride ?? plan?.cpuBurstCores ?? '—', burstCustom, setBurstCustom, burstOverride, setBurstOverride, tenant.cpuBurstCoresOverride != null, plan?.cpuBurstCores ?? undefined, 'number', '0.5')}
+          <p className="-mt-2 text-xs text-gray-500 dark:text-gray-400 sm:col-span-2" data-testid="tenant-burst-note">
+            {tenant.cpuSchedulingMode === 'tiered'
+              ? 'Applies on the next migration, not on save.'
+              : 'Not in effect while this tenant uses the legacy CPU limit.'}
+          </p>
           {renderField('Memory Limit', 'GB', effectiveMem, memCustom, setMemCustom, memOverride, setMemOverride, tenant.memoryLimitOverride != null, plan?.memoryLimit, 'number', '0.5')}
           {renderField('Storage Limit', 'GB', effectiveStorage, storageCustom, setStorageCustom, storageOverride, setStorageOverride, tenant.storageLimitOverride != null, plan?.storageLimit, 'number', '1')}
           {renderField('Bandwidth', 'GB/mo', effectiveBandwidth, bandwidthCustom, setBandwidthCustom, bandwidthOverride, setBandwidthOverride, tenant.bandwidthLimitOverride != null, plan?.bandwidthGbLimit, 'number', '1')}
