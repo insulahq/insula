@@ -40,8 +40,9 @@ new_repo() {
   git -C "$dir" init --quiet
   git -C "$dir" config user.email t@example.test
   git -C "$dir" config user.name t
-  echo 'seed' > "$dir/backend/seed.txt"
-  commit "$dir" 'feat: seed'
+  # $2 overrides the seed commit's file, so a fixture can start with a
+  # history in which nothing builds.
+  commit "$dir" 'feat: seed' "${2:-backend/app.ts}"
 }
 
 # commit <dir> <subject> [file ...] — touches each file (default backend/app.ts).
@@ -184,12 +185,18 @@ git_at "$d" merge --quiet --no-ff -m 'Merge pull request #2 from side' side
 expect 'a docs-only merge does not inherit trunk-side backend files' 0 "$(run "$d"; echo $?)"
 
 echo '── a window in which nothing builds ──'
-new_repo nothing-builds; d=$REPO
-commit "$d" 'fix: built and pinned'
-pin_to "$d" HEAD
+# Not a duplicate of the case above: NOTHING here builds, including the
+# seed, so the collection loop ends with an empty list and takes the
+# branch that decides what an unanswerable question means.
+new_repo nothing-builds documentation/docs/seed.md; d=$REPO
 for i in 1 2 3 4 5; do commit "$d" "docs: page $i" "documentation/docs/p$i.md"; done
-git -C "$d" rm --quiet -r --cached k8s >/dev/null 2>&1 || true
-expect 'a run of documentation commits alone passes' 0 "$(run "$d"; echo $?)"
+pin_to "$d" deadbee
+expect 'a history in which nothing builds passes' 0 "$(run "$d"; echo $?)"
+if grep -q 'nothing in the window builds' <<<"$(run_out "$d")"; then
+  ok 'and says so, rather than passing through the ordinary path'
+else
+  bad 'the empty-window branch was not the one taken'
+fi
 
 echo '── a shallow checkout must not silently skip its frontier ──'
 # fetch-depth is finite, so the oldest visible commit has no readable
@@ -201,7 +208,24 @@ commit "$d" 'fix: newer, never pinned'    backend/newer.ts
 pin_to "$d" deadbee
 SHALLOW="$WORK/shallow"
 git clone --quiet --depth=2 "file://$d" "$SHALLOW" 2>/dev/null
-expect 'the frontier commit still counts as a code commit' 1 "$(run "$SHALLOW"; echo $?)"
+expect 'a shallow checkout with an unpinnable pin fails' 1 "$(run "$SHALLOW"; echo $?)"
+# The exit code alone cannot tell "counted the frontier commit" apart from
+# "found no code commits at all" — both are non-zero. The reported SHA can.
+frontier=$(git -C "$SHALLOW" rev-parse HEAD~1)
+if grep -q "last code commit:   ${frontier:0:12}" <<<"$(run_out "$SHALLOW")"; then
+  ok 'the frontier commit itself is the one counted'
+else
+  bad "the frontier commit ${frontier:0:7} was not counted"
+fi
+
+echo '── the subject line is not evidence ──'
+# A commit wearing the auto-pin prefix while changing backend code used to
+# leave the window on its subject line alone. If it is the only such
+# commit, that is a permanent orphan reported as healthy.
+new_repo mislabelled documentation/docs/seed.md; d=$REPO
+commit "$d" 'chore(development): tidy up' backend/sneaky.ts
+pin_to "$d" deadbee
+expect 'a pin-prefixed commit that changes code still counts' 1 "$(run "$d"; echo $?)"
 
 echo '── a malformed pin file is an error, not a pass ──'
 new_repo malformed; d=$REPO

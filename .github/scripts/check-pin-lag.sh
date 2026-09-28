@@ -46,12 +46,17 @@ if [[ -z "$PIN_SHA" ]]; then
   exit 1
 fi
 
-# Collect up to SLACK_N+1 most-recent commits whose message does NOT
-# begin with `chore(development):` (or legacy `chore(staging):`). That filter excludes both bot
-# auto-pins ("chore(development): pin platform-version to ...") and human
-# manual pins ("chore(development): manual pin to ..."). Anything else —
-# feat/fix/refactor/chore(other)/ci/merge commits — counts as a
-# "code commit" whose images should be represented in the pin.
+# Collect up to SLACK_N+1 most-recent commits that could have an image
+# behind them — decided by what each commit CHANGED, not by how its
+# subject line is worded.
+#
+# Auto-pins ("chore(development): pin platform-version to ...") and manual
+# pins fall out on their own: they touch nothing but the three pin files,
+# which PIN_PATHS_RE removes. Matching the subject line instead would be
+# trusting a convention nothing enforces — a commit carrying that prefix
+# while changing backend code would leave the window silently, and if it
+# were the only such commit the guard would report a healthy pin over a
+# permanent orphan.
 #
 # SLACK_N defines how many code commits behind the latest is still
 # considered "in flight, not yet orphaned":
@@ -121,43 +126,42 @@ builds_something() {
 SLACK_N=2
 CODE_COMMITS=()
 while IFS=' ' read -r sha msg_rest; do
+  # `[skip ci]` is the one thing a subject line can say that a diff
+  # cannot: GitHub really does not run the workflow, so no image exists
+  # however much build-relevant code the commit changed. Counting them
+  # made this guard cry wolf after EVERY release — release.yml pushes two
+  # [skip ci] sync commits back to development (platform/VERSION +
+  # CHANGELOG), enough on their own to push the last built commit outside
+  # SLACK_N (observed 2026-08-26 after v2026.8.18).
   case "$msg_rest" in
-    # Legacy 'chore(staging):' prefix kept — pre-rename pin commits
-    # remain in the last-100 window for a while (W1 branch rename).
-    'chore(development):'* | 'chore(staging):'*) continue ;;
-    # A commit that skipped CI can never be represented in a pin — no
-    # build ran for it, so there are no images to point at. Counting
-    # them consumed the slack and made this guard cry wolf after EVERY
-    # release: release.yml pushes two [skip ci] sync commits back to
-    # development (platform/VERSION + CHANGELOG), which alone are
-    # enough to push the last built commit outside SLACK_N. Every PR
-    # opened afterwards then failed this check until the next
-    # backend/frontend change happened to trigger a rebuild
-    # (observed 2026-08-26 after v2026.8.18).
     *'[skip ci]'*) continue ;;
-    *)
-      # Same reasoning as [skip ci]: a commit that changed nothing
-      # Build Images watches has no image to be pinned to, so counting
-      # it spends the slack on a pin that can never exist. Three
-      # documentation commits in a row did exactly that while cutting
-      # a release — the pin was healthy and this guard called it
-      # orphaned.
-      builds_something "$sha" || continue
-      CODE_COMMITS+=("$sha")
-      if [[ ${#CODE_COMMITS[@]} -gt $SLACK_N ]]; then
-        break
-      fi
-      ;;
   esac
+  # A commit that changed nothing Build Images watches has no image to be
+  # pinned to, so counting it spends the slack on a pin that can never
+  # exist. Three documentation commits in a row did exactly that while
+  # cutting a release — the pin was healthy and this guard called it
+  # orphaned.
+  builds_something "$sha" || continue
+  CODE_COMMITS+=("$sha")
+  if [[ ${#CODE_COMMITS[@]} -gt $SLACK_N ]]; then
+    break
+  fi
 done < <(git log --pretty='%H %s' -n 100)
 
 if [[ ${#CODE_COMMITS[@]} -eq 0 ]]; then
-  # Nothing in the window produces an image, so there is no image for the
-  # pin to be behind. Exiting 0 here is what keeps a run of documentation
-  # commits from failing the guard; a genuinely orphaned pin still fails,
-  # because the commit that orphaned it builds by definition and therefore
-  # appears in this list.
-  echo "✓ no commit in the last 100 builds an image — pin cannot be stale against them"
+  # No commit in the window produces an image, so there is nothing for the
+  # pin to be behind and failing here would be the very false alarm this
+  # guard keeps raising on documentation runs. A pin orphaned WITHIN the
+  # window still fails, because the commit that orphaned it built by
+  # definition and is therefore in this list.
+  #
+  # It is still worth saying out loud: on this repository a hundred
+  # commits that touch no build path is not a normal state, and an orphan
+  # older than the window would hide behind exactly this message. A
+  # warning annotation puts it in front of whoever reads the run without
+  # blocking them.
+  echo "::warning::no commit in the last 100 builds an image — the pin cannot be checked against them"
+  echo "✓ nothing in the window builds; pin left alone"
   exit 0
 fi
 
@@ -215,8 +219,8 @@ echo "       k8s/overlays/development/platform-version-patch.yaml"
 echo "       k8s/overlays/development/deploy-rev-patch.yaml"
 echo "       k8s/overlays/development/kustomization.yaml"
 echo "     (the apply-development-pin.sh helper does this idempotently)."
-echo "  4. Commit + push to main (the manual-pin commit itself satisfies"
-echo "     the chore(development): prefix filter so this guard won't fail again)."
+echo "  4. Commit + push to main (a commit touching only the three pin"
+echo "     files counts as a pin, not as code, so this guard won't fail again)."
 echo ""
 echo "Or, if the Build Images run for $LAST_CODE_SHORT failed entirely"
 echo "(no images pushed to GHCR), re-trigger a build with:"
