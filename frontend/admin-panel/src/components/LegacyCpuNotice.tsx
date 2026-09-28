@@ -54,7 +54,11 @@ export default function LegacyCpuNotice() {
         <Gauge size={18} className="mt-0.5 shrink-0 text-amber-600 dark:text-amber-400" />
         <div>
           <div className="font-semibold text-gray-900 dark:text-gray-100">
-            {legacy.length} tenant{legacy.length === 1 ? '' : 's'} still reserve CPU they do not use
+            {/* The VERB agrees too: "1 tenant still reserve" shipped to a
+                real console before anyone read it aloud. */}
+            {legacy.length === 1
+              ? '1 tenant still reserves CPU it does not use'
+              : `${legacy.length} tenants still reserve CPU they do not use`}
           </div>
           <p className="mt-1 text-xs text-amber-800 dark:text-amber-300">
             {reservedPct !== null && usedPct !== null ? (

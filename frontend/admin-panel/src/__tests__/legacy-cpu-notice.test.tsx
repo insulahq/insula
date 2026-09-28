@@ -93,4 +93,17 @@ describe('LegacyCpuNotice', () => {
     show();
     expect(screen.getByTestId('legacy-cpu-notice-link')).toHaveAttribute('href', '/cluster/cpu-scheduling');
   });
+
+  // Read it aloud. "1 tenant still reserve CPU" shipped to a live console.
+  it.each([
+    [1, /1 tenant still reserves CPU it does not use/],
+    [2, /2 tenants still reserve CPU they do not use/],
+  ])('agrees in number for %i legacy tenant(s)', (n, re) => {
+    ok(preview({
+      tenants: Array.from({ length: n }, (_, i) => tenant({ tenantId: `t${i}` })),
+      reclaimableMillis: 690 * n,
+    }));
+    show();
+    expect(screen.getByTestId('legacy-cpu-notice')).toHaveTextContent(re);
+  });
 });
