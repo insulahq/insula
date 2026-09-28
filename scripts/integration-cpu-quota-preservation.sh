@@ -154,12 +154,23 @@ else
   # Re-send the value the plan ALREADY has. The cascade fires on cpu_limit
   # being present in the body, not on it differing, so this exercises the
   # exact path without changing what any tenant is sold.
-  PCODE=$(curl "${A[@]}" -o "$J/plan" -w '%{http_code}' -X PATCH "$API/api/v1/plans/$PLAN_ID" -d "{\"cpu_limit\":\"$PLAN_CPU\"}")
+  # /admin/plans/:id — NOT /plans/:id, which is the read route and 404s on
+  # PATCH. A guessed path here does nothing and the assertion below then
+  # passes against a fan-out that never ran.
+  PCODE=$(curl "${A[@]}" -o "$J/plan" -w '%{http_code}' -X PATCH "$API/api/v1/admin/plans/$PLAN_ID" -d "{\"cpu_limit\":\"$PLAN_CPU\"}")
   [ "$PCODE" = "200" ] && ok "plan PATCH accepted" || bad "plan PATCH failed" "http=$PCODE $(head -c 200 "$J/plan")"
   sleep 10
   C=$(ceiling_of "$NS")
-  [ "$C" = "$CEIL0" ] && ok "ceiling survived the plan fan-out ($C)" \
-    || bad "THE PRODUCTION BUG: a plan edit removed the ceiling" "before=$CEIL0 after=${C:-<none>}"
+  if [ "$PCODE" != "200" ]; then
+    # ★ Do NOT score this. The fan-out is the whole case, and a ceiling that
+    # "survived" an edit the server refused is the vacuous pass this suite
+    # exists to avoid.
+    note "fan-out never ran, so the ceiling check below proves nothing"
+  elif [ "$C" = "$CEIL0" ]; then
+    ok "ceiling survived the plan fan-out ($C)"
+  else
+    bad "THE PRODUCTION BUG: a plan edit removed the ceiling" "before=$CEIL0 after=${C:-<none>}"
+  fi
   NOW=$(psql "SELECT cpu_limit FROM hosting_plans WHERE id='$PLAN_ID';")
   [ "$(python3 -c "print(float('$NOW')==float('$PLAN_CPU'))" 2>/dev/null)" = "True" ] \
     && ok "the plan is unchanged ($NOW)" || bad "the harness altered the plan" "was=$PLAN_CPU now=$NOW"
