@@ -46,21 +46,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Added
 
-- **CPU tiers can now be configured, not only applied.** The previous release
-  added the tier model but no way to set it: an operator could migrate a
-  tenant and accept whatever the platform derived, and that was all. A plan
-  now sells a **CPU tier** and a **burst ceiling**, and either can be
-  overridden per tenant — the same shape as memory, storage and mailboxes.
-
-  Both controls default to *inherit*, and a blank one stays blank. A plan that
-  has never named a tier does not acquire one because somebody opened the form
-  to change its price, and an empty ceiling means "inherit", never zero cores.
-
-  They appear for every tenant, including those still on the old model,
-  because the decision of what a tenant *will* get has to be made before
-  migrating it. For those tenants the form says so outright rather than
-  leaving a control that appears to work and changes nothing.
-
 - **A tenant's CPU can now be a share of the machine instead of a reservation
   of it (ADR-062, opt-in per tenant).** The previous release made the gap
   visible: a cluster can refuse new work while running at a fraction of its
@@ -112,6 +97,21 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   back, but a single-replica workload is briefly unavailable.
 
 ### Changed
+
+- **CPU tiers can now be configured, not only applied.** The previous release
+  added the tier model but no way to set it: an operator could migrate a
+  tenant and accept whatever the platform derived, and that was all. A plan
+  now sells a **CPU tier** and a **burst ceiling**, and either can be
+  overridden per tenant — the same shape as memory, storage and mailboxes.
+
+  Both controls default to *inherit*, and a blank one stays blank. A plan that
+  has never named a tier does not acquire one because somebody opened the form
+  to change its price, and an empty ceiling means "inherit", never zero cores.
+
+  They appear for every tenant, including those still on the old model,
+  because the decision of what a tenant *will* get has to be made before
+  migrating it. For those tenants the form says so outright rather than
+  leaving a control that appears to work and changes nothing.
 
 - **The cluster-headroom quota check now advises instead of refusing.**
   v2026.9.35 repaired this check — it had been summing a table that is empty
