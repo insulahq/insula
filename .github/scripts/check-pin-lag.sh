@@ -67,6 +67,27 @@ fi
 # to avoid SIGPIPE under `set -o pipefail` — head closing the pipe
 # after the third match would terminate grep with rc=141 and fail
 # the script.
+# Paths that make Build Images run at all. Mirrors the positive `paths:`
+# list in .github/workflows/build-deploy.yml — a commit touching none of
+# them produces no image and therefore no auto-pin, exactly like a
+# `[skip ci]` commit.
+BUILD_PATHS_RE='^(backend/|frontend/admin-panel/|frontend/tenant-panel/|packages/api-contracts/|k8s/|scripts/|images/|\.github/workflows/build-deploy\.yml$)'
+
+# Does this commit touch anything Build Images watches?
+#
+# `-m --first-parent` makes a merge commit report its merged-in changes
+# rather than nothing, so a merge that brings code in still counts.
+#
+# The file list is captured into a variable before grep sees it: a
+# `git … | grep -q` pipeline under `set -o pipefail` can return 141
+# when grep exits on the first match and git dies of SIGPIPE, which
+# reads as "no match" and would skip a commit that does build.
+builds_something() {
+  local files
+  files=$(git diff-tree --no-commit-id --name-only -r -m --first-parent "$1" 2>/dev/null || true)
+  [[ -n "$files" ]] && grep -qE "$BUILD_PATHS_RE" <<<"$files"
+}
+
 SLACK_N=2
 CODE_COMMITS=()
 while IFS=' ' read -r sha msg_rest; do
@@ -85,6 +106,13 @@ while IFS=' ' read -r sha msg_rest; do
     # (observed 2026-08-26 after v2026.8.18).
     *'[skip ci]'*) continue ;;
     *)
+      # Same reasoning as [skip ci]: a commit that changed nothing
+      # Build Images watches has no image to be pinned to, so counting
+      # it spends the slack on a pin that can never exist. Three
+      # documentation commits in a row did exactly that while cutting
+      # a release — the pin was healthy and this guard called it
+      # orphaned.
+      builds_something "$sha" || continue
       CODE_COMMITS+=("$sha")
       if [[ ${#CODE_COMMITS[@]} -gt $SLACK_N ]]; then
         break
