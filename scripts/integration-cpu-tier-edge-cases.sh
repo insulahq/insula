@@ -54,12 +54,24 @@ cleanup() {
   # to 91% of its memory requests, after which nothing could schedule and
   # every later fixture failed for a reason that had nothing to do with the
   # code under test.
+  # Wait on the TENANT being gone, which is authoritative, AND on the
+  # namespace, which is what actually holds the resources. Watching only
+  # the namespace let a tenant row survive the run; watching only the
+  # tenant would let the workloads outlive it.
   for _ in $(seq 1 45); do
-    local left
-    left=$(timeout 60 $K "kubectl get ns --no-headers 2>/dev/null | grep -c cpufix" 2>/dev/null)
-    [ "${left:-1}" = "0" ] && break
+    local left_ns left_tenant
+    left_ns=$(timeout 60 $K "kubectl get ns --no-headers 2>/dev/null | grep -c cpufix" 2>/dev/null)
+    left_tenant=$(curl -sk "$API/api/v1/tenants?limit=100" -H "Authorization: Bearer $T" \
+      | python3 -c 'import sys,json;print(sum(1 for t in json.load(sys.stdin).get("data",[]) if "cpufix" in t["name"]))' 2>/dev/null)
+    [ "${left_ns:-1}" = "0" ] && [ "${left_tenant:-1}" = "0" ] && break
     sleep 10
   done
+  # Say so, rather than leaving the next run to meet it as a capacity
+  # failure whose message points nowhere near the cause.
+  if [ "${left_ns:-0}" != "0" ] || [ "${left_tenant:-0}" != "0" ]; then
+    printf "  WARN  fixture cleanup incomplete: %s namespace(s), %s tenant(s) remain\n" \
+      "${left_ns:-?}" "${left_tenant:-?}"
+  fi
   rm -rf "$J"
 }
 trap cleanup EXIT
