@@ -23,6 +23,7 @@ import { eq } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
 import { hostingPlans } from '../../db/schema.js';
 import { resolveTenantCpu } from '../cpu-migration/resolve.js';
+import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
 export interface TenantDisplayLimits {
   readonly cpuLimit: number;
@@ -107,4 +108,68 @@ export async function resolveTenantDisplayLimits(
     ? await db.select().from(hostingPlans).where(eq(hostingPlans.id, tenant.planId))
     : [undefined];
   return tenantDisplayLimits(tenant, plan);
+}
+
+/**
+ * The ceiling the namespace ACTUALLY enforces, in cores, or null.
+ *
+ * ★ What a tenant is shown must be what is in force, not what is saved.
+ *
+ * ADR-062 says the tenant view carries "two real, ENFORCED numbers".
+ * `tenantDisplayLimits` resolves from the database, which is the saved
+ * value — and saving is not applying: between an admin editing a ceiling
+ * and pressing Re-apply, the two differ. Caught in a browser against a
+ * live tenant whose namespace enforced 4 cores while the panel told them
+ * 2.
+ *
+ * The harmful direction is a RAISED ceiling that has not been applied: the
+ * tenant is told they may burst further than the LimitRange will let them,
+ * and the throttling that follows contradicts their own usage page.
+ *
+ * `_default`, not `default` — the Kubernetes client renames the reserved
+ * word on deserialisation. Reading `.default` returns undefined for every
+ * LimitRange, with no error.
+ */
+export async function enforcedCpuCeilingCores(
+  k8s: K8sClients | undefined,
+  namespace: string | null | undefined,
+): Promise<number | null> {
+  if (!k8s || !namespace) return null;
+  try {
+    const lr = await (k8s.core as unknown as {
+      readNamespacedLimitRange: (a: { name: string; namespace: string }) => Promise<{
+        spec?: { limits?: ReadonlyArray<{
+          type?: string;
+          default?: Record<string, string>;
+          _default?: Record<string, string>;
+        }> };
+      }>;
+    }).readNamespacedLimitRange({ name: `${namespace}-cpu`, namespace });
+    const c = (lr.spec?.limits ?? []).find((l) => l.type === 'Container');
+    const raw = (c?.default ?? c?._default)?.cpu;
+    if (!raw) return null;
+    const millis = raw.endsWith('m') ? Number(raw.slice(0, -1)) : Number(raw) * 1000;
+    return Number.isFinite(millis) && millis > 0 ? Math.round(millis / 10) / 100 : null;
+  } catch {
+    // A tenant with no LimitRange is legacy, or mid-change. Falling back to
+    // the saved value is right: it is the only number there is.
+    return null;
+  }
+}
+
+/**
+ * `tenantDisplayLimits`, with the CPU ceiling replaced by what the cluster
+ * enforces when it can be read. Legacy tenants are untouched — their
+ * `cpuLimit` is a plan allowance, not a namespace object.
+ */
+export async function tenantDisplayLimitsEnforced(
+  tenant: TenantCpuRow,
+  plan: PlanRow | undefined,
+  k8s: K8sClients | undefined,
+  namespace: string | null | undefined,
+): Promise<TenantDisplayLimits> {
+  const saved = tenantDisplayLimits(tenant, plan);
+  if (saved.cpuKind !== 'consume') return saved;
+  const enforced = await enforcedCpuCeilingCores(k8s, namespace);
+  return enforced === null ? saved : { ...saved, cpuLimit: enforced };
 }

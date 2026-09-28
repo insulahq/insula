@@ -4,7 +4,7 @@ import { authenticate, requireRole, requireTenantAccess } from '../../middleware
 import { metricsQuerySchema } from './schema.js';
 import * as service from './service.js';
 import { getCachedMetrics, getAllCachedMetrics, collectTenantMetrics } from './resource-metrics.js';
-import { resolveTenantDisplayLimits } from './tenant-display-limits.js';
+import { tenantDisplayLimitsEnforced } from './tenant-display-limits.js';
 import { getTenantById } from '../tenants/service.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { tenants, hostingPlans } from '../../db/schema.js';
@@ -55,11 +55,16 @@ async function runBounded<T>(
 async function resolvePlanLimits(
   db: Parameters<typeof service.getMetrics>[0],
   tenant: Awaited<ReturnType<typeof getTenantById>>,
+  k8s?: ReturnType<typeof createK8sClients>,
 ): Promise<{ cpuLimit: number; memoryLimitGi: number; storageLimitGi: number }> {
   // For a tiered tenant `cpuLimit` is the BURST CEILING, not the legacy
-  // reservation — see tenant-display-limits.ts. Everything a tenant reads
-  // their CPU usage against flows from here.
-  return resolveTenantDisplayLimits(db, tenant);
+  // reservation — and the ENFORCED ceiling, not the saved one, because a
+  // tenant must not be shown a limit their namespace does not apply. See
+  // tenant-display-limits.ts.
+  const [plan] = tenant.planId
+    ? await db.select().from(hostingPlans).where(eq(hostingPlans.id, tenant.planId))
+    : [undefined];
+  return tenantDisplayLimitsEnforced(tenant, plan, k8s, tenant.kubernetesNamespace);
 }
 
 /**
@@ -75,7 +80,7 @@ async function collectSafe(
 
     const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
     const k8s = createK8sClients(kubeconfigPath);
-    const planLimits = await resolvePlanLimits(app.db, tenant);
+    const planLimits = await resolvePlanLimits(app.db, tenant, k8s);
     await collectTenantMetrics(app.db, k8s, tenantId, tenant.kubernetesNamespace, planLimits);
   } catch (err) {
     console.warn(`[metrics] Background refresh failed for ${tenantId}:`, err instanceof Error ? err.message : String(err));
@@ -126,7 +131,7 @@ export async function metricsRoutes(app: FastifyInstance): Promise<void> {
       throw new ApiError('K8S_UNAVAILABLE', 'Kubernetes cluster is not reachable', 503);
     }
 
-    const planLimits = await resolvePlanLimits(app.db, tenant);
+    const planLimits = await resolvePlanLimits(app.db, tenant, k8s);
     const metrics = await collectTenantMetrics(app.db, k8s, id, tenant.kubernetesNamespace, planLimits);
     return success(metrics);
   });
@@ -150,7 +155,7 @@ export async function metricsRoutes(app: FastifyInstance): Promise<void> {
       throw new ApiError('K8S_UNAVAILABLE', 'Kubernetes cluster is not reachable', 503);
     }
 
-    const planLimits = await resolvePlanLimits(app.db, tenant);
+    const planLimits = await resolvePlanLimits(app.db, tenant, k8s);
     const metrics = await collectTenantMetrics(app.db, k8s, id, tenant.kubernetesNamespace, planLimits);
     return success(metrics);
   });

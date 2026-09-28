@@ -165,6 +165,15 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   router a read-only directory to write its log into, silently costing the
   intrusion-detection its only source of requests.
 
+- **A tenant is shown the CPU ceiling in force, not one an administrator
+  has saved but not applied.** Saving a ceiling and applying it are separate
+  steps, so between them the two differ — and the tenant panel was reading
+  the saved figure. The dangerous direction is a raised ceiling that has not
+  been applied: the tenant is told they may burst further than they can, and
+  the throttling that follows contradicts their own usage page. Found by
+  opening the page against a live tenant whose namespace enforced four cores
+  while the panel said two.
+
 ### Changed
 
 - **The default hosting plans now sell distinct CPU shares.** Starter,

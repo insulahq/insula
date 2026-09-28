@@ -1,6 +1,7 @@
 import { eq, and, notInArray } from 'drizzle-orm';
 import { CPU_TIER_MILLICORES } from '@insula/api-contracts';
 import { resolveTenantCpu } from '../cpu-migration/resolve.js';
+import { enforcedCpuCeilingCores } from '../metrics/tenant-display-limits.js';
 import { resourceQuotas, tenants, hostingPlans, deployments } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -239,10 +240,18 @@ export async function getTenantResourceAvailability(
 
   // One division at the end yields the correctly-rounded double for the
   // decimal value, so an exact fit compares equal on the client.
+  // The ceiling the namespace ENFORCES wins over the saved one, for the
+  // same reason as the usage figures: between an admin saving a change and
+  // applying it, the two differ, and the tenant must be told what is in
+  // force. Null (legacy, or unreadable) keeps the saved value.
+  const enforcedCeiling = resolvedCpu.mode === 'tiered'
+    ? await enforcedCpuCeilingCores(opts.k8s ?? undefined, tenant.kubernetesNamespace)
+    : null;
+
   return {
     cpuModel: resolvedCpu.mode,
     cpuTier: resolvedCpu.tier,
-    cpuBurstCores: resolvedCpu.burstCores,
+    cpuBurstCores: enforcedCeiling ?? resolvedCpu.burstCores,
     cpuTierRequest: resolvedCpu.tier ? `${CPU_TIER_MILLICORES[resolvedCpu.tier]}m` : null,
     cpuLimit,
     memoryLimitGi,

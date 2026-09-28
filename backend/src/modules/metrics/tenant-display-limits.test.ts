@@ -13,7 +13,7 @@
  * was wrong.
  */
 import { describe, it, expect } from 'vitest';
-import { tenantDisplayLimits } from './tenant-display-limits.js';
+import { tenantDisplayLimits, tenantDisplayLimitsEnforced } from './tenant-display-limits.js';
 
 const plan = {
   cpuLimit: '0.25', cpuTier: 'normal' as const, cpuBurstCores: null,
@@ -70,5 +70,71 @@ describe('tenantDisplayLimits', () => {
     const tiered = tenantDisplayLimits(tenant({ cpuSchedulingMode: 'tiered' }), plan);
     expect(tiered.memoryLimitGi).toBe(legacy.memoryLimitGi);
     expect(tiered.storageLimitGi).toBe(legacy.storageLimitGi);
+  });
+});
+
+/**
+ * ★ A tenant must be shown what is ENFORCED, not what is saved.
+ *
+ * ADR-062 says the tenant view carries "two real, enforced numbers".
+ * `tenantDisplayLimits` resolves from the database — the SAVED value — and
+ * saving is not applying. Caught in a browser on a live tenant whose
+ * namespace enforced a 4-core ceiling while the panel told them 2.
+ *
+ * The harmful direction is a RAISED ceiling that has not been applied: the
+ * tenant is told they may burst further than the LimitRange allows, and
+ * the throttling that follows contradicts their own usage page.
+ */
+describe('tenantDisplayLimitsEnforced', () => {
+  const plan = {
+    cpuLimit: '2.00', cpuTier: 'highest' as const, cpuBurstCores: '4.00',
+    memoryLimit: '2.00', storageLimit: '10.00',
+  };
+  const tiered = (o = {}) => ({
+    planId: 'p1', cpuLimitOverride: null, cpuSchedulingMode: 'tiered' as string | null,
+    cpuTierOverride: null, cpuBurstCoresOverride: null,
+    memoryLimitOverride: null, storageLimitOverride: null, ...o,
+  });
+  /** A cluster whose LimitRange imposes `cpu`, spelled as the client returns it. */
+  const k8sWith = (cpu: string | null) => ({
+    core: {
+      readNamespacedLimitRange: async () => {
+        if (cpu === null) throw Object.assign(new Error('HTTP-Code: 404'), { statusCode: 404 });
+        return { spec: { limits: [{ type: 'Container', _default: { cpu } }] } };
+      },
+    },
+  }) as never;
+
+  it('reports the ENFORCED ceiling when it differs from the saved one', async () => {
+    const l = await tenantDisplayLimitsEnforced(
+      tiered({ cpuBurstCoresOverride: '2' }), plan, k8sWith('4'), 'ns',
+    );
+    expect(l.cpuLimit).toBe(4);
+  });
+
+  it('falls back to the saved value when the namespace has no LimitRange', async () => {
+    // Mid-change, or a tenant whose LimitRange is gone. The saved value is
+    // the only number there is.
+    const l = await tenantDisplayLimitsEnforced(
+      tiered({ cpuBurstCoresOverride: '2' }), plan, k8sWith(null), 'ns',
+    );
+    expect(l.cpuLimit).toBe(2);
+  });
+
+  it('leaves a LEGACY tenant alone — its limit is a plan allowance', async () => {
+    const l = await tenantDisplayLimitsEnforced(
+      tiered({ cpuSchedulingMode: 'legacy' }), plan, k8sWith('4'), 'ns',
+    );
+    expect(l).toMatchObject({ cpuLimit: 2, cpuKind: 'reserve' });
+  });
+
+  it('reads millicores as millicores', async () => {
+    const l = await tenantDisplayLimitsEnforced(tiered(), plan, k8sWith('1500m'), 'ns');
+    expect(l.cpuLimit).toBe(1.5);
+  });
+
+  it('is the saved value when there is no cluster to ask', async () => {
+    const l = await tenantDisplayLimitsEnforced(tiered(), plan, undefined, 'ns');
+    expect(l.cpuLimit).toBe(4);
   });
 });

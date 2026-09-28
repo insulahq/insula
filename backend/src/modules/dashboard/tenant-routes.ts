@@ -3,7 +3,7 @@ import { eq } from 'drizzle-orm';
 import { authenticate, requireRole, requireTenantAccess } from '../../middleware/auth.js';
 import { hostingPlans } from '../../db/schema.js';
 import { getTenantById } from '../tenants/service.js';
-import { tenantDisplayLimits } from '../metrics/tenant-display-limits.js';
+import { tenantDisplayLimitsEnforced } from '../metrics/tenant-display-limits.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { buildTenantSummary, buildTenantLive } from './tenant-service.js';
 
@@ -43,9 +43,13 @@ export async function tenantDashboardRoutes(app: FastifyInstance): Promise<void>
     // `cpuLimit` is the burst CEILING for a tiered tenant and the legacy
     // reservation otherwise, and `cpuKind` says which — the console tile
     // already draws those two differently. See tenant-display-limits.ts.
-    const planLimits = tenantDisplayLimits(tenant, plan);
     const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
     const k8s = createK8sClients(kubeconfigPath);
+    // The ENFORCED ceiling, not the saved one — a tenant must not be shown
+    // a limit their namespace does not apply. See tenant-display-limits.ts.
+    const planLimits = await tenantDisplayLimitsEnforced(
+      tenant, plan, k8s, tenant.kubernetesNamespace,
+    );
     return {
       data: await buildTenantLive(
         app.db, k8s, tenantId, tenant.kubernetesNamespace, planLimits, app.log,
