@@ -44,8 +44,15 @@ done
 (( ${#PANELS[@]} == 0 )) && PANELS=(admin-panel tenant-panel)
 
 FAILED=0
-fail() { echo "  ✗ $1" >&2; FAILED=1; }
-ok()   { echo "  ✓ $1"; }
+# Two different failures wear the same exit code, and conflating them sent a
+# reader hunting a password bug that did not exist: a stale
+# packages/api-contracts/dist (the `tsc --build --force` trap) broke the
+# admin-panel build, and the epilogue below announced "a password input reached
+# a chunk" anyway. Only a real marker hit may claim that.
+PW_VIOLATION=0
+fail()    { echo "  ✗ $1" >&2; FAILED=1; }
+fail_pw() { fail "$1"; PW_VIOLATION=1; }
+ok()      { echo "  ✓ $1"; }
 
 # Tokens that only ever appear on a real password input. `type:"password"` is
 # the minified JSX prop; the autocomplete tokens are what a manager keys on.
@@ -57,9 +64,22 @@ for panel in "${PANELS[@]}"; do
 
   if (( SKIP_BUILD == 0 )); then
     echo "building $panel..."
-    ( cd "$dir" && npm run build >/tmp/pwguard-$panel.log 2>&1 ) || {
-      fail "$panel: build failed — see /tmp/pwguard-$panel.log"
+    ( cd "$dir" && npm run build >"/tmp/pwguard-$panel.log" 2>&1 ) || {
+      fail "$panel: build failed — this guard proved NOTHING about password fields"
       tail -20 "/tmp/pwguard-$panel.log" >&2
+      # The failure mode that actually happens locally: @insula/api-contracts
+      # resolves through the workspace symlink to a dist/ built before the
+      # symbol existed, so the panel fails on a export that IS in the source.
+      # A plain `npm run build` honours a stale tsbuildinfo and emits 0 files,
+      # which is why the fix is --force. (AGENTS.md, "Build & local-dev gotchas")
+      if grep -q "is not exported by.*api-contracts" "/tmp/pwguard-$panel.log" 2>/dev/null; then
+        cat >&2 <<'HINT'
+       ↑ a missing export FROM api-contracts usually means its dist/ is stale,
+         not that the symbol is gone. Rebuild it and re-run:
+             cd packages/api-contracts && node_modules/.bin/tsc --build --force
+         (a plain `npm run build` honours a stale tsbuildinfo and emits 0 files)
+HINT
+      fi
       continue
     }
   fi
@@ -81,7 +101,7 @@ for panel in "${PANELS[@]}"; do
     [[ -f "$f" ]] || continue
     hits=$(grep -oE "$PATTERNS" "$f" 2>/dev/null | wc -l | tr -d ' ')
     if [[ "$hits" != "0" ]]; then
-      fail "$panel: $asset is loaded on EVERY page and contains $hits password-input marker(s)"
+      fail_pw "$panel: $asset is loaded on EVERY page and contains $hits password-input marker(s)"
       grep -oE ".{40}($PATTERNS).{25}" "$f" 2>/dev/null | head -3 | sed 's/^/       /' >&2
       panel_bad=1
     fi
@@ -99,7 +119,8 @@ for panel in "${PANELS[@]}"; do
 done
 
 if (( FAILED != 0 )); then
-  cat >&2 <<'EOF'
+  if (( PW_VIOLATION != 0 )); then
+    cat >&2 <<'EOF'
 
 ci-no-password-fields-in-entry-chunk: FAILED
 
@@ -112,6 +133,17 @@ outside a route (a modal in Header/Layout/a provider) must be lazy-loaded too.
 An INEFFECTIVE_DYNAMIC_IMPORT warning during the build means something still
 imports it statically, which pulls it straight back into the entry chunk.
 EOF
+  else
+    cat >&2 <<'EOF'
+
+ci-no-password-fields-in-entry-chunk: FAILED TO RUN
+
+No password input was found in an eagerly-loaded chunk — the guard could not
+get far enough to look. Read the per-panel error above: a build that did not
+complete, a missing dist/, or an index.html referencing no JS assets all land
+here. Fix that first; this says NOTHING about where password fields live.
+EOF
+  fi
   exit 1
 fi
 echo "ci-no-password-fields-in-entry-chunk: OK"
