@@ -506,19 +506,53 @@ TRAEFIK_CHART_VERSION="41.0.2"           # app v3.7.6; verify: helm search repo 
 # NOT an infra version pin: nothing here changes which k3s/helm/flux VERSION
 # gets installed, so ci-migration-coverage.sh does not require a matching
 # host-migration (existing nodes already have these tools installed).
-# Refreshed. Provenance verified before bumping, not assumed:
-#   * the OLD pin d264d4d4… is byte-identical to k3s-io/k3s install.sh at the
-#     commit immediately BEFORE 2d0f82fa, so nothing had drifted underneath us;
-#   * the NEW pin ed01f89f… is byte-identical to both https://get.k3s.io and
-#     raw.githubusercontent.com/k3s-io/k3s/master/install.sh;
-# * the only diff is upstream commit 2d0f82fa "change sles to use
-#     slemicro rpms instead of microos" — SUSE/SLE-Micro RPM repo selection,
-#     which touches no OS in our support matrix (Debian/Ubuntu, RHEL family).
-# NOTE: get.k3s.io serves MASTER's install.sh, so this pin breaks every fresh
-# install whenever upstream edits that file for any reason. Fetching from the
-# version-pinned tag URL instead would make the checksum change only when
-# K3S_VERSION does — see ROADMAP R26.
-K3S_INSTALLER_SHA256="ed01f89fd977bf20ac1516bbebf8370bf3ddbaa55dac8aba610956a4c78cc00b"
+# ★ The k3s installer is fetched from the VERSION-PINNED TAG, not get.k3s.io.
+#
+# get.k3s.io serves master's install.sh, so this pin broke EVERY fresh
+# install the moment upstream edited that file for any reason — which they
+# did, and it did: a clean bootstrap died at
+# "k3s installer checksum MISMATCH — refusing to execute" on a file nobody
+# here had touched. The guard was right and the target was wrong.
+#
+# Fetching the installer that shipped WITH the k3s release we pin is both
+# more correct and stable: the digest now changes only when K3S_VERSION
+# does, which is a change someone here makes deliberately and which already
+# requires a host-migration. (ROADMAP R26.)
+#
+# TO REFRESH: bump K3S_VERSION, then
+#   curl -fsSL https://raw.githubusercontent.com/k3s-io/k3s/<VERSION>/install.sh | sha256sum
+# and diff it against the previous tag's before trusting it.
+#
+# Provenance of this value, verified rather than assumed: it is
+# raw.githubusercontent.com/k3s-io/k3s at tag v1.36.2+k3s1. Against the
+# master installer it was previously pinned to, the only differences are
+# SUSE/SLE-Micro RPM repo selection, CoreOS/Flatcar detection, and the
+# generated uninstall script's k3s-selinux removal — none of which touches
+# any OS in the support matrix (Debian/Ubuntu, RHEL family).
+K3S_INSTALLER_PINNED_VERSION="v1.36.2+k3s1"
+K3S_INSTALLER_SHA256="46177d4c99440b4c0311b67233823a8e8a2fc09693f6c89af1a7161e152fbfad"
+
+# Resolved at FETCH time, not here: `--k3s-version` is parsed long after this
+# line, so an eager URL would install one version while verifying another
+# version's installer — the kind of mismatch a pin exists to prevent.
+k3s_installer_url() {
+  printf 'https://raw.githubusercontent.com/k3s-io/k3s/%s/install.sh' "$K3S_VERSION"
+}
+
+# ★ A pinned digest only describes the version it was taken from.
+#
+# `--k3s-version` now changes the URL too, so the pin above stops applying.
+# Refusing is the only safe answer: silently verifying v1.36.2's installer
+# while installing something else is worse than not verifying at all,
+# because it looks verified. `--k3s-installer-sha256` is how an operator
+# says they have reviewed the other one.
+assert_k3s_installer_pin() {
+  [[ "$K3S_VERSION" == "$K3S_INSTALLER_PINNED_VERSION" ]] && return 0
+  [[ -n "${K3S_INSTALLER_SHA256_OVERRIDE:-}" ]] && { K3S_INSTALLER_SHA256="$K3S_INSTALLER_SHA256_OVERRIDE"; return 0; }
+  error "--k3s-version ${K3S_VERSION} needs its own installer digest: the pin here is for ${K3S_INSTALLER_PINNED_VERSION}. Review
+  https://raw.githubusercontent.com/k3s-io/k3s/${K3S_VERSION}/install.sh
+then pass --k3s-installer-sha256 <sha256 of that file>."
+}
 HELM_INSTALLER_SHA256="e4a604efcff328eef2b2c7e67445d609f333e3875b34420ebf4e5ae379d259bb"
 FLUX_INSTALLER_SHA256="bd7765225b731a1df952456eced0abb5dbbf5e11bc70cf6ab5fddd1476088b7e"
 
@@ -732,7 +766,14 @@ OPTIONS:
   --env <dev|staging|production> Environment (default: production)
   --release-tag <vYYYY.M.PATCH> Production only: release tag for the Flux source
                          (default: v<platform/VERSION> of this checkout)
-  --k3s-version <ver>    k3s version (default: v1.31.4+k3s1)
+  --k3s-version <ver>    k3s version (default: v1.31.4+k3s1). The installer
+                         is fetched from that release's tag, so a non-default
+                         version also needs --k3s-installer-sha256.
+  --k3s-installer-sha256 <hex>
+                         Digest of the install.sh belonging to a
+                         non-default --k3s-version. Required with it: the
+                         built-in pin describes one version only, and
+                         verifying the wrong one merely looks verified.
   --with-monitoring      DEPRECATED no-op — monitoring is Flux-managed (ADR-051)
   --skip-flux            Skip Flux v2 GitOps
   --skip-hardening       Skip SSH/firewall hardening
@@ -1273,6 +1314,7 @@ parse_args() {
       --server)          K3S_SERVER_IP="$2"; shift 2 ;;
       --token)           K3S_TOKEN="$2"; shift 2 ;;
       --k3s-version)     K3S_VERSION="$2"; shift 2 ;;
+      --k3s-installer-sha256) K3S_INSTALLER_SHA256_OVERRIDE="$2"; shift 2 ;;
       # Explicit flag drives BOTH roles: node-ip pin (NODEIP_PIN_CIDR)
       # AND firewall whitelist (CLUSTER_NETWORK_CIDR). Auto-detect only
       # ever sets the firewall var, never the pin var.
@@ -4408,7 +4450,8 @@ install_k3s_server() {
   # shellcheck disable=SC2086
   if [[ "$is_joining_server" == true ]]; then
     set +e
-    k3s_installer="$(fetch_verified_script https://get.k3s.io "$K3S_INSTALLER_SHA256" k3s)" || exit 1
+    assert_k3s_installer_pin
+    k3s_installer="$(fetch_verified_script "$(k3s_installer_url)" "$K3S_INSTALLER_SHA256" k3s)" || exit 1
     # A zero-byte payload would be piped into `sh`, which succeeds and installs
     # NOTHING — a failed fetch must never look like a clean install.
     [[ -n "$k3s_installer" ]] || { printf 'ERROR: empty k3s installer payload — refusing to execute.\n' >&2; exit 1; }
@@ -4443,7 +4486,8 @@ install_k3s_server() {
       log "  automatically as soon as the join succeeds. Ctrl-C if you need to investigate."
     fi
   else
-    k3s_installer="$(fetch_verified_script https://get.k3s.io "$K3S_INSTALLER_SHA256" k3s)" || exit 1
+    assert_k3s_installer_pin
+    k3s_installer="$(fetch_verified_script "$(k3s_installer_url)" "$K3S_INSTALLER_SHA256" k3s)" || exit 1
     # A zero-byte payload would be piped into `sh`, which succeeds and installs
     # NOTHING — a failed fetch must never look like a clean install.
     [[ -n "$k3s_installer" ]] || { printf 'ERROR: empty k3s installer payload — refusing to execute.\n' >&2; exit 1; }
@@ -4558,7 +4602,8 @@ install_k3s_worker() {
   # systemd-retried success.
   local install_rc=0 k3s_installer=""
   set +e
-  k3s_installer="$(fetch_verified_script https://get.k3s.io "$K3S_INSTALLER_SHA256" k3s)" || exit 1
+  assert_k3s_installer_pin
+    k3s_installer="$(fetch_verified_script "$(k3s_installer_url)" "$K3S_INSTALLER_SHA256" k3s)" || exit 1
   # A zero-byte payload would be piped into `sh`, which succeeds and installs
   # NOTHING — a failed fetch must never look like a clean install.
   [[ -n "$k3s_installer" ]] || { printf 'ERROR: empty k3s installer payload — refusing to execute.\n' >&2; exit 1; }
