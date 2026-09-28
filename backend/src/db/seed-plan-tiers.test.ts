@@ -44,6 +44,7 @@ function planLiteral(code: string): string {
 }
 const tierOf = (code: string) => /cpuTier: '(\w+)'/.exec(planLiteral(code))?.[1] as CpuTier | undefined;
 const cpuOf = (code: string) => Number(/cpuLimit: '([\d.]+)'/.exec(planLiteral(code))?.[1]);
+const burstOf = (code: string) => Number(/cpuBurstCores: '([\d.]+)'/.exec(planLiteral(code))?.[1]);
 
 describe('seeded hosting plans', () => {
   it.each([['starter', 'normal'], ['premium', 'high'], ['ultimate', 'highest']])(
@@ -58,13 +59,27 @@ describe('seeded hosting plans', () => {
     expect(w('premium')).toBeLessThan(w('ultimate'));
   });
 
-  it('leaves the burst ceiling to derive from cpu_limit', () => {
-    // max(1, cpu_limit x 2) -> 1 / 2 / 4 cores. A literal here would freeze
-    // the ceiling against any later change to cpu_limit.
-    for (const code of ['starter', 'premium', 'ultimate']) {
-      expect(planLiteral(code)).not.toMatch(/cpuBurstCores/);
-    }
-    expect([cpuOf('starter'), cpuOf('premium'), cpuOf('ultimate')].map((c) => Math.max(1, c * 2)))
-      .toEqual([1, 2, 4]);
+  /**
+   * ★ DECLARED, not derived.
+   *
+   * Absent, the ceiling falls back to max(1, cpu_limit x 2) — the same
+   * 1/2/4 ladder, but it keeps a TIERED tenant depending on `cpu_limit`,
+   * the column the tier model exists to retire. ADR-062 says `cpu_limit`
+   * is "unused by tiered mode"; while the fallback answers, that is false.
+   */
+  it('declares the burst ceiling instead of leaving it to derive', () => {
+    expect([burstOf('starter'), burstOf('premium'), burstOf('ultimate')]).toEqual([1, 2, 4]);
+  });
+
+  it('declares the same ladder the derivation would have produced', () => {
+    // So installing this release changes no tenant's ceiling — it only
+    // stops the value depending on a column that is going away.
+    const derived = ['starter', 'premium', 'ultimate'].map((c) => Math.max(1, cpuOf(c) * 2));
+    expect(['starter', 'premium', 'ultimate'].map(burstOf)).toEqual(derived);
+  });
+
+  it('ascends with the ladder', () => {
+    expect(burstOf('starter')).toBeLessThan(burstOf('premium'));
+    expect(burstOf('premium')).toBeLessThan(burstOf('ultimate'));
   });
 });

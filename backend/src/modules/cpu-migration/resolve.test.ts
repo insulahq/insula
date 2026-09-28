@@ -140,3 +140,57 @@ describe('tieredQuotaRequestMillis', () => {
     expect(tieredQuotaRequestMillis([])).toBe(0);
   });
 });
+
+describe('the DERIVED ceiling uses the effective limit', () => {
+  /**
+   * ★ `cpu_limit_override ?? plan.cpu_limit`, the precedence every other
+   * path uses — including this function's own legacy branch.
+   *
+   * It read `plan.cpuLimit` alone, so one tenant resolved two different
+   * ways depending on which branch asked. Seen on production: a tenant
+   * whose `cpu_limit_override` was 1.00 against an ultimate plan's 2.00
+   * was given a 4-core ceiling derived from the plan, ignoring the
+   * override entirely.
+   */
+  const plan = { cpuLimit: '2.00', cpuTier: null, cpuBurstCores: null };
+  const tiered = (o = {}) => ({
+    cpuSchedulingMode: 'tiered' as const,
+    cpuLimitOverride: null, cpuTierOverride: null, cpuBurstCoresOverride: null, ...o,
+  });
+
+  it('honours a LOWER cpu_limit_override', () => {
+    expect(resolveTenantCpu(plan, tiered({ cpuLimitOverride: '1.00' })).burstCores).toBe(2);
+  });
+
+  it('honours a HIGHER cpu_limit_override', () => {
+    expect(resolveTenantCpu(plan, tiered({ cpuLimitOverride: '4.00' })).burstCores).toBe(8);
+  });
+
+  it('falls back to the plan when there is no override', () => {
+    expect(resolveTenantCpu(plan, tiered()).burstCores).toBe(4);
+  });
+
+  it('agrees with the legacy branch about which limit applies', () => {
+    // The same tenant, asked both ways: legacy reports 1 core of
+    // reservation, tiered derives its ceiling from that same 1 core.
+    const t = { cpuLimitOverride: '1.00', cpuTierOverride: null, cpuBurstCoresOverride: null };
+    const legacy = resolveTenantCpu(plan, { ...t, cpuSchedulingMode: 'legacy' });
+    const tier = resolveTenantCpu(plan, { ...t, cpuSchedulingMode: 'tiered' });
+    expect(legacy.requestMillis).toBe(1000);
+    expect(tier.burstCores).toBe(2); // max(1, 1.00 x 2)
+  });
+
+  it('is never reached when the PLAN declares a ceiling', () => {
+    // Which is now the seeded default, so the derivation is a safety net
+    // for plans that predate the column rather than the normal answer.
+    expect(resolveTenantCpu(
+      { ...plan, cpuBurstCores: '3.00' }, tiered({ cpuLimitOverride: '0.10' }),
+    ).burstCores).toBe(3);
+  });
+
+  it('is never reached when the TENANT declares one', () => {
+    expect(resolveTenantCpu(
+      { ...plan, cpuBurstCores: '3.00' }, tiered({ cpuBurstCoresOverride: '6' }),
+    ).burstCores).toBe(6);
+  });
+});

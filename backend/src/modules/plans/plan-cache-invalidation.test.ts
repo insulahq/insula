@@ -44,8 +44,15 @@ function buildApp(): FastifyInstance {
   const db = {
     select: () => ({
       from: () => {
-        const p = Promise.resolve(rows) as Promise<unknown> & { where: () => Promise<unknown> };
+        // Thenable AND chainable: the list route calls `.orderBy(...)` (the
+        // list must not reorder when a plan is saved — see routes.ts) while
+        // the single-plan read awaits `.where(...)`.
+        const p = Promise.resolve(rows) as Promise<unknown> & {
+          where: () => Promise<unknown>;
+          orderBy: (...c: unknown[]) => Promise<unknown>;
+        };
         p.where = () => Promise.resolve(rows);
+        p.orderBy = () => Promise.resolve(rows);
         return p;
       },
     }),

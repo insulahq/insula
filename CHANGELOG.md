@@ -121,6 +121,32 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   with no field name on it, for an input the API had already said it was
   checking. CPU is unchanged: it is genuinely fractional.
 
+- **Editing a hosting plan opened the wrong plan.** The plan list came back
+  in no particular order, and Postgres moves a row when you update it — so
+  saving a plan silently reordered the list, and the next click on "the
+  second plan" was a different plan. Reproduced on a production database:
+  touching one plan without changing a value moved it up a row. The list is
+  ordered by price now.
+
+- **A tenant's CPU settings can be applied from the tenant page.** Saving a
+  tier or ceiling writes it; the new **Apply new limits** button delivers it
+  to the cluster, says whether the saved and running settings differ, and
+  says whether applying will replace that tenant's applications. Saving and
+  applying stay separate on purpose: a changed ceiling replaces every pod,
+  which should not happen as a side effect of pressing Save on a form that
+  also edits memory and mailboxes.
+
+- **The default plans declare their burst ceiling** (1 / 2 / 4 cores)
+  instead of deriving it from the CPU limit. Same numbers, but a tenant on
+  the share model no longer depends on `cpu_limit` — the field the share
+  model exists to retire. Fresh installs only; your own plans are never
+  rewritten by a release.
+
+- **A per-tenant CPU limit override is now honoured when a ceiling is
+  derived.** It was read from the plan alone, so a tenant whose limit had
+  been overridden got a ceiling computed from a number that did not apply
+  to it. Moot once a plan declares its ceiling, which the defaults now do.
+
 ### Changed
 
 - **The default hosting plans now sell distinct CPU shares.** Starter,

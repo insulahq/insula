@@ -1,4 +1,5 @@
 import { Fragment, useMemo, useState, type FormEvent } from 'react';
+import ApplyCpuLimitsPanel from '@/components/ApplyCpuLimitsPanel';
 import ActionsMenu, { ActionsMenuItem, ActionsMenuSeparator } from '@/components/ui/ActionsMenu';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { config } from '@/lib/runtime-config';
@@ -2157,6 +2158,12 @@ function ResourceLimitsCard({
           {renderField('Email Sends / Day', 'msgs', effectiveMailDaily, mailDailyCustom, setMailDailyCustom, mailDailyOverride, setMailDailyOverride, tenant.emailSendRateLimitDaily != null, plan?.emailDailySendLimit, 'number', '1')}
           {renderBoolField('Allow Custom Containers', effectiveAllowCc, allowCcCustom, setAllowCcCustom, allowCcOverride, setAllowCcOverride, tenant.allowCustomContainersOverride != null, plan?.allowCustomContainers ?? false)}
         </div>
+
+        {/* Saving writes the CPU tier and ceiling; this delivers them to the
+            namespace. Two acts, because a changed ceiling replaces every pod
+            and that must not be a side effect of pressing Save on a form
+            that also edits memory and mailboxes. */}
+        <ApplyCpuLimitsPanel tenantId={tenant.id} schedulingMode={tenant.cpuSchedulingMode} />
 
         {updateTenant.error && editing && (
           <p className="mt-3 text-sm text-red-600 dark:text-red-400">

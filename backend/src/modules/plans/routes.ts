@@ -1,4 +1,4 @@
-import { eq, and } from 'drizzle-orm';
+import { eq, and, asc } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { authenticate, requireRole } from '../../middleware/auth.js';
 import { hostingPlans, tenants } from '../../db/schema.js';
@@ -28,7 +28,26 @@ export async function planRoutes(app: FastifyInstance) {
   // clearing it below only clears it on the replica that served the write.
   // At five minutes that window was long enough to look permanent.
   app.get('/plans', { preHandler: createCacheMiddleware(10_000) }, async () => {
-    const rows = await app.db.select().from(hostingPlans);
+    /**
+     * ★ ORDERED. Without this the admin panel's Edit button opened a
+     * different plan each time.
+     *
+     * A bare SELECT returns rows in physical order, and Postgres rewrites a
+     * tuple on UPDATE — so saving a plan moves it in the list. Reproduced on
+     * production: `update hosting_plans set name = name where code='premium'`
+     * changed no value and moved premium from the third row to the second.
+     * The operator clicks Edit on "the second plan", gets the right form,
+     * saves, and the next time "the second plan" is something else. Nothing
+     * in the panel is wrong; the list under it had reordered.
+     *
+     * By price, then code. Price is the ladder these plans are sold on, and
+     * `code` is unique, so the order is total — two rows can never tie and
+     * fall back to physical order. It also matters for the ten-second
+     * response cache above: an unordered result makes two cached bodies
+     * differ for no reason.
+     */
+    const rows = await app.db.select().from(hostingPlans)
+      .orderBy(asc(hostingPlans.monthlyPriceUsd), asc(hostingPlans.code));
     return { data: rows };
   });
 
