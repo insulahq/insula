@@ -12,6 +12,38 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+
+- **Creating a tenant no longer discards fields it does not recognise.** The
+  per-tenant CPU and memory overrides can only be set when *updating* a
+  tenant, never when creating one — but a create carrying them returned
+  success with those fields silently dropped, and the tenant quietly took its
+  plan's limits instead. Nothing in the response said so. The platform's own
+  burstable-QoS test suite had been announcing "Starter plan + 2-CPU
+  override" and creating a quarter-core tenant for as long as it had existed,
+  then measuring its conclusions against a budget that tenant never had.
+
+  Unrecognised fields are now refused outright. That is the kinder failure:
+  everyone making the mistake finds out at once, instead of each discovering
+  later that a tenant's quota does not match what they asked for. Setting the
+  overrides still works — on the update call, where they have always been
+  defined.
+
+- **A stopped application that comes back is no longer stopped forever.** The
+  reconciler that keeps the platform's view of a deployment in step with the
+  cluster skipped anything marked stopped, which made that status a one-way
+  door: if the workload returned, nothing ever looked again. One was found
+  running with its full complement of pods while the platform still recorded
+  it as stopped — and every feature that answers "what is running here?" by
+  trusting that record skipped it, while it consumed real CPU and memory.
+
+  Stopped deployments are now re-examined, but only after they have sat
+  untouched for a while. Stopping one writes the new status a moment before
+  the workload is actually wound down, and without that delay a reconciler
+  running in the gap would see live pods and undo the stop. A deployment
+  deliberately left stopped stays stopped; only a disagreement with reality
+  is corrected.
+
 ### Added
 
 - **A tenant's CPU can now be a share of the machine instead of a reservation

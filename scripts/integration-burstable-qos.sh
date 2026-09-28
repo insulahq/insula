@@ -92,10 +92,19 @@ if [[ -z "$PLAN_ID" || -z "$REGION_ID" ]]; then
   exit 1
 fi
 
+# ★ The overrides go on a PATCH, not the create.
+#
+# createTenantSchema does not declare them — it never has — and Zod used to
+# strip them silently, so this script announced "Starter plan + 2-CPU
+# override" while creating a tenant on the Starter plan's 0.25 cores. Every
+# assertion below about a 2-CPU budget was measured against a tenant that
+# never had one. The create schema is `.strict()` now, so sending them here
+# would be refused outright rather than ignored; they are applied where they
+# are actually declared, on updateTenantSchema.
 CLIENT_RESP=$(curl -fsSL -X POST "$ADMIN_HOST/api/v1/tenants" \
   -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
-  -d "{\"name\":\"$TENANT_NAME\",\"primary_email\":\"$TENANT_NAME@example.test\",\"plan_id\":\"$PLAN_ID\",\"region_id\":\"$REGION_ID\",\"cpu_limit_override\":2,\"memory_limit_override\":4}")
+  -d "{\"name\":\"$TENANT_NAME\",\"primary_email\":\"$TENANT_NAME@example.test\",\"plan_id\":\"$PLAN_ID\",\"region_id\":\"$REGION_ID\"}")
 TENANT_ID=$(echo "$CLIENT_RESP" | jq -r '.data.id')
 
 if [[ -z "$TENANT_ID" || "$TENANT_ID" == "null" ]]; then
@@ -103,6 +112,20 @@ if [[ -z "$TENANT_ID" || "$TENANT_ID" == "null" ]]; then
   exit 1
 fi
 echo "  Client ID: $TENANT_ID"
+
+PATCH_RESP=$(curl -fsSL -X PATCH "$ADMIN_HOST/api/v1/tenants/$TENANT_ID" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"cpu_limit_override":2,"memory_limit_override":4}')
+APPLIED_CPU=$(echo "$PATCH_RESP" | jq -r '.data.cpuLimitOverride // .data.cpu_limit_override // empty')
+# Assert it LANDED. The whole point of this change is that the suite stopped
+# believing a limit it never had; checking the response closes that loop
+# instead of trusting a 200.
+if [[ -z "$APPLIED_CPU" ]]; then
+  echo "ERROR: cpu_limit_override did not apply — every budget assertion below would be meaningless: $PATCH_RESP" >&2
+  exit 1
+fi
+echo "  CPU override applied: ${APPLIED_CPU} core(s)"
 
 cleanup() {
   if [[ -n "$TENANT_ID" && "$TENANT_ID" != "null" ]]; then

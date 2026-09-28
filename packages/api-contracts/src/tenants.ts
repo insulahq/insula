@@ -74,7 +74,24 @@ export const createTenantSchema = z.object({
   // existing tenant doesn't migrate the PVC — operator must run the
   // storage-migration flow (future).
   storage_tier: tenantStorageTierEnum.optional(),
-});
+/**
+ * ★ .strict() — an unknown key is REFUSED, not quietly dropped.
+ *
+ * Zod's default is to strip what a schema does not declare, so a create
+ * carrying a field this schema has never had returned 201 with that field
+ * silently discarded. The per-tenant limit overrides are the ones that bit:
+ * they live on updateTenantSchema, not here, so
+ * `POST /tenants {..., cpu_limit_override: 2}` created a tenant on the
+ * PLAN's limits and said nothing. integration-burstable-qos.sh had been
+ * announcing "Starter plan + 2-CPU override" and creating a 0.25-core tenant
+ * for as long as it has existed.
+ *
+ * Refusing is the kinder failure: every caller making that mistake finds out
+ * at once, rather than each discovering it later as a quota that does not
+ * match what they asked for. Overrides remain settable — by PATCH, against
+ * updateTenantSchema, which is where they are declared.
+ */
+}).strict();
 
 export const updateTenantSchema = z.object({
   name: z.string().min(1).max(255).optional(),
