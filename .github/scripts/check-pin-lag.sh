@@ -84,12 +84,16 @@ fi
 # never reaches this pin either.
 BUILD_PATHS_RE='^(backend/|frontend/admin-panel/|frontend/tenant-panel/|packages/api-contracts/|k8s/|scripts/|\.github/workflows/build-deploy\.yml$)'
 
-# The three files the auto-pin itself rewrites, excluded from build-deploy's
-# triggers for the same reason they are excluded here: writing them is the
-# pin, not something to be pinned. Normally such a commit is caught by the
-# `chore(development):` message filter below — but that prefix is a
-# convention this script recommends, not one anything enforces.
-PIN_PATHS_RE='^k8s/overlays/development/(kustomization|platform-version-patch|deploy-rev-patch)\.yaml$'
+# The files a pin itself rewrites. Writing one of these IS the pin, so a
+# commit that touches nothing else has no image of its own to be measured
+# against. Three of them come from apply-development-pin.sh (the trio
+# build-deploy excludes from its own triggers for the same reason);
+# platform-config-patch.yaml comes from pin-config-image.sh, which the
+# seven per-image workflows run to pin an image the backend resolves at
+# runtime. Those fire concurrently by design — several such commits land
+# in a row — and each one wrongly counted is a slot of slack spent on a
+# pin that can never exist.
+PIN_PATHS_RE='^k8s/overlays/development/(kustomization|platform-version-patch|deploy-rev-patch|platform-config-patch)\.yaml$'
 
 # Does this commit touch anything Build Images watches?
 #
@@ -203,14 +207,14 @@ done
 echo ""
 echo "Likely cause: a recent Build Images run successfully built and pushed"
 echo "images to GHCR, but its trailing auto-pin commit failed to land on"
-echo "main (the rebase recovery from cross-workflow collisions can still"
-echo "fail in rare cases). Subsequent commits' auto-pins will skip over"
+echo "development (the rebase recovery from cross-workflow collisions can"
+echo "still fail in rare cases). Subsequent auto-pins will skip over"
 echo "the orphaned image — the workload it should have deployed is stuck"
 echo "on the previous version."
 echo ""
 echo "Recovery:"
 echo "  1. List recent Build Images runs:"
-echo "       gh run list --branch main --workflow='Build Images' --limit 5"
+echo "       gh run list --branch development --workflow='Build Images' --limit 5"
 echo "  2. Find the failed run for short SHA $LAST_CODE_SHORT, view its"
 echo "     'Update development platform-version → Pin image tags' step log,"
 echo "     and copy BACKEND_TAG / ADMIN_TAG / TENANT_TAG."
@@ -219,10 +223,10 @@ echo "       k8s/overlays/development/platform-version-patch.yaml"
 echo "       k8s/overlays/development/deploy-rev-patch.yaml"
 echo "       k8s/overlays/development/kustomization.yaml"
 echo "     (the apply-development-pin.sh helper does this idempotently)."
-echo "  4. Commit + push to main (a commit touching only the three pin"
+echo "  4. Commit + push to development (a commit touching only the pin"
 echo "     files counts as a pin, not as code, so this guard won't fail again)."
 echo ""
 echo "Or, if the Build Images run for $LAST_CODE_SHORT failed entirely"
 echo "(no images pushed to GHCR), re-trigger a build with:"
-echo "       gh workflow run 'Build Images' --ref main"
+echo "       gh workflow run 'Build Images' --ref development"
 exit 1
