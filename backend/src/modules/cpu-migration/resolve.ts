@@ -115,10 +115,21 @@ export function resolveTenantCpu(
 
   const overrideBurst = num(tenant.cpuBurstCoresOverride);
   const planBurst = num(plan?.cpuBurstCores ?? null);
-  // Derived from the legacy limit only as a LAST resort, so a plan migrated
-  // before cpu_burst_cores was populated still bounds its tenants instead of
-  // resolving to "no ceiling".
-  const burstCores = overrideBurst ?? planBurst ?? ceilingCores(num(plan?.cpuLimit ?? null));
+  /**
+   * Derived from the legacy limit only as a LAST resort, so a plan that
+   * predates `cpu_burst_cores` still bounds its tenants instead of resolving
+   * to "no ceiling". A plan that declares a ceiling never reaches this.
+   *
+   * ★ The EFFECTIVE limit — `cpu_limit_override ?? plan.cpu_limit` — which
+   * is the precedence every other path uses, including this function's own
+   * legacy branch ten lines up. It used to read `plan.cpuLimit` alone, so
+   * the same tenant resolved two different ways depending on which branch
+   * asked: a tenant whose `cpu_limit_override` was 1.00 against an
+   * ultimate plan's 2.00 was given a 4-core ceiling derived from the plan,
+   * ignoring the override entirely. Seen on production.
+   */
+  const burstCores = overrideBurst ?? planBurst
+    ?? ceilingCores(num(tenant.cpuLimitOverride) ?? num(plan?.cpuLimit ?? null));
   const burstSource = overrideBurst != null
     ? 'tenant_override' as const
     : planBurst != null ? 'plan' as const : 'derived' as const;

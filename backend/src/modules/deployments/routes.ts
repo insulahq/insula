@@ -1131,7 +1131,7 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     if (!k8s) {
       return success({ checked: 0, updated: 0, errors: ['K8s cluster not available'] });
     }
-    const result = await reconcileDeploymentStatuses(app.db, k8s);
+    const result = await reconcileDeploymentStatuses(app.db, k8s, app.log);
     return success(result);
   });
 

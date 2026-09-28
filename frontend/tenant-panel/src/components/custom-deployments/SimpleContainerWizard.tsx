@@ -9,6 +9,7 @@ import clsx from 'clsx';
 import { useCreateCustomDeployment, useUpdateCustomDeployment, useValidateCustomDeployment } from '@/hooks/use-custom-deployments';
 import type { CreateCustomDeploymentSimpleInput, CustomDeploymentIssue, CustomDeploymentSpec } from '@insula/api-contracts';
 import type { CustomDeploymentRow } from '@/hooks/use-custom-deployments';
+import { useResourceAvailability as useTenantCpuModel, CPU_TIER_LABEL } from '@/hooks/use-resource-availability';
 import { Tooltip } from '@/components/ui/Tooltip';
 import {
   PrivateRegistryFields,
@@ -76,6 +77,18 @@ export function SimpleContainerWizard({ tenantId, existingNames, onClose, onCrea
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [validateState, setValidateState] = useState<'idle' | 'success' | 'warning' | 'error'>('idle');
 
+  /**
+   * ★ Under the tier model a container does not request a CPU number.
+   *
+   * The tooltip below called the value a guaranteed floor. It never was —
+   * the platform sets no CPU limit, so the number is a scheduling
+   * reservation and a share weight, not a floor. Under ADR-062 it is the
+   * tenant's share, identical for every application they run, and the
+   * ceiling is what bounds actual use.
+   */
+  const { data: tenantCpuData } = useTenantCpuModel(tenantId);
+  const tenantCpu = tenantCpuData?.data;
+  const tieredCpu = tenantCpu?.cpuModel === 'tiered';
   const validateMutation = useValidateCustomDeployment(tenantId);
   const createMutation = useCreateCustomDeployment(tenantId);
   const updateMutation = useUpdateCustomDeployment(tenantId);
@@ -87,7 +100,12 @@ export function SimpleContainerWizard({ tenantId, existingNames, onClose, onCrea
     ports: ports.filter((p) => p.name && p.containerPort > 0),
     volumes: volumes.filter((v) => v.name && v.containerPath),
     env: env.filter((e) => e.name).map((e) => ({ name: e.name, value: e.value })),
-    resources: { cpuRequest, memoryRequest },
+    // `cpuRequest` is required by the custom-deployment contract, so it
+      // is still sent for a tiered tenant even though the field above is
+      // no longer offered — and the server replaces it with the tenant's
+      // share (applyTenantCpuTier). The value below is therefore inert
+      // under tiers, not a choice being honoured.
+      resources: { cpuRequest, memoryRequest },
     ...(usePrivateRegistry && pullCredentialComplete(pullCredential)
       ? { pull_credential: toPullCredentialInput(pullCredential) }
       : {}),
@@ -123,7 +141,7 @@ export function SimpleContainerWizard({ tenantId, existingNames, onClose, onCrea
 
   const isPending = isEdit ? updateMutation.isPending : createMutation.isPending;
   const canSubmit = Boolean(
-    name && image && !nameError && !cpuError && !memoryError && !credentialError && !isPending
+    name && image && !nameError && (tieredCpu || !cpuError) && !memoryError && !credentialError && !isPending
     && (!usePrivateRegistry || pullCredentialComplete(pullCredential)),
   );
 
@@ -154,7 +172,12 @@ export function SimpleContainerWizard({ tenantId, existingNames, onClose, onCrea
           image,
           env: env.filter(e => e.name).map(e => ({ name: e.name, value: e.value })),
           ports: ports.filter(p => p.name && p.containerPort > 0),
-          resources: { cpuRequest, memoryRequest },
+          // `cpuRequest` is required by the custom-deployment contract, so it
+      // is still sent for a tiered tenant even though the field above is
+      // no longer offered — and the server replaces it with the tenant's
+      // share (applyTenantCpuTier). The value below is therefore inert
+      // under tiers, not a choice being honoured.
+      resources: { cpuRequest, memoryRequest },
         });
       } else {
         await createMutation.mutateAsync(buildInput());
@@ -389,13 +412,29 @@ export function SimpleContainerWizard({ tenantId, existingNames, onClose, onCrea
               </span>
             </SectionHeader>
             <div className="grid grid-cols-2 gap-4">
-              <Field
-                label="CPU request"
-                tooltip="Minimum CPU guaranteed to your container. 100m = 0.1 vCPU, 500m = 0.5 vCPU, 1 = 1 full vCPU. Your container may burst above this if the node has spare capacity, but is guaranteed this floor."
-              >
-                <input type="text" className={inputCls(Boolean(cpuError))} value={cpuRequest} onChange={(e) => setCpuRequest(e.target.value)} placeholder="100m" data-testid="custom-simple-cpu" />
-                {cpuError && <FieldError>{cpuError}</FieldError>}
-              </Field>
+              {tieredCpu ? (
+                <Field
+                  label="CPU"
+                  tooltip="Your share of the machine when containers compete for it. Nothing is reserved and nothing is idle-wasted: when neighbours are quiet your container uses what it needs, up to the ceiling your plan sets."
+                >
+                  <p className="text-sm text-gray-900 dark:text-gray-100" data-testid="custom-simple-cpu-tier">
+                    {tenantCpu?.cpuTier ? CPU_TIER_LABEL[tenantCpu.cpuTier] : 'Standard'} share
+                  </p>
+                  <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                    {tenantCpu?.cpuBurstCores != null
+                      ? `Bursts to ${tenantCpu.cpuBurstCores} core${tenantCpu.cpuBurstCores === 1 ? '' : 's'}. Set by your plan.`
+                      : 'Set by your plan.'}
+                  </p>
+                </Field>
+              ) : (
+                <Field
+                  label="CPU request"
+                  tooltip="Minimum CPU guaranteed to your container. 100m = 0.1 vCPU, 500m = 0.5 vCPU, 1 = 1 full vCPU. Your container may burst above this if the node has spare capacity, but is guaranteed this floor."
+                >
+                  <input type="text" className={inputCls(Boolean(cpuError))} value={cpuRequest} onChange={(e) => setCpuRequest(e.target.value)} placeholder="100m" data-testid="custom-simple-cpu" />
+                  {cpuError && <FieldError>{cpuError}</FieldError>}
+                </Field>
+              )}
               <Field
                 label="Memory request"
                 tooltip="Minimum RAM guaranteed to your container. 128Mi = 128 mebibytes, 512Mi = 512 MiB, 1Gi = 1 GiB. If the container exceeds the cluster memory limit it will be OOM-killed and restarted automatically."

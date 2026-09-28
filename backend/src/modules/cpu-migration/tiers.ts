@@ -12,28 +12,6 @@ import {
   type CpuMigrationBlocker,
 } from '@insula/api-contracts';
 
-/**
- * Tier for a catalog entry that declares no tier of its own.
- *
- * The catalog is a separate public repo synced by every platform version, so
- * requiring a new field would be a flag day across three repositories and
- * would break every third-party catalog. Instead the tier is DERIVED from the
- * legacy `recommended.cpu`, which every manifest already carries:
- *
- *   <= 0.10 cores  -> normal    (static sites, caches)
- *   <= 0.50 cores  -> high      (runtimes, single-service apps, databases)
- *    > 0.50 cores  -> highest   (Nextcloud, Jitsi, Moodle-Bitnami, …)
- *
- * An author who disagrees sets `resources.cpu.tier` explicitly and this is
- * never consulted.
- */
-export function deriveTier(recommendedCores: number | null): CpuTier {
-  if (recommendedCores === null || Number.isNaN(recommendedCores)) return 'high';
-  if (recommendedCores <= 0.10) return 'normal';
-  if (recommendedCores <= 0.50) return 'high';
-  return 'highest';
-}
-
 export function tierMillis(tier: CpuTier): number {
   return CPU_TIER_MILLICORES[tier];
 }

@@ -118,6 +118,21 @@ export interface BuildPlanInput {
   readonly namespace: string;
   readonly deployments: readonly DeploymentToRetier[];
   readonly defaultTier: CpuTier;
+  /**
+   * Does every pod have to be re-admitted?
+   *
+   * True on a first migration — the pods predate the LimitRange and carry no
+   * ceiling at all, which is the whole reason `recreate_deployment` exists.
+   * True again when a RE-APPLY changes the ceiling, because a LimitRange
+   * stamps its default at admission and a running pod never picks up a new
+   * one.
+   *
+   * False when re-applying a ceiling that did not move: the tier of a
+   * workload whose request is unchanged has no cluster effect to deliver,
+   * and recreating its pods would be an outage-shaped no-op. The straggler
+   * sweep still catches anything genuinely out of step.
+   */
+  readonly readmitPods?: boolean;
 }
 
 export interface MigrationPlan {
@@ -164,6 +179,11 @@ export function buildMigrationPlan(input: BuildPlanInput): MigrationPlan {
       continue;
     }
     if (fromMillis === toMillis) {
+      if (input.readmitPods === false) {
+        // Re-apply with an unchanged ceiling: nothing about this deployment
+        // needs to reach the cluster, so do not roll it.
+        continue;
+      }
       // Already the right size — but its pods still predate the LimitRange
       // and carry no limit. Replace them, or verify_limits_ready can never
       // pass. freesMillis is 0: this hands nothing back, it only re-admits.

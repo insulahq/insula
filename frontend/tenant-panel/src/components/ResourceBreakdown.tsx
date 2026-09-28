@@ -1,5 +1,6 @@
 import { AlertTriangle, Info, Pin } from 'lucide-react';
 import { useResourceBreakdown } from '@/hooks/use-deployments';
+import { useResourceAvailability as useTenantCpuModel } from '@/hooks/use-resource-availability';
 
 interface ResourceBreakdownProps {
   readonly tenantId: string;
@@ -19,6 +20,12 @@ interface ResourceBreakdownProps {
  */
 export function ResourceBreakdown({ tenantId, deploymentId }: ResourceBreakdownProps) {
   const { data, isLoading, isError, error } = useResourceBreakdown(tenantId, deploymentId);
+  // Under the tier model the per-component CPU figure is a split of the
+  // application's SHARE, not a baseline it is guaranteed — ADR-062. The
+  // word matters: "baseline" told the tenant a number was reserved for
+  // them, and nothing ever was.
+  const { data: tenantCpuData } = useTenantCpuModel(tenantId);
+  const tieredCpu = tenantCpuData?.data?.cpuModel === 'tiered';
 
   if (isLoading) {
     return <div className="text-xs text-gray-400 dark:text-gray-500">Loading breakdown…</div>;
@@ -47,9 +54,11 @@ export function ResourceBreakdown({ tenantId, deploymentId }: ResourceBreakdownP
         </h4>
         <span
           className="text-[10px] text-gray-400 dark:text-gray-500"
-          title="CPU bursts beyond the baseline when neighbours are idle; memory is guaranteed at the declared value."
+          title={tieredCpu
+            ? 'CPU is a share of the machine under contention, split across components by weight; memory is guaranteed at the declared value.'
+            : 'CPU bursts beyond the baseline when neighbours are idle; memory is guaranteed at the declared value.'}
         >
-          CPU burstable · Memory guaranteed
+          {tieredCpu ? 'CPU shared · Memory guaranteed' : 'CPU burstable · Memory guaranteed'}
         </span>
       </div>
       <div className="overflow-x-auto">
@@ -58,7 +67,7 @@ export function ResourceBreakdown({ tenantId, deploymentId }: ResourceBreakdownP
             <tr className="text-left text-gray-500 dark:text-gray-400">
               <th className="pb-1 pr-2 font-normal">Component</th>
               <th className="pb-1 px-2 font-normal text-right">Weight</th>
-              <th className="pb-1 px-2 font-normal text-right">CPU baseline</th>
+              <th className="pb-1 px-2 font-normal text-right">{tieredCpu ? 'CPU share' : 'CPU baseline'}</th>
               <th className="pb-1 pl-2 font-normal text-right">Memory</th>
             </tr>
           </thead>
@@ -116,7 +125,9 @@ export function ResourceBreakdown({ tenantId, deploymentId }: ResourceBreakdownP
         <Info size={10} className="mt-0.5 shrink-0" />
         <span>
           Components share the deployment&apos;s CPU/memory budget by weight, with a per-component minimum floor.
-          CPU may burst above the baseline; memory is guaranteed at the declared value.
+          {tieredCpu
+            ? ' CPU is a share under contention, not a reservation; memory is guaranteed at the declared value.'
+            : ' CPU may burst above the baseline; memory is guaranteed at the declared value.'}
         </span>
       </p>
     </div>

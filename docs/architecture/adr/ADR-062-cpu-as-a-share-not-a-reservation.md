@@ -119,8 +119,32 @@ Effect on the ledger: 24 starter tenants × ~2 pods × 5m is **240m**, against ~
 
 `DEFAULT_MIN_CPU` in `resource-allocator.ts` drops 50m → 10m, and catalog
 `resources.minimum.cpu` floors drop to ~10% of `recommended` (see the companion catalog
-change). `recommended.cpu` is unchanged: it stops being what a pod reserves and becomes
-input to the tier mapping.
+change). `recommended.cpu` stops being what a pod reserves and, for a tiered tenant, stops
+being read at all — see *Where the tier comes from* below.
+
+#### Where the tier comes from — the TENANT, not the manifest
+
+**Corrected in R3** (operator decision, 2026-09-28). An earlier revision of this ADR
+derived each workload's tier from its catalog entry's `recommended.cpu`, with the plan's
+`cpu_tier` as a fallback for containers that declared nothing. That was wrong twice over:
+
+- After a migration every deployment carries an explicit request, so the plan's tier
+  reached *nothing*. The ladder differentiated price, memory and disk — and not the one
+  quantity the tier model exists to express. A Starter tenant's WordPress and an Ultimate
+  tenant's WordPress asked for the same share and competed as equals.
+- It let the manifest choose. The catalog is a separate public repo plus an opt-in
+  community one, so a third-party entry could hand itself priority over everything else a
+  tenant runs.
+
+What CPU a tenant gets is what they are **sold**: the plan's `cpu_tier`, overridable per
+tenant, and every one of that tenant's applications takes it — catalog entry and custom
+container alike. Within a tenant, applications compete through the kernel and the burst
+ceiling, not through their manifests.
+
+Catalog manifests therefore declare no CPU. `resources.minimum.cpu` and
+`resources.recommended.cpu` become **optional** rather than being removed — an old
+manifest stays valid, and a legacy tenant, whose namespace is still sized in reservations,
+reads them exactly as before.
 
 **Memory does not change.** Tenant pods run `request == limit` (Guaranteed), so a memory
 request *is* the ceiling; lowering it buys an OOM kill. CPU is compressible and memory is
@@ -256,20 +280,21 @@ of the policy. Fix the ledger; keep the safety valve.
 
 ## Catalog schema
 
-`resources.minimum.cpu` and `resources.recommended.cpu` are declared **required** today
-(`packages/api-contracts/src/catalog.ts:131-132`). Under this ADR they stop describing what
-a pod reserves, so the manifest needs to express a tier instead:
+`resources.minimum.cpu` and `resources.recommended.cpu` were declared **required**. Under
+this ADR they stop describing what a pod reserves, and a manifest does not get to name a
+tier in their place — see *Where the tier comes from*. So they simply become optional:
 
 ```jsonc
 "resources": {
-  "minimum":     { "memory": "128Mi" },        // cpu now optional (legacy)
-  "recommended": { "memory": "256Mi" },
-  "cpu": {
-    "tier": "normal" | "high" | "highest",     // NEW, optional
-    "burstHint": "2"                           // NEW, optional; capped by the plan
-  }
+  "minimum":     { "memory": "128Mi" },        // cpu now optional
+  "recommended": { "memory": "256Mi" }         // cpu now optional
 }
 ```
+
+**A `cpu: { tier, burstHint }` block was considered and rejected.** It would let a catalog
+repository — including a third-party one — decide how much of a tenant's machine its own
+entry gets, relative to everything else that tenant runs. The share is a property of the
+subscription, and nothing shipped in a manifest can know what else the tenant bought.
 
 ### It must not be a flag day
 
@@ -278,26 +303,18 @@ The catalog is a **separate public repo**, plus an opt-in community repo
 be running. A required schema change would mean coordinating a release across three repos
 and breaking every third-party catalog in existence.
 
-So the migration is derivation, not translation. When `resources.cpu.tier` is absent, the
-platform derives it from the legacy `recommended.cpu`:
+It is not. Nothing in a manifest has to change, because nothing in a manifest is read for
+scheduling any more: a tiered tenant's applications take that tenant's share, and an
+existing entry's `recommended.cpu` is simply ignored for them.
 
-| legacy `recommended.cpu` | derived tier |
-|---|---|
-| ≤ 0.10 | Normal |
-| > 0.10 and ≤ 0.50 | High |
-| > 0.50 | Highest |
+**An earlier revision of this section specified a derivation** — `≤0.10 → Normal`,
+`≤0.50 → High`, above that `Highest` — so that every catalog entry would get a sensible
+tier with no edits. It was implemented in R2 and removed in R3: see *Where the tier comes
+from*. Deriving a share from a manifest is the wrong shape regardless of how good the
+mapping is.
 
-Applied to today's Official catalog that lands `static-nginx`, `static-apache`, `redis-7`
-and `memcached-alpine` on Normal; the runtimes and single-service apps (`apache-php`,
-`nodejs`, `mariadb`, `postgresql`, `apache-php-office`, `wordpress`, `gitea`, …) on High;
-and `nextcloud`, `jitsi`, `immich`, `rocketchat`, `plausible`, `moodle-bitnami`,
-`discourse` on Highest. **Every existing entry gets a sensible tier with zero catalog
-edits**, and an author who disagrees declares `cpu.tier` explicitly.
-
-`cpu` becomes optional in `minimum`/`recommended` rather than being removed — an old
-manifest stays valid, a new one may omit it, and the platform prefers `cpu.tier` when both
-are present. `resourceShare.minCpu` (ADR-037 per-component floors) becomes a fraction of
-the deployment's tier value rather than an absolute core count; the catalog sync validator's
+`resourceShare.minCpu` (ADR-037 per-component floors) becomes a fraction of the
+deployment's tier value rather than an absolute core count; the catalog sync validator's
 all-or-nothing rule is unchanged.
 
 > The companion change lowering `minimum.cpu` across 20 manifests is the **tactical
@@ -396,11 +413,46 @@ Most tenants need no human decision. The dry run auto-classifies; only these nee
 - tenants whose measured p95 already exceeds the proposed ceiling,
 - entries from third-party catalog repositories we have never seen.
 
-### R3 — tiered becomes the default for fresh installs
+### R3 — tiered becomes the default for fresh installs  *(shipped)*
 
 Existing clusters keep `legacy`, but visibly: a standing panel notice carrying their own
 reserved-vs-used figures and a link to the dry run. `legacy` and `cpu_limit` are removed in
 a later major, at which point the migration flag goes with them.
+
+**Which cluster is which is decided once, at the first tenant creation after this
+release — not at boot.** A disaster-recovery rebuild starts the API against a
+freshly-migrated, empty database and restores the backup afterwards, so a boot-time count
+of tenants would read "fresh install" for a cluster whose thirty legacy tenants are about
+to reappear, and record it permanently. Asking when a tenant is created cannot race a
+restore, because a restore is what puts the tenants there. The answer lives in
+`platform_settings.cpu_scheduling_default` and nothing overwrites it.
+
+R3 also closed four gaps that made the model unwind by itself:
+
+- **A changed tier could not be applied.** An already-tiered tenant was refused with
+  `ALREADY_TIERED`, so editing its tier or ceiling wrote a column and reached nothing. The
+  same migration pipeline now re-runs with the new numbers; a changed ceiling replaces
+  pods one at a time, a changed tier alone replaces none. A LimitRange stamps its default
+  at *admission*, so nothing already running picks up a new ceiling on its own — the run
+  finds the pods still carrying the previous one and replaces them, and refuses rather
+  than reporting success if one of them has no controller to bring it back.
+- **A new deployment went back to the catalog's core count**, undoing the migration one
+  application at a time.
+- **Nothing grew the namespace `requests.cpu` quota.** The migration sized it from a
+  snapshot plus surge and never revisited it, leaving every migrated tenant room for about
+  three more applications before the fourth was refused by a limit the platform set itself.
+- **`limits.cpu` was sized as `burst x BACKSTOP` alone**, which can land below
+  `status.used`. Kubernetes accepts that and then refuses every later pod; re-applying a
+  reduced ceiling walks into it by construction.
+
+> **Watch out for `_default`.** The Kubernetes JS client deserialises a LimitRange's
+> `spec.limits[].default` as **`_default`** — `default` is a reserved word — while
+> serialising a plain `default` correctly on the way out. So the object written and the
+> object read back have different shapes, and reading `.default` returns undefined with no
+> error. That silently emptied the dry run's "what does this namespace enforce" reader and
+> the re-apply's stale-ceiling detection: both failed by finding nothing, which is
+> indistinguishable from there being nothing to find. Found on a live cluster, not by a
+> test, because every fixture spelled it the way we write it.
 
 ### Admission control, and why the grandfather question dissolves
 

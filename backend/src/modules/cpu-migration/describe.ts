@@ -20,8 +20,8 @@
 import {
   type CpuMigrationBlocker, type CpuTier,
 } from '@insula/api-contracts';
-import { deriveTier, tierMillis, blockerFor } from './tiers.js';
-import { customSpecPinsCpu, recommendedCores } from './preview.js';
+import { tierMillis, blockerFor } from './tiers.js';
+import { customSpecPinsCpu } from './preview.js';
 import { cpuToMillis } from '../dashboard/cpu-reservation.js';
 
 /** The columns every caller must select. Keep the SQL in step with this. */
@@ -51,18 +51,35 @@ export interface DescribedDeployment {
 export function describeDeployment(
   row: DeploymentFactsRow,
   officialRepoId: string | null,
+  /**
+   * The tenant's resolved tier — the CAP on what any of its workloads may
+   * ask for. Null leaves the workload's own tier untouched, which is what
+   * a legacy tenant's dry run wants.
+   */
+  tenantTier: CpuTier | null = null,
 ): DescribedDeployment {
   const declaresOwnResources = customSpecPinsCpu(row.custom_spec);
   const thirdPartyCatalog = row.source === 'catalog'
     && row.source_repo_id !== null
     && row.source_repo_id !== officialRepoId;
 
-  const proposedTier: CpuTier = row.source === 'custom'
-    // A custom container has no catalog recommendation to derive from.
-    // `high` is the safe default: `normal` would quietly starve an app
-    // nobody sized.
-    ? 'high'
-    : deriveTier(recommendedCores(row.entry_resources));
+  /**
+   * ★ The tier is the TENANT's, for every workload it runs.
+   *
+   * Not the catalog's. A manifest describing `recommended.cpu: 0.25` was
+   * describing a reservation the platform no longer makes, and deriving a
+   * share from it produced two wrong outcomes at once: a Starter tenant's
+   * WordPress outranked its own static site for no reason the operator
+   * chose, and a third-party catalog repo could hand its entry priority
+   * over everything else that tenant runs.
+   *
+   * What CPU a tenant gets is what they are sold — a plan tier with a
+   * per-tenant override — so every one of their applications takes it and
+   * they compete with each other only through the burst ceiling and the
+   * kernel. `high` is the fallback for a tenant whose tier cannot be
+   * resolved, matching resolve.ts's own DEFAULT_TIER.
+   */
+  const proposedTier: CpuTier = tenantTier ?? 'high';
 
   const services = (row.custom_spec as { services?: unknown } | null)?.services;
   const serviceCount = Array.isArray(services)

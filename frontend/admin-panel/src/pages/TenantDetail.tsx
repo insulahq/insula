@@ -1,4 +1,5 @@
 import { Fragment, useMemo, useState, type FormEvent } from 'react';
+import ApplyCpuLimitsPanel from '@/components/ApplyCpuLimitsPanel';
 import ActionsMenu, { ActionsMenuItem, ActionsMenuSeparator } from '@/components/ui/ActionsMenu';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { config } from '@/lib/runtime-config';
@@ -2098,11 +2099,18 @@ function ResourceLimitsCard({
               override until someone clicks Edit — and keeps showing a value
               the operator just CANCELLED. View mode must render from the
               props, never from edit state. */}
+          {/* Same shape as every sibling field on this card: the flex
+              label row, INPUT_CLS on the control, and the value-plus-
+              "custom" chip in view mode. It used to carry its own
+              `rounded-md … shadow-sm` select and an `text-xs` label, which
+              sat visibly narrower and squarer than the inputs beside it. */}
           <div className="sm:col-span-2">
-            <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">CPU tier</label>
+            <div className="flex items-center justify-between mb-1">
+              <label className="text-sm font-medium text-gray-700 dark:text-gray-300">CPU tier</label>
+            </div>
             {editing ? (
               <select
-                className="mt-1 block w-full rounded-md border-gray-300 text-sm shadow-sm dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
+                className={INPUT_CLS}
                 value={cpuTierOverride}
                 onChange={(e) => setCpuTierOverride(e.target.value)}
                 data-testid="tenant-cpu-tier"
@@ -2113,14 +2121,19 @@ function ResourceLimitsCard({
                 <option value="highest">Highest — 4x share</option>
               </select>
             ) : (
-              <p className="mt-1 text-sm text-gray-900 dark:text-gray-100" data-testid="tenant-cpu-tier-value">
-                {tenant.cpuTierOverride
-                  ?? (plan?.cpuTier ? `${plan.cpuTier} (from plan)` : 'derived automatically')}
-              </p>
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-gray-900 dark:text-gray-100 font-medium" data-testid="tenant-cpu-tier-value">
+                  {tenant.cpuTierOverride
+                    ?? (plan?.cpuTier ? `${plan.cpuTier} (from plan)` : 'derived automatically')}
+                </span>
+                {tenant.cpuTierOverride != null && (
+                  <span className="inline-flex rounded-full bg-amber-50 dark:bg-amber-900/20 px-2 py-0.5 text-xs text-amber-600 dark:text-amber-400">custom</span>
+                )}
+              </div>
             )}
             <p className="mt-1 text-xs text-gray-500 dark:text-gray-400" data-testid="tenant-cpu-tier-note">
               {tenant.cpuSchedulingMode === 'tiered'
-                ? 'Saved changes do not reach the cluster on their own: a tenant already on tiers keeps its current namespace settings until it is reverted and migrated again.'
+                ? 'Saved here, applied in the cluster by "Re-apply" under Cluster → CPU Scheduling. Applying a changed tier alone replaces no running application; a changed burst ceiling does, one at a time.'
                 : 'Saved, but not in effect: this tenant still uses the legacy CPU limit. It applies once you migrate it under Cluster → CPU Scheduling.'}
             </p>
           </div>
@@ -2131,7 +2144,7 @@ function ResourceLimitsCard({
           {renderField('Burst ceiling', 'cores', tenant.cpuBurstCoresOverride ?? plan?.cpuBurstCores ?? '—', burstCustom, setBurstCustom, burstOverride, setBurstOverride, tenant.cpuBurstCoresOverride != null, plan?.cpuBurstCores ?? undefined, 'number', '0.5')}
           <p className="-mt-2 text-xs text-gray-500 dark:text-gray-400 sm:col-span-2" data-testid="tenant-burst-note">
             {tenant.cpuSchedulingMode === 'tiered'
-              ? 'Applies on the next migration, not on save.'
+              ? 'Applied by "Re-apply" under Cluster → CPU Scheduling, not on save. Changing it replaces this tenant\u2019s pods, one at a time.'
               : 'Not in effect while this tenant uses the legacy CPU limit.'}
           </p>
           {renderField('Memory Limit', 'GB', effectiveMem, memCustom, setMemCustom, memOverride, setMemOverride, tenant.memoryLimitOverride != null, plan?.memoryLimit, 'number', '0.5')}
@@ -2145,6 +2158,12 @@ function ResourceLimitsCard({
           {renderField('Email Sends / Day', 'msgs', effectiveMailDaily, mailDailyCustom, setMailDailyCustom, mailDailyOverride, setMailDailyOverride, tenant.emailSendRateLimitDaily != null, plan?.emailDailySendLimit, 'number', '1')}
           {renderBoolField('Allow Custom Containers', effectiveAllowCc, allowCcCustom, setAllowCcCustom, allowCcOverride, setAllowCcOverride, tenant.allowCustomContainersOverride != null, plan?.allowCustomContainers ?? false)}
         </div>
+
+        {/* Saving writes the CPU tier and ceiling; this delivers them to the
+            namespace. Two acts, because a changed ceiling replaces every pod
+            and that must not be a side effect of pressing Save on a form
+            that also edits memory and mailboxes. */}
+        <ApplyCpuLimitsPanel tenantId={tenant.id} schedulingMode={tenant.cpuSchedulingMode} />
 
         {updateTenant.error && editing && (
           <p className="mt-3 text-sm text-red-600 dark:text-red-400">

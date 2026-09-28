@@ -15,6 +15,7 @@ import { buildRevertPlan, runTenantCpuRevert, type RevertOutcome } from './rever
 import { resolveTenantCpu, DEFAULT_LEGACY_CPU_CORES } from './resolve.js';
 import { tenantUsageBlocker, ceilingCores } from './tiers.js';
 import { describeDeployment, type DeploymentFactsRow } from './describe.js';
+import type { CpuTier } from '@insula/api-contracts';
 import type { DeploymentToRetier } from './plan.js';
 import { catalogRepositories } from '../../db/schema.js';
 import { DEFAULT_CATALOG_URL } from '../catalog/service.js';
@@ -83,7 +84,12 @@ async function loadTenant(db: Database, tenantId: string): Promise<TenantCtx> {
  * shared SQL and the shared function are what make that impossible now, not
  * a promise to keep the two in step.
  */
-async function describeDeployments(db: Database, tenantId: string): Promise<{
+async function describeDeployments(
+  db: Database,
+  tenantId: string,
+  /** The tenant's resolved tier — the cap on what its workloads may ask for. */
+  tenantTier: CpuTier | null,
+): Promise<{
   deployments: DeploymentToRetier[];
   blocked: Array<{ name: string; blocker: string }>;
 }> {
@@ -102,7 +108,7 @@ async function describeDeployments(db: Database, tenantId: string): Promise<{
      ORDER BY d.name
   `);
 
-  const described = (rows.rows ?? []).map((r) => describeDeployment(r, officialRepoId));
+  const described = (rows.rows ?? []).map((r) => describeDeployment(r, officialRepoId, tenantTier));
   return {
     deployments: described.map((f) => ({
       id: f.id,
@@ -150,9 +156,25 @@ export async function startTenantCpuMigration(
   acknowledgeBlockers = false,
 ): Promise<{ taskId: string; outcome: MigrationOutcome }> {
   const ctx = await loadTenant(db, tenantId);
-  if (ctx.mode === 'tiered') {
-    throw new ApiError('ALREADY_TIERED', 'This tenant is already on tiered CPU scheduling', 409, { tenant_id: tenantId });
-  }
+  /**
+   * ★ An already-tiered tenant is a RE-APPLY, not a refusal.
+   *
+   * This used to throw ALREADY_TIERED, which made the tier and ceiling
+   * columns write-only for any tenant that had been migrated: an operator
+   * could change a tenant's tier in the admin panel, the row would update,
+   * the panel would confirm it, and nothing in the cluster would move. The
+   * LimitRange kept the old ceiling, the quota kept the old backstop, and
+   * every pod kept the limit it had been admitted with. The only way to
+   * deliver a change was revert-then-migrate, which recreates every pod
+   * twice and loses the exact-revert baseline in between.
+   *
+   * The pipeline is the same one — that is the point. Re-applying means
+   * re-running it with the new numbers, which is idempotent by
+   * construction: a workload already at its tier is skipped, a ceiling that
+   * did not move recreates nothing, and the last step is a no-op for a
+   * tenant that is already marked tiered.
+   */
+  const reapply = ctx.mode === 'tiered';
   /**
    * ★ Exactly one run per tenant at a time.
    *
@@ -189,7 +211,7 @@ export async function startTenantCpuMigration(
    * released when the transaction ends; the `tasks` row is what holds the
    * claim for the run itself.
    */
-  const { deployments: deps, blocked } = await describeDeployments(db, tenantId);
+  const { deployments: deps, blocked } = await describeDeployments(db, tenantId, ctx.tier ?? null);
 
   /**
    * ★ Enforce the review the dry run asked for.
@@ -257,7 +279,7 @@ export async function startTenantCpuMigration(
       scope: 'admin',
       userId,
       tenantId,
-      label: toSafeText('CPU tier migration'),
+      label: toSafeText(reapply ? 'CPU tier re-apply' : 'CPU tier migration'),
       target: { type: 'route', href: `/tenants/${tenantId}` },
       details: { tenantId, namespace: ctx.namespace },
       progressPct: 0,
@@ -310,6 +332,14 @@ export async function startTenantCpuMigration(
       deployments: deps,
       tier: ctx.tier ?? 'high',
       burstCores: ctx.burstCores,
+      reapply,
+      // Read from the LIMITRANGE, which is the only object that holds the
+      // figure pods are admitted with. The tenant row holds the new value
+      // and the quota holds a multiple of it; neither answers "what are the
+      // running pods actually capped at".
+      currentCeilingMillis: reapply
+        ? await fx.readLimitRangeCeilingMillis(k8s, ctx.namespace)
+        : null,
     });
   } catch (err) {
     await taskService.finish(db, taskId, {

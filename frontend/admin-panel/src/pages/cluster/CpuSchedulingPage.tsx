@@ -118,17 +118,37 @@ function TenantRow({ t }: { t: CpuMigrationTenant }) {
             <span className="text-gray-400 dark:text-gray-500">—</span>
           )}
         </td>
+        {/* What the tenant is SOLD. When the cluster enforces something
+            else, say both — a saved-but-unapplied tier is otherwise
+            invisible: every panel shows the new number and the namespace
+            runs the old one. */}
         <td className="px-3 py-2 text-right font-mono tabular-nums text-gray-600 dark:text-gray-300">
           {t.proposedCeilingCores.toFixed(2)}
+          {t.pendingCpuChange && t.appliedCeilingCores !== null && t.appliedCeilingCores !== t.proposedCeilingCores && (
+            <span className="ml-1 text-[10px] text-amber-700 dark:text-amber-400" data-testid={`cpu-applied-${t.tenantId}`}>
+              (now {t.appliedCeilingCores.toFixed(2)})
+            </span>
+          )}
         </td>
         <td className="px-3 py-2 text-right font-mono tabular-nums text-gray-500 dark:text-gray-400">
           {/* A measured zero is a reading. Only null means unsampled. */}
           {t.observedP95Millis === null ? '—' : cores(t.observedP95Millis)}
         </td>
         <td className="px-3 py-2">
-          {t.migratesCleanly
-            ? <span className="inline-flex rounded-full bg-green-50 px-2 py-0.5 text-xs text-green-700 dark:bg-green-900/30 dark:text-green-300">migrates cleanly</span>
-            : <span className="inline-flex rounded-full bg-amber-50 px-2 py-0.5 text-xs text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">needs review</span>}
+          {t.pendingCpuChange
+            ? (
+              <span
+                className="inline-flex rounded-full bg-amber-50 px-2 py-0.5 text-xs text-amber-700 dark:bg-amber-900/30 dark:text-amber-300"
+                data-testid={`cpu-pending-${t.tenantId}`}
+              >
+                change not applied
+              </span>
+            )
+            : t.schedulingMode === 'tiered'
+              ? <span className="inline-flex rounded-full bg-green-50 px-2 py-0.5 text-xs text-green-700 dark:bg-green-900/30 dark:text-green-300">tiered</span>
+              : t.migratesCleanly
+                ? <span className="inline-flex rounded-full bg-green-50 px-2 py-0.5 text-xs text-green-700 dark:bg-green-900/30 dark:text-green-300">migrates cleanly</span>
+                : <span className="inline-flex rounded-full bg-amber-50 px-2 py-0.5 text-xs text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">needs review</span>}
         </td>
       </tr>
       {open && (
@@ -199,6 +219,7 @@ function TenantMigrationActions({ tenant }: { tenant: CpuMigrationTenant }) {
   const running = tenant.migrationRunning || apply.isPending;
   const busy = running || revert.isPending || stop.isPending;
   const tiered = tenant.schedulingMode === 'tiered';
+  const pending = tenant.pendingCpuChange;
   const needsReview = !tenant.migratesCleanly;
 
   // Report the server's own words. A mutation that "succeeded" can still have
@@ -208,7 +229,9 @@ function TenantMigrationActions({ tenant }: { tenant: CpuMigrationTenant }) {
   const reverted = revert.data?.data;
   const outcome = run
     ? { bad: run.status !== 'completed', text: run.status === 'completed'
-        ? `Migrated — freed ${(run.freedMillis ?? 0) / 1000} cores`
+        ? (tiered && (run.freedMillis ?? 0) === 0
+          ? 'Applied — the namespace now matches its saved tier and ceiling'
+          : `Migrated — freed ${(run.freedMillis ?? 0) / 1000} cores`)
         : `${run.status}: ${run.reason ?? run.step ?? 'see the task list'}` }
     : reverted
       ? { bad: reverted.status !== 'completed', text: reverted.status === 'completed'
@@ -221,7 +244,20 @@ function TenantMigrationActions({ tenant }: { tenant: CpuMigrationTenant }) {
         : null;
 
   return (
-    <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-gray-200 pt-3 dark:border-gray-700">
+    <div className="mt-3 border-t border-gray-200 pt-3 dark:border-gray-700">
+      {pending && (
+        <p className="mb-2 text-xs text-amber-700 dark:text-amber-400" data-testid={`cpu-pending-detail-${tenant.tenantId}`}>
+          Saved settings differ from what this namespace enforces:{' '}
+          tier <span className="font-medium">{tenant.appliedTier ? TIER_LABEL[tenant.appliedTier] : 'unknown'}</span> →{' '}
+          <span className="font-medium">{TIER_LABEL[tenant.proposedTier]}</span>, ceiling{' '}
+          <span className="font-medium">{tenant.appliedCeilingCores?.toFixed(2) ?? '—'}</span> →{' '}
+          <span className="font-medium">{tenant.proposedCeilingCores.toFixed(2)}</span> cores.
+          {tenant.appliedCeilingCores !== tenant.proposedCeilingCores
+            ? ' Applying replaces this tenant\u2019s pods, one at a time.'
+            : ' Applying changes no running application — the tier governs containers that declare no CPU of their own.'}
+        </p>
+      )}
+      <div className="flex flex-wrap items-center gap-2">
       {!tiered && (
         <button
           type="button"
@@ -231,6 +267,25 @@ function TenantMigrationActions({ tenant }: { tenant: CpuMigrationTenant }) {
           className="rounded-md bg-brand-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-brand-700 disabled:opacity-50 dark:bg-brand-500 dark:hover:bg-brand-600"
         >
           {running ? 'Migrating…' : 'Migrate this tenant'}
+        </button>
+      )}
+      {/* ★ The control that was missing for the whole of R2.
+          An already-tiered tenant was refused outright, so a changed tier or
+          ceiling wrote a database column and reached nothing: the LimitRange
+          kept the old ceiling, the quota kept the old backstop, and every pod
+          kept the limit it was admitted with. The only route was
+          revert-then-migrate, which recreates every pod twice. */}
+      {tiered && (
+        <button
+          type="button"
+          disabled={busy || (needsReview && !acknowledged)}
+          onClick={() => apply.mutate({ tenantId: tenant.tenantId, acknowledgeBlockers: acknowledged })}
+          data-testid={`cpu-reapply-${tenant.tenantId}`}
+          className={pending
+            ? 'rounded-md bg-brand-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-brand-700 disabled:opacity-50 dark:bg-brand-500 dark:hover:bg-brand-600'
+            : 'rounded-md border border-gray-300 px-2.5 py-1 text-xs font-medium text-gray-700 hover:bg-gray-100 disabled:opacity-50 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-700'}
+        >
+          {running ? 'Applying…' : pending ? 'Apply pending change' : 'Re-apply settings'}
         </button>
       )}
       {tiered && (
@@ -258,7 +313,11 @@ function TenantMigrationActions({ tenant }: { tenant: CpuMigrationTenant }) {
           refuses a flagged tenant without an explicit acknowledgement, so a
           caption next to a still-clickable button would just produce a 409
           the operator cannot get past. */}
-      {needsReview && !tiered && (
+      {/* Shown for a RE-APPLY too. The server gates both on the same
+          acknowledgement, and the usage flag — measured load already above
+          the ceiling — is most relevant precisely when an operator is
+          changing that ceiling. */}
+      {needsReview && (
         <label className="flex items-center gap-1.5 text-xs text-amber-700 dark:text-amber-400">
           <input
             type="checkbox"
@@ -280,6 +339,7 @@ function TenantMigrationActions({ tenant }: { tenant: CpuMigrationTenant }) {
           {outcome.text}
         </span>
       )}
+      </div>
     </div>
   );
 }

@@ -81,8 +81,35 @@ export const cpuMigrationTenantSchema = z.object({
    * figure would render a net increase identically to no change.
    */
   increasedMillis: z.number(),
-  /** Tenant-wide burst ceiling the plan would grant, in cores. */
+  /**
+   * Tenant-wide burst ceiling the tenant would get, in cores.
+   *
+   * Resolved the same way the runner resolves it — tenant override, then
+   * plan, then derived from `cpu_limit`. An earlier revision derived it from
+   * `cpu_limit` ALONE, so any operator who set a plan or tenant burst saw
+   * one number in the dry run and got another when they applied it. That is
+   * the preview-versus-apply split describe.ts exists to prevent, on the
+   * other axis.
+   */
   proposedCeilingCores: z.number(),
+  /** The tier the tenant's undeclared containers would take. */
+  proposedTier: cpuTierSchema,
+  /**
+   * What the CLUSTER enforces for this tenant right now — read from the
+   * namespace LimitRange, the only object that holds the figure pods are
+   * admitted with. Null for a tenant with no LimitRange (every legacy one).
+   */
+  appliedCeilingCores: z.number().nullable(),
+  appliedTier: cpuTierSchema.nullable(),
+  /**
+   * The database says one thing and the cluster another, and an operator
+   * has to press something to close the gap.
+   *
+   * ★ Not cosmetic. Editing a tiered tenant's tier writes a column; until
+   * it is re-applied, every panel shows the new value and the cluster runs
+   * the old one, with nothing anywhere saying so.
+   */
+  pendingCpuChange: z.boolean(),
   /**
    * Measured p95 across the tenant, millicores, or null when unsampled.
    * Tenant-wide because the ceiling it is compared against is tenant-wide —

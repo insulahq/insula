@@ -10,6 +10,7 @@ import NetworkAccessSection from '@/components/NetworkAccessSection';
 import AvailableUpgradesCard from '@/components/AvailableUpgradesCard';
 import { ResourceBreakdown } from '@/components/ResourceBreakdown';
 import { useCatalogEntryVersions } from '@/hooks/use-catalog';
+import { useResourceAvailability as useTenantCpuModel, CPU_TIER_LABEL } from '@/hooks/use-resource-availability';
 import clsx from 'clsx';
 
 /**
@@ -175,6 +176,12 @@ export default function InstalledAppDetailModal({
   // Derived: combine value + unit for submission
   const editMemory = `${editMemoryValue}${editMemoryUnit}`;
   const updateResources = useUpdateDeploymentResources(tenantId);
+  // One source for "which CPU model governs this tenant" — see
+  // use-resource-availability. Re-deriving it per surface is how surfaces
+  // end up disagreeing about what the tenant was sold.
+  const { data: tenantCpuData } = useTenantCpuModel(tenantId);
+  const tenantCpu = tenantCpuData?.data;
+  const tieredCpu = tenantCpu?.cpuModel === 'tiered';
   const availability = useResourceAvailability(tenantId, editingResources ? deployment?.id : undefined);
   const avail = availability.data?.data;
   const [showLogs, setShowLogs] = useState(false);
@@ -561,24 +568,47 @@ export default function InstalledAppDetailModal({
           {editingResources ? (
             <div className="space-y-3">
               <div className="grid grid-cols-2 gap-4">
+                {/* ★ Not editable under the tier model (ADR-062). A CPU
+                    number is not something this tenant chooses: their
+                    applications take the tenant's share and are bounded by
+                    the plan's burst ceiling. The server normalises anything
+                    sent here, so leaving the box would report a choice that
+                    was discarded. */}
                 <div>
                   <label
                     className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1"
-                    title="Your CPU baseline — guaranteed minimum. When neighbour customers are idle, your pods can burst above this value (shared CPU model)."
+                    title={tieredCpu
+                      ? 'Your share of the machine under contention. When neighbours are idle your application bursts above it, up to the ceiling.'
+                      : 'Your CPU baseline — guaranteed minimum. When neighbour customers are idle, your pods can burst above this value (shared CPU model).'}
                   >
-                    CPU baseline (burstable)
+                    {tieredCpu ? 'CPU share' : 'CPU baseline (burstable)'}
                   </label>
-                  <input
-                    type="text"
-                    value={editCpu}
-                    onChange={(e) => setEditCpu(e.target.value)}
-                    className="w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                    data-testid="edit-cpu-input"
-                  />
-                  {avail && (
-                    <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">
-                      Min: {avail.cpu.min} &middot; Max: {avail.cpu.max} cores
-                    </p>
+                  {tieredCpu ? (
+                    <div data-testid="edit-cpu-tier">
+                      <p className="text-sm text-gray-900 dark:text-gray-100">
+                        {tenantCpu?.cpuTier ? CPU_TIER_LABEL[tenantCpu.cpuTier] : 'Standard'}
+                      </p>
+                      <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">
+                        {tenantCpu?.cpuBurstCores != null
+                          ? `Bursts to ${tenantCpu.cpuBurstCores} core${tenantCpu.cpuBurstCores === 1 ? '' : 's'}. Set by your plan.`
+                          : 'Set by your plan.'}
+                      </p>
+                    </div>
+                  ) : (
+                    <>
+                      <input
+                        type="text"
+                        value={editCpu}
+                        onChange={(e) => setEditCpu(e.target.value)}
+                        className="w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                        data-testid="edit-cpu-input"
+                      />
+                      {avail && (
+                        <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">
+                          Min: {avail.cpu.min} &middot; Max: {avail.cpu.max} cores
+                        </p>
+                      )}
+                    </>
                   )}
                 </div>
                 <div>
@@ -623,7 +653,13 @@ export default function InstalledAppDetailModal({
                   type="button"
                   onClick={() => {
                     updateResources.mutate(
-                      { deploymentId: deployment.id, cpu_request: editCpu, memory_request: editMemory },
+                      {
+                        deploymentId: deployment.id,
+                        // Omitted under tiers: the server would replace it
+                        // with the tenant's share anyway.
+                        ...(tieredCpu ? {} : { cpu_request: editCpu }),
+                        memory_request: editMemory,
+                      },
                       {
                         onSuccess: () => {
                           setEditingResources(false);
@@ -633,7 +669,7 @@ export default function InstalledAppDetailModal({
                       },
                     );
                   }}
-                  disabled={updateResources.isPending || (editCpu === deployment.cpuRequest && editMemory === deployment.memoryRequest)}
+                  disabled={updateResources.isPending || ((tieredCpu || editCpu === deployment.cpuRequest) && editMemory === deployment.memoryRequest)}
                   className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
                   data-testid="apply-resources-button"
                 >

@@ -12,6 +12,7 @@ import type { DeployComponentInput } from './k8s-deployer.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { Database } from '../../db/index.js';
 import { reconcileCustomRow, applyReconcileOutcome } from '../custom-deployments/reconcile.js';
+import { buildWorkloadSnapshot, type WorkloadSnapshot } from './workload-snapshot.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -130,9 +131,18 @@ export function needsStatusWrite(
     && (current.lastError !== null || current.statusMessage !== null);
 }
 
+/**
+ * Minimal logger surface, matching the shape the bandwidth meter uses. Kept
+ * optional so the existing tests can call the reconciler with two arguments.
+ */
+export interface ReconcileLogger {
+  warn?: (obj: unknown, msg?: string) => void;
+}
+
 export async function reconcileDeploymentStatuses(
   db: Database,
   k8s: K8sClients,
+  logger: ReconcileLogger = {},
 ): Promise<ReconcileResult> {
   let checked = 0;
   let updated = 0;
@@ -175,6 +185,24 @@ export async function reconcileDeploymentStatuses(
 
   if (activeDeployments.length === 0) {
     return { checked: 0, updated: 0, errors: [] };
+  }
+
+  // One pair of cluster-wide LISTs replaces ~2 API round-trips per component
+  // per tick. The client opens a fresh TLS connection per request (see
+  // workload-snapshot.ts), so request count — not payload size — is the cost.
+  //
+  // A failure here is NOT fatal: getDeploymentStatus falls back to its
+  // per-call reads when handed no snapshot, so a bad cycle costs request
+  // volume, never correctness. It is logged because silently reverting to the
+  // old behaviour is a regression nobody would otherwise notice.
+  let snapshot: WorkloadSnapshot | undefined;
+  try {
+    snapshot = await buildWorkloadSnapshot(k8s);
+  } catch (err) {
+    logger.warn?.(
+      { err: err instanceof Error ? err.message : String(err) },
+      'status-reconciler: cluster workload snapshot failed — falling back to per-deployment reads this cycle',
+    );
   }
 
   // Group deployments by tenant for namespace lookup
@@ -241,7 +269,7 @@ export async function reconcileDeploymentStatuses(
 
     try {
       const components = resolveComponentsForReconcile(entry);
-      const k8sStatus = await getDeploymentStatus(k8s, namespace, deployment.name, components);
+      const k8sStatus = await getDeploymentStatus(k8s, namespace, deployment.name, components, snapshot);
       let newDbStatus = phaseToDbStatus(k8sStatus.phase);
       let timeoutMessage: string | null = null;
 
