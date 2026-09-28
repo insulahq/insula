@@ -60,8 +60,11 @@ fi
 #   - 2 → covers 3-commit-rapid-fire race (typical operator workflow
 #         where two PRs merge in quick succession + one in-flight pin)
 # We use 2 — false-positive rate < 1% on hourly cron, and a real
-# orphan would still be caught within 2 more code commits (or by the
-# next cron tick) which is acceptable detection latency.
+# orphan would still be caught within 2 more code commits, which is
+# acceptable detection latency. Note the unit: commits that BUILD.
+# Commits that produce no image no longer advance this window, so the
+# hourly cron alone does not shorten the wait — the next build does,
+# and that build re-pins anyway.
 #
 # Implemented as a while-read loop (instead of `grep -v | head -3`)
 # to avoid SIGPIPE under `set -o pipefail` — head closing the pipe
@@ -69,22 +72,49 @@ fi
 # the script.
 # Paths that make Build Images run at all. Mirrors the positive `paths:`
 # list in .github/workflows/build-deploy.yml — a commit touching none of
-# them produces no image and therefore no auto-pin, exactly like a
-# `[skip ci]` commit.
-BUILD_PATHS_RE='^(backend/|frontend/admin-panel/|frontend/tenant-panel/|packages/api-contracts/|k8s/|scripts/|images/|\.github/workflows/build-deploy\.yml$)'
+# them produces no image and therefore no auto-pin.
+#
+# `images/**` is deliberately absent: build-deploy.yml dropped it (those
+# DaemonSets are pinned by their own ci-*.yml), so an images-only commit
+# never reaches this pin either.
+BUILD_PATHS_RE='^(backend/|frontend/admin-panel/|frontend/tenant-panel/|packages/api-contracts/|k8s/|scripts/|\.github/workflows/build-deploy\.yml$)'
+
+# The three files the auto-pin itself rewrites, excluded from build-deploy's
+# triggers for the same reason they are excluded here: writing them is the
+# pin, not something to be pinned. Normally such a commit is caught by the
+# `chore(development):` message filter below — but that prefix is a
+# convention this script recommends, not one anything enforces.
+PIN_PATHS_RE='^k8s/overlays/development/(kustomization|platform-version-patch|deploy-rev-patch)\.yaml$'
 
 # Does this commit touch anything Build Images watches?
 #
-# `-m --first-parent` makes a merge commit report its merged-in changes
-# rather than nothing, so a merge that brings code in still counts.
+# Diffed explicitly against the FIRST PARENT, which is what a push event
+# shows GitHub and therefore what decides whether build-deploy ran. The
+# obvious `git diff-tree -m --first-parent` does not do this: --first-parent
+# is silently ignored by diff-tree, and -m returns the union of the diffs
+# against every parent — so a merge of a documentation-only branch would
+# report the backend files that landed on the trunk while that branch was
+# open, and count as a commit with an image behind it.
+#
+# A commit whose parent cannot be read — the repository's first commit, or
+# the frontier of the shallow checkout this runs in — is diffed against the
+# empty tree, which lists its whole tree and counts as building. That is the
+# safe direction: a commit we cannot classify must not silently drop out of
+# the window, because dropping it is what hides an orphan.
 #
 # The file list is captured into a variable before grep sees it: a
-# `git … | grep -q` pipeline under `set -o pipefail` can return 141
-# when grep exits on the first match and git dies of SIGPIPE, which
-# reads as "no match" and would skip a commit that does build.
+# `git … | grep -q` pipeline under `set -o pipefail` can return 141 when
+# grep exits on the first match and git dies of SIGPIPE, which reads as
+# "builds nothing" for a commit that does.
 builds_something() {
-  local files
-  files=$(git diff-tree --no-commit-id --name-only -r -m --first-parent "$1" 2>/dev/null || true)
+  local sha="$1" parent files
+  parent=$(git rev-parse --verify --quiet "${sha}^1" 2>/dev/null || true)
+  if [[ -n "$parent" ]] && git cat-file -e "${parent}^{commit}" 2>/dev/null; then
+    files=$(git diff-tree --no-commit-id --name-only -r "$parent" "$sha")
+  else
+    files=$(git diff-tree --no-commit-id --name-only -r --root "$sha")
+  fi
+  files=$(grep -vE "$PIN_PATHS_RE" <<<"$files" || true)
   [[ -n "$files" ]] && grep -qE "$BUILD_PATHS_RE" <<<"$files"
 }
 
@@ -122,8 +152,13 @@ while IFS=' ' read -r sha msg_rest; do
 done < <(git log --pretty='%H %s' -n 100)
 
 if [[ ${#CODE_COMMITS[@]} -eq 0 ]]; then
-  echo "::error::no non-pin commit found in last 100 commits — fetch depth too shallow or branch is pure pin churn"
-  exit 1
+  # Nothing in the window produces an image, so there is no image for the
+  # pin to be behind. Exiting 0 here is what keeps a run of documentation
+  # commits from failing the guard; a genuinely orphaned pin still fails,
+  # because the commit that orphaned it builds by definition and therefore
+  # appears in this list.
+  echo "✓ no commit in the last 100 builds an image — pin cannot be stale against them"
+  exit 0
 fi
 
 LAST_CODE_FULL_SHA="${CODE_COMMITS[0]}"
