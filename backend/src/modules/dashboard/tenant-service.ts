@@ -199,7 +199,13 @@ export async function buildTenantLive(
   k8s: K8sClients,
   tenantId: string,
   namespace: string,
-  planLimits: { cpuLimit: number; memoryLimitGi: number; storageLimitGi: number },
+  planLimits: {
+    cpuLimit: number;
+    memoryLimitGi: number;
+    storageLimitGi: number;
+    /** 'consume' for a tiered tenant — see tenant-display-limits.ts. */
+    cpuKind?: 'reserve' | 'consume';
+  },
   logger?: Logger,
 ): Promise<TenantDashboardLive> {
   const resources = await collect('resources', async () => {
@@ -210,7 +216,19 @@ export async function buildTenantLive(
     // so an idle tenant reads as idle instead of as broken.
     const used = (v: number): number | null => (m.usageMeasured ? v : null);
     return {
-      cpu: { inUse: used(m.cpu.inUse), committed: m.cpu.reserved, total: m.cpu.available, unit: 'cores', kind: 'reserve' as const },
+      /**
+       * ★ CONSUMED, not reserved, for a tiered tenant.
+       *
+       * The tile vocabulary already models the difference: a `consume`
+       * triad hides the reservation band and relabels the remainder
+       * "Free". A tiered tenant HAS no CPU reservation — they have a share
+       * and a ceiling — so drawing a reservation band was showing them a
+       * number that does not exist and cannot be acted on. `committed`
+       * collapses onto usage for the same reason storage already does.
+       */
+      cpu: planLimits.cpuKind === 'consume'
+        ? { inUse: used(m.cpu.inUse), committed: m.cpu.inUse, total: m.cpu.available, unit: 'cores', kind: 'consume' as const }
+        : { inUse: used(m.cpu.inUse), committed: m.cpu.reserved, total: m.cpu.available, unit: 'cores', kind: 'reserve' as const },
       memory: { inUse: used(m.memory.inUse), committed: m.memory.reserved, total: m.memory.available, unit: 'GiB', kind: 'reserve' as const },
       // Disk is CONSUMED, not reserved: a tenant's free storage is the limit
       // minus what is on disk, and there is no reserved band to show.

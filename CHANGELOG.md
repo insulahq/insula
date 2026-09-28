@@ -85,6 +85,22 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   one application quietly keeps the old ceiling and every screen shows the
   new one.
 
+- **What a tenant sees about CPU now matches what they actually get.** The
+  tenant panel asked for a CPU number in four places and measured usage
+  against a reservation — quantities that do not exist under the share
+  model, and a server that quietly replaced whatever was typed. Those
+  fields now state the share the plan sells and the ceiling it bursts to,
+  the usage bars measure against that ceiling instead of a reservation, and
+  the deploy check no longer refuses an application for want of CPU it does
+  not need to reserve.
+
+- **A cluster still on the old model says so, with its own numbers.** The
+  operator console carries a standing note — how much CPU is reserved
+  against how much is in use on *that* cluster, how many cores moving the
+  remaining tenants would hand back, and a way through to do it. It
+  disappears by itself once the last tenant is migrated; there is nothing to
+  dismiss, because the cost it names is real for as long as it is there.
+
 ### Changed
 
 - **The default hosting plans now sell distinct CPU shares.** Starter,

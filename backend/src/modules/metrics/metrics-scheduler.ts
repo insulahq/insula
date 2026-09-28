@@ -7,6 +7,7 @@ import { scanTenantOom, describeOomEvent } from './oom-scan.js';
 import { notifyAdminTenantOom } from '../notifications/events.js';
 import { recordHourlyUsage } from './usage-rollup.js';
 import type { Database } from '../../db/index.js';
+import { tenantDisplayLimits } from './tenant-display-limits.js';
 
 /** Admin per-tenant saturation alerts are on unless explicitly set to 'off'. */
 async function saturationAlertsEnabled(db: Database): Promise<boolean> {
@@ -65,11 +66,11 @@ export function startMetricsScheduler(db: Database): NodeJS.Timeout {
         const tenant = provisioned[i];
         const plan = planMap.get(tenant.planId);
 
-        const planLimits = {
-          cpuLimit: Number(tenant.cpuLimitOverride ?? plan?.cpuLimit ?? 2),
-          memoryLimitGi: Number(tenant.memoryLimitOverride ?? plan?.memoryLimit ?? 4),
-          storageLimitGi: Number(tenant.storageLimitOverride ?? plan?.storageLimit ?? 50),
-        };
+        // Tiered tenants measure usage against their burst CEILING, not
+        // against a reservation they do not have — see
+        // tenant-display-limits.ts. Same resolver as the HTTP path, so a
+        // cached sample and a live read cannot disagree.
+        const planLimits = tenantDisplayLimits(tenant, plan);
 
         try {
           const metrics = await collectTenantMetrics(db, k8s, tenant.id, tenant.namespace, planLimits);

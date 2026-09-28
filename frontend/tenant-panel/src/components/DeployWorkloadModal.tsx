@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, type FormEvent } from 'react';
 import { X, Loader2, Search, Rocket, CheckCircle, AlertCircle, AlertTriangle } from 'lucide-react';
 import { useTenantContext } from '@/hooks/use-tenant-context';
+import { useResourceAvailability, CPU_TIER_LABEL } from '@/hooks/use-resource-availability';
 import { useCatalog, useCatalogEntryVersions } from '@/hooks/use-catalog';
 import { useCreateDeployment } from '@/hooks/use-deployments';
 import { useDomains } from '@/hooks/use-domains';
@@ -33,6 +34,19 @@ const CLUSTER_ONLY_ENTRY_TYPES = new Set(['database', 'service']);
 
 export default function DeployWorkloadModal({ open, onClose, preSelectedImageId, onSuccess, existingNames = [] }: DeployWorkloadModalProps) {
   const { tenantId } = useTenantContext();
+  /**
+   * ★ Under the tier model there is no CPU number to type (ADR-062).
+   *
+   * An application gets the tenant's share and is bounded by the plan's
+   * burst ceiling. The box below used to accept millicores and validate
+   * them against the catalog's `minimum.cpu` — a floor that refused 0.25 on
+   * an entry recommending exactly that — and the server now overwrites
+   * whatever it sends. A field whose value is discarded is worse than no
+   * field: it tells the tenant they chose something.
+   */
+  const { data: availability } = useResourceAvailability(tenantId ?? undefined);
+  const cpu = availability?.data;
+  const tiered = cpu?.cpuModel === 'tiered';
   const { data: catalogData } = useCatalog();
   const { data: domainsData } = useDomains(tenantId ?? undefined);
   const createDeployment = useCreateDeployment(tenantId ?? undefined);
@@ -119,13 +133,15 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId,
       return Number(trimmed) || 0;
     };
 
-    const cpuTooLow = parseCpuValue(cpuRequest) < parseCpuValue(effectiveMinCpu);
+    // No CPU floor under the tier model: the request is the tenant's share,
+    // not something the catalog gets to set a minimum for.
+    const cpuTooLow = !tiered && parseCpuValue(cpuRequest) < parseCpuValue(effectiveMinCpu);
     const memoryTooLow = parseMemoryMi(memoryRequest) < parseMemoryMi(effectiveMinMemory);
 
     if (cpuTooLow) return `Minimum CPU: ${effectiveMinCpu}`;
     if (memoryTooLow) return `Minimum memory: ${effectiveMinMemory}`;
     return null;
-  }, [selectedImageId, minCpu, minMemory, cpuRequest, memoryRequest]);
+  }, [selectedImageId, minCpu, minMemory, cpuRequest, memoryRequest, tiered]);
 
   // Reset resourcesFit when selected image changes
   useEffect(() => {
@@ -240,7 +256,7 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId,
       await createDeployment.mutateAsync({
         catalog_entry_id: selectedImageId,
         name: name.trim(),
-        cpu_request: cpuRequest,
+        ...(tiered ? {} : { cpu_request: cpuRequest }),
         memory_request: memoryRequest,
         configuration: Object.keys(paramValues).length > 0 ? paramValues : undefined,
         version: selectedVersion || undefined,
@@ -541,15 +557,28 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId,
                   )}
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">CPU Request</label>
-                  <input
-                    type="text"
-                    value={cpuRequest}
-                    onChange={(e) => setCpuRequest(e.target.value)}
-                    className={INPUT_CLASS}
-                    placeholder="100m"
-                    data-testid="deploy-cpu-input"
-                  />
+                  <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">CPU</label>
+                  {tiered ? (
+                    <div data-testid="deploy-cpu-tier">
+                      <p className="text-sm text-gray-900 dark:text-gray-100">
+                        {cpu?.cpuTier ? CPU_TIER_LABEL[cpu.cpuTier] : 'Standard'} share
+                      </p>
+                      <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                        {cpu?.cpuBurstCores != null
+                          ? `Bursts to ${cpu.cpuBurstCores} core${cpu.cpuBurstCores === 1 ? '' : 's'} when the machine is free.`
+                          : 'Bursts freely when the machine is idle.'}
+                      </p>
+                    </div>
+                  ) : (
+                    <input
+                      type="text"
+                      value={cpuRequest}
+                      onChange={(e) => setCpuRequest(e.target.value)}
+                      className={INPUT_CLASS}
+                      placeholder="100m"
+                      data-testid="deploy-cpu-input"
+                    />
+                  )}
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Memory Request</label>

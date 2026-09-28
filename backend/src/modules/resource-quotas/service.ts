@@ -1,4 +1,6 @@
 import { eq, and, notInArray } from 'drizzle-orm';
+import { CPU_TIER_MILLICORES } from '@insula/api-contracts';
+import { resolveTenantCpu } from '../cpu-migration/resolve.js';
 import { resourceQuotas, tenants, hostingPlans, deployments } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -66,6 +68,26 @@ interface ResourceAvailability {
   readonly cpuAvailable: number;
   readonly memoryAvailableGi: number;
   readonly storageAvailableGi: number;
+  /**
+   * ★ The tenant's CPU model, so every tenant-facing surface reads ONE
+   * truth (ADR-062 R3).
+   *
+   * Under the tier model a tenant does not choose a CPU number: their
+   * applications take the tenant's share and are bounded by the burst
+   * ceiling. The panels were built around choosing one — a free-text
+   * millicore box in four modals, a reservation gate on the deploy button,
+   * and a header chip reading "0.00/2.0" of a reservation nobody can act
+   * on. Each surface needs to know which model applies before it can show
+   * the right thing, and re-deriving that per surface is how they end up
+   * disagreeing.
+   */
+  readonly cpuModel: 'legacy' | 'tiered';
+  /** Tiered only: the share every one of this tenant's applications takes. */
+  readonly cpuTier: 'normal' | 'high' | 'highest' | null;
+  /** Tiered only: the ceiling, in cores. What a container may USE. */
+  readonly cpuBurstCores: number | null;
+  /** Tiered only: that share as a Kubernetes quantity, e.g. "30m". */
+  readonly cpuTierRequest: string | null;
 }
 
 /**
@@ -205,9 +227,23 @@ export async function getTenantResourceAvailability(
   // Storage: estimate 1 Gi per active deployment (MVP approximation)
   const storageUsedGi = activeDeployments.length * 1;
 
+  const resolvedCpu = resolveTenantCpu(
+    plan ? { cpuLimit: plan.cpuLimit, cpuTier: plan.cpuTier, cpuBurstCores: plan.cpuBurstCores } : null,
+    {
+      cpuSchedulingMode: tenant.cpuSchedulingMode === 'tiered' ? 'tiered' : 'legacy',
+      cpuLimitOverride: tenant.cpuLimitOverride,
+      cpuTierOverride: tenant.cpuTierOverride,
+      cpuBurstCoresOverride: tenant.cpuBurstCoresOverride,
+    },
+  );
+
   // One division at the end yields the correctly-rounded double for the
   // decimal value, so an exact fit compares equal on the client.
   return {
+    cpuModel: resolvedCpu.mode,
+    cpuTier: resolvedCpu.tier,
+    cpuBurstCores: resolvedCpu.burstCores,
+    cpuTierRequest: resolvedCpu.tier ? `${CPU_TIER_MILLICORES[resolvedCpu.tier]}m` : null,
     cpuLimit,
     memoryLimitGi,
     storageLimitGi,

@@ -94,7 +94,24 @@ TF=$(curl "${A[@]}" -X POST "$API/api/v1/tenants" \
 [ -n "$TF" ] || { bad "fixture tenant create failed" ""; printf '\n  PASS: %s   FAIL: %s\n' "$PASS" "$FAIL"; exit 1; }
 TENANTS+=("$TF")
 curl "${A[@]}" -X POST "$API/api/v1/admin/tenants/$TF/provision" -d '{}' >/dev/null 2>&1
-for _ in $(seq 1 60); do curl "${A[@]}" "$API/api/v1/tenants/$TF" | grep -q '"status":"active"' && break; sleep 5; done
+# ★ ABORT if it never goes active, and give it long enough.
+#
+# The first run of this harness waited five minutes, gave up SILENTLY, and
+# then created a deployment against a half-provisioned tenant. That call
+# failed, its response was discarded, and the run spent another six minutes
+# waiting for a workload that had never been asked for — reporting, at the
+# end, that the workload "never became Ready". The cause was nowhere in the
+# output.
+ACTIVE=0
+for _ in $(seq 1 120); do
+  curl "${A[@]}" "$API/api/v1/tenants/$TF" | grep -q '"status":"active"' && { ACTIVE=1; break; }
+  sleep 5
+done
+if [ "$ACTIVE" != "1" ]; then
+  bad "the fixture tenant never became active — nothing below can run" \
+      "$(curl "${A[@]}" "$API/api/v1/tenants/$TF" | python3 -c 'import sys,json;d=json.load(sys.stdin).get("data",{});print("status=",d.get("status"),"provisioning=",d.get("provisioningStatus"))' 2>/dev/null)"
+  printf '\n  PASS: %s   FAIL: %s\n' "$PASS" "$FAIL"; exit 1
+fi
 NS=$(psql "SELECT kubernetes_namespace FROM tenants WHERE id='$TF';")
 [ -n "$NS" ] || { bad "fixture has no namespace" ""; printf '\n  PASS: %s   FAIL: %s\n' "$PASS" "$FAIL"; exit 1; }
 
@@ -103,8 +120,14 @@ import sys,json
 d=json.load(sys.stdin).get("data",[])
 print(d[0]["id"] if d else "")' 2>/dev/null)
 [ -n "$ENTRY" ] || { bad "no catalog entry — the fixture would have no workload" ""; printf '\n  PASS: %s   FAIL: %s\n' "$PASS" "$FAIL"; exit 1; }
-curl "${A[@]}" -X POST "$API/api/v1/tenants/$TF/deployments" \
-  -d "{\"catalog_entry_id\":\"$ENTRY\",\"name\":\"keep-app\",\"cpu_request\":\"0.2\",\"memory_request\":\"128Mi\"}" >/dev/null 2>&1
+# Report WHY. A discarded response is how the first run mistook a refused
+# create for a workload that would not start.
+DRESP=$(curl "${A[@]}" -X POST "$API/api/v1/tenants/$TF/deployments" \
+  -d "{\"catalog_entry_id\":\"$ENTRY\",\"name\":\"keep-app\",\"cpu_request\":\"0.2\",\"memory_request\":\"128Mi\"}")
+if ! echo "$DRESP" | grep -q '"id"'; then
+  bad "the fixture deployment was refused — nothing below can run" "$(echo "$DRESP" | head -c 300)"
+  printf '\n  PASS: %s   FAIL: %s\n' "$PASS" "$FAIL"; exit 1
+fi
 READY=0
 for _ in $(seq 1 60); do
   r=$(kc "-n $NS get deploy keep-app -o jsonpath='{.status.readyReplicas}'")

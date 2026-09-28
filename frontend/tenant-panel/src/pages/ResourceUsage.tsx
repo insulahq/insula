@@ -1,6 +1,7 @@
 import { Cpu, MemoryStick, HardDrive, Gauge, Mail, ArrowUpDown, Loader2, RefreshCw } from 'lucide-react';
 import clsx from 'clsx';
 import { useTenantContext } from '@/hooks/use-tenant-context';
+import { useResourceAvailability as useTenantCpuModel, CPU_TIER_LABEL } from '@/hooks/use-resource-availability';
 import { useResourceMetrics, useRefreshMetrics } from '@/hooks/use-resource-metrics';
 import {
   resourceBarColor, resourcePercent, resourceRatio, resourceStatus,
@@ -33,6 +34,11 @@ export default function ResourceUsage() {
   const refresh = useRefreshMetrics();
   const { data: mailboxUsageData } = useMailboxUsage(tenantId ?? undefined);
   const { data: subscriptionData } = useSubscription(tenantId ?? undefined);
+  // Which CPU model governs this tenant — one source, see
+  // use-resource-availability.
+  const { data: tenantCpuData } = useTenantCpuModel(tenantId ?? undefined);
+  const tenantCpu = tenantCpuData?.data;
+  const tieredCpu = tenantCpu?.cpuModel === 'tiered';
   const { data: bandwidthData } = useBandwidth();
 
   const metrics = metricsData?.data;
@@ -84,15 +90,24 @@ export default function ResourceUsage() {
 
       {metrics && (
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          {/* ★ No reservation band for a tiered tenant (ADR-062).
+              They have no CPU reservation: an application asks for a share
+              and is bounded by the plan's ceiling. `available` is that
+              ceiling here — see tenant-display-limits.ts — so the honest
+              card is used-against-ceiling with nothing else on the bar. */}
           <ResourceCard
             icon={<Cpu size={18} className="text-blue-500 dark:text-blue-400" />}
             label="CPU"
             inUse={metrics.cpu.inUse}
-            reserved={metrics.cpu.reserved}
+            reserved={tieredCpu ? null : metrics.cpu.reserved}
             available={metrics.cpu.available}
             unit="cores"
             formatValue={formatCpu}
             testId="cpu-card"
+            limitLabel={tieredCpu ? 'Ceiling' : 'Available'}
+            note={tieredCpu
+              ? `Your applications share the machine at the ${tenantCpu?.cpuTier ? CPU_TIER_LABEL[tenantCpu.cpuTier].toLowerCase() : 'standard'} level and burst to the ceiling when it is free.`
+              : undefined}
           />
           <ResourceCard
             icon={<MemoryStick size={18} className="text-purple-500 dark:text-purple-400" />}
@@ -154,20 +169,25 @@ function ResourceCard({
   unit,
   formatValue,
   testId,
+  limitLabel = 'Available',
+  note,
 }: {
   readonly icon: React.ReactNode;
   readonly label: string;
   readonly inUse: number;
-  readonly reserved: number;
+  /** Null hides the band and the column: the resource has no reservation. */
+  readonly reserved: number | null;
   readonly available: number;
   readonly unit: string;
   readonly formatValue: (v: number) => string;
   readonly testId: string;
+  readonly limitLabel?: string;
+  readonly note?: string;
 }) {
   // Shared policy — see lib/resource-usage.ts. `available` is the PLAN LIMIT.
   const ratio = resourceRatio(inUse, available);
   const pct = resourcePercent(inUse, available);
-  const reservedPct = resourcePercent(reserved, available);
+  const reservedPct = reserved === null ? 0 : resourcePercent(reserved, available);
   const status = resourceStatus(ratio);
   const atWarning = status === 'warning';
   const atCritical = status === 'critical';
@@ -197,11 +217,13 @@ function ResourceCard({
 
       {/* Stacked bar: reserved (lighter), in-use (solid) */}
       <div className="relative h-3 w-full overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
-        {/* Reserved track */}
-        <div
-          className="absolute inset-y-0 left-0 bg-gray-300 dark:bg-gray-600"
-          style={{ width: `${reservedPct}%` }}
-        />
+        {/* Reserved track — absent when the resource has no reservation */}
+        {reserved !== null && (
+          <div
+            className="absolute inset-y-0 left-0 bg-gray-300 dark:bg-gray-600"
+            style={{ width: `${reservedPct}%` }}
+          />
+        )}
         {/* In-use bar on top */}
         <div
           className={clsx('absolute inset-y-0 left-0 transition-all', barColor)}
@@ -209,20 +231,23 @@ function ResourceCard({
         />
       </div>
 
-      <dl className="mt-3 grid grid-cols-3 gap-2 text-xs">
+      <dl className={clsx('mt-3 grid gap-2 text-xs', reserved === null ? 'grid-cols-2' : 'grid-cols-3')}>
         <div>
           <dt className="text-gray-500 dark:text-gray-400">In use</dt>
           <dd className="font-medium text-gray-900 dark:text-gray-100">{formatValue(inUse)}</dd>
         </div>
+        {reserved !== null && (
+          <div>
+            <dt className="text-gray-500 dark:text-gray-400">Reserved</dt>
+            <dd className="font-medium text-gray-900 dark:text-gray-100">{formatValue(reserved)}</dd>
+          </div>
+        )}
         <div>
-          <dt className="text-gray-500 dark:text-gray-400">Reserved</dt>
-          <dd className="font-medium text-gray-900 dark:text-gray-100">{formatValue(reserved)}</dd>
-        </div>
-        <div>
-          <dt className="text-gray-500 dark:text-gray-400">Available</dt>
+          <dt className="text-gray-500 dark:text-gray-400">{limitLabel}</dt>
           <dd className="font-medium text-gray-900 dark:text-gray-100">{formatValue(available)}</dd>
         </div>
       </dl>
+      {note && <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">{note}</p>}
 
       {atCritical && (
         <p className="mt-3 rounded-md bg-red-50 dark:bg-red-900/20 px-3 py-1.5 text-xs text-red-600 dark:text-red-400">

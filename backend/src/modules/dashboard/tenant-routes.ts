@@ -3,6 +3,7 @@ import { eq } from 'drizzle-orm';
 import { authenticate, requireRole, requireTenantAccess } from '../../middleware/auth.js';
 import { hostingPlans } from '../../db/schema.js';
 import { getTenantById } from '../tenants/service.js';
+import { tenantDisplayLimits } from '../metrics/tenant-display-limits.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { buildTenantSummary, buildTenantLive } from './tenant-service.js';
 
@@ -39,11 +40,10 @@ export async function tenantDashboardRoutes(app: FastifyInstance): Promise<void>
     const { tenantId } = request.params as { tenantId: string };
     const tenant = await getTenantById(app.db, tenantId);
     const [plan] = await app.db.select().from(hostingPlans).where(eq(hostingPlans.id, tenant.planId));
-    const planLimits = {
-      cpuLimit: Number(tenant.cpuLimitOverride ?? plan?.cpuLimit ?? 2),
-      memoryLimitGi: Number(tenant.memoryLimitOverride ?? plan?.memoryLimit ?? 4),
-      storageLimitGi: Number(tenant.storageLimitOverride ?? plan?.storageLimit ?? 50),
-    };
+    // `cpuLimit` is the burst CEILING for a tiered tenant and the legacy
+    // reservation otherwise, and `cpuKind` says which — the console tile
+    // already draws those two differently. See tenant-display-limits.ts.
+    const planLimits = tenantDisplayLimits(tenant, plan);
     const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
     const k8s = createK8sClients(kubeconfigPath);
     return {

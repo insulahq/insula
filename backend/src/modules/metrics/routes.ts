@@ -4,6 +4,7 @@ import { authenticate, requireRole, requireTenantAccess } from '../../middleware
 import { metricsQuerySchema } from './schema.js';
 import * as service from './service.js';
 import { getCachedMetrics, getAllCachedMetrics, collectTenantMetrics } from './resource-metrics.js';
+import { resolveTenantDisplayLimits } from './tenant-display-limits.js';
 import { getTenantById } from '../tenants/service.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { tenants, hostingPlans } from '../../db/schema.js';
@@ -55,13 +56,10 @@ async function resolvePlanLimits(
   db: Parameters<typeof service.getMetrics>[0],
   tenant: Awaited<ReturnType<typeof getTenantById>>,
 ): Promise<{ cpuLimit: number; memoryLimitGi: number; storageLimitGi: number }> {
-  const [plan] = await db.select().from(hostingPlans).where(eq(hostingPlans.id, tenant.planId));
-
-  return {
-    cpuLimit: Number(tenant.cpuLimitOverride ?? plan?.cpuLimit ?? 2),
-    memoryLimitGi: Number(tenant.memoryLimitOverride ?? plan?.memoryLimit ?? 4),
-    storageLimitGi: Number(tenant.storageLimitOverride ?? plan?.storageLimit ?? 50),
-  };
+  // For a tiered tenant `cpuLimit` is the BURST CEILING, not the legacy
+  // reservation — see tenant-display-limits.ts. Everything a tenant reads
+  // their CPU usage against flows from here.
+  return resolveTenantDisplayLimits(db, tenant);
 }
 
 /**

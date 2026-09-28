@@ -1,6 +1,7 @@
 import { Settings as SettingsIcon, CreditCard, Bell, Loader2, Lock, Shield, Network, Share2, ChevronRight } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { useTenantContext } from '@/hooks/use-tenant-context';
+import { useResourceAvailability as useTenantCpuModel, CPU_TIER_LABEL } from '@/hooks/use-resource-availability';
 import { useSubscription } from '@/hooks/use-subscription';
 import { useSystemInfo } from '@/hooks/use-system-info';
 import { formatCurrency } from '@/lib/format-currency';
@@ -8,6 +9,9 @@ import { formatCurrency } from '@/lib/format-currency';
 export default function Settings() {
   const { tenantId } = useTenantContext();
   const { data, isLoading } = useSubscription(tenantId ?? undefined);
+  const { data: tenantCpuData } = useTenantCpuModel(tenantId ?? undefined);
+  const tenantCpu = tenantCpuData?.data;
+  const tieredCpu = tenantCpu?.cpuModel === 'tiered';
   const { data: sysInfo } = useSystemInfo();
   const currency = sysInfo?.currency ?? 'USD';
   const sub = data?.data;
@@ -89,9 +93,22 @@ export default function Settings() {
             </div>
             {plan && (
               <>
+                {/* ★ A tiered plan does not sell a CPU limit (ADR-062).
+                    It sells a share of the machine and a ceiling on what one
+                    application may use. Printing "0.25 cores" described a
+                    reservation the tenant does not have. */}
                 <div>
-                  <dt className="text-sm font-medium text-gray-500 dark:text-gray-400">CPU Limit</dt>
-                  <dd className="mt-1 text-sm text-gray-900 dark:text-gray-100">{plan.cpuLimit} cores</dd>
+                  <dt className="text-sm font-medium text-gray-500 dark:text-gray-400">
+                    {tieredCpu ? 'CPU' : 'CPU Limit'}
+                  </dt>
+                  <dd className="mt-1 text-sm text-gray-900 dark:text-gray-100" data-testid="settings-cpu">
+                    {tieredCpu
+                      ? `${tenantCpu?.cpuTier ? CPU_TIER_LABEL[tenantCpu.cpuTier] : 'Standard'} share`
+                        + (tenantCpu?.cpuBurstCores != null
+                          ? `, bursts to ${tenantCpu.cpuBurstCores} core${tenantCpu.cpuBurstCores === 1 ? '' : 's'}`
+                          : '')
+                      : `${plan.cpuLimit} cores`}
+                  </dd>
                 </div>
                 <div>
                   <dt className="text-sm font-medium text-gray-500 dark:text-gray-400">Memory Limit</dt>

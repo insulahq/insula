@@ -62,36 +62,41 @@ function tierForMillis(millis: number): CpuTier | null {
 }
 
 /**
- * The ceiling and default tier every tenant namespace currently enforces.
+ * The ceiling and default tier each TIERED namespace currently enforces.
  *
- * ONE list call for the whole cluster. Per-tenant reads would be thirty
- * round trips on a page an operator refreshes while watching a migration.
- * A failure here must not fail the dry run — the report is still true
- * without it, it just cannot say whether a change is pending — so it warns
- * and returns empty.
+ * ★ One read per tiered tenant, not one list for the cluster.
+ *
+ * The list form returned nothing on a live cluster — no error, no items,
+ * and therefore no way to tell "this namespace has no LimitRange" from
+ * "the call did not work". Every applied figure came back null and the
+ * panel silently lost its ability to say a change was pending, which is
+ * the one thing this function exists for. `readNamespacedLimitRange` is
+ * the call the migration itself uses, on every run, so it is the one whose
+ * behaviour is not in question.
+ *
+ * Bounded by the number of TIERED tenants, which is zero on a cluster that
+ * has not adopted the model and thirty on one that has. A failure must not
+ * fail the dry run — the report is still true without it, it just cannot
+ * say whether a change is pending — so it warns and skips that tenant.
  */
 async function readAppliedCeilings(
   k8s: K8sClients,
+  namespaces: readonly string[],
   log?: { warn?: (o: unknown, m: string) => void },
 ): Promise<Map<string, AppliedCpu>> {
   const out = new Map<string, AppliedCpu>();
-  try {
-    const list = await (k8s.core as unknown as {
-      listLimitRangeForAllNamespaces: () => Promise<{
-        items?: ReadonlyArray<{
-          metadata?: { name?: string; namespace?: string };
+  for (const ns of namespaces) {
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      const lr = await (k8s.core as unknown as {
+        readNamespacedLimitRange: (a: { name: string; namespace: string }) => Promise<{
           spec?: { limits?: ReadonlyArray<{
             type?: string;
             default?: Record<string, string>;
             defaultRequest?: Record<string, string>;
           }> };
         }>;
-      }>;
-    }).listLimitRangeForAllNamespaces();
-    for (const lr of list.items ?? []) {
-      const ns = lr.metadata?.namespace;
-      // The tier LimitRange specifically — a namespace may carry others.
-      if (!ns || lr.metadata?.name !== `${ns}-cpu`) continue;
+      }).readNamespacedLimitRange({ name: `${ns}-cpu`, namespace: ns });
       const container = (lr.spec?.limits ?? []).find((l) => l.type === 'Container');
       const ceiling = cpuToMillis(container?.default?.cpu);
       if (!ceiling) continue;
@@ -99,12 +104,18 @@ async function readAppliedCeilings(
         ceilingCores: Math.round((ceiling / 1000) * 100) / 100,
         tier: tierForMillis(cpuToMillis(container?.defaultRequest?.cpu)),
       });
+    } catch (err) {
+      // A 404 is the ordinary answer for a tenant marked tiered whose
+      // LimitRange is genuinely gone — say nothing, and report it as
+      // "nothing applied", which is exactly what it is.
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!msg.includes('HTTP-Code: 404') && (err as { statusCode?: number })?.statusCode !== 404) {
+        log?.warn?.(
+          { namespace: ns, err: msg },
+          'cpu-migration: could not read a namespace LimitRange — the report cannot say whether a tier change is pending for it',
+        );
+      }
     }
-  } catch (err) {
-    log?.warn?.(
-      { err: err instanceof Error ? err.message : String(err) },
-      'cpu-migration: could not read namespace LimitRanges — the report cannot say whether a tier change is pending',
-    );
   }
   return out;
 }
@@ -144,10 +155,16 @@ export async function buildCpuMigrationPreview(
      ORDER BY t.name
   `);
 
-  // What each namespace ENFORCES today, in one call rather than one per
-  // tenant. A tenant whose database row and LimitRange disagree has a change
-  // waiting to be applied, and nothing else in the platform can see it.
-  const appliedByNamespace = await readAppliedCeilings(k8s, log);
+  // What each TIERED namespace enforces today. A tenant whose database row
+  // and LimitRange disagree has a change waiting to be applied, and nothing
+  // else in the platform can see it.
+  const appliedByNamespace = await readAppliedCeilings(
+    k8s,
+    (tenantRows.rows ?? [])
+      .filter((t) => t.cpu_scheduling_mode === 'tiered' && t.kubernetes_namespace)
+      .map((t) => t.kubernetes_namespace as string),
+    log,
+  );
 
   // Same 15-minute staleness rule the apply guard uses: a run that has not
   // reported in that long is a dead process, not an active migration, and
