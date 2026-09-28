@@ -22,6 +22,13 @@ import { STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
 import { allocateResources, InsufficientResourceBudgetError } from './resource-allocator.js';
 import { isNotFound } from '../../shared/k8s-errors.js';
 import { describeTermination, isOomTermination, isReplacedPodRecord } from '../../lib/container-termination.js';
+import {
+  deploymentKey,
+  podsForApp,
+  type SnapshotDeployment,
+  type SnapshotPod,
+  type WorkloadSnapshot,
+} from './workload-snapshot.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -1560,6 +1567,13 @@ export async function getDeploymentStatus(
   namespace: string,
   deploymentName: string,
   components: readonly DeployComponentInput[],
+  /**
+   * Optional pre-read of every Deployment and Pod in the cluster. When given,
+   * component status is resolved from it instead of one API round-trip per
+   * component — see workload-snapshot.ts for why that matters. Omit it and the
+   * per-call read path runs exactly as before.
+   */
+  snapshot?: WorkloadSnapshot,
 ): Promise<AggregateDeploymentStatus> {
   const componentCount = components.length;
   const componentStatuses: ComponentPodStatus[] = [];
@@ -1568,7 +1582,7 @@ export async function getDeploymentStatus(
     const name = k8sResourceName(deploymentName, component.name, componentCount);
 
     if (component.type === 'deployment' || component.type === 'statefulset') {
-      const status = await getK8sDeploymentStatus(k8s, namespace, name, deploymentName, component.name);
+      const status = await getK8sDeploymentStatus(k8s, namespace, name, deploymentName, component.name, snapshot);
       componentStatuses.push(status);
     } else if (component.type === 'cronjob') {
       // CronJobs are either suspended or active
@@ -1679,17 +1693,26 @@ async function getK8sDeploymentStatus(
   name: string,
   baseName: string,
   componentName: string,
+  snapshot?: WorkloadSnapshot,
 ): Promise<ComponentPodStatus> {
-  let deployment: Record<string, unknown> | null = null;
-  try {
-    deployment = await k8s.apps.readNamespacedDeployment({ name, namespace }) as Record<string, unknown>;
-  } catch (err: unknown) {
-    if (isK8s404(err)) return { name: componentName, type: 'deployment', phase: 'not_deployed', ready: false };
-    throw err;
+  let deployment: SnapshotDeployment;
+  if (snapshot) {
+    // Absent from a cluster-wide list means the object does not exist — the
+    // same conclusion the read path draws from a 404.
+    const found = snapshot.deployments.get(deploymentKey(namespace, name));
+    if (!found) return { name: componentName, type: 'deployment', phase: 'not_deployed', ready: false };
+    deployment = found;
+  } else {
+    try {
+      deployment = await k8s.apps.readNamespacedDeployment({ name, namespace }) as SnapshotDeployment;
+    } catch (err: unknown) {
+      if (isK8s404(err)) return { name: componentName, type: 'deployment', phase: 'not_deployed', ready: false };
+      throw err;
+    }
   }
 
-  const spec = (deployment as { spec?: { replicas?: number } }).spec;
-  const status = (deployment as { status?: { replicas?: number; readyReplicas?: number } }).status;
+  const spec = deployment.spec;
+  const status = deployment.status;
   const desiredReplicas = spec?.replicas ?? 1;
   const readyReplicas = status?.readyReplicas ?? 0;
 
@@ -1697,26 +1720,17 @@ async function getK8sDeploymentStatus(
     return { name: componentName, type: 'deployment', phase: 'stopped', ready: false };
   }
 
-  // Check for pod failures — use baseName for app label selector
-  type PodItem = {
-    // metadata.deletionTimestamp + status.reason are what tell a live pod from
-    // a dead record — omitting them compiles fine and silently restores the
-    // node-reboot false positive below. See lib/container-termination.ts.
-    metadata?: {
-      deletionTimestamp?: string;
-    };
-    spec?: {
-      nodeName?: string;
-    };
-    status?: {
-      phase?: string;
-      reason?: string;
-      conditions?: Array<{ type?: string; status?: string; reason?: string; message?: string }>;
-      containerStatuses?: Array<{ state?: { waiting?: { reason?: string; message?: string }; terminated?: { reason?: string; message?: string; exitCode?: number } } }>;
-    };
-  };
-  const pods = await k8s.core.listNamespacedPod({ namespace, labelSelector: `app=${baseName}` });
-  const podList = (pods as { items?: PodItem[] }).items ?? [];
+  // Check for pod failures — use baseName for app label selector.
+  // The field set this reads (and why deletionTimestamp/reason must stay) is
+  // documented on SnapshotPod in workload-snapshot.ts.
+  let podList: readonly SnapshotPod[];
+  if (snapshot) {
+    // In-process equivalent of `labelSelector: app=<baseName>`.
+    podList = podsForApp(snapshot, namespace, baseName);
+  } else {
+    const pods = await k8s.core.listNamespacedPod({ namespace, labelSelector: `app=${baseName}` });
+    podList = (pods as { items?: SnapshotPod[] }).items ?? [];
+  }
 
   // Dead pod OBJECTS the controller has already replaced — a node-reboot
   // corpse, a drained pod, a completed rollout casualty — sit in the namespace

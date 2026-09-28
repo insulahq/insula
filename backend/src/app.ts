@@ -2471,7 +2471,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           const { createK8sClients } = await import('./modules/k8s-provisioner/k8s-client.js');
           const { reconcileDeploymentStatuses } = await import('./modules/deployments/status-reconciler.js');
           const k8s = createK8sClients(kubePath);
-          await reconcileDeploymentStatuses(app.db, k8s);
+          await reconcileDeploymentStatuses(app.db, k8s, app.log);
         } catch (err) {
           app.log.warn({ err }, 'Deployment status reconciliation failed — skipping cycle');
         }

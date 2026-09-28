@@ -12,6 +12,32 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Changed
+
+- **The platform stops spending most of its CPU talking to itself.** On a
+  production cluster the node was only ~26% busy, but almost all of that was
+  the platform's own control plane — tenants accounted for roughly a
+  twentieth of it. Two causes, both self-inflicted.
+
+  The status reconciler asked Kubernetes about every deployment
+  individually, every 15 seconds — around 82 separate requests each pass. The
+  Kubernetes client opens a fresh connection for every single request and
+  closes it afterwards, so those were 82 full TLS handshakes, paid for twice:
+  once in the platform API and once in the cluster's API server. It now reads
+  the whole cluster in two requests and answers every deployment from that,
+  which is also strictly more consistent — every workload is judged against
+  one moment in time instead of a reading smeared across several seconds.
+  Nothing about what the reconciler reports changes.
+
+  Separately, the GitOps reconciler was re-applying all 272 platform objects
+  every 60 seconds, which alone accounted for about an eighth of everything
+  the cluster's API server was doing. That cadence only governs how quickly a
+  *manual* change gets undone; new releases are picked up the moment they
+  land, and still are. It is now five minutes.
+
+  Existing clusters get the second half via a host-migration; new installs
+  get both.
+
 ## [2026.9.36] - 2026-09-28
 
 ### Fixed

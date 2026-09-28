@@ -6620,7 +6620,24 @@ metadata:
   name: platform
   namespace: flux-system
 spec:
-  interval: 1m
+  # 5m is the DRIFT-CORRECTION cadence, not the deploy latency. kustomize-
+  # controller watches its GitRepository source and reconciles immediately on a
+  # new artifact revision, so a push still lands in seconds — this interval only
+  # sets how often an UNCHANGED revision is re-applied to undo manual drift.
+  #
+  # It was 1m, which on the production cluster meant re-applying all 272
+  # inventory objects every 60s at 4.8-9.4s of CPU per pass: a sustained 4.32
+  # server-side-applies per second, ~12% of ALL apiserver traffic, and the
+  # single largest contributor to k3s's CPU after the apiserver's own work.
+  # Nothing needed that cadence — this repo's overlays change on release, not
+  # continuously. 5m matches what k8s/base/flux/kustomization-*.yaml already
+  # declared (those manifests describe a differently-named object and are never
+  # applied; bootstrap's copy here is the one every cluster actually runs).
+  #
+  # Existing clusters are NOT reached by this — the object is created once, by
+  # hand, at bootstrap. platform/host-migrations/<ver>/*-flux-kustomization-interval.sh
+  # patches them in place.
+  interval: 5m
   path: ./k8s/overlays/${overlay_dir}
   prune: true
   sourceRef:
