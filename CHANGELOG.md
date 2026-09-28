@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.9.36] - 2026-09-28
+
 ### Fixed
 
 - **Creating a tenant no longer discards fields it does not recognise.** The
