@@ -95,6 +95,13 @@ that raw usage figures never show.
 Storage is consumed rather than reserved, so it simply reads as used against
 your limit.
 
+**CPU may not work that way for your account.** Accounts on the share model
+have no CPU reservation to show: your applications take a *share* of the
+machine — the level your plan sells — and burst freely up to a **ceiling**
+when the machine is quiet. The CPU card then reads your usage against that
+ceiling and names your share underneath it, and there is no reserved figure
+on it, because nothing is set aside. Memory and storage are unaffected.
+
 CPU is shown to the millicore, because that is the scale small applications
 actually run at — a site idling at a few thousandths of a core would otherwise
 round away to nothing. If it reads **usage unavailable**, the platform's
@@ -172,6 +179,10 @@ The **menu on the left** is how you move around. Here is what each item is for:
   amount even while idle, so reserved is normally higher than in use. This is the
   number your plan limit is checked against when you deploy or resize something.
 - **Available** — your plan limit.
+
+On the share model the CPU card reads **Ceiling** instead of *Available* and
+shows no reserved figure: the bar is what you are using against the most you
+may use. Memory and storage are unchanged.
 
 The figures are read live from the cluster. The page refreshes itself about once
 a minute while you have it open, and the **Refresh** button fetches immediately.

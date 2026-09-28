@@ -46,12 +46,17 @@ if [[ -z "$PIN_SHA" ]]; then
   exit 1
 fi
 
-# Collect up to SLACK_N+1 most-recent commits whose message does NOT
-# begin with `chore(development):` (or legacy `chore(staging):`). That filter excludes both bot
-# auto-pins ("chore(development): pin platform-version to ...") and human
-# manual pins ("chore(development): manual pin to ..."). Anything else —
-# feat/fix/refactor/chore(other)/ci/merge commits — counts as a
-# "code commit" whose images should be represented in the pin.
+# Collect up to SLACK_N+1 most-recent commits that could have an image
+# behind them — decided by what each commit CHANGED, not by how its
+# subject line is worded.
+#
+# Auto-pins ("chore(development): pin platform-version to ...") and manual
+# pins fall out on their own: they touch nothing but the three pin files,
+# which PIN_PATHS_RE removes. Matching the subject line instead would be
+# trusting a convention nothing enforces — a commit carrying that prefix
+# while changing backend code would leave the window silently, and if it
+# were the only such commit the guard would report a healthy pin over a
+# permanent orphan.
 #
 # SLACK_N defines how many code commits behind the latest is still
 # considered "in flight, not yet orphaned":
@@ -60,42 +65,104 @@ fi
 #   - 2 → covers 3-commit-rapid-fire race (typical operator workflow
 #         where two PRs merge in quick succession + one in-flight pin)
 # We use 2 — false-positive rate < 1% on hourly cron, and a real
-# orphan would still be caught within 2 more code commits (or by the
-# next cron tick) which is acceptable detection latency.
+# orphan would still be caught within 2 more code commits, which is
+# acceptable detection latency. Note the unit: commits that BUILD.
+# Commits that produce no image no longer advance this window, so the
+# hourly cron alone does not shorten the wait — the next build does,
+# and that build re-pins anyway.
 #
 # Implemented as a while-read loop (instead of `grep -v | head -3`)
 # to avoid SIGPIPE under `set -o pipefail` — head closing the pipe
 # after the third match would terminate grep with rc=141 and fail
 # the script.
+# Paths that make Build Images run at all. Mirrors the positive `paths:`
+# list in .github/workflows/build-deploy.yml — a commit touching none of
+# them produces no image and therefore no auto-pin.
+#
+# `images/**` is deliberately absent: build-deploy.yml dropped it (those
+# DaemonSets are pinned by their own ci-*.yml), so an images-only commit
+# never reaches this pin either.
+BUILD_PATHS_RE='^(backend/|frontend/admin-panel/|frontend/tenant-panel/|packages/api-contracts/|k8s/|scripts/|\.github/workflows/build-deploy\.yml$)'
+
+# The three files the auto-pin itself rewrites, excluded from build-deploy's
+# triggers for the same reason they are excluded here: writing them is the
+# pin, not something to be pinned. Normally such a commit is caught by the
+# `chore(development):` message filter below — but that prefix is a
+# convention this script recommends, not one anything enforces.
+PIN_PATHS_RE='^k8s/overlays/development/(kustomization|platform-version-patch|deploy-rev-patch)\.yaml$'
+
+# Does this commit touch anything Build Images watches?
+#
+# Diffed explicitly against the FIRST PARENT, which is what a push event
+# shows GitHub and therefore what decides whether build-deploy ran. The
+# obvious `git diff-tree -m --first-parent` does not do this: --first-parent
+# is silently ignored by diff-tree, and -m returns the union of the diffs
+# against every parent — so a merge of a documentation-only branch would
+# report the backend files that landed on the trunk while that branch was
+# open, and count as a commit with an image behind it.
+#
+# A commit whose parent cannot be read — the repository's first commit, or
+# the frontier of the shallow checkout this runs in — is diffed against the
+# empty tree, which lists its whole tree and counts as building. That is the
+# safe direction: a commit we cannot classify must not silently drop out of
+# the window, because dropping it is what hides an orphan.
+#
+# The file list is captured into a variable before grep sees it: a
+# `git … | grep -q` pipeline under `set -o pipefail` can return 141 when
+# grep exits on the first match and git dies of SIGPIPE, which reads as
+# "builds nothing" for a commit that does.
+builds_something() {
+  local sha="$1" parent files
+  parent=$(git rev-parse --verify --quiet "${sha}^1" 2>/dev/null || true)
+  if [[ -n "$parent" ]] && git cat-file -e "${parent}^{commit}" 2>/dev/null; then
+    files=$(git diff-tree --no-commit-id --name-only -r "$parent" "$sha")
+  else
+    files=$(git diff-tree --no-commit-id --name-only -r --root "$sha")
+  fi
+  files=$(grep -vE "$PIN_PATHS_RE" <<<"$files" || true)
+  [[ -n "$files" ]] && grep -qE "$BUILD_PATHS_RE" <<<"$files"
+}
+
 SLACK_N=2
 CODE_COMMITS=()
 while IFS=' ' read -r sha msg_rest; do
+  # `[skip ci]` is the one thing a subject line can say that a diff
+  # cannot: GitHub really does not run the workflow, so no image exists
+  # however much build-relevant code the commit changed. Counting them
+  # made this guard cry wolf after EVERY release — release.yml pushes two
+  # [skip ci] sync commits back to development (platform/VERSION +
+  # CHANGELOG), enough on their own to push the last built commit outside
+  # SLACK_N (observed 2026-08-26 after v2026.8.18).
   case "$msg_rest" in
-    # Legacy 'chore(staging):' prefix kept — pre-rename pin commits
-    # remain in the last-100 window for a while (W1 branch rename).
-    'chore(development):'* | 'chore(staging):'*) continue ;;
-    # A commit that skipped CI can never be represented in a pin — no
-    # build ran for it, so there are no images to point at. Counting
-    # them consumed the slack and made this guard cry wolf after EVERY
-    # release: release.yml pushes two [skip ci] sync commits back to
-    # development (platform/VERSION + CHANGELOG), which alone are
-    # enough to push the last built commit outside SLACK_N. Every PR
-    # opened afterwards then failed this check until the next
-    # backend/frontend change happened to trigger a rebuild
-    # (observed 2026-08-26 after v2026.8.18).
     *'[skip ci]'*) continue ;;
-    *)
-      CODE_COMMITS+=("$sha")
-      if [[ ${#CODE_COMMITS[@]} -gt $SLACK_N ]]; then
-        break
-      fi
-      ;;
   esac
+  # A commit that changed nothing Build Images watches has no image to be
+  # pinned to, so counting it spends the slack on a pin that can never
+  # exist. Three documentation commits in a row did exactly that while
+  # cutting a release — the pin was healthy and this guard called it
+  # orphaned.
+  builds_something "$sha" || continue
+  CODE_COMMITS+=("$sha")
+  if [[ ${#CODE_COMMITS[@]} -gt $SLACK_N ]]; then
+    break
+  fi
 done < <(git log --pretty='%H %s' -n 100)
 
 if [[ ${#CODE_COMMITS[@]} -eq 0 ]]; then
-  echo "::error::no non-pin commit found in last 100 commits — fetch depth too shallow or branch is pure pin churn"
-  exit 1
+  # No commit in the window produces an image, so there is nothing for the
+  # pin to be behind and failing here would be the very false alarm this
+  # guard keeps raising on documentation runs. A pin orphaned WITHIN the
+  # window still fails, because the commit that orphaned it built by
+  # definition and is therefore in this list.
+  #
+  # It is still worth saying out loud: on this repository a hundred
+  # commits that touch no build path is not a normal state, and an orphan
+  # older than the window would hide behind exactly this message. A
+  # warning annotation puts it in front of whoever reads the run without
+  # blocking them.
+  echo "::warning::no commit in the last 100 builds an image — the pin cannot be checked against them"
+  echo "✓ nothing in the window builds; pin left alone"
+  exit 0
 fi
 
 LAST_CODE_FULL_SHA="${CODE_COMMITS[0]}"
@@ -152,8 +219,8 @@ echo "       k8s/overlays/development/platform-version-patch.yaml"
 echo "       k8s/overlays/development/deploy-rev-patch.yaml"
 echo "       k8s/overlays/development/kustomization.yaml"
 echo "     (the apply-development-pin.sh helper does this idempotently)."
-echo "  4. Commit + push to main (the manual-pin commit itself satisfies"
-echo "     the chore(development): prefix filter so this guard won't fail again)."
+echo "  4. Commit + push to main (a commit touching only the three pin"
+echo "     files counts as a pin, not as code, so this guard won't fail again)."
 echo ""
 echo "Or, if the Build Images run for $LAST_CODE_SHORT failed entirely"
 echo "(no images pushed to GHCR), re-trigger a build with:"
