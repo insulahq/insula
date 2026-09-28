@@ -5451,11 +5451,35 @@ metrics:
 # Without this the accessLog.filePath simply fails to open and Traefik logs a
 # warning at start — the access log would be silently absent and every HTTP
 # scenario would sit idle. The chain is only as good as its weakest mount.
-volumes:
+# ★ `deployment.additionalVolumes` + `additionalVolumeMounts`, NOT the
+# chart's top-level `volumes:`.
+#
+# That key supports `secret` and `configMap` ONLY. A `type: hostPath` entry
+# renders the container's volumeMOUNT and no volume at all, so the DaemonSet
+# references a volume nobody declared and the API server rejects the whole
+# object:
+#
+#   DaemonSet.apps "traefik" is invalid:
+#     spec.template.spec.initContainers[0].volumeMounts[0].name:
+#     Not found: "traefik-access-log"
+#
+# Every FRESH install died there. Existing clusters already had Traefik
+# installed, so nothing surfaced it until a cluster was rebuilt from
+# scratch.
+#
+# The same key also hardcodes `readOnly: true` on the mount it renders — so
+# even had the volume existed, Traefik would have been handed a read-only
+# directory to write its access log into, which is exactly the failure the
+# init container below exists to prevent.
+additionalVolumeMounts:
   - name: traefik-access-log
     mountPath: /var/log/traefik
-    type: hostPath
 deployment:
+  additionalVolumes:
+    - name: traefik-access-log
+      hostPath:
+        path: /var/log/traefik
+        type: DirectoryOrCreate
   initContainers:
     # The mount alone is NOT enough, verified on a live node.
     #
