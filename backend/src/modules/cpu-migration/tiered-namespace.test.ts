@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   buildTieredQuotaHard, buildTenantLimitRange, assessLimitsCpuReadiness,
+  podsWithStaleCeiling, type PodCpuLimitFact,
   QUOTA_LIMITS_CPU_BACKSTOP, MIN_QUOTA_REQUEST_MILLIS,
 } from './tiered-namespace.js';
 
@@ -150,8 +151,8 @@ describe('assessLimitsCpuReadiness', () => {
    */
   it('refuses when the LimitRange exists but a running pod predates it', () => {
     const r = assessLimitsCpuReadiness(true, [
-      { podName: 'web-1', containersWithoutCpuLimit: [], priorityClassName: 'tenant-default' , hasController: true },
-      { podName: 'worker-7', containersWithoutCpuLimit: ['worker'], priorityClassName: 'tenant-default' , hasController: true },
+      { podName: 'web-1', containersWithoutCpuLimit: [], containerCpuLimitsMillis: [2000], priorityClassName: 'tenant-default' , hasController: true },
+      { podName: 'worker-7', containersWithoutCpuLimit: ['worker'], containerCpuLimitsMillis: [2000], priorityClassName: 'tenant-default' , hasController: true },
     ], 'tenant-default');
     expect(r.ready).toBe(false);
     expect(r.reason).toContain('recreated first');
@@ -161,8 +162,8 @@ describe('assessLimitsCpuReadiness', () => {
 
   it('allows it once the LimitRange exists and every pod carries a limit', () => {
     const r = assessLimitsCpuReadiness(true, [
-      { podName: 'web-1', containersWithoutCpuLimit: [], priorityClassName: 'tenant-default' , hasController: true },
-      { podName: 'db-0', containersWithoutCpuLimit: [], priorityClassName: 'tenant-default' , hasController: true },
+      { podName: 'web-1', containersWithoutCpuLimit: [], containerCpuLimitsMillis: [2000], priorityClassName: 'tenant-default' , hasController: true },
+      { podName: 'db-0', containersWithoutCpuLimit: [], containerCpuLimitsMillis: [2000], priorityClassName: 'tenant-default' , hasController: true },
     ], 'tenant-default');
     expect(r.ready).toBe(true);
     expect(r.reason).toBeNull();
@@ -178,8 +179,8 @@ describe('assessLimitsCpuReadiness', () => {
    */
   it('ignores platform pods the quota does not govern', () => {
     const r = assessLimitsCpuReadiness(true, [
-      { podName: 'web-1', containersWithoutCpuLimit: [], priorityClassName: 'tenant-default' , hasController: true },
-      { podName: 'file-manager-abc', containersWithoutCpuLimit: ['file-manager'], priorityClassName: 'platform-tenant-overhead' , hasController: true },
+      { podName: 'web-1', containersWithoutCpuLimit: [], containerCpuLimitsMillis: [2000], priorityClassName: 'tenant-default' , hasController: true },
+      { podName: 'file-manager-abc', containersWithoutCpuLimit: ['file-manager'], containerCpuLimitsMillis: [2000], priorityClassName: 'platform-tenant-overhead' , hasController: true },
     ], 'tenant-default');
     expect(r.ready).toBe(true);
     expect(r.blockingPods).toEqual([]);
@@ -188,7 +189,7 @@ describe('assessLimitsCpuReadiness', () => {
   // A pod with no class at all is not in scope either.
   it('ignores a pod with no priority class', () => {
     const r = assessLimitsCpuReadiness(true, [
-      { podName: 'stray', containersWithoutCpuLimit: ['x'], priorityClassName: null , hasController: true },
+      { podName: 'stray', containersWithoutCpuLimit: ['x'], containerCpuLimitsMillis: [2000], priorityClassName: null , hasController: true },
     ], 'tenant-default');
     expect(r.ready).toBe(true);
   });
@@ -196,5 +197,132 @@ describe('assessLimitsCpuReadiness', () => {
   // An empty namespace is ready — there is nothing to break.
   it('allows it for a namespace with no pods', () => {
     expect(assessLimitsCpuReadiness(true, [], 'tenant-default').ready).toBe(true);
+  });
+});
+
+describe('buildTieredQuotaHard — the limit axis', () => {
+  /**
+   * ★ The same lesson as requests.cpu, on the other axis.
+   *
+   * `limits.cpu` was sized purely as burst x BACKSTOP, which assumes a
+   * tenant never runs more than BACKSTOP containers at the ceiling. A tenant
+   * with five does — and Kubernetes ACCEPTS a quota below `used`, then
+   * refuses every later pod. Re-applying a REDUCED ceiling walks into it by
+   * construction: the pods still hold the old, larger limits.
+   */
+  it('never writes a ceiling below what the namespace already holds', () => {
+    const hard = buildTieredQuotaHard({
+      tiers: ['normal'], burstCores: 1, liveUsedMillis: 10, largestPodMillis: 10,
+      liveUsedLimitMillis: 9000, largestPodLimitMillis: 2000,
+    });
+    // used 9 + room for one more of the biggest (2) = 11, over the 4 backstop.
+    expect(Number(hard['limits.cpu'])).toBeGreaterThanOrEqual(9);
+    expect(Number(hard['limits.cpu'])).toBe(11);
+  });
+
+  it('uses the backstop when it is the larger of the two', () => {
+    const hard = buildTieredQuotaHard({
+      tiers: ['normal'], burstCores: 2, liveUsedMillis: 10, largestPodMillis: 10,
+      liveUsedLimitMillis: 1000, largestPodLimitMillis: 1000,
+    });
+    expect(hard['limits.cpu']).toBe('8'); // 2 x 4
+  });
+
+  it('is the plain backstop on a first migration, where no pod has a limit', () => {
+    const hard = buildTieredQuotaHard({
+      tiers: ['normal'], burstCores: 1, liveUsedMillis: 250, largestPodMillis: 250,
+    });
+    expect(hard['limits.cpu']).toBe('4');
+  });
+});
+
+describe('podsWithStaleCeiling', () => {
+  const pod = (o: Partial<PodCpuLimitFact>): PodCpuLimitFact => ({
+    podName: 'p', containersWithoutCpuLimit: [], priorityClassName: 'tenant-default',
+    hasController: true, containerCpuLimitsMillis: [1000], ...o,
+  });
+
+  it('finds a pod carrying the previous ceiling', () => {
+    expect(podsWithStaleCeiling([pod({ podName: 'old' })], 'tenant-default', 1000)).toEqual(['old']);
+  });
+
+  it('leaves a container that declares its own, different limit', () => {
+    // Its limit did not come from the LimitRange, so replacing the pod
+    // brings back exactly the same thing.
+    expect(podsWithStaleCeiling([pod({ containerCpuLimitsMillis: [1500] })], 'tenant-default', 1000)).toEqual([]);
+  });
+
+  it('never names a pod nothing would recreate', () => {
+    expect(podsWithStaleCeiling([pod({ hasController: false })], 'tenant-default', 1000)).toEqual([]);
+  });
+
+  it('ignores pods the quota does not govern', () => {
+    expect(podsWithStaleCeiling([pod({ priorityClassName: 'platform-tenant-overhead' })], 'tenant-default', 1000)).toEqual([]);
+  });
+
+  it('leaves a limitless pod to the readiness check, which BLOCKS on it', () => {
+    // Folding the two together would turn a blocking condition into a
+    // silent deletion.
+    expect(podsWithStaleCeiling(
+      [pod({ containersWithoutCpuLimit: ['web'], containerCpuLimitsMillis: [] })], 'tenant-default', 1000,
+    )).toEqual([]);
+  });
+
+  it('does nothing when there was no previous ceiling', () => {
+    expect(podsWithStaleCeiling([pod({})], 'tenant-default', null)).toEqual([]);
+  });
+});
+
+describe('assessLimitsCpuReadiness — the re-apply case', () => {
+  const pod = (o: Partial<PodCpuLimitFact>): PodCpuLimitFact => ({
+    podName: 'p', containersWithoutCpuLimit: [], priorityClassName: 'tenant-default',
+    hasController: true, containerCpuLimitsMillis: [1000], ...o,
+  });
+
+  /**
+   * ★ The silent failure of a re-apply.
+   *
+   * The sweep skips a pod with no controller — correctly, deleting one
+   * destroys the workload — and this check used to pass it, because it does
+   * have *a* limit. The run reported `completed` while that pod went on
+   * running at the old, higher ceiling, and the panel reported the new
+   * ceiling as applied because the panel reads the LimitRange.
+   */
+  it('REFUSES when a controller-less pod still carries the previous ceiling', () => {
+    const r = assessLimitsCpuReadiness(
+      true, [pod({ podName: 'bare', hasController: false })], 'tenant-default', 1000,
+    );
+    expect(r.ready).toBe(false);
+    expect(r.blockingPods).toEqual(['bare']);
+    expect(r.reason).toMatch(/no controller/i);
+  });
+
+  it('allows one that something WILL recreate — the sweep handles it', () => {
+    expect(assessLimitsCpuReadiness(
+      true, [pod({ hasController: true })], 'tenant-default', 1000,
+    ).ready).toBe(true);
+  });
+
+  it('allows a controller-less pod already on the NEW ceiling', () => {
+    expect(assessLimitsCpuReadiness(
+      true, [pod({ hasController: false, containerCpuLimitsMillis: [2000] })], 'tenant-default', 1000,
+    ).ready).toBe(true);
+  });
+
+  it('ignores the whole question on a first migration', () => {
+    // No previous ceiling to be stuck on.
+    expect(assessLimitsCpuReadiness(
+      true, [pod({ hasController: false })], 'tenant-default', null,
+    ).ready).toBe(true);
+  });
+
+  it('still refuses a limitless pod first — that check comes before this one', () => {
+    const r = assessLimitsCpuReadiness(
+      true,
+      [pod({ podName: 'nolimit', containersWithoutCpuLimit: ['web'], containerCpuLimitsMillis: [] })],
+      'tenant-default', 1000,
+    );
+    expect(r.ready).toBe(false);
+    expect(r.reason).toMatch(/no CPU limit/i);
   });
 });

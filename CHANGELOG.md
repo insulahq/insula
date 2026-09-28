@@ -12,6 +12,79 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+
+- **A changed CPU tier can finally be applied.** Editing a migrated tenant's
+  tier or burst ceiling used to write the value and change nothing: the
+  namespace kept its old ceiling, and the only way through was to revert the
+  tenant and migrate it again, recreating every application twice. Cluster →
+  CPU Scheduling now offers **Re-apply** for a tenant already on the tier
+  model, and says plainly when the saved settings and the running ones
+  disagree — which nothing anywhere did before.
+
+  Applying a changed **tier** replaces no running application. Applying a
+  changed **ceiling** does, one at a time with a health check between, the
+  same pacing a migration uses. A tenant whose measured load is already
+  above the new ceiling still has to be acknowledged first.
+
+- **New installs start on the tier model.** The choice is made once, at the
+  first start after upgrading to this release, and recorded: a cluster that
+  already has tenants stays on the old model and nothing moves, a brand-new
+  one begins tiered and never needs migrating at all.
+
+### Fixed
+
+- **A migrated tenant could only add about three more applications.** The
+  migration sized each namespace's CPU allowance from what the tenant was
+  running at that moment plus a little room, and nothing ever revisited it —
+  so a few deployments later the tenant's next one was refused by a limit
+  the platform had set itself, with an error they could not act on and
+  nobody would connect to a migration weeks earlier. The allowance now grows
+  as applications are added.
+
+- **A new application on a migrated tenant went back to reserving a quarter
+  of a core.** Migrating re-sized every application a tenant had, and then
+  the next one arrived at the old catalog figure, undoing the saving one
+  deployment at a time. New applications now take the same share as the rest
+  of the tenant's.
+
+- **Hosting plans now really differ in CPU priority.** An application's
+  share came from its catalog entry, so a plan's tier governed almost
+  nothing and a Starter tenant's site competed as an equal with an Ultimate
+  tenant's. What CPU a tenant gets is now simply what they are sold: every
+  application a tenant runs takes the tenant's tier.
+
+  Catalog manifests no longer describe CPU at all. The figure they carried
+  described a reservation the platform no longer makes, and letting a
+  manifest choose its own share would let a third-party catalog hand its
+  application priority over everything else a tenant runs. Existing
+  manifests stay valid — the field is simply ignored for tenants on the
+  tier model, and read exactly as before for those still on the old one.
+
+- **The dry run and the migration can no longer disagree about the burst
+  ceiling.** The preview derived it from the plan's old CPU figure and
+  ignored the ceiling actually configured on the plan or the tenant, so an
+  operator who had set one saw a different number than they got.
+
+- **A tenant's CPU allowance can no longer be sized below what it is already
+  using.** Kubernetes accepts such a limit and then refuses every new pod;
+  the case was reachable by lowering a ceiling on a tenant running several
+  applications.
+
+- **A tenant on the tier model can no longer set a raw CPU number.** The
+  resize endpoint accepted any value up to the burst ceiling and wrote it
+  straight onto the pod as a reservation — reintroducing the whole model
+  this replaces, and permanently enlarging that tenant's scheduling budget
+  to fit it. Whatever is submitted, a tiered tenant's application gets its
+  tenant's share; the ceiling bounds what it may *use*, which is a separate
+  thing the platform applies for it.
+
+- **A re-apply now refuses rather than under-delivering.** If a pod is
+  still running under the previous ceiling and nothing exists to recreate
+  it, the run stops and names that pod, instead of reporting success while
+  one application quietly keeps the old ceiling and every screen shows the
+  new one.
+
 ### Changed
 
 - **The default hosting plans now sell distinct CPU shares.** Starter,

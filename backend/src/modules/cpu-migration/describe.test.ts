@@ -88,4 +88,74 @@ describe('describeDeployment', () => {
   it('falls back to the safe tier when the manifest is silent', () => {
     expect(describeDeployment(row({ entry_resources: null }), 'official').proposedTier).toBe('high');
   });
+
+  /**
+   * ★ The plan's tier is a CAP, and until R3 it was a decoration.
+   *
+   * A workload's tier came from its catalog entry alone, so a Starter
+   * tenant's WordPress and an Ultimate tenant's WordPress asked for the same
+   * share and competed as equals under contention. The plan's `cpu_tier`
+   * reached only containers that declared no CPU at all — which, after a
+   * migration re-tiers every deployment, is none of them.
+   */
+  
+  /**
+   * ★ The catalog may now say what share it wants (ADR-062).
+   *
+   * Making `resources.cpu.tier` optional rather than required is what keeps
+   * this from being a flag day: the catalog is a separate public repo, plus
+   * an opt-in community one, consumed by whatever platform version an
+   * operator happens to be running.
+   */
+  
+  /**
+   * ★ The tier is the TENANT's, for every workload it runs (ADR-062 R3).
+   *
+   * It used to come from the catalog manifest's `recommended.cpu`, which
+   * was describing a reservation the platform no longer makes. Two wrong
+   * outcomes fell out of that: a tenant's WordPress outranked its own
+   * static site for no reason the operator chose, and a third-party
+   * catalog repo could hand its entry priority over everything else that
+   * tenant runs.
+   */
+  describe('the tier comes from the subscription', () => {
+    it('gives every workload the tenant tier, whatever the manifest says', () => {
+      const demanding = describeDeployment(
+        row({ entry_resources: { recommended: { cpu: '2' } } }), 'official', 'normal',
+      );
+      const modest = describeDeployment(
+        row({ entry_resources: { recommended: { cpu: '0.05' } } }), 'official', 'normal',
+      );
+      expect(demanding.proposedTier).toBe('normal');
+      expect(modest.proposedTier).toBe('normal');
+      expect(demanding.proposedMillis).toBe(modest.proposedMillis);
+    });
+
+    it('raises as well as lowers — it is the tenant tier, not a cap', () => {
+      const f = describeDeployment(
+        row({ entry_resources: { recommended: { cpu: '0.05' } } }), 'official', 'highest',
+      );
+      expect(f.proposedTier).toBe('highest');
+    });
+
+    it('treats a custom container the same as a catalog one', () => {
+      const f = describeDeployment(row({ source: 'custom' }), 'official', 'normal');
+      expect(f.proposedTier).toBe('normal');
+    });
+
+    it('ignores a manifest with no cpu at all', () => {
+      // `cpu` is optional in minimum/recommended now, and nothing reads it
+      // for scheduling.
+      const f = describeDeployment(
+        row({ entry_resources: { recommended: { memory: '256Mi' } } }), 'official', 'high',
+      );
+      expect(f.proposedTier).toBe('high');
+    });
+
+    it('falls back to high when no tenant tier is supplied', () => {
+      // Matches resolve.ts's own DEFAULT_TIER, so the dry run and the
+      // runner cannot disagree about an unresolvable tenant.
+      expect(describeDeployment(row(), 'official').proposedTier).toBe('high');
+    });
+  });
 });

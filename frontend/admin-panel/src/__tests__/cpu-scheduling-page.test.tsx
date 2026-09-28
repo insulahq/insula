@@ -30,6 +30,10 @@ const tenant = (o: Partial<CpuMigrationPreview['tenants'][number]> = {}) => ({
   reclaimableMillis: 690,
   increasedMillis: 0,
   proposedCeilingCores: 2,
+  proposedTier: 'high' as const,
+  appliedCeilingCores: null,
+  appliedTier: null,
+  pendingCpuChange: false,
   observedP95Millis: 65,
   tenantBlocker: null,
   migratesCleanly: true,
@@ -293,5 +297,68 @@ describe('CpuSchedulingPage', () => {
     render(<CpuSchedulingPage />);
     await userEvent.click(screen.getByTestId('cpu-migration-tenant-t1'));
     expect(screen.queryByTestId('cpu-stop-t1')).toBeNull();
+  });
+
+  /**
+   * ★ The control that did not exist for the whole of R2.
+   *
+   * An already-tiered tenant was refused outright, so a changed tier or
+   * ceiling wrote a database column and reached nothing in the cluster. The
+   * page now offers to apply it, and — more importantly — SAYS that the
+   * saved settings and the running ones disagree, which was invisible.
+   */
+  describe('an already-tiered tenant', () => {
+    const tiered = (o = {}) => tenant({
+      schedulingMode: 'tiered' as const,
+      appliedCeilingCores: 2,
+      appliedTier: 'high' as const,
+      ...o,
+    });
+
+    it('offers Re-apply, and Migrate is gone', async () => {
+      ok(preview({ tenants: [tiered()] }));
+      render(<CpuSchedulingPage />);
+      await userEvent.click(screen.getByTestId('cpu-migration-tenant-t1'));
+      expect(screen.getByTestId('cpu-reapply-t1')).toBeInTheDocument();
+      expect(screen.queryByTestId('cpu-migrate-t1')).toBeNull();
+      expect(screen.getByTestId('cpu-reapply-t1')).toHaveTextContent('Re-apply settings');
+    });
+
+    it('names the pending change instead of only flagging one', async () => {
+      ok(preview({
+        tenants: [tiered({ pendingCpuChange: true, proposedCeilingCores: 4, proposedTier: 'highest' as const })],
+      }));
+      render(<CpuSchedulingPage />);
+      expect(screen.getByTestId('cpu-pending-t1')).toHaveTextContent('change not applied');
+      // Both numbers, so the operator can see WHAT would change.
+      expect(screen.getByTestId('cpu-applied-t1')).toHaveTextContent('now 2.00');
+      await userEvent.click(screen.getByTestId('cpu-migration-tenant-t1'));
+      const detail = screen.getByTestId('cpu-pending-detail-t1');
+      expect(detail).toHaveTextContent('High');
+      expect(detail).toHaveTextContent('Highest');
+      expect(detail).toHaveTextContent('replaces');
+      expect(screen.getByTestId('cpu-reapply-t1')).toHaveTextContent('Apply pending change');
+    });
+
+    // A tier-only change moves no pod: the tier governs containers that
+    // declare no CPU, and every running one declares its own. Saying
+    // "replaces your pods" there would deter a free change.
+    it('says a tier-only change replaces nothing', async () => {
+      ok(preview({
+        tenants: [tiered({ pendingCpuChange: true, proposedTier: 'normal' as const, proposedCeilingCores: 2 })],
+      }));
+      render(<CpuSchedulingPage />);
+      await userEvent.click(screen.getByTestId('cpu-migration-tenant-t1'));
+      expect(screen.getByTestId('cpu-pending-detail-t1')).toHaveTextContent('changes no running application');
+    });
+
+    it('still gates a flagged tenant behind the acknowledgement', async () => {
+      ok(preview({ tenants: [tiered({ migratesCleanly: false, tenantBlocker: 'usage_above_ceiling' })] }));
+      render(<CpuSchedulingPage />);
+      await userEvent.click(screen.getByTestId('cpu-migration-tenant-t1'));
+      expect(screen.getByTestId('cpu-reapply-t1')).toBeDisabled();
+      await userEvent.click(screen.getByTestId('cpu-ack-t1'));
+      expect(screen.getByTestId('cpu-reapply-t1')).toBeEnabled();
+    });
   });
 });

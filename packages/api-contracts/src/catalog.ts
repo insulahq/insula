@@ -127,9 +127,29 @@ export const catalogEntryResponseSchema = z.object({
   components: z.array(componentSchema).nullable(),
   networking: z.record(z.string(), z.unknown()).nullable(),
   volumes: z.array(volumeSchema).nullable(),
+  /**
+   * ★ `cpu` is OPTIONAL, and nothing reads it for scheduling (ADR-062).
+   *
+   * A manifest no longer describes what CPU an application gets. Under the
+   * tier model that is a property of the TENANT's subscription — the plan
+   * sells a share and a burst ceiling, and every one of that tenant's
+   * applications takes it. A catalog entry declaring `0.25` was describing
+   * a reservation the platform no longer makes, and letting a manifest pick
+   * its own share would let a third-party repo hand itself priority over
+   * everything else the tenant runs.
+   *
+   * Optional rather than removed, because the catalog is a separate public
+   * repo plus an opt-in community one, consumed by whatever platform
+   * version an operator happens to run. An old manifest stays valid; the
+   * value is simply ignored for tiering. Legacy tenants, whose namespaces
+   * are still sized in reservations, read it exactly as before.
+   *
+   * `memory` stays required: it is incompressible, it is what actually
+   * bounds a tenant, and ADR-062 changes nothing about it.
+   */
   resources: z.object({
-    recommended: z.object({ cpu: z.string(), memory: z.string(), storage: z.string().optional() }),
-    minimum: z.object({ cpu: z.string(), memory: z.string(), storage: z.string().optional() }),
+    recommended: z.object({ cpu: z.string().optional(), memory: z.string(), storage: z.string().optional() }),
+    minimum: z.object({ cpu: z.string().optional(), memory: z.string(), storage: z.string().optional() }),
   }).nullable(),
   healthCheck: z.record(z.string(), z.unknown()).nullable(),
   parameters: z.array(parameterSchema).nullable(),

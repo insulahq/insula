@@ -46,6 +46,9 @@ function rethrowAsApiErrorIfBudget(err: unknown): never {
 }
 import { encodeCursor, decodeCursor } from '../../shared/pagination.js';
 import { getTenantById } from '../tenants/service.js';
+import { newWorkloadCpuFor } from '../cpu-migration/new-workload.js';
+import { ensureTieredQuotaRoom } from '../cpu-migration/effects.js';
+import { cpuRequestToMillis } from '../cpu-migration/plan.js';
 import { assertTenantActive } from '../tenants/guards.js';
 import { getSettings as getSystemSettings } from '../system-settings/service.js';
 import {
@@ -473,8 +476,31 @@ export async function createDeployment(
 
   const resources = parseJsonField<{ recommended?: { cpu?: string; memory?: string; storage?: string }; minimum?: { cpu?: string; memory?: string; storage?: string } }>(entry.resources);
   const storageRequest = resources?.recommended?.storage ?? resources?.minimum?.storage ?? '1Gi';
-  const catalogCpu = resources?.recommended?.cpu ?? resources?.minimum?.cpu ?? '0.1';
+  const catalogManifestCpu = resources?.recommended?.cpu ?? resources?.minimum?.cpu ?? '0.1';
   const catalogMemory = resources?.recommended?.memory ?? resources?.minimum?.memory ?? '256Mi';
+  /**
+   * ★ A tiered tenant's new workload asks for a SHARE, not a reservation.
+   *
+   * Without this the tier model leaks on the very next deploy: the
+   * migration re-tiers everything a tenant has, and then the next
+   * application arrives at the catalog's quarter-core recommendation. The
+   * reserved figure climbs back one deployment at a time, and the tenant's
+   * namespace quota — sized from what it held at migration — refuses the
+   * deploy long before the node is near full.
+   *
+   * Identity for a legacy tenant, whose namespace is still sized in
+   * reservations.
+   */
+  const [planForCpu] = tenant.planId
+    ? await db.select().from(hostingPlans).where(eq(hostingPlans.id, tenant.planId))
+    : [undefined];
+  const catalogCpu = newWorkloadCpuFor(
+    planForCpu
+      ? { cpuLimit: planForCpu.cpuLimit, cpuTier: planForCpu.cpuTier, cpuBurstCores: planForCpu.cpuBurstCores }
+      : null,
+    tenant,
+    catalogManifestCpu,
+  ) ?? catalogManifestCpu;
 
   // Generate secrets for env_vars.generated entries.
   // Phoenix/Elixir apps (Plausible, others) require SECRET_KEY_BASE >= 64
@@ -576,6 +602,22 @@ export async function createDeployment(
   // Deploy to K8s if cluster is available
   if (k8s && namespace) {
     try {
+      // ★ Make room BEFORE the pod is offered, not after it is refused.
+      //
+      // A tiered namespace's requests.cpu was sized from what it held at
+      // migration and never revisited, leaving every tenant ~100m of room —
+      // three small applications, then "exceeded quota" on the fourth. A
+      // no-op for a legacy namespace, whose quota IS the plan allowance.
+      await ensureTieredQuotaRoom(
+        k8s, namespace,
+        cpuRequestToMillis(input.cpu_request ?? catalogCpu) ?? 0,
+      ).catch((err: unknown) => {
+        // Never block a deploy on this. If the quota is genuinely too small
+        // the pod is refused with the quota's own message, which is clearer
+        // than one invented here.
+        console.warn('[deployments] could not widen the tiered quota:', err instanceof Error ? err.message : String(err));
+      });
+
       // Detect the ADMIN password env var for the password-reset init
       // container. Shared with the redeploy path below — see
       // findAdminPasswordEnvVar for why a loose match is wrong.
@@ -1273,13 +1315,32 @@ export async function getResourceAvailability(
   const minCpu = resources?.minimum?.cpu ?? DEFAULT_MIN_CPU;
   const minMemory = resources?.minimum?.memory ?? '64Mi';
 
+  /**
+   * ★ For a tiered tenant, CPU is not a range — it is a fixed value.
+   *
+   * min == max == the tenant's tier. Advertising the burst ceiling as a
+   * `max` invited exactly the thing the tier model forbids: a tenant typing
+   * a core count into a field that then becomes a real reservation. The
+   * ceiling bounds what a container may USE, not what it may ask for, and
+   * it is applied by the namespace LimitRange, not by this number.
+   */
+  const tieredHere = tenant.cpuSchedulingMode === 'tiered';
+  const tierValue = tieredHere
+    ? newWorkloadCpuFor(
+      plan ? { cpuLimit: plan.cpuLimit, cpuTier: plan.cpuTier, cpuBurstCores: plan.cpuBurstCores } : null,
+      tenant,
+      null,
+    )
+    : null;
   return {
-    cpu: {
-      min: minCpu,
-      max: String(Math.round((cpuLimit - otherCpu) * 100) / 100),
-      current: deployment.cpuRequest,
-      planLimit: String(cpuLimit),
-    },
+    cpu: tieredHere && tierValue
+      ? { min: tierValue, max: tierValue, current: deployment.cpuRequest, planLimit: tierValue }
+      : {
+        min: minCpu,
+        max: String(Math.round((cpuLimit - otherCpu) * 100) / 100),
+        current: deployment.cpuRequest,
+        planLimit: String(cpuLimit),
+      },
     memory: {
       min: minMemory,
       max: `${Math.round((memoryLimitGi - otherMemoryGi) * 1024)}Mi`,
@@ -1321,10 +1382,41 @@ export async function updateDeploymentResources(
     otherMemoryGi += parseResourceValue(d.memoryRequest || '0', 'memory');
   }
 
+  /**
+   * ★ A tiered tenant does not choose a CPU number. At all.
+   *
+   * Under ADR-062 a container's REQUEST is the tenant's tier — 5, 30 or
+   * 100m — and the burst ceiling bounds its LIMIT, which the namespace
+   * LimitRange fills in. Accepting a raw value here and merely checking it
+   * against the ceiling reintroduced the whole reservation model through
+   * the back door: `k8s-deployer` writes `cpu_request` verbatim as
+   * `resources.requests.cpu`, so an Ultimate tenant could type "2", the
+   * check would pass (2 <= 4), and that pod would reserve two real cores —
+   * and `ensureTieredQuotaRoom` would dutifully widen the namespace quota
+   * to fit it, permanently, starving the tenant's correctly-tiny
+   * deployments out of their own scheduling budget.
+   *
+   * So the value is NORMALISED rather than validated. That also makes the
+   * tenant panel's existing free-text CPU field harmless while it is still
+   * a free-text field: whatever it sends, the tenant gets their tier.
+   *
+   * Memory is deliberately unchanged: it is incompressible, its limit is
+   * real, and ADR-062 changes nothing about it.
+   */
+  const tiered = tenant.cpuSchedulingMode === 'tiered';
+  if (tiered && input.cpu_request !== undefined) {
+    const tierValue = newWorkloadCpuFor(
+      plan ? { cpuLimit: plan.cpuLimit, cpuTier: plan.cpuTier, cpuBurstCores: plan.cpuBurstCores } : null,
+      tenant,
+      input.cpu_request,
+    );
+    if (tierValue) input = { ...input, cpu_request: tierValue };
+  }
+
   const newCpu = input.cpu_request ? parseResourceValue(input.cpu_request, 'cpu') : parseResourceValue(deployment.cpuRequest || '0', 'cpu');
   const newMemoryGi = input.memory_request ? parseResourceValue(input.memory_request, 'memory') : parseResourceValue(deployment.memoryRequest || '0', 'memory');
 
-  if (newCpu + otherCpu > cpuLimit) {
+  if (!tiered && newCpu + otherCpu > cpuLimit) {
     const available = Math.round((cpuLimit - otherCpu) * 100) / 100;
     throw new ApiError('RESOURCE_LIMIT_EXCEEDED', `CPU request ${input.cpu_request} exceeds available capacity. Maximum: ${available} cores (plan limit: ${cpuLimit} cores)`, 400, { field: 'cpu_request', available: String(available), limit: String(cpuLimit) });
   }
@@ -1335,6 +1427,11 @@ export async function updateDeploymentResources(
   }
 
   const updateValues: Record<string, unknown> = {};
+  if (input.cpu_request && tiered && k8s && tenant.kubernetesNamespace) {
+    await ensureTieredQuotaRoom(
+      k8s, tenant.kubernetesNamespace, cpuRequestToMillis(input.cpu_request) ?? 0,
+    ).catch(() => undefined);
+  }
   if (input.cpu_request) updateValues.cpuRequest = input.cpu_request;
   if (input.memory_request) updateValues.memoryRequest = input.memory_request;
 

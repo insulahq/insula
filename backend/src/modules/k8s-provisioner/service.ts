@@ -408,6 +408,79 @@ export interface ResourceQuotaOptions {
   readonly cpuModel?: TenantCpuModel;
 }
 
+/**
+ * Make a brand-new namespace tiered, when that is this cluster's default.
+ *
+ * Returns the model to hand `applyResourceQuota` plus the database write
+ * that marks the tenant tiered — SEPARATELY, because that write must not
+ * land until the quota does. Null for a legacy cluster, where every line of
+ * this is skipped and provisioning is exactly what it was.
+ *
+ * Order matters: the LimitRange must exist before the quota carries a
+ * `limits.cpu`, because with a ceiling every pod must declare a CPU limit
+ * and the LimitRange is what gives one to a pod that does not. Doing it the
+ * other way round makes the tenant's first deploy fail admission.
+ *
+ * Best-effort by design. A failure here leaves the tenant legacy — fully
+ * working, migratable with one click — which is a far better outcome than
+ * failing to provision at all.
+ */
+async function prepareTieredNamespace(
+  db: Database,
+  k8s: K8sClients,
+  tenantId: string,
+  namespace: string,
+): Promise<{
+  model: { mode: 'tiered'; ceilingCores: number };
+  /** Marks the tenant tiered. Call ONLY after the quota is written. */
+  commit: () => Promise<void>;
+} | null> {
+  try {
+    const { cpuModeForNewTenant } = await import('../cpu-migration/default-mode.js');
+    if ((await cpuModeForNewTenant(db)) !== 'tiered') return null;
+
+    const [t] = await db.select().from(tenants).where(eq(tenants.id, tenantId));
+    if (!t) return null;
+    const [plan] = t.planId
+      ? await db.select().from(hostingPlans).where(eq(hostingPlans.id, t.planId))
+      : [undefined];
+
+    const { resolveTenantCpu } = await import('../cpu-migration/resolve.js');
+    const resolved = resolveTenantCpu(
+      plan ? { cpuLimit: plan.cpuLimit, cpuTier: plan.cpuTier, cpuBurstCores: plan.cpuBurstCores } : null,
+      {
+        cpuSchedulingMode: 'tiered',
+        cpuLimitOverride: t.cpuLimitOverride,
+        cpuTierOverride: t.cpuTierOverride,
+        cpuBurstCoresOverride: t.cpuBurstCoresOverride,
+      },
+    );
+    if (resolved.tier === null || resolved.burstCores === null || !(resolved.burstCores > 0)) return null;
+
+    const { ensureLimitRange } = await import('../cpu-migration/effects.js');
+    const { QUOTA_LIMITS_CPU_BACKSTOP } = await import('../cpu-migration/tiered-namespace.js');
+    await ensureLimitRange(k8s, namespace, resolved.tier, resolved.burstCores);
+
+    return {
+      model: {
+        mode: 'tiered',
+        ceilingCores: Math.round(resolved.burstCores * QUOTA_LIMITS_CPU_BACKSTOP * 100) / 100,
+      },
+      commit: async () => {
+        await db.update(tenants)
+          .set({ cpuSchedulingMode: 'tiered', cpuMigratedAt: new Date() })
+          .where(eq(tenants.id, tenantId));
+      },
+    };
+  } catch (err) {
+    console.warn(
+      `[k8s-provisioner] could not build ${namespace} as a tiered namespace; it stays legacy: `
+      + (err instanceof Error ? err.message : String(err)),
+    );
+    return null;
+  }
+}
+
 export async function applyResourceQuota(
   k8s: K8sClients,
   namespace: string,
@@ -1165,9 +1238,30 @@ export async function runProvisionNamespace(
     await updateProgress('Create Namespace', 'completed');
 
     // Step 2: Create ResourceQuota
+    //
+    // ★ On a cluster whose default is TIERED (ADR-062 R3 — a fresh install),
+    // the namespace is born tiered: the CPU LimitRange goes in FIRST, so the
+    // quota's ceiling has something to satisfy it, and the tenant row is
+    // marked before its first workload is ever sized. Building it legacy and
+    // migrating later would mean recreating every pod of a tenant that had
+    // no reason to be legacy for a single minute.
+    //
+    // An upgraded cluster records `legacy` at first boot, so this whole
+    // branch is inert there and provisioning is byte-for-byte what it was.
     if (!(await guardTenantExists())) return;
     await updateProgress('Create ResourceQuota', 'running');
-    await applyResourceQuota(k8s, namespace, { cpu: cpuLimit, memory: memoryLimit, storage: storageLimit });
+    const bornTiered = await prepareTieredNamespace(db, k8s, tenantId, namespace);
+    await applyResourceQuota(
+      k8s, namespace,
+      { cpu: cpuLimit, memory: memoryLimit, storage: storageLimit },
+      bornTiered ? { cpuModel: bornTiered.model } : {},
+    );
+    // ★ Only now. Marking the row `tiered` before the quota carries the
+    // ceiling leaves a half-tiered tenant if this throws: the database
+    // claims a model the namespace was never sized for, and anything that
+    // reads cpu_scheduling_mode in that window — a status page, a
+    // concurrent deploy widening the quota — sees an inconsistent tenant.
+    await bornTiered?.commit();
     await updateProgress('Create ResourceQuota', 'completed');
 
     // Step 3: Create NetworkPolicy

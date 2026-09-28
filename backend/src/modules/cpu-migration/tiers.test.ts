@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { CPU_TIER_MILLICORES, CPU_TIER_WEIGHT } from '@insula/api-contracts';
 import {
-  deriveTier, tierMillis, ceilingCores, blockerFor, tenantUsageBlocker, reclaimFor,
+  tierMillis, ceilingCores, blockerFor, tenantUsageBlocker, reclaimFor,
   type DeploymentFacts,
 } from './tiers.js';
 
@@ -32,25 +32,6 @@ describe('tier ladder', () => {
   });
 });
 
-describe('deriveTier', () => {
-  it.each([
-    [0.10, 'normal'],   // static-nginx, redis
-    [0.05, 'normal'],
-    [0.25, 'high'],     // apache-php, mariadb, nodejs
-    [0.50, 'high'],     // apache-php-office
-    [0.75, 'highest'],  // wordpress
-    [2.00, 'highest'],  // nextcloud, jitsi
-  ])('recommended %s cores -> %s', (rec, want) => {
-    expect(deriveTier(rec as number)).toBe(want);
-  });
-
-  // A manifest with no recommendation must not silently land on the cheapest
-  // tier — that would quietly starve an app nobody sized.
-  it('defaults to high when the manifest says nothing', () => {
-    expect(deriveTier(null)).toBe('high');
-    expect(deriveTier(Number.NaN)).toBe('high');
-  });
-});
 
 describe('ceilingCores', () => {
   // Generous on purpose: today there is NO CPU limit, so a tenant can burst
@@ -138,3 +119,4 @@ describe('reclaimFor', () => {
     expect(reclaimFor(5, tierMillis('highest'))).toBe(0);
   });
 });
+

@@ -26,7 +26,7 @@ function effects(over: Partial<MigrationEffects> = {}) {
     limitRangeExists: vi.fn(async () => true),
     readWorkloads: vi.fn(async () => healthy),
     readPodCpuLimits: vi.fn(async () => [
-      { podName: 'app-1', containersWithoutCpuLimit: [], priorityClassName: 'tenant-default' , hasController: true },
+      { podName: 'app-1', containersWithoutCpuLimit: [], containerCpuLimitsMillis: [2000], priorityClassName: 'tenant-default' , hasController: true },
     ]),
     deletePods: vi.fn(async (names: readonly string[]) => { calls.push(`delete:${names.join('+')}`); }),
     quotaScopePriorityClass: 'tenant-default',
@@ -122,7 +122,7 @@ describe('runTenantCpuMigration', () => {
   it('refuses the quota ceiling when a pod still has no CPU limit', async () => {
     const { fx, calls } = effects({
       readPodCpuLimits: vi.fn(async () => [
-        { podName: 'old-1', containersWithoutCpuLimit: ['web'], priorityClassName: 'tenant-default' , hasController: true },
+        { podName: 'old-1', containersWithoutCpuLimit: ['web'], containerCpuLimitsMillis: [2000], priorityClassName: 'tenant-default' , hasController: true },
       ]),
     });
     const r = await runTenantCpuMigration(fx, {
@@ -243,8 +243,8 @@ describe('runTenantCpuMigration', () => {
         seen += 1;
         // First read: an orphan with no limit. After the delete: clean.
         return seen === 1
-          ? [{ podName: 'ghost-1', containersWithoutCpuLimit: ['db'], priorityClassName: 'tenant-default' , hasController: true }]
-          : [{ podName: 'ghost-2', containersWithoutCpuLimit: [], priorityClassName: 'tenant-default' , hasController: true }];
+          ? [{ podName: 'ghost-1', containersWithoutCpuLimit: ['db'], containerCpuLimitsMillis: [2000], priorityClassName: 'tenant-default' , hasController: true }]
+          : [{ podName: 'ghost-2', containersWithoutCpuLimit: [], containerCpuLimitsMillis: [2000], priorityClassName: 'tenant-default' , hasController: true }];
       }),
     });
     const r = await runTenantCpuMigration(fx, {
@@ -268,7 +268,7 @@ describe('runTenantCpuMigration', () => {
   it('leaves out-of-scope pods alone even when they lack a ceiling', async () => {
     const { fx, calls } = effects({
       readPodCpuLimits: vi.fn(async () => [
-        { podName: 'file-manager-1', containersWithoutCpuLimit: ['fm'], priorityClassName: 'platform-tenant-overhead' , hasController: true },
+        { podName: 'file-manager-1', containersWithoutCpuLimit: ['fm'], containerCpuLimitsMillis: [2000], priorityClassName: 'platform-tenant-overhead' , hasController: true },
       ]),
     });
     const r = await runTenantCpuMigration(fx, {
@@ -287,7 +287,7 @@ describe('runTenantCpuMigration', () => {
   it('never deletes a pod that nothing would recreate', async () => {
     const { fx, calls } = effects({
       readPodCpuLimits: vi.fn(async () => [
-        { podName: 'orphan', containersWithoutCpuLimit: ['c'], priorityClassName: 'tenant-default', hasController: false },
+        { podName: 'orphan', containersWithoutCpuLimit: ['c'], containerCpuLimitsMillis: [2000], priorityClassName: 'tenant-default', hasController: false },
       ]),
     });
     const r = await runTenantCpuMigration(fx, {
@@ -344,5 +344,81 @@ describe('runTenantCpuMigration', () => {
     });
     expect(r.status).toBe('failed');
     expect(calls.some((c) => c.startsWith('retier:'))).toBe(false);
+  });
+
+  // ── RE-APPLY (ADR-062 R3) ───────────────────────────────────────────────
+  //
+  // Until this existed an already-tiered tenant was refused outright, so a
+  // changed tier or ceiling wrote a database column and reached nothing.
+  describe('re-applying a changed tier to an already-tiered tenant', () => {
+    const capped = (limitMillis: number, name = 'app-1') => ([{
+      podName: name, containersWithoutCpuLimit: [], priorityClassName: 'tenant-default',
+      hasController: true, containerCpuLimitsMillis: [limitMillis],
+    }]);
+
+    it('replaces the pods still admitted under the OLD ceiling', async () => {
+      const { fx, calls } = effects({ readPodCpuLimits: vi.fn(async () => capped(1000)) });
+      const r = await runTenantCpuMigration(fx, {
+        namespace: 'tenant-a', tier: 'high', burstCores: 2, reapply: true,
+        currentCeilingMillis: 1000,
+        deployments: [dep({ currentCpuRequest: '5m', proposedTier: 'normal' })],
+      });
+      expect(r.status).toBe('completed');
+      expect(calls).toContain('delete:app-1');
+      // And the new ceiling reaches the LimitRange and the quota.
+      expect(fx.ensureLimitRange).toHaveBeenCalledWith('high', 2);
+      expect(fx.applyQuotaLimits).toHaveBeenCalledWith(2, ['normal']);
+    });
+
+    it('touches no pod when the ceiling did not move', async () => {
+      // A tier-only edit. The tier governs what an UNDECLARED container
+      // requests; every existing pod already declares one, so rolling them
+      // would be an outage-shaped no-op.
+      const { fx, calls } = effects({ readPodCpuLimits: vi.fn(async () => capped(2000)) });
+      const r = await runTenantCpuMigration(fx, {
+        namespace: 'tenant-a', tier: 'highest', burstCores: 2, reapply: true,
+        currentCeilingMillis: 2000,
+        deployments: [dep({ currentCpuRequest: '5m', proposedTier: 'normal' })],
+      });
+      expect(r.status).toBe('completed');
+      expect(calls.filter((c) => c.startsWith('delete') || c.startsWith('recreate'))).toEqual([]);
+      expect(fx.ensureLimitRange).toHaveBeenCalledWith('highest', 2);
+    });
+
+    it('still re-tiers a deployment whose request changed', async () => {
+      const { fx, calls } = effects({ readPodCpuLimits: vi.fn(async () => capped(2000)) });
+      await runTenantCpuMigration(fx, {
+        namespace: 'tenant-a', tier: 'high', burstCores: 2, reapply: true,
+        currentCeilingMillis: 2000,
+        deployments: [dep({ currentCpuRequest: '100m', proposedTier: 'normal' })],
+      });
+      // A changed request rewrites the pod template, so Kubernetes rolls it
+      // — no sweep needed, and none happens.
+      expect(calls).toContain('retier:d1');
+      expect(calls.filter((c) => c.startsWith('delete'))).toEqual([]);
+    });
+
+    it('leaves a container that declares its own limit alone', async () => {
+      // Its limit comes from its own spec, not the LimitRange, so replacing
+      // the pod would bring back exactly the same thing.
+      const { fx, calls } = effects({ readPodCpuLimits: vi.fn(async () => capped(1500, 'pinned-1')) });
+      await runTenantCpuMigration(fx, {
+        namespace: 'tenant-a', tier: 'high', burstCores: 2, reapply: true,
+        currentCeilingMillis: 1000,
+        deployments: [dep({ pinsOwnCpu: true })],
+      });
+      expect(calls.filter((c) => c.startsWith('delete'))).toEqual([]);
+    });
+
+    it('sweeps on a first migration only for pods with NO limit', async () => {
+      // Same pod shape, but not a re-apply: a limit already present was
+      // declared by the workload and the plan skips it deliberately.
+      const { fx, calls } = effects({ readPodCpuLimits: vi.fn(async () => capped(1500)) });
+      await runTenantCpuMigration(fx, {
+        namespace: 'tenant-a', tier: 'high', burstCores: 2,
+        deployments: [dep({ currentCpuRequest: '5m', proposedTier: 'normal' })],
+      });
+      expect(calls.filter((c) => c.startsWith('delete'))).toEqual([]);
+    });
   });
 });

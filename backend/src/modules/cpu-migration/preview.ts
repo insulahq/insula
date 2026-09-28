@@ -19,7 +19,9 @@ import { catalogRepositories } from '../../db/schema.js';
 import { DEFAULT_CATALOG_URL } from '../catalog/service.js';
 import { describeDeployment } from './describe.js';
 import { readCpuReservation, cpuToMillis } from '../dashboard/cpu-reservation.js';
-import { deriveTier, tierMillis, ceilingCores, blockerFor, tenantUsageBlocker, reclaimFor } from './tiers.js';
+import { tierMillis, ceilingCores, blockerFor, tenantUsageBlocker, reclaimFor } from './tiers.js';
+import { resolveTenantCpu, DEFAULT_TIER } from './resolve.js';
+import { CPU_TIER_MILLICORES, type CpuTier } from '@insula/api-contracts';
 
 interface DeploymentRow extends Record<string, unknown> {
   id: string;
@@ -35,10 +37,76 @@ interface DeploymentRow extends Record<string, unknown> {
 interface TenantRow extends Record<string, unknown> {
   id: string;
   name: string;
+  kubernetes_namespace: string | null;
   plan_code: string | null;
   cpu_scheduling_mode: 'legacy' | 'tiered';
   cpu_limit: string | null;
   cpu_limit_override: string | null;
+  cpu_tier: CpuTier | null;
+  cpu_tier_override: CpuTier | null;
+  cpu_burst_cores: string | null;
+  cpu_burst_cores_override: string | null;
+}
+
+/** What a namespace's LimitRange actually imposes. */
+interface AppliedCpu {
+  readonly ceilingCores: number;
+  readonly tier: CpuTier | null;
+}
+
+/** Millicores back to the tier that produces them, or null if it is none of them. */
+function tierForMillis(millis: number): CpuTier | null {
+  const hit = (Object.entries(CPU_TIER_MILLICORES) as Array<[CpuTier, number]>)
+    .find(([, m]) => m === millis);
+  return hit ? hit[0] : null;
+}
+
+/**
+ * The ceiling and default tier every tenant namespace currently enforces.
+ *
+ * ONE list call for the whole cluster. Per-tenant reads would be thirty
+ * round trips on a page an operator refreshes while watching a migration.
+ * A failure here must not fail the dry run — the report is still true
+ * without it, it just cannot say whether a change is pending — so it warns
+ * and returns empty.
+ */
+async function readAppliedCeilings(
+  k8s: K8sClients,
+  log?: { warn?: (o: unknown, m: string) => void },
+): Promise<Map<string, AppliedCpu>> {
+  const out = new Map<string, AppliedCpu>();
+  try {
+    const list = await (k8s.core as unknown as {
+      listLimitRangeForAllNamespaces: () => Promise<{
+        items?: ReadonlyArray<{
+          metadata?: { name?: string; namespace?: string };
+          spec?: { limits?: ReadonlyArray<{
+            type?: string;
+            default?: Record<string, string>;
+            defaultRequest?: Record<string, string>;
+          }> };
+        }>;
+      }>;
+    }).listLimitRangeForAllNamespaces();
+    for (const lr of list.items ?? []) {
+      const ns = lr.metadata?.namespace;
+      // The tier LimitRange specifically — a namespace may carry others.
+      if (!ns || lr.metadata?.name !== `${ns}-cpu`) continue;
+      const container = (lr.spec?.limits ?? []).find((l) => l.type === 'Container');
+      const ceiling = cpuToMillis(container?.default?.cpu);
+      if (!ceiling) continue;
+      out.set(ns, {
+        ceilingCores: Math.round((ceiling / 1000) * 100) / 100,
+        tier: tierForMillis(cpuToMillis(container?.defaultRequest?.cpu)),
+      });
+    }
+  } catch (err) {
+    log?.warn?.(
+      { err: err instanceof Error ? err.message : String(err) },
+      'cpu-migration: could not read namespace LimitRanges — the report cannot say whether a tier change is pending',
+    );
+  }
+  return out;
 }
 
 /**
@@ -56,29 +124,6 @@ export function customSpecPinsCpu(spec: unknown): boolean {
   });
 }
 
-/**
- * `resources.recommended.cpu` in cores, or null when the manifest is silent.
- *
- * ★ Parsed as a Kubernetes QUANTITY, not with a bare `Number()`. The field may
- * carry millicore notation — `catalog/service.ts:toCpuMilli` handles exactly
- * this shape for the same field — and `Number('50m')` is NaN. A bare parse
- * would return null for it, which deriveTier reads as "the manifest said
- * nothing" and answers `high`: a `50m` entry (normal, per the ADR) forced six
- * tiers up, and a `2000m` entry (highest) forced down. Silent, and wrong in
- * both directions.
- *
- * No entry in the Official catalog uses the notation today — every value is
- * decimal cores — so this is latent there. It is not latent for the community
- * catalog or any third-party repository, which the tier model explicitly
- * supports.
- */
-export function recommendedCores(entryResources: unknown): number | null {
-  const rec = (entryResources as { recommended?: { cpu?: string } } | null)?.recommended?.cpu;
-  if (rec === undefined || rec === null || String(rec).trim() === '') return null;
-  const millis = cpuToMillis(String(rec));
-  return Number.isFinite(millis) && millis > 0 ? millis / 1000 : null;
-}
-
 export async function buildCpuMigrationPreview(
   db: Database,
   k8s: K8sClients,
@@ -91,11 +136,18 @@ export async function buildCpuMigrationPreview(
   const officialRepoId = officialRepo[0]?.id ?? null;
 
   const tenantRows = await db.execute<TenantRow>(sql`
-    SELECT t.id, t.name, p.code AS plan_code, p.cpu_limit, t.cpu_limit_override,
+    SELECT t.id, t.name, t.kubernetes_namespace, p.code AS plan_code,
+           p.cpu_limit, p.cpu_tier, p.cpu_burst_cores,
+           t.cpu_limit_override, t.cpu_tier_override, t.cpu_burst_cores_override,
            t.cpu_scheduling_mode
       FROM tenants t LEFT JOIN hosting_plans p ON p.id = t.plan_id
      ORDER BY t.name
   `);
+
+  // What each namespace ENFORCES today, in one call rather than one per
+  // tenant. A tenant whose database row and LimitRange disagree has a change
+  // waiting to be applied, and nothing else in the platform can see it.
+  const appliedByNamespace = await readAppliedCeilings(k8s, log);
 
   // Same 15-minute staleness rule the apply guard uses: a run that has not
   // reported in that long is a dead process, not an active migration, and
@@ -163,12 +215,35 @@ export async function buildCpuMigrationPreview(
   let reclaimable = 0;
 
   for (const t of tenantRows.rows ?? []) {
-    // The tenant override wins over the plan, and 0 is a real value — the
-    // same precedence the quota itself is built from.
-    const planLimit = t.cpu_limit_override !== null
-      ? Number(t.cpu_limit_override)
-      : (t.cpu_limit !== null ? Number(t.cpu_limit) : null);
-    const ceiling = ceilingCores(planLimit);
+    /**
+     * ★ The SAME resolver the runner uses.
+     *
+     * This used to be `ceilingCores(cpu_limit_override ?? cpu_limit)`, which
+     * ignores `cpu_burst_cores` and `cpu_burst_cores_override` completely —
+     * so an operator who set a burst on a plan saw the derived number here
+     * and got the configured one when they applied it. Deriving the same
+     * quantity twice is the defect describe.ts was written to remove; it had
+     * survived on the ceiling axis.
+     */
+    const resolved = resolveTenantCpu(
+      { cpuLimit: t.cpu_limit, cpuTier: t.cpu_tier, cpuBurstCores: t.cpu_burst_cores },
+      {
+        cpuSchedulingMode: 'tiered',
+        cpuLimitOverride: t.cpu_limit_override,
+        cpuTierOverride: t.cpu_tier_override,
+        cpuBurstCoresOverride: t.cpu_burst_cores_override,
+      },
+    );
+    const ceiling = resolved.burstCores ?? ceilingCores(null);
+    const tier = resolved.tier ?? DEFAULT_TIER;
+    const applied = t.kubernetes_namespace
+      ? appliedByNamespace.get(t.kubernetes_namespace) ?? null
+      : null;
+    const mode = t.cpu_scheduling_mode ?? 'legacy';
+    // Only meaningful for a tiered tenant: a legacy one has no LimitRange
+    // and is not "pending", it is un-migrated.
+    const pendingCpuChange = mode === 'tiered' && applied !== null
+      && (applied.ceilingCores !== ceiling || applied.tier !== tier);
     const p95 = p95ByTenant.has(t.id) ? p95ByTenant.get(t.id)! : null;
     const tenantBlocker = tenantUsageBlocker(p95, ceiling);
 
@@ -178,7 +253,7 @@ export async function buildCpuMigrationPreview(
       // ★ The SAME function the apply runs on. Deriving the tier twice, once
       // here and once in the runner, is how the operator came to approve one
       // plan and get another — see describe.ts.
-      const f = describeDeployment(d, officialRepoId);
+      const f = describeDeployment(d, officialRepoId, tier);
       // Accumulated per DEPLOYMENT, then summed — the tenant row and the
       // cluster headline are therefore the same operation at two scopes, and
       // the columns add up to the total by construction rather than by luck.
@@ -205,10 +280,14 @@ export async function buildCpuMigrationPreview(
       reclaimableMillis: tenantReclaim,
       increasedMillis: tenantIncrease,
       proposedCeilingCores: ceiling,
+      proposedTier: tier,
+      appliedCeilingCores: applied?.ceilingCores ?? null,
+      appliedTier: applied?.tier ?? null,
+      pendingCpuChange,
       observedP95Millis: p95,
       tenantBlocker,
       migratesCleanly: tenantBlocker === null && deployments.every((d) => d.blocker === null),
-      schedulingMode: t.cpu_scheduling_mode ?? 'legacy',
+      schedulingMode: mode,
       migrationRunning: runningTenantIds.has(t.id),
       deployments,
     });

@@ -129,9 +129,16 @@ export async function ensureSystemTenant(
   }
 
   const tenantId = crypto.randomUUID();
+  // Born on whatever CPU model this cluster creates tenants on (ADR-062 R3).
+  // Leaving it hardcoded would make the SYSTEM tenant the one legacy
+  // namespace on an otherwise tiered fresh install — the split the default
+  // exists to avoid, on the tenant an operator is least likely to notice.
+  const { cpuModeForNewTenant } = await import('../cpu-migration/default-mode.js');
+  const cpuSchedulingMode = await cpuModeForNewTenant(db);
   try {
     await db.insert(tenants).values({
       id: tenantId,
+      cpuSchedulingMode,
       regionId: anyRegion.id,
       name: SYSTEM_TENANT_NAME,
       primaryEmail: systemTenantEmail(apex),

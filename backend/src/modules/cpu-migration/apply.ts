@@ -14,7 +14,9 @@
 
 import { type CpuTier } from '@insula/api-contracts';
 import { buildMigrationPlan, type DeploymentToRetier, type MigrationStep } from './plan.js';
-import { assessLimitsCpuReadiness, type PodCpuLimitFact } from './tiered-namespace.js';
+import {
+  assessLimitsCpuReadiness, podsWithStaleCeiling, type PodCpuLimitFact,
+} from './tiered-namespace.js';
 import { waitForHealthy, type WorkloadReadiness } from './health-gate.js';
 
 export interface MigrationEffects {
@@ -54,6 +56,19 @@ export interface MigrationInput {
   readonly burstCores: number;
   readonly healthTimeoutMs?: number;
   readonly healthPollMs?: number;
+  /**
+   * RE-APPLY. The tenant is already tiered and this run exists to deliver a
+   * changed tier or ceiling — the operation that had no implementation at
+   * all until now, so editing a tiered tenant's tier wrote a column and
+   * changed nothing in the cluster.
+   */
+  readonly reapply?: boolean;
+  /**
+   * The ceiling the namespace's pods were admitted with, in millicores, or
+   * null when they carry none. Compared against the target to decide whether
+   * pods have to be replaced at all.
+   */
+  readonly currentCeilingMillis?: number | null;
 }
 
 export type MigrationOutcome =
@@ -102,10 +117,17 @@ export async function runTenantCpuMigration(
   fx: MigrationEffects,
   input: MigrationInput,
 ): Promise<MigrationOutcome> {
+  const targetCeilingMillis = Math.round(input.burstCores * 1000);
+  // A first migration always re-admits (pods carry no ceiling). A re-apply
+  // re-admits only when the ceiling actually moved.
+  const readmitPods = !input.reapply
+    || input.currentCeilingMillis == null
+    || input.currentCeilingMillis !== targetCeilingMillis;
   const plan = buildMigrationPlan({
     namespace: input.namespace,
     deployments: input.deployments,
     defaultTier: input.tier,
+    readmitPods,
   });
   const total = plan.steps.length;
   let done = 0;
@@ -174,13 +196,29 @@ export async function runTenantCpuMigration(
       }
 
       case 'recreate_stragglers': {
-        const stragglers = (await fx.readPodCpuLimits()).filter(
+        const pods = await fx.readPodCpuLimits();
+        const limitless = pods.filter(
           (p) => p.priorityClassName === fx.quotaScopePriorityClass
             && p.containersWithoutCpuLimit.length > 0
             // Never delete a pod nothing will bring back. verify_limits_ready
             // then refuses and names it, which is the recoverable outcome.
             && p.hasController,
-        );
+        ).map((p) => p.podName);
+        // ★ Also the pods carrying the PREVIOUS ceiling.
+        //
+        // A LimitRange stamps its default at admission, so re-applying a
+        // changed ceiling reaches nothing already running. Without this the
+        // re-apply updated the LimitRange and the quota, reported success,
+        // and every pod kept the old limit until something unrelated
+        // happened to restart it.
+        //
+        // Re-apply only. On a FIRST migration a pod that already has a limit
+        // declared it itself, and the plan leaves those alone on purpose.
+        const staleCeiling = input.reapply && readmitPods
+          ? podsWithStaleCeiling(pods, fx.quotaScopePriorityClass, input.currentCeilingMillis ?? null)
+          : [];
+        const stragglerNames = [...new Set([...limitless, ...staleCeiling])];
+        const stragglers = stragglerNames.map((podName) => ({ podName }));
         if (stragglers.length > 0) {
           await fx.deletePods(stragglers.map((p) => p.podName));
           const gate = await waitForHealthy(fx.readWorkloads, {
@@ -216,6 +254,10 @@ export async function runTenantCpuMigration(
           await fx.limitRangeExists(),
           await fx.readPodCpuLimits(),
           fx.quotaScopePriorityClass,
+          // Re-apply only: a pod nothing will recreate, still on the old
+          // ceiling, is the one case the sweep cannot fix and must not
+          // pass silently.
+          input.reapply && readmitPods ? (input.currentCeilingMillis ?? null) : null,
         );
         if (!readiness.ready) {
           // Stop SHORT of the quota rather than forcing it. Everything so far
