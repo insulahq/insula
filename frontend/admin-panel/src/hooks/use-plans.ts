@@ -7,6 +7,9 @@ export interface Plan {
   readonly name: string;
   readonly description: string | null;
   readonly cpuLimit: string;
+  /** ADR-062. null = the plan does not express one; a derived default applies. */
+  readonly cpuTier: 'normal' | 'high' | 'highest' | null;
+  readonly cpuBurstCores: string | null;
   readonly memoryLimit: string;
   readonly storageLimit: string;
   readonly bandwidthGbLimit: number;

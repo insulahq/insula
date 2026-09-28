@@ -1008,6 +1008,15 @@ export async function updateTenant(
       : null;
   }
   if (input.cpu_limit_override !== undefined) updateValues.cpuLimitOverride = input.cpu_limit_override === null ? null : String(input.cpu_limit_override);
+  // ADR-062 tier overrides. Read only by a tenant in tiered mode — setting
+  // them on a legacy tenant changes nothing about its scheduling, which is
+  // what lets an operator prepare a plan without re-tiering anyone.
+  if (input.cpu_tier_override !== undefined) updateValues.cpuTierOverride = input.cpu_tier_override;
+  if (input.cpu_burst_cores_override !== undefined) {
+    updateValues.cpuBurstCoresOverride = input.cpu_burst_cores_override === null
+      ? null
+      : String(input.cpu_burst_cores_override);
+  }
   if (input.memory_limit_override !== undefined) updateValues.memoryLimitOverride = input.memory_limit_override === null ? null : String(input.memory_limit_override);
   if (input.storage_limit_override !== undefined) updateValues.storageLimitOverride = input.storage_limit_override === null ? null : String(input.storage_limit_override);
   // Integer GB — no String() wrap (mirrors max_mailboxes_override). No k8s

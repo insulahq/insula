@@ -5,6 +5,33 @@ import { usePlans } from '@/hooks/use-plans';
 import { useCreatePlan, useUpdatePlan, useDeletePlan } from '@/hooks/use-plan-management';
 import { useSystemSettings } from '@/hooks/use-system-settings';
 import { formatCurrency } from '@/lib/format-currency';
+import type { CpuTier } from '@insula/api-contracts';
+
+/**
+ * Narrow the select's string to the tier union. A cast would let any value
+ * through to the API; anything unrecognised is treated as "inherit", which is
+ * the safe reading — a plan that does not express a tier falls through to the
+ * derived default.
+ */
+/** Distinguishes "not a number" from a legitimate null (inherit). */
+const INVALID_BURST = Symbol('invalid-burst');
+
+/**
+ * Blank -> null (inherit). A number -> that number. Anything else -> the
+ * sentinel, so the caller can SAY so. Number('2 cores') is NaN and
+ * JSON.stringify turns NaN into null, which would send a typo as "inherit"
+ * and make the admin's value disappear without a word.
+ */
+function parseBurst(raw: string): number | null | typeof INVALID_BURST {
+  const t = raw.trim();
+  if (t === '') return null;
+  const n = Number(t);
+  return Number.isFinite(n) ? n : INVALID_BURST;
+}
+
+function asCpuTier(v: string): CpuTier | null {
+  return v === 'normal' || v === 'high' || v === 'highest' ? v : null;
+}
 
 const INPUT_CLASS = 'mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2.5 text-sm text-gray-900 dark:text-gray-100 bg-white dark:bg-gray-700 placeholder:text-gray-400 dark:placeholder:text-gray-500 dark:text-gray-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
 
@@ -14,6 +41,8 @@ interface PlanRow {
   readonly name: string;
   readonly description: string | null;
   readonly cpuLimit: string;
+  readonly cpuTier: 'normal' | 'high' | 'highest' | null;
+  readonly cpuBurstCores: string | null;
   readonly memoryLimit: string;
   readonly storageLimit: string;
   readonly bandwidthGbLimit: number;
@@ -70,10 +99,15 @@ function PlanForm({ onClose, initial }: { readonly onClose: () => void; readonly
   const { data: sysResp } = useSystemSettings();
   const currency = sysResp?.data?.currency ?? 'USD';
   const isEdit = Boolean(initial);
+  const [validationError, setValidationError] = useState<Error | null>(null);
 
   const [form, setForm] = useState({
     code: initial?.code ?? '', name: initial?.name ?? '', description: initial?.description ?? '',
     cpu_limit: initial?.cpuLimit ?? '0.50', memory_limit: initial?.memoryLimit ?? '1.00',
+    // '' means "this plan does not express it" — distinct from any value, and
+    // it must survive the round trip as null rather than 0.
+    cpu_tier: initial?.cpuTier ?? '',
+    cpu_burst_cores: initial?.cpuBurstCores ?? '',
     storage_limit: initial?.storageLimit ?? '10.00', monthly_price_usd: initial?.monthlyPriceUsd ?? '5.00',
     bandwidth_gb_limit: String(initial?.bandwidthGbLimit ?? 100),
     max_sub_users: String(initial?.maxSubUsers ?? 3),
@@ -96,8 +130,26 @@ function PlanForm({ onClose, initial }: { readonly onClose: () => void; readonly
       email_hourly_send_limit: Number(form.email_hourly_send_limit),
       email_daily_send_limit: Number(form.email_daily_send_limit),
       weekly_ai_budget_cents: Number(form.weekly_ai_budget_cents),
+      // ★ Blank -> null ("inherit"), never Number('') === 0. A 0 here would
+      // read as a real ceiling of zero cores rather than an absent one.
+      cpu_tier: asCpuTier(form.cpu_tier),
+      // ★ Number('2 cores') is NaN, and JSON.stringify turns NaN into null —
+      // so a typo would travel as "inherit" and the admin would see their
+      // value vanish with no error. Reject it instead of guessing; blank
+      // still means inherit.
+      cpu_burst_cores: null as number | null, // replaced below; see the guard
       allow_custom_containers: form.allow_custom_containers,
     };
+    const burst = parseBurst(form.cpu_burst_cores);
+    if (burst === INVALID_BURST) {
+      // Tell the admin. Throwing here would escape the handler entirely and
+      // show nothing at all, which is worse than the silent inherit it
+      // replaces.
+      setValidationError(new Error(`Burst ceiling must be a number of cores, not "${form.cpu_burst_cores}"`));
+      return;
+    }
+    payload.cpu_burst_cores = burst;
+    setValidationError(null);
     try {
       if (isEdit && initial) { await update.mutateAsync({ id: initial.id, ...payload }); }
       else { await create.mutateAsync(payload); }
@@ -105,7 +157,9 @@ function PlanForm({ onClose, initial }: { readonly onClose: () => void; readonly
     } catch {}
   };
 
-  const error = isEdit ? update.error : create.error;
+  // A validation failure is not a mutation failure, so it needs its own
+  // channel — the payload is assembled before the mutation is ever called.
+  const error = validationError ?? (isEdit ? update.error : create.error);
   const isPending = isEdit ? update.isPending : create.isPending;
 
   return (
@@ -116,7 +170,40 @@ function PlanForm({ onClose, initial }: { readonly onClose: () => void; readonly
         <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Price ({currency}/mo)</label><input type="text" className={INPUT_CLASS} placeholder="5.00" value={form.monthly_price_usd} onChange={(e) => setForm({ ...form, monthly_price_usd: e.target.value })} required data-testid="plan-price-input" /></div>
       </div>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">
-        <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">CPU Limit (cores)</label><input type="text" className={INPUT_CLASS} value={form.cpu_limit} onChange={(e) => setForm({ ...form, cpu_limit: e.target.value })} required /></div>
+        <div>
+          <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">CPU Limit (cores)</label>
+          <input type="text" className={INPUT_CLASS} value={form.cpu_limit} onChange={(e) => setForm({ ...form, cpu_limit: e.target.value })} required />
+          <p className="mt-0.5 text-[11px] text-gray-500 dark:text-gray-400">Reserves a place in the queue. Used by tenants not yet on CPU tiers.</p>
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">CPU tier</label>
+          <select
+            className={INPUT_CLASS}
+            value={form.cpu_tier}
+            onChange={(e) => setForm({ ...form, cpu_tier: e.target.value })}
+            data-testid="plan-cpu-tier"
+          >
+            {/* First option is "inherit", so a plan that has never set a tier
+                does not silently acquire one the moment the form is saved. */}
+            <option value="">Derive automatically</option>
+            <option value="normal">Normal — 1x share</option>
+            <option value="high">High — 2x share</option>
+            <option value="highest">Highest — 4x share</option>
+          </select>
+          <p className="mt-0.5 text-[11px] text-gray-500 dark:text-gray-400">Share under contention. Idle workloads burst freely regardless.</p>
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Burst ceiling (cores)</label>
+          <input
+            type="text"
+            className={INPUT_CLASS}
+            placeholder="inherit"
+            value={form.cpu_burst_cores}
+            onChange={(e) => setForm({ ...form, cpu_burst_cores: e.target.value })}
+            data-testid="plan-cpu-burst"
+          />
+          <p className="mt-0.5 text-[11px] text-gray-500 dark:text-gray-400">Most one container may use. Throttles when reached — never killed.</p>
+        </div>
         <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Memory Limit (GB)</label><input type="text" className={INPUT_CLASS} value={form.memory_limit} onChange={(e) => setForm({ ...form, memory_limit: e.target.value })} required /></div>
         <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Storage Limit (GB)</label><input type="text" className={INPUT_CLASS} value={form.storage_limit} onChange={(e) => setForm({ ...form, storage_limit: e.target.value })} required /></div>
         <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Bandwidth (GB/mo)</label><input type="number" min="1" step="1" className={INPUT_CLASS} value={form.bandwidth_gb_limit} onChange={(e) => setForm({ ...form, bandwidth_gb_limit: e.target.value })} required /></div>
@@ -244,6 +331,8 @@ function PlanRowComp({ plan }: { readonly plan: PlanRow }) {
         <div className="flex items-center gap-4 text-xs text-gray-500 dark:text-gray-400">
           <span>{formatCurrency(plan.monthlyPriceUsd, currency)}/mo</span>
           <span>{plan.cpuLimit} CPU</span>
+          {plan.cpuTier && <span data-testid={`plan-tier-${plan.code}`}>tier {plan.cpuTier}</span>}
+          {plan.cpuBurstCores && <span>burst {plan.cpuBurstCores}</span>}
           <span>{plan.memoryLimit}GB RAM</span>
           <span>{plan.storageLimit}GB disk</span>
           <span>{plan.bandwidthGbLimit}GB/mo transfer</span>
