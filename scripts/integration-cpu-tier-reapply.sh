@@ -123,10 +123,19 @@ fi
 NS=$(psql "SELECT kubernetes_namespace FROM tenants WHERE id='$TF';")
 [ -n "$NS" ] || { bad "fixture has no namespace" ""; printf '\n  PASS: %s   FAIL: %s\n' "$PASS" "$FAIL"; exit 1; }
 
+# ★ PREFER a first-party image. Taking d[0] took whatever the catalog
+# listed first — MinIO, whose Docker Hub image will not pull anonymously —
+# and the fixture then sat in ImagePullBackOff while the run reported "the
+# workload never became Ready". It passed for months only because that
+# image happened to be cached on the node; a freshly wiped host has no
+# cache, which is exactly when a harness should still work.
 ENTRY=$(curl "${A[@]}" "$API/api/v1/catalog?limit=100" | python3 -c '
 import sys,json
 d=json.load(sys.stdin).get("data",[])
-print(d[0]["id"] if d else "")' 2>/dev/null)
+def imgs(e): return " ".join((c.get("image") or "") for c in (e.get("components") or []))
+first=[e for e in d if "ghcr.io/insulahq" in imgs(e)]
+pick=(first or d or [None])[0]
+print(pick["id"] if pick else "")' 2>/dev/null)
 [ -n "$ENTRY" ] || { bad "no catalog entry" ""; printf '\n  PASS: %s   FAIL: %s\n' "$PASS" "$FAIL"; exit 1; }
 # Report WHY. A discarded response is how the first run mistook a refused
 # create for a workload that would not start.
