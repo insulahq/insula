@@ -131,6 +131,52 @@ idle, because that is the right rule for an alarm. Discovery is a different job:
 a cluster at 40% reserved should be able to look at this before it becomes the
 cluster at 96%.
 
+### Changing a tenant's share or ceiling afterwards
+
+A migrated tenant's share and ceiling can be edited at any time — on the
+tenant's own page, or through its plan. **Saving the change does not apply
+it.** The tenant's namespace keeps enforcing what it has until you press
+**Apply new limits**, which appears on the tenant detail page and as
+**Apply pending change** in the tenant's row here.
+
+That separation is deliberate. Changing a ceiling replaces the tenant's
+applications, and that should not happen as a side effect of saving a form
+that also edits memory and mailbox counts.
+
+Both places tell you which of the two you are about to do:
+
+| What you changed | What applying does |
+|---|---|
+| The **share** only | Replaces nothing. The share governs how CPU is divided under contention; existing applications pick it up without restarting. |
+| The **ceiling** | Replaces the tenant's applications, one at a time with a health check between — the same pacing a migration uses. A ceiling is stamped onto a container when it starts, so a running application cannot pick up a new one. |
+
+Until you apply it, the tenant's row shows **change not applied** with both
+figures side by side — what is saved, and what the namespace is really
+enforcing. Tenants are shown the enforced figure, never the saved one, so
+they are never told they may burst further than they can.
+
+!!! note "A tenant with measured load above the new ceiling still needs review"
+    The same acknowledgement that guards a first migration guards a
+    re-apply, for the same reason: lowering a ceiling under a tenant whose
+    peak already exceeds it migrates them straight into throttling.
+
+## New clusters start on the share model
+
+A cluster installed from this release onwards creates its tenants on the
+share model from the start — there is nothing to migrate, and the pages
+above will simply show every tenant as tiered.
+
+**An existing cluster is never switched.** The choice is made once, at the
+first tenant creation after upgrading, and recorded: a platform that
+already has tenants stays on the old model and nothing moves until you
+migrate it, tenant by tenant.
+
+While any tenant is still on the old model, the operator console carries a
+standing note with that cluster's own reserved-versus-used figures, how
+many cores migrating the rest would hand back, and a link to this page. It
+disappears by itself once the last tenant is migrated; there is nothing to
+dismiss, because the cost it names is real for as long as it is there.
+
 ## Quotas and the headroom advisory
 
 When you save a tenant's CPU or memory quota, the platform adds up what every

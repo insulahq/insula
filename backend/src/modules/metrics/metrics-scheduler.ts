@@ -7,6 +7,7 @@ import { scanTenantOom, describeOomEvent } from './oom-scan.js';
 import { notifyAdminTenantOom } from '../notifications/events.js';
 import { recordHourlyUsage } from './usage-rollup.js';
 import type { Database } from '../../db/index.js';
+import { tenantDisplayLimits } from './tenant-display-limits.js';
 
 /** Admin per-tenant saturation alerts are on unless explicitly set to 'off'. */
 async function saturationAlertsEnabled(db: Database): Promise<boolean> {
@@ -46,6 +47,15 @@ export function startMetricsScheduler(db: Database): NodeJS.Timeout {
         namespace: tenants.kubernetesNamespace,
         planId: tenants.planId,
         cpuLimitOverride: tenants.cpuLimitOverride,
+        // ★ The three CPU-model columns. Without them every tenant read as
+        // LEGACY here, so a tiered tenant's usage was measured against the
+        // old reservation and the hourly saturation check paged an admin
+        // about a tenant comfortably inside its real ceiling. The
+        // interactive endpoints were right and this one — the only path
+        // that actually emails someone — was wrong.
+        cpuSchedulingMode: tenants.cpuSchedulingMode,
+        cpuTierOverride: tenants.cpuTierOverride,
+        cpuBurstCoresOverride: tenants.cpuBurstCoresOverride,
         memoryLimitOverride: tenants.memoryLimitOverride,
         storageLimitOverride: tenants.storageLimitOverride,
         provisioningStatus: tenants.provisioningStatus,
@@ -65,11 +75,11 @@ export function startMetricsScheduler(db: Database): NodeJS.Timeout {
         const tenant = provisioned[i];
         const plan = planMap.get(tenant.planId);
 
-        const planLimits = {
-          cpuLimit: Number(tenant.cpuLimitOverride ?? plan?.cpuLimit ?? 2),
-          memoryLimitGi: Number(tenant.memoryLimitOverride ?? plan?.memoryLimit ?? 4),
-          storageLimitGi: Number(tenant.storageLimitOverride ?? plan?.storageLimit ?? 50),
-        };
+        // Tiered tenants measure usage against their burst CEILING, not
+        // against a reservation they do not have — see
+        // tenant-display-limits.ts. Same resolver as the HTTP path, so a
+        // cached sample and a live read cannot disagree.
+        const planLimits = tenantDisplayLimits(tenant, plan);
 
         try {
           const metrics = await collectTenantMetrics(db, k8s, tenant.id, tenant.namespace, planLimits);

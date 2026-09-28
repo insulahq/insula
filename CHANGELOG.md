@@ -12,6 +12,221 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+
+- **A changed CPU tier can finally be applied.** Editing a migrated tenant's
+  tier or burst ceiling used to write the value and change nothing: the
+  namespace kept its old ceiling, and the only way through was to revert the
+  tenant and migrate it again, recreating every application twice. Cluster →
+  CPU Scheduling now offers **Re-apply** for a tenant already on the tier
+  model, and says plainly when the saved settings and the running ones
+  disagree — which nothing anywhere did before.
+
+  Applying a changed **tier** replaces no running application. Applying a
+  changed **ceiling** does, one at a time with a health check between, the
+  same pacing a migration uses. A tenant whose measured load is already
+  above the new ceiling still has to be acknowledged first.
+
+- **A tenant's CPU settings can be applied from the tenant page.** Saving a
+  tier or ceiling writes it; the new **Apply new limits** button delivers it
+  to the cluster, says whether the saved and running settings differ, and
+  says whether applying will replace that tenant's applications. Saving and
+  applying stay separate on purpose: a changed ceiling replaces every pod,
+  which should not happen as a side effect of pressing Save on a form that
+  also edits memory and mailboxes.
+
+- **New installs start on the tier model.** The choice is made once, at the
+  first start after upgrading to this release, and recorded: a cluster that
+  already has tenants stays on the old model and nothing moves, a brand-new
+  one begins tiered and never needs migrating at all.
+
+- **A cluster still on the old model says so, with its own numbers.** The
+  operator console carries a standing note — how much CPU is reserved
+  against how much is in use on *that* cluster, how many cores moving the
+  remaining tenants would hand back, and a way through to do it. It
+  disappears by itself once the last tenant is migrated; there is nothing to
+  dismiss, because the cost it names is real for as long as it is there.
+
+### Changed
+
+- **The default hosting plans now sell distinct CPU shares, and declare
+  their burst ceilings.** Starter, Premium and Ultimate ship as *normal*,
+  *high* and *highest* — the three weights the kernel actually
+  distinguishes — with ceilings of 1, 2 and 4 cores. Until now the shipped
+  plans named no share at all, so all three resolved to the same one and
+  the ladder differentiated price, memory and disk but not CPU priority.
+
+  The ceilings are the same numbers they were previously derived from, so
+  no tenant's ceiling changes; declaring them means a tenant on the share
+  model no longer depends on the old per-plan CPU limit, which that model
+  exists to retire.
+
+  Only new installs get this. Seeding runs on every start, but it refreshes
+  nothing on a plan that already exists except its display name — a share
+  an operator set by hand is never overwritten.
+
+- **What a tenant sees about CPU matches what they actually get.** The
+  tenant panel asked for a CPU number in four places and measured usage
+  against a reservation — quantities that do not exist under the share
+  model, against a server that quietly replaced whatever was typed. Those
+  fields now state the share the plan sells and the ceiling it bursts to,
+  the usage bars measure against that ceiling, and the deploy check no
+  longer refuses an application for want of CPU it does not need to
+  reserve.
+
+- **The platform stops spending most of its CPU talking to itself.** On a
+  production cluster the node was only ~26% busy, but almost all of that was
+  the platform's own control plane — tenants accounted for roughly a
+  twentieth of it. Two causes, both self-inflicted.
+
+  The status reconciler asked Kubernetes about every deployment
+  individually, every 15 seconds — around 82 separate requests each pass. The
+  Kubernetes client opens a fresh connection for every single request and
+  closes it afterwards, so those were 82 full TLS handshakes, paid for twice:
+  once in the platform API and once in the cluster's API server. It now reads
+  the whole cluster in two requests and answers every deployment from that,
+  which is also strictly more consistent — every workload is judged against
+  one moment in time instead of a reading smeared across several seconds.
+  Nothing about what the reconciler reports changes.
+
+  Separately, the GitOps reconciler was re-applying all 272 platform objects
+  every 60 seconds, which alone accounted for about an eighth of everything
+  the cluster's API server was doing. That cadence only governs how quickly a
+  *manual* change gets undone; new releases are picked up the moment they
+  land, and still are. It is now five minutes.
+
+  Existing clusters get the second half via a host-migration; new installs
+  get both.
+
+### Fixed
+
+- **A tenant moved to the CPU tier model kept losing its burst ceiling.**
+  Editing a hosting plan, editing one tenant's limits, or simply restarting
+  the management API re-applied the *old* CPU shape over every tenant it
+  touched — quietly removing the ceiling the tier migration had installed.
+  Fourteen of thirty namespaces on a production cluster had lost theirs
+  within two hours of being migrated, and the next restart would have taken
+  the rest. Nothing failed while it happened: the per-application
+  ceilings stayed in place, so what was lost was the namespace-wide backstop
+  above them, and no error, alert or status anywhere said it was gone.
+
+  The five paths that write a tenant's quota now read what is there first
+  and leave the CPU budget of a tiered namespace alone. Only the tier
+  migration sizes that budget, and it sizes it from what the tenant's
+  applications are actually running.
+
+- **Ceilings already lost are put back on the next start.** The boot-time
+  sweep knows which tenants are on the tier model and restores a ceiling
+  that is missing — without an operator re-running anything, and without
+  touching one that is present. It will not install a ceiling over a
+  namespace that cannot satisfy one, and it leaves a tenant alone entirely
+  while a migration or a revert is in flight: both deliberately change the
+  cluster before they change the database, and a sweep that believed the
+  database would undo the step in progress.
+
+- **Installing a brand-new cluster works again.** Two things had broken it,
+  and neither could be seen from a cluster that was already running.
+
+  The Kubernetes installer was fetched from a URL that always serves the
+  latest development version of that script, so the moment its authors
+  edited it — for reasons of their own, affecting other operating systems —
+  our integrity check correctly refused to run it and every new install
+  stopped dead. It now comes from the specific release being installed, so
+  it changes only when we change which version we install.
+
+  The web router then failed to install at all: its access-log directory was
+  declared in a way its packaging no longer supports, producing a broken
+  object the cluster rejected. Existing clusters were unaffected because
+  they receive that directory through an upgrade step instead — which is
+  exactly why it went unnoticed. Left alone it would also have handed the
+  router a read-only directory to write its log into, silently costing the
+  intrusion-detection its only source of requests.
+
+- **Hosting plans now really differ in CPU priority.** An application's
+  share came from its catalog entry, so a plan's tier governed almost
+  nothing and a Starter tenant's site competed as an equal with an Ultimate
+  tenant's. What CPU a tenant gets is now simply what they are sold: every
+  application a tenant runs takes the tenant's tier.
+
+  Catalog manifests no longer describe CPU at all. The figure they carried
+  described a reservation the platform no longer makes, and letting a
+  manifest choose its own share would let a third-party catalog hand its
+  application priority over everything else a tenant runs. Existing
+  manifests stay valid — the field is simply ignored for tenants on the
+  tier model, and read exactly as before for those still on the old one.
+
+- **A migrated tenant could only add about three more applications.** The
+  migration sized each namespace's CPU allowance from what the tenant was
+  running at that moment plus a little room, and nothing ever revisited it —
+  so a few deployments later the tenant's next one was refused by a limit
+  the platform had set itself, with an error they could not act on and
+  nobody would connect to a migration weeks earlier. The allowance now grows
+  as applications are added.
+
+- **A new application on a migrated tenant takes the tenant's share.**
+  Migrating re-sizes every application a tenant has, and then the next one
+  arrived at the old catalog figure — a quarter of a core — undoing the
+  saving one deployment at a time. This was fixed twice: the first attempt
+  computed the right value but used it only as a fallback for a field that
+  is filled in automatically when omitted, so the fallback never fired.
+  Custom containers were not converted at all.
+
+- **A tenant on the tier model can no longer set a raw CPU number.** The
+  resize endpoint accepted any value up to the burst ceiling and wrote it
+  straight onto the pod as a reservation — reintroducing the whole model
+  this replaces, and permanently enlarging that tenant's scheduling budget
+  to fit it. Whatever is submitted, a tiered tenant's application gets its
+  tenant's share; the ceiling bounds what it may *use*, which is a separate
+  thing the platform applies for it.
+
+- **A tenant is shown the CPU ceiling in force, not one an administrator
+  has saved but not applied.** Saving a ceiling and applying it are separate
+  steps, so between them the two differ — and the tenant panel was reading
+  the saved figure. The dangerous direction is a raised ceiling that has not
+  been applied: the tenant is told they may burst further than they can, and
+  the throttling that follows contradicts their own usage page. Found by
+  opening the page against a live tenant whose namespace enforced four cores
+  while the panel said two.
+
+- **Tenants on the share model no longer get false CPU-saturation alerts.**
+  The hourly check measured their usage against the old reservation rather
+  than their ceiling, so a tenant comfortably inside its limits could email
+  an administrator a critical alert every hour. The screens had already been
+  corrected; this was the one path that actually contacts someone.
+
+- **The dry run and the migration can no longer disagree about the burst
+  ceiling.** The preview derived it from the plan's old CPU figure and
+  ignored the ceiling actually configured on the plan or the tenant, so an
+  operator who had set one saw a different number than they got.
+
+- **A tenant's CPU allowance can no longer be sized below what it is already
+  using.** Kubernetes accepts such a limit and then refuses every new pod;
+  the case was reachable by lowering a ceiling on a tenant running several
+  applications.
+
+- **A re-apply now refuses rather than under-delivering.** If a pod is
+  still running under the previous ceiling and nothing exists to recreate
+  it, the run stops and names that pod, instead of reporting success while
+  one application quietly keeps the old ceiling and every screen shows the
+  new one.
+
+- **A per-tenant CPU limit override is now honoured when a ceiling is
+  derived.** It was read from the plan alone, so a tenant whose limit had
+  been overridden got a ceiling computed from a number that did not apply
+  to it. Moot once a plan declares its ceiling, which the defaults now do.
+
+- **Editing a hosting plan opened the wrong plan.** The plan list came back
+  in no particular order, and Postgres moves a row when you update it — so
+  saving a plan silently reordered the list, and the next click on "the
+  second plan" was a different plan. Reproduced on a production database:
+  touching one plan without changing a value moved it up a row. The list is
+  ordered by price now.
+
+- **A fractional memory, storage or bandwidth quota is now refused, not a
+  server error.** Those three are whole gigabytes in the database, so asking
+  for 1.5 GB passed validation and then failed inside the driver — a 500
+  with no field name on it, for an input the API had already said it was
+  checking. CPU is unchanged: it is genuinely fractional.
 ## [2026.9.36] - 2026-09-28
 
 ### Fixed

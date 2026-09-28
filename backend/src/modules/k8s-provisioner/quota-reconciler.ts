@@ -17,7 +17,8 @@
 import type { Database } from '../../db/index.js';
 import { tenants, hostingPlans } from '../../db/schema.js';
 import { eq } from 'drizzle-orm';
-import { applyResourceQuota } from './service.js';
+import { applyResourceQuota, type TenantCpuModel } from './service.js';
+import { cpuModelForTenant, tenantsMidCpuChange } from '../cpu-migration/quota-ceiling.js';
 import type { K8sClients } from './k8s-client.js';
 
 interface ReconcileResult {
@@ -40,12 +41,28 @@ export async function reconcileAllTenantQuotas(
       cpuLimitOverride: tenants.cpuLimitOverride,
       memoryLimitOverride: tenants.memoryLimitOverride,
       storageLimitOverride: tenants.storageLimitOverride,
+      cpuSchedulingMode: tenants.cpuSchedulingMode,
+      cpuTierOverride: tenants.cpuTierOverride,
+      cpuBurstCoresOverride: tenants.cpuBurstCoresOverride,
       cpuLimit: hostingPlans.cpuLimit,
       memoryLimit: hostingPlans.memoryLimit,
       storageLimit: hostingPlans.storageLimit,
+      planCpuTier: hostingPlans.cpuTier,
+      planCpuBurstCores: hostingPlans.cpuBurstCores,
     })
     .from(tenants)
     .leftJoin(hostingPlans, eq(hostingPlans.id, tenants.planId));
+
+  // Tenants whose CPU model is being changed RIGHT NOW. One query, not one
+  // per row: with 30 tenants the per-row version is 30 round trips to save
+  // nothing.
+  const midChange = await tenantsMidCpuChange(db);
+  if (midChange.size > 0) {
+    log.info(
+      { tenants: [...midChange] },
+      'quota-reconcile: leaving CPU keys alone for tenants with a migration in flight',
+    );
+  }
 
   let reconciled = 0;
   let skipped = 0;
@@ -65,7 +82,7 @@ export async function reconcileAllTenantQuotas(
         cpu: String(effectiveCpu),
         memory: String(effectiveMemory),
         storage: String(effectiveStorage),
-      });
+      }, { cpuModel: cpuModelForTenant(c, midChange, log) });
       reconciled++;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

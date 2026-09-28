@@ -3,6 +3,7 @@ import { Loader2, RefreshCw, X, Cpu, MemoryStick, HardDrive, Mail } from 'lucide
 import { useResourceMetrics, useRefreshMetrics } from '@/hooks/use-resource-metrics';
 import { useMailboxUsage } from '@/hooks/use-email';
 import { useTenantContext } from '@/hooks/use-tenant-context';
+import { useResourceAvailability as useTenantCpuModel } from '@/hooks/use-resource-availability';
 import { resourceBarColor, resourcePercent, resourceRatio } from '@/lib/resource-usage';
 
 interface ResourceMetricsModalProps {
@@ -131,7 +132,8 @@ function ResourceSection({
   readonly icon: React.ReactNode;
   readonly label: string;
   readonly inUse: number;
-  readonly reserved: number;
+  /** Null hides the reservation band and row entirely. */
+  readonly reserved: number | null;
   readonly available: number;
   readonly formatValue: (v: number) => string;
   readonly inUseLabel: string;
@@ -143,7 +145,7 @@ function ResourceSection({
   // a normal one on the Resource Usage page, for the same number.
   const inUseRatio = resourceRatio(inUse, available);
   const inUsePct = resourcePercent(inUse, available);
-  const reservedPct = resourcePercent(reserved, available);
+  const reservedPct = reserved === null ? 0 : resourcePercent(reserved, available);
   const barColor = resourceBarColor(inUseRatio);
 
   return (
@@ -154,11 +156,13 @@ function ResourceSection({
       </div>
       {/* Combined bar: grey=reserved, colored=in-use */}
       <div className="relative h-3 w-full rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden">
-        {/* Reserved (grey) layer */}
-        <div
-          className="absolute inset-y-0 left-0 bg-gray-400/40 dark:bg-gray-500/40 rounded-full"
-          style={{ width: `${reservedPct}%` }}
-        />
+        {/* Reserved (grey) layer — absent when there is no reservation */}
+        {reserved !== null && (
+          <div
+            className="absolute inset-y-0 left-0 bg-gray-400/40 dark:bg-gray-500/40 rounded-full"
+            style={{ width: `${reservedPct}%` }}
+          />
+        )}
         {/* In-use (colored) layer */}
         <div
           className={`absolute inset-y-0 left-0 rounded-full transition-all ${barColor}`}
@@ -166,7 +170,9 @@ function ResourceSection({
         />
       </div>
       <p className="text-xs text-gray-600 dark:text-gray-400">
-        {formatValue(inUse)} used / {formatValue(reserved)} reserved / {formatValue(available)} available
+        {reserved === null
+          ? `${formatValue(inUse)} used / ${formatValue(available)} ceiling`
+          : `${formatValue(inUse)} used / ${formatValue(reserved)} reserved / ${formatValue(available)} available`}
       </p>
       <div className="space-y-1 pl-1">
         <div className="flex justify-between text-xs">
@@ -176,13 +182,15 @@ function ResourceSection({
             <span className="ml-1 text-gray-400 dark:text-gray-500">({inUseLabel})</span>
           </span>
         </div>
-        <div className="flex justify-between text-xs">
-          <span className="text-gray-500 dark:text-gray-400">Reserved</span>
-          <span className="font-medium text-gray-700 dark:text-gray-300">
-            {formatValue(reserved)}
-            <span className="ml-1 text-gray-400 dark:text-gray-500">({reservedLabel})</span>
-          </span>
-        </div>
+        {reserved !== null && (
+          <div className="flex justify-between text-xs">
+            <span className="text-gray-500 dark:text-gray-400">Reserved</span>
+            <span className="font-medium text-gray-700 dark:text-gray-300">
+              {formatValue(reserved)}
+              <span className="ml-1 text-gray-400 dark:text-gray-500">({reservedLabel})</span>
+            </span>
+          </div>
+        )}
         <div className="flex justify-between text-xs">
           <span className="text-gray-500 dark:text-gray-400">Available</span>
           <span className="font-medium text-gray-700 dark:text-gray-300">
@@ -200,6 +208,8 @@ export default function ResourceMetricsModal({ open, onClose }: ResourceMetricsM
   const refreshMetrics = useRefreshMetrics();
   const { tenantId } = useTenantContext();
   const { data: mailboxUsageData } = useMailboxUsage(tenantId ?? undefined);
+  const { data: tenantCpuData } = useTenantCpuModel(tenantId ?? undefined);
+  const tieredCpu = tenantCpuData?.data?.cpuModel === 'tiered';
 
   useEffect(() => {
     if (open) {
@@ -249,16 +259,19 @@ export default function ResourceMetricsModal({ open, onClose }: ResourceMetricsM
 
         {metrics && (
           <div className="space-y-5">
+            {/* ★ No reservation row for a tiered tenant (ADR-062): there
+                is no CPU reservation to report, and `available` here is the
+                burst ceiling rather than a plan limit. */}
             <ResourceSection
               icon={<Cpu size={16} className="text-blue-500 dark:text-blue-400" />}
               label="CPU"
               inUse={metrics.cpu.inUse}
-              reserved={metrics.cpu.reserved}
+              reserved={tieredCpu ? null : metrics.cpu.reserved}
               available={metrics.cpu.available}
               formatValue={formatCpu}
               inUseLabel="actual current consumption"
               reservedLabel="allocated by deployments"
-              availableLabel="subscription plan limit"
+              availableLabel={tieredCpu ? 'burst ceiling from your plan' : 'subscription plan limit'}
             />
 
             <div className="border-t border-gray-100 dark:border-gray-700" />

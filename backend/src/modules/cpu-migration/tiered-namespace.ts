@@ -72,6 +72,23 @@ export interface TieredQuotaInput {
    * the namespace would not be frozen, but nothing could ever roll.
    */
   readonly largestPodMillis: number;
+  /**
+   * The sum of the CPU LIMITS the in-scope pods already carry, in
+   * millicores, from the live quota's `status.used['limits.cpu']`.
+   *
+   * ★ The same lesson as `liveUsedMillis`, on the other axis, and it took a
+   * second incident to notice. `limits.cpu` was sized purely as
+   * burst x BACKSTOP, which silently assumes a tenant never runs more than
+   * BACKSTOP containers at the ceiling. A tenant with five does, and
+   * Kubernetes ACCEPTS the too-small quota and then refuses every later pod.
+   * Re-applying a REDUCED ceiling to a tiered tenant walks straight into it:
+   * the pods still carry the old, larger limits until they are replaced.
+   *
+   * Absent (0) on a first migration, where no pod has a limit yet.
+   */
+  readonly liveUsedLimitMillis?: number;
+  /** The largest single in-scope pod's CPU LIMIT, in millicores. */
+  readonly largestPodLimitMillis?: number;
 }
 
 export function buildTieredQuotaHard(input: TieredQuotaInput): Record<string, string> {
@@ -93,9 +110,16 @@ export function buildTieredQuotaHard(input: TieredQuotaInput): Record<string, st
    * during a CPU migration. Re-stating a value we have no reason to change
    * bought nothing and risked that; a merge patch simply leaves it alone.
    */
+  // The backstop, or what the namespace already holds plus room for one more
+  // of its biggest pod — whichever is larger. Writing the backstop alone can
+  // land BELOW `used`, which freezes the namespace (see liveUsedLimitMillis).
+  const backstopMillis = Math.round(input.burstCores * QUOTA_LIMITS_CPU_BACKSTOP * 1000);
+  const heldMillis = (input.liveUsedLimitMillis ?? 0)
+    + Math.max(input.largestPodLimitMillis ?? 0, Math.round(input.burstCores * 1000));
+  const limitMillis = Math.max(backstopMillis, input.liveUsedLimitMillis ? heldMillis : 0);
   return {
     'requests.cpu': `${requestMillis}m`,
-    'limits.cpu': `${round2(input.burstCores * QUOTA_LIMITS_CPU_BACKSTOP)}`,
+    'limits.cpu': `${round2(limitMillis / 1000)}`,
   };
 }
 
@@ -152,6 +176,16 @@ export interface PodCpuLimitFact {
   readonly podName: string;
   /** Containers (init included) that declare NO cpu limit. */
   readonly containersWithoutCpuLimit: readonly string[];
+  /**
+   * The CPU limit each container DOES declare, in millicores.
+   *
+   * A LimitRange stamps its `default` at admission, so a pod keeps the
+   * ceiling that was in force when it started, for as long as it runs. That
+   * is invisible from the LimitRange, the quota or the deployment spec —
+   * only the pod knows. Re-applying a changed ceiling is precisely the
+   * operation that has to find the pods still carrying the old one.
+   */
+  readonly containerCpuLimitsMillis: readonly number[];
   /**
    * ★ Which pods the quota actually governs. The tenant quota carries
    * `scopeSelector: PriorityClass In [tenant-default]`, so it constrains ONLY
@@ -211,6 +245,19 @@ export function assessLimitsCpuReadiness(
   pods: readonly PodCpuLimitFact[],
   /** The class the quota's scopeSelector matches. Pods outside it are exempt. */
   quotaScopePriorityClass: string,
+  /**
+   * RE-APPLY only: the ceiling that is being replaced.
+   *
+   * ★ A pod still carrying it, with nothing to recreate it, is the silent
+   * failure of a re-apply. The sweep skips it — correctly, deleting a bare
+   * pod destroys the workload — and this check used to pass it, because it
+   * does have *a* limit. The run then reported `completed` while one pod
+   * went on running at the old, higher ceiling, and the panel reported the
+   * new one as applied because the panel reads the LimitRange. Refusing and
+   * naming it is recoverable; a silently unenforced ceiling is not visible
+   * at all.
+   */
+  previousCeilingMillis?: number | null,
 ): LimitsCpuReadiness {
   if (!limitRangeExists) {
     return {
@@ -230,10 +277,59 @@ export function assessLimitsCpuReadiness(
       blockingPods: offenders.map((p) => p.podName),
     };
   }
+  if (previousCeilingMillis != null && previousCeilingMillis > 0) {
+    const stuck = inScope.filter((p) => !p.hasController
+      && p.containerCpuLimitsMillis.some((m) => m === previousCeilingMillis));
+    if (stuck.length > 0) {
+      return {
+        ready: false,
+        reason: `${stuck.length} running pod(s) still carry the previous CPU ceiling and have no `
+          + 'controller to recreate them; replace them by hand, or the new ceiling will not apply '
+          + 'to them',
+        blockingPods: stuck.map((p) => p.podName),
+      };
+    }
+  }
   return { ready: true, reason: null, blockingPods: [] };
 }
 
 /** Trailing-zero-free to keep the rendered quota readable. */
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
+}
+
+/**
+ * Pods still admitted under the PREVIOUS ceiling.
+ *
+ * A LimitRange stamps its `default` at admission, so a pod keeps the ceiling
+ * that was in force when it started for as long as it runs. Re-applying a
+ * changed ceiling therefore reaches nothing already running — the LimitRange
+ * and the quota move, the pods do not, and the operator is told the change
+ * was applied.
+ *
+ * ★ Matched against the OLD ceiling, not "anything unequal to the new one".
+ * A container that declares its own CPU limit (ADR-036 bring-your-own) also
+ * fails "equals the new ceiling", and the plan deliberately leaves those
+ * alone — sweeping them would recreate a pod to no effect, since its limit
+ * comes from its own spec and not from the LimitRange. A limit that is
+ * exactly the previous default is one the previous LimitRange put there.
+ *
+ * Only pods the quota governs, and only those something will recreate — the
+ * sweep DELETES these, and a pod with no controller does not come back. A
+ * pod with no limit at all is not here: that is the first-migration case
+ * `assessLimitsCpuReadiness` refuses on, and folding the two together would
+ * turn a blocking condition into a silent deletion.
+ */
+export function podsWithStaleCeiling(
+  pods: readonly PodCpuLimitFact[],
+  quotaScopePriorityClass: string,
+  previousCeilingMillis: number | null,
+): readonly string[] {
+  if (previousCeilingMillis === null || previousCeilingMillis <= 0) return [];
+  return pods
+    .filter((p) => p.priorityClassName === quotaScopePriorityClass
+      && p.hasController
+      && p.containersWithoutCpuLimit.length === 0
+      && p.containerCpuLimitsMillis.some((m) => m === previousCeilingMillis))
+    .map((p) => p.podName);
 }

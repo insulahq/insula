@@ -21,6 +21,7 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import type { AdminNode, DashboardAlert, DashboardAlertAction } from '@insula/api-contracts';
 import OrphanedVolumesModal from '@/components/OrphanedVolumesModal';
+import LegacyCpuNotice from '@/components/LegacyCpuNotice';
 import { useConsoleSummary, useConsoleLive } from '@/hooks/use-operator-console';
 import {
   AlertBand, HoverCard, MatrixTile, RefreshButton, SectionFallback, Tile, TileSkeleton, TriadBar,
@@ -118,6 +119,10 @@ export default function Dashboard() {
           onClick={() => { void summary.refetch(); void live.refetch(); }}
         />
       </header>
+
+      {/* Standing, not dismissible, and gone the moment the last tenant is
+          migrated — see LegacyCpuNotice. */}
+      <LegacyCpuNotice />
 
       {/* ── attention: conditional, and absent when empty ──────────── */}
       {loadingFirst ? (

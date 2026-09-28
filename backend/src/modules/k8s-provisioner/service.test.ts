@@ -22,6 +22,16 @@ function createMockK8sTenants(): K8sClients {
       readNamespace: vi.fn().mockRejectedValue(Object.assign(new Error('Not found'), { statusCode: 404 })),
       patchNamespace: vi.fn().mockResolvedValue({}),
       createNamespacedResourceQuota: vi.fn().mockResolvedValue({}),
+      // Default to "no quota yet", the provisioning case: applyResourceQuota
+      // reads the live quota to tell a tiered namespace from a legacy one.
+      readNamespacedResourceQuota: vi.fn().mockRejectedValue(
+        Object.assign(new Error('HTTP-Code: 404'), { statusCode: 404 }),
+      ),
+      // The tier LimitRange. Present by default: it is the precondition for
+      // a quota ceiling, and a mock that 404s it would make every restore
+      // test pass by declining to restore.
+      readNamespacedLimitRange: vi.fn().mockResolvedValue({}),
+      replaceNamespacedResourceQuota: vi.fn().mockResolvedValue({}),
       // Phase F+G fix: applyPVC now reads-then-creates to dodge the
       // ResourceQuota admission firing 403 before the existence check.
       // Mock 404 so the create branch still runs in the existing tests.
@@ -205,6 +215,191 @@ describe('K8s Provisioner Service', () => {
       const patchCall = (mockK8s.core.patchNamespace as ReturnType<typeof vi.fn>).mock.calls[0];
       const patchBody = patchCall[0] as { body: { metadata: { labels: Record<string, string> } } };
       expect(patchBody.body.metadata.labels['pod-security.kubernetes.io/enforce']).toBe('baseline');
+    });
+
+    /**
+     * ★ A tiered namespace must keep its CPU keys (ADR-062).
+     *
+     * This function writes the LEGACY shape — plan `requests.cpu`, no
+     * `limits.cpu` — and EVERY caller re-applies it: provisioning, the
+     * boot-time reconciler, a plan edit (which fans out to every tenant on
+     * that plan) and a tenant limit edit. Against a migrated namespace that
+     * silently removed the burst ceiling the migration had installed.
+     *
+     * Observed on production: a plan edit wiped the ceiling from the nine
+     * tenants migrated before it. The other twenty survived only because
+     * nothing had touched their quota yet — the next API restart would have
+     * taken all thirty, since the boot reconciler sweeps every tenant.
+     */
+    it('preserves the CPU ceiling and tiered request of a migrated namespace', async () => {
+      (mockK8s.core.readNamespacedResourceQuota as ReturnType<typeof vi.fn>).mockResolvedValue({
+        spec: { hard: { 'requests.cpu': '110m', 'limits.cpu': '4', 'requests.memory': '1Gi', 'limits.memory': '1Gi' } },
+      });
+      const { applyResourceQuota } = await import('./service.js');
+      await applyResourceQuota(mockK8s, 'test-ns', { cpu: '0.25', memory: '4', storage: '50' });
+
+      const calls = (mockK8s.core.createNamespacedResourceQuota as ReturnType<typeof vi.fn>).mock.calls;
+      const pod = calls.find((c) => (c[0] as { body: { metadata: { name: string } } }).body.metadata.name === 'test-ns-quota');
+      const hard = (pod![0] as { body: { spec: { hard: Record<string, string> } } }).body.spec.hard;
+
+      // The ceiling survives, and requests.cpu stays the TIERED figure —
+      // under tiering the plan's cpu_limit does not govern requests at all.
+      expect(hard['limits.cpu']).toBe('4');
+      expect(hard['requests.cpu']).toBe('110m');
+      // Memory still follows the plan; the tier model changes nothing there.
+      expect(hard['requests.memory']).toBe('4Gi');
+      expect(hard['limits.memory']).toBe('4Gi');
+    });
+
+    // A legacy namespace is untouched by the above — plan values still win.
+    it('still writes the plan CPU for a namespace that was never migrated', async () => {
+      (mockK8s.core.readNamespacedResourceQuota as ReturnType<typeof vi.fn>).mockResolvedValue({
+        spec: { hard: { 'requests.cpu': '1', 'requests.memory': '1Gi', 'limits.memory': '1Gi' } },
+      });
+      const { applyResourceQuota } = await import('./service.js');
+      await applyResourceQuota(mockK8s, 'test-ns', { cpu: '0.25', memory: '4', storage: '50' });
+      const calls = (mockK8s.core.createNamespacedResourceQuota as ReturnType<typeof vi.fn>).mock.calls;
+      const pod = calls.find((c) => (c[0] as { body: { metadata: { name: string } } }).body.metadata.name === 'test-ns-quota');
+      const hard = (pod![0] as { body: { spec: { hard: Record<string, string> } } }).body.spec.hard;
+      expect(hard['requests.cpu']).toBe('0.25');
+      expect(hard['limits.cpu']).toBeUndefined();
+    });
+
+    // Provisioning a brand-new tenant: nothing to read, plan values apply.
+    it('writes the plan CPU when the quota does not exist yet', async () => {
+      (mockK8s.core.readNamespacedResourceQuota as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('HTTP-Code: 404'));
+      const { applyResourceQuota } = await import('./service.js');
+      await applyResourceQuota(mockK8s, 'test-ns', { cpu: '0.25', memory: '4', storage: '50' });
+      const calls = (mockK8s.core.createNamespacedResourceQuota as ReturnType<typeof vi.fn>).mock.calls;
+      const pod = calls.find((c) => (c[0] as { body: { metadata: { name: string } } }).body.metadata.name === 'test-ns-quota');
+      const hard = (pod![0] as { body: { spec: { hard: Record<string, string> } } }).body.spec.hard;
+      expect(hard['requests.cpu']).toBe('0.25');
+      expect(hard['limits.cpu']).toBeUndefined();
+    });
+
+    // The repair direction: ten production namespaces had already lost their
+    // ceiling before the write above became tier-aware. The boot sweep knows
+    // they are tiered and hands the ceiling back.
+    it('restores a MISSING ceiling on a tiered tenant when the caller supplies one', async () => {
+      (mockK8s.core.readNamespacedResourceQuota as ReturnType<typeof vi.fn>).mockResolvedValue({
+        spec: { hard: { 'requests.cpu': '0.25', 'requests.memory': '1Gi', 'limits.memory': '1Gi' } },
+      });
+      const { applyResourceQuota } = await import('./service.js');
+      await applyResourceQuota(mockK8s, 'test-ns', { cpu: '0.25', memory: '4', storage: '50' }, { cpuModel: { mode: 'tiered', ceilingCores: 4 } });
+      const calls = (mockK8s.core.createNamespacedResourceQuota as ReturnType<typeof vi.fn>).mock.calls;
+      const pod = calls.find((c) => (c[0] as { body: { metadata: { name: string } } }).body.metadata.name === 'test-ns-quota');
+      const hard = (pod![0] as { body: { spec: { hard: Record<string, string> } } }).body.spec.hard;
+      expect(hard['limits.cpu']).toBe('4');
+      // Left where it is. Only the migration can size this from live pods,
+      // and the plan value it currently holds is a cap, not a reservation.
+      expect(hard['requests.cpu']).toBe('0.25');
+    });
+
+    it('never overwrites a ceiling that is already there', async () => {
+      (mockK8s.core.readNamespacedResourceQuota as ReturnType<typeof vi.fn>).mockResolvedValue({
+        spec: { hard: { 'requests.cpu': '110m', 'limits.cpu': '2', 'requests.memory': '1Gi', 'limits.memory': '1Gi' } },
+      });
+      const { applyResourceQuota } = await import('./service.js');
+      await applyResourceQuota(mockK8s, 'test-ns', { cpu: '0.25', memory: '4', storage: '50' }, { cpuModel: { mode: 'tiered', ceilingCores: 8 } });
+      const calls = (mockK8s.core.createNamespacedResourceQuota as ReturnType<typeof vi.fn>).mock.calls;
+      const pod = calls.find((c) => (c[0] as { body: { metadata: { name: string } } }).body.metadata.name === 'test-ns-quota');
+      const hard = (pod![0] as { body: { spec: { hard: Record<string, string> } } }).body.spec.hard;
+      expect(hard['limits.cpu']).toBe('2');
+    });
+
+    it('does not invent a ceiling for a namespace being provisioned', async () => {
+      // Neither object exists yet. The LimitRange is the precondition for a
+      // ceiling and the honest test of whether a namespace is tiered, so a
+      // brand-new one gets the legacy shape whatever the database says.
+      (mockK8s.core.readNamespacedResourceQuota as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('HTTP-Code: 404'));
+      (mockK8s.core.readNamespacedLimitRange as ReturnType<typeof vi.fn>).mockRejectedValue(
+        Object.assign(new Error('HTTP-Code: 404'), { statusCode: 404 }),
+      );
+      const { applyResourceQuota } = await import('./service.js');
+      await applyResourceQuota(mockK8s, 'test-ns', { cpu: '0.25', memory: '4', storage: '50' }, { cpuModel: { mode: 'tiered', ceilingCores: 4 } });
+      const calls = (mockK8s.core.createNamespacedResourceQuota as ReturnType<typeof vi.fn>).mock.calls;
+      const pod = calls.find((c) => (c[0] as { body: { metadata: { name: string } } }).body.metadata.name === 'test-ns-quota');
+      const hard = (pod![0] as { body: { spec: { hard: Record<string, string> } } }).body.spec.hard;
+      expect(hard['limits.cpu']).toBeUndefined();
+    });
+
+    // ── from review ───────────────────────────────────────────────────────
+    it('REFUSES to write when the quota cannot be read for any reason but 404', async () => {
+      // An unreadable API is not an absent quota. Swallowing this returned
+      // null, the caller wrote the legacy shape, and upsertQuota's fallback
+      // is a full-object REPLACE — which deletes limits.cpu. The production
+      // incident, re-armed behind a transient blip.
+      (mockK8s.core.readNamespacedResourceQuota as ReturnType<typeof vi.fn>).mockRejectedValue(
+        Object.assign(new Error('HTTP-Code: 500'), { statusCode: 500 }),
+      );
+      const { applyResourceQuota } = await import('./service.js');
+      await expect(applyResourceQuota(mockK8s, 'test-ns', { cpu: '0.25', memory: '4', storage: '50' }))
+        .rejects.toThrow(/500/);
+      expect(mockK8s.core.createNamespacedResourceQuota).not.toHaveBeenCalled();
+      expect(mockK8s.core.replaceNamespacedResourceQuota).not.toHaveBeenCalled();
+    });
+
+    it('drops a stray ceiling from a tenant the database calls legacy', async () => {
+      // Nothing else removes one, and a legacy pod declares no CPU limit —
+      // so a ceiling left here refuses every deploy the tenant makes.
+      (mockK8s.core.readNamespacedResourceQuota as ReturnType<typeof vi.fn>).mockResolvedValue({
+        spec: { hard: { 'requests.cpu': '110m', 'limits.cpu': '4', 'requests.memory': '1Gi', 'limits.memory': '1Gi' } },
+      });
+      const { applyResourceQuota } = await import('./service.js');
+      await applyResourceQuota(mockK8s, 'test-ns', { cpu: '0.25', memory: '4', storage: '50' }, { cpuModel: { mode: 'legacy' } });
+      const calls = (mockK8s.core.createNamespacedResourceQuota as ReturnType<typeof vi.fn>).mock.calls;
+      const pod = calls.find((c) => (c[0] as { body: { metadata: { name: string } } }).body.metadata.name === 'test-ns-quota');
+      const hard = (pod![0] as { body: { spec: { hard: Record<string, string> } } }).body.spec.hard;
+      expect(hard['limits.cpu']).toBeUndefined();
+      expect(hard['requests.cpu']).toBe('0.25');
+    });
+
+    it('will not restore a ceiling over a namespace with no LimitRange', async () => {
+      // A revert that died after removing the LimitRange and before marking
+      // the tenant legacy. With a ceiling and no LimitRange, every pod that
+      // does not declare a CPU limit is refused — which is every legacy pod.
+      (mockK8s.core.readNamespacedResourceQuota as ReturnType<typeof vi.fn>).mockResolvedValue({
+        spec: { hard: { 'requests.cpu': '0.25', 'requests.memory': '1Gi', 'limits.memory': '1Gi' } },
+      });
+      (mockK8s.core.readNamespacedLimitRange as ReturnType<typeof vi.fn>).mockRejectedValue(
+        Object.assign(new Error('HTTP-Code: 404'), { statusCode: 404 }),
+      );
+      const { applyResourceQuota } = await import('./service.js');
+      await applyResourceQuota(mockK8s, 'test-ns', { cpu: '0.25', memory: '4', storage: '50' }, { cpuModel: { mode: 'tiered', ceilingCores: 4 } });
+      const calls = (mockK8s.core.createNamespacedResourceQuota as ReturnType<typeof vi.fn>).mock.calls;
+      const pod = calls.find((c) => (c[0] as { body: { metadata: { name: string } } }).body.metadata.name === 'test-ns-quota');
+      const hard = (pod![0] as { body: { spec: { hard: Record<string, string> } } }).body.spec.hard;
+      expect(hard['limits.cpu']).toBeUndefined();
+    });
+
+    it('will not write a ceiling of zero, which would freeze the namespace', async () => {
+      (mockK8s.core.readNamespacedResourceQuota as ReturnType<typeof vi.fn>).mockResolvedValue({
+        spec: { hard: { 'requests.cpu': '0.25', 'requests.memory': '1Gi', 'limits.memory': '1Gi' } },
+      });
+      const { applyResourceQuota } = await import('./service.js');
+      await applyResourceQuota(mockK8s, 'test-ns', { cpu: '0.25', memory: '4', storage: '50' }, { cpuModel: { mode: 'tiered', ceilingCores: 0 } });
+      const calls = (mockK8s.core.createNamespacedResourceQuota as ReturnType<typeof vi.fn>).mock.calls;
+      const pod = calls.find((c) => (c[0] as { body: { metadata: { name: string } } }).body.metadata.name === 'test-ns-quota');
+      const hard = (pod![0] as { body: { spec: { hard: Record<string, string> } } }).body.spec.hard;
+      expect(hard['limits.cpu']).toBeUndefined();
+    });
+
+    it('rebuilds a DELETED quota with its ceiling when the LimitRange is still there', async () => {
+      // namespace-integrity repair. The quota object is gone; the namespace
+      // is otherwise intact and its pods carry limits, so recreating it in
+      // the legacy shape would leave the backstop off until the next boot.
+      (mockK8s.core.readNamespacedResourceQuota as ReturnType<typeof vi.fn>).mockRejectedValue(
+        Object.assign(new Error('HTTP-Code: 404'), { statusCode: 404 }),
+      );
+      const { applyResourceQuota } = await import('./service.js');
+      await applyResourceQuota(mockK8s, 'test-ns', { cpu: '0.25', memory: '4', storage: '50' }, { cpuModel: { mode: 'tiered', ceilingCores: 4 } });
+      const calls = (mockK8s.core.createNamespacedResourceQuota as ReturnType<typeof vi.fn>).mock.calls;
+      const pod = calls.find((c) => (c[0] as { body: { metadata: { name: string } } }).body.metadata.name === 'test-ns-quota');
+      const hard = (pod![0] as { body: { spec: { hard: Record<string, string> } } }).body.spec.hard;
+      expect(hard['limits.cpu']).toBe('4');
+      // Nothing live to preserve, so requests.cpu falls back to the plan —
+      // a cap above the tier sum, which the next migration step resizes.
+      expect(hard['requests.cpu']).toBe('0.25');
     });
 
     it('should create TWO ResourceQuotas: a Pod-scoped one (CPU/memory) + an unscoped storage one', async () => {

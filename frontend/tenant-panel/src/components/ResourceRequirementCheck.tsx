@@ -79,7 +79,18 @@ export default function ResourceRequirementCheck({
     if (!availability) return [];
     const result: ResourceRow[] = [];
 
-    if (minimumCpu) {
+    /**
+     * ★ No CPU row under the tier model (ADR-062).
+     *
+     * This gate compares a catalog `minimum.cpu` against the tenant's
+     * remaining CPU RESERVATION — a quantity the tier model does not have.
+     * Under tiers an application asks for its tenant's share, which is
+     * 5-100m and always fits; what actually decides whether a workload can
+     * be deployed is memory and the pod count it implies. Leaving the row
+     * in produced the exact reading this ADR exists to prevent: "0.10 cores
+     * available (0.10 required) — Insufficient" on a machine at 20%.
+     */
+    if (minimumCpu && availability.cpuModel !== 'tiered') {
       const required = parseCpu(minimumCpu);
       const available = availability.cpuAvailable;
       result.push({ label: 'CPU', available, required, unit: 'cores', fits: fitsWithin(available, required, 'cores') });
@@ -112,8 +123,12 @@ export default function ResourceRequirementCheck({
     }
   }, [isError, onFitsChange]);
 
-  // Don't render if no requirements specified
+  // Don't render if no requirements specified — including the tiered case
+  // where the CPU row was the only one and has been dropped.
   if (!minimumCpu && !minimumMemory && !minimumStorage) {
+    return null;
+  }
+  if (!isLoading && !isError && rows.length === 0) {
     return null;
   }
 

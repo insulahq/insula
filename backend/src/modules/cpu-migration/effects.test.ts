@@ -3,7 +3,9 @@ import {
   rollPodsStillCapped,
   quantityToMillis, largestDeclaredCpuMillis, largestInScopePodMillis,
   readPodCpuLimits, readWorkloads, widenQuotaHeadroom, removeQuotaLimits,
+  ensureTieredQuotaRoom,
 } from './effects.js';
+import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
 /**
  * effects.ts had no tests, and the adversarial review named that as the
@@ -102,8 +104,10 @@ describe('readPodCpuLimits', () => {
     ]);
     const out = await readPodCpuLimits(k, 'ns');
     expect(out).toEqual([
-      { podName: 'orphan', priorityClassName: 'tenant-default', hasController: false, containersWithoutCpuLimit: ['web'] },
-      { podName: 'fine', priorityClassName: 'tenant-default', hasController: true, containersWithoutCpuLimit: [] },
+      { podName: 'orphan', priorityClassName: 'tenant-default', hasController: false, containersWithoutCpuLimit: ['web'], containerCpuLimitsMillis: [] },
+      // The limit it DOES carry, in millicores — what a re-apply compares
+      // against to find pods still admitted under the previous ceiling.
+      { podName: 'fine', priorityClassName: 'tenant-default', hasController: true, containersWithoutCpuLimit: [], containerCpuLimitsMillis: [1000] },
     ]);
   });
 
@@ -301,5 +305,68 @@ describe('rollPodsStillCapped', () => {
     expect(await rollPodsStillCapped(k, 'ns', 'tenant-default')).toBe(0);
     expect(patch).not.toHaveBeenCalled();
     expect(del).not.toHaveBeenCalled();
+  });
+});
+
+describe('ensureTieredQuotaRoom', () => {
+  /**
+   * ★ The gap that made the tier model a one-way street.
+   *
+   * `applyQuotaLimits` sizes requests.cpu from what the namespace held at
+   * migration plus one pod's surge — a snapshot nothing revisited. Every
+   * migrated tenant was left with about 100m of room: three more small
+   * applications, then "exceeded quota" on the fourth, weeks after the
+   * migration nobody would connect it to.
+   */
+  const quota = (hard: Record<string, string>, used: Record<string, string>) => ({
+    core: {
+      readNamespacedResourceQuota: vi.fn(async () => ({ spec: { hard }, status: { used } })),
+      patchNamespacedResourceQuota: vi.fn(async () => ({})),
+    },
+  } as unknown as K8sClients & { core: { patchNamespacedResourceQuota: ReturnType<typeof vi.fn> } });
+
+  it('raises requests.cpu to fit the workload plus surge', async () => {
+    const k = quota({ 'requests.cpu': '110m', 'limits.cpu': '4' }, { 'requests.cpu': '10m' });
+    await ensureTieredQuotaRoom(k, 'ns', 100);
+    const body = k.core.patchNamespacedResourceQuota.mock.calls[0][0].body;
+    // held 10 + the new 100 + 100 surge
+    expect(body.spec.hard['requests.cpu']).toBe('210m');
+    // and it must not disturb the ceiling it found
+    expect(body.spec.hard['limits.cpu']).toBe('4');
+  });
+
+  it('never lowers a quota that is already roomy', async () => {
+    const k = quota({ 'requests.cpu': '4', 'limits.cpu': '4' }, { 'requests.cpu': '10m' });
+    await ensureTieredQuotaRoom(k, 'ns', 30);
+    expect(k.core.patchNamespacedResourceQuota).not.toHaveBeenCalled();
+  });
+
+  it('leaves a LEGACY namespace alone', async () => {
+    // Its requests.cpu IS the plan allowance; widening it would quietly
+    // sell CPU nobody bought.
+    const k = quota({ 'requests.cpu': '250m' }, { 'requests.cpu': '250m' });
+    await ensureTieredQuotaRoom(k, 'ns', 100);
+    expect(k.core.patchNamespacedResourceQuota).not.toHaveBeenCalled();
+  });
+
+  it('does nothing when there is no quota at all', async () => {
+    const k = {
+      core: {
+        readNamespacedResourceQuota: vi.fn(async () => { throw Object.assign(new Error('HTTP-Code: 404'), { statusCode: 404 }); }),
+        patchNamespacedResourceQuota: vi.fn(async () => ({})),
+      },
+    } as unknown as K8sClients & { core: { patchNamespacedResourceQuota: ReturnType<typeof vi.fn> } };
+    await expect(ensureTieredQuotaRoom(k, 'ns', 100)).resolves.toBeUndefined();
+    expect(k.core.patchNamespacedResourceQuota).not.toHaveBeenCalled();
+  });
+
+  it('rethrows a read failure that is not a 404', async () => {
+    // An unreadable API is not an absent quota.
+    const k = {
+      core: {
+        readNamespacedResourceQuota: vi.fn(async () => { throw Object.assign(new Error('HTTP-Code: 500'), { statusCode: 500 }); }),
+      },
+    } as unknown as K8sClients;
+    await expect(ensureTieredQuotaRoom(k, 'ns', 100)).rejects.toThrow(/500/);
   });
 });

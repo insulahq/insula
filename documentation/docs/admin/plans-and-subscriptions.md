@@ -30,7 +30,9 @@ Each plan has these fields:
 | **Code** | A short stable identifier (e.g. `starter`). Set once at creation; can't be changed later. |
 | **Name** | The human label shown in dropdowns (e.g. *Starter*). |
 | **Price (/mo)** | Monthly price in your platform currency. |
-| **CPU Limit (cores)** | Max CPU the tenant's workloads may use. |
+| **CPU Limit (cores)** | The old CPU reservation. Read only for tenants still on the pre-share model; ignored for everyone else. See below. |
+| **CPU tier** | The *share* of the machine this plan sells — **Normal**, **High** or **Highest** (1× / 2× / 4×). Every application a tenant on this plan runs takes this share when applications compete for CPU; when the machine is quiet they all burst freely regardless. |
+| **Burst ceiling (cores)** | The most any one of the tenant's containers may actually use. Reaching it throttles the container — it is never killed for it. Leave blank to derive it from **CPU Limit** as `max(1, limit × 2)`. |
 | **Memory Limit (GB)** | Max memory. |
 | **Storage Limit (GB)** | Max persistent storage. |
 | **Max Sub-Users** | How many additional logins the tenant may create. **0** means none. |
@@ -61,6 +63,22 @@ Saved changes appear on the list straight away.
     so lowering one takes capacity away from running workloads, and a tenant
     already using more than the new figure will have deployments refused until
     they fit.
+
+!!! note "The share and the ceiling are the exception — saving does not apply them"
+    **CPU tier** and **Burst ceiling** are written when you save, but a
+    tenant's namespace keeps enforcing what it has until someone presses
+    **Apply new limits** for that tenant. Changing a ceiling replaces the
+    tenant's applications, which should not happen as a side effect of
+    editing a plan's price. Affected tenants show **change not applied**
+    under *Cluster → CPU Scheduling*, with both figures side by side. See
+    [CPU & capacity](../operator/cpu-and-capacity.md#changing-a-tenants-share-or-ceiling-afterwards).
+
+!!! tip "The shipped plans"
+    New installs ship Starter / Premium / Ultimate selling **Normal**,
+    **High** and **Highest** with ceilings of **1**, **2** and **4** cores.
+    An existing platform's plans are never rewritten by an upgrade — if
+    yours predate the share model they will show no tier, and their ceiling
+    is derived from **CPU Limit** until you set one.
 
     Tenants given an individual override on their **Resource Limits** card are
     not affected: the override wins, and a plan edit does not overwrite it.

@@ -374,10 +374,118 @@ export async function applyNamespace(
   });
 }
 
+/**
+ * What the DATABASE says this tenant's CPU model is (ADR-062).
+ *
+ * `tiered` carries the `limits.cpu` ceiling in cores — already multiplied by
+ * QUOTA_LIMITS_CPU_BACKSTOP by the caller. It is RESTORE-ONLY: it fills a
+ * ceiling that is missing and never changes one that is present, because
+ * only the migration sizes a tiered quota from live pod facts. Rewriting a
+ * live ceiling from the database would make the quota follow an edited tier
+ * while the LimitRange — which is what actually governs pods — did not.
+ *
+ * `legacy` asserts the opposite: this namespace must NOT carry a ceiling.
+ * Without that arm a ceiling installed in error is permanent, since nothing
+ * else removes one, and a legacy pod declares no CPU limit — so the quota
+ * would reject every deploy the tenant attempts.
+ */
+export type TenantCpuModel =
+  | { readonly mode: 'tiered'; readonly ceilingCores: number }
+  | { readonly mode: 'legacy' };
+
+export interface ResourceQuotaOptions {
+  /**
+   * Omit it when the caller has no tenant row, or when the tenant's model is
+   * mid-change: the CPU keys are then left exactly as the cluster has them.
+   *
+   * ★ Mid-change matters. A migration installs the ceiling BEFORE it marks
+   * the tenant tiered, and a revert removes the ceiling BEFORE it marks the
+   * tenant legacy — both deliberately, so a crash leaves a recoverable
+   * state. During either window the database and the cluster disagree on
+   * purpose, and a sweep that believed the database would undo the step the
+   * runner had just taken.
+   */
+  readonly cpuModel?: TenantCpuModel;
+}
+
+/**
+ * Make a brand-new namespace tiered, when that is this cluster's default.
+ *
+ * Returns the model to hand `applyResourceQuota` plus the database write
+ * that marks the tenant tiered — SEPARATELY, because that write must not
+ * land until the quota does. Null for a legacy cluster, where every line of
+ * this is skipped and provisioning is exactly what it was.
+ *
+ * Order matters: the LimitRange must exist before the quota carries a
+ * `limits.cpu`, because with a ceiling every pod must declare a CPU limit
+ * and the LimitRange is what gives one to a pod that does not. Doing it the
+ * other way round makes the tenant's first deploy fail admission.
+ *
+ * Best-effort by design. A failure here leaves the tenant legacy — fully
+ * working, migratable with one click — which is a far better outcome than
+ * failing to provision at all.
+ */
+async function prepareTieredNamespace(
+  db: Database,
+  k8s: K8sClients,
+  tenantId: string,
+  namespace: string,
+): Promise<{
+  model: { mode: 'tiered'; ceilingCores: number };
+  /** Marks the tenant tiered. Call ONLY after the quota is written. */
+  commit: () => Promise<void>;
+} | null> {
+  try {
+    const { cpuModeForNewTenant } = await import('../cpu-migration/default-mode.js');
+    if ((await cpuModeForNewTenant(db)) !== 'tiered') return null;
+
+    const [t] = await db.select().from(tenants).where(eq(tenants.id, tenantId));
+    if (!t) return null;
+    const [plan] = t.planId
+      ? await db.select().from(hostingPlans).where(eq(hostingPlans.id, t.planId))
+      : [undefined];
+
+    const { resolveTenantCpu } = await import('../cpu-migration/resolve.js');
+    const resolved = resolveTenantCpu(
+      plan ? { cpuLimit: plan.cpuLimit, cpuTier: plan.cpuTier, cpuBurstCores: plan.cpuBurstCores } : null,
+      {
+        cpuSchedulingMode: 'tiered',
+        cpuLimitOverride: t.cpuLimitOverride,
+        cpuTierOverride: t.cpuTierOverride,
+        cpuBurstCoresOverride: t.cpuBurstCoresOverride,
+      },
+    );
+    if (resolved.tier === null || resolved.burstCores === null || !(resolved.burstCores > 0)) return null;
+
+    const { ensureLimitRange } = await import('../cpu-migration/effects.js');
+    const { QUOTA_LIMITS_CPU_BACKSTOP } = await import('../cpu-migration/tiered-namespace.js');
+    await ensureLimitRange(k8s, namespace, resolved.tier, resolved.burstCores);
+
+    return {
+      model: {
+        mode: 'tiered',
+        ceilingCores: Math.round(resolved.burstCores * QUOTA_LIMITS_CPU_BACKSTOP * 100) / 100,
+      },
+      commit: async () => {
+        await db.update(tenants)
+          .set({ cpuSchedulingMode: 'tiered', cpuMigratedAt: new Date() })
+          .where(eq(tenants.id, tenantId));
+      },
+    };
+  } catch (err) {
+    console.warn(
+      `[k8s-provisioner] could not build ${namespace} as a tiered namespace; it stays legacy: `
+      + (err instanceof Error ? err.message : String(err)),
+    );
+    return null;
+  }
+}
+
 export async function applyResourceQuota(
   k8s: K8sClients,
   namespace: string,
   limits: { cpu: string; memory: string; storage: string },
+  opts: ResourceQuotaOptions = {},
 ): Promise<void> {
   // Asymmetric QoS model (ADR-037):
   //
@@ -407,11 +515,45 @@ export async function applyResourceQuota(
   const quotaName = `${namespace}-quota`;
   const storageQuotaName = `${namespace}-storage-quota`;
 
+  /**
+   * ★ Never strip a tiered namespace's CPU keys (ADR-062).
+   *
+   * This function writes the LEGACY quota shape — requests.cpu from the
+   * plan, and no limits.cpu at all. Every caller re-applies it: provisioning,
+   * the boot-time reconciler, a plan edit (which fans out to EVERY tenant on
+   * that plan), and a tenant limit edit. Against a migrated namespace that
+   * silently removed the burst ceiling the migration had just installed.
+   *
+   * Observed on production: two plan edits and one tenant edit between them
+   * wiped the ceiling from fourteen of thirty namespaces within two hours of
+   * their migration, each one left holding requests.cpu exactly equal to its
+   * `cpu_limit_override ?? plan.cpu_limit`. The other sixteen were spared
+   * only because nothing had re-applied their quota yet — the boot
+   * reconciler sweeps every tenant, so the next restart would have taken
+   * them too.
+   *
+   * A tiered namespace's CPU budget is not derived from the plan's
+   * `cpu_limit`: `requests.cpu` is the sum of its workloads' tier values plus
+   * surge, and `limits.cpu` is the ceiling. Neither is this function's to
+   * compute, so when it sees them it leaves both alone and updates only what
+   * it does own. Memory and storage still follow the plan, as they should —
+   * the tier model deliberately changes nothing about memory.
+   *
+   * Read from the live object first, because the cluster is the only party
+   * that knows what the migration measured. A caller holding the tenant row
+   * can additionally say which model the DATABASE believes in — see
+   * ResourceQuotaOptions — but that only ever fills a gap or clears a
+   * contradiction; it never overrides a ceiling the cluster already has.
+   */
+  const liveHard = await readQuotaHard(k8s, namespace, quotaName);
+  const liveCeiling = liveHard?.['limits.cpu'];
+  const cpuHard = await resolveCpuHard(k8s, namespace, limits.cpu, liveHard, liveCeiling, opts.cpuModel);
+
   const podBody = {
     metadata: { name: quotaName, namespace },
     spec: {
       hard: {
-        'requests.cpu': limits.cpu,
+        ...cpuHard,
         'requests.memory': `${limits.memory}Gi`,
         'limits.memory': `${limits.memory}Gi`,
       },
@@ -438,6 +580,116 @@ export async function applyResourceQuota(
 
   await upsertQuota(k8s, namespace, quotaName, podBody);
   await upsertQuota(k8s, namespace, storageQuotaName, storageBody);
+}
+
+/**
+ * The CPU half of the quota's `hard` map.
+ *
+ * Three inputs decide it: what the cluster has, what the database says, and
+ * the plan. They are ranked in that order for a reason — the cluster is the
+ * only one that knows what the migration measured from live pods.
+ *
+ *   ceiling present   -> keep it, and keep the tiered requests.cpu with it.
+ *                        The plan's cpu_limit does not govern a tiered
+ *                        namespace, and re-asserting it here is the bug.
+ *   db says tiered    -> the ceiling is MISSING and should not be. Put it
+ *                        back, but only over a quota that exists and a
+ *                        namespace that has the LimitRange to satisfy it.
+ *   db says legacy    -> no ceiling. Anything found is dropped by writing
+ *                        the legacy shape.
+ *   db not consulted  -> follow the cluster.
+ */
+async function resolveCpuHard(
+  k8s: K8sClients,
+  namespace: string,
+  planCpu: string,
+  liveHard: Record<string, string> | null,
+  liveCeiling: string | undefined,
+  model: TenantCpuModel | undefined,
+): Promise<Record<string, string>> {
+  const legacyShape = { 'requests.cpu': planCpu };
+  if (model?.mode === 'legacy') return legacyShape;
+
+  const keep = (ceiling: string) => ({
+    'requests.cpu': liveHard?.['requests.cpu'] ?? planCpu,
+    'limits.cpu': ceiling,
+  });
+  if (liveCeiling) return keep(liveCeiling);
+  if (model?.mode !== 'tiered') return legacyShape;
+
+  // ── restore ───────────────────────────────────────────────────────────
+  // `!= null` and not truthiness — a resolved 0 is a real, and fatal,
+  // ceiling, so it must reach the guard rather than read as "unset".
+  if (model.ceilingCores == null || !(model.ceilingCores > 0)) return legacyShape;
+  // ★ The ONE precondition. A ceiling obliges every pod in scope to declare
+  // a CPU limit, and the LimitRange is what gives one to a pod that does
+  // not — so a ceiling over a namespace without it rejects the tenant's next
+  // deploy. It is also the honest test of "is this namespace tiered": a
+  // namespace being provisioned has neither, and a revert that died after
+  // removing the LimitRange and before marking the tenant legacy has the
+  // database saying one thing and the cluster another.
+  //
+  // Deliberately the only one. An earlier version also refused when the
+  // quota did not exist, which is redundant — the LimitRange already
+  // answers it — and would have blocked both the integrity repair of a
+  // DELETED quota and provisioning a tenant tiered from the start.
+  if (!(await tenantLimitRangeExists(k8s, namespace))) return legacyShape;
+  return keep(String(model.ceilingCores));
+}
+
+/**
+ * The live `hard` map, or null when the quota does not exist yet.
+ *
+ * ★ Only a 404 means "not there". Anything else — a 5xx, a timeout, RBAC —
+ * is rethrown, because an unreadable API is not an absent quota: swallowing
+ * it would return null, the caller would write the legacy CPU shape, and
+ * `upsertQuota`'s fallback is a full-object REPLACE, which deletes
+ * `limits.cpu` from the live object. That is the production incident this
+ * whole function exists to prevent, re-armed behind a transient blip.
+ *
+ * The cost of rethrowing is that provisioning a tenant fails while the API
+ * server is unhealthy — a retryable, visible failure, against a silent
+ * unbounded namespace. `limitRangeExists` in cpu-migration/effects.ts makes
+ * the same call for the same reason.
+ */
+async function readQuotaHard(
+  k8s: K8sClients,
+  namespace: string,
+  name: string,
+): Promise<Record<string, string> | null> {
+  try {
+    const live = await k8s.core.readNamespacedResourceQuota({ name, namespace } as never) as {
+      spec?: { hard?: Record<string, string> };
+    };
+    return live.spec?.hard ?? null;
+  } catch (err) {
+    if (isK8s404(err)) return null;
+    throw err;
+  }
+}
+
+/**
+ * Does the namespace carry the tier LimitRange?
+ *
+ * The precondition for a `limits.cpu` on the quota: with one, EVERY pod in
+ * scope must declare a CPU limit, and the LimitRange is what supplies that
+ * limit to a pod that does not declare one. A ceiling over a namespace with
+ * no LimitRange rejects the tenant's next pod.
+ *
+ * Deliberately duplicated rather than imported from cpu-migration/effects.ts
+ * — that module imports TENANT_DEFAULT_PRIORITY_CLASS from this one, and an
+ * import cycle over a module-scope const is not worth six lines.
+ */
+async function tenantLimitRangeExists(k8s: K8sClients, namespace: string): Promise<boolean> {
+  try {
+    await (k8s.core as unknown as {
+      readNamespacedLimitRange: (a: { name: string; namespace: string }) => Promise<unknown>;
+    }).readNamespacedLimitRange({ name: `${namespace}-cpu`, namespace });
+    return true;
+  } catch (err) {
+    if (isK8s404(err)) return false;
+    throw err;
+  }
 }
 
 async function upsertQuota(
@@ -986,9 +1238,30 @@ export async function runProvisionNamespace(
     await updateProgress('Create Namespace', 'completed');
 
     // Step 2: Create ResourceQuota
+    //
+    // ★ On a cluster whose default is TIERED (ADR-062 R3 — a fresh install),
+    // the namespace is born tiered: the CPU LimitRange goes in FIRST, so the
+    // quota's ceiling has something to satisfy it, and the tenant row is
+    // marked before its first workload is ever sized. Building it legacy and
+    // migrating later would mean recreating every pod of a tenant that had
+    // no reason to be legacy for a single minute.
+    //
+    // An upgraded cluster records `legacy` at first boot, so this whole
+    // branch is inert there and provisioning is byte-for-byte what it was.
     if (!(await guardTenantExists())) return;
     await updateProgress('Create ResourceQuota', 'running');
-    await applyResourceQuota(k8s, namespace, { cpu: cpuLimit, memory: memoryLimit, storage: storageLimit });
+    const bornTiered = await prepareTieredNamespace(db, k8s, tenantId, namespace);
+    await applyResourceQuota(
+      k8s, namespace,
+      { cpu: cpuLimit, memory: memoryLimit, storage: storageLimit },
+      bornTiered ? { cpuModel: bornTiered.model } : {},
+    );
+    // ★ Only now. Marking the row `tiered` before the quota carries the
+    // ceiling leaves a half-tiered tenant if this throws: the database
+    // claims a model the namespace was never sized for, and anything that
+    // reads cpu_scheduling_mode in that window — a status page, a
+    // concurrent deploy widening the quota — sees an inconsistent tenant.
+    await bornTiered?.commit();
     await updateProgress('Create ResourceQuota', 'completed');
 
     // Step 3: Create NetworkPolicy

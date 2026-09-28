@@ -37,7 +37,7 @@
 | [R23](#r23--insula-single-binary-install--branding) | `insula` single-binary install + branding | P2 | Proposed (ADR-055, 2026-07-26) — fold bootstrap into the signed binary; rename `platform-ops`→`insula`; consolidate host paths |
 | [R24](#r24--proxy-protocol-support-for-cloud-load-balancers) | PROXY-protocol support for cloud (SNAT) load balancers | P2 | Proposed 2026-07-26 — real client IP is lost behind a SNAT-ing cloud LB (neither Traefik nor HAProxy accept inbound PROXY protocol); today needs a source-preserving L4-passthrough LB or DNS multi-A |
 | [R25](#r25--migration--dr-recover-completeness) | Migration / DR-recover completeness | P2 | ✅ Mostly shipped — §1 + §2 were already built (roadmap was stale); §3 bundle preflight + skipped-tenant reporting shipped 2026-09-13; §4 up-front key check remains |
-| [R26](#r26--pin-the-k3s-installer-to-a-version-tag-not-master) | Pin the k3s installer to a version tag, not master | P2 | Proposed 2026-08-04 — get.k3s.io serves master, so any upstream edit to install.sh breaks every fresh install until the digest is re-pinned |
+| [R26](#r26--pin-the-k3s-installer-to-a-version-tag-not-master) | Pin the k3s installer to a version tag, not master | P2 | **SHIPPED 2026-09-28.** Operator decision recorded: KEEP — the new host was already a hard dependency (Calico, Helm, CSI snapshotter) and `k3s.io` is now contacted not at all |
 | [R27](#r27--dual-stack-tenant-services-end-to-end-ipv6) | Dual-stack tenant Services (end-to-end IPv6) | P4 | Proposed 2026-08-10 — the residual from R13: globally-routable pod addressing + catalog images binding `::`. COUPLED and inert individually; both only become load-bearing if tenant Services stop being SingleStack IPv4. Needs a provider-delegated prefix |
 | [R28](#r28--make-email-aliases-and-auto-reply-real) | Make email aliases + auto-reply real (Stalwart-backed) | P2 | ✅ **CLOSED 2026-08-24** — auto-reply (vacation), aliases (Stalwart MailingList per alias, fan-out to local + external destinations) and the domain catch-all (native Domain.catchAllAddress) all enforced by the mail server, DB authoritative with boot reconcile |
 | [R29](#r29--schema-validate-the-rest-of-the-api-surface) | Schema-validate the rest of the API surface | **P2** | ✅ **R29a SHIPPED 2026-09-13** — 19 of 43 converted, 24 classified + frozen by a CI guard; R29b not started |
@@ -50,6 +50,7 @@
 | [R36](#r36--every-per-service-postgres-role-can-connect-to-the-platform-database) | Per-service roles can connect to the `platform` database | **P2** | ✅ **SHIPPED 2026-09-13** — `db-isolation` converger + bootstrap + Security→Hardening card; verified on DEV against a real role |
 | [R37](#r37--tenant-pods-can-fill-a-nodes-disk-and-nothing-charges-them-for-it) | Tenant pods can fill a node's disk | P2 | Not started — needs a hosting-plan policy decision (an `ephemeral-storage` limit EVICTS) |
 | [R38](#r38--mail-dns-is-written-once-and-never-reconciled-deliberate) | Mail DNS is written once, never reconciled | — | ✅ **DECIDED 2026-09-14** — dead `dns-sync` deleted; blind reconciliation would delete a tenant's own MX/SPF |
+| [R39](#r39--the-ha-and-upgrade-runbooks-install-k3s-by-hand-bypassing-bootstrapsh) | HA/upgrade runbooks bypass `bootstrap.sh` | P2 | Not started — 16 hand-written `curl \| sh` k3s installs across two ACTIVE runbooks; needs someone who can exercise an HA join and a k3s upgrade |
 
 ---
 
@@ -1218,6 +1219,66 @@ trust anchor and should be an explicit operator decision rather than a silent
 refactor. A CI freshness check (warn when the tag's installer digest differs
 from the pin) is the alternative if the host change is unwanted.
 
+### SHIPPED 2026-09-28 — operator decision recorded: KEEP
+
+It recurred exactly as predicted. A from-scratch DEV rebuild died at
+
+```
+ERROR: k3s installer checksum MISMATCH — refusing to execute.
+  expected: ed01f89f…   actual: e5cc3b3d…
+```
+
+The proposal above is implemented: the installer is fetched from
+`raw.githubusercontent.com/k3s-io/k3s/${K3S_VERSION}/install.sh` and pinned
+to that tag's digest.
+
+**The host change was made before the operator decision this entry asked
+for, and then put to them. Decision: keep it.** What settled it was
+checking what `bootstrap.sh` already fetches:
+
+| host | used for |
+|---|---|
+| `raw.githubusercontent.com` | Calico manifests, the Helm installer, the CSI snapshotter — **and now the k3s installer** |
+| `get.k3s.io` | the k3s installer, and nothing else |
+
+So this adds no third party to the install path. It REMOVES one: a
+bootstrap already could not succeed without reaching
+`raw.githubusercontent.com`, and `k3s.io` is no longer contacted at all.
+Operators who allowlist egress by domain can drop `k3s.io`; they already
+had to permit `raw.githubusercontent.com`.
+
+There is also a security argument, not only a convenience one. The old
+arrangement fired the guard on every legitimate upstream edit, and a
+checksum failure caused by a SUSE packaging commit is indistinguishable
+from one caused by tampering. A guard that cries wolf every few weeks is
+one people learn to silence by re-pinning without reading the diff.
+Pinning to a release tag means a mismatch means something.
+
+**Caveat, stated rather than glossed:** a git tag is mutable in principle —
+upstream *could* move `v1.36.2+k3s1`. The digest catches it, so the
+security property holds; "immutable" here is a practical claim about how
+the k3s project behaves, not a cryptographic one.
+
+Provenance of the shipped digest was verified rather than assumed: the
+tagged installer differs from the master one it replaced only in
+SUSE/SLE-Micro RPM selection, CoreOS/Flatcar detection, and the generated
+uninstall script's k3s-selinux removal — none of which touches an OS in
+the support matrix.
+
+A second hole opened by the change was closed with it: `--k3s-version` is
+parsed after the URL would have been built, so a version override would
+have installed one version while verifying another's installer — a
+mismatch that LOOKS verified. The URL resolves at fetch time now, and a
+non-default version is refused unless the operator supplies
+`--k3s-installer-sha256`.
+
+**Still open, and NOT part of this change.** Several operations runbooks
+still instruct an operator to `curl -sfL https://get.k3s.io | sh -` by
+hand — unverified, and from master — which contradicts both this decision
+and the standing rule to provision only via `bootstrap.sh`. They carry a
+warning now; rewriting their procedures needs someone who can exercise
+them.
+
 ## R27 — Dual-stack tenant Services (end-to-end IPv6)
 
 **Proposed 2026-08-10.** The residual carved out of
@@ -1798,6 +1859,60 @@ report, without writing.
 expected record set with explicit per-record ownership (`dns_records.managed_by`),
 never against Stalwart's zone file, and never touching a record the platform did
 not write.
+
+## R39 — The HA and upgrade runbooks install k3s by hand, bypassing `bootstrap.sh`
+
+**Surfaced 2026-09-28** while recording the [R26](#r26--pin-the-k3s-installer-to-a-version-tag-not-master)
+decision. Not caused by it — R26 only made it visible.
+
+**The gap.** Two runbooks marked **Active** tell an operator to install or
+upgrade k3s with a bare pipe:
+
+```bash
+curl -sfL https://get.k3s.io | sh -s - server --disable traefik --tls-san <ip>
+```
+
+| document | occurrences |
+|---|---|
+| `docs/operations/CLUSTER_MAINTENANCE_AND_UPGRADES.md` | 9 |
+| `docs/operations/HA_MIGRATION_RUNBOOK.md` | 7 |
+
+Three things are wrong with that, and they compound:
+
+1. **It contradicts a standing rule.** AGENTS.md: *"Always provision via
+   `./scripts/bootstrap.sh` — never raw `curl get.k3s.io`."*
+2. **It is unverified.** `bootstrap.sh` pins the installer's SHA256 and
+   refuses to execute on a mismatch; a bare pipe executes whatever arrives.
+3. **It installs from master.** `get.k3s.io` serves k3s master's
+   `install.sh`, so the version and behaviour depend on when you ran it —
+   and after R26 that host is not part of the platform's install path at
+   all.
+
+A node built this way also misses everything `bootstrap.sh` does around
+k3s: the firewall shape, kubelet eviction and pod-capacity settings, node
+labels and taints, the Calico MTU calculation, and the host-migration
+converger. It joins the cluster and is quietly unlike every other node —
+which is the shape of failure that takes days to attribute.
+
+**Why this is not already fixed.** `bootstrap.sh --join-as server` exists
+and is the correct replacement for most of these invocations, but the
+surrounding procedures — an HA control-plane join, a rolling k3s upgrade —
+have not been exercised against it. Replacing a *visibly* wrong command
+with a plausible untested one is worse: the reader stops questioning it.
+Both documents therefore carry a warning that the commands illustrate the
+underlying k3s steps and are not instructions to run.
+
+**Proposal.** Rewrite both procedures around `bootstrap.sh --join-as
+server|worker` and `platform-ops cluster upgrade`, and prove each on a
+throwaway multi-node cluster — the HA join at minimum, since that is the
+one an operator reaches for under pressure. `scripts/vm-integration-tests/`
+already stands up multiple nodes and is the natural harness.
+
+**Decide before building:** whether the runbooks should keep the raw k3s
+commands at all, as an appendix documenting what bootstrap does underneath.
+There is real value in an operator being able to see the underlying steps
+when recovering a half-broken node; the danger is only that they currently
+read as the primary path.
 
 ## R37 — Tenant pods can fill a node's disk, and nothing charges them for it
 

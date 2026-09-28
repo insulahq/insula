@@ -368,7 +368,26 @@ export async function checkTenantNamespaceIntegrity(
       const cpu = String(parseFloat(String(tenant.cpuLimitOverride ?? plan?.cpuLimit ?? '2')));
       const memory = String(parseFloat(String(tenant.memoryLimitOverride ?? plan?.memoryLimit ?? '4')));
       const storage = String(parseFloat(String(tenant.storageLimitOverride ?? plan?.storageLimit ?? '50')));
-      await applyResourceQuota(k8s, ns, { cpu, memory, storage });
+      // Rebuild a tiered tenant's quota WITH its ceiling. Recreating it in
+      // the legacy shape would leave the namespace-wide backstop off until
+      // the next API restart, on a namespace whose pods already carry the
+      // per-container limits that make a ceiling safe. applyResourceQuota
+      // still refuses if the tier LimitRange is gone too.
+      const { cpuModelForTenant, tenantsMidCpuChange } = await import('../cpu-migration/quota-ceiling.js');
+      const cpuModel = cpuModelForTenant(
+        {
+          id: tenant.id,
+          cpuSchedulingMode: tenant.cpuSchedulingMode,
+          cpuTierOverride: tenant.cpuTierOverride,
+          cpuBurstCoresOverride: tenant.cpuBurstCoresOverride,
+          cpuLimitOverride: tenant.cpuLimitOverride,
+          cpuLimit: plan?.cpuLimit ?? null,
+          planCpuTier: plan?.cpuTier ?? null,
+          planCpuBurstCores: plan?.cpuBurstCores ?? null,
+        },
+        await tenantsMidCpuChange(db),
+      );
+      await applyResourceQuota(k8s, ns, { cpu, memory, storage }, { cpuModel });
       repaired.push('resource_quota_missing');
     } catch (err) {
       errors.push(`resource_quota_missing: ${(err as Error).message}`);

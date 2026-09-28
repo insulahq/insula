@@ -227,6 +227,9 @@ jobs:
       # Guards the DEV cluster against a slow build pinning its older images
       # over a newer pin — see pin-would-regress.sh for the incident.
       - run: ./.github/scripts/test-pin-would-regress.sh
+      # The other half of the pin story: that the staleness check counts only
+      # commits an image could exist for.
+      - run: ./.github/scripts/test-check-pin-lag.sh
       # Runs in a container with NET_ADMIN so the nft operations (and the
       # `flush ruleset` in its fixtures) are isolated from the runner's own
       # networking. Proves the firewall-blacklist host-migration is surgical

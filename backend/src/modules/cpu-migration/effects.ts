@@ -7,7 +7,7 @@
  * exercised by the DEV end-to-end run.
  */
 
-import { eq, and, ne, isNull } from 'drizzle-orm';
+import { eq, and, ne, isNull, sql } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { TENANT_DEFAULT_PRIORITY_CLASS } from '../k8s-provisioner/service.js';
@@ -116,6 +116,41 @@ export async function limitRangeExists(k8s: K8sClients, namespace: string): Prom
   }
 }
 
+/**
+ * The ceiling the namespace's LimitRange currently imposes, in millicores,
+ * or null when there is no LimitRange.
+ *
+ * What a re-apply compares against. It is NOT derivable from the tenant row
+ * (that is the new value) nor from the quota (which carries the backstop,
+ * a multiple of it) — only the LimitRange holds the figure pods are actually
+ * admitted with.
+ */
+export async function readLimitRangeCeilingMillis(
+  k8s: K8sClients, namespace: string,
+): Promise<number | null> {
+  try {
+    const lr = await (k8s.core as unknown as {
+      readNamespacedLimitRange: (a: { name: string; namespace: string }) => Promise<{
+        spec?: { limits?: ReadonlyArray<{
+          type?: string;
+          default?: Record<string, string>;
+          _default?: Record<string, string>;
+        }> };
+      }>;
+    }).readNamespacedLimitRange({ name: limitRangeName(namespace), namespace });
+    const container = (lr.spec?.limits ?? []).find((l) => l.type === 'Container');
+    // ★ `_default`, because the client renames the reserved word — see
+    // limitRangeDefault in preview.ts. Reading `.default` returned
+    // undefined every time, so the re-apply could not tell which pods were
+    // still admitted under the previous ceiling and swept none of them.
+    const cpu = (container?.default ?? container?._default)?.cpu;
+    return cpu ? quantityToMillis(cpu) : null;
+  } catch (err) {
+    if (is404(err)) return null;
+    throw err;
+  }
+}
+
 export async function removeLimitRange(k8s: K8sClients, namespace: string): Promise<void> {
   try {
     await k8s.core.deleteNamespacedLimitRange({ name: limitRangeName(namespace), namespace } as never);
@@ -166,6 +201,9 @@ export async function readPodCpuLimits(
       containersWithoutCpuLimit: all
         .filter((c) => !c.resources?.limits?.cpu)
         .map((c) => c.name ?? '(unnamed)'),
+      containerCpuLimitsMillis: all
+        .map((c) => quantityToMillis(c.resources?.limits?.cpu))
+        .filter((m) => m > 0),
     });
   }
   return out;
@@ -236,7 +274,18 @@ export async function applyQuotaLimits(
   // itself counts against this quota right now.
   const liveUsedMillis = quantityToMillis(live.status?.used?.['requests.cpu']);
   const largestPodMillis = await largestInScopePodMillis(k8s, namespace, priorityClass);
-  const hard = buildTieredQuotaHard({ tiers, burstCores, liveUsedMillis, largestPodMillis });
+  // The LIMIT axis needs the same treatment as the request axis: a quota
+  // below `used` is accepted and then refuses every pod. Re-applying a
+  // reduced ceiling is exactly when the pods still hold the larger one.
+  const liveUsedLimitMillis = quantityToMillis(live.status?.used?.['limits.cpu']);
+  const pods = await readPodCpuLimits(k8s, namespace);
+  const largestPodLimitMillis = pods
+    .filter((p) => p.priorityClassName === priorityClass)
+    .reduce((mx, p) => Math.max(mx, p.containerCpuLimitsMillis.reduce((a, b) => a + b, 0)), 0);
+  const hard = buildTieredQuotaHard({
+    tiers, burstCores, liveUsedMillis, largestPodMillis,
+    liveUsedLimitMillis, largestPodLimitMillis,
+  });
   // MERGE_PATCH, not the client's default json-patch: the body is a merge
   // object, and the default would be rejected as a malformed op array.
   await k8s.core.patchNamespacedResourceQuota(
@@ -253,6 +302,53 @@ export async function applyQuotaLimits(
  * the pods carry limits is the armed trap assessLimitsCpuReadiness exists to
  * prevent, so the ceiling still waits for the end.
  */
+/**
+ * Make room in a TIERED namespace's quota for a workload about to be added.
+ *
+ * ★ The gap that made the tier model a one-way street.
+ *
+ * `applyQuotaLimits` sizes `requests.cpu` from what the namespace held at
+ * migration plus one pod's worth of surge — a snapshot, and nothing ever
+ * revisited it. Every migrated tenant was therefore left with about 100m of
+ * room: three more small applications, and the fourth deploy is refused by a
+ * quota the platform set itself, with an "exceeded quota" the tenant cannot
+ * act on and the operator would not connect to a migration weeks earlier.
+ *
+ * Raises only. A tenant's total is still bounded — by memory, by the pod
+ * count that implies, and by the burst ceiling on actual use — which is
+ * what ADR-062 says should bound it. `requests.cpu` under the tier model is
+ * a guard rail against runaway scheduling, not the product.
+ */
+export async function ensureTieredQuotaRoom(
+  k8s: K8sClients, namespace: string, addingMillis: number,
+): Promise<void> {
+  const name = quotaName(namespace);
+  let live: { spec?: { hard?: Record<string, string> }; status?: { used?: Record<string, string> } };
+  try {
+    live = await k8s.core.readNamespacedResourceQuota({ name, namespace } as never) as typeof live;
+  } catch (err) {
+    // No quota is not an error here: an unprovisioned namespace has nothing
+    // to widen, and a read failure must not block a deploy that the quota
+    // may well have allowed anyway.
+    if (is404(err)) return;
+    throw err;
+  }
+  // Tiered namespaces only. A legacy quota's requests.cpu IS the plan
+  // allowance, and widening it would quietly sell CPU nobody bought.
+  if (!live.spec?.hard?.['limits.cpu']) return;
+
+  const currentHard = quantityToMillis(live.spec?.hard?.['requests.cpu']);
+  const used = quantityToMillis(live.status?.used?.['requests.cpu']);
+  // Room for the new workload on top of what is held, plus the same surge
+  // the migration leaves so the next rolling update still fits.
+  const wanted = used + Math.max(addingMillis, 0) + Math.max(addingMillis, 100);
+  if (wanted <= currentHard) return;
+  await k8s.core.patchNamespacedResourceQuota(
+    { name, namespace, body: { spec: { hard: { ...live.spec?.hard, 'requests.cpu': `${wanted}m` } } } } as never,
+    MERGE_PATCH,
+  );
+}
+
 export async function widenQuotaHeadroom(
   k8s: K8sClients, namespace: string, priorityClass: string,
 ): Promise<void> {
@@ -478,7 +574,10 @@ export async function setSchedulingMode(
   await db.update(tenants)
     .set({
       cpuSchedulingMode: mode,
-      cpuMigratedAt: mode === 'tiered' ? new Date() : null,
+      // ★ First migration only. Re-applying a changed tier is not a new
+      // migration, and restamping this would rewrite the date the panel
+      // shows as "tiered since" every time an operator adjusts a ceiling.
+      cpuMigratedAt: mode === 'tiered' ? sql`COALESCE(${tenants.cpuMigratedAt}, NOW())` : null,
     })
     .where(eq(tenants.id, tenantId));
 }

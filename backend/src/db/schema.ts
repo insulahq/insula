@@ -588,7 +588,13 @@ export const catalogEntries = pgTable('catalog_entries', {
     description?: string;
     optional?: boolean;
   }> | null>(),
-  resources: jsonb('resources').$type<{ recommended: { cpu: string; memory: string; storage?: string }; minimum: { cpu: string; memory: string; storage?: string } } | null>(),
+  // `cpu` optional in both, plus the ADR-062 `cpu: { tier, burstHint }`.
+  // An old manifest stays valid and a new one may omit the core counts.
+  resources: jsonb('resources').$type<{
+    recommended: { cpu?: string; memory: string; storage?: string };
+    minimum: { cpu?: string; memory: string; storage?: string };
+    cpu?: { tier?: 'normal' | 'high' | 'highest'; burstHint?: string };
+  } | null>(),
   healthCheck: jsonb('health_check').$type<{ path?: string | null; command?: string[] | null; port?: number | null; initial_delay_seconds: number; period_seconds: number } | null>(),
   parameters: jsonb('parameters').$type<Array<{ key: string; label: string; type: string; default?: unknown; required?: boolean; description?: string; advanced?: boolean }> | null>(),
   tags: jsonb('tags').$type<string[] | null>(),

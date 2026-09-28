@@ -296,8 +296,12 @@ Click **Details** on a card to see and change:
         time) are shown masked — click the eye icon to reveal, and change
         passwords inside the app itself rather than here.
 
-- **Assigned resources** — the CPU and memory reserved for the app (editable
-  within your plan limits). Shown directly under **Supported versions**.
+- **Assigned resources** — the memory reserved for the app, editable within
+  your plan limits, and its CPU. Shown directly under **Supported versions**.
+  On the share model CPU is not a number you set: the field states the share
+  your plan sells and the ceiling the app bursts to, and every app you run
+  takes the same share. Accounts still on the older model edit a CPU baseline
+  here as before.
 - **Volumes** — the **Local path** of each of the app's data folders in your
   file area (for example `/runtime/apache-php/my-site`), alongside the path it
   is mounted at inside the container. Paths are absolute, so they can be pasted
