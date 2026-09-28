@@ -38,6 +38,32 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   Existing clusters get the second half via a host-migration; new installs
   get both.
 
+### Fixed
+
+- **A tenant moved to the CPU tier model kept losing its burst ceiling.**
+  Editing a hosting plan, editing one tenant's limits, or simply restarting
+  the management API re-applied the *old* CPU shape over every tenant it
+  touched — quietly removing the ceiling the tier migration had installed.
+  Fourteen of thirty namespaces on a production cluster had lost theirs
+  within two hours of being migrated, and the next restart would have taken
+  the rest. Nothing failed while it happened: the per-application
+  ceilings stayed in place, so what was lost was the namespace-wide backstop
+  above them, and no error, alert or status anywhere said it was gone.
+
+  The five paths that write a tenant's quota now read what is there first
+  and leave the CPU budget of a tiered namespace alone. Only the tier
+  migration sizes that budget, and it sizes it from what the tenant's
+  applications are actually running.
+
+- **Ceilings already lost are put back on the next start.** The boot-time
+  sweep knows which tenants are on the tier model and restores a ceiling
+  that is missing — without an operator re-running anything, and without
+  touching one that is present. It will not install a ceiling over a
+  namespace that cannot satisfy one, and it leaves a tenant alone entirely
+  while a migration or a revert is in flight: both deliberately change the
+  cluster before they change the database, and a sweep that believed the
+  database would undo the step in progress.
+
 ## [2026.9.36] - 2026-09-28
 
 ### Fixed
