@@ -37,7 +37,7 @@
 | [R23](#r23--insula-single-binary-install--branding) | `insula` single-binary install + branding | P2 | Proposed (ADR-055, 2026-07-26) — fold bootstrap into the signed binary; rename `platform-ops`→`insula`; consolidate host paths |
 | [R24](#r24--proxy-protocol-support-for-cloud-load-balancers) | PROXY-protocol support for cloud (SNAT) load balancers | P2 | Proposed 2026-07-26 — real client IP is lost behind a SNAT-ing cloud LB (neither Traefik nor HAProxy accept inbound PROXY protocol); today needs a source-preserving L4-passthrough LB or DNS multi-A |
 | [R25](#r25--migration--dr-recover-completeness) | Migration / DR-recover completeness | P2 | ✅ Mostly shipped — §1 + §2 were already built (roadmap was stale); §3 bundle preflight + skipped-tenant reporting shipped 2026-09-13; §4 up-front key check remains |
-| [R26](#r26--pin-the-k3s-installer-to-a-version-tag-not-master) | Pin the k3s installer to a version tag, not master | P2 | **SHIPPED 2026-09-28** after it recurred and blocked a from-scratch rebuild. NOTE: the trust-anchor host change this entry said should be an explicit operator decision was made without one — see the section for how to reverse it |
+| [R26](#r26--pin-the-k3s-installer-to-a-version-tag-not-master) | Pin the k3s installer to a version tag, not master | P2 | **SHIPPED 2026-09-28.** Operator decision recorded: KEEP — the new host was already a hard dependency (Calico, Helm, CSI snapshotter) and `k3s.io` is now contacted not at all |
 | [R27](#r27--dual-stack-tenant-services-end-to-end-ipv6) | Dual-stack tenant Services (end-to-end IPv6) | P4 | Proposed 2026-08-10 — the residual from R13: globally-routable pod addressing + catalog images binding `::`. COUPLED and inert individually; both only become load-bearing if tenant Services stop being SingleStack IPv4. Needs a provider-delegated prefix |
 | [R28](#r28--make-email-aliases-and-auto-reply-real) | Make email aliases + auto-reply real (Stalwart-backed) | P2 | ✅ **CLOSED 2026-08-24** — auto-reply (vacation), aliases (Stalwart MailingList per alias, fan-out to local + external destinations) and the domain catch-all (native Domain.catchAllAddress) all enforced by the mail server, DB authoritative with boot reconcile |
 | [R29](#r29--schema-validate-the-rest-of-the-api-surface) | Schema-validate the rest of the API surface | **P2** | ✅ **R29a SHIPPED 2026-09-13** — 19 of 43 converted, 24 classified + frozen by a CI guard; R29b not started |
@@ -1218,7 +1218,7 @@ trust anchor and should be an explicit operator decision rather than a silent
 refactor. A CI freshness check (warn when the tag's installer digest differs
 from the pin) is the alternative if the host change is unwanted.
 
-### SHIPPED 2026-09-28 — and the host change was NOT pre-approved
+### SHIPPED 2026-09-28 — operator decision recorded: KEEP
 
 It recurred exactly as predicted. A from-scratch DEV rebuild died at
 
@@ -1227,28 +1227,56 @@ ERROR: k3s installer checksum MISMATCH — refusing to execute.
   expected: ed01f89f…   actual: e5cc3b3d…
 ```
 
-and the proposal above was implemented to unblock it: the installer is now
-fetched from `raw.githubusercontent.com/k3s-io/k3s/${K3S_VERSION}/install.sh`
-and pinned to that tag's digest.
+The proposal above is implemented: the installer is fetched from
+`raw.githubusercontent.com/k3s-io/k3s/${K3S_VERSION}/install.sh` and pinned
+to that tag's digest.
 
-**The "decide before building" note above was not honoured.** The host change
-was made in the course of unblocking a blocked rebuild, not as a considered
-operator decision. Recording it here so the choice is visible rather than
-buried in a commit. It is cheap to reverse: restore the `get.k3s.io` URL,
-re-pin to master's current digest, and add the CI freshness check this entry
-offers as the alternative.
+**The host change was made before the operator decision this entry asked
+for, and then put to them. Decision: keep it.** What settled it was
+checking what `bootstrap.sh` already fetches:
 
-Provenance of the shipped digest was verified rather than assumed — the
-tagged installer differs from the master one it replaced only in SUSE/
-SLE-Micro RPM selection, CoreOS/Flatcar detection, and the generated
-uninstall script's k3s-selinux removal, none of which touches an OS in the
-support matrix.
+| host | used for |
+|---|---|
+| `raw.githubusercontent.com` | Calico manifests, the Helm installer, the CSI snapshotter — **and now the k3s installer** |
+| `get.k3s.io` | the k3s installer, and nothing else |
+
+So this adds no third party to the install path. It REMOVES one: a
+bootstrap already could not succeed without reaching
+`raw.githubusercontent.com`, and `k3s.io` is no longer contacted at all.
+Operators who allowlist egress by domain can drop `k3s.io`; they already
+had to permit `raw.githubusercontent.com`.
+
+There is also a security argument, not only a convenience one. The old
+arrangement fired the guard on every legitimate upstream edit, and a
+checksum failure caused by a SUSE packaging commit is indistinguishable
+from one caused by tampering. A guard that cries wolf every few weeks is
+one people learn to silence by re-pinning without reading the diff.
+Pinning to a release tag means a mismatch means something.
+
+**Caveat, stated rather than glossed:** a git tag is mutable in principle —
+upstream *could* move `v1.36.2+k3s1`. The digest catches it, so the
+security property holds; "immutable" here is a practical claim about how
+the k3s project behaves, not a cryptographic one.
+
+Provenance of the shipped digest was verified rather than assumed: the
+tagged installer differs from the master one it replaced only in
+SUSE/SLE-Micro RPM selection, CoreOS/Flatcar detection, and the generated
+uninstall script's k3s-selinux removal — none of which touches an OS in
+the support matrix.
 
 A second hole opened by the change was closed with it: `--k3s-version` is
-parsed after the URL would have been built, so a version override would have
-installed one version while verifying another's installer — a mismatch that
-LOOKS verified. The URL resolves at fetch time now and a non-default version
-is refused unless the operator supplies `--k3s-installer-sha256`.
+parsed after the URL would have been built, so a version override would
+have installed one version while verifying another's installer — a
+mismatch that LOOKS verified. The URL resolves at fetch time now, and a
+non-default version is refused unless the operator supplies
+`--k3s-installer-sha256`.
+
+**Still open, and NOT part of this change.** Several operations runbooks
+still instruct an operator to `curl -sfL https://get.k3s.io | sh -` by
+hand — unverified, and from master — which contradicts both this decision
+and the standing rule to provision only via `bootstrap.sh`. They carry a
+warning now; rewriting their procedures needs someone who can exercise
+them.
 
 ## R27 — Dual-stack tenant Services (end-to-end IPv6)
 

@@ -508,6 +508,12 @@ TRAEFIK_CHART_VERSION="41.0.2"           # app v3.7.6; verify: helm search repo 
 # host-migration (existing nodes already have these tools installed).
 # ★ The k3s installer is fetched from the VERSION-PINNED TAG, not get.k3s.io.
 #
+# Settled by operator decision (ROADMAP R26): this moves the install path's
+# download host from k3s.io to raw.githubusercontent.com, which bootstrap
+# ALREADY required for Calico, Helm and the CSI snapshotter — so it adds no
+# third party and removes one, since k3s.io is now contacted nowhere in this
+# script. Egress allowlists can drop k3s.io.
+#
 # get.k3s.io serves master's install.sh, so this pin broke EVERY fresh
 # install the moment upstream edited that file for any reason — which they
 # did, and it did: a clean bootstrap died at

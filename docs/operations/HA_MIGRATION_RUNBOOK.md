@@ -7,6 +7,16 @@
 
 ---
 
+> **These `curl … | sh -` invocations are NOT how this platform installs k3s.**
+> Provision through `scripts/bootstrap.sh`, which downloads the installer from
+> the pinned k3s **release tag** and verifies it against a digest before running
+> it (ROADMAP R26). A bare `curl -sfL https://get.k3s.io | sh -` executes
+> whatever k3s master currently holds, unverified — and `get.k3s.io` is no
+> longer part of the platform's install path at all. The commands below are
+> retained because the surrounding procedure has not been re-exercised against
+> `bootstrap.sh`; treat them as illustrative of the underlying k3s steps, not as
+> instructions to run.
+
 ## Overview
 
 This runbook provides step-by-step procedures for scaling the platform from a single-node deployment to full high availability. Each stage is independent — you can stop at any stage and remain at that level indefinitely.
