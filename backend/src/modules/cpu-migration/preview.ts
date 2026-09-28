@@ -62,6 +62,29 @@ function tierForMillis(millis: number): CpuTier | null {
 }
 
 /**
+ * A LimitRange's `default`, whatever the client calls it.
+ *
+ * ★ The Kubernetes JS client renames it. `default` is a reserved word, so
+ * the generated model deserialises `spec.limits[].default` as `_default` —
+ * on the way OUT a plain `default` serialises correctly, so the object we
+ * write is right and the object we read back has a different shape from
+ * the one we wrote.
+ *
+ * Reading `.default` therefore returned undefined, always, with no error:
+ * the dry run reported every tenant's applied ceiling as null and so could
+ * never say a change was pending, and the re-apply could not tell which
+ * pods were still admitted under the previous ceiling. Both failed by
+ * finding nothing, which looks exactly like "there is nothing to find".
+ *
+ * `defaultRequest` is not a reserved word and comes back unchanged.
+ */
+function limitRangeDefault(
+  container: { default?: Record<string, string>; _default?: Record<string, string> } | undefined,
+): Record<string, string> | undefined {
+  return container?.default ?? container?._default;
+}
+
+/**
  * The ceiling and default tier each TIERED namespace currently enforces.
  *
  * ★ One read per tiered tenant, not one list for the cluster.
@@ -93,12 +116,13 @@ async function readAppliedCeilings(
           spec?: { limits?: ReadonlyArray<{
             type?: string;
             default?: Record<string, string>;
+            _default?: Record<string, string>;
             defaultRequest?: Record<string, string>;
           }> };
         }>;
       }).readNamespacedLimitRange({ name: `${ns}-cpu`, namespace: ns });
       const container = (lr.spec?.limits ?? []).find((l) => l.type === 'Container');
-      const ceiling = cpuToMillis(container?.default?.cpu);
+      const ceiling = cpuToMillis(limitRangeDefault(container)?.cpu);
       if (!ceiling) continue;
       out.set(ns, {
         ceilingCores: Math.round((ceiling / 1000) * 100) / 100,

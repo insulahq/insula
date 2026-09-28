@@ -57,11 +57,20 @@ function k8sWith(limitRange: { ceiling: string; request: string } | null): K8sCl
     core: {
       readNamespacedLimitRange: vi.fn(async () => {
         if (!limitRange) throw Object.assign(new Error('HTTP-Code: 404'), { statusCode: 404 });
+        /**
+         * ★ `_default`, exactly as the Kubernetes client hands it back.
+         *
+         * `default` is a reserved word, so the generated model renames it
+         * on deserialisation — the object we write and the object we read
+         * back have different shapes. A fixture spelling it `default`
+         * would have passed while the real code read undefined and
+         * reported every applied ceiling as null, which is what shipped.
+         */
         return {
           spec: {
             limits: [{
               type: 'Container',
-              default: { cpu: limitRange.ceiling },
+              _default: { cpu: limitRange.ceiling },
               defaultRequest: { cpu: limitRange.request },
             }],
           },

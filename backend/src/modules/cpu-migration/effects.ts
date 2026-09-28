@@ -131,11 +131,19 @@ export async function readLimitRangeCeilingMillis(
   try {
     const lr = await (k8s.core as unknown as {
       readNamespacedLimitRange: (a: { name: string; namespace: string }) => Promise<{
-        spec?: { limits?: ReadonlyArray<{ type?: string; default?: Record<string, string> }> };
+        spec?: { limits?: ReadonlyArray<{
+          type?: string;
+          default?: Record<string, string>;
+          _default?: Record<string, string>;
+        }> };
       }>;
     }).readNamespacedLimitRange({ name: limitRangeName(namespace), namespace });
     const container = (lr.spec?.limits ?? []).find((l) => l.type === 'Container');
-    const cpu = container?.default?.cpu;
+    // ★ `_default`, because the client renames the reserved word — see
+    // limitRangeDefault in preview.ts. Reading `.default` returned
+    // undefined every time, so the re-apply could not tell which pods were
+    // still admitted under the previous ceiling and swept none of them.
+    const cpu = (container?.default ?? container?._default)?.cpu;
     return cpu ? quantityToMillis(cpu) : null;
   } catch (err) {
     if (is404(err)) return null;
