@@ -116,10 +116,20 @@ console.log('  Seeded regions');
 // keeps existing rows untouched (operators can edit live plans via the
 // admin UI without re-seeding clobbering them).
 //
-// Resources:                CPU   RAM     Disk   Users  Mailboxes  AI/wk
-//   Starter                 0.25  256 MB  2 GB   1       5         —
-//   Business                1.00  1 GB    5 GB   3      10         $3
-//   Premium                 2.00  2 GB    10 GB  10     10         $10
+// Resources:                CPU   Tier      RAM     Disk   Users  Mailboxes  AI/wk
+//   Starter                 0.25  normal    256 MB  2 GB   1       5         —
+//   Business                1.00  high      1 GB    5 GB   3      10         $3
+//   Premium                 2.00  highest   2 GB    10 GB  10     10         $10
+//
+// `cpu_tier` is the ADR-062 scheduling share the plan sells — the kernel
+// distinguishes the three weights (1 / 2 / 4), and without it every plan
+// resolves to the same default and the ladder does not differentiate CPU
+// priority at all. Inert until a tenant is migrated off `legacy`, which is
+// deliberate: installing a release must not move anybody.
+//
+// `cpu_burst_cores` is left unset on purpose. Absent, the ceiling derives as
+// max(1, cpu_limit x 2) -> 1 / 2 / 4 cores, which is the ladder we want; a
+// literal here would freeze it against any later change to cpu_limit.
 //
 // `weekly_ai_budget_cents` stores AI-Editor weekly spend cap in cents
 // (1 AI Unit = $1/week = 100 cents). Storage units are GB; memory units
@@ -129,9 +139,9 @@ console.log('  Seeded regions');
 // 'premium'->'ultimate' codes on existing clusters). maxMailboxSizeMb is the
 // per-mailbox size ceiling (MB).
 await db.insert(hostingPlans).values([
-  { id: crypto.randomUUID(), code: 'starter', name: 'Starter', description: 'Shared hosting for small sites', cpuLimit: '0.25', memoryLimit: '0.25', storageLimit: '2.00', monthlyPriceUsd: '5.00', maxSubUsers: 1, maxMailboxes: 5, maxMailboxSizeMb: 1024, weeklyAiBudgetCents: 0, features: { shared_pod: true, ssl: true, backups: 'daily' }, status: 'active' },
-  { id: crypto.randomUUID(), code: 'premium', name: 'Premium', description: 'Dedicated pod with more resources', cpuLimit: '1.00', memoryLimit: '1.00', storageLimit: '5.00', monthlyPriceUsd: '15.00', maxSubUsers: 3, maxMailboxes: 10, maxMailboxSizeMb: 2048, weeklyAiBudgetCents: 300, features: { dedicated_pod: true, ssl: true, backups: 'daily', waf: true }, status: 'active' },
-  { id: crypto.randomUUID(), code: 'ultimate', name: 'Ultimate', description: 'Maximum resources with priority support', cpuLimit: '2.00', memoryLimit: '2.00', storageLimit: '10.00', monthlyPriceUsd: '40.00', maxSubUsers: 10, maxMailboxes: 10, maxMailboxSizeMb: 5120, weeklyAiBudgetCents: 1000, features: { dedicated_pod: true, ssl: true, backups: 'hourly', waf: true, priority_support: true }, status: 'active' },
+  { id: crypto.randomUUID(), code: 'starter', name: 'Starter', description: 'Shared hosting for small sites', cpuLimit: '0.25', cpuTier: 'normal', memoryLimit: '0.25', storageLimit: '2.00', monthlyPriceUsd: '5.00', maxSubUsers: 1, maxMailboxes: 5, maxMailboxSizeMb: 1024, weeklyAiBudgetCents: 0, features: { shared_pod: true, ssl: true, backups: 'daily' }, status: 'active' },
+  { id: crypto.randomUUID(), code: 'premium', name: 'Premium', description: 'Dedicated pod with more resources', cpuLimit: '1.00', cpuTier: 'high', memoryLimit: '1.00', storageLimit: '5.00', monthlyPriceUsd: '15.00', maxSubUsers: 3, maxMailboxes: 10, maxMailboxSizeMb: 2048, weeklyAiBudgetCents: 300, features: { dedicated_pod: true, ssl: true, backups: 'daily', waf: true }, status: 'active' },
+  { id: crypto.randomUUID(), code: 'ultimate', name: 'Ultimate', description: 'Maximum resources with priority support', cpuLimit: '2.00', cpuTier: 'highest', memoryLimit: '2.00', storageLimit: '10.00', monthlyPriceUsd: '40.00', maxSubUsers: 10, maxMailboxes: 10, maxMailboxSizeMb: 5120, weeklyAiBudgetCents: 1000, features: { dedicated_pod: true, ssl: true, backups: 'hourly', waf: true, priority_support: true }, status: 'active' },
 ]).onConflictDoUpdate({ target: hostingPlans.code, set: { name: sql`excluded.name` } });
 console.log('  Seeded hosting plans');
 

@@ -14,6 +14,19 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Changed
 
+- **The default hosting plans now sell distinct CPU shares.** Starter,
+  Premium and Ultimate ship as *normal*, *high* and *highest* — the three
+  weights the kernel actually distinguishes. Until now the shipped plans
+  named no share at all, so all three resolved to the same one, and the
+  ladder differentiated price, memory and disk but not CPU priority. Burst
+  ceilings still derive from each plan's CPU figure (1 / 2 / 4 cores) rather
+  than being fixed, so they follow a plan that is later re-priced.
+
+  Only new installs get it. Seeding runs on every start, but it refreshes
+  nothing on a plan that already exists except its display name — so a share
+  an operator set by hand is never overwritten. The value also does nothing
+  at all for a tenant still on the old CPU model.
+
 - **The platform stops spending most of its CPU talking to itself.** On a
   production cluster the node was only ~26% busy, but almost all of that was
   the platform's own control plane — tenants accounted for roughly a

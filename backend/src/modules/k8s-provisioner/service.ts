@@ -545,16 +545,21 @@ async function resolveCpuHard(
   if (model?.mode !== 'tiered') return legacyShape;
 
   // ── restore ───────────────────────────────────────────────────────────
-  // Not onto a quota that does not exist: a namespace being provisioned has
-  // no tiered pods yet, and the migration installs its own ceiling.
-  if (!liveHard) return legacyShape;
   // `!= null` and not truthiness — a resolved 0 is a real, and fatal,
-  // ceiling, so it must reach the guard below rather than read as "unset".
+  // ceiling, so it must reach the guard rather than read as "unset".
   if (model.ceilingCores == null || !(model.ceilingCores > 0)) return legacyShape;
-  // A ceiling obliges every pod to declare a CPU limit. The LimitRange is
-  // what gives one to a pod that does not, so without it this would reject
-  // the tenant's next deploy — the case being a tenant whose revert died
-  // after removing the LimitRange and before marking it legacy.
+  // ★ The ONE precondition. A ceiling obliges every pod in scope to declare
+  // a CPU limit, and the LimitRange is what gives one to a pod that does
+  // not — so a ceiling over a namespace without it rejects the tenant's next
+  // deploy. It is also the honest test of "is this namespace tiered": a
+  // namespace being provisioned has neither, and a revert that died after
+  // removing the LimitRange and before marking the tenant legacy has the
+  // database saying one thing and the cluster another.
+  //
+  // Deliberately the only one. An earlier version also refused when the
+  // quota did not exist, which is redundant — the LimitRange already
+  // answers it — and would have blocked both the integrity repair of a
+  // DELETED quota and provisioning a tenant tiered from the start.
   if (!(await tenantLimitRangeExists(k8s, namespace))) return legacyShape;
   return keep(String(model.ceilingCores));
 }
