@@ -140,8 +140,18 @@ commit "$d" 'fix: built and pinned'
 pin_to "$d" HEAD
 commit "$d" 'chore: repin by hand' k8s/overlays/development/kustomization.yaml
 commit "$d" 'chore: repin by hand' k8s/overlays/development/deploy-rev-patch.yaml
-commit "$d" 'chore: repin by hand' k8s/overlays/development/kustomization.yaml
+commit "$d" 'chore: repin by hand' k8s/overlays/development/platform-version-patch.yaml
 expect 'commits touching only the pin files do not age the pin' 0 "$(run "$d"; echo $?)"
+
+# pin-config-image.sh writes a fourth pin file, from seven image workflows
+# that fire concurrently — so these land several in a row.
+new_repo paths-configpin; d=$REPO
+commit "$d" 'fix: built and pinned'
+pin_to "$d" HEAD
+for k in file-manager claim-validator sftp-gateway; do
+  commit "$d" "chore(development): pin $k to 2026-x" k8s/overlays/development/platform-config-patch.yaml
+done
+expect 'runtime-image pins do not age the platform-version pin' 0 "$(run "$d"; echo $?)"
 
 echo '── a merge commit reports what it merged ──'
 # A merge shows no files of its own. Without -m --first-parent it would look
