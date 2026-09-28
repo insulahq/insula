@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { cpuTierSchema } from './cpu-migration.js';
 import { tenantStatusEnum, storageLifecycleStateEnum, uuidField, paginatedResponseSchema, identityEmailSchema } from './shared.js';
 import { provisioningStatusEnum } from './provisioning.js';
 
@@ -74,7 +75,24 @@ export const createTenantSchema = z.object({
   // existing tenant doesn't migrate the PVC — operator must run the
   // storage-migration flow (future).
   storage_tier: tenantStorageTierEnum.optional(),
-});
+/**
+ * ★ .strict() — an unknown key is REFUSED, not quietly dropped.
+ *
+ * Zod's default is to strip what a schema does not declare, so a create
+ * carrying a field this schema has never had returned 201 with that field
+ * silently discarded. The per-tenant limit overrides are the ones that bit:
+ * they live on updateTenantSchema, not here, so
+ * `POST /tenants {..., cpu_limit_override: 2}` created a tenant on the
+ * PLAN's limits and said nothing. integration-burstable-qos.sh had been
+ * announcing "Starter plan + 2-CPU override" and creating a 0.25-core tenant
+ * for as long as it has existed.
+ *
+ * Refusing is the kinder failure: every caller making that mistake finds out
+ * at once, rather than each discovering it later as a quota that does not
+ * match what they asked for. Overrides remain settable — by PATCH, against
+ * updateTenantSchema, which is where they are declared.
+ */
+}).strict();
 
 export const updateTenantSchema = z.object({
   name: z.string().min(1).max(255).optional(),
@@ -87,6 +105,16 @@ export const updateTenantSchema = z.object({
   plan_id: uuidField.optional(),
   subscription_expires_at: z.string().datetime().nullable().optional(),
   cpu_limit_override: z.number().min(0.1).max(64).nullable().optional(),
+  /**
+   * ADR-062. Same override shape as every other plan property: null means
+   * inherit the plan, which in turn may fall through to a derived default.
+   *
+   * These are read ONLY by a tenant in tiered mode. Setting them on a tenant
+   * still in legacy changes nothing about how it is scheduled — deliberately,
+   * so preparing a plan cannot re-tier anyone by accident.
+   */
+  cpu_tier_override: cpuTierSchema.nullable().optional(),
+  cpu_burst_cores_override: z.number().min(0.1).max(256).nullable().optional(),
   memory_limit_override: z.number().min(0.1).max(256).nullable().optional(),
   storage_limit_override: z.number().min(1).max(10000).nullable().optional(),
   /** Per-tenant monthly bandwidth cap override (GB). null = inherit plan. */
@@ -181,6 +209,10 @@ export const tenantResponseSchema = z.object({
   storageLifecycleState: storageLifecycleStateEnum.optional(),
   provisioningStatus: provisioningStatusEnum,
   cpuLimitOverride: z.string().nullable(),
+  // ADR-062. numeric columns arrive as strings; the enum does not.
+  cpuTierOverride: cpuTierSchema.nullable().optional(),
+  cpuBurstCoresOverride: z.string().nullable().optional(),
+  cpuSchedulingMode: z.enum(['legacy', 'tiered']).optional(),
   memoryLimitOverride: z.string().nullable(),
   storageLimitOverride: z.string().nullable(),
   bandwidthLimitOverride: z.number().nullable().optional(),

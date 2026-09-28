@@ -53,23 +53,75 @@ Below the summary, one row per tenant shows what it reserves now, what it would
 reserve under the tier model, its burst ceiling, and its observed peak (p95).
 Expand a row to see the individual applications.
 
-### This page changes nothing
+### Migrating a tenant
 
-It is a **dry run**. It shows what *would* happen; there is no apply button. Use
-it to understand the cluster and to see which tenants need attention before any
-model change is rolled out.
+Each tenant row carries its own **Migrate this tenant** button, inside the
+expanded row. There is no "migrate everything" control, and none is planned:
+migration recreates pods, and doing that across a whole cluster from one click
+is precisely the flag day this design avoids.
 
-The **Verdict** column is either *migrates cleanly* or *needs review*. Expand a
-tenant marked for review to see why — the reason is always named, and so is the
-application it applies to:
+What happens when you press it:
+
+1. A CPU **LimitRange** is created for the tenant's namespace, so every
+   container gets a share and a ceiling from then on.
+2. Each application is re-tiered **one at a time**, biggest saving first,
+   waiting for the cluster to settle between each. Biggest-first is
+   deliberate — every migration hands CPU back, so the earliest steps buy the
+   headroom that makes the later ones safe.
+3. Once every pod provably carries a ceiling, the namespace quota gains its
+   burst cap.
+4. Only then is the tenant marked as tiered.
+
+While it runs you get a **Stop after this step** button. It is not a cancel:
+the run finishes the step it is on and puts the tools down between steps, so
+the tenant is never left half-way through a single change.
+
+!!! warning "Migrating restarts the tenant's applications"
+    Every re-tiered application is **rolled**: Kubernetes starts the new pod
+    before retiring the old one, so a healthy app stays reachable throughout.
+    Two things are worth knowing anyway:
+
+    - An app that cannot be re-tiered cleanly but still has to pick up the new
+      ceiling — most often one already sized exactly at a tier value — is
+      rolled the same way, so it too stays up.
+    - A pod that the platform cannot match to any application (for example a
+      deployment marked stopped in the database whose pod is still running) is
+      **deleted** so its replacement inherits the ceiling. Whatever owns it
+      recreates it, but a single-replica workload is briefly unavailable.
+
+    Migrate one tenant at a time and watch it, which is what the per-tenant
+    button is for.
+
+!!! tip "Stopping part-way is safe"
+    A stopped or failed migration leaves the tenant on the **old** model with
+    some applications already re-tiered. That state is stable and serviceable
+    — a smaller CPU request is always easier to schedule than the one it
+    replaced — so a tenant that stops half-way is better off than before it
+    started, not worse.
+
+### Reverting
+
+A migrated tenant shows **Revert to legacy** instead. The revert restores each
+application's **exact** prior CPU request, recorded before anything was
+changed — not a recalculated equivalent. It removes the burst ceiling first
+(so a restore cannot be refused by a limit the migration itself installed) and
+the LimitRange last.
+
+If a baseline cannot be honoured for some application, the revert says so and
+counts it, rather than putting back a number nobody chose.
+
+### What the dry run decides for you, and what it does not
+
+The report auto-classifies. Only these need a human:
 
 | Reason | What to do |
 |---|---|
-| An application **pins its own CPU** (a custom container image with explicit resources) | Decide deliberately; the platform will not overwrite a value you set by hand |
+| An application **pins its own CPU** (a custom container with explicit resources) | Decide deliberately; the platform will not overwrite a value you set by hand |
+| A **compose stack** | Its CPU request covers several services with no unambiguous way to split it back |
 | **No usage samples** in the last 7 days | Let it run, or size it yourself — there is nothing to size against |
 
-A tenant whose reservation would *increase* is shown as an increase, not folded
-into the total as if it were a saving.
+A tenant whose reservation would *increase* is shown as an increase, not
+folded into the total as if it were a saving.
 
 ### Where to find it
 
@@ -79,11 +131,11 @@ idle, because that is the right rule for an alarm. Discovery is a different job:
 a cluster at 40% reserved should be able to look at this before it becomes the
 cluster at 96%.
 
-## Quotas and the headroom check
+## Quotas and the headroom advisory
 
-When you save a tenant's CPU or memory quota, the platform checks the new total
-against what the cluster can carry and refuses a quota it cannot honour. What
-"can carry" means depends on the cluster:
+When you save a tenant's CPU or memory quota, the platform adds up what every
+tenant is *allowed* to consume and compares it against what the cluster can
+carry. What "can carry" means depends on the cluster:
 
 - **More than one server** — the budget holds one server's worth in reserve, so
   that losing any single node still leaves somewhere for its work to go.
@@ -91,20 +143,20 @@ against what the cluster can carry and refuses a quota it cannot honour. What
   meaningless. The budget is simply what the machine has, less the platform's
   own share.
 
-The refusal message says which of the two it is enforcing, and by how much the
-request exceeds it.
+!!! note "This is advice, not a gate — the save always goes through"
+    Oversubscription is a legitimate position on this platform: a CPU request
+    reserves a place in the queue, it does not cap anything, so selling more
+    than the machine has is a deliberate trade rather than a fault. The check
+    therefore **reports** and never refuses. The verdict is written to the
+    audit log (`resource_quota.update.over_headroom`) and returned with the
+    saved quota as `headroomAdvisory`.
 
-Only a change that makes things **worse** is refused, and only in the
-dimension that grows. Lowering a quota, or re-saving the same values, always
-passes — including on a cluster that is already oversubscribed. Otherwise the
-check would forbid the very thing its own error message asks you to do.
+It sums **ceilings**, not current usage — the worst case where every tenant
+uses everything its plan permits at once. That total can sit well above what
+the cluster is actually running, which is the point: it is the number that
+tells you how exposed you would be if everyone showed up at the same time.
 
-!!! warning "Already oversubscribed?"
-    On a cluster whose tenant ceilings already add up to more than the budget,
-    every *increase* is refused until the total comes down; nothing is shrunk
-    retroactively. Use **CPU Scheduling** to find the reserved-but-unused
-    capacity before raising anyone's allowance. A `super_admin` can override a
-    single refusal deliberately when they are accepting the risk knowingly.
+To see where the slack is, use **CPU Scheduling** above.
 
 ## Background
 

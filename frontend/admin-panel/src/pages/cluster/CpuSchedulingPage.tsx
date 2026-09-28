@@ -3,6 +3,9 @@ import { Loader2, Cpu, ChevronDown, ChevronRight } from 'lucide-react';
 import clsx from 'clsx';
 import type { CpuMigrationBlocker, CpuMigrationTenant, CpuTier } from '@insula/api-contracts';
 import { useCpuMigrationPreview } from '@/hooks/use-cpu-migration';
+import {
+  useApplyCpuMigration, useRevertCpuMigration, useStopCpuMigration,
+} from '@/hooks/use-cpu-migration-actions';
 import ErrorPanel from '@/components/ErrorPanel';
 import { extractOperatorError } from '@/lib/extract-operator-error';
 
@@ -171,10 +174,113 @@ function TenantRow({ t }: { t: CpuMigrationTenant }) {
                 )}
               </tbody>
             </table>
+            <TenantMigrationActions tenant={t} />
           </td>
         </tr>
       )}
     </>
+  );
+}
+
+
+/**
+ * The only place anything is applied. One tenant at a time, from inside that
+ * tenant's own row — there is no bulk control here and no endpoint behind one,
+ * because recreating every tenant's pods from a single click is the flag day
+ * ADR-062 exists to avoid.
+ */
+function TenantMigrationActions({ tenant }: { tenant: CpuMigrationTenant }) {
+  const apply = useApplyCpuMigration();
+  const revert = useRevertCpuMigration();
+  const stop = useStopCpuMigration();
+  const [acknowledged, setAcknowledged] = useState(false);
+  // Server-side truth, so the controls are right after a reload or for a
+  // second admin — not just in the tab that pressed the button.
+  const running = tenant.migrationRunning || apply.isPending;
+  const busy = running || revert.isPending || stop.isPending;
+  const tiered = tenant.schedulingMode === 'tiered';
+  const needsReview = !tenant.migratesCleanly;
+
+  // Report the server's own words. A mutation that "succeeded" can still have
+  // stopped or failed partway — reading only isError would show a green tick
+  // over a migration that gave up at step 4.
+  const run = apply.data?.data;
+  const reverted = revert.data?.data;
+  const outcome = run
+    ? { bad: run.status !== 'completed', text: run.status === 'completed'
+        ? `Migrated — freed ${(run.freedMillis ?? 0) / 1000} cores`
+        : `${run.status}: ${run.reason ?? run.step ?? 'see the task list'}` }
+    : reverted
+      ? { bad: reverted.status !== 'completed', text: reverted.status === 'completed'
+          ? `Reverted ${reverted.restored} application(s)`
+            + (reverted.uncapped > 0 ? `, released ${reverted.uncapped} from the ceiling` : '')
+            + (reverted.unrestorable > 0 ? ` — ${reverted.unrestorable} could not be restored` : '')
+          : `revert failed: ${reverted.reason ?? 'unknown'}` }
+      : apply.isError || revert.isError
+        ? { bad: true, text: 'The request failed. Check the task list for detail.' }
+        : null;
+
+  return (
+    <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-gray-200 pt-3 dark:border-gray-700">
+      {!tiered && (
+        <button
+          type="button"
+          disabled={busy || (needsReview && !acknowledged)}
+          onClick={() => apply.mutate({ tenantId: tenant.tenantId, acknowledgeBlockers: acknowledged })}
+          data-testid={`cpu-migrate-${tenant.tenantId}`}
+          className="rounded-md bg-brand-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-brand-700 disabled:opacity-50 dark:bg-brand-500 dark:hover:bg-brand-600"
+        >
+          {running ? 'Migrating…' : 'Migrate this tenant'}
+        </button>
+      )}
+      {tiered && (
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => revert.mutate(tenant.tenantId)}
+          data-testid={`cpu-revert-${tenant.tenantId}`}
+          className="rounded-md border border-gray-300 px-2.5 py-1 text-xs font-medium text-gray-700 hover:bg-gray-100 disabled:opacity-50 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-700"
+        >
+          {revert.isPending ? 'Reverting…' : 'Revert to legacy'}
+        </button>
+      )}
+      {running && (
+        <button
+          type="button"
+          onClick={() => stop.mutate(tenant.tenantId)}
+          data-testid={`cpu-stop-${tenant.tenantId}`}
+          className="rounded-md border border-amber-400 px-2.5 py-1 text-xs font-medium text-amber-700 hover:bg-amber-50 dark:border-amber-500 dark:text-amber-300 dark:hover:bg-amber-900/30"
+        >
+          Stop after this step
+        </button>
+      )}
+      {/* ★ The flag has to bind the button, not sit beside it. The server
+          refuses a flagged tenant without an explicit acknowledgement, so a
+          caption next to a still-clickable button would just produce a 409
+          the operator cannot get past. */}
+      {needsReview && !tiered && (
+        <label className="flex items-center gap-1.5 text-xs text-amber-700 dark:text-amber-400">
+          <input
+            type="checkbox"
+            checked={acknowledged}
+            onChange={(e) => setAcknowledged(e.target.checked)}
+            data-testid={`cpu-ack-${tenant.tenantId}`}
+            className="rounded border-gray-300 dark:border-gray-600 dark:bg-gray-700"
+          />
+          I have reviewed the notes above and want to migrate anyway
+        </label>
+      )}
+      {outcome && (
+        <span
+          data-testid={`cpu-outcome-${tenant.tenantId}`}
+          className={clsx('text-xs', outcome.bad
+            ? 'text-red-700 dark:text-red-400'
+            : 'text-teal-700 dark:text-teal-300')}
+        >
+          {outcome.text}
+        </span>
+      )}
+    </div>
   );
 }
 
@@ -192,8 +298,12 @@ export default function CpuSchedulingPage() {
       <div className="flex items-center gap-2">
         <Cpu size={20} className="text-gray-600 dark:text-gray-400" />
         <h1 className="text-xl font-semibold text-gray-900 dark:text-gray-100">CPU scheduling</h1>
+        {/* This said "dry run — changes nothing" while the page was report-only.
+            It now carries per-tenant Migrate/Revert buttons, so that label
+            would be the page lying about itself — the figures are still a
+            preview, but the page is no longer inert. */}
         <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-600 dark:bg-gray-700 dark:text-gray-300">
-          dry run — changes nothing
+          preview — nothing changes until you migrate a tenant
         </span>
       </div>
 

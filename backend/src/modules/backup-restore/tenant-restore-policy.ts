@@ -90,6 +90,15 @@ export const DEFAULT_TENANT_RESTORE_POLICY: TenantRestorePolicy = {
       'storage_limit_override',
       'cpu_limit_override',
       'memory_limit_override',
+      // ADR-062 tier model. Same class as cpu_limit_override: a tenant
+      // restoring its own backup must not be able to grant itself a larger
+      // share or a higher burst ceiling, nor flip its own scheduling mode —
+      // which would move it between two different enforcement models behind
+      // the operator's back.
+      'cpu_tier_override',
+      'cpu_burst_cores_override',
+      'cpu_scheduling_mode',
+      'cpu_migrated_at',
       // Note: schema column is `max_sub_users_override` (the underscore
       // is between sub_users, not subusers). The CI guard
       // scripts/ci-tenant-restore-policy-check.sh catches typos.

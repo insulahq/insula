@@ -545,3 +545,111 @@ describe('TenantDetail namespace integrity — subscription vs cluster', () => {
     expect(screen.queryByTestId('namespace-integrity-banner')).toBeNull();
   });
 });
+
+/**
+ * ADR-062. The tier and burst ceiling are per-tenant overrides with the same
+ * shape as every other limit — and they are shown for EVERY tenant, not only
+ * migrated ones, because an operator has to decide what a tenant will get
+ * before migrating it.
+ */
+describe('TenantDetail — CPU tier override (ADR-062)', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setupLimitsApi();
+  });
+
+  it('offers the tier control in the limits form', async () => {
+    renderTenantDetail();
+    fireEvent.click(await screen.findByTestId('edit-limits-button'));
+    expect(await screen.findByTestId('tenant-cpu-tier')).toBeInTheDocument();
+  });
+
+  /**
+   * ★ A control that appears to work but changes nothing is worse than no
+   * control. A legacy tenant ignores the tier entirely, so the form says so
+   * rather than leaving the operator to infer it from a migration that never
+   * happens.
+   */
+  it('says plainly that the tier is not in effect for a legacy tenant', async () => {
+    renderTenantDetail();
+    fireEvent.click(await screen.findByTestId('edit-limits-button'));
+    expect(await screen.findByTestId('tenant-cpu-tier-note'))
+      .toHaveTextContent(/not in effect/i);
+  });
+
+  // Default is inherit, and it must travel as null rather than as the first
+  // tier in the list.
+  it('defaults to inherit', async () => {
+    renderTenantDetail();
+    fireEvent.click(await screen.findByTestId('edit-limits-button'));
+    expect(await screen.findByTestId('tenant-cpu-tier')).toHaveValue('');
+  });
+
+  it('sends the chosen tier on save', async () => {
+    renderTenantDetail();
+    fireEvent.click(await screen.findByTestId('edit-limits-button'));
+    fireEvent.change(await screen.findByTestId('tenant-cpu-tier'), { target: { value: 'highest' } });
+    fireEvent.click(screen.getByTestId('save-limits-button'));
+
+    await waitFor(() => {
+      const patch = mockApiFetch.mock.calls
+        .map(([, init]) => init as { method?: string; body?: string } | undefined)
+        .filter((i) => i?.method === 'PATCH')
+        .pop();
+      expect(patch).toBeDefined();
+      expect(JSON.parse(patch!.body ?? '{}')).toMatchObject({ cpu_tier_override: 'highest' });
+    });
+  });
+
+  /**
+   * ★ View mode must render from the PROPS, not from edit state. The control
+   * was a bare <select> bound to state that only startEditing() populates, so
+   * a tenant WITH an override read as "Inherit" until someone clicked Edit —
+   * and kept showing a value the operator had just cancelled.
+   */
+  it('shows the saved tier before anyone clicks Edit', async () => {
+    mockApiFetch.mockImplementation((path: string) => {
+      if (path.includes('/plans')) return Promise.resolve(MOCK_PLANS_BASIC);
+      if (path.match(/\/tenants\/tenant-001$/)) {
+        return Promise.resolve({ data: { ...MOCK_CLIENT.data, cpuTierOverride: 'highest' } });
+      }
+      if (path.includes('/metrics')) return Promise.resolve({ data: {} });
+      return Promise.resolve({ data: [] });
+    });
+    renderTenantDetail();
+    expect(await screen.findByTestId('tenant-cpu-tier-value')).toHaveTextContent('highest');
+    // The editable control is not rendered at all outside edit mode.
+    expect(screen.queryByTestId('tenant-cpu-tier')).toBeNull();
+  });
+
+  it('does not keep showing a tier the operator cancelled', async () => {
+    renderTenantDetail();
+    fireEvent.click(await screen.findByTestId('edit-limits-button'));
+    fireEvent.change(await screen.findByTestId('tenant-cpu-tier'), { target: { value: 'highest' } });
+    fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
+    await waitFor(() => expect(screen.queryByTestId('tenant-cpu-tier')).toBeNull());
+    // Back to what is actually stored — no override on this fixture.
+    expect(screen.getByTestId('tenant-cpu-tier-value')).not.toHaveTextContent('highest');
+  });
+
+  // The burst override travels on save too — untested, it could be dropped
+  // from either payload without anything failing.
+  it('sends the burst ceiling override on save', async () => {
+    renderTenantDetail();
+    fireEvent.click(await screen.findByTestId('edit-limits-button'));
+    fireEvent.click(screen.getByTestId('toggle-burst-ceiling'));
+    const inputs = await screen.findAllByRole('spinbutton');
+    const burst = inputs[inputs.length - 1] as HTMLInputElement;
+    fireEvent.change(burst, { target: { value: '3' } });
+    fireEvent.click(screen.getByTestId('save-limits-button'));
+
+    await waitFor(() => {
+      const patch = mockApiFetch.mock.calls
+        .map(([, init]) => init as { method?: string; body?: string } | undefined)
+        .filter((i) => i?.method === 'PATCH')
+        .pop();
+      expect(patch).toBeDefined();
+      expect(JSON.parse(patch!.body ?? '{}')).toHaveProperty('cpu_burst_cores_override');
+    });
+  });
+});

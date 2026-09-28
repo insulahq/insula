@@ -7,8 +7,7 @@ import { success } from '../../shared/response.js';
 import { parseBody } from '../../shared/validate-body.js';
 import { validateQuotaFitsHeadroom } from './headroom-gate.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
-import { auditLogs, notifications, users } from '../../db/schema.js';
-import { inArray } from 'drizzle-orm';
+import { auditLogs } from '../../db/schema.js';
 
 export async function resourceQuotaRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
@@ -38,23 +37,21 @@ export async function resourceQuotaRoutes(app: FastifyInstance): Promise<void> {
 
   // PATCH /api/v1/tenants/:tenantId/resource-quota — admin only
   //
-  // (Phase 2): cluster-failover-headroom gate. Before saving
-  // the new limits, sum all tenant quota limits (across every tenant),
-  // add the projected delta from this patch, and compare against
-  // getClusterFailoverHeadroom().tenantAvailable{Cpu,MemoryGi}. If the
-  // projection breaches single-failure survivability, return 409
-  // CLUSTER_HEADROOM_EXCEEDED. A `?force=true` query param lets a
-  // super_admin bypass the gate (e.g. capacity expansion in flight); both
-  // accept and override paths emit audit-log entries.
+  // Cluster-headroom ADVISORY. Before saving, the effective ceiling of every
+  // non-archived tenant is summed and compared against what this cluster can
+  // carry. The verdict is logged, audited and returned with the write — it
+  // never refuses. Oversubscription is an accepted position on this platform
+  // (CPU requests are a scheduling hint, not a guarantee); the operator asked
+  // to SEE the gap, not to be stopped at it. See headroom-gate.ts.
+  //
+  // `?force=true` is accepted and ignored — kept so scripts written against
+  // the refusing version keep working. There is nothing left to force.
   app.patch('/tenants/:tenantId/resource-quota', {
     onRequest: [authenticate, requireRole('super_admin', 'admin')],
-  }, async (request, reply) => {
+  }, async (request) => {
     const { tenantId } = request.params as { tenantId: string };
     const input = parseBody(updateResourceQuotaSchema, request.body);
-    const query = request.query as { force?: string };
-    const force = query.force === 'true' || query.force === '1';
-    const userSub = (request.user as { sub?: string; role?: string } | undefined)?.sub ?? 'system';
-    const userRole = (request.user as { sub?: string; role?: string } | undefined)?.role ?? '';
+    const userSub = (request.user as { sub?: string } | undefined)?.sub ?? 'system';
 
     const newCpuLimit =
       typeof input.cpu_cores_limit === 'number' ? input.cpu_cores_limit : null;
@@ -66,6 +63,10 @@ export async function resourceQuotaRoutes(app: FastifyInstance): Promise<void> {
     // only those fields, skip the headroom check.
     const gateApplies = newCpuLimit !== null || newMemoryLimitGi !== null;
 
+    // Surfaced on the 200 alongside the write — the only place a caller of
+    // this API-only endpoint would ever see it.
+    let advisory: string | null = null;
+
     if (gateApplies) {
       const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
       const k8s = createK8sClients(kubeconfigPath);
@@ -75,115 +76,51 @@ export async function resourceQuotaRoutes(app: FastifyInstance): Promise<void> {
         newMemoryLimitGi,
       });
 
-      if (!gate.allowed && !force) {
-        await app.db.insert(auditLogs).values({
-          id: crypto.randomUUID(),
-          actorId: userSub,
-          actorType: 'user',
-          actionType: 'resource_quota.update.refused',
-          resourceType: 'resource_quota',
-          resourceId: tenantId,
-          changes: {
-            reason: 'cluster_headroom_exceeded',
-            // The human-readable verdict, so a later reader does not have to
-            // infer which dimension blocked it from figures that describe the
-            // whole cluster.
-            refusalReason: gate.reason,
-            attempt: { newCpuLimit, newMemoryLimitGi },
-            details: gate.details,
-          },
-          httpStatus: 409,
-        });
-        return reply.code(409).send({
-          error: {
-            code: 'CLUSTER_HEADROOM_EXCEEDED',
-            message: gate.reason,
-            status: 409,
-            details: gate.details,
-            remediation:
-              'Lower another tenant\'s quota first, add a server, or (super_admin only) retry with ?force=true to accept the failover risk.',
-          },
-        });
-      }
+      if (!gate.withinBudget) {
+        /**
+         * ★ ADVISORY, not admission control.
+         *
+         * This used to return 409 and refuse the write. That was the wrong
+         * policy for this platform: oversubscription is a deliberate,
+         * accepted position here — CPU requests are a scheduling hint, not a
+         * guarantee, and the operator asked for VISIBILITY into the gap, not
+         * a gate across it. A guard that refuses an accepted state is not a
+         * safety feature, it is an obstacle that teaches people to pass
+         * ?force=true reflexively.
+         *
+         * So the measurement stays — it is honest and hard-won — and the
+         * verdict is recorded rather than enforced. Reverting instead to the
+         * old "sum an empty table" behaviour would have made the number
+         * wrong as well as unenforced.
+         *
+         * Deliberately NOT a notification. This cluster is permanently past
+         * the budget, so alerting per edit would fan a standing condition out
+         * as a stream of alarms. The standing condition is already reported
+         * once, deduped per node, by the CPU-reservation finding.
+         */
+        request.log.warn({
+          tenantId,
+          attempt: { newCpuLimit, newMemoryLimitGi },
+          advisory: gate.reason,
+          details: gate.details,
+        }, 'resource quota accepted past cluster headroom (advisory)');
 
-      if (!gate.allowed && force) {
-        // Force-override is super_admin-only. The PATCH is already
-        // gated by requireRole('super_admin','admin') so an `admin`
-        // could otherwise sneak through — block them here.
-        if (userRole !== 'super_admin') {
-          await app.db.insert(auditLogs).values({
-            id: crypto.randomUUID(),
-            actorId: userSub,
-            actorType: 'user',
-            actionType: 'resource_quota.update.force_denied',
-            resourceType: 'resource_quota',
-            resourceId: tenantId,
-            changes: { reason: 'force_requires_super_admin', userRole },
-            httpStatus: 403,
-          });
-          return reply.code(403).send({
-            error: {
-              code: 'FORCE_REQUIRES_SUPER_ADMIN',
-              message: 'force=true overrides the cluster failover headroom gate; only super_admin may use it.',
-              status: 403,
-            },
-          });
-        }
-        // Allowed override — audit-log the deliberate breach.
         await app.db.insert(auditLogs).values({
           id: crypto.randomUUID(),
           actorId: userSub,
           actorType: 'user',
-          actionType: 'resource_quota.update.force_override',
+          actionType: 'resource_quota.update.over_headroom',
           resourceType: 'resource_quota',
           resourceId: tenantId,
           changes: {
-            reason: 'super_admin_override_cluster_headroom',
-            refusalReason: gate.reason,
-            patch: { newCpuLimit, newMemoryLimitGi },
+            reason: 'cluster_headroom_exceeded_advisory',
+            advisory: gate.reason,
+            attempt: { newCpuLimit, newMemoryLimitGi },
             details: gate.details,
           },
           httpStatus: 200,
         });
-        // Security-review follow-up: an audit-log entry
-        // alone is invisible to operators monitoring the bell icon. A
-        // deliberate failover-survivability breach is at least as
-        // significant as a storage-capacity warning — fan out a
-        // warning-severity notification to all super_admin + admin
-        // users so the operator team sees the override land.
-        const adminRows = await app.db
-          .select({ id: users.id })
-          .from(users)
-          .where(inArray(users.roleName, ['super_admin', 'admin']));
-        // Caption from the VERDICT, not from the measurement. overByCpu /
-        // overByMemoryGi describe how far the cluster TOTAL sits past budget
-        // and stay positive for a dimension that is being reduced — so
-        // reporting them here once announced "CPU +3.30 cores overridden" to
-        // every admin for a patch that LOWERED that tenant's CPU. The
-        // refusedBy* flags are the reason the gate actually gave.
-        const overage: string[] = [];
-        if (gate.details.refusedByCpu) overage.push(`CPU +${gate.details.overByCpu.toFixed(2)} cores`);
-        if (gate.details.refusedByMemory) overage.push(`memory +${gate.details.overByMemoryGi.toFixed(2)} GiB`);
-        const overageStr = overage.length > 0
-          ? overage.join(', ')
-          : 'cluster headroom clamped';
-        // The consequence differs by cluster shape, and stating the failover
-        // one on a single-server cluster is simply false — there is no
-        // single-server loss to survive.
-        const consequence = gate.details.isSingleServer
-          ? 'Tenant ceilings now exceed what this server can provide; the cluster is oversubscribed until quotas come back inside it or a server is added.'
-          : 'The cluster will NOT survive single-server loss until quotas come back inside headroom or a server is added.';
-        // Dispatched, not inserted: a row per admin with no category reached no
-        // template, no email, no preference gate and no delivery audit — for
-        // an event that says the cluster will not survive losing a server.
-        const { notifyAdminOperationalEvent } = await import('../notifications/events.js');
-        await notifyAdminOperationalEvent(app.db, 'platform', {
-          subsystem: 'Resource quota',
-          objectLabel: `tenant ${tenantId}`,
-          detail: `super_admin "${userSub}" used ?force=true on a quota patch — ${overageStr} past safe headroom. Tenant total ${gate.details.projectedSumCpu.toFixed(2)} CPU / ${gate.details.projectedSumMemoryGi.toFixed(2)} GiB vs available ${gate.details.headroomCpu.toFixed(2)} CPU / ${gate.details.headroomMemoryGi.toFixed(2)} GiB.`,
-          severityLabel: 'headroom overridden',
-          recommendedAction: consequence,
-        }, `quota-force:${tenantId}:${new Date().toISOString().slice(0, 13)}`).catch(() => undefined);
+        advisory = gate.reason;
       }
     }
 
@@ -216,6 +153,8 @@ export async function resourceQuotaRoutes(app: FastifyInstance): Promise<void> {
       });
     }
 
-    return success(updated);
+    // `headroomAdvisory` is null on a quota that fits. Additive, so a client
+    // that ignores it is unaffected.
+    return success({ ...updated, headroomAdvisory: advisory });
   });
 }
