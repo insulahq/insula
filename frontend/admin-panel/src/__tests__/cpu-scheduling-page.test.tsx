@@ -308,7 +308,11 @@ describe('CpuSchedulingPage', () => {
    * saved settings and the running ones disagree, which was invisible.
    */
   describe('an already-tiered tenant', () => {
-    const tiered = (o = {}) => tenant({
+    // ★ TYPED. An untyped `o = {}` widens every literal passed through it,
+    // so a field could be given a value that is not in its enum and
+    // nothing would say so — `tenantBlocker: 'usage_exceeds_ceiling'` sat
+    // here for exactly that reason, naming a blocker that does not exist.
+    const tiered = (o: Partial<CpuMigrationPreview['tenants'][number]> = {}) => tenant({
       schedulingMode: 'tiered' as const,
       appliedCeilingCores: 2,
       appliedTier: 'high' as const,
@@ -353,7 +357,7 @@ describe('CpuSchedulingPage', () => {
     });
 
     it('still gates a flagged tenant behind the acknowledgement', async () => {
-      ok(preview({ tenants: [tiered({ migratesCleanly: false, tenantBlocker: 'usage_above_ceiling' })] }));
+      ok(preview({ tenants: [tiered({ migratesCleanly: false, tenantBlocker: 'usage_exceeds_ceiling' })] }));
       render(<CpuSchedulingPage />);
       await userEvent.click(screen.getByTestId('cpu-migration-tenant-t1'));
       expect(screen.getByTestId('cpu-reapply-t1')).toBeDisabled();

@@ -101,7 +101,7 @@ describe('ApplyCpuLimitsPanel', () => {
    * button would only produce an error the operator cannot get past.
    */
   it('disables the button for a flagged tenant until it is acknowledged', () => {
-    ok(tenant({ migratesCleanly: false, tenantBlocker: 'usage_above_ceiling' }));
+    ok(tenant({ migratesCleanly: false, tenantBlocker: 'usage_exceeds_ceiling' }));
     const mutate = apply();
     show();
     expect(screen.getByTestId('apply-cpu-limits-button')).toBeDisabled();
