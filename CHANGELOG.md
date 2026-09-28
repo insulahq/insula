@@ -115,6 +115,12 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   an administrator a critical alert every hour. The screens had already been
   corrected; this was the one path that actually contacts someone.
 
+- **A fractional memory, storage or bandwidth quota is now refused, not a
+  server error.** Those three are whole gigabytes in the database, so asking
+  for 1.5 GB passed validation and then failed inside the driver — a 500
+  with no field name on it, for an input the API had already said it was
+  checking. CPU is unchanged: it is genuinely fractional.
+
 ### Changed
 
 - **The default hosting plans now sell distinct CPU shares.** Starter,
