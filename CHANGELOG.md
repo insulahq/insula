@@ -147,6 +147,24 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   been overridden got a ceiling computed from a number that did not apply
   to it. Moot once a plan declares its ceiling, which the defaults now do.
 
+- **Installing a brand-new cluster works again.** Two things had broken it,
+  and neither could be seen from a cluster that was already running.
+
+  The Kubernetes installer was fetched from a URL that always serves the
+  latest development version of that script, so the moment its authors
+  edited it — for reasons of their own, affecting other operating systems —
+  our integrity check correctly refused to run it and every new install
+  stopped dead. It now comes from the specific release being installed, so
+  it changes only when we change which version we install.
+
+  The web router then failed to install at all: its access-log directory was
+  declared in a way its packaging no longer supports, producing a broken
+  object the cluster rejected. Existing clusters were unaffected because
+  they receive that directory through an upgrade step instead — which is
+  exactly why it went unnoticed. Left alone it would also have handed the
+  router a read-only directory to write its log into, silently costing the
+  intrusion-detection its only source of requests.
+
 ### Changed
 
 - **The default hosting plans now sell distinct CPU shares.** Starter,
