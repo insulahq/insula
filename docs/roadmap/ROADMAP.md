@@ -50,6 +50,7 @@
 | [R36](#r36--every-per-service-postgres-role-can-connect-to-the-platform-database) | Per-service roles can connect to the `platform` database | **P2** | ✅ **SHIPPED 2026-09-13** — `db-isolation` converger + bootstrap + Security→Hardening card; verified on DEV against a real role |
 | [R37](#r37--tenant-pods-can-fill-a-nodes-disk-and-nothing-charges-them-for-it) | Tenant pods can fill a node's disk | P2 | Not started — needs a hosting-plan policy decision (an `ephemeral-storage` limit EVICTS) |
 | [R38](#r38--mail-dns-is-written-once-and-never-reconciled-deliberate) | Mail DNS is written once, never reconciled | — | ✅ **DECIDED 2026-09-14** — dead `dns-sync` deleted; blind reconciliation would delete a tenant's own MX/SPF |
+| [R39](#r39--the-ha-and-upgrade-runbooks-install-k3s-by-hand-bypassing-bootstrapsh) | HA/upgrade runbooks bypass `bootstrap.sh` | P2 | Not started — 16 hand-written `curl \| sh` k3s installs across two ACTIVE runbooks; needs someone who can exercise an HA join and a k3s upgrade |
 
 ---
 
@@ -1858,6 +1859,60 @@ report, without writing.
 expected record set with explicit per-record ownership (`dns_records.managed_by`),
 never against Stalwart's zone file, and never touching a record the platform did
 not write.
+
+## R39 — The HA and upgrade runbooks install k3s by hand, bypassing `bootstrap.sh`
+
+**Surfaced 2026-09-28** while recording the [R26](#r26--pin-the-k3s-installer-to-a-version-tag-not-master)
+decision. Not caused by it — R26 only made it visible.
+
+**The gap.** Two runbooks marked **Active** tell an operator to install or
+upgrade k3s with a bare pipe:
+
+```bash
+curl -sfL https://get.k3s.io | sh -s - server --disable traefik --tls-san <ip>
+```
+
+| document | occurrences |
+|---|---|
+| `docs/operations/CLUSTER_MAINTENANCE_AND_UPGRADES.md` | 9 |
+| `docs/operations/HA_MIGRATION_RUNBOOK.md` | 7 |
+
+Three things are wrong with that, and they compound:
+
+1. **It contradicts a standing rule.** AGENTS.md: *"Always provision via
+   `./scripts/bootstrap.sh` — never raw `curl get.k3s.io`."*
+2. **It is unverified.** `bootstrap.sh` pins the installer's SHA256 and
+   refuses to execute on a mismatch; a bare pipe executes whatever arrives.
+3. **It installs from master.** `get.k3s.io` serves k3s master's
+   `install.sh`, so the version and behaviour depend on when you ran it —
+   and after R26 that host is not part of the platform's install path at
+   all.
+
+A node built this way also misses everything `bootstrap.sh` does around
+k3s: the firewall shape, kubelet eviction and pod-capacity settings, node
+labels and taints, the Calico MTU calculation, and the host-migration
+converger. It joins the cluster and is quietly unlike every other node —
+which is the shape of failure that takes days to attribute.
+
+**Why this is not already fixed.** `bootstrap.sh --join-as server` exists
+and is the correct replacement for most of these invocations, but the
+surrounding procedures — an HA control-plane join, a rolling k3s upgrade —
+have not been exercised against it. Replacing a *visibly* wrong command
+with a plausible untested one is worse: the reader stops questioning it.
+Both documents therefore carry a warning that the commands illustrate the
+underlying k3s steps and are not instructions to run.
+
+**Proposal.** Rewrite both procedures around `bootstrap.sh --join-as
+server|worker` and `platform-ops cluster upgrade`, and prove each on a
+throwaway multi-node cluster — the HA join at minimum, since that is the
+one an operator reaches for under pressure. `scripts/vm-integration-tests/`
+already stands up multiple nodes and is the natural harness.
+
+**Decide before building:** whether the runbooks should keep the raw k3s
+commands at all, as an appendix documenting what bootstrap does underneath.
+There is real value in an operator being able to see the underlying steps
+when recovering a half-broken node; the danger is only that they currently
+read as the primary path.
 
 ## R37 — Tenant pods can fill a node's disk, and nothing charges them for it
 

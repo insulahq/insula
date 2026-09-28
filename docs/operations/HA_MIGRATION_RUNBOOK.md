@@ -15,7 +15,10 @@
 > longer part of the platform's install path at all. The commands below are
 > retained because the surrounding procedure has not been re-exercised against
 > `bootstrap.sh`; treat them as illustrative of the underlying k3s steps, not as
-> instructions to run.
+> instructions to run. A node built by hand also misses the firewall shape,
+> kubelet eviction settings, node labels and the host-migration converger that
+> `bootstrap.sh` applies — it joins and is quietly unlike every other node.
+> Tracked as [ROADMAP R39](../roadmap/ROADMAP.md#r39--the-ha-and-upgrade-runbooks-install-k3s-by-hand-bypassing-bootstrapsh).
 
 ## Overview
 
