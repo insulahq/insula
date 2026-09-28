@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.9.37] - 2026-09-28
+
 ### Added
 
 - **A changed CPU tier can finally be applied.** Editing a migrated tenant's
