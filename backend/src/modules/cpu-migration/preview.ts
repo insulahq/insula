@@ -108,9 +108,13 @@ async function readAppliedCeilings(
   log?: { warn?: (o: unknown, m: string) => void },
 ): Promise<Map<string, AppliedCpu>> {
   const out = new Map<string, AppliedCpu>();
-  for (const ns of namespaces) {
+  // Eight at a time. Thirty sequential round trips is a few seconds on a
+  // page an operator refreshes while watching a migration, and these reads
+  // are independent of each other.
+  const CONCURRENCY = 8;
+  const queue = [...namespaces];
+  const readOne = async (ns: string) => {
     try {
-      // eslint-disable-next-line no-await-in-loop
       const lr = await (k8s.core as unknown as {
         readNamespacedLimitRange: (a: { name: string; namespace: string }) => Promise<{
           spec?: { limits?: ReadonlyArray<{
@@ -123,7 +127,7 @@ async function readAppliedCeilings(
       }).readNamespacedLimitRange({ name: `${ns}-cpu`, namespace: ns });
       const container = (lr.spec?.limits ?? []).find((l) => l.type === 'Container');
       const ceiling = cpuToMillis(limitRangeDefault(container)?.cpu);
-      if (!ceiling) continue;
+      if (!ceiling) return;
       out.set(ns, {
         ceilingCores: Math.round((ceiling / 1000) * 100) / 100,
         tier: tierForMillis(cpuToMillis(container?.defaultRequest?.cpu)),
@@ -140,7 +144,12 @@ async function readAppliedCeilings(
         );
       }
     }
-  }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(CONCURRENCY, queue.length) }, async () => {
+      for (let ns = queue.shift(); ns !== undefined; ns = queue.shift()) await readOne(ns);
+    }),
+  );
   return out;
 }
 

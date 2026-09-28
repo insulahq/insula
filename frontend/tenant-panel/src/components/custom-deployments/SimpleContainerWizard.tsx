@@ -100,7 +100,12 @@ export function SimpleContainerWizard({ tenantId, existingNames, onClose, onCrea
     ports: ports.filter((p) => p.name && p.containerPort > 0),
     volumes: volumes.filter((v) => v.name && v.containerPath),
     env: env.filter((e) => e.name).map((e) => ({ name: e.name, value: e.value })),
-    resources: { cpuRequest, memoryRequest },
+    // `cpuRequest` is required by the custom-deployment contract, so it
+      // is still sent for a tiered tenant even though the field above is
+      // no longer offered — and the server replaces it with the tenant's
+      // share (applyTenantCpuTier). The value below is therefore inert
+      // under tiers, not a choice being honoured.
+      resources: { cpuRequest, memoryRequest },
     ...(usePrivateRegistry && pullCredentialComplete(pullCredential)
       ? { pull_credential: toPullCredentialInput(pullCredential) }
       : {}),
@@ -167,7 +172,12 @@ export function SimpleContainerWizard({ tenantId, existingNames, onClose, onCrea
           image,
           env: env.filter(e => e.name).map(e => ({ name: e.name, value: e.value })),
           ports: ports.filter(p => p.name && p.containerPort > 0),
-          resources: { cpuRequest, memoryRequest },
+          // `cpuRequest` is required by the custom-deployment contract, so it
+      // is still sent for a tiered tenant even though the field above is
+      // no longer offered — and the server replaces it with the tenant's
+      // share (applyTenantCpuTier). The value below is therefore inert
+      // under tiers, not a choice being honoured.
+      resources: { cpuRequest, memoryRequest },
         });
       } else {
         await createMutation.mutateAsync(buildInput());

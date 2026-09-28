@@ -101,6 +101,20 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   disappears by itself once the last tenant is migrated; there is nothing to
   dismiss, because the cost it names is real for as long as it is there.
 
+- **A new application on a migrated tenant really does take the tenant's
+  share now.** The previous release computed the right value and then used
+  it only as a fallback — and the field it was falling back from is filled
+  in automatically when omitted, so the fallback never fired and every new
+  application still reserved a quarter core. Custom containers were not
+  converted at all: the wizard had stopped offering the field while the
+  container kept whatever the form last held.
+
+- **Tenants on the share model no longer get false CPU-saturation alerts.**
+  The hourly check measured their usage against the old reservation rather
+  than their ceiling, so a tenant comfortably inside its limits could email
+  an administrator a critical alert every hour. The screens had already been
+  corrected; this was the one path that actually contacts someone.
+
 ### Changed
 
 - **The default hosting plans now sell distinct CPU shares.** Starter,

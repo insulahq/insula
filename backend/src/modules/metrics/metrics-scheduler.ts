@@ -47,6 +47,15 @@ export function startMetricsScheduler(db: Database): NodeJS.Timeout {
         namespace: tenants.kubernetesNamespace,
         planId: tenants.planId,
         cpuLimitOverride: tenants.cpuLimitOverride,
+        // ★ The three CPU-model columns. Without them every tenant read as
+        // LEGACY here, so a tiered tenant's usage was measured against the
+        // old reservation and the hourly saturation check paged an admin
+        // about a tenant comfortably inside its real ceiling. The
+        // interactive endpoints were right and this one — the only path
+        // that actually emails someone — was wrong.
+        cpuSchedulingMode: tenants.cpuSchedulingMode,
+        cpuTierOverride: tenants.cpuTierOverride,
+        cpuBurstCoresOverride: tenants.cpuBurstCoresOverride,
         memoryLimitOverride: tenants.memoryLimitOverride,
         storageLimitOverride: tenants.storageLimitOverride,
         provisioningStatus: tenants.provisioningStatus,

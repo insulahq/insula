@@ -11,7 +11,8 @@
 import { randomUUID } from 'node:crypto';
 import { and, desc, eq, isNotNull } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
-import { customDeploymentImageAudit, deployments, tenants } from '../../db/schema.js';
+import { customDeploymentImageAudit, deployments, tenants, hostingPlans } from '../../db/schema.js';
+import { newWorkloadCpuFor } from '../cpu-migration/new-workload.js';
 import { ApiError } from '../../shared/errors.js';
 import { getSettings } from '../system-settings/service.js';
 import { isCustomContainersAllowedByPlan } from '../subscriptions/service.js';
@@ -218,7 +219,7 @@ export async function createSimpleDeployment(
   const { namespace, nodeName, storageTier } = await loadTenantContext(db, tenantId);
 
   // Build + validate the normalized spec.
-  const spec = buildSpecFromSimple(input);
+  const spec = await applyTenantCpuTier(db, tenantId, buildSpecFromSimple(input));
   const validation = validateCustomSpec(spec, {
     callerRole: ctx.role,
     warnUnpinnedTags: settings.customDeploymentsWarnUnpinnedTags,
@@ -1123,6 +1124,60 @@ async function loadTenantContext(db: Database, tenantId: string): Promise<Tenant
     namespace: tenant.kubernetesNamespace,
     nodeName: tenant.nodeName ?? null,
     storageTier: (tenant.storageTier ?? 'local') as 'local' | 'ha',
+  };
+}
+
+/**
+ * A tiered tenant's container asks for its tenant's share (ADR-062 R3).
+ *
+ * ★ The custom path had no normalisation at all.
+ *
+ * The catalog path routes every new workload through `newWorkloadCpuFor`,
+ * and the resize endpoint overrides whatever it is sent — but a custom
+ * container stored `resources.cpuRequest` verbatim. The simple wizard's
+ * default is `100m`, which happens to equal the `highest` tier, so a
+ * Normal tenant's bring-your-own container asked for twenty times the
+ * share of everything else that tenant runs. The panel, meanwhile, had
+ * stopped offering the field and was telling them their plan set it.
+ *
+ * COMPOSE SPECS ARE LEFT ALONE, deliberately: a service that pins its own
+ * CPU in a compose file is the operator's declaration (ADR-036), and the
+ * migration itself refuses to re-tier those for the same reason. This
+ * applies only to the simple form, where the field is no longer offered
+ * and the stored value is therefore not a choice anybody made.
+ */
+async function applyTenantCpuTier(
+  db: Database,
+  tenantId: string,
+  spec: CustomDeploymentSpec,
+): Promise<CustomDeploymentSpec> {
+  const [t] = await db.select().from(tenants).where(eq(tenants.id, tenantId));
+  if (!t || t.cpuSchedulingMode !== 'tiered') return spec;
+  const [plan] = t.planId
+    ? await db.select().from(hostingPlans).where(eq(hostingPlans.id, t.planId))
+    : [undefined];
+  const tierRequest = newWorkloadCpuFor(
+    plan ? { cpuLimit: plan.cpuLimit, cpuTier: plan.cpuTier, cpuBurstCores: plan.cpuBurstCores } : null,
+    t,
+    null,
+  );
+  if (!tierRequest) return spec;
+  return withTenantCpuTier(spec, tierRequest);
+}
+
+/** The pure half of applyTenantCpuTier: every service asks for `tierRequest`. */
+export function withTenantCpuTier(
+  spec: CustomDeploymentSpec,
+  tierRequest: string,
+): CustomDeploymentSpec {
+  return {
+    ...spec,
+    services: Object.fromEntries(
+      Object.entries(spec.services).map(([name, svc]) => [
+        name,
+        { ...svc, resources: { ...svc.resources, cpuRequest: tierRequest } },
+      ]),
+    ),
   };
 }
 

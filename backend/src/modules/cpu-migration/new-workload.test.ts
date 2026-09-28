@@ -76,3 +76,31 @@ describe('newWorkloadCpuFor — from the raw rows', () => {
     }, '0.25')).toBe('0.25');
   });
 });
+
+/**
+ * ★ The trap that made an omitted field useless.
+ *
+ * `createDeploymentSchema` declares `cpu_request` with `.default('0.25')`.
+ * The tenant panel stopped sending it for a tiered tenant, expecting the
+ * server's `input.cpu_request ?? tierValue` to fall through — but Zod
+ * fills the default in during parse, so the key is never absent by the
+ * time that line runs, and every new deployment reserved 250m while the
+ * panel showed a 5m share. The fix was to normalise the FINAL value; this
+ * pins the schema fact that makes a fallback the wrong shape.
+ */
+describe('createDeploymentSchema.cpu_request', () => {
+  it('is FILLED IN by Zod when omitted — so a `??` fallback never fires', async () => {
+    const { createDeploymentSchema } = await import('@insula/api-contracts');
+    const parsed = createDeploymentSchema.parse({
+      catalog_entry_id: '00000000-0000-4000-8000-000000000000',
+      name: 'app',
+    });
+    expect(parsed.cpu_request).toBe('0.25');
+  });
+
+  it('and the tier resolver ignores whatever it is handed, which is the fix', () => {
+    expect(newWorkloadCpuRequest({
+      catalogCpu: '0.25', mode: 'tiered', tenantTier: 'normal',
+    })).toBe('5m');
+  });
+});

@@ -38,20 +38,33 @@ export interface TenantDisplayLimits {
   readonly cpuKind: 'reserve' | 'consume';
 }
 
+/**
+ * ★ Every CPU field is REQUIRED, deliberately.
+ *
+ * They were optional, and TypeScript therefore accepted a caller whose
+ * query had not selected them — which is exactly what the hourly metrics
+ * scheduler did. `cpuSchedulingMode` was `undefined` at runtime for every
+ * tenant, so every tenant resolved to `legacy`, and a tiered tenant using
+ * 0.30 cores was measured against its old 0.25-core reservation and paged
+ * an admin with a CRITICAL saturation alert. Hourly. Forever.
+ *
+ * Required means a caller that forgets a column fails to compile, which is
+ * the only place this class of bug is cheap to find.
+ */
 interface TenantCpuRow {
   readonly planId: string | null;
   readonly cpuLimitOverride: string | number | null;
-  readonly cpuSchedulingMode?: string | null;
-  readonly cpuTierOverride?: 'normal' | 'high' | 'highest' | null;
-  readonly cpuBurstCoresOverride?: string | number | null;
+  readonly cpuSchedulingMode: string | null;
+  readonly cpuTierOverride: 'normal' | 'high' | 'highest' | null;
+  readonly cpuBurstCoresOverride: string | number | null;
   readonly memoryLimitOverride: string | number | null;
   readonly storageLimitOverride: string | number | null;
 }
 
 interface PlanRow {
   readonly cpuLimit: string | number | null;
-  readonly cpuTier?: 'normal' | 'high' | 'highest' | null;
-  readonly cpuBurstCores?: string | number | null;
+  readonly cpuTier: 'normal' | 'high' | 'highest' | null;
+  readonly cpuBurstCores: string | number | null;
   readonly memoryLimit: string | number | null;
   readonly storageLimit: string | number | null;
 }
@@ -63,17 +76,22 @@ export function tenantDisplayLimits(
 ): TenantDisplayLimits {
   const legacyCpu = Number(tenant.cpuLimitOverride ?? plan?.cpuLimit ?? 2);
   const resolved = resolveTenantCpu(
-    plan ? { cpuLimit: plan.cpuLimit, cpuTier: plan.cpuTier ?? null, cpuBurstCores: plan.cpuBurstCores ?? null } : null,
+    plan ? { cpuLimit: plan.cpuLimit, cpuTier: plan.cpuTier, cpuBurstCores: plan.cpuBurstCores } : null,
     {
       cpuSchedulingMode: tenant.cpuSchedulingMode === 'tiered' ? 'tiered' : 'legacy',
       cpuLimitOverride: tenant.cpuLimitOverride,
-      cpuTierOverride: tenant.cpuTierOverride ?? null,
-      cpuBurstCoresOverride: tenant.cpuBurstCoresOverride ?? null,
+      cpuTierOverride: tenant.cpuTierOverride,
+      cpuBurstCoresOverride: tenant.cpuBurstCoresOverride,
     },
   );
-  const tiered = resolved.mode === 'tiered' && resolved.burstCores !== null && resolved.burstCores > 0;
+  // ONE test for "is this tenant tiered", and it is the resolver's own
+  // answer. A second, independent one here — `mode === 'tiered' &&
+  // burstCores > 0` — is how three call sites came to disagree in the
+  // first place. The resolver's tiered branch always floors burstCores at
+  // 1 (ceilingCores), so the `??` below is a type guard, not a policy.
+  const tiered = resolved.mode === 'tiered';
   return {
-    cpuLimit: tiered ? resolved.burstCores! : legacyCpu,
+    cpuLimit: tiered ? (resolved.burstCores ?? legacyCpu) : legacyCpu,
     cpuKind: tiered ? 'consume' : 'reserve',
     memoryLimitGi: Number(tenant.memoryLimitOverride ?? plan?.memoryLimit ?? 4),
     storageLimitGi: Number(tenant.storageLimitOverride ?? plan?.storageLimit ?? 50),

@@ -494,13 +494,30 @@ export async function createDeployment(
   const [planForCpu] = tenant.planId
     ? await db.select().from(hostingPlans).where(eq(hostingPlans.id, tenant.planId))
     : [undefined];
+  /**
+   * ★ Normalise the FINAL value, not a fallback.
+   *
+   * An earlier version computed the tier here and then wrote the caller's
+   * value with this as a FALLBACK, expecting an omitted field to fall
+   * through. `createDeploymentSchema` declares
+   * `cpu_request: z.string().max(20).default('0.25')` — so an omitted key
+   * is filled in by Zod BEFORE this code runs, the `??` never falls
+   * through, and every new deployment by a tiered tenant reserved 250m
+   * while the panel showed it a 5m share. Two-and-a-half to fifty times
+   * the tier, silently, on every deploy.
+   *
+   * Passing the caller's own value in makes the tiered branch total: it
+   * returns the tenant's share whatever it is handed, and the legacy
+   * branch returns it unchanged.
+   */
+  const requestedCpu = input.cpu_request ?? catalogManifestCpu;
   const catalogCpu = newWorkloadCpuFor(
     planForCpu
       ? { cpuLimit: planForCpu.cpuLimit, cpuTier: planForCpu.cpuTier, cpuBurstCores: planForCpu.cpuBurstCores }
       : null,
     tenant,
-    catalogManifestCpu,
-  ) ?? catalogManifestCpu;
+    requestedCpu,
+  ) ?? requestedCpu;
 
   // Generate secrets for env_vars.generated entries.
   // Phoenix/Elixir apps (Plausible, others) require SECRET_KEY_BASE >= 64
@@ -574,7 +591,7 @@ export async function createDeployment(
       name: input.name,
       domainName: input.domain_name ?? null,
       replicaCount: input.replica_count ?? 1,
-      cpuRequest: input.cpu_request ?? catalogCpu,
+      cpuRequest: catalogCpu,
       memoryRequest: input.memory_request ?? catalogMemory,
       configuration: finalConfiguration,
       storagePath,
@@ -610,7 +627,7 @@ export async function createDeployment(
       // no-op for a legacy namespace, whose quota IS the plan allowance.
       await ensureTieredQuotaRoom(
         k8s, namespace,
-        cpuRequestToMillis(input.cpu_request ?? catalogCpu) ?? 0,
+        cpuRequestToMillis(catalogCpu) ?? 0,
       ).catch((err: unknown) => {
         // Never block a deploy on this. If the quota is genuinely too small
         // the pod is refused with the quota's own message, which is clearer
@@ -630,7 +647,7 @@ export async function createDeployment(
         components,
         volumes,
         replicaCount: input.replica_count ?? 1,
-        cpuRequest: input.cpu_request ?? catalogCpu,
+        cpuRequest: catalogCpu,
         memoryRequest: input.memory_request ?? catalogMemory,
         storageRequest,
         configuration: finalConfiguration,
