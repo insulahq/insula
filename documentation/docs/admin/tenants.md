@@ -126,7 +126,11 @@ buttons (below). Underneath are several cards and a tabbed resource view.
   **Edit** to change the plan or set an expiry.
 - **Resource Limits** — the effective CPU / memory / storage / sub-user /
   mailbox limits and monthly price, each of which you can **override**
-  per tenant (see below).
+  per tenant (see below). For CPU this is the tenant's **share** and its
+  **burst ceiling**; both default to *inherit from plan*.
+- **Apply new limits** — appears under Resource Limits for a tenant on the
+  share model. Saving a share or ceiling writes it; this delivers it to the
+  tenant's namespace (see below).
 - **Storage Lifecycle** — current storage state and grow/shrink controls.
 - **Placement** — which node the tenant is pinned to.
 
@@ -227,6 +231,38 @@ The SYSTEM tenant's checkbox is always disabled — it can't be included in
 any bulk action.
 
 ## Per-tenant overrides
+
+### Applying a changed CPU share or ceiling
+
+Saving a tenant's **CPU tier** or **Burst ceiling** records it; it does not
+reach the cluster. The panel under *Resource Limits* says which state the
+tenant is in and what pressing the button will do:
+
+| It says | Meaning |
+|---|---|
+| **CPU settings are applied** | Saved and running settings agree. Pressing it again is safe and changes nothing. |
+| **CPU settings not yet applied** | The two disagree. Both are shown — what is saved, and what the namespace is really enforcing. |
+
+The panel also tells you the cost before you commit to it. Applying a
+changed **share** replaces nothing. Applying a changed **ceiling** replaces
+the tenant's applications, one at a time with a health check between —
+a ceiling is stamped onto a container when it starts, so a running
+application cannot pick one up any other way.
+
+If the tenant needs review — most often because their measured peak already
+exceeds the new ceiling — the button stays disabled until you tick the
+acknowledgement beside it. That is the same gate that guards a first
+migration, for the same reason.
+
+!!! note "Tenants are shown what is enforced, never what is saved"
+    While the two disagree, the tenant's own panel keeps reporting the
+    ceiling their namespace actually applies. They are never told they may
+    burst further than they can.
+
+The same control appears per tenant under
+[Cluster → CPU Scheduling](../operator/cpu-and-capacity.md#changing-a-tenants-share-or-ceiling-afterwards),
+which is the better place to work through several tenants at once.
+
 
 A tenant inherits CPU, memory, storage, sub-user count, mailbox count,
 and monthly price from its **plan**. When one customer needs something

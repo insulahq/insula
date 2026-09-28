@@ -43,6 +43,37 @@ restores data from the pre-archive snapshot.
     restore from for the retention window. Workloads must be redeployed and
     mailboxes are **not** automatically recreated after restoring from archive.
 
+## CPU is a share, not a reservation
+
+Memory, storage and bandwidth are allowances: a tenant holds what their plan
+grants whether they use it or not. **CPU does not work that way, and treating
+it as though it did is what fills a cluster on paper while it sits idle.**
+
+A plan sells two things:
+
+- **A share** — *Normal*, *High* or *Highest*. It decides how CPU is divided
+  when applications compete for it: under contention a *High* application gets
+  twice the CPU of a *Normal* one. When the machine is quiet, the share does
+  nothing at all and every application runs as fast as it can.
+- **A burst ceiling** — the most any one container may actually use. Reaching
+  it **throttles** the container; it is never killed for it, unlike memory.
+
+Nothing is set aside in advance. That is the point: reserving CPU a tenant is
+not using makes the cluster refuse new work while the processors are idle, and
+the reservation never protected anybody anyway — it decided queue position, not
+entitlement.
+
+!!! note "What this means for a tenant"
+    A tenant sees their actual usage against their ceiling — two real,
+    enforced numbers. They are not shown a reservation, because they do not
+    have one, and they do not choose a CPU figure per application: every
+    application they run takes the share their plan sells.
+
+Clusters installed before this model keep the older per-plan **CPU Limit**
+until an operator migrates each tenant. New installs use shares from the
+start. The operator-facing side is in
+[CPU & capacity](../operator/cpu-and-capacity.md).
+
 ## Plans, quotas, and overrides
 
 A plan defines a complete set of defaults. The platform ships three starting
@@ -51,7 +82,7 @@ editable, and you can create unlimited custom plans.
 
 | Setting (examples) | Starter | Business | Premium |
 |---|---|---|---|
-| CPU request / limit | 50m / 500m | 100m / 1000m | 200m / 2000m |
+| CPU share / burst ceiling | Normal / 1 core | High / 2 cores | Highest / 4 cores |
 | Memory request / limit | 64Mi / 256Mi | 256Mi / 1Gi | 512Mi / 4Gi |
 | Storage | 5Gi | 20Gi | 50Gi |
 | Database | Add-on | Add-on | Included (dedicated) |
