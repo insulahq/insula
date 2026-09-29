@@ -14,6 +14,45 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **Tenants were billed for backups the platform scheduled for them.** A
+  tenant's files backup runs as a Job inside the tenant's own namespace, so
+  `container_network_transmit_bytes_total{namespace="tenant-…"}` measured its
+  upload to off-site storage exactly like a visitor download — and the meter
+  filtered on `namespace` alone, so those bytes landed in
+  `bandwidth_gb_used`. On the reference production cluster a single day put
+  the backup at **78% and 80%** of the two busiest tenants' recorded egress
+  (17.4 GB of 22.1 GB, and 13.3 GB of 16.6 GB). Sustained, that is roughly
+  500 GB a month of platform-initiated traffic charged against a 100 GB
+  allowance — in a meter that suspends serving when it is exhausted.
+
+  Only a backup the tenant asked for is billed now. `backup_jobs.initiator`
+  already recorded who asked, so nothing new is collected: everything that is
+  not `initiator = 'tenant'` is subtracted from the namespace delta before it
+  accumulates, and the tenant panel says so under the allowance bar.
+
+  The exclusion is keyed on the Job name derived from a real `backup_jobs`
+  row, never on a pod-name pattern — excluding every `bk-*` pod would have
+  let a tenant name a workload `bk-files-anything` and stop paying for its
+  egress. A pod is excluded only when it is that Job's pod
+  (`<jobName>-<5 chars>`; a Deployment's pod carries a ReplicaSet hash too)
+  *and* the backup belongs to the tenant whose namespace it ran in. Anything
+  unrecognised stays billed. Existing `bandwidth_gb_used` figures are not
+  retroactively corrected — the meter is forward-looking, and the current
+  cycle's overcount stands until the month rolls over.
+
+  The pod-shape half of that check is not self-enforcing, so it is now backed
+  by a reservation. A Deployment's pod carries a ReplicaSet hash and cannot
+  take the Job-pod shape, but a single-component catalog entry of type `job`
+  takes the tenant's chosen name verbatim as its Job name — and a tenant
+  reusing one of their *own* past backup ids would satisfy the ownership check
+  by construction. `bk-files-` and `bk-mbox-` are therefore reserved from
+  every tenant-chosen workload name (catalog deployments and custom
+  deployments alike), mirroring the reserved-platform-hostname rule of
+  ADR-040. No existing deployment on the reference cluster uses either prefix.
+  A test asserts that every Job name the meter trusts starts with a reserved
+  prefix, so adding a platform Job prefix without reserving it fails the
+  build.
+
 - **Tenant file backups stopped running on every small plan.** The same
   migration installed a namespace LimitRange with `max` set to the tenant's
   burst ceiling. A LimitRange polices *every* container in the namespace, and

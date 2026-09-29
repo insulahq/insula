@@ -13,6 +13,7 @@
 //      same `customSpec` shape.
 
 import { z } from 'zod';
+import { isReservedWorkloadName, RESERVED_WORKLOAD_NAME_MESSAGE } from './reserved-workload-names.js';
 import { uuidField, paginatedResponseSchema } from './shared.js';
 
 // ─── Common shapes ──────────────────────────────────────────────────────────
@@ -428,7 +429,7 @@ export const createCustomDeploymentSimpleSchema = z.object({
   mode: z.literal('simple'),
   name: z.string().min(1).max(63).regex(CUSTOM_NAME_RE, {
     message: 'Name must be DNS-compatible: lowercase letters, digits, and hyphens (max 63 chars, must start and end with letter/digit)',
-  }),
+  }).refine((n) => !isReservedWorkloadName(n), { message: RESERVED_WORKLOAD_NAME_MESSAGE }),
   image: z.string().min(1).max(500),
   command: z.array(z.string()).max(64).optional(),
   entrypoint: z.array(z.string()).max(64).optional(),
@@ -470,7 +471,7 @@ export const createCustomDeploymentComposeSchema = z.object({
    *  the regex. The editor must OMIT the key, not send a blank one. */
   name: z.string().max(63).regex(CUSTOM_NAME_RE, {
     message: 'Name must be DNS-compatible: lowercase letters, digits, and hyphens (max 63 chars, must start and end with letter/digit)',
-  }).optional(),
+  }).refine((n) => !isReservedWorkloadName(n), { message: RESERVED_WORKLOAD_NAME_MESSAGE }).optional(),
   compose_yaml: z.string().min(1).max(256 * 1024),
   /** Files referenced by compose `env_file:` directives. Map of
    *  filename → UTF-8 content. */

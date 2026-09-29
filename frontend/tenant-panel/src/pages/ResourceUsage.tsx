@@ -353,6 +353,14 @@ function BandwidthCard({ usage }: { readonly usage: TenantBandwidthUsage }) {
         {resetDate && <> · resets {resetDate.toLocaleDateString()}</>}
       </p>
 
+      {/* Scheduled backups run inside this tenant's namespace, so their upload
+          is measured like any other egress. It is subtracted before metering —
+          say so, because the figure above is otherwise unexplainable against a
+          nightly spike the tenant can see elsewhere in the panel. */}
+      <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">
+        Backups scheduled by the platform are not counted. A backup you start yourself is.
+      </p>
+
       {usage.capped && (
         <p className="mt-3 rounded-md bg-red-50 dark:bg-red-900/20 px-3 py-1.5 text-xs text-red-600 dark:text-red-400">
           Monthly bandwidth cap reached — your sites show a maintenance page until the month resets.
