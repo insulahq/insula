@@ -12,6 +12,43 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+
+- **A migrated tenant could only run as many applications as its quota had
+  ceilings — two, on the starter plan.** The tier work put a second CPU limit
+  on each migrated namespace: a budget for the *sum* of every container's
+  burst ceiling. A quota charges each container its whole ceiling the moment
+  it starts, used or not, so that budget was a cap on how many containers a
+  tenant may run, wearing the clothes of a CPU limit. It is not the plan's CPU
+  figure and nothing an operator configured.
+
+  On the reference production cluster it stopped a starter tenant at two
+  applications and refused the third. Worse, a rolling replacement needs a
+  free slot while the old pod still holds its own, so **nothing in that
+  namespace could restart either** — including the replacements the tenant's
+  own CPU migration was making, which deadlocked that migration half-finished.
+  Two tenants were wedged and fourteen more were one application away from it.
+  Actual CPU use in the wedged namespace was 20 millicores of a 300 millicore
+  reservation; nothing was short of CPU at any point.
+
+  The budget is gone: the quota carries a CPU *reservation* budget only, and
+  any namespace still holding a ceiling has it removed the next time its quota
+  is written. What bounds one noisy application is the per-container ceiling
+  in the namespace LimitRange, which is unchanged — that is the protection the
+  share model actually promises, and it is enforced at admission by Kubernetes
+  whether or not a quota exists.
+
+- **A quota rejection now says which budget refused the application, in
+  units.** The message read "This app asks for 1 of cpu, but only 0m of your 2
+  plan is free — 2 is already in use": two of the three numbers had no unit, a
+  noun was missing, and none of the figures was usage — so a tenant could look
+  at their own usage page, see almost nothing, and conclude the platform was
+  lying to them. It now names the budget (reserved CPU or CPU ceiling, which
+  are different things), carries a unit on every number, says "reserved" or
+  "committed" rather than "in use", and explains in one sentence why an idle
+  application still occupies the budget.
+
+
 ## [2026.9.37] - 2026-09-28
 
 ### Added
