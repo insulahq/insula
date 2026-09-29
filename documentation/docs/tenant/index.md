@@ -180,7 +180,14 @@ to be called Resource Usage; old links still work and land on that tab.
 The bar at the top is the one number this tab exists to explain: **included
 traffic this month**, against your plan's allowance.
 
-Below it, choose a time range and a breakdown:
+Under it are four read-outs of the range you are looking at — **Out / In**,
+**Peak** and when it happened, **Average** with how peaky the range was, and
+how many **spikes** were flagged. Hiding a row in the table recalculates all
+four, so they always describe the chart above them.
+
+Below that, choose a time range and a breakdown. The range button opens
+presets, two months of calendar, a time of day for each end, and the
+duration you are about to ask for:
 
 | Break down by | Shows |
 |---|---|
@@ -194,8 +201,13 @@ per website, and cannot tell which copy of an application answered.
 
 Hovering the chart gives an exact reading, and clicking a row in the table
 below hides that line. A break in the line means that interval was not
-measured — it does not mean traffic stopped. All times are in your own
-timezone.
+measured — it does not mean traffic stopped. Orange markers flag spikes;
+click one to zoom to it. All times are in your own timezone, shown on a pill
+in the corner of the chart.
+
+Detailed figures are kept for **30 days**. Ask for a wider range and the page
+serves what it has and says so, rather than padding the missing months with
+zeroes.
 
 !!! note "Backups do not count against your allowance"
     Backups the platform runs for you happen inside your account, so they look

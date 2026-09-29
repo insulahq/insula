@@ -76,6 +76,12 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   adapter over it, and the SLO panel cards now use it instead of a local
   sparkline that drew straight through unmeasured intervals.
 
+- **The manual describes the page that ships.** It still documented Monitoring
+  as opening on SLOs, a three-way Included/Separate/Only Backups control that
+  no longer exists, and the backup classes under their first-cut names. It now
+  carries the cluster view's three headings and which of them adds up, the
+  four class names, the range presets and the 400-day ceiling.
+
 ## [2026.9.38] - 2026-09-29
 
 ### Added
