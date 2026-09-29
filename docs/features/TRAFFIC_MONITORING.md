@@ -11,6 +11,13 @@ Where the bytes went, for whom, and when — in both panels.
 
 ## Two measurements, deliberately kept apart
 
+A cluster frame tags every series with a `group` — `wire`, `wire-subset` or
+`workload` — and the summary table renders one heading per group and computes
+share **within** a group. `wire-subset` (node-to-node encapsulation, the
+off-site backup upload) is already inside the wire total; `workload` does not
+decompose the wire at all, because a backup crosses the relay twice and
+pod-to-pod traffic never reaches the NIC. Only `wire` adds up.
+
 They share a name and do not share a number.
 
 | Scope | Source | What it means |
@@ -90,9 +97,15 @@ Platform-scheduled backup egress runs inside the tenant's namespace and is
 **excluded from the tenant's bandwidth meter** (see the FAQ entry on what
 counts towards a tenant's allowance).
 
-- **Admin** gets a `Backups` control on cluster scope: *Included* /
-  *Separate* / *Only*, splitting by class (tenant files, mailboxes, databases,
-  system & secrets) using the same pod-name matchers the meter excludes on.
+- **Admin** sees backups split out on every cluster traffic view, always —
+  the `backups` mode is decided by the panel, not offered as a control. How
+  much of the cluster's egress is the platform backing itself up is needed
+  every time the page is read, not only when someone remembers to ask.
+  Classes are `tenant-bundles`, `mail-snapshots`, `databases` and `system`,
+  matched on pod name with the same matchers the meter excludes on.
+  `bk-files-*` and `bk-mbox-*` are two *components* of one tenant bundle, so
+  they are one class; `stalwart-snapshot-cron-*` is a separate job that the
+  first cut missed entirely.
 - **Tenant** has no such control, and the API refuses to split for them. Those
   backups are not billed to the tenant, so drawing them would contradict the
   allowance bar above the chart. A backup the tenant *starts* is theirs, and
@@ -113,6 +126,12 @@ The tenant endpoints take the tenant from the **path**, where
 `requireTenantAccess` has already authorised it. A `scope` only an operator
 may ask for is a **403**, not an empty chart, and `backups` is always forced
 to `included`.
+
+`backups` still defaults to `included` at the API, so a bare `curl` returns
+the unsplit frame. The admin panel sends `separate` on cluster traffic. That
+gap has bitten once already: an API probe returned a correct inbound series
+while the page drew none, because the two were asking different questions.
+Reproduce a panel bug with the panel's parameters.
 
 `subject` is handled per scope. For `tenant` and `pod` it is discarded and
 replaced by the caller's own namespace. For `route` it is *used* — a route is
