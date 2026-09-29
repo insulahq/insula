@@ -178,3 +178,22 @@ describe('pod grouping', () => {
     expect(buildTrafficQuery({ ...base, scope: 'pod', subject: 'tenant-a-1', pod: 'web-1' }).groupBy).toBe('pod');
   });
 });
+
+describe('backup classes are not confined to a namespace allowlist', () => {
+  it('finds a database backup wherever its uploader runs', () => {
+    // CNPG's barman-cloud lives in `cnpg-system`; an allowlist of
+    // tenant-*/platform/mail hid every byte of it.
+    const expr = buildTrafficQuery({ ...base, scope: 'backup-class', backupClass: 'databases' }).expr;
+    expect(expr).toContain('pod=~"barman-.+"');
+    expect(expr).not.toContain('namespace=~');
+  });
+
+  it('still identifies each class by its own pod prefix', () => {
+    for (const [cls, re] of Object.entries(BACKUP_CLASS_POD_RE)) {
+      const expr = buildTrafficQuery({
+        ...base, scope: 'backup-class', backupClass: cls as keyof typeof BACKUP_CLASS_POD_RE,
+      }).expr;
+      expect(expr, cls).toContain(`pod=~"${re}"`);
+    }
+  });
+});

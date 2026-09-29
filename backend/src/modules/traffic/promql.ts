@@ -129,8 +129,18 @@ function networkSelector(input: TrafficQueryInput): string {
     case 'backup-class': {
       const cls = input.backupClass;
       if (!cls) throw new UnsupportedTrafficQuery('backup-class scope needs a class');
+      // Pod name only. This carried a namespace allowlist
+      // (`tenant-*|platform|mail`) that looked like defence in depth and was
+      // really a false-negative generator: CNPG's `barman-cloud` uploader
+      // lives in `cnpg-system`, so every byte of database-backup egress was
+      // invisible in the split. Backup components are not confined to a fixed
+      // set of namespaces and there is no reason they should be.
+      //
+      // Safe to widen because these matchers drive a CHART, not a bill. The
+      // meter's exclusion is anchored to `backup_jobs` rows and a reserved
+      // name prefix (`bandwidth/backup-exclusion.ts`); nothing here can move
+      // what a tenant is charged.
       parts.push(`pod=~"${BACKUP_CLASS_POD_RE[cls]}"`);
-      parts.push('namespace=~"tenant-.+|platform|mail"');
       break;
     }
     default:
