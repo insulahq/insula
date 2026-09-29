@@ -14,7 +14,6 @@ import type { Database } from '../../db/index.js';
 import type { CpuTier } from '@insula/api-contracts';
 import type { TenantCpuModel } from '../k8s-provisioner/service.js';
 import { resolveTenantCpu, type CpuSchedulingMode } from './resolve.js';
-import { QUOTA_LIMITS_CPU_BACKSTOP } from './tiered-namespace.js';
 
 /** The task kind the migration runner claims under. */
 const TASK_KIND = 'cpu_migration';
@@ -99,8 +98,5 @@ export function cpuModelForTenant(
     );
     return undefined;
   }
-  return {
-    mode: 'tiered',
-    ceilingCores: Math.round(resolved.burstCores * QUOTA_LIMITS_CPU_BACKSTOP * 100) / 100,
-  };
+  return { mode: 'tiered' };
 }

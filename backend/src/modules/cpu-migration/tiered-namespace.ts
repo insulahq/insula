@@ -18,24 +18,27 @@ import { type CpuTier } from '@insula/api-contracts';
 import { tierMillis } from './tiers.js';
 
 /**
- * How far above the per-container ceiling the quota's `limits.cpu` sits.
+ * ★ REMOVED: the namespace-wide `limits.cpu` budget (was burst x 4).
  *
- * ★ The two knobs fight, and this is the deliberate resolution. The quota caps
- * the SUM of declared container limits. If it equalled the tenant's burst
- * allowance — so any single app could use all of it — the first container
- * would consume the whole quota and the tenant's SECOND POD WOULD FAIL
- * ADMISSION. A tenant with three apps could not deploy the third.
+ * A ResourceQuota charges each container its whole CPU *ceiling* the moment
+ * it starts, used or not — so a budget of N ceilings is a cap of N
+ * CONTAINERS wearing the clothes of a CPU limit. On production it capped a
+ * starter tenant at two applications, refused the third, and then refused
+ * every rolling replacement too — a replacement needs a free slot while the
+ * old pod still holds its own — including the replacements its own
+ * migration was making, which deadlocked that migration mid-run. Two
+ * tenants were wedged and fourteen more were one application away.
  *
- * So the per-container ceiling is the full allowance (the common case stays
- * useful, and one runaway process is caught exactly), and the quota is a loose
- * backstop above it for the many-pods-pegged-at-once case.
+ * What bounds a noisy neighbour is the per-container ceiling in the
+ * LimitRange (`default` + `max`), which is untouched and is what ADR-062
+ * actually promised. The aggregate added nothing the per-container ceiling
+ * does not already give; before ADR-062 there was no CPU ceiling of any
+ * kind, so removing it is strictly closer to the prior behaviour.
  *
- * State the weakening plainly: tenant-wide use is NOT bounded at the burst
- * allowance. That stronger guarantee is not claimed. The rejected alternative
- * — dividing the allowance by an expected pod count — buys a tighter bound by
- * guessing a divisor and making the common case worse.
+ * An aggregate cap done properly would be sized from the tenant's live
+ * container count and widened as applications are added, the way
+ * `requests.cpu` already is. That is a different feature.
  */
-export const QUOTA_LIMITS_CPU_BACKSTOP = 4;
 
 /**
  * Floor for the quota's `requests.cpu`.
@@ -72,23 +75,6 @@ export interface TieredQuotaInput {
    * the namespace would not be frozen, but nothing could ever roll.
    */
   readonly largestPodMillis: number;
-  /**
-   * The sum of the CPU LIMITS the in-scope pods already carry, in
-   * millicores, from the live quota's `status.used['limits.cpu']`.
-   *
-   * ★ The same lesson as `liveUsedMillis`, on the other axis, and it took a
-   * second incident to notice. `limits.cpu` was sized purely as
-   * burst x BACKSTOP, which silently assumes a tenant never runs more than
-   * BACKSTOP containers at the ceiling. A tenant with five does, and
-   * Kubernetes ACCEPTS the too-small quota and then refuses every later pod.
-   * Re-applying a REDUCED ceiling to a tiered tenant walks straight into it:
-   * the pods still carry the old, larger limits until they are replaced.
-   *
-   * Absent (0) on a first migration, where no pod has a limit yet.
-   */
-  readonly liveUsedLimitMillis?: number;
-  /** The largest single in-scope pod's CPU LIMIT, in millicores. */
-  readonly largestPodLimitMillis?: number;
 }
 
 export function buildTieredQuotaHard(input: TieredQuotaInput): Record<string, string> {
@@ -110,17 +96,9 @@ export function buildTieredQuotaHard(input: TieredQuotaInput): Record<string, st
    * during a CPU migration. Re-stating a value we have no reason to change
    * bought nothing and risked that; a merge patch simply leaves it alone.
    */
-  // The backstop, or what the namespace already holds plus room for one more
-  // of its biggest pod — whichever is larger. Writing the backstop alone can
-  // land BELOW `used`, which freezes the namespace (see liveUsedLimitMillis).
-  const backstopMillis = Math.round(input.burstCores * QUOTA_LIMITS_CPU_BACKSTOP * 1000);
-  const heldMillis = (input.liveUsedLimitMillis ?? 0)
-    + Math.max(input.largestPodLimitMillis ?? 0, Math.round(input.burstCores * 1000));
-  const limitMillis = Math.max(backstopMillis, input.liveUsedLimitMillis ? heldMillis : 0);
-  return {
-    'requests.cpu': `${requestMillis}m`,
-    'limits.cpu': `${round2(limitMillis / 1000)}`,
-  };
+  // `requests.cpu` ONLY. The namespace never gains a `limits.cpu` — see the
+  // note where the backstop constant used to be.
+  return { 'requests.cpu': `${requestMillis}m` };
 }
 
 export interface LimitRangeInput {

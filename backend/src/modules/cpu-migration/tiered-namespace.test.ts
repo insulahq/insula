@@ -1,8 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   buildTieredQuotaHard, buildTenantLimitRange, assessLimitsCpuReadiness,
-  podsWithStaleCeiling, type PodCpuLimitFact,
-  QUOTA_LIMITS_CPU_BACKSTOP, MIN_QUOTA_REQUEST_MILLIS,
+  podsWithStaleCeiling, type PodCpuLimitFact, MIN_QUOTA_REQUEST_MILLIS,
 } from './tiered-namespace.js';
 
 const quota = (o: Partial<Parameters<typeof buildTieredQuotaHard>[0]> = {}) =>
@@ -51,11 +50,20 @@ describe('buildTieredQuotaHard', () => {
    * and the first pod consumes the entire quota — the tenant's second pod
    * fails admission. This asserts the headroom for more than one pod exists.
    */
-  it('leaves room for several pods each holding the full per-container ceiling', () => {
-    const burstCores = 2;
-    const h = quota({ tiers: ['high'], burstCores });
-    expect(Number(h['limits.cpu'])).toBe(burstCores * QUOTA_LIMITS_CPU_BACKSTOP);
-    expect(Number(h['limits.cpu'])).toBeGreaterThan(burstCores);
+  /**
+   * ★ The quota must never carry a CPU ceiling again.
+   *
+   * It charges each container its whole ceiling at admission, so a budget of
+   * N ceilings is a cap of N containers. On production it stopped a starter
+   * tenant at two applications and then blocked every rolling replacement,
+   * its own migration included. The per-container ceiling in the LimitRange
+   * is what bounds a noisy neighbour, and that is untouched.
+   */
+  it('never writes a CPU ceiling, whatever the burst allowance is', () => {
+    for (const burstCores of [0.5, 1, 2, 4, 16]) {
+      const h = quota({ tiers: ['high'], burstCores });
+      expect(h['limits.cpu']).toBeUndefined();
+    }
   });
 
   // requests.cpu "0" does not mean "reserves nothing", it means nothing can
@@ -73,7 +81,7 @@ describe('buildTieredQuotaHard', () => {
    */
   it('says nothing about memory, so a merge patch cannot disturb it', () => {
     const h = quota({ tiers: ['high'], burstCores: 1 });
-    expect(Object.keys(h).sort()).toEqual(['limits.cpu', 'requests.cpu']);
+    expect(Object.keys(h)).toEqual(['requests.cpu']);
   });
 
   // 16 idle static sites: 1600m before, 80m here. The ADR's headline number.
@@ -210,30 +218,20 @@ describe('buildTieredQuotaHard — the limit axis', () => {
    * refuses every later pod. Re-applying a REDUCED ceiling walks into it by
    * construction: the pods still hold the old, larger limits.
    */
-  it('never writes a ceiling below what the namespace already holds', () => {
+  /**
+   * The three tests that used to live here checked the ceiling arithmetic —
+   * backstop versus what the pods already hold. Both branches produced a cap
+   * on the container count; the fix was to stop writing the key, so what is
+   * worth asserting now is that no input resurrects it.
+   */
+  it('emits no ceiling however large the live limits are', () => {
     const hard = buildTieredQuotaHard({
       tiers: ['normal'], burstCores: 1, liveUsedMillis: 10, largestPodMillis: 10,
-      liveUsedLimitMillis: 9000, largestPodLimitMillis: 2000,
     });
-    // used 9 + room for one more of the biggest (2) = 11, over the 4 backstop.
-    expect(Number(hard['limits.cpu'])).toBeGreaterThanOrEqual(9);
-    expect(Number(hard['limits.cpu'])).toBe(11);
+    expect(hard['limits.cpu']).toBeUndefined();
+    expect(Object.keys(hard)).toEqual(['requests.cpu']);
   });
 
-  it('uses the backstop when it is the larger of the two', () => {
-    const hard = buildTieredQuotaHard({
-      tiers: ['normal'], burstCores: 2, liveUsedMillis: 10, largestPodMillis: 10,
-      liveUsedLimitMillis: 1000, largestPodLimitMillis: 1000,
-    });
-    expect(hard['limits.cpu']).toBe('8'); // 2 x 4
-  });
-
-  it('is the plain backstop on a first migration, where no pod has a limit', () => {
-    const hard = buildTieredQuotaHard({
-      tiers: ['normal'], burstCores: 1, liveUsedMillis: 250, largestPodMillis: 250,
-    });
-    expect(hard['limits.cpu']).toBe('4');
-  });
 });
 
 describe('podsWithStaleCeiling', () => {

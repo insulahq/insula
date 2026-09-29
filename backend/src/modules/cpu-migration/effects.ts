@@ -254,12 +254,20 @@ async function readWorkloadList(
 }
 
 /**
- * Put the tiered numbers on the EXISTING tenant quota.
+ * Size the tenant quota's `requests.cpu` for the tiered model, and take off
+ * any `limits.cpu` the namespace still carries.
  *
  * A read-modify-write rather than a blind replace: the quota also carries
  * memory and a scopeSelector that is immutable after creation, so rebuilding
  * it from scratch would either lose the scope or force a delete/recreate that
  * leaves the namespace briefly unbounded.
+ *
+ * ★ The `limits.cpu: null` is a REMOVAL, not an omission. A quota charges
+ * each container its whole ceiling, so that key was a cap on the tenant's
+ * container COUNT and it wedged two production tenants — see the note in
+ * tiered-namespace.ts. Clusters upgraded from an earlier version still have
+ * it on every migrated namespace, so migrating or re-applying a tenant is
+ * the moment to clean it up; null deletes a key under RFC 7396.
  */
 export async function applyQuotaLimits(
   k8s: K8sClients, namespace: string, burstCores: number, tiers: readonly CpuTier[],
@@ -274,22 +282,15 @@ export async function applyQuotaLimits(
   // itself counts against this quota right now.
   const liveUsedMillis = quantityToMillis(live.status?.used?.['requests.cpu']);
   const largestPodMillis = await largestInScopePodMillis(k8s, namespace, priorityClass);
-  // The LIMIT axis needs the same treatment as the request axis: a quota
-  // below `used` is accepted and then refuses every pod. Re-applying a
-  // reduced ceiling is exactly when the pods still hold the larger one.
-  const liveUsedLimitMillis = quantityToMillis(live.status?.used?.['limits.cpu']);
-  const pods = await readPodCpuLimits(k8s, namespace);
-  const largestPodLimitMillis = pods
-    .filter((p) => p.priorityClassName === priorityClass)
-    .reduce((mx, p) => Math.max(mx, p.containerCpuLimitsMillis.reduce((a, b) => a + b, 0)), 0);
-  const hard = buildTieredQuotaHard({
-    tiers, burstCores, liveUsedMillis, largestPodMillis,
-    liveUsedLimitMillis, largestPodLimitMillis,
-  });
+  const hard = buildTieredQuotaHard({ tiers, burstCores, liveUsedMillis, largestPodMillis });
   // MERGE_PATCH, not the client's default json-patch: the body is a merge
   // object, and the default would be rejected as a malformed op array.
   await k8s.core.patchNamespacedResourceQuota(
-    { name, namespace, body: { spec: { hard: { ...live.spec?.hard, ...hard } } } } as never,
+    {
+      name,
+      namespace,
+      body: { spec: { hard: { ...live.spec?.hard, ...hard, 'limits.cpu': null } } },
+    } as never,
     MERGE_PATCH,
   );
 }
@@ -335,7 +336,13 @@ export async function ensureTieredQuotaRoom(
   }
   // Tiered namespaces only. A legacy quota's requests.cpu IS the plan
   // allowance, and widening it would quietly sell CPU nobody bought.
-  if (!live.spec?.hard?.['limits.cpu']) return;
+  //
+  // ★ The test is the LimitRange, not a `limits.cpu` on the quota. That key
+  // used to mark a tiered namespace and no longer exists anywhere — reading
+  // it here would make this a no-op for every tiered tenant, and the
+  // requests budget would stop growing as applications were added: the same
+  // wall one axis over.
+  if (!(await limitRangeExists(k8s, namespace))) return;
 
   const currentHard = quantityToMillis(live.spec?.hard?.['requests.cpu']);
   const used = quantityToMillis(live.status?.used?.['requests.cpu']);

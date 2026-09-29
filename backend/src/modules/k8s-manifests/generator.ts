@@ -108,7 +108,11 @@ export async function generateTenantManifests(
     },
     spec: {
       hard: {
-        'limits.cpu': cpuLimit,
+        // ★ `requests.cpu`, never `limits.cpu`: a quota charges each
+        // container its whole CPU ceiling, so that key caps how many
+        // containers a tenant may run rather than how much CPU they get.
+        // It wedged two production tenants and is gone platform-wide.
+        'requests.cpu': cpuLimit,
         'limits.memory': `${memoryLimit}Gi`,
       },
       scopeSelector: {

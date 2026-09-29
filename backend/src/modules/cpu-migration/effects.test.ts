@@ -318,25 +318,32 @@ describe('ensureTieredQuotaRoom', () => {
    * applications, then "exceeded quota" on the fourth, weeks after the
    * migration nobody would connect it to.
    */
-  const quota = (hard: Record<string, string>, used: Record<string, string>) => ({
+  /**
+   * `tiered` is now decided by the LimitRange, not by a `limits.cpu` on the
+   * quota — that key is gone. A fixture without the LimitRange reader is a
+   * legacy namespace.
+   */
+  const quota = (hard: Record<string, string>, used: Record<string, string>, tiered = true) => ({
     core: {
       readNamespacedResourceQuota: vi.fn(async () => ({ spec: { hard }, status: { used } })),
       patchNamespacedResourceQuota: vi.fn(async () => ({})),
+      readNamespacedLimitRange: vi.fn(async () => {
+        if (tiered) return { spec: { limits: [{ type: 'Container', default: { cpu: '1' } }] } };
+        throw Object.assign(new Error('HTTP-Code: 404'), { statusCode: 404 });
+      }),
     },
   } as unknown as K8sClients & { core: { patchNamespacedResourceQuota: ReturnType<typeof vi.fn> } });
 
   it('raises requests.cpu to fit the workload plus surge', async () => {
-    const k = quota({ 'requests.cpu': '110m', 'limits.cpu': '4' }, { 'requests.cpu': '10m' });
+    const k = quota({ 'requests.cpu': '110m' }, { 'requests.cpu': '10m' });
     await ensureTieredQuotaRoom(k, 'ns', 100);
     const body = k.core.patchNamespacedResourceQuota.mock.calls[0][0].body;
     // held 10 + the new 100 + 100 surge
     expect(body.spec.hard['requests.cpu']).toBe('210m');
-    // and it must not disturb the ceiling it found
-    expect(body.spec.hard['limits.cpu']).toBe('4');
   });
 
   it('never lowers a quota that is already roomy', async () => {
-    const k = quota({ 'requests.cpu': '4', 'limits.cpu': '4' }, { 'requests.cpu': '10m' });
+    const k = quota({ 'requests.cpu': '4' }, { 'requests.cpu': '10m' });
     await ensureTieredQuotaRoom(k, 'ns', 30);
     expect(k.core.patchNamespacedResourceQuota).not.toHaveBeenCalled();
   });
@@ -344,9 +351,24 @@ describe('ensureTieredQuotaRoom', () => {
   it('leaves a LEGACY namespace alone', async () => {
     // Its requests.cpu IS the plan allowance; widening it would quietly
     // sell CPU nobody bought.
-    const k = quota({ 'requests.cpu': '250m' }, { 'requests.cpu': '250m' });
+    const k = quota({ 'requests.cpu': '250m' }, { 'requests.cpu': '250m' }, false);
     await ensureTieredQuotaRoom(k, 'ns', 100);
     expect(k.core.patchNamespacedResourceQuota).not.toHaveBeenCalled();
+  });
+
+  /**
+   * ★ The gate used to be "does the quota carry limits.cpu". Once that key
+   * was removed everywhere, that test answered false for every tenant and
+   * this function became a no-op — the requests budget would have stopped
+   * growing as applications were added, which is the same wall one axis
+   * over and the reason this test exists.
+   */
+  it('widens a tiered namespace that has no limits.cpu at all', async () => {
+    const k = quota({ 'requests.cpu': '110m' }, { 'requests.cpu': '10m' });
+    await ensureTieredQuotaRoom(k, 'ns', 100);
+    expect(k.core.patchNamespacedResourceQuota).toHaveBeenCalled();
+    const body = k.core.patchNamespacedResourceQuota.mock.calls[0][0].body;
+    expect(body.spec.hard['limits.cpu']).toBeUndefined();
   });
 
   it('does nothing when there is no quota at all', async () => {
