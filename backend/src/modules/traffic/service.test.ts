@@ -171,3 +171,19 @@ describe('the cluster view keeps both directions', () => {
     expect(asked.filter((e) => e.includes('receive'))).toHaveLength(0);
   });
 });
+
+describe('row order', () => {
+  it('keeps a measurement’s two directions adjacent', async () => {
+    // Gathered direction-major, Node-to-node (in) landed after an unrelated
+    // row instead of beside its own (out).
+    const frame = await fetchTrafficFrame({
+      ...range, scope: 'cluster', metric: 'traffic', direction: 'both', backups: 'separate',
+    }, { db });
+    const names = frame.series.map((s) => s.name);
+    const n2nOut = names.indexOf('Node-to-node (out)');
+    const n2nIn = names.indexOf('Node-to-node (in)');
+    expect(n2nOut).toBeGreaterThanOrEqual(0);
+    expect(n2nIn).toBe(n2nOut + 1);
+    expect(names.indexOf('Outbound (wire)')).toBeLessThan(names.indexOf('Inbound (wire)'));
+  });
+});

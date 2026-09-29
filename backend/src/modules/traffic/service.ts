@@ -237,6 +237,17 @@ export async function fetchTrafficFrame(
     }
   }
 
+  // Frames are gathered direction-major (all of "out", then all of "in"),
+  // which scatters a pair like Node-to-node (out) / (in) either side of an
+  // unrelated row. Put each measurement's directions back together, keeping
+  // outbound first, without disturbing anything else.
+  if (collected.some((c) => c.group)) {
+    const rank = (key: string): number => ['wire:', 'n2n:', 'offsite', 'serving', 'backup']
+      .findIndex((p) => key.startsWith(p));
+    const dirRank = (key: string): number => (key.includes(':in') ? 1 : 0);
+    collected.sort((a, b) => (rank(a.key) - rank(b.key)) || (dirRank(a.key) - dirRank(b.key)));
+  }
+
   const nsToName = await tenantNames(deps.db, [...namespacesSeen]);
   for (const s of collected) {
     if (s.kind === 'subject') s.name = displayNameFor(req.scope, s.name, nsToName);
