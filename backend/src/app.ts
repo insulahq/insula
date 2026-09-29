@@ -830,6 +830,58 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         app.log.error({ err }, 'PITR interrupted-restore recovery failed at startup');
       }
 
+      // Strip a stale `max` from tenant LimitRanges.
+      //
+      // The tier model briefly wrote `max.cpu` into every tenant namespace.
+      // It policed the platform's OWN Jobs rather than the tenant — the
+      // file-backup Job declares 1.5 cores, a 1-core `max` refused it at
+      // admission, and the bundle finished `partial` with the files missing
+      // and nothing reporting a failure.
+      //
+      // The builder stopped writing it two releases ago, and that reconciled
+      // nothing: a builder only runs when something applies it, and the only
+      // appliers are provisioning and the per-tenant Apply button. Twenty-four
+      // of thirty-one namespaces on the reference cluster kept their `max` and
+      // kept failing their file backups nightly while the notes said it was
+      // fixed. A corrected builder is not a corrected cluster; this is the
+      // half that was missing.
+      //
+      // Narrow on purpose: it removes `max` and nothing else. Rewriting
+      // `default` would replace every running pod in the namespace, which is
+      // why applying a tier is an operator action and not a boot-time one.
+      try {
+        const { sweepStaleLimitRangeMax, limitRangeName } = await import('./modules/cpu-migration/limitrange-sweep.js');
+        const { createK8sClients } = await import('./modules/k8s-provisioner/k8s-client.js');
+        const cfg = app.config as Record<string, unknown>;
+        const k8s = createK8sClients(cfg.KUBECONFIG_PATH as string | undefined);
+        const result = await sweepStaleLimitRangeMax(app.db, {
+          read: async (namespace) => {
+            try {
+              return await k8s.core.readNamespacedLimitRange({
+                name: limitRangeName(namespace), namespace,
+              } as never) as never;
+            } catch (err) {
+              // 404 = this namespace has no CPU LimitRange, which is fine.
+              if ((err as { statusCode?: number })?.statusCode === 404) return null;
+              throw err;
+            }
+          },
+          replace: async (namespace, body) => {
+            await k8s.core.replaceNamespacedLimitRange({
+              name: limitRangeName(namespace), namespace, body,
+            } as never);
+          },
+        });
+        if (result.stripped.length > 0 || result.failed.length > 0) {
+          app.log.warn(
+            { scanned: result.scanned, stripped: result.stripped, failed: result.failed },
+            'removed stale LimitRange max.cpu from tenant namespaces — their file backups were being refused at admission',
+          );
+        }
+      } catch (err) {
+        app.log.error({ err }, 'stale LimitRange max sweep failed at startup');
+      }
+
       // Reconcile platform-ingress hosts from the DB-configured panel URLs.
       // Kustomize overlays no longer hardcode spec.rules/tls — platform-api
       // owns them via server-side apply. On every startup we sync the live
