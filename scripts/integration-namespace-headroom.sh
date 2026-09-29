@@ -103,7 +103,7 @@ echo "════ 1. a namespace holds five applications"
 # ceiling: exactly four containers, whatever the plan.
 DEPLOYED=0
 for i in 1 2 3 4 5; do
-  body=$(printf '{"name":"hdr%s","image":"registry.k8s.io/pause:3.9","resources":{"memory_request":"32Mi"}}' "$i")
+  body=$(printf '{"mode":"simple","name":"hdr%s","image":"registry.k8s.io/pause:3.9","resources":{"memoryRequest":"32Mi"}}' "$i")
   code=$(curl "${A[@]}" -o "$J/d$i.json" -w '%{http_code}' \
     -X POST "$API/api/v1/tenants/$TID/custom-deployments" -d "$body")
   [ "$code" = "201" ] || [ "$code" = "200" ] && DEPLOYED=$((DEPLOYED+1)) || note "app $i create -> HTTP $code $(head -c 160 "$J/d$i.json")"
@@ -183,20 +183,30 @@ note "per-container default=${DEF:-<none>} defaultRequest=${REQ:-<none>}"
 [ -n "$DEF" ] && ok "every container still gets the tenant's ceiling" \
   || bad "the per-container ceiling is gone — a tenant is now unbounded" ""
 POD_LIM=$(kc "-n $NS get pods -l app=hdr2 -o jsonpath='{.items[0].spec.containers[0].resources.limits.cpu}'")
-[ "$POD_LIM" = "$DEF" ] && ok "and it reaches a pod that declares nothing ($POD_LIM)" \
-  || bad "a pod declaring no CPU did not get the ceiling" "got '${POD_LIM:-<none>}', want '$DEF'"
+# ★ Both must be NON-EMPTY as well as equal. An absent ceiling equals an
+# absent pod limit, and comparing them alone passed on a namespace that had
+# no ceiling at all — which is precisely what a dropped `default` produces.
+if [ -n "$POD_LIM" ] && [ "$POD_LIM" = "$DEF" ]; then
+  ok "and it reaches a pod that declares nothing ($POD_LIM)"
+else
+  bad "a pod declaring no CPU did not get the ceiling" "got '${POD_LIM:-<none>}', want '${DEF:-<none>}'"
+fi
 
 # ══ 5. a real backup completes ═════════════════════════════════════════════
 echo "════ 5. a tenant bundle completes, not 'partial'"
 BID=$(curl "${A[@]}" -X POST "$API/api/v1/tenants/$TID/bundles/run-now" -d '{}' \
-  | python3 -c 'import sys,json;d=json.load(sys.stdin).get("data",{});print(d.get("id") or d.get("bundle_id") or "")' 2>/dev/null)
+  | python3 -c 'import sys,json;d=json.load(sys.stdin).get("data",{});print(d.get("bundleId") or d.get("bundle_id") or d.get("id") or "")' 2>/dev/null)
 if [ -z "$BID" ]; then
   bad "could not start a bundle" "no id returned"
 else
   ST=""
   for _ in $(seq 1 90); do
     ST=$(curl "${A[@]}" "$API/api/v1/tenants/$TID/bundles" \
-      | python3 -c "import sys,json;d=json.load(sys.stdin)['data'];print(next((b.get('status') for b in d if b.get('id')=='$BID'),''))" 2>/dev/null)
+      | python3 -c "
+import sys,json
+d=json.load(sys.stdin).get('data') or []
+if isinstance(d,dict): d=d.get('items') or []
+print(next((b.get('status','') for b in d if b.get('id')=='$BID' or b.get('bundleId')=='$BID'),''))" 2>/dev/null)
     case "$ST" in completed|failed|partial) break ;; esac
     sleep 10
   done

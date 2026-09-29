@@ -93,11 +93,26 @@ describe('buildTieredQuotaHard', () => {
 });
 
 describe('buildTenantLimitRange', () => {
+  /**
+   * ★ The ceiling key is `_default`, and that is not a typo to tidy up.
+   *
+   * The Kubernetes JS client renames the reserved word: `_default` on the
+   * model serialises to `default` on the wire, and a plain `default` is not
+   * a model field at all — the client drops it and returns 201, leaving a
+   * LimitRange with a request and NO ceiling. Measured against a live API
+   * server; `kubectl get` on the result showed `default: {cpu: 2}` only for
+   * the `_default` form.
+   *
+   * It survived unnoticed while a `max` was also being written, because
+   * that carried the ceiling along with it. Removing `max` removed the
+   * ceiling too — so this assertion is the one that would have caught it.
+   */
   it('defaults an undeclared container to the tier and the ceiling', () => {
     const lr = buildTenantLimitRange({ namespace: 'tenant-x', tier: 'normal', burstCores: 2 });
     const l = lr.spec.limits[0] as Record<string, Record<string, string>>;
     expect(l.defaultRequest.cpu).toBe('5m');
-    expect(l.default.cpu).toBe('2');
+    expect(l._default.cpu).toBe('2');
+    expect(l.default).toBeUndefined();
   });
 
   /**
@@ -116,7 +131,7 @@ describe('buildTenantLimitRange', () => {
       expect(l.max).toBeUndefined();
       // The bound that matters is untouched: anything declaring no CPU limit
       // still gets the ceiling, which is every application a tenant deploys.
-      expect(l.default.cpu).toBe(String(burstCores));
+      expect(l._default.cpu).toBe(String(burstCores));
     }
   });
 
@@ -128,7 +143,7 @@ describe('buildTenantLimitRange', () => {
   it('says nothing about memory', () => {
     const l = buildTenantLimitRange({ namespace: 'tenant-x', tier: 'high', burstCores: 1 })
       .spec.limits[0] as Record<string, Record<string, string>>;
-    expect(l.default.memory).toBeUndefined();
+    expect(l._default.memory).toBeUndefined();
     expect(l.defaultRequest.memory).toBeUndefined();
   });
 });

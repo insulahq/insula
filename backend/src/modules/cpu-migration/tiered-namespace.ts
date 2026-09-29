@@ -122,10 +122,31 @@ export function buildTenantLimitRange(input: LimitRangeInput): {
         // including custom containers and bring-your-own images, without
         // touching a tenant's manifests.
         defaultRequest: { cpu: `${tierMillis(input.tier)}m` },
-        // The ceiling. Memory is deliberately absent: a memory default here
-        // would collide with the Guaranteed request==limit model tenant pods
-        // already use, and memory is incompressible — see ADR-062.
-        default: { cpu: ceiling },
+        /**
+         * The ceiling. Memory is deliberately absent: a memory default here
+         * would collide with the Guaranteed request==limit model tenant pods
+         * already use, and memory is incompressible — see ADR-062.
+         *
+         * ★ `_default`, NOT `default`. The Kubernetes JS client renames that
+         * reserved word: `_default` on the model is what it serialises to
+         * `default` on the wire. A plain `default` is not a model field, and
+         * the client DROPS it — silently, with a 201 back, leaving a
+         * LimitRange that sets a request and no ceiling at all.
+         *
+         * Measured in the running pod against the live API server:
+         *   {defaultRequest, default}        -> stored WITHOUT the ceiling
+         *   {defaultRequest, _default}       -> stored as `default: 2` ✓
+         *   {defaultRequest, default, max}   -> stored WITH the ceiling
+         * The third line is why this went unnoticed: while a `max` was also
+         * being written the ceiling came along with it, so removing `max`
+         * took the ceiling with it and every tenant became unbounded. Two
+         * bugs that cancelled out.
+         *
+         * Reading it back inverts the rename, so `.spec.limits[0]._default`
+         * is also what the READ paths must look at — `.default` there is
+         * undefined forever.
+         */
+        _default: { cpu: ceiling },
         /**
          * ★ NO `max`. A LimitRange polices EVERY container in the namespace,
          * and a tenant namespace is not only the tenant's: the platform runs
