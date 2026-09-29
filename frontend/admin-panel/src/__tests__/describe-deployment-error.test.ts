@@ -29,8 +29,9 @@ describe('describeDeploymentError — quota', () => {
     expect(e.code).toBe('QUOTA_EXCEEDED');
     expect(e.diagnostics).toMatchObject({
       'Memory requested': '512Mi',
-      'Memory already in use': '544Mi',
-      'Memory plan limit': '1Gi',
+      'Memory already reserved': '544Mi',
+      'Memory limit': '1Gi',
+      'Memory quota key': 'limits.memory',
       'Memory free': '480Mi',
       'Memory short by': '32Mi',
       Reason: 'Forbidden',
@@ -41,7 +42,8 @@ describe('describeDeploymentError — quota', () => {
   it('states the problem in a sentence, with no JSON in it', () => {
     const e = describeDeploymentError(RAW_K8S_BODY);
     expect(e.detail).toBe(
-      'This app asks for 512Mi of memory, but only 480Mi of your 1Gi plan is free — 544Mi is already in use.',
+      'This app asks for 512Mi of memory. Of the 1Gi your plan allows, 480Mi is free '
+      + '— 544Mi is already reserved.',
     );
     expect(e.detail).not.toContain('{');
     expect(e.detail).not.toContain('kind');
@@ -70,7 +72,7 @@ describe('describeDeploymentError — quota', () => {
   it('reports one row per resource, not one per quota key', () => {
     const e = describeDeploymentError(QUOTA_MESSAGE);
     const memoryKeys = Object.keys(e.diagnostics ?? {}).filter((k) => k.startsWith('Memory '));
-    expect(memoryKeys).toHaveLength(5);
+    expect(memoryKeys).toHaveLength(6);
   });
 
   it('handles a CPU rejection in cores, not bytes', () => {
@@ -78,12 +80,100 @@ describe('describeDeploymentError — quota', () => {
       'pods "x" is forbidden: exceeded quota: q, requested: requests.cpu=500m, ' +
       'used: requests.cpu=700m, limited: requests.cpu=1',
     );
-    expect(e.title).toBe('Not enough cpu in your plan');
+    expect(e.title).toBe('No CPU reservation left for this app');
     expect(e.diagnostics).toMatchObject({
       'CPU requested': '500m',
       'CPU free': '300m',
       'CPU short by': '200m',
     });
+  });
+
+  /**
+   * ★ The two CPU quota keys are different budgets and the tenant has to be
+   * able to tell which one refused them.
+   *
+   * Reported from production: "This app asks for 1 of cpu, but only 0m of
+   * your 2 plan is free — 2 is already in use", against a tenant whose usage
+   * page showed almost no CPU at all. Every number in it was right and the
+   * sentence was still unusable — no units on two of the three, no noun after
+   * "your 2", and "in use" for something nothing was using.
+   */
+  it('names which CPU budget is exhausted — the ceiling', () => {
+    const e = describeDeploymentError(
+      'pods "db-0" is forbidden: exceeded quota: tenant-example-quota, ' +
+      'requested: limits.cpu=1, used: limits.cpu=2, limited: limits.cpu=2',
+    );
+    expect(e.title).toBe('No CPU ceiling left for this app');
+    expect(e.detail).toContain('1 core of CPU ceiling');
+    expect(e.detail).toContain('2 cores are already committed');
+    expect(e.detail).toContain('charged its full burst ceiling');
+    expect(e.diagnostics).toMatchObject({ 'CPU ceiling quota key': 'limits.cpu' });
+    // Shrinking the app cannot help: the ceiling comes from the plan.
+    expect(e.remediation.join(' ')).not.toContain('shrinking');
+  });
+
+  it('names which CPU budget is exhausted — the reservation', () => {
+    const e = describeDeploymentError(
+      'pods "db-0" is forbidden: exceeded quota: tenant-example-quota, ' +
+      'requested: requests.cpu=1, used: requests.cpu=2, limited: requests.cpu=2',
+    );
+    expect(e.title).toBe('No CPU reservation left for this app');
+    expect(e.detail).toContain('1 core of reserved CPU');
+    expect(e.detail).toContain('Reserved is not the same as in use');
+    expect(e.diagnostics).toMatchObject({ 'CPU quota key': 'requests.cpu' });
+  });
+
+  // Every quantity in the sentence carries a unit, or none of them can be
+  // compared. "only 0m of your 2 plan" mixed a formatted number with a raw
+  // one and read as nonsense.
+  it('gives every number in the sentence a unit', () => {
+    const e = describeDeploymentError(
+      'pods "x" is forbidden: exceeded quota: q, requested: requests.cpu=1, ' +
+      'used: requests.cpu=2, limited: requests.cpu=2',
+    );
+    for (const bare of [' 1.', ' 1 ', ' 2 ', ' 2.']) {
+      expect(e.detail.replace(/\d+ cores?/g, 'N').replace(/\d+m/g, 'N')).not.toContain(bare);
+    }
+  });
+
+  // A quantity in subject position has to agree with its verb.
+  it('agrees in number', () => {
+    const one = describeDeploymentError(
+      'pods "x" is forbidden: exceeded quota: q, requested: requests.cpu=1, ' +
+      'used: requests.cpu=1, limited: requests.cpu=1',
+    );
+    expect(one.detail).toContain('1 core is already reserved');
+    const many = describeDeploymentError(
+      'pods "x" is forbidden: exceeded quota: q, requested: requests.cpu=1, ' +
+      'used: requests.cpu=2, limited: requests.cpu=2',
+    );
+    expect(many.detail).toContain('2 cores are already reserved');
+  });
+
+  // The backend pre-formats some of these, and deployments still carry the
+  // older wording it used in their stored lastError.
+  it('decodes the backend wording, old and new, to the same budget', () => {
+    const envelope = (detail: string) => JSON.stringify({
+      code: 'QUOTA_EXCEEDED', title: 'Quota exceeded', detail,
+    });
+    const old = describeDeploymentError(envelope(
+      'Quota exceeded — CPU limit: requesting 1, already using 2 of 2 limit.',
+    ));
+    const now = describeDeploymentError(envelope(
+      'Quota exceeded — CPU limit: requesting 1, already claimed 2 of 2 limit.',
+    ));
+    expect(old.title).toBe('No CPU ceiling left for this app');
+    expect(now.title).toBe(old.title);
+    expect(now.detail).toBe(old.detail);
+  });
+
+  it('keeps the two CPU budgets apart in the formatted wording too', () => {
+    const e = describeDeploymentError(JSON.stringify({
+      code: 'QUOTA_EXCEEDED',
+      title: 'Quota exceeded',
+      detail: 'Quota exceeded — CPU request: requesting 1, already claimed 2 of 2 limit.',
+    }));
+    expect(e.title).toBe('No CPU reservation left for this app');
   });
 
   it('switches the title when more than one resource is exhausted', () => {
@@ -157,7 +247,8 @@ describe('describeDeploymentError — the stored OperatorError envelope', () => 
     expect(e.code).toBe('QUOTA_EXCEEDED');
     expect(e.title).toBe('Not enough memory in your plan');
     expect(e.detail).toBe(
-      'This app asks for 512Mi of memory, but only 256Mi of your 2Gi plan is free — 1792Mi is already in use.',
+      'This app asks for 512Mi of memory. Of the 2Gi your plan allows, 256Mi is free '
+      + '— 1.75Gi is already reserved.',
     );
   });
 
@@ -165,8 +256,8 @@ describe('describeDeploymentError — the stored OperatorError envelope', () => 
     const e = describeDeploymentError(STORED_ENVELOPE);
     expect(e.diagnostics).toMatchObject({
       'Memory requested': '512Mi',
-      'Memory already in use': '1792Mi',
-      'Memory plan limit': '2Gi',
+      'Memory already reserved': '1792Mi',
+      'Memory limit': '2Gi',
       'Memory free': '256Mi',
       'Memory short by': '256Mi',
     });

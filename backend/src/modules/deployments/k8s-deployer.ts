@@ -1637,8 +1637,15 @@ export async function getDeploymentStatus(
  *   exceeded quota: <quota-name>, requested: limits.cpu=500m, used: limits.cpu=500m, limited: limits.cpu=500m
  *
  * Output example:
- *   Quota exceeded — CPU limit: requested 500m, using 500m of 500m.
+ *   Quota exceeded — CPU limit: requesting 500m, already claimed 500m of 500m limit.
  *   Free up resources or upgrade the plan.
+ *
+ * ★ "claimed", not "using". None of these numbers is usage: `requests.*` is
+ * what the tenant's pods reserve and `limits.*` is what they are allowed to
+ * burst to, charged in full the moment a container starts. Reporting either
+ * as "already using" sends a tenant to a usage page that correctly shows a
+ * fraction of it, and makes the platform look wrong about its own quota.
+ * The frontend decoder accepts both words — stored errors carry the old one.
  */
 export function formatQuotaExceededMessage(raw: string): string {
   const LABEL_MAP: Record<string, string> = {
@@ -1675,7 +1682,7 @@ export function formatQuotaExceededMessage(raw: string): string {
     const cur = used[key];
     const lim = limited[key];
     if (req && cur && lim) {
-      parts.push(`${label}: requesting ${req}, already using ${cur} of ${lim} limit`);
+      parts.push(`${label}: requesting ${req}, already claimed ${cur} of ${lim} limit`);
     } else if (req && lim) {
       parts.push(`${label}: requesting ${req}, limit is ${lim}`);
     } else {
