@@ -81,12 +81,18 @@ print(sorted(d, key=mem)[-1]["id"])' 2>/dev/null)
 REGION_ID=$(curl "${A[@]}" "$API/api/v1/regions?limit=5" | python3 -c 'import sys,json;print(json.load(sys.stdin)["data"][0]["id"])' 2>/dev/null)
 [ -n "$PLAN_ID" ] && [ -n "$REGION_ID" ] || { bad "no plan/region" ""; exit 1; }
 
+
 NAME="hdr-$$"
 TID=$(curl "${A[@]}" -X POST "$API/api/v1/tenants" \
   -d "{\"name\":\"$NAME\",\"primary_email\":\"$NAME@example.test\",\"plan_id\":\"$PLAN_ID\",\"region_id\":\"$REGION_ID\"}" \
   | python3 -c 'import sys,json;print(json.load(sys.stdin).get("data",{}).get("id",""))' 2>/dev/null)
 [ -n "$TID" ] || { bad "tenant create failed" ""; exit 1; }
 TENANTS+=("$TID")
+# Bring-your-own containers are gated per subscription (ADR-036). The
+# per-tenant override is the lever that touches nothing else on the
+# cluster — the fixture is deleted at the end, and so is the override.
+curl "${A[@]}" -o /dev/null -X PATCH "$API/api/v1/tenants/$TID" \
+  -d '{"allow_custom_containers_override":true}'
 curl "${A[@]}" -X POST "$API/api/v1/admin/tenants/$TID/provision" -d '{}' >/dev/null 2>&1
 for _ in $(seq 1 120); do
   curl "${A[@]}" "$API/api/v1/tenants/$TID" | grep -q '"status":"active"' && break
@@ -194,14 +200,26 @@ fi
 
 # ══ 5. a real backup completes ═════════════════════════════════════════════
 echo "════ 5. a tenant bundle completes, not 'partial'"
-BID=$(curl "${A[@]}" -X POST "$API/api/v1/tenants/$TID/bundles/run-now" -d '{}' \
-  | python3 -c 'import sys,json;d=json.load(sys.stdin).get("data",{});print(d.get("bundleId") or d.get("bundle_id") or d.get("id") or "")' 2>/dev/null)
-if [ -z "$BID" ]; then
-  bad "could not start a bundle" "no id returned"
+# ★ A tenant-panel endpoint, and an admin token is refused there
+# (PANEL_ACCESS_DENIED). Impersonation is how the platform itself crosses
+# that line, so the harness uses the same door rather than a special case.
+TT=$(curl "${A[@]}" -X POST "$API/api/v1/admin/impersonate/$TID" -d '{}' \
+  | python3 -c 'import sys,json;print(json.load(sys.stdin).get("data",{}).get("token",""))' 2>/dev/null)
+TA=(-sk -H "Authorization: Bearer ${TT:-$T}" -H 'Content-Type: application/json')
+RN=$(curl "${TA[@]}" -X POST "$API/api/v1/tenants/$TID/bundles/run-now" -d '{}')
+BID=$(printf '%s' "$RN" | python3 -c 'import sys,json;d=json.load(sys.stdin).get("data",{}) or {};print(d.get("bundleId") or d.get("bundle_id") or d.get("id") or "")' 2>/dev/null)
+if [ -z "$BID" ] && printf '%s' "$RN" | grep -qiE 'no active|not configured|NO_BACKUP_TARGET|TARGET_NOT'; then
+  # A cluster with no backup target cannot run this section, and saying so
+  # beats a failure this code cannot cause. It is still a gap in coverage,
+  # so it is reported, not swallowed.
+  note "SKIPPED — this cluster has no active tenant backup target configured"
+  note "$(printf '%s' "$RN" | head -c 200)"
+elif [ -z "$BID" ]; then
+  bad "could not start a bundle" "$(printf '%s' "$RN" | head -c 200)"
 else
   ST=""
   for _ in $(seq 1 90); do
-    ST=$(curl "${A[@]}" "$API/api/v1/tenants/$TID/bundles" \
+    ST=$(curl "${TA[@]}" "$API/api/v1/tenants/$TID/bundles" \
       | python3 -c "
 import sys,json
 d=json.load(sys.stdin).get('data') or []
