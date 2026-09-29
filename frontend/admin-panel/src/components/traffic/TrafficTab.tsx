@@ -125,7 +125,10 @@ export default function TrafficTab() {
   const needsSubjectList = scope !== 'cluster';
   const { data: subjects, isLoading: subjectsLoading } = useTrafficSubjects(
     { from: range.from, to: range.to, scope: scope === 'pod' ? 'pod' : scope, subject: scope === 'pod' ? (subject ?? undefined) : undefined, metric: effectiveMetric },
-    needsSubjectList && (scope !== 'pod' || Boolean(subject)),
+    // Pods no longer need a tenant first: with none chosen the list is every
+    // pod, ranked. Gating it on a tenant is what left the default pod view
+    // with an error and no way forward.
+    needsSubjectList,
   );
 
   // Pods live under a tenant, so the tenant picker has to come first.
@@ -215,13 +218,13 @@ export default function TrafficTab() {
               value={subject}
               options={tenantOptions}
               loading={tenantsLoading}
-              allLabel="Choose a tenant"
+              allLabel="All tenants"
               onChange={(k) => { setSubject(k); setPod(null); setHidden(new Set()); }}
             />
           </div>
         )}
 
-        {needsSubjectList && (scope !== 'pod' || Boolean(subject)) && (
+        {needsSubjectList && (
           <div className="min-w-[220px]">
             <TrafficPicker
               id="traffic-subject"

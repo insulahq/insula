@@ -37,8 +37,14 @@ describe('tenant and pod traffic read the pod', () => {
     expect(expr).not.toContain('id="/"');
   });
 
-  it('refuses a pod scope with no tenant', () => {
-    expect(() => buildTrafficQuery({ ...base, scope: 'pod' })).toThrow(UnsupportedTrafficQuery);
+  // Was: "refuses a pod scope with no tenant". It threw
+  // TRAFFIC_QUERY_UNSUPPORTED, which is what the operator saw on the panel's
+  // own default pod view — an error for a question the store answers fine.
+  it('a pod scope with no tenant is every tenant pod, grouped by pod', () => {
+    const { expr, groupBy } = buildTrafficQuery({ ...base, scope: 'pod' });
+    expect(groupBy).toBe('pod');
+    expect(expr).toContain('namespace=~"tenant-.+"');
+    expect(expr).toContain('sum by (pod)');
   });
 
   it('reads the right counter per direction', () => {
