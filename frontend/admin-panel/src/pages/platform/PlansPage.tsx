@@ -206,7 +206,13 @@ function PlanForm({ onClose, initial }: { readonly onClose: () => void; readonly
         </div>
         <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Memory Limit (GB)</label><input type="text" className={INPUT_CLASS} value={form.memory_limit} onChange={(e) => setForm({ ...form, memory_limit: e.target.value })} required /></div>
         <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Storage Limit (GB)</label><input type="text" className={INPUT_CLASS} value={form.storage_limit} onChange={(e) => setForm({ ...form, storage_limit: e.target.value })} required /></div>
-        <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Bandwidth (GB/mo)</label><input type="number" min="1" step="1" className={INPUT_CLASS} value={form.bandwidth_gb_limit} onChange={(e) => setForm({ ...form, bandwidth_gb_limit: e.target.value })} required /></div>
+        <div>
+          <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Bandwidth (GB/mo)</label>
+          <input type="number" min="1" step="1" className={INPUT_CLASS} value={form.bandwidth_gb_limit} onChange={(e) => setForm({ ...form, bandwidth_gb_limit: e.target.value })} required />
+          {/* The meter subtracts platform-scheduled backup egress, so this
+              number is what the tenant serves — not what the namespace moves. */}
+          <p className="mt-0.5 text-[11px] text-gray-500 dark:text-gray-400">Egress the tenant serves. Backups the platform schedules are not counted.</p>
+        </div>
         <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Max Sub-Users</label><input type="number" className={INPUT_CLASS} min={0} max={100} required value={form.max_sub_users} onChange={(e) => setForm({ ...form, max_sub_users: e.target.value })} data-testid="plan-max-sub-users-input" /></div>
       </div>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">

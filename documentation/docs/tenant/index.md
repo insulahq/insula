@@ -165,12 +165,45 @@ The **menu on the left** is how you move around. Here is what each item is for:
 | **SSH Keys** | Store public keys for secure file access. | [Files & SFTP](files-and-sftp.md) |
 | **SFTP Access** | File-transfer accounts for uploading. | [Files & SFTP](files-and-sftp.md) |
 | **Private Workers** | Advanced background workers (if your plan includes them). | — |
-| **Resource Usage** | Detailed CPU/memory/storage figures — see below. | — |
+| **Monitoring** | Your traffic, and detailed CPU/memory/storage figures — see below. | — |
 | **Notifications** | Your full message history and preferences. | [Account & security](account-and-security.md) |
 | **Settings** | Subscription details and account-wide settings. | [Account & security](account-and-security.md) |
 
 
-## Resource Usage
+## Monitoring
+
+**Monitoring** has two tabs: **Traffic** and **Resource Usage**. The page used
+to be called Resource Usage; old links still work and land on that tab.
+
+### Traffic
+
+The bar at the top is the one number this tab exists to explain: **included
+traffic this month**, against your plan's allowance.
+
+Below it, choose a time range and a breakdown:
+
+| Break down by | Shows |
+|---|---|
+| **My account** | Everything your workloads moved, in and out |
+| **Application** | One line per application |
+| **My routes** | One line per website or route |
+
+**Traffic** is always available; **Requests** and **Avg latency** are offered
+for your account and your routes, but not per application — the router counts
+per website, and cannot tell which copy of an application answered.
+
+Hovering the chart gives an exact reading, and clicking a row in the table
+below hides that line. A break in the line means that interval was not
+measured — it does not mean traffic stopped. All times are in your own
+timezone.
+
+!!! note "Backups do not count against your allowance"
+    Backups the platform runs for you happen inside your account, so they look
+    like ordinary traffic from the outside — but you did not ask for them, so
+    they are **not counted** and are **not drawn** on this chart. A backup you
+    start yourself is your traffic, and appears in both.
+
+### Resource Usage
 
 **Resource Usage** shows, for CPU, memory and storage:
 
@@ -188,7 +221,7 @@ The figures are read live from the cluster. The page refreshes itself about once
 a minute while you have it open, and the **Refresh** button fetches immediately.
 It stops polling when you switch to another tab and catches up when you return.
 
-### Disk usage on an application
+#### Disk usage on an application
 
 Expanding an application shows its **Disk usage** — how much space that app's
 own folder occupies, measured against your account's storage limit and shown as
@@ -196,7 +229,7 @@ own folder occupies, measured against your account's storage limit and shown as
 the account's, not the app's; the bar uses the same colour scale as everything
 else.
 
-### What the bar colours mean
+#### What the bar colours mean
 
 Every usage bar on every page — dashboard, this page, the file manager, and the
 metrics pop-up — uses the same scale, measured against your plan limit:

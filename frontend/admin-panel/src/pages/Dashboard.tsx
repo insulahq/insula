@@ -17,6 +17,7 @@
  *
  * Fed by exactly two endpoints — see use-operator-console.ts for why.
  */
+import TrafficTile from '@/components/traffic/TrafficTile';
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import type { AdminNode, DashboardAlert, DashboardAlertAction } from '@insula/api-contracts';
@@ -196,11 +197,12 @@ export default function Dashboard() {
 
       {/* ── platform ───────────────────────────────────────────────── */}
       <SectionHead title="Platform" />
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-5">
         {loadingFirst ? (
-          <><TileSkeleton /><TileSkeleton /><TileSkeleton /><TileSkeleton /></>
+          <><TileSkeleton /><TileSkeleton /><TileSkeleton /><TileSkeleton /><TileSkeleton /></>
         ) : (
           <>
+            <TrafficTile />
             <MailTile live={l} />
             <WebDefenceTile live={l} />
             <TenantsTile summary={s} />

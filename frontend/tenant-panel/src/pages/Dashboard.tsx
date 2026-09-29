@@ -101,12 +101,12 @@ export default function Dashboard() {
           <>
             {l?.resources.data ? (
               <>
-                <TriadBar triad={l.resources.data.cpu} label="CPU" to="/resource-usage" vocab="reserved" />
-                <TriadBar triad={l.resources.data.memory} label="Memory" to="/resource-usage" vocab="reserved" />
-                <TriadBar triad={l.resources.data.storage} label="Storage" to="/resource-usage" vocab="reserved" />
+                <TriadBar triad={l.resources.data.cpu} label="CPU" to="/monitoring?tab=resource-usage" vocab="reserved" />
+                <TriadBar triad={l.resources.data.memory} label="Memory" to="/monitoring?tab=resource-usage" vocab="reserved" />
+                <TriadBar triad={l.resources.data.storage} label="Storage" to="/monitoring?tab=resource-usage" vocab="reserved" />
               </>
             ) : (
-              <SectionFallback title="Your plan" to="/resource-usage" section={l?.resources ?? { state: 'stale', reason: null, observedAt: null }} />
+              <SectionFallback title="Your plan" to="/monitoring?tab=resource-usage" section={l?.resources ?? { state: 'stale', reason: null, observedAt: null }} />
             )}
             <BandwidthTile summary={s} />
           </>
@@ -149,11 +149,11 @@ type Live = NonNullable<ReturnType<typeof useOverviewLive>['data']>['data'];
 
 function BandwidthTile({ summary }: { summary: Summary | undefined }) {
   const p = summary?.plan.data;
-  if (!p) return <SectionFallback title="Bandwidth" to="/resource-usage" section={summary?.plan ?? { state: 'stale', reason: null, observedAt: null }} />;
+  if (!p) return <SectionFallback title="Bandwidth" to="/monitoring?tab=resource-usage" section={summary?.plan ?? { state: 'stale', reason: null, observedAt: null }} />;
   const pct = p.bandwidthLimitGb > 0 ? (p.bandwidthUsedGb / p.bandwidthLimitGb) * 100 : 0;
   const tone = pct >= 100 ? 'crit' : pct >= 80 ? 'warn' : 'ok';
   return (
-    <Tile title="Bandwidth" to="/resource-usage" card={(
+    <Tile title="Bandwidth" to="/monitoring?tab=resource-usage" card={(
       <HoverCard title="Bandwidth this cycle" rows={[
         ['Allowance', `${p.bandwidthLimitGb} GB`],
         ['Used', `${p.bandwidthUsedGb.toFixed(2)} GB · ${Math.round(pct)}%`],

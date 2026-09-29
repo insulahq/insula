@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isReservedWorkloadName, RESERVED_WORKLOAD_NAME_MESSAGE } from './reserved-workload-names.js';
 import { extraMountsSchema, folderProblem } from './extra-mounts.js';
 import { uuidField, paginatedResponseSchema } from './shared.js';
 import { customDeploymentSpecSchema } from './custom-deployments.js';
@@ -291,9 +292,12 @@ export const k8sNameRegex = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
 
 export const createDeploymentSchema = z.object({
   catalog_entry_id: z.string().uuid(),
+  // A single-component entry takes this name VERBATIM as its k8s object name,
+  // and a `job` component's pod is then shaped exactly like a platform backup
+  // Job's pod — which the bandwidth meter trusts. Hence the reserved prefixes.
   name: z.string().min(1).max(63).regex(k8sNameRegex, {
     message: 'Name must be DNS-compatible: lowercase letters, digits, and hyphens only (max 63 chars, must start and end with a letter or digit)',
-  }),
+  }).refine((n) => !isReservedWorkloadName(n), { message: RESERVED_WORKLOAD_NAME_MESSAGE }),
   domain_name: z.string().max(255).optional(),
   replica_count: z.number().int().min(1).max(10).default(1),
   cpu_request: z.string().max(20).default('0.25'),
