@@ -14,6 +14,24 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **Tenant file backups stopped running on every small plan.** The same
+  migration installed a namespace LimitRange with `max` set to the tenant's
+  burst ceiling. A LimitRange polices *every* container in the namespace, and
+  a tenant namespace is not only the tenant's — the platform runs its own
+  Jobs there. The file-backup Job declares 1.5 cores, so a 1-core `max`
+  refused it outright, the Job retried until its 29-minute deadline and died,
+  and the backup finished as **partial**: mailboxes, secrets and config all
+  succeeded, and only the files were missing. Twenty-four of thirty-one
+  namespaces on the reference production cluster were affected — every tenant
+  whose plan grants a 1-core ceiling — and nothing reported it as a failure.
+
+  `max` is gone. `default` stays and is what actually bounds a tenant: under
+  the share model their applications declare no CPU limit at all, so the
+  ceiling is applied to them at admission exactly as before. What `max`
+  policed was containers that declare more — the platform's own jobs, and
+  compose stacks that pin their own CPU, which is allowed deliberately
+  (ADR-036). Neither was bounded before this model existed.
+
 - **A migrated tenant could only run as many applications as its quota had
   ceilings — two, on the starter plan.** The tier work put a second CPU limit
   on each migrated namespace: a budget for the *sum* of every container's

@@ -47,4 +47,26 @@ if [ "$fail" -ne 0 ]; then
   exit 1
 fi
 
-echo "ci-no-tenant-cpu-ceiling-quota: OK — no quota writes limits.cpu"
+# ── the other half: a tenant LimitRange must not carry `max` ───────────
+# A LimitRange polices every container in the namespace, and the platform
+# runs its own Jobs in a tenant namespace — the file-backup Job declares 1.5
+# cores. A `max` at the tenant's ceiling refused it outright and took the
+# file backups of 24 of 31 namespaces down without failing the backup run:
+# every other component succeeded, so it reported `partial`.
+#
+# `default` is the bound that matters and stays; `max` only refuses a
+# container that DECLARES more, which under the tier model is never a
+# tenant's own application.
+while IFS= read -r hit; do
+  echo "::error::$hit"
+  fail=1
+done < <(grep -rn "max: { cpu" backend/src --include='*.ts' | grep -v '\.test\.ts:' || true)
+
+if [ "$fail" -ne 0 ]; then
+  echo ""
+  echo "A tenant LimitRange must not set max.cpu — it refuses the platform's"
+  echo "own Jobs in that namespace. Bound the tenant with 'default' instead."
+  exit 1
+fi
+
+echo "ci-no-tenant-cpu-ceiling-quota: OK — no quota limits.cpu, no LimitRange max"

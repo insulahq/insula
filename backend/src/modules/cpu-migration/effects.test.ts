@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   rollPodsStillCapped,
-  quantityToMillis, largestDeclaredCpuMillis, largestInScopePodMillis,
+  quantityToMillis, largestInScopePodMillis,
   readPodCpuLimits, readWorkloads, widenQuotaHeadroom, removeQuotaLimits,
   ensureTieredQuotaRoom,
 } from './effects.js';
@@ -58,29 +58,6 @@ describe('quantityToMillis', () => {
     for (const v of ['', 'abc', undefined, null]) {
       expect(quantityToMillis(v as string)).toBe(0);
     }
-  });
-});
-
-describe('largestDeclaredCpuMillis', () => {
-  /**
-   * Feeds the LimitRange `max`, which — measured on a cluster — REJECTS a
-   * container requesting more than it. Missing the largest declaration would
-   * make an existing pod unschedulable.
-   */
-  it('takes the largest of any request OR limit', async () => {
-    const k = k8sWith([
-      pod({ name: 'a', containers: [{ req: '100m' }] }),
-      pod({ name: 'b', containers: [{ req: '200m', lim: '1500m' }] }),
-    ]);
-    expect(await largestDeclaredCpuMillis(k, 'ns')).toBe(1500);
-  });
-
-  it('ignores finished pods, which constrain nothing', async () => {
-    const k = k8sWith([
-      pod({ name: 'done', phase: 'Succeeded', containers: [{ req: '8' }] }),
-      pod({ name: 'live', containers: [{ req: '100m' }] }),
-    ]);
-    expect(await largestDeclaredCpuMillis(k, 'ns')).toBe(100);
   });
 });
 

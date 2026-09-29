@@ -33,10 +33,10 @@ function is409(err: unknown): boolean {
 export async function ensureLimitRange(
   k8s: K8sClients, namespace: string, tier: CpuTier, burstCores: number,
 ): Promise<void> {
-  // Read what the namespace already declares BEFORE installing the range, so
-  // `max` cannot invalidate a pod that is running right now.
-  const largestDeclaredMillis = await largestDeclaredCpuMillis(k8s, namespace);
-  const body = buildTenantLimitRange({ namespace, tier, burstCores, largestDeclaredMillis });
+  // No survey of what the namespace already declares: the range no longer
+  // carries a `max`, so nothing here can invalidate a running pod. Replacing
+  // the object is also how an upgraded namespace LOSES the `max` it has.
+  const body = buildTenantLimitRange({ namespace, tier, burstCores });
   try {
     await k8s.core.createNamespacedLimitRange({ namespace, body } as never);
   } catch (err) {
@@ -54,31 +54,6 @@ export function quantityToMillis(v: string | undefined | null): number {
   if (s.endsWith('m')) return Math.round(Number(s.slice(0, -1)) || 0);
   const n = Number(s);
   return Number.isFinite(n) ? Math.round(n * 1000) : 0;
-}
-
-/**
- * The biggest CPU any live container in the namespace declares — request OR
- * limit, whichever is larger, since a LimitRange `max` constrains both.
- */
-export async function largestDeclaredCpuMillis(
-  k8s: K8sClients, namespace: string,
-): Promise<number> {
-  const list = await k8s.core.listNamespacedPod({ namespace }) as {
-    items?: ReadonlyArray<{
-      spec?: { containers?: ReadonlyArray<{ resources?: { requests?: Record<string, string>; limits?: Record<string, string> } }>;
-               initContainers?: ReadonlyArray<{ resources?: { requests?: Record<string, string>; limits?: Record<string, string> } }> };
-      status?: { phase?: string };
-    }>;
-  };
-  let max = 0;
-  for (const p of list.items ?? []) {
-    const phase = p.status?.phase;
-    if (phase === 'Succeeded' || phase === 'Failed') continue;
-    for (const c of [...(p.spec?.containers ?? []), ...(p.spec?.initContainers ?? [])]) {
-      max = Math.max(max, quantityToMillis(c.resources?.requests?.cpu), quantityToMillis(c.resources?.limits?.cpu));
-    }
-  }
-  return max;
 }
 
 /** What a single in-scope POD requests at most — the surge allowance. */

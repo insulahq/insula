@@ -106,21 +106,6 @@ export interface LimitRangeInput {
   /** The tenant's default tier — what an undeclared container requests. */
   readonly tier: CpuTier;
   readonly burstCores: number;
-  /**
-   * The largest CPU any in-scope container already declares, in millicores.
-   *
-   * ★ `max` must never invalidate a pod that is already running. Verified on
-   * a cluster: a LimitRange `max.cpu` rejects a container REQUESTING more
-   * than it — "must be less than or equal to cpu limit of 1" — so installing
-   * one at the burst ceiling would make an existing larger workload
-   * unschedulable, and the straggler sweep would delete such a pod and then
-   * be unable to recreate it. An outage caused by the migration itself.
-   *
-   * The policy bound is `default` (what an undeclared container gets); `max`
-   * only stops a NEW declaration going higher, so raising it to cover what
-   * already exists costs nothing and prevents that.
-   */
-  readonly largestDeclaredMillis: number;
 }
 
 export function buildTenantLimitRange(input: LimitRangeInput): {
@@ -128,8 +113,6 @@ export function buildTenantLimitRange(input: LimitRangeInput): {
   spec: { limits: ReadonlyArray<Record<string, unknown>> };
 } {
   const ceiling = `${round2(input.burstCores)}`;
-  const maxMillis = Math.max(Math.round(input.burstCores * 1000), input.largestDeclaredMillis);
-  const maxCpu = `${round2(maxMillis / 1000)}`;
   return {
     metadata: { name: `${input.namespace}-cpu`, namespace: input.namespace },
     spec: {
@@ -143,8 +126,23 @@ export function buildTenantLimitRange(input: LimitRangeInput): {
         // would collide with the Guaranteed request==limit model tenant pods
         // already use, and memory is incompressible — see ADR-062.
         default: { cpu: ceiling },
-        // >= ceiling, and never below what a container already declares.
-        max: { cpu: maxCpu },
+        /**
+         * ★ NO `max`. A LimitRange polices EVERY container in the namespace,
+         * and a tenant namespace is not only the tenant's: the platform runs
+         * its own Jobs there. The file-backup Job declares 1.5 cores, so a
+         * `max` of 1 refused it outright — "maximum cpu usage per Container
+         * is 1, but limit is 1500m" — and the Job retried until its 29-minute
+         * deadline and died. Twenty-four of thirty-one namespaces silently
+         * stopped backing up their files; every other component succeeded, so
+         * the run reported `partial` rather than failed.
+         *
+         * `max` only refuses a container that DECLARES more than the ceiling.
+         * Under the tier model a tenant's own applications declare nothing —
+         * `default` above is what bounds them, at admission, and it is
+         * untouched. What `max` actually policed was the platform's own jobs
+         * and compose stacks that pin their own CPU, which ADR-036 allows on
+         * purpose. Neither was ever bounded before ADR-062.
+         */
       }],
     },
   };

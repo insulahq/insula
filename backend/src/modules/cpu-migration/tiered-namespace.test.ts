@@ -93,37 +93,31 @@ describe('buildTieredQuotaHard', () => {
 });
 
 describe('buildTenantLimitRange', () => {
-  it('defaults an undeclared container to the tier, and caps it at the allowance', () => {
-    const lr = buildTenantLimitRange({ namespace: 'tenant-x', tier: 'normal', burstCores: 2, largestDeclaredMillis: 0 });
+  it('defaults an undeclared container to the tier and the ceiling', () => {
+    const lr = buildTenantLimitRange({ namespace: 'tenant-x', tier: 'normal', burstCores: 2 });
     const l = lr.spec.limits[0] as Record<string, Record<string, string>>;
     expect(l.defaultRequest.cpu).toBe('5m');
     expect(l.default.cpu).toBe('2');
-    expect(l.max.cpu).toBe('2');
   });
 
   /**
-   * ★ MEASURED on a live cluster: a LimitRange `max.cpu` rejects a container
-   * REQUESTING more than it —
-   *   "spec.containers[0].resources.requests: Invalid value: \"2\":
-   *    must be less than or equal to cpu limit of 1"
-   * — so installing one at the burst ceiling makes an existing larger
-   * workload unschedulable. The straggler sweep would then delete such a pod
-   * and be unable to recreate it: an outage caused by the migration.
+   * ★ A LimitRange polices EVERY container in the namespace, and a tenant
+   * namespace is not only the tenant's. The platform's file-backup Job runs
+   * there and declares 1.5 cores, so a `max` of 1 refused it — "maximum cpu
+   * usage per Container is 1, but limit is 1500m" — and the Job retried to
+   * its 29-minute deadline and died. Twenty-four of thirty-one namespaces
+   * stopped backing up their files, reported as `partial` because every
+   * other component of the backup succeeded.
    */
-  it('raises max to cover a container that already declares more', () => {
-    const l = buildTenantLimitRange({
-      namespace: 'tenant-x', tier: 'high', burstCores: 1, largestDeclaredMillis: 2000,
-    }).spec.limits[0] as Record<string, Record<string, string>>;
-    expect(l.max.cpu).toBe('2');
-    // The POLICY bound is unchanged — only what may be declared moves.
-    expect(l.default.cpu).toBe('1');
-  });
-
-  it('keeps max at the ceiling when nothing declares more', () => {
-    const l = buildTenantLimitRange({
-      namespace: 'tenant-x', tier: 'high', burstCores: 2, largestDeclaredMillis: 500,
-    }).spec.limits[0] as Record<string, Record<string, string>>;
-    expect(l.max.cpu).toBe('2');
+  it('sets no max, so a platform job may declare more than the ceiling', () => {
+    for (const burstCores of [0.5, 1, 2, 6]) {
+      const l = buildTenantLimitRange({ namespace: 'tenant-x', tier: 'high', burstCores })
+        .spec.limits[0] as Record<string, Record<string, string>>;
+      expect(l.max).toBeUndefined();
+      // The bound that matters is untouched: anything declaring no CPU limit
+      // still gets the ceiling, which is every application a tenant deploys.
+      expect(l.default.cpu).toBe(String(burstCores));
+    }
   });
 
   /**
@@ -132,11 +126,10 @@ describe('buildTenantLimitRange', () => {
    * collide with that model and an OOM kill is the price of getting it wrong.
    */
   it('says nothing about memory', () => {
-    const l = buildTenantLimitRange({ namespace: 'tenant-x', tier: 'high', burstCores: 1, largestDeclaredMillis: 0 })
+    const l = buildTenantLimitRange({ namespace: 'tenant-x', tier: 'high', burstCores: 1 })
       .spec.limits[0] as Record<string, Record<string, string>>;
     expect(l.default.memory).toBeUndefined();
     expect(l.defaultRequest.memory).toBeUndefined();
-    expect(l.max.memory).toBeUndefined();
   });
 });
 
