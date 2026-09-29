@@ -133,11 +133,19 @@ interface DirectionPlan {
 
 function directionPlans(req: TrafficRequest): DirectionPlan[] {
   if (req.metric !== 'traffic') return [{ direction: 'out', label: '' }];
-  // A backup split is about egress: these pods upload to off-site storage and
-  // receive almost nothing. Running both directions produced the split TWICE
-  // and two identically-named "Serving traffic" rows, which is what the
-  // end-to-end run on DEV actually showed.
-  if (req.backups !== 'included') return [{ direction: 'out', label: 'Outbound' }];
+  // A backup split is about egress: those pods upload and receive almost
+  // nothing, and running both directions produced the split twice.
+  //
+  // NOT on a cluster view. That path builds its own plans and already gates
+  // the egress-only rows on direction itself — applying this here silently
+  // deleted Inbound from the wire, which is the one row on the page that is
+  // definitionally not egress. The panel forces `separate` for cluster
+  // traffic, so this was every cluster view, and a query with the default
+  // `included` (what curl sends) still returned it — which is exactly why
+  // this survived an API check and only showed up on screen.
+  if (req.backups !== 'included' && req.scope !== 'cluster') {
+    return [{ direction: 'out', label: 'Outbound' }];
+  }
   if (req.direction === 'in') return [{ direction: 'in', label: 'Inbound' }];
   if (req.direction === 'out') return [{ direction: 'out', label: 'Outbound' }];
   return [{ direction: 'out', label: 'Outbound' }, { direction: 'in', label: 'Inbound' }];

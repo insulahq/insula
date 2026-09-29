@@ -150,3 +150,24 @@ describe('a subject breakdown across both directions', () => {
     vi.resetModules();
   });
 });
+
+describe('the cluster view keeps both directions', () => {
+  it('returns Inbound at the wire even when backups are separated', async () => {
+    // The panel forces `separate` for cluster traffic, and the
+    // egress-only rule for backup splits then removed Inbound from the
+    // wire — on every cluster view, while an API call with the default
+    // `included` still looked correct.
+    const frame = await fetchTrafficFrame({
+      ...range, scope: 'cluster', metric: 'traffic', direction: 'both', backups: 'separate',
+    }, { db });
+    const wire = frame.series.filter((s) => s.group === 'wire').map((s) => s.name);
+    expect(wire).toEqual(['Outbound (wire)', 'Inbound (wire)']);
+  });
+
+  it('still collapses to one direction for a backup split OFF the cluster view', async () => {
+    await fetchTrafficFrame({
+      ...range, scope: 'tenant', metric: 'traffic', direction: 'both', backups: 'separate',
+    }, { db });
+    expect(asked.filter((e) => e.includes('receive'))).toHaveLength(0);
+  });
+});
