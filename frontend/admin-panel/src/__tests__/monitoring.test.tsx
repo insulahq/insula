@@ -240,4 +240,43 @@ describe('Monitoring page', () => {
     // ever warning or critical.
     expect(screen.queryByText('info')).not.toBeInTheDocument();
   });
+
+  // Every Monitoring tab renders INSIDE the card that holds the tab strip, so
+  // the inset is the tab's own job. Traffic shipped without it and its content
+  // ran to the card border while six siblings sat 20px in — visible on the
+  // page, invisible to every assertion we had, because nothing compared the
+  // tabs to each other. Measured on DEV: Traffic 0px, the rest 20px.
+  //
+  // Asserted as a SET rather than "Traffic has p-5": the requirement is that
+  // the panels agree, so a seventh tab that forgets fails here too, and a
+  // deliberate change of the shared value stays one edit.
+  it('insets every card tab by the same padding', async () => {
+    const sources = Object.entries({
+      TrafficTab: await import('../components/traffic/TrafficTab.tsx?raw'),
+      SloTab: await import('../components/SloTab.tsx?raw'),
+      MailTab: await import('../components/monitoring/MailTab.tsx?raw'),
+      NodeHealthPanel: await import('../components/NodeHealthPanel.tsx?raw'),
+      HealthTab: await import('../pages/Monitoring.tsx?raw'),
+    });
+
+    // The panel root is the first `<div className="space-y-N …">` after the
+    // component's final `return (` — the element Monitoring drops into the card.
+    const padOf = (name: string, src: string): string | null => {
+      const anchor = name === 'HealthTab' ? 'function HealthTab(' : `function ${name}(`;
+      const from = src.indexOf(anchor);
+      expect(from, `${name} not found in its source`).toBeGreaterThan(-1);
+      const m = /<div className="(space-y-[\d.]+[^"]*)"/.exec(src.slice(from));
+      if (!m) return null;
+      return (/\bp-(\d+)\b/.exec(m[1]) ?? [])[0] ?? null;
+    };
+
+    const pads = sources.map(([name, mod]) => [name, padOf(name, mod.default)] as const);
+    for (const [name, pad] of pads) {
+      expect(pad, `${name} panel root has no padding — its content will touch the card edge`)
+        .not.toBeNull();
+    }
+    expect(new Set(pads.map(([, pad]) => pad)).size,
+      `tab panels disagree on padding: ${pads.map(([n, v]) => `${n}=${v}`).join(', ')}`)
+      .toBe(1);
+  });
 });

@@ -181,7 +181,9 @@ export default function TrafficTab() {
   const operatorError = error ? extractOperatorError(error) : null;
 
   return (
-    <div className="space-y-4">
+    // `p-5` inset, like every other Monitoring tab: the tab strip sits inside
+    // a card, and a panel with no padding runs its content into the border.
+    <div className="space-y-4 p-5">
       <div className="flex flex-wrap items-end gap-x-3.5 gap-y-2.5">
         <div className="min-w-[320px]"><TrafficRangePicker value={range} onChange={setRange} /></div>
 
