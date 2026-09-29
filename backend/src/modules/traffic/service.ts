@@ -115,11 +115,19 @@ export function subjectIdOf(key: string): string {
 export function disambiguateNames<T extends { key: string; name: string }>(series: T[]): T[] {
   const count = new Map<string, number>();
   for (const s of series) count.set(s.name, (count.get(s.name) ?? 0) + 1);
+  // Numbered, not hashed. Rows that collide are rows the measurement genuinely
+  // cannot tell apart — two routes inside one ingress object, say — and
+  // showing eight characters of a Traefik hash names them after an
+  // implementation detail the operator has no way to look up. A counter says
+  // the same thing ("these are different") without pretending to be an id.
+  // Ordering within a frame is deterministic, so the numbering is stable
+  // between refreshes of the same query.
+  const seen = new Map<string, number>();
   return series.map((s) => {
     if ((count.get(s.name) ?? 0) < 2) return s;
-    const bare = s.key.replace(/^(in|out):/, '').replace(/@[a-z]+$/, '');
-    const tail = /-([0-9a-f]{8,})$/.exec(bare)?.[1]?.slice(0, 8) ?? bare.slice(-8);
-    return { ...s, name: `${s.name} · ${tail}` };
+    const n = (seen.get(s.name) ?? 0) + 1;
+    seen.set(s.name, n);
+    return { ...s, name: `${s.name} #${n}` };
   });
 }
 
@@ -174,7 +182,9 @@ export function prettyServiceName(
   nsToName: ReadonlyMap<string, string>,
   nsToHosts: ReadonlyMap<string, readonly string[]> = new Map(),
 ): string {
-  const bare = service.replace(/@[a-z]+$/, '').replace(/-[0-9a-f]{16,}$/, '');
+  // Traefik appends a hash of the match rule. It is 20 hex here and 16 in
+  // other provider versions, so match 8 or more rather than pinning a width.
+  const bare = service.replace(/@[a-z]+$/, '').replace(/-[0-9a-f]{8,}$/, '');
   for (const [ns, name] of nsToName) {
     if (bare === ns || bare.startsWith(`${ns}-`)) {
       const hosts = nsToHosts.get(ns) ?? [];
@@ -188,7 +198,13 @@ export function prettyServiceName(
       return rest ? `${name} · ${rest}` : name;
     }
   }
-  return bare;
+  // Not a tenant namespace — `platform`, `mail`, and so on. Traefik names the
+  // object `<namespace>-<ingress>`, which doubles the namespace when the
+  // ingress is itself named after it (`platform-platform-ingress`). Collapse
+  // that and drop the `-ingress` suffix every one of them carries.
+  return bare
+    .replace(/^([a-z0-9-]+?)-\1-/, '$1-')
+    .replace(/-ingress$/, '');
 }
 
 function displayNameFor(

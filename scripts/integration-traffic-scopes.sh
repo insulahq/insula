@@ -97,13 +97,34 @@ k get ingressroute -n "$NS" -o name 2>/dev/null | grep -q . \
 # Through the ingress, with the Host header, so BOTH Traefik's per-service
 # counters and the pod's own interface counters advance.
 echo "→ 2. drive real traffic at the host"
+# --resolve, not -H Host:. Over TLS the Host header does not set SNI, so
+# Traefik matched its default router and the tenant's own route never saw a
+# request — which then reads as "tenant/requests has no data" and looks
+# exactly like a product bug. Verified: with -H there were zero
+# tenant-prefixed Traefik services in the store afterwards.
 ssh $SSH_OPTS -i "$SSH_KEY" "root@${CONTROL_HOST}" \
-  "for i in \$(seq 1 200); do curl -sk -o /dev/null -H 'Host: $HOST' https://127.0.0.1/ ; done" >/dev/null 2>&1
-pass "200 requests sent at $HOST"
+  "for i in \$(seq 1 200); do curl -sk -o /dev/null --resolve '$HOST:443:127.0.0.1' 'https://$HOST/' ; done" >/dev/null 2>&1
+SEEN=$(ssh $SSH_OPTS -i "$SSH_KEY" "root@${CONTROL_HOST}" \
+  "curl -sk -o /dev/null -w '%{http_code}' --resolve '$HOST:443:127.0.0.1' 'https://$HOST/'" 2>/dev/null)
+if [[ -n "$SEEN" && "$SEEN" != "000" ]]; then
+  pass "first burst reached $HOST (status $SEEN)"
+else
+  fail "could not reach $HOST at all — the scopes below cannot be judged"
+fi
 
-# A scrape plus a rate window has to pass before anything can be non-zero.
-echo "   waiting 150s for a scrape interval + rate window…"
-sleep 150
+# A SECOND burst after a gap, and this is not belt-and-braces. A counter that
+# has just appeared has no earlier sample to difference against, so its rate
+# is zero however much traffic created it. One burst against a brand-new
+# tenant therefore reads as "this scope has no data" — which is exactly what
+# this suite is supposed to mean something by. Two bursts either side of a
+# scrape guarantee an increase between two samples.
+echo "   waiting 90s so the new counter is scraped once…"
+sleep 90
+ssh $SSH_OPTS -i "$SSH_KEY" "root@${CONTROL_HOST}" \
+  "for i in \$(seq 1 200); do curl -sk -o /dev/null --resolve '$HOST:443:127.0.0.1' 'https://$HOST/' ; done" >/dev/null 2>&1
+pass "second burst sent"
+echo "   waiting 120s for the rate window to span both bursts…"
+sleep 120
 
 # ── 3. every scope answers with data ─────────────────────────────────────────
 FROM=$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ)
@@ -137,8 +158,8 @@ done
 echo "→ 4. a picker key selects the thing it names"
 for scope in node tenant route; do
   SJ=$(subjects_json "$scope" traffic)
-  KEY=$(echo "$SJ" | jq -r '.data[0].key // empty')
-  NAME=$(echo "$SJ" | jq -r '.data[0].name // empty')
+  KEY=$(echo "$SJ" | jq -r '.data.subjects[0].key // empty')
+  NAME=$(echo "$SJ" | jq -r '.data.subjects[0].name // empty')
   if [[ -z "$KEY" ]]; then fail "$scope: the picker offered nothing"; continue; fi
   case "$KEY" in
     out:*|in:*) fail "$scope: picker key carries a direction prefix ($KEY)" ;;
@@ -151,12 +172,12 @@ done
 
 # ── 5. a tenant key opens that tenant's pods ─────────────────────────────────
 echo "→ 5. tenant → pods"
-TKEY=$(subjects_json tenant traffic | jq -r --arg ns "$NS" '[.data[] | select(.key==$ns)][0].key // .data[0].key // empty')
+TKEY=$(subjects_json tenant traffic | jq -r --arg ns "$NS" '[.data.subjects[] | select(.key==$ns)][0].key // .data.subjects[0].key // empty')
 PODS=$(subjects_json pod traffic "$TKEY")
-PN=$(echo "$PODS" | jq '[.data[]?] | length')
+PN=$(echo "$PODS" | jq '[.data.subjects[]?] | length')
 if [[ "${PN:-0}" -gt 0 ]]; then pass "tenant $TKEY lists $PN pod(s)"
 else fail "tenant $TKEY lists NO pods"; fi
-PKEY=$(echo "$PODS" | jq -r '.data[0].key // empty')
+PKEY=$(echo "$PODS" | jq -r '.data.subjects[0].key // empty')
 if [[ -n "$PKEY" ]]; then
   n=$(series_count pod traffic "$TKEY" "$PKEY")
   [[ "${n:-0}" -gt 0 ]] && pass "pod $PKEY returns $n series" || fail "pod $PKEY returned NO data"
@@ -164,21 +185,29 @@ fi
 
 # ── 6. names are names, not ids ──────────────────────────────────────────────
 echo "→ 6. subjects read as names"
-TN=$(subjects_json tenant traffic | jq -r '[.data[].name] | join(" | ")')
+TN=$(subjects_json tenant traffic | jq -r '[.data.subjects[].name] | join(" | ")')
 case "$TN" in
   *kubernetescrd*) fail "tenant picker shows Traefik service ids: $TN" ;;
   *)               pass "tenant picker shows names" ;;
 esac
 # The identity must not change when the metric does — that silently
 # invalidated whatever was selected.
-T_TRAF=$(subjects_json tenant traffic  | jq -r '[.data[].key] | sort | .[0] // ""')
-T_REQ=$(subjects_json tenant requests | jq -r '[.data[].key] | sort | .[0] // ""')
-if [[ -n "$T_TRAF" && "$T_TRAF" == "$T_REQ" ]]; then
-  pass "a tenant's key is the same under traffic and requests"
+# Not "the top key matches" — the two metrics rank different populations, so
+# comparing their first entries compares different tenants and fails for no
+# reason. The invariant is that a tenant's identity is a NAMESPACE whichever
+# metric is selected, so that switching metric does not invalidate whatever
+# was chosen.
+BAD_KEYS=""
+for m in traffic requests latency; do
+  K=$(subjects_json tenant "$m" | jq -r '[.data.subjects[].key] | map(select(startswith("tenant-") | not)) | join(",")')
+  [[ -n "$K" ]] && BAD_KEYS="$BAD_KEYS $m:[$K]"
+done
+if [[ -z "$BAD_KEYS" ]]; then
+  pass "a tenant's key is a namespace under traffic, requests and latency"
 else
-  fail "tenant key changes with the metric: traffic='$T_TRAF' requests='$T_REQ'"
+  fail "tenant keys are not namespaces under every metric:$BAD_KEYS"
 fi
-RN=$(subjects_json route traffic | jq -r '[.data[].name] | join(" | ")')
+RN=$(subjects_json route traffic | jq -r '[.data.subjects[].name] | join(" | ")')
 case "$RN" in
   *kubernetescrd*) fail "route picker shows raw service ids: $RN" ;;
   *)               pass "route picker shows readable names" ;;
