@@ -65,8 +65,12 @@ export const TENANT_SEARCH_REGISTRY: readonly RegistryEntry[] = [
   { id: 'private-workers', label: 'Private Workers', group: 'Access', to: '/private-workers',
     keywords: ['tunnel', 'remote', 'own server', 'connect', 'token', 'byo node'] },
 
-  { id: 'resource-usage', label: 'Resource Usage', group: 'Account', to: '/resource-usage',
-    keywords: ['cpu', 'memory', 'ram', 'storage', 'disk', 'bandwidth', 'quota', 'limits', 'metrics'] },
+  { id: 'monitoring-traffic', label: 'Traffic', group: 'Account', to: '/monitoring?tab=traffic',
+    keywords: ['traffic', 'bandwidth', 'egress', 'inbound', 'outbound', 'transfer', 'requests', 'latency', 'graph'] },
+  // Kept findable under its old name: somebody searching "resource usage"
+  // should land on the tab it became, not on nothing.
+  { id: 'resource-usage', label: 'Resource Usage', group: 'Account', to: '/monitoring?tab=resource-usage',
+    keywords: ['cpu', 'memory', 'ram', 'storage', 'disk', 'bandwidth', 'quota', 'limits', 'metrics', 'monitoring'] },
 
   { id: 'notifications', label: 'Notifications', group: 'Account', to: '/notifications',
     keywords: ['alerts', 'messages', 'inbox', 'updates'] },

@@ -1,5 +1,5 @@
 import { lazy, Suspense } from 'react';
-import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { MutationCache, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { TASK_CENTER_QUERY_KEY } from '@/hooks/use-task-center';
 import Layout from '@/components/layout/Layout';
@@ -86,8 +86,13 @@ export default function App() {
             <Route path="settings/zrok-providers" element={<ZrokProviders />} />
             <Route path="monitoring" element={<Monitoring />} />
             {/* The page was Resource Usage before Traffic joined it. Old links
-                and bookmarks keep working, landing on the tab they meant. */}
-            <Route path="resource-usage" element={<Monitoring defaultTab="resource-usage" />} />
+                and bookmarks redirect to the tab they meant — a redirect, not
+                a second mount, so Monitoring keeps exactly one canonical URL
+                and does not appear twice in search. */}
+            <Route
+              path="resource-usage"
+              element={<Navigate to="/monitoring?tab=resource-usage" replace />}
+            />
             <Route path="notifications" element={<Notifications />} />
             <Route path="notification-preferences" element={<NotificationPreferences />} />
             <Route path="user-settings" element={<UserSettings />} />

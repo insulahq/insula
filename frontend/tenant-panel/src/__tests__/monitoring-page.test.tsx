@@ -11,8 +11,11 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+// `?raw` rather than node:fs — this suite runs in a browser environment,
+// where node types are not available and `readFileSync` does not exist.
+import sidebarSrc from '../components/layout/Sidebar.tsx?raw';
+import appSrc from '../App.tsx?raw';
+import registrySrc from '../search/registry.ts?raw';
 
 vi.mock('@/components/traffic/TenantTrafficTab', () => ({
   default: () => <div data-testid="traffic-tab-stub">traffic</div>,
@@ -59,9 +62,10 @@ describe('tenant Monitoring page', () => {
     expect(screen.getByTestId('resource-tab-stub')).toBeInTheDocument();
   });
 
-  it('sends the legacy /resource-usage path to the tab it used to be', () => {
-    renderAt('/resource-usage', <Monitoring defaultTab="resource-usage" />);
-    expect(screen.getByTestId('resource-tab-stub')).toBeInTheDocument();
+  it('declares the legacy path as a REDIRECT, not a second mount', () => {
+    // Mounting the page at two URLs would give Monitoring two canonical
+    // addresses and list it twice in search.
+    expect(appSrc).toMatch(/path="resource-usage"[\s\S]{0,160}<Navigate to="\/monitoring\?tab=resource-usage" replace/);
   });
 
   it('ignores a nonsense ?tab= rather than rendering nothing', () => {
@@ -71,14 +75,11 @@ describe('tenant Monitoring page', () => {
 });
 
 describe('navigation targets resolve', () => {
-  const read = (rel: string): string =>
-    readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8');
-
   it('every sidebar link matches a declared route', () => {
     // A rename that misses one surface produces a link to nowhere, and the
     // only symptom is a blank page for whoever clicks it.
-    const sidebar = read('../components/layout/Sidebar.tsx');
-    const app = read('../App.tsx');
+    const sidebar = sidebarSrc;
+    const app = appSrc;
     const declared = new Set(
       [...app.matchAll(/<Route\s+path="([^"]+)"/g)].map(([, p]) => p.replace(/^\//, '')),
     );
@@ -91,12 +92,22 @@ describe('navigation targets resolve', () => {
   });
 
   it('the sidebar points at Monitoring, not the retired path', () => {
-    const sidebar = read('../components/layout/Sidebar.tsx');
-    expect(sidebar).toContain("to: '/monitoring'");
-    expect(sidebar).not.toContain("to: '/resource-usage'");
+    expect(sidebarSrc).toContain("to: '/monitoring'");
+    expect(sidebarSrc).not.toContain("to: '/resource-usage'");
   });
 
   it('keeps the legacy route declared so bookmarks still resolve', () => {
-    expect(read('../App.tsx')).toContain('path="resource-usage"');
+    expect(appSrc).toContain('path="resource-usage"');
+  });
+
+  it('every search registry target resolves to a declared route', () => {
+    const declared = new Set(
+      [...appSrc.matchAll(/<Route\s+path="([^"]+)"/g)].map(([, p]) => p.replace(/^\//, '')),
+    );
+    for (const [, to] of registrySrc.matchAll(/to:\s*'\/([^']*)'/g)) {
+      const path = to.split('?')[0];
+      if (path === '') continue;
+      expect(declared, `registry links /${path}`).toContain(path);
+    }
   });
 });

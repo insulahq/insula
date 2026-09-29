@@ -6,8 +6,9 @@
  * at the top of the Traffic tab is metered from the same wire the Resource
  * tab reports on.
  *
- * `/resource-usage` still resolves — bookmarks and older links land on the
- * Resource Usage tab instead of a 404.
+ * `/resource-usage` still resolves: App.tsx redirects it here with
+ * `?tab=resource-usage`, so bookmarks and older links land on the tab they
+ * meant instead of a 404, and this page keeps one canonical URL.
  */
 
 import { useMemo } from 'react';
@@ -25,17 +26,12 @@ const TABS: ReadonlyArray<{ key: Tab; label: string }> = [
   { key: 'resource-usage', label: 'Resource Usage' },
 ];
 
-export interface MonitoringProps {
-  /** Landing tab when the URL names none — used by the legacy route. */
-  readonly defaultTab?: Tab;
-}
-
-export default function Monitoring({ defaultTab = 'traffic' }: MonitoringProps = {}) {
+export default function Monitoring() {
   const [searchParams, setSearchParams] = useSearchParams();
   const requested = searchParams.get('tab');
   const activeTab: Tab = useMemo(
-    () => (requested && VALID.has(requested as Tab) ? (requested as Tab) : defaultTab),
-    [requested, defaultTab],
+    () => (requested && VALID.has(requested as Tab) ? (requested as Tab) : 'traffic'),
+    [requested],
   );
 
   const setActiveTab = (key: Tab): void => {
