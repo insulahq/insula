@@ -22,6 +22,7 @@ you, through the panel and notifications, when one of them goes wrong.
 
 | Tab | What it shows |
 |---|---|
+| **Traffic** | What moved over the wire — see [Traffic](#traffic) below |
 | **SLOs** | Service-level indicators and the rule table — the default view |
 | **Mail** | Mail-flow health |
 | **Active Alerts** | Current platform alerts |
@@ -31,8 +32,10 @@ you, through the panel and notifications, when one of them goes wrong.
 | **Storage Usage** | Storage consumption |
 | **Pods** | Pod-level view |
 
-SLOs is the landing tab because it answers "is the platform meeting its
-objectives right now", where Active Alerts only shows what has already fired.
+Traffic sits first, but **SLOs is still the landing tab**: opening a
+monitoring page should say whether anything is wrong, where traffic says what
+is happening — the question you ask second. Active Alerts only shows what has
+already fired.
 Every tab is linkable — append `?tab=<name>` (for example
 `/monitoring?tab=active-alerts`) and that tab opens instead.
 
@@ -103,6 +106,72 @@ and one slow page load would page you.
     expected while DNS is being set up — the platform does not order a
     certificate until the domain verifies. See
     [Domains and DNS](../admin/domains-and-dns.md#ssltls-tab).
+
+## Traffic
+
+**Monitoring → Traffic** answers "what moved over the wire, for whom, and
+when". Pick a time range, a breakdown, and a metric.
+
+| Break down by | Shows |
+|---|---|
+| **Cluster** | The whole cluster as one line, in and out |
+| **Node** | One line per node, or a single node's own NIC |
+| **Tenant** | One line per tenant, or one tenant in both directions |
+| **Pod** | A chosen tenant's pods |
+| **Ingress route** | One line per route |
+
+Metrics are **Traffic** (bytes), **Requests**, and **Avg latency**. Requests
+and latency are not offered for pods: Traefik counts per backend *service* and
+cannot know which pod replied. Asking for them anyway returns an error saying
+so rather than a flat zero line.
+
+### Two measurements that share a name
+
+Cluster and node traffic is the **host's own NIC**. Tenant and pod traffic is
+the **pod's own interface**. They do not add up to each other and are not
+meant to — a tenant is billed for what their pods moved, not for a share of
+the host, and no per-pod arithmetic can recover host-network traffic.
+
+Nothing here is tied to an interface called `eth0`. A node whose NIC is
+`ens3`, `enp1s0`, `eno1`, `bond0` or a bridge is measured exactly the same
+way.
+
+### Reading the chart
+
+- **Hover the plot** for an exact reading. The card is pinned to the top-left
+  and appears only while the pointer is over it.
+- **Orange markers** flag spikes; click one to zoom to it.
+- **Click a row** in the summary table to hide that series. It stays listed,
+  dimmed, so you can put it back.
+- **A gap is a gap.** An unmeasured interval breaks the line instead of
+  dropping to zero — a scrape that did not happen is not an hour of silence.
+- Times are shown in **your own timezone**.
+
+### Backups
+
+Backups the platform schedules run inside the tenant's namespace, so their
+upload looks like any other egress. The **Backups** control separates them:
+
+| Setting | Shows |
+|---|---|
+| **Included** | Everything together |
+| **Separate** | Serving traffic beside each backup class |
+| **Only** | Backup classes alone |
+
+Classes are tenant files, mailboxes, databases and system & secrets. If
+nothing was backed up in the range, the page says so rather than leaving you
+to wonder whether the split is broken.
+
+This egress is **not billed to the tenant** — see
+[Tenant backups](tenant-backups.md). The tenant's own Monitoring page does not
+draw it, because it would contradict the allowance shown above the chart.
+
+### Retention
+
+Detailed metrics are kept for **30 days**. Beyond that only the per-tenant
+daily egress rollup survives, and the page says which regime it is in: a
+wider request at any other breakdown is served short, and says so, rather
+than padding the missing months with zeroes.
 
 ## Dead pod records
 

@@ -13,6 +13,13 @@ This page is the operator's view: scheduling, retention, reading bundle status,
 and handling failures. The actual *restore* work — the shopping-cart
 picker — is in the [Admin guide → Backups & restore](../admin/backups-and-restore.md).
 
+!!! note "Backup traffic is not billed to the tenant"
+    A tenant's backup runs inside the tenant's own namespace, so its upload
+    to off-site storage is metered like any other egress. It is subtracted
+    from the tenant's monthly bandwidth before the meter accumulates — only
+    a backup the tenant starts themselves counts against their allowance.
+    See [Plans & subscriptions](../admin/plans-and-subscriptions.md#what-the-meter-counts).
+
 ## What a bundle contains
 
 Every bundle is split into four **components**:
