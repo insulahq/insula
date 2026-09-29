@@ -225,7 +225,7 @@ describe('retained plumbing must not inflate history', () => {
 
   it('selects ONLY the encapsulation for node-to-node, and never adds it to the wire', () => {
     const n2n = buildTrafficQuery({ ...base, scope: 'cluster', wireSubset: 'node-to-node' }).expr;
-    expect(n2n).toContain('interface=~"vxlan.*|wireguard\\.cali"');
+    expect(n2n).toContain('interface=~"vxlan.*|wireguard.*"');
     expect(n2n).toContain('id="/"');
   });
 
@@ -245,5 +245,48 @@ describe('retained plumbing must not inflate history', () => {
   it('keeps the exclusion on backup-class queries too', () => {
     const expr = buildTrafficQuery({ ...base, scope: 'backup-class', backupClass: 'files' }).expr;
     expect(expr).toContain('interface!~');
+  });
+});
+
+describe('every generated query is valid PromQL', () => {
+  // A PromQL string literal accepts only a fixed set of escapes. `\.` is not
+  // one of them, and VictoriaMetrics answers 422 — which reached the panel as
+  // "Unexpected error" with no chart at all.
+  const BAD_ESCAPE = /\\(?!\\|"|n|t|r|'|`)/;
+
+  const everyQuery = (): string[] => {
+    const base = { metric: 'traffic', direction: 'out', stepSeconds: 300 } as const;
+    const out: string[] = [];
+    for (const scope of ['cluster', 'node', 'tenant', 'pod', 'route'] as const) {
+      for (const metric of ['traffic', 'requests', 'latency'] as const) {
+        for (const subject of [undefined, 'tenant-alpha-example']) {
+          try {
+            out.push(buildTrafficQuery({ ...base, scope, metric, subject }).expr);
+          } catch { /* unsupported combinations are refused on purpose */ }
+        }
+      }
+    }
+    for (const wireSubset of ['node-to-node', 'offsite-backup'] as const) {
+      out.push(buildTrafficQuery({ ...base, scope: 'cluster', wireSubset }).expr);
+    }
+    for (const cls of Object.keys(BACKUP_CLASS_POD_RE) as Array<keyof typeof BACKUP_CLASS_POD_RE>) {
+      out.push(buildTrafficQuery({ ...base, scope: 'backup-class', backupClass: cls }).expr);
+    }
+    out.push(buildTrafficQuery({ ...base, scope: 'tenant', backups: 'exclude', subject: 'tenant-a-1' }).expr);
+    return out;
+  };
+
+  it('contains no escape a PromQL string literal would reject', () => {
+    for (const expr of everyQuery()) {
+      expect(BAD_ESCAPE.test(expr), expr).toBe(false);
+    }
+  });
+
+  it('balances every brace and quote', () => {
+    for (const expr of everyQuery()) {
+      expect((expr.match(/\{/g) ?? []).length, expr).toBe((expr.match(/\}/g) ?? []).length);
+      expect((expr.match(/"/g) ?? []).length % 2, expr).toBe(0);
+      expect((expr.match(/\(/g) ?? []).length, expr).toBe((expr.match(/\)/g) ?? []).length);
+    }
   });
 });

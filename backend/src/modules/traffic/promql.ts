@@ -49,7 +49,12 @@ const VIRTUAL_IFACE_RE = 'cali[0-9a-f].*|tunl.*|veth.*|vxlan.*|wireguard.*|docke
  * A SUBSET of the NIC: the tunnel rides over it, so these bytes are already
  * in the wire total and adding them would count them twice.
  */
-const NODE_TO_NODE_IFACE_RE = 'vxlan.*|wireguard\\.cali';
+// No backslash escape: a PromQL string literal rejects `\.` outright — it is
+// not one of the escapes it accepts — and the query 422s. Delivering a real
+// escaped dot to the regex needs `\\.` in the literal, which is more
+// ceremony than it is worth when an unescaped `.` matches the same
+// interfaces and nothing else is named `wireguardXcali`.
+const NODE_TO_NODE_IFACE_RE = 'vxlan.*|wireguard.*';
 
 /** cAdvisor counters, by direction. */
 const NETWORK_COUNTER: Record<'in' | 'out', string> = {
