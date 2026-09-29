@@ -126,13 +126,27 @@ daily figures survive. The longest range the API accepts is **400 days**.
 | **Cluster** | The whole cluster as one line, in and out |
 | **Node** | One line per node, or a single node's own NIC |
 | **Tenant** | One line per tenant, or one tenant in both directions |
-| **Pod** | A chosen tenant's pods |
+| **Pod** | Every pod, or one tenant's pods once a tenant is chosen |
 | **Ingress route** | One line per route |
 
 Metrics are **Traffic** (bytes), **Requests**, and **Avg latency**. Requests
 and latency are not offered for pods: Traefik counts per backend *service* and
 cannot know which pod replied. Asking for them anyway returns an error saying
 so rather than a flat zero line.
+
+### What a route is named
+
+A route row is named for its **domain and the tenant that owns it**. Where
+that is not knowable it is named for the tenant and the ingress object
+instead, never for a guessed domain.
+
+The limit is in the measurement, not the naming. Traefik counts per backend
+*service* and its counters carry no host: a tenant gets one ingress object
+holding all of its routes, and Traefik mints one service per route inside
+it, told apart by a hash of the match rule that cannot be turned back into a
+hostname. So a service maps to a domain exactly when the tenant serves one
+host — then every service of theirs serves it. Tenants with several hosts
+keep object naming. Rows that cannot be told apart at all are numbered.
 
 ### Two measurements that share a name
 

@@ -139,9 +139,9 @@ export default function TrafficPicker({
                     onClick={() => { onChange(o.key); setOpen(false); }}
                     className={clsx(
                       'flex w-full items-center justify-between gap-[18px] whitespace-nowrap rounded px-2.5 py-1.5',
-                      'text-left text-[13px] hover:bg-brand-50 hover:text-brand-700',
-                      'dark:hover:bg-brand-950/40 dark:hover:text-brand-300',
-                      o.key === value && 'bg-brand-50 text-brand-700 dark:bg-brand-950/40 dark:text-brand-300',
+                      'text-left text-[13px] hover:bg-brand-50 hover:text-brand-500',
+                      'dark:hover:bg-brand-950 dark:hover:text-brand-300',
+                      o.key === value && 'bg-brand-50 text-brand-500 dark:bg-brand-950 dark:text-brand-300',
                     )}
                   >
                     <span className="min-w-0 flex-1 truncate">{o.label}</span>

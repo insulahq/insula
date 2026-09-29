@@ -20,7 +20,7 @@ import {
   type TrafficFrame, type TrafficMetric, type TrafficScope,
   type TrafficSeries, type TrafficSubject, type TrafficUnit,
 } from '@insula/api-contracts';
-import { tenants, usageMetrics } from '../../db/schema.js';
+import { domains, ingressRoutes, tenants, usageMetrics } from '../../db/schema.js';
 import { queryRange, type VmClientOptions } from '../monitoring/vm-client.js';
 import {
   BACKUP_CLASS_POD_RE, buildTrafficQuery, UnsupportedTrafficQuery,
@@ -97,14 +97,37 @@ export function belongsToNested(service: string, nested: readonly string[]): boo
  * Traefik service that is its hash, which is the only thing distinguishing
  * two ingresses of the same name.
  */
+/**
+ * A series key carries its direction so that "out" and "in" for one subject
+ * are distinct rows. A SUBJECT does not have a direction — it is a node, a
+ * tenant, a pod, a route — so the picker must hand back the bare identity.
+ *
+ * Getting this wrong is invisible in a frame and fatal one request later:
+ * the panel echoes the key back as `subject`, the query becomes
+ * `node="out:sv1"` or `namespace="out:tenant-<slug>-<hash>"`, and every
+ * individual node, tenant, pod and route reads as "no traffic" while the
+ * breakdown above it is full of data.
+ */
+export function subjectIdOf(key: string): string {
+  return key.replace(/^(in|out):/, '');
+}
+
 export function disambiguateNames<T extends { key: string; name: string }>(series: T[]): T[] {
   const count = new Map<string, number>();
   for (const s of series) count.set(s.name, (count.get(s.name) ?? 0) + 1);
+  // Numbered, not hashed. Rows that collide are rows the measurement genuinely
+  // cannot tell apart — two routes inside one ingress object, say — and
+  // showing eight characters of a Traefik hash names them after an
+  // implementation detail the operator has no way to look up. A counter says
+  // the same thing ("these are different") without pretending to be an id.
+  // Ordering within a frame is deterministic, so the numbering is stable
+  // between refreshes of the same query.
+  const seen = new Map<string, number>();
   return series.map((s) => {
     if ((count.get(s.name) ?? 0) < 2) return s;
-    const bare = s.key.replace(/^(in|out):/, '').replace(/@[a-z]+$/, '');
-    const tail = /-([0-9a-f]{8,})$/.exec(bare)?.[1]?.slice(0, 8) ?? bare.slice(-8);
-    return { ...s, name: `${s.name} · ${tail}` };
+    const n = (seen.get(s.name) ?? 0) + 1;
+    seen.set(s.name, n);
+    return { ...s, name: `${s.name} #${n}` };
   });
 }
 
@@ -118,24 +141,77 @@ async function tenantNames(db: Database, namespaces: readonly string[]): Promise
   return new Map(rows.filter((r) => r.ns).map((r) => [r.ns, r.name]));
 }
 
+/** namespace → the hostnames its ingress serves. */
+async function tenantHosts(
+  db: Database, namespaces: readonly string[],
+): Promise<Map<string, string[]>> {
+  if (namespaces.length === 0) return new Map();
+  const rows = await db
+    .select({ ns: tenants.kubernetesNamespace, host: ingressRoutes.hostname })
+    .from(ingressRoutes)
+    .innerJoin(domains, eq(domains.id, ingressRoutes.domainId))
+    .innerJoin(tenants, eq(tenants.id, domains.tenantId))
+    .where(inArray(tenants.kubernetesNamespace, [...namespaces]));
+  const out = new Map<string, string[]>();
+  for (const r of rows) {
+    if (!r.ns || !r.host) continue;
+    const seen = out.get(r.ns) ?? [];
+    if (!seen.includes(r.host)) seen.push(r.host);
+    out.set(r.ns, seen);
+  }
+  return out;
+}
+
 /**
  * A Traefik service label is `<namespace>-<ingress>-<hash>@kubernetescrd`,
- * which is unreadable. Trim the provider suffix and the trailing hash, and
- * lead with the tenant's own name when the namespace is recognised.
+ * which tells an operator nothing. What they want is the domain.
+ *
+ * WHAT CAN AND CANNOT BE KNOWN. Traefik's counters carry `service` and
+ * nothing else — no host, no router (verified against the live store: the
+ * only labels are service/job/instance/node/code/method/protocol). A tenant
+ * gets ONE IngressRoute object holding all of its routes, and Traefik mints
+ * one service per route inside it, distinguished by a hash of the match rule
+ * that cannot be inverted. So a service maps to a host only when the tenant
+ * serves exactly one host — then every service of theirs necessarily serves
+ * it. That covers most tenants (21 of 27 on the reference cluster); the rest
+ * are named for their tenant and ingress object, because inventing a domain
+ * for them would be a guess presented as a fact.
  */
-export function prettyServiceName(service: string, nsToName: ReadonlyMap<string, string>): string {
-  const bare = service.replace(/@[a-z]+$/, '').replace(/-[0-9a-f]{16,}$/, '');
+export function prettyServiceName(
+  service: string,
+  nsToName: ReadonlyMap<string, string>,
+  nsToHosts: ReadonlyMap<string, readonly string[]> = new Map(),
+): string {
+  // Traefik appends a hash of the match rule. It is 20 hex here and 16 in
+  // other provider versions, so match 8 or more rather than pinning a width.
+  const bare = service.replace(/@[a-z]+$/, '').replace(/-[0-9a-f]{8,}$/, '');
   for (const [ns, name] of nsToName) {
     if (bare === ns || bare.startsWith(`${ns}-`)) {
+      const hosts = nsToHosts.get(ns) ?? [];
       const rest = bare.slice(ns.length).replace(/^-/, '').replace(/-ingress$/, '');
+      if (hosts.length === 1) {
+        // The HTTP-entrypoint router is a real distinction worth keeping —
+        // it is the one that redirects rather than serves.
+        const http = /-ingress-http$/.test(bare) || rest.endsWith('-http');
+        return `${hosts[0]} · ${name}${http ? ' (http)' : ''}`;
+      }
       return rest ? `${name} · ${rest}` : name;
     }
   }
-  return bare;
+  // Not a tenant namespace — `platform`, `mail`, and so on. Traefik names the
+  // object `<namespace>-<ingress>`, which doubles the namespace when the
+  // ingress is itself named after it (`platform-platform-ingress`). Collapse
+  // that and drop the `-ingress` suffix every one of them carries.
+  return bare
+    .replace(/^([a-z0-9-]+?)-\1-/, '$1-')
+    .replace(/-ingress$/, '');
 }
 
 function displayNameFor(
-  scope: TrafficScope, key: string, nsToName: ReadonlyMap<string, string>,
+  scope: TrafficScope,
+  key: string,
+  nsToName: ReadonlyMap<string, string>,
+  nsToHosts: ReadonlyMap<string, readonly string[]> = new Map(),
 ): string {
   if (scope === 'tenant') {
     const name = nsToName.get(key);
@@ -146,7 +222,7 @@ function displayNameFor(
     // that. Naming it for what it is does neither, and is a cleanup lead.
     return `${key} (no tenant record)`;
   }
-  if (scope === 'route') return prettyServiceName(key, nsToName);
+  if (scope === 'route') return prettyServiceName(key, nsToName, nsToHosts);
   return key;
 }
 
@@ -255,7 +331,7 @@ export async function fetchTrafficFrame(
     const nested = await nestedNamespaces(deps.db, req.restrictToNamespace);
     if (nested.length > 0) {
       for (let i = collected.length - 1; i >= 0; i--) {
-        const service = collected[i].key.replace(/^(in|out):/, '');
+        const service = subjectIdOf(collected[i].key);
         if (belongsToNested(service, nested)) collected.splice(i, 1);
       }
     }
@@ -273,8 +349,11 @@ export async function fetchTrafficFrame(
   }
 
   const nsToName = await tenantNames(deps.db, [...namespacesSeen]);
+  const nsToHosts = req.scope === 'route'
+    ? await tenantHosts(deps.db, [...namespacesSeen])
+    : new Map<string, string[]>();
   for (const s of collected) {
-    if (s.kind === 'subject') s.name = displayNameFor(req.scope, s.name, nsToName);
+    if (s.kind === 'subject') s.name = displayNameFor(req.scope, s.name, nsToName, nsToHosts);
   }
   // Both directions across a SUBJECT breakdown gives two series per subject.
   // Their keys differ but their names do not, so the table listed "SYSTEM"
@@ -513,7 +592,7 @@ export async function fetchTrafficSubjects(
   return frame.series
     .filter((s) => s.kind === 'subject')
     .map((s) => ({
-      key: s.key,
+      key: subjectIdOf(s.key),
       name: s.name,
       value: frame.unit === 'milliseconds' ? meanOf(s.points) : integrate(s.points, frame.stepSeconds),
       unit: frame.unit,
