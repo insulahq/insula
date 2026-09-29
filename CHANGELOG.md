@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.9.39] - 2026-09-29
+
 ### Fixed
 
 - **Historical traffic read up to 7× too high.** Dropping Calico's per-pod
