@@ -6,7 +6,7 @@ import { dropMaxCpu, sweepStaleLimitRangeMax } from './limitrange-sweep.js';
 
 /** What the k8s JS client actually hands back: the ceiling as `_default`. */
 const liveObject = () => ({
-  metadata: { name: 'tenant-acme-1a2b3c4d-cpu' },
+  metadata: { name: 'tenant-alpha-ns-cpu' },
   spec: {
     limits: [{
       type: 'Container',
@@ -54,10 +54,10 @@ describe('sweepStaleLimitRangeMax', () => {
   }) as never;
 
   it('rewrites only the namespaces that carry a max', async () => {
-    const withMax = new Set(['tenant-a-11111111', 'tenant-c-33333333']);
+    const withMax = new Set(['tenant-alpha-ns', 'tenant-gamma-ns']);
     const replaced: string[] = [];
     const res = await sweepStaleLimitRangeMax(
-      db(['tenant-a-11111111', 'tenant-b-22222222', 'tenant-c-33333333']),
+      db(['tenant-alpha-ns', 'tenant-beta-ns', 'tenant-gamma-ns']),
       {
         read: async (ns) => (withMax.has(ns)
           ? liveObject() as never
@@ -66,27 +66,27 @@ describe('sweepStaleLimitRangeMax', () => {
       },
     );
     expect(res.scanned).toBe(3);
-    expect(res.stripped).toEqual(['tenant-a-11111111', 'tenant-c-33333333']);
-    expect(replaced).toEqual(['tenant-a-11111111', 'tenant-c-33333333']);
+    expect(res.stripped).toEqual(['tenant-alpha-ns', 'tenant-gamma-ns']);
+    expect(replaced).toEqual(['tenant-alpha-ns', 'tenant-gamma-ns']);
   });
 
   it('one unreachable namespace does not stop the rest', async () => {
     const res = await sweepStaleLimitRangeMax(
-      db(['tenant-a-11111111', 'tenant-b-22222222']),
+      db(['tenant-alpha-ns', 'tenant-beta-ns']),
       {
         read: async (ns) => {
-          if (ns === 'tenant-a-11111111') throw new Error('boom');
+          if (ns === 'tenant-alpha-ns') throw new Error('boom');
           return liveObject() as never;
         },
         replace: vi.fn(async () => {}),
       },
     );
-    expect(res.failed).toEqual(['tenant-a-11111111']);
-    expect(res.stripped).toEqual(['tenant-b-22222222']);
+    expect(res.failed).toEqual(['tenant-alpha-ns']);
+    expect(res.stripped).toEqual(['tenant-beta-ns']);
   });
 
   it('a namespace with no LimitRange is skipped, not an error', async () => {
-    const res = await sweepStaleLimitRangeMax(db(['tenant-a-11111111']), {
+    const res = await sweepStaleLimitRangeMax(db(['tenant-alpha-ns']), {
       read: async () => null,
       replace: async () => { throw new Error('must not write'); },
     });
