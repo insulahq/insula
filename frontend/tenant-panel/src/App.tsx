@@ -28,7 +28,7 @@ const DatabaseManager = lazy(() => import('@/pages/DatabaseManager'));
 const SshKeys = lazy(() => import('@/pages/SshKeys'));
 const SftpUsers = lazy(() => import('@/pages/SftpUsers'));
 const PrivateWorkers = lazy(() => import('@/pages/PrivateWorkers'));
-const ResourceUsage = lazy(() => import('@/pages/ResourceUsage'));
+const Monitoring = lazy(() => import('@/pages/Monitoring'));
 const Notifications = lazy(() => import('@/pages/Notifications'));
 const NotificationPreferences = lazy(() => import('@/pages/NotificationPreferences'));
 const Placeholder = lazy(() => import('@/pages/Placeholder'));
@@ -84,7 +84,10 @@ export default function App() {
             <Route path="settings/mtls-providers" element={<MtlsProviders />} />
             <Route path="settings/openziti-providers" element={<OpenZitiProviders />} />
             <Route path="settings/zrok-providers" element={<ZrokProviders />} />
-            <Route path="resource-usage" element={<ResourceUsage />} />
+            <Route path="monitoring" element={<Monitoring />} />
+            {/* The page was Resource Usage before Traffic joined it. Old links
+                and bookmarks keep working, landing on the tab they meant. */}
+            <Route path="resource-usage" element={<Monitoring defaultTab="resource-usage" />} />
             <Route path="notifications" element={<Notifications />} />
             <Route path="notification-preferences" element={<NotificationPreferences />} />
             <Route path="user-settings" element={<UserSettings />} />

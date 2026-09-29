@@ -28,7 +28,16 @@ import { useBandwidth, type TenantBandwidthUsage } from '@/hooks/use-bandwidth';
  * added alongside this phase; metrics come from the existing
  * useResourceMetrics hook.
  */
-export default function ResourceUsage() {
+export interface ResourceUsageProps {
+  /**
+   * Rendered inside Monitoring's tab strip, which already carries the page
+   * heading. Standalone it keeps its own, so the old route still reads as a
+   * page rather than a headless fragment.
+   */
+  readonly embedded?: boolean;
+}
+
+export default function ResourceUsage({ embedded = false }: ResourceUsageProps = {}) {
   const { tenantId } = useTenantContext();
   const { data: metricsData, isLoading: metricsLoading } = useResourceMetrics();
   const refresh = useRefreshMetrics();
@@ -51,11 +60,13 @@ export default function ResourceUsage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <Gauge size={28} className="text-gray-700 dark:text-gray-300" />
+          {!embedded && <Gauge size={28} className="text-gray-700 dark:text-gray-300" />}
           <div>
-            <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100" data-testid="resource-usage-heading">
-              Resource Usage
-            </h1>
+            {!embedded && (
+              <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100" data-testid="resource-usage-heading">
+                Resource Usage
+              </h1>
+            )}
             {plan && (
               <p className="text-sm text-gray-500 dark:text-gray-400">
                 Limits from your <span className="font-semibold">{plan.name}</span> plan

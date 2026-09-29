@@ -12,6 +12,50 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+
+- **Traffic monitoring, in both panels.** Admin: **Monitoring → Traffic**, the
+  first tab — cluster, per node, per tenant, per pod or per ingress route,
+  over any range, with traffic, request-rate and average-latency metrics. The
+  chart carries a pinned hover readout (only while the pointer is on the plot),
+  spike markers that zoom on click, and a summary table that doubles as the
+  legend: click a row to hide its series. Tenant: **Resource Usage** becomes
+  **Monitoring**, with **Traffic** and **Resource Usage** tabs — the included
+  traffic bar sits first, since it is the number the page exists to explain.
+  `/resource-usage` still resolves, landing on the tab it used to be. A
+  cluster in/out tile joins the admin dashboard's Platform row.
+
+  Every instant is rendered in the reader's own timezone. Detailed metrics are
+  kept 30 days; beyond that only the per-tenant daily egress rollup survives,
+  and the frame says which regime it is in rather than letting a rollup pass
+  for detail. An unmeasured bucket is drawn as a gap, never as zero — a scrape
+  that did not happen is not an hour of silence.
+
+  On the admin side a **Backups** control splits platform-scheduled backup
+  egress out of cluster traffic by class (tenant files, mailboxes, databases,
+  system), using the same pod-name matchers the bandwidth meter excludes on.
+  The tenant side has no such control: those backups are not billed to the
+  tenant, so drawing them would contradict the allowance above the chart.
+
+### Fixed
+
+- **Inbound traffic was never collected, and 84% of what was collected was
+  churn.** `container_network_receive_bytes_total` was absent from the cAdvisor
+  keep-list, so the platform had egress only and no chart could show an
+  inbound line. It is now kept — and paid for several times over by dropping
+  virtual interfaces (`cali*`, `vxlan*`, `veth*`, Calico's own
+  `wireguard.cali`, …), which cAdvisor attributes to the root cgroup once per
+  pod: **570 of 681** network series on the reference cluster. Net effect is
+  both directions collected at roughly a third of the previous cardinality.
+
+  Safe for billing by measurement rather than by argument: every series in a
+  `tenant-*` namespace carries `interface="eth0"` and nothing else, so the
+  meter's totals are untouched. Node and cluster traffic read the host's own
+  NIC from the root cgroup, and **no query or rule names an interface** — a
+  host whose NIC is `ens3`, `enp1s0`, `eno1`, `bond0` or a bridge is summed
+  exactly like one using `eth0`, which a keep-list for `eth0` would have
+  silently zeroed. No node-exporter is needed for any of it.
+
 ### Fixed
 
 - **Tenants were billed for backups the platform scheduled for them.** A

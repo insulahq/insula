@@ -17,12 +17,13 @@ import SortableHeader from '@/components/ui/SortableHeader';
 import StorageUsageTab from '@/components/StorageUsageTab';
 import NodeHealthPanel from '@/components/NodeHealthPanel';
 import SloTab from '@/components/SloTab';
+import TrafficTab from '@/components/traffic/TrafficTab';
 import MailTab from '@/components/monitoring/MailTab';
 
-type Tab = 'active-alerts' | 'alert-history' | 'activity' | 'health' | 'storage' | 'pods' | 'node-health' | 'slos' | 'mail';
+type Tab = 'traffic' | 'active-alerts' | 'alert-history' | 'activity' | 'health' | 'storage' | 'pods' | 'node-health' | 'slos' | 'mail';
 
 const VALID_TABS: ReadonlySet<Tab> = new Set([
-  'active-alerts', 'alert-history', 'activity', 'health', 'storage', 'pods', 'node-health', 'slos', 'mail',
+  'traffic', 'active-alerts', 'alert-history', 'activity', 'health', 'storage', 'pods', 'node-health', 'slos', 'mail',
 ]);
 
 interface Alert {
@@ -89,6 +90,7 @@ function splitAlerts(entries: readonly AuditLogEntry[]): {
 }
 
 const TABS: readonly { readonly key: Tab; readonly label: string }[] = [
+  { key: 'traffic', label: 'Traffic' },
   { key: 'slos', label: 'SLOs' },
   { key: 'mail', label: 'Mail' },
   { key: 'active-alerts', label: 'Active Alerts' },
@@ -268,6 +270,11 @@ export default function Monitoring() {
     // SLOs is the landing view: it answers "is the platform meeting its
     // objectives right now", where Active Alerts only shows what has already
     // fired. An explicit ?tab= (deep links from other surfaces) still wins.
+    //
+    // Traffic sits FIRST in the strip but is deliberately not the landing
+    // view. Opening a monitoring page should say whether anything is wrong;
+    // traffic says what is happening, which is the question you ask second.
+    // Flip this to 'traffic' if that ordering ever stops being true.
     return 'slos';
   }, [requested]);
   const setActiveTab = (key: Tab): void => {
@@ -383,6 +390,7 @@ export default function Monitoring() {
           <AlertTable alerts={[...recent, ...older]} isLoading={auditLoading} />
         )}
         {activeTab === 'health' && <HealthTab />}
+        {activeTab === 'traffic' && <TrafficTab />}
         {activeTab === 'slos' && <SloTab />}
         {activeTab === 'mail' && <MailTab />}
         {activeTab === 'storage' && <StorageUsageTab />}
