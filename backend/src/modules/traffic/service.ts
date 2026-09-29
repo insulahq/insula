@@ -84,6 +84,30 @@ export function belongsToNested(service: string, nested: readonly string[]): boo
   return nested.some((n) => service.startsWith(`${n}-`));
 }
 
+/**
+ * Make every series name unique.
+ *
+ * Three separate bugs in this feature shipped rows the reader could not tell
+ * apart — five "Tenant workloads sent", two "Node-to-node", and two Traefik
+ * services whose display name collapsed to the same thing once the hash was
+ * trimmed off. Each was fixed where it arose; this is the net underneath, so
+ * the next one is a cosmetic suffix rather than an unreadable table.
+ *
+ * The discriminator is the part of the key that actually differs — for a
+ * Traefik service that is its hash, which is the only thing distinguishing
+ * two ingresses of the same name.
+ */
+export function disambiguateNames<T extends { key: string; name: string }>(series: T[]): T[] {
+  const count = new Map<string, number>();
+  for (const s of series) count.set(s.name, (count.get(s.name) ?? 0) + 1);
+  return series.map((s) => {
+    if ((count.get(s.name) ?? 0) < 2) return s;
+    const bare = s.key.replace(/^(in|out):/, '').replace(/@[a-z]+$/, '');
+    const tail = /-([0-9a-f]{8,})$/.exec(bare)?.[1]?.slice(0, 8) ?? bare.slice(-8);
+    return { ...s, name: `${s.name} · ${tail}` };
+  });
+}
+
 /** namespace → tenant display name, for every namespace in the frame. */
 async function tenantNames(db: Database, namespaces: readonly string[]): Promise<Map<string, string>> {
   if (namespaces.length === 0) return new Map();
@@ -264,6 +288,10 @@ export async function fetchTrafficFrame(
       s.name = `${s.name} · ${dir}`;
     }
   }
+
+  const deduped = disambiguateNames(collected);
+  collected.length = 0;
+  collected.push(...deduped);
 
   let series: TrafficSeries[];
   let othersFolded = 0;

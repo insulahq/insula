@@ -14,7 +14,7 @@ vi.mock('../monitoring/vm-client.js', () => ({
   queryInstant: () => Promise.resolve([]),
 }));
 
-const { fetchTrafficFrame } = await import('./service.js');
+const { fetchTrafficFrame, disambiguateNames } = await import('./service.js');
 
 const db = { select: () => ({ from: () => ({ where: () => Promise.resolve([]), then: (r: (v: unknown) => void) => r([]) }) }) } as never;
 const range = { from: new Date(Date.now() - 3_600_000), to: new Date() };
@@ -185,5 +185,49 @@ describe('row order', () => {
     expect(n2nOut).toBeGreaterThanOrEqual(0);
     expect(n2nIn).toBe(n2nOut + 1);
     expect(names.indexOf('Outbound (wire)')).toBeLessThan(names.indexOf('Inbound (wire)'));
+  });
+});
+
+describe('disambiguateNames', () => {
+  it('leaves unique names untouched', () => {
+    const rows = [{ key: 'a', name: 'Alpha' }, { key: 'b', name: 'Beta' }];
+    expect(disambiguateNames(rows).map((r) => r.name)).toEqual(['Alpha', 'Beta']);
+  });
+
+  it('separates two Traefik services whose trimmed names collide', () => {
+    // Real case: two ingresses of the same name in one namespace differ only
+    // by the hash, which prettyServiceName trims off.
+    const rows = [
+      { key: 'out:platform-platform-ingress-dfcb3e698c83816be48f@kubernetescrd', name: 'platform-platform-ingress' },
+      { key: 'out:platform-platform-ingress-bd9f21e8c15075f5f289@kubernetescrd', name: 'platform-platform-ingress' },
+    ];
+    const out = disambiguateNames(rows).map((r) => r.name);
+    expect(new Set(out).size).toBe(2);
+    expect(out[0]).toContain('dfcb3e69');
+    expect(out[1]).toContain('bd9f21e8');
+  });
+
+  it('falls back to the key tail when there is no hash to use', () => {
+    const rows = [{ key: 'x:one', name: 'Same' }, { key: 'x:two', name: 'Same' }];
+    expect(new Set(disambiguateNames(rows).map((r) => r.name)).size).toBe(2);
+  });
+
+  it('is applied to the frame, so no route view can repeat a name', async () => {
+    vi.resetModules();
+    vi.doMock('../monitoring/vm-client.js', () => ({
+      queryRange: () => Promise.resolve([
+        { labels: { service: 'platform-a-ingress-dfcb3e698c83816be48f@kubernetescrd' }, points: [[Math.floor(Date.now() / 1000), 1]] },
+        { labels: { service: 'platform-a-ingress-bd9f21e8c15075f5f289@kubernetescrd' }, points: [[Math.floor(Date.now() / 1000), 2]] },
+      ]),
+      queryInstant: () => Promise.resolve([]),
+    }));
+    const { fetchTrafficFrame: fresh } = await import('./service.js');
+    const frame = await fresh({
+      ...range, scope: 'route', metric: 'traffic', direction: 'out', backups: 'included',
+    }, { db });
+    const names = frame.series.map((s) => s.name);
+    expect(new Set(names).size, names.join(', ')).toBe(names.length);
+    vi.doUnmock('../monitoring/vm-client.js');
+    vi.resetModules();
   });
 });
