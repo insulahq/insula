@@ -34,7 +34,7 @@ describe('the cluster frame is two measurements, labelled', () => {
     // The wire is the ground truth, in both directions.
     expect(groups.get('wire')).toEqual(['Outbound (wire)', 'Inbound (wire)']);
     // Subsets of that same total — present, and marked so nothing adds them in.
-    expect(groups.get('wire-subset')).toContain('Node-to-node');
+    expect(groups.get('wire-subset')).toContain('Node-to-node (out)');
     expect(groups.get('wire-subset')).toContain('Off-site backup upload');
     // What each workload sent: double-counts through the shim, so it is a
     // separate group rather than a decomposition of the wire.
@@ -43,12 +43,27 @@ describe('the cluster frame is two measurements, labelled', () => {
     expect(groups.get('workload')).toContain('Backup · mail server snapshots');
   });
 
-  it('never repeats a series key, so the table cannot show a row twice', async () => {
+  it('never repeats a series key OR a series NAME', async () => {
+    // Unique keys are not enough: the table shows names, and the first
+    // build put five rows called "Tenant workloads sent" and two called
+    // "Node-to-node" in front of the operator. Only looking at it caught
+    // that — every assertion passed.
     const frame = await fetchTrafficFrame({
       ...range, scope: 'cluster', metric: 'traffic', direction: 'both', backups: 'included',
     }, { db });
     const keys = frame.series.map((s) => s.key);
+    const names = frame.series.map((s) => s.name);
     expect(new Set(keys).size).toBe(keys.length);
+    expect(new Set(names).size, `duplicate name in: ${names.join(', ')}`).toBe(names.length);
+  });
+
+  it('sums tenant serving into ONE line rather than one per namespace', async () => {
+    await fetchTrafficFrame({
+      ...range, scope: 'cluster', metric: 'traffic', direction: 'out', backups: 'included',
+    }, { db });
+    const serving = asked.filter((e) => e.includes('pod!~'));
+    expect(serving).toHaveLength(1);
+    expect(serving[0]).not.toContain('sum by (namespace)');
   });
 
   it('asks for the off-site and workload rows once, not once per direction', async () => {

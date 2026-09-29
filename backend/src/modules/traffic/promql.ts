@@ -149,6 +149,12 @@ export interface TrafficQueryInput {
    * Both are subsets of the wire and must never be added to it.
    */
   readonly wireSubset?: 'node-to-node' | 'offsite-backup';
+  /**
+   * Collapse to a single line instead of one per subject. "What tenant
+   * workloads sent" is one number; grouped by namespace it returned a row
+   * per tenant, every one of them carrying the same name.
+   */
+  readonly aggregate?: boolean;
 }
 
 /** Scopes that can answer a request/latency question at all. */
@@ -238,7 +244,10 @@ function traefikSelector(input: TrafficQueryInput): string {
   }
 }
 
-function groupLabelFor(scope: TrafficScope, hasSubject: boolean, metric: TrafficMetric): string | null {
+function groupLabelFor(
+  scope: TrafficScope, hasSubject: boolean, metric: TrafficMetric, aggregate?: boolean,
+): string | null {
+  if (aggregate) return null;
   if (scope === 'cluster') return null;
   if (scope === 'node') return hasSubject ? null : 'node';
   if (scope === 'route') return hasSubject ? null : 'service';
@@ -278,7 +287,7 @@ export function buildTrafficQuery(input: TrafficQueryInput): QuerySpec {
   if (input.metric === 'traffic') {
     const sel = networkSelector(input);
     const counter = NETWORK_COUNTER[input.direction];
-    const by = groupLabelFor(input.scope, Boolean(input.subject), input.metric);
+    const by = groupLabelFor(input.scope, Boolean(input.subject), input.metric, input.aggregate);
     const inner = `rate(${counter}{${sel}}[${win}])`;
     return { expr: by ? `sum by (${by}) (${inner})` : `sum(${inner})`, groupBy: by };
   }

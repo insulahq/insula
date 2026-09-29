@@ -322,7 +322,9 @@ function planQueries(
       {
         query: buildTrafficQuery({ ...base, wireSubset: 'node-to-node' }),
         kind: 'direction', fallbackKey: direction, keyPrefix: 'n2n',
-        nameOverride: 'Node-to-node', group: 'wire-subset',
+        // Named per direction like the wire rows above: two lines called
+        // "Node-to-node" tell the reader nothing about which is which.
+        nameOverride: `Node-to-node (${direction})`, group: 'wire-subset',
       },
       ...(direction === 'out' ? [{
         query: buildTrafficQuery({ ...base, wireSubset: 'offsite-backup' }),
@@ -331,8 +333,11 @@ function planQueries(
       }] : []),
       ...(direction === 'out' ? [
         {
-          query: buildTrafficQuery({ ...base, scope: 'tenant', backups: 'exclude' }),
-          kind: 'serving' as const, fallbackKey: 'serving',
+          // One line, not one per tenant: this row answers "how much of the
+          // wire was tenants serving", and the per-tenant breakdown is a
+          // scope of its own.
+          query: buildTrafficQuery({ ...base, scope: 'tenant', backups: 'exclude', aggregate: true }),
+          kind: 'serving' as const, fallbackKey: 'serving', keyPrefix: 'serving',
           nameOverride: 'Tenant workloads sent', group: 'workload' as const,
         },
         ...(Object.keys(BACKUP_CLASS_POD_RE) as Array<keyof typeof BACKUP_CLASS_POD_RE>).map((cls) => ({
