@@ -110,9 +110,18 @@ GET /api/v1/tenants/:id/traffic/subjects?…
 ```
 
 The tenant endpoints take the tenant from the **path**, where
-`requireTenantAccess` has already authorised it, and discard any `subject`,
-`scope` or `backups` the client sends that they may not use. An
-operator-only scope is a **403**, not an empty chart.
+`requireTenantAccess` has already authorised it. A `scope` only an operator
+may ask for is a **403**, not an empty chart, and `backups` is always forced
+to `included`.
+
+`subject` is handled per scope. For `tenant` and `pod` it is discarded and
+replaced by the caller's own namespace. For `route` it is *used* — a route is
+addressed by Traefik service, and no service equals the bare namespace — after
+being checked against the caller's namespace, including against namespaces
+**nested** inside it (`tenant-acme-<hash>` and
+`tenant-acme-<hash>-eu-<hash2>` are both legal, and the second begins with
+the first). Anything unowned is dropped, falling back to all of that tenant's
+routes.
 
 Schemas live in `@insula/api-contracts` (`traffic.ts`).
 

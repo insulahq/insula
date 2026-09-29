@@ -45,35 +45,45 @@ export function buildTimeline(fromMs: number, toMs: number, stepSeconds: number)
  * nothing for a window it has no data for — a pod that did not exist yet, a
  * scrape that failed — and writing that as zero draws a confident line along
  * the axis, which reads as "nothing happened" rather than "nothing is known".
+ *
+ * Each SAMPLE is assigned to its nearest bucket, rather than each bucket
+ * hunting for a sample. Hunting needs a search window, and any window wide
+ * enough to catch a sample that drifted is wide enough for two neighbouring
+ * buckets to catch the same one — which double-counted it in the totals.
+ * Narrowing the window on one side fixed that and introduced the opposite
+ * fault: a sample at the far edge of the LAST bucket, or anywhere at all when
+ * the step is odd, had no neighbour to catch it and was dropped.
+ *
+ * Assignment has neither failure. Every sample lands in exactly one bucket or
+ * none, no bucket depends on having a neighbour, and odd steps need no
+ * special case. Where two samples claim one bucket the closer one wins, so
+ * the result does not depend on the order VictoriaMetrics returned them in.
  */
 export function alignToTimeline(
   points: ReadonlyArray<readonly [number, number]>,
   timeline: readonly number[],
   stepSeconds: number,
 ): Array<number | null> {
-  const bySecond = new Map<number, number>();
-  for (const [t, v] of points) if (Number.isFinite(v)) bySecond.set(Math.round(t), v);
-  // The search window is HALF-OPEN: back to `sec - tolerance` inclusive,
-  // forward to `sec + tolerance` EXCLUSIVE. Symmetric windows of exactly half
-  // a step overlap at the midpoint, so a sample landing there is found by both
-  // neighbouring buckets and the one measurement is counted twice — visible in
-  // the totals and in the subject ranking. At the daily rung that window is
-  // twelve hours wide on each side, which makes the tie far from theoretical.
-  const tolerance = Math.max(1, Math.floor(stepSeconds / 2));
-  return timeline.map((ms) => {
-    const sec = Math.round(ms / 1000);
-    const exact = bySecond.get(sec);
-    if (exact !== undefined) return exact;
-    for (let d = 1; d <= tolerance; d++) {
-      const lo = bySecond.get(sec - d);
-      if (lo !== undefined) return lo;
-      if (d < tolerance) {
-        const hi = bySecond.get(sec + d);
-        if (hi !== undefined) return hi;
-      }
-    }
-    return null;
-  });
+  const out: Array<number | null> = timeline.map(() => null);
+  if (timeline.length === 0 || stepSeconds <= 0) return out;
+
+  const originSec = timeline[0] / 1000;
+  const tolerance = Math.max(1, stepSeconds / 2);
+  const bestDrift: number[] = timeline.map(() => Number.POSITIVE_INFINITY);
+
+  for (const [t, v] of points) {
+    if (!Number.isFinite(v)) continue;
+    const idx = Math.round((t - originSec) / stepSeconds);
+    if (idx < 0 || idx >= timeline.length) continue;
+    const drift = Math.abs(t - (originSec + idx * stepSeconds));
+    // `<=` keeps an exact hit winning over nothing; strict `<` between two
+    // candidates keeps the first of an exact tie, which only happens when two
+    // samples sit equidistant either side of one bucket.
+    if (drift > tolerance || drift >= bestDrift[idx]) continue;
+    bestDrift[idx] = drift;
+    out[idx] = v;
+  }
+  return out;
 }
 
 /** Sum of a series over the frame, in the metric's base unit × seconds. */

@@ -14,7 +14,7 @@
  * have drawn a long quiet stretch that never happened.
  */
 
-import { and, eq, gte, inArray, lte, sql } from 'drizzle-orm';
+import { and, eq, gte, inArray, like, lte, ne, sql } from 'drizzle-orm';
 import {
   TRAFFIC_FINE_RETENTION_DAYS,
   type TrafficFrame, type TrafficMetric, type TrafficScope,
@@ -54,6 +54,34 @@ export function unitFor(metric: TrafficMetric): TrafficUnit {
 /** Oldest instant the metrics store can still answer for. */
 export function fineRetentionStart(now: Date): Date {
   return new Date(now.getTime() - TRAFFIC_FINE_RETENTION_DAYS * DAY_MS);
+}
+
+/**
+ * Tenant namespaces NESTED inside `namespace` — those beginning with it plus a
+ * hyphen.
+ *
+ * A namespace is `tenant-<slug>-<8 hex>`, and the slug comes from the tenant's
+ * name, so `tenant-acme-<hash>` and `tenant-acme-<hash>-eu-<hash2>` are
+ * both legal and the second begins with the first. Any ownership test that is
+ * only a string prefix therefore hands the nested tenant's routes to the outer
+ * one. The trailing hyphen defeats the `tenant-a` / `tenant-ab` case and does
+ * nothing about this one, so it is settled against the real list instead of
+ * against the shape of the string.
+ */
+export async function nestedNamespaces(db: Database, namespace: string): Promise<string[]> {
+  const rows = await db
+    .select({ nested: tenants.kubernetesNamespace })
+    .from(tenants)
+    .where(and(
+      like(tenants.kubernetesNamespace, `${namespace}-%`),
+      ne(tenants.kubernetesNamespace, namespace),
+    ));
+  return rows.map((r) => r.nested).filter((n): n is string => Boolean(n));
+}
+
+/** True when `service` belongs to one of the nested namespaces, not to us. */
+export function belongsToNested(service: string, nested: readonly string[]): boolean {
+  return nested.some((n) => service.startsWith(`${n}-`));
 }
 
 /** namespace → tenant display name, for every namespace in the frame. */
@@ -186,6 +214,16 @@ export async function fetchTrafficFrame(
     }
   }
   if (req.scope === 'tenant' && req.subject) namespacesSeen.add(req.subject);
+
+  if (req.scope === 'route' && req.restrictToNamespace) {
+    const nested = await nestedNamespaces(deps.db, req.restrictToNamespace);
+    if (nested.length > 0) {
+      for (let i = collected.length - 1; i >= 0; i--) {
+        const service = collected[i].key.replace(/^(in|out):/, '');
+        if (belongsToNested(service, nested)) collected.splice(i, 1);
+      }
+    }
+  }
 
   const nsToName = await tenantNames(deps.db, [...namespacesSeen]);
   for (const s of collected) {

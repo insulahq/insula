@@ -28,6 +28,9 @@ const NS_A = 'tenant-alpha-ns';
 const NS_B = 'tenant-beta-ns';
 const NS_BY_ID: Record<string, string> = { [TENANT_A]: NS_A, [TENANT_B]: NS_B };
 
+/** Namespaces nested inside NS_A; swapped per test. */
+let nestedRows: Array<{ nested: string }> = [];
+
 function makeDb(): unknown {
   let pending: unknown[] = [];
   const chain = (): Record<string, unknown> => {
@@ -38,11 +41,13 @@ function makeDb(): unknown {
   };
   return {
     select: (cols?: Record<string, unknown>) => {
-      // The only single-column select is the namespace lookup; the name map
-      // select asks for two.
-      pending = cols && Object.keys(cols).length === 1
-        ? [{ ns: NS_A }]
-        : [{ ns: NS_A, name: 'Alpha Ltd' }, { ns: NS_B, name: 'Beta Ltd' }];
+      const keys = cols ? Object.keys(cols) : [];
+      // Three different selects reach this fake, told apart by their shape:
+      // the namespace lookup (`ns`), the nested-namespace check (`nested`),
+      // and the display-name map (two columns).
+      if (keys.length === 1 && keys[0] === 'nested') pending = nestedRows;
+      else if (keys.length === 1) pending = [{ ns: NS_A }];
+      else pending = [{ ns: NS_A, name: 'Alpha Ltd' }, { ns: NS_B, name: 'Beta Ltd' }];
       return chain();
     },
   };
@@ -193,6 +198,34 @@ describe('tenant route scope (was entirely non-functional)', () => {
     );
     expect(res.statusCode).toBe(200);
     expect(asked.join(' ')).toContain(`service="${own}"`);
+  });
+
+  it('DROPS a route of a NESTED namespace, which the prefix test alone allows', async () => {
+    // `tenant-alpha-ns` and `tenant-alpha-ns-eu-ns` are both legal namespaces
+    // and the second begins with the first plus a hyphen, so a string-prefix
+    // ownership test hands the inner tenant's routes to the outer one. The
+    // trailing hyphen does not help here — only the real namespace list does.
+    nestedRows = [{ nested: `${NS_A}-eu-ns` }];
+    const theirs = `${NS_A}-eu-ns-web-abc@kubernetescrd`;
+    expect(theirs.startsWith(`${NS_A}-`)).toBe(true); // the prefix test would pass
+    const res = await call(
+      `/api/v1/tenants/${TENANT_A}/traffic/series?from=${FROM}&to=${TO}&scope=route&subject=${encodeURIComponent(theirs)}`,
+    );
+    expect(res.statusCode).toBe(200);
+    expect(asked.join(' ')).not.toContain(`service="${theirs}"`);
+    expect(asked.join(' ')).toContain(`service=~"${NS_A}-.+"`);
+    nestedRows = [];
+  });
+
+  it('still accepts the tenant’s own route when a nested namespace exists', async () => {
+    nestedRows = [{ nested: `${NS_A}-eu-ns` }];
+    const own = `${NS_A}-web-abc@kubernetescrd`;
+    const res = await call(
+      `/api/v1/tenants/${TENANT_A}/traffic/series?from=${FROM}&to=${TO}&scope=route&subject=${encodeURIComponent(own)}`,
+    );
+    expect(res.statusCode).toBe(200);
+    expect(asked.join(' ')).toContain(`service="${own}"`);
+    nestedRows = [];
   });
 
   it('DROPS a route belonging to somebody else rather than querying it', async () => {

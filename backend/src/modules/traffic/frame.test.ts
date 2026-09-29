@@ -148,3 +148,62 @@ describe('alignToTimeline never hands one sample to two buckets', () => {
     expect(integrate(aligned, step)).toBe(10 * step);
   });
 });
+
+describe('alignToTimeline edges the half-open window got wrong', () => {
+  it('keeps a drifted sample in the LAST bucket, which has no neighbour', () => {
+    // A per-bucket search that excluded its forward edge relied on the next
+    // bucket catching it; the last bucket has no next, so the sample vanished.
+    const step = 300; const t0 = 1_000_000_000;
+    expect(alignToTimeline([[t0 + 149, 42]], [t0 * 1000], step)).toEqual([42]);
+    expect(alignToTimeline([[t0 - 149, 42]], [t0 * 1000], step)).toEqual([42]);
+  });
+
+  it('treats exactly half a step PAST the last bucket as the next frame', () => {
+    // Nearest-bucket with ties going later: `to + step/2` rounds to a bucket
+    // this frame does not contain. Pulling it back would show the reader data
+    // from beyond the window they asked for, so it is dropped — the frame's
+    // coverage ends halfway past its last point.
+    const step = 300; const t0 = 1_000_000_000;
+    expect(alignToTimeline([[t0 + step / 2, 42]], [t0 * 1000], step)).toEqual([null]);
+    // …and the same instant IS kept once a bucket exists there.
+    expect(alignToTimeline([[t0 + step / 2, 42]], [t0 * 1000, (t0 + step) * 1000], step))
+      .toEqual([null, 42]);
+  });
+
+  it('keeps a boundary sample when the step is ODD', () => {
+    // With step 301 the neighbour's backward reach is 151 but its window is
+    // 150, so a sample at +150 belonged to neither bucket.
+    const step = 301; const t0 = 1_000_000_000;
+    const timeline = [t0 * 1000, (t0 + step) * 1000, (t0 + 2 * step) * 1000];
+    const aligned = alignToTimeline([[t0 + 150, 42]], timeline, step);
+    expect(aligned.filter((v) => v === 42)).toHaveLength(1);
+  });
+
+  it('still refuses to put one sample in two buckets', () => {
+    for (const step of [60, 300, 301, 86_400]) {
+      const t0 = 1_000_000_000;
+      const timeline = [t0 * 1000, (t0 + step) * 1000];
+      const aligned = alignToTimeline([[t0 + step / 2, 7]], timeline, step);
+      expect(aligned.filter((v) => v === 7), `step ${step}`).toHaveLength(1);
+    }
+  });
+
+  it('gives a bucket the CLOSER of two competing samples, whatever the order', () => {
+    const step = 300; const t0 = 1_000_000_000;
+    const near: [number, number] = [t0 + 10, 1];
+    const far: [number, number] = [t0 - 120, 2];
+    expect(alignToTimeline([near, far], [t0 * 1000], step)).toEqual([1]);
+    expect(alignToTimeline([far, near], [t0 * 1000], step)).toEqual([1]);
+  });
+
+  it('ignores a sample that belongs to no bucket at all', () => {
+    const step = 300; const t0 = 1_000_000_000;
+    const timeline = [t0 * 1000, (t0 + step) * 1000];
+    expect(alignToTimeline([[t0 - 10 * step, 9], [t0 + 10 * step, 9]], timeline, step))
+      .toEqual([null, null]);
+  });
+
+  it('survives an empty timeline without throwing', () => {
+    expect(alignToTimeline([[1, 1]], [], 300)).toEqual([]);
+  });
+});

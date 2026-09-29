@@ -2,10 +2,23 @@
  * Traffic endpoints.
  *
  * Two surfaces over one service. The admin surface takes a scope and a subject
- * as given; the tenant surface takes the tenant from the PATH — where
- * `requireTenantAccess` has already authorised it — and overwrites whatever
- * scope and subject the client sent. A tenant cannot name another tenant's
- * namespace here, because nothing they send is used to choose one.
+ * as given; the tenant surface takes the tenant from the PATH, where
+ * `requireTenantAccess` has already authorised it.
+ *
+ * What the tenant surface does with the client's own `subject` depends on the
+ * scope, and the difference is worth stating rather than leaving to be read
+ * out of the code:
+ *
+ *   • `tenant` and `pod` — the subject is DISCARDED and replaced by the path
+ *     tenant's namespace. A tenant cannot name another tenant's namespace
+ *     because nothing they send is used to choose one.
+ *   • `route` — the subject IS used, because a route is addressed by Traefik
+ *     service and no service equals the bare namespace. It is checked against
+ *     the caller's namespace first (`ownRouteOrNone`), and anything unowned
+ *     is dropped, falling back to "all of this tenant's routes".
+ *
+ * Scopes an operator alone may ask for are refused with 403, not answered
+ * with an empty chart.
  */
 
 import type { FastifyInstance } from 'fastify';
@@ -18,7 +31,9 @@ import { authenticate, requireRole, requireTenantAccess } from '../../middleware
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import { tenants } from '../../db/schema.js';
-import { fetchTrafficFrame, fetchTrafficSubjects } from './service.js';
+import {
+  belongsToNested, fetchTrafficFrame, fetchTrafficSubjects, nestedNamespaces,
+} from './service.js';
 import { isValidNamespace, UnsupportedTrafficQuery } from './promql.js';
 
 /** Zod issues → one operator-readable 400, rather than a wall of JSON. */
@@ -99,15 +114,16 @@ export async function trafficRoutes(app: FastifyInstance): Promise<void> {
     const q = parseOrThrow(trafficSeriesQuerySchema, request.query);
     const scope = assertTenantScope(q.scope);
     const namespace = await namespaceOfTenant(app, id);
+    // A route is addressed by Traefik SERVICE, which is never equal to the
+    // bare namespace — forcing the namespace in here selected nothing and
+    // rendered an empty chart that read as "no traffic". Route scope is
+    // confined by namespace instead, and a named route must belong to it.
+    const routeSubject = scope === 'route' ? await ownRouteOrNone(app, q.subject, namespace) : namespace;
     return success(await guard(() => fetchTrafficFrame({
       from: new Date(q.from),
       to: new Date(q.to),
       scope,
-      // A route is addressed by Traefik SERVICE, which is never equal to the
-      // bare namespace — forcing the namespace in here selected nothing and
-      // rendered an empty chart that read as "no traffic". Route scope is
-      // confined by namespace instead, and a named route must belong to it.
-      subject: scope === 'route' ? ownRouteOrNone(q.subject, namespace) : namespace,
+      subject: routeSubject,
       restrictToNamespace: namespace,
       pod: q.pod,
       metric: q.metric,
@@ -146,14 +162,25 @@ export async function trafficRoutes(app: FastifyInstance): Promise<void> {
 /**
  * A route the caller actually owns, or nothing.
  *
- * Traefik service labels start with the owning namespace, so ownership is
- * checkable without a lookup. Anything else is dropped rather than rejected:
- * a stale bookmark pointing at a route that has since been renamed should
- * show the tenant all their routes, not an error.
+ * Traefik service labels begin with the owning namespace, which makes the
+ * prefix necessary but NOT sufficient. A namespace is `tenant-<slug>-<8 hex>`
+ * and the slug comes from the tenant's name, so one namespace can legally
+ * begin with another plus a hyphen — `tenant-acme-<hash>` and
+ * `tenant-acme-<hash>-eu-<hash2>` — and a prefix test alone would hand the
+ * nested tenant's routes to the outer one. Contrived to arrange, but this is
+ * an authorisation check, and "the random suffix makes it unlikely" is not an
+ * argument an authorisation check should rest on.
+ *
+ * Anything unowned is dropped rather than rejected: a stale bookmark pointing
+ * at a route that has since been renamed should show the tenant all their
+ * routes, not an error.
  */
-function ownRouteOrNone(subject: string | undefined, namespace: string): string | undefined {
-  if (!subject) return undefined;
-  return subject.startsWith(`${namespace}-`) ? subject : undefined;
+async function ownRouteOrNone(
+  app: FastifyInstance, subject: string | undefined, namespace: string,
+): Promise<string | undefined> {
+  if (!subject || !subject.startsWith(`${namespace}-`)) return undefined;
+  const nested = await nestedNamespaces(app.db, namespace);
+  return belongsToNested(subject, nested) ? undefined : subject;
 }
 
 function assertTenantScope(scope: TrafficScope): TrafficScope {
