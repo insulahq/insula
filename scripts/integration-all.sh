@@ -323,6 +323,13 @@ PARALLEL=(
   # and the cap-enforcement redirect Middleware (inject on cap, remove on uncap)
   # on a disposable tenant's live IngressRoute. Self-provisions + trap cleanup.
   "bandwidth:integration-bandwidth-e2e.sh"
+  # Every traffic scope answers with DATA, and a subject picker's key selects
+  # the subject it names. Both tabs shipped with every individual view blank —
+  # pick a node, tenant, pod or route and the chart was empty — while the whole
+  # suite stayed green, because DEV held one tenant and no workloads and "the
+  # page renders" is satisfied by an empty page. Self-provisions a tenant,
+  # serves a host, drives real requests at it, trap cleanup.
+  "traffic-scopes:integration-traffic-scopes.sh"
   # File-manager recycle bin: a delete MOVES the file (gone from the
   # listing, present in the bin, bytes still charged to the tenant), restore
   # returns the original content to the original path recreating parents, a
