@@ -12,6 +12,75 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+
+- **Tenant file backups were still being refused, two releases after the fix
+  shipped.** The tier model briefly wrote `max.cpu` into every tenant
+  namespace's LimitRange. A LimitRange polices *every* container in the
+  namespace, and a tenant namespace is not only the tenant's — the platform
+  runs its own Jobs there. The file-backup Job declares 1.5 cores, so a
+  1-core `max` refused it at admission and the bundle finished **partial**
+  with the files silently missing.
+
+  The builder stopped writing `max` in 2026.9.38. That reconciled nothing: a
+  builder only takes effect when something applies it, and the only appliers
+  are provisioning a *new* namespace and the per-tenant **Apply** button. So
+  24 of 31 namespaces on the reference cluster kept their `max` and kept
+  failing their file backups nightly — 82 partial bundles against 9
+  completed over three days, and 22 active tenants with no completed bundle
+  in that window. A tenant whose backup took 9 seconds burned its full
+  29-minute deadline and produced nothing.
+
+  A startup reconciler now removes it, so pulling a release corrects the
+  cluster rather than only the next namespace. It is narrow by design: it
+  strips `max` and touches nothing else, because rewriting `default`
+  restamps at admission and would replace every running pod — which is why
+  applying a tier stays an operator action. `max` only ever refused
+  containers that *declare* a limit, so no tenant ceiling changes and
+  nothing restarts.
+
+- **Picking anything from a traffic subject picker showed no traffic.**
+  Individual node, tenant and route were all empty while the breakdown they
+  were chosen from was full, the tenant pod list came back empty, and
+  requests and latency were blank in the same places. On a breakdown each
+  series key carries its direction so "out" and "in" are separate rows, and
+  the picker handed those row ids back as the subject — so the next query
+  asked for `node="out:sv1"`, which matches nothing.
+
+- **A tenant meant something different under each metric.** Traefik counts
+  per backend service, so a tenant breakdown of requests or latency listed
+  raw service ids and changed the key space when the metric changed,
+  silently invalidating whatever was selected. Tenant series are keyed by
+  namespace under all three metrics now.
+
+- **"All pods" answered with `TRAFFIC_QUERY_UNSUPPORTED`** — the panel's own
+  default pod view met an error on arrival. With no tenant chosen it is now
+  every tenant pod, grouped by pod.
+
+- **Routes and objects were named after hashes.** Rows read
+  `platform-platform-ingress · dfcb3e69`: a rule hash the trim missed, a
+  namespace doubled by an object named after it, and an `-ingress` suffix
+  that distinguishes nothing. Routes now read as their domain and tenant
+  where that is knowable — Traefik exposes no host label, so it is knowable
+  exactly when a tenant serves one host — and rows that genuinely cannot be
+  told apart are numbered rather than hashed.
+
+- **The dashboard traffic card drew seven lines under a legend naming two,**
+  and took its scale from the largest of them, which pinned the two it names
+  flat along the bottom edge. It draws the wire pair, scaled to the wire
+  pair.
+
+- **The Traffic tab had no padding.** Every other Monitoring tab insets its
+  content by 20px inside the card that holds the tab strip; Traffic insets by
+  0, so its content ran to the border and the trend sparklines were clipped.
+
+- **Dark mode had no active state at all, in either panel.** Twelve places
+  referenced `brand-950` and the scale stopped at `brand-900`, so every dark
+  active and hover background — dropdown items, calendar days, range presets,
+  stat cards, the DNS drift modal — resolved to nothing. The token is defined
+  as the mockup's own dark surface. Chart lines also follow the mockup's
+  weight rather than being a quarter-point thinner.
+
 ## [2026.9.39] - 2026-09-29
 
 ### Fixed
