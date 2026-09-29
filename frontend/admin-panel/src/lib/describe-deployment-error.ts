@@ -21,17 +21,70 @@ import type { OperatorError } from '@insula/api-contracts';
  * — the raw string is always the last row.
  */
 
-/** Kubernetes quota keys → what a tenant calls them. */
-const RESOURCE_LABELS: Record<string, string> = {
-  'limits.cpu': 'CPU',
-  'requests.cpu': 'CPU',
-  'limits.memory': 'Memory',
-  'requests.memory': 'Memory',
-  'requests.storage': 'Storage',
-  'count/pods': 'Pods',
-  'count/services': 'Services',
-  persistentvolumeclaims: 'Volumes',
+/**
+ * Kubernetes quota keys → what a tenant calls them, and how that budget is
+ * charged.
+ *
+ * ★ The two CPU keys are DIFFERENT budgets and must not share a sentence.
+ *
+ * `requests.cpu` is what the tenant's apps RESERVE. `limits.cpu` is the
+ * ceiling budget: every container is charged its whole burst ceiling against
+ * it the moment it starts, used or not. Calling both of them "cpu" produced a
+ * message a tenant cannot act on — and worse, one they can disprove: it said
+ * two cores were "already in use" while their own usage page, correctly, read
+ * near zero. Neither number is usage. Nothing says which one it is unless
+ * this table does.
+ */
+interface ResourceKind {
+  /** Heading in the diagnostics table, and the noun in the title. */
+  readonly label: string;
+  /** The noun mid-sentence — what the app is asking for some of. */
+  readonly noun: string;
+  /** Whose budget this is. Completes "Of the 2 cores …". */
+  readonly budget: string;
+  /** What the used figure means. Completes "… already reserved". */
+  readonly charge: string;
+  /** Answers "but nothing is using that much!" — the whole point. */
+  readonly note?: string;
+  /** Overrides the "Not enough <label> in your plan" title. */
+  readonly title?: string;
+}
+
+const PLAN_BUDGET = 'your plan allows';
+
+const RESOURCE_KINDS: Record<string, ResourceKind> = {
+  'requests.cpu': {
+    label: 'CPU',
+    noun: 'reserved CPU',
+    // Not "your plan allows": on the share model this budget is sized by the
+    // platform from what the apps actually ask for, and only on the older
+    // model is it the plan's CPU figure. True either way.
+    budget: 'this account may reserve',
+    charge: 'reserved',
+    note: 'Reserved is not the same as in use: an app holds its reservation while it is idle, '
+      + 'so your usage figures can read near zero while this budget is full.',
+    title: 'No CPU reservation left for this app',
+  },
+  'limits.cpu': {
+    label: 'CPU ceiling',
+    noun: 'CPU ceiling',
+    budget: 'of CPU ceiling this account may commit',
+    charge: 'committed',
+    note: 'Every app is charged its full burst ceiling here the moment it starts, whether it '
+      + 'uses that much or not — so this fills up with idle apps.',
+    title: 'No CPU ceiling left for this app',
+  },
+  'requests.memory': { label: 'Memory', noun: 'memory', budget: PLAN_BUDGET, charge: 'reserved' },
+  'limits.memory': { label: 'Memory', noun: 'memory', budget: PLAN_BUDGET, charge: 'reserved' },
+  'requests.storage': { label: 'Storage', noun: 'storage', budget: PLAN_BUDGET, charge: 'used' },
+  'count/pods': { label: 'Pods', noun: 'pods', budget: PLAN_BUDGET, charge: 'running' },
+  'count/services': { label: 'Services', noun: 'services', budget: PLAN_BUDGET, charge: 'in use' },
+  persistentvolumeclaims: { label: 'Volumes', noun: 'volumes', budget: PLAN_BUDGET, charge: 'in use' },
 };
+
+function kindFor(key: string): ResourceKind {
+  return RESOURCE_KINDS[key] ?? { label: key, noun: key, budget: PLAN_BUDGET, charge: 'in use' };
+}
 
 const MIB_PER_GI = 1024;
 
@@ -67,16 +120,56 @@ function formatMiB(mib: number): string {
 }
 
 function formatCores(cores: number): string {
-  return cores < 1 ? `${Math.round(cores * 1000)}m` : `${Number(cores.toFixed(3))} cores`;
+  if (cores < 1) return `${Math.round(cores * 1000)}m`;
+  const n = Number(cores.toFixed(3));
+  return `${n} ${n === 1 ? 'core' : 'cores'}`;
 }
+/** Parse a plain object count (`count/pods`, `persistentvolumeclaims`). */
+function toCount(value: string): number | null {
+  const n = Number(value.trim());
+  return Number.isFinite(n) ? n : null;
+}
+
+function formatCount(n: number): string {
+  return `${n}`;
+}
+
+/**
+ * "2 cores are", "1 core is", "544Mi is".
+ *
+ * A formatted quantity is plural only when it names a countable unit and
+ * there is more than one of it; `544Mi` of memory is a mass noun and stays
+ * singular however large it gets.
+ */
+function agrees(formatted: string): string {
+  if (/cores$/.test(formatted)) return 'are';
+  if (/^\d+$/.test(formatted)) return Number(formatted) === 1 ? 'is' : 'are';
+  return 'is';
+}
+
 
 interface QuotaResource {
   readonly key: string;
   readonly label: string;
+  /**
+   * Quantities as Kubernetes wrote them — kept for the diagnostics table so
+   * the decoded numbers can always be checked against the raw ones.
+   */
   readonly requested: string;
   readonly used: string;
   readonly limit: string;
-  /** Headroom and shortfall, when the quantities parse. */
+  /**
+   * The same three, normalised and unit-suffixed, plus headroom and
+   * shortfall. Null when a quantity did not parse.
+   *
+   * ★ Mixing raw and formatted values is how the sentence came to read
+   * "only 0m of your 2 plan is free": `free` had been through the formatter
+   * and `limit` had not, so one number carried a unit and the other did not.
+   * Either every number in a sentence is formatted or none is.
+   */
+  readonly requestedF: string | null;
+  readonly usedF: string | null;
+  readonly limitF: string | null;
   readonly free: string | null;
   readonly shortBy: string | null;
 }
@@ -110,7 +203,10 @@ function parseQuotaResources(message: string): QuotaResource[] {
   const rows: QuotaResource[] = [];
 
   for (const key of Object.keys(requested)) {
-    const label = RESOURCE_LABELS[key] ?? key;
+    const { label } = kindFor(key);
+    // Memory is listed under both of its keys because tenant workloads set
+    // request == limit, so one row is right. The two CPU keys are different
+    // budgets with different labels, and both survive.
     if (seen.has(label)) continue;
     seen.add(label);
 
@@ -120,18 +216,28 @@ function parseQuotaResources(message: string): QuotaResource[] {
 
     let free: string | null = null;
     let shortBy: string | null = null;
+    let requestedF: string | null = null;
+    let usedF: string | null = null;
+    let limitF: string | null = null;
     const isCpu = key.endsWith('cpu');
-    const parse = isCpu ? toCores : toMiB;
-    const format = isCpu ? formatCores : formatMiB;
+    const isCount = !isCpu && (key.startsWith('count/') || key === 'persistentvolumeclaims');
+    const parse = isCpu ? toCores : isCount ? toCount : toMiB;
+    const format = isCpu ? formatCores : isCount ? formatCount : formatMiB;
     const pReq = parse(req);
     const pUse = parse(use);
     const pLim = parse(lim);
     if (pReq !== null && pUse !== null && pLim !== null) {
+      requestedF = format(pReq);
+      usedF = format(pUse);
+      limitF = format(pLim);
       free = format(Math.max(0, pLim - pUse));
       shortBy = format(Math.max(0, pReq - (pLim - pUse)));
     }
 
-    rows.push({ key, label, requested: req, used: use, limit: lim, free, shortBy });
+    rows.push({
+      key, label, requested: req, used: use, limit: lim,
+      requestedF, usedF, limitF, free, shortBy,
+    });
   }
 
   return rows;
@@ -167,25 +273,54 @@ function parseOperatorEnvelope(raw: string): OperatorError | null {
  * or the table is only ever built for whichever path happens to reach the
  * panel first.
  */
-const FORMATTED_QUOTA = /([A-Za-z ]+?):\s*requesting\s+(\S+?),\s*already using\s+(\S+?)\s+of\s+(\S+?)\s+limit/g;
+// `already (using|claimed)`: the backend said "using" for a long time, and
+// deployments still carry that wording in their stored lastError. A parser
+// that only knows the new phrasing would silently stop decoding every error
+// written before the change.
+const FORMATTED_QUOTA = /([A-Za-z ]+?):\s*requesting\s+(\S+?),\s*already (?:using|claimed)\s+(\S+?)\s+of\s+(\S+?)\s+limit/g;
+
+/**
+ * The backend's own label (`CPU limit`, `memory request`, …) back to the
+ * Kubernetes quota key it came from.
+ *
+ * ★ This is the fact the tenant-facing sentence needs and the old code threw
+ * away: "CPU limit" and "CPU request" are two different budgets, and both
+ * were being flattened to the label "CPU".
+ */
+function keyForFormattedLabel(raw: string): string {
+  const l = raw.trim().toLowerCase();
+  if (l.includes('cpu')) return l.includes('limit') ? 'limits.cpu' : 'requests.cpu';
+  if (l.includes('memory')) return l.includes('limit') ? 'limits.memory' : 'requests.memory';
+  if (l.includes('storage')) return 'requests.storage';
+  if (l.includes('pod')) return 'count/pods';
+  if (l.includes('service')) return 'count/services';
+  if (l.includes('pvc') || l.includes('volume')) return 'persistentvolumeclaims';
+  return raw.trim();
+}
 
 function parseFormattedQuota(message: string): QuotaResource[] {
   const seen = new Set<string>();
   const rows: QuotaResource[] = [];
   for (const m of message.matchAll(FORMATTED_QUOTA)) {
-    // "memory limit" / "memory request" both describe one resource to a
-    // tenant; the distinction is Kubernetes' bookkeeping, not theirs.
-    const label = /cpu/i.test(m[1]) ? 'CPU' : /memory/i.test(m[1]) ? 'Memory' : /storage/i.test(m[1]) ? 'Storage' : m[1].trim();
+    // "memory limit" / "memory request" are one resource to a tenant — that
+    // distinction really is Kubernetes' bookkeeping. The two CPU budgets are
+    // not: one is what the apps reserve, the other is what they may burst to.
+    const key = keyForFormattedLabel(m[1]);
+    const { label } = kindFor(key);
     if (seen.has(label)) continue;
     seen.add(label);
     const [, , requested, used, limit] = m;
-    const isCpu = label === 'CPU';
-    const parse = isCpu ? toCores : toMiB;
-    const format = isCpu ? formatCores : formatMiB;
+    const isCpu = key.endsWith('cpu');
+    const isCount = !isCpu && (key.startsWith('count/') || key === 'persistentvolumeclaims');
+    const parse = isCpu ? toCores : isCount ? toCount : toMiB;
+    const format = isCpu ? formatCores : isCount ? formatCount : formatMiB;
     const pReq = parse(requested), pUse = parse(used), pLim = parse(limit);
     const known = pReq !== null && pUse !== null && pLim !== null;
     rows.push({
-      key: label, label, requested, used, limit,
+      key, label, requested, used, limit,
+      requestedF: known ? format(pReq!) : null,
+      usedF: known ? format(pUse!) : null,
+      limitF: known ? format(pLim!) : null,
       free: known ? format(Math.max(0, pLim! - pUse!)) : null,
       shortBy: known ? format(Math.max(0, pReq! - (pLim! - pUse!))) : null,
     });
@@ -265,36 +400,51 @@ function quotaError(
 
     const diagnostics: Record<string, unknown> = {};
     for (const r of rows) {
+      const k = kindFor(r.key);
       diagnostics[`${r.label} requested`] = r.requested;
-      diagnostics[`${r.label} already in use`] = r.used;
-      diagnostics[`${r.label} plan limit`] = r.limit;
+      diagnostics[`${r.label} already ${k.charge}`] = r.used;
+      diagnostics[`${r.label} limit`] = r.limit;
+      // The quota key itself: the one fact that says which budget this is,
+      // and the first thing worth quoting to a provider.
+      diagnostics[`${r.label} quota key`] = r.key;
       if (r.free !== null) diagnostics[`${r.label} free`] = r.free;
       if (r.shortBy !== null) diagnostics[`${r.label} short by`] = r.shortBy;
     }
     Object.assign(diagnostics, fields);
     diagnostics['Raw error'] = trimmed;
 
-    // "already in use" is the honest phrase: the number includes reservations
-    // the tenant cannot see on this page (an init container is charged for the
-    // life of its pod), so "your other apps use X" would be a claim we cannot
-    // stand behind.
-    const detail = primary
+    // Numbers go in subject position so singular and plural agree without a
+    // special case, and every one of them carries its unit.
+    const kind = primary ? kindFor(primary.key) : null;
+    const detail = primary && kind
       ? primary.free !== null
-        ? `This app asks for ${primary.requested} of ${primary.label.toLowerCase()}, but only ${primary.free} of your ${primary.limit} plan is free — ${primary.used} is already in use.`
-        : `This app asks for ${primary.requested} of ${primary.label.toLowerCase()}, which is more than your ${primary.limit} plan allows (${primary.used} already in use).`
+        ? `This app asks for ${primary.requestedF} of ${kind.noun}. Of the ${primary.limitF} `
+          + `${kind.budget}, ${primary.free} is free — ${primary.usedF} `
+          + `${agrees(primary.usedF ?? '')} already ${kind.charge}.`
+          + (kind.note ? ` ${kind.note}` : '')
+        : `This app asks for ${primary.requested} of ${kind.noun}, which is more than the `
+          + `${primary.limit} ${kind.budget} (${primary.used} already ${kind.charge}).`
       : 'This app needs more resources than your plan allows.';
 
+    const nothingShort = !primary?.shortBy || primary.shortBy === '0Mi' || primary.shortBy === '0m'
+      || primary.shortBy === '0';
+    const ceiling = primary?.key === 'limits.cpu';
+    const how = ceiling ? 'by stopping or deleting another app' : 'by stopping, deleting, or shrinking another app';
     const remediation = [
-      primary?.shortBy && primary.shortBy !== '0Mi' && primary.shortBy !== '0m'
-        ? `Free at least ${primary.shortBy} by stopping, deleting, or shrinking another app.`
-        : 'Free up resources by stopping, deleting, or shrinking another app.',
-      'Or reduce this app’s resource request on the deployment form.',
+      nothingShort
+        ? `Free up capacity ${how}.`
+        : `Free at least ${primary?.shortBy} ${how}.`,
+      ceiling
+        // Shrinking will not help here: a container's ceiling comes from the
+        // account's plan, not from anything on the deployment form.
+        ? 'Stopping an app frees its whole ceiling, not just the CPU it was using.'
+        : 'Or reduce this app’s resource request on the deployment form.',
       'Or ask your provider to raise the plan limit.',
     ];
 
     const title = rows.length > 1
       ? 'Plan limit reached'
-      : `Not enough ${primary ? primary.label.toLowerCase() : 'capacity'} in your plan`;
+      : kind?.title ?? `Not enough ${kind ? kind.noun : 'capacity'} in your plan`;
 
     return {
       code: 'QUOTA_EXCEEDED',

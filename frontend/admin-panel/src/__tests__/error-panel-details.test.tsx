@@ -30,7 +30,7 @@ describe('ErrorPanel for a quota rejection', () => {
     const { container } = panel();
     expect(screen.getByText('Not enough memory in your plan')).toBeInTheDocument();
     expect(
-      screen.getByText(/only 480Mi of your 1Gi plan is free/),
+      screen.getByText(/Of the 1Gi your plan allows, 480Mi is free/),
     ).toBeInTheDocument();
     expect(container.textContent).not.toContain('"kind"');
     expect(container.textContent).not.toContain('apiVersion');
@@ -50,8 +50,8 @@ describe('ErrorPanel for a quota rejection', () => {
     expect(within(details).getByRole('table')).toBeInTheDocument();
     for (const [label, value] of [
       ['Memory requested', '512Mi'],
-      ['Memory already in use', '544Mi'],
-      ['Memory plan limit', '1Gi'],
+      ['Memory already reserved', '544Mi'],
+      ['Memory limit', '1Gi'],
       ['Memory free', '480Mi'],
       ['Memory short by', '32Mi'],
     ]) {

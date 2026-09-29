@@ -171,7 +171,9 @@ describe('generateTenantManifests', () => {
       kind: 'ResourceQuota',
       metadata: { name: 'acme-corp-quota', namespace: 'acme-corp' },
       spec: {
-        hard: { 'limits.cpu': '2', 'limits.memory': '4Gi' },
+        // CPU is a REQUEST budget. A `limits.cpu` here would charge each
+        // container its whole ceiling and cap how many the tenant may run.
+        hard: { 'requests.cpu': '2', 'limits.memory': '4Gi' },
         scopeSelector: {
           matchExpressions: [
             { scopeName: 'PriorityClass', operator: 'In', values: ['tenant-default'] },
@@ -468,7 +470,7 @@ describe('generateTenantManifests', () => {
     expect(rq).toMatchObject({
       spec: {
         hard: {
-          'limits.cpu': '4',
+          'requests.cpu': '4',
           'limits.memory': '8Gi',
         },
       },

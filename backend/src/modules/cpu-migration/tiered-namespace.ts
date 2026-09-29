@@ -18,24 +18,27 @@ import { type CpuTier } from '@insula/api-contracts';
 import { tierMillis } from './tiers.js';
 
 /**
- * How far above the per-container ceiling the quota's `limits.cpu` sits.
+ * ★ REMOVED: the namespace-wide `limits.cpu` budget (was burst x 4).
  *
- * ★ The two knobs fight, and this is the deliberate resolution. The quota caps
- * the SUM of declared container limits. If it equalled the tenant's burst
- * allowance — so any single app could use all of it — the first container
- * would consume the whole quota and the tenant's SECOND POD WOULD FAIL
- * ADMISSION. A tenant with three apps could not deploy the third.
+ * A ResourceQuota charges each container its whole CPU *ceiling* the moment
+ * it starts, used or not — so a budget of N ceilings is a cap of N
+ * CONTAINERS wearing the clothes of a CPU limit. On production it capped a
+ * starter tenant at two applications, refused the third, and then refused
+ * every rolling replacement too — a replacement needs a free slot while the
+ * old pod still holds its own — including the replacements its own
+ * migration was making, which deadlocked that migration mid-run. Two
+ * tenants were wedged and fourteen more were one application away.
  *
- * So the per-container ceiling is the full allowance (the common case stays
- * useful, and one runaway process is caught exactly), and the quota is a loose
- * backstop above it for the many-pods-pegged-at-once case.
+ * What bounds a noisy neighbour is the per-container ceiling in the
+ * LimitRange (`default` + `max`), which is untouched and is what ADR-062
+ * actually promised. The aggregate added nothing the per-container ceiling
+ * does not already give; before ADR-062 there was no CPU ceiling of any
+ * kind, so removing it is strictly closer to the prior behaviour.
  *
- * State the weakening plainly: tenant-wide use is NOT bounded at the burst
- * allowance. That stronger guarantee is not claimed. The rejected alternative
- * — dividing the allowance by an expected pod count — buys a tighter bound by
- * guessing a divisor and making the common case worse.
+ * An aggregate cap done properly would be sized from the tenant's live
+ * container count and widened as applications are added, the way
+ * `requests.cpu` already is. That is a different feature.
  */
-export const QUOTA_LIMITS_CPU_BACKSTOP = 4;
 
 /**
  * Floor for the quota's `requests.cpu`.
@@ -72,23 +75,6 @@ export interface TieredQuotaInput {
    * the namespace would not be frozen, but nothing could ever roll.
    */
   readonly largestPodMillis: number;
-  /**
-   * The sum of the CPU LIMITS the in-scope pods already carry, in
-   * millicores, from the live quota's `status.used['limits.cpu']`.
-   *
-   * ★ The same lesson as `liveUsedMillis`, on the other axis, and it took a
-   * second incident to notice. `limits.cpu` was sized purely as
-   * burst x BACKSTOP, which silently assumes a tenant never runs more than
-   * BACKSTOP containers at the ceiling. A tenant with five does, and
-   * Kubernetes ACCEPTS the too-small quota and then refuses every later pod.
-   * Re-applying a REDUCED ceiling to a tiered tenant walks straight into it:
-   * the pods still carry the old, larger limits until they are replaced.
-   *
-   * Absent (0) on a first migration, where no pod has a limit yet.
-   */
-  readonly liveUsedLimitMillis?: number;
-  /** The largest single in-scope pod's CPU LIMIT, in millicores. */
-  readonly largestPodLimitMillis?: number;
 }
 
 export function buildTieredQuotaHard(input: TieredQuotaInput): Record<string, string> {
@@ -110,17 +96,9 @@ export function buildTieredQuotaHard(input: TieredQuotaInput): Record<string, st
    * during a CPU migration. Re-stating a value we have no reason to change
    * bought nothing and risked that; a merge patch simply leaves it alone.
    */
-  // The backstop, or what the namespace already holds plus room for one more
-  // of its biggest pod — whichever is larger. Writing the backstop alone can
-  // land BELOW `used`, which freezes the namespace (see liveUsedLimitMillis).
-  const backstopMillis = Math.round(input.burstCores * QUOTA_LIMITS_CPU_BACKSTOP * 1000);
-  const heldMillis = (input.liveUsedLimitMillis ?? 0)
-    + Math.max(input.largestPodLimitMillis ?? 0, Math.round(input.burstCores * 1000));
-  const limitMillis = Math.max(backstopMillis, input.liveUsedLimitMillis ? heldMillis : 0);
-  return {
-    'requests.cpu': `${requestMillis}m`,
-    'limits.cpu': `${round2(limitMillis / 1000)}`,
-  };
+  // `requests.cpu` ONLY. The namespace never gains a `limits.cpu` — see the
+  // note where the backstop constant used to be.
+  return { 'requests.cpu': `${requestMillis}m` };
 }
 
 export interface LimitRangeInput {
@@ -128,21 +106,6 @@ export interface LimitRangeInput {
   /** The tenant's default tier — what an undeclared container requests. */
   readonly tier: CpuTier;
   readonly burstCores: number;
-  /**
-   * The largest CPU any in-scope container already declares, in millicores.
-   *
-   * ★ `max` must never invalidate a pod that is already running. Verified on
-   * a cluster: a LimitRange `max.cpu` rejects a container REQUESTING more
-   * than it — "must be less than or equal to cpu limit of 1" — so installing
-   * one at the burst ceiling would make an existing larger workload
-   * unschedulable, and the straggler sweep would delete such a pod and then
-   * be unable to recreate it. An outage caused by the migration itself.
-   *
-   * The policy bound is `default` (what an undeclared container gets); `max`
-   * only stops a NEW declaration going higher, so raising it to cover what
-   * already exists costs nothing and prevents that.
-   */
-  readonly largestDeclaredMillis: number;
 }
 
 export function buildTenantLimitRange(input: LimitRangeInput): {
@@ -150,8 +113,6 @@ export function buildTenantLimitRange(input: LimitRangeInput): {
   spec: { limits: ReadonlyArray<Record<string, unknown>> };
 } {
   const ceiling = `${round2(input.burstCores)}`;
-  const maxMillis = Math.max(Math.round(input.burstCores * 1000), input.largestDeclaredMillis);
-  const maxCpu = `${round2(maxMillis / 1000)}`;
   return {
     metadata: { name: `${input.namespace}-cpu`, namespace: input.namespace },
     spec: {
@@ -161,12 +122,48 @@ export function buildTenantLimitRange(input: LimitRangeInput): {
         // including custom containers and bring-your-own images, without
         // touching a tenant's manifests.
         defaultRequest: { cpu: `${tierMillis(input.tier)}m` },
-        // The ceiling. Memory is deliberately absent: a memory default here
-        // would collide with the Guaranteed request==limit model tenant pods
-        // already use, and memory is incompressible — see ADR-062.
-        default: { cpu: ceiling },
-        // >= ceiling, and never below what a container already declares.
-        max: { cpu: maxCpu },
+        /**
+         * The ceiling. Memory is deliberately absent: a memory default here
+         * would collide with the Guaranteed request==limit model tenant pods
+         * already use, and memory is incompressible — see ADR-062.
+         *
+         * ★ `_default`, NOT `default`. The Kubernetes JS client renames that
+         * reserved word: `_default` on the model is what it serialises to
+         * `default` on the wire. A plain `default` is not a model field, and
+         * the client DROPS it — silently, with a 201 back, leaving a
+         * LimitRange that sets a request and no ceiling at all.
+         *
+         * Measured in the running pod against the live API server:
+         *   {defaultRequest, default}        -> stored WITHOUT the ceiling
+         *   {defaultRequest, _default}       -> stored as `default: 2` ✓
+         *   {defaultRequest, default, max}   -> stored WITH the ceiling
+         * The third line is why this went unnoticed: while a `max` was also
+         * being written the ceiling came along with it, so removing `max`
+         * took the ceiling with it and every tenant became unbounded. Two
+         * bugs that cancelled out.
+         *
+         * Reading it back inverts the rename, so `.spec.limits[0]._default`
+         * is also what the READ paths must look at — `.default` there is
+         * undefined forever.
+         */
+        _default: { cpu: ceiling },
+        /**
+         * ★ NO `max`. A LimitRange polices EVERY container in the namespace,
+         * and a tenant namespace is not only the tenant's: the platform runs
+         * its own Jobs there. The file-backup Job declares 1.5 cores, so a
+         * `max` of 1 refused it outright — "maximum cpu usage per Container
+         * is 1, but limit is 1500m" — and the Job retried until its 29-minute
+         * deadline and died. Twenty-four of thirty-one namespaces silently
+         * stopped backing up their files; every other component succeeded, so
+         * the run reported `partial` rather than failed.
+         *
+         * `max` only refuses a container that DECLARES more than the ceiling.
+         * Under the tier model a tenant's own applications declare nothing —
+         * `default` above is what bounds them, at admission, and it is
+         * untouched. What `max` actually policed was the platform's own jobs
+         * and compose stacks that pin their own CPU, which ADR-036 allows on
+         * purpose. Neither was ever bounded before ADR-062.
+         */
       }],
     },
   };
