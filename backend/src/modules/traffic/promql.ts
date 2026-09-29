@@ -24,6 +24,38 @@
 
 import type { TrafficBackupClass, TrafficDirection, TrafficMetric, TrafficScope } from '@insula/api-contracts';
 
+/**
+ * Interfaces that are plumbing, not a wire.
+ *
+ * The scrape config drops these so they are never stored again — but the
+ * store keeps 30 days, and every one of those days already holds them. A
+ * query that trusts the scrape alone therefore reads correct data going
+ * forward and badly inflated data for a month: cAdvisor attributes one
+ * Calico veth per pod to the root cgroup, so cluster traffic measured 265 GB
+ * over a day that actually moved 46 GB, and 1.2 TB over a week that moved
+ * 164 GB.
+ *
+ * Excluding them HERE as well fixes history, and keeps the numbers right if
+ * anyone ever loosens the scrape rule. Listed by what is virtual rather than
+ * by keeping `eth0`, for the same reason as the scrape rule: a NIC is
+ * `ens3`/`enp1s0`/`eno1`/`bond0` on plenty of hosts.
+ */
+const VIRTUAL_IFACE_RE = 'cali[0-9a-f].*|tunl.*|veth.*|vxlan.*|wireguard.*|docker.*'
+  + '|br-.*|flannel.*|cni.*|dummy.*|nodelocaldns.*|kube-ipvs.*|lo';
+
+/**
+ * Calico's inter-node encapsulation — the only view of node-to-node traffic.
+ *
+ * A SUBSET of the NIC: the tunnel rides over it, so these bytes are already
+ * in the wire total and adding them would count them twice.
+ */
+// No backslash escape: a PromQL string literal rejects `\.` outright — it is
+// not one of the escapes it accepts — and the query 422s. Delivering a real
+// escaped dot to the regex needs `\\.` in the literal, which is more
+// ceremony than it is worth when an unescaped `.` matches the same
+// interfaces and nothing else is named `wireguardXcali`.
+const NODE_TO_NODE_IFACE_RE = 'vxlan.*|wireguard.*';
+
 /** cAdvisor counters, by direction. */
 const NETWORK_COUNTER: Record<'in' | 'out', string> = {
   in: 'container_network_receive_bytes_total',
@@ -47,9 +79,15 @@ const TRAEFIK_BYTES: Record<'in' | 'out', string> = {
  * `@insula/api-contracts` so a tenant workload cannot appear as one.
  */
 export const BACKUP_CLASS_POD_RE: Record<TrafficBackupClass, string> = {
-  files: 'bk-files-.+',
-  mailboxes: 'bk-mbox-.+',
+  // Both components of one tenant bundle — files on disk and the JMAP
+  // mailbox capture — so they are one line, not two.
+  'tenant-bundles': 'bk-(files|mbox)-.+',
+  // The mail SERVER's own snapshots, which is a different job from the
+  // mailbox component above and was not being counted at all.
+  'mail-snapshots': 'stalwart-snapshot-cron-.+',
   databases: 'barman-.+',
+  // Cluster state and secrets are one concern to an operator reading a
+  // chart, and separately they are a rounding error.
   system: 'platform-(cluster-state|secrets)-backup-.+',
 };
 
@@ -86,6 +124,9 @@ export interface QuerySpec {
   readonly groupBy: string | null;
 }
 
+/** The in-cluster relay every off-site backup upload passes through. */
+export const OFFSITE_SHIM_POD_RE = 'backup-rclone.+';
+
 export interface TrafficQueryInput {
   readonly scope: TrafficScope;
   readonly metric: TrafficMetric;
@@ -101,6 +142,19 @@ export interface TrafficQueryInput {
   readonly backupClass?: TrafficBackupClass;
   /** Confines a `route` scope to one namespace's services. */
   readonly namespacePrefix?: string;
+  /**
+   * A cluster sub-measurement instead of the plain wire total:
+   *  - `node-to-node` — Calico's encapsulation, what crossed BETWEEN nodes;
+   *  - `offsite-backup` — the rclone shim, what actually left for storage.
+   * Both are subsets of the wire and must never be added to it.
+   */
+  readonly wireSubset?: 'node-to-node' | 'offsite-backup';
+  /**
+   * Collapse to a single line instead of one per subject. "What tenant
+   * workloads sent" is one number; grouped by namespace it returned a row
+   * per tenant, every one of them carrying the same name.
+   */
+  readonly aggregate?: boolean;
 }
 
 /** Scopes that can answer a request/latency question at all. */
@@ -109,10 +163,28 @@ export const TRAEFIK_SCOPES: readonly TrafficScope[] = ['cluster', 'node', 'tena
 export class UnsupportedTrafficQuery extends Error {}
 
 function networkSelector(input: TrafficQueryInput): string {
-  const parts: string[] = [];
+  // Every network query carries it: a pod's own series is always `eth0`, so
+  // this costs real data nothing and removes the retained plumbing.
+  const parts: string[] = [`interface!~"${VIRTUAL_IFACE_RE}"`];
   switch (input.scope) {
     case 'cluster':
     case 'node':
+      if (input.wireSubset === 'offsite-backup') {
+        // Measured at the shim, not at the backup jobs: the jobs send to the
+        // shim over the pod network, and only the shim's egress leaves.
+        parts.length = 0;
+        parts.push(`interface!~"${VIRTUAL_IFACE_RE}"`);
+        parts.push(`pod=~"${OFFSITE_SHIM_POD_RE}"`);
+        break;
+      }
+      if (input.wireSubset === 'node-to-node') {
+        // Replace the exclusion: these are exactly the interfaces it drops.
+        parts.length = 0;
+        parts.push(`interface=~"${NODE_TO_NODE_IFACE_RE}"`);
+        parts.push('id="/"');
+        if (input.scope === 'node' && input.subject) parts.push(`node="${quoteLabel(input.subject)}"`);
+        break;
+      }
       // Root cgroup = the host's own interfaces. No `interface=` filter: see
       // the header. `node` is attached by the kubelet-cadvisor relabel rule.
       parts.push('id="/"');
@@ -172,7 +244,10 @@ function traefikSelector(input: TrafficQueryInput): string {
   }
 }
 
-function groupLabelFor(scope: TrafficScope, hasSubject: boolean, metric: TrafficMetric): string | null {
+function groupLabelFor(
+  scope: TrafficScope, hasSubject: boolean, metric: TrafficMetric, aggregate?: boolean,
+): string | null {
+  if (aggregate) return null;
   if (scope === 'cluster') return null;
   if (scope === 'node') return hasSubject ? null : 'node';
   if (scope === 'route') return hasSubject ? null : 'service';
@@ -212,7 +287,7 @@ export function buildTrafficQuery(input: TrafficQueryInput): QuerySpec {
   if (input.metric === 'traffic') {
     const sel = networkSelector(input);
     const counter = NETWORK_COUNTER[input.direction];
-    const by = groupLabelFor(input.scope, Boolean(input.subject), input.metric);
+    const by = groupLabelFor(input.scope, Boolean(input.subject), input.metric, input.aggregate);
     const inner = `rate(${counter}{${sel}}[${win}])`;
     return { expr: by ? `sum by (${by}) (${inner})` : `sum(${inner})`, groupBy: by };
   }

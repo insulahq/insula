@@ -84,6 +84,30 @@ export function belongsToNested(service: string, nested: readonly string[]): boo
   return nested.some((n) => service.startsWith(`${n}-`));
 }
 
+/**
+ * Make every series name unique.
+ *
+ * Three separate bugs in this feature shipped rows the reader could not tell
+ * apart — five "Tenant workloads sent", two "Node-to-node", and two Traefik
+ * services whose display name collapsed to the same thing once the hash was
+ * trimmed off. Each was fixed where it arose; this is the net underneath, so
+ * the next one is a cosmetic suffix rather than an unreadable table.
+ *
+ * The discriminator is the part of the key that actually differs — for a
+ * Traefik service that is its hash, which is the only thing distinguishing
+ * two ingresses of the same name.
+ */
+export function disambiguateNames<T extends { key: string; name: string }>(series: T[]): T[] {
+  const count = new Map<string, number>();
+  for (const s of series) count.set(s.name, (count.get(s.name) ?? 0) + 1);
+  return series.map((s) => {
+    if ((count.get(s.name) ?? 0) < 2) return s;
+    const bare = s.key.replace(/^(in|out):/, '').replace(/@[a-z]+$/, '');
+    const tail = /-([0-9a-f]{8,})$/.exec(bare)?.[1]?.slice(0, 8) ?? bare.slice(-8);
+    return { ...s, name: `${s.name} · ${tail}` };
+  });
+}
+
 /** namespace → tenant display name, for every namespace in the frame. */
 async function tenantNames(db: Database, namespaces: readonly string[]): Promise<Map<string, string>> {
   if (namespaces.length === 0) return new Map();
@@ -133,11 +157,19 @@ interface DirectionPlan {
 
 function directionPlans(req: TrafficRequest): DirectionPlan[] {
   if (req.metric !== 'traffic') return [{ direction: 'out', label: '' }];
-  // A backup split is about egress: these pods upload to off-site storage and
-  // receive almost nothing. Running both directions produced the split TWICE
-  // and two identically-named "Serving traffic" rows, which is what the
-  // end-to-end run on DEV actually showed.
-  if (req.backups !== 'included') return [{ direction: 'out', label: 'Outbound' }];
+  // A backup split is about egress: those pods upload and receive almost
+  // nothing, and running both directions produced the split twice.
+  //
+  // NOT on a cluster view. That path builds its own plans and already gates
+  // the egress-only rows on direction itself — applying this here silently
+  // deleted Inbound from the wire, which is the one row on the page that is
+  // definitionally not egress. The panel forces `separate` for cluster
+  // traffic, so this was every cluster view, and a query with the default
+  // `included` (what curl sends) still returned it — which is exactly why
+  // this survived an API check and only showed up on screen.
+  if (req.backups !== 'included' && req.scope !== 'cluster') {
+    return [{ direction: 'out', label: 'Outbound' }];
+  }
   if (req.direction === 'in') return [{ direction: 'in', label: 'Inbound' }];
   if (req.direction === 'out') return [{ direction: 'out', label: 'Outbound' }];
   return [{ direction: 'out', label: 'Outbound' }, { direction: 'in', label: 'Inbound' }];
@@ -184,7 +216,10 @@ export async function fetchTrafficFrame(
 
   const plans = directionPlans(req);
   const single = isSingleSubject(req);
-  const collected: Array<{ key: string; name: string; kind: TrafficSeries['kind']; points: Array<number | null> }> = [];
+  const collected: Array<{
+    key: string; name: string; kind: TrafficSeries['kind'];
+    group?: TrafficSeries['group']; points: Array<number | null>;
+  }> = [];
   const namespacesSeen = new Set<string>();
 
   for (const plan of plans) {
@@ -208,6 +243,7 @@ export async function fetchTrafficFrame(
           key: spec.keyPrefix ? `${spec.keyPrefix}:${rawKey}` : rawKey,
           name: spec.nameOverride ?? rawKey,
           kind: spec.kind,
+          group: spec.group,
           points: alignToTimeline(row.points, timeline, stepSeconds),
         });
       }
@@ -223,6 +259,17 @@ export async function fetchTrafficFrame(
         if (belongsToNested(service, nested)) collected.splice(i, 1);
       }
     }
+  }
+
+  // Frames are gathered direction-major (all of "out", then all of "in"),
+  // which scatters a pair like Node-to-node (out) / (in) either side of an
+  // unrelated row. Put each measurement's directions back together, keeping
+  // outbound first, without disturbing anything else.
+  if (collected.some((c) => c.group)) {
+    const rank = (key: string): number => ['wire:', 'n2n:', 'offsite', 'serving', 'backup']
+      .findIndex((p) => key.startsWith(p));
+    const dirRank = (key: string): number => (key.includes(':in') ? 1 : 0);
+    collected.sort((a, b) => (rank(a.key) - rank(b.key)) || (dirRank(a.key) - dirRank(b.key)));
   }
 
   const nsToName = await tenantNames(deps.db, [...namespacesSeen]);
@@ -242,10 +289,16 @@ export async function fetchTrafficFrame(
     }
   }
 
+  const deduped = disambiguateNames(collected);
+  collected.length = 0;
+  collected.push(...deduped);
+
   let series: TrafficSeries[];
   let othersFolded = 0;
   if (opts.noFold || single || req.backups !== 'included' || collected.every((s) => s.kind !== 'subject')) {
-    series = collected.map((s) => ({ key: s.key, name: s.name, kind: s.kind, points: s.points }));
+    series = collected.map((s) => ({
+      key: s.key, name: s.name, kind: s.kind, group: s.group, points: s.points,
+    }));
   } else {
     const folded = foldTail(collected.map((s) => ({ key: s.key, name: s.name, points: s.points })), unit, stepSeconds);
     series = folded.series;
@@ -271,6 +324,7 @@ interface PlannedQuery {
   readonly fallbackKey: string;
   readonly nameOverride?: string;
   readonly keyPrefix?: string;
+  readonly group?: TrafficSeries['group'];
 }
 
 /**
@@ -292,6 +346,58 @@ function planQueries(
     pod: req.pod,
     namespacePrefix: req.restrictToNamespace,
   };
+
+  // Backup traffic is ALWAYS its own series on a cluster view — it is not a
+  // mode to opt into. An operator reading cluster traffic needs to know how
+  // much of it is the platform backing itself up, every time, not only when
+  // they remember to ask.
+  // ── cluster traffic: the wire, its subsets, then the workload view ──
+  //
+  // Two measurements, deliberately not blended. The wire is what crossed the
+  // network. The workload rows are what each job SENT, which double-counts
+  // every backup byte (job → in-cluster shim → off-site) and misses nothing
+  // that stayed inside the node. Both are true; only one of them adds up,
+  // and the frame says which is which.
+  if (req.scope === 'cluster' && req.metric === 'traffic') {
+    const wire = (direction === 'in' ? 'Inbound' : 'Outbound');
+    return [
+      {
+        query: buildTrafficQuery({ ...base }),
+        kind: 'direction', fallbackKey: direction, keyPrefix: 'wire',
+        nameOverride: `${wire} (wire)`, group: 'wire',
+      },
+      {
+        query: buildTrafficQuery({ ...base, wireSubset: 'node-to-node' }),
+        kind: 'direction', fallbackKey: direction, keyPrefix: 'n2n',
+        // Named per direction like the wire rows above: two lines called
+        // "Node-to-node" tell the reader nothing about which is which.
+        nameOverride: `Node-to-node (${direction})`, group: 'wire-subset',
+      },
+      ...(direction === 'out' ? [{
+        query: buildTrafficQuery({ ...base, wireSubset: 'offsite-backup' }),
+        kind: 'direction' as const, fallbackKey: direction, keyPrefix: 'offsite',
+        nameOverride: 'Off-site backup upload', group: 'wire-subset' as const,
+      }] : []),
+      ...(direction === 'out' ? [
+        {
+          // One line, not one per tenant: this row answers "how much of the
+          // wire was tenants serving", and the per-tenant breakdown is a
+          // scope of its own.
+          query: buildTrafficQuery({ ...base, scope: 'tenant', backups: 'exclude', aggregate: true }),
+          kind: 'serving' as const, fallbackKey: 'serving', keyPrefix: 'serving',
+          nameOverride: 'Tenant workloads sent', group: 'workload' as const,
+        },
+        ...(Object.keys(BACKUP_CLASS_POD_RE) as Array<keyof typeof BACKUP_CLASS_POD_RE>).map((cls) => ({
+          query: buildTrafficQuery({ ...base, scope: 'backup-class', backupClass: cls }),
+          kind: 'backup-class' as const,
+          fallbackKey: cls,
+          nameOverride: BACKUP_CLASS_LABEL[cls],
+          keyPrefix: 'backup',
+          group: 'workload' as const,
+        })),
+      ] : []),
+    ];
+  }
 
   if (req.backups === 'included' || req.metric !== 'traffic') {
     const single = isSingleSubject(req);
@@ -327,10 +433,10 @@ function planQueries(
 }
 
 const BACKUP_CLASS_LABEL: Record<keyof typeof BACKUP_CLASS_POD_RE, string> = {
-  files: 'Backup · tenant files',
-  mailboxes: 'Backup · mailboxes',
+  'tenant-bundles': 'Backup · tenant bundles',
+  'mail-snapshots': 'Backup · mail server snapshots',
   databases: 'Backup · databases',
-  system: 'Backup · system & secrets',
+  system: 'Backup · cluster state & secrets',
 };
 
 /**

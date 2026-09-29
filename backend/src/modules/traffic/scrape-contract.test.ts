@@ -94,11 +94,20 @@ describe('interface drop list', () => {
     for (const nic of ['wt0', 'wg0', 'nb0']) expect(kept(NAME, nic), nic).toBe(true);
   });
 
-  it('drops CNI plumbing, including Calico’s own encapsulation', () => {
-    for (const v of ['cali0c0e0e9c695', 'calie7f2a1b3c4d', 'vxlan.calico', 'vxlan-v6.calico',
-      'wireguard.cali', 'tunl0', 'veth9a2b', 'docker0', 'br-1a2b3c', 'flannel.1', 'cni0',
-      'dummy0', 'nodelocaldns', 'kube-ipvs0', 'lo']) {
+  it('drops the per-pod CNI plumbing', () => {
+    for (const v of ['cali0c0e0e9c695', 'calie7f2a1b3c4d', 'tunl0', 'veth9a2b', 'docker0',
+      'br-1a2b3c', 'flannel.1', 'cni0', 'dummy0', 'nodelocaldns', 'kube-ipvs0', 'lo']) {
       expect(kept(NAME, v), v).toBe(false);
+    }
+  });
+
+  it('KEEPS Calico’s inter-node encapsulation — it is the node-to-node signal', () => {
+    // One or two series per node rather than per pod, so the cardinality
+    // argument that removes the veths does not apply. These are a subset of
+    // the NIC, which the queries account for; dropping them would leave
+    // node-to-node traffic unmeasurable.
+    for (const v of ['vxlan.calico', 'vxlan-v6.calico', 'wireguard.cali']) {
+      expect(kept(NAME, v), v).toBe(true);
     }
   });
 

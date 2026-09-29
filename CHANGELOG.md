@@ -12,6 +12,70 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+
+- **Historical traffic read up to 7× too high.** Dropping Calico's per-pod
+  veth series at scrape time fixed new data, but the metrics store keeps 30
+  days and every one of those days already held them — cAdvisor attributes
+  one veth per pod to the root cgroup. A day that moved 46 GB was reported as
+  265 GB; a week that moved 164 GB as 1.2 TB. The queries exclude them too
+  now, so history reads correctly and the numbers stay right if the scrape
+  rule is ever loosened.
+
+- **Inbound was missing from every cluster view.** Backup traffic is always
+  separated on that view, and the rule that a backup split runs one outbound
+  plan then applied to the whole frame. A direct API call with the default
+  `backups=included` returned the inbound series and looked correct — only
+  the panel, which forces `separate`, was affected.
+
+- **Inbound and outbound looked identical however far apart their values
+  were.** The chart stacked them, so "Inbound" was drawn at out+in: a line
+  parallel to Outbound. Directions of one subject are independent lines now;
+  only a breakdown across subjects stacks.
+
+- **The Traffic tab showed nothing but "Unexpected error."** A node-to-node
+  matcher used `\.` inside a PromQL string literal, which is not an escape
+  that literal accepts, so VictoriaMetrics rejected every request with 422.
+
+- **The summary table listed rows it could not tell apart** — five called
+  "Tenant workloads sent" and two called "Node-to-node". Tenant serving is
+  one aggregated line; node-to-node names its direction.
+
+### Changed
+
+- **The traffic UI matches the agreed design.** Compact stat tiles, the trend
+  sparkline column, row borders and a visible hover, the timezone pill inside
+  the plot, and a combined from/to picker with presets, two months of
+  calendar, a time per end and the resulting duration. The tenant Traffic tab
+  gains the four summary tiles it never had. Hiding a row now recalculates
+  every tile, including the spike count, so the tiles always describe the
+  chart above them.
+
+- **The cluster view is two labelled measurements rather than one blended
+  number.** Pod egress does not decompose the wire: backups travel job →
+  in-cluster relay → off-site, so those bytes are counted twice, and
+  pod-to-pod traffic never reaches the NIC. "At the wire" is the node's own
+  NIC; node-to-node and off-site backup upload are marked as subsets of it
+  and are never stacked into it; "what each workload sent" carries the
+  per-class detail under a heading that says what it is. Share is computed
+  within a group.
+
+- **Backup traffic is always its own series**, and the included/separate/only
+  selector is gone — how much of the cluster's traffic is the platform
+  backing itself up should not be a setting an operator has to find.
+
+- **Backup classes are named for what the jobs do.** `bk-files` and `bk-mbox`
+  are two components of one *tenant bundle*, so they are one line.
+  *Mail server snapshots* are a separate job that was not being counted at
+  all. Cluster state and secrets are combined.
+
+- **Monitoring opens on Traffic** in the admin panel.
+
+- **The chart is a shared component.** `TimeSeriesChart` owns gap handling,
+  the pinned readout, spike markers and stacking; the traffic chart is an
+  adapter over it, and the SLO panel cards now use it instead of a local
+  sparkline that drew straight through unmeasured intervals.
+
 ## [2026.9.38] - 2026-09-29
 
 ### Added

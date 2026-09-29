@@ -161,10 +161,12 @@ describe('Monitoring page', () => {
     expect(screen.getByText('2')).toBeInTheDocument();
   });
 
-  it('defaults to the SLOs tab', () => {
+  it('defaults to the Traffic tab', () => {
+    // Operator decision: opening Monitoring shows what the platform is
+    // doing; "is anything wrong" is one click away on SLOs or Active Alerts.
     render(<Monitoring />, { wrapper: createWrapper() });
-    expect(screen.getByTestId('tab-slos')).toHaveClass('border-brand-500');
-    expect(screen.getByTestId('tab-active-alerts')).not.toHaveClass('border-brand-500');
+    expect(screen.getByTestId('tab-traffic')).toHaveClass('border-brand-500');
+    expect(screen.getByTestId('tab-slos')).not.toHaveClass('border-brand-500');
   });
 
   it('honours an explicit ?tab= over the default', () => {

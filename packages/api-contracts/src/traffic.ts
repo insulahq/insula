@@ -44,8 +44,18 @@ export type TrafficDirection = z.infer<typeof trafficDirectionSchema>;
 export const trafficBackupModeSchema = z.enum(['included', 'separate', 'only']);
 export type TrafficBackupMode = z.infer<typeof trafficBackupModeSchema>;
 
-/** Which backup a `backup-class` series is. Pod-name prefixes, not guesses. */
-export const TRAFFIC_BACKUP_CLASSES = ['files', 'mailboxes', 'databases', 'system'] as const;
+/**
+ * Which backup a `backup-class` series is — named for what the job actually
+ * does, checked against the code rather than guessed from the pod prefix.
+ *
+ * `bk-files-*` and `bk-mbox-*` are two COMPONENTS of one tenant bundle (same
+ * `bundleId`, alongside config and secrets), so they are one class, not two.
+ * Mail-server snapshots are a separate thing entirely — `stalwart-snapshot-cron-*`
+ * — and were missing from the first cut.
+ */
+export const TRAFFIC_BACKUP_CLASSES = [
+  'tenant-bundles', 'mail-snapshots', 'databases', 'system',
+] as const;
 export const trafficBackupClassSchema = z.enum(TRAFFIC_BACKUP_CLASSES);
 export type TrafficBackupClass = z.infer<typeof trafficBackupClassSchema>;
 
@@ -106,12 +116,30 @@ export type TrafficUnit = z.infer<typeof trafficUnitSchema>;
  * than 0 — a scrape that did not happen is not an hour of silence, and drawing
  * it as zero invents a dip that never occurred.
  */
+/**
+ * Which measurement a series belongs to, and whether it can be added up.
+ *
+ * `wire` is the node's own NIC — the ground truth for what crossed the
+ * network. `wire-subset` is part of that same total seen another way
+ * (node-to-node encapsulation, the off-site backup upload): real, useful,
+ * and already inside `wire`, so adding it would double count.
+ *
+ * `workload` is measured at the pods. It does NOT decompose the wire:
+ * backups travel pod → in-cluster shim → off-site, so those bytes appear
+ * twice, and pod-to-pod traffic never reaches the NIC at all. Kept because
+ * it is the only per-class detail there is — labelled, not blended.
+ */
+export const trafficSeriesGroupSchema = z.enum(['wire', 'wire-subset', 'workload']);
+export type TrafficSeriesGroup = z.infer<typeof trafficSeriesGroupSchema>;
+
 export const trafficSeriesSchema = z.object({
   /** Stable identity: a node name, tenant id, pod name, `in`/`out`, a class. */
   key: z.string(),
   /** What to show a human. For a tenant this is their display name. */
   name: z.string(),
   kind: z.enum(['direction', 'subject', 'backup-class', 'serving', 'other']),
+  /** Absent means an ordinary single-measurement frame. */
+  group: trafficSeriesGroupSchema.optional(),
   points: z.array(z.number().nullable()),
 });
 export type TrafficSeries = z.infer<typeof trafficSeriesSchema>;

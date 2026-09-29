@@ -10,7 +10,7 @@
  */
 
 import { useMemo, useState } from 'react';
-import { Activity, ArrowUpDown, Gauge, Loader2 } from 'lucide-react';
+import { Loader2 } from 'lucide-react';
 import clsx from 'clsx';
 import type { TrafficMetric, TrafficScope } from '@insula/api-contracts';
 import { useTenantContext } from '@/hooks/use-tenant-context';
@@ -18,13 +18,20 @@ import { useBandwidth } from '@/hooks/use-bandwidth';
 import { useTrafficSeries, useTrafficSubjects } from '@/hooks/use-traffic';
 import { extractOperatorError } from '@/lib/extract-operator-error';
 import ErrorPanel from '@/components/ErrorPanel';
-import TrafficChart from './TrafficChart';
+import TrafficChart, { findSpikes } from './TrafficChart';
+import TrafficStats from './TrafficStats';
 import TrafficSummaryTable from './TrafficSummaryTable';
 import TrafficPicker from './TrafficPicker';
 import TrafficRangePicker, { presetRange, type RangeValue } from './TrafficRangePicker';
-import {
-  formatInstant, formatTrafficRate, formatTrafficVolume, utcOffsetLabel,
-} from '@/lib/format-traffic';
+import { formatInstant, formatTrafficRate, formatTrafficVolume } from '@/lib/format-traffic';
+
+/** "24 hours", "7 days" — what the first tile is a total OVER. */
+function spanLabel(r: { from: Date; to: Date }): string {
+  const hours = Math.round((r.to.getTime() - r.from.getTime()) / 3_600_000);
+  if (hours < 48) return `${hours} hours`;
+  const days = Math.round(hours / 24);
+  return days < 60 ? `${days} days` : `${Math.round(days / 30)} months`;
+}
 
 const SCOPES: ReadonlyArray<{ key: TrafficScope; label: string; subjectLabel: string }> = [
   { key: 'tenant', label: 'My account', subjectLabel: 'Direction' },
@@ -80,8 +87,37 @@ export default function TenantTrafficTab() {
     [subjects],
   );
 
+  const stats = useMemo(() => {
+    if (!frame) return null;
+    const step = frame.stepSeconds;
+    // Only the series still shown. Hiding a row is a way of asking "what
+    // does this look like without that" — tiles that ignored it answered a
+    // different question from the chart directly above them.
+    const shown = frame.series.filter((s) => !hidden.has(s.key));
+    if (shown.length === 0) return null;
+    const measuredAt = (i: number): boolean => shown.some((s) => s.points[i] !== null);
+    const perIndex = frame.times.map((_, i) => shown.reduce((a, s) => {
+      const v = s.points[i];
+      return v === null || v === undefined ? a : a + v;
+    }, 0));
+    const measured = perIndex.filter((_, i) => measuredAt(i));
+    const peak = measured.length ? Math.max(...measured) : 0;
+    const peakAt = frame.times[perIndex.indexOf(peak)];
+    const avg = measured.length ? measured.reduce((a, v) => a + v, 0) / measured.length : 0;
+    const total = perIndex.reduce((a, v) => a + v, 0) * step;
+    const sumOf = (name: string): number | null => {
+      const s = shown.find((x) => x.name === name);
+      return s ? s.points.reduce<number>((a, v) => a + (v ?? 0), 0) * step : null;
+    };
+    const spikes = findSpikes(perIndex.map((v, i) => (measuredAt(i) ? v : null))).length;
+    return { peak, peakAt, avg, total, spikes, out: sumOf('Outbound'), in: sumOf('Inbound') };
+  }, [frame, hidden]);
+
   const scopeMeta = SCOPES.find((s) => s.key === scope) ?? SCOPES[0];
-  const stacked = Boolean(frame) && frame!.unit !== 'milliseconds';
+  // See the admin tab: directions of one subject are independent lines, not
+  // parts of a whole. Only a breakdown across subjects stacks.
+  const singleSubject = scope === 'tenant' || Boolean(subject);
+  const stacked = Boolean(frame) && frame!.unit !== 'milliseconds' && !singleSubject;
   const operatorError = error ? extractOperatorError(error) : null;
 
   const pct = bandwidth
@@ -117,8 +153,8 @@ export default function TenantTrafficTab() {
         </div>
       )}
 
-      <div className="flex flex-wrap items-end gap-3">
-        <div className="min-w-[280px] flex-1"><TrafficRangePicker value={range} onChange={setRange} /></div>
+      <div className="flex flex-wrap items-end gap-x-3.5 gap-y-2.5">
+        <div className="min-w-[320px]"><TrafficRangePicker value={range} onChange={setRange} /></div>
         <div className="min-w-[180px]">
           <TrafficPicker
             id="tenant-traffic-scope"
@@ -174,6 +210,46 @@ export default function TenantTrafficTab() {
 
       {operatorError && <ErrorPanel error={operatorError} />}
 
+      {frame && stats && (
+        <TrafficStats stats={[
+          frame.unit === 'bytes' && stats.out !== null && stats.in !== null
+            ? {
+              key: 'outin',
+              label: 'Out / In',
+              value: `${formatTrafficVolume(stats.out, frame.unit)} / ${formatTrafficVolume(stats.in, frame.unit)}`,
+              sub: `over ${spanLabel(range)}`,
+            }
+            : {
+              key: 'total',
+              label: frame.unit === 'milliseconds' ? 'Average' : 'Total',
+              value: frame.unit === 'milliseconds'
+                ? formatTrafficRate(stats.avg, frame.unit)
+                : formatTrafficVolume(stats.total, frame.unit),
+              sub: `over ${spanLabel(range)}`,
+            },
+          {
+            key: 'peak',
+            label: frame.resolution === 'daily' ? 'Peak (daily)' : 'Peak',
+            value: formatTrafficRate(stats.peak, frame.unit),
+            sub: stats.peakAt ? formatInstant(stats.peakAt) : '—',
+          },
+          {
+            key: 'average',
+            label: 'Average',
+            value: formatTrafficRate(stats.avg, frame.unit),
+            sub: stats.avg > 0 ? `${(stats.peak / stats.avg).toFixed(1)}× peak-to-mean` : '—',
+          },
+          {
+            key: 'spikes',
+            label: 'Spikes flagged',
+            value: String(stats.spikes),
+            sub: stats.spikes ? 'click a marker to zoom' : 'none in this range',
+            alert: stats.spikes > 0,
+          },
+        ]}
+        />
+      )}
+
       {frame?.clamped && (
         <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800
           dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300"
@@ -210,9 +286,6 @@ export default function TenantTrafficTab() {
                 })}
               />
             </div>
-            <p className="mt-3 flex items-center gap-1.5 text-xs text-gray-500 dark:text-gray-400">
-              <Gauge size={12} /> Times shown in your own timezone ({utcOffsetLabel()}).
-            </p>
           </>
         )}
       </div>

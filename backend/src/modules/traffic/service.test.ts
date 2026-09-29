@@ -14,46 +14,76 @@ vi.mock('../monitoring/vm-client.js', () => ({
   queryInstant: () => Promise.resolve([]),
 }));
 
-const { fetchTrafficFrame } = await import('./service.js');
+const { fetchTrafficFrame, disambiguateNames } = await import('./service.js');
 
 const db = { select: () => ({ from: () => ({ where: () => Promise.resolve([]), then: (r: (v: unknown) => void) => r([]) }) }) } as never;
 const range = { from: new Date(Date.now() - 3_600_000), to: new Date() };
 
 beforeEach(() => { asked = []; });
 
-describe('backup split', () => {
-  it('produces ONE serving row, not one per direction', async () => {
-    // With direction 'both' the split ran twice and the table showed
-    // "Serving traffic" twice — seen on DEV before this was fixed.
-    const frame = await fetchTrafficFrame({
-      ...range, scope: 'cluster', metric: 'traffic', direction: 'both', backups: 'separate',
-    }, { db });
-    const serving = frame.series.filter((s) => s.name === 'Serving traffic');
-    expect(serving).toHaveLength(1);
-    expect(new Set(frame.series.map((s) => s.key)).size).toBe(frame.series.length);
-  });
-
-  it('asks for serving plus one query per backup class', async () => {
-    await fetchTrafficFrame({
-      ...range, scope: 'cluster', metric: 'traffic', direction: 'both', backups: 'separate',
-    }, { db });
-    expect(asked).toHaveLength(5);
-    expect(asked.filter((e) => e.includes('pod!~')).length).toBe(1);
-  });
-
-  it('asks only for the classes when the mode is "only"', async () => {
-    await fetchTrafficFrame({
-      ...range, scope: 'cluster', metric: 'traffic', direction: 'both', backups: 'only',
-    }, { db });
-    expect(asked).toHaveLength(4);
-    expect(asked.some((e) => e.includes('pod!~'))).toBe(false);
-  });
-
-  it('still draws both directions when backups are included', async () => {
+describe('the cluster frame is two measurements, labelled', () => {
+  it('reports the wire, its subsets, and the workload view — never blended', async () => {
     const frame = await fetchTrafficFrame({
       ...range, scope: 'cluster', metric: 'traffic', direction: 'both', backups: 'included',
     }, { db });
-    expect(frame.series.map((s) => s.name).sort()).toEqual(['Inbound', 'Outbound']);
+    const groups = new Map<string, string[]>();
+    for (const s of frame.series) {
+      const g = s.group ?? 'none';
+      groups.set(g, [...(groups.get(g) ?? []), s.name]);
+    }
+    // The wire is the ground truth, in both directions.
+    expect(groups.get('wire')).toEqual(['Outbound (wire)', 'Inbound (wire)']);
+    // Subsets of that same total — present, and marked so nothing adds them in.
+    expect(groups.get('wire-subset')).toContain('Node-to-node (out)');
+    expect(groups.get('wire-subset')).toContain('Off-site backup upload');
+    // What each workload sent: double-counts through the shim, so it is a
+    // separate group rather than a decomposition of the wire.
+    expect(groups.get('workload')).toContain('Tenant workloads sent');
+    expect(groups.get('workload')).toContain('Backup · tenant bundles');
+    expect(groups.get('workload')).toContain('Backup · mail server snapshots');
+  });
+
+  it('never repeats a series key OR a series NAME', async () => {
+    // Unique keys are not enough: the table shows names, and the first
+    // build put five rows called "Tenant workloads sent" and two called
+    // "Node-to-node" in front of the operator. Only looking at it caught
+    // that — every assertion passed.
+    const frame = await fetchTrafficFrame({
+      ...range, scope: 'cluster', metric: 'traffic', direction: 'both', backups: 'included',
+    }, { db });
+    const keys = frame.series.map((s) => s.key);
+    const names = frame.series.map((s) => s.name);
+    expect(new Set(keys).size).toBe(keys.length);
+    expect(new Set(names).size, `duplicate name in: ${names.join(', ')}`).toBe(names.length);
+  });
+
+  it('sums tenant serving into ONE line rather than one per namespace', async () => {
+    await fetchTrafficFrame({
+      ...range, scope: 'cluster', metric: 'traffic', direction: 'out', backups: 'included',
+    }, { db });
+    const serving = asked.filter((e) => e.includes('pod!~'));
+    expect(serving).toHaveLength(1);
+    expect(serving[0]).not.toContain('sum by (namespace)');
+  });
+
+  it('asks for the off-site and workload rows once, not once per direction', async () => {
+    // They are egress by nature; running them for inbound too produced
+    // duplicate identically-named rows the first time round.
+    await fetchTrafficFrame({
+      ...range, scope: 'cluster', metric: 'traffic', direction: 'both', backups: 'included',
+    }, { db });
+    // Match the SELECTOR, not any mention: the "tenant workloads" query also
+    // names these pods, in its exclusion.
+    expect(asked.filter((e) => e.includes('pod=~"backup-rclone'))).toHaveLength(1);
+    expect(asked.filter((e) => e.includes('pod=~"bk-(files|mbox)'))).toHaveLength(1);
+    expect(asked.filter((e) => e.includes('pod!~'))).toHaveLength(1);
+  });
+
+  it('leaves non-cluster scopes as a plain single measurement', async () => {
+    const frame = await fetchTrafficFrame({
+      ...range, scope: 'node', metric: 'traffic', direction: 'both', backups: 'included',
+    }, { db });
+    expect(frame.series.every((s) => s.group === undefined)).toBe(true);
   });
 });
 
@@ -116,6 +146,87 @@ describe('a subject breakdown across both directions', () => {
       ...range, scope: 'tenant', metric: 'traffic', direction: 'out', backups: 'included',
     }, { db });
     expect(frame.series[0].name).not.toMatch(/ · (in|out)$/);
+    vi.doUnmock('../monitoring/vm-client.js');
+    vi.resetModules();
+  });
+});
+
+describe('the cluster view keeps both directions', () => {
+  it('returns Inbound at the wire even when backups are separated', async () => {
+    // The panel forces `separate` for cluster traffic, and the
+    // egress-only rule for backup splits then removed Inbound from the
+    // wire — on every cluster view, while an API call with the default
+    // `included` still looked correct.
+    const frame = await fetchTrafficFrame({
+      ...range, scope: 'cluster', metric: 'traffic', direction: 'both', backups: 'separate',
+    }, { db });
+    const wire = frame.series.filter((s) => s.group === 'wire').map((s) => s.name);
+    expect(wire).toEqual(['Outbound (wire)', 'Inbound (wire)']);
+  });
+
+  it('still collapses to one direction for a backup split OFF the cluster view', async () => {
+    await fetchTrafficFrame({
+      ...range, scope: 'tenant', metric: 'traffic', direction: 'both', backups: 'separate',
+    }, { db });
+    expect(asked.filter((e) => e.includes('receive'))).toHaveLength(0);
+  });
+});
+
+describe('row order', () => {
+  it('keeps a measurement’s two directions adjacent', async () => {
+    // Gathered direction-major, Node-to-node (in) landed after an unrelated
+    // row instead of beside its own (out).
+    const frame = await fetchTrafficFrame({
+      ...range, scope: 'cluster', metric: 'traffic', direction: 'both', backups: 'separate',
+    }, { db });
+    const names = frame.series.map((s) => s.name);
+    const n2nOut = names.indexOf('Node-to-node (out)');
+    const n2nIn = names.indexOf('Node-to-node (in)');
+    expect(n2nOut).toBeGreaterThanOrEqual(0);
+    expect(n2nIn).toBe(n2nOut + 1);
+    expect(names.indexOf('Outbound (wire)')).toBeLessThan(names.indexOf('Inbound (wire)'));
+  });
+});
+
+describe('disambiguateNames', () => {
+  it('leaves unique names untouched', () => {
+    const rows = [{ key: 'a', name: 'Alpha' }, { key: 'b', name: 'Beta' }];
+    expect(disambiguateNames(rows).map((r) => r.name)).toEqual(['Alpha', 'Beta']);
+  });
+
+  it('separates two Traefik services whose trimmed names collide', () => {
+    // Real case: two ingresses of the same name in one namespace differ only
+    // by the hash, which prettyServiceName trims off.
+    const rows = [
+      { key: 'out:platform-platform-ingress-dfcb3e698c83816be48f@kubernetescrd', name: 'platform-platform-ingress' },
+      { key: 'out:platform-platform-ingress-bd9f21e8c15075f5f289@kubernetescrd', name: 'platform-platform-ingress' },
+    ];
+    const out = disambiguateNames(rows).map((r) => r.name);
+    expect(new Set(out).size).toBe(2);
+    expect(out[0]).toContain('dfcb3e69');
+    expect(out[1]).toContain('bd9f21e8');
+  });
+
+  it('falls back to the key tail when there is no hash to use', () => {
+    const rows = [{ key: 'x:one', name: 'Same' }, { key: 'x:two', name: 'Same' }];
+    expect(new Set(disambiguateNames(rows).map((r) => r.name)).size).toBe(2);
+  });
+
+  it('is applied to the frame, so no route view can repeat a name', async () => {
+    vi.resetModules();
+    vi.doMock('../monitoring/vm-client.js', () => ({
+      queryRange: () => Promise.resolve([
+        { labels: { service: 'platform-a-ingress-dfcb3e698c83816be48f@kubernetescrd' }, points: [[Math.floor(Date.now() / 1000), 1]] },
+        { labels: { service: 'platform-a-ingress-bd9f21e8c15075f5f289@kubernetescrd' }, points: [[Math.floor(Date.now() / 1000), 2]] },
+      ]),
+      queryInstant: () => Promise.resolve([]),
+    }));
+    const { fetchTrafficFrame: fresh } = await import('./service.js');
+    const frame = await fresh({
+      ...range, scope: 'route', metric: 'traffic', direction: 'out', backups: 'included',
+    }, { db });
+    const names = frame.series.map((s) => s.name);
+    expect(new Set(names).size, names.join(', ')).toBe(names.length);
     vi.doUnmock('../monitoring/vm-client.js');
     vi.resetModules();
   });

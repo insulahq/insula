@@ -57,8 +57,14 @@ describe('backup separation', () => {
   });
 
   it('isolates one class', () => {
-    const expr = buildTrafficQuery({ ...base, scope: 'backup-class', backupClass: 'mailboxes' }).expr;
-    expect(expr).toContain('pod=~"bk-mbox-.+"');
+    // A tenant bundle is one class covering BOTH of its capture jobs.
+    const expr = buildTrafficQuery({ ...base, scope: 'backup-class', backupClass: 'tenant-bundles' }).expr;
+    expect(expr).toContain('pod=~"bk-(files|mbox)-.+"');
+  });
+
+  it('counts the mail server\u2019s own snapshots, which the first cut missed', () => {
+    const expr = buildTrafficQuery({ ...base, scope: 'backup-class', backupClass: 'mail-snapshots' }).expr;
+    expect(expr).toContain('stalwart-snapshot-cron-.+');
   });
 
   it('refuses a backup-class query with no class', () => {
@@ -194,6 +200,93 @@ describe('backup classes are not confined to a namespace allowlist', () => {
         ...base, scope: 'backup-class', backupClass: cls as keyof typeof BACKUP_CLASS_POD_RE,
       }).expr;
       expect(expr, cls).toContain(`pod=~"${re}"`);
+    }
+  });
+});
+
+describe('retained plumbing must not inflate history', () => {
+  it('excludes virtual interfaces in the QUERY, not only at scrape time', () => {
+    // The store keeps 30 days, and those days already hold one Calico veth
+    // per pod on the root cgroup. Trusting the scrape rule alone measured a
+    // day that moved 46 GB as 265 GB.
+    for (const scope of ['node', 'tenant', 'pod'] as const) {
+      const expr = buildTrafficQuery({
+        ...base, scope, subject: scope === 'tenant' || scope === 'pod' ? 'tenant-a-1' : undefined,
+      }).expr;
+      expect(expr, scope).toContain('interface!~');
+      expect(expr, scope).toContain('cali[0-9a-f].*');
+    }
+  });
+
+  it('excludes the retained veths on a plain cluster query too', () => {
+    const expr = buildTrafficQuery({ ...base, scope: 'cluster' }).expr;
+    expect(expr).toContain('cali[0-9a-f].*');
+  });
+
+  it('selects ONLY the encapsulation for node-to-node, and never adds it to the wire', () => {
+    const n2n = buildTrafficQuery({ ...base, scope: 'cluster', wireSubset: 'node-to-node' }).expr;
+    expect(n2n).toContain('interface=~"vxlan.*|wireguard.*"');
+    expect(n2n).toContain('id="/"');
+  });
+
+  it('measures off-site upload at the shim, not at the backup jobs', () => {
+    // The jobs send to an in-cluster relay; only the relay's egress leaves.
+    const off = buildTrafficQuery({ ...base, scope: 'cluster', wireSubset: 'offsite-backup' }).expr;
+    expect(off).toContain('pod=~"backup-rclone.+"');
+    expect(off).not.toContain('id="/"');
+  });
+
+  it('still names no real NIC — the exclusion lists what is virtual', () => {
+    const expr = buildTrafficQuery({ ...base, scope: 'cluster' }).expr;
+    expect(expr).not.toMatch(/interface\s*=\s*"/);   // no equality match
+    expect(expr).not.toContain('eth0');
+  });
+
+  it('keeps the exclusion on backup-class queries too', () => {
+    const expr = buildTrafficQuery({ ...base, scope: 'backup-class', backupClass: 'files' }).expr;
+    expect(expr).toContain('interface!~');
+  });
+});
+
+describe('every generated query is valid PromQL', () => {
+  // A PromQL string literal accepts only a fixed set of escapes. `\.` is not
+  // one of them, and VictoriaMetrics answers 422 — which reached the panel as
+  // "Unexpected error" with no chart at all.
+  const BAD_ESCAPE = /\\(?!\\|"|n|t|r|'|`)/;
+
+  const everyQuery = (): string[] => {
+    const base = { metric: 'traffic', direction: 'out', stepSeconds: 300 } as const;
+    const out: string[] = [];
+    for (const scope of ['cluster', 'node', 'tenant', 'pod', 'route'] as const) {
+      for (const metric of ['traffic', 'requests', 'latency'] as const) {
+        for (const subject of [undefined, 'tenant-alpha-example']) {
+          try {
+            out.push(buildTrafficQuery({ ...base, scope, metric, subject }).expr);
+          } catch { /* unsupported combinations are refused on purpose */ }
+        }
+      }
+    }
+    for (const wireSubset of ['node-to-node', 'offsite-backup'] as const) {
+      out.push(buildTrafficQuery({ ...base, scope: 'cluster', wireSubset }).expr);
+    }
+    for (const cls of Object.keys(BACKUP_CLASS_POD_RE) as Array<keyof typeof BACKUP_CLASS_POD_RE>) {
+      out.push(buildTrafficQuery({ ...base, scope: 'backup-class', backupClass: cls }).expr);
+    }
+    out.push(buildTrafficQuery({ ...base, scope: 'tenant', backups: 'exclude', subject: 'tenant-a-1' }).expr);
+    return out;
+  };
+
+  it('contains no escape a PromQL string literal would reject', () => {
+    for (const expr of everyQuery()) {
+      expect(BAD_ESCAPE.test(expr), expr).toBe(false);
+    }
+  });
+
+  it('balances every brace and quote', () => {
+    for (const expr of everyQuery()) {
+      expect((expr.match(/\{/g) ?? []).length, expr).toBe((expr.match(/\}/g) ?? []).length);
+      expect((expr.match(/"/g) ?? []).length % 2, expr).toBe(0);
+      expect((expr.match(/\(/g) ?? []).length, expr).toBe((expr.match(/\)/g) ?? []).length);
     }
   });
 });
