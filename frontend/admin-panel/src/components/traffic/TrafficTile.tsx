@@ -22,7 +22,9 @@ import { formatTrafficRate, formatTrafficVolume } from '@/lib/format-traffic';
 import { colourForIndex } from './TrafficChart';
 
 const SPARK_W = 260;
-const SPARK_H = 48;
+// Tall enough to use the card rather than hug its bottom edge. Out of flow,
+// so growing it costs the grid nothing (see the note above).
+const SPARK_H = 66;
 
 function pathFor(points: ReadonlyArray<number | null>, ceiling: number): string {
   const n = points.length;
@@ -62,16 +64,30 @@ export default function TrafficTile() {
 
 /** Split out so the rendering can be tested without a query client. */
 export function TrafficTileView({ frame }: { frame: TrafficFrame }) {
-  const out = frame.series.find((s) => s.key.includes('out')) ?? frame.series[0];
-  const inb = frame.series.find((s) => s.key.includes('in') && s !== out);
+  // The cluster frame is no longer two lines. It carries the wire pair, the
+  // subsets of that pair (node-to-node, off-site upload) and the per-class
+  // workload rows — seven or more series. Drawing all of them under a legend
+  // that names two was both wrong and unreadable, and computing the ceiling
+  // across them squashed the wire pair flat against the baseline, which is
+  // the thing the card exists to show.
+  //
+  // Selected by GROUP, not by whether the key happens to contain "in" or
+  // "out": `n2n:in` and `offsite` contain those substrings too, so the old
+  // test picked a line by accident of ordering.
+  const wire = frame.series.filter((s) => s.group === 'wire');
+  const drawn = wire.length > 0 ? wire : frame.series.slice(0, 2);
+  const out = drawn.find((s) => s.key.startsWith('out') || s.key.includes(':out')) ?? drawn[0];
+  const inb = drawn.find((s) => s !== out);
   const step = frame.stepSeconds;
 
   const outTotal = out ? totalOf(out.points, step) : 0;
   const inTotal = inb ? totalOf(inb.points, step) : 0;
-  const peak = frame.series.reduce((best, s) => s.points.reduce<number>(
+  // Peak over what is DRAWN, so the sparkline uses the card's full height
+  // and the footer figure describes the line above it.
+  const peak = drawn.reduce((best, s) => s.points.reduce<number>(
     (b, v) => (v !== null && v > b ? v : b), best,
   ), 0);
-  const ceiling = Math.max(peak * 1.15, 1);
+  const ceiling = Math.max(peak * 1.08, 1);
 
   return (
     <Tile title="Traffic" to="/monitoring?tab=traffic">
@@ -93,15 +109,15 @@ export function TrafficTileView({ frame }: { frame: TrafficFrame }) {
         viewBox={`0 0 ${SPARK_W} ${SPARK_H}`}
         preserveAspectRatio="none"
         aria-hidden="true"
-        className="pointer-events-none absolute inset-x-0 bottom-0 h-[48px] w-full opacity-50"
+        className="pointer-events-none absolute inset-x-0 bottom-0 h-[66px] w-full opacity-60"
       >
-        {frame.series.map((s, i) => (
+        {drawn.map((s, i) => (
           <polyline
             key={s.key}
             points={pathFor(s.points, ceiling)}
             fill="none"
             stroke={colourForIndex(i)}
-            strokeWidth={1.4}
+            strokeWidth={1.9}
             strokeLinejoin="round"
             vectorEffect="non-scaling-stroke"
           />

@@ -91,3 +91,55 @@ describe('TrafficChart gap handling', () => {
     expect(container.querySelectorAll('polyline')).toHaveLength(3);
   });
 });
+
+/**
+ * The fixture above is two series. The real cluster frame has not been two
+ * series since the traffic round: it carries the wire pair, the subsets OF
+ * that pair, and a row per backup class. The tile mapped over all of them
+ * under a legend naming two, and took its ceiling from the largest — which
+ * pinned the wire lines flat along the bottom of the card. Every assertion
+ * here passed throughout, because the fixture had been built to match the
+ * component instead of the server.
+ */
+const clusterFrame: TrafficFrame = {
+  ...frame,
+  series: [
+    { key: 'wire:out', name: 'Outbound (wire)', kind: 'direction', group: 'wire', points: Array.from({ length: 12 }, () => 2_000_000) },
+    { key: 'wire:in', name: 'Inbound (wire)', kind: 'direction', group: 'wire', points: Array.from({ length: 12 }, () => 1_000_000) },
+    { key: 'n2n:out', name: 'Node-to-node (out)', kind: 'direction', group: 'wire-subset', points: Array.from({ length: 12 }, () => 500_000) },
+    { key: 'n2n:in', name: 'Node-to-node (in)', kind: 'direction', group: 'wire-subset', points: Array.from({ length: 12 }, () => 400_000) },
+    { key: 'offsite', name: 'Off-site backup upload', kind: 'direction', group: 'wire-subset', points: Array.from({ length: 12 }, () => 300_000) },
+    { key: 'serving', name: 'Tenant workloads sent', kind: 'serving', group: 'workload', points: Array.from({ length: 12 }, () => 40_000_000) },
+    { key: 'backup:tenant-bundles', name: 'Backup · tenant bundles', kind: 'backup-class', group: 'workload', points: Array.from({ length: 12 }, () => 30_000_000) },
+  ],
+};
+
+describe('TrafficTile against the real cluster frame', () => {
+  it('draws only the two lines its legend names', () => {
+    const { container } = renderTile(clusterFrame);
+    expect(container.querySelectorAll('svg polyline')).toHaveLength(2);
+  });
+
+  it('reads the totals off the wire, not off a workload row', () => {
+    renderTile(clusterFrame);
+    // Wire only: 12 × 300s × 2 MB/s = 7.20 GB out, half that in.
+    expect(screen.getByText(/7\.20 GB out/)).toBeInTheDocument();
+    expect(screen.getByText(/3\.60 GB in/)).toBeInTheDocument();
+  });
+
+  it('scales to the drawn lines so they use the card height', () => {
+    const { container } = renderTile(clusterFrame);
+    // The FIRST line — outbound, the larger of the pair. Taking the minimum
+    // across every polyline is not a test: while the workload rows were
+    // being drawn, one of them reached the top and satisfied it.
+    const first = container.querySelector('svg polyline');
+    const ys = (first?.getAttribute('points') ?? '').split(' ')
+      .map((pt) => Number(pt.split(',')[1]))
+      .filter((n) => Number.isFinite(n));
+    const viewBoxH = Number((container.querySelector('svg')?.getAttribute('viewBox') ?? '0 0 0 48').split(' ')[3]);
+    // Taking the ceiling from the 40 MB/s workload row put the 2 MB/s wire
+    // line at ~95% of the way down. The top line must reach the upper part
+    // of the box instead.
+    expect(Math.min(...ys)).toBeLessThan(viewBoxH * 0.25);
+  });
+});
