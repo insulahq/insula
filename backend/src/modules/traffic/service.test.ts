@@ -14,7 +14,7 @@ vi.mock('../monitoring/vm-client.js', () => ({
   queryInstant: () => Promise.resolve([]),
 }));
 
-const { fetchTrafficFrame, disambiguateNames } = await import('./service.js');
+const { fetchTrafficFrame, disambiguateNames, prettyServiceName } = await import('./service.js');
 
 const db = { select: () => ({ from: () => ({ where: () => Promise.resolve([]), then: (r: (v: unknown) => void) => r([]) }) }) } as never;
 const range = { from: new Date(Date.now() - 3_600_000), to: new Date() };
@@ -194,20 +194,32 @@ describe('disambiguateNames', () => {
     expect(disambiguateNames(rows).map((r) => r.name)).toEqual(['Alpha', 'Beta']);
   });
 
-  it('separates two Traefik services whose trimmed names collide', () => {
-    // Real case: two ingresses of the same name in one namespace differ only
-    // by the hash, which prettyServiceName trims off.
+  it('separates colliding names by number, without showing a hash', () => {
+    // Real case: two routes inside one ingress object differ only by the
+    // hash Traefik derives from the match rule. They have to be told apart,
+    // but eight characters of that hash names a row after an implementation
+    // detail nobody can look up — so they are numbered instead.
     const rows = [
-      { key: 'out:platform-platform-ingress-dfcb3e698c83816be48f@kubernetescrd', name: 'platform-platform-ingress' },
-      { key: 'out:platform-platform-ingress-bd9f21e8c15075f5f289@kubernetescrd', name: 'platform-platform-ingress' },
+      { key: 'out:platform-platform-ingress-dfcb3e698c83816be48f@kubernetescrd', name: 'platform-ingress' },
+      { key: 'out:platform-platform-ingress-bd9f21e8c15075f5f289@kubernetescrd', name: 'platform-ingress' },
     ];
     const out = disambiguateNames(rows).map((r) => r.name);
     expect(new Set(out).size).toBe(2);
-    expect(out[0]).toContain('dfcb3e69');
-    expect(out[1]).toContain('bd9f21e8');
+    expect(out).toEqual(['platform-ingress #1', 'platform-ingress #2']);
+    expect(out.join(' ')).not.toMatch(/[0-9a-f]{8}/);
   });
 
-  it('falls back to the key tail when there is no hash to use', () => {
+  it('strips the hash and the doubled namespace from a platform route', () => {
+    // `platform-platform-ingress-dfcb3e698c83816be48f@kubernetescrd` is the
+    // namespace, the object named after the namespace, and a rule hash. None
+    // of those three things is worth showing an operator.
+    expect(prettyServiceName('platform-platform-ingress-dfcb3e698c83816be48f@kubernetescrd', new Map()))
+      .toBe('platform');
+    expect(prettyServiceName('mail-platform-webmail-ingress-92a47957fdd54f9cc8d4@kubernetescrd', new Map()))
+      .toBe('mail-platform-webmail');
+  });
+
+  it('numbers collisions even when the keys share no hash', () => {
     const rows = [{ key: 'x:one', name: 'Same' }, { key: 'x:two', name: 'Same' }];
     expect(new Set(disambiguateNames(rows).map((r) => r.name)).size).toBe(2);
   });

@@ -194,8 +194,15 @@ function networkSelector(input: TrafficQueryInput): string {
       parts.push(input.subject ? `namespace="${quoteLabel(input.subject)}"` : 'namespace=~"tenant-.+"');
       break;
     case 'pod':
-      if (!input.subject) throw new UnsupportedTrafficQuery('pod scope needs a tenant namespace');
-      parts.push(`namespace="${quoteLabel(input.subject)}"`);
+      // No tenant chosen means "every pod", which is an ordinary breakdown
+      // across tenant namespaces — the same selector the tenant breakdown
+      // uses, grouped by pod instead. This used to throw
+      // TRAFFIC_QUERY_UNSUPPORTED, so the panel's own default pod view
+      // greeted the operator with an error for a question the store can
+      // answer perfectly well.
+      parts.push(input.subject
+        ? `namespace="${quoteLabel(input.subject)}"`
+        : 'namespace=~"tenant-.+"');
       if (input.pod) parts.push(`pod="${quoteLabel(input.pod)}"`);
       break;
     case 'backup-class': {
@@ -244,6 +251,24 @@ function traefikSelector(input: TrafficQueryInput): string {
   }
 }
 
+/**
+ * The label a tenant's Traefik series is rewritten onto.
+ *
+ * Traefik counts per backend SERVICE, so a tenant breakdown of requests or
+ * latency grouped by `service` — which meant the picker listed raw ids like
+ * `tenant-acme-<hash>-tenant-acme-<hash>-ingress-<hash>@kubernetescrd`, and
+ * worse, that a tenant's subject key MEANT something different depending on
+ * which metric happened to be selected. Switching metric silently invalidated
+ * the selection. `label_replace` folds the service back onto the namespace
+ * that owns it, so one tenant is one row under all three metrics and the key
+ * is the same namespace every time.
+ */
+const TENANT_NS_FROM_SERVICE = '^(tenant-[a-z0-9-]+?-[0-9a-f]{8})-.*';
+
+export function tenantNamespaceRewrite(inner: string): string {
+  return `label_replace(${inner}, "namespace", "$1", "service", "${TENANT_NS_FROM_SERVICE}")`;
+}
+
 function groupLabelFor(
   scope: TrafficScope, hasSubject: boolean, metric: TrafficMetric, aggregate?: boolean,
 ): string | null {
@@ -252,10 +277,7 @@ function groupLabelFor(
   if (scope === 'node') return hasSubject ? null : 'node';
   if (scope === 'route') return hasSubject ? null : 'service';
   if (scope === 'backup-class') return null;
-  if (scope === 'tenant') {
-    if (!hasSubject) return metric === 'traffic' ? 'namespace' : 'service';
-    return null;
-  }
+  if (scope === 'tenant') return hasSubject ? null : 'namespace';
   // Pod scope: always grouped by pod. Whether that renders as one line or
   // several is decided by `isSingleSubject` in service.ts, not here — this
   // used to be a ternary whose branches were both 'pod'.
@@ -305,16 +327,21 @@ export function buildTrafficQuery(input: TrafficQueryInput): QuerySpec {
   const braces = sel ? `{${sel}}` : '';
   const by = groupLabelFor(input.scope, Boolean(input.subject), input.metric);
 
+  const asTenant = input.scope === 'tenant' && by === 'namespace';
+
   if (input.metric === 'requests') {
-    const inner = `rate(traefik_service_requests_total${braces}[${win}])`;
+    const raw = `rate(traefik_service_requests_total${braces}[${win}])`;
+    const inner = asTenant ? tenantNamespaceRewrite(raw) : raw;
     return { expr: by ? `sum by (${by}) (${inner})` : `sum(${inner})`, groupBy: by };
   }
 
   // Average latency, in milliseconds. Ratio of SUMS, never an average of
   // averages — the latter weights a service with three requests the same as
   // one with thirty thousand.
-  const sum = `rate(traefik_service_request_duration_seconds_sum${braces}[${win}])`;
-  const count = `rate(traefik_service_request_duration_seconds_count${braces}[${win}])`;
+  const rawSum = `rate(traefik_service_request_duration_seconds_sum${braces}[${win}])`;
+  const rawCount = `rate(traefik_service_request_duration_seconds_count${braces}[${win}])`;
+  const sum = asTenant ? tenantNamespaceRewrite(rawSum) : rawSum;
+  const count = asTenant ? tenantNamespaceRewrite(rawCount) : rawCount;
   const expr = by
     ? `1000 * sum by (${by}) (${sum}) / sum by (${by}) (${count})`
     : `1000 * sum(${sum}) / sum(${count})`;

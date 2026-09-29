@@ -206,7 +206,7 @@ export default function TrafficRangePicker({ value, onChange }: TrafficRangePick
                   className={clsx(
                     'rounded-md px-2 py-[5px] text-left text-[12.5px]',
                     p.key === value.preset
-                      ? 'bg-brand-50 font-semibold text-brand-700 dark:bg-brand-950/50 dark:text-brand-300'
+                      ? 'bg-brand-50 font-semibold text-brand-500 dark:bg-brand-950 dark:text-brand-300'
                       : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900 dark:text-gray-300 dark:hover:bg-gray-700/60 dark:hover:text-gray-100',
                   )}
                 >
@@ -273,8 +273,8 @@ export default function TrafficRangePicker({ value, onChange }: TrafficRangePick
                               isStart || isEnd
                                 ? 'bg-brand-600 font-semibold text-white'
                                 : inRange
-                                  ? 'bg-brand-50 dark:bg-brand-950/40'
-                                  : 'hover:bg-brand-50 hover:text-brand-700 dark:hover:bg-brand-950/40',
+                                  ? 'bg-brand-50 dark:bg-brand-950'
+                                  : 'hover:bg-brand-50 hover:text-brand-500 dark:hover:bg-brand-950 dark:hover:text-brand-300',
                               isStart && isEnd ? 'rounded-md'
                                 : isStart ? 'rounded-l-md' : isEnd ? 'rounded-r-md' : 'rounded-none',
                               !inMonth && 'text-gray-400 opacity-55 dark:text-gray-500',

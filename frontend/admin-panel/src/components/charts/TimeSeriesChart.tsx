@@ -139,6 +139,11 @@ export default function TimeSeriesChart({
     [series, hidden],
   );
 
+  // Daily rollup points are far apart, and a hairline between them reads as
+  // noise rather than a series. The mockup draws those thicker and with butt
+  // caps so a single day does not render as a lone round blob.
+  const coarse = stepSeconds >= 86_400;
+
   const { bands, totals, ceiling } = useMemo(() => {
     const running = new Map<string, Array<number | null>>();
     const out: Band[] = [];
@@ -275,7 +280,8 @@ export default function TimeSeriesChart({
               {lines.map((pts, si) => (
                 <polyline
                   key={`${b.key}-l${si}`} points={pts} fill="none" stroke={b.colour}
-                  strokeWidth={1.6} strokeLinejoin="round" vectorEffect="non-scaling-stroke"
+                  strokeWidth={coarse ? 2.4 : 1.75} strokeLinecap={coarse ? 'butt' : 'round'}
+                  strokeLinejoin="round" vectorEffect="non-scaling-stroke"
                 />
               ))}
               {dots.map((d, di) => (

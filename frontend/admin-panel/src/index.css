@@ -14,6 +14,14 @@
   --color-brand-700: #003d7a;
   --color-brand-800: #002952;
   --color-brand-900: #001429;
+  /* The dark theme's soft brand surface, straight from the traffic mockup
+     (`--brand-soft` under `prefers-color-scheme: dark`). It is not a
+     continuation of the light ramp — #001429 is a deep tone for a WHITE
+     ground and disappears on a dark one — it is the dark counterpart of
+     brand-50. Twelve places already referenced `brand-950` and it was never
+     defined, so every dark-mode active/hover background (dropdown items,
+     calendar days, range presets, stat cards) resolved to nothing. */
+  --color-brand-950: #14243a;
 
   --color-accent-500: #00663d;
   --color-accent-600: #005232;
