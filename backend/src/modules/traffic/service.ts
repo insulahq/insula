@@ -42,7 +42,7 @@ export interface TrafficRequest {
   readonly metric: TrafficMetric;
   readonly direction: 'in' | 'out' | 'both';
   readonly backups: 'included' | 'separate' | 'only';
-  /** Set for tenant-panel callers; narrows every query to this namespace. */
+  /** Set for tenant-panel callers; confines a `route` scope to their services. */
   readonly restrictToNamespace?: string;
 }
 
@@ -85,7 +85,15 @@ export function prettyServiceName(service: string, nsToName: ReadonlyMap<string,
 function displayNameFor(
   scope: TrafficScope, key: string, nsToName: ReadonlyMap<string, string>,
 ): string {
-  if (scope === 'tenant') return nsToName.get(key) ?? key;
+  if (scope === 'tenant') {
+    const name = nsToName.get(key);
+    if (name) return name;
+    // Namespaces outlive the tenants that owned them — a deleted tenant can
+    // leave one behind still moving bytes. Hiding it would drop real traffic
+    // out of the breakdown; printing the bare slug implies somebody is called
+    // that. Naming it for what it is does neither, and is a cleanup lead.
+    return `${key} (no tenant record)`;
+  }
   if (scope === 'route') return prettyServiceName(key, nsToName);
   return key;
 }
@@ -97,6 +105,11 @@ interface DirectionPlan {
 
 function directionPlans(req: TrafficRequest): DirectionPlan[] {
   if (req.metric !== 'traffic') return [{ direction: 'out', label: '' }];
+  // A backup split is about egress: these pods upload to off-site storage and
+  // receive almost nothing. Running both directions produced the split TWICE
+  // and two identically-named "Serving traffic" rows, which is what the
+  // end-to-end run on DEV actually showed.
+  if (req.backups !== 'included') return [{ direction: 'out', label: 'Outbound' }];
   if (req.direction === 'in') return [{ direction: 'in', label: 'Inbound' }];
   if (req.direction === 'out') return [{ direction: 'out', label: 'Outbound' }];
   return [{ direction: 'out', label: 'Outbound' }, { direction: 'in', label: 'Inbound' }];
@@ -227,6 +240,7 @@ function planQueries(
     stepSeconds,
     subject: req.subject,
     pod: req.pod,
+    namespacePrefix: req.restrictToNamespace,
   };
 
   if (req.backups === 'included' || req.metric !== 'traffic') {

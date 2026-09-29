@@ -53,6 +53,12 @@ export function alignToTimeline(
 ): Array<number | null> {
   const bySecond = new Map<number, number>();
   for (const [t, v] of points) if (Number.isFinite(v)) bySecond.set(Math.round(t), v);
+  // The search window is HALF-OPEN: back to `sec - tolerance` inclusive,
+  // forward to `sec + tolerance` EXCLUSIVE. Symmetric windows of exactly half
+  // a step overlap at the midpoint, so a sample landing there is found by both
+  // neighbouring buckets and the one measurement is counted twice — visible in
+  // the totals and in the subject ranking. At the daily rung that window is
+  // twelve hours wide on each side, which makes the tie far from theoretical.
   const tolerance = Math.max(1, Math.floor(stepSeconds / 2));
   return timeline.map((ms) => {
     const sec = Math.round(ms / 1000);
@@ -61,8 +67,10 @@ export function alignToTimeline(
     for (let d = 1; d <= tolerance; d++) {
       const lo = bySecond.get(sec - d);
       if (lo !== undefined) return lo;
-      const hi = bySecond.get(sec + d);
-      if (hi !== undefined) return hi;
+      if (d < tolerance) {
+        const hi = bySecond.get(sec + d);
+        if (hi !== undefined) return hi;
+      }
     }
     return null;
   });

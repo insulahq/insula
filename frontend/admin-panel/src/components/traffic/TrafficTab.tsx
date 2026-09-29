@@ -73,6 +73,11 @@ function Segmented<T extends string>({
   );
 }
 
+/** Which metrics a scope can actually answer. */
+function metricsFor(scope: TrafficScope): ReadonlyArray<{ key: TrafficMetric; label: string }> {
+  return scope === 'pod' ? METRICS.slice(0, 1) : METRICS;
+}
+
 export default function TrafficTab() {
   const [range, setRange] = useState<RangeValue>(() => presetRange('24h'));
   const [scope, setScope] = useState<TrafficScope>('cluster');
@@ -84,7 +89,7 @@ export default function TrafficTab() {
   const [hidden, setHidden] = useState<ReadonlySet<string>>(new Set());
 
   // Traefik has no per-pod dimension, so those questions are not offered.
-  const metricsForScope = scope === 'pod' ? METRICS.slice(0, 1) : METRICS;
+  const metricsForScope = metricsFor(scope);
   const effectiveMetric: TrafficMetric = metricsForScope.some((m) => m.key === metric) ? metric : 'traffic';
   const showBackups = effectiveMetric === 'traffic' && scope === 'cluster';
   const effectiveBackups: TrafficBackupMode = showBackups ? backups : 'included';
@@ -161,10 +166,15 @@ export default function TrafficTab() {
             value={scope}
             options={SCOPES.map((s) => ({ key: s.key, label: s.label }))}
             onChange={(k) => {
-              setScope((k as TrafficScope) ?? 'cluster');
+              const next = (k as TrafficScope) ?? 'cluster';
+              setScope(next);
               setSubject(null);
               setPod(null);
               setHidden(new Set());
+              // Pod scope cannot answer a request or latency question, so a
+              // metric carried over from another scope would leave the button
+              // highlighted on something the chart is not showing.
+              if (!metricsFor(next).some((m) => m.key === metric)) setMetric('traffic');
             }}
           />
         </div>

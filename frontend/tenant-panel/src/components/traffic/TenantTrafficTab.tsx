@@ -38,6 +38,11 @@ const METRICS: ReadonlyArray<{ key: TrafficMetric; label: string }> = [
   { key: 'latency', label: 'Avg latency' },
 ];
 
+/** Which metrics a scope can actually answer. */
+function metricsFor(scope: TrafficScope): ReadonlyArray<{ key: TrafficMetric; label: string }> {
+  return scope === 'pod' ? METRICS.slice(0, 1) : METRICS;
+}
+
 export default function TenantTrafficTab() {
   const { tenantId } = useTenantContext();
   const id = tenantId ?? '';
@@ -50,7 +55,7 @@ export default function TenantTrafficTab() {
   const [metric, setMetric] = useState<TrafficMetric>('traffic');
   const [hidden, setHidden] = useState<ReadonlySet<string>>(new Set());
 
-  const metricsForScope = scope === 'pod' ? METRICS.slice(0, 1) : METRICS;
+  const metricsForScope = metricsFor(scope);
   const effectiveMetric: TrafficMetric = metricsForScope.some((m) => m.key === metric) ? metric : 'traffic';
 
   const { data: frame, isLoading, error } = useTrafficSeries(id, {
@@ -120,7 +125,13 @@ export default function TenantTrafficTab() {
             label="Break down by"
             value={scope}
             options={SCOPES.map((s) => ({ key: s.key, label: s.label }))}
-            onChange={(k) => { setScope((k as TrafficScope) ?? 'tenant'); setSubject(null); setHidden(new Set()); }}
+            onChange={(k) => {
+              const next = (k as TrafficScope) ?? 'tenant';
+              setScope(next);
+              setSubject(null);
+              setHidden(new Set());
+              if (!metricsFor(next).some((m) => m.key === metric)) setMetric('traffic');
+            }}
           />
         </div>
         {scope !== 'tenant' && (

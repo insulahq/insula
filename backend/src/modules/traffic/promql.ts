@@ -63,9 +63,20 @@ export function quoteLabel(value: string): string {
 
 /** A Traefik `service` label is `<namespace>-<ingress>-<hash>@kubernetescrd`. */
 export function serviceMatcherForNamespace(namespace: string): string {
-  // The namespace is a DNS-1123 name, so the only regex metacharacters it can
-  // contain are hyphens — but it is escaped anyway rather than trusted.
-  return `${namespace.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-.+`;
+  // TWO escapes are needed and only one is obvious. The regex metacharacters
+  // matter because this lands inside `=~`; the QUOTES matter because it also
+  // lands inside a PromQL string literal, and a value carrying `"` ends the
+  // literal and starts a second label matcher. Escaping one without the other
+  // reads as safe and is not.
+  const regexSafe = namespace.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return `${quoteLabel(regexSafe)}-.+`;
+}
+
+/** DNS-1123 label rules, which every Kubernetes namespace obeys. */
+const NAMESPACE_RE = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
+
+export function isValidNamespace(value: string): boolean {
+  return NAMESPACE_RE.test(value);
 }
 
 export interface QuerySpec {
@@ -88,6 +99,8 @@ export interface TrafficQueryInput {
   readonly backups?: 'included' | 'exclude' | 'only';
   /** For `backup-class` scope. */
   readonly backupClass?: TrafficBackupClass;
+  /** Confines a `route` scope to one namespace's services. */
+  readonly namespacePrefix?: string;
 }
 
 /** Scopes that can answer a request/latency question at all. */
@@ -138,7 +151,12 @@ function traefikSelector(input: TrafficQueryInput): string {
     case 'tenant':
       return input.subject ? `service=~"${serviceMatcherForNamespace(input.subject)}"` : 'service=~"tenant-.+"';
     case 'route':
-      return input.subject ? `service="${quoteLabel(input.subject)}"` : '';
+      if (input.subject) return `service="${quoteLabel(input.subject)}"`;
+      // A tenant asking for "my routes" owns a namespace, not a service id;
+      // its services are the ones whose label starts with that namespace.
+      return input.namespacePrefix
+        ? `service=~"${serviceMatcherForNamespace(input.namespacePrefix)}"`
+        : '';
     default:
       throw new UnsupportedTrafficQuery(`scope ${input.scope} has no request-level metrics`);
   }
@@ -153,8 +171,10 @@ function groupLabelFor(scope: TrafficScope, hasSubject: boolean, metric: Traffic
     if (!hasSubject) return metric === 'traffic' ? 'namespace' : 'service';
     return null;
   }
-  // pod scope: one line per pod until a pod is chosen
-  return hasSubject && scope === 'pod' ? 'pod' : 'pod';
+  // Pod scope: always grouped by pod. Whether that renders as one line or
+  // several is decided by `isSingleSubject` in service.ts, not here — this
+  // used to be a ternary whose branches were both 'pod'.
+  return 'pod';
 }
 
 /**
@@ -165,6 +185,19 @@ function groupLabelFor(scope: TrafficScope, hasSubject: boolean, metric: Traffic
  */
 export function buildTrafficQuery(input: TrafficQueryInput): QuerySpec {
   const win = `${Math.max(60, input.stepSeconds)}s`;
+
+  // A route IS a Traefik service, so its bytes come from Traefik's own
+  // counters rather than from cAdvisor — there is no cgroup that corresponds
+  // to an ingress route. Without this, `scope=route` + `metric=traffic` fell
+  // through to networkSelector's `default:` and threw on every request, while
+  // both panels offered it as the default selection.
+  if (input.metric === 'traffic' && input.scope === 'route') {
+    const sel = traefikSelector(input);
+    const braces = sel ? `{${sel}}` : '';
+    const by = groupLabelFor(input.scope, Boolean(input.subject), input.metric);
+    const inner = `rate(${TRAEFIK_BYTES[input.direction]}${braces}[${win}])`;
+    return { expr: by ? `sum by (${by}) (${inner})` : `sum(${inner})`, groupBy: by };
+  }
 
   if (input.metric === 'traffic') {
     const sel = networkSelector(input);

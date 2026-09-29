@@ -19,7 +19,7 @@ import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import { tenants } from '../../db/schema.js';
 import { fetchTrafficFrame, fetchTrafficSubjects } from './service.js';
-import { UnsupportedTrafficQuery } from './promql.js';
+import { isValidNamespace, UnsupportedTrafficQuery } from './promql.js';
 
 /** Zod issues → one operator-readable 400, rather than a wall of JSON. */
 function parseOrThrow<T>(schema: { safeParse: (v: unknown) => { success: boolean; data?: T; error?: { issues: Array<{ path: PropertyKey[]; message: string }> } } }, value: unknown): T {
@@ -77,7 +77,11 @@ export async function trafficRoutes(app: FastifyInstance): Promise<void> {
     onRequest: [requireRole('super_admin', 'admin', 'billing', 'support', 'read_only')],
   }, async (request) => {
     const q = parseOrThrow(trafficSubjectsQuerySchema, request.query);
-    const subject = q.scope === 'pod' && q.subject ? await resolveNamespaceArg(app, q.subject) : q.subject;
+    // Normalise for BOTH namespace-addressed scopes. `tenant` used to skip
+    // this, so an unchecked string reached the service matcher.
+    const subject = (q.scope === 'pod' || q.scope === 'tenant') && q.subject
+      ? await resolveNamespaceArg(app, q.subject)
+      : q.subject;
     const subjects = await guard(() => fetchTrafficSubjects({
       from: new Date(q.from), to: new Date(q.to), scope: q.scope, subject, metric: q.metric,
     }, { db: app.db }));
@@ -99,8 +103,12 @@ export async function trafficRoutes(app: FastifyInstance): Promise<void> {
       from: new Date(q.from),
       to: new Date(q.to),
       scope,
-      // Always this tenant's namespace — the client's `subject` is discarded.
-      subject: namespace,
+      // A route is addressed by Traefik SERVICE, which is never equal to the
+      // bare namespace — forcing the namespace in here selected nothing and
+      // rendered an empty chart that read as "no traffic". Route scope is
+      // confined by namespace instead, and a named route must belong to it.
+      subject: scope === 'route' ? ownRouteOrNone(q.subject, namespace) : namespace,
+      restrictToNamespace: namespace,
       pod: q.pod,
       metric: q.metric,
       direction: q.direction,
@@ -121,10 +129,31 @@ export async function trafficRoutes(app: FastifyInstance): Promise<void> {
     const scope = assertTenantScope(q.scope);
     const namespace = await namespaceOfTenant(app, id);
     const subjects = await guard(() => fetchTrafficSubjects({
-      from: new Date(q.from), to: new Date(q.to), scope, subject: namespace, metric: q.metric,
+      from: new Date(q.from),
+      to: new Date(q.to),
+      scope,
+      // Leaving `subject` unset for route scope is what makes this a LIST:
+      // with it set the frame is a single subject and the picker came back
+      // empty, so a tenant could never choose one of their own routes.
+      subject: scope === 'route' ? undefined : namespace,
+      restrictToNamespace: namespace,
+      metric: q.metric,
     }, { db: app.db }));
     return success({ subjects });
   });
+}
+
+/**
+ * A route the caller actually owns, or nothing.
+ *
+ * Traefik service labels start with the owning namespace, so ownership is
+ * checkable without a lookup. Anything else is dropped rather than rejected:
+ * a stale bookmark pointing at a route that has since been renamed should
+ * show the tenant all their routes, not an error.
+ */
+function ownRouteOrNone(subject: string | undefined, namespace: string): string | undefined {
+  if (!subject) return undefined;
+  return subject.startsWith(`${namespace}-`) ? subject : undefined;
 }
 
 function assertTenantScope(scope: TrafficScope): TrafficScope {
@@ -142,9 +171,23 @@ function assertTenantScope(scope: TrafficScope): TrafficScope {
  * Admin callers address a tenant by id; the queries address it by namespace.
  * A value that is already a namespace is passed through, so the endpoint is
  * usable with either.
+ *
+ * `startsWith('tenant-')` is a routing hint, NOT a validator — it says which
+ * lookup to skip, and on its own would let any string through as long as it
+ * began with those seven characters. The shape check is what actually bounds
+ * the value before it reaches a query.
  */
 async function resolveNamespaceArg(app: FastifyInstance, subject: string): Promise<string> {
-  if (subject.startsWith('tenant-')) return subject;
+  if (subject.startsWith('tenant-')) {
+    if (!isValidNamespace(subject)) {
+      throw new ApiError(
+        'INVALID_TRAFFIC_QUERY',
+        'subject must be a tenant id or a Kubernetes namespace name',
+        400,
+      );
+    }
+    return subject;
+  }
   const [row] = await app.db
     .select({ ns: tenants.kubernetesNamespace })
     .from(tenants)

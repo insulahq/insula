@@ -150,19 +150,26 @@ export default function TrafficChart({
    * A single polyline across a null would draw a straight segment over the
    * missing hours, which is a claim that traffic was interpolated-flat.
    */
-  const segmentsOf = useCallback((points: ReadonlyArray<number | null>): string[] => {
-    const out: string[] = [];
-    let run: string[] = [];
+  const segmentsOf = useCallback((points: ReadonlyArray<number | null>): {
+    lines: string[]; dots: Array<{ cx: number; cy: number }>;
+  } => {
+    const lines: string[] = [];
+    const dots: Array<{ cx: number; cy: number }> = [];
+    let run: Array<{ i: number; v: number }> = [];
+    const flush = (): void => {
+      if (run.length > 1) lines.push(run.map((p) => `${x(p.i).toFixed(1)},${y(p.v).toFixed(1)}`).join(' '));
+      // A single measured point between two gaps has no segment to be part
+      // of. Dropping it would hide a real measurement — the same failure as
+      // drawing a gap as zero, in the other direction — so it gets a dot.
+      else if (run.length === 1) dots.push({ cx: x(run[0].i), cy: y(run[0].v) });
+      run = [];
+    };
     points.forEach((v, i) => {
-      if (v === null) {
-        if (run.length > 1) out.push(run.join(' '));
-        run = [];
-        return;
-      }
-      run.push(`${x(i).toFixed(1)},${y(v).toFixed(1)}`);
+      if (v === null) { flush(); return; }
+      run.push({ i, v });
     });
-    if (run.length > 1) out.push(run.join(' '));
-    return out;
+    flush();
+    return { lines, dots };
   }, [x, y]);
 
   const onMove = useCallback((ev: React.MouseEvent<SVGSVGElement>) => {
@@ -234,12 +241,22 @@ export default function TrafficChart({
           />
         )}
 
-        {bands.map((b) => segmentsOf(b.upper).map((pts, si) => (
-          <polyline
-            key={`${b.key}-${si}`} points={pts} fill="none" stroke={b.colour}
-            strokeWidth={1.6} strokeLinejoin="round" vectorEffect="non-scaling-stroke"
-          />
-        )))}
+        {bands.map((b) => {
+          const { lines, dots } = segmentsOf(b.upper);
+          return (
+            <g key={b.key}>
+              {lines.map((pts, si) => (
+                <polyline
+                  key={`${b.key}-l${si}`} points={pts} fill="none" stroke={b.colour}
+                  strokeWidth={1.6} strokeLinejoin="round" vectorEffect="non-scaling-stroke"
+                />
+              ))}
+              {dots.map((d, di) => (
+                <circle key={`${b.key}-d${di}`} cx={d.cx} cy={d.cy} r={1.8} fill={b.colour} />
+              ))}
+            </g>
+          );
+        })}
 
         {spikes.map((i) => (
           <g key={`spike-${i}`}>

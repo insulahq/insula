@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   buildTrafficQuery, quoteLabel, serviceMatcherForNamespace, UnsupportedTrafficQuery,
-  BACKUP_CLASS_POD_RE,
+  BACKUP_CLASS_POD_RE, isValidNamespace,
 } from './promql.js';
 
 const base = { metric: 'traffic', direction: 'out', stepSeconds: 300 } as const;
@@ -100,7 +100,81 @@ describe('label injection', () => {
     expect(expr.match(/rate\(/g)).toHaveLength(1);
   });
 
-  it('escapes regex metacharacters in a namespace service matcher', () => {
-    expect(serviceMatcherForNamespace('tenant-a.b+c')).toBe('tenant-a\\.b\\+c-.+');
+  it('escapes regex metacharacters so they SURVIVE the string literal', () => {
+    // Two layers, and the inner one is easy to get wrong. The regex wants
+    // `\.`; a PromQL double-quoted literal unescapes `\.` to `.`, so the
+    // literal must carry `\\.` for the regex engine to receive an escaped dot.
+    // Escaping once produced a matcher where `.` matched any character.
+    expect(serviceMatcherForNamespace('tenant-a.b+c')).toBe('tenant-a\\\\.b\\\\+c-.+');
+  });
+});
+
+describe('route scope (regressions found in review + on DEV)', () => {
+  it('answers a traffic question instead of throwing', () => {
+    // This combination is the default selection in both panels and used to
+    // fall through networkSelector's `default:` and 400 on every request.
+    const q = buildTrafficQuery({ ...base, scope: 'route' });
+    expect(q.expr).toContain('traefik_service_responses_bytes_total');
+    expect(q.groupBy).toBe('service');
+  });
+
+  it('reads Traefik byte counters from the PROXY’s point of view', () => {
+    // requests_bytes = what clients sent IN; responses_bytes = what went OUT.
+    expect(buildTrafficQuery({ ...base, scope: 'route', direction: 'in' }).expr)
+      .toContain('traefik_service_requests_bytes_total');
+    expect(buildTrafficQuery({ ...base, scope: 'route', direction: 'out' }).expr)
+      .toContain('traefik_service_responses_bytes_total');
+  });
+
+  it('confines a tenant to their own services when no route is named', () => {
+    const expr = buildTrafficQuery({ ...base, scope: 'route', namespacePrefix: 'tenant-a-1' }).expr;
+    expect(expr).toContain('service=~"tenant-a-1-.+"');
+  });
+
+  it('selects exactly one service when a route is named', () => {
+    const expr = buildTrafficQuery({
+      ...base, scope: 'route', subject: 'tenant-a-1-web-abc@kubernetescrd',
+    }).expr;
+    expect(expr).toContain('service="tenant-a-1-web-abc@kubernetescrd"');
+    expect(expr).not.toContain('=~');
+  });
+});
+
+describe('label escaping closes the string literal, not only the regex', () => {
+  it('escapes a quote out of a namespace service matcher', () => {
+    // Escaping regex metacharacters alone left `"` free to end the PromQL
+    // string literal and start a second label matcher.
+    const m = serviceMatcherForNamespace('tenant-x", job=~".+');
+    expect(m).not.toMatch(/(^|[^\\])"/);
+  });
+
+  it('cannot add a second matcher through the route confinement', () => {
+    const expr = buildTrafficQuery({
+      ...base, scope: 'route', namespacePrefix: 'tenant-x", job=~".+',
+    }).expr;
+    expect(expr.match(/rate\(/g)).toHaveLength(1);
+    expect(expr.match(/service=~/g)).toHaveLength(1);
+    // The injected text may still be PRESENT — it is just inert, sitting
+    // inside the string literal. What matters is that every quote between
+    // the delimiters is escaped, so the literal ends where we put its end.
+    const inner = /service=~"((?:[^"\\]|\\.)*)"/.exec(expr);
+    expect(inner, 'the matcher must parse as one complete string literal').not.toBeNull();
+    expect(expr.slice(expr.indexOf(inner![0]) + inner![0].length)).not.toContain('job=');
+  });
+
+  it('accepts a real namespace and refuses a shaped-but-invalid one', () => {
+    expect(isValidNamespace('tenant-alpha-1a2b3c4d')).toBe(true);
+    expect(isValidNamespace('tenant-x", job=~".+')).toBe(false);
+    expect(isValidNamespace('Tenant-Upper')).toBe(false);
+    expect(isValidNamespace('-leading-hyphen')).toBe(false);
+    expect(isValidNamespace('a'.repeat(64))).toBe(false);
+  });
+});
+
+describe('pod grouping', () => {
+  it('groups by pod whether or not a pod is named', () => {
+    // Used to be a ternary with two identical branches.
+    expect(buildTrafficQuery({ ...base, scope: 'pod', subject: 'tenant-a-1' }).groupBy).toBe('pod');
+    expect(buildTrafficQuery({ ...base, scope: 'pod', subject: 'tenant-a-1', pod: 'web-1' }).groupBy).toBe('pod');
   });
 });

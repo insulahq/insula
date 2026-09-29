@@ -118,3 +118,33 @@ describe('foldTail', () => {
     expect(series[TRAFFIC_TOP_N].points).toEqual([null, null, null]);
   });
 });
+
+describe('alignToTimeline never hands one sample to two buckets', () => {
+  it('places a midpoint sample in exactly one bucket', () => {
+    // Symmetric half-step windows overlap at the midpoint, so both
+    // neighbouring buckets claimed the same measurement and integrate()
+    // counted it twice.
+    const step = 300;
+    const t0 = 1_000_000_000;
+    const timeline = [t0 * 1000, (t0 + step) * 1000];
+    const midpoint = t0 + step / 2;
+    const aligned = alignToTimeline([[midpoint, 99]], timeline, step);
+    expect(aligned.filter((v) => v === 99)).toHaveLength(1);
+  });
+
+  it('holds at the daily step, where the window is twelve hours each side', () => {
+    const step = 86_400;
+    const t0 = 1_700_000_000 - (1_700_000_000 % step);
+    const timeline = [t0 * 1000, (t0 + step) * 1000];
+    const aligned = alignToTimeline([[t0 + step / 2, 7]], timeline, step);
+    expect(aligned.filter((v) => v === 7)).toHaveLength(1);
+  });
+
+  it('does not inflate the total when a sample sits on a boundary', () => {
+    const step = 600;
+    const t0 = 1_000_000_200;
+    const timeline = [t0 * 1000, (t0 + step) * 1000, (t0 + 2 * step) * 1000];
+    const aligned = alignToTimeline([[t0 + step / 2, 10]], timeline, step);
+    expect(integrate(aligned, step)).toBe(10 * step);
+  });
+});

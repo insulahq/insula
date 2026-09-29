@@ -64,3 +64,30 @@ describe('TrafficTile', () => {
     expect(pts.trim().split(/\s+/)).toHaveLength(2);
   });
 });
+
+describe('TrafficChart gap handling', () => {
+  it('draws an isolated measured point as a dot rather than losing it', async () => {
+    // A run of one has no segment to belong to. Dropping it hides a real
+    // measurement — the mirror image of drawing a gap as zero.
+    const { default: TrafficChart } = await import('@/components/traffic/TrafficChart');
+    const lonely: TrafficFrame = {
+      ...frame,
+      series: [{ key: 'out', name: 'Outbound', kind: 'direction', points: [null, null, 5_000, null, null, null, null, null, null, null, null, null] }],
+    };
+    const { container } = render(<TrafficChart frame={lonely} stacked={false} />);
+    expect(container.querySelectorAll('polyline')).toHaveLength(0);
+    const dots = [...container.querySelectorAll('circle')].filter((c) => c.getAttribute('r') === '1.8');
+    expect(dots).toHaveLength(1);
+  });
+
+  it('breaks the line at a gap instead of bridging it', async () => {
+    const { default: TrafficChart } = await import('@/components/traffic/TrafficChart');
+    const gappy: TrafficFrame = {
+      ...frame,
+      series: [{ key: 'out', name: 'Outbound', kind: 'direction', points: [1, 2, null, null, 3, 4, null, null, 5, 6, null, null] }],
+    };
+    const { container } = render(<TrafficChart frame={gappy} stacked={false} />);
+    // three runs of two → three separate polylines, not one across the gaps
+    expect(container.querySelectorAll('polyline')).toHaveLength(3);
+  });
+});

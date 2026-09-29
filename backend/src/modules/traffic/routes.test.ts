@@ -144,3 +144,101 @@ describe('traffic routes', () => {
     expect(res.statusCode).toBe(403);
   });
 });
+
+describe('tenant route scope (was entirely non-functional)', () => {
+  let app2: FastifyInstance;
+  let token: string;
+  beforeAll(async () => {
+    app2 = Fastify();
+    await app2.register(fastifyJwt, { secret: 'test-secret-key-for-testing-only' });
+    registerAuth(app2);
+    app2.setErrorHandler(errorHandler);
+    app2.decorate('db', makeDb() as never);
+    await app2.register(trafficRoutes, { prefix: '/api/v1' });
+    await app2.ready();
+    token = app2.jwt.sign({
+      sub: 'u-a', role: 'tenant_admin', panel: 'tenant', tenantId: TENANT_A,
+      iat: Math.floor(Date.now() / 1000),
+    });
+  });
+  afterAll(async () => { await app2.close(); });
+
+  const call = (path: string) => {
+    asked = [];
+    return app2.inject({ method: 'GET', url: path, headers: { authorization: `Bearer ${token}` } });
+  };
+
+  it('matches the tenant’s services by namespace, not by the bare namespace', async () => {
+    // `service="tenant-alpha-ns"` can never match: a Traefik service label is
+    // `<namespace>-<ingress>-<hash>@kubernetescrd`. It selected nothing and
+    // rendered an empty chart that read as "you have no traffic".
+    const res = await call(`/api/v1/tenants/${TENANT_A}/traffic/series?from=${FROM}&to=${TO}&scope=route`);
+    expect(res.statusCode).toBe(200);
+    expect(asked.join(' ')).toContain(`service=~"${NS_A}-.+"`);
+    expect(asked.join(' ')).not.toContain(`service="${NS_A}"`);
+  });
+
+  it('lists a tenant’s individual routes instead of returning nothing', async () => {
+    const res = await call(`/api/v1/tenants/${TENANT_A}/traffic/subjects?from=${FROM}&to=${TO}&scope=route`);
+    expect(res.statusCode).toBe(200);
+    // Grouping by service is what makes the picker a list; forcing a subject
+    // collapsed it to one line and the picker came back empty.
+    expect(asked.join(' ')).toContain('sum by (service)');
+  });
+
+  it('accepts a route that belongs to the tenant', async () => {
+    const own = `${NS_A}-web-abc@kubernetescrd`;
+    const res = await call(
+      `/api/v1/tenants/${TENANT_A}/traffic/series?from=${FROM}&to=${TO}&scope=route&subject=${encodeURIComponent(own)}`,
+    );
+    expect(res.statusCode).toBe(200);
+    expect(asked.join(' ')).toContain(`service="${own}"`);
+  });
+
+  it('DROPS a route belonging to somebody else rather than querying it', async () => {
+    const other = `${NS_B}-web-abc@kubernetescrd`;
+    const res = await call(
+      `/api/v1/tenants/${TENANT_A}/traffic/series?from=${FROM}&to=${TO}&scope=route&subject=${encodeURIComponent(other)}`,
+    );
+    expect(res.statusCode).toBe(200);
+    expect(asked.join(' ')).not.toContain(NS_B);
+    expect(asked.join(' ')).toContain(`service=~"${NS_A}-.+"`);
+  });
+
+  it('serves route traffic rather than 400ing on the default metric', async () => {
+    const res = await call(`/api/v1/tenants/${TENANT_A}/traffic/series?from=${FROM}&to=${TO}&scope=route&metric=traffic`);
+    expect(res.statusCode).toBe(200);
+    expect(asked.join(' ')).toMatch(/traefik_service_(responses|requests)_bytes_total/);
+  });
+});
+
+describe('admin subject validation', () => {
+  let app3: FastifyInstance;
+  let adminTok: string;
+  beforeAll(async () => {
+    app3 = Fastify();
+    await app3.register(fastifyJwt, { secret: 'test-secret-key-for-testing-only' });
+    registerAuth(app3);
+    app3.setErrorHandler(errorHandler);
+    app3.decorate('db', makeDb() as never);
+    await app3.register(trafficRoutes, { prefix: '/api/v1' });
+    await app3.ready();
+    adminTok = app3.jwt.sign({ sub: 'op', role: 'admin', panel: 'admin', iat: Math.floor(Date.now() / 1000) });
+  });
+  afterAll(async () => { await app3.close(); });
+
+  it('refuses a subject that only LOOKS like a namespace', async () => {
+    // `startsWith('tenant-')` was the whole check, so any string beginning
+    // with those characters reached the query builder.
+    asked = [];
+    const evil = encodeURIComponent('tenant-x", job=~".+');
+    const res = await app3.inject({
+      method: 'GET',
+      url: `/api/v1/admin/monitoring/traffic/subjects?from=${FROM}&to=${TO}&scope=tenant&subject=${evil}`,
+      headers: { authorization: `Bearer ${adminTok}` },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.code).toBe('INVALID_TRAFFIC_QUERY');
+    expect(asked).toHaveLength(0);
+  });
+});
