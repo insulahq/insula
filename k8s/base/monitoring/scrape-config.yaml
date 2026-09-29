@@ -113,8 +113,15 @@ data:
           # real traffic and is kept; Calico's own `wireguard.cali` and
           # `vxlan.calico` are encapsulation of pod traffic already counted at
           # the pod, so they are dropped.
+          # `vxlan.*`/`wireguard.*` are KEPT, unlike the rest of this list.
+          # They are Calico's inter-node encapsulation — one or two series per
+          # node, not per pod, so they cost nothing — and they are the only
+          # measurement of node-to-node traffic there is. They are a SUBSET of
+          # what the NIC already carries (the tunnel rides over it), so the
+          # queries must present them as a subset and never add them to the
+          # wire total.
           - source_labels: [__name__, interface]
-            regex: 'container_network_[^;]*;(cali.*|tunl.*|veth.*|vxlan.*|wireguard.*|docker.*|br-.*|flannel.*|cni.*|dummy.*|nodelocaldns.*|kube-ipvs.*|lo)'
+            regex: 'container_network_[^;]*;(cali[0-9a-f].*|tunl.*|veth.*|docker.*|br-.*|flannel.*|cni.*|dummy.*|nodelocaldns.*|kube-ipvs.*|lo)'
             action: drop
 
       # ── kubelet: pod/container requests-level resource metrics ──

@@ -17,9 +17,11 @@
 
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import clsx from 'clsx';
+import { Clock } from 'lucide-react';
 import type { TrafficFrame } from '@insula/api-contracts';
 import {
-  formatAxisTick, formatInstant, formatTrafficRate, formatTrafficTotal,
+  browserTimeZone, formatAxisTick, formatInstant, formatTrafficRate, formatTrafficTotal,
+  utcOffsetLabel,
 } from '@/lib/format-traffic';
 
 const M = { top: 18, right: 16, bottom: 26, left: 62 };
@@ -113,9 +115,13 @@ export default function TrafficChart({
     const out: Band[] = [];
     visible.forEach((s, i) => {
       const upper: Array<number | null> = [];
+      // A grouped frame carries two different measurements and one of them
+      // is a subset of another — stacking any of it would add a number to
+      // the total it is already inside.
+      const stackThis = stacked && s.group === undefined;
       for (let idx = 0; idx < frame.times.length; idx++) {
         const v = s.points[idx] ?? null;
-        if (!stacked) { upper.push(v); continue; }
+        if (!stackThis) { upper.push(v); continue; }
         if (v === null) { upper.push(running[idx]); continue; }
         running[idx] = (running[idx] ?? 0) + v;
         upper.push(running[idx]);
@@ -336,6 +342,22 @@ export default function TrafficChart({
               Traffic spike
             </div>
           )}
+        </div>
+      )}
+
+      {/* The zone pill sits where the readout will appear and yields to it —
+          two cards in the same corner is one too many. */}
+      {!hovered && (
+        <div
+          className="pointer-events-none absolute left-[74px] top-[5px] inline-flex items-center gap-1.5
+            whitespace-nowrap rounded-full border border-gray-200 bg-gray-50 px-2.5 py-[3px]
+            text-[11.5px] text-gray-500 dark:border-gray-700 dark:bg-gray-900/60 dark:text-gray-400"
+          title={`Times are shown in ${browserTimeZone()}`}
+          data-testid="traffic-tzpill"
+        >
+          <Clock size={11} />
+          <b className="font-semibold text-gray-600 dark:text-gray-300">{utcOffsetLabel()}</b>
+          {' '}your time
         </div>
       )}
 

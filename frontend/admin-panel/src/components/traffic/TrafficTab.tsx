@@ -7,7 +7,7 @@
  */
 
 import { useMemo, useState } from 'react';
-import { Activity, ArrowUpDown, Gauge, Loader2 } from 'lucide-react';
+import { Loader2 } from 'lucide-react';
 import clsx from 'clsx';
 import type {
   TrafficBackupMode, TrafficDirection, TrafficMetric, TrafficScope,
@@ -15,14 +15,20 @@ import type {
 import { useTrafficSeries, useTrafficSubjects } from '@/hooks/use-traffic';
 import { extractOperatorError } from '@/lib/extract-operator-error';
 import ErrorPanel from '@/components/ErrorPanel';
-import StatCard from '@/components/ui/StatCard';
-import TrafficChart from './TrafficChart';
+import TrafficChart, { findSpikes } from './TrafficChart';
+import TrafficStats from './TrafficStats';
 import TrafficSummaryTable from './TrafficSummaryTable';
 import TrafficPicker from './TrafficPicker';
 import TrafficRangePicker, { presetRange, type RangeValue } from './TrafficRangePicker';
-import {
-  formatInstant, formatTrafficRate, formatTrafficVolume, utcOffsetLabel,
-} from '@/lib/format-traffic';
+import { formatInstant, formatTrafficRate, formatTrafficVolume } from '@/lib/format-traffic';
+
+/** "24 hours", "7 days" — what the Total tile is a total OVER. */
+function spanLabel(r: { from: Date; to: Date }): string {
+  const hours = Math.round((r.to.getTime() - r.from.getTime()) / 3_600_000);
+  if (hours < 48) return `${hours} hours`;
+  const days = Math.round(hours / 24);
+  return days < 60 ? `${days} days` : `${Math.round(days / 30)} months`;
+}
 
 const SCOPES: ReadonlyArray<{ key: TrafficScope; label: string; subjectLabel: string }> = [
   { key: 'cluster', label: 'Cluster', subjectLabel: 'Direction' },
@@ -85,14 +91,16 @@ export default function TrafficTab() {
   const [pod, setPod] = useState<string | null>(null);
   const [metric, setMetric] = useState<TrafficMetric>('traffic');
   const [direction, setDirection] = useState<TrafficDirection>('both');
-  const [backups, setBackups] = useState<TrafficBackupMode>('included');
   const [hidden, setHidden] = useState<ReadonlySet<string>>(new Set());
 
   // Traefik has no per-pod dimension, so those questions are not offered.
   const metricsForScope = metricsFor(scope);
   const effectiveMetric: TrafficMetric = metricsForScope.some((m) => m.key === metric) ? metric : 'traffic';
-  const showBackups = effectiveMetric === 'traffic' && scope === 'cluster';
-  const effectiveBackups: TrafficBackupMode = showBackups ? backups : 'included';
+  // Always separated on a cluster traffic view — no selector, because the
+  // split is not an opinion the operator should have to hold.
+  const effectiveBackups: TrafficBackupMode = effectiveMetric === 'traffic' && scope === 'cluster'
+    ? 'separate'
+    : 'included';
   const singleSubject = scope === 'cluster' || (scope === 'pod' ? Boolean(pod) : Boolean(subject));
   const showDirection = effectiveMetric === 'traffic' && !singleSubject && effectiveBackups === 'included';
   // A single subject shows both directions as two lines. A BREAKDOWN shows one
@@ -140,29 +148,42 @@ export default function TrafficTab() {
   );
 
   const scopeMeta = SCOPES.find((s) => s.key === scope) ?? SCOPES[0];
-  const stacked = Boolean(frame) && frame!.unit !== 'milliseconds';
+  // Stack only when the series are PARTS OF ONE WHOLE: a backup split, or a
+  // breakdown across subjects. Two directions of one subject are not — and
+  // stacking them drew Inbound at out+in, a line parallel to Outbound that
+  // looked identical in shape however different the values were.
+  const stacked = Boolean(frame)
+    && frame!.unit !== 'milliseconds'
+    && (effectiveBackups !== 'included' || !singleSubject);
 
   const stats = useMemo(() => {
     if (!frame) return null;
     const step = frame.stepSeconds;
-    const perIndex = frame.times.map((_, i) => frame.series.reduce((a, s) => {
+    // Only the series still shown. Hiding a row is a way of asking "what
+    // does this look like without that" — tiles that ignored it answered a
+    // different question from the chart directly above them.
+    const shown = frame.series.filter((s) => !hidden.has(s.key));
+    if (shown.length === 0) return null;
+    const perIndex = frame.times.map((_, i) => shown.reduce((a, s) => {
       const v = s.points[i];
       return v === null || v === undefined ? a : a + v;
     }, 0));
-    const measured = perIndex.filter((_, i) => frame.series.some((s) => s.points[i] !== null));
+    const measured = perIndex.filter((_, i) => shown.some((s) => s.points[i] !== null));
     const peak = measured.length ? Math.max(...measured) : 0;
     const peakAt = frame.times[perIndex.indexOf(peak)];
     const avg = measured.length ? measured.reduce((a, v) => a + v, 0) / measured.length : 0;
     const total = perIndex.reduce((a, v) => a + v, 0) * step;
-    return { peak, peakAt, avg, total };
-  }, [frame]);
+    // Same detector the chart marks with, so the tile and the markers agree.
+    const spikes = findSpikes(perIndex.map((v, i) => (shown.some((sx) => sx.points[i] !== null) ? v : null))).length;
+    return { peak, peakAt, avg, total, spikes };
+  }, [frame, hidden]);
 
   const operatorError = error ? extractOperatorError(error) : null;
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-end gap-3">
-        <div className="min-w-[280px] flex-1"><TrafficRangePicker value={range} onChange={setRange} /></div>
+      <div className="flex flex-wrap items-end gap-x-3.5 gap-y-2.5">
+        <div className="min-w-[320px]"><TrafficRangePicker value={range} onChange={setRange} /></div>
 
         <div className="min-w-[180px]">
           <TrafficPicker
@@ -222,19 +243,6 @@ export default function TrafficTab() {
           onChange={(m) => { setMetric(m); setHidden(new Set()); }}
         />
 
-        {showBackups && (
-          <Segmented
-            label="Backups"
-            value={backups}
-            options={[
-              { key: 'included' as const, label: 'Included' },
-              { key: 'separate' as const, label: 'Separate' },
-              { key: 'only' as const, label: 'Only' },
-            ]}
-            onChange={(b) => { setBackups(b); setHidden(new Set()); }}
-          />
-        )}
-
         {showDirection && (
           <Segmented
             label="Direction"
@@ -271,38 +279,44 @@ export default function TrafficTab() {
       )}
 
       {stats && frame && (
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <StatCard
-            title={frame.unit === 'milliseconds' ? 'Average' : 'Total'}
-            value={frame.unit === 'milliseconds'
+        <TrafficStats stats={[
+          {
+            key: 'total',
+            label: frame.unit === 'milliseconds' ? 'Average' : 'Total',
+            value: frame.unit === 'milliseconds'
               ? formatTrafficRate(stats.avg, frame.unit)
-              : formatTrafficVolume(stats.total, frame.unit)}
-            subtitle={frame.resolution === 'daily' ? 'daily rollup' : 'over the selected range'}
-            icon={ArrowUpDown}
-            accent="brand"
-          />
-          <StatCard
-            title="Peak"
-            value={formatTrafficRate(stats.peak, frame.unit)}
-            subtitle={stats.peakAt ? formatInstant(stats.peakAt) : '—'}
-            icon={Activity}
-          />
-          <StatCard
-            title="Average"
-            value={formatTrafficRate(stats.avg, frame.unit)}
-            subtitle={stats.avg > 0 ? `${(stats.peak / stats.avg).toFixed(1)}× peak-to-mean` : '—'}
-            icon={Gauge}
-          />
-          <StatCard
-            title="Resolution"
-            value={frame.resolution === 'daily' ? '1 day' : `${Math.round(frame.stepSeconds / 60)} min`}
-            subtitle={frame.resolution === 'daily'
-              ? 'UTC days · spikes averaged out'
-              : `${utcOffsetLabel()} · your time`}
-            icon={Activity}
-            accent={frame.resolution === 'daily' ? 'amber' : undefined}
-          />
-        </div>
+              : formatTrafficVolume(stats.total, frame.unit),
+            sub: frame.resolution === 'daily' ? 'daily rollup' : `over ${spanLabel(range)}`,
+          },
+          {
+            key: 'peak',
+            label: frame.resolution === 'daily' ? 'Peak (daily)' : 'Peak',
+            value: formatTrafficRate(stats.peak, frame.unit),
+            sub: stats.peakAt ? formatInstant(stats.peakAt) : '—',
+          },
+          {
+            key: 'average',
+            label: 'Average',
+            value: formatTrafficRate(stats.avg, frame.unit),
+            sub: stats.avg > 0 ? `${(stats.peak / stats.avg).toFixed(1)}× peak-to-mean` : '—',
+          },
+          frame.resolution === 'daily'
+            ? {
+              key: 'resolution',
+              label: 'Resolution',
+              value: '1 day',
+              sub: 'UTC days · spikes averaged out',
+              alert: true,
+            }
+            : {
+              key: 'spikes',
+              label: 'Spikes flagged',
+              value: String(stats.spikes),
+              sub: stats.spikes ? 'click a marker to zoom' : 'none in this range',
+              alert: stats.spikes > 0,
+            },
+        ]}
+        />
       )}
 
       <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-700 dark:bg-gray-800">

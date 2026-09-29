@@ -184,7 +184,10 @@ export async function fetchTrafficFrame(
 
   const plans = directionPlans(req);
   const single = isSingleSubject(req);
-  const collected: Array<{ key: string; name: string; kind: TrafficSeries['kind']; points: Array<number | null> }> = [];
+  const collected: Array<{
+    key: string; name: string; kind: TrafficSeries['kind'];
+    group?: TrafficSeries['group']; points: Array<number | null>;
+  }> = [];
   const namespacesSeen = new Set<string>();
 
   for (const plan of plans) {
@@ -208,6 +211,7 @@ export async function fetchTrafficFrame(
           key: spec.keyPrefix ? `${spec.keyPrefix}:${rawKey}` : rawKey,
           name: spec.nameOverride ?? rawKey,
           kind: spec.kind,
+          group: spec.group,
           points: alignToTimeline(row.points, timeline, stepSeconds),
         });
       }
@@ -245,7 +249,9 @@ export async function fetchTrafficFrame(
   let series: TrafficSeries[];
   let othersFolded = 0;
   if (opts.noFold || single || req.backups !== 'included' || collected.every((s) => s.kind !== 'subject')) {
-    series = collected.map((s) => ({ key: s.key, name: s.name, kind: s.kind, points: s.points }));
+    series = collected.map((s) => ({
+      key: s.key, name: s.name, kind: s.kind, group: s.group, points: s.points,
+    }));
   } else {
     const folded = foldTail(collected.map((s) => ({ key: s.key, name: s.name, points: s.points })), unit, stepSeconds);
     series = folded.series;
@@ -271,6 +277,7 @@ interface PlannedQuery {
   readonly fallbackKey: string;
   readonly nameOverride?: string;
   readonly keyPrefix?: string;
+  readonly group?: TrafficSeries['group'];
 }
 
 /**
@@ -292,6 +299,53 @@ function planQueries(
     pod: req.pod,
     namespacePrefix: req.restrictToNamespace,
   };
+
+  // Backup traffic is ALWAYS its own series on a cluster view — it is not a
+  // mode to opt into. An operator reading cluster traffic needs to know how
+  // much of it is the platform backing itself up, every time, not only when
+  // they remember to ask.
+  // ── cluster traffic: the wire, its subsets, then the workload view ──
+  //
+  // Two measurements, deliberately not blended. The wire is what crossed the
+  // network. The workload rows are what each job SENT, which double-counts
+  // every backup byte (job → in-cluster shim → off-site) and misses nothing
+  // that stayed inside the node. Both are true; only one of them adds up,
+  // and the frame says which is which.
+  if (req.scope === 'cluster' && req.metric === 'traffic') {
+    const wire = (direction === 'in' ? 'Inbound' : 'Outbound');
+    return [
+      {
+        query: buildTrafficQuery({ ...base }),
+        kind: 'direction', fallbackKey: direction, keyPrefix: 'wire',
+        nameOverride: `${wire} (wire)`, group: 'wire',
+      },
+      {
+        query: buildTrafficQuery({ ...base, wireSubset: 'node-to-node' }),
+        kind: 'direction', fallbackKey: direction, keyPrefix: 'n2n',
+        nameOverride: 'Node-to-node', group: 'wire-subset',
+      },
+      ...(direction === 'out' ? [{
+        query: buildTrafficQuery({ ...base, wireSubset: 'offsite-backup' }),
+        kind: 'direction' as const, fallbackKey: direction, keyPrefix: 'offsite',
+        nameOverride: 'Off-site backup upload', group: 'wire-subset' as const,
+      }] : []),
+      ...(direction === 'out' ? [
+        {
+          query: buildTrafficQuery({ ...base, scope: 'tenant', backups: 'exclude' }),
+          kind: 'serving' as const, fallbackKey: 'serving',
+          nameOverride: 'Tenant workloads sent', group: 'workload' as const,
+        },
+        ...(Object.keys(BACKUP_CLASS_POD_RE) as Array<keyof typeof BACKUP_CLASS_POD_RE>).map((cls) => ({
+          query: buildTrafficQuery({ ...base, scope: 'backup-class', backupClass: cls }),
+          kind: 'backup-class' as const,
+          fallbackKey: cls,
+          nameOverride: BACKUP_CLASS_LABEL[cls],
+          keyPrefix: 'backup',
+          group: 'workload' as const,
+        })),
+      ] : []),
+    ];
+  }
 
   if (req.backups === 'included' || req.metric !== 'traffic') {
     const single = isSingleSubject(req);
@@ -327,10 +381,10 @@ function planQueries(
 }
 
 const BACKUP_CLASS_LABEL: Record<keyof typeof BACKUP_CLASS_POD_RE, string> = {
-  files: 'Backup · tenant files',
-  mailboxes: 'Backup · mailboxes',
+  'tenant-bundles': 'Backup · tenant bundles',
+  'mail-snapshots': 'Backup · mail server snapshots',
   databases: 'Backup · databases',
-  system: 'Backup · system & secrets',
+  system: 'Backup · cluster state & secrets',
 };
 
 /**

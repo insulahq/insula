@@ -57,8 +57,14 @@ describe('backup separation', () => {
   });
 
   it('isolates one class', () => {
-    const expr = buildTrafficQuery({ ...base, scope: 'backup-class', backupClass: 'mailboxes' }).expr;
-    expect(expr).toContain('pod=~"bk-mbox-.+"');
+    // A tenant bundle is one class covering BOTH of its capture jobs.
+    const expr = buildTrafficQuery({ ...base, scope: 'backup-class', backupClass: 'tenant-bundles' }).expr;
+    expect(expr).toContain('pod=~"bk-(files|mbox)-.+"');
+  });
+
+  it('counts the mail server\u2019s own snapshots, which the first cut missed', () => {
+    const expr = buildTrafficQuery({ ...base, scope: 'backup-class', backupClass: 'mail-snapshots' }).expr;
+    expect(expr).toContain('stalwart-snapshot-cron-.+');
   });
 
   it('refuses a backup-class query with no class', () => {
@@ -195,5 +201,49 @@ describe('backup classes are not confined to a namespace allowlist', () => {
       }).expr;
       expect(expr, cls).toContain(`pod=~"${re}"`);
     }
+  });
+});
+
+describe('retained plumbing must not inflate history', () => {
+  it('excludes virtual interfaces in the QUERY, not only at scrape time', () => {
+    // The store keeps 30 days, and those days already hold one Calico veth
+    // per pod on the root cgroup. Trusting the scrape rule alone measured a
+    // day that moved 46 GB as 265 GB.
+    for (const scope of ['node', 'tenant', 'pod'] as const) {
+      const expr = buildTrafficQuery({
+        ...base, scope, subject: scope === 'tenant' || scope === 'pod' ? 'tenant-a-1' : undefined,
+      }).expr;
+      expect(expr, scope).toContain('interface!~');
+      expect(expr, scope).toContain('cali[0-9a-f].*');
+    }
+  });
+
+  it('excludes the retained veths on a plain cluster query too', () => {
+    const expr = buildTrafficQuery({ ...base, scope: 'cluster' }).expr;
+    expect(expr).toContain('cali[0-9a-f].*');
+  });
+
+  it('selects ONLY the encapsulation for node-to-node, and never adds it to the wire', () => {
+    const n2n = buildTrafficQuery({ ...base, scope: 'cluster', wireSubset: 'node-to-node' }).expr;
+    expect(n2n).toContain('interface=~"vxlan.*|wireguard\\.cali"');
+    expect(n2n).toContain('id="/"');
+  });
+
+  it('measures off-site upload at the shim, not at the backup jobs', () => {
+    // The jobs send to an in-cluster relay; only the relay's egress leaves.
+    const off = buildTrafficQuery({ ...base, scope: 'cluster', wireSubset: 'offsite-backup' }).expr;
+    expect(off).toContain('pod=~"backup-rclone.+"');
+    expect(off).not.toContain('id="/"');
+  });
+
+  it('still names no real NIC — the exclusion lists what is virtual', () => {
+    const expr = buildTrafficQuery({ ...base, scope: 'cluster' }).expr;
+    expect(expr).not.toMatch(/interface\s*=\s*"/);   // no equality match
+    expect(expr).not.toContain('eth0');
+  });
+
+  it('keeps the exclusion on backup-class queries too', () => {
+    const expr = buildTrafficQuery({ ...base, scope: 'backup-class', backupClass: 'files' }).expr;
+    expect(expr).toContain('interface!~');
   });
 });

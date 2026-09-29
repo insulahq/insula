@@ -21,39 +21,54 @@ const range = { from: new Date(Date.now() - 3_600_000), to: new Date() };
 
 beforeEach(() => { asked = []; });
 
-describe('backup split', () => {
-  it('produces ONE serving row, not one per direction', async () => {
-    // With direction 'both' the split ran twice and the table showed
-    // "Serving traffic" twice — seen on DEV before this was fixed.
-    const frame = await fetchTrafficFrame({
-      ...range, scope: 'cluster', metric: 'traffic', direction: 'both', backups: 'separate',
-    }, { db });
-    const serving = frame.series.filter((s) => s.name === 'Serving traffic');
-    expect(serving).toHaveLength(1);
-    expect(new Set(frame.series.map((s) => s.key)).size).toBe(frame.series.length);
-  });
-
-  it('asks for serving plus one query per backup class', async () => {
-    await fetchTrafficFrame({
-      ...range, scope: 'cluster', metric: 'traffic', direction: 'both', backups: 'separate',
-    }, { db });
-    expect(asked).toHaveLength(5);
-    expect(asked.filter((e) => e.includes('pod!~')).length).toBe(1);
-  });
-
-  it('asks only for the classes when the mode is "only"', async () => {
-    await fetchTrafficFrame({
-      ...range, scope: 'cluster', metric: 'traffic', direction: 'both', backups: 'only',
-    }, { db });
-    expect(asked).toHaveLength(4);
-    expect(asked.some((e) => e.includes('pod!~'))).toBe(false);
-  });
-
-  it('still draws both directions when backups are included', async () => {
+describe('the cluster frame is two measurements, labelled', () => {
+  it('reports the wire, its subsets, and the workload view — never blended', async () => {
     const frame = await fetchTrafficFrame({
       ...range, scope: 'cluster', metric: 'traffic', direction: 'both', backups: 'included',
     }, { db });
-    expect(frame.series.map((s) => s.name).sort()).toEqual(['Inbound', 'Outbound']);
+    const groups = new Map<string, string[]>();
+    for (const s of frame.series) {
+      const g = s.group ?? 'none';
+      groups.set(g, [...(groups.get(g) ?? []), s.name]);
+    }
+    // The wire is the ground truth, in both directions.
+    expect(groups.get('wire')).toEqual(['Outbound (wire)', 'Inbound (wire)']);
+    // Subsets of that same total — present, and marked so nothing adds them in.
+    expect(groups.get('wire-subset')).toContain('Node-to-node');
+    expect(groups.get('wire-subset')).toContain('Off-site backup upload');
+    // What each workload sent: double-counts through the shim, so it is a
+    // separate group rather than a decomposition of the wire.
+    expect(groups.get('workload')).toContain('Tenant workloads sent');
+    expect(groups.get('workload')).toContain('Backup · tenant bundles');
+    expect(groups.get('workload')).toContain('Backup · mail server snapshots');
+  });
+
+  it('never repeats a series key, so the table cannot show a row twice', async () => {
+    const frame = await fetchTrafficFrame({
+      ...range, scope: 'cluster', metric: 'traffic', direction: 'both', backups: 'included',
+    }, { db });
+    const keys = frame.series.map((s) => s.key);
+    expect(new Set(keys).size).toBe(keys.length);
+  });
+
+  it('asks for the off-site and workload rows once, not once per direction', async () => {
+    // They are egress by nature; running them for inbound too produced
+    // duplicate identically-named rows the first time round.
+    await fetchTrafficFrame({
+      ...range, scope: 'cluster', metric: 'traffic', direction: 'both', backups: 'included',
+    }, { db });
+    // Match the SELECTOR, not any mention: the "tenant workloads" query also
+    // names these pods, in its exclusion.
+    expect(asked.filter((e) => e.includes('pod=~"backup-rclone'))).toHaveLength(1);
+    expect(asked.filter((e) => e.includes('pod=~"bk-(files|mbox)'))).toHaveLength(1);
+    expect(asked.filter((e) => e.includes('pod!~'))).toHaveLength(1);
+  });
+
+  it('leaves non-cluster scopes as a plain single measurement', async () => {
+    const frame = await fetchTrafficFrame({
+      ...range, scope: 'node', metric: 'traffic', direction: 'both', backups: 'included',
+    }, { db });
+    expect(frame.series.every((s) => s.group === undefined)).toBe(true);
   });
 });
 
