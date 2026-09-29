@@ -68,8 +68,8 @@ What happens when you press it:
    waiting for the cluster to settle between each. Biggest-first is
    deliberate — every migration hands CPU back, so the earliest steps buy the
    headroom that makes the later ones safe.
-3. Once every pod provably carries a ceiling, the namespace quota gains its
-   burst cap.
+3. The namespace's CPU reservation budget is resized to what the tenant's
+   applications now actually ask for, plus room to roll one of them.
 4. Only then is the tenant marked as tiered.
 
 While it runs you get a **Stop after this step** button. It is not a cancel:
@@ -130,6 +130,38 @@ trouble. The dashboard raises a finding only when a node is reserved-full *and*
 idle, because that is the right rule for an alarm. Discovery is a different job:
 a cluster at 40% reserved should be able to look at this before it becomes the
 cluster at 96%.
+
+### What bounds a tenant, and what deliberately does not
+
+One thing bounds a tenant's CPU: the **per-container ceiling**. Kubernetes
+applies it to every container that starts without a CPU limit of its own,
+which under the share model is every application a tenant deploys.
+
+There is deliberately **no namespace-wide CPU ceiling** — no cap on the sum
+of a tenant's ceilings, and none on how many applications they may run.
+An earlier version of this had both, and both were mistakes worth naming:
+
+- A quota that bounds the *sum* of ceilings is really a cap on the number of
+  containers, because a quota charges each container its whole ceiling the
+  moment it starts, idle or not. A tenant hit it by deploying an ordinary
+  third application, and then could not restart anything either — replacing
+  a pod needs room beside the one it replaces.
+- A `max` on the namespace applies to **every** container in it, and a
+  tenant namespace is not only the tenant's: the platform runs its own jobs
+  there, including the file backup. One sized to the tenant's ceiling
+  refused the backup job outright.
+
+So a tenant running five applications can, in principle, burst to five times
+their ceiling if the node happens to be idle. That is the model working:
+idle capacity is there to be used, the *share* is what decides who gets the
+CPU when it is contended, and nothing was bounded at all before the share
+model existed.
+
+!!! note "Memory is the constraint that stops a tenant adding applications"
+    Memory is reserved, incompressible, and quota-bounded per plan. If a
+    tenant cannot deploy another application, look at memory first — CPU no
+    longer refuses anything at the namespace level.
+
 
 ### Changing a tenant's share or ceiling afterwards
 

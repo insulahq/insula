@@ -876,7 +876,14 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
       const hard = quotaObj.status?.hard ?? {};
 
       return success({
-        cpu: { used: used['limits.cpu'] ?? '0', limit: hard['limits.cpu'] ?? '0' },
+        // ★ `requests.cpu`. The namespace quota no longer carries a
+        // `limits.cpu` — it charged every container its whole ceiling and
+        // became a cap on how many a tenant could run. Reading the gone key
+        // would report 0 of 0 CPU to whoever calls this.
+        cpu: {
+          used: used['requests.cpu'] ?? used['limits.cpu'] ?? '0',
+          limit: hard['requests.cpu'] ?? hard['limits.cpu'] ?? '0',
+        },
         memory: { used: used['limits.memory'] ?? '0', limit: hard['limits.memory'] ?? '0' },
         storage: { used: used['requests.storage'] ?? '0', limit: hard['requests.storage'] ?? '0' },
       });

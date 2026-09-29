@@ -64,7 +64,7 @@ describe('reconcileAllTenantQuotas', () => {
     // No plan tier and no override: burst is DERIVED from the plan's
     // cpu_limit as max(1, 0.25 x 2) = 1 core, and the quota backstop is 4x.
     const call = await sweep({ ...BASE, cpuSchedulingMode: 'tiered' });
-    expect(call[3]).toEqual({ cpuModel: { mode: 'tiered', ceilingCores: 4 } });
+    expect(call[3]).toEqual({ cpuModel: { mode: 'tiered' } });
   });
 
   it('prefers the tenant override over the plan for the restored ceiling', async () => {
@@ -74,7 +74,7 @@ describe('reconcileAllTenantQuotas', () => {
       planCpuBurstCores: '1.50',
       cpuBurstCoresOverride: '0.50',
     });
-    expect(call[3]).toEqual({ cpuModel: { mode: 'tiered', ceilingCores: 2 } });
+    expect(call[3]).toEqual({ cpuModel: { mode: 'tiered' } });
   });
 
   // ★ The window the runners open on purpose. A migration installs the
