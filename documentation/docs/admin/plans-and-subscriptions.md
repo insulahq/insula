@@ -100,6 +100,29 @@ month:
 - Serving resumes automatically at the month rollover, or immediately when you
   raise the tenant's limit.
 
+### What the meter counts
+
+Egress from the tenant's namespace — **minus backups the tenant did not ask
+for**.
+
+A tenant's files backup runs as a Job *inside* the tenant's own namespace, so
+its upload to off-site storage is measured exactly like a visitor download.
+Billing a tenant for a backup the platform scheduled is not defensible, and it
+is not small: on a reference production cluster, a single day's measurement
+put the backup at **78%** and **80%** of the two busiest tenants' recorded
+egress.
+
+So the meter subtracts it. Only a backup a tenant *starts themselves* is
+billed; anything scheduled by the platform, or triggered by an admin, is
+excluded. The tenant's Monitoring page states this under the allowance bar,
+and does not draw that traffic on the chart either.
+
+Restores are not counted at all — they are inbound.
+
+!!! note "Not applied retroactively"
+    The meter is forward-looking. A cycle already in progress when this
+    changed keeps whatever it had accumulated until the month rolls over.
+
 !!! note "Deprecating instead of deleting"
     A plan in `deprecated` status is greyed out in the list and won't be
     offered for new tenants, while existing tenants on it keep running.

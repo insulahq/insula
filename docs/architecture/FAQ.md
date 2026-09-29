@@ -248,6 +248,34 @@ Pod logs are read through the platform and the Kubernetes API rather than a log-
 
 **A:** Yes. VictoriaMetrics serves a Prometheus-compatible query API, and per-tenant bandwidth metering and storage usage are exposed by the management API — enough to drive invoicing.
 
+### Q: What counts towards a tenant's bandwidth allowance?
+
+**A:** Egress from the tenant's namespace, minus backups the tenant did not ask for.
+
+A tenant's files backup runs as a Job **inside the tenant's own namespace**, so
+`container_network_transmit_bytes_total{namespace="tenant-…"}` measures its upload to off-site
+storage exactly like a visitor download. Billing a tenant for a backup the platform scheduled is
+not defensible, and it is not small: on a production cluster, a single day's measurement put the
+backup at 78% and 80% of the two busiest tenants' recorded egress.
+
+So the meter subtracts it. `backup_jobs.initiator` records who asked — `tenant`, `admin`, `system`
+or `cluster` — and everything that is not `tenant` is excluded before the hourly delta is
+accumulated. A backup a tenant starts themselves is their traffic and is billed normally.
+
+The exclusion is keyed on the **Job name derived from a real `backup_jobs` row**, not on a pod-name
+pattern: excluding every pod matching `bk-*` would let a tenant name a workload `bk-files-anything`
+and stop paying for its egress. A pod is excluded only when it is shaped like that Job's pod
+(`<jobName>-<5 chars>`, which a Deployment's pod cannot be — it carries a ReplicaSet hash as well)
+*and* the backup belongs to the tenant whose namespace it ran in. Anything unrecognised is billed.
+
+`bk-files-` and `bk-mbox-` are reserved from every tenant-chosen workload name to keep that
+boundary honest: a single-component catalog entry of type `job` takes the tenant's name verbatim as
+its Job name, so without the reservation a tenant could reuse one of their own past backup ids and
+satisfy the ownership check by construction.
+
+The mailbox backup never affects a tenant's allowance at all: it runs in the platform's `mail`
+namespace, which the meter does not attribute to any tenant.
+
 ---
 
 ## Disaster Recovery & HA Questions

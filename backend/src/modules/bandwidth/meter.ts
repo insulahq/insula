@@ -8,6 +8,14 @@
  * (a single value per tenant — bounded) and resets it to 0 at the UTC
  * calendar-month boundary, also lifting any bandwidth cap for the new cycle.
  *
+ * Platform-scheduled backup egress is SUBTRACTED before accumulating: a
+ * tenant's backup Job runs in the tenant's own namespace, so its upload to
+ * off-site storage is measured exactly like a visitor download, and the tenant
+ * is not the one who asked for it. Only `initiator = 'tenant'` backups are
+ * billed. See `backup-exclusion.ts` for how a pod is tied back to the backup
+ * that explains it — and why a bare pod-name pattern would have been a way for
+ * a tenant to stop paying for traffic.
+ *
  * Footprint: no per-tenant time-series is written here; the month-to-date total
  * lives on the tenant row. (Historical hourly rollup into usage_metrics + its
  * reaper is Phase 2.)
@@ -17,6 +25,7 @@ import { eq } from 'drizzle-orm';
 import { tenants, platformSettings } from '../../db/schema.js';
 import { queryInstant } from '../monitoring/vm-client.js';
 import { evaluateBandwidthThresholds } from './thresholds.js';
+import { platformBackupBytesByNamespace } from './backup-exclusion.js';
 import { recordHourlyUsage } from '../metrics/usage-rollup.js';
 import type { Database } from '../../db/index.js';
 
@@ -81,23 +90,6 @@ export async function meterBandwidthOnce(db: Database, logger: MeterLogger = {})
   // Per-namespace transmit-byte delta for the window. increase() sums each
   // pod/interface series' rise (handling resets), then sum by namespace folds
   // pod churn away. Empty result (no traffic / vmsingle down) → all-zero deltas.
-  let byNamespace = new Map<string, number>();
-  try {
-    const samples = await queryInstant(
-      `sum by (namespace) (increase(container_network_transmit_bytes_total{namespace!=""}[${gapS}s]))`,
-    );
-    byNamespace = new Map(
-      samples
-        .map((s) => [s.labels.namespace ?? '', s.value] as const)
-        .filter(([ns, v]) => ns.length > 0 && Number.isFinite(v) && v >= 0),
-    );
-  } catch (err) {
-    logger.warn?.({ err }, 'bandwidth-meter: vmsingle query failed — skipping accumulation this tick');
-    // Still advance lastRun? No — leave it so the next tick's wider window
-    // (capped at MAX_GAP_S) recovers the missed bytes.
-    return 0;
-  }
-
   const rows = await db
     .select({
       id: tenants.id,
@@ -109,6 +101,36 @@ export async function meterBandwidthOnce(db: Database, logger: MeterLogger = {})
     })
     .from(tenants);
 
+  let byNamespace = new Map<string, number>();
+  let excludedByNamespace = new Map<string, number>();
+  try {
+    const samples = await queryInstant(
+      `sum by (namespace) (increase(container_network_transmit_bytes_total{namespace!=""}[${gapS}s]))`,
+    );
+    byNamespace = new Map(
+      samples
+        .map((s) => [s.labels.namespace ?? '', s.value] as const)
+        .filter(([ns, v]) => ns.length > 0 && Number.isFinite(v) && v >= 0),
+    );
+    // Same failure contract as the query above: if the exclusion cannot be
+    // computed, bill nothing this tick rather than bill the tenant for the
+    // platform's backup. lastRun stays put, so the next window covers it.
+    excludedByNamespace = await platformBackupBytesByNamespace(
+      db,
+      rows
+        .filter((t) => t.provisioningStatus === 'provisioned' && t.namespace)
+        .map((t) => ({ tenantId: t.id, namespace: t.namespace })),
+      gapS,
+      now,
+      logger,
+    );
+  } catch (err) {
+    logger.warn?.({ err }, 'bandwidth-meter: vmsingle query failed — skipping accumulation this tick');
+    // Still advance lastRun? No — leave it so the next tick's wider window
+    // (capped at MAX_GAP_S) recovers the missed bytes.
+    return 0;
+  }
+
   let updated = 0;
   const cycleAnchor = monthStartUtc(now);
 
@@ -116,7 +138,14 @@ export async function meterBandwidthOnce(db: Database, logger: MeterLogger = {})
     if (t.provisioningStatus !== 'provisioned') continue;
     const rollover = isNewCycle(t.cycleStart, now);
     const priorUsed = rollover ? 0 : Number(t.used ?? 0);
-    const deltaGb = bytesToGb(byNamespace.get(t.namespace) ?? 0);
+    // Clamped at zero: the two queries are separate `increase()` evaluations
+    // over the same window, so rounding at the edges can leave the exclusion a
+    // few bytes above the total. A negative delta would hand back bandwidth.
+    const billableBytes = Math.max(
+      0,
+      (byNamespace.get(t.namespace) ?? 0) - (excludedByNamespace.get(t.namespace) ?? 0),
+    );
+    const deltaGb = bytesToGb(billableBytes);
     const newUsed = priorUsed + deltaGb;
 
     const set: Record<string, unknown> = { bandwidthGbUsed: String(newUsed) };

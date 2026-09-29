@@ -90,8 +90,32 @@ data:
           # event). id="/" = global kernel OOMs; per-namespace series feed
           # the system-container-oom SLO rule. One series per container.
           - source_labels: [__name__]
-            regex: 'container_(memory_working_set_bytes|cpu_usage_seconds_total|fs_usage_bytes|network_transmit_bytes_total|oom_events_total)|machine_memory_bytes|machine_cpu_cores'
+            regex: 'container_(memory_working_set_bytes|cpu_usage_seconds_total|fs_usage_bytes|network_(transmit|receive)_bytes_total|oom_events_total)|machine_memory_bytes|machine_cpu_cores'
             action: keep
+          # Drop the CNI plumbing. cAdvisor attributes every host interface to
+          # the root cgroup (and to any hostNetwork pod), so one Calico veth per
+          # pod is reported twice over — 570 of 681 network series on the
+          # reference cluster, all of it churn that turns over with pod
+          # lifetime. What is left is the real thing: `eth0` inside each pod's
+          # netns (per-tenant metering, one series per pod per direction) and
+          # `eth0` on the root cgroup (the node's actual NIC, which is where
+          # per-node and cluster-total traffic come from — no node-exporter
+          # required).
+          #
+          # Safe for billing by measurement, not by argument: every series in a
+          # `tenant-*` namespace carries interface="eth0" and nothing else, so
+          # the bandwidth meter's totals are untouched. Verified on the
+          # reference cluster before this rule was written.
+          # Listed by what is virtual rather than by keeping `eth0`: a node's
+          # NIC is `eth0` here but `ens3`/`enp1s0`/`eno1` on other providers,
+          # and hardcoding one name would silently lose node traffic on any
+          # host that does not use it. A mesh interface (`wt0`, `wg0`) carries
+          # real traffic and is kept; Calico's own `wireguard.cali` and
+          # `vxlan.calico` are encapsulation of pod traffic already counted at
+          # the pod, so they are dropped.
+          - source_labels: [__name__, interface]
+            regex: 'container_network_[^;]*;(cali.*|tunl.*|veth.*|vxlan.*|wireguard.*|docker.*|br-.*|flannel.*|cni.*|dummy.*|nodelocaldns.*|kube-ipvs.*|lo)'
+            action: drop
 
       # ── kubelet: pod/container requests-level resource metrics ──
       - job_name: kubelet-resource

@@ -35,6 +35,7 @@ import { tenantRoutes } from './modules/tenants/routes.js';
 import { domainRoutes } from './modules/domains/routes.js';
 import { subscriptionRoutes } from './modules/subscriptions/routes.js';
 import { bandwidthRoutes } from './modules/bandwidth/routes.js';
+import { trafficRoutes } from './modules/traffic/routes.js';
 import { metricsRoutes } from './modules/metrics/routes.js';
 import { cronJobRoutes } from './modules/cron-jobs/routes.js';
 import { authRoutes } from './modules/auth/routes.js';
@@ -666,6 +667,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(nodeHealthRoutes, { prefix: '/api/v1' });
   await app.register(tenantHealthRoutes, { prefix: '/api/v1' });
   await app.register(monitoringRoutes, { prefix: '/api/v1' });
+  await app.register(trafficRoutes, { prefix: '/api/v1' });
   await app.register(platformStoragePolicyRoutes, { prefix: '/api/v1' });
   await app.register(namespaceIntegrityRoutes, { prefix: '/api/v1' });
   await app.register(orphanedVolumesRoutes, { prefix: '/api/v1' });

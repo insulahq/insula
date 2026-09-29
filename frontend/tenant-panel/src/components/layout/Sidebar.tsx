@@ -42,7 +42,7 @@ const navItems = [
   { to: '/ssh-keys', icon: Key, label: 'SSH Keys' },
   { to: '/sftp', icon: HardDrive, label: 'SFTP Access' },
   { to: '/private-workers', icon: Cable, label: 'Private Workers' },
-  { to: '/resource-usage', icon: Gauge, label: 'Resource Usage' },
+  { to: '/monitoring', icon: Gauge, label: 'Monitoring' },
   { to: '/notifications', icon: Bell, label: 'Notifications' },
   { to: '/settings', icon: Settings, label: 'Settings' },
 ] as const;
