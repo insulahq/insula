@@ -56,8 +56,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   exactly like one using `eth0`, which a keep-list for `eth0` would have
   silently zeroed. No node-exporter is needed for any of it.
 
-### Fixed
-
 - **Tenants were billed for backups the platform scheduled for them.** A
   tenant's files backup runs as a Job inside the tenant's own namespace, so
   `container_network_transmit_bytes_total{namespace="tenant-…"}` measured its
@@ -148,7 +146,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   are different things), carries a unit on every number, says "reserved" or
   "committed" rather than "in use", and explains in one sentence why an idle
   application still occupies the budget.
-
 
 ## [2026.9.37] - 2026-09-28
 
