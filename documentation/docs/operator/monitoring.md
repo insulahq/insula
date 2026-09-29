@@ -18,12 +18,12 @@ you, through the panel and notifications, when one of them goes wrong.
 
 ## The Monitoring page
 
-**Monitoring** opens on the **SLOs** tab. It has these tabs:
+**Monitoring** opens on the **Traffic** tab. It has these tabs:
 
 | Tab | What it shows |
 |---|---|
-| **Traffic** | What moved over the wire — see [Traffic](#traffic) below |
-| **SLOs** | Service-level indicators and the rule table — the default view |
+| **Traffic** | What moved over the wire — the default view; see [Traffic](#traffic) below |
+| **SLOs** | Service-level indicators and the rule table |
 | **Mail** | Mail-flow health |
 | **Active Alerts** | Current platform alerts |
 | **Alert History** | Past alerts |
@@ -32,10 +32,11 @@ you, through the panel and notifications, when one of them goes wrong.
 | **Storage Usage** | Storage consumption |
 | **Pods** | Pod-level view |
 
-Traffic sits first, but **SLOs is still the landing tab**: opening a
-monitoring page should say whether anything is wrong, where traffic says what
-is happening — the question you ask second. Active Alerts only shows what has
-already fired.
+**Traffic is the landing tab.** Whether something is *wrong* already reaches
+you without opening this page — alerts notify, and the summary cards at the
+top of every tab carry Platform Status and Active Alerts. What traffic costs
+and where it went does not announce itself, so that is what the page opens
+on. SLOs and Active Alerts are one click away.
 Every tab is linkable — append `?tab=<name>` (for example
 `/monitoring?tab=active-alerts`) and that tab opens instead.
 
@@ -112,6 +113,14 @@ and one slow page load would page you.
 **Monitoring → Traffic** answers "what moved over the wire, for whom, and
 when". Pick a time range, a breakdown, and a metric.
 
+The **time range** control is one button showing the current range. Opening it
+gives presets (last hour, 6 hours, 24 hours, 7 days, 30 days, 90 days and 12
+months), two months of calendar, a time of day for each end, and the
+resulting duration — so you can see what you are about to ask for before you
+ask for it. A range reaching past 30 days is marked **daily rollup**, both
+beside the duration and on the closed button, because past that only the
+daily figures survive. The longest range the API accepts is **400 days**.
+
 | Break down by | Shows |
 |---|---|
 | **Cluster** | The whole cluster as one line, in and out |
@@ -132,6 +141,22 @@ the **pod's own interface**. They do not add up to each other and are not
 meant to — a tenant is billed for what their pods moved, not for a share of
 the host, and no per-pod arithmetic can recover host-network traffic.
 
+Cluster traffic shows **both**, under headings that say which is which,
+rather than blending them into one number that would be wrong:
+
+| Heading | Rows | Adds up? |
+|---|---|---|
+| **At the wire — what crossed the network** | `Inbound (wire)`, `Outbound (wire)` | Yes — this is the total |
+| **Part of that same total, seen another way** | `Node-to-node (in/out)`, `Off-site backup upload` | No — already inside the wire total |
+| **What each workload sent — counted at the pod, not the wire** | `Tenant workloads sent`, one row per backup class | No — see below |
+
+The workload rows do not decompose the wire, and the page does not pretend
+they do. A backup travels job → in-cluster relay → off-site, so its bytes are
+counted twice there; traffic between two pods on the same node never reaches
+the NIC at all. They are kept because they are the only per-class detail
+there is. **Share** is therefore computed within a heading, never across all
+three.
+
 Nothing here is tied to an interface called `eth0`. A node whose NIC is
 `ens3`, `enp1s0`, `eno1`, `bond0` or a bridge is measured exactly the same
 way.
@@ -142,7 +167,12 @@ way.
   and appears only while the pointer is over it.
 - **Orange markers** flag spikes; click one to zoom to it.
 - **Click a row** in the summary table to hide that series. It stays listed,
-  dimmed, so you can put it back.
+  dimmed, so you can put it back — and the summary tiles above the chart
+  recalculate from what is left, so they always describe the chart you are
+  looking at.
+- **The trend column** in the summary table sparks each row's own shape, so a
+  row that is flat and a row that spiked are distinguishable without hiding
+  the others.
 - **A gap is a gap.** An unmeasured interval breaks the line instead of
   dropping to zero — a scrape that did not happen is not an hour of silence.
 - Times are shown in **your own timezone**.
@@ -150,17 +180,21 @@ way.
 ### Backups
 
 Backups the platform schedules run inside the tenant's namespace, so their
-upload looks like any other egress. The **Backups** control separates them:
+upload looks like any other egress. On a cluster traffic view they are
+**always shown separately** — there is no control to fold them back in. How
+much of the cluster's egress is the platform backing itself up is something
+you need every time you read this page, not only when you remember to ask
+for it.
 
-| Setting | Shows |
+| Class | What it is |
 |---|---|
-| **Included** | Everything together |
-| **Separate** | Serving traffic beside each backup class |
-| **Only** | Backup classes alone |
+| **Backup · tenant bundles** | A tenant's whole bundle. Files and mailboxes are two *components* of one bundle, alongside config and secrets — so they are one class, not two |
+| **Backup · mail server snapshots** | The mail server's own snapshots — a different job from a tenant's mailbox component |
+| **Backup · databases** | Postgres base backups and WAL archiving |
+| **Backup · cluster state & secrets** | The cluster-state and secrets backups |
 
-Classes are tenant files, mailboxes, databases and system & secrets. If
-nothing was backed up in the range, the page says so rather than leaving you
-to wonder whether the split is broken.
+If nothing was backed up in the range, the page says so rather than leaving
+you to wonder whether the split is broken.
 
 This egress is **not billed to the tenant** — see
 [Tenant backups](tenant-backups.md). The tenant's own Monitoring page does not

@@ -267,15 +267,11 @@ export default function Monitoring() {
   const requested = searchParams.get('tab');
   const activeTab: Tab = useMemo(() => {
     if (requested && VALID_TABS.has(requested as Tab)) return requested as Tab;
-    // SLOs is the landing view: it answers "is the platform meeting its
-    // objectives right now", where Active Alerts only shows what has already
-    // fired. An explicit ?tab= (deep links from other surfaces) still wins.
-    //
-    // Traffic sits FIRST in the strip but is deliberately not the landing
-    // view. Opening a monitoring page should say whether anything is wrong;
-    // traffic says what is happening, which is the question you ask second.
-    // Flip this to 'traffic' if that ordering ever stops being true.
-    return 'slos';
+    // Traffic is the landing view — operator decision. Opening Monitoring
+    // shows what the platform is doing; SLOs and Active Alerts are one click
+    // away for "is anything wrong". An explicit ?tab= still wins, so deep
+    // links from other surfaces are unaffected.
+    return 'traffic';
   }, [requested]);
   const setActiveTab = (key: Tab): void => {
     const next = new URLSearchParams(searchParams);

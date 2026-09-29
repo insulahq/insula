@@ -7,6 +7,7 @@
  * admin-gated VMUI (admin.<apex>/metrics/vmui/) — deliberately not here.
  */
 import { useMemo } from 'react';
+import TimeSeriesChart from '@/components/charts/TimeSeriesChart';
 import { useQuery } from '@tanstack/react-query';
 import { Loader2, AlertTriangle, CheckCircle, Activity, ExternalLink, MinusCircle } from 'lucide-react';
 import clsx from 'clsx';
@@ -80,8 +81,27 @@ function PanelCard({ id, label, format }: { id: string; label: string; format: (
       <div className="mt-1 text-xl font-semibold text-gray-900 dark:text-gray-100">
         {q.isLoading ? <Loader2 className="h-5 w-5 animate-spin" /> : last != null ? format(last) : '—'}
       </div>
-      <div className="mt-2 text-blue-500 dark:text-blue-400">
-        <Sparkline points={series[0]?.points ?? []} />
+      {/* The shared chart rather than the local sparkline: it breaks the
+          line at an unmeasured interval instead of drawing straight through
+          it, and it gives a reading on hover. The sparkline below is kept
+          for the table rows, where 32px of height is all there is. */}
+      <div className="mt-2">
+        <TimeSeriesChart
+          times={(series[0]?.points ?? []).map(([t]) => new Date(t * 1000).toISOString())}
+          series={[{
+            key: id,
+            name: label,
+            points: (series[0]?.points ?? []).map(([, v]) => (Number.isFinite(v) ? v : null)),
+          }]}
+          stepSeconds={60}
+          height={96}
+          formatValue={(v) => (v === null ? '—' : format(v))}
+          formatTick={(iso) => new Date(iso).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}
+          formatInstant={(iso) => new Date(iso).toLocaleString(undefined, {
+            month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+          })}
+          ariaLabel={`${label} over time`}
+        />
       </div>
     </div>
   );

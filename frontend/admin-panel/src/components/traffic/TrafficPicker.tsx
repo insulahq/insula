@@ -63,8 +63,8 @@ export default function TrafficPicker({
   const display = selected?.label ?? (allLabel ?? placeholder);
 
   return (
-    <div className="flex min-w-0 flex-col gap-1">
-      <label htmlFor={id} className="text-[11px] font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
+    <div className="relative flex min-w-0 flex-col gap-[5px]">
+      <label htmlFor={id} className="whitespace-nowrap text-[10.5px] font-semibold uppercase tracking-[0.1em] text-gray-500 dark:text-gray-400">
         {label}
       </label>
       <div ref={boxRef} className="relative">
@@ -76,7 +76,9 @@ export default function TrafficPicker({
           aria-expanded={open}
           onClick={() => { if (!disabled) { setQuery(''); setOpen((o) => !o); } }}
           className={clsx(
-            'flex w-full items-center gap-2 rounded-md border px-3 py-2 text-left text-sm',
+            // min-width, not full-width: the control sizes to its content
+            // within a wrapping row instead of stretching to fill it.
+            'flex w-full min-w-[232px] items-center gap-2 rounded-md border px-2.5 py-1.5 text-left text-[13px]',
             'border-gray-300 bg-white text-gray-900 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100',
             disabled ? 'cursor-not-allowed opacity-50' : 'hover:border-gray-400 dark:hover:border-gray-500',
           )}
@@ -89,8 +91,8 @@ export default function TrafficPicker({
 
         {open && (
           <div
-            className="absolute z-20 mt-1 max-h-72 w-full min-w-[280px] overflow-hidden rounded-md border
-              border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-800"
+            className="absolute z-20 mt-1 max-h-72 w-max min-w-full max-w-[460px] overflow-hidden rounded-lg
+              border border-gray-300 bg-white shadow-lg dark:border-gray-600 dark:bg-gray-800"
             role="listbox"
           >
             <div className="flex items-center gap-2 border-b border-gray-100 px-3 py-2 dark:border-gray-700">
@@ -136,14 +138,17 @@ export default function TrafficPicker({
                     aria-selected={o.key === value}
                     onClick={() => { onChange(o.key); setOpen(false); }}
                     className={clsx(
-                      'flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-sm',
-                      'hover:bg-gray-50 dark:hover:bg-gray-700/60',
-                      o.key === value && 'bg-brand-50 dark:bg-brand-950/40',
+                      'flex w-full items-center justify-between gap-[18px] whitespace-nowrap rounded px-2.5 py-1.5',
+                      'text-left text-[13px] hover:bg-brand-50 hover:text-brand-700',
+                      'dark:hover:bg-brand-950/40 dark:hover:text-brand-300',
+                      o.key === value && 'bg-brand-50 text-brand-700 dark:bg-brand-950/40 dark:text-brand-300',
                     )}
                   >
-                    <span className="min-w-0 flex-1 truncate text-gray-900 dark:text-gray-100">{o.label}</span>
+                    <span className="min-w-0 flex-1 truncate">{o.label}</span>
                     {o.meta && (
-                      <span className="shrink-0 tabular-nums text-xs text-gray-500 dark:text-gray-400">{o.meta}</span>
+                      <span className="shrink-0 font-mono text-[11.5px] tabular-nums text-gray-500 dark:text-gray-400">
+                        {o.meta}
+                      </span>
                     )}
                   </button>
                 </li>
