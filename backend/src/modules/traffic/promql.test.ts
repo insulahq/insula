@@ -163,7 +163,7 @@ describe('label escaping closes the string literal, not only the regex', () => {
   });
 
   it('accepts a real namespace and refuses a shaped-but-invalid one', () => {
-    expect(isValidNamespace('tenant-alpha-1a2b3c4d')).toBe(true);
+    expect(isValidNamespace('tenant-alpha-example')).toBe(true);
     expect(isValidNamespace('tenant-x", job=~".+')).toBe(false);
     expect(isValidNamespace('Tenant-Upper')).toBe(false);
     expect(isValidNamespace('-leading-hyphen')).toBe(false);

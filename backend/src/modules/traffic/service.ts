@@ -191,6 +191,18 @@ export async function fetchTrafficFrame(
   for (const s of collected) {
     if (s.kind === 'subject') s.name = displayNameFor(req.scope, s.name, nsToName);
   }
+  // Both directions across a SUBJECT breakdown gives two series per subject.
+  // Their keys differ but their names do not, so the table listed "SYSTEM"
+  // twice with no way to tell which row was which — and the top-N fold then
+  // ranked lines rather than subjects. Name the direction when there is more
+  // than one of them to tell apart.
+  if (plans.length > 1) {
+    for (const s of collected) {
+      if (s.kind !== 'subject') continue;
+      const dir = s.key.startsWith('in:') ? 'in' : 'out';
+      s.name = `${s.name} · ${dir}`;
+    }
+  }
 
   let series: TrafficSeries[];
   let othersFolded = 0;

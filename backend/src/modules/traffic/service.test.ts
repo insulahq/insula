@@ -65,7 +65,7 @@ describe('a namespace with no tenant record', () => {
       }),
     } as never;
     vi.doMock('../monitoring/vm-client.js', () => ({
-      queryRange: () => Promise.resolve([{ labels: { namespace: 'tenant-gone-1a2b3c4d' }, points: [[Math.floor(Date.now() / 1000), 5]] }]),
+      queryRange: () => Promise.resolve([{ labels: { namespace: 'tenant-gone-ns' }, points: [[Math.floor(Date.now() / 1000), 5]] }]),
       queryInstant: () => Promise.resolve([]),
     }));
     vi.resetModules();
@@ -74,6 +74,48 @@ describe('a namespace with no tenant record', () => {
       ...range, scope: 'tenant', metric: 'traffic', direction: 'out', backups: 'included',
     }, { db: orphanDb });
     expect(frame.series[0]?.name).toContain('no tenant record');
+    vi.doUnmock('../monitoring/vm-client.js');
+    vi.resetModules();
+  });
+});
+
+describe('a subject breakdown across both directions', () => {
+  it('never lists two rows with the same name', async () => {
+    // Keys differed but names did not, so the table showed the same tenant
+    // twice with no way to tell the rows apart — seen on DEV as "SYSTEM,
+    // SYSTEM" — and the top-N fold then ranked LINES rather than subjects.
+    vi.resetModules();
+    vi.doMock('../monitoring/vm-client.js', () => ({
+      queryRange: () => Promise.resolve([
+        { labels: { namespace: 'tenant-one-ns' }, points: [[Math.floor(Date.now() / 1000), 5]] },
+        { labels: { namespace: 'tenant-two-ns' }, points: [[Math.floor(Date.now() / 1000), 3]] },
+      ]),
+      queryInstant: () => Promise.resolve([]),
+    }));
+    const { fetchTrafficFrame: fresh } = await import('./service.js');
+    const frame = await fresh({
+      ...range, scope: 'tenant', metric: 'traffic', direction: 'both', backups: 'included',
+    }, { db });
+    const names = frame.series.map((s) => s.name);
+    expect(new Set(names).size).toBe(names.length);
+    expect(names.every((n) => / · (in|out)$/.test(n))).toBe(true);
+    vi.doUnmock('../monitoring/vm-client.js');
+    vi.resetModules();
+  });
+
+  it('leaves a single-direction breakdown unlabelled — there is nothing to tell apart', async () => {
+    vi.resetModules();
+    vi.doMock('../monitoring/vm-client.js', () => ({
+      queryRange: () => Promise.resolve([
+        { labels: { namespace: 'tenant-one-ns' }, points: [[Math.floor(Date.now() / 1000), 5]] },
+      ]),
+      queryInstant: () => Promise.resolve([]),
+    }));
+    const { fetchTrafficFrame: fresh } = await import('./service.js');
+    const frame = await fresh({
+      ...range, scope: 'tenant', metric: 'traffic', direction: 'out', backups: 'included',
+    }, { db });
+    expect(frame.series[0].name).not.toMatch(/ · (in|out)$/);
     vi.doUnmock('../monitoring/vm-client.js');
     vi.resetModules();
   });

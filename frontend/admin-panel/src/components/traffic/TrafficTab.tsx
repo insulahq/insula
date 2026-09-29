@@ -95,7 +95,12 @@ export default function TrafficTab() {
   const effectiveBackups: TrafficBackupMode = showBackups ? backups : 'included';
   const singleSubject = scope === 'cluster' || (scope === 'pod' ? Boolean(pod) : Boolean(subject));
   const showDirection = effectiveMetric === 'traffic' && !singleSubject && effectiveBackups === 'included';
-  const effectiveDirection: TrafficDirection = showDirection ? direction : 'both';
+  // A single subject shows both directions as two lines. A BREAKDOWN shows one
+  // line per subject, so it picks a direction: "both" would draw two lines per
+  // subject and let the top-N fold rank lines instead of subjects.
+  const effectiveDirection: TrafficDirection = showDirection
+    ? (direction === 'both' ? 'out' : direction)
+    : 'both';
 
   const seriesParams = {
     from: range.from,
@@ -233,9 +238,8 @@ export default function TrafficTab() {
         {showDirection && (
           <Segmented
             label="Direction"
-            value={direction}
+            value={effectiveDirection}
             options={[
-              { key: 'both' as const, label: 'Both' },
               { key: 'out' as const, label: 'Out' },
               { key: 'in' as const, label: 'In' },
             ]}
