@@ -355,22 +355,27 @@ export function buildImportJobSpec(input: BuildImportJobInput): Record<string, u
   };
   if (input.pinToNode) podSpec.nodeName = input.pinToNode;
 
-  const jobSpec: Record<string, unknown> = {
-    // No retries: a re-run would re-extract and re-snapshot, producing a second
-    // set of snapshots for the same import. The caller decides whether to retry.
-    backoffLimit: 0,
-    ttlSecondsAfterFinished: 600,
-    template: { metadata: { labels }, spec: podSpec },
-  };
-  if (input.activeDeadlineSeconds && input.activeDeadlineSeconds > 0) {
-    jobSpec.activeDeadlineSeconds = input.activeDeadlineSeconds;
-  }
+  const deadline = input.activeDeadlineSeconds && input.activeDeadlineSeconds > 0
+    ? { activeDeadlineSeconds: input.activeDeadlineSeconds }
+    : {};
 
+  // The spec is inlined after `kind: 'Job'` rather than built above and
+  // referenced: ci-job-ttl-check scans FORWARD from the `kind` line for
+  // `ttlSecondsAfterFinished`, so a TTL declared earlier reads to the guard
+  // as no TTL at all.
   return {
     apiVersion: 'batch/v1',
     kind: 'Job',
     metadata: { name: input.jobName, namespace: input.namespace, labels },
-    spec: jobSpec,
+    spec: {
+      // No retries: a re-run would re-extract and re-snapshot, producing a
+      // second set of snapshots for the same import. The caller decides
+      // whether to retry.
+      backoffLimit: 0,
+      ttlSecondsAfterFinished: 600,
+      ...deadline,
+      template: { metadata: { labels }, spec: podSpec },
+    },
   };
 }
 

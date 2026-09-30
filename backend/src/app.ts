@@ -123,6 +123,7 @@ import { backupsV2Routes } from './modules/tenant-bundles/routes.js';
 import { backupsV2InternalUploadRoutes } from './modules/tenant-bundles/internal-upload-route.js';
 import { backupsV2InternalDownloadRoutes } from './modules/tenant-bundles/internal-download-route.js';
 import { backupsV2ClientRoutes } from './modules/tenant-bundles/tenant-routes.js';
+import { bundleImportAdminRoutes, bundleImportTenantRoutes } from './modules/tenant-bundles/import-routes.js';
 import { backupRestoreRoutes } from './modules/backup-restore/routes.js';
 import { drRecoverRoutes } from './modules/dr-recover/routes.js';
 import { migrationRoutes } from './modules/migration/routes.js';
@@ -694,6 +695,8 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(backupsV2InternalUploadRoutes, { prefix: '/api/v1' });
   await app.register(backupsV2InternalDownloadRoutes, { prefix: '/api/v1' });
   await app.register(backupsV2ClientRoutes, { prefix: '/api/v1' });
+  await app.register(bundleImportAdminRoutes, { prefix: '/api/v1' });
+  await app.register(bundleImportTenantRoutes, { prefix: '/api/v1' });
   await app.register(backupRestoreRoutes, { prefix: '/api/v1' });
   await app.register(drRecoverRoutes, { prefix: '/api/v1' });
   await app.register(migrationRoutes, { prefix: '/api/v1' });

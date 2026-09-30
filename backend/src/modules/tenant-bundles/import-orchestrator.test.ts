@@ -51,6 +51,10 @@ vi.mock('./import-reaper.js', async (orig) => ({
   deleteAbortedImportRow: (...a: unknown[]) => deleteRowMock(...a),
 }));
 const deleteRowMock = vi.fn();
+const writableMock = vi.fn();
+vi.mock('../backup-config/writable-guard.js', () => ({
+  requireWritableTarget: (...a: unknown[]) => writableMock(...a),
+}));
 
 const { runBundleImport, buildImportLabel, assertImportComplete, buildImportedMeta, MANUAL_IMPORT_LABEL } =
   await import('./import-orchestrator.js');
@@ -121,7 +125,7 @@ const OK_LOG = [
 beforeEach(() => {
   for (const m of [waitForJobMock, readLogMock, createJobMock, deleteJobMock, deleteSecretMock,
     createSecretMock, initRepoMock, forgetMock, storeDeleteMock, putMetaMock, reserveMock,
-    fmRemoveMock, deleteRowMock]) m.mockReset();
+    fmRemoveMock, deleteRowMock, writableMock]) m.mockReset();
   createJobMock.mockResolvedValue({ metadata: { uid: 'u1' } });
   reserveMock.mockResolvedValue({ backupId: 'x' });
   readLogMock.mockResolvedValue(OK_LOG);
@@ -211,6 +215,17 @@ describe('runBundleImport — failure teardown', () => {
     })).rejects.toThrow(/does not own/);
     expect(reserveMock).not.toHaveBeenCalled();
     expect(createJobMock).not.toHaveBeenCalled();
+  });
+
+  it('★ refuses a FROZEN (read-only) backup target before creating anything', async () => {
+    // A frozen target is still `active` — freezing is what an operator does
+    // while decommissioning one, and an import is a write like any other.
+    writableMock.mockRejectedValueOnce(new Error('Backup target is frozen'));
+    const { db } = recordingDb(CFG);
+    await expect(runBundleImport(deps(db), INPUT)).rejects.toThrow(/frozen/);
+    expect(reserveMock).not.toHaveBeenCalled();
+    expect(createJobMock).not.toHaveBeenCalled();
+    expect(initRepoMock).not.toHaveBeenCalled();
   });
 
   it('refuses an inactive backup target', async () => {

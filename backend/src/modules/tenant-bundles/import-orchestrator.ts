@@ -23,6 +23,7 @@ import { eq } from 'drizzle-orm';
 import { backupJobs, backupComponents, backupConfigurations } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import { ApiError } from '../../shared/errors.js';
+import { requireWritableTarget } from '../backup-config/writable-guard.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { readJobLogTail } from '../storage-lifecycle/job-log-tail.js';
 import { waitForJob } from '../backup-restore/executors/files-paths.js';
@@ -130,6 +131,12 @@ export async function runBundleImport(
   if (preflight.units.length === 0) {
     throw new ApiError('IMPORT_BLOCKED', 'This archive carries no files or mailboxes to import.', 409);
   }
+
+  // A FROZEN target must refuse new writes — an operator freezes one while
+  // decommissioning it or after restoring it from DR, and an import is a
+  // write like any other. `active` alone does not cover this: a frozen
+  // target is still active for reads.
+  await requireWritableTarget(deps.db, input.targetConfigId);
 
   const [cfg] = await deps.db.select().from(backupConfigurations)
     .where(eq(backupConfigurations.id, input.targetConfigId)).limit(1);
