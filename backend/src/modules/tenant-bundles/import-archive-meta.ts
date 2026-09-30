@@ -256,13 +256,19 @@ export async function readArchiveMeta(args: {
       }
       const chunks: Buffer[] = [];
       let size = 0;
-      entryStream.on('data', (c: Buffer) => {
-        size += c.length;
+      // `unknown`, not `Buffer`: tar-stream's entry stream types its `data`
+      // payload differently across versions, and a handler that accepts the
+      // wider type is assignable either way. Annotating `Buffer` typechecks
+      // against one version's types and fails against the other — which is
+      // exactly how this passed locally and failed in CI.
+      entryStream.on('data', (c: unknown) => {
+        const buf = c as Buffer;
+        size += buf.length;
         if (size > MAX_META_BYTES) {
           finish(() => reject(new ArchiveMetaError('META_TOO_LARGE', 'meta.json exceeded its size cap while reading.')));
           return;
         }
-        chunks.push(c);
+        chunks.push(buf);
       });
       entryStream.on('end', () => {
         let parsed: unknown;
