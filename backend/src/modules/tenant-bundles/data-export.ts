@@ -137,10 +137,16 @@ async function feedSourceIntoTar(
 // event loop. The async variant runs the work on libuv's threadpool.
 const pbkdf2 = promisify(pbkdf2Cb);
 
-const PBKDF2_ITERATIONS = 100_000; // matches `openssl enc -iter 100000`
-const KEY_BYTES = 32;
-const IV_BYTES = 16;
-const SALT_BYTES = 8;
+// Exported so the streaming import reader derives the SAME key material rather
+// than restating these four numbers. A second copy that drifts would decrypt to
+// garbage and read as "wrong passphrase", which is the least debuggable failure
+// this format has.
+export const PBKDF2_ITERATIONS = 100_000; // matches `openssl enc -iter 100000`
+export const KEY_BYTES = 32;
+export const IV_BYTES = 16;
+export const SALT_BYTES = 8;
+/** OpenSSL `enc` envelope prefix: `Salted__` + 8-byte salt. */
+export const OPENSSL_SALT_MAGIC = 'Salted__';
 
 export interface WrapBundleArgs {
   readonly store: BackupStore;
