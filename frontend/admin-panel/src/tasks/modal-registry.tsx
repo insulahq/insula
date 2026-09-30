@@ -36,6 +36,13 @@ const SpeedtestProgressModal = lazy(() => import('@/components/SpeedtestProgress
 const PitrProgressModal = lazy(() => import('@/components/backups/PitrProgressModal'));
 // snapshot create enrolls a `storage.snapshot` task with a
 // `snapshot-create` modal target so the chip re-opens this progress modal.
+// an on-demand tenant bundle. The task used to target the route
+// `/tenants/<id>?tab=backups`, which reaches the page but not the progress —
+// and in the TENANT panel that path does not exist at all. Both panels now
+// re-open their own bundle modal instead.
+const AdminBundleProgressModal = lazy(async () => ({
+  default: (await import('@/components/AdminBundleProgressModal')).AdminBundleProgressModal,
+}));
 const SnapshotCreateProgressModal = lazy(() => import('@/components/SnapshotCreateProgressModal'));
 // platform upgrade (ADR-045 re-pin). The apply enrolls a
 // `platform.upgrade` task with `target.modal = 'platform-upgrade'` so the chip
@@ -69,6 +76,9 @@ const TlsReissueTaskModal = lazy(() => import('@/components/TlsReissueTaskModal'
 // Surfaces without a dedicated modal use `target.type = 'route'`
 // instead.
 const REGISTRY: Record<string, RegistryEntry> = {
+  'admin-bundle-progress': {
+    Component: AdminBundleProgressModal as unknown as ComponentType<Record<string, unknown> & ModalCloseProps>,
+  },
   transition: {
     Component: TransitionProgressModal as unknown as ComponentType<Record<string, unknown> & ModalCloseProps>,
   },

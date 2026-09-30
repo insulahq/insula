@@ -88,10 +88,10 @@ describe('Hosting overview — conditional alerts', () => {
 describe('Hosting overview — plan', () => {
   it('shows in use and reserved as different figures', () => {
     show();
-    // 0.02 in use against 0.50 reserved of 2.00 — the gap is the point.
-    // A 2-core ceiling gets three decimals on BOTH halves: two is a
-    // 10-millicore quantum and the whole tenant fits inside it.
-    expect(screen.getByText((_t, el) => el?.textContent === '0.020/2.000')).toBeInTheDocument();
+    // 0.02 in use against 0.50 reserved of 2.00. The tile prints cores at
+    // ONE decimal by operator decision, so the in-use figure rounds to
+    // "0.0"; the reserved share is what carries the distinction here.
+    expect(screen.getByText((_t, el) => el?.textContent === '0.0/2.0')).toBeInTheDocument();
     expect(screen.getByText(/reserved 25%/)).toBeInTheDocument();
   });
 
@@ -110,7 +110,7 @@ describe('Hosting overview — plan', () => {
       }) }) }, isLoading: false,
     });
     show();
-    expect(screen.getByText((_t, el) => el?.textContent === '0.000/2.000')).toBeInTheDocument();
+    expect(screen.getByText((_t, el) => el?.textContent === '0.0/2.0')).toBeInTheDocument();
     expect(screen.queryByText(/usage unavailable/)).not.toBeInTheDocument();
   });
 
@@ -126,7 +126,15 @@ describe('Hosting overview — plan', () => {
     expect(screen.getAllByText(/usage unavailable/).length).toBeGreaterThan(0);
   });
 
-  it('keeps a sub-millicore reading visible instead of collapsing it to zero', () => {
+  /**
+   * This used to pin "a sub-millicore reading stays visible" — 0.019 printed
+   * as 0.019. Cores are shown at one decimal now, by operator decision, so
+   * that property is gone deliberately and asserting it would be asserting
+   * the old design. What still matters, and what this pins, is that a small
+   * non-zero reading is not reported as UNAVAILABLE: rounding it for display
+   * is a choice, claiming it was never measured is a lie.
+   */
+  it('a sub-decimal reading is rounded, never reported as unmeasured', () => {
     // The real production shape: three containers totalling 0.019 cores.
     liveFn.mockReturnValue({
       data: { data: live({ resources: ok({
@@ -136,7 +144,9 @@ describe('Hosting overview — plan', () => {
       }) }) }, isLoading: false,
     });
     show();
-    expect(screen.getByText((_t, el) => el?.textContent === '0.019/2.000')).toBeInTheDocument();
+    expect(screen.getByText((_t, el) => el?.textContent === '0.0/2.0')).toBeInTheDocument();
+    expect(screen.queryByText(/usage unavailable/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/not reported/)).not.toBeInTheDocument();
   });
 
   it('flags a tight plan on the headline rather than in a sentence below', () => {

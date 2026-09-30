@@ -99,6 +99,38 @@ export function quoteLabel(value: string): string {
   return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '');
 }
 
+/**
+ * The generated tail a Deployment gives its pods: `-<replicaset>-<suffix>`.
+ *
+ * Neither generated segment can contain a hyphen, which is what keeps this
+ * from reaching across an application boundary: `website-[a-z0-9]{6,10}-…`
+ * cannot match `website-admin-655bc877b9-przdh`, because `admin-655bc877b9`
+ * is not one segment. PromQL anchors a `=~` at both ends, so there is no
+ * prefix-overrun either.
+ */
+const POD_GENERATED_TAIL = '-[a-z0-9]{6,10}-[a-z0-9]{5}';
+
+/** True when the value is already a full pod name rather than an app name. */
+export function looksLikePodName(value: string): boolean {
+  return /-[a-z0-9]{6,10}-[a-z0-9]{5}$/.test(value);
+}
+
+/**
+ * Select one APPLICATION's pods, or one exact pod.
+ *
+ * Pod rows are aggregated per application — three `file-manager` replicas
+ * are one line, not three rows wearing the same name — so the subject the
+ * panel sends back is an application name. An exact pod name is still
+ * accepted: it is a legitimate thing to ask for and a caller who has one
+ * should not be forced to widen it.
+ */
+export function podMatcher(value: string): string {
+  const safe = value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return looksLikePodName(value)
+    ? `pod="${quoteLabel(value)}"`
+    : `pod=~"${quoteLabel(safe)}${POD_GENERATED_TAIL}"`;
+}
+
 /** A Traefik `service` label is `<namespace>-<ingress>-<hash>@kubernetescrd`. */
 export function serviceMatcherForNamespace(namespace: string): string {
   // TWO escapes are needed and only one is obvious. The regex metacharacters
@@ -203,7 +235,7 @@ function networkSelector(input: TrafficQueryInput): string {
       parts.push(input.subject
         ? `namespace="${quoteLabel(input.subject)}"`
         : 'namespace=~"tenant-.+"');
-      if (input.pod) parts.push(`pod="${quoteLabel(input.pod)}"`);
+      if (input.pod) parts.push(podMatcher(input.pod));
       break;
     case 'backup-class': {
       const cls = input.backupClass;
@@ -225,7 +257,7 @@ function networkSelector(input: TrafficQueryInput): string {
     default:
       throw new UnsupportedTrafficQuery(`scope ${input.scope} is not a network-counter scope`);
   }
-  if (input.pod && input.scope === 'tenant') parts.push(`pod="${quoteLabel(input.pod)}"`);
+  if (input.pod && input.scope === 'tenant') parts.push(podMatcher(input.pod));
   if (input.backups === 'exclude') parts.push(`pod!~"${ANY_BACKUP_POD_RE}"`);
   if (input.backups === 'only') parts.push(`pod=~"${ANY_BACKUP_POD_RE}"`);
   return parts.join(',');

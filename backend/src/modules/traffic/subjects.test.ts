@@ -73,7 +73,17 @@ describe('a subject key round-trips into a query', () => {
     const pods = await fetchTrafficSubjects(
       { ...range, scope: 'pod', metric: 'traffic', subject: tenants[0].key } as never, { db },
     );
-    expect(pods.map((p) => p.key)).toEqual(['website-794d87b45d-pljpd']);
+    // Pod rows are per APPLICATION now — replicas of one Deployment are one
+    // line — so the key is the application, not a pod instance.
+    expect(pods.map((p) => p.key)).toEqual(['website']);
+
+    // And it must still round-trip: sending that key back selects exactly
+    // that application's pods and nothing else's.
+    const { expr } = buildTrafficQuery({
+      scope: 'pod', metric: 'traffic', direction: 'out', stepSeconds: 300,
+      subject: tenants[0].key, pod: pods[0].key,
+    });
+    expect(expr).toContain('pod=~"website-[a-z0-9]{6,10}-[a-z0-9]{5}"');
   });
 
   it('strips only the direction prefix, never part of a name', () => {

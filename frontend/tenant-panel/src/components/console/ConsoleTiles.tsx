@@ -185,13 +185,16 @@ export function RefreshButton({ onClick, busy }: {
  * halves of "X/Y" carry the same decimals, and a cluster tile does not grow
  * noise digits to accommodate a tenant-sized one.
  *
- * Two decimals of a core is a 10-millicore quantum. On a 7.5-core cluster
- * that is 0.13% and invisible; on a 2-core tenant plan it is 0.5%, and the
- * whole tenant fits inside it — a namespace running Apache, MariaDB and nginx
- * measured 0.3 to 19 millicores on production, every one of which printed as
- * "0.00".
+ * ONE decimal, by operator decision. Three digits of a core read as noise on
+ * a dashboard tile — "0.019/2.000 cores" is a measurement, not a glance.
+ *
+ * The trade-off is real and was the reason for three: a tenant running
+ * Apache, MariaDB and nginx measured 0.3 to 19 millicores on production, and
+ * at one decimal every one of those prints as "0.0". The precise figure is a
+ * click away on Monitoring → Resource Usage; the tile answers "is anything
+ * close to its ceiling", which one decimal answers fine.
  */
-const coreDecimalsFor = (total: number): number => (total < 4 ? 3 : 2);
+const coreDecimalsFor = (_total: number): number => 1;
 
 const fmt = (v: number, unit: string, coreDecimals = 2): string =>
   unit === 'cores' ? v.toFixed(coreDecimals)

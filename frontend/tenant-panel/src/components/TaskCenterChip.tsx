@@ -1,10 +1,14 @@
-// Tenant-panel TaskCenterChip — mirror of admin-panel chip with a
-// reduced surface: no modal registry (the admin-panel-only progress
-// modals don't exist in tenant-panel), so all task targets that arrive
-// here should be `type: 'route'`. Tasks of `type: 'modal'` ARE possible
-// in theory but practically a tenant_admin never triggers an admin
-// bulk op or per-tenant transition, so we render them as inert info
-// rows in the popover (no click action) — defensive, not common.
+// Tenant-panel TaskCenterChip — mirror of the admin chip, including a
+// modal registry.
+//
+// It used to carry no registry, on the reasoning that every target arriving
+// here "should be `type: 'route'`" and a `modal` target was defensive
+// hypothetical. That was already wrong for the task a tenant triggers most:
+// an on-demand backup enrolled a route target pointing at the ADMIN path
+// `/tenants/<id>?tab=backups`, which does not exist in this panel — so the
+// row navigated nowhere, and closing the progress modal abandoned the run
+// with no way back. Modal targets are now resolved against
+// `@/tasks/modal-registry`, the same shape the admin chip uses.
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -14,6 +18,7 @@ import {
 import clsx from 'clsx';
 import type { TaskRow } from '@insula/api-contracts';
 import { useTaskCenter, useClearTasks } from '@/hooks/use-task-center';
+import { TaskModalHost } from '@/tasks/modal-registry';
 
 const RECENT_TERMINAL_WINDOW_MS = 5 * 60 * 1000;
 
@@ -21,6 +26,9 @@ export default function TaskCenterChip() {
   const { data, isLoading } = useTaskCenter();
   const clearTasks = useClearTasks();
   const [open, setOpen] = useState(false);
+  const [modalTask, setModalTask] = useState<
+    { readonly modal: string; readonly props: Record<string, unknown> } | null
+  >(null);
   const ref = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
 
@@ -91,10 +99,13 @@ export default function TaskCenterChip() {
     if (task.target.type === 'route') {
       navigate(task.target.href);
       setOpen(false);
+      return;
     }
-    // type='modal' fall-through: the tenant-panel doesn't carry the
-    // admin-panel modal registry. The popover row stays clickable but
-    // does nothing — practically unreachable for a tenant_admin.
+    // Re-open the progress the user closed. This is the whole point of the
+    // row for a long-running op: a backup keeps running after the modal is
+    // dismissed, and without this there is no way back to it.
+    setModalTask({ modal: task.target.modal, props: task.target.modalProps ?? {} });
+    setOpen(false);
   };
 
   return (
@@ -164,6 +175,16 @@ export default function TaskCenterChip() {
             Updates every {runningCount > 0 ? '3' : '30'} seconds. Completed tasks auto-expire after 5 minutes.
           </div>
         </div>
+      )}
+
+      {/* Rendered OUTSIDE the popover: dismissing the popover must not
+          dismiss the progress the user just re-opened. */}
+      {modalTask && (
+        <TaskModalHost
+          modal={modalTask.modal}
+          props={modalTask.props}
+          onClose={() => setModalTask(null)}
+        />
       )}
     </div>
   );

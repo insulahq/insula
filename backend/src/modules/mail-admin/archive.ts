@@ -247,7 +247,8 @@ export async function startMailArchive(
             ? 'Create mail archive (no-downtime)'
             : 'Create mail archive (with downtime)',
         ),
-        target: { type: 'modal', modal: 'mail-archive-run', modalProps: { runId } },
+        // No `mail-archive-run` modal exists; an unknown key renders nothing.
+        target: { type: 'route', href: '/backups/mail' },
       })
       .catch((err) =>
         deps.logger?.warn?.(
@@ -344,7 +345,8 @@ export async function startMailArchiveRestore(
         scope: 'admin',
         userId: deps.userId,
         label: toSafeText(`Restore mail from archive ${runId.slice(0, 8)}`),
-        target: { type: 'modal', modal: 'mail-archive-run', modalProps: { runId: newRunId } },
+        // No `mail-archive-run` modal exists; an unknown key renders nothing.
+        target: { type: 'route', href: '/backups/mail' },
       })
       .catch((err) =>
         deps.logger?.warn?.(

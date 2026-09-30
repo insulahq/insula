@@ -14,7 +14,8 @@ vi.mock('../monitoring/vm-client.js', () => ({
   queryInstant: () => Promise.resolve([]),
 }));
 
-const { fetchTrafficFrame, disambiguateNames, prettyServiceName } = await import('./service.js');
+const { fetchTrafficFrame, disambiguateNames, prettyServiceName, prettyPodName, aggregateByName } = await import('./service.js');
+const { podMatcher } = await import('./promql.js');
 
 const db = { select: () => ({ from: () => ({ where: () => Promise.resolve([]), then: (r: (v: unknown) => void) => r([]) }) }) } as never;
 const range = { from: new Date(Date.now() - 3_600_000), to: new Date() };
@@ -241,5 +242,75 @@ describe('disambiguateNames', () => {
     expect(new Set(names).size, names.join(', ')).toBe(names.length);
     vi.doUnmock('../monitoring/vm-client.js');
     vi.resetModules();
+  });
+});
+
+describe('prettyPodName', () => {
+  it('shows the application, not the pod', () => {
+    // The two the operator reported, verbatim.
+    expect(prettyPodName('website-589bc77f7-q2hrk')).toBe('website');
+    expect(prettyPodName('file-manager-655bc877b9-przdh')).toBe('file-manager');
+  });
+
+  it('keeps a name that is not a Deployment pod', () => {
+    // A StatefulSet ordinal IS the identity — `system-db-1` and
+    // `system-db-2` are different pods and must not both read `system-db`.
+    expect(prettyPodName('system-db-1')).toBe('system-db-1');
+    // A bare Job pod: one generated segment, not two. Folding it would risk
+    // merging two different jobs into one row.
+    expect(prettyPodName('bk-files-bkp-1a2b-wvh4t')).toBe('bk-files-bkp-1a2b-wvh4t');
+    // Nothing generated at all.
+    expect(prettyPodName('nginx')).toBe('nginx');
+  });
+
+  it('does not eat a real name that merely looks generated', () => {
+    // Five-char last segment but a too-short middle: not the Deployment
+    // shape, so it survives.
+    expect(prettyPodName('api-v2-alpha')).toBe('api-v2-alpha');
+  });
+});
+
+describe('pod rows are per application', () => {
+  it('folds replicas of one Deployment into a single series', () => {
+    const rows = [
+      { key: 'out:file-manager-655bc877b9-przdh', name: 'file-manager', points: [1, 2, 3] },
+      { key: 'out:file-manager-655bc877b9-k2r8p', name: 'file-manager', points: [10, 20, 30] },
+      { key: 'out:website-589bc77f7-q2hrk', name: 'website', points: [5, 5, 5] },
+    ];
+    const out = aggregateByName(rows);
+    expect(out).toHaveLength(2);
+    const fm = out.find((r) => r.name === 'file-manager');
+    expect(fm?.points).toEqual([11, 22, 33]);
+    // The key becomes the application, because that is what the picker
+    // sends back as `pod=` now.
+    expect(fm?.key).toBe('file-manager');
+  });
+
+  it('a gap in ONE replica does not blank the application', () => {
+    const rows = [
+      { key: 'a', name: 'app', points: [null, 2, null] },
+      { key: 'b', name: 'app', points: [10, null, null] },
+    ];
+    // Unmeasured in every replica stays unmeasured — a break, not a zero.
+    expect(aggregateByName(rows)[0].points).toEqual([10, 2, null]);
+  });
+});
+
+describe('podMatcher', () => {
+  it('selects every pod of an application', () => {
+    expect(podMatcher('file-manager')).toBe('pod=~"file-manager-[a-z0-9]{6,10}-[a-z0-9]{5}"');
+  });
+
+  it('still accepts one exact pod', () => {
+    expect(podMatcher('website-589bc77f7-q2hrk')).toBe('pod="website-589bc77f7-q2hrk"');
+  });
+
+  it('cannot reach across an application boundary', () => {
+    // `website` must not select `website-admin`'s pods. Neither generated
+    // segment may contain a hyphen, and PromQL anchors =~ at both ends.
+    const m = podMatcher('website');
+    const re = new RegExp(`^${m.slice('pod=~"'.length, -1)}$`);
+    expect(re.test('website-589bc77f7-q2hrk')).toBe(true);
+    expect(re.test('website-admin-655bc877b9-przdh')).toBe(false);
   });
 });

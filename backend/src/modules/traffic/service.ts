@@ -112,6 +112,41 @@ export function subjectIdOf(key: string): string {
   return key.replace(/^(in|out):/, '');
 }
 
+/**
+ * Fold every pod of one application into a single series.
+ *
+ * A Deployment's pods are replicas of one thing. Listing
+ * `file-manager-655bc877b9-przdh` beside `file-manager-655bc877b9-k2r8p`
+ * asks the reader to add two numbers that were never separate questions —
+ * and once the names are collapsed to the application, the rows are simply
+ * indistinguishable, which the disambiguator would then "fix" by numbering
+ * them `file-manager #1` and `#2`. Neither is what was wanted.
+ *
+ * Summed point-by-point, and `null` is preserved as null ONLY where every
+ * member is null: one replica with a gap must not blank the application's
+ * whole line, but an interval nobody measured is still unmeasured and must
+ * stay a break rather than becoming a zero.
+ */
+export function aggregateByName<T extends { key: string; name: string; points: (number | null)[] }>(
+  series: readonly T[],
+): T[] {
+  const byName = new Map<string, T>();
+  for (const s of series) {
+    const seen = byName.get(s.name);
+    if (!seen) {
+      byName.set(s.name, { ...s, key: s.name, points: [...s.points] });
+      continue;
+    }
+    const merged = seen.points.map((v, i) => {
+      const w = s.points[i];
+      if (v === null && (w === null || w === undefined)) return null;
+      return (v ?? 0) + (w ?? 0);
+    });
+    byName.set(s.name, { ...seen, points: merged });
+  }
+  return [...byName.values()];
+}
+
 export function disambiguateNames<T extends { key: string; name: string }>(series: T[]): T[] {
   const count = new Map<string, number>();
   for (const s of series) count.set(s.name, (count.get(s.name) ?? 0) + 1);
@@ -207,6 +242,25 @@ export function prettyServiceName(
     .replace(/-ingress$/, '');
 }
 
+/**
+ * A pod name, as the application it belongs to.
+ *
+ * A Deployment names its pods `<app>-<replicaset hash>-<suffix>`, so the
+ * traffic tables listed `website-589bc77f7-q2hrk` and
+ * `file-manager-655bc877b9-przdh` — two identifiers the reader has to strip
+ * in their head to find the one word that matters. The pod KEY is untouched:
+ * it is what goes back as `pod=` on the next query, and it has to stay the
+ * real name.
+ *
+ * Only the Deployment shape is collapsed, and only when both trailing
+ * segments look like generated ones. A StatefulSet pod (`system-db-1`) and a
+ * bare Job pod keep their names: the ordinal in the first IS the identity,
+ * and guessing at the second risks folding two different jobs into one row.
+ */
+export function prettyPodName(pod: string): string {
+  return pod.replace(/-[a-z0-9]{6,10}-[a-z0-9]{5}$/, '');
+}
+
 function displayNameFor(
   scope: TrafficScope,
   key: string,
@@ -223,6 +277,7 @@ function displayNameFor(
     return `${key} (no tenant record)`;
   }
   if (scope === 'route') return prettyServiceName(key, nsToName, nsToHosts);
+  if (scope === 'pod') return prettyPodName(key);
   return key;
 }
 
@@ -366,6 +421,18 @@ export async function fetchTrafficFrame(
       const dir = s.key.startsWith('in:') ? 'in' : 'out';
       s.name = `${s.name} · ${dir}`;
     }
+  }
+
+  // Pod rows are per-APPLICATION: replicas of one Deployment are one line.
+  // Must run after naming (it groups on the collapsed name) and before
+  // disambiguation (otherwise the duplicates it exists to remove get
+  // numbered instead).
+  if (req.scope === 'pod') {
+    const subjects = collected.filter((s) => s.kind === 'subject');
+    const rest = collected.filter((s) => s.kind !== 'subject');
+    const folded = aggregateByName(subjects);
+    collected.length = 0;
+    collected.push(...rest, ...folded);
   }
 
   const deduped = disambiguateNames(collected);
