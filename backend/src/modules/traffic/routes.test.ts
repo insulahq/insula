@@ -83,17 +83,19 @@ describe('traffic routes', () => {
   const tenantSeries = (qs: string, token = tenantToken) =>
     get(`/api/v1/tenants/${TENANT_A}/traffic/series?from=${FROM}&to=${TO}&${qs}`, token);
 
+  // A tenant's traffic is measured at the INGRESS now, so isolation is
+  // carried by the service matcher rather than a namespace label.
   it('serves a tenant their own traffic', async () => {
     const res = await tenantSeries('scope=tenant&metric=traffic');
     expect(res.statusCode).toBe(200);
-    expect(asked.every((e) => e.includes(`namespace="${NS_A}"`))).toBe(true);
+    expect(asked.every((e) => e.includes(`service=~"${NS_A}-.+"`))).toBe(true);
   });
 
   it('IGNORES a subject naming another tenant', async () => {
     // The client may send anything; the handler uses the path tenant only.
     const res = await tenantSeries(`scope=tenant&subject=${NS_B}`);
     expect(res.statusCode).toBe(200);
-    expect(asked.join(' ')).toContain(`namespace="${NS_A}"`);
+    expect(asked.join(' ')).toContain(`service=~"${NS_A}-.+"`);
     expect(asked.join(' ')).not.toContain(NS_B);
   });
 

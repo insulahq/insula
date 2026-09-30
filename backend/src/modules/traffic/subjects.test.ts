@@ -44,7 +44,10 @@ const range = { from: new Date(Date.now() - 3_600_000), to: new Date() };
 describe('a subject key round-trips into a query', () => {
   const cases = [
     { scope: 'node' as const, label: 'node', expect: 'node="sv1"' },
-    { scope: 'tenant' as const, label: 'namespace', expect: 'namespace="tenant-acme-1a2b3c4d"' },
+    // A tenant is measured at the ingress now, so the key it hands back has
+    // to select that tenant's SERVICES. Still the namespace — the identity
+    // did not change, only the instrument.
+    { scope: 'tenant' as const, label: 'namespace', expect: 'service=~"tenant-acme-1a2b3c4d-.+"' },
   ];
 
   for (const c of cases) {

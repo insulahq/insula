@@ -175,6 +175,16 @@ export interface TrafficQueryInput {
   /** Confines a `route` scope to one namespace's services. */
   readonly namespacePrefix?: string;
   /**
+   * Namespaces nested UNDER the subject, whose services must be excluded.
+   *
+   * A tenant is selected by `service=~"<ns>-.+"`, and namespaces nest:
+   * `tenant-acme-<hash>` and `tenant-acme-<hash>-eu-<hash2>` are two
+   * different tenants and the second begins with the first. Without this the
+   * parent's figure would silently include the child's traffic — a
+   * cross-tenant leak in a number a customer is billed on.
+   */
+  readonly excludeNestedNamespaces?: readonly string[];
+  /**
    * A cluster sub-measurement instead of the plain wire total:
    *  - `node-to-node` — Calico's encapsulation, what crossed BETWEEN nodes;
    *  - `offsite-backup` — the rclone shim, what actually left for storage.
@@ -301,6 +311,16 @@ export function tenantNamespaceRewrite(inner: string): string {
   return `label_replace(${inner}, "namespace", "$1", "service", "${TENANT_NS_FROM_SERVICE}")`;
 }
 
+/** `service!~"<child>-.+|<child2>-.+"`, or '' when nothing nests here. */
+export function nestedExclusion(input: TrafficQueryInput): string {
+  const nested = input.excludeNestedNamespaces ?? [];
+  if (nested.length === 0) return '';
+  const alts = nested
+    .map((n) => `${quoteLabel(n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))}-.+`)
+    .join('|');
+  return `service!~"${alts}"`;
+}
+
 function groupLabelFor(
   scope: TrafficScope, hasSubject: boolean, metric: TrafficMetric, aggregate?: boolean,
 ): string | null {
@@ -330,11 +350,34 @@ export function buildTrafficQuery(input: TrafficQueryInput): QuerySpec {
   // to an ingress route. Without this, `scope=route` + `metric=traffic` fell
   // through to networkSelector's `default:` and threw on every request, while
   // both panels offered it as the default selection.
-  if (input.metric === 'traffic' && input.scope === 'route') {
-    const sel = traefikSelector(input);
+  // ── EXTERNAL traffic: measured at the ingress, for a route or a tenant ──
+  //
+  // A tenant's bytes used to come from their pods' own interfaces, which
+  // count everything those pods move — including the database answering the
+  // application, inside the namespace, on a path that never touches the
+  // network. Measured on production over six hours: Sunshine College's pods
+  // moved 2.15 GB out while the tenant served 274 MB, because MariaDB sent
+  // Moodle 1.9 GB that never left the node. Across the active tenants the
+  // pod figure was 7.0x the served figure, and 190x for the most
+  // database-heavy one; tenants with no database sat at 1.0x, which is the
+  // signature that says the excess is intra-namespace chatter and nothing
+  // else.
+  //
+  // So a tenant's traffic is what the ingress served on their behalf. It is
+  // the number the tenant can reconcile against their own route page, and
+  // the only one that means "bytes that left". Traffic between their pods is
+  // still visible, in the pod breakdown, which is labelled as internal.
+  //
+  // Known and deliberate: this counts HTTP through the ingress, so egress a
+  // workload makes on its own (an outbound API call, SMTP, a package pull)
+  // is not billed. That under-counts rather than over-counts, which is the
+  // right way round for a figure a customer pays against.
+  if (input.metric === 'traffic' && (input.scope === 'route' || input.scope === 'tenant')) {
+    const sel = [traefikSelector(input), nestedExclusion(input)].filter(Boolean).join(',');
     const braces = sel ? `{${sel}}` : '';
     const by = groupLabelFor(input.scope, Boolean(input.subject), input.metric);
-    const inner = `rate(${TRAEFIK_BYTES[input.direction]}${braces}[${win}])`;
+    const raw = `rate(${TRAEFIK_BYTES[input.direction]}${braces}[${win}])`;
+    const inner = input.scope === 'tenant' && by === 'namespace' ? tenantNamespaceRewrite(raw) : raw;
     return { expr: by ? `sum by (${by}) (${inner})` : `sum(${inner})`, groupBy: by };
   }
 

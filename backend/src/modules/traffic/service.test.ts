@@ -22,8 +22,8 @@ const range = { from: new Date(Date.now() - 3_600_000), to: new Date() };
 
 beforeEach(() => { asked = []; });
 
-describe('the cluster frame is two measurements, labelled', () => {
-  it('reports the wire, its subsets, and the workload view — never blended', async () => {
+describe('the cluster frame is the wire, and only the wire', () => {
+  it('reports the wire and the one subset measured the same way', async () => {
     const frame = await fetchTrafficFrame({
       ...range, scope: 'cluster', metric: 'traffic', direction: 'both', backups: 'included',
     }, { db });
@@ -32,16 +32,30 @@ describe('the cluster frame is two measurements, labelled', () => {
       const g = s.group ?? 'none';
       groups.set(g, [...(groups.get(g) ?? []), s.name]);
     }
-    // The wire is the ground truth, in both directions.
     expect(groups.get('wire')).toEqual(['Outbound (wire)', 'Inbound (wire)']);
-    // Subsets of that same total — present, and marked so nothing adds them in.
+    // Same `id="/"` root cgroup, narrowed to the encapsulation interfaces —
+    // comparable to the total it sits under because it shares its instrument.
     expect(groups.get('wire-subset')).toContain('Node-to-node (out)');
-    expect(groups.get('wire-subset')).toContain('Off-site backup upload');
-    // What each workload sent: double-counts through the shim, so it is a
-    // separate group rather than a decomposition of the wire.
-    expect(groups.get('workload')).toContain('Tenant workloads sent');
-    expect(groups.get('workload')).toContain('Backup · tenant bundles');
-    expect(groups.get('workload')).toContain('Backup · mail server snapshots');
+  });
+
+  /**
+   * The cluster view used to carry a third group built from POD counters —
+   * a serving line and a row per backup class — plus an "Off-site backup
+   * upload" row selected by `pod=~"backup-rclone.+"` with no `id="/"`. That
+   * last one claimed to be part of the wire total while being a different
+   * instrument entirely, and the shim answers backup jobs over the pod
+   * network, so it reported 2.15 GB inside a 1.58 GB wire total. A subset
+   * larger than its whole is not a rounding problem.
+   */
+  it('emits NO pod-measured rows — not workload, not off-site', async () => {
+    const frame = await fetchTrafficFrame({
+      ...range, scope: 'cluster', metric: 'traffic', direction: 'both', backups: 'included',
+    }, { db });
+    expect(frame.series.filter((s) => s.group === 'workload')).toEqual([]);
+    expect(frame.series.map((s) => s.name)).not.toContain('Off-site backup upload');
+    expect(frame.series.map((s) => s.name)).not.toContain('Tenant workloads sent');
+    // And nothing reaches for the shim's pod counters any more.
+    expect(asked.join(' ')).not.toContain('backup-rclone');
   });
 
   it('never repeats a series key OR a series NAME', async () => {
@@ -58,27 +72,13 @@ describe('the cluster frame is two measurements, labelled', () => {
     expect(new Set(names).size, `duplicate name in: ${names.join(', ')}`).toBe(names.length);
   });
 
-  it('sums tenant serving into ONE line rather than one per namespace', async () => {
-    await fetchTrafficFrame({
-      ...range, scope: 'cluster', metric: 'traffic', direction: 'out', backups: 'included',
-    }, { db });
-    const serving = asked.filter((e) => e.includes('pod!~'));
-    expect(serving).toHaveLength(1);
-    expect(serving[0]).not.toContain('sum by (namespace)');
-  });
-
-  it('asks for the off-site and workload rows once, not once per direction', async () => {
-    // They are egress by nature; running them for inbound too produced
-    // duplicate identically-named rows the first time round.
-    await fetchTrafficFrame({
-      ...range, scope: 'cluster', metric: 'traffic', direction: 'both', backups: 'included',
-    }, { db });
-    // Match the SELECTOR, not any mention: the "tenant workloads" query also
-    // names these pods, in its exclusion.
-    expect(asked.filter((e) => e.includes('pod=~"backup-rclone'))).toHaveLength(1);
-    expect(asked.filter((e) => e.includes('pod=~"bk-(files|mbox)'))).toHaveLength(1);
-    expect(asked.filter((e) => e.includes('pod!~'))).toHaveLength(1);
-  });
+  // REMOVED: "sums tenant serving into ONE line" and "asks for the off-site
+  // and workload rows once, not once per direction". Both pinned the shape
+  // of rows the cluster view no longer emits — a serving line, a row per
+  // backup class, and an off-site upload row that was pod-measured under a
+  // wire-measured heading. Keeping them passing would have meant keeping the
+  // rows. "emits NO pod-measured rows" above asserts the same territory from
+  // the side that is now true.
 
   it('leaves non-cluster scopes as a plain single measurement', async () => {
     const frame = await fetchTrafficFrame({

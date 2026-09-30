@@ -102,28 +102,53 @@ export async function meterBandwidthOnce(db: Database, logger: MeterLogger = {})
     .from(tenants);
 
   let byNamespace = new Map<string, number>();
-  let excludedByNamespace = new Map<string, number>();
   try {
+    // EXTERNAL egress only — what the ingress served on the tenant's behalf.
+    //
+    // This used to sum `container_network_transmit_bytes_total` per
+    // namespace, which is every byte the tenant's pods sent, including the
+    // database answering the application over the pod network. Those bytes
+    // never leave the node and a customer must not pay for them. Measured
+    // on production over six hours: the active tenants were billed 4,687 MB
+    // against 668 MB actually served — 7.0x overall, 190x for the most
+    // database-heavy tenant — while tenants with no database add-on sat at
+    // 1.0x, which is what identifies the excess as intra-namespace chatter
+    // rather than real egress.
+    //
+    // `label_replace` folds Traefik's per-SERVICE counter onto the namespace
+    // that owns it, so one tenant is one figure regardless of how many
+    // routes they run.
+    //
+    // The trade-off, stated because it is a billing decision and not an
+    // implementation detail: egress a workload initiates itself — an
+    // outbound API call, SMTP, a package pull — does not pass through the
+    // ingress and is therefore not billed. That under-counts. For a figure
+    // the customer pays against, under-counting is the correct direction,
+    // and it is the only number they can reconcile against their own route
+    // page.
     const samples = await queryInstant(
-      `sum by (namespace) (increase(container_network_transmit_bytes_total{namespace!=""}[${gapS}s]))`,
+      `sum by (namespace) (label_replace(`
+      + `increase(traefik_service_responses_bytes_total{service=~"tenant-.+"}[${gapS}s])`
+      + `, "namespace", "$1", "service", "^(tenant-[a-z0-9-]+?-[0-9a-f]{8})-.*"))`,
     );
     byNamespace = new Map(
       samples
         .map((s) => [s.labels.namespace ?? '', s.value] as const)
         .filter(([ns, v]) => ns.length > 0 && Number.isFinite(v) && v >= 0),
     );
-    // Same failure contract as the query above: if the exclusion cannot be
-    // computed, bill nothing this tick rather than bill the tenant for the
-    // platform's backup. lastRun stays put, so the next window covers it.
-    excludedByNamespace = await platformBackupBytesByNamespace(
-      db,
-      rows
-        .filter((t) => t.provisioningStatus === 'provisioned' && t.namespace)
-        .map((t) => ({ tenantId: t.id, namespace: t.namespace })),
-      gapS,
-      now,
-      logger,
-    );
+    // ★ No backup exclusion any more, and removing it is REQUIRED rather
+    // than tidy. It subtracted the bytes a platform-scheduled backup Job
+    // shipped off-site, because the old per-namespace pod counter saw them
+    // and billed them. The ingress counter cannot see them at all — a
+    // backup Job talks to the off-site store, never through Traefik — so
+    // subtracting them now would deduct bytes that were never added and
+    // hand back bandwidth the tenant did use. The `Math.max(0, …)` below
+    // would hide most of that as a floor rather than surface it.
+    //
+    // `platformBackupBytesByNamespace` and the reserved `bk-` name prefixes
+    // it depends on are deliberately kept: they still describe which pods
+    // are platform backups, which the bundle and traffic views rely on.
+    void platformBackupBytesByNamespace;
   } catch (err) {
     logger.warn?.({ err }, 'bandwidth-meter: vmsingle query failed — skipping accumulation this tick');
     // Still advance lastRun? No — leave it so the next tick's wider window
@@ -139,12 +164,10 @@ export async function meterBandwidthOnce(db: Database, logger: MeterLogger = {})
     const rollover = isNewCycle(t.cycleStart, now);
     const priorUsed = rollover ? 0 : Number(t.used ?? 0);
     // Clamped at zero: the two queries are separate `increase()` evaluations
-    // over the same window, so rounding at the edges can leave the exclusion a
-    // few bytes above the total. A negative delta would hand back bandwidth.
-    const billableBytes = Math.max(
-      0,
-      (byNamespace.get(t.namespace) ?? 0) - (excludedByNamespace.get(t.namespace) ?? 0),
-    );
+    // Nothing to deduct — see the note above the query. The clamp stays as a
+    // floor against a counter reset mid-window, which `increase()` can
+    // briefly report as negative.
+    const billableBytes = Math.max(0, byNamespace.get(t.namespace) ?? 0);
     const deltaGb = bytesToGb(billableBytes);
     const newUsed = priorUsed + deltaGb;
 

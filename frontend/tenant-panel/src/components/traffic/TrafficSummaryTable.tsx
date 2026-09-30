@@ -98,7 +98,11 @@ export default function TrafficSummaryTable({
   const GROUP_LABEL: Record<string, string> = {
     wire: 'At the wire — what crossed the network',
     'wire-subset': 'Part of that same total, seen another way',
-    workload: 'What each workload sent — counted at the pod, not the wire',
+    // Retained only so an older frame still renders a heading. Cluster
+    // traffic no longer emits this group: pod-measured rows under a
+    // wire-measured heading invited exactly the comparison they could
+    // not survive.
+    workload: 'Measured at the pod — includes traffic inside the cluster',
   };
   const groupsInOrder = [...new Set(rows.map((r) => r.s.group))]
     .filter((g): g is NonNullable<typeof g> => Boolean(g));

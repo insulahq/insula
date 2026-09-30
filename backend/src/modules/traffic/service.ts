@@ -353,8 +353,15 @@ export async function fetchTrafficFrame(
   }> = [];
   const namespacesSeen = new Set<string>();
 
+  // A tenant is selected by a service PREFIX now, and namespaces nest, so
+  // the children have to be named and excluded before the query is built —
+  // otherwise a parent tenant is billed for a child tenant's traffic.
+  const nestedUnderSubject = req.scope === 'tenant' && req.subject && req.metric === 'traffic'
+    ? await nestedNamespaces(deps.db, req.subject)
+    : [];
+
   for (const plan of plans) {
-    const specs = planQueries(req, plan.direction, stepSeconds, plan.label);
+    const specs = planQueries(req, plan.direction, stepSeconds, plan.label, nestedUnderSubject);
     for (const spec of specs) {
       const rows = await queryRange(
         spec.query.expr,
@@ -482,6 +489,7 @@ interface PlannedQuery {
  */
 function planQueries(
   req: TrafficRequest, direction: 'in' | 'out', stepSeconds: number, directionLabel: string,
+  excludeNestedNamespaces: readonly string[] = [],
 ): PlannedQuery[] {
   const base: Omit<TrafficQueryInput, 'backups' | 'backupClass' | 'scope'> & { scope: TrafficScope } = {
     scope: req.scope,
@@ -491,6 +499,7 @@ function planQueries(
     subject: req.subject,
     pod: req.pod,
     namespacePrefix: req.restrictToNamespace,
+    excludeNestedNamespaces,
   };
 
   // Backup traffic is ALWAYS its own series on a cluster view — it is not a
@@ -505,6 +514,25 @@ function planQueries(
   // that stayed inside the node. Both are true; only one of them adds up,
   // and the frame says which is which.
   if (req.scope === 'cluster' && req.metric === 'traffic') {
+    // ── the wire, and the one honest subset of it ────────────────────────
+    //
+    // This used to carry a third group, "what each workload sent", built
+    // from pod counters: a serving line plus a row per backup class. Those
+    // are a DIFFERENT INSTRUMENT sitting under a cluster-traffic heading,
+    // and they answered a question nobody asked here — cluster traffic is
+    // about what crossed the network, and pod counters mostly measure
+    // traffic that never did. Per-workload detail lives in the pod
+    // breakdown, which is labelled for what it is.
+    //
+    // The off-site backup upload row went with them, and it was the clearest
+    // possible demonstration of the problem: it claimed to be part of the
+    // wire total while being selected by `pod=~"backup-rclone.+"` with no
+    // `id="/"` at all — the shim POD's counters. The shim also answers the
+    // backup jobs over the pod network, so its egress includes bytes that
+    // never leave the node, and the row routinely exceeded the wire total it
+    // claimed to be a part of (2.15 GB inside 1.58 GB, observed). There is no
+    // way to isolate off-site bytes at the NIC, so the row is gone rather
+    // than quietly wrong.
     const wire = (direction === 'in' ? 'Inbound' : 'Outbound');
     return [
       {
@@ -513,35 +541,13 @@ function planQueries(
         nameOverride: `${wire} (wire)`, group: 'wire',
       },
       {
+        // Genuinely a subset: same `id="/"` root cgroup, narrowed to the
+        // encapsulation interfaces. Measured with the same instrument as the
+        // total it sits under, which is what makes it comparable.
         query: buildTrafficQuery({ ...base, wireSubset: 'node-to-node' }),
         kind: 'direction', fallbackKey: direction, keyPrefix: 'n2n',
-        // Named per direction like the wire rows above: two lines called
-        // "Node-to-node" tell the reader nothing about which is which.
         nameOverride: `Node-to-node (${direction})`, group: 'wire-subset',
       },
-      ...(direction === 'out' ? [{
-        query: buildTrafficQuery({ ...base, wireSubset: 'offsite-backup' }),
-        kind: 'direction' as const, fallbackKey: direction, keyPrefix: 'offsite',
-        nameOverride: 'Off-site backup upload', group: 'wire-subset' as const,
-      }] : []),
-      ...(direction === 'out' ? [
-        {
-          // One line, not one per tenant: this row answers "how much of the
-          // wire was tenants serving", and the per-tenant breakdown is a
-          // scope of its own.
-          query: buildTrafficQuery({ ...base, scope: 'tenant', backups: 'exclude', aggregate: true }),
-          kind: 'serving' as const, fallbackKey: 'serving', keyPrefix: 'serving',
-          nameOverride: 'Tenant workloads sent', group: 'workload' as const,
-        },
-        ...(Object.keys(BACKUP_CLASS_POD_RE) as Array<keyof typeof BACKUP_CLASS_POD_RE>).map((cls) => ({
-          query: buildTrafficQuery({ ...base, scope: 'backup-class', backupClass: cls }),
-          kind: 'backup-class' as const,
-          fallbackKey: cls,
-          nameOverride: BACKUP_CLASS_LABEL[cls],
-          keyPrefix: 'backup',
-          group: 'workload' as const,
-        })),
-      ] : []),
     ];
   }
 
