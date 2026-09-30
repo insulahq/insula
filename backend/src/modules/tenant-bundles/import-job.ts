@@ -292,7 +292,9 @@ export function buildImportScript(input: BuildImportJobInput): string {
     // so a truncated or malformed archive is caught BEFORE the first restic
     // call: /bin/sh is dash, there is no pipefail, and a short read can leave
     // tar exiting 0.
-    `tar -tzf "$ARCHIVE" > ${IMPORT_STAGE_ROOT}/manifest.txt || { echo "ERROR: could not read the uploaded archive"; exit 1; }`,
+    // `./`-prefixed members are normalised away so the presence checks below
+    // can compare exact prefixes.
+    `tar -tzf "$ARCHIVE" | sed 's|^[.]/||' > ${IMPORT_STAGE_ROOT}/manifest.txt || { echo "ERROR: could not read the uploaded archive"; exit 1; }`,
   ];
 
   // A truncated or malformed archive can leave tar exiting 0 on a short read,
@@ -301,7 +303,15 @@ export function buildImportScript(input: BuildImportJobInput): string {
   for (const u of input.units) {
     const member = `components/${u.component}/${u.name}`;
     lines.push(
-      `grep -q ${sq(`^\\./\\?${member.replace(/[.[\]*^$+?(){}|\\]/g, '\\$&')}`)} ${IMPORT_STAGE_ROOT}/manifest.txt `
+      // ★ awk's `index($0, m) == 1`, not grep. A unit name is a mailbox
+      // ADDRESS, so it contains regex metacharacters (`.`, `+`) — the first
+      // version of this check anchored with `^\./\?…`, which makes the SLASH
+      // optional rather than the `./` pair and therefore demanded a leading
+      // dot that no archive has. Every promised unit read as missing and the
+      // import refused itself. Exact prefix comparison has no escaping to get
+      // wrong.
+      `awk -v m=${sq(member)} 'index($0, m) == 1 { found = 1; exit } END { exit !found }' `
+      + `${IMPORT_STAGE_ROOT}/manifest.txt `
       + `|| { echo "ERROR: archive is missing ${u.component}/${u.name} — upload truncated or bundle malformed"; exit 1; }`,
     );
   }

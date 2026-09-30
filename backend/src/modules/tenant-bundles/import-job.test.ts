@@ -95,6 +95,21 @@ describe('buildImportScript', () => {
     expect(script).toMatch(/\[ -f "\$ARCHIVE" \] \|\| \{ echo "ERROR: uploaded archive not found/);
   });
 
+  it('★ matches archive members by exact prefix, not by regex', () => {
+    // A unit name is a mailbox ADDRESS and contains regex metacharacters. An
+    // earlier version anchored with `^\\./\\?…`, which makes the SLASH
+    // optional rather than the `./` pair — so it demanded a leading dot no
+    // archive has, every unit read as missing, and the import refused itself
+    // on a perfectly good bundle (observed on DEV).
+    expect(script).not.toMatch(/grep -q '\^/);
+    for (const u of UNITS) {
+      expect(script, u.name).toContain(`awk -v m='components/${u.component}/${u.name}' 'index($0, m) == 1'`
+        .replace(" 'index($0, m) == 1'", " 'index($0, m) == 1 { found = 1; exit } END { exit !found }'"));
+    }
+    // and `./`-prefixed members are normalised so the comparison holds
+    expect(script).toContain("sed 's|^[.]/||'");
+  });
+
   it('★ stages each unit AT its capture root, which is what restore and browse read', () => {
     // restic records the absolute path it is given, and every consumer resolves
     // content by that prefix: browse strips /source, files restore includes
@@ -120,8 +135,7 @@ describe('buildImportScript', () => {
     const firstBackup = script.indexOf('restic -r "$REPO" backup');
     expect(firstBackup).toBeGreaterThan(-1);
     // One presence check per unit, ALL of them before the first restic call.
-    // Matched on the manifest grep rather than the member string, because the
-    // member is regex-escaped in the emitted shell (`user@example\.test`).
+    // Matched on the manifest reads rather than the member string.
     const checks = [...script.matchAll(new RegExp(`${IMPORT_STAGE_ROOT}/manifest\\.txt`, 'g'))]
       .map((m) => m.index ?? -1);
     // one write of the manifest + one grep per unit

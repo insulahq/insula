@@ -72,7 +72,22 @@ async function openUploadedArchive(
   relPath: string,
 ): Promise<Readable> {
   const k8sTenants = createK8sClients(kubeconfigPathOf(app));
-  const { directUrl } = await ensureFileManagerReady(k8sTenants, namespace, getFileManagerImage(app));
+  let directUrl: string | null = null;
+  try {
+    ({ directUrl } = await ensureFileManagerReady(k8sTenants, namespace, getFileManagerImage(app)));
+  } catch {
+    // ★ A legible 503, not a bare 500. The file manager idle-scales to zero,
+    // so an import started after a quiet spell routinely arrives while it is
+    // still coming up — and `ensureFileManagerReady` throws a plain Error,
+    // which the error handler renders as INTERNAL_SERVER_ERROR. An operator
+    // reading that has no idea it is a transient worth retrying.
+    throw new ApiError(
+      'FILE_MANAGER_UNAVAILABLE',
+      'The tenant\'s file manager is still starting, so the uploaded archive cannot be read yet. '
+      + 'Retry in a moment — the upload is untouched.',
+      503,
+    );
+  }
   if (!directUrl) {
     throw new ApiError('FILE_ERROR',
       'The file manager is not reachable from platform-api, so the upload cannot be inspected.', 503);
