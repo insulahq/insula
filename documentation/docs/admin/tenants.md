@@ -28,6 +28,7 @@ list of accounts, and the other tabs are cross-tenant views:
 | **Users** | Sub-users across all tenants. |
 | **Email Accounts** | Mailboxes across all tenants. → [Email](email.md) |
 | **Cron Jobs** | Scheduled jobs across all tenants. Select rows for the bulk enable / disable / delete bar, or use a row's **pencil** to edit one — it saves against that job's own tenant, so it works with no tenant filter set. Type cannot be changed once saved. → [Scheduled tasks](../tenant/cron-jobs.md) |
+| **SFTP Users** | Every SFTP account across all tenants, searchable by username, home path, description or tenant name. Each row opens the tenant that owns it. Read-only here — accounts are created and rotated on the tenant's own page, where the home path and their storage are both in view. |
 
 ### The "N issues" chip
 
@@ -137,10 +138,14 @@ buttons (below). Underneath are several cards and a tabbed resource view.
 A **namespace health banner** appears above Storage Lifecycle only when
 something is wrong — see [When a tenant is over quota](#when-a-tenant-is-over-quota).
 
-**Resource tabs:** Domains, Applications, Deployments, Files, Email,
-Backups, Users. Each shows that tenant's resources with a count. The
+**Resource tabs:** Domains, Deployments, Files, Email, Backups, Snapshots,
+Users, SFTP Users. Each shows that tenant's resources with a count. The
 **Files** tab is intentionally a pointer — the file browser lives in the
 tenant panel; use **Login as Tenant** to reach it.
+
+There is no longer an **Applications** tab: it listed the deployments of
+type `application`, which is a filtered view of the **Deployments** tab
+beside it, under a second name for the same objects.
 
 The **Backups** tab lists that tenant's off-site backup bundles — when each
 ran, whether it completed, how large it is, who started it, and when it
