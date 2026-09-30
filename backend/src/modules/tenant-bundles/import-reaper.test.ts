@@ -25,10 +25,24 @@ function fakeFm(entries: Entry[] | Error) {
   };
 }
 
-/** db stub whose one query returns the given live bundle ids. */
-function fakeDb(liveIds: string[]) {
+/**
+ * db stub returning in-flight bundle ROWS.
+ *
+ * ★ Rows carry a `bkp-<uuid>` id and an import id only inside the
+ * description — exactly as the real schema does. The previous stub returned
+ * `{ id: '<importId>' }`, which is a shape the database can never produce, so
+ * the test agreed with the bug instead of catching it.
+ */
+function fakeDb(liveImportIds: string[]) {
   return {
-    select: () => ({ from: () => ({ where: () => Promise.resolve(liveIds.map((id) => ({ id }))) }) }),
+    select: () => ({
+      from: () => ({
+        where: () => Promise.resolve(liveImportIds.map((id, i) => ({
+          id: `bkp-0000000${i}-0000-0000-0000-000000000000`,
+          description: `Imported from an uploaded bundle [import:${id}]`,
+        }))),
+      }),
+    }),
   } as never;
 }
 
@@ -114,21 +128,23 @@ describe('forgetImportSnapshots', () => {
 describe('sweepAbandonedImportUploads', () => {
   it('deletes an old upload whose import is dead', async () => {
     const { removed, gw } = fakeFm([{ name: 'imp-old.tar.gz', modifiedAt: OLD }]);
-    const r = await sweepAbandonedImportUploads({ db: fakeDb([]), fm: gw, namespace: 'tenant-x', now: NOW });
+    const r = await sweepAbandonedImportUploads({ db: fakeDb([]), fm: gw, namespace: 'tenant-x', tenantId: 't-1', now: NOW });
     expect(r.deleted).toBe(1);
     expect(removed[0]!.permanent).toBe(true);
   });
 
   it('★ keeps an upload whose import is still running', async () => {
     const { removed, gw } = fakeFm([{ name: 'imp-live.tar.gz', modifiedAt: OLD }]);
-    const r = await sweepAbandonedImportUploads({ db: fakeDb(['imp-live']), fm: gw, namespace: 'tenant-x', now: NOW });
+    const r = await sweepAbandonedImportUploads({
+      db: fakeDb(['imp-live']), fm: gw, namespace: 'tenant-x', tenantId: 't-1', now: NOW,
+    });
     expect(r).toMatchObject({ deleted: 0, skippedLive: 1 });
     expect(removed).toEqual([]);
   });
 
   it('★ keeps a FRESH upload — it has no bundle row yet because it is still streaming', async () => {
     const { removed, gw } = fakeFm([{ name: 'imp-new.tar.gz', modifiedAt: FRESH }]);
-    const r = await sweepAbandonedImportUploads({ db: fakeDb([]), fm: gw, namespace: 'tenant-x', now: NOW });
+    const r = await sweepAbandonedImportUploads({ db: fakeDb([]), fm: gw, namespace: 'tenant-x', tenantId: 't-1', now: NOW });
     expect(r).toMatchObject({ deleted: 0, skippedYoung: 1 });
     expect(removed).toEqual([]);
   });
@@ -138,7 +154,7 @@ describe('sweepAbandonedImportUploads', () => {
     // and delete a live upload mid-stream.
     for (const mtime of [null, undefined, 'not-a-date', '']) {
       const { removed, gw } = fakeFm([{ name: 'imp-x.tar.gz', modifiedAt: mtime as never }]);
-      const r = await sweepAbandonedImportUploads({ db: fakeDb([]), fm: gw, namespace: 'tenant-x', now: NOW });
+      const r = await sweepAbandonedImportUploads({ db: fakeDb([]), fm: gw, namespace: 'tenant-x', tenantId: 't-1', now: NOW });
       expect(r.deleted, String(mtime)).toBe(0);
       expect(removed).toEqual([]);
     }
@@ -146,14 +162,26 @@ describe('sweepAbandonedImportUploads', () => {
 
   it('ignores unrelated files in the directory', async () => {
     const { removed, gw } = fakeFm([{ name: 'README.txt', modifiedAt: OLD }, { name: '.keep', modifiedAt: OLD }]);
-    const r = await sweepAbandonedImportUploads({ db: fakeDb([]), fm: gw, namespace: 'tenant-x', now: NOW });
+    const r = await sweepAbandonedImportUploads({ db: fakeDb([]), fm: gw, namespace: 'tenant-x', tenantId: 't-1', now: NOW });
     expect(r.deleted).toBe(0);
     expect(removed).toEqual([]);
   });
 
+  it('★ correlates via the description, because the row id is a DIFFERENT identifier', async () => {
+    // backup_jobs.id is `bkp-<uuid>`; the import id is `imp<hex>`. Comparing
+    // them directly (as an earlier version did) can never match, so the
+    // liveness check silently did not exist and a live upload was deletable.
+    const { importIdFromDescription } = await import('./import-reaper.js');
+    expect(importIdFromDescription('Imported from uploaded bundle bkp-x [import:imp1]')).toBe('imp1');
+    expect(importIdFromDescription('no marker here')).toBeNull();
+    expect(importIdFromDescription(null)).toBeNull();
+    // a bundle id must never be mistaken for an import id
+    expect(importIdFromDescription('bkp-2f1c9a10-0000-0000-0000-000000000000')).toBeNull();
+  });
+
   it('is a no-op when the tenant never imported (no upload directory)', async () => {
     const { gw } = fakeFm(new Error('ENOENT'));
-    await expect(sweepAbandonedImportUploads({ db: fakeDb([]), fm: gw, namespace: 'tenant-x', now: NOW }))
+    await expect(sweepAbandonedImportUploads({ db: fakeDb([]), fm: gw, namespace: 'tenant-x', tenantId: 't-1', now: NOW }))
       .resolves.toEqual({ scanned: 0, deleted: 0, skippedLive: 0, skippedYoung: 0 });
   });
 });

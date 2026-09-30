@@ -306,10 +306,19 @@ export function buildImportScript(input: BuildImportJobInput): string {
       `[ -f "$ART" ] || { echo "ERROR: archive is missing ${o.component}/${o.name}"; exit 1; }`,
       `TOKEN="$(cat ${IMPORT_CREDS_MOUNT_PATH}/${o.tokenKey})"`,
       `[ -n "$TOKEN" ] || { echo "ERROR: upload token missing for ${o.component}"; exit 1; }`,
+      // ★ The token goes into a curl CONFIG FILE, never onto the command
+      // line. `?token=$TOKEN` is expanded by the shell before exec, so the
+      // real token would sit in /proc/<pid>/cmdline and `ps` for the life of
+      // the upload (up to 600s). Every other secret in these Jobs is already
+      // read from the creds mount into a variable precisely to stay off
+      // argv; this holds the upload token to the same standard.
+      'umask 077',
+      `printf 'url = "%s?token=%s"\\n' ${sq(url)} "$TOKEN" > /tmp/curlrc`,
       // --upload-file already implies PUT, which is what the internal route
       // registers. -f so an HTTP error is a non-zero exit rather than a body.
-      `curl -sS -f --retry 3 --retry-delay 2 --max-time 600 --upload-file "$ART" ${sq(url)}"?token=$TOKEN" > /dev/null `
-        + `|| { echo "ERROR: object upload failed for ${o.component}/${o.name}"; exit 1; }`,
+      `curl -sS -f --retry 3 --retry-delay 2 --max-time 600 --config /tmp/curlrc --upload-file "$ART" > /dev/null `
+        + `|| { rm -f /tmp/curlrc; echo "ERROR: object upload failed for ${o.component}/${o.name}"; exit 1; }`,
+      'rm -f /tmp/curlrc',
       `OSIZE=$(wc -c < "$ART" | tr -d " ")`,
       `echo "IMPORT_OBJECT_DONE importId=${input.importId} component=${o.component} name=${o.name} sizeBytes=\${OSIZE:-0}"`,
       `rm -f "$ART"`,

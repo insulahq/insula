@@ -259,7 +259,23 @@ describe('buildImportScript — object artifacts', () => {
     for (const o of OBJECTS) {
       expect(script).toContain(`TOKEN="$(cat ${IMPORT_CREDS_MOUNT_PATH}/${o.tokenKey})"`);
     }
-    expect(script).toContain('?token=$TOKEN');
+  });
+
+  it('★ keeps the token off curl\'s argv', () => {
+    // `curl ...?token=$TOKEN` is expanded by the shell BEFORE exec, so the
+    // real token would sit in /proc/<pid>/cmdline and `ps` for the life of
+    // the upload. It goes into a config file instead.
+    const curlLines = script.split('\n').filter((l) => l.includes('curl '));
+    expect(curlLines.length).toBeGreaterThan(0);
+    for (const l of curlLines) {
+      expect(l, l).not.toContain('token=');
+      expect(l, l).not.toContain('$TOKEN');
+    }
+    expect(script).toContain('--config /tmp/curlrc');
+    expect(script).toMatch(/printf 'url = "%s\?token=%s"/);
+    // …and the file does not outlive the upload, on either path
+    expect(script).toContain('rm -f /tmp/curlrc');
+    expect(script).toContain('umask 077');
   });
 
   it('uploads only AFTER every restic unit succeeded', () => {

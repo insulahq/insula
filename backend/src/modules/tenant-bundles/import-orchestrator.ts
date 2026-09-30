@@ -18,6 +18,7 @@
  * the bundle is registered complete, or it does not exist.
  */
 import { randomUUID } from 'node:crypto';
+import { MANUAL_IMPORT_LABEL } from '@insula/api-contracts';
 import { eq } from 'drizzle-orm';
 
 import { backupJobs, backupComponents, backupConfigurations } from '../../db/schema.js';
@@ -60,8 +61,14 @@ import {
 } from './import-reaper.js';
 import type { ImportPreflight, ImportScope } from './import-preflight.js';
 
-/** Bundles created by upload carry this label so they are distinguishable. */
-export const MANUAL_IMPORT_LABEL = 'manual-import';
+/**
+ * Bundles created by upload carry this label so they are distinguishable.
+ *
+ * Re-exported from `@insula/api-contracts` rather than redeclared — both
+ * panels render it and the backend writes it, and a second declaration is
+ * exactly how those drift apart.
+ */
+export { MANUAL_IMPORT_LABEL } from '@insula/api-contracts';
 
 /** Upload tokens outlive the Job's own deadline by a margin, nothing more. */
 const UPLOAD_TOKEN_TTL_SECONDS = 60 * 60;
@@ -141,12 +148,30 @@ export async function runBundleImport(
   const [cfg] = await deps.db.select().from(backupConfigurations)
     .where(eq(backupConfigurations.id, input.targetConfigId)).limit(1);
   if (!cfg) throw new ApiError('NOT_FOUND', 'Backup target not found', 404);
-  if (!cfg.active) {
-    throw new ApiError('CONFIG_INVALID', `Backup target ${cfg.name} is not active`, 400);
+  // ★ `enabled`, NOT `active`. `active` is the Longhorn-BackupTarget
+  // designator — at most ONE row per cluster may carry it, and the schema
+  // states it is "not consulted by the shim path (… tenant-bundles …)".
+  // Gating on it would have refused almost every real target, and the
+  // failure would have looked like a misconfigured backup rather than a
+  // wrong column. `enabled` is the operator's on/off switch.
+  if (cfg.enabled === 0) {
+    throw new ApiError('CONFIG_INVALID', `Backup target ${cfg.name} is disabled`, 400);
   }
 
   const bundleId = `bkp-${randomUUID()}`;
+  const credsSecretName = `imp-creds-${input.importId}`.replace(/[^a-z0-9-]/gi, '').toLowerCase().slice(0, 63);
+  const jobName = importJobName(input.importId);
   const progress = async (msg: string): Promise<void> => { await input.onProgress?.(msg); };
+
+  // ── Refuse a duplicate before touching anything ─────────────────────────
+  // Two calls with the same importId (double-click, a client retry after a
+  // timed-out-but-successful request, two tabs) derive the SAME Job name and
+  // the SAME archive path. Without this the loser's `finally` would delete
+  // the archive the winner's Job is still extracting from.
+  if (await importJobExists(deps, input.namespace, jobName)) {
+    throw new ApiError('IMPORT_IN_PROGRESS',
+      'An import with this id is already running for this tenant. Wait for it to finish, or start a new import.', 409);
+  }
 
   // ── Repos: one URI per component present (per-component layout splits them)
   const target = await resolveTargetForImport(deps, cfg);
@@ -172,68 +197,69 @@ export async function runBundleImport(
     });
   }
 
-  // ── Reserve the bundle + register the row the uploads resolve through ────
-  const store = await resolveStoreOrThrow(deps, input.targetConfigId);
-  const handle = await store.reserveBundle({ backupId: bundleId, tenantId: input.tenantId });
-
-  const targetKind = cfg.storageType as 's3' | 'ssh' | 'hostpath';
-  const retentionDays = input.retentionDays ?? 30;
-  await deps.db.insert(backupJobs).values({
-    id: bundleId,
-    tenantId: input.tenantId,
-    initiator: input.initiator,
-    systemTrigger: null,
-    // `running`, NOT `completed`: the row must exist for the internal upload
-    // route to resolve a store, but it must not look like a usable bundle
-    // until every unit has landed.
-    status: 'running',
-    targetKind,
-    targetUri: `${targetKind}://${cfg.id}`,
-    targetConfigId: input.targetConfigId,
-    label: buildImportLabel(input.label),
-    description: preflight.sourceBundleId
-      ? `Imported from uploaded bundle ${preflight.sourceBundleId}`
-      : 'Imported from an uploaded bundle',
-    sizeBytes: 0,
-    repoLayout: layout,
-    retentionDays,
-    expiresAt: null,
-    exportMode: null,
-    startedAt: new Date(),
-    lastError: null,
-  });
-
-  // ── Creds Secret: repo URIs per component + one upload token per artifact ─
-  const credsSecretName = `imp-creds-${input.importId}`.replace(/[^a-z0-9-]/gi, '').toLowerCase().slice(0, 63);
-  const jobName = `bundle-import-${input.importId}`.replace(/[^a-z0-9-]/gi, '').toLowerCase().slice(0, 63);
-
   const objectArtifacts: ImportObjectUpload[] = preflight.objectArtifacts.map((a) => ({
     component: a.component,
     name: artifactNameFor(a.component),
     tokenKey: `upload_token_${a.component}`,
   }));
 
-  const stringData: Record<string, string> = buildResticCredsStringData({
-    passwordHex,
-    // `repo_uri` stays populated for any shared tooling that expects it; the
-    // import script reads the per-component keys below.
-    repoUri: repoUriByComponent.get(components[0]!)!,
-    env: buildResticEnv(target),
-  });
-  for (const [component, uri] of repoUriByComponent) stringData[repoUriKey(component)] = uri;
-  for (const a of objectArtifacts) {
-    stringData[a.tokenKey] = signUploadToken(
-      { bundleId, component: a.component, artifactName: a.name, ttlSeconds: UPLOAD_TOKEN_TTL_SECONDS },
-      deps.encryptionKey,
-    );
-  }
-
   const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const writtenByRepo = new Map<string, string[]>();
+  const retentionDays = input.retentionDays ?? 30;
   let succeeded = false;
   let credsCreated = false;
+  let store: import('./bundle-store.js').BackupStore | null = null;
+  let handle: import('./bundle-store.js').BundleHandle | null = null;
+  let rowInserted = false;
 
   try {
+    // Reservation and row are INSIDE the try: a failure between them used to
+    // leak the store-side reservation, because the only `store.delete` lives
+    // in the catch below.
+    store = await resolveStoreOrThrow(deps, input.targetConfigId);
+    handle = await store.reserveBundle({ backupId: bundleId, tenantId: input.tenantId });
+
+    const targetKind = cfg.storageType as 's3' | 'ssh' | 'hostpath';
+    await deps.db.insert(backupJobs).values({
+      id: bundleId,
+      tenantId: input.tenantId,
+      initiator: input.initiator,
+      systemTrigger: null,
+      // `running`, NOT `completed`: the row must exist for the internal upload
+      // route to resolve a store, but it must not look like a usable bundle
+      // until every unit has landed.
+      status: 'running',
+      targetKind,
+      targetUri: `${targetKind}://${cfg.id}`,
+      targetConfigId: input.targetConfigId,
+      label: buildImportLabel(input.label),
+      description: describeImport(input.importId, preflight.sourceBundleId),
+      sizeBytes: 0,
+      repoLayout: layout,
+      retentionDays,
+      expiresAt: null,
+      exportMode: null,
+      startedAt: new Date(),
+      lastError: null,
+    });
+    rowInserted = true;
+
+    // ── Creds Secret: repo URIs per component + one upload token per artifact
+    const stringData: Record<string, string> = buildResticCredsStringData({
+      passwordHex,
+      // `repo_uri` stays populated for any shared tooling that expects it; the
+      // import script reads the per-component keys below.
+      repoUri: repoUriByComponent.get(components[0]!)!,
+      env: buildResticEnv(target),
+    });
+    for (const [component, uri] of repoUriByComponent) stringData[repoUriKey(component)] = uri;
+    for (const a of objectArtifacts) {
+      stringData[a.tokenKey] = signUploadToken(
+        { bundleId, component: a.component, artifactName: a.name, ttlSeconds: UPLOAD_TOKEN_TTL_SECONDS },
+        deps.encryptionKey,
+      );
+    }
+
     await createResticCredsSecret(deps.k8s, input.namespace, credsSecretName, stringData, 'bundle-import');
     credsCreated = true;
 
@@ -271,28 +297,50 @@ export async function runBundleImport(
       }
     }
 
-    await waitForJob(deps.k8s, input.namespace, jobName, timeoutMs, progress);
-
-    const log = (await readJobLogTail(deps.k8s, input.namespace, jobName, { tailLines: 400 })) ?? '';
-    const units = parseImportUnitResults(log);
-    const objects = parseImportObjectResults(log);
-
-    // Record what landed BEFORE judging success — a partial run still has to
-    // be cleaned up, and these ids are the only handle on those snapshots.
-    for (const u of units) {
-      const repoUri = repoUriByComponent.get(u.component as 'files' | 'mailboxes');
-      if (!repoUri) continue;
-      const list = writtenByRepo.get(repoUri) ?? [];
-      list.push(u.snapshotId);
-      writtenByRepo.set(repoUri, list);
+    let log = '';
+    try {
+      await waitForJob(deps.k8s, input.namespace, jobName, timeoutMs, progress);
+    } finally {
+      // ★ Read the log on BOTH paths. `waitForJob` throws the moment the Job
+      // reports Failed — and a Job that failed on unit 2 still WROTE unit 1's
+      // snapshot. Those ids exist only in the log, so reading it only on the
+      // success path left every partial snapshot orphaned in the repo, with
+      // nothing referencing it and retention unable to reclaim it.
+      log = await readImportLog(deps, input.namespace, jobName, preflight.units.length);
+      for (const u of parseImportUnitResults(log)) {
+        const repoUri = repoUriByComponent.get(u.component as 'files' | 'mailboxes');
+        if (!repoUri) continue;
+        const list = writtenByRepo.get(repoUri) ?? [];
+        list.push(u.snapshotId);
+        writtenByRepo.set(repoUri, list);
+      }
     }
 
+    const units = parseImportUnitResults(log);
+    const objects = parseImportObjectResults(log);
     assertImportComplete(log, input.importId, preflight, units, objects);
 
     // ── Only now do rows appear ───────────────────────────────────────────
     const sizeBytes = units.reduce((a, u) => a + u.sizeBytes, 0)
       + objects.reduce((a, o) => a + o.sizeBytes, 0);
     const addedBytes = units.reduce((a, u) => a + u.addedBytes, 0);
+
+    // ★ Re-check the quota against what ACTUALLY landed. The preflight's
+    // check ran on sizes declared by the uploaded manifest, which is an
+    // assertion by whoever built the archive — a bundle declaring
+    // `sizeBytes: 0` would sail through it and then park arbitrary data on a
+    // shared, admin-managed target. This is the same question asked of the
+    // only number that is measured. Throwing here runs the teardown below,
+    // so the oversized snapshots are forgotten rather than left behind.
+    if (preflight.quota.limitBytes > 0 && sizeBytes > preflight.quota.limitBytes) {
+      throw new ApiError(
+        'IMPORT_EXCEEDS_QUOTA',
+        `The imported data is ${Math.ceil(sizeBytes / 1024 ** 3)} GiB, which exceeds this tenant's `
+        + `${Math.floor(preflight.quota.limitBytes / 1024 ** 3)} GiB storage allowance. `
+        + 'Nothing has been registered. Raise the plan or import a smaller bundle.',
+        409,
+      );
+    }
 
     await deps.db.insert(backupComponents).values([
       ...units.map((u) => ({
@@ -335,23 +383,43 @@ export async function runBundleImport(
       .set({ status: 'completed', sizeBytes, resticAddedBytes: addedBytes, finishedAt: new Date() })
       .where(eq(backupJobs.id, bundleId));
 
+    // ★ Nothing that can throw may run between here and `return` unguarded —
+    // past this line the bundle is REGISTERED, and the catch below would
+    // delete the data it points at. The progress call is therefore wrapped.
     succeeded = true;
-    await progress('Import complete.');
+    try { await progress('Import complete.'); } catch { /* cosmetic only */ }
     return { bundleId, units, objects, sizeBytes };
   } catch (err) {
-    // ── Failure teardown: leave nothing behind ──────────────────────────────
-    if (writtenByRepo.size > 0) {
-      await forgetImportSnapshots({ target, passwordHex, byRepo: writtenByRepo, log: deps.log });
+    // ★ Guarded on `succeeded`. Without it, a throw AFTER the bundle was
+    // registered would forget its snapshots and delete its artefacts while
+    // `deleteAbortedImportRow` (which skips `completed` rows by design) left
+    // the row behind — a bundle that is registered complete and has no data,
+    // the exact inverse of the invariant this module exists to hold.
+    if (!succeeded) {
+      if (writtenByRepo.size > 0) {
+        await forgetImportSnapshots({ target, passwordHex, byRepo: writtenByRepo, log: deps.log });
+      }
+      if (store && handle) {
+        try { await store.delete(handle); } catch (e) {
+          deps.log.warn({ bundleId, err: e instanceof Error ? e.message : String(e) },
+            'bundle-import: could not drop the reserved bundle after a failed import');
+        }
+      }
+      if (rowInserted) {
+        // Guarded: an unwrapped throw here would replace the operator-legible
+        // original failure with an opaque DB error.
+        try { await deleteAbortedImportRow(deps.db, bundleId); } catch (e) {
+          deps.log.warn({ bundleId, err: e instanceof Error ? e.message : String(e) },
+            'bundle-import: could not delete the aborted bundle row');
+        }
+      }
     }
-    try { await store.delete(handle); } catch (e) {
-      deps.log.warn({ bundleId, err: e instanceof Error ? e.message : String(e) },
-        'bundle-import: could not drop the reserved bundle after a failed import');
-    }
-    await deleteAbortedImportRow(deps.db, bundleId);
     throw err;
   } finally {
     // The uploaded archive goes on BOTH paths — it is the artifact that
-    // silently eats the tenant's quota if it survives.
+    // silently eats the tenant's quota if it survives. Safe to do
+    // unconditionally here: the duplicate-import guard above returns BEFORE
+    // this try block, so reaching this point means this call owns the upload.
     await reapImportUpload(deps.fm, input.namespace, input.archiveRelPath, deps.log);
     if (credsCreated) {
       try {
@@ -369,6 +437,65 @@ export async function runBundleImport(
     }
   }
 }
+
+/** Deterministic Job name for an import — also the duplicate-detection key. */
+export function importJobName(importId: string): string {
+  return `bundle-import-${importId}`.replace(/[^a-z0-9-]/gi, '').toLowerCase().slice(0, 63);
+}
+
+/** Description carrying the importId, so the sweeper can correlate uploads. */
+export function describeImport(importId: string, sourceBundleId: string | null): string {
+  return sourceBundleId
+    ? `Imported from uploaded bundle ${sourceBundleId} [import:${importId}]`
+    : `Imported from an uploaded bundle [import:${importId}]`;
+}
+
+/** True when an import Job with this name already exists in the namespace. */
+async function importJobExists(
+  deps: ImportRunnerDeps,
+  namespace: string,
+  jobName: string,
+): Promise<boolean> {
+  try {
+    await (deps.k8s.batch as unknown as {
+      readNamespacedJob: (a: { name: string; namespace: string }) => Promise<unknown>;
+    }).readNamespacedJob({ name: jobName, namespace });
+    return true;
+  } catch {
+    // A 404 is the expected case. Any other read failure is treated as
+    // "absent" rather than blocking a legitimate import on a transient
+    // API hiccup — the Job create itself 409s if it really does exist.
+    return false;
+  }
+}
+
+/**
+ * Read enough of the Job log to see EVERY unit line.
+ *
+ * A fixed `tailLines` silently truncates: each unit emits 2-3 lines, so a
+ * tenant with a few hundred mailboxes pushes the early `IMPORT_UNIT_DONE`
+ * lines out of the window. `assertImportComplete` would then reject a
+ * genuinely complete import — and, worse, the truncated-out snapshots would
+ * be invisible to the cleanup that is supposed to forget them.
+ */
+async function readImportLog(
+  deps: ImportRunnerDeps,
+  namespace: string,
+  jobName: string,
+  unitCount: number,
+): Promise<string> {
+  const tailLines = Math.max(400, unitCount * 4 + 200);
+  try {
+    return (await readJobLogTail(deps.k8s, namespace, jobName, { tailLines })) ?? '';
+  } catch (err) {
+    deps.log.warn(
+      { jobName, err: err instanceof Error ? err.message : String(err) },
+      'bundle-import: could not read the Job log',
+    );
+    return '';
+  }
+}
+
 
 /**
  * Fail unless the Job reported EVERY promised unit and artifact.
@@ -469,7 +596,10 @@ async function resolveStoreOrThrow(
   targetConfigId: string,
 ): Promise<import('./bundle-store.js').BackupStore> {
   const { resolveBackupStore } = await import('./resolve-store.js');
-  const store = await resolveBackupStore(deps.db, targetConfigId, deps.encryptionKey);
+  // `requireActive: false` for the same reason as above — and because the
+  // existing tenant-bundle create path does exactly this (routes.ts passes
+  // it too). The `enabled` gate in runBundleImport is the real check.
+  const store = await resolveBackupStore(deps.db, targetConfigId, deps.encryptionKey, { requireActive: false });
   if (!store) {
     throw new ApiError('NOT_IMPLEMENTED',
       'This backup target does not support bundle import.', 400);

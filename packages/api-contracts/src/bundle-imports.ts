@@ -96,8 +96,14 @@ export const bundleImportStartInputSchema = z.object({
   importId: bundleImportIdSchema,
   extension: z.enum(BUNDLE_IMPORT_EXTENSIONS).optional().default('tar.gz'),
   passphrase: z.string().min(1).max(512).optional(),
-  /** Backup target the resulting bundle is written to. */
-  targetConfigId: z.string().min(1).max(36),
+  /**
+   * Backup target the resulting bundle is written to.
+   *
+   * Required on the admin path, where the operator chooses. OMITTED on the
+   * tenant path — a tenant has no way to know which targets exist and must
+   * not be able to name one, so the server resolves it.
+   */
+  targetConfigId: z.string().min(1).max(36).optional(),
   /** Operator note appended to the `manual-import` label. */
   label: z.string().max(200).optional(),
   retentionDays: z.number().int().min(1).max(3650).optional(),

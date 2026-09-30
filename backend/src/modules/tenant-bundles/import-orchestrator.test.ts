@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { readFileSync } from 'node:fs';
 
 // ── mocks for everything the orchestrator reaches out to ──────────────────
 const waitForJobMock = vi.fn();
@@ -81,7 +82,11 @@ function tableName(t: unknown): string {
   return sym ? String((t as Record<symbol, unknown>)[sym]) : 'unknown';
 }
 
-const CFG = { id: 'cfg-1', name: 'main', active: true, storageType: 's3' };
+// `enabled` is the operator's on/off switch. `active` is the Longhorn
+// BackupTarget designator — at most one row per cluster carries it and the
+// schema says it is "not consulted by the shim path (… tenant-bundles …)",
+// so gating on it refused almost every real target.
+const CFG = { id: 'cfg-1', name: 'main', enabled: 1, active: false, storageType: 's3' };
 
 const PREFLIGHT = {
   sourceBundleId: 'bkp-src', sourceTenantId: 't-src',
@@ -199,6 +204,7 @@ describe('runBundleImport — failure teardown', () => {
 
   it('★ reaps the uploaded archive even when the Job itself fails', async () => {
     waitForJobMock.mockRejectedValue(new Error('Job failed: evicted'));
+    readLogMock.mockResolvedValue('');   // died before any unit reported
     const { db } = recordingDb(CFG);
     await expect(runBundleImport(deps(db), INPUT)).rejects.toThrow(/evicted/);
     expect(fmRemoveMock).toHaveBeenCalled();
@@ -206,6 +212,73 @@ describe('runBundleImport — failure teardown', () => {
     expect(deleteSecretMock).toHaveBeenCalled();
     // nothing was snapshotted, so nothing to forget
     expect(forgetMock).not.toHaveBeenCalled();
+  });
+
+  it('★ forgets the snapshots a PARTIALLY successful Job already wrote', async () => {
+    // The common failure: unit 1 succeeds, unit 2 fails, the Job is marked
+    // Failed and waitForJob throws. The snapshot from unit 1 is real and its
+    // id exists only in the Job log — so reading the log ONLY on the success
+    // path left it orphaned in the repo forever, referenced by nothing and
+    // invisible to retention.
+    waitForJobMock.mockRejectedValue(new Error('Job failed: unit 2 exited 1'));
+    readLogMock.mockResolvedValue(
+      `IMPORT_UNIT_DONE importId=imp1 component=files name=archive snapshot=${'a'.repeat(64)} sizeBytes=100 addedBytes=5`,
+    );
+    const { db, inserts } = recordingDb(CFG);
+    await expect(runBundleImport(deps(db), INPUT)).rejects.toThrow(/unit 2 exited/);
+
+    expect(forgetMock).toHaveBeenCalled();
+    const byRepo = (forgetMock.mock.calls[0]![0] as { byRepo: Map<string, string[]> }).byRepo;
+    expect([...byRepo.values()].flat()).toEqual(['a'.repeat(64)]);
+    expect(inserts.some((i) => i.table.includes('backup_components'))).toBe(false);
+  });
+
+  it('★ a failing progress sink cannot fail an import that already succeeded', async () => {
+    // The only statement between the flip to `completed` and `return` is the
+    // progress call, and it is wrapped: a cosmetic sink failure must not
+    // surface as a failed import, and must not reach the teardown.
+    const { db } = recordingDb(CFG);
+    const r = await runBundleImport(deps(db), { ...INPUT, onProgress: (m: string) => {
+      if (m === 'Import complete.') throw new Error('progress sink exploded');
+    } } as never);
+    expect(r.bundleId).toMatch(/^bkp-/);
+    expect(forgetMock).not.toHaveBeenCalled();
+    expect(storeDeleteMock).not.toHaveBeenCalled();
+    expect(deleteRowMock).not.toHaveBeenCalled();
+  });
+
+  it('★ the teardown is guarded on `succeeded`', () => {
+    // Source-level ON PURPOSE. Behaviourally this is unreachable today —
+    // the one post-commit statement is wrapped above, so nothing can throw
+    // into the catch after the bundle is registered, and a behavioural test
+    // would pass with the guard REMOVED (verified by mutation). The guard is
+    // defence for the next statement someone adds there, and the property
+    // worth pinning is that it exists: without it, a throw after the flip to
+    // `completed` would forget the snapshots and delete the artefacts while
+    // `deleteAbortedImportRow` (which skips completed rows) left the row —
+    // a bundle registered complete with no data behind it.
+    const src = readFileSync('src/modules/tenant-bundles/import-orchestrator.ts', 'utf8');
+    // Anchored on the guard comment, not on `  } catch (err) {` — that
+    // 2-space pattern is a SUBSTRING of the 6-space inner catch around
+    // waitForJob, so it sliced the wrong block and the test failed on
+    // correct code.
+    const start = src.indexOf('    // ★ Guarded on `succeeded`.');
+    expect(start, 'guard comment not found').toBeGreaterThan(-1);
+    const catchBlock = src.slice(start, src.indexOf('\n  } finally {', start));
+    expect(catchBlock).toMatch(/if \(!succeeded\) \{/);
+    // Match the CALLS, not the bare names — the comment above the guard
+    // names them too, and matching that put the first "hit" before the guard.
+    const guardAt = catchBlock.indexOf('if (!succeeded) {');
+    expect(guardAt, 'guard not found in the catch block').toBeGreaterThan(-1);
+    for (const call of [
+      'await forgetImportSnapshots({',
+      'await store.delete(handle)',
+      'await deleteAbortedImportRow(deps.db, bundleId)',
+    ]) {
+      const at = catchBlock.indexOf(call);
+      expect(at, `${call} not found`).toBeGreaterThan(-1);
+      expect(at, `${call} is not inside the guard`).toBeGreaterThan(guardAt);
+    }
   });
 
   it('refuses a blocked preflight before creating anything', async () => {
@@ -228,10 +301,19 @@ describe('runBundleImport — failure teardown', () => {
     expect(initRepoMock).not.toHaveBeenCalled();
   });
 
-  it('refuses an inactive backup target', async () => {
-    const { db } = recordingDb({ ...CFG, active: false });
-    await expect(runBundleImport(deps(db), INPUT)).rejects.toThrow(/not active/);
+  it('refuses a DISABLED backup target', async () => {
+    const { db } = recordingDb({ ...CFG, enabled: 0 });
+    await expect(runBundleImport(deps(db), INPUT)).rejects.toThrow(/is disabled/);
     expect(reserveMock).not.toHaveBeenCalled();
+  });
+
+  it('★ does NOT gate on `active`, which is the Longhorn-only column', () => {
+    // Gating on it would refuse every target except the single Longhorn row —
+    // a failure that reads like a misconfigured backup rather than a wrong
+    // column, which is why it is pinned here.
+    const src = readFileSync('src/modules/tenant-bundles/import-orchestrator.ts', 'utf8');
+    expect(src).not.toMatch(/cfg\.active/);
+    expect(src).toMatch(/cfg\.enabled === 0/);
   });
 });
 

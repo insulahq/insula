@@ -102,3 +102,61 @@ describe('mintImportTarget', () => {
     expect(ids.size).toBe(50);
   });
 });
+
+describe('resolveTenantImportTarget', () => {
+  // A tenant cannot name a target — they have no way to know which exist, and
+  // naming one would be a way to write into a target never granted to them.
+  // So the server picks, and ambiguity is an error rather than a guess.
+  function stubApp(recent: string | null, writable: string[]) {
+    let call = 0;
+    return {
+      db: {
+        select: () => ({
+          from: () => {
+            call += 1;
+            const chain: Record<string, unknown> = {
+              where: () => chain,
+              orderBy: () => chain,
+              limit: () => Promise.resolve(recent ? [{ targetConfigId: recent }] : []),
+              then: (res: (v: unknown) => unknown, rej?: (e: unknown) => unknown) =>
+                Promise.resolve(call === 2 ? writable.map((id) => ({ id })) : []).then(res, rej),
+            };
+            return chain;
+          },
+        }),
+      },
+    } as never;
+  }
+
+  it('keeps a tenant on the target their last bundle already used', async () => {
+    const { resolveTenantImportTarget } = await import('./import-routes.js');
+    await expect(resolveTenantImportTarget(stubApp('cfg-a', ['cfg-a', 'cfg-b']), 't-1'))
+      .resolves.toBe('cfg-a');
+  });
+
+  it('★ ignores a remembered target that is no longer writable', async () => {
+    // Frozen or deactivated since the last bundle — importing into it would
+    // fail deep inside the Job instead of here.
+    const { resolveTenantImportTarget } = await import('./import-routes.js');
+    await expect(resolveTenantImportTarget(stubApp('cfg-gone', ['cfg-b']), 't-1'))
+      .resolves.toBe('cfg-b');
+  });
+
+  it('falls back to the only writable target', async () => {
+    const { resolveTenantImportTarget } = await import('./import-routes.js');
+    await expect(resolveTenantImportTarget(stubApp(null, ['cfg-only']), 't-1'))
+      .resolves.toBe('cfg-only');
+  });
+
+  it('★ refuses rather than guessing when several targets could apply', async () => {
+    const { resolveTenantImportTarget } = await import('./import-routes.js');
+    await expect(resolveTenantImportTarget(stubApp(null, ['cfg-a', 'cfg-b']), 't-1'))
+      .rejects.toThrow(/several are configured/);
+  });
+
+  it('says so when nothing writable is configured', async () => {
+    const { resolveTenantImportTarget } = await import('./import-routes.js');
+    await expect(resolveTenantImportTarget(stubApp(null, []), 't-1'))
+      .rejects.toThrow(/No writable backup target/);
+  });
+});

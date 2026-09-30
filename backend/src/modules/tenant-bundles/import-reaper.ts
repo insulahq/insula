@@ -32,7 +32,11 @@ export interface FileManagerGateway {
   /** POST `/rm` on the tenant's file-manager sidecar. */
   remove(namespace: string, path: string, permanent: boolean): Promise<void>;
   /** GET `/ls` on the tenant's file-manager sidecar. */
-  list(namespace: string, path: string): Promise<ReadonlyArray<{ name: string; modifiedAt?: string | number | null }>>;
+  list(namespace: string, path: string): Promise<ReadonlyArray<{
+    name: string;
+    modifiedAt?: string | number | null;
+    size?: number;
+  }>>;
 }
 
 export interface ReapLog {
@@ -116,6 +120,21 @@ export async function forgetImportSnapshots(
   return { forgotten, failed };
 }
 
+/**
+ * Pull the import id out of a bundle row's description.
+ *
+ * ★ The bundle row's PRIMARY KEY is a freshly minted `bkp-<uuid>`, NOT the
+ * import id — they can never be equal, so matching `backup_jobs.id` against an
+ * import id (as an earlier version did) always found nothing and the liveness
+ * check silently did not exist. `describeImport` stamps `[import:<id>]` into
+ * the description precisely so this correlation is possible without a schema
+ * change.
+ */
+export function importIdFromDescription(description: string | null | undefined): string | null {
+  const m = (description ?? '').match(/\[import:([A-Za-z0-9_-]{1,64})\]/);
+  return m ? m[1]! : null;
+}
+
 /** Parse an import id out of an upload filename, or null if it is not one. */
 export function importIdFromUploadName(name: string): string | null {
   const m = name.match(/^([A-Za-z0-9_-]{1,64})\.(?:tar\.gz|tar\.gz\.enc|tar|zip)$/);
@@ -134,6 +153,8 @@ export async function sweepAbandonedImportUploads(args: {
   readonly db: Database;
   readonly fm: FileManagerGateway;
   readonly namespace: string;
+  /** Owner of this namespace — scopes the liveness query to their bundles. */
+  readonly tenantId: string;
   readonly now?: number;
   readonly maxAgeMs?: number;
   readonly log?: ReapLog;
@@ -169,15 +190,19 @@ export async function sweepAbandonedImportUploads(args: {
     return { scanned: entries.length, deleted: 0, skippedLive: 0, skippedYoung };
   }
 
-  // One query for the whole batch — never one per file.
+  // One query for the whole batch — never one per file. Scoped to this
+  // tenant's in-flight bundles; the import id is read back out of the
+  // description, because the row's own id is a different identifier entirely.
   const live = await args.db
-    .select({ id: backupJobs.id })
+    .select({ description: backupJobs.description })
     .from(backupJobs)
     .where(and(
-      inArray(backupJobs.id, candidates.map((c) => c.importId)),
+      eq(backupJobs.tenantId, args.tenantId),
       inArray(backupJobs.status, ['pending', 'running']),
     ));
-  const liveIds = new Set(live.map((r) => r.id));
+  const liveIds = new Set(
+    live.map((r) => importIdFromDescription(r.description)).filter((v): v is string => v !== null),
+  );
 
   let deleted = 0;
   let skippedLive = 0;

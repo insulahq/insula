@@ -28,13 +28,14 @@ import {
 import { authenticate, requirePanel, requireRole } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
-import { tenants } from '../../db/schema.js';
+import { tenants, backupJobs, backupConfigurations } from '../../db/schema.js';
+import { and, desc, isNotNull } from 'drizzle-orm';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { ensureFileManagerReady, fileManagerRequest } from '../file-manager/service.js';
 import { readArchiveMeta, ArchiveMetaError } from './import-archive-meta.js';
 import { buildImportPreflight, type ImportScope } from './import-preflight.js';
 import { runBundleImport, buildImportLabel, type ImportRunnerDeps } from './import-orchestrator.js';
-import type { FileManagerGateway } from './import-reaper.js';
+import { sweepAbandonedImportUploads, type FileManagerGateway } from './import-reaper.js';
 
 /** Resolve a provisioned tenant's namespace, or fail with a legible error. */
 async function resolveTenantNamespace(app: FastifyInstance, tenantId: string): Promise<string> {
@@ -131,10 +132,76 @@ function uploadRelPath(importId: string, extension: string): string {
 /** Translate an archive-decode failure into an operator-legible API error. */
 function archiveError(err: unknown): never {
   if (err instanceof ArchiveMetaError) {
-    const status = err.code === 'PASSPHRASE_REQUIRED' || err.code === 'PASSPHRASE_INVALID' ? 400 : 400;
-    throw new ApiError(err.code, err.message, status);
+    // Every decode failure is the caller's to fix: a wrong passphrase, a
+    // truncated upload, a zip, or something that is not a bundle at all.
+    throw new ApiError(err.code, err.message, 400);
   }
   throw err;
+}
+
+
+/**
+ * Pick the backup target for a TENANT-initiated import.
+ *
+ * A tenant cannot name a target — they have no way to know which exist, and
+ * letting them choose would be a way to write into a target they were never
+ * granted. Preference order:
+ *
+ *   1. the target their most recent bundle already lives on (keeps a tenant's
+ *      bundles together, and is the one an operator already chose for them)
+ *   2. the single writable target, if there is exactly one
+ *
+ * Ambiguity is an error, not a guess: silently picking one of several targets
+ * would scatter a tenant's bundles across destinations for no stated reason.
+ */
+export async function resolveTenantImportTarget(app: FastifyInstance, tenantId: string): Promise<string> {
+  const [recent] = await app.db
+    .select({ targetConfigId: backupJobs.targetConfigId })
+    .from(backupJobs)
+    .where(and(eq(backupJobs.tenantId, tenantId), isNotNull(backupJobs.targetConfigId)))
+    .orderBy(desc(backupJobs.createdAt))
+    .limit(1);
+
+  // `enabled`, not `active` — see the note in import-orchestrator.ts.
+  const writable = await app.db
+    .select({ id: backupConfigurations.id })
+    .from(backupConfigurations)
+    .where(and(eq(backupConfigurations.enabled, 1), eq(backupConfigurations.readOnly, false)));
+  const writableIds = new Set(writable.map((w) => w.id));
+
+  if (recent?.targetConfigId && writableIds.has(recent.targetConfigId)) return recent.targetConfigId;
+  if (writable.length === 1) return writable[0]!.id;
+  if (writable.length === 0) {
+    throw new ApiError('CONFIG_INVALID',
+      'No writable backup target is configured. Ask an administrator to configure one before importing.', 409);
+  }
+  throw new ApiError('CONFIG_INVALID',
+    'This tenant has no backup target yet and several are configured. Ask an administrator to run a backup first, or to import on your behalf.', 409);
+}
+
+
+/**
+ * Size of the uploaded archive on disk, or 0 when it cannot be read.
+ *
+ * Measured, unlike the manifest. Used as a floor for the quota check so an
+ * under-declared `meta.json` cannot walk past it. Failing to read it degrades
+ * to "unknown" rather than blocking — the post-import check in the
+ * orchestrator is the backstop either way.
+ */
+async function measureUploadedArchive(
+  app: FastifyInstance,
+  namespace: string,
+  importId: string,
+  extension: string,
+): Promise<number> {
+  try {
+    const entries = await fmGateway(app).list(namespace, `/${BUNDLE_IMPORT_UPLOAD_DIR}`);
+    const wanted = `${importId}.${extension}`;
+    const hit = (entries as ReadonlyArray<{ name: string; size?: number }>).find((e) => e.name === wanted);
+    return typeof hit?.size === 'number' && hit.size > 0 ? hit.size : 0;
+  } catch {
+    return 0;
+  }
 }
 
 async function runPreflight(
@@ -149,6 +216,26 @@ async function runPreflight(
 
   const namespace = await resolveTenantNamespace(app, tenantId);
   const relPath = uploadRelPath(importId, extension);
+
+  // Sweep the tenant's abandoned uploads HERE rather than on a global timer.
+  // The sweep needs the file-manager sidecar, and a timer would have to start
+  // every tenant's sidecar just to look — expensive, and for most tenants
+  // there is nothing to find. A preflight is the moment the sidecar is
+  // already warm for this tenant, and it is also the moment an earlier
+  // abandoned attempt by the same tenant is most likely to exist.
+  // Best-effort: a sweep failure must never block the import in front of it.
+  try {
+    const swept = await sweepAbandonedImportUploads({
+      db: app.db, fm: fmGateway(app), namespace, tenantId,
+    });
+    if (swept.deleted > 0) {
+      app.log.info({ tenantId, ...swept }, 'bundle-import: swept abandoned upload(s) before preflight');
+    }
+  } catch (err) {
+    app.log.warn({ tenantId, err: err instanceof Error ? err.message : String(err) },
+      'bundle-import: abandoned-upload sweep failed');
+  }
+
   const stream = await openUploadedArchive(app, namespace, relPath);
 
   let meta: Record<string, unknown>;
@@ -162,7 +249,10 @@ async function runPreflight(
     archiveError(err);
   }
 
-  const preflight = await buildImportPreflight({ db: app.db, meta, targetTenantId: tenantId, scope });
+  const archiveBytes = await measureUploadedArchive(app, namespace, importId, extension);
+  const preflight = await buildImportPreflight({
+    db: app.db, meta, targetTenantId: tenantId, scope, archiveBytes,
+  });
   return { importId, format, ...preflight };
 }
 
@@ -175,7 +265,14 @@ async function startImport(
 ): Promise<Record<string, unknown>> {
   const parsed = bundleImportStartInputSchema.safeParse(body);
   if (!parsed.success) throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0]!.message, 400);
-  const { importId, extension, passphrase, targetConfigId, label, retentionDays } = parsed.data;
+  const { importId, extension, passphrase, label, retentionDays } = parsed.data;
+  // Admin supplies the target explicitly; a tenant never names one.
+  const targetConfigId = scope === 'admin'
+    ? parsed.data.targetConfigId
+    : await resolveTenantImportTarget(app, tenantId);
+  if (!targetConfigId) {
+    throw new ApiError('VALIDATION_ERROR', 'targetConfigId is required', 400);
+  }
 
   const namespace = await resolveTenantNamespace(app, tenantId);
   const relPath = uploadRelPath(importId, extension);
@@ -193,7 +290,10 @@ async function startImport(
     archiveError(err);
   }
 
-  const preflight = await buildImportPreflight({ db: app.db, meta, targetTenantId: tenantId, scope });
+  const archiveBytes = await measureUploadedArchive(app, namespace, importId, extension);
+  const preflight = await buildImportPreflight({
+    db: app.db, meta, targetTenantId: tenantId, scope, archiveBytes,
+  });
   if (preflight.blocked) {
     throw new ApiError('IMPORT_BLOCKED', preflight.blockReasons.join(' '), 409);
   }

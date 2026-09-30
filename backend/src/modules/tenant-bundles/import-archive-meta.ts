@@ -178,21 +178,6 @@ async function decodedStream(
   return stream.pipe(decipher).pipe(gunzip);
 }
 
-/** Pull exactly `n` bytes off a stream, leaving the remainder readable. */
-async function readExactly(stream: Readable, n: number): Promise<Buffer> {
-  const chunks: Buffer[] = [];
-  let got = 0;
-  for await (const c of stream) {
-    const buf = c as Buffer;
-    chunks.push(buf);
-    got += buf.length;
-    if (got >= n) break;
-  }
-  const all = Buffer.concat(chunks);
-  if (all.length > n) stream.unshift(all.subarray(n));
-  return all.subarray(0, n);
-}
-
 /**
  * Read `meta.json` out of a bundle archive stream.
  *
