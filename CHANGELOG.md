@@ -64,15 +64,23 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   "unbuffered" — it means "no size limit" — and the CI guard's comment asserting
   otherwise is corrected.
 
-  The carve-out is **`Method(\`GET\`)`-restricted, and that is load-bearing**: the
-  ModSecurity plugin reads the whole request body with `io.ReadAll` and no limit,
-  so dropping the cap on a POST would reopen the hole where one 600 MB request
-  OOM-killed the Traefik DaemonSet. POST streaming routes (`/:id/export`,
-  `/:id/zip`, `pg-dump/stream`) therefore stay buffered; neither panel uses them.
-  `ci-waf-body-limit-check.sh` gained a route-level scan that fails any future
-  carve-out dropping the cap while keeping the WAF without a GET restriction —
-  its existing checks were file-level and a per-route `.filter()` slipped past
-  them.
+  The carve-out drops the WAF **together with** the cap, exactly as the existing
+  `files/upload-raw` carve-out does. An earlier iteration kept the WAF and
+  dropped only the cap, on the reasoning that a ``Method(`GET`)`` term meant
+  there was no request body for the plugin's unbounded `io.ReadAll(req.Body)` to
+  read. **That was wrong, and a security review caught it**: `Method()` matches
+  the verb string and does not reject a GET carrying a body. Measured against the
+  ingress, a GET with a 40 MiB body on the carved-out route uploaded **all
+  41,943,040 bytes** before ModSecurity answered, versus 1,113,941-then-413 on a
+  capped route — the same mechanism as the 600 MB request that OOM-killed the
+  Traefik DaemonSet. A smaller request-only cap is not a substitute either: any
+  `buffering` middleware re-spools the whole response.
+
+  POST streaming routes (`/:id/export`, `/:id/zip`, `pg-dump/stream`) stay behind
+  the full chain; neither panel uses them. `ci-waf-body-limit-check.sh` gained a
+  route-level scan enforcing the corrected invariant — **a route that attaches
+  the WAF must attach the cap, with no method exception** — because its existing
+  checks were file-level and a per-route `.filter()` slipped past them.
 
 ### Changed
 

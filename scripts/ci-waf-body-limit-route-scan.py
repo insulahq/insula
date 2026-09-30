@@ -7,21 +7,36 @@ in that order. A per-route `.filter()` that removes the cap from one route's
 middleware list satisfies both and is still a hole, because the file still
 mentions both names and the push order is unchanged.
 
-The invariant that actually matters is per ROUTE:
+THE INVARIANT, per route:
 
-    keeping the WAF while dropping the cap is safe ONLY on a route that
-    cannot carry a request body.
+    a route that attaches the WAF MUST also attach the cap.
 
-The madebymode plugin does an unbounded `body, _ := io.ReadAll(req.Body)` before
-asking the sidecar for a verdict. One 600 MB unauthenticated POST OOM-killed the
-Traefik DaemonSet in ~3 s and took every site on the platform offline; the cap is
-what turns that into a 413 in 0.33 s. A GET has no body to read, so a
-GET-restricted route may drop the cap — and must, because the cap is a
-`buffering` middleware that spools the whole RESPONSE to disk before releasing a
-byte, which is what made multi-GB downloads look like a hang.
+No exceptions, and in particular **not** an HTTP-method exception.
 
-So: any route whose middleware list drops the cap but keeps the WAF must carry a
-Method(`GET`) term. Lose that term and the carve-out becomes the 600 MB hole.
+★ This guard previously allowed exactly one: a route could drop the cap while
+keeping the WAF if its rule carried a ``Method(`GET`)`` term, on the reasoning
+that a GET has no request body for the plugin's unbounded
+``io.ReadAll(req.Body)`` to read. That reasoning was wrong and the guard blessed
+a real vulnerability. Traefik's ``Method()`` matches the verb string; it does not
+reject a GET carrying a body, and the plugin has no method check. Measured
+against a live ingress with the WAF attached and the cap dropped:
+
+    GET + 40 MiB body, carved-out path -> uploaded=41,943,040 (all of it), 1.11 s
+    GET + 40 MiB body, normal path     -> uploaded=1,113,941 then 413, 0.016 s
+
+The entire body was buffered before ModSecurity returned a verdict — the same
+mechanism as the incident where one 600 MB unauthenticated request OOM-killed
+the Traefik DaemonSet in ~3 s and took every site on the platform offline.
+
+★ Nor can a smaller request-only cap substitute. `waf-body-limit` is a
+`buffering` middleware, and any buffering middleware spools the whole RESPONSE
+to disk whatever its request settings are — which is the multi-minute download
+stall the download carve-out exists to remove. A route that needs unbuffered
+responses must drop the WAF as well, exactly as the upload carve-out does.
+
+So there are only two legal shapes for a middleware list here:
+  * keeps the WAF   -> must keep the cap
+  * drops the WAF   -> may drop the cap (upload / download carve-outs)
 """
 import os
 import re
@@ -41,50 +56,58 @@ def main() -> int:
     src = open(path).read()
 
     # Which middleware-list identifiers drop the cap, and which drop the WAF?
-    drops_cap, drops_waf = set(), set()
+    drops_cap, drops_waf, known = set(), set(), set()
     for m in re.finditer(r"const\s+(\w+)\s*=\s*panelMiddlewares\s*\.filter\(([\s\S]*?)\);", src):
         name, body = m.group(1), m.group(2)
+        known.add(name)
         if CAP_CONST in body:
             drops_cap.add(name)
         if WAF_CONST in body:
             drops_waf.add(name)
 
-    if not drops_cap:
-        # Nothing drops the cap — nothing to check, but say so rather than
-        # passing silently: a rename would otherwise make this guard vacuous.
-        print("  OK  no middleware list drops the cap")
-        return 0
+    if not known:
+        print(
+            "FAIL: no `const X = panelMiddlewares.filter(...)` found. Either the "
+            "carve-outs were renamed or this scan stopped matching — in which case "
+            "it proves nothing. Fix the scan, do not delete it.",
+            file=sys.stderr,
+        )
+        return 1
 
     bad = 0
     checked = 0
     for m in re.finditer(r"traefikRoutes\.push\(\{([\s\S]*?)\n    \}\);", src):
         block = m.group(1)
         mw = re.search(r"middlewares:\s*(\w+)", block)
-        # Line-based on purpose. The match expression is a TS template literal
-        # whose backticks are ESCAPED (\`Host(...)\`), so any regex that stops
-        # at the first backtick truncates it before the Method() term and the
-        # check silently passes everything. Take the whole line instead.
-        match = re.search(r"^\s*match:.*$", block, re.M)
-        if not mw or not match:
+        if not mw:
             continue
-        ident, expr = mw.group(1), match.group(0)
-        if ident not in drops_cap or ident in drops_waf:
+        ident = mw.group(1)
+        if ident not in known:
             continue
         checked += 1
-        if "Method(\\`GET\\`)" not in expr:
+        keeps_waf = ident not in drops_waf
+        keeps_cap = ident not in drops_cap
+        if keeps_waf and not keeps_cap:
             print(
-                f"FAIL: a route using `{ident}` drops waf-body-limit but keeps the WAF "
-                "with no Method(`GET`) term. The plugin reads the whole request body "
-                "with no limit, so on a POST this is the 600 MB OOM again.",
+                f"FAIL: a route using `{ident}` attaches the WAF but drops "
+                "waf-body-limit. The ModSecurity plugin reads the whole request "
+                "body with io.ReadAll and no limit, for ANY method including GET, "
+                "so this is the 600 MB Traefik OOM. Drop the WAF too (as the "
+                "upload and download carve-outs do) — a smaller buffering "
+                "middleware is not a substitute, it re-spools every response.",
                 file=sys.stderr,
             )
             bad = 1
+        elif not keeps_waf and not keeps_cap:
+            print(f"  OK  route using `{ident}` drops the WAF and the cap together")
+        elif not keeps_waf and keeps_cap:
+            print(f"  OK  route using `{ident}` drops the WAF, keeps the cap")
         else:
-            print(f"  OK  route using `{ident}` drops the cap and is GET-restricted")
+            print(f"  OK  route using `{ident}` keeps both")
 
     if checked == 0:
         print(
-            "FAIL: a middleware list drops the cap but no emitted route uses it — "
+            "FAIL: middleware lists exist but no emitted route references one — "
             "the scan matched nothing, so this guard proved nothing. Fix the scan, "
             "do not delete it.",
             file=sys.stderr,

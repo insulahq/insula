@@ -44,10 +44,21 @@ export function startIngressSpoolReaper(deps: SpoolReaperSchedulerDeps): () => v
 
   const runTick = async (): Promise<SpoolReapResult> => {
     const result = await reapIngressSpool({ ...deps, logger: log });
-    // Publish even when zero — a measured zero is the all-clear and must be
+    // Publish a measured zero — that IS the all-clear, and it must be
     // distinguishable from "the reaper never ran", which is an absent series.
-    if (result.podsScanned > 0) {
+    //
+    // ★ Keyed on podsAnswered, NOT podsScanned. If every pod's exec fails (RBAC
+    // regression, apiserver under load, Traefik mid-roll) the aggregates are all
+    // zero while nothing was measured at all; publishing that would report a
+    // confident all-clear precisely while the spool grows unwatched. Leaving the
+    // series stale is the honest signal, and the per-pod warns say why.
+    if (result.podsAnswered > 0) {
       ingressSpoolBytes.set(result.remainingBytes);
+    } else if (result.podsScanned > 0) {
+      log.warn('every Traefik pod failed its sweep — spool gauge left stale, not zeroed', {
+        podsScanned: result.podsScanned,
+        errors: result.perPod.map((p) => p.error).filter(Boolean).slice(0, 3),
+      });
     }
     if (result.deleted > 0) {
       const line = {

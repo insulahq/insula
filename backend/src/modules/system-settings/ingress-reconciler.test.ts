@@ -193,7 +193,7 @@ describe('buildIngressRouteBody', () => {
     expect(wafAdmin!.priority).toBe(101);
   });
 
-  it('routes large downloads around the response BUFFER but keeps the WAF', () => {
+  it('routes large downloads around BOTH the response buffer and the WAF', () => {
     const body = buildIngressRouteBody(
       [{ host: 'admin.example.com', serviceName: 'admin-panel', oauth2: false }],
       { namespace: 'platform', name: 'platform-ingress', tlsSecretName: 'platform-tls' },
@@ -202,20 +202,25 @@ describe('buildIngressRouteBody', () => {
     const dl = routes.find(r => String(r.match).includes('files/download'));
     expect(dl).toBeDefined();
     const names = (dl!.middlewares as Array<{ name: string }>).map(m => m.name);
-    // THE fix: `waf-body-limit` is a Traefik `buffering` middleware and it
-    // spools the entire RESPONSE to disk before releasing a byte. Measured on a
-    // production export: backend first byte 0.35 s, client first byte never
-    // (0 bytes in 300 s), Traefik RSS flat while its disk grew 5.5 MB/s.
+    // `waf-body-limit` is a Traefik `buffering` middleware: it spools the whole
+    // RESPONSE to disk before releasing a byte. Measured on a production export:
+    // backend first byte 0.35 s, client first byte never (0 bytes in 300 s),
+    // Traefik RSS flat while its disk grew 5.5 MB/s.
     expect(names).not.toContain('waf-body-limit');
-    // Unlike the upload carve-out, the WAF STAYS. The plugin buffers only
-    // req.Body and then calls next with the raw ResponseWriter, so it costs
-    // nothing on a download — and a download request is a GET with no body.
-    expect(names).toContain('modsecurity-crs');
+    // ★ The WAF goes WITH it. An earlier version kept the WAF and relied on
+    // Method(`GET`) to mean "no request body" — that is not an invariant
+    // Traefik enforces. Measured with the WAF attached and the cap dropped: a
+    // GET carrying a 40 MiB body uploaded all 41,943,040 bytes before
+    // ModSecurity answered, vs 1,113,941 then 413 on a capped route. The plugin
+    // does io.ReadAll(req.Body) with no method check, so that combination IS the
+    // 600 MB Traefik OOM.
+    expect(names).not.toContain('modsecurity-crs');
+    // CrowdSec still applies — IP reputation is orthogonal to body size.
     expect(names).toContain('crowdsec');
     // Must outrank the bare Host() panel route and the /oauth2 route (100).
     expect(dl!.priority).toBe(101);
-    // The GET restriction is what makes dropping the cap safe — a POST must not
-    // reach the uncapped WAF. Without this term the carve-out is a vulnerability.
+    // Kept as scope-narrowing, NOT as the safety mechanism. Asserted so the
+    // carve-out cannot silently widen to verbs these paths never serve.
     expect(String(dl!.match)).toContain('Method(`GET`)');
   });
 

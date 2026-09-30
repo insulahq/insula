@@ -76,6 +76,16 @@ export interface PodReapResult {
 
 export interface SpoolReapResult {
   readonly podsScanned: number;
+  /**
+   * Pods whose sweep actually returned a parseable measurement.
+   *
+   * ★ Separate from `podsScanned` on purpose. `podsScanned` counts pods that
+   * were LISTED; if every exec then fails, the aggregates below are all zero
+   * and publishing them would report a confident all-clear for a spool nobody
+   * measured — the exact confusion `parseSweepOutput` refuses to make per pod,
+   * thrown away again at the aggregate. The gauge must key on THIS.
+   */
+  readonly podsAnswered: number;
   readonly deleted: number;
   readonly reclaimedBytes: number;
   /** Max remaining spool across pods — a single node's exposure. */
@@ -96,12 +106,17 @@ export interface SpoolReapResult {
  * under-reap.
  */
 export function buildSweepScript(minAgeMinutes: number): string {
+  const globTotal = `find /tmp -maxdepth 1 -name '${SPOOL_GLOB}' -exec du -k {} + 2>/dev/null | awk '{s+=$1} END {print s+0}'`;
   return [
-    `before=$(du -sk /tmp 2>/dev/null | cut -f1)`,
+    // Both measurements are scoped to the GLOB, not to all of /tmp. An earlier
+    // version bracketed the sweep with `du -sk /tmp`, which also counts whatever
+    // else Traefik writes there — so a spool file starting mid-sweep polluted
+    // the diff and could under-report the reclaim, which in turn decides
+    // whether the tick logs at warn or info.
+    `before=$(${globTotal})`,
     `n=$(find /tmp -maxdepth 1 -name '${SPOOL_GLOB}' -mmin +${minAgeMinutes} -print -delete 2>/dev/null | wc -l)`,
-    `rem=$(find /tmp -maxdepth 1 -name '${SPOOL_GLOB}' -exec du -k {} + 2>/dev/null | awk '{s+=$1} END {print s+0}')`,
-    `after=$(du -sk /tmp 2>/dev/null | cut -f1)`,
-    `echo "REAP $\{n:-0} $\{before:-0} $\{after:-0} $\{rem:-0}"`,
+    `after=$(${globTotal})`,
+    `echo "REAP $\{n:-0} $\{before:-0} $\{after:-0}"`,
   ].join('; ');
 }
 
@@ -119,20 +134,19 @@ export function parseSweepOutput(stdout: string): {
   const line = stdout.split('\n').map((l) => l.trim()).find((l) => l.startsWith('REAP '));
   if (!line) return null;
   const parts = line.split(/\s+/);
-  if (parts.length !== 5) return null;
-  const [, nRaw, beforeRaw, afterRaw, remRaw] = parts;
+  if (parts.length !== 4) return null;
+  const [, nRaw, beforeRaw, afterRaw] = parts;
   const n = Number(nRaw);
   const before = Number(beforeRaw);
   const after = Number(afterRaw);
-  const rem = Number(remRaw);
-  if (![n, before, after, rem].every((v) => Number.isFinite(v) && v >= 0)) return null;
-  // du reports kB. Clamp: `after` can exceed `before` if traffic landed
-  // between the two measurements, and a negative reclaim is nonsense.
+  if (![n, before, after].every((v) => Number.isFinite(v) && v >= 0)) return null;
+  // du reports kB. Clamp: `after` can exceed `before` when a new spool file is
+  // created between the two measurements, and a negative reclaim is nonsense.
   const reclaimedKb = Math.max(0, before - after);
   return {
     deleted: n,
     reclaimedBytes: reclaimedKb * 1024,
-    remainingBytes: rem * 1024,
+    remainingBytes: after * 1024,
   };
 }
 
@@ -167,7 +181,16 @@ export function makeExecOnce(exec: Exec): ExecOnce {
           }
           resolve(Buffer.concat(chunks).toString('utf8'));
         },
-      ).then((s) => { ws = s as unknown as { close: () => void }; })
+      ).then((s) => {
+        // The socket can resolve AFTER the timeout already fired. `ws` was still
+        // undefined when the handler ran, so its `ws?.close()` was a no-op and
+        // nothing else would ever close this one — a leaked socket per slow pod,
+        // every tick, forever. Most likely exactly when the node is under the
+        // I/O pressure this reaper exists to relieve.
+        const sock = s as unknown as { close: () => void };
+        if (settled) { try { sock.close(); } catch { /* already gone */ } return; }
+        ws = sock;
+      })
         .catch((err) => {
           if (settled) return;
           settled = true;
@@ -201,7 +224,7 @@ export async function reapIngressSpool(deps: SpoolReaperDeps): Promise<SpoolReap
     pods = res.items ?? [];
   } catch (err) {
     deps.logger.warn('spool-reaper: listing Traefik pods failed', err);
-    return { podsScanned: 0, deleted: 0, reclaimedBytes: 0, remainingBytes: 0, perPod: [] };
+    return { podsScanned: 0, podsAnswered: 0, deleted: 0, reclaimedBytes: 0, remainingBytes: 0, perPod: [] };
   }
 
   const running = pods.filter((p) => p.status?.phase === 'Running' && p.metadata?.name);
@@ -230,6 +253,7 @@ export async function reapIngressSpool(deps: SpoolReaperDeps): Promise<SpoolReap
   const ok = perPod.filter((r) => !r.error);
   return {
     podsScanned: running.length,
+    podsAnswered: ok.length,
     deleted: ok.reduce((a, r) => a + r.deleted, 0),
     reclaimedBytes: ok.reduce((a, r) => a + r.reclaimedBytes, 0),
     remainingBytes: ok.reduce((a, r) => Math.max(a, r.remainingBytes), 0),

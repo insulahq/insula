@@ -235,21 +235,40 @@ const UPLOAD_ROUTE_PRIORITY = 101;
  * request-side inspection is retained. A download request is a GET with an
  * empty body — there is nothing for the WAF to spool.
  *
- * ★ GET ONLY, and that restriction is load-bearing — see the Method() term on
- * the route. Dropping the cap is safe here ONLY because a GET has no request
- * body for the plugin's unbounded `io.ReadAll(req.Body)` to read. On a POST it
- * would reopen the exact hole `waf-body-limit` exists to close: one 600 MB
- * unauthenticated POST OOM-killed the Traefik DaemonSet in ~3 s and took every
- * site on the platform offline (see scripts/ci-waf-body-limit-check.sh). A POST
- * to one of these paths therefore does NOT match this route and falls through
- * to the panel route, cap and all.
+ * ★ This drops the WAF TOO, exactly like the upload carve-out — and that is a
+ * correction, not a convenience. An earlier version of this route kept
+ * `modsecurity-crs` and dropped only the cap, on the reasoning that a
+ * `Method(`GET`)` term meant there was no request body for the plugin's
+ * unbounded `io.ReadAll(req.Body)` to read.
  *
- * Consequently only the GET download paths are listed. `POST /:id/export`,
- * `POST /:id/zip` and `POST /system-backup/pg-dump/stream` stream too and stay
- * buffered on purpose: neither panel uses them (both go through
- * `export-token` -> signed GET), they are admin-authenticated, and the only way
- * to unbuffer them would be to drop the WAF entirely as the upload carve-out
- * does. `export-token` itself is a small JSON POST and belongs behind the cap.
+ * THAT REASONING WAS WRONG. `Method()` matches the verb string; it does not and
+ * cannot reject a GET that carries a body, and the plugin has no method check.
+ * Measured against the ingress with the WAF still attached here:
+ *
+ *   GET + 40 MiB body, carved-out path -> uploaded=41,943,040 (ALL of it), 1.11 s
+ *   GET + 40 MiB body, normal path     -> uploaded=1,113,941 then 413, 0.016 s
+ *
+ * The whole body was read before ModSecurity returned its verdict — i.e. the
+ * exact mechanism behind the documented incident where one 600 MB
+ * unauthenticated request OOM-killed the Traefik DaemonSet in ~3 s and took
+ * every site offline. Keeping the WAF without the cap re-opens it for any
+ * client that sets a Content-Length on a GET.
+ *
+ * ★ And the cap cannot be replaced by a smaller one: `waf-body-limit` is a
+ * `buffering` middleware, and ANY buffering middleware spools the whole
+ * RESPONSE to disk regardless of its request settings. Adding a request-only
+ * cap here would re-introduce the multi-minute download stall this carve-out
+ * exists to fix. Dropping both is the only combination that is fast AND safe.
+ *
+ * `Method(`GET`)` is KEPT, but as scope-narrowing only — it stops the carve-out
+ * applying to verbs these paths never legitimately serve. Nothing about the
+ * safety of this route depends on it any more.
+ *
+ * Only the GET download paths are listed. `POST /:id/export`, `POST /:id/zip`
+ * and `POST /system-backup/pg-dump/stream` stream too and stay behind the full
+ * chain on purpose: neither panel uses them (both go through `export-token` ->
+ * signed GET), and they are admin-authenticated. `export-token` itself is a
+ * small JSON POST and belongs behind the cap.
  */
 const DOWNLOAD_PATH_REGEXP =
   '^/api/v1/('
@@ -400,14 +419,17 @@ export function buildIngressRouteBody(
       services: [{ name: r.serviceName, port: 80 }],
     });
 
-    // Large-download carve-out: the panel chain minus ONLY the response
-    // buffering. CrowdSec and the WAF both stay — see DOWNLOAD_PATH_REGEXP for
-    // why the WAF is free here and why the buffer is not.
-    const downloadMiddlewares = panelMiddlewares.filter(m => m.name !== WAF_BODY_LIMIT_MIDDLEWARE_NAME);
+    // Large-download carve-out: the panel chain minus the response buffering
+    // AND the WAF, identical to the upload carve-out above. The cap and the WAF
+    // are removed together because the plugin reads any request body regardless
+    // of method — see DOWNLOAD_PATH_REGEXP. CrowdSec (and ForwardAuth when
+    // oauth2 is on) still apply.
+    const downloadMiddlewares = panelMiddlewares.filter(m =>
+      m.name !== WAF_BODY_LIMIT_MIDDLEWARE_NAME && m.name !== PLATFORM_WAF_MIDDLEWARE_NAME);
     traefikRoutes.push({
-      // Method(`GET`) is a SAFETY term, not a filter: it is what makes dropping
-      // the body cap legitimate. Remove it and a POST to any path above reaches
-      // the WAF plugin uncapped.
+      // Method(`GET`) narrows the carve-out to the verbs these paths serve. It
+      // is NOT what makes it safe — that is the WAF being absent. See the note
+      // on DOWNLOAD_PATH_REGEXP; an earlier version had this backwards.
       match: `Host(\`${r.host}\`) && PathRegexp(\`${DOWNLOAD_PATH_REGEXP}\`) && Method(\`GET\`)`,
       kind: 'Rule',
       priority: UPLOAD_ROUTE_PRIORITY,
