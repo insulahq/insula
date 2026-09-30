@@ -12,6 +12,23 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+
+- **Traefik response-buffer spool reaper.** Traefik's `buffering` middleware
+  spools whole responses to `/tmp/temp-multibuf-*` and never removes them when a
+  client disconnects mid-transfer. That `/tmp` is an emptyDir on the **node root
+  filesystem** — the same disk as k3s, etcd, containerd and Longhorn — so the
+  leak ends in DiskPressure eviction rather than merely wasted space. A
+  15-minute sweep in platform-api now removes orphans older than an hour (the
+  age threshold is what keeps it from cutting off an in-flight transfer), and
+  publishes `platform_ingress_spool_bytes` so the leak is visible rather than
+  only swept: if the spool starts outpacing the sweep, that is an upstream
+  regression — most likely a download route that lost its GET carve-out.
+
+  Runs via `pods/exec` from platform-api rather than a sidecar because the spool
+  lives in Traefik's own emptyDir, which no other pod can mount; a sidecar would
+  mean changing Traefik's Helm values, which reaches fresh installs only.
+
 ### Fixed
 
 - **Large downloads no longer stall for minutes and leak the node's disk.**

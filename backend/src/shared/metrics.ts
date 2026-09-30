@@ -269,3 +269,28 @@ export const ingressRouterUp = new Gauge({
   labelNames: ['host'] as const,
   registers: [metricsRegistry],
 });
+
+/**
+ * Orphaned response-buffer spool sitting in Traefik's emptyDir.
+ *
+ * Traefik's `buffering` middleware spools whole responses to
+ * `/tmp/temp-multibuf-*` and does NOT remove them when a client disconnects
+ * mid-transfer. That emptyDir is on the NODE ROOT filesystem — the same disk as
+ * k3s, etcd, containerd and Longhorn — so an unswept leak ends in DiskPressure
+ * eviction, not just wasted space. Four abandoned downloads left 2.68 GB on the
+ * reference cluster.
+ *
+ * modules/ingress-spool-reaper sweeps it every 15 min; this is what makes the
+ * sweep observable. A reaper without a gauge hides its own subject: it would
+ * keep the disk from filling while saying nothing about the upstream regression
+ * producing the spool (most likely a download route that lost its GET
+ * carve-out). Alert on a SUSTAINED value — a transient spike is just a large
+ * response in flight.
+ *
+ * Absent series = the reaper never ran, which is NOT the same as zero.
+ */
+export const ingressSpoolBytes = new Gauge({
+  name: 'platform_ingress_spool_bytes',
+  help: 'Bytes of orphaned Traefik response-buffer spool remaining after the last sweep',
+  registers: [metricsRegistry],
+});

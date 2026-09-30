@@ -2306,6 +2306,39 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         });
         app.addHook('onClose', () => cleanupDraftsStop());
 
+        // Traefik response-buffer spool reaper.
+        //
+        // The `waf-body-limit` buffering middleware spools whole responses to
+        // /tmp/temp-multibuf-* inside Traefik and does NOT remove them when the
+        // client disconnects. That /tmp is an emptyDir on the NODE ROOT disk —
+        // shared with k3s, etcd, containerd and Longhorn — so the leak ends in
+        // DiskPressure, not just wasted space. Four abandoned downloads left
+        // 2.68 GB on the reference cluster.
+        //
+        // Best-effort: without a kubeconfig the reaper simply never starts. A
+        // missing client must not fail app boot over a cleanup sweep.
+        try {
+          const { createK8sClients } = await import('./modules/k8s-provisioner/k8s-client.js');
+          const k8sNodeSpool = await import('@kubernetes/client-node');
+          const spoolKubePath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+          const spoolCore = createK8sClients(spoolKubePath).core;
+          const spoolKc = new k8sNodeSpool.KubeConfig();
+          if (spoolKubePath) spoolKc.loadFromFile(spoolKubePath); else spoolKc.loadFromCluster();
+          const { startIngressSpoolReaper } = await import('./modules/ingress-spool-reaper/scheduler.js');
+          const spoolStop = startIngressSpoolReaper({
+            core: spoolCore,
+            exec: new k8sNodeSpool.Exec(spoolKc),
+            logger: {
+              info: (msg, ctx) => app.log.info(ctx ?? {}, `spool-reaper: ${msg}`),
+              warn: (msg, err) => app.log.warn({ err }, `spool-reaper: ${msg}`),
+            },
+          });
+          app.addHook('onClose', () => spoolStop());
+        } catch (err) {
+          app.log.warn({ err: err instanceof Error ? err.message : String(err) },
+            'spool-reaper: k8s client init failed — Traefik spool sweep disabled');
+        }
+
         // CNPG-backup-health: sister scheduler that watches CNPG Backup
         // CRs (postgresql.cnpg.io/v1, distinct from K8s batch/v1 Jobs)
         // and emits one admin notification per failed CR. Closes the
