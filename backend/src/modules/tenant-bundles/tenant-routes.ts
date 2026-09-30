@@ -23,6 +23,7 @@
  * platform-staff use; this file is the customer-facing slice.
  */
 
+import { z } from 'zod';
 import type { FastifyInstance } from 'fastify';
 import { eq, desc, and } from 'drizzle-orm';
 import { authenticate, requirePanel, requireTenantAccess } from '../../middleware/auth.js';
@@ -95,6 +96,67 @@ export async function backupsV2ClientRoutes(app: FastifyInstance): Promise<void>
       components: components.map(toComponentInfo),
     };
     return success(detail);
+  });
+
+  // ── POST /api/v1/tenant/backups/bundles/:id/export-token ───────────
+  //
+  // Mint a single-use download URL for one of the CALLER'S OWN bundles.
+  //
+  // The admin panel has had this; the tenant panel only had the GDPR
+  // data-export, which appears solely on bundles that already carry that
+  // artifact. A tenant could see their backups and not take one away.
+  //
+  // Ownership is enforced HERE, at mint time, by looking the bundle up with
+  // `tenantId` in the WHERE clause. The download route that follows is
+  // authenticated by the token alone — a browser GET cannot carry a Bearer
+  // header — so the token must never be mintable for a bundle the caller
+  // does not own. A tenant asking for someone else's id gets 404, and no
+  // token exists to replay.
+  app.post('/tenant/backups/bundles/:id/export-token', {
+    schema: {
+      tags: ['TenantBundles-Client'],
+      summary: 'Mint a single-purpose download URL for one of my bundles',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request) => {
+    const tenantId = tenantIdFromRequest(request);
+    const { id } = request.params as { id: string };
+    const parsed = z.object({
+      format: z.enum(['tar', 'zip']),
+      password: z.string().optional(),
+    }).safeParse(request.body ?? {});
+    if (!parsed.success) {
+      throw new ApiError('VALIDATION_ERROR', `invalid body: ${parsed.error.issues[0]?.message ?? 'unknown'}`, 400);
+    }
+    const { format } = parsed.data;
+    // As on the admin side: zip discards a password rather than silently
+    // producing an unencrypted archive the caller believes is encrypted.
+    const password = format === 'tar' ? parsed.data.password : undefined;
+
+    const [job] = await app.db.select().from(backupJobs)
+      .where(and(eq(backupJobs.id, id), eq(backupJobs.tenantId, tenantId)))
+      .limit(1);
+    if (!job) throw new ApiError('NOT_FOUND', 'Bundle not found', 404);
+    if (!job.targetConfigId) throw new ApiError('CONFIG_INVALID', 'Bundle has no target_config_id', 400);
+
+    const configuredKey = (app.config as Record<string, unknown>).PLATFORM_ENCRYPTION_KEY as string | undefined
+      ?? process.env.PLATFORM_ENCRYPTION_KEY;
+    if (!configuredKey && process.env.NODE_ENV === 'production') {
+      throw new ApiError('CONFIG_INVALID', 'PLATFORM_ENCRYPTION_KEY is not configured', 500);
+    }
+    const { signExportToken } = await import('./export-token.js');
+    const token = signExportToken(
+      { bundleId: id, format, password: password || undefined },
+      configuredKey ?? '0'.repeat(64),
+    );
+    // Deliberately the ADMIN download path: it is token-authenticated and
+    // bound to this one bundle id, so it grants nothing beyond the bundle
+    // just proven to belong to the caller. A second downloader would be a
+    // second place for that check to drift.
+    return success({
+      downloadUrl: `/api/v1/admin/tenant-bundles/exports/${encodeURIComponent(token)}`,
+      expiresInSec: 300,
+    });
   });
 
   // ── GET /api/v1/tenant/backups/bundles/:id/data-export ─────────────

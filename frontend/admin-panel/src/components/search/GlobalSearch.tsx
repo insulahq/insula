@@ -35,7 +35,11 @@ interface Row {
   readonly groupLabel: string;
 }
 
-const PLACEHOLDER = 'Search pages, tenants, domains…';
+// Short by requirement: the previous placeholder listed what is
+// searchable and was long enough to wrap the control onto a second
+// line on a narrow viewport. The result list already shows what was
+// found, so the field only has to name itself.
+const PLACEHOLDER = 'Universal Search';
 
 export default function GlobalSearch() {
   const navigate = useNavigate();
