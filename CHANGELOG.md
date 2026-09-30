@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.9.41] - 2026-09-30
+
 ### Fixed
 
 - **A tenant user could list every tenant's cron jobs.**
