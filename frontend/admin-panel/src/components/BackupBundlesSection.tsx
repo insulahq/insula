@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Package, Plus, Trash2, ShieldCheck, Loader2, AlertCircle, CheckCircle, X, Database, KeyRound, FolderOpen, RotateCcw, Download, Lock, FileArchive } from 'lucide-react';
+import { Package, Plus, Trash2, ShieldCheck, Loader2, AlertCircle, CheckCircle, X, Database, KeyRound, FolderOpen, RotateCcw, Download, Lock, FileArchive, Upload } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import StatusBadge from '@/components/ui/StatusBadge';
 import {
@@ -17,6 +17,7 @@ import type {
 } from '@insula/api-contracts';
 import { formatBytes } from '@/hooks/use-platform-storage';
 import { BundleExportModal } from '@/components/BundleExportModal';
+import { BundleImportModal } from '@/components/BundleImportModal';
 
 const INPUT_CLASS =
   'w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 bg-white dark:bg-gray-700';
@@ -36,8 +37,10 @@ interface Props {
  * secrets + decompress config), and delete.
  */
 export default function BackupBundlesSection({ configs }: Props) {
-  const { data: bundlesResp, isLoading } = useBundles();
+  const { data: bundlesResp, isLoading, refetch: refetchBundles } = useBundles();
   const [showCreate, setShowCreate] = useState(false);
+  const [showImport, setShowImport] = useState(false);
+  const { data: tenantsForImport } = useTenants({ limit: 100 });
   const [verifyResult, setVerifyResult] = useState<{
     bundleId: string;
     result: VerifyBundleResponse | null;
@@ -94,15 +97,26 @@ export default function BackupBundlesSection({ configs }: Props) {
             Component-oriented · off-site only · ADR-032
           </span>
         </div>
-        <button
-          type="button"
-          onClick={() => setShowCreate(true)}
-          disabled={activeTargets.length === 0}
-          className="flex items-center gap-2 rounded-lg bg-brand-600 px-3 py-2 text-sm font-medium text-white hover:bg-brand-700 disabled:opacity-50 disabled:cursor-not-allowed"
-          title={activeTargets.length === 0 ? 'No active backup target configured' : 'Create a new tenant bundle'}
-        >
-          <Plus size={16} /> New Bundle
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setShowImport(true)}
+            disabled={activeTargets.length === 0}
+            className="flex items-center gap-2 rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            title={activeTargets.length === 0 ? 'No active backup target configured' : 'Import a bundle from an uploaded archive'}
+          >
+            <Upload size={16} /> Import Bundle
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowCreate(true)}
+            disabled={activeTargets.length === 0}
+            className="flex items-center gap-2 rounded-lg bg-brand-600 px-3 py-2 text-sm font-medium text-white hover:bg-brand-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            title={activeTargets.length === 0 ? 'No active backup target configured' : 'Create a new tenant bundle'}
+          >
+            <Plus size={16} /> New Bundle
+          </button>
+        </div>
       </div>
 
       {activeTargets.length === 0 && (
@@ -150,6 +164,15 @@ export default function BackupBundlesSection({ configs }: Props) {
           onClose={() => setShowCreate(false)}
         />
       )}
+
+      <BundleImportModal
+        open={showImport}
+        onClose={() => setShowImport(false)}
+        scope="admin"
+        tenants={(tenantsForImport?.data ?? []).map((t) => ({ id: t.id, name: t.name }))}
+        targets={activeTargets.map((t) => ({ id: t.id, name: t.name, active: true }))}
+        onImported={() => { void refetchBundles(); }}
+      />
 
       {verifyResult && (
         <VerifyResultModal
