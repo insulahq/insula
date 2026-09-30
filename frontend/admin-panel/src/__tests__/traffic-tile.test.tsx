@@ -40,7 +40,7 @@ describe('TrafficTile', () => {
 
   it('keeps the sparkline out of flow so the grid row does not grow', () => {
     const { container } = renderTile(frame);
-    const svg = container.querySelector('svg');
+    const svg = container.querySelector('[data-testid="traffic-tile-spark"]');
     expect(svg).not.toBeNull();
     expect(svg!.getAttribute('class')).toContain('absolute');
     expect(svg!.getAttribute('class')).toContain('bottom-0');
@@ -117,7 +117,7 @@ const clusterFrame: TrafficFrame = {
 describe('TrafficTile against the real cluster frame', () => {
   it('draws only the two lines its legend names', () => {
     const { container } = renderTile(clusterFrame);
-    expect(container.querySelectorAll('svg polyline')).toHaveLength(2);
+    expect(container.querySelectorAll('[data-testid="traffic-tile-spark"] polyline')).toHaveLength(2);
   });
 
   it('reads the totals off the wire, not off a workload row', () => {
@@ -132,11 +132,11 @@ describe('TrafficTile against the real cluster frame', () => {
     // The FIRST line — outbound, the larger of the pair. Taking the minimum
     // across every polyline is not a test: while the workload rows were
     // being drawn, one of them reached the top and satisfied it.
-    const first = container.querySelector('svg polyline');
+    const first = container.querySelector('[data-testid="traffic-tile-spark"] polyline');
     const ys = (first?.getAttribute('points') ?? '').split(' ')
       .map((pt) => Number(pt.split(',')[1]))
       .filter((n) => Number.isFinite(n));
-    const viewBoxH = Number((container.querySelector('svg')?.getAttribute('viewBox') ?? '0 0 0 48').split(' ')[3]);
+    const viewBoxH = Number((container.querySelector('[data-testid="traffic-tile-spark"]')?.getAttribute('viewBox') ?? '0 0 0 48').split(' ')[3]);
     // Taking the ceiling from the 40 MB/s workload row put the 2 MB/s wire
     // line at ~95% of the way down. The top line must reach the upper part
     // of the box instead.

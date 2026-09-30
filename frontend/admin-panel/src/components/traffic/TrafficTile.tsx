@@ -106,6 +106,7 @@ export function TrafficTileView({ frame }: { frame: TrafficFrame }) {
       </div>
 
       <svg
+        data-testid="traffic-tile-spark"
         viewBox={`0 0 ${SPARK_W} ${SPARK_H}`}
         preserveAspectRatio="none"
         aria-hidden="true"

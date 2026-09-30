@@ -79,7 +79,11 @@ describe('tenant scoping', () => {
     // `[].every(...)` is true and `it.each([])` runs nothing. If a refactor
     // renamed `panels`/`scope` or emptied the registry, every assertion below
     // would pass by vacuity — so pin the set size before asserting on it.
-    expect(tenantScoped.length).toBeGreaterThanOrEqual(7);
+    // Was 7; the SFTP-user provider was unregistered on purpose (an access
+    // credential is not a navigation target, and its only destination was
+    // the owning tenant's page, which the tenant row already answers for).
+    // Lowered deliberately rather than loosened — the floor is the point.
+    expect(tenantScoped.length).toBeGreaterThanOrEqual(6);
   });
 
   it('pins which tenant-panel providers are allowed to skip tenant filtering', () => {

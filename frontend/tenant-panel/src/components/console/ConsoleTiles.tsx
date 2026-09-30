@@ -1,6 +1,6 @@
-import { useCallback, useRef, useState, type ReactNode } from 'react';
+import { useLayoutEffect, useCallback, useRef, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
-import { RefreshCw } from 'lucide-react';
+import { ArrowUpRight, RefreshCw } from 'lucide-react';
 import clsx from 'clsx';
 import type { DashboardAlert, DashboardAlertAction, DashboardSection, ResourceTriad } from '@insula/api-contracts';
 
@@ -71,6 +71,18 @@ export function HoverCard({ title, rows, note }: {
     });
   }, []);
 
+  // Placed on mount, not only on hover. Every card is rendered at opacity 0
+  // with real dimensions, so an unplaced one sat at `left: 0` and a card
+  // wider than its tile hung past the right edge of the scroll container —
+  // measured at 109px on the rightmost dashboard tile, which is the
+  // horizontal scrollbar that was there on every page load. Hovering fixed
+  // it, which is why it looked intermittent.
+  useLayoutEffect(() => {
+    place();
+    window.addEventListener('resize', place);
+    return () => window.removeEventListener('resize', place);
+  }, [place]);
+
   return (
     <div
       ref={ref}
@@ -132,9 +144,16 @@ export function Tile({ title, to, children, card, busy }: {
           {title}
         </span>
         <span className="flex-1" />
-        <span className="hidden whitespace-nowrap font-mono text-[10px] text-gray-400 opacity-0 transition-opacity group-hover:opacity-100 lg:inline dark:text-gray-500">
-          {to} →
-        </span>
+        {/* An icon, not the href. Printing the destination spent the whole
+            width of the header on a string nobody reads — it also left the
+            path in the tile's text, so anything reading the tile read the
+            URL too. The arrow says "this goes somewhere"; the tile is a
+            link, so where is one click away. */}
+        <ArrowUpRight
+          size={13}
+          aria-hidden
+          className="shrink-0 text-gray-400 opacity-0 transition-opacity group-hover:opacity-100 dark:text-gray-500"
+        />
       </div>
       {children}
       {card}
