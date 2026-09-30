@@ -86,6 +86,8 @@ export const bundleImportPreflightSchema = z.object({
     rejected: z.array(bundleImportRejectedAddressSchema),
   }),
   warnings: z.array(z.string()),
+  /** Source manifest components, verbatim. Informational counts only. */
+  sourceComponents: z.record(z.string(), z.record(z.string(), z.unknown())).optional(),
   /** True when the import must not proceed. Distinct from a warning. */
   blocked: z.boolean(),
   blockReasons: z.array(z.string()),

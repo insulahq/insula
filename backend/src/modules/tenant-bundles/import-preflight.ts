@@ -72,6 +72,15 @@ export interface ImportPreflight {
     readonly rejected: ReadonlyArray<RejectedAddress>;
   };
   readonly warnings: ReadonlyArray<string>;
+  /**
+   * The source manifest's `components` block, verbatim.
+   *
+   * Carried so the new bundle's meta can reuse the purely INFORMATIONAL
+   * counts (`config.rowCount`, `secrets.secretCount`, `secrets.encryptionKeyId`)
+   * that the import itself cannot recompute. Never used for sizing or for any
+   * access decision — those read measured values only.
+   */
+  readonly sourceComponents: Record<string, Record<string, unknown>>;
   /** True when the import must not proceed. Distinct from a warning. */
   readonly blocked: boolean;
   readonly blockReasons: ReadonlyArray<string>;
@@ -303,6 +312,7 @@ export async function buildImportPreflight(args: BuildImportPreflightArgs): Prom
     quota: { limitBytes, incomingBytes: totalBytes, fits },
     mailboxDomains: { ok: mailboxDomains.ok, rejected: mailboxDomains.rejected },
     warnings: allWarnings,
+    sourceComponents: components as Record<string, Record<string, unknown>>,
     blocked: blockReasons.length > 0,
     blockReasons,
   };

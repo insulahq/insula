@@ -106,6 +106,14 @@ describe('buildImportScript', () => {
     }
   });
 
+  it('★ emits the file count the bundle manifest requires', () => {
+    // meta.components.files.fileCount is a REQUIRED field on the manifest,
+    // and putMeta validates it — a guessed 0 would have been a lie, a missing
+    // one fails validation AFTER the snapshots are already written.
+    expect(script).toContain('"total_files_processed":[0-9]');
+    expect(script).toContain('fileCount=${FILES:-0}');
+  });
+
   it('tags every snapshot with the import id so a failed run is prunable', () => {
     // Partial snapshots from a failed import have to be findable; the tag is
     // the only handle, because no rows are written until every unit succeeds.
@@ -202,10 +210,11 @@ describe('parseImportUnitResults', () => {
   it('extracts a completed unit', () => {
     const snap = 'b'.repeat(64);
     const [r] = parseImportUnitResults(
-      `noise\nIMPORT_UNIT_DONE importId=imp-1 component=mailboxes name=user@example.test snapshot=${snap} sizeBytes=99 addedBytes=42\n`,
+      `noise\nIMPORT_UNIT_DONE importId=imp-1 component=mailboxes name=user@example.test snapshot=${snap} sizeBytes=99 addedBytes=42 fileCount=7\n`,
     );
     expect(r).toEqual({
-      component: 'mailboxes', name: 'user@example.test', snapshotId: snap, sizeBytes: 99, addedBytes: 42,
+      component: 'mailboxes', name: 'user@example.test', snapshotId: snap,
+      sizeBytes: 99, addedBytes: 42, fileCount: 7,
     });
   });
 

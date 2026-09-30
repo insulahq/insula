@@ -32,6 +32,21 @@ vi.mock('./restic-driver.js', () => ({
   deriveResticPassword: () => 'deadbeef',
   ensureResticRepoInitialised: (...a: unknown[]) => initRepoMock(...a),
 }));
+vi.mock('./orchestrator.js', () => ({
+  // Reused by buildImportedMeta so an imported bundle's meta is shaped
+  // exactly like a captured one.
+  captureTenantBlock: async () => ({
+    name: 'T', primaryEmail: 'o@example.test', secondaryEmail: null, status: 'active',
+    kubernetesNamespace: 'tenant-x', regionId: '11111111-1111-4111-8111-111111111111',
+    planId: '22222222-2222-4222-8222-222222222222', nodeName: null, storageTier: 'local',
+    timezone: null, storageLimitOverride: null, cpuLimitOverride: null, memoryLimitOverride: null,
+    maxSubUsersOverride: null, maxMailboxesOverride: null, monthlyPriceOverride: null,
+    emailSendRateLimit: null, subscriptionExpiresAt: null, effectiveResources: null,
+    counts: { mailboxes: 0, domains: 0, deployments: 0 },
+  }),
+  captureDomainsSummary: async () => [],
+  captureDeploymentsSummary: async () => [],
+}));
 vi.mock('./repo-init-lock.js', () => ({ makeRepoInitSerialiser: () => (_u: string, fn: () => unknown) => fn() }));
 vi.mock('./repo-layout.js', () => ({ CURRENT_REPO_LAYOUT: 'per-tenant' }));
 vi.mock('./upload-token.js', () => ({ signUploadToken: () => 'tok-123' }));
@@ -107,13 +122,16 @@ const PREFLIGHT = {
     { component: 'mailboxes' as const, name: 'a@example.test', sizeBytes: 0 },
   ],
   objectArtifacts: [], dropped: [], totalBytes: 100, stageSizeLimit: '2Gi',
+  sourceComponents: { files: { sizeBytes: 100 } },
   quota: { limitBytes: 0, incomingBytes: 100, fits: true },
   mailboxDomains: { ok: true, rejected: [] },
   warnings: [], blocked: false, blockReasons: [],
 };
 
 const INPUT = {
-  tenantId: 't-1', namespace: 'tenant-x', pvcName: 'pvc-1', importId: 'imp1',
+  // A REAL v4 uuid: the manifest schema validates tenantId, and zod v4
+  // checks the version and variant nibbles, not just the shape.
+  tenantId: '33333333-3333-4333-8333-333333333333', namespace: 'tenant-x', pvcName: 'pvc-1', importId: 'imp1',
   archiveRelPath: '.insula-imports/imp1.tar.gz', targetConfigId: 'cfg-1',
   preflight: PREFLIGHT, scope: 'admin' as const, initiator: 'admin' as const,
 };
@@ -137,8 +155,8 @@ function deps(db: unknown) {
 }
 
 const OK_LOG = [
-  `IMPORT_UNIT_DONE importId=imp1 component=files name=archive snapshot=${'a'.repeat(64)} sizeBytes=100 addedBytes=50`,
-  `IMPORT_UNIT_DONE importId=imp1 component=mailboxes name=a@example.test snapshot=${'b'.repeat(64)} sizeBytes=20 addedBytes=10`,
+  `IMPORT_UNIT_DONE importId=imp1 component=files name=archive snapshot=${'a'.repeat(64)} sizeBytes=100 addedBytes=50 fileCount=3`,
+  `IMPORT_UNIT_DONE importId=imp1 component=mailboxes name=a@example.test snapshot=${'b'.repeat(64)} sizeBytes=20 addedBytes=10 fileCount=5`,
   'IMPORT_DONE importId=imp1 units=2 objects=0',
 ].join('\n');
 
@@ -365,22 +383,42 @@ describe('assertImportComplete', () => {
 });
 
 describe('buildImportedMeta', () => {
-  it('rebuilds components from what actually landed, not from the source meta', () => {
-    const meta = buildImportedMeta({
-      bundleId: 'bkp-new', input: INPUT as never, preflight: PREFLIGHT as never,
-      units: [
-        { component: 'files', name: 'archive', snapshotId: 'a'.repeat(64), sizeBytes: 100, addedBytes: 1 },
-        { component: 'mailboxes', name: 'a@example.test', snapshotId: 'b'.repeat(64), sizeBytes: 20, addedBytes: 1 },
-      ],
-      objects: [], platformVersion: 'v1', retentionDays: 30,
+  const UNITS = [
+    { component: 'files', name: 'archive', snapshotId: 'a'.repeat(64), sizeBytes: 100, addedBytes: 1, fileCount: 3 },
+    { component: 'mailboxes', name: 'a@example.test', snapshotId: 'b'.repeat(64), sizeBytes: 20, addedBytes: 1, fileCount: 5 },
+  ];
+
+  it('rebuilds components from what actually landed, not from the source meta', async () => {
+    const meta = await buildImportedMeta({
+      db: {} as never, bundleId: 'bkp-new', input: INPUT as never, preflight: PREFLIGHT as never,
+      units: UNITS, objects: [], platformVersion: 'v1', retentionDays: 30,
     });
     expect(meta.backupId).toBe('bkp-new');
-    expect(meta.tenantId).toBe('t-1');
+    expect(meta.tenantId).toBe('33333333-3333-4333-8333-333333333333');
     expect(meta.label).toBe(MANUAL_IMPORT_LABEL);
-    expect((meta.components as Record<string, { addresses?: string[] }>).mailboxes!.addresses)
-      .toEqual(['a@example.test']);
-    // provenance so a bundle traces back to the upload without the Job log
-    expect(meta.importedFrom).toMatchObject({ sourceBundleId: 'bkp-src', importId: 'imp1' });
+    const c = meta.components as Record<string, Record<string, unknown>>;
+    // the files component's sha256 IS the restic snapshot id, and fileCount
+    // comes out of the run rather than being guessed
+    expect(c.files).toEqual({ sizeBytes: 100, fileCount: 3, sha256: 'a'.repeat(64) });
+    expect(c.mailboxes!.addresses).toEqual(['a@example.test']);
+    expect(c.mailboxes!.snapshots).toEqual({ 'a@example.test': 'b'.repeat(64) });
+    // provenance, readable without the Job log
+    expect(meta.description).toContain('[import:imp1]');
+    expect(meta.description).toContain('bkp-src');
+  });
+
+  it('★ satisfies the manifest schema putMeta validates against', async () => {
+    // An ad-hoc object shaped by hand failed this validation on the first
+    // real run — AFTER the snapshots had been written.
+    const { backupMetaV1Schema } = await import('@insula/api-contracts');
+    const meta = await buildImportedMeta({
+      db: {} as never, bundleId: 'bkp-new', input: INPUT as never, preflight: PREFLIGHT as never,
+      units: UNITS,
+      objects: [{ component: 'config', name: 'db-rows.json.gz', sizeBytes: 12 }],
+      platformVersion: 'v1', retentionDays: 30,
+    });
+    const parsed = backupMetaV1Schema.safeParse(meta);
+    expect(parsed.success, JSON.stringify(parsed.error?.issues ?? [], null, 1)).toBe(true);
   });
 });
 

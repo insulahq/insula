@@ -286,7 +286,10 @@ export function buildImportScript(input: BuildImportJobInput): string {
       `SIZE=$(grep -o '"total_bytes_processed":[0-9]\\+' /tmp/out.json | tail -n1 | sed 's/.*://')`,
       `ADDED=$(grep -o '"data_added_packed":[0-9]\\+' /tmp/out.json | tail -n1 | sed 's/.*://')`,
       `[ -n "$ADDED" ] || ADDED=$(grep -o '"data_added":[0-9]\\+' /tmp/out.json | tail -n1 | sed 's/.*://')`,
-      `echo "IMPORT_UNIT_DONE importId=${input.importId} component=${u.component} name=${u.name} snapshot=$SNAP sizeBytes=\${SIZE:-0} addedBytes=\${ADDED:-0}"`,
+      // meta.components.files.fileCount is a REQUIRED field on the bundle
+      // manifest, so it must come out of the run rather than be guessed.
+      `FILES=$(grep -o '"total_files_processed":[0-9]\\+' /tmp/out.json | tail -n1 | sed 's/.*://')`,
+      `echo "IMPORT_UNIT_DONE importId=${input.importId} component=${u.component} name=${u.name} snapshot=$SNAP sizeBytes=\${SIZE:-0} addedBytes=\${ADDED:-0} fileCount=\${FILES:-0}"`,
       // Free the space before the next unit — this is what keeps peak staging
       // falling rather than holding the whole bundle to the end.
       `rm -rf ${sq(p)}`,
@@ -408,6 +411,7 @@ export interface ParsedUnitResult {
   readonly snapshotId: string;
   readonly sizeBytes: number;
   readonly addedBytes: number;
+  readonly fileCount: number;
 }
 
 /**
@@ -439,6 +443,7 @@ export function parseImportUnitResults(log: string): ParsedUnitResult[] {
       snapshotId,
       sizeBytes: Number(field('sizeBytes') ?? 0) || 0,
       addedBytes: Number(field('addedBytes') ?? 0) || 0,
+      fileCount: Number(field('fileCount') ?? 0) || 0,
     });
   }
   return out;

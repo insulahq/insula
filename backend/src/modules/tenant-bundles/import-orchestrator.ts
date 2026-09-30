@@ -18,7 +18,11 @@
  * the bundle is registered complete, or it does not exist.
  */
 import { randomUUID } from 'node:crypto';
-import { MANUAL_IMPORT_LABEL } from '@insula/api-contracts';
+import {
+  MANUAL_IMPORT_LABEL,
+  BACKUP_META_SCHEMA_VERSION,
+  type BackupMetaV1,
+} from '@insula/api-contracts';
 import { eq } from 'drizzle-orm';
 
 import { backupJobs, backupComponents, backupConfigurations } from '../../db/schema.js';
@@ -42,6 +46,11 @@ import {
   type BackupTarget,
 } from './restic-driver.js';
 import { makeRepoInitSerialiser } from './repo-init-lock.js';
+import {
+  captureTenantBlock,
+  captureDomainsSummary,
+  captureDeploymentsSummary,
+} from './orchestrator.js';
 import { CURRENT_REPO_LAYOUT } from './repo-layout.js';
 import {
   buildImportJobSpec,
@@ -382,7 +391,8 @@ export async function runBundleImport(
       })),
     ]);
 
-    await store.putMeta(handle, buildImportedMeta({
+    await store.putMeta(handle, await buildImportedMeta({
+      db: deps.db,
       bundleId,
       input,
       preflight,
@@ -390,7 +400,7 @@ export async function runBundleImport(
       objects,
       platformVersion: deps.platformVersion,
       retentionDays,
-    }) as never);
+    }));
 
     await deps.db.update(backupJobs)
       .set({ status: 'completed', sizeBytes, resticAddedBytes: addedBytes, finishedAt: new Date() })
@@ -615,8 +625,22 @@ export function assertImportComplete(
   }
 }
 
-/** meta.json for the newly created bundle. Source values are NOT carried over. */
-export function buildImportedMeta(args: {
+/**
+ * meta.json for the newly created bundle.
+ *
+ * ★ Built the SAME way capture builds it — `captureTenantBlock` /
+ * `captureDomainsSummary` / `captureDeploymentsSummary` off the TARGET
+ * tenant — because "an imported bundle is indistinguishable from a captured
+ * one" is the whole premise of ADR-063, and `putMeta` validates against
+ * `backupMetaV2Schema`. An ad-hoc object shaped by hand failed that
+ * validation on the first real run, AFTER the snapshots were written.
+ *
+ * Source values are deliberately NOT carried over: the source tenant's plan,
+ * namespace and limits describe a different cluster. What IS carried is
+ * provenance, under `description`.
+ */
+export async function buildImportedMeta(args: {
+  db: Database;
   bundleId: string;
   input: RunBundleImportInput;
   preflight: ImportPreflight;
@@ -624,21 +648,55 @@ export function buildImportedMeta(args: {
   objects: ReadonlyArray<{ component: string; name: string; sizeBytes: number }>;
   platformVersion: string;
   retentionDays: number;
-}): Record<string, unknown> {
+}): Promise<BackupMetaV1> {
+  const sourceComponents = args.preflight.sourceComponents ?? {};
+
+  const filesUnit = args.units.find((u) => u.component === 'files');
+  const mailboxUnits = args.units.filter((u) => u.component === 'mailboxes');
+
   const components: Record<string, unknown> = {};
-  for (const u of args.units) {
-    const bucket = (components[u.component] ?? { sizeBytes: 0 }) as Record<string, unknown>;
-    bucket.sizeBytes = (bucket.sizeBytes as number) + u.sizeBytes;
-    if (u.component === 'mailboxes') {
-      const addrs = (bucket.addresses as string[] | undefined) ?? [];
-      addrs.push(u.name);
-      bucket.addresses = addrs;
-    }
-    components[u.component] = bucket;
+  if (filesUnit) {
+    components.files = {
+      sizeBytes: filesUnit.sizeBytes,
+      fileCount: filesUnit.fileCount,
+      sha256: filesUnit.snapshotId,
+    };
   }
-  for (const o of args.objects) components[o.component] = { sizeBytes: o.sizeBytes };
+  if (mailboxUnits.length > 0) {
+    const addresses = mailboxUnits.map((u) => u.name).filter((n) => n.includes('@'));
+    components.mailboxes = {
+      sizeBytes: mailboxUnits.reduce((a, u) => a + u.sizeBytes, 0),
+      mailboxCount: addresses.length,
+      addresses,
+      // ADR-061: one snapshot per mailbox, keyed by address. The legacy
+      // whole-tenant shape has no addresses and keeps the flat `sha256`.
+      ...(addresses.length > 0
+        ? { snapshots: Object.fromEntries(mailboxUnits.filter((u) => u.name.includes('@')).map((u) => [u.name, u.snapshotId])) }
+        : { sha256: mailboxUnits[0]!.snapshotId }),
+    };
+  }
+  for (const o of args.objects) {
+    if (o.component === 'config') {
+      components.config = {
+        sizeBytes: o.sizeBytes,
+        rowCount: Number((sourceComponents.config ?? {}).rowCount ?? 0) || 0,
+      };
+    }
+    if (o.component === 'secrets') {
+      components.secrets = {
+        sizeBytes: o.sizeBytes,
+        secretCount: Number((sourceComponents.secrets ?? {}).secretCount ?? 0) || 0,
+        encryptionKeyId: String((sourceComponents.secrets ?? {}).encryptionKeyId ?? 'k1'),
+      };
+    }
+  }
+
+  const tenantBlock = await captureTenantBlock(args.db, args.input.tenantId);
+  const domainsSummary = [...(await captureDomainsSummary(args.db, args.input.tenantId))];
+  const deploymentsSummary = [...(await captureDeploymentsSummary(args.db, args.input.tenantId))];
 
   return {
+    schemaVersion: BACKUP_META_SCHEMA_VERSION,
     backupId: args.bundleId,
     tenantId: args.input.tenantId,
     capturedAt: new Date().toISOString(),
@@ -646,21 +704,19 @@ export function buildImportedMeta(args: {
     initiator: args.input.initiator,
     systemTrigger: null,
     label: buildImportLabel(args.input.label),
-    components,
-    nodePlacement: null,
+    components: components as BackupMetaV1['components'],
+    nodePlacement: tenantBlock.nodeName
+      ? { preferredNode: tenantBlock.nodeName, preferredRegion: tenantBlock.regionId }
+      : null,
     expiresAt: null,
     retentionDays: args.retentionDays,
-    description: args.preflight.sourceBundleId
-      ? `Imported from uploaded bundle ${args.preflight.sourceBundleId}`
-      : 'Imported from an uploaded bundle',
-    // Provenance: which upload this came from, so an operator can trace a
-    // bundle back to the archive without reading the Job log.
-    importedFrom: {
-      sourceBundleId: args.preflight.sourceBundleId,
-      sourceTenantId: args.preflight.sourceTenantId,
-      importId: args.input.importId,
-      scope: args.input.scope,
-    },
+    // Provenance: which upload this came from, so a bundle traces back to the
+    // archive without reading the Job log.
+    description: describeImport(args.input.importId, args.preflight.sourceBundleId),
+    tenant: tenantBlock,
+    domainsSummary,
+    deploymentsSummary,
+    repoLayout: CURRENT_REPO_LAYOUT,
   };
 }
 

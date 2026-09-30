@@ -1126,7 +1126,9 @@ function addDays(d: Date, days: number): Date {
  * returns them as strings; we coerce to number|null so the JSON
  * round-trips cleanly through z.number().nullable() on the schema.
  */
-async function captureTenantBlock(
+/** Exported for the bundle-IMPORT path (ADR-063): an imported bundle's meta
+ * must be byte-shaped like a captured one, so both build it the same way. */
+export async function captureTenantBlock(
   db: Database,
   tenantId: string,
 ): Promise<import('@insula/api-contracts').BackupMetaTenant> {
@@ -1195,7 +1197,8 @@ async function captureTenantBlock(
   };
 }
 
-async function captureDomainsSummary(
+/** Exported for the bundle-import path — see captureTenantBlock. */
+export async function captureDomainsSummary(
   db: Database,
   tenantId: string,
 ): Promise<ReadonlyArray<import('@insula/api-contracts').BackupMetaDomainSummary>> {
@@ -1206,7 +1209,8 @@ async function captureDomainsSummary(
   return rows.map((r) => ({ name: r.name, status: r.status as string }));
 }
 
-async function captureDeploymentsSummary(
+/** Exported for the bundle-import path — see captureTenantBlock. */
+export async function captureDeploymentsSummary(
   db: Database,
   tenantId: string,
 ): Promise<ReadonlyArray<import('@insula/api-contracts').BackupMetaDeploymentSummary>> {
