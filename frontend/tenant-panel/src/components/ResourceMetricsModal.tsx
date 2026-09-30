@@ -55,11 +55,13 @@ function formatBytes(valueGi: number | null | undefined): string {
 }
 
 /** Compact format for header tags */
+// One decimal below ten, matching the dashboard tile — the header chip sat
+// beside it reading "0.00/1.0", two different precisions for the same
+// quantity on the same screen.
 function formatCpuCompact(value: number | null | undefined): string {
   if (isUnusable(value)) return NO_VALUE;
   if (value >= 10) return value.toFixed(0);
-  if (value >= 1) return value.toFixed(1);
-  return value.toFixed(2);
+  return value.toFixed(1);
 }
 
 function formatBytesCompact(valueGi: number | null | undefined): string {
