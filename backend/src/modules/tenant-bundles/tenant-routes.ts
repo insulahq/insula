@@ -1,9 +1,12 @@
 /**
  * Client-panel self-service routes for Tenant Backup (Tier-3).
  *
- * Mounted at /api/v1/tenant/backups — gated by `requirePanel('tenant')`
- * + `requireTenantAccess()`. Each route resolves the tenant from the
- * JWT's tenantId claim; there is no `:tenantId` URL param to spoof.
+ * Mounted at /api/v1/tenant/backups — gated by `requirePanel('tenant')`.
+ * Each route resolves the tenant from the JWT's tenantId claim and puts it
+ * in the WHERE clause; there is no `:tenantId` URL param to spoof, and
+ * another tenant's bundle is a 404 rather than a 403.
+ *
+ * Deliberately NOT `requireTenantAccess()` — see the note at the hooks.
  *
  * Endpoints:
  *   GET  /api/v1/tenant/backups/bundles
@@ -26,7 +29,7 @@
 import { z } from 'zod';
 import type { FastifyInstance } from 'fastify';
 import { eq, desc, and } from 'drizzle-orm';
-import { authenticate, requirePanel, requireTenantAccess } from '../../middleware/auth.js';
+import { authenticate, requirePanel } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import {
@@ -49,13 +52,26 @@ import { decrypt } from '../oidc/crypto.js';
 export async function backupsV2ClientRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
   app.addHook('onRequest', requirePanel('tenant'));
-  // Defence-in-depth: even though every handler reads the tenantId
-  // from the JWT (never the URL params) and filters DB queries by
-  // it, requireTenantAccess gives a second enforcement layer so a
-  // future handler that forgets the WHERE clause can't leak across
-  // tenants. The middleware is a no-op for these handlers (no
-  // :tenantId params) but rejects malformed tenant-panel tokens.
-  app.addHook('onRequest', requireTenantAccess());
+  // ★ NOT requireTenantAccess(). The comment that used to sit here called it
+  // "a no-op for these handlers (no :tenantId params)". That was wrong, and
+  // the cost was silent: the middleware reads `params.tenantId ?? params.id`,
+  // and every route below is `/tenant/backups/bundles/:id` where `:id` is a
+  // BUNDLE. It compared a bundle id against the caller's tenant id, found
+  // them different, and returned 403 — so bundle detail, GDPR data-export
+  // and export-token were all refused to the very tenant that owned them.
+  // Only the list route, which has no `:id`, worked. Verified against the
+  // running cluster: list 200, detail 403.
+  //
+  // What it was there for is already done, in SQL: each handler resolves the
+  // tenant from the JWT via `tenantIdFromRequest` and puts it in the WHERE
+  // clause, so another tenant's bundle is 404 rather than forbidden. That is
+  // the stronger check anyway — it cannot be satisfied by a path param.
+  // `requirePanel('tenant')` above still rejects a non-tenant token, and a
+  // tenant-panel token with no tenantId claim fails closed in
+  // `tenantIdFromRequest`.
+  //
+  // A handler added here that forgets the WHERE clause is the risk this
+  // leaves; `tenant-routes.access.test.ts` asserts every one of them has it.
 
   // Resolve the tenant from the JWT — every route shares this.
   function tenantIdFromRequest(request: { user?: { tenantId?: string } }): string {
