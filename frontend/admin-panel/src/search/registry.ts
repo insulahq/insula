@@ -36,6 +36,12 @@ export const ADMIN_SEARCH_REGISTRY: readonly RegistryEntry[] = [
     keywords: ['mailboxes', 'inboxes', 'addresses', 'imap'] },
   { id: 'tenants.cron-jobs', label: 'Scheduled Tasks', group: 'Tenants', to: '/tenants/cron-jobs',
     keywords: ['cron', 'crontab', 'jobs', 'timers', 'schedules'] },
+  { id: 'tenants.sftp-users', label: 'SFTP Users', group: 'Tenants', to: '/tenants/sftp-users',
+    keywords: ['sftp', 'ftp', 'file transfer', 'accounts', 'credentials'] },
+  // The operator's own notification history, distinct from Platform ->
+  // Notifications below, which configures what produces them.
+  { id: 'notifications.mine', label: 'My Notifications', group: 'Platform', to: '/notifications',
+    keywords: ['notifications', 'alerts', 'inbox', 'history', 'unread'] },
 
   // ─── Applications ──────────────────────────────────────────────────────────
   { id: 'applications.installed', label: 'Installed Applications', group: 'Applications', to: '/applications?tab=installed',

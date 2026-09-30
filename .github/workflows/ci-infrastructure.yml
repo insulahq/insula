@@ -370,6 +370,14 @@ jobs:
       - name: Verify every integration-*.sh is registered (no orphans)
         run: ./scripts/ci-integration-coverage.sh
 
+  admin-route-role-check:
+    name: /admin routes restrict themselves to operators
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Verify every /admin/* route names its own role
+        run: ./scripts/ci-admin-route-role-check.sh
+
   task-modal-registry-check:
     name: Task modal targets resolve in a panel registry
     runs-on: ubuntu-latest

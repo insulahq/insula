@@ -125,10 +125,14 @@ describe('TenantDetail resource tabs', () => {
     });
 
     expect(screen.getByTestId('tab-domains')).toBeInTheDocument();
-    expect(screen.getByTestId('tab-applications')).toBeInTheDocument();
     expect(screen.getByTestId('tab-deployments')).toBeInTheDocument();
     expect(screen.getByTestId('tab-email')).toBeInTheDocument();
     expect(screen.getByTestId('tab-backups')).toBeInTheDocument();
+    expect(screen.getByTestId('tab-sftp')).toBeInTheDocument();
+    // Applications was removed: it listed the deployments of type
+    // `application`, which is a filtered view of the Deployments tab beside
+    // it, under a second name for the same things.
+    expect(screen.queryByTestId('tab-applications')).not.toBeInTheDocument();
   });
 
   it('shows counts in tab labels', async () => {

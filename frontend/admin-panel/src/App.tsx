@@ -14,6 +14,7 @@ const WorkloadsTab = lazy(() => import('@/pages/tenants/WorkloadsTab'));
 const UsersTab = lazy(() => import('@/pages/tenants/UsersTab'));
 const EmailAccountsTab = lazy(() => import('@/pages/tenants/EmailAccountsTab'));
 const CronJobsTab = lazy(() => import('@/pages/tenants/CronJobsTab'));
+const SftpUsersTab = lazy(() => import('@/pages/tenants/SftpUsersTab'));
 const TenantDetail = lazy(() => import('@/pages/TenantDetail'));
 const Monitoring = lazy(() => import('@/pages/Monitoring'));
 const Applications = lazy(() => import('@/pages/Applications'));
@@ -121,6 +122,7 @@ export default function App() {
               <Route path="users" element={<UsersTab />} />
               <Route path="email-accounts" element={<EmailAccountsTab />} />
               <Route path="cron-jobs" element={<CronJobsTab />} />
+              <Route path="sftp-users" element={<SftpUsersTab />} />
             </Route>
             <Route path="tenants/:id" element={<TenantDetail />} />
             <Route path="tenants/:tenantId/domains/:domainId" element={<DomainDetail />} />
