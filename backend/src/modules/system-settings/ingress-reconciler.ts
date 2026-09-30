@@ -55,6 +55,19 @@ export interface IngressRouteCurrentSpec {
      *  carve-out. Same invisibility problem as the two above — see
      *  DOWNLOAD_PATH_REGEXP. */
     readonly downloadCarveOut?: boolean;
+    /**
+     * Middleware names actually attached to that carve-out route.
+     *
+     * ★ Presence is not enough, and assuming it was shipped a security fix that
+     * never reached a cluster. When the carve-out was corrected to drop the WAF
+     * as well as the body cap, only the MIDDLEWARE LIST changed — the `match`
+     * string was identical, so a comparison that only asked "does a download
+     * route exist?" read as in-sync and never re-applied. The image carried the
+     * fix and the cluster carried the vulnerability.
+     *
+     * Compared by CONTENT below. A middleware added or removed here is drift.
+     */
+    readonly downloadMiddlewares?: ReadonlyArray<string>;
   }>;
   readonly tlsSecret: string | null;
 }
@@ -575,7 +588,15 @@ export async function reconcileIngressHosts(
           // And for the large-download carve-out. Heeding the warning above:
           // omit this term and every cluster that predates the carve-out reads
           // as in-sync forever, so exports keep being spooled to node disk.
-          r.downloadCarveOut
+          r.downloadCarveOut &&
+          // ★ CONTENT, not just presence. The carve-out's middleware list is the
+          // security-relevant part of it: neither the WAF nor the body cap may
+          // be attached (see DOWNLOAD_PATH_REGEXP for why they go together).
+          // Checking only `downloadCarveOut` above let a cluster keep an
+          // out-of-date middleware list forever, because correcting it does not
+          // change the route's `match`.
+          !(r.downloadMiddlewares ?? []).includes(PLATFORM_WAF_MIDDLEWARE_NAME) &&
+          !(r.downloadMiddlewares ?? []).includes(WAF_BODY_LIMIT_MIDDLEWARE_NAME)
         );
       }) &&
       currentRoute.tlsSecret === input.tlsSecretName;
@@ -653,7 +674,7 @@ function defaultDeps(opts: IngressReconcileOptions): IngressReconcileDeps {
           // the oauth2Backend field populated, so the desired-vs-current
           // comparison stays symmetrical with the desired-routes shape.
           .reduce<
-            Array<{ host: string; serviceName: string; oauth2Backend: string | null; uploadCarveOut: boolean; wafAdminCarveOut: boolean; downloadCarveOut: boolean }>
+            Array<{ host: string; serviceName: string; oauth2Backend: string | null; uploadCarveOut: boolean; wafAdminCarveOut: boolean; downloadCarveOut: boolean; downloadMiddlewares: string[] }>
           >((acc, route) => {
             const match = String(route.match ?? '');
             const hostMatch = match.match(/Host\(`([^`]+)`\)/);
@@ -661,6 +682,8 @@ function defaultDeps(opts: IngressReconcileOptions): IngressReconcileDeps {
             if (!host) return acc;
             const services = (route.services as Array<Record<string, unknown>>) ?? [];
             const svcName = (services[0]?.name as string | undefined) ?? '';
+            const mwNames = ((route.middlewares as Array<Record<string, unknown>>) ?? [])
+              .map((m) => String(m.name ?? ''));
             const isOauth2Path = /PathPrefix\(`\/oauth2`\)/.test(match);
             const isUpload = match.includes('upload-raw');
             const isWafAdmin = match.includes('waf-rule-exclusions');
@@ -678,6 +701,7 @@ function defaultDeps(opts: IngressReconcileOptions): IngressReconcileDeps {
                 existing.wafAdminCarveOut = true;
               } else if (isDownload) {
                 existing.downloadCarveOut = true;
+                existing.downloadMiddlewares = mwNames;
               } else if (isOauth2Path) {
                 existing.oauth2Backend = svcName;
               } else {
@@ -691,6 +715,7 @@ function defaultDeps(opts: IngressReconcileOptions): IngressReconcileDeps {
                 uploadCarveOut: isUpload,
                 wafAdminCarveOut: isWafAdmin,
                 downloadCarveOut: isDownload,
+                downloadMiddlewares: isDownload ? mwNames : [],
               });
             }
             return acc;

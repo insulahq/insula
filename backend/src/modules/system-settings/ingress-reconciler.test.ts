@@ -441,8 +441,8 @@ describe('reconcileIngressHosts', () => {
           // sync and MUST be re-applied — that is the whole point of tracking
           // them in the comparison (see #300, where a correct carve-out was
           // never applied because the reconciler thought it was in sync).
-          { host: 'admin.example.com', serviceName: 'admin-panel', oauth2Backend: null, uploadCarveOut: true, wafAdminCarveOut: true, downloadCarveOut: true },
-          { host: 'my.example.com', serviceName: 'tenant-panel', oauth2Backend: null, uploadCarveOut: true, wafAdminCarveOut: true, downloadCarveOut: true },
+          { host: 'admin.example.com', serviceName: 'admin-panel', oauth2Backend: null, uploadCarveOut: true, wafAdminCarveOut: true, downloadCarveOut: true, downloadMiddlewares: ['crowdsec'] },
+          { host: 'my.example.com', serviceName: 'tenant-panel', oauth2Backend: null, uploadCarveOut: true, wafAdminCarveOut: true, downloadCarveOut: true, downloadMiddlewares: ['crowdsec'] },
         ],
         tlsSecret: 'platform-tls',
       },
@@ -471,8 +471,8 @@ describe('reconcileIngressHosts', () => {
     const deps = mockDeps(
       {
         routes: [
-          { host: 'admin.example.com', serviceName: 'admin-panel', oauth2Backend: null, uploadCarveOut: true, wafAdminCarveOut: true, downloadCarveOut: false },
-          { host: 'my.example.com', serviceName: 'tenant-panel', oauth2Backend: null, uploadCarveOut: true, wafAdminCarveOut: true, downloadCarveOut: true },
+          { host: 'admin.example.com', serviceName: 'admin-panel', oauth2Backend: null, uploadCarveOut: true, wafAdminCarveOut: true, downloadCarveOut: false, downloadMiddlewares: [] },
+          { host: 'my.example.com', serviceName: 'tenant-panel', oauth2Backend: null, uploadCarveOut: true, wafAdminCarveOut: true, downloadCarveOut: true, downloadMiddlewares: ['crowdsec'] },
         ],
         tlsSecret: 'platform-tls',
       },
@@ -489,6 +489,69 @@ describe('reconcileIngressHosts', () => {
     }, deps);
     expect(result.changed).toBe(true);
     expect(deps.applyIngressRoute).toHaveBeenCalled();
+  });
+
+  it('re-applies when the download carve-out exists but still carries the WAF', async () => {
+    // ★ THE BUG THIS PINS. Correcting the carve-out to drop the WAF alongside
+    // the body cap changes only the MIDDLEWARE LIST — the route's `match` is
+    // byte-identical. A comparison that only asked "does a download route
+    // exist?" read as in-sync, so the corrected image ran against a cluster that
+    // kept the vulnerable middleware chain indefinitely. Observed live: the
+    // pod was running the fixed build and the live IngressRoute still listed
+    // ['crowdsec', 'modsecurity-crs'] on the download route.
+    const deps = mockDeps(
+      {
+        routes: [
+          {
+            host: 'admin.example.com', serviceName: 'admin-panel', oauth2Backend: null,
+            uploadCarveOut: true, wafAdminCarveOut: true, downloadCarveOut: true,
+            downloadMiddlewares: ['crowdsec', 'modsecurity-crs'],
+          },
+          {
+            host: 'my.example.com', serviceName: 'tenant-panel', oauth2Backend: null,
+            uploadCarveOut: true, wafAdminCarveOut: true, downloadCarveOut: true,
+            downloadMiddlewares: ['crowdsec'],
+          },
+        ],
+        tlsSecret: 'platform-tls',
+      },
+      { dnsNames: ['admin.example.com', 'my.example.com'], secretName: 'platform-tls', issuerName: 'letsencrypt-prod-http01' },
+    );
+    const result = await reconcileIngressHosts({
+      adminPanelUrl: 'https://admin.example.com',
+      tenantPanelUrl: 'https://my.example.com',
+      tlsSecretName: 'platform-tls',
+    }, deps);
+    expect(result.changed).toBe(true);
+    expect(deps.applyIngressRoute).toHaveBeenCalled();
+  });
+
+  it('re-applies when the download carve-out still carries the body cap', async () => {
+    // The cap is the other half: leaving it re-spools every response to disk.
+    const deps = mockDeps(
+      {
+        routes: [
+          {
+            host: 'admin.example.com', serviceName: 'admin-panel', oauth2Backend: null,
+            uploadCarveOut: true, wafAdminCarveOut: true, downloadCarveOut: true,
+            downloadMiddlewares: ['crowdsec', 'waf-body-limit'],
+          },
+          {
+            host: 'my.example.com', serviceName: 'tenant-panel', oauth2Backend: null,
+            uploadCarveOut: true, wafAdminCarveOut: true, downloadCarveOut: true,
+            downloadMiddlewares: ['crowdsec'],
+          },
+        ],
+        tlsSecret: 'platform-tls',
+      },
+      { dnsNames: ['admin.example.com', 'my.example.com'], secretName: 'platform-tls', issuerName: 'letsencrypt-prod-http01' },
+    );
+    const result = await reconcileIngressHosts({
+      adminPanelUrl: 'https://admin.example.com',
+      tenantPanelUrl: 'https://my.example.com',
+      tlsSecretName: 'platform-tls',
+    }, deps);
+    expect(result.changed).toBe(true);
   });
 
   it('skips reconcile if neither URL is set — never produces an empty IngressRoute', async () => {
