@@ -158,12 +158,13 @@ export default function NotificationDropdown() {
             <button
               onClick={() => {
                 setOpen(false);
-                navigate('/platform/notifications');
+                // The operator's own history, not the configuration page.
+                navigate('/notifications');
               }}
               className="w-full rounded-lg py-1.5 text-center text-xs font-medium text-brand-600 hover:bg-brand-50 dark:text-brand-400 dark:hover:bg-brand-900/20"
               data-testid="notification-view-all"
             >
-              View all activity
+              View all notifications
             </button>
           </div>
         </div>

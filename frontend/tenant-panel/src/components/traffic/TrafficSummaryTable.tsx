@@ -299,7 +299,7 @@ function Row({ s, colour, total, peak, off, grand, isLatency, unit, onToggle }: 
                           points={pts}
                           fill="none"
                           stroke={colour}
-                          strokeWidth={1.4}
+                          strokeWidth={1.9}
                           vectorEffect="non-scaling-stroke"
                         />
                       ))}

@@ -52,6 +52,9 @@ const PleskMigrationPage = lazy(() => import('@/pages/platform/PleskMigrationPag
 const AiPage = lazy(() => import('@/pages/platform/AiPage'));
 const LifecycleHooksPage = lazy(() => import('@/pages/platform/LifecycleHooksPage'));
 const NotificationsPage = lazy(() => import('@/pages/platform/NotificationsPage'));
+// The operator's own notification history, as distinct from the page above,
+// which configures what produces them.
+const MyNotifications = lazy(() => import('@/pages/Notifications'));
 const ExportImportPage = lazy(() => import('@/pages/platform/ExportImportPage'));
 // Security group
 const IdentityAndSessionsPage = lazy(() => import('@/pages/IdentityAndSessionsPage'));
@@ -176,6 +179,7 @@ export default function App() {
             <Route path="platform/ai" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><AiPage /></ProtectedRoute>} />
             <Route path="platform/lifecycle-hooks" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><LifecycleHooksPage /></ProtectedRoute>} />
             <Route path="platform/notifications" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><NotificationsPage /></ProtectedRoute>} />
+            <Route path="notifications" element={<MyNotifications />} />
             <Route path="platform/export-import" element={<ProtectedRoute allowedRoles={['super_admin']}><ExportImportPage /></ProtectedRoute>} />
 
             {/* Tenant-bundle restore cart — reachable from the Restoration

@@ -139,9 +139,12 @@ export default function TimeSeriesChart({
     [series, hidden],
   );
 
-  // Daily rollup points are far apart, and a hairline between them reads as
-  // noise rather than a series. The mockup draws those thicker and with butt
-  // caps so a single day does not render as a lone round blob.
+  // Heavier than the mockup's 1.75. That value was read off a design file at
+  // its own scale; on a real plot at real viewing distance the series still
+  // read as hairlines against the gridlines, which was the operator's
+  // complaint twice over. Daily-rollup points are further apart again and
+  // get more weight still, with butt caps so a single day is a segment
+  // rather than a round blob.
   const coarse = stepSeconds >= 86_400;
 
   const { bands, totals, ceiling } = useMemo(() => {
@@ -280,7 +283,7 @@ export default function TimeSeriesChart({
               {lines.map((pts, si) => (
                 <polyline
                   key={`${b.key}-l${si}`} points={pts} fill="none" stroke={b.colour}
-                  strokeWidth={coarse ? 2.4 : 1.75} strokeLinecap={coarse ? 'butt' : 'round'}
+                  strokeWidth={coarse ? 3.2 : 2.6} strokeLinecap={coarse ? 'butt' : 'round'}
                   strokeLinejoin="round" vectorEffect="non-scaling-stroke"
                 />
               ))}

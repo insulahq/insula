@@ -118,7 +118,7 @@ export function TrafficTileView({ frame }: { frame: TrafficFrame }) {
             points={pathFor(s.points, ceiling)}
             fill="none"
             stroke={colourForIndex(i)}
-            strokeWidth={1.9}
+            strokeWidth={2.4}
             strokeLinejoin="round"
             vectorEffect="non-scaling-stroke"
           />
