@@ -3166,13 +3166,13 @@ function PvcPlacementSection({ tenantId }: { readonly tenantId: string }) {
       <table className="w-full text-xs">
         <thead className="text-left text-gray-500 dark:text-gray-400">
           <tr>
-            <SortableHeader label="PVC" sortKey="pvcName" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="!px-2 !py-1.5 !text-left" />
-            <SortableHeader label="Volume" sortKey="volumeName" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="!px-2 !py-1.5 !text-left" />
-            <SortableHeader label="FS" sortKey="fsType" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="!px-2 !py-1.5 !text-left" />
-            <SortableHeader label="Requested" sortKey="sizeBytes" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="!px-2 !py-1.5 !text-left" />
-            <SortableHeader label="Used" sortKey="usedBytes" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="!px-2 !py-1.5 !text-left" />
-            <SortableHeader label="State" sortKey="state" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="!px-2 !py-1.5 !text-left" />
-            <SortableHeader label="Robustness" sortKey="robustness" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="!px-2 !py-1.5 !text-left" />
+            <SortableHeader label="PVC" sortKey="pvcName" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="!px-3 !py-2 !text-left" />
+            <SortableHeader label="Volume" sortKey="volumeName" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="!px-3 !py-2 !text-left" />
+            <SortableHeader label="FS" sortKey="fsType" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="!px-3 !py-2 !text-left" />
+            <SortableHeader label="Requested" sortKey="sizeBytes" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="!px-3 !py-2 !text-left" />
+            <SortableHeader label="Used" sortKey="usedBytes" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="!px-3 !py-2 !text-left" />
+            <SortableHeader label="State" sortKey="state" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="!px-3 !py-2 !text-left" />
+            <SortableHeader label="Robustness" sortKey="robustness" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="!px-3 !py-2 !text-left" />
             <th className="px-3 py-2 text-left font-medium">Replicas</th>
             <th className="px-3 py-2 text-left font-medium">Replica node(s)</th>
             <th className="px-3 py-2 text-left font-medium">Filesystem</th>
