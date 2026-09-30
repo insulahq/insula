@@ -109,13 +109,22 @@ overflow is contained: the kubelet evicts the Job rather than filling the node. 
 Size comes from the bundle, not the plan:
 
 - `meta.json` carries `sizeBytes` per component, plus `addresses` and per-mailbox snapshot
-  ids, and it is the **first entry in the tar** — a streaming reader knows the sizes before
-  any payload arrives.
-- Because units are staged one at a time, **peak staging is the largest single unit, not the
-  bundle total**.
+  ids, and it is the **first entry in the tar** — the sizes are known before any payload.
+
+**Peak staging is the extracted total, declining as units are consumed** — not the largest
+single unit. An earlier draft of this ADR claimed the latter; extracting one unit at a time
+would require either one download per unit (N transfers of the same archive) or holding the
+compressed archive on disk alongside the unit being extracted. Measured against a real
+bundle the difference favours the simple option anyway: for a 3,088 MB bundle whose largest
+unit is a 3,004 MB mailbox, archive-plus-largest-unit is ~5.8 GB while extract-everything is
+~3.1 GB. Mail bundles are typically dominated by one mailbox, so the "largest unit" saving
+is usually illusory.
+
+So: one download, extract the whole archive, then `restic backup` each unit and delete it
+before the next. Peak is at the end of extraction and falls from there.
 
 ```
-sizeLimit = clamp(max(unit sizeBytes) × SAFETY_FACTOR, FLOOR, PLATFORM_CEILING)
+sizeLimit = clamp(sum(unit sizeBytes) × SAFETY_FACTOR, FLOOR, PLATFORM_CEILING)
 ```
 
 `meta.json` is supplied by whoever uploaded the archive and is **not trusted**. Under-
