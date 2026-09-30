@@ -114,3 +114,34 @@ export async function downloadTenantDataExport(bundleId: string): Promise<void> 
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
+
+/**
+ * Download one of my bundles, streamed through a signed single-use URL.
+ *
+ * Same two-step as the admin side — mint a token, click a hidden anchor —
+ * so a large bundle streams to disk instead of being buffered in a Blob.
+ * `rel="noreferrer"` keeps the signed token out of Referer headers on any
+ * request the download page makes afterwards.
+ *
+ * Ownership is settled server-side when the token is minted: the lookup
+ * carries the caller's tenantId, so a bundle that is not theirs is a 404
+ * and no token is ever issued.
+ */
+export async function downloadBundleExport(
+  bundleId: string,
+  format: 'tar' | 'zip' = 'tar',
+): Promise<void> {
+  const r = await apiFetch<{ data: { downloadUrl: string; expiresInSec: number } }>(
+    `/api/v1/tenant/backups/bundles/${bundleId}/export-token`,
+    { method: 'POST', body: JSON.stringify({ format }) },
+  );
+  const downloadUrl = r.data?.downloadUrl;
+  if (!downloadUrl) throw new Error('server returned no downloadUrl');
+  const a = document.createElement('a');
+  a.href = downloadUrl;
+  a.rel = 'noreferrer';
+  a.download = '';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}

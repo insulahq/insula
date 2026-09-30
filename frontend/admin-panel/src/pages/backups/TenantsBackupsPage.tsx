@@ -19,7 +19,8 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import {
+import { downloadBundleExport } from '@/hooks/use-backup-bundles';
+import { Download,
   Package, Search, Loader2, Filter, Camera, Archive, RotateCw, AlertCircle, Trash2, Clock,
   ChevronDown,
   ChevronRight,
@@ -250,12 +251,9 @@ interface FilterBarProps {
   readonly search: string;
   readonly setSearch: (v: string) => void;
   readonly rowCount: number;
-  readonly tenantOptions: ReadonlyArray<{ id: string; name: string }>;
-  readonly selectedTenantId: string | null;
-  readonly setSelectedTenantId: (id: string | null) => void;
 }
 
-function FilterBar({ search, setSearch, rowCount, tenantOptions, selectedTenantId, setSelectedTenantId }: FilterBarProps) {
+function FilterBar({ search, setSearch, rowCount }: FilterBarProps) {
   return (
     <div className="flex flex-wrap items-center gap-3">
       <div className="relative flex-1 min-w-[200px] max-w-md">
@@ -269,17 +267,10 @@ function FilterBar({ search, setSearch, rowCount, tenantOptions, selectedTenantI
           className="w-full rounded-md border border-gray-300 bg-white py-1.5 pl-9 pr-3 text-sm placeholder:text-gray-400 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
         />
       </div>
-      <select
-        value={selectedTenantId ?? ''}
-        onChange={(e) => setSelectedTenantId(e.target.value || null)}
-        className="rounded-md border border-gray-300 bg-white px-2 py-1.5 text-sm dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
-        data-testid="tenants-backups-tenant-filter"
-      >
-        <option value="">All tenants</option>
-        {tenantOptions.map((t) => (
-          <option key={t.id} value={t.id}>{t.name}</option>
-        ))}
-      </select>
+      {/* The tenant dropdown is gone: the search field beside it already
+          matches on tenant name, so the two narrowed the same list by the
+          same thing, and a dropdown of every tenant is the slower of the
+          two to use once there are more than a handful. */}
       <span className="inline-flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400">
         <Filter size={12} /> {rowCount} row{rowCount === 1 ? '' : 's'}
       </span>
@@ -332,9 +323,6 @@ function SnapshotsTab(p: SnapshotsTabProps) {
         search={p.search}
         setSearch={p.setSearch}
         rowCount={filtered.length}
-        tenantOptions={p.tenantOptions}
-        selectedTenantId={p.selectedTenantId}
-        setSelectedTenantId={p.setSelectedTenantId}
       />
       <div
         className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-700/60 dark:bg-amber-900/20 dark:text-amber-200"
@@ -571,6 +559,18 @@ function TenantBundleTable({
 }) {
   const q = useAllBundlesForTenant(tenantId, true);
   const rows = q.data ?? [];
+  const [exporting, setExporting] = useState<string | null>(null);
+  const [rowError, setRowError] = useState<string | null>(null);
+  const qc = useQueryClient();
+  const deleteBundle = useMutation({
+    mutationFn: (bundleId: string) =>
+      apiFetch<void>(`/api/v1/admin/tenant-bundles/${bundleId}`, { method: 'DELETE' }),
+    onSuccess: () => {
+      // Both the per-tenant list and the rollup counts above it.
+      void qc.invalidateQueries({ queryKey: ['admin', 'tenant-bundles'] });
+      void qc.invalidateQueries({ queryKey: ['admin', 'backups', 'tenants', 'overview'] });
+    },
+  });
   // `isFetching` rather than `isLoading`: isLoading is only true for the FIRST
   // page, and this query walks several. A table that stopped showing progress
   // after page 1 would look finished while still filling in.
@@ -662,11 +662,61 @@ function TenantBundleTable({
                 >
                   <RotateCw size={11} /> Restore…
                 </button>
+                {/* Export downloads the bundle itself, through the signed
+                    single-use URL the tenant export already uses — no Blob
+                    buffering, so a large bundle streams rather than filling
+                    a tab's memory. */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setExporting(r.id);
+                    // No password: encrypting here would prompt for one the operator
+                    // has no way to hand on. Encrypted export stays on the
+                    // bundle detail page, which asks for it properly.
+                    void downloadBundleExport(r.id, 'tar', null)
+                      .catch((e: unknown) => setRowError(e instanceof Error ? e.message : 'Export failed'))
+                      .finally(() => setExporting(null));
+                  }}
+                  disabled={exporting === r.id || (r.status !== 'completed' && r.status !== 'partial')}
+                  className="inline-flex items-center gap-1 rounded border border-gray-300 px-2 py-0.5 text-[11px] font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-40 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+                  data-testid={`tenant-bundle-export-${r.id}`}
+                  title="Download this bundle as a tar.gz"
+                >
+                  {exporting === r.id ? <Loader2 size={11} className="animate-spin" /> : <Download size={11} />}
+                  Export
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    // Named in the prompt: a bundle id means nothing to the
+                    // reader, and this is not recoverable.
+                    const what = r.label ? `"${r.label}"` : `from ${new Date(r.createdAt).toLocaleString()}`;
+                    if (!window.confirm(`Delete the bundle ${what}? The stored data is removed and this cannot be undone.`)) return;
+                    setRowError(null);
+                    deleteBundle.mutate(r.id, {
+                      onError: (e) => setRowError(e instanceof Error ? e.message : 'Delete failed'),
+                    });
+                  }}
+                  disabled={deleteBundle.isPending && deleteBundle.variables === r.id}
+                  className="inline-flex items-center gap-1 rounded border border-red-300 px-2 py-0.5 text-[11px] font-medium text-red-700 hover:bg-red-50 disabled:opacity-40 dark:border-red-700 dark:text-red-300 dark:hover:bg-red-900/30"
+                  data-testid={`tenant-bundle-delete-${r.id}`}
+                  title="Delete this bundle and its stored data"
+                >
+                  {deleteBundle.isPending && deleteBundle.variables === r.id
+                    ? <Loader2 size={11} className="animate-spin" />
+                    : <Trash2 size={11} />}
+                  Delete
+                </button>
               </td>
             </tr>
           ))}
         </tbody>
       </table>
+      {rowError && (
+        <p className="px-2 py-1 text-[11px] text-red-600 dark:text-red-400" data-testid={`tenant-bundle-row-error-${tenantId}`}>
+          {rowError}
+        </p>
+      )}
       {busy && (
         // Still walking the cursor. Says so under the rows already drawn, so a
         // partially-loaded list is never mistaken for the whole history.
@@ -733,9 +783,6 @@ function BackupsTab(p: BackupsTabProps) {
         search={p.search}
         setSearch={p.setSearch}
         rowCount={groups.length}
-        tenantOptions={p.tenantOptions}
-        selectedTenantId={p.selectedTenantId}
-        setSelectedTenantId={p.setSelectedTenantId}
       />
       {/* Inclusion summary + editor — which tenants the platform-global
           daily scheduler bundles (hosting_plans.include_in_scheduled_bundles
@@ -780,6 +827,22 @@ function BackupsTab(p: BackupsTabProps) {
                       </span>
                       <span className="inline-flex items-center gap-1.5">
                         {busy && <Loader2 size={11} className="animate-spin text-gray-400" />}
+                        {/* Replaces the "Trigger a bundle for a single
+                            tenant" section, which made you pick a tenant
+                            from a dropdown that duplicated this very list. */}
+                        <button
+                          type="button"
+                          onClick={() => p.onBundle(r.tenantId)}
+                          disabled={p.tenantPendingBundle === r.tenantId || !p.tenantTargetBound}
+                          className="inline-flex items-center gap-1 rounded border border-gray-300 px-1.5 py-0.5 text-[11px] text-gray-700 hover:bg-gray-100 disabled:opacity-50 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-700"
+                          data-testid={`inclusion-bundle-now-${r.tenantId}`}
+                          title={p.tenantTargetBound ? 'Create a bundle for this tenant now' : 'Bind a target on tab (c) first'}
+                        >
+                          {p.tenantPendingBundle === r.tenantId
+                            ? <Loader2 size={10} className="animate-spin" />
+                            : <Archive size={10} />}
+                          Backup now
+                        </button>
                         <select
                           value={r.scheduledBundlesOverride}
                           disabled={busy}
@@ -800,24 +863,27 @@ function BackupsTab(p: BackupsTabProps) {
                 “Inherit plan” follows the plan's <code>include_in_scheduled_bundles</code> default; the explicit
                 options override it for this tenant only. Changes take effect at the next scheduled run.
               </p>
+              {/* The fleet-wide action belongs with the list of who is IN the
+                  schedule — it acts on exactly the tenants shown above, and
+                  sitting in the page header it read as applying to whatever
+                  the filter happened to be. */}
+              <div className="mt-2 flex justify-end border-t border-gray-200 pt-2 dark:border-gray-700">
+                <button
+                  type="button"
+                  onClick={p.bundleAll}
+                  disabled={p.bundleAllPending || p.tenantOptions.length === 0 || !p.tenantTargetBound}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-brand-300 bg-brand-50 px-3 py-1.5 text-xs font-medium text-brand-700 hover:bg-brand-100 disabled:opacity-50 dark:border-brand-700 dark:bg-brand-900/30 dark:text-brand-300"
+                  data-testid="tenants-bundle-all"
+                  title={p.tenantTargetBound ? 'Create a bundle for every eligible tenant' : 'Bind a target on tab (c) first'}
+                >
+                  {p.bundleAllPending ? <Loader2 size={12} className="animate-spin" /> : <Archive size={12} />}
+                  Bundle all eligible tenants
+                </button>
+              </div>
             </div>
           </details>
         );
       })()}
-
-      <div className="flex items-center justify-end gap-2">
-        <button
-          type="button"
-          onClick={p.bundleAll}
-          disabled={p.bundleAllPending || p.tenantOptions.length === 0 || !p.tenantTargetBound}
-          className="inline-flex items-center gap-1.5 rounded-md border border-brand-300 bg-brand-50 px-3 py-1.5 text-xs font-medium text-brand-700 hover:bg-brand-100 disabled:opacity-50 dark:border-brand-700 dark:bg-brand-900/30 dark:text-brand-300"
-          data-testid="tenants-bundle-all"
-          title={p.tenantTargetBound ? 'Create a bundle for every eligible tenant' : 'Bind a target on tab (c) first'}
-        >
-          {p.bundleAllPending ? <Loader2 size={12} className="animate-spin" /> : <Archive size={12} />}
-          Bundle all eligible tenants
-        </button>
-      </div>
 
       {p.isLoading && groups.length === 0 ? (
         <div className="flex items-center gap-2 text-sm text-gray-500"><Loader2 size={14} className="animate-spin" /> Loading…</div>
@@ -898,8 +964,21 @@ function BackupsTab(p: BackupsTabProps) {
                       </button>
                       <span className="text-gray-500 dark:text-gray-400">
                         Last backup size {roll ? formatBytes(roll.bundleBytes / Math.max(roll.bundleCount, 1)) : '—'} avg ·
-                        {' '}{roll?.repoStatsAt ? `repo measured ${new Date(roll.repoStatsAt).toLocaleDateString()}` : 'repo never measured'}
+                        {' '}
+                        {/* The SIZE and a TIME, not just a date. This read
+                            "repo measured <date>" with no figure and no
+                            clock, so a refresh that worked perfectly well
+                            looked like it had done nothing — press it twice
+                            in one day and not a character changed. */}
+                        {roll?.repoStatsAt
+                          ? `repo ${roll.repoTotalBytes != null ? formatBytes(roll.repoTotalBytes) : 'measured'}, ${new Date(roll.repoStatsAt).toLocaleString()}`
+                          : 'repo never measured'}
                       </span>
+                      {refreshStats.isSuccess && refreshStats.variables === g.tenantId && (
+                        <span className="text-green-600 dark:text-green-400" data-testid={`repo-refresh-done-${g.tenantId}`}>
+                          measured {formatBytes(refreshStats.data.data.totalBytes)}
+                        </span>
+                      )}
                       {refreshStats.isError && refreshStats.variables === g.tenantId && (
                         <span className="text-red-600 dark:text-red-400">
                           {refreshStats.error instanceof Error ? refreshStats.error.message : 'Could not measure the repository'}
@@ -977,31 +1056,10 @@ function BackupsTab(p: BackupsTabProps) {
         </div>
       )}
 
-      <details className="rounded-lg border border-gray-200 bg-white p-3 text-xs dark:border-gray-700 dark:bg-gray-800">
-        <summary className="cursor-pointer font-medium text-gray-700 dark:text-gray-300">
-          Trigger a bundle for a single tenant
-        </summary>
-        <ul className="mt-2 space-y-1">
-          {p.tenantOptions.map((t) => {
-            const busy = p.tenantPendingBundle === t.id;
-            return (
-              <li key={t.id} className="flex items-center justify-between">
-                <span className="font-mono text-xs">{t.name}</span>
-                <button
-                  type="button"
-                  onClick={() => p.onBundle(t.id)}
-                  disabled={busy || !p.tenantTargetBound}
-                  className="inline-flex items-center gap-1 rounded border border-brand-300 bg-brand-50 px-2 py-0.5 text-[11px] font-medium text-brand-700 hover:bg-brand-100 disabled:opacity-50 dark:border-brand-700 dark:bg-brand-900/30 dark:text-brand-300"
-                  data-testid={`tenant-row-bundle-${t.id}`}
-                >
-                  {busy ? <Loader2 size={11} className="animate-spin" /> : <Archive size={11} />}
-                  Bundle
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-      </details>
+      {/* "Trigger a bundle for a single tenant" lived here: a second list
+          of every tenant, each with a Bundle button, duplicating the
+          Scheduled Inclusion list directly above. Backup now sits on those
+          rows instead. */}
     </div>
   );
 }
@@ -1177,10 +1235,10 @@ export default function TenantsBackupsPage() {
             {errorBanner}
             <SnapshotsTab
               rows={snapshotsQ.data?.data?.rows ?? []}
-              tenantOptions={tenantOptions}
               isLoading={snapshotsQ.isLoading}
               search={search}
               setSearch={setSearch}
+              tenantOptions={tenantOptions}
               selectedTenantId={selectedTenantId}
               setSelectedTenantId={setSelectedTenantId}
               tenantPendingSnapshot={snapshotNow.isPending ? (snapshotNow.variables ?? null) : null}
@@ -1198,13 +1256,13 @@ export default function TenantsBackupsPage() {
           <div className="space-y-3">
             {errorBanner}
             <BackupsTab
-              tenantOptions={tenantOptions}
               // The page's only up-front fetch is the rollup — the tenant
               // list with each one's backup count and repository size.
               // Bundles load per tenant, when a group is opened.
               isLoading={rollupLoading}
               search={search}
               setSearch={setSearch}
+              tenantOptions={tenantOptions}
               selectedTenantId={selectedTenantId}
               setSelectedTenantId={setSelectedTenantId}
               tenantPendingBundle={bundleNow.isPending ? (bundleNow.variables ?? null) : null}

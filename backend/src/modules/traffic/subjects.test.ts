@@ -17,9 +17,9 @@ import { describe, it, expect, vi } from 'vitest';
 
 const LABELLED: Record<string, string> = {
   node: 'sv1',
-  namespace: 'tenant-acme-1a2b3c4d',
-  pod: 'website-794d87b45d-pljpd',
-  service: 'tenant-acme-1a2b3c4d-tenant-acme-1a2b3c4d-ingress-66364415ff27@kubernetescrd',
+  namespace: `tenant-alpha-${'deadbeef'}`,
+  pod: 'website-aaaaaaaaaa-bbbbb',
+  service: 'tenant-alpha-ns-tenant-alpha-ns-ingress-66364415ff27@kubernetescrd',
 };
 
 vi.mock('../monitoring/vm-client.js', () => ({
@@ -44,7 +44,10 @@ const range = { from: new Date(Date.now() - 3_600_000), to: new Date() };
 describe('a subject key round-trips into a query', () => {
   const cases = [
     { scope: 'node' as const, label: 'node', expect: 'node="sv1"' },
-    { scope: 'tenant' as const, label: 'namespace', expect: 'namespace="tenant-acme-1a2b3c4d"' },
+    // A tenant is measured at the ingress now, so the key it hands back has
+    // to select that tenant's SERVICES. Still the namespace — the identity
+    // did not change, only the instrument.
+    { scope: 'tenant' as const, label: 'namespace', expect: `service=~"tenant-alpha-${'deadbeef'}-.+"` },
   ];
 
   for (const c of cases) {
@@ -73,7 +76,17 @@ describe('a subject key round-trips into a query', () => {
     const pods = await fetchTrafficSubjects(
       { ...range, scope: 'pod', metric: 'traffic', subject: tenants[0].key } as never, { db },
     );
-    expect(pods.map((p) => p.key)).toEqual(['website-794d87b45d-pljpd']);
+    // Pod rows are per APPLICATION now — replicas of one Deployment are one
+    // line — so the key is the application, not a pod instance.
+    expect(pods.map((p) => p.key)).toEqual(['website']);
+
+    // And it must still round-trip: sending that key back selects exactly
+    // that application's pods and nothing else's.
+    const { expr } = buildTrafficQuery({
+      scope: 'pod', metric: 'traffic', direction: 'out', stepSeconds: 300,
+      subject: tenants[0].key, pod: pods[0].key,
+    });
+    expect(expr).toContain('pod=~"website-[a-z0-9]{6,10}-[a-z0-9]{5}"');
   });
 
   it('strips only the direction prefix, never part of a name', () => {

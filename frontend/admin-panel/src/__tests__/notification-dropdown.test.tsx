@@ -97,14 +97,16 @@ describe('Admin NotificationDropdown', () => {
     expect(screen.getByText('just now')).toBeInTheDocument();
   });
 
-  it('shows View all activity link', async () => {
+  it('links to the operator\u2019s own notification history', async () => {
     const user = userEvent.setup();
     render(<NotificationDropdown />, { wrapper: createWrapper() });
 
     await user.click(screen.getByTestId('notification-bell'));
 
     expect(screen.getByTestId('notification-view-all')).toBeInTheDocument();
-    expect(screen.getByText('View all activity')).toBeInTheDocument();
+    // Was "View all activity", pointing at Platform -> Notifications, which
+    // CONFIGURES notifications rather than listing the reader's own.
+    expect(screen.getByText('View all notifications')).toBeInTheDocument();
   });
 
   it('closes dropdown when bell is clicked again', async () => {

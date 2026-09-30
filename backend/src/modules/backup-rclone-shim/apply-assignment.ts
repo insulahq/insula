@@ -314,9 +314,11 @@ export async function applyShimAssignmentChange(
     userId: args.userId,
     label,
     target: {
-      type: 'modal',
-      modal: 'shim-target-switch',
-      modalProps: { className: args.className },
+      // No modal exists for this, and a `modal` key no registry knows
+      // renders NOTHING when the row is clicked. Point it at the page
+      // that shows the shim's state instead.
+      type: 'route',
+      href: '/backups/targets',
     },
     progressPct: 0,
     progressText: toSafeText('Starting target switch'),
@@ -774,9 +776,11 @@ export async function runDrainNow(
     userId: args.userId,
     label,
     target: {
-      type: 'modal',
-      modal: 'shim-drain',
-      modalProps: { classes: args.classes },
+      // No modal exists for this, and a `modal` key no registry knows
+      // renders NOTHING when the row is clicked. Point it at the page
+      // that shows the shim's state instead.
+      type: 'route',
+      href: '/backups/targets',
     },
     progressPct: 0,
     progressText: toSafeText(

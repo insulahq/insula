@@ -217,7 +217,23 @@ export async function runBundle(
         userId: input.triggeredByUserId,
         tenantId: input.tenantId,
         label: toSafeText(`Backup bundle (${input.tenantId.slice(0, 8)})`),
-        target: { type: 'route', href: `/tenants/${input.tenantId}?tab=backups` },
+        // A MODAL, not a route, and a different one per panel.
+        //
+        // The route this used to carry — `/tenants/<id>?tab=backups` — is an
+        // ADMIN path. A tenant's own task row is rendered in the TENANT
+        // panel, whose backups live at `/backups` and which has no
+        // `/tenants/:id` route at all, so clicking your own backup went
+        // nowhere. It also could not do the one thing a task row is for
+        // here: re-open the progress you just closed.
+        //
+        // Both panels already own a bundle progress modal that polls the
+        // per-component status, so the target names it and the chip
+        // re-opens it. The key is resolved against that panel's registry,
+        // and `ci-task-modal-registry-check.sh` fails the build if a key
+        // the backend emits is missing from it.
+        target: input.initiator === 'tenant'
+          ? { type: 'modal', modal: 'bundle-progress', modalProps: { bundleId } }
+          : { type: 'modal', modal: 'admin-bundle-progress', modalProps: { bundleId } },
         details: { bundleId, initiator: input.initiator },
       });
     } catch (err) {

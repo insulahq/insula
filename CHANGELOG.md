@@ -12,6 +12,105 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+
+- **A tenant user could list every tenant's cron jobs.**
+  `GET /api/v1/admin/cron-jobs` returned HTTP 200 and a cross-tenant listing
+  to any authenticated tenant-panel token. The route inherited two hooks
+  that read like protection and are not: `requireTenantRoleByMethod()`
+  permits `tenant_admin` and `tenant_user` on GET, and
+  `requireTenantAccess()` only compares a `:tenantId` **path param** against
+  the caller's claim — an `/admin/*` route has no such param, so the
+  comparison never ran. Both that route and the new cross-tenant SFTP
+  listing now name `requireRole('super_admin', 'admin')`, and
+  `ci-admin-route-role-check.sh` fails the build on an `/admin/*` route that
+  does not.
+
+- **A tenant could not open their own backup.** Bundle detail and the GDPR
+  data-export returned *"You can only access your own tenant resources"* to
+  the tenant that owned them, and had done since the hook was added. Same
+  middleware, opposite direction: `requireTenantAccess()` reads
+  `params.tenantId ?? params.id`, and on `/tenant/backups/bundles/:id` the
+  `:id` is a **bundle**, so a bundle id was compared against a tenant id and
+  refused. Only the list route, which has no `:id`, worked. Ownership was
+  already enforced in SQL on every route in that file — the tenant comes
+  from the JWT and goes into the `WHERE` clause, so another tenant's bundle
+  is a 404 — which is the stronger check, because a path param cannot
+  satisfy it.
+
+- **Tenants were billed for their own internal traffic.** The meter summed
+  every byte a tenant's pods transmitted, which includes the database
+  answering the application inside the namespace, over a path that never
+  touches the network. Measured over six hours: 4,687 MB billed against
+  668 MB actually served — 7.0× overall, 190× for the most database-heavy
+  tenant, and 1.0× for every tenant with no database add-on, which is what
+  identifies the excess as intra-namespace chatter rather than egress.
+
+  Billing is external egress now: what the ingress served, plus an estimate
+  of the egress the ingress cannot see (an outbound API call, SMTP, a
+  package pull), derived from `externalOut = TX − RX + externalIn` and
+  bounded by measurements on both sides — never below what Traefik counted
+  leaving, never above what the pods actually transmitted.
+
+- **A permanent horizontal scrollbar on both dashboards.** Two faults
+  meeting: `main` set only `overflow-y`, and a box that sets one axis gets
+  `overflow-x: auto` computed for the other — and the tile hover cards only
+  positioned themselves on `mouseenter`, so an un-hovered card sat at
+  `left: 0` and the rightmost one ended 109px past the container. Hovering
+  it fixed the page, which is why it looked intermittent.
+
+- **The search control wrapped onto a second line** on a narrow viewport,
+  doubling the header height.
+
+- **Table headers did not sit over their columns** in the tenant-detail
+  tabs. Sortable and static headers in the same row carried different
+  padding — one table ran 8px for seven columns then 12px for three.
+
+- **Dark mode had no active state at all, in either panel.** Twelve places
+  referenced a `brand-950` that the colour scale never defined, so every
+  dark active and hover background — dropdown items, calendar days, range
+  presets, stat cards — resolved to nothing.
+
+### Changed
+
+- **Traffic is about what crossed the network.** A tenant's figure is
+  measured at the ingress and reconciles exactly with the sum of their
+  routes. The cluster view shows the wire and the one subset measured the
+  same way; the pod-measured rows are gone, including an "off-site backup
+  upload" row that claimed to be part of the wire total while reading the
+  shim pod's counters — it reported 2.15 GB inside a 1.58 GB total. Internal
+  traffic is visible in exactly one place, named for what it is:
+  **Pod (internal traffic)**.
+
+- **Pod rows read as applications.** `website-<replicaset>-<pod>` is `website`,
+  and replicas of one Deployment are one line rather than several rows
+  wearing the same name.
+
+- **The bell menu opens your notifications.** "View all activity" pointed at
+  Platform → Notifications, which *configures* notifications; there was no
+  page listing your own. There is now, matching the tenant panel's.
+
+- **Tenants → SFTP Users** lists every SFTP account on the platform,
+  searchable, each row linking to the tenant that owns it. Tenant detail
+  gains the same table for one tenant and loses **Applications**, which was
+  a filtered view of the Deployments tab beside it. SFTP accounts no longer
+  appear in global search, where every hit led back to the owning tenant.
+
+- **Tenant Backups** — "Bundle all eligible tenants" moved inside Scheduled
+  Inclusion, whose rows gain **Backup now**; the duplicate
+  "Trigger a bundle for a single tenant" section and the tenant dropdown are
+  gone (the search field already matched on tenant name); every bundle row
+  gains **Export** and **Delete**; and *Refresh repo size*, which worked all
+  along, now shows the measured size and a timestamp instead of a bare date
+  that did not change twice in one day.
+
+- **A running backup can be re-opened from the task centre** in the tenant
+  panel, and bundles can be exported there.
+
+- Chart lines are heavier, scrollbars are neutral rather than brand-blue in
+  both themes, tiles show a link icon instead of printing their own URL, and
+  CPU reads at one decimal.
+
 ## [2026.9.40] - 2026-09-29
 
 ### Fixed

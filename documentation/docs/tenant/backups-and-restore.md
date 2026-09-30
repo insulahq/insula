@@ -50,9 +50,24 @@ centrally by your admins.
 Want a fresh snapshot right now — say, before a risky change?
 
 1. Click **Run backup now** (top right).
-2. A progress window opens and tracks the new bundle as it builds.
+2. A progress window opens and tracks each part of the bundle — files,
+   mailboxes, config, secrets — as it completes.
+
+Closing that window does not stop the backup. It keeps running, and you can
+open it again from **Tasks** in the page header, which lists anything still
+in flight.
 
 The finished bundle appears in the list, ready to restore from.
+
+## Download a bundle
+
+Each completed bundle has an **Export** action that downloads it as a
+`tar.gz`. The download starts immediately and streams to disk, so a large
+bundle does not have to fit in the browser first.
+
+This is the whole bundle. The **GDPR** button described below is a different
+thing: a smaller, encrypted export of personal data, and it only appears on
+bundles that were created with one.
 
 ## Restore from a bundle (the restore cart)
 

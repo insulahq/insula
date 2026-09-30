@@ -37,7 +37,13 @@ export default function Layout() {
             Making the scroll container a positioning context confines them
             here, so only this element scrolls. Fixed on the container
             rather than per-table: any long page had the same bug. */}
-        <main className="relative flex-1 overflow-y-auto p-4 lg:p-6">
+        {/* `overflow-x-clip`, and it is not belt-and-braces. Setting ONLY
+            `overflow-y` makes the browser compute `overflow-x: auto`, so any
+            child a single pixel too wide gives the whole page a horizontal
+            scrollbar — a hover card did exactly that. `clip` suppresses it
+            without creating a scroll container, so a future stray child
+            cannot reintroduce the bar. */}
+        <main className="relative flex-1 overflow-y-auto overflow-x-clip p-4 lg:p-6">
           <Outlet />
         </main>
         <Footer />

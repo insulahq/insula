@@ -75,7 +75,9 @@ export default function TenantSnapshotsPanel({ tenantId, variant = 'full', onMan
   const compact = variant === 'compact';
   const snapshots = compact ? allSnapshots.slice(0, 3) : allSnapshots;
   const { sortedData: sortedSnapshots, sortKey, sortDirection, onSort } = useSortable(snapshots, 'createdAt', 'desc');
-  const th = { currentKey: sortKey, direction: sortDirection, onSort, className: '!px-5 !py-3 font-medium text-sm text-gray-500 dark:text-gray-400 normal-case tracking-normal' };
+  const th = { currentKey: sortKey, direction: sortDirection, onSort, // Matches the plain <th> cells in this section; a sortable header and a
+    // static one in the same row must line up.
+    className: '!px-3 !py-2 font-medium text-sm text-gray-500 dark:text-gray-400 normal-case tracking-normal' };
 
   const [createOpen, setCreateOpen] = useState(false);
   const [label, setLabel] = useState('');
@@ -186,25 +188,25 @@ export default function TenantSnapshotsPanel({ tenantId, variant = 'full', onMan
                   <SortableHeader label="Size" sortKey="sizeBytes" {...th} className={`${th.className} hidden sm:table-cell`} />
                   <SortableHeader label="Created" sortKey="createdAt" {...th} className={`${th.className} hidden lg:table-cell`} />
                   <SortableHeader label="Expires" sortKey="expiresAt" {...th} />
-                  <th className="px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Actions</th>
+                  <th className="px-3 py-2 font-medium text-gray-500 dark:text-gray-400">Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {sortedSnapshots.map((s) => (
                   <tr key={s.id} className="border-b border-gray-100 dark:border-gray-700 last:border-0" data-testid={`admin-snapshot-row-${s.id}`}>
-                    <td className="px-5 py-3 text-gray-900 dark:text-gray-100">{s.label || <span className="font-mono text-xs text-gray-400">{s.id.slice(0, 12)}</span>}</td>
-                    <td className="px-5 py-3">
+                    <td className="px-3 py-2 text-gray-900 dark:text-gray-100">{s.label || <span className="font-mono text-xs text-gray-400">{s.id.slice(0, 12)}</span>}</td>
+                    <td className="px-3 py-2">
                       <StatusBadge status={s.status} />
                       {s.status === 'error' && s.lastError && (
                         <p className="mt-1 max-w-xs truncate text-xs text-red-500" title={s.lastError}>{s.lastError}</p>
                       )}
                     </td>
-                    <td className="hidden px-5 py-3 text-gray-600 dark:text-gray-400 sm:table-cell">{formatBytes(s.sizeBytes)}</td>
-                    <td className="hidden px-5 py-3 text-gray-500 dark:text-gray-400 lg:table-cell"><TimeCell iso={s.createdAt} /></td>
-                    <td className="px-5 py-3 text-gray-500 dark:text-gray-400">
+                    <td className="px-3 py-2 hidden text-gray-600 dark:text-gray-400 sm:table-cell">{formatBytes(s.sizeBytes)}</td>
+                    <td className="px-3 py-2 hidden text-gray-500 dark:text-gray-400 lg:table-cell"><TimeCell iso={s.createdAt} /></td>
+                    <td className="px-3 py-2 text-gray-500 dark:text-gray-400">
                       <span className="inline-flex items-center gap-1"><Clock size={12} /> {expiresIn(s.expiresAt)}</span>
                     </td>
-                    <td className="px-5 py-3">
+                    <td className="px-3 py-2">
                       <div className="flex items-center gap-2">
                         {s.status === 'ready' && (
                           <button

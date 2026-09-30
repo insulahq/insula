@@ -311,7 +311,8 @@ const userProvider: SearchProvider = {
   },
 };
 
-const sftpUserProvider: SearchProvider = {
+/** Retained but unregistered — see the note in the provider list. */
+export const sftpUserProvider: SearchProvider = {
   type: 'sftp_user',
   scope: 'tenant',
   label: 'SFTP Users',
@@ -551,7 +552,12 @@ export const SEARCH_PROVIDERS: readonly SearchProvider[] = [
   mailboxProvider,
   cronJobProvider,
   userProvider,
-  sftpUserProvider,
+  // sftpUserProvider — deliberately NOT registered. An SFTP account is an
+  // access credential, not a thing an operator navigates to: its only
+  // destination was the owning tenant's page, which the tenant itself
+  // already answers for. It crowded every search for a tenant name with
+  // rows that all led back to the same place. SFTP users are listed where
+  // they belong — the Tenants page table and the tenant detail tab.
   sshKeyProvider,
   privateWorkerProvider,
   nodeProvider,

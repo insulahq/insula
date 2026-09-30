@@ -7,6 +7,7 @@ import {
   useDeleteRestoreCart,
   useRunBundleNow,
   downloadTenantDataExport,
+  downloadBundleExport,
 } from '@/hooks/use-tenant-backups';
 import { BundleProgressModal } from '@/components/BundleProgressModal';
 import { useSortable } from '@/hooks/use-sortable';
@@ -47,6 +48,7 @@ export default function Backups() {
   // Track the in-flight bundle id from the most recent run-now click
   // so we can open BundleProgressModal. Cleared via modal onClose.
   const [progressBundleId, setProgressBundleId] = useState<string | null>(null);
+  const [exporting, setExporting] = useState<string | null>(null);
   // Top-level (Rules of Hooks) — the table renders conditionally below.
   const { sortedData: sortedBundles, sortKey, sortDirection, onSort } = useSortable(bundles, 'createdAt', 'desc');
   // SortableHeader defaults to px-5/py-3 — override to this table's px-6.
@@ -244,6 +246,30 @@ export default function Backups() {
                           >
                             <RotateCcw size={12} /> Restore
                           </Link>
+                        )}
+                        {/* Export the bundle itself. The GDPR button beside
+                            this one appears only on bundles that already
+                            carry that artifact, so until now a tenant could
+                            see their backups and not take one away. */}
+                        {(b.status === 'completed' || b.status === 'partial') && (
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              setExporting(b.id);
+                              try { await downloadBundleExport(b.id); }
+                              catch (e) { window.alert(`Export failed: ${(e as Error).message}`); }
+                              finally { setExporting(null); }
+                            }}
+                            disabled={exporting === b.id}
+                            className="inline-flex items-center gap-1 rounded-md border border-gray-300 px-2 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+                            data-testid={`export-bundle-${b.id}`}
+                            title="Download this bundle as a tar.gz"
+                          >
+                            {exporting === b.id
+                              ? <Loader2 size={12} className="animate-spin" />
+                              : <Download size={12} />}
+                            Export
+                          </button>
                         )}
                         {b.exportArtifact && b.status === 'completed' && (
                           <button

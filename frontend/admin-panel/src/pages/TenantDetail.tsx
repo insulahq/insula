@@ -61,15 +61,16 @@ import {
   useFsckCheck,
   useFsckRepair,
 } from '@/hooks/use-storage-lifecycle';
+import { useSftpUsers } from '@/hooks/use-sftp-users';
 import { useTableSearch } from '@/hooks/use-table-search';
 import ErrorPanel from '@/components/ErrorPanel';
 import { describeDeploymentError } from '@/lib/describe-deployment-error';
 import { useTabParam } from '@/hooks/use-tab-param';
 import { formatMetricsCpu, formatMetricsGi } from '@/lib/format-metrics';
 
-type TabKey = 'domains' | 'applications' | 'deployments' | 'files' | 'email' | 'backups' | 'snapshots' | 'users';
+type TabKey = 'domains' | 'deployments' | 'files' | 'email' | 'backups' | 'snapshots' | 'users' | 'sftp';
 
-const TENANT_DETAIL_TAB_IDS: readonly TabKey[] = ['domains', 'applications', 'deployments', 'files', 'email', 'backups', 'snapshots', 'users'];
+const TENANT_DETAIL_TAB_IDS: readonly TabKey[] = ['domains', 'deployments', 'files', 'email', 'backups', 'snapshots', 'users', 'sftp'];
 
 export default function TenantDetail() {
   const { id } = useParams<{ id: string }>();
@@ -102,6 +103,7 @@ export default function TenantDetail() {
   const emailDomainsQuery = useEmailDomains(id);
   const mailboxesQuery = useMailboxes(id);
   const subUsersQuery = useAdminSubUsers(id ?? null);
+  const sftpUsersQuery = useSftpUsers({ tenantId: id });
   // Snapshot count for the tab badge. Shares the query cache (same key)
   // with TenantSnapshotsPanel, so this adds no extra request.
   const snapshotsQuery = useTenantSnapshots(id ?? '');
@@ -268,7 +270,6 @@ export default function TenantDetail() {
 
   const domainCount = domainsQuery.data?.data.length ?? 0;
   const deploymentCount = deploymentsQuery.data?.data.length ?? 0;
-  const applicationCount = deploymentsQuery.data?.data.filter((d) => d.type === 'application').length ?? 0;
   // Bundle count comes from the paginated total, not the page length — the
   // endpoint caps a page at 50 and a long-lived tenant has more than that.
   const backupCount = bundlesQuery.data?.pagination?.total_count
@@ -276,17 +277,18 @@ export default function TenantDetail() {
     ?? 0;
   const emailDomainCount = emailDomainsQuery.data?.data.length ?? 0;
   const subUserCount = subUsersQuery.data?.data.length ?? 0;
+  const sftpUserCount = sftpUsersQuery.data?.data.length ?? 0;
   const snapshotCount = snapshotsQuery.data?.data?.snapshots?.length ?? 0;
 
   const tabs: readonly { readonly key: TabKey; readonly label: string; readonly count: number }[] = [
     { key: 'domains', label: 'Domains', count: domainCount },
-    { key: 'applications', label: 'Applications', count: applicationCount },
     { key: 'deployments', label: 'Deployments', count: deploymentCount },
     { key: 'files', label: 'Files', count: 0 },
     { key: 'email', label: 'Email', count: emailDomainCount },
     { key: 'backups', label: 'Backups', count: backupCount },
     { key: 'snapshots', label: 'Snapshots', count: snapshotCount },
     { key: 'users', label: 'Users', count: subUserCount },
+    { key: 'sftp', label: 'SFTP Users', count: sftpUserCount },
   ];
 
   return (
@@ -653,7 +655,6 @@ export default function TenantDetail() {
 
         <div className="p-5">
           {activeTab === 'domains' && <DomainsTab data={domainsQuery.data} isLoading={domainsQuery.isLoading} error={domainsQuery.error} tenantId={id} />}
-          {activeTab === 'applications' && <ApplicationsTab tenantId={id} />}
           {activeTab === 'deployments' && <DeploymentsTab data={deploymentsQuery.data} isLoading={deploymentsQuery.isLoading} error={deploymentsQuery.error} tenantId={id} />}
           {activeTab === 'files' && (
             <div className="text-center py-8 text-sm text-gray-500 dark:text-gray-400">
@@ -675,6 +676,7 @@ export default function TenantDetail() {
             </div>
           )}
           {activeTab === 'snapshots' && id && <TenantSnapshotsPanel tenantId={id} />}
+          {activeTab === 'sftp' && id && <TenantSftpUsersTab tenantId={id} />}
           {activeTab === 'users' && id && <TenantUsersTab tenantId={id} />}
         </div>
       </div>
@@ -988,23 +990,23 @@ function DomainsTab({ data, isLoading, error, tenantId }: TabContentProps<Domain
     <table className="w-full text-left text-sm" data-testid="domains-table">
       <thead>
         <tr className="border-b border-gray-100 dark:border-gray-700 text-xs font-medium uppercase text-gray-500 dark:text-gray-400">
-          <SortableHeader label="Domain" sortKey="domainName" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
-          <SortableHeader label="DNS Mode" sortKey="dnsMode" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
-          <SortableHeader label="SSL" sortKey="sslAutoRenew" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
-          <SortableHeader label="Status" sortKey="status" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
-          <SortableHeader label="Created" sortKey="createdAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
-          <th className="py-2 text-right font-medium uppercase text-gray-500 dark:text-gray-400">Actions</th>
+          <SortableHeader label="Domain" sortKey="domainName" currentKey={sortKey} direction={sortDirection} onSort={onSort}  className="!px-3 !py-2" />
+          <SortableHeader label="DNS Mode" sortKey="dnsMode" currentKey={sortKey} direction={sortDirection} onSort={onSort}  className="!px-3 !py-2" />
+          <SortableHeader label="SSL" sortKey="sslAutoRenew" currentKey={sortKey} direction={sortDirection} onSort={onSort}  className="!px-3 !py-2" />
+          <SortableHeader label="Status" sortKey="status" currentKey={sortKey} direction={sortDirection} onSort={onSort}  className="!px-3 !py-2" />
+          <SortableHeader label="Created" sortKey="createdAt" currentKey={sortKey} direction={sortDirection} onSort={onSort}  className="!px-3 !py-2" />
+          <th className="px-3 py-2 text-right font-medium uppercase text-gray-500 dark:text-gray-400">Actions</th>
         </tr>
       </thead>
       <tbody>
         {sortedItems.map((d) => (
           <tr key={d.id} className="border-b border-gray-50 dark:border-gray-700">
-            <td className="py-2 font-medium text-gray-900 dark:text-gray-100">{d.domainName}</td>
-            <td className="py-2 text-gray-600 dark:text-gray-400">{d.dnsMode}</td>
-            <td className="py-2 text-gray-600 dark:text-gray-400">{d.sslAutoRenew ? 'Auto' : 'Manual'}</td>
-            <td className="py-2"><StatusBadge status={d.status as 'active' | 'pending' | 'error'} /></td>
-            <td className="py-2 text-gray-500 dark:text-gray-400">{new Date(d.createdAt).toLocaleDateString()}</td>
-            <td className="py-2 text-right">
+            <td className="px-3 py-2 font-medium text-gray-900 dark:text-gray-100">{d.domainName}</td>
+            <td className="px-3 py-2 text-gray-600 dark:text-gray-400">{d.dnsMode}</td>
+            <td className="px-3 py-2 text-gray-600 dark:text-gray-400">{d.sslAutoRenew ? 'Auto' : 'Manual'}</td>
+            <td className="px-3 py-2"><StatusBadge status={d.status as 'active' | 'pending' | 'error'} /></td>
+            <td className="px-3 py-2 text-gray-500 dark:text-gray-400">{new Date(d.createdAt).toLocaleDateString()}</td>
+            <td className="px-3 py-2 text-right">
               {/* Primary mode only — in cname/secondary mode the platform does
                   not control the zone, so there is nothing to refresh. */}
               {d.dnsMode === 'primary' && (
@@ -1055,46 +1057,9 @@ function RefreshRouteDnsButton({ tenantId, domainId }: { readonly tenantId: stri
   );
 }
 
-function ApplicationsTab({ tenantId }: { readonly tenantId: string | undefined }) {
-  const { data, isLoading, error } = useDeployments(tenantId, 'application');
-
-  if (isLoading) return <TabLoading />;
-  if (error) return <TabError message="Failed to load applications." />;
-
-  const items = data?.data ?? [];
-  if (items.length === 0) {
-    return (
-      <p className="py-6 text-center text-sm text-gray-500 dark:text-gray-400" data-testid="applications-tab-empty">
-        No applications deployed.
-      </p>
-    );
-  }
-
-  return (
-    <table className="w-full text-left text-sm" data-testid="applications-table">
-      <thead>
-        <tr className="border-b border-gray-100 dark:border-gray-700 text-xs font-medium uppercase text-gray-500 dark:text-gray-400">
-          <th className="py-2 pr-4">Name</th>
-          <th className="py-2 pr-4">Version</th>
-          <th className="py-2 pr-4">Domain</th>
-          <th className="py-2 pr-4">Status</th>
-          <th className="py-2 pr-4">Created</th>
-        </tr>
-      </thead>
-      <tbody>
-        {items.map((d) => (
-          <tr key={d.id} className="border-b border-gray-50 dark:border-gray-700">
-            <td className="py-2 font-medium text-gray-900 dark:text-gray-100">{d.name}</td>
-            <td className="py-2 text-gray-600 dark:text-gray-400">{d.installedVersion ?? '\u2014'}</td>
-            <td className="py-2 text-gray-600 dark:text-gray-400">{d.domainName ?? '\u2014'}</td>
-            <td className="py-2"><StatusBadge status={d.status as Parameters<typeof StatusBadge>[0]['status']} /></td>
-            <td className="py-2 text-gray-500 dark:text-gray-400">{new Date(d.createdAt).toLocaleDateString()}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
-  );
-}
+// ApplicationsTab removed with its tab: it listed deployments of type
+// `application`, a filtered view of the Deployments tab beside it, under a
+// second name for the same objects.
 
 interface EmailTabProps {
   readonly emailDomains: readonly { readonly id: string; readonly domainName: string; readonly enabled: number; readonly mailboxCount?: number; readonly createdAt: string }[] | undefined;
@@ -1128,21 +1093,21 @@ function EmailTab({ emailDomains, mailboxes, tenantId, isLoading, error }: Email
         <table className="w-full text-left text-sm">
           <thead>
             <tr className="border-b border-gray-100 dark:border-gray-700 text-xs font-medium uppercase text-gray-500 dark:text-gray-400">
-              <SortableHeader label="Domain" sortKey="domainName" currentKey={domainSortKey} direction={domainSortDir} onSort={onDomainSort} />
-              <SortableHeader label="Mailboxes" sortKey="mailboxCount" currentKey={domainSortKey} direction={domainSortDir} onSort={onDomainSort} />
-              <SortableHeader label="Status" sortKey="enabled" currentKey={domainSortKey} direction={domainSortDir} onSort={onDomainSort} />
-              <SortableHeader label="Created" sortKey="createdAt" currentKey={domainSortKey} direction={domainSortDir} onSort={onDomainSort} />
+              <SortableHeader label="Domain" sortKey="domainName" currentKey={domainSortKey} direction={domainSortDir} onSort={onDomainSort}  className="!px-3 !py-2" />
+              <SortableHeader label="Mailboxes" sortKey="mailboxCount" currentKey={domainSortKey} direction={domainSortDir} onSort={onDomainSort}  className="!px-3 !py-2" />
+              <SortableHeader label="Status" sortKey="enabled" currentKey={domainSortKey} direction={domainSortDir} onSort={onDomainSort}  className="!px-3 !py-2" />
+              <SortableHeader label="Created" sortKey="createdAt" currentKey={domainSortKey} direction={domainSortDir} onSort={onDomainSort}  className="!px-3 !py-2" />
             </tr>
           </thead>
           <tbody>
             {sortedDomains.map((d) => (
               <tr key={d.id} className="border-b border-gray-50 dark:border-gray-700">
-                <td className="py-2 font-medium text-gray-900 dark:text-gray-100">{d.domainName}</td>
-                <td className="py-2 text-gray-600 dark:text-gray-400">{d.mailboxCount ?? 0}</td>
-                <td className="py-2">
+                <td className="px-3 py-2 font-medium text-gray-900 dark:text-gray-100">{d.domainName}</td>
+                <td className="px-3 py-2 text-gray-600 dark:text-gray-400">{d.mailboxCount ?? 0}</td>
+                <td className="px-3 py-2">
                   <StatusBadge status={d.enabled ? 'active' : 'suspended'} />
                 </td>
-                <td className="py-2 text-gray-500 dark:text-gray-400">{new Date(d.createdAt).toLocaleDateString()}</td>
+                <td className="px-3 py-2 text-gray-500 dark:text-gray-400">{new Date(d.createdAt).toLocaleDateString()}</td>
               </tr>
             ))}
           </tbody>
@@ -1159,16 +1124,16 @@ function EmailTab({ emailDomains, mailboxes, tenantId, isLoading, error }: Email
           <table className="w-full text-left text-sm">
             <thead>
               <tr className="border-b border-gray-100 dark:border-gray-700 text-xs font-medium uppercase text-gray-500 dark:text-gray-400">
-                <SortableHeader label="Address" sortKey="fullAddress" currentKey={mboxSortKey} direction={mboxSortDir} onSort={onMboxSort} />
-                <SortableHeader label="Display Name" sortKey="displayName" currentKey={mboxSortKey} direction={mboxSortDir} onSort={onMboxSort} />
-                <SortableHeader label="Quota" sortKey="usedMb" currentKey={mboxSortKey} direction={mboxSortDir} onSort={onMboxSort} />
-                <SortableHeader label="Status" sortKey="status" currentKey={mboxSortKey} direction={mboxSortDir} onSort={onMboxSort} />
+                <SortableHeader label="Address" sortKey="fullAddress" currentKey={mboxSortKey} direction={mboxSortDir} onSort={onMboxSort}  className="!px-3 !py-2" />
+                <SortableHeader label="Display Name" sortKey="displayName" currentKey={mboxSortKey} direction={mboxSortDir} onSort={onMboxSort}  className="!px-3 !py-2" />
+                <SortableHeader label="Quota" sortKey="usedMb" currentKey={mboxSortKey} direction={mboxSortDir} onSort={onMboxSort}  className="!px-3 !py-2" />
+                <SortableHeader label="Status" sortKey="status" currentKey={mboxSortKey} direction={mboxSortDir} onSort={onMboxSort}  className="!px-3 !py-2" />
               </tr>
             </thead>
             <tbody>
               {sortedMailboxes.map((m) => (
                 <tr key={m.id} className="border-b border-gray-50 dark:border-gray-700">
-                  <td className="py-2 font-medium text-gray-900 dark:text-gray-100">
+                  <td className="px-3 py-2 font-medium text-gray-900 dark:text-gray-100">
                     {m.fullAddress}
                     {(m.aliases?.length ?? 0) > 0 && (
                       <div className="text-xs font-normal text-teal-600 dark:text-teal-400" title={(m.aliases ?? []).join(', ')}>
@@ -1181,9 +1146,9 @@ function EmailTab({ emailDomains, mailboxes, tenantId, isLoading, error }: Email
                       </div>
                     )}
                   </td>
-                  <td className="py-2 text-gray-600 dark:text-gray-400">{m.displayName ?? '\u2014'}</td>
-                  <td className="py-2 text-gray-600 dark:text-gray-400">{m.usedMb}/{m.quotaMb} MB</td>
-                  <td className="py-2">
+                  <td className="px-3 py-2 text-gray-600 dark:text-gray-400">{m.displayName ?? '\u2014'}</td>
+                  <td className="px-3 py-2 text-gray-600 dark:text-gray-400">{m.usedMb}/{m.quotaMb} MB</td>
+                  <td className="px-3 py-2">
                     <StatusBadge status={m.status as 'active' | 'pending' | 'suspended'} />
                   </td>
                 </tr>
@@ -1464,14 +1429,14 @@ function DeploymentsTab({ data, isLoading, error, tenantId }: TabContentProps<De
       <table className="w-full text-left text-sm" data-testid="deployments-table">
       <thead>
         <tr className="border-b border-gray-100 dark:border-gray-700 text-xs font-medium uppercase text-gray-500 dark:text-gray-400">
-          <SortableHeader label="Name" sortKey="name" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
-          <SortableHeader label="Type" sortKey="type" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
-          <SortableHeader label="Node" sortKey="currentNodeName" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
-          <SortableHeader label="Replicas" sortKey="replicaCount" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
-          <SortableHeader label="CPU" sortKey="cpuRequest" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
-          <SortableHeader label="Memory" sortKey="memoryRequest" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
-          <SortableHeader label="Status" sortKey="status" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
-          <SortableHeader label="Created" sortKey="createdAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+          <SortableHeader label="Name" sortKey="name" currentKey={sortKey} direction={sortDirection} onSort={onSort}  className="!px-3 !py-2" />
+          <SortableHeader label="Type" sortKey="type" currentKey={sortKey} direction={sortDirection} onSort={onSort}  className="!px-3 !py-2" />
+          <SortableHeader label="Node" sortKey="currentNodeName" currentKey={sortKey} direction={sortDirection} onSort={onSort}  className="!px-3 !py-2" />
+          <SortableHeader label="Replicas" sortKey="replicaCount" currentKey={sortKey} direction={sortDirection} onSort={onSort}  className="!px-3 !py-2" />
+          <SortableHeader label="CPU" sortKey="cpuRequest" currentKey={sortKey} direction={sortDirection} onSort={onSort}  className="!px-3 !py-2" />
+          <SortableHeader label="Memory" sortKey="memoryRequest" currentKey={sortKey} direction={sortDirection} onSort={onSort}  className="!px-3 !py-2" />
+          <SortableHeader label="Status" sortKey="status" currentKey={sortKey} direction={sortDirection} onSort={onSort}  className="!px-3 !py-2" />
+          <SortableHeader label="Created" sortKey="createdAt" currentKey={sortKey} direction={sortDirection} onSort={onSort}  className="!px-3 !py-2" />
           <th className="px-3 py-2 text-right">Actions</th>
         </tr>
       </thead>
@@ -1497,7 +1462,7 @@ function DeploymentsTab({ data, isLoading, error, tenantId }: TabContentProps<De
           return (
             <Fragment key={d.id}>
               <tr className="border-b border-gray-50 dark:border-gray-700">
-                <td className="py-2 font-medium text-gray-900 dark:text-gray-100">
+                <td className="px-3 py-2 font-medium text-gray-900 dark:text-gray-100">
                   {d.name}
                   {d.source === 'custom' && (
                     <span className="ml-1.5 rounded-full bg-purple-100 px-1.5 py-0.5 text-[10px] font-medium text-purple-700 dark:bg-purple-900/30 dark:text-purple-300" title="Custom container/compose deployment (ADR-036)">
@@ -1505,14 +1470,14 @@ function DeploymentsTab({ data, isLoading, error, tenantId }: TabContentProps<De
                     </span>
                   )}
                 </td>
-                <td className="py-2 text-gray-600 dark:text-gray-400">{d.type}</td>
-                <td className="py-2 font-mono text-gray-700 dark:text-gray-300">{d.currentNodeName ?? <span className="text-gray-400">—</span>}</td>
-                <td className="py-2 text-gray-600 dark:text-gray-400">{d.replicaCount}</td>
-                <td className="py-2 text-gray-600 dark:text-gray-400">{d.cpuRequest}</td>
-                <td className="py-2 text-gray-600 dark:text-gray-400">{d.memoryRequest}</td>
-                <td className="py-2"><StatusBadge status={d.status as Parameters<typeof StatusBadge>[0]['status']} /></td>
-                <td className="py-2 text-gray-500 dark:text-gray-400">{new Date(d.createdAt).toLocaleDateString()}</td>
-                <td className="py-2 text-right">
+                <td className="px-3 py-2 text-gray-600 dark:text-gray-400">{d.type}</td>
+                <td className="px-3 py-2 font-mono text-gray-700 dark:text-gray-300">{d.currentNodeName ?? <span className="text-gray-400">—</span>}</td>
+                <td className="px-3 py-2 text-gray-600 dark:text-gray-400">{d.replicaCount}</td>
+                <td className="px-3 py-2 text-gray-600 dark:text-gray-400">{d.cpuRequest}</td>
+                <td className="px-3 py-2 text-gray-600 dark:text-gray-400">{d.memoryRequest}</td>
+                <td className="px-3 py-2"><StatusBadge status={d.status as Parameters<typeof StatusBadge>[0]['status']} /></td>
+                <td className="px-3 py-2 text-gray-500 dark:text-gray-400">{new Date(d.createdAt).toLocaleDateString()}</td>
+                <td className="px-3 py-2 text-right">
                   <div className="inline-flex items-center gap-1.5">
                     {d.status !== 'deleted' && d.status !== 'stopped' && (
                       <button
@@ -1668,6 +1633,56 @@ function TenantBundlesSummary({ tenantId }: { readonly tenantId: string }) {
   );
 }
 
+/**
+ * The tenant's SFTP accounts. Read-only here for the same reason the
+ * cross-tenant table is: creating one belongs in the flow where the home
+ * path and the tenant's storage are both in view.
+ */
+function TenantSftpUsersTab({ tenantId }: { readonly tenantId: string }) {
+  const { data, isLoading, error } = useSftpUsers({ tenantId });
+  if (isLoading) return <TabLoading />;
+  if (error) return <TabError message="Failed to load SFTP users." />;
+  const users = data?.data ?? [];
+  if (users.length === 0) {
+    return (
+      <p className="py-6 text-center text-sm text-gray-500 dark:text-gray-400" data-testid="sftp-tab-empty">
+        No SFTP users for this tenant.
+      </p>
+    );
+  }
+  return (
+    <table className="w-full text-left text-sm" data-testid="tenant-sftp-users-table">
+      <thead>
+        <tr className="border-b border-gray-200 text-xs uppercase tracking-wider text-gray-500 dark:border-gray-700 dark:text-gray-400">
+          <th className="px-3 py-2">Username</th>
+          <th className="px-3 py-2">Home path</th>
+          <th className="px-3 py-2">Status</th>
+          <th className="px-3 py-2">Last login</th>
+        </tr>
+      </thead>
+      <tbody>
+        {users.map((u) => (
+          <tr key={u.id} className="border-b border-gray-100 last:border-0 dark:border-gray-700/50">
+            <td className="px-3 py-2 font-mono text-gray-900 dark:text-gray-100">{u.username}</td>
+            <td className="px-3 py-2 font-mono text-xs text-gray-500 dark:text-gray-400">{u.homePath}</td>
+            <td className="px-3 py-2">
+              <span className={u.enabled
+                ? 'inline-flex rounded-full bg-green-50 px-2.5 py-0.5 text-xs font-medium text-green-700 dark:bg-green-900/40 dark:text-green-300'
+                : 'inline-flex rounded-full bg-gray-100 px-2.5 py-0.5 text-xs font-medium text-gray-600 dark:bg-gray-700 dark:text-gray-300'}
+              >
+                {u.enabled ? 'enabled' : 'disabled'}
+              </span>
+            </td>
+            <td className="px-3 py-2 text-gray-500 dark:text-gray-400">
+              {u.lastLoginAt ? new Date(u.lastLoginAt).toLocaleString() : 'never'}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
 function BackupsTab({ bundles, isLoading, error, tenantId }: {
   readonly bundles: readonly BundleSummary[] | undefined;
   readonly isLoading: boolean;
@@ -1686,26 +1701,26 @@ function BackupsTab({ bundles, isLoading, error, tenantId }: {
     <table className="w-full text-left text-sm" data-testid="backups-table">
       <thead>
         <tr className="border-b border-gray-100 dark:border-gray-700 text-xs font-medium uppercase text-gray-500 dark:text-gray-400">
-          <SortableHeader label="Created" sortKey="createdAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
-          <SortableHeader label="Status" sortKey="status" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
-          <SortableHeader label="Size" sortKey="sizeBytes" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
-          <SortableHeader label="Started by" sortKey="initiator" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
-          <SortableHeader label="Expires" sortKey="expiresAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
-          <th className="py-2" />
+          <SortableHeader label="Created" sortKey="createdAt" currentKey={sortKey} direction={sortDirection} onSort={onSort}  className="!px-3 !py-2" />
+          <SortableHeader label="Status" sortKey="status" currentKey={sortKey} direction={sortDirection} onSort={onSort}  className="!px-3 !py-2" />
+          <SortableHeader label="Size" sortKey="sizeBytes" currentKey={sortKey} direction={sortDirection} onSort={onSort}  className="!px-3 !py-2" />
+          <SortableHeader label="Started by" sortKey="initiator" currentKey={sortKey} direction={sortDirection} onSort={onSort}  className="!px-3 !py-2" />
+          <SortableHeader label="Expires" sortKey="expiresAt" currentKey={sortKey} direction={sortDirection} onSort={onSort}  className="!px-3 !py-2" />
+          <th className="px-3 py-2" />
         </tr>
       </thead>
       <tbody>
         {sortedItems.map((b) => (
           <tr key={b.id} className="border-b border-gray-50 dark:border-gray-700">
-            <td className="py-2 font-medium text-gray-900 dark:text-gray-100"><TimeCell iso={b.createdAt} /></td>
-            <td className="py-2"><StatusBadge status={b.status} /></td>
-            <td className="py-2 text-gray-600 dark:text-gray-400">{b.sizeBytes ? formatBytes(b.sizeBytes) : '—'}</td>
-            <td className="py-2 text-gray-600 dark:text-gray-400">{b.initiator}</td>
+            <td className="px-3 py-2 font-medium text-gray-900 dark:text-gray-100"><TimeCell iso={b.createdAt} /></td>
+            <td className="px-3 py-2"><StatusBadge status={b.status} /></td>
+            <td className="px-3 py-2 text-gray-600 dark:text-gray-400">{b.sizeBytes ? formatBytes(b.sizeBytes) : '—'}</td>
+            <td className="px-3 py-2 text-gray-600 dark:text-gray-400">{b.initiator}</td>
             {/* mode="until": an expiry is in the FUTURE, and TimeCell's default
                 age mode renders any future instant as "just now" (caught in the
                 browser on DEV). Same rendering the cross-tenant Backups page uses. */}
-            <td className="py-2 text-gray-500 dark:text-gray-400">{b.expiresAt ? <TimeCell iso={b.expiresAt} mode="until" /> : '—'}</td>
-            <td className="py-2 text-right">
+            <td className="px-3 py-2 text-gray-500 dark:text-gray-400">{b.expiresAt ? <TimeCell iso={b.expiresAt} mode="until" /> : '—'}</td>
+            <td className="px-3 py-2 text-right">
               <Link
                 to={`/backups/tenants?tab=backups&tenant=${tenantId ?? b.tenantId}&bundle=${b.id}`}
                 className="text-xs font-medium text-blue-600 hover:underline dark:text-blue-400"
@@ -3151,16 +3166,16 @@ function PvcPlacementSection({ tenantId }: { readonly tenantId: string }) {
       <table className="w-full text-xs">
         <thead className="text-left text-gray-500 dark:text-gray-400">
           <tr>
-            <SortableHeader label="PVC" sortKey="pvcName" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="!px-2 !py-1.5 !text-left" />
-            <SortableHeader label="Volume" sortKey="volumeName" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="!px-2 !py-1.5 !text-left" />
-            <SortableHeader label="FS" sortKey="fsType" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="!px-2 !py-1.5 !text-left" />
-            <SortableHeader label="Requested" sortKey="sizeBytes" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="!px-2 !py-1.5 !text-left" />
-            <SortableHeader label="Used" sortKey="usedBytes" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="!px-2 !py-1.5 !text-left" />
-            <SortableHeader label="State" sortKey="state" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="!px-2 !py-1.5 !text-left" />
-            <SortableHeader label="Robustness" sortKey="robustness" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="!px-2 !py-1.5 !text-left" />
-            <th className="px-2 py-1.5 text-left font-medium">Replicas</th>
-            <th className="px-2 py-1.5 text-left font-medium">Replica node(s)</th>
-            <th className="px-2 py-1.5 text-left font-medium">Filesystem</th>
+            <SortableHeader label="PVC" sortKey="pvcName" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="!px-3 !py-2 !text-left" />
+            <SortableHeader label="Volume" sortKey="volumeName" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="!px-3 !py-2 !text-left" />
+            <SortableHeader label="FS" sortKey="fsType" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="!px-3 !py-2 !text-left" />
+            <SortableHeader label="Requested" sortKey="sizeBytes" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="!px-3 !py-2 !text-left" />
+            <SortableHeader label="Used" sortKey="usedBytes" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="!px-3 !py-2 !text-left" />
+            <SortableHeader label="State" sortKey="state" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="!px-3 !py-2 !text-left" />
+            <SortableHeader label="Robustness" sortKey="robustness" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="!px-3 !py-2 !text-left" />
+            <th className="px-3 py-2 text-left font-medium">Replicas</th>
+            <th className="px-3 py-2 text-left font-medium">Replica node(s)</th>
+            <th className="px-3 py-2 text-left font-medium">Filesystem</th>
           </tr>
         </thead>
         <tbody>
@@ -3169,9 +3184,9 @@ function PvcPlacementSection({ tenantId }: { readonly tenantId: string }) {
             const fsLabel = (p.fsType ?? '—').toLowerCase();
             return (
               <tr key={p.volumeName} className="border-t border-gray-100 dark:border-gray-700">
-                <td className="px-2 py-1.5 font-mono">{p.pvcName}</td>
-                <td className="px-2 py-1.5 font-mono text-gray-500 dark:text-gray-400">{p.volumeName.slice(0, 12)}…</td>
-                <td className="px-2 py-1.5">
+                <td className="px-3 py-2 font-mono">{p.pvcName}</td>
+                <td className="px-3 py-2 font-mono text-gray-500 dark:text-gray-400">{p.volumeName.slice(0, 12)}…</td>
+                <td className="px-3 py-2">
                   <span className={fsLabel === 'xfs'
                     ? 'rounded bg-blue-100 px-1 py-0.5 text-[10px] text-blue-800 dark:bg-blue-900/40 dark:text-blue-300'
                     : fsLabel === 'ext4' || fsLabel === 'ext3'
@@ -3181,14 +3196,14 @@ function PvcPlacementSection({ tenantId }: { readonly tenantId: string }) {
                     {fsLabel}
                   </span>
                 </td>
-                <td className="px-2 py-1.5">{p.sizeBytes > 0 ? formatBytes(p.sizeBytes) : '—'}</td>
-                <td className="px-2 py-1.5">
+                <td className="px-3 py-2">{p.sizeBytes > 0 ? formatBytes(p.sizeBytes) : '—'}</td>
+                <td className="px-3 py-2">
                   {p.usedBytes > 0 ? formatBytes(p.usedBytes) : '0 B'}
                   {p.allocatedBytes > 0 && (
                     <span className="ml-1 text-gray-500 dark:text-gray-400">({formatBytes(p.allocatedBytes)})</span>
                   )}
                 </td>
-                <td className="px-2 py-1.5">
+                <td className="px-3 py-2">
                   {(() => {
                     // Longhorn reports state="detached" any time no Pod
                     // consumes the PVC. For a healthy idle volume that's
@@ -3217,7 +3232,7 @@ function PvcPlacementSection({ tenantId }: { readonly tenantId: string }) {
                     return <span className="text-gray-700 dark:text-gray-300">{state ?? '—'}</span>;
                   })()}
                 </td>
-                <td className="px-2 py-1.5">
+                <td className="px-3 py-2">
                   <span className={p.robustness === 'healthy'
                     ? 'rounded bg-green-100 px-1 py-0.5 text-[10px] text-green-800 dark:bg-green-900/40 dark:text-green-300'
                     : p.robustness === 'degraded' ? 'rounded bg-amber-100 px-1 py-0.5 text-[10px] text-amber-800 dark:bg-amber-900/40 dark:text-amber-300'
@@ -3225,7 +3240,7 @@ function PvcPlacementSection({ tenantId }: { readonly tenantId: string }) {
                     {p.robustness ?? '—'}
                   </span>
                 </td>
-                <td className="px-2 py-1.5">
+                <td className="px-3 py-2">
                   <span className={replicasOk
                     ? 'rounded bg-green-100 px-1 py-0.5 text-[10px] text-green-800 dark:bg-green-900/40 dark:text-green-300'
                     : 'rounded bg-amber-100 px-1 py-0.5 text-[10px] text-amber-800 dark:bg-amber-900/40 dark:text-amber-300'}
@@ -3233,10 +3248,10 @@ function PvcPlacementSection({ tenantId }: { readonly tenantId: string }) {
                     {p.replicasHealthy}/{p.replicasExpected}
                   </span>
                 </td>
-                <td className="px-2 py-1.5 font-mono">
+                <td className="px-3 py-2 font-mono">
                   {p.replicaNodes.length === 0 ? <span className="text-gray-400">—</span> : p.replicaNodes.join(', ')}
                 </td>
-                <td className="px-2 py-1.5">
+                <td className="px-3 py-2">
                   <div className="flex gap-1">
                     <button
                       type="button"

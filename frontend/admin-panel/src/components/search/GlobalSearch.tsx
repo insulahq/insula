@@ -35,7 +35,11 @@ interface Row {
   readonly groupLabel: string;
 }
 
-const PLACEHOLDER = 'Search pages, tenants, domains…';
+// Short by requirement: the previous placeholder listed what is
+// searchable and was long enough to wrap the control onto a second
+// line on a narrow viewport. The result list already shows what was
+// found, so the field only has to name itself.
+const PLACEHOLDER = 'Universal Search';
 
 export default function GlobalSearch() {
   const navigate = useNavigate();
@@ -175,7 +179,13 @@ export default function GlobalSearch() {
   const activeId = rows[activeIndex] ? `gs-row-${activeIndex}` : undefined;
 
   const boxClass =
-    'w-full rounded-lg border border-gray-200 bg-gray-50 py-2 pl-9 pr-4 text-sm ' +
+    // `whitespace-nowrap truncate` — the control is 114px wide at 390px,
+    // and the label wrapped INSIDE it onto a second line, doubling the
+    // header's height on mobile. Shortening the text did not fix that,
+    // only delayed it: any label long enough to fill the button wraps
+    // while wrapping is allowed. It clips now, which is the right
+    // failure for a control whose job is to be tapped.
+    'w-full truncate whitespace-nowrap rounded-lg border border-gray-200 bg-gray-50 py-2 pl-9 pr-4 text-sm ' +
     'dark:border-gray-600 dark:bg-gray-700';
 
   return (

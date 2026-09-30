@@ -1,6 +1,6 @@
 import { NavLink, Outlet } from 'react-router-dom';
 import clsx from 'clsx';
-import { Users, Globe, Boxes, UserCircle, Mail, Clock } from 'lucide-react';
+import { HardDrive, Users, Globe, Boxes, UserCircle, Mail, Clock } from 'lucide-react';
 
 interface TabDef {
   readonly to: string;
@@ -15,6 +15,7 @@ const TABS: readonly TabDef[] = [
   { to: '/tenants/users', label: 'Users', icon: UserCircle },
   { to: '/tenants/email-accounts', label: 'Email Accounts', icon: Mail },
   { to: '/tenants/cron-jobs', label: 'Cron Jobs', icon: Clock },
+  { to: '/tenants/sftp-users', label: 'SFTP Users', icon: HardDrive },
 ];
 
 export default function TenantsLayout() {

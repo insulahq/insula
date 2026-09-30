@@ -305,33 +305,33 @@ export default function TenantUsersTab({ tenantId }: { readonly tenantId: string
           <table className="w-full text-left text-sm">
             <thead>
               <tr className="border-b border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-900/50">
-                <th className="px-6 py-3 text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">Name</th>
-                <th className="px-6 py-3 text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">Email</th>
-                <th className="px-6 py-3 text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">Role</th>
-                <th className="px-6 py-3 text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">Status</th>
-                <th className="hidden px-6 py-3 text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400 sm:table-cell">Last Login</th>
-                <th className="px-6 py-3 text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">Actions</th>
+                <th className="px-3 py-2 text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">Name</th>
+                <th className="px-3 py-2 text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">Email</th>
+                <th className="px-3 py-2 text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">Role</th>
+                <th className="px-3 py-2 text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">Status</th>
+                <th className="px-3 py-2 hidden text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400 sm:table-cell">Last Login</th>
+                <th className="px-3 py-2 text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">Actions</th>
               </tr>
             </thead>
             <tbody>
               {users.map((u) => (
                 <tr key={u.id} className="border-b border-gray-100 dark:border-gray-700 last:border-0">
-                  <td className="px-6 py-4 font-medium text-gray-900 dark:text-gray-100">{u.fullName}</td>
-                  <td className="px-6 py-4 text-gray-600 dark:text-gray-400">{u.email}</td>
-                  <td className="px-6 py-4">
+                  <td className="px-3 py-2 font-medium text-gray-900 dark:text-gray-100">{u.fullName}</td>
+                  <td className="px-3 py-2 text-gray-600 dark:text-gray-400">{u.email}</td>
+                  <td className="px-3 py-2">
                     <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${ROLE_BADGE_CLASSES[u.roleName as SubUserRole] ?? ROLE_BADGE_CLASSES.tenant_user}`}>
                       {ROLE_LABELS[u.roleName as SubUserRole] ?? u.roleName}
                     </span>
                   </td>
-                  <td className="px-6 py-4">
+                  <td className="px-3 py-2">
                     <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${u.status === 'active' ? 'bg-green-50 text-green-700 dark:bg-green-900/40 dark:text-green-300' : 'bg-gray-50 text-gray-600 dark:bg-gray-700 dark:text-gray-400'}`}>
                       {u.status}
                     </span>
                   </td>
-                  <td className="hidden px-6 py-4 text-gray-500 dark:text-gray-400 sm:table-cell">
+                  <td className="px-3 py-2 hidden text-gray-500 dark:text-gray-400 sm:table-cell">
                     {u.lastLoginAt ? new Date(u.lastLoginAt).toLocaleDateString() : 'Never'}
                   </td>
-                  <td className="px-6 py-4">
+                  <td className="px-3 py-2">
                     {deleteConfirmId === u.id ? (
                       <div className="inline-flex gap-1">
                         <button

@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
 
-interface NotificationEntry {
+export interface NotificationEntry {
   readonly id: string;
   readonly userId: string;
   readonly type: 'info' | 'warning' | 'error' | 'success';
@@ -92,6 +92,18 @@ export function useDeleteNotification() {
   return useMutation({
     mutationFn: (id: string) =>
       apiFetch<void>(`/api/v1/notifications/${id}`, { method: 'DELETE' }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['notifications'] });
+      qc.invalidateQueries({ queryKey: ['notifications-unread-count'] });
+    },
+  });
+}
+
+export function useDeleteAllNotifications() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      apiFetch<{ data: { deleted: number } }>('/api/v1/notifications', { method: 'DELETE' }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['notifications'] });
       qc.invalidateQueries({ queryKey: ['notifications-unread-count'] });
