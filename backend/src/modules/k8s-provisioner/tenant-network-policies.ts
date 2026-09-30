@@ -19,7 +19,7 @@
  *                               public, authenticated services: HTTP(S) ingress
  *                               (Traefik), the mail server, and the SFTP
  *                               gateway. Additive over tenant-egress.
- *   6. allow-backup-jobs-egress — backup/restore Jobs → platform-api + the
+ *   6. allow-backup-jobs-egress — backup/restore/bundle-import Jobs → platform-api + the
  *                               rclone-shim (scoped by component label).
  *
  * ── Why the pod-CIDR ipBlock was REMOVED ──────────────────────
@@ -449,7 +449,13 @@ export function buildTenantNetworkPolicies(
         spec: {
           podSelector: {
             matchExpressions: [
-              { key: 'platform.io/component', operator: 'In', values: ['backup-files', 'restore-files'] },
+              // `bundle-import` (ADR-063) needs the SAME two destinations: the
+              // shim on :9000 for `restic backup`, and platform-api on :3000
+              // for the internal config/secrets artifact upload. Omitting it
+              // was not a visible error — the Job scheduled, extracted, and
+              // then sat in `restic backup` retrying
+              // `dial tcp <shim-ip>:9000: i/o timeout` until its deadline.
+              { key: 'platform.io/component', operator: 'In', values: ['backup-files', 'restore-files', 'bundle-import'] },
             ],
           },
           policyTypes: ['Egress'],

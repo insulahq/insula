@@ -65,7 +65,10 @@ describe('buildTenantNetworkPolicies', () => {
     // scoped to the backup/restore component label, not all pods
     expect(spec.podSelector).toEqual({
       matchExpressions: [
-        { key: 'platform.io/component', operator: 'In', values: ['backup-files', 'restore-files'] },
+        // bundle-import (ADR-063) needs the same shim:9000 + platform-api:3000
+        // egress. Without it the import Job schedules and extracts, then hangs
+        // in `restic backup` on `dial tcp <shim-ip>:9000: i/o timeout`.
+        { key: 'platform.io/component', operator: 'In', values: ['backup-files', 'restore-files', 'bundle-import'] },
       ],
     });
     const egress = spec.egress as Array<{ to: Array<Record<string, unknown>>; ports: Array<{ port: number }> }>;
