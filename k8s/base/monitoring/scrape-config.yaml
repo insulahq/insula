@@ -90,7 +90,7 @@ data:
           # event). id="/" = global kernel OOMs; per-namespace series feed
           # the system-container-oom SLO rule. One series per container.
           - source_labels: [__name__]
-            regex: 'container_(memory_working_set_bytes|cpu_usage_seconds_total|fs_usage_bytes|network_(transmit|receive)_bytes_total|oom_events_total)|machine_memory_bytes|machine_cpu_cores'
+            regex: 'container_(memory_working_set_bytes|cpu_usage_seconds_total|network_(transmit|receive)_bytes_total|oom_events_total)|machine_memory_bytes|machine_cpu_cores'
             action: keep
           # Drop the CNI plumbing. cAdvisor attributes every host interface to
           # the root cgroup (and to any hostNetwork pod), so one Calico veth per
@@ -123,28 +123,50 @@ data:
           - source_labels: [__name__, interface]
             regex: 'container_network_[^;]*;(cali[0-9a-f].*|tunl.*|veth.*|docker.*|br-.*|flannel.*|cni.*|dummy.*|nodelocaldns.*|kube-ipvs.*|lo)'
             action: drop
-
-      # ── kubelet: pod/container requests-level resource metrics ──
-      - job_name: kubelet-resource
-        scheme: https
-        metrics_path: /metrics/resource
-        kubernetes_sd_configs:
-          - role: node
-        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
-        tls_config:
-          insecure_skip_verify: true
-        relabel_configs:
-          - source_labels: [__meta_kubernetes_node_name]
-            target_label: node
-        metric_relabel_configs:
-          # Swap is OFF on every supported node (k3s requires it disabled;
-          # verified `Swap: 0` on the production cluster), so
-          # these 1073 series are a constant zero per container and pod.
-          # If swap support is ever enabled, delete this rule — the
-          # metrics are genuinely useful then.
-          - source_labels: [__name__]
-            regex: '(container|pod|node)_swap_(usage|limit)_bytes'
+          # CHURN GUARD: the pod NAME is a label, so a CronJob that fires every
+          # 2 minutes mints a brand-new set of series 720 times a day and every
+          # one of them stays in the index for the full 30d retention. Measured
+          # on the reference cluster: 577 distinct pods seen in 24h against 98
+          # actually running (5.9x), driving the tsid cache 57,265 -> 172,805
+          # entries over nineteen days at a dead-linear +6,100/day while only
+          # 17,391 series were live. That index growth is what pushed the Go
+          # heap into GOMEMLIMIT and OOM-killed this pod.
+          #
+          # Dropped by pod-name prefix rather than by a generic CronJob-pod
+          # regex ON PURPOSE: real batch work (bk-files/bk-mbox/barman/
+          # platform-*-backup) DOES get OOM-killed and its
+          # container_oom_events_total is load-bearing. These three are
+          # short-lived guards and reconcilers whose own failure is already
+          # reported as a failed Job. Add a prefix here only when the pod is
+          # BOTH high-frequency AND separately monitored.
+          #
+          # Cadence is deliberately NOT relaxed to buy this back: traefik-plugin-guard
+          # runs every 2 min to bound a plugin outage, and that detection window
+          # is worth more than the series were costing.
+          - source_labels: [pod]
+            regex: '(traefik-plugin-guard|ingress-external-ips-reconciler|version-poller)-[0-9]+-[a-z0-9]+'
             action: drop
+
+      # ── kubelet: /metrics/resource — REMOVED ───────────────────
+      # This job was 100% redundant. It served five families and NOTHING
+      # read any of them:
+      #   pod_cpu_usage_seconds_total        456 series  — unread
+      #   pod_memory_working_set_bytes       456 series  — unread
+      #   container_start_time_seconds       464 series  — unread
+      #   container_cpu_usage_seconds_total   —  a DUPLICATE of cadvisor's
+      #   container_memory_working_set_bytes  —  a DUPLICATE of cadvisor's
+      # Verified against every real query: the code reads
+      # container_memory_working_set_bytes{id="/"} and machine_memory_bytes,
+      # both of which carry an `id` label this endpoint never emits, so they
+      # can only ever have come from cadvisor. The 48h query log on both
+      # clusters confirms no reader.
+      #
+      # It was also an UNGUARDED second source of tenant-scaling, pod-name
+      # churn — it had no keep-list at all, only a swap-metric drop — while
+      # the cadvisor comment above claimed cadvisor was the only such job.
+      #
+      # If pod-level (as opposed to container-level) accounting is ever
+      # needed, restore this job WITH a keep-list; do not restore it bare.
 
       # ── kubelet: PVC usage ──────────────────────────────────────
       # kubelet_volume_stats_* live on the kubelet's MAIN /metrics endpoint,
@@ -237,6 +259,22 @@ data:
             regex: 'go_.*_bucket'
             action: drop
 
+          # Families with no reader, verified against the 48h query log on
+          # both clusters and against every PromQL string in the backend:
+          #   traefik_service_requests_tls_total               196 series
+          #   traefik_entrypoint_requests_bytes_total          120
+          #   traefik_entrypoint_responses_bytes_total         120
+          #   traefik_entrypoint_request_duration_seconds_sum  120
+          #   traefik_entrypoint_request_duration_seconds_count 120
+          #   traefik_tls_certs_not_after                       37
+          # Per-tenant byte accounting comes from traefik_service_{requests,
+          # responses}_bytes_total (kept) and per-entrypoint latency comes from
+          # the _bucket family (kept, and stream-aggregated — see
+          # streamaggr-config.yaml). Certificate expiry is cert-manager's job.
+          - source_labels: [__name__]
+            regex: 'traefik_(service_requests_tls_total|entrypoint_(requests|responses)_bytes_total|entrypoint_request_duration_seconds_(sum|count)|tls_certs_not_after)'
+            action: drop
+
       # ── cert-manager (certificate expiry/readiness, :9402) ──────
       - job_name: cert-manager
         kubernetes_sd_configs:
@@ -256,6 +294,15 @@ data:
           # expiry/readiness metrics this job exists for) is untouched.
           - source_labels: [__name__]
             regex: 'go_.*_bucket'
+            action: drop
+
+          # Three per-certificate timestamp families (42 series each) that no
+          # rule or panel reads. The one the alert pack DOES read —
+          # certmanager_certificate_expiration_timestamp_seconds — is kept, as
+          # is certmanager_certificate_ready_status. `not_after` is the same
+          # instant as `expiration`; `renewal`/`not_before` are unused.
+          - source_labels: [__name__]
+            regex: 'certmanager_certificate_(renewal|not_before|not_after)_timestamp_seconds'
             action: drop
 
       # ── Longhorn (volume/node storage metrics, :9500) ────────────
@@ -286,6 +333,22 @@ data:
           # Go runtime histograms — see the traefik job.
           - source_labels: [__name__]
             regex: 'go_.*_bucket'
+            action: drop
+
+          # Per-volume/replica/engine state gauges: 460 series that grow with
+          # tenant count and that nothing queries. The only Longhorn metrics
+          # with a reader are longhorn_node_storage_{usage,capacity}_bytes
+          # (the node-storage SLO rule + panel) — four series.
+          #   longhorn_replica_state           204
+          #   longhorn_engine_state            198
+          #   longhorn_snapshot_actual_size_bytes 58
+          # longhorn_volume_state and longhorn_volume_robustness are KEPT:
+          # 'degraded' is the first sign of a replica problem and is worth
+          # having in the TSDB even unqueried. Everything dropped here is still
+          # live in the Longhorn UI and its API, which the platform already
+          # integrates — so the regret on these is bounded.
+          - source_labels: [__name__]
+            regex: 'longhorn_(replica_state|engine_state|snapshot_actual_size_bytes)'
             action: drop
 
       # ── Flux controllers (reconcile health, :8080 http-prom) ─────
@@ -417,4 +480,15 @@ data:
           # family and is kept; it is the only latency signal for cluster DNS.
           - source_labels: [__name__]
             regex: 'go_.*_bucket'
+            action: drop
+          # CoreDNS histograms with no reader (306 series):
+          #   coredns_proxy_request_duration_seconds_bucket            102
+          #   coredns_kubernetes_dns_programming_duration_seconds_bucket 84
+          #   coredns_dns_response_size_bytes_bucket                    60
+          #   coredns_dns_request_size_bytes_bucket                     60
+          # coredns_dns_request_duration_seconds_bucket is deliberately NOT in
+          # this list — per the note above it is the only latency signal for
+          # cluster DNS, and it is small.
+          - source_labels: [__name__]
+            regex: 'coredns_(proxy_request_duration_seconds|kubernetes_dns_programming_duration_seconds|dns_(request|response)_size_bytes)_bucket'
             action: drop

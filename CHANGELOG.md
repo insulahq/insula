@@ -12,6 +12,39 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Changed
+
+- **vmsingle: cut the metric cardinality that was OOM-killing it, and stop
+  paying VictoriaMetrics' million-series entry price on a 17k-series cluster.**
+  The pod had been running at 85–91% of its 384Mi limit continuously; the
+  memory looked flat only because a cgroup at its ceiling cannot show growth —
+  the real demand escaped as CPU (0.01 → 0.21 cores, all of it garbage
+  collection) and page-cache thrash instead. Four changes, no limit increase:
+  - **Per-cache ceilings.** `storage/tsid` and `storage/metricName` sat at a
+    32 MiB floor *each* regardless of `-memory.allowedBytes`, which budgets the
+    caches only as a group. `-storage.cacheSizeStorageTSID` /
+    `-storage.cacheSizeStorageMetricName` override them individually — so the
+    earlier conclusion that this was an immovable fixed cost was wrong.
+  - **Series nothing reads are no longer scraped** (~1,800 series): the whole
+    `kubelet-resource` job, which was 100% redundant with cadvisor and was an
+    unguarded second source of pod-name churn; `container_fs_usage_bytes`;
+    per-volume Longhorn replica/engine state; four CoreDNS histograms; six
+    Traefik families; three cert-manager timestamp families. Verified against
+    every PromQL string in the backend *and* 48h of vmsingle's own
+    `top_queries` on both clusters.
+  - **Pod-name churn guard.** Short-lived guard/reconciler CronJob pods no
+    longer mint a fresh series set every run. Real batch work (backups, barman,
+    mailbox jobs) is deliberately *not* matched — its
+    `container_oom_events_total` is load-bearing. Cadence is unchanged; the
+    detection window was worth more than the series.
+  - **Stream aggregation** sums Traefik's two latency histograms by the labels
+    their readers actually group on, before storage. No query changed.
+
+  `GOMEMLIMIT` re-derived 192Mi → 224Mi against the new off-heap total. The
+  durable signal is not that number but
+  `go_memstats_next_gc_bytes / go_memstats_alloc_bytes`: at `GOGC=40` it should
+  sit near 1.40, and drifting under ~1.1 means the limit is binding again.
+
 ## [2026.9.41] - 2026-09-30
 
 ### Fixed

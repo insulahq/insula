@@ -143,6 +143,44 @@ spec:
             # Re-measure vm_cache_size_bytes against vm_cache_entries before
             # trusting any prediction about this value, including this one.
             - -memory.allowedBytes=64MiB
+            # PER-CACHE CEILINGS — the correction to the note above.
+            #
+            # -memory.allowedBytes budgets the caches as a GROUP, and three of
+            # them then sat at a 32 MiB floor EACH regardless of it:
+            # storage/tsid, storage/metricIDs and storage/metricName, measured
+            # at exactly 33,554,432 bytes apiece on production while holding
+            # 62,896 / 23,259 / 15,299 entries for a cluster with 17,391 live
+            # series. ~99 MiB — a quarter of the container limit — of cache
+            # sized for a workload with millions of series. That is where the
+            # earlier "~126 MiB of fastcache is a fixed cost" conclusion came
+            # from, and it was WRONG: these per-cache overrides exist and work.
+            #
+            # 16MiB is not a guess. At ~533 bytes/entry (measured: 33,554,432
+            # over 62,896 entries) 16 MiB holds ~31,500 series against 17,391
+            # live — roughly 1.8x headroom, which also covers the churn the
+            # scrape config no longer admits. Going to 8 MiB would hold ~15,700
+            # and start missing on the live set every scrape; the flag's own
+            # help warns a too-small value costs CPU and disk IO, which is the
+            # exact failure being fixed here. Re-derive from
+            # vm_cache_size_bytes / vm_cache_entries, and check
+            # vm_cache_misses_total before lowering further.
+            #
+            # storage/metricIDs has NO override flag and stays at 32 MiB.
+            - -storage.cacheSizeStorageTSID=16MiB
+            - -storage.cacheSizeStorageMetricName=16MiB
+            # Bound the indexdb caches too. Both sit well under these today
+            # (dataBlocks 6.4 MiB, indexBlocks 0.7 MiB) so this changes nothing
+            # now; it caps the worst case a cache-warming query can reach.
+            - -storage.cacheSizeIndexDBDataBlocks=16MiB
+            - -storage.cacheSizeIndexDBIndexBlocks=8MiB
+            # Sum traefik's latency histograms BEFORE storage instead of
+            # storing every code x method x protocol permutation and throwing
+            # them away at query time. See streamaggr-config.yaml — the `by:`
+            # lists there are a contract with the queries in
+            # backend/src/modules/monitoring/{rules,routes}.ts.
+            # Matched samples are aggregated and DROPPED (VM's default);
+            # unmatched samples are stored untouched.
+            - -streamAggr.config=/streamaggr/streamaggr.yaml
             # 4 → 2. The -memory.allowedBytes note above records
             # that the failure mode is "a single cache-warming query could OOM
             # the pod outright"; this is the flag that bounds how many of those
@@ -205,10 +243,34 @@ spec:
             #   384 MiB limit − 126 fastcache − ~40 binary/stacks/slab/slack
             #   ≈ 218 MiB available to the Go runtime
             #
-            # 192Mi keeps a real margin inside that. Re-derive it — do not
-            # copy it — if vm_cache_size_bytes ever changes materially.
+            # RE-DERIVED after the per-cache ceilings above cut ~32 MiB of
+            # off-heap fastcache. The instruction below said to re-derive when
+            # vm_cache_size_bytes changed materially; it just did, deliberately.
+            #
+            #   384 MiB limit − ~94 off-heap (tsid 16 + metricIDs 32 +
+            #   metricName 16 + storage/indexBlocks 3 + rollupResult 30)
+            #   − ~15 indexdb caches − ~40 binary/stacks/slab/slack
+            #   ≈ 235 MiB available to the Go runtime
+            #
+            # 224Mi keeps a margin inside that.
+            #
+            # ★ THE 192Mi VALUE FAILED IN PRODUCTION and the reason matters
+            # more than the number. It was derived from a
+            # live heap MEASURED AT ~89 MiB and treated as fixed. The heap is
+            # not fixed — it grows with the index, and index growth is what
+            # series churn produces. It reached 164 MiB over 19 days, at which
+            # point go_memstats_next_gc_bytes/go_memstats_alloc_bytes had
+            # collapsed 1.21 → 1.00: the GC target equalled the live heap, so
+            # Go collected continuously. GC went 0.12 → 4.88 cycles/sec (40x)
+            # and user CPU 0.01 → 0.21 cores (20x) on a FLAT-LOOKING RSS,
+            # because RSS was clamped by the cgroup and could not show it.
+            #
+            # So the number below is NOT the durable guard — the ratio is.
+            # next_gc/alloc should sit near 1 + GOGC/100 (1.40 here). Drifting
+            # under ~1.1 means GOMEMLIMIT is binding again and the heap, not
+            # this value, is what needs attention.
             - name: GOMEMLIMIT
-              value: "201326592"
+              value: "234881024"
           ports:
             - name: http
               containerPort: 8428
@@ -223,6 +285,9 @@ spec:
               mountPath: /storage
             - name: scrape-config
               mountPath: /config
+              readOnly: true
+            - name: streamaggr-config
+              mountPath: /streamaggr
               readOnly: true
           readinessProbe:
             httpGet:
@@ -249,6 +314,9 @@ spec:
         - name: scrape-config
           configMap:
             name: vmsingle-scrape-config
+        - name: streamaggr-config
+          configMap:
+            name: vmsingle-streamaggr-config
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
