@@ -15,7 +15,10 @@ import type {
 import { useTrafficSeries, useTrafficSubjects } from '@/hooks/use-traffic';
 import { extractOperatorError } from '@/lib/extract-operator-error';
 import ErrorPanel from '@/components/ErrorPanel';
-import TrafficChart, { findSpikes } from './TrafficChart';
+import TrafficChart from './TrafficChart';
+import {
+  combinedLine, TOTAL_KEY, totalLabel, totalState, trafficStats,
+} from './combined-line';
 import TrafficStats from './TrafficStats';
 import TrafficSummaryTable from './TrafficSummaryTable';
 import TrafficPicker from './TrafficPicker';
@@ -28,6 +31,16 @@ function spanLabel(r: { from: Date; to: Date }): string {
   if (hours < 48) return `${hours} hours`;
   const days = Math.round(hours / 24);
   return days < 60 ? `${days} days` : `${Math.round(days / 30)} months`;
+}
+
+/**
+ * A dragged range as a query range. The last point stands for the step that
+ * STARTS there, so the range runs to that step's end — otherwise zooming in
+ * would drop the very spike the reader dragged across.
+ */
+function draggedRange(fromIso: string, toIso: string, stepSeconds: number): RangeValue {
+  const to = Math.min(Date.now(), new Date(toIso).getTime() + stepSeconds * 1000);
+  return { from: new Date(fromIso), to: new Date(to), preset: null };
 }
 
 const SCOPES: ReadonlyArray<{ key: TrafficScope; label: string; subjectLabel: string }> = [
@@ -95,7 +108,11 @@ export default function TrafficTab() {
   const [pod, setPod] = useState<string | null>(null);
   const [metric, setMetric] = useState<TrafficMetric>('traffic');
   const [direction, setDirection] = useState<TrafficDirection>('both');
-  const [hidden, setHidden] = useState<ReadonlySet<string>>(new Set());
+  // The combined line starts OFF: it is there to be asked for, and drawn by
+  // default it would set the axis and push every row down to the floor.
+  const [hidden, setHidden] = useState<ReadonlySet<string>>(() => new Set([TOTAL_KEY]));
+  const [focus, setFocus] = useState<string | null>(null);
+  const resetRows = (): void => { setHidden(new Set([TOTAL_KEY])); setFocus(null); };
 
   // Traefik has no per-pod dimension, so those questions are not offered.
   const metricsForScope = metricsFor(scope);
@@ -155,35 +172,15 @@ export default function TrafficTab() {
   );
 
   const scopeMeta = SCOPES.find((s) => s.key === scope) ?? SCOPES[0];
-  // Stack only when the series are PARTS OF ONE WHOLE: a backup split, or a
-  // breakdown across subjects. Two directions of one subject are not — and
-  // stacking them drew Inbound at out+in, a line parallel to Outbound that
-  // looked identical in shape however different the values were.
-  const stacked = Boolean(frame)
-    && frame!.unit !== 'milliseconds'
-    && (effectiveBackups !== 'included' || !singleSubject);
-
-  const stats = useMemo(() => {
-    if (!frame) return null;
-    const step = frame.stepSeconds;
-    // Only the series still shown. Hiding a row is a way of asking "what
-    // does this look like without that" — tiles that ignored it answered a
-    // different question from the chart directly above them.
-    const shown = frame.series.filter((s) => !hidden.has(s.key));
-    if (shown.length === 0) return null;
-    const perIndex = frame.times.map((_, i) => shown.reduce((a, s) => {
-      const v = s.points[i];
-      return v === null || v === undefined ? a : a + v;
-    }, 0));
-    const measured = perIndex.filter((_, i) => shown.some((s) => s.points[i] !== null));
-    const peak = measured.length ? Math.max(...measured) : 0;
-    const peakAt = frame.times[perIndex.indexOf(peak)];
-    const avg = measured.length ? measured.reduce((a, v) => a + v, 0) / measured.length : 0;
-    const total = perIndex.reduce((a, v) => a + v, 0) * step;
-    // Same detector the chart marks with, so the tile and the markers agree.
-    const spikes = findSpikes(perIndex.map((v, i) => (shown.some((sx) => sx.points[i] !== null) ? v : null))).length;
-    return { peak, peakAt, avg, total, spikes };
-  }, [frame, hidden]);
+  // A breakdown across subjects offers a combined Total; a cluster view does
+  // not — its rows are the wire and subsets of it, which do not add up.
+  const breakdown = !singleSubject;
+  const total = frame ? totalState(frame, hidden, breakdown) : null;
+  // Tiles, spike markers, the Total line and each row's share all read this
+  // one line, so they cannot disagree. Hiding a row is a way of asking "what
+  // does this look like without that", so it follows the rows shown.
+  const combined = useMemo(() => (frame ? combinedLine(frame, hidden) : null), [frame, hidden]);
+  const stats = useMemo(() => (frame ? trafficStats(frame, hidden) : null), [frame, hidden]);
 
   const operatorError = error ? extractOperatorError(error) : null;
 
@@ -205,7 +202,7 @@ export default function TrafficTab() {
               setScope(next);
               setSubject(null);
               setPod(null);
-              setHidden(new Set());
+              resetRows();
               // Pod scope cannot answer a request or latency question, so a
               // metric carried over from another scope would leave the button
               // highlighted on something the chart is not showing.
@@ -223,7 +220,7 @@ export default function TrafficTab() {
               options={tenantOptions}
               loading={tenantsLoading}
               allLabel="All tenants"
-              onChange={(k) => { setSubject(k); setPod(null); setHidden(new Set()); }}
+              onChange={(k) => { setSubject(k); setPod(null); resetRows(); }}
             />
           </div>
         )}
@@ -239,7 +236,7 @@ export default function TrafficTab() {
               allLabel={`All ${scopeMeta.subjectLabel.toLowerCase()}s`}
               onChange={(k) => {
                 if (scope === 'pod') setPod(k); else setSubject(k);
-                setHidden(new Set());
+                resetRows();
               }}
             />
           </div>
@@ -249,7 +246,7 @@ export default function TrafficTab() {
           label="Metric"
           value={effectiveMetric}
           options={metricsForScope}
-          onChange={(m) => { setMetric(m); setHidden(new Set()); }}
+          onChange={(m) => { setMetric(m); resetRows(); }}
         />
 
         {showDirection && (
@@ -320,9 +317,9 @@ export default function TrafficTab() {
             : {
               key: 'spikes',
               label: 'Spikes flagged',
-              value: String(stats.spikes),
-              sub: stats.spikes ? 'click a marker to zoom' : 'none in this range',
-              alert: stats.spikes > 0,
+              value: String(stats.spikes.length),
+              sub: stats.spikes.length ? 'click a marker to zoom' : 'none in this range',
+              alert: stats.spikes.length > 0,
             },
         ]}
         />
@@ -339,23 +336,38 @@ export default function TrafficTab() {
             <TrafficChart
               frame={frame}
               hidden={hidden}
-              stacked={stacked}
+              focusKey={focus}
+              combined={total?.offered ? combined : null}
+              showTotal={Boolean(total?.drawn)}
+              spikeIndices={stats?.spikes}
               onZoom={(centre) => {
                 const c = new Date(centre).getTime();
                 const half = Math.max(1, (range.to.getTime() - range.from.getTime()) / 8);
                 setRange({ from: new Date(c - half), to: new Date(c + half), preset: null });
               }}
+              onRangeSelect={(a, b) => setRange(draggedRange(a, b, frame.stepSeconds))}
             />
             <div className="mt-3">
               <TrafficSummaryTable
                 frame={frame}
                 hidden={hidden}
                 subjectLabel={effectiveBackups === 'included' ? scopeMeta.subjectLabel : 'Class'}
-                onToggle={(key) => setHidden((prev) => {
-                  const next = new Set(prev);
-                  if (next.has(key)) next.delete(key); else next.add(key);
-                  return next;
-                })}
+                total={total?.offered && combined ? {
+                  name: totalLabel(frame.unit),
+                  points: combined,
+                  off: !total.drawn,
+                  disabled: !total.usable,
+                } : null}
+                focusKey={focus}
+                onFocus={setFocus}
+                onToggle={(key) => {
+                  setFocus(null);
+                  setHidden((prev) => {
+                    const next = new Set(prev);
+                    if (next.has(key)) next.delete(key); else next.add(key);
+                    return next;
+                  });
+                }}
               />
             </div>
           </>

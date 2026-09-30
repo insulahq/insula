@@ -74,7 +74,7 @@ describe('TrafficChart gap handling', () => {
       ...frame,
       series: [{ key: 'out', name: 'Outbound', kind: 'direction', points: [null, null, 5_000, null, null, null, null, null, null, null, null, null] }],
     };
-    const { container } = render(<TrafficChart frame={lonely} stacked={false} />);
+    const { container } = render(<TrafficChart frame={lonely} />);
     expect(container.querySelectorAll('polyline')).toHaveLength(0);
     const dots = [...container.querySelectorAll('circle')].filter((c) => c.getAttribute('r') === '1.8');
     expect(dots).toHaveLength(1);
@@ -86,7 +86,7 @@ describe('TrafficChart gap handling', () => {
       ...frame,
       series: [{ key: 'out', name: 'Outbound', kind: 'direction', points: [1, 2, null, null, 3, 4, null, null, 5, 6, null, null] }],
     };
-    const { container } = render(<TrafficChart frame={gappy} stacked={false} />);
+    const { container } = render(<TrafficChart frame={gappy} />);
     // three runs of two → three separate polylines, not one across the gaps
     expect(container.querySelectorAll('polyline')).toHaveLength(3);
   });

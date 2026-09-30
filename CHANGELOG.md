@@ -14,6 +14,20 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Added
 
+- **Ingress-route traffic is named after the route.** Traefik labels a
+  route's traffic only with `<namespace>-<ingressroute>-<hash of the match
+  rule>`, and the breakdown fell back to `<tenant> · <ingress object> #1/#2`
+  for every tenant serving more than one host. The hash is sha256 of the
+  literal rule, so hashing each LIVE IngressRoute rule and looking the label
+  up names the series exactly: `www.example.test → website` (admin adds
+  `· <tenant>`), `example.test/shop → shop`, and
+  `www.example.test (http → https redirect)` for the port-80 router. Against a
+  week of production labels, 97 of 103 series were named exactly with no
+  collisions. cert-manager solver series and routes that no longer exist are
+  left out of the breakdown, the table and the picker, and take no top-N slot.
+  When the cluster cannot be read, series keep their previous names and
+  nothing is hidden that could not be verified.
+
 - **Export download dialog with a pre-flight check.** "Download" used to be a
   button whose only feedback was the browser's own download indicator, which
   does not appear until the first byte arrives — indistinguishable from a hang.
@@ -46,6 +60,26 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   mean changing Traefik's Helm values, which reaches fresh installs only.
 
 ### Fixed
+
+- **Traffic breakdowns: every line is its own tenant again.** A breakdown drew
+  each series as a LINE at the running total of the ones below it, so every
+  tenant above the biggest one repeated its spikes, and the small ones lay on
+  top of each other. Each series is now drawn at its own value on one
+  full-width chart. Paint order follows traffic: lowest first, highest on top.
+  A grey **Total** (sum of the visible rows; **Average** for latency) is
+  offered on every breakdown except Cluster, when there are two or more rows.
+  It is off by default, toggled from its table row, and greyed out while fewer
+  than two rows are shown. Hovering a table row highlights that line and fades
+  the rest; dragging across the chart zooms to that range; spike markers have
+  a 26 px target, grow on hover or keyboard focus and zoom on click. The
+  readout shows each row's share and sits on the side away from the pointer.
+  Axis labels land on round numbers, and the steps pill matches the timezone
+  pill. Both panels.
+
+  Also fixed in the same views: the cluster tiles added *Node-to-node* on top
+  of the wire total it is already inside; a latency breakdown's tiles added
+  the services' averages together; the table's trend sparklines kept every
+  Nth point and dropped short spikes; hiding a row could recolour the others.
 
 - **Large downloads no longer stall for minutes and leak the node's disk.**
   Bundle exports, tenant file downloads and pg-dump artifacts were routed
