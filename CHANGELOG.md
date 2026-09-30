@@ -14,6 +14,22 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Added
 
+- **Export download dialog with a pre-flight check.** "Download" used to be a
+  button whose only feedback was the browser's own download indicator, which
+  does not appear until the first byte arrives — indistinguishable from a hang.
+  Both panels now open a dialog on click, before any request, naming the step it
+  is on (checking contents → preparing a secure link → handing off to the
+  browser) and listing what the archive will contain with per-component sizes.
+
+  A new `GET …/export-preflight` reports the components and whether the
+  cluster-wide capture gate is full, so an export that will legitimately **queue
+  behind an unrelated tenant's backup** says so instead of appearing stuck. The
+  warning **pauses rather than blocks**: the preflight is advisory, the export
+  would still succeed after waiting, and refusing would be wrong twice over —
+  the answer can go stale between check and click, and a capture finishing a
+  second later would have the UI denying an export that works. A preflight that
+  itself fails also falls through to "download anyway" rather than blocking.
+
 - **Traefik response-buffer spool reaper.** Traefik's `buffering` middleware
   spools whole responses to `/tmp/temp-multibuf-*` and never removes them when a
   client disconnects mid-transfer. That `/tmp` is an emptyDir on the **node root

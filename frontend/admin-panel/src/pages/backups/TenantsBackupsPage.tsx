@@ -19,7 +19,6 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { downloadBundleExport } from '@/hooks/use-backup-bundles';
 import { Download,
   Package, Search, Loader2, Filter, Camera, Archive, RotateCw, AlertCircle, Trash2, Clock,
   ChevronDown,
@@ -37,6 +36,7 @@ import type {
 import BackupClassPage from './BackupClassPage';
 import RestorationWizard, { type RestoreArtifact } from '@/components/backups/RestorationWizard';
 import { AdminBundleProgressModal } from '@/components/AdminBundleProgressModal';
+import { BundleExportModal } from '@/components/BundleExportModal';
 import { useShimAssignments } from '@/hooks/use-backup-rclone-shim';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
@@ -669,13 +669,10 @@ function TenantBundleTable({
                 <button
                   type="button"
                   onClick={() => {
-                    setExporting(r.id);
                     // No password: encrypting here would prompt for one the operator
                     // has no way to hand on. Encrypted export stays on the
                     // bundle detail page, which asks for it properly.
-                    void downloadBundleExport(r.id, 'tar', null)
-                      .catch((e: unknown) => setRowError(e instanceof Error ? e.message : 'Export failed'))
-                      .finally(() => setExporting(null));
+                    setExporting(r.id);
                   }}
                   disabled={exporting === r.id || (r.status !== 'completed' && r.status !== 'partial')}
                   className="inline-flex items-center gap-1 rounded border border-gray-300 px-2 py-0.5 text-[11px] font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-40 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
@@ -685,6 +682,12 @@ function TenantBundleTable({
                   {exporting === r.id ? <Loader2 size={11} className="animate-spin" /> : <Download size={11} />}
                   Export
                 </button>
+                {/* Inside the cell, not the row: a <div> child of <tr> is
+                    invalid HTML and gets hoisted out of the table. The dialog
+                    is position:fixed, so its parent does not affect layout. */}
+                {exporting === r.id && (
+                  <BundleExportModal bundleId={r.id} onClose={() => setExporting(null)} />
+                )}
                 <button
                   type="button"
                   onClick={() => {

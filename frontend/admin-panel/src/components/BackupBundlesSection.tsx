@@ -7,7 +7,6 @@ import {
   useCreateBundle,
   useDeleteBundle,
   useVerifyBundle,
-  downloadBundleExport,
   downloadDataExport,
 } from '@/hooks/use-backup-bundles';
 import { useTenants } from '@/hooks/use-tenants';
@@ -17,6 +16,7 @@ import type {
   VerifyBundleResponse,
 } from '@insula/api-contracts';
 import { formatBytes } from '@/hooks/use-platform-storage';
+import { BundleExportModal } from '@/components/BundleExportModal';
 
 const INPUT_CLASS =
   'w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 bg-white dark:bg-gray-700';
@@ -172,7 +172,7 @@ function BundleRow({
   onVerify: (id: string) => void;
   onDelete: (id: string) => void;
 }) {
-  const [exporting, setExporting] = useState(false);
+  const [exportBundleId, setExportBundleId] = useState<string | null>(null);
   const target = configs.find((c) => c.id === bundle.targetConfigId);
   const targetLabel = target ? target.name : `${bundle.targetKind}://${bundle.targetConfigId ?? '?'}`;
   return (
@@ -233,18 +233,23 @@ function BundleRow({
           {bundle.status === 'completed' && (
             <button
               type="button"
-              disabled={exporting}
-              onClick={async () => {
-                setExporting(true);
-                try { await downloadBundleExport(bundle.id, 'tar', null); }
-                catch (e) { window.alert(`Export failed: ${(e as Error).message}`); }
-                finally { setExporting(false); }
-              }}
+              disabled={exportBundleId !== null}
+              onClick={() => setExportBundleId(bundle.id)}
               className="cursor-pointer flex items-center gap-1 px-2 py-1 rounded text-xs font-medium text-emerald-700 dark:text-emerald-300 hover:bg-emerald-50 dark:hover:bg-emerald-950/30 disabled:opacity-40 disabled:cursor-not-allowed"
               title="Download the whole bundle as a tar.gz — meta.json, config, secrets, every file and every mailbox. Streams from the off-site target; the secrets component stays inner-encrypted."
             >
-              {exporting ? <Loader2 size={14} className="animate-spin" /> : <FileArchive size={14} />} Export
+              {exportBundleId ? <Loader2 size={14} className="animate-spin" /> : <FileArchive size={14} />} Export
             </button>
+          )}
+          {/* Rendered inside the actions cell, not the <tr>: a bare <div> child
+              of <tr> is invalid HTML and the parser hoists it out of the table.
+              The dialog is position:fixed, so its DOM parent does not affect
+              where it appears. */}
+          {exportBundleId && (
+            <BundleExportModal
+              bundleId={exportBundleId}
+              onClose={() => setExportBundleId(null)}
+            />
           )}
           {bundle.exportArtifact && bundle.status === 'completed' && (
             <button

@@ -7,9 +7,9 @@ import {
   useDeleteRestoreCart,
   useRunBundleNow,
   downloadTenantDataExport,
-  downloadBundleExport,
 } from '@/hooks/use-tenant-backups';
 import { BundleProgressModal } from '@/components/BundleProgressModal';
+import { BundleExportModal } from '@/components/BundleExportModal';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
 import TimeCell from '@/components/ui/TimeCell';
@@ -254,12 +254,7 @@ export default function Backups() {
                         {(b.status === 'completed' || b.status === 'partial') && (
                           <button
                             type="button"
-                            onClick={async () => {
-                              setExporting(b.id);
-                              try { await downloadBundleExport(b.id); }
-                              catch (e) { window.alert(`Export failed: ${(e as Error).message}`); }
-                              finally { setExporting(null); }
-                            }}
+                            onClick={() => setExporting(b.id)}
                             disabled={exporting === b.id}
                             className="inline-flex items-center gap-1 rounded-md border border-gray-300 px-2 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
                             data-testid={`export-bundle-${b.id}`}
@@ -270,6 +265,12 @@ export default function Backups() {
                               : <Download size={12} />}
                             Export
                           </button>
+                        )}
+                        {/* Inside the cell, not the row: a <div> child of <tr>
+                            is invalid HTML and the parser hoists it out of the
+                            table. The dialog is position:fixed. */}
+                        {exporting === b.id && (
+                          <BundleExportModal bundleId={b.id} onClose={() => setExporting(null)} />
                         )}
                         {b.exportArtifact && b.status === 'completed' && (
                           <button
