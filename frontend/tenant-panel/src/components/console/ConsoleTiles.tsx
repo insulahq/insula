@@ -1,6 +1,6 @@
-import { useCallback, useRef, useState, type ReactNode } from 'react';
+import { useLayoutEffect, useCallback, useRef, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
-import { RefreshCw } from 'lucide-react';
+import { ArrowUpRight, RefreshCw } from 'lucide-react';
 import clsx from 'clsx';
 import type { DashboardAlert, DashboardAlertAction, DashboardSection, ResourceTriad } from '@insula/api-contracts';
 
@@ -71,6 +71,18 @@ export function HoverCard({ title, rows, note }: {
     });
   }, []);
 
+  // Placed on mount, not only on hover. Every card is rendered at opacity 0
+  // with real dimensions, so an unplaced one sat at `left: 0` and a card
+  // wider than its tile hung past the right edge of the scroll container —
+  // measured at 109px on the rightmost dashboard tile, which is the
+  // horizontal scrollbar that was there on every page load. Hovering fixed
+  // it, which is why it looked intermittent.
+  useLayoutEffect(() => {
+    place();
+    window.addEventListener('resize', place);
+    return () => window.removeEventListener('resize', place);
+  }, [place]);
+
   return (
     <div
       ref={ref}
@@ -132,9 +144,16 @@ export function Tile({ title, to, children, card, busy }: {
           {title}
         </span>
         <span className="flex-1" />
-        <span className="hidden whitespace-nowrap font-mono text-[10px] text-gray-400 opacity-0 transition-opacity group-hover:opacity-100 lg:inline dark:text-gray-500">
-          {to} →
-        </span>
+        {/* An icon, not the href. Printing the destination spent the whole
+            width of the header on a string nobody reads — it also left the
+            path in the tile's text, so anything reading the tile read the
+            URL too. The arrow says "this goes somewhere"; the tile is a
+            link, so where is one click away. */}
+        <ArrowUpRight
+          size={13}
+          aria-hidden
+          className="shrink-0 text-gray-400 opacity-0 transition-opacity group-hover:opacity-100 dark:text-gray-500"
+        />
       </div>
       {children}
       {card}
@@ -185,13 +204,16 @@ export function RefreshButton({ onClick, busy }: {
  * halves of "X/Y" carry the same decimals, and a cluster tile does not grow
  * noise digits to accommodate a tenant-sized one.
  *
- * Two decimals of a core is a 10-millicore quantum. On a 7.5-core cluster
- * that is 0.13% and invisible; on a 2-core tenant plan it is 0.5%, and the
- * whole tenant fits inside it — a namespace running Apache, MariaDB and nginx
- * measured 0.3 to 19 millicores on production, every one of which printed as
- * "0.00".
+ * ONE decimal, by operator decision. Three digits of a core read as noise on
+ * a dashboard tile — "0.019/2.000 cores" is a measurement, not a glance.
+ *
+ * The trade-off is real and was the reason for three: a tenant running
+ * Apache, MariaDB and nginx measured 0.3 to 19 millicores on production, and
+ * at one decimal every one of those prints as "0.0". The precise figure is a
+ * click away on Monitoring → Resource Usage; the tile answers "is anything
+ * close to its ceiling", which one decimal answers fine.
  */
-const coreDecimalsFor = (total: number): number => (total < 4 ? 3 : 2);
+const coreDecimalsFor = (_total: number): number => 1;
 
 const fmt = (v: number, unit: string, coreDecimals = 2): string =>
   unit === 'cores' ? v.toFixed(coreDecimals)

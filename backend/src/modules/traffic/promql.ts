@@ -99,6 +99,38 @@ export function quoteLabel(value: string): string {
   return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '');
 }
 
+/**
+ * The generated tail a Deployment gives its pods: `-<replicaset>-<suffix>`.
+ *
+ * Neither generated segment can contain a hyphen, which is what keeps this
+ * from reaching across an application boundary: `website-[a-z0-9]{6,10}-…`
+ * cannot match `website-admin-aaaaaaaaaa-bbbbb`, because `admin-aaaaaaaaaa`
+ * is not one segment. PromQL anchors a `=~` at both ends, so there is no
+ * prefix-overrun either.
+ */
+const POD_GENERATED_TAIL = '-[a-z0-9]{6,10}-[a-z0-9]{5}';
+
+/** True when the value is already a full pod name rather than an app name. */
+export function looksLikePodName(value: string): boolean {
+  return /-[a-z0-9]{6,10}-[a-z0-9]{5}$/.test(value);
+}
+
+/**
+ * Select one APPLICATION's pods, or one exact pod.
+ *
+ * Pod rows are aggregated per application — three `file-manager` replicas
+ * are one line, not three rows wearing the same name — so the subject the
+ * panel sends back is an application name. An exact pod name is still
+ * accepted: it is a legitimate thing to ask for and a caller who has one
+ * should not be forced to widen it.
+ */
+export function podMatcher(value: string): string {
+  const safe = value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return looksLikePodName(value)
+    ? `pod="${quoteLabel(value)}"`
+    : `pod=~"${quoteLabel(safe)}${POD_GENERATED_TAIL}"`;
+}
+
 /** A Traefik `service` label is `<namespace>-<ingress>-<hash>@kubernetescrd`. */
 export function serviceMatcherForNamespace(namespace: string): string {
   // TWO escapes are needed and only one is obvious. The regex metacharacters
@@ -142,6 +174,16 @@ export interface TrafficQueryInput {
   readonly backupClass?: TrafficBackupClass;
   /** Confines a `route` scope to one namespace's services. */
   readonly namespacePrefix?: string;
+  /**
+   * Namespaces nested UNDER the subject, whose services must be excluded.
+   *
+   * A tenant is selected by `service=~"<ns>-.+"`, and namespaces nest:
+   * `tenant-acme-<hash>` and `tenant-acme-<hash>-eu-<hash2>` are two
+   * different tenants and the second begins with the first. Without this the
+   * parent's figure would silently include the child's traffic — a
+   * cross-tenant leak in a number a customer is billed on.
+   */
+  readonly excludeNestedNamespaces?: readonly string[];
   /**
    * A cluster sub-measurement instead of the plain wire total:
    *  - `node-to-node` — Calico's encapsulation, what crossed BETWEEN nodes;
@@ -203,7 +245,7 @@ function networkSelector(input: TrafficQueryInput): string {
       parts.push(input.subject
         ? `namespace="${quoteLabel(input.subject)}"`
         : 'namespace=~"tenant-.+"');
-      if (input.pod) parts.push(`pod="${quoteLabel(input.pod)}"`);
+      if (input.pod) parts.push(podMatcher(input.pod));
       break;
     case 'backup-class': {
       const cls = input.backupClass;
@@ -225,7 +267,7 @@ function networkSelector(input: TrafficQueryInput): string {
     default:
       throw new UnsupportedTrafficQuery(`scope ${input.scope} is not a network-counter scope`);
   }
-  if (input.pod && input.scope === 'tenant') parts.push(`pod="${quoteLabel(input.pod)}"`);
+  if (input.pod && input.scope === 'tenant') parts.push(podMatcher(input.pod));
   if (input.backups === 'exclude') parts.push(`pod!~"${ANY_BACKUP_POD_RE}"`);
   if (input.backups === 'only') parts.push(`pod=~"${ANY_BACKUP_POD_RE}"`);
   return parts.join(',');
@@ -269,6 +311,16 @@ export function tenantNamespaceRewrite(inner: string): string {
   return `label_replace(${inner}, "namespace", "$1", "service", "${TENANT_NS_FROM_SERVICE}")`;
 }
 
+/** `service!~"<child>-.+|<child2>-.+"`, or '' when nothing nests here. */
+export function nestedExclusion(input: TrafficQueryInput): string {
+  const nested = input.excludeNestedNamespaces ?? [];
+  if (nested.length === 0) return '';
+  const alts = nested
+    .map((n) => `${quoteLabel(n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))}-.+`)
+    .join('|');
+  return `service!~"${alts}"`;
+}
+
 function groupLabelFor(
   scope: TrafficScope, hasSubject: boolean, metric: TrafficMetric, aggregate?: boolean,
 ): string | null {
@@ -298,11 +350,34 @@ export function buildTrafficQuery(input: TrafficQueryInput): QuerySpec {
   // to an ingress route. Without this, `scope=route` + `metric=traffic` fell
   // through to networkSelector's `default:` and threw on every request, while
   // both panels offered it as the default selection.
-  if (input.metric === 'traffic' && input.scope === 'route') {
-    const sel = traefikSelector(input);
+  // ── EXTERNAL traffic: measured at the ingress, for a route or a tenant ──
+  //
+  // A tenant's bytes used to come from their pods' own interfaces, which
+  // count everything those pods move — including the database answering the
+  // application, inside the namespace, on a path that never touches the
+  // network. Measured on production over six hours: Sunshine College's pods
+  // moved 2.15 GB out while the tenant served 274 MB, because MariaDB sent
+  // Moodle 1.9 GB that never left the node. Across the active tenants the
+  // pod figure was 7.0x the served figure, and 190x for the most
+  // database-heavy one; tenants with no database sat at 1.0x, which is the
+  // signature that says the excess is intra-namespace chatter and nothing
+  // else.
+  //
+  // So a tenant's traffic is what the ingress served on their behalf. It is
+  // the number the tenant can reconcile against their own route page, and
+  // the only one that means "bytes that left". Traffic between their pods is
+  // still visible, in the pod breakdown, which is labelled as internal.
+  //
+  // Known and deliberate: this counts HTTP through the ingress, so egress a
+  // workload makes on its own (an outbound API call, SMTP, a package pull)
+  // is not billed. That under-counts rather than over-counts, which is the
+  // right way round for a figure a customer pays against.
+  if (input.metric === 'traffic' && (input.scope === 'route' || input.scope === 'tenant')) {
+    const sel = [traefikSelector(input), nestedExclusion(input)].filter(Boolean).join(',');
     const braces = sel ? `{${sel}}` : '';
     const by = groupLabelFor(input.scope, Boolean(input.subject), input.metric);
-    const inner = `rate(${TRAEFIK_BYTES[input.direction]}${braces}[${win}])`;
+    const raw = `rate(${TRAEFIK_BYTES[input.direction]}${braces}[${win}])`;
+    const inner = input.scope === 'tenant' && by === 'namespace' ? tenantNamespaceRewrite(raw) : raw;
     return { expr: by ? `sum by (${by}) (${inner})` : `sum(${inner})`, groupBy: by };
   }
 

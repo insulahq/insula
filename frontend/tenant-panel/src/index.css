@@ -148,10 +148,22 @@
   }
 }
 
-/* Custom scrollbar — thin, transparent bg, primary color thumb */
+/* Custom scrollbar — thin, transparent track, NEUTRAL thumb.
+   It was blue-500, which read as an accent: a scrollbar is chrome, and a
+   brand colour on it competes with the controls that are actually
+   interactive. These are the neutral pair from the design tokens, and they
+   flip with the theme — one grey cannot serve a white ground and a dark one. */
+:root {
+  --scrollbar-thumb: #c3ccdb;
+  --scrollbar-thumb-hover: #9aa7bc;
+}
+.dark {
+  --scrollbar-thumb: #31435a;
+  --scrollbar-thumb-hover: #465b76;
+}
 * {
   scrollbar-width: thin;
-  scrollbar-color: rgb(59 130 246) transparent;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
 }
 *::-webkit-scrollbar {
   width: 6px;
@@ -161,11 +173,11 @@
   background: transparent;
 }
 *::-webkit-scrollbar-thumb {
-  background-color: rgb(59 130 246 / 0.4);
+  background-color: var(--scrollbar-thumb);
   border-radius: 9999px;
 }
 *::-webkit-scrollbar-thumb:hover {
-  background-color: rgb(59 130 246 / 0.7);
+  background-color: var(--scrollbar-thumb-hover);
 }
 *:hover::-webkit-scrollbar {
   width: 10px;

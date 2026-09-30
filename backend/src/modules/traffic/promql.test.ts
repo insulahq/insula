@@ -30,9 +30,25 @@ describe('node and cluster traffic read the NIC', () => {
   });
 });
 
-describe('tenant and pod traffic read the pod', () => {
-  it('uses the namespace, not the root cgroup', () => {
+describe('a tenant is measured at the INGRESS, a pod at the pod', () => {
+  // Was: "tenant traffic uses the namespace, not the root cgroup". It did,
+  // and that was the defect: per-namespace pod counters include the database
+  // answering the application inside the namespace, on a path that never
+  // touches the network. Production over six hours — pods 2.15 GB out,
+  // ingress 274 MB served, 7.0x across the fleet and 1.0x for every tenant
+  // with no database. A tenant's traffic is what left.
+  it('bills a tenant on what the ingress served, not on what their pods moved', () => {
     const expr = buildTrafficQuery({ ...base, scope: 'tenant', subject: 'tenant-a-1' }).expr;
+    expect(expr).toContain('traefik_service_responses_bytes_total');
+    expect(expr).toContain('service=~"tenant-a-1-.+"');
+    expect(expr).not.toContain('container_network');
+  });
+
+  // The pod breakdown is the one place internal traffic is visible, so it
+  // must keep reading the pod.
+  it('a pod scope still reads the pod counters', () => {
+    const expr = buildTrafficQuery({ ...base, scope: 'pod', subject: 'tenant-a-1' }).expr;
+    expect(expr).toContain('container_network');
     expect(expr).toContain('namespace="tenant-a-1"');
     expect(expr).not.toContain('id="/"');
   });
@@ -55,9 +71,59 @@ describe('tenant and pod traffic read the pod', () => {
   });
 });
 
+// The namespace shape matters to these assertions — `tenant-<slug>-<8 hex>`
+// is what the rewrite regex keys on — but a literal of that shape reads as a
+// real customer's namespace in a public repo. Composed from parts so the
+// shape is exercised and no such literal exists in the file.
+const HEX8 = 'deadbeef';
+const PARENT_NS = `tenant-alpha-${HEX8}`;
+const CHILD_NS = `${PARENT_NS}-eu-${HEX8}`;
+
+describe('a tenant prefix must not reach a nested tenant', () => {
+  /**
+   * Namespaces NEST. `tenant-acme-<hash>` and `tenant-acme-<hash>-eu-<hash2>`
+   * are two different customers and the second begins with the first, so
+   * `service=~"<parent>-.+"` matches the child's services too. Before the
+   * ingress switch a tenant was selected by an exact `namespace=` label and
+   * this could not happen; a prefix matcher reintroduces it, in a number the
+   * parent is billed on.
+   */
+  it('excludes a nested namespace from the parent\u2019s query', () => {
+    const { expr } = buildTrafficQuery({
+      ...base,
+      scope: 'tenant',
+      subject: PARENT_NS,
+      excludeNestedNamespaces: [CHILD_NS],
+    });
+    expect(expr).toContain(`service=~"${PARENT_NS}-.+"`);
+    expect(expr).toContain(`service!~"${CHILD_NS}-.+"`);
+  });
+
+  it('adds no exclusion when nothing nests', () => {
+    const { expr } = buildTrafficQuery({
+      ...base, scope: 'tenant', subject: PARENT_NS, excludeNestedNamespaces: [],
+    });
+    expect(expr).not.toContain('service!~');
+  });
+
+  it('the parent selector alone WOULD have matched the child', () => {
+    // Stated as a test so the reason for the exclusion cannot be optimised
+    // away by someone who reads only the happy path.
+    const { expr } = buildTrafficQuery({
+      ...base, scope: 'tenant', subject: PARENT_NS,
+    });
+    const m = /service=~"([^"]+)"/.exec(expr);
+    expect(m).not.toBeNull();
+    expect(new RegExp(`^${m![1]}$`).test(`${CHILD_NS}-ingress-abc`)).toBe(true);
+  });
+});
+
 describe('backup separation', () => {
-  it('excludes every backup class when asked for serving traffic', () => {
-    const expr = buildTrafficQuery({ ...base, scope: 'tenant', subject: 'tenant-a-1', backups: 'exclude' }).expr;
+  // Was asserted on `tenant` scope, which is measured at the ingress now and
+  // cannot see a backup pod at all. The exclusion still has to work where
+  // pod counters are still read — the pod breakdown.
+  it('excludes every backup class from a pod-measured view', () => {
+    const expr = buildTrafficQuery({ ...base, scope: 'pod', subject: 'tenant-a-1', backups: 'exclude' }).expr;
     for (const re of Object.values(BACKUP_CLASS_POD_RE)) expect(expr).toContain(re);
     expect(expr).toContain('pod!~');
   });
@@ -215,9 +281,11 @@ describe('retained plumbing must not inflate history', () => {
     // The store keeps 30 days, and those days already hold one Calico veth
     // per pod on the root cgroup. Trusting the scrape rule alone measured a
     // day that moved 46 GB as 265 GB.
-    for (const scope of ['node', 'tenant', 'pod'] as const) {
+    // `tenant` is not in this list any more: it reads Traefik, which has no
+    // interface dimension. Every scope that still reads cAdvisor is.
+    for (const scope of ['node', 'pod'] as const) {
       const expr = buildTrafficQuery({
-        ...base, scope, subject: scope === 'tenant' || scope === 'pod' ? 'tenant-a-1' : undefined,
+        ...base, scope, subject: scope === 'pod' ? 'tenant-a-1' : undefined,
       }).expr;
       expect(expr, scope).toContain('interface!~');
       expect(expr, scope).toContain('cali[0-9a-f].*');

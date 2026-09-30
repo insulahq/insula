@@ -1,12 +1,28 @@
-import { eq, and, desc, count, inArray } from 'drizzle-orm';
+import { eq, and, desc, count, inArray, ilike, lt, or } from 'drizzle-orm';
 import crypto from 'crypto';
 import bcrypt from 'bcrypt';
-import { sftpUsers, sftpAuditLog, sftpUserSshKeys, sshKeys, platformSettings } from '../../db/schema.js';
+import { sftpUsers, sftpAuditLog, sftpUserSshKeys, sshKeys, platformSettings, tenants } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import type { Database } from '../../db/index.js';
 import type { CreateSftpUserInput, UpdateSftpUserInput } from './schema.js';
 import { resolveBaseDomain, filesHost } from '../../config/domains.js';
 import { getPlatformApex } from '../system-settings/platform-domain.js';
+
+import { encodeCursor, decodeCursor } from '../../shared/pagination.js';
+import type { PaginationMeta } from '../../shared/response.js';
+
+/** One SFTP account with the tenant that owns it, for the operator list. */
+export interface AdminSftpUserRow {
+  readonly id: string;
+  readonly tenantId: string;
+  readonly username: string;
+  readonly homePath: string;
+  readonly description: string | null;
+  readonly enabled: number;
+  readonly lastLoginAt: Date | null;
+  readonly createdAt: Date;
+  readonly tenantName: string | null;
+}
 
 const BCRYPT_COST = 12;
 
@@ -407,5 +423,71 @@ export async function listSftpAuditLog(
       createdAt: row.createdAt.toISOString(),
     })),
     total: totalRow?.total ?? 0,
+  };
+}
+
+/**
+ * Every SFTP account on the platform, newest first.
+ *
+ * The per-tenant list already existed; an operator looking for "who has SFTP
+ * here" had to open each tenant in turn. Mirrors `listAllCronJobs` — same
+ * cursor shape, same search-across-the-tenant-name behaviour — so the
+ * Tenants tabs behave alike.
+ */
+export async function listAllSftpUsers(
+  db: Database,
+  params: { limit: number; cursor?: string; search?: string },
+): Promise<{ data: AdminSftpUserRow[]; pagination: PaginationMeta }> {
+  const { limit, cursor, search } = params;
+
+  const conds = [];
+  if (search) {
+    const pattern = `%${search}%`;
+    conds.push(or(
+      ilike(sftpUsers.username, pattern),
+      ilike(sftpUsers.homePath, pattern),
+      ilike(sftpUsers.description, pattern),
+      ilike(tenants.name, pattern),
+    ));
+  }
+  if (cursor) conds.push(lt(sftpUsers.createdAt, new Date(decodeCursor(cursor).sort)));
+  const where = conds.length > 0 ? and(...conds) : undefined;
+
+  const rows = await db
+    .select({
+      id: sftpUsers.id,
+      tenantId: sftpUsers.tenantId,
+      username: sftpUsers.username,
+      homePath: sftpUsers.homePath,
+      description: sftpUsers.description,
+      enabled: sftpUsers.enabled,
+      lastLoginAt: sftpUsers.lastLoginAt,
+      createdAt: sftpUsers.createdAt,
+      tenantName: tenants.name,
+    })
+    .from(sftpUsers)
+    .leftJoin(tenants, eq(sftpUsers.tenantId, tenants.id))
+    .where(where)
+    .orderBy(desc(sftpUsers.createdAt))
+    .limit(limit + 1);
+
+  const hasMore = rows.length > limit;
+  const data = rows.slice(0, limit) as AdminSftpUserRow[];
+
+  let nextCursor: string | null = null;
+  if (hasMore && data.length > 0) {
+    const last = data[data.length - 1];
+    nextCursor = encodeCursor({ resource: 'sftp_user', sort: last.createdAt.toISOString(), id: last.id });
+  }
+
+  const [{ value: total }] = await db
+    .select({ value: count() })
+    .from(sftpUsers)
+    .leftJoin(tenants, eq(sftpUsers.tenantId, tenants.id))
+    .where(search ? where : undefined);
+
+  return {
+    data,
+    pagination: { cursor: nextCursor, has_more: hasMore, page_size: limit, total_count: total },
   };
 }

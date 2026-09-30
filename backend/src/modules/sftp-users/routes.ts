@@ -1,9 +1,10 @@
 import type { FastifyInstance } from 'fastify';
-import { authenticate, requireTenantRoleByMethod, requireTenantAccess } from '../../middleware/auth.js';
+import { authenticate, requireRole, requireTenantRoleByMethod, requireTenantAccess } from '../../middleware/auth.js';
 import { createSftpUserSchema, updateSftpUserSchema, rotateSftpPasswordSchema } from './schema.js';
 import * as service from './service.js';
-import { success } from '../../shared/response.js';
+import { success, paginated } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
+import { parsePaginationParams } from '../../shared/pagination.js';
 
 export async function sftpUserRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
@@ -11,6 +12,21 @@ export async function sftpUserRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', requireTenantAccess());
 
   // GET /api/v1/tenants/:tenantId/sftp-users
+  // GET /api/v1/admin/sftp-users — every SFTP account, across all tenants.
+  // The per-tenant list already existed; without this an operator asking
+  // "who has SFTP on this platform" had to open each tenant in turn.
+  // Operator-only, explicitly: the file's blanket hooks do not restrict an
+  // /admin/* route to operators (see ci-admin-route-role-check.sh).
+  app.get('/admin/sftp-users', {
+    onRequest: [authenticate, requireRole('super_admin', 'admin')],
+  }, async (request) => {
+    const query = request.query as Record<string, unknown>;
+    const { limit, cursor } = parsePaginationParams(query);
+    const search = typeof query.search === 'string' && query.search.length > 0 ? query.search : undefined;
+    const result = await service.listAllSftpUsers(app.db, { limit, cursor, search });
+    return paginated(result.data, result.pagination);
+  });
+
   app.get('/tenants/:tenantId/sftp-users', async (request) => {
     const { tenantId } = request.params as { tenantId: string };
     const users = await service.listSftpUsers(app.db, tenantId);

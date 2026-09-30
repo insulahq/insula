@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { formatCpuCompact, formatBytesCompact } from '@/components/ResourceMetricsModal';
+
+const NO_VALUE_DASH = '\u2014';
 import ErrorBoundary from '@/components/ErrorBoundary';
 
 /**
@@ -28,7 +30,8 @@ describe('resource formatters tolerate a missing number', () => {
   });
 
   it('still formats real values unchanged', () => {
-    expect(formatCpuCompact(0.02)).toBe('0.02');
+    // One decimal, matching the dashboard tile beside it.
+    expect(formatCpuCompact(0.02)).toBe('0.0');
     expect(formatCpuCompact(2)).toBe('2.0');
     expect(formatCpuCompact(12)).toBe('12');
     expect(formatBytesCompact(0)).toBe('0Mi');
@@ -37,8 +40,10 @@ describe('resource formatters tolerate a missing number', () => {
   });
 
   it('treats 0 as a real value, not a missing one', () => {
-    // `!value` would wrongly dash out an idle tenant.
-    expect(formatCpuCompact(0)).toBe('0.00');
+    // `!value` would wrongly dash out an idle tenant. The distinction that
+    // matters is "0.0" versus the em-dash, not the number of decimals.
+    expect(formatCpuCompact(0)).toBe('0.0');
+    expect(formatCpuCompact(0)).not.toBe(NO_VALUE_DASH);
   });
 });
 

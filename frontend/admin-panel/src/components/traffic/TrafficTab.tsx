@@ -34,7 +34,11 @@ const SCOPES: ReadonlyArray<{ key: TrafficScope; label: string; subjectLabel: st
   { key: 'cluster', label: 'Cluster', subjectLabel: 'Direction' },
   { key: 'node', label: 'Node', subjectLabel: 'Node' },
   { key: 'tenant', label: 'Tenant', subjectLabel: 'Tenant' },
-  { key: 'pod', label: 'Pod', subjectLabel: 'Pod' },
+  // The ONLY view that shows internal traffic. Every other scope is what
+  // crossed the network; pod counters include the database answering the
+  // application inside a namespace, which never leaves the node. Named
+  // for that so the two are not compared as if they measured one thing.
+  { key: 'pod', label: 'Pod (internal traffic)', subjectLabel: 'Pod' },
   { key: 'route', label: 'Ingress route', subjectLabel: 'Route' },
 ];
 

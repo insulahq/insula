@@ -35,7 +35,10 @@ function spanLabel(r: { from: Date; to: Date }): string {
 
 const SCOPES: ReadonlyArray<{ key: TrafficScope; label: string; subjectLabel: string }> = [
   { key: 'tenant', label: 'My account', subjectLabel: 'Direction' },
-  { key: 'pod', label: 'Application', subjectLabel: 'Application' },
+  // Pod counters include traffic between this tenant's own pods — an
+  // application talking to its database never leaves the cluster and is
+  // not billed. This is the only view that shows it.
+  { key: 'pod', label: 'Application (internal traffic)', subjectLabel: 'Application' },
   { key: 'route', label: 'My routes', subjectLabel: 'Route' },
 ];
 

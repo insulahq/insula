@@ -35,7 +35,18 @@ export async function cronJobRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // GET /api/v1/admin/cron-jobs — list all cron jobs across all tenants
-  app.get('/admin/cron-jobs', async (request) => {
+  //
+  // ★ The guard is NOT inherited. This file's blanket hooks are
+  // `requireTenantRoleByMethod()`, which permits tenant_admin and
+  // tenant_user on GET, and `requireTenantAccess()`, which only compares a
+  // `:tenantId` path param against the caller's claim — this route has no
+  // such param, so the comparison is skipped and the request passes. A
+  // tenant-panel token got HTTP 200 and a cross-tenant listing from the
+  // running cluster. `ci-admin-route-role-check.sh` now fails the build on
+  // an /admin/* route without its own role.
+  app.get('/admin/cron-jobs', {
+    onRequest: [authenticate, requireRole('super_admin', 'admin')],
+  }, async (request) => {
     const query = request.query as Record<string, unknown>;
     const { limit, cursor } = parsePaginationParams(query);
     const search = typeof query.search === 'string' && query.search.length > 0 ? query.search : undefined;

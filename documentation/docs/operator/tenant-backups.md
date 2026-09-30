@@ -49,15 +49,28 @@ Which tenants are *included* in that schedule is controlled in two places:
   default for every tenant on it.
 - **Per tenant** — a per-tenant override (inherits from the plan when unset).
 
-The **Backups → Tenants** tab shows an expandable *scheduled inclusion* summary
-so you can see exactly which tenants are in or out of the daily run, and a
-**Bundle all eligible** button to fire one off on demand.
+The **Backups → Tenants** tab shows an expandable *scheduled inclusion*
+summary: exactly which tenants are in or out of the daily run, with a
+**Backup now** on each row and a **Bundle all eligible tenants** button at the
+foot of the same list. The button lives there because it acts on precisely
+the tenants that list shows.
+
+Each bundle row carries **Restore…**, **Export** and **Delete**. Export
+downloads the bundle as a `tar.gz` through a signed single-use link, so a
+large bundle streams to disk rather than being held in the browser. Delete
+removes the stored data and cannot be undone, so the prompt names the bundle
+rather than its id.
+
+**Refresh repo size** measures the tenant's real repository with
+`restic stats`. It reports the size and the time it was taken; per-tenant
+repositories make it quick.
 
 !!! tip "On-demand bundles"
-    Beyond the schedule, an operator can create a bundle for a single tenant
-    from **Backups → Tenants**, and a tenant can self-serve a one-off "Run
-    backup now" from their own panel. A tenant cannot run two bundles at once
-    (the second is rejected to prevent corruption).
+    A tenant can self-serve a one-off "Run backup now" from their own panel,
+    which opens a progress modal showing each component as it completes. Closing
+    that modal does not stop the backup — it can be re-opened from the task
+    centre in the header. A tenant cannot run two bundles at once (the second is
+    rejected to prevent corruption).
 
 ## Retention
 

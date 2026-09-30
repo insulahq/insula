@@ -14,15 +14,16 @@ vi.mock('../monitoring/vm-client.js', () => ({
   queryInstant: () => Promise.resolve([]),
 }));
 
-const { fetchTrafficFrame, disambiguateNames, prettyServiceName } = await import('./service.js');
+const { fetchTrafficFrame, disambiguateNames, prettyServiceName, prettyPodName, aggregateByName } = await import('./service.js');
+const { podMatcher } = await import('./promql.js');
 
 const db = { select: () => ({ from: () => ({ where: () => Promise.resolve([]), then: (r: (v: unknown) => void) => r([]) }) }) } as never;
 const range = { from: new Date(Date.now() - 3_600_000), to: new Date() };
 
 beforeEach(() => { asked = []; });
 
-describe('the cluster frame is two measurements, labelled', () => {
-  it('reports the wire, its subsets, and the workload view — never blended', async () => {
+describe('the cluster frame is the wire, and only the wire', () => {
+  it('reports the wire and the one subset measured the same way', async () => {
     const frame = await fetchTrafficFrame({
       ...range, scope: 'cluster', metric: 'traffic', direction: 'both', backups: 'included',
     }, { db });
@@ -31,16 +32,30 @@ describe('the cluster frame is two measurements, labelled', () => {
       const g = s.group ?? 'none';
       groups.set(g, [...(groups.get(g) ?? []), s.name]);
     }
-    // The wire is the ground truth, in both directions.
     expect(groups.get('wire')).toEqual(['Outbound (wire)', 'Inbound (wire)']);
-    // Subsets of that same total — present, and marked so nothing adds them in.
+    // Same `id="/"` root cgroup, narrowed to the encapsulation interfaces —
+    // comparable to the total it sits under because it shares its instrument.
     expect(groups.get('wire-subset')).toContain('Node-to-node (out)');
-    expect(groups.get('wire-subset')).toContain('Off-site backup upload');
-    // What each workload sent: double-counts through the shim, so it is a
-    // separate group rather than a decomposition of the wire.
-    expect(groups.get('workload')).toContain('Tenant workloads sent');
-    expect(groups.get('workload')).toContain('Backup · tenant bundles');
-    expect(groups.get('workload')).toContain('Backup · mail server snapshots');
+  });
+
+  /**
+   * The cluster view used to carry a third group built from POD counters —
+   * a serving line and a row per backup class — plus an "Off-site backup
+   * upload" row selected by `pod=~"backup-rclone.+"` with no `id="/"`. That
+   * last one claimed to be part of the wire total while being a different
+   * instrument entirely, and the shim answers backup jobs over the pod
+   * network, so it reported 2.15 GB inside a 1.58 GB wire total. A subset
+   * larger than its whole is not a rounding problem.
+   */
+  it('emits NO pod-measured rows — not workload, not off-site', async () => {
+    const frame = await fetchTrafficFrame({
+      ...range, scope: 'cluster', metric: 'traffic', direction: 'both', backups: 'included',
+    }, { db });
+    expect(frame.series.filter((s) => s.group === 'workload')).toEqual([]);
+    expect(frame.series.map((s) => s.name)).not.toContain('Off-site backup upload');
+    expect(frame.series.map((s) => s.name)).not.toContain('Tenant workloads sent');
+    // And nothing reaches for the shim's pod counters any more.
+    expect(asked.join(' ')).not.toContain('backup-rclone');
   });
 
   it('never repeats a series key OR a series NAME', async () => {
@@ -57,27 +72,13 @@ describe('the cluster frame is two measurements, labelled', () => {
     expect(new Set(names).size, `duplicate name in: ${names.join(', ')}`).toBe(names.length);
   });
 
-  it('sums tenant serving into ONE line rather than one per namespace', async () => {
-    await fetchTrafficFrame({
-      ...range, scope: 'cluster', metric: 'traffic', direction: 'out', backups: 'included',
-    }, { db });
-    const serving = asked.filter((e) => e.includes('pod!~'));
-    expect(serving).toHaveLength(1);
-    expect(serving[0]).not.toContain('sum by (namespace)');
-  });
-
-  it('asks for the off-site and workload rows once, not once per direction', async () => {
-    // They are egress by nature; running them for inbound too produced
-    // duplicate identically-named rows the first time round.
-    await fetchTrafficFrame({
-      ...range, scope: 'cluster', metric: 'traffic', direction: 'both', backups: 'included',
-    }, { db });
-    // Match the SELECTOR, not any mention: the "tenant workloads" query also
-    // names these pods, in its exclusion.
-    expect(asked.filter((e) => e.includes('pod=~"backup-rclone'))).toHaveLength(1);
-    expect(asked.filter((e) => e.includes('pod=~"bk-(files|mbox)'))).toHaveLength(1);
-    expect(asked.filter((e) => e.includes('pod!~'))).toHaveLength(1);
-  });
+  // REMOVED: "sums tenant serving into ONE line" and "asks for the off-site
+  // and workload rows once, not once per direction". Both pinned the shape
+  // of rows the cluster view no longer emits — a serving line, a row per
+  // backup class, and an off-site upload row that was pod-measured under a
+  // wire-measured heading. Keeping them passing would have meant keeping the
+  // rows. "emits NO pod-measured rows" above asserts the same territory from
+  // the side that is now true.
 
   it('leaves non-cluster scopes as a plain single measurement', async () => {
     const frame = await fetchTrafficFrame({
@@ -241,5 +242,75 @@ describe('disambiguateNames', () => {
     expect(new Set(names).size, names.join(', ')).toBe(names.length);
     vi.doUnmock('../monitoring/vm-client.js');
     vi.resetModules();
+  });
+});
+
+describe('prettyPodName', () => {
+  it('shows the application, not the pod', () => {
+    // The two the operator reported, verbatim.
+    expect(prettyPodName('website-aaaaaaaaaa-bbbbb')).toBe('website');
+    expect(prettyPodName('file-manager-aaaaaaaaaa-bbbbb')).toBe('file-manager');
+  });
+
+  it('keeps a name that is not a Deployment pod', () => {
+    // A StatefulSet ordinal IS the identity — `system-db-1` and
+    // `system-db-2` are different pods and must not both read `system-db`.
+    expect(prettyPodName('system-db-1')).toBe('system-db-1');
+    // A bare Job pod: one generated segment, not two. Folding it would risk
+    // merging two different jobs into one row.
+    expect(prettyPodName('bk-files-bkp-1a2b-wvh4t')).toBe('bk-files-bkp-1a2b-wvh4t');
+    // Nothing generated at all.
+    expect(prettyPodName('nginx')).toBe('nginx');
+  });
+
+  it('does not eat a real name that merely looks generated', () => {
+    // Five-char last segment but a too-short middle: not the Deployment
+    // shape, so it survives.
+    expect(prettyPodName('api-v2-alpha')).toBe('api-v2-alpha');
+  });
+});
+
+describe('pod rows are per application', () => {
+  it('folds replicas of one Deployment into a single series', () => {
+    const rows = [
+      { key: 'out:file-manager-aaaaaaaaaa-bbbbb', name: 'file-manager', points: [1, 2, 3] },
+      { key: 'out:file-manager-aaaaaaaaaa-ccccc', name: 'file-manager', points: [10, 20, 30] },
+      { key: 'out:website-aaaaaaaaaa-bbbbb', name: 'website', points: [5, 5, 5] },
+    ];
+    const out = aggregateByName(rows);
+    expect(out).toHaveLength(2);
+    const fm = out.find((r) => r.name === 'file-manager');
+    expect(fm?.points).toEqual([11, 22, 33]);
+    // The key becomes the application, because that is what the picker
+    // sends back as `pod=` now.
+    expect(fm?.key).toBe('file-manager');
+  });
+
+  it('a gap in ONE replica does not blank the application', () => {
+    const rows = [
+      { key: 'a', name: 'app', points: [null, 2, null] },
+      { key: 'b', name: 'app', points: [10, null, null] },
+    ];
+    // Unmeasured in every replica stays unmeasured — a break, not a zero.
+    expect(aggregateByName(rows)[0].points).toEqual([10, 2, null]);
+  });
+});
+
+describe('podMatcher', () => {
+  it('selects every pod of an application', () => {
+    expect(podMatcher('file-manager')).toBe('pod=~"file-manager-[a-z0-9]{6,10}-[a-z0-9]{5}"');
+  });
+
+  it('still accepts one exact pod', () => {
+    expect(podMatcher('website-aaaaaaaaaa-bbbbb')).toBe('pod="website-aaaaaaaaaa-bbbbb"');
+  });
+
+  it('cannot reach across an application boundary', () => {
+    // `website` must not select `website-admin`'s pods. Neither generated
+    // segment may contain a hyphen, and PromQL anchors =~ at both ends.
+    const m = podMatcher('website');
+    const re = new RegExp(`^${m.slice('pod=~"'.length, -1)}$`);
+    expect(re.test('website-aaaaaaaaaa-bbbbb')).toBe(true);
+    expect(re.test('website-admin-aaaaaaaaaa-bbbbb')).toBe(false);
   });
 });

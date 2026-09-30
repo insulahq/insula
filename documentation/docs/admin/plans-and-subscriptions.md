@@ -102,22 +102,37 @@ month:
 
 ### What the meter counts
 
-Egress from the tenant's namespace — **minus backups the tenant did not ask
-for**.
+**Traffic that left the cluster.** Nothing else.
 
-A tenant's files backup runs as a Job *inside* the tenant's own namespace, so
-its upload to off-site storage is measured exactly like a visitor download.
-Billing a tenant for a backup the platform scheduled is not defensible, and it
-is not small: on a reference production cluster, a single day's measurement
-put the backup at **78%** and **80%** of the two busiest tenants' recorded
-egress.
+That sounds obvious and was not what happened. The meter used to sum every
+byte a tenant's pods transmitted, which includes the database answering the
+application inside the namespace — over a path that never touches the
+network. Measured over six hours on a reference production cluster, tenants
+were billed **4,687 MB against 668 MB actually served**: 7.0× overall, 190×
+for the most database-heavy tenant, and 1.0× for every tenant with no
+database add-on. That last figure is the one that identifies the excess: it
+was intra-namespace chatter, not egress.
 
-So the meter subtracts it. Only a backup a tenant *starts themselves* is
-billed; anything scheduled by the platform, or triggered by an admin, is
-excluded. The tenant's Monitoring page states this under the allowance bar,
-and does not draw that traffic on the chart either.
+Two things are counted now:
 
-Restores are not counted at all — they are inbound.
+- **What the ingress served**, measured by Traefik per tenant. This is
+  exact, and it is the number a tenant can reconcile against their own
+  route page.
+- **An estimate of the egress the ingress cannot see** — an outbound API
+  call, SMTP, a package pull. It is derived from what the pods sent and
+  received rather than guessed, and it is bounded on both sides by things
+  that are measured: never below what Traefik counted leaving, never above
+  what the pods actually transmitted.
+
+Backups the platform schedules are excluded, as before: a tenant's backup
+Job runs inside their namespace and ships off-site, and billing a tenant for
+a backup they did not ask for is not defensible — on the same cluster it was
+once **78%** and **80%** of the two busiest tenants' recorded egress. Only a
+backup a tenant starts themselves counts.
+
+Inbound is not billed. Restores are inbound, and so is the request half of
+ordinary web traffic; the tenant's chart shows both directions while the
+allowance counts only what left.
 
 !!! note "Not applied retroactively"
     The meter is forward-looking. A cycle already in progress when this

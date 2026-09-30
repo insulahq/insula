@@ -1,9 +1,12 @@
 /**
  * Client-panel self-service routes for Tenant Backup (Tier-3).
  *
- * Mounted at /api/v1/tenant/backups — gated by `requirePanel('tenant')`
- * + `requireTenantAccess()`. Each route resolves the tenant from the
- * JWT's tenantId claim; there is no `:tenantId` URL param to spoof.
+ * Mounted at /api/v1/tenant/backups — gated by `requirePanel('tenant')`.
+ * Each route resolves the tenant from the JWT's tenantId claim and puts it
+ * in the WHERE clause; there is no `:tenantId` URL param to spoof, and
+ * another tenant's bundle is a 404 rather than a 403.
+ *
+ * Deliberately NOT `requireTenantAccess()` — see the note at the hooks.
  *
  * Endpoints:
  *   GET  /api/v1/tenant/backups/bundles
@@ -23,9 +26,10 @@
  * platform-staff use; this file is the customer-facing slice.
  */
 
+import { z } from 'zod';
 import type { FastifyInstance } from 'fastify';
 import { eq, desc, and } from 'drizzle-orm';
-import { authenticate, requirePanel, requireTenantAccess } from '../../middleware/auth.js';
+import { authenticate, requirePanel } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import {
@@ -48,13 +52,26 @@ import { decrypt } from '../oidc/crypto.js';
 export async function backupsV2ClientRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
   app.addHook('onRequest', requirePanel('tenant'));
-  // Defence-in-depth: even though every handler reads the tenantId
-  // from the JWT (never the URL params) and filters DB queries by
-  // it, requireTenantAccess gives a second enforcement layer so a
-  // future handler that forgets the WHERE clause can't leak across
-  // tenants. The middleware is a no-op for these handlers (no
-  // :tenantId params) but rejects malformed tenant-panel tokens.
-  app.addHook('onRequest', requireTenantAccess());
+  // ★ NOT requireTenantAccess(). The comment that used to sit here called it
+  // "a no-op for these handlers (no :tenantId params)". That was wrong, and
+  // the cost was silent: the middleware reads `params.tenantId ?? params.id`,
+  // and every route below is `/tenant/backups/bundles/:id` where `:id` is a
+  // BUNDLE. It compared a bundle id against the caller's tenant id, found
+  // them different, and returned 403 — so bundle detail, GDPR data-export
+  // and export-token were all refused to the very tenant that owned them.
+  // Only the list route, which has no `:id`, worked. Verified against the
+  // running cluster: list 200, detail 403.
+  //
+  // What it was there for is already done, in SQL: each handler resolves the
+  // tenant from the JWT via `tenantIdFromRequest` and puts it in the WHERE
+  // clause, so another tenant's bundle is 404 rather than forbidden. That is
+  // the stronger check anyway — it cannot be satisfied by a path param.
+  // `requirePanel('tenant')` above still rejects a non-tenant token, and a
+  // tenant-panel token with no tenantId claim fails closed in
+  // `tenantIdFromRequest`.
+  //
+  // A handler added here that forgets the WHERE clause is the risk this
+  // leaves; `tenant-routes.access.test.ts` asserts every one of them has it.
 
   // Resolve the tenant from the JWT — every route shares this.
   function tenantIdFromRequest(request: { user?: { tenantId?: string } }): string {
@@ -95,6 +112,67 @@ export async function backupsV2ClientRoutes(app: FastifyInstance): Promise<void>
       components: components.map(toComponentInfo),
     };
     return success(detail);
+  });
+
+  // ── POST /api/v1/tenant/backups/bundles/:id/export-token ───────────
+  //
+  // Mint a single-use download URL for one of the CALLER'S OWN bundles.
+  //
+  // The admin panel has had this; the tenant panel only had the GDPR
+  // data-export, which appears solely on bundles that already carry that
+  // artifact. A tenant could see their backups and not take one away.
+  //
+  // Ownership is enforced HERE, at mint time, by looking the bundle up with
+  // `tenantId` in the WHERE clause. The download route that follows is
+  // authenticated by the token alone — a browser GET cannot carry a Bearer
+  // header — so the token must never be mintable for a bundle the caller
+  // does not own. A tenant asking for someone else's id gets 404, and no
+  // token exists to replay.
+  app.post('/tenant/backups/bundles/:id/export-token', {
+    schema: {
+      tags: ['TenantBundles-Client'],
+      summary: 'Mint a single-purpose download URL for one of my bundles',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request) => {
+    const tenantId = tenantIdFromRequest(request);
+    const { id } = request.params as { id: string };
+    const parsed = z.object({
+      format: z.enum(['tar', 'zip']),
+      password: z.string().optional(),
+    }).safeParse(request.body ?? {});
+    if (!parsed.success) {
+      throw new ApiError('VALIDATION_ERROR', `invalid body: ${parsed.error.issues[0]?.message ?? 'unknown'}`, 400);
+    }
+    const { format } = parsed.data;
+    // As on the admin side: zip discards a password rather than silently
+    // producing an unencrypted archive the caller believes is encrypted.
+    const password = format === 'tar' ? parsed.data.password : undefined;
+
+    const [job] = await app.db.select().from(backupJobs)
+      .where(and(eq(backupJobs.id, id), eq(backupJobs.tenantId, tenantId)))
+      .limit(1);
+    if (!job) throw new ApiError('NOT_FOUND', 'Bundle not found', 404);
+    if (!job.targetConfigId) throw new ApiError('CONFIG_INVALID', 'Bundle has no target_config_id', 400);
+
+    const configuredKey = (app.config as Record<string, unknown>).PLATFORM_ENCRYPTION_KEY as string | undefined
+      ?? process.env.PLATFORM_ENCRYPTION_KEY;
+    if (!configuredKey && process.env.NODE_ENV === 'production') {
+      throw new ApiError('CONFIG_INVALID', 'PLATFORM_ENCRYPTION_KEY is not configured', 500);
+    }
+    const { signExportToken } = await import('./export-token.js');
+    const token = signExportToken(
+      { bundleId: id, format, password: password || undefined },
+      configuredKey ?? '0'.repeat(64),
+    );
+    // Deliberately the ADMIN download path: it is token-authenticated and
+    // bound to this one bundle id, so it grants nothing beyond the bundle
+    // just proven to belong to the caller. A second downloader would be a
+    // second place for that check to drift.
+    return success({
+      downloadUrl: `/api/v1/admin/tenant-bundles/exports/${encodeURIComponent(token)}`,
+      expiresInSec: 300,
+    });
   });
 
   // ── GET /api/v1/tenant/backups/bundles/:id/data-export ─────────────
