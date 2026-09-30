@@ -149,8 +149,8 @@ describe('exactRouteName — what it declines to name', () => {
     expect(exactRouteName(stale, { live, rows, nsToName, tenantView: false })).toBeNull();
   });
 
-  it('leaves non-tenant namespaces to the existing names', () => {
-    expect(admin(PLATFORM)).toBeNull();
+  it('names a non-tenant route for the admin, owned by its namespace', () => {
+    expect(admin(PLATFORM)).toBe('admin.example.test → admin-panel · platform');
   });
 
   it('returns null when the rule has no readable host', () => {
@@ -220,5 +220,23 @@ describe('isHiddenRouteSeries', () => {
   it('leaves labels of other providers alone — the index cannot vouch for them', () => {
     expect(isHiddenRouteSeries('api@internal', live, true)).toBe(false);
     expect(isHiddenRouteSeries('platform-legacy-ingress-80@kubernetes', live, true)).toBe(false);
+  });
+});
+
+describe('exactRouteName — routes that are not a tenant’s', () => {
+  const route: LiveRoute = {
+    namespace: 'platform', objectName: 'platform-ingress', entryPoints: ['websecure'],
+    match: 'Host(`admin.example.test`) && PathPrefix(`/api`)', backendService: 'platform-api',
+  };
+  const live = indexLiveRoutes([route]);
+  const service = traefikServiceLabel(route.namespace, route.objectName, route.match);
+  const ctx = { live, rows: [], nsToName: new Map<string, string>() };
+
+  it('names them from the live rule, owned by the namespace', () => {
+    expect(exactRouteName(service, { ...ctx, tenantView: false })).toBe('admin.example.test/api → platform-api · platform');
+  });
+
+  it('never names one for a tenant — it is not theirs to see', () => {
+    expect(exactRouteName(service, { ...ctx, tenantView: true })).toBeNull();
   });
 });

@@ -21,7 +21,9 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   literal rule, so hashing each LIVE IngressRoute rule and looking the label
   up names the series exactly: `www.example.test → website` (admin adds
   `· <tenant>`), `example.test/shop → shop`, and
-  `www.example.test (http → https redirect)` for the port-80 router. Against a
+  `www.example.test (http → https redirect)` for the port-80 router. The
+  platform's own routes, which read `platform #1 … #4`, are named the same way
+  in the admin panel (`admin.example.test/api → platform-api · platform`). Against a
   week of production labels, 97 of 103 series were named exactly with no
   collisions. cert-manager solver series and routes that no longer exist are
   left out of the breakdown, the table and the picker, and take no top-N slot.

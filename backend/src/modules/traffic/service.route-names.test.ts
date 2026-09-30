@@ -80,8 +80,9 @@ describe('route-scope frame naming', () => {
     expect(byKey[`out:${label(WWW)}`]).toBe('www.example.test → website · Acme Ltd');
     expect(byKey[`out:${label(SHOP)}`]).toBe('example.test/shop → shop · Acme Ltd');
     expect(byKey[`out:${label(WWW_HTTP)}`]).toBe('www.example.test (http → https redirect) · Acme Ltd');
-    // Not a tenant namespace: today's name, untouched.
-    expect(byKey[`out:${label(PLATFORM)}`]).toBe('platform');
+    // Not a tenant's: named from its live rule too, owned by its namespace —
+    // on DEV these read `platform #1 … #4`, the admin API's own traffic among them.
+    expect(byKey[`out:${label(PLATFORM)}`]).toBe('admin.example.test → admin-panel · platform');
   });
 
   it('names each series exactly — tenant-panel format', async () => {

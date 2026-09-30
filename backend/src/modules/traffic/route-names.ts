@@ -106,8 +106,9 @@ function isPlainHttpRouter(route: LiveRoute): boolean {
   return route.entryPoints.length > 0 && route.entryPoints.every((e) => e === 'web');
 }
 
+/** Admin view: who owns the route — the tenant's name, or the namespace when it is nobody's tenant. */
 function withTenant(name: string, namespace: string, ctx: RouteNamingContext): string {
-  return ctx.tenantView ? name : `${name} · ${ctx.nsToName.get(namespace)}`;
+  return ctx.tenantView ? name : `${name} · ${ctx.nsToName.get(namespace) ?? namespace}`;
 }
 
 function nameLiveRoute(route: LiveRoute, ctx: RouteNamingContext): string | null {
@@ -132,6 +133,9 @@ export function exactRouteName(service: string, ctx: RouteNamingContext): string
     return ctx.nsToName.has(solverNs) ? withTenant('Certificate validation', solverNs, ctx) : null;
   }
   const route = ctx.live.get(service);
-  if (!route || !ctx.nsToName.has(route.namespace)) return null;
+  if (!route) return null;
+  // A platform or mail route is named the same way for an operator — they
+  // read `platform #1 … #4` otherwise — but is never a tenant's to see.
+  if (ctx.tenantView && !ctx.nsToName.has(route.namespace)) return null;
   return nameLiveRoute(route, ctx);
 }
