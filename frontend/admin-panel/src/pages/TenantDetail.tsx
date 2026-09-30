@@ -990,11 +990,11 @@ function DomainsTab({ data, isLoading, error, tenantId }: TabContentProps<Domain
     <table className="w-full text-left text-sm" data-testid="domains-table">
       <thead>
         <tr className="border-b border-gray-100 dark:border-gray-700 text-xs font-medium uppercase text-gray-500 dark:text-gray-400">
-          <SortableHeader label="Domain" sortKey="domainName" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
-          <SortableHeader label="DNS Mode" sortKey="dnsMode" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
-          <SortableHeader label="SSL" sortKey="sslAutoRenew" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
-          <SortableHeader label="Status" sortKey="status" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
-          <SortableHeader label="Created" sortKey="createdAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+          <SortableHeader label="Domain" sortKey="domainName" currentKey={sortKey} direction={sortDirection} onSort={onSort}  className="!px-3 !py-2" />
+          <SortableHeader label="DNS Mode" sortKey="dnsMode" currentKey={sortKey} direction={sortDirection} onSort={onSort}  className="!px-3 !py-2" />
+          <SortableHeader label="SSL" sortKey="sslAutoRenew" currentKey={sortKey} direction={sortDirection} onSort={onSort}  className="!px-3 !py-2" />
+          <SortableHeader label="Status" sortKey="status" currentKey={sortKey} direction={sortDirection} onSort={onSort}  className="!px-3 !py-2" />
+          <SortableHeader label="Created" sortKey="createdAt" currentKey={sortKey} direction={sortDirection} onSort={onSort}  className="!px-3 !py-2" />
           <th className="px-3 py-2 text-right font-medium uppercase text-gray-500 dark:text-gray-400">Actions</th>
         </tr>
       </thead>
@@ -1093,10 +1093,10 @@ function EmailTab({ emailDomains, mailboxes, tenantId, isLoading, error }: Email
         <table className="w-full text-left text-sm">
           <thead>
             <tr className="border-b border-gray-100 dark:border-gray-700 text-xs font-medium uppercase text-gray-500 dark:text-gray-400">
-              <SortableHeader label="Domain" sortKey="domainName" currentKey={domainSortKey} direction={domainSortDir} onSort={onDomainSort} />
-              <SortableHeader label="Mailboxes" sortKey="mailboxCount" currentKey={domainSortKey} direction={domainSortDir} onSort={onDomainSort} />
-              <SortableHeader label="Status" sortKey="enabled" currentKey={domainSortKey} direction={domainSortDir} onSort={onDomainSort} />
-              <SortableHeader label="Created" sortKey="createdAt" currentKey={domainSortKey} direction={domainSortDir} onSort={onDomainSort} />
+              <SortableHeader label="Domain" sortKey="domainName" currentKey={domainSortKey} direction={domainSortDir} onSort={onDomainSort}  className="!px-3 !py-2" />
+              <SortableHeader label="Mailboxes" sortKey="mailboxCount" currentKey={domainSortKey} direction={domainSortDir} onSort={onDomainSort}  className="!px-3 !py-2" />
+              <SortableHeader label="Status" sortKey="enabled" currentKey={domainSortKey} direction={domainSortDir} onSort={onDomainSort}  className="!px-3 !py-2" />
+              <SortableHeader label="Created" sortKey="createdAt" currentKey={domainSortKey} direction={domainSortDir} onSort={onDomainSort}  className="!px-3 !py-2" />
             </tr>
           </thead>
           <tbody>
@@ -1124,10 +1124,10 @@ function EmailTab({ emailDomains, mailboxes, tenantId, isLoading, error }: Email
           <table className="w-full text-left text-sm">
             <thead>
               <tr className="border-b border-gray-100 dark:border-gray-700 text-xs font-medium uppercase text-gray-500 dark:text-gray-400">
-                <SortableHeader label="Address" sortKey="fullAddress" currentKey={mboxSortKey} direction={mboxSortDir} onSort={onMboxSort} />
-                <SortableHeader label="Display Name" sortKey="displayName" currentKey={mboxSortKey} direction={mboxSortDir} onSort={onMboxSort} />
-                <SortableHeader label="Quota" sortKey="usedMb" currentKey={mboxSortKey} direction={mboxSortDir} onSort={onMboxSort} />
-                <SortableHeader label="Status" sortKey="status" currentKey={mboxSortKey} direction={mboxSortDir} onSort={onMboxSort} />
+                <SortableHeader label="Address" sortKey="fullAddress" currentKey={mboxSortKey} direction={mboxSortDir} onSort={onMboxSort}  className="!px-3 !py-2" />
+                <SortableHeader label="Display Name" sortKey="displayName" currentKey={mboxSortKey} direction={mboxSortDir} onSort={onMboxSort}  className="!px-3 !py-2" />
+                <SortableHeader label="Quota" sortKey="usedMb" currentKey={mboxSortKey} direction={mboxSortDir} onSort={onMboxSort}  className="!px-3 !py-2" />
+                <SortableHeader label="Status" sortKey="status" currentKey={mboxSortKey} direction={mboxSortDir} onSort={onMboxSort}  className="!px-3 !py-2" />
               </tr>
             </thead>
             <tbody>
@@ -1429,14 +1429,14 @@ function DeploymentsTab({ data, isLoading, error, tenantId }: TabContentProps<De
       <table className="w-full text-left text-sm" data-testid="deployments-table">
       <thead>
         <tr className="border-b border-gray-100 dark:border-gray-700 text-xs font-medium uppercase text-gray-500 dark:text-gray-400">
-          <SortableHeader label="Name" sortKey="name" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
-          <SortableHeader label="Type" sortKey="type" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
-          <SortableHeader label="Node" sortKey="currentNodeName" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
-          <SortableHeader label="Replicas" sortKey="replicaCount" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
-          <SortableHeader label="CPU" sortKey="cpuRequest" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
-          <SortableHeader label="Memory" sortKey="memoryRequest" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
-          <SortableHeader label="Status" sortKey="status" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
-          <SortableHeader label="Created" sortKey="createdAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+          <SortableHeader label="Name" sortKey="name" currentKey={sortKey} direction={sortDirection} onSort={onSort}  className="!px-3 !py-2" />
+          <SortableHeader label="Type" sortKey="type" currentKey={sortKey} direction={sortDirection} onSort={onSort}  className="!px-3 !py-2" />
+          <SortableHeader label="Node" sortKey="currentNodeName" currentKey={sortKey} direction={sortDirection} onSort={onSort}  className="!px-3 !py-2" />
+          <SortableHeader label="Replicas" sortKey="replicaCount" currentKey={sortKey} direction={sortDirection} onSort={onSort}  className="!px-3 !py-2" />
+          <SortableHeader label="CPU" sortKey="cpuRequest" currentKey={sortKey} direction={sortDirection} onSort={onSort}  className="!px-3 !py-2" />
+          <SortableHeader label="Memory" sortKey="memoryRequest" currentKey={sortKey} direction={sortDirection} onSort={onSort}  className="!px-3 !py-2" />
+          <SortableHeader label="Status" sortKey="status" currentKey={sortKey} direction={sortDirection} onSort={onSort}  className="!px-3 !py-2" />
+          <SortableHeader label="Created" sortKey="createdAt" currentKey={sortKey} direction={sortDirection} onSort={onSort}  className="!px-3 !py-2" />
           <th className="px-3 py-2 text-right">Actions</th>
         </tr>
       </thead>
@@ -1701,11 +1701,11 @@ function BackupsTab({ bundles, isLoading, error, tenantId }: {
     <table className="w-full text-left text-sm" data-testid="backups-table">
       <thead>
         <tr className="border-b border-gray-100 dark:border-gray-700 text-xs font-medium uppercase text-gray-500 dark:text-gray-400">
-          <SortableHeader label="Created" sortKey="createdAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
-          <SortableHeader label="Status" sortKey="status" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
-          <SortableHeader label="Size" sortKey="sizeBytes" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
-          <SortableHeader label="Started by" sortKey="initiator" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
-          <SortableHeader label="Expires" sortKey="expiresAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+          <SortableHeader label="Created" sortKey="createdAt" currentKey={sortKey} direction={sortDirection} onSort={onSort}  className="!px-3 !py-2" />
+          <SortableHeader label="Status" sortKey="status" currentKey={sortKey} direction={sortDirection} onSort={onSort}  className="!px-3 !py-2" />
+          <SortableHeader label="Size" sortKey="sizeBytes" currentKey={sortKey} direction={sortDirection} onSort={onSort}  className="!px-3 !py-2" />
+          <SortableHeader label="Started by" sortKey="initiator" currentKey={sortKey} direction={sortDirection} onSort={onSort}  className="!px-3 !py-2" />
+          <SortableHeader label="Expires" sortKey="expiresAt" currentKey={sortKey} direction={sortDirection} onSort={onSort}  className="!px-3 !py-2" />
           <th className="px-3 py-2" />
         </tr>
       </thead>

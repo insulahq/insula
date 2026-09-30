@@ -75,7 +75,9 @@ export default function TenantSnapshotsPanel({ tenantId, variant = 'full', onMan
   const compact = variant === 'compact';
   const snapshots = compact ? allSnapshots.slice(0, 3) : allSnapshots;
   const { sortedData: sortedSnapshots, sortKey, sortDirection, onSort } = useSortable(snapshots, 'createdAt', 'desc');
-  const th = { currentKey: sortKey, direction: sortDirection, onSort, className: '!px-5 !py-3 font-medium text-sm text-gray-500 dark:text-gray-400 normal-case tracking-normal' };
+  const th = { currentKey: sortKey, direction: sortDirection, onSort, // Matches the plain <th> cells in this section; a sortable header and a
+    // static one in the same row must line up.
+    className: '!px-3 !py-2 font-medium text-sm text-gray-500 dark:text-gray-400 normal-case tracking-normal' };
 
   const [createOpen, setCreateOpen] = useState(false);
   const [label, setLabel] = useState('');
