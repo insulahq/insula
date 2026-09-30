@@ -52,6 +52,8 @@
  *                        quota forever.
  */
 import { resolvePlatformImage } from '../../shared/platform-images.js';
+import { FILES_CAPTURE_ROOT } from './components/files.js';
+import { MAILBOX_CAPTURE_ROOT, addressDirName } from './components/mailboxes-restic.js';
 
 /** Where the archive is unpacked inside the Job. */
 export const IMPORT_STAGE_ROOT = '/stage';
@@ -59,8 +61,15 @@ export const IMPORT_STAGE_ROOT = '/stage';
 /** Same mount point the capture Job uses, so the creds Secret is interchangeable. */
 export const IMPORT_CREDS_MOUNT_PATH = '/var/run/restic-creds';
 
-/** Tenant file space, mounted read-only — matches the capture Job's `/source`. */
-export const IMPORT_SOURCE_ROOT = '/source';
+/**
+ * Tenant file space, mounted READ-ONLY.
+ *
+ * ★ Deliberately NOT `/source`. `/source` is the files component's CAPTURE
+ * root — the absolute path recorded inside every files snapshot — and the
+ * import has to reproduce it exactly (see `unitCaptureRoot`), so the uploaded
+ * archive is read from somewhere else entirely.
+ */
+export const IMPORT_UPLOAD_MOUNT = '/upload';
 
 /**
  * Directory in the tenant's file space that uploaded archives land in.
@@ -140,6 +149,35 @@ export interface BuildImportJobInput {
 export function unitStagePath(u: ImportUnit): string {
   return `${IMPORT_STAGE_ROOT}/components/${u.component}/${u.name}`;
 }
+
+/**
+ * The absolute path this unit's data must occupy before `restic backup`.
+ *
+ * ★ THIS IS THE WHOLE POINT. restic records the absolute path it was given,
+ * and every consumer resolves content by that path:
+ *   - browse strips `FILES_CAPTURE_ROOT` (`/source`) — `browse-files-restic.ts`
+ *   - files restore includes `${FILES_CAPTURE_ROOT}/<p>`
+ *   - mailbox restore reads `${MAILBOX_CAPTURE_ROOT}/<addressDirName>`
+ *   - the export strips exactly these prefixes to build the archive
+ *
+ * An import that snapshots its own staging path produces a snapshot nothing
+ * can read: browse returns an EMPTY tree and a restore restores nothing while
+ * reporting success. Verified on DEV — the first successful import was
+ * unbrowsable for precisely this reason.
+ */
+export function unitCaptureRoot(u: ImportUnit): string {
+  if (u.component === 'files') return FILES_CAPTURE_ROOT;
+  // Pre-ADR-061 whole-tenant blob: a FILE, not an address directory.
+  if (!u.name.includes('@')) return `${MAILBOX_CAPTURE_ROOT}/${u.name}`;
+  return `${MAILBOX_CAPTURE_ROOT}/${addressDirName(u.name)}`;
+}
+
+/**
+ * How many leading path components to strip so the archive's entries land at
+ * the capture root. The export writes `components/<component>/<name>/<rel>`,
+ * where `<rel>` is already relative to that root — so exactly three.
+ */
+export const UNIT_STRIP_COMPONENTS = 3;
 
 /**
  * Shell-quote for single-quoted POSIX context.
@@ -243,28 +281,43 @@ export function buildImportScript(input: BuildImportJobInput): string {
     `if [ -f ${IMPORT_CREDS_MOUNT_PATH}/aws_secret_access_key ]; then export AWS_SECRET_ACCESS_KEY="$(cat ${IMPORT_CREDS_MOUNT_PATH}/aws_secret_access_key)"; fi`,
     `if [ -f ${IMPORT_CREDS_MOUNT_PATH}/aws_region ]; then export AWS_DEFAULT_REGION="$(cat ${IMPORT_CREDS_MOUNT_PATH}/aws_region)"; fi`,
     `mkdir -p ${IMPORT_STAGE_ROOT}`,
-    `ARCHIVE=${sq(`${IMPORT_SOURCE_ROOT}/${input.archiveRelPath}`)}`,
+    `ARCHIVE=${sq(`${IMPORT_UPLOAD_MOUNT}/${input.archiveRelPath}`)}`,
     `[ -f "$ARCHIVE" ] || { echo "ERROR: uploaded archive not found at $ARCHIVE"; exit 1; }`,
-    'echo "Extracting the uploaded archive..."',
     // Read straight off the mounted PVC — the chunked upload already put it
-    // there, so there is no second transfer.
-    `tar -xzf "$ARCHIVE" -C ${IMPORT_STAGE_ROOT}`,
+    // there, so there is no second transfer of the bulk.
+    'echo "Listing the uploaded archive..."',
+    // A LISTING, not a full extraction. Each unit is then extracted straight
+    // into its own capture root, backed up, and deleted — so peak staging is
+    // the largest single unit rather than the whole bundle. The listing exists
+    // so a truncated or malformed archive is caught BEFORE the first restic
+    // call: /bin/sh is dash, there is no pipefail, and a short read can leave
+    // tar exiting 0.
+    `tar -tzf "$ARCHIVE" > ${IMPORT_STAGE_ROOT}/manifest.txt || { echo "ERROR: could not read the uploaded archive"; exit 1; }`,
   ];
 
   // A truncated or malformed archive can leave tar exiting 0 on a short read,
   // so the reliable completeness signal is that every promised unit is present.
   // Assert before touching the repo.
   for (const u of input.units) {
-    const p = unitStagePath(u);
+    const member = `components/${u.component}/${u.name}`;
     lines.push(
-      `[ -e ${sq(p)} ] || { echo "ERROR: archive is missing ${u.component}/${u.name} — download truncated or bundle malformed"; exit 1; }`,
+      `grep -q ${sq(`^\\./\\?${member.replace(/[.[\]*^$+?(){}|\\]/g, '\\$&')}`)} ${IMPORT_STAGE_ROOT}/manifest.txt `
+      + `|| { echo "ERROR: archive is missing ${u.component}/${u.name} — upload truncated or bundle malformed"; exit 1; }`,
     );
   }
   lines.push(`echo "IMPORT_EXTRACTED units=${input.units.length}"`);
 
   for (const u of input.units) {
-    const p = unitStagePath(u);
+    const p = unitCaptureRoot(u);
+    const member = `components/${u.component}/${u.name}`;
     lines.push(
+      `echo "Staging ${u.component}/${u.name} at ${p}..."`,
+      // ★ Extracted AT the capture root, not at a staging path. restic records
+      // the absolute path it is given, and browse/restore/export all resolve
+      // content by that exact prefix — see unitCaptureRoot.
+      `rm -rf ${sq(p)} && mkdir -p ${sq(p)}`,
+      `tar -xzf "$ARCHIVE" -C ${sq(p)} --strip-components=${UNIT_STRIP_COMPONENTS} ${sq(member)} `
+        + `|| { echo "ERROR: could not extract ${u.component}/${u.name}"; exit 1; }`,
       `echo "Backing up ${u.component}/${u.name}..."`,
       // Per COMPONENT, not one repo for the whole import: under the
       // `per-component` layout `files` and `mailboxes` are DIFFERENT
@@ -300,11 +353,15 @@ export function buildImportScript(input: BuildImportJobInput): string {
   // that dies early therefore leaves nothing in the object store to orphan —
   // and the orchestrator drops the reserved bundle on failure regardless.
   for (const o of objects) {
-    const artPath = `${IMPORT_STAGE_ROOT}/components/${o.component}/${o.name}`;
+    const artPath = `${IMPORT_STAGE_ROOT}/obj/${o.name}`;
     const url = `${input.internalApiBase}/api/v1/internal/bundles/${input.bundleId}`
       + `/components/${o.component}/${o.name}`;
     lines.push(
       `echo "Uploading ${o.component}/${o.name}..."`,
+      `mkdir -p ${IMPORT_STAGE_ROOT}/obj`,
+      `tar -xzf "$ARCHIVE" -C ${IMPORT_STAGE_ROOT}/obj --strip-components=2 `
+        + `${sq(`components/${o.component}/${o.name}`)} `
+        + `|| { echo "ERROR: archive is missing ${o.component}/${o.name}"; exit 1; }`,
       `ART=${sq(artPath)}`,
       `[ -f "$ART" ] || { echo "ERROR: archive is missing ${o.component}/${o.name}"; exit 1; }`,
       `TOKEN="$(cat ${IMPORT_CREDS_MOUNT_PATH}/${o.tokenKey})"`,
@@ -364,14 +421,20 @@ export function buildImportJobSpec(input: BuildImportJobInput): Record<string, u
       volumeMounts: [
         // Read-only: the import must never be able to mutate tenant files. It
         // only reads the archive it was told to read.
-        { name: 'source', mountPath: IMPORT_SOURCE_ROOT, readOnly: true },
-        { name: 'stage', mountPath: IMPORT_STAGE_ROOT },
+        { name: 'upload', mountPath: IMPORT_UPLOAD_MOUNT, readOnly: true },
+        { name: 'stage', mountPath: IMPORT_STAGE_ROOT, subPath: 'raw' },
+        // ★ The CAPTURE ROOTS, backed by subPaths of the SAME size-limited
+        // volume — so one `sizeLimit` still bounds everything the import
+        // writes, while each unit sits at the absolute path its snapshot must
+        // record (see unitCaptureRoot).
+        { name: 'stage', mountPath: FILES_CAPTURE_ROOT, subPath: 'files' },
+        { name: 'stage', mountPath: MAILBOX_CAPTURE_ROOT, subPath: 'mail' },
         { name: 'scratch', mountPath: '/tmp' },
         { name: 'restic-creds', mountPath: IMPORT_CREDS_MOUNT_PATH, readOnly: true },
       ],
     }],
     volumes: [
-      { name: 'source', persistentVolumeClaim: { claimName: input.pvcName, readOnly: true } },
+      { name: 'upload', persistentVolumeClaim: { claimName: input.pvcName, readOnly: true } },
       // sizeLimit is the containment: the kubelet evicts this Job rather than
       // filling the node root disk when a manifest under-declared its sizes.
       { name: 'stage', emptyDir: { sizeLimit: input.stageSizeLimit } },

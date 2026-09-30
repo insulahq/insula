@@ -25,6 +25,13 @@ vi.mock('./components/files.js', () => ({
   buildResticCredsStringData: (a: { repoUri: string }) => ({ restic_password: 'p', repo_uri: a.repoUri }),
   createResticCredsSecret: (...a: unknown[]) => createSecretMock(...a),
   wireSecretOwnerRef: vi.fn(),
+  // import-job.ts reads the capture roots from here — the import has to
+  // reproduce the exact absolute paths capture snapshots.
+  FILES_CAPTURE_ROOT: '/source',
+}));
+vi.mock('./components/mailboxes-restic.js', () => ({
+  MAILBOX_CAPTURE_ROOT: '/capture',
+  addressDirName: (a: string) => a.replace(/[^A-Za-z0-9._@-]/g, '_'),
 }));
 vi.mock('./restic-driver.js', () => ({
   buildResticEnv: () => ({}),

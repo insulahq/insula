@@ -12,8 +12,9 @@ import {
   repoUriKey,
   IMPORT_CREDS_MOUNT_PATH,
   unitStagePath,
+  unitCaptureRoot,
   IMPORT_STAGE_ROOT,
-  IMPORT_SOURCE_ROOT,
+  IMPORT_UPLOAD_MOUNT,
   type BuildImportJobInput,
   type ImportUnit,
   type ImportObjectUpload,
@@ -83,8 +84,8 @@ describe('buildImportScript', () => {
   it('reads the archive off the mounted PVC, not over the network', () => {
     // The ARCHIVE is never fetched over the network — the chunked upload
     // already put it on the PVC, so there is no second transfer of the bulk.
-    expect(script).toContain(`${IMPORT_SOURCE_ROOT}/.insula-imports/imp-1.tar.gz`);
-    expect(script).toContain(`tar -xzf "$ARCHIVE" -C ${IMPORT_STAGE_ROOT}`);
+    expect(script).toContain(`${IMPORT_UPLOAD_MOUNT}/.insula-imports/imp-1.tar.gz`);
+    expect(script).toContain('tar -tzf "$ARCHIVE"');
     expect(script).not.toMatch(/curl[^\n]*\$ARCHIVE/);
     // With no object artifacts there is no network egress at all.
     expect(script).not.toContain('curl');
@@ -94,15 +95,42 @@ describe('buildImportScript', () => {
     expect(script).toMatch(/\[ -f "\$ARCHIVE" \] \|\| \{ echo "ERROR: uploaded archive not found/);
   });
 
+  it('★ stages each unit AT its capture root, which is what restore and browse read', () => {
+    // restic records the absolute path it is given, and every consumer resolves
+    // content by that prefix: browse strips /source, files restore includes
+    // /source/<p>, mailbox restore reads /capture/<addressDirName>. Snapshotting
+    // a staging path instead produces a snapshot nothing can read — browse
+    // returns an EMPTY tree and a restore restores nothing while reporting
+    // success. Observed on DEV on the first otherwise-successful import.
+    expect(unitCaptureRoot(UNITS[0]!)).toBe('/source');
+    expect(unitCaptureRoot(UNITS[1]!)).toBe('/capture/user@example.test');
+    for (const u of UNITS) {
+      const root = unitCaptureRoot(u);
+      expect(script).toContain(`--strip-components=3 'components/${u.component}/${u.name}'`.replace(/'/g, u.name.includes('@') ? "'" : "'"));
+      expect(script, u.name).toContain(`backup '${root}'`);
+      // …and never the raw staging path
+      expect(script).not.toContain(`backup '${unitStagePath(u)}'`);
+    }
+  });
+
   it('asserts every promised unit landed before touching the repo', () => {
     // /bin/sh is dash — no pipefail — so a short read can leave tar exiting 0.
     // Unit presence is the completeness signal, and it must be checked BEFORE
     // the first restic call or a truncated archive writes a partial snapshot.
     const firstBackup = script.indexOf('restic -r "$REPO" backup');
+    expect(firstBackup).toBeGreaterThan(-1);
+    // One presence check per unit, ALL of them before the first restic call.
+    // Matched on the manifest grep rather than the member string, because the
+    // member is regex-escaped in the emitted shell (`user@example\.test`).
+    const checks = [...script.matchAll(new RegExp(`${IMPORT_STAGE_ROOT}/manifest\\.txt`, 'g'))]
+      .map((m) => m.index ?? -1);
+    // one write of the manifest + one grep per unit
+    expect(checks).toHaveLength(UNITS.length + 1);
+    for (const at of checks) expect(at).toBeLessThan(firstBackup);
+    // and each unit is named in some form
     for (const u of UNITS) {
-      const assertIdx = script.indexOf(`[ -e '${unitStagePath(u)}' ]`);
-      expect(assertIdx, u.name).toBeGreaterThan(-1);
-      expect(assertIdx).toBeLessThan(firstBackup);
+      expect(script).toContain(`components/${u.component}/`);
+      expect(script, u.name).toMatch(new RegExp(u.name.replace(/[.*+?^${}()|[\]\\]/g, '\\\\?$&')));
     }
   });
 
@@ -123,8 +151,10 @@ describe('buildImportScript', () => {
 
   it('deletes each unit after its backup so peak staging falls', () => {
     for (const u of UNITS) {
-      const backupIdx = script.indexOf(`backup '${unitStagePath(u)}'`);
-      const rmIdx = script.indexOf(`rm -rf '${unitStagePath(u)}'`);
+      const root = unitCaptureRoot(u);
+      const backupIdx = script.indexOf(`backup '${root}'`);
+      const rmIdx = script.lastIndexOf(`rm -rf '${root}'`);
+      expect(backupIdx, u.name).toBeGreaterThan(-1);
       expect(rmIdx, u.name).toBeGreaterThan(backupIdx);
     }
   });
@@ -166,13 +196,26 @@ describe('buildImportJobSpec', () => {
   const job = buildImportJobSpec(BASE) as Record<string, any>;
   const pod = job.spec.template.spec;
 
-  it('mounts the tenant PVC READ-ONLY', () => {
+  it('mounts the tenant PVC READ-ONLY, and NOT at the files capture root', () => {
     // The import reads one archive. It must never be able to mutate tenant
-    // files, whatever the archive contains.
-    const mount = pod.containers[0].volumeMounts.find((m: any) => m.name === 'source');
-    expect(mount).toMatchObject({ mountPath: IMPORT_SOURCE_ROOT, readOnly: true });
-    const vol = pod.volumes.find((v: any) => v.name === 'source');
+    // files, whatever the archive contains. And it must not occupy /source —
+    // that path belongs to the files snapshot the import has to reproduce.
+    const mount = pod.containers[0].volumeMounts.find((m: any) => m.name === 'upload');
+    expect(mount).toMatchObject({ mountPath: IMPORT_UPLOAD_MOUNT, readOnly: true });
+    expect(IMPORT_UPLOAD_MOUNT).not.toBe('/source');
+    const vol = pod.volumes.find((v: any) => v.name === 'upload');
     expect(vol.persistentVolumeClaim).toMatchObject({ claimName: 'tenant-files', readOnly: true });
+  });
+
+  it('★ backs both capture roots with the ONE size-limited volume', () => {
+    // Otherwise the sizeLimit bounds only the raw staging area and the actual
+    // extracted data lands somewhere unbounded.
+    const mounts = pod.containers[0].volumeMounts.filter((m: any) => m.name === 'stage');
+    const byPath = Object.fromEntries(mounts.map((m: any) => [m.mountPath, m.subPath]));
+    expect(byPath['/source']).toBe('files');
+    expect(byPath['/capture']).toBe('mail');
+    expect(byPath['/stage']).toBe('raw');
+    expect(pod.volumes.filter((v: any) => v.name === 'stage')).toHaveLength(1);
   });
 
   it('bounds staging with a sizeLimit so an under-declared manifest evicts the Job, not the node', () => {
