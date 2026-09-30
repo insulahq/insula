@@ -82,7 +82,7 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   traffic is visible in exactly one place, named for what it is:
   **Pod (internal traffic)**.
 
-- **Pod rows read as applications.** `website-589bc77f7-q2hrk` is `website`,
+- **Pod rows read as applications.** `website-<replicaset>-<pod>` is `website`,
   and replicas of one Deployment are one line rather than several rows
   wearing the same name.
 

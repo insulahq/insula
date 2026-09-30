@@ -104,7 +104,7 @@ export function quoteLabel(value: string): string {
  *
  * Neither generated segment can contain a hyphen, which is what keeps this
  * from reaching across an application boundary: `website-[a-z0-9]{6,10}-…`
- * cannot match `website-admin-655bc877b9-przdh`, because `admin-655bc877b9`
+ * cannot match `website-admin-aaaaaaaaaa-bbbbb`, because `admin-aaaaaaaaaa`
  * is not one segment. PromQL anchors a `=~` at both ends, so there is no
  * prefix-overrun either.
  */

@@ -71,6 +71,14 @@ describe('a tenant is measured at the INGRESS, a pod at the pod', () => {
   });
 });
 
+// The namespace shape matters to these assertions — `tenant-<slug>-<8 hex>`
+// is what the rewrite regex keys on — but a literal of that shape reads as a
+// real customer's namespace in a public repo. Composed from parts so the
+// shape is exercised and no such literal exists in the file.
+const HEX8 = 'deadbeef';
+const PARENT_NS = `tenant-alpha-${HEX8}`;
+const CHILD_NS = `${PARENT_NS}-eu-${HEX8}`;
+
 describe('a tenant prefix must not reach a nested tenant', () => {
   /**
    * Namespaces NEST. `tenant-acme-<hash>` and `tenant-acme-<hash>-eu-<hash2>`
@@ -84,16 +92,16 @@ describe('a tenant prefix must not reach a nested tenant', () => {
     const { expr } = buildTrafficQuery({
       ...base,
       scope: 'tenant',
-      subject: 'tenant-acme-1a2b3c4d',
-      excludeNestedNamespaces: ['tenant-acme-1a2b3c4d-eu-9f8e7d6c'],
+      subject: PARENT_NS,
+      excludeNestedNamespaces: [CHILD_NS],
     });
-    expect(expr).toContain('service=~"tenant-acme-1a2b3c4d-.+"');
-    expect(expr).toContain('service!~"tenant-acme-1a2b3c4d-eu-9f8e7d6c-.+"');
+    expect(expr).toContain(`service=~"${PARENT_NS}-.+"`);
+    expect(expr).toContain(`service!~"${CHILD_NS}-.+"`);
   });
 
   it('adds no exclusion when nothing nests', () => {
     const { expr } = buildTrafficQuery({
-      ...base, scope: 'tenant', subject: 'tenant-acme-1a2b3c4d', excludeNestedNamespaces: [],
+      ...base, scope: 'tenant', subject: PARENT_NS, excludeNestedNamespaces: [],
     });
     expect(expr).not.toContain('service!~');
   });
@@ -102,11 +110,11 @@ describe('a tenant prefix must not reach a nested tenant', () => {
     // Stated as a test so the reason for the exclusion cannot be optimised
     // away by someone who reads only the happy path.
     const { expr } = buildTrafficQuery({
-      ...base, scope: 'tenant', subject: 'tenant-acme-1a2b3c4d',
+      ...base, scope: 'tenant', subject: PARENT_NS,
     });
     const m = /service=~"([^"]+)"/.exec(expr);
     expect(m).not.toBeNull();
-    expect(new RegExp(`^${m![1]}$`).test('tenant-acme-1a2b3c4d-eu-9f8e7d6c-ingress-abc')).toBe(true);
+    expect(new RegExp(`^${m![1]}$`).test(`${CHILD_NS}-ingress-abc`)).toBe(true);
   });
 });
 

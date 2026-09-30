@@ -248,8 +248,8 @@ describe('disambiguateNames', () => {
 describe('prettyPodName', () => {
   it('shows the application, not the pod', () => {
     // The two the operator reported, verbatim.
-    expect(prettyPodName('website-589bc77f7-q2hrk')).toBe('website');
-    expect(prettyPodName('file-manager-655bc877b9-przdh')).toBe('file-manager');
+    expect(prettyPodName('website-aaaaaaaaaa-bbbbb')).toBe('website');
+    expect(prettyPodName('file-manager-aaaaaaaaaa-bbbbb')).toBe('file-manager');
   });
 
   it('keeps a name that is not a Deployment pod', () => {
@@ -273,9 +273,9 @@ describe('prettyPodName', () => {
 describe('pod rows are per application', () => {
   it('folds replicas of one Deployment into a single series', () => {
     const rows = [
-      { key: 'out:file-manager-655bc877b9-przdh', name: 'file-manager', points: [1, 2, 3] },
-      { key: 'out:file-manager-655bc877b9-k2r8p', name: 'file-manager', points: [10, 20, 30] },
-      { key: 'out:website-589bc77f7-q2hrk', name: 'website', points: [5, 5, 5] },
+      { key: 'out:file-manager-aaaaaaaaaa-bbbbb', name: 'file-manager', points: [1, 2, 3] },
+      { key: 'out:file-manager-aaaaaaaaaa-ccccc', name: 'file-manager', points: [10, 20, 30] },
+      { key: 'out:website-aaaaaaaaaa-bbbbb', name: 'website', points: [5, 5, 5] },
     ];
     const out = aggregateByName(rows);
     expect(out).toHaveLength(2);
@@ -302,7 +302,7 @@ describe('podMatcher', () => {
   });
 
   it('still accepts one exact pod', () => {
-    expect(podMatcher('website-589bc77f7-q2hrk')).toBe('pod="website-589bc77f7-q2hrk"');
+    expect(podMatcher('website-aaaaaaaaaa-bbbbb')).toBe('pod="website-aaaaaaaaaa-bbbbb"');
   });
 
   it('cannot reach across an application boundary', () => {
@@ -310,7 +310,7 @@ describe('podMatcher', () => {
     // segment may contain a hyphen, and PromQL anchors =~ at both ends.
     const m = podMatcher('website');
     const re = new RegExp(`^${m.slice('pod=~"'.length, -1)}$`);
-    expect(re.test('website-589bc77f7-q2hrk')).toBe(true);
-    expect(re.test('website-admin-655bc877b9-przdh')).toBe(false);
+    expect(re.test('website-aaaaaaaaaa-bbbbb')).toBe(true);
+    expect(re.test('website-admin-aaaaaaaaaa-bbbbb')).toBe(false);
   });
 });

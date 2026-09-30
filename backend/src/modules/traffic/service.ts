@@ -116,7 +116,7 @@ export function subjectIdOf(key: string): string {
  * Fold every pod of one application into a single series.
  *
  * A Deployment's pods are replicas of one thing. Listing
- * `file-manager-655bc877b9-przdh` beside `file-manager-655bc877b9-k2r8p`
+ * `file-manager-aaaaaaaaaa-bbbbb` beside `file-manager-aaaaaaaaaa-ccccc`
  * asks the reader to add two numbers that were never separate questions —
  * and once the names are collapsed to the application, the rows are simply
  * indistinguishable, which the disambiguator would then "fix" by numbering
@@ -246,8 +246,8 @@ export function prettyServiceName(
  * A pod name, as the application it belongs to.
  *
  * A Deployment names its pods `<app>-<replicaset hash>-<suffix>`, so the
- * traffic tables listed `website-589bc77f7-q2hrk` and
- * `file-manager-655bc877b9-przdh` — two identifiers the reader has to strip
+ * traffic tables listed `website-aaaaaaaaaa-bbbbb` and
+ * `file-manager-aaaaaaaaaa-bbbbb` — two identifiers the reader has to strip
  * in their head to find the one word that matters. The pod KEY is untouched:
  * it is what goes back as `pod=` on the next query, and it has to stay the
  * real name.

@@ -17,9 +17,9 @@ import { describe, it, expect, vi } from 'vitest';
 
 const LABELLED: Record<string, string> = {
   node: 'sv1',
-  namespace: 'tenant-acme-1a2b3c4d',
-  pod: 'website-794d87b45d-pljpd',
-  service: 'tenant-acme-1a2b3c4d-tenant-acme-1a2b3c4d-ingress-66364415ff27@kubernetescrd',
+  namespace: `tenant-alpha-${'deadbeef'}`,
+  pod: 'website-aaaaaaaaaa-bbbbb',
+  service: 'tenant-alpha-ns-tenant-alpha-ns-ingress-66364415ff27@kubernetescrd',
 };
 
 vi.mock('../monitoring/vm-client.js', () => ({
@@ -47,7 +47,7 @@ describe('a subject key round-trips into a query', () => {
     // A tenant is measured at the ingress now, so the key it hands back has
     // to select that tenant's SERVICES. Still the namespace — the identity
     // did not change, only the instrument.
-    { scope: 'tenant' as const, label: 'namespace', expect: 'service=~"tenant-acme-1a2b3c4d-.+"' },
+    { scope: 'tenant' as const, label: 'namespace', expect: `service=~"tenant-alpha-${'deadbeef'}-.+"` },
   ];
 
   for (const c of cases) {
