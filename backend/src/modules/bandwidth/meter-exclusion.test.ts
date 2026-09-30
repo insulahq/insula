@@ -59,51 +59,100 @@ function makeDb(backupRows: Array<{ id: string; tenantId: string; initiator: str
   } as never;
 }
 
-const SERVED_BYTES = 4_740_000_000;   // what the ingress served for them
+// Sunshine College over six hours on production, scaled to one tick. The
+// identity gives 301 MB where the ingress measured 274 MB; the 27 MB gap is
+// the non-HTTP egress the estimate exists to capture.
+const SERVED_OUT = 274_000_000;
+const SERVED_IN = 122_000_000;
+const POD_TX = 2_159_000_000;
+const POD_RX = 1_980_000_000;
+// TX − RX + servedIn = 301 MB
+const EXPECTED_BILLED_GB = (POD_TX - POD_RX + SERVED_IN) / 1e9;
+
+/** Route each query by the counter it names. */
+function mockQueries(over: Partial<Record<'servedOut' | 'servedIn' | 'tx' | 'rx' | 'backup', number>> = {}) {
+  const v = { servedOut: SERVED_OUT, servedIn: SERVED_IN, tx: POD_TX, rx: POD_RX, backup: 0, ...over };
+  queryInstant.mockImplementation((q: string) => {
+    if (q.includes('namespace, pod')) {
+      return Promise.resolve(v.backup > 0
+        ? [{ labels: { namespace: NS, pod: `${filesJobName(JOB)}-x7k2p` }, value: v.backup }]
+        : []);
+    }
+    if (q.includes('traefik_service_responses_bytes_total')) return Promise.resolve([{ labels: { namespace: NS }, value: v.servedOut }]);
+    if (q.includes('traefik_service_requests_bytes_total')) return Promise.resolve([{ labels: { namespace: NS }, value: v.servedIn }]);
+    if (q.includes('container_network_transmit_bytes_total')) return Promise.resolve([{ labels: { namespace: NS }, value: v.tx }]);
+    if (q.includes('container_network_receive_bytes_total')) return Promise.resolve([{ labels: { namespace: NS }, value: v.rx }]);
+    return Promise.resolve([]);
+  });
+}
 
 beforeEach(() => {
   queryInstant.mockReset();
   recordHourlyUsage.mockClear();
-  queryInstant.mockImplementation(() => Promise.resolve(
-    [{ labels: { namespace: NS }, value: SERVED_BYTES }],
-  ));
+  mockQueries();
 });
 
 describe('meterBandwidthOnce · bills external egress only', () => {
-  it('reads the ingress, never the pod counters', async () => {
+  it('bills served HTTP PLUS an estimate of what the ingress cannot see', async () => {
     const captured: Captured = {};
-    await meterBandwidthOnce(makeDb([{ id: JOB, tenantId: 'ta', initiator: 'system' }], captured));
-    const queries = queryInstant.mock.calls.map((c) => String(c[0]));
-    expect(queries.join(' ')).toContain('traefik_service_responses_bytes_total');
-    // The old instrument counted the database answering the application.
-    expect(queries.join(' ')).not.toContain('container_network_transmit_bytes_total');
+    await meterBandwidthOnce(makeDb([], captured));
+    // Not 274 MB (ingress alone) and nowhere near 2159 MB (every byte the
+    // pods moved, including the database answering the application).
+    expect(captured.used).toBeCloseTo(10 + EXPECTED_BILLED_GB, 5);
+    expect(captured.used).toBeGreaterThan(10 + SERVED_OUT / 1e9);
+    expect(captured.used).toBeLessThan(10 + POD_TX / 1e9);
   });
 
-  it('bills exactly what was served', async () => {
+  it('never bills less than what was measured leaving', async () => {
+    // A tenant taking a large NON-HTTP upload: externalIn is far bigger than
+    // Traefik saw, so the identity under-states egress and can go negative.
+    // Traefik counted 274 MB out; that provably left and must still be paid.
+    mockQueries({ rx: POD_TX + 4_000_000_000 });
     const captured: Captured = {};
-    await meterBandwidthOnce(makeDb([{ id: JOB, tenantId: 'ta', initiator: 'system' }], captured));
-    expect(captured.used).toBeCloseTo(10 + 4.74, 5);
+    await meterBandwidthOnce(makeDb([], captured));
+    expect(captured.used).toBeCloseTo(10 + SERVED_OUT / 1e9, 5);
   });
 
-  it('does not run an exclusion query, and bills the same either way', async () => {
-    // A platform backup does not pass through the ingress, so there is
-    // nothing to deduct. Deducting anyway would hand back bandwidth the
-    // tenant did use — and the clamp below would hide most of it.
+  it('never bills more than the pods actually transmitted', async () => {
+    // A burst of inbound HTTP inflates servedIn; the identity would put
+    // externalOut above what the pods sent, which is impossible.
+    mockQueries({ servedIn: POD_TX * 4 });
+    const captured: Captured = {};
+    await meterBandwidthOnce(makeDb([], captured));
+    expect(captured.used).toBeCloseTo(10 + POD_TX / 1e9, 5);
+  });
+
+  it('still removes a platform backup before estimating', async () => {
+    // A backup Job runs in the tenant's namespace and ships to a DIFFERENT
+    // one, so the identity scores it as external egress. Left in, the tenant
+    // pays for a backup the platform scheduled — the original defect.
+    // A low served figure so the measured floor does not mask the effect —
+    // with the production numbers it does, which the next test pins.
+    const LOW_SERVED = 50_000_000;
     const withBackup: Captured = {};
+    mockQueries({ backup: 150_000_000, servedOut: LOW_SERVED });
     await meterBandwidthOnce(makeDb([{ id: JOB, tenantId: 'ta', initiator: 'system' }], withBackup));
-    const queries = queryInstant.mock.calls.map((c) => String(c[0]));
-    expect(queries.some((q) => q.includes('namespace, pod'))).toBe(false);
 
-    queryInstant.mockClear();
-    const withNone: Captured = {};
-    await meterBandwidthOnce(makeDb([], withNone));
-    expect(withNone.used).toBeCloseTo(withBackup.used as number, 5);
+    const clean: Captured = {};
+    mockQueries({ backup: 0, servedOut: LOW_SERVED });
+    await meterBandwidthOnce(makeDb([], clean));
+
+    expect((clean.used as number) - (withBackup.used as number)).toBeCloseTo(0.15, 5);
+  });
+
+  it('the measured floor can mask the exclusion, and that is correct', () => {
+    // With the real Sunshine numbers, removing a 150 MB backup drops the
+    // estimate to 151 MB — below the 274 MB Traefik actually counted going
+    // out. Billing the estimate there would charge less than what provably
+    // left, so the floor wins. Worth pinning: it looks like the exclusion
+    // "did not work" unless you know which bound is binding.
+    const estimated = (POD_TX - 150_000_000) - POD_RX + SERVED_IN;
+    expect(estimated).toBeLessThan(SERVED_OUT);
+    expect(Math.max(SERVED_OUT, estimated)).toBe(SERVED_OUT);
   });
 
   it('never returns bandwidth — a counter reset floors at zero', async () => {
-    queryInstant.mockImplementation(() => Promise.resolve(
-      [{ labels: { namespace: NS }, value: -5_000 }],
-    ));
+    mockQueries({ servedOut: -5_000, tx: -5_000, rx: 0, servedIn: 0 });
     const captured: Captured = {};
     await meterBandwidthOnce(makeDb([], captured));
     expect(captured.used ?? 10).toBe(10);
@@ -122,6 +171,6 @@ describe('meterBandwidthOnce · bills external egress only', () => {
     await meterBandwidthOnce(makeDb([], captured));
     expect(recordHourlyUsage).toHaveBeenCalledTimes(1);
     const arg = recordHourlyUsage.mock.calls[0][2] as { bandwidth_gb: number };
-    expect(arg.bandwidth_gb).toBeCloseTo(4.74, 5);
+    expect(arg.bandwidth_gb).toBeCloseTo(EXPECTED_BILLED_GB, 5);
   });
 });
