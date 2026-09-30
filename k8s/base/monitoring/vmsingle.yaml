@@ -143,31 +143,43 @@ spec:
             # Re-measure vm_cache_size_bytes against vm_cache_entries before
             # trusting any prediction about this value, including this one.
             - -memory.allowedBytes=64MiB
-            # PER-CACHE CEILINGS — the correction to the note above.
+            # PER-CACHE CEILINGS. -memory.allowedBytes budgets the caches only
+            # as a GROUP; these bound them individually.
             #
-            # -memory.allowedBytes budgets the caches as a GROUP, and three of
-            # them then sat at a 32 MiB floor EACH regardless of it:
-            # storage/tsid, storage/metricIDs and storage/metricName, measured
-            # at exactly 33,554,432 bytes apiece on production while holding
-            # 62,896 / 23,259 / 15,299 entries for a cluster with 17,391 live
-            # series. ~99 MiB — a quarter of the container limit — of cache
-            # sized for a workload with millions of series. That is where the
-            # earlier "~126 MiB of fastcache is a fixed cost" conclusion came
-            # from, and it was WRONG: these per-cache overrides exist and work.
+            # ★ WHAT THIS DOES AND DOES NOT DO — MEASURED, because the obvious
+            # reading is wrong in both directions:
             #
-            # 16MiB is not a guess. At ~533 bytes/entry (measured: 33,554,432
-            # over 62,896 entries) 16 MiB holds ~31,500 series against 17,391
-            # live — roughly 1.8x headroom, which also covers the churn the
-            # scrape config no longer admits. Going to 8 MiB would hold ~15,700
-            # and start missing on the live set every scrape; the flag's own
-            # help warns a too-small value costs CPU and disk IO, which is the
-            # exact failure being fixed here. Re-derive from
-            # vm_cache_size_bytes / vm_cache_entries, and check
-            # vm_cache_misses_total before lowering further.
+            # It DOES apply. The startup log is the proof, not
+            # vm_cache_size_max_bytes:
+            #     loaded cache at /storage/cache/metricName_tsid
+            #       in modeWhole with maxSize 16777216 bytes
+            # ★ vm_cache_size_max_bytes{type="storage/tsid"} MISREPORTS these —
+            # it keeps reporting the -memory.allowedBytes budget (64 MiB) no
+            # matter what the override is set to. Read the startup log instead.
+            # The indexdb caches below DO report their override correctly.
             #
-            # storage/metricIDs has NO override flag and stays at 32 MiB.
-            - -storage.cacheSizeStorageTSID=16MiB
-            - -storage.cacheSizeStorageMetricName=16MiB
+            # It does NOT reduce resident memory. storage/tsid, metricIDs and
+            # metricName each report vm_cache_size_bytes = exactly 33,554,432
+            # (32 MiB) — and measured on DEV, that number was identical before
+            # and after this flag. 32 MiB is fastcache's own allocation floor
+            # (512 buckets x 64 KiB chunk), so the caches cannot be made
+            # smaller than that by any flag. The earlier "~126 MiB of fastcache
+            # is a fixed cost" conclusion was therefore RIGHT about the floor —
+            # what was wrong was believing the CEILING could not be bounded.
+            #
+            # So this is a worst-case bound, not a saving: it caps the ceiling
+            # at the value these caches already occupy, instead of leaving them
+            # free to grow to the 64 MiB that -memory.allowedBytes permits.
+            # That is worth having — a cache-warming query reaching 64 MiB on
+            # each of two caches is 64 MiB of headroom gone — but do NOT budget
+            # any freed memory against it.
+            #
+            # 32MiB, not lower: the floor is 32 MiB anyway, so a smaller value
+            # buys nothing and only risks eviction (the flag's own help warns a
+            # too-small value costs CPU and disk IO — the exact failure being
+            # fixed here). storage/metricIDs has NO override flag.
+            - -storage.cacheSizeStorageTSID=32MiB
+            - -storage.cacheSizeStorageMetricName=32MiB
             # Bound the indexdb caches too. Both sit well under these today
             # (dataBlocks 6.4 MiB, indexBlocks 0.7 MiB) so this changes nothing
             # now; it caps the worst case a cache-warming query can reach.
@@ -243,16 +255,26 @@ spec:
             #   384 MiB limit − 126 fastcache − ~40 binary/stacks/slab/slack
             #   ≈ 218 MiB available to the Go runtime
             #
-            # RE-DERIVED after the per-cache ceilings above cut ~32 MiB of
-            # off-heap fastcache. The instruction below said to re-derive when
-            # vm_cache_size_bytes changed materially; it just did, deliberately.
+            # STAYS AT 192Mi. This was briefly raised to 224Mi on the theory
+            # that the per-cache ceilings above had freed ~32 MiB of off-heap
+            # fastcache. MEASUREMENT REFUTED IT: vm_cache_size_bytes for
+            # storage/tsid and storage/metricName read exactly 32 MiB both
+            # before and after that change, because 32 MiB is fastcache's
+            # allocation floor. Nothing was freed, so nothing can be spent.
             #
-            #   384 MiB limit − ~94 off-heap (tsid 16 + metricIDs 32 +
-            #   metricName 16 + storage/indexBlocks 3 + rollupResult 30)
-            #   − ~15 indexdb caches − ~40 binary/stacks/slab/slack
-            #   ≈ 235 MiB available to the Go runtime
+            # The budget that still applies, with the worst case each cache is
+            # actually allowed to reach:
+            #   384 MiB limit
+            #   − 96 fastcache (tsid + metricIDs + metricName, 32 MiB each)
+            #   − 64 promql/rollupResult (its ceiling IS -memory.allowedBytes)
+            #   − ~26 indexdb caches + storage/indexBlocks
+            #   − ~40 binary/stacks/slab/slack
+            #   ≈ 158 MiB worst case, ~230 MiB at the caches' measured sizes
+            # 192Mi sits between those, which is the same bet as before.
             #
-            # 224Mi keeps a margin inside that.
+            # What actually fixes the GC spiral is not this number — it is the
+            # smaller index. Measured on DEV across this change, live heap fell
+            # 138 -> 93 MiB and next_gc/alloc recovered to ~1.26.
             #
             # ★ THE 192Mi VALUE FAILED IN PRODUCTION and the reason matters
             # more than the number. It was derived from a
@@ -270,7 +292,7 @@ spec:
             # under ~1.1 means GOMEMLIMIT is binding again and the heap, not
             # this value, is what needs attention.
             - name: GOMEMLIMIT
-              value: "234881024"
+              value: "201326592"
           ports:
             - name: http
               containerPort: 8428

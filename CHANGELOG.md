@@ -20,11 +20,14 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   memory looked flat only because a cgroup at its ceiling cannot show growth —
   the real demand escaped as CPU (0.01 → 0.21 cores, all of it garbage
   collection) and page-cache thrash instead. Four changes, no limit increase:
-  - **Per-cache ceilings.** `storage/tsid` and `storage/metricName` sat at a
-    32 MiB floor *each* regardless of `-memory.allowedBytes`, which budgets the
-    caches only as a group. `-storage.cacheSizeStorageTSID` /
-    `-storage.cacheSizeStorageMetricName` override them individually — so the
-    earlier conclusion that this was an immovable fixed cost was wrong.
+  - **Per-cache ceilings.** `-memory.allowedBytes` budgets the caches only as a
+    group, leaving individual caches free to grow to the whole budget.
+    `-storage.cacheSize*` bounds them individually. This is a worst-case bound,
+    **not** a saving: `storage/tsid` and `storage/metricName` report exactly
+    32 MiB resident before *and* after, because that is fastcache's allocation
+    floor. Note `vm_cache_size_max_bytes` misreports these caches — it keeps
+    showing the `-memory.allowedBytes` budget regardless of the override; the
+    startup log is the only honest source.
   - **Series nothing reads are no longer scraped** (~1,800 series): the whole
     `kubelet-resource` job, which was 100% redundant with cadvisor and was an
     unguarded second source of pod-name churn; `container_fs_usage_bytes`;
@@ -40,10 +43,13 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   - **Stream aggregation** sums Traefik's two latency histograms by the labels
     their readers actually group on, before storage. No query changed.
 
-  `GOMEMLIMIT` re-derived 192Mi → 224Mi against the new off-heap total. The
-  durable signal is not that number but
-  `go_memstats_next_gc_bytes / go_memstats_alloc_bytes`: at `GOGC=40` it should
-  sit near 1.40, and drifting under ~1.1 means the limit is binding again.
+  `GOMEMLIMIT` stays at 192Mi — it was briefly raised on the assumption that the
+  cache ceilings had freed memory, and measurement refuted that. What fixes the
+  GC spiral is the smaller index, not a bigger limit: measured on DEV across
+  this change, live heap fell 138 → 93 MiB and
+  `go_memstats_next_gc_bytes / go_memstats_alloc_bytes` recovered to ~1.26. That
+  ratio, not the limit, is the durable signal — at `GOGC=40` it should sit near
+  1.40, and drifting under ~1.1 means the limit is binding again.
 
 ## [2026.9.41] - 2026-09-30
 
