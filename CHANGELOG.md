@@ -12,6 +12,35 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+
+- **Large downloads no longer stall for minutes and leak the node's disk.**
+  Bundle exports, tenant file downloads and pg-dump artifacts were routed
+  through `waf-body-limit`, a Traefik `buffering` middleware, which spools the
+  **entire response to disk** before releasing a single byte. Measured on a
+  3 GB production bundle: the backend's first byte took **0.35 s** while the
+  client got **zero bytes in 300 s**; Traefik's RSS stayed flat while its disk
+  grew **5.5 MB/s** (idle control: 0.03 MB/s). A 25 GB bundle would be over an
+  hour of apparent hang. Worse, the spool is **never removed when the client
+  disconnects** — four abandoned downloads left **2.68 GB** of orphaned
+  `temp-multibuf-*` files on Traefik's emptyDir, which is the **node root
+  filesystem** shared with k3s, etcd, containerd and Longhorn.
+
+  GET download routes now bypass that middleware, the same way `files/upload-raw`
+  already bypassed it for uploads. `maxResponseBodyBytes: 0` does **not** mean
+  "unbuffered" — it means "no size limit" — and the CI guard's comment asserting
+  otherwise is corrected.
+
+  The carve-out is **`Method(\`GET\`)`-restricted, and that is load-bearing**: the
+  ModSecurity plugin reads the whole request body with `io.ReadAll` and no limit,
+  so dropping the cap on a POST would reopen the hole where one 600 MB request
+  OOM-killed the Traefik DaemonSet. POST streaming routes (`/:id/export`,
+  `/:id/zip`, `pg-dump/stream`) therefore stay buffered; neither panel uses them.
+  `ci-waf-body-limit-check.sh` gained a route-level scan that fails any future
+  carve-out dropping the cap while keeping the WAF without a GET restriction —
+  its existing checks were file-level and a per-route `.filter()` slipped past
+  them.
+
 ### Changed
 
 - **vmsingle: cut the metric cardinality that was OOM-killing it, and stop
