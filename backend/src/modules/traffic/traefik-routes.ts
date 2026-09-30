@@ -89,8 +89,13 @@ export function indexLiveRoutes(routes: readonly LiveRoute[]): Map<string, LiveR
 export interface ParsedRule {
   /** Every host the rule names, in order; a wildcard reads `*.<base>`. */
   readonly hosts: readonly string[];
-  /** The PathPrefix()/Path() narrowing, or null for none. */
+  /** The PathPrefix()/Path() narrowing, or null for none. Used to match route rows. */
   readonly path: string | null;
+  /**
+   * What narrows the host, for a person: the path, a PathRegexp read as a
+   * pattern, and the method. Null when the rule is the host alone.
+   */
+  readonly label: string | null;
 }
 
 // No nested quantifier: the call body is taken whole, its arguments picked
@@ -99,6 +104,29 @@ const HOST_CALL_RE = /\bHost\(([^)]*)\)/g;
 const BACKTICK_ARG_RE = /`([^`]*)`/g;
 const HOST_REGEXP_RE = /\bHostRegexp\(\s*`([^`]*)`\s*\)/g;
 const PATH_RE = /\b(?:PathPrefix|Path)\(\s*`([^`]*)`\s*\)/;
+const PATH_REGEXP_RE = /\bPathRegexp\(\s*`([^`]*)`\s*\)/;
+const METHOD_RE = /\bMethod\(\s*`([^`]*)`\s*\)/;
+const GROUP_RE = /\([^()]*\)/g;
+
+/**
+ * A PathRegexp as a pattern a person can scan:
+ * `^/api/v1/tenants/[^/]+/files/upload-raw$` reads as `/api/v1/tenants/` + a star + `/files/upload-raw`.
+ * Anchors go, `[^/]+` is `*`, `.+` is `**`, and a group of alternatives —
+ * which has no short honest reading — folds to `…`.
+ */
+export function readablePathRegexp(re: string): string {
+  let s = re.replace(/^\^/, '').replace(/\$$/, '');
+  // Innermost groups first, so nested alternatives fold to one ellipsis.
+  for (let prev = ''; prev !== s;) {
+    prev = s;
+    s = s.replace(GROUP_RE, '…');
+  }
+  return s
+    .replace(/\[\^\/\]\+/g, '*')
+    .replace(/\.[+*]/g, '**')
+    .replace(/\\(.)/g, '$1')
+    .replace(/…+/g, '…');
+}
 /** What `hostMatch()` emits for `*.<base>`: one label, case-insensitive. */
 const PLATFORM_WILDCARD_RE = /^\(\?i\)\^\[\^\.\]\+\\\.(.+)\$$/;
 
@@ -126,5 +154,9 @@ export function parseMatchRule(match: string): ParsedRule | null {
   if (found.length === 0) return null;
   const hosts = [...new Set([...found].sort((a, b) => a.at - b.at).map((f) => f.host))];
   const path = PATH_RE.exec(match)?.[1] ?? null;
-  return { hosts, path };
+  const regexp = PATH_REGEXP_RE.exec(match)?.[1] ?? null;
+  const method = METHOD_RE.exec(match)?.[1] ?? null;
+  const shown = path ?? (regexp !== null ? readablePathRegexp(regexp) : null);
+  const label = [shown, method].filter((x): x is string => Boolean(x)).join(' ') || null;
+  return { hosts, path, label };
 }

@@ -240,3 +240,29 @@ describe('exactRouteName — routes that are not a tenant’s', () => {
     expect(exactRouteName(service, { ...ctx, tenantView: true })).toBeNull();
   });
 });
+
+describe('exactRouteName — routes told apart only by a path regexp', () => {
+  const carve = (match: string): LiveRoute => ({
+    namespace: 'platform', objectName: 'platform-ingress', entryPoints: ['websecure'], match, backendService: 'admin-panel',
+  });
+  const routes = [
+    carve('Host(`admin.example.test`) && PathRegexp(`^/api/v1/tenants/[^/]+/files/upload-raw$`)'),
+    carve('Host(`admin.example.test`) && PathRegexp(`^/api/v1/admin/security/waf-rule-exclusions`)'),
+    carve('Host(`admin.example.test`) && PathRegexp(`^/api/v1/(exports/.+|downloads)$`) && Method(`GET`)'),
+    carve('Host(`admin.example.test`)'),
+  ];
+  const live = indexLiveRoutes(routes);
+  const names = routes.map((r) => exactRouteName(
+    traefikServiceLabel(r.namespace, r.objectName, r.match),
+    { live, rows: [], nsToName: new Map(), tenantView: false },
+  ));
+
+  it('gives each a distinct name', () => {
+    expect(names).toEqual([
+      'admin.example.test/api/v1/tenants/*/files/upload-raw → admin-panel · platform',
+      'admin.example.test/api/v1/admin/security/waf-rule-exclusions → admin-panel · platform',
+      'admin.example.test/api/v1/… GET → admin-panel · platform',
+      'admin.example.test → admin-panel · platform',
+    ]);
+  });
+});

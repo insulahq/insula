@@ -54,36 +54,36 @@ describe('traefikServiceLabel', () => {
 
 describe('parseMatchRule — every shape the platform emits', () => {
   it('reads a bare Host()', () => {
-    expect(parseMatchRule('Host(`www.example.test`)')).toEqual({ hosts: ['www.example.test'], path: null });
+    expect(parseMatchRule('Host(`www.example.test`)')).toEqual({ hosts: ['www.example.test'], path: null, label: null });
   });
 
   it('reads Host() narrowed by PathPrefix()', () => {
     expect(parseMatchRule('Host(`example.test`) && PathPrefix(`/shop`)'))
-      .toEqual({ hosts: ['example.test'], path: '/shop' });
+      .toEqual({ hosts: ['example.test'], path: '/shop', label: '/shop' });
   });
 
   it('reads the wildcard HostRegexp() back into its *. hostname', () => {
     expect(parseMatchRule('HostRegexp(`(?i)^[^.]+\\.example\\.test$`)'))
-      .toEqual({ hosts: ['*.example.test'], path: null });
+      .toEqual({ hosts: ['*.example.test'], path: null, label: null });
     expect(parseMatchRule('HostRegexp(`(?i)^[^.]+\\.sites\\.example\\.test$`) && PathPrefix(`/api`)'))
-      .toEqual({ hosts: ['*.sites.example.test'], path: '/api' });
+      .toEqual({ hosts: ['*.sites.example.test'], path: '/api', label: '/api' });
   });
 
   it('reads ||-joined hosts in order, with or without parentheses', () => {
     expect(parseMatchRule('Host(`example.test`) || Host(`www.example.test`)'))
-      .toEqual({ hosts: ['example.test', 'www.example.test'], path: null });
+      .toEqual({ hosts: ['example.test', 'www.example.test'], path: null, label: null });
     expect(parseMatchRule('(Host(`a.example.test`) || Host(`b.example.test`)) && PathPrefix(`/x`)'))
-      .toEqual({ hosts: ['a.example.test', 'b.example.test'], path: '/x' });
+      .toEqual({ hosts: ['a.example.test', 'b.example.test'], path: '/x', label: '/x' });
   });
 
   it('reads the multi-argument Host() form', () => {
     expect(parseMatchRule('Host(`a.example.test`, `b.example.test`)'))
-      .toEqual({ hosts: ['a.example.test', 'b.example.test'], path: null });
+      .toEqual({ hosts: ['a.example.test', 'b.example.test'], path: null, label: null });
   });
 
   it('reads an exact Path() as the path', () => {
     expect(parseMatchRule('Host(`example.test`) && Path(`/health`)'))
-      .toEqual({ hosts: ['example.test'], path: '/health' });
+      .toEqual({ hosts: ['example.test'], path: '/health', label: '/health' });
   });
 
   it('lists a repeated host once', () => {
@@ -93,11 +93,11 @@ describe('parseMatchRule — every shape the platform emits', () => {
   it('round-trips whatever the platform’s own rule builders emit', () => {
     // Pinned to the builders rather than to hand-written strings, so a change
     // to how rules are composed fails here instead of silently unnaming rows.
-    expect(parseMatchRule(routeMatch('www.example.test', '/'))).toEqual({ hosts: ['www.example.test'], path: null });
-    expect(parseMatchRule(routeMatch('example.test', '/shop'))).toEqual({ hosts: ['example.test'], path: '/shop' });
-    expect(parseMatchRule(routeMatch('*.example.test', null))).toEqual({ hosts: ['*.example.test'], path: null });
-    expect(parseMatchRule(routeMatch('*.example.test', '/api'))).toEqual({ hosts: ['*.example.test'], path: '/api' });
-    expect(parseMatchRule(hostMatch('*.a-b.example.test'))).toEqual({ hosts: ['*.a-b.example.test'], path: null });
+    expect(parseMatchRule(routeMatch('www.example.test', '/'))).toEqual({ hosts: ['www.example.test'], path: null, label: null });
+    expect(parseMatchRule(routeMatch('example.test', '/shop'))).toEqual({ hosts: ['example.test'], path: '/shop', label: '/shop' });
+    expect(parseMatchRule(routeMatch('*.example.test', null))).toEqual({ hosts: ['*.example.test'], path: null, label: null });
+    expect(parseMatchRule(routeMatch('*.example.test', '/api'))).toEqual({ hosts: ['*.example.test'], path: '/api', label: '/api' });
+    expect(parseMatchRule(hostMatch('*.a-b.example.test'))).toEqual({ hosts: ['*.a-b.example.test'], path: null, label: null });
   });
 
   it('returns null when no hostname can be read', () => {
@@ -160,5 +160,34 @@ describe('liveRoutesFromList / indexLiveRoutes', () => {
     expect(index.get(`${NS}-${NS}-ingress-147c899de9b819b12821@kubernetescrd`)?.backendService).toBe('shop');
     expect(index.get(`${NS}-${NS}-ingress-http-69f7b9a673940005ba26@kubernetescrd`)?.entryPoints).toEqual(['web']);
     expect(index.size).toBe(3);
+  });
+});
+
+describe('parseMatchRule — path regexps and methods', () => {
+  // The platform's WAF carve-outs: one host, one backend, told apart only
+  // by a PathRegexp. Reading only PathPrefix named all three the same.
+  it('reads a PathRegexp as a pattern a person can scan', () => {
+    const r = parseMatchRule('Host(`admin.example.test`) && PathRegexp(`^/api/v1/tenants/[^/]+/files/upload-raw$`)');
+    expect(r?.label).toBe('/api/v1/tenants/*/files/upload-raw');
+  });
+
+  it('keeps an unanchored prefix regexp as written', () => {
+    const r = parseMatchRule('Host(`admin.example.test`) && PathRegexp(`^/api/v1/admin/security/waf-rule-exclusions`)');
+    expect(r?.label).toBe('/api/v1/admin/security/waf-rule-exclusions');
+  });
+
+  it('folds a group of alternatives to an ellipsis, and names the method', () => {
+    const r = parseMatchRule('Host(`admin.example.test`) && PathRegexp(`^/api/v1/(admin/tenant-bundles/(exports/.+|[^/]+/data-export)|tenants/[^/]+/files/download)$`) && Method(`GET`)');
+    expect(r?.label).toBe('/api/v1/… GET');
+  });
+
+  it('does not treat a regexp as a plain path when matching route rows', () => {
+    const r = parseMatchRule('Host(`admin.example.test`) && PathRegexp(`^/api/v1/tenants/[^/]+/files/upload-raw$`)');
+    expect(r?.path).toBeNull();
+  });
+
+  it('labels a plain prefix as itself, and a bare host with no label', () => {
+    expect(parseMatchRule('Host(`example.test`) && PathPrefix(`/shop`)')?.label).toBe('/shop');
+    expect(parseMatchRule('Host(`example.test`)')?.label).toBeNull();
   });
 });

@@ -115,9 +115,12 @@ function nameLiveRoute(route: LiveRoute, ctx: RouteNamingContext): string | null
   const rule = parseMatchRule(route.match);
   if (!rule) return null;
   const [host] = rule.hosts;
-  const path = rule.path && rule.path !== '/' ? rule.path : '';
+  // The path, a readable PathRegexp and the method: routes on one host are
+  // often told apart by nothing else (the platform's WAF carve-outs).
+  const label = rule.label && rule.label !== '/' ? rule.label : '';
+  const narrowing = !label || label.startsWith('/') ? label : ` ${label}`;
   const more = rule.hosts.length > 1 ? ` +${rule.hosts.length - 1}` : '';
-  const where = `${host}${path}${more}`;
+  const where = `${host}${narrowing}${more}`;
   if (isPlainHttpRouter(route)) {
     return withTenant(`${where} (http → https redirect)`, route.namespace, ctx);
   }
