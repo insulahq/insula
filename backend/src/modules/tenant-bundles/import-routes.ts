@@ -32,6 +32,7 @@ import { tenants, backupJobs, backupConfigurations } from '../../db/schema.js';
 import { and, desc, isNotNull } from 'drizzle-orm';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { ensureFileManagerReady, fileManagerRequest } from '../file-manager/service.js';
+import { deriveFmSecret } from '../file-manager/internal-secret.js';
 import { readArchiveMeta, ArchiveMetaError } from './import-archive-meta.js';
 import { buildImportPreflight, type ImportScope } from './import-preflight.js';
 import { runBundleImport, buildImportLabel, type ImportRunnerDeps } from './import-orchestrator.js';
@@ -79,8 +80,16 @@ async function openUploadedArchive(
   const http = await import('node:http');
   const url = new URL(`${directUrl}/download`);
   url.searchParams.set('path', `/${relPath}`);
+  // ★ The sidecar enforces `X-Platform-Internal` on every direct-ClusterIP
+  // request. Without it the read is a bare 403 that looks like the upload
+  // never landed — which is exactly how this failed the first time on DEV.
+  // Derived per namespace, the same way `service.ts:internalAuthHeader` does.
+  const master = process.env.PLATFORM_INTERNAL_SECRET;
+  const headers: Record<string, string> = master
+    ? { 'X-Platform-Internal': deriveFmSecret(master, namespace) }
+    : {};
   return await new Promise<Readable>((resolve, reject) => {
-    const req = http.get(url, (res) => {
+    const req = http.get(url, { headers }, (res) => {
       const status = res.statusCode ?? 500;
       if (status === 404) {
         res.resume();

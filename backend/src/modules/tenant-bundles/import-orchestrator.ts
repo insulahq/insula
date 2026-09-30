@@ -591,18 +591,38 @@ async function resolveTargetForImport(
   return resolveShimBackupTarget(deps.k8s.core, 'tenant', deps.log as never);
 }
 
+/**
+ * Resolve the bundle store exactly the way CAPTURE does: shim first.
+ *
+ * ★ The B9 rclone-shim mediates every upstream protocol, and the direct
+ * cfg-based resolver only understands `s3` and `ssh` — it returns null for
+ * `cifs`, which is what real clusters actually use since S3 was retired. A
+ * direct-only resolution therefore fails on every live target: verified on
+ * DEV, whose single target is `cifs`. Falls back to the direct resolver when
+ * the shim key is not bootstrapped, mirroring `routes.ts:resolveStore`.
+ */
 async function resolveStoreOrThrow(
   deps: ImportRunnerDeps,
   targetConfigId: string,
 ): Promise<import('./bundle-store.js').BackupStore> {
+  try {
+    const { resolveShimBackupStore } = await import('./shim-backup-store.js');
+    return await resolveShimBackupStore(deps.k8s.core, 'tenant', {
+      log: { warn: (m: string) => deps.log.warn({}, m) },
+    });
+  } catch (err) {
+    deps.log.warn(
+      { err: err instanceof Error ? err.message : String(err) },
+      'bundle-import: shim store unavailable — falling back to the direct cfg resolver',
+    );
+  }
   const { resolveBackupStore } = await import('./resolve-store.js');
-  // `requireActive: false` for the same reason as above — and because the
-  // existing tenant-bundle create path does exactly this (routes.ts passes
-  // it too). The `enabled` gate in runBundleImport is the real check.
+  // `requireActive: false` — `active` is the Longhorn-only column; the
+  // `enabled` gate in runBundleImport is the real check.
   const store = await resolveBackupStore(deps.db, targetConfigId, deps.encryptionKey, { requireActive: false });
   if (!store) {
     throw new ApiError('NOT_IMPLEMENTED',
-      'This backup target does not support bundle import.', 400);
+      `This backup target does not support bundle import (no shim, and no direct driver for its storage type).`, 400);
   }
   return store;
 }
