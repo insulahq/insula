@@ -38,8 +38,20 @@ vi.mock('./upload-token.js', () => ({ signUploadToken: () => 'tok-123' }));
 vi.mock('./resolve-backup-target.js', () => ({
   resolveShimBackupTarget: async () => ({ kind: 'hostpath', hostPath: '/srv' }),
 }));
+vi.mock('./shim-backup-store.js', () => ({
+  resolveShimBackupStore: async () => ({
+    kind: 'rclone',
+    reserveBundle: (...a: unknown[]) => reserveMock(...a),
+    putMeta: (...a: unknown[]) => putMetaMock(...a),
+    delete: (...a: unknown[]) => storeDeleteMock(...a),
+  }),
+}));
 vi.mock('./resolve-store.js', () => ({
   resolveBackupStore: async () => ({
+    // `kind` matters: targetKind is derived from the STORE, and the
+    // backup_target_kind enum has no `cifs` — a config-derived kind fails
+    // the insert on any real (shim/cifs) cluster.
+    kind: 'rclone',
     reserveBundle: (...a: unknown[]) => reserveMock(...a),
     putMeta: (...a: unknown[]) => putMetaMock(...a),
     delete: (...a: unknown[]) => storeDeleteMock(...a),
@@ -158,6 +170,8 @@ describe('runBundleImport — success path', () => {
     // the job row is inserted as `running`, never as `completed`
     const jobRow = inserts.find((i) => i.table.includes('backup_jobs'))!.rows[0] as Record<string, unknown>;
     expect(jobRow.status).toBe('running');
+    // rclone (the shim) maps to `s3`; `cifs` is not a backup_target_kind value
+    expect(jobRow.targetKind).toBe('s3');
     expect(jobRow.label).toBe(MANUAL_IMPORT_LABEL);
 
     // component rows exist and carry the SNAPSHOT id in sha256

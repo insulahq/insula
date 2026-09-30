@@ -22,6 +22,7 @@ import { MANUAL_IMPORT_LABEL } from '@insula/api-contracts';
 import { eq } from 'drizzle-orm';
 
 import { backupJobs, backupComponents, backupConfigurations } from '../../db/schema.js';
+import { storeKindToTargetKind } from './bundle-store.js';
 import type { Database } from '../../db/index.js';
 import { ApiError } from '../../shared/errors.js';
 import { requireWritableTarget } from '../backup-config/writable-guard.js';
@@ -219,7 +220,12 @@ export async function runBundleImport(
     store = await resolveStoreOrThrow(deps, input.targetConfigId);
     handle = await store.reserveBundle({ backupId: bundleId, tenantId: input.tenantId });
 
-    const targetKind = cfg.storageType as 's3' | 'ssh' | 'hostpath';
+    // ★ Derived from the resolved STORE, not from `cfg.storageType`. The
+    // `backup_target_kind` enum has only hostpath/s3/ssh — a `cifs` config
+    // (what real clusters use since S3 was retired) is served by the rclone
+    // shim, whose store kind maps to `s3`. Writing storageType straight in
+    // fails the insert with "invalid input value for enum backup_target_kind".
+    const targetKind = storeKindToTargetKind(store.kind);
     await deps.db.insert(backupJobs).values({
       id: bundleId,
       tenantId: input.tenantId,
