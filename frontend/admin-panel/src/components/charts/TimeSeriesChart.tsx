@@ -101,7 +101,9 @@ export interface TimeSeriesChartProps {
 }
 
 const MARGIN = { top: 18, right: 16, bottom: 26, left: 62 };
-const MARGIN_BLEED = { top: 12, right: 8, bottom: 24, left: 8 };
+// The top gridline's label is drawn ABOVE its line, inside the plot, so the
+// top margin must hold one line of text — at 12 px it was clipped in half.
+const MARGIN_BLEED = { top: 20, right: 8, bottom: 24, left: 8 };
 /** A drag shorter than this is a click with a shaky hand. */
 const MIN_DRAG_PX = 6;
 
