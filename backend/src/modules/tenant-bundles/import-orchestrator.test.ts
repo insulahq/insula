@@ -123,7 +123,10 @@ function deps(db: unknown) {
     db: db as never,
     k8s: {
       batch: { createNamespacedJob: createJobMock, deleteNamespacedJob: deleteJobMock },
-      core: { deleteNamespacedSecret: deleteSecretMock },
+      core: {
+        deleteNamespacedSecret: deleteSecretMock,
+        listNamespacedPod: async () => ({ items: [{ metadata: { name: 'p1' } }] }),
+      },
     } as never,
     fm: { remove: async () => {}, list: async () => [] },
     log: { warn: vi.fn(), info: vi.fn() },
@@ -181,6 +184,7 @@ describe('runBundleImport — success path', () => {
 
     // …and only then is it flipped to completed
     expect(updates.at(-1)).toMatchObject({ status: 'completed', sizeBytes: 120 });
+    // consumed on success, so it stops counting against the tenant's quota
     expect(fmRemoveMock).toHaveBeenCalled();
     expect(forgetMock).not.toHaveBeenCalled();
     expect(storeDeleteMock).not.toHaveBeenCalled();
@@ -213,15 +217,19 @@ describe('runBundleImport — failure teardown', () => {
     expect([...byRepo.values()].flat()).toEqual(['a'.repeat(64)]);
     expect(storeDeleteMock).toHaveBeenCalled();
     expect(deleteRowMock).toHaveBeenCalled();
-    expect(fmRemoveMock).toHaveBeenCalled();
+    expect(fmRemoveMock).not.toHaveBeenCalled();
   });
 
-  it('★ reaps the uploaded archive even when the Job itself fails', async () => {
+  it('★ KEEPS the uploaded archive when the import fails, so a retry is cheap', async () => {
+    // The archive is the one artifact the import did not create. Deleting it
+    // on failure makes the obvious next step cost a full re-upload of a
+    // multi-GB file. The sweeper reclaims it if no retry follows.
     waitForJobMock.mockRejectedValue(new Error('Job failed: evicted'));
     readLogMock.mockResolvedValue('');   // died before any unit reported
     const { db } = recordingDb(CFG);
     await expect(runBundleImport(deps(db), INPUT)).rejects.toThrow(/evicted/);
-    expect(fmRemoveMock).toHaveBeenCalled();
+    expect(fmRemoveMock).not.toHaveBeenCalled();
+    // everything the import DID create is still torn down
     expect(deleteJobMock).toHaveBeenCalled();
     expect(deleteSecretMock).toHaveBeenCalled();
     // nothing was snapshotted, so nothing to forget
@@ -373,5 +381,52 @@ describe('buildImportedMeta', () => {
       .toEqual(['a@example.test']);
     // provenance so a bundle traces back to the upload without the Job log
     expect(meta.importedFrom).toMatchObject({ sourceBundleId: 'bkp-src', importId: 'imp1' });
+  });
+});
+
+describe('assertJobCanSchedule', () => {
+  const { } = {};
+
+  function coreWith(pods: unknown[], events: unknown[] = []) {
+    return {
+      db: {} as never,
+      k8s: { core: {
+        listNamespacedPod: async () => ({ items: pods }),
+        listNamespacedEvent: async () => ({ items: events }),
+      } } as never,
+      fm: { remove: async () => {}, list: async () => [] },
+      log: { warn: vi.fn(), info: vi.fn() },
+      encryptionKey: 'ab'.repeat(32),
+      platformApiUrl: 'http://x', platformVersion: 'v1',
+    };
+  }
+
+  it('returns as soon as a pod exists', async () => {
+    const { assertJobCanSchedule } = await import('./import-orchestrator.js');
+    await expect(assertJobCanSchedule(coreWith([{ metadata: { name: 'p' } }]), 'ns', 'j', { timeoutMs: 50, pollMs: 5 }))
+      .resolves.toBeUndefined();
+  });
+
+  it('★ fails fast with the quota reason when no pod ever appears', async () => {
+    // backoffLimit:0 bounds pod FAILURES, not pod CREATE failures — a quota
+    // rejection retries forever, so without this the Job sits in Running 0/1
+    // and waitForJob blocks for the whole (multi-hour) deadline.
+    const { assertJobCanSchedule } = await import('./import-orchestrator.js');
+    const deps = coreWith([], [{
+      reason: 'FailedCreate',
+      involvedObject: { name: 'j' },
+      message: 'failed quota: must specify limits.memory for: import',
+    }]);
+    await expect(assertJobCanSchedule(deps, 'ns', 'j', { timeoutMs: 40, pollMs: 5 }))
+      .rejects.toThrow(/could not start a pod.*failed quota: must specify limits.memory/s);
+  });
+
+  it('does not block the import when the pod listing itself fails', async () => {
+    const { assertJobCanSchedule } = await import('./import-orchestrator.js');
+    const deps = {
+      ...coreWith([]),
+      k8s: { core: { listNamespacedPod: async () => { throw new Error('api down'); } } } as never,
+    };
+    await expect(assertJobCanSchedule(deps, 'ns', 'j', { timeoutMs: 40, pollMs: 5 })).resolves.toBeUndefined();
   });
 });

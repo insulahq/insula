@@ -194,7 +194,18 @@ Import creates four kinds of artifact, and each needs an owner:
 | import Job | `ttlSecondsAfterFinished`, as the restore Job already sets |
 | partial restic snapshots from a failed run | tagged `import-<importId>`; a failed import prunes its own tag |
 | `backup_jobs` / `backup_components` rows for an aborted import | written **only after** all units succeed |
+| the uploaded archive, on SUCCESS | deleted permanently (not to the bin, which would keep charging the quota) |
+| the uploaded archive, on FAILURE | **KEPT** — see below — and reclaimed by the abandoned-upload sweeper |
 | an upload abandoned mid-stream | the Job exits on `request.raw` `aborted`/`close`, as `internal-upload-route` already does |
+
+**Amended after the first end-to-end run.** The uploaded archive is the one artifact in this
+table the import did **not** create: the user uploaded it, into their own file space, before
+any of this ran. Deleting it on failure makes the obvious next step — retry — cost a full
+re-upload of a multi-GB file, for a failure that is usually not theirs. So it is deleted on
+success (where it has been consumed) and kept on failure. `sweepAbandonedImportUploads`
+reclaims it if no retry follows: age-gated, and it skips uploads whose import is still live.
+The sweep runs at preflight, where the tenant's file-manager sidecar is already warm — a
+global timer would have to start every tenant's sidecar just to look.
 
 The rows-last ordering is deliberate: a half-imported bundle must never be visible to the
 restore cart. Either the bundle is registered complete, or it does not exist.

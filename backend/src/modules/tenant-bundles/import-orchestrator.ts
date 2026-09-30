@@ -303,6 +303,13 @@ export async function runBundleImport(
       }
     }
 
+    // ★ Fail fast when the Job cannot create a pod at all. `backoffLimit: 0`
+    // bounds pod FAILURES, not pod CREATE failures — a quota rejection makes
+    // the job-controller retry creation forever, so the Job sits in
+    // `Running 0/1` and `waitForJob` blocks for the whole deadline (hours).
+    // Observed on DEV before the priorityClass/resources fix landed.
+    await assertJobCanSchedule(deps, input.namespace, jobName);
+
     let log = '';
     try {
       await waitForJob(deps.k8s, input.namespace, jobName, timeoutMs, progress);
@@ -422,11 +429,25 @@ export async function runBundleImport(
     }
     throw err;
   } finally {
-    // The uploaded archive goes on BOTH paths — it is the artifact that
-    // silently eats the tenant's quota if it survives. Safe to do
-    // unconditionally here: the duplicate-import guard above returns BEFORE
-    // this try block, so reaching this point means this call owns the upload.
-    await reapImportUpload(deps.fm, input.namespace, input.archiveRelPath, deps.log);
+    // ★ The uploaded archive is deleted on SUCCESS only.
+    //
+    // It is the one artifact here the import did NOT create — the user
+    // uploaded it, into their own file space, before any of this ran. On
+    // success it has been consumed and keeping it would silently double the
+    // bundle's cost against their quota. On FAILURE deleting it makes the
+    // obvious next step — retry — cost a full re-upload of a multi-GB file,
+    // for a failure that was usually not theirs. It is kept, the retry is
+    // cheap, and `sweepAbandonedImportUploads` reclaims it if they never
+    // come back (age-gated, and it skips uploads whose import is live).
+    if (succeeded) {
+      await reapImportUpload(deps.fm, input.namespace, input.archiveRelPath, deps.log);
+    } else {
+      deps.log.warn(
+        { namespace: input.namespace, archiveRelPath: input.archiveRelPath },
+        'bundle-import: import failed — the uploaded archive is kept so a retry need not re-upload; '
+        + 'the abandoned-upload sweeper reclaims it if no retry follows',
+      );
+    }
     if (credsCreated) {
       try {
         await (deps.k8s.core as unknown as {
@@ -442,6 +463,61 @@ export async function runBundleImport(
       } catch { /* ttlSecondsAfterFinished is the backstop */ }
     }
   }
+}
+
+
+/** How long a Job gets to produce its first pod before we call it stuck. */
+const POD_APPEAR_TIMEOUT_MS = 90_000;
+const POD_APPEAR_POLL_MS = 3_000;
+
+/**
+ * Wait for the Job's first pod, or explain why it will never come.
+ *
+ * A pod that has not appeared within the window is almost always a quota or
+ * scheduling rejection, and the reason is only in the Job's events. Surfacing
+ * it beats a timeout hours later whose message says nothing.
+ */
+export async function assertJobCanSchedule(
+  deps: ImportRunnerDeps,
+  namespace: string,
+  jobName: string,
+  opts: { timeoutMs?: number; pollMs?: number } = {},
+): Promise<void> {
+  const core = deps.k8s.core as unknown as {
+    listNamespacedPod: (a: { namespace: string; labelSelector?: string }) => Promise<{ items?: unknown[] }>;
+    listNamespacedEvent?: (a: { namespace: string; fieldSelector?: string }) => Promise<{
+      items?: Array<{ reason?: string; message?: string; involvedObject?: { name?: string } }>;
+    }>;
+  };
+  const deadline = Date.now() + (opts.timeoutMs ?? POD_APPEAR_TIMEOUT_MS);
+  for (;;) {
+    try {
+      const pods = await core.listNamespacedPod({ namespace, labelSelector: `job-name=${jobName}` });
+      if ((pods.items ?? []).length > 0) return;
+    } catch {
+      // A listing hiccup must not fail a Job that is otherwise fine; the
+      // normal waitForJob deadline remains the backstop.
+      return;
+    }
+    if (Date.now() >= deadline) break;
+    await new Promise((r) => setTimeout(r, opts.pollMs ?? POD_APPEAR_POLL_MS));
+  }
+
+  let detail = '';
+  try {
+    const events = await core.listNamespacedEvent?.({ namespace });
+    const failed = (events?.items ?? []).find(
+      (e) => e.reason === 'FailedCreate' && e.involvedObject?.name === jobName,
+    );
+    if (failed?.message) detail = ` ${failed.message}`;
+  } catch { /* events are a nicety, not a requirement */ }
+
+  throw new ApiError(
+    'IMPORT_JOB_UNSCHEDULABLE',
+    `The import job could not start a pod within ${Math.round((opts.timeoutMs ?? POD_APPEAR_TIMEOUT_MS) / 1000)}s — `
+    + `usually the tenant namespace's resource quota.${detail} Nothing has been registered.`,
+    409,
+  );
 }
 
 /** Deterministic Job name for an import — also the duplicate-detection key. */

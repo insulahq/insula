@@ -172,6 +172,19 @@ describe('buildImportJobSpec', () => {
     expect(stage.emptyDir.sizeLimit).toBe('8Gi');
   });
 
+  it('★ carries platform-tenant-overhead and explicit resources', () => {
+    // The tenant ResourceQuota is scoped to PriorityClass In [tenant-default].
+    // Without this class the quota applies to a PLATFORM job running in the
+    // tenant namespace, demands memory requests/limits, and the
+    // job-controller cannot create a pod — the Job then sits in `Running 0/1`
+    // emitting FailedCreate until its deadline. Observed on DEV.
+    expect(pod.priorityClassName).toBe('platform-tenant-overhead');
+    expect(pod.containers[0].resources).toEqual({
+      requests: { cpu: '100m', memory: '256Mi' },
+      limits: { cpu: '1500m', memory: '1Gi' },
+    });
+  });
+
   it('never retries — a re-run would double-snapshot the same import', () => {
     expect(job.spec.backoffLimit).toBe(0);
   });

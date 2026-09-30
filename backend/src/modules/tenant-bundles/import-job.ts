@@ -340,10 +340,24 @@ export function buildImportJobSpec(input: BuildImportJobInput): Record<string, u
 
   const podSpec: Record<string, unknown> = {
     restartPolicy: 'Never',
+    // ★ REQUIRED, not cosmetic. A tenant's ResourceQuota is scoped to
+    // `PriorityClass In [tenant-default]`, so a platform Job in the tenant
+    // namespace escapes the tenant's own budget only by carrying this class —
+    // which is what every other tenant-namespace platform Job does. Without
+    // it the quota also demands explicit memory requests/limits, the
+    // job-controller cannot create a pod at all, and the Job sits in
+    // `Running 0/1` with FailedCreate events until the deadline expires.
+    priorityClassName: 'platform-tenant-overhead',
     containers: [{
       name: 'import',
       image: input.image ?? TOOLS_IMAGE_DEFAULT,
       command: ['/bin/sh', '-c', buildImportScript(input)],
+      // Matches the capture Job: restic's pack buffer (s3.connections=5 x
+      // pack-size=64 = 320 MiB) plus tar's working set fits in 1Gi.
+      resources: {
+        requests: { cpu: '100m', memory: '256Mi' },
+        limits: { cpu: '1500m', memory: '1Gi' },
+      },
       volumeMounts: [
         // Read-only: the import must never be able to mutate tenant files. It
         // only reads the archive it was told to read.
