@@ -11,11 +11,19 @@
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+
+// Resolved from THIS module, not from the cwd: a relative
+// `readFileSync('src/...')` silently fails to load the whole test file when
+// vitest is invoked with a different root.
+const HERE = dirname(fileURLToPath(import.meta.url));
+const srcFile = (name: string): string => readFileSync(join(HERE, name), 'utf8');
 
 import { mintImportTarget } from './import-routes.js';
 
-const SRC = readFileSync('src/modules/tenant-bundles/import-routes.ts', 'utf8');
-const APP = readFileSync('src/app.ts', 'utf8');
+const SRC = srcFile('import-routes.ts');
+const APP = srcFile('../../app.ts');
 
 describe('tenant import routes cannot target another tenant', () => {
   const tenantRoutes = [...SRC.matchAll(/app\.(post|get)\('(\/tenant\/[^']*)'/g)].map((m) => m[2]!);

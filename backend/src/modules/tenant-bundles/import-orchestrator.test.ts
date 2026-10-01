@@ -1,5 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+
+// Resolved from THIS module, not from the cwd: a relative
+// `readFileSync('src/...')` silently fails to load the whole test file when
+// vitest is invoked with a different root.
+const HERE = dirname(fileURLToPath(import.meta.url));
+const srcFile = (name: string): string => readFileSync(join(HERE, name), 'utf8');
 
 // ── mocks for everything the orchestrator reaches out to ──────────────────
 const waitForJobMock = vi.fn();
@@ -304,7 +312,7 @@ describe('runBundleImport — failure teardown', () => {
     // `completed` would forget the snapshots and delete the artefacts while
     // `deleteAbortedImportRow` (which skips completed rows) left the row —
     // a bundle registered complete with no data behind it.
-    const src = readFileSync('src/modules/tenant-bundles/import-orchestrator.ts', 'utf8');
+    const src = srcFile('import-orchestrator.ts');
     // Anchored on the guard comment, not on `  } catch (err) {` — that
     // 2-space pattern is a SUBSTRING of the 6-space inner catch around
     // waitForJob, so it sliced the wrong block and the test failed on
@@ -358,7 +366,7 @@ describe('runBundleImport — failure teardown', () => {
     // Gating on it would refuse every target except the single Longhorn row —
     // a failure that reads like a misconfigured backup rather than a wrong
     // column, which is why it is pinned here.
-    const src = readFileSync('src/modules/tenant-bundles/import-orchestrator.ts', 'utf8');
+    const src = srcFile('import-orchestrator.ts');
     expect(src).not.toMatch(/cfg\.active/);
     expect(src).toMatch(/cfg\.enabled === 0/);
   });
