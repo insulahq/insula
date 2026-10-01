@@ -97,6 +97,12 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   the admin panel's generated join command both say so. A 2-server control plane stops when
   either server is down; go from one server to three, or add workers.
 
+### Security
+
+- **The management API can no longer watch Secrets or delete them in bulk.** Its role granted
+  every verb on Secrets in every namespace; it now has only the ones it uses (`get`, `list`,
+  `create`, `update`, `patch`, `delete`).
+
 ## [2026.10.2] - 2026-10-01
 
 ### Fixed
