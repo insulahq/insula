@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.10.1] - 2026-10-01
+
 ### Added
 
 - **Import a tenant bundle from a direct upload (ADR-063).** A bundle exported
