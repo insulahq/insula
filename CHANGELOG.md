@@ -102,6 +102,10 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 - **The management API can no longer watch Secrets or delete them in bulk.** Its role granted
   every verb on Secrets in every namespace; it now has only the ones it uses (`get`, `list`,
   `create`, `update`, `patch`, `delete`).
+- **The management API can exec into pods only where it needs to.** An admission policy now
+  limits its `exec` to tenant namespaces and the `platform`, `mail` and `traefik` namespaces;
+  `kube-system`, `flux-system`, `cert-manager`, Longhorn, CNPG and the rest are refused.
+  `scripts/test-platform-api-exec-scope.sh` checks a live cluster.
 
 ## [2026.10.2] - 2026-10-01
 

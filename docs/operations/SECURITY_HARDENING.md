@@ -316,6 +316,38 @@ operator decision.
 If a compliance requirement ever forces the issue, the patched build is the only option
 that survives a re-test; partial suppression will not.
 
+## What the management API's own account may do
+
+The `platform-api` ServiceAccount (the API pods and the PITR Job) holds a broad
+ClusterRole (`k8s/base/rbac.yaml`) because it provisions tenant namespaces at
+runtime and RBAC cannot say "every tenant namespace". Two limits apply on top:
+
+- **Secrets:** explicit verbs only — `get`, `list`, `create`, `update`, `patch`,
+  `delete`. No `watch` and no `deletecollection`.
+- **Exec into pods** is limited at admission by the ValidatingAdmissionPolicy
+  `platform-api-pods-exec-scope` (`k8s/base/platform-api-guardrails/`): tenant
+  namespaces (`tenant-*`, or an `ns-*` namespace annotated
+  `insula.host/tenant-namespace: "true"`), `platform`, `mail` and `traefik`.
+  An exec anywhere else — `kube-system`, `flux-system`, `cert-manager`,
+  `longhorn-system`, `cnpg-system`, … — is refused with
+  `platform-api may not exec into pods in namespace <ns>`. The account has no
+  rights on admission policies, so it cannot lift the limit itself.
+
+Verify on a live cluster (impersonates the account, runs `true` in one pod per
+namespace):
+
+```bash
+KUBECONFIG=/etc/rancher/k3s/k3s.yaml scripts/test-platform-api-exec-scope.sh
+```
+
+Adding an exec target in a new namespace means adding it to the policy in the
+same change — otherwise that feature fails with the message above.
+
+What this does **not** do yet: the account can still create workloads (Jobs,
+Deployments) in any namespace under any ServiceAccount, and list Secrets in
+every namespace. Those are the next limits to add; until then, treat the
+`platform-api` token as close to cluster-admin.
+
 ## CI guards
 
 - `scripts/ci-firewall-check.sh` — validates bootstrap.sh has the right SSH rendering paths AND dual-stack symmetry on saddr scopes.

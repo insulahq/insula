@@ -91,6 +91,9 @@ rules:
   # sub-roles like sftp-gateway's file-manager role). @kubernetes/tenant-node
   # v1 establishes the exec channel via a WebSocket GET, so `get` is also
   # required alongside `create`.
+  # Cluster-wide here only because tenant namespaces are created at runtime;
+  # the namespaces it actually reaches are limited at admission by
+  # platform-api-guardrails/pods-exec-scope.yaml (tenant, platform, mail, traefik).
   - apiGroups: [""]
     resources: ["pods/exec"]
     verbs: ["get", "create"]

@@ -6,6 +6,8 @@ resources:
   - priority-classes.yaml
   - platform-tenant-ops/namespace.yaml
   - rbac.yaml
+  # Admission-time limits on the platform-api ServiceAccount (pods/exec scope).
+  - platform-api-guardrails/
   - network-policies.yaml
   - resource-quotas.yaml
   # System-namespace LimitRanges that flip BestEffort control-plane
