@@ -14,6 +14,43 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Added
 
+- **Import a tenant bundle from a direct upload (ADR-063).** A bundle exported
+  from this or another cluster can be uploaded and re-ingested, and the result
+  is indistinguishable from a bundle captured here: it browses, restores,
+  selectively restores and re-exports with no changes to any of those paths.
+  Operators import on **Backups → Tenants → Bundles**, tenants on their own
+  **Backups** page; both surfaces show what will be imported, what will **not**
+  and why, the storage head-room, and any blocker — before committing, because
+  an import is not undone by a button. Every imported bundle carries the
+  `manual-import` label.
+
+  Transport reuses the existing chunked file upload, so there is no new upload
+  surface, no new size ceiling and no second copy of the resumable-chunk logic.
+  The archive lands on the tenant's own file space; a Job then extracts each
+  unit straight into its restic **capture root** and snapshots it there, which
+  is what makes the result readable by restore and browse. Peak disk is the
+  largest single unit, bounded by an `emptyDir.sizeLimit` capped by the
+  tenant's own storage allowance.
+
+  Tenant self-import is restricted to `files` and `mailboxes`: `config`
+  restores platform DB rows and `secrets` carries TLS private keys, so both are
+  dropped with a stated reason rather than silently. Every mailbox address in
+  an upload is checked against a mail domain the **target** tenant owns, before
+  anything is created — an upload, unlike a capture, can name any address it
+  likes. The same ordering defect is fixed in the pre-existing
+  `mailboxes-by-address` restore path: validate, then act.
+
+  Nothing is registered until every promised unit and artifact has landed, so a
+  half-imported bundle is never visible to the restore cart. A failed import
+  forgets its partial snapshots, drops the reserved bundle and deletes its row;
+  it **keeps** the uploaded archive, because that file is the user's and a
+  retry should not cost a multi-GB re-upload. An abandoned upload is reclaimed
+  by a sweeper that skips anything whose import is still live.
+
+  Sizes declared in an uploaded `meta.json` are treated as claims, not
+  measurements: quota and containment use the larger of declared and measured
+  archive size, and the quota is re-checked against what actually landed.
+
 - **Ingress-route traffic is named after the route.** Traefik labels a
   route's traffic only with `<namespace>-<ingressroute>-<hash of the match
   rule>`, and the breakdown fell back to `<tenant> · <ingress object> #1/#2`
