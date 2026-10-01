@@ -2086,6 +2086,24 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           );
         }
 
+        // Daily prune of the mail-snapshot repo. The snapshot Job only
+        // forgets (RESTIC_PRUNE_MODE=platform in its template); reclaiming
+        // runs here at most once per 24h across all replicas. Hourly tick,
+        // first one 15 min after start. Non-blocking on failure.
+        try {
+          const { startMailSnapshotPruneScheduler } = await import(
+            './modules/mail-admin/snapshot-prune.js'
+          );
+          const mailPruneHandle = startMailSnapshotPruneScheduler(
+            app.db,
+            k8sForImapsync.core,
+            app.log,
+          );
+          app.addHook('onClose', () => mailPruneHandle.stop());
+        } catch (err) {
+          app.log.warn({ err }, 'mail-snapshot-prune: scheduler start failed (non-blocking)');
+        }
+
         // R-X6: postgres ObjectStore + ScheduledBackup reconciler.
         // Materialises the CNPG plugin-barman-cloud wiring whenever
         // the SYSTEM-class shim target binding changes. 5-min tick.

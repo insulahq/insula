@@ -12,7 +12,9 @@
 # If RESTIC_REPOSITORY is empty or not set (Secret missing / not configured),
 # exits 0 with an informational log — upload is optional.
 #
-# After a successful backup, reports stats to the platform API.
+# After a successful backup, applies retention (`restic forget`) and reports
+# stats to the platform API. Whether this Job also PRUNES is decided by
+# RESTIC_PRUNE_MODE — see the forget step below.
 #
 # Env vars (from stalwart-snapshot-restic-repo Secret — all optional):
 #   RESTIC_REPOSITORY   e.g. s3:https://s3.hetzner.com/bucket/mail-snapshots
@@ -23,6 +25,10 @@
 # Env vars (from pod spec):
 #   PLATFORM_API_URL    internal platform API URL
 #   PLATFORM_API_TOKEN  SA token for platform API internal endpoints (optional)
+#   RESTIC_PRUNE_MODE   `platform` → forget only; platform-api prunes daily.
+#                       Anything else (incl. unset) → forget --prune here, the
+#                       previous behaviour, so this image stays correct under a
+#                       manifest that predates the platform-side prune.
 
 set -e
 
@@ -188,8 +194,16 @@ if [ -n "${EXTRA_RESTIC_TAGS:-}" ]; then
   done
 fi
 
+# --retry-lock: platform-api's daily prune holds an EXCLUSIVE lock — about half
+# a minute at the measured repo size, more when it repacks, and its repack is
+# capped (1G per prune) to keep that bounded. A backup that collides with it
+# waits instead of failing the run, and paging someone, for a lock that is about
+# to be released.
+RETRY_LOCK="${RESTIC_RETRY_LOCK:-10m}"
+
 # shellcheck disable=SC2086 # EXTRA_TAG_ARGS intentionally word-split
 restic backup \
+  --retry-lock "$RETRY_LOCK" \
   --tag "stalwart-snapshot" \
   --tag "auto" \
   $EXTRA_TAG_ARGS \
@@ -197,7 +211,7 @@ restic backup \
   --exclude "LOCK" \
   "$DATA_DIR"
 
-echo "=== snapshot-upload: backup complete — running restic forget/prune ==="
+echo "=== snapshot-upload: backup complete — applying retention ==="
 # Retention policy: driven by operator-set values in backup_schedules[mail].
 # The platform-api reconciler patches the CronJob env to match. Defaults
 # preserve the pre-2026-05-27 behaviour for backwards-compat.
@@ -227,10 +241,29 @@ if [ -z "$KEEP_ARGS" ]; then
   KEEP_ARGS="--keep-last 48"
 fi
 
-echo "=== snapshot-upload: applying retention: restic forget $KEEP_ARGS ==="
-# shellcheck disable=SC2086 # KEEP_ARGS intentionally word-split
+# ── forget every run; prune once a day ───────────────────────────────────────
+# `forget` only rewrites the snapshot list — the retention policy is applied
+# on every run, so restore points are exactly what the operator configured.
+# `prune` is what frees space, and it is expensive in a way that does not
+# scale with what changed: it walks every snapshot's trees, LISTS EVERY PACK
+# FILE on the target and rewrites the whole index. On a ~60 GiB repo at a
+# 10-minute cadence a run's backup took 2 s and added ~1.4 MiB, then prune took
+# 27 s and moved ~14 MB from the target and ~50 MB inside the cluster —
+# 144 times a day.
+#
+# With RESTIC_PRUNE_MODE=platform (set by the CronJob template) platform-api
+# prunes this repo at most once per 24h (mail-admin/snapshot-prune.ts).
+PRUNE_ARGS="--prune"
+if [ "${RESTIC_PRUNE_MODE:-}" = "platform" ]; then
+  PRUNE_ARGS=""
+  echo "=== snapshot-upload: RESTIC_PRUNE_MODE=platform — forget only; platform-api prunes daily ==="
+fi
+
+echo "=== snapshot-upload: applying retention: restic forget $KEEP_ARGS $PRUNE_ARGS ==="
+# shellcheck disable=SC2086 # KEEP_ARGS + PRUNE_ARGS intentionally word-split
 restic forget $KEEP_ARGS \
-  --prune \
+  $PRUNE_ARGS \
+  --retry-lock "$RETRY_LOCK" \
   --tag "stalwart-snapshot" \
   --quiet
 
@@ -239,7 +272,11 @@ restic forget $KEEP_ARGS \
 echo "=== snapshot-upload: collecting repo stats ==="
 STATS_JSON=$(restic stats --json --no-lock --mode raw-data 2>/dev/null || echo '{}')
 TOTAL_SIZE=$(printf '%s' "$STATS_JSON" | grep -o '"total_size":[0-9]*' | grep -o '[0-9]*' || echo '0')
-SNAP_COUNT=$(restic snapshots --json --no-lock --tag stalwart-snapshot 2>/dev/null | grep -c '"time"' || echo '0')
+# Count the parsed array. This was `grep -c '"time"'`, which counts LINES — and
+# restic prints the whole array on one line, so every repo reported 1 snapshot
+# (production held 61).
+SNAP_COUNT=$(restic snapshots --json --no-lock --tag stalwart-snapshot 2>/dev/null \
+  | python3 -c 'import json, sys; print(len(json.load(sys.stdin)))' 2>/dev/null || echo '0')
 
 echo "=== snapshot-upload: totalSizeBytes=$TOTAL_SIZE snapshotCount=$SNAP_COUNT ==="
 

@@ -22,6 +22,8 @@ import {
 
 const FIXED_KEY = Buffer.alloc(32);
 for (let i = 0; i < 32; i++) FIXED_KEY[i] = i;
+/** Stand-in for the static launcher.sh — its content is part of the input hash. */
+const LAUNCHER = '#!/bin/sh\nexec rclone serve s3 --buffer-size 1M combined:\n';
 
 const s3Target: BackupTargetConfig = {
   id: 't-s3',
@@ -394,46 +396,46 @@ describe('renderShimConfig — determinism', () => {
     // rclone obscure uses fresh random IV per call
     expect(a.rcloneConf).not.toBe(b.rcloneConf);
     // But the computeInputHash is over INPUTS not OUTPUTS
-    expect(computeInputHash(FIXED_KEY, [assign('tenant', sftpTarget)])).toBe(
-      computeInputHash(FIXED_KEY, [assign('tenant', sftpTarget)]),
+    expect(computeInputHash(FIXED_KEY, [assign('tenant', sftpTarget)], LAUNCHER)).toBe(
+      computeInputHash(FIXED_KEY, [assign('tenant', sftpTarget)], LAUNCHER),
     );
   });
 });
 
 describe('computeInputHash', () => {
   it('is stable across renders', () => {
-    const a = computeInputHash(FIXED_KEY, [assign('system', s3Target)]);
-    const b = computeInputHash(FIXED_KEY, [assign('system', s3Target)]);
+    const a = computeInputHash(FIXED_KEY, [assign('system', s3Target)], LAUNCHER);
+    const b = computeInputHash(FIXED_KEY, [assign('system', s3Target)], LAUNCHER);
     expect(a).toBe(b);
   });
 
   it('changes when the key changes', () => {
     const otherKey = Buffer.alloc(32, 0xff);
-    expect(computeInputHash(FIXED_KEY, [assign('system', s3Target)])).not.toBe(
-      computeInputHash(otherKey, [assign('system', s3Target)]),
+    expect(computeInputHash(FIXED_KEY, [assign('system', s3Target)], LAUNCHER)).not.toBe(
+      computeInputHash(otherKey, [assign('system', s3Target)], LAUNCHER),
     );
   });
 
   it('changes when a credential changes', () => {
     const mutated: BackupTargetConfig = { ...s3Target, s3AccessKey: 'AKIA_DIFFERENT' };
-    expect(computeInputHash(FIXED_KEY, [assign('system', s3Target)])).not.toBe(
-      computeInputHash(FIXED_KEY, [assign('system', mutated)]),
+    expect(computeInputHash(FIXED_KEY, [assign('system', s3Target)], LAUNCHER)).not.toBe(
+      computeInputHash(FIXED_KEY, [assign('system', mutated)], LAUNCHER),
     );
   });
 
   it('changes when s3UsePathStyle toggles', () => {
     const a: BackupTargetConfig = { ...s3Target, s3UsePathStyle: true };
     const b: BackupTargetConfig = { ...s3Target, s3UsePathStyle: false };
-    expect(computeInputHash(FIXED_KEY, [assign('system', a)])).not.toBe(
-      computeInputHash(FIXED_KEY, [assign('system', b)]),
+    expect(computeInputHash(FIXED_KEY, [assign('system', a)], LAUNCHER)).not.toBe(
+      computeInputHash(FIXED_KEY, [assign('system', b)], LAUNCHER),
     );
   });
 
   it('treats s3UsePathStyle=undefined and =true identically (legacy compat)', () => {
     const legacy: BackupTargetConfig = { ...s3Target };
     const explicit: BackupTargetConfig = { ...s3Target, s3UsePathStyle: true };
-    expect(computeInputHash(FIXED_KEY, [assign('system', legacy)])).toBe(
-      computeInputHash(FIXED_KEY, [assign('system', explicit)]),
+    expect(computeInputHash(FIXED_KEY, [assign('system', legacy)], LAUNCHER)).toBe(
+      computeInputHash(FIXED_KEY, [assign('system', explicit)], LAUNCHER),
     );
   });
 
@@ -448,8 +450,22 @@ describe('computeInputHash', () => {
       assign('tenant', s3Target),
       assign('system', s3Target),
     ];
-    expect(computeInputHash(FIXED_KEY, ordered)).toBe(
-      computeInputHash(FIXED_KEY, reordered),
+    expect(computeInputHash(FIXED_KEY, ordered, LAUNCHER)).toBe(
+      computeInputHash(FIXED_KEY, reordered, LAUNCHER),
     );
+  });
+
+  // The launcher carries the rclone flags. A flag change with every target
+  // unchanged must still produce a new hash, or the reconciler skips and the
+  // running shim keeps the old flags forever.
+  it('changes when ONLY the launcher script changes', () => {
+    const before = LAUNCHER.replace('--buffer-size 1M', '--buffer-size 2M');
+    expect(computeInputHash(FIXED_KEY, [assign('system', s3Target)], before)).not.toBe(
+      computeInputHash(FIXED_KEY, [assign('system', s3Target)], LAUNCHER),
+    );
+  });
+
+  it('changes when only the launcher changes and nothing is assigned', () => {
+    expect(computeInputHash(FIXED_KEY, [], '')).not.toBe(computeInputHash(FIXED_KEY, [], LAUNCHER));
   });
 });

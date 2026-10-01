@@ -294,6 +294,29 @@ kubectl cp mail/stalwart-mail-0:/opt/stalwart/backups/$(date +%Y%m%d).tar ./mail
 
 For scheduled backups, create a `CronJob` that invokes the above and streams the output to S3/NFS/another node (Phase 5 task).
 
+### 4.5b Scheduled mail snapshots: retention and reclaiming space
+
+The `stalwart-snapshot` Job (cadence under **Backups → Mail**) backs the mail store
+up with restic to the `mail` backup class target. Two steps happen at different
+rates:
+
+- **Retention (`restic forget`) runs on every snapshot.** The configured keep-daily /
+  keep-last policy is applied each run, so the restore points listed are always the
+  ones the policy says.
+- **Reclaiming space (`restic prune`) runs at most once a day, from platform-api.**
+  A prune lists every pack file on the target and rewrites the repository index —
+  far more than a snapshot adds — so it no longer runs inside the Job. Space freed by
+  retention can therefore take up to a day to show up in the repository size.
+
+The prune skips a read-only (DR-frozen) target. A failure raises a notification and
+is retried within the hour. A prune interrupted by a platform-api restart is
+reported, then retried within a few hours. Snapshot Jobs that start during a prune
+wait for its lock instead of failing.
+
+Kill switch for an outage: set `MAIL_SNAPSHOT_PRUNE=disable` on platform-api. The
+Jobs keep forgetting, so the repository only grows by what the policy keeps, until
+the prune is re-enabled.
+
 ### 4.6 Prometheus scrape
 
 The management service exposes `/metrics/prometheus`. Annotate the ServiceMonitor (if using prom-operator) or configure static scrape:

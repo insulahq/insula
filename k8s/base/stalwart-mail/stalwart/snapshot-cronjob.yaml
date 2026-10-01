@@ -12,7 +12,11 @@
 #   Single container runs snapshot-upload.sh which:
 #   1. Exits 0 if RESTIC_REPOSITORY is not configured (upload is optional).
 #   2. Runs `restic backup /var/lib/stalwart/data` with `--exclude LOCK`.
-#   3. Runs `restic forget --keep-last 48 --prune` to limit repo growth.
+#   3. Runs `restic forget` with the operator's retention policy. It does NOT
+#      prune: RESTIC_PRUNE_MODE=platform below hands reclaiming to
+#      platform-api, which prunes the repo at most once a day
+#      (mail-admin/snapshot-prune.ts). Pruning on every run was ~all of this
+#      Job's backup-target traffic.
 #   4. Reports totalSnapshotSizeBytes + snapshotCount to the platform API.
 #
 # RESTORE FLOW:
@@ -141,6 +145,11 @@ spec:
               env:
                 - name: PLATFORM_API_URL
                   value: "http://platform-api.platform.svc.cluster.local:3000"
+                # Forget only — platform-api prunes daily. Lives in the
+                # template, not the image, so an image newer than its
+                # manifest keeps pruning by itself rather than never.
+                - name: RESTIC_PRUNE_MODE
+                  value: "platform"
                 - name: PLATFORM_API_TOKEN
                   valueFrom:
                     secretKeyRef:
