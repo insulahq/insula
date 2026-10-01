@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { eq, and, isNull } from 'drizzle-orm';
+import { eq, and, isNull, sql } from 'drizzle-orm';
 import { dnsRecords, domains, tenants } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { getActiveServers, getActiveServersForDomain, getProviderForServer } from '../dns-servers/service.js';
@@ -171,6 +171,25 @@ function toRecordChange(action: 'create' | 'update' | 'delete', record: SyncReco
     previous: update?.previous ? toRecordInput(update.previous) : undefined,
     withdrawOnFailure: update?.withdrawOnFailure,
   };
+}
+
+/**
+ * Run one record write for a domain with every other such write held off.
+ *
+ * "Does another row still publish this value?" and the row delete must be one
+ * step. Two concurrent deletes of a duplicate pair each saw the other's row,
+ * both skipped the upstream withdraw, and the value stayed live with no row
+ * left to delete it from. Held for the provider round-trip of one record.
+ */
+async function withDomainRecordLock<T>(
+  db: Database,
+  domainId: string,
+  fn: (tx: Database) => Promise<T>,
+): Promise<T> {
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`dns-records/${domainId}`}, 0))`);
+    return fn(tx as unknown as Database);
+  });
 }
 
 /**
@@ -377,7 +396,15 @@ export async function updateDnsRecord(
   input: UpdateDnsRecordInput,
 ) {
   await verifyDomainOwnership(db, tenantId, domainId);
+  return withDomainRecordLock(db, domainId, (tx) => updateDnsRecordLocked(tx, domainId, recordId, input));
+}
 
+async function updateDnsRecordLocked(
+  db: Database,
+  domainId: string,
+  recordId: string,
+  input: UpdateDnsRecordInput,
+) {
   const [record] = await db
     .select()
     .from(dnsRecords)
@@ -471,7 +498,10 @@ export async function deleteDnsRecord(
   recordId: string,
 ) {
   await verifyDomainOwnership(db, tenantId, domainId);
+  await withDomainRecordLock(db, domainId, (tx) => deleteDnsRecordLocked(tx, domainId, recordId));
+}
 
+async function deleteDnsRecordLocked(db: Database, domainId: string, recordId: string) {
   const [record] = await db
     .select()
     .from(dnsRecords)

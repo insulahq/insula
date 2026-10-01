@@ -7,9 +7,14 @@ const provisions: string[] = [];
 let staleRows: Array<{ id: string; recordType: string; recordName: string | null; recordValue: string | null }> = [];
 let sharedValues = new Set<string>();
 
+let refusedValue: string | null = null;
+
 vi.mock('../dns-records/service.js', () => ({
   syncRecordToProviders: vi.fn(async (_db, _zone, action, record) => {
     if (action === 'delete') deletes.push(`${record.type} ${record.name} ${record.content}`);
+    if (action === 'delete' && record.content === refusedValue) {
+      return { status: 'failed', errors: [{ server: 'ns1', message: 'PowerDNS API error: 500' }] };
+    }
     return { status: 'published', servers: 1 };
   }),
   provisionManagedRecord: vi.fn(async (_db, _owner, _domain, record) => {
@@ -18,7 +23,7 @@ vi.mock('../dns-records/service.js', () => ({
   }),
   deleteManagedRecords: vi.fn(async () => staleRows),
   rowsPublishingSameValue: vi.fn(async (_db, _zone, _row, value) => (sharedValues.has(value.recordValue) ? ['manual-row'] : [])),
-  describeSyncFailure: vi.fn(),
+  describeSyncFailure: vi.fn((o: { errors: Array<{ message: string }> }) => o.errors[0].message),
 }));
 
 import { autoDeleteRouteDns, refreshRouteDnsForDomain } from './service.js';
@@ -63,6 +68,7 @@ beforeEach(() => {
   provisions.length = 0;
   staleRows = [];
   sharedValues = new Set();
+  refusedValue = null;
 });
 
 describe('autoDeleteRouteDns', () => {
@@ -102,6 +108,21 @@ describe('refreshRouteDnsForDomain', () => {
     expect(deletes).toEqual(['A @ 198.51.100.7']);
     expect(provisions).toEqual(['A @ 203.0.113.1', 'A @ 203.0.113.2']);
     expect(result).toMatchObject({ hostnames: 1, removed: 3, failures: [] });
+  });
+
+  it('reports a stale address the server would not withdraw instead of counting it gone', async () => {
+    const { db } = fakeDb({
+      settings: { ingress_default_ipv4: '203.0.113.1' },
+      routes: [{ hostname: 'example.test' }],
+    });
+    staleRows = [{ id: 's1', recordType: 'A', recordName: '@', recordValue: '198.51.100.7' }];
+    refusedValue = '198.51.100.7';
+
+    const result = await refreshRouteDnsForDomain(db, 'd1');
+
+    expect(result.failures).toEqual([
+      { hostname: 'example.test', detail: 'A 198.51.100.7 is still published: PowerDNS API error: 500' },
+    ]);
   });
 
   it("refreshes a route's www companion too — the name that usually serves the site", async () => {

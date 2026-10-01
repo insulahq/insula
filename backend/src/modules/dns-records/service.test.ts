@@ -20,6 +20,15 @@ import { ApiError } from '../../shared/errors.js';
 
 beforeEach(() => { vi.clearAllMocks(); });
 
+/** Record writes run inside a per-domain advisory-lock transaction; the fake
+ *  runs the callback against itself and records the lock statement. */
+function withTx<T extends object>(db: T): T {
+  const self = db as T & { transaction: unknown; execute: unknown };
+  self.execute = vi.fn().mockResolvedValue(undefined);
+  self.transaction = vi.fn(async (fn: (tx: unknown) => unknown) => fn(self));
+  return self;
+}
+
 function createMockDb(selectResult: unknown[] = []) {
   const whereFn = vi.fn().mockResolvedValue(selectResult);
   const fromFn = vi.fn().mockReturnValue({ where: whereFn });
@@ -114,7 +123,7 @@ describe('updateDnsRecord', () => {
     });
     const fromFn = vi.fn().mockReturnValue({ where: whereFn });
     const selectFn = vi.fn().mockReturnValue({ from: fromFn });
-    const db = { select: selectFn } as unknown as Parameters<typeof updateDnsRecord>[0];
+    const db = withTx({ select: selectFn }) as unknown as Parameters<typeof updateDnsRecord>[0];
 
     await expect(updateDnsRecord(db, 'c1', 'd1', 'missing', { ttl: 7200 })).rejects.toMatchObject({
       code: 'DNS_RECORD_NOT_FOUND',
@@ -131,10 +140,10 @@ describe('updateDnsRecord', () => {
     const updated = { ...RECORD, recordValue: '5.6.7.8' };
     const results: unknown[][] = [[DOMAIN], [RECORD], [updated], [DOMAIN], oldValueSiblings, [updated], [{ dnsMode: 'primary' }]];
     const whereFn = vi.fn().mockImplementation(() => Promise.resolve(results.shift() ?? []));
-    return {
+    return withTx({
       select: vi.fn().mockReturnValue({ from: vi.fn().mockReturnValue({ where: whereFn }) }),
       update: vi.fn().mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }) }),
-    } as unknown as Parameters<typeof updateDnsRecord>[0];
+    }) as unknown as Parameters<typeof updateDnsRecord>[0];
   }
 
   it('publishes the new value and withdraws the old one', async () => {
@@ -166,10 +175,10 @@ describe('deleteDnsRecord', () => {
     const whereFn = vi.fn().mockImplementation(() => Promise.resolve(results.shift() ?? []));
     const deleteWhere = vi.fn().mockResolvedValue(undefined);
     const deleteFn = vi.fn().mockReturnValue({ where: deleteWhere });
-    const db = {
+    const db = withTx({
       select: vi.fn().mockReturnValue({ from: vi.fn().mockReturnValue({ where: whereFn }) }),
       delete: deleteFn,
-    } as unknown as Parameters<typeof deleteDnsRecord>[0];
+    }) as unknown as Parameters<typeof deleteDnsRecord>[0];
     return { db, deleteFn };
   }
 
@@ -183,6 +192,9 @@ describe('deleteDnsRecord', () => {
     }));
     expect(provider.deleteRecord).not.toHaveBeenCalled();
     expect(deleteFn).toHaveBeenCalled();
+    // Sibling check, upstream withdraw and row delete ran under the domain lock.
+    expect((db as unknown as { transaction: ReturnType<typeof vi.fn> }).transaction).toHaveBeenCalledTimes(1);
+    expect((db as unknown as { execute: ReturnType<typeof vi.fn> }).execute).toHaveBeenCalledTimes(1);
   });
 
   it('leaves the value published when another row (any apex spelling) still holds it', async () => {
@@ -213,7 +225,7 @@ describe('deleteDnsRecord', () => {
     });
     const fromFn = vi.fn().mockReturnValue({ where: whereFn });
     const selectFn = vi.fn().mockReturnValue({ from: fromFn });
-    const db = { select: selectFn } as unknown as Parameters<typeof deleteDnsRecord>[0];
+    const db = withTx({ select: selectFn }) as unknown as Parameters<typeof deleteDnsRecord>[0];
 
     await expect(deleteDnsRecord(db, 'c1', 'd1', 'missing')).rejects.toMatchObject({
       code: 'DNS_RECORD_NOT_FOUND',

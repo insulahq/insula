@@ -1015,12 +1015,19 @@ export async function refreshRouteDnsForDomain(
         // A hand-made row for the same value is still the operator's record.
         const shared = await rowsPublishingSameValue(db, domain.domainName, { domainId, recordType: rec.recordType, recordName: rec.recordName }, rec);
         if (shared.length > 0) continue;
-        await syncRecordToProviders(db, domain.domainName, 'delete', {
+        const withdrawn = await syncRecordToProviders(db, domain.domainName, 'delete', {
           type: rec.recordType,
           name: rec.recordName ?? '',
           content: rec.recordValue ?? '',
           id: 'auto',
         }, domainId);
+        // The row is already gone; a value the server kept is still answering.
+        if (withdrawn.status === 'failed') {
+          failures.push({
+            hostname,
+            detail: `${rec.recordType} ${rec.recordValue} is still published: ${describeSyncFailure(withdrawn)}`,
+          });
+        }
       }
       const before = created;
       await autoProvisionRouteDns(db, domainId, hostname);
