@@ -59,4 +59,7 @@ type MigrationItem struct {
 	Attempt      *int    `json:"attempt,omitempty"`
 	FailingSince *string `json:"failingSince,omitempty"`
 	SkipReason   *string `json:"skipReason,omitempty"`
+	// ADR-056 §5: recorded by a fresh bootstrap's `.baseline` marker — it never
+	// ran on this node. Only ever true; absent for a script that really ran.
+	Baseline *bool `json:"baseline,omitempty"`
 }

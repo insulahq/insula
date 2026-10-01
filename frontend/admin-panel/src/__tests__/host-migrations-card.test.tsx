@@ -91,6 +91,23 @@ describe('HostMigrationsCard', () => {
     expect(screen.queryByTestId('host-migrations-runbook-link')).not.toBeInTheDocument();
   });
 
+  it('says how many applied migrations a fresh bootstrap recorded as baseline — they never ran there', async () => {
+    resolve({
+      degraded: false, runbookUrl: 'r',
+      nodes: [node({
+        appliedCount: 3,
+        items: [
+          { key: '2026.6.3/0001-a.sh', state: 'already-applied', baseline: true },
+          { key: '2026.6.3/0002-b.sh', state: 'already-applied', baseline: true },
+          { key: '2026.10.3/0001-c.sh', state: 'already-applied' },
+        ],
+      })],
+    });
+    render(<HostMigrationsCard />, { wrapper });
+    await waitFor(() => expect(screen.getByText('3 applied (2 baseline)')).toBeInTheDocument());
+    expect(screen.queryByText(/needs attention/i)).not.toBeInTheDocument();
+  });
+
   it('says so plainly when a node has not reported, rather than showing a scary zero', async () => {
     resolve({
       degraded: false, runbookUrl: 'r',

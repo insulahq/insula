@@ -40,8 +40,10 @@ const HELP = `platform-ops — Insula operator CLI
 Usage: platform-ops <command> [args]
 
 Commands:
-  bootstrap [flags]       Install Insula on this node (fresh single-binary install;
-                         no repo clone). 'bootstrap --help' for flags.
+  bootstrap [flags]       Prepare this node (single-binary, no repo clone):
+                         --domain <apex> CREATES a new cluster; --join-as
+                         server|worker --server <ip> --token <t> JOINS one
+                         (node-local only). 'bootstrap --help' for flags.
   version [--json]        Show installed / running / available platform version
   cluster status         Cluster node + control-plane health (kubectl)
   cluster diagnostics    Best-effort support bundle (nodes, pods, events, flux)
@@ -114,7 +116,13 @@ Commands:
                          (host-packages-desired, additive-only) + host-migration
                          scripts (host-migrations-desired) to policy
                          (status = dry-run report; apply --apply forces enforce)
-  shell                  Open a shell with cluster admin env (KUBECONFIG set)
+  host-config baseline --up-to <calver> [--dry-run] [--force]
+                         FRESH node only: record every shipped host-migration
+                         <= <calver> as '.baseline' (the bootstrap of that release
+                         already produced its end state) so the first converge
+                         does not replay them; newer ones stay pending. Refused
+                         (exit 3) if this node has converge history, unless --force
+  shell                 Open a shell with cluster admin env (KUBECONFIG set)
   help                   Show this help
 
 Runs on any cluster node. Mostly read-only; the privileged operations

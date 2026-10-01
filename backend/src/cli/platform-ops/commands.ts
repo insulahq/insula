@@ -7,6 +7,7 @@
  */
 import type { Deps, NodeVersion, VersionInfo } from './deps.js';
 import { buildK3sUpgradePlans, parseK3sVersion, planK3sUpgradePath } from './operations/k3s-plan.js';
+import { isValidVersion } from '../../modules/platform-updates/poller/semver.js';
 import { uiOf } from './ui.js';
 
 const KUBECTL = 'kubectl';
@@ -279,11 +280,14 @@ export async function selfUpgrade(args: string[], deps: Deps): Promise<number> {
  * AND no `--dry-run`; `--apply` forces enforce for a manual run. Default (no
  * policy / mode!=enforce) is a no-op dry-run, so the daily timer never mutates
  * the host until the operator opts in. Exit 1 only on a real failure.
+ * `host-config baseline …` is routed to hostConfigBaselineCommand (it never converges).
  */
 export async function hostConfigCommand(args: string[], deps: Deps): Promise<number> {
   const sub = args[0];
+  // `baseline` is its own action with its own flags — it never converges.
+  if (sub === 'baseline') return hostConfigBaselineCommand(args.slice(1), deps);
   if (sub !== undefined && sub !== 'apply' && sub !== 'status' && !sub.startsWith('--')) {
-    deps.err(`host-config: unknown subcommand '${sub}' (use: apply | status)`);
+    deps.err(`host-config: unknown subcommand '${sub}' (use: apply | status | baseline)`);
     return 2;
   }
   const flags = sub && sub.startsWith('--') ? args : args.slice(1);
@@ -344,7 +348,14 @@ export async function hostConfigCommand(args: string[], deps: Deps): Promise<num
     deps.out(`host-config host-migrations: REFUSED — ${h.reason}`);
   } else {
     const pending = h.items.filter((i) => i.state === 'would-run' || i.state === 'run-failed' || i.state === 'blocked');
-    deps.out(`host-config host-migrations ${h.mode} [${h.source}]: ${h.appliedCount} applied, ${pending.length} pending, ${h.items.length} shipped`);
+    // ADR-056 §5: say how many are recorded only because a fresh bootstrap
+    // already reflects them, so "0 applied" on a new node is not mistaken for
+    // "nothing ever ran" — nor a baseline for a run.
+    const baselined = h.items.filter((i) => i.baseline === true).length;
+    deps.out(
+      `host-config host-migrations ${h.mode} [${h.source}]: ${h.appliedCount} applied, ${pending.length} pending, ` +
+        `${h.items.length} shipped${baselined > 0 ? ` (${baselined} baseline)` : ''}`,
+    );
     for (const i of h.items) {
       if (i.state === 'already-applied') continue;
       // ADR-056 §3: a repeat failure states how long it has been repeating, so a
@@ -404,6 +415,80 @@ export async function hostConfigCommand(args: string[], deps: Deps): Promise<num
   // A write/install/migration/load failure is a real problem (exit 1). not-allowed
   // / invalid are policy-authoring issues, not runtime failures — exit 0.
   return r.ok && p.ok && h.ok && u.ok && m.ok ? 0 : 1;
+}
+
+interface HostConfigBaselineArgs {
+  readonly upTo: string;
+  readonly force: boolean;
+  readonly dryRun: boolean;
+}
+
+/** Parse `host-config baseline` flags; returns an error string on a usage problem. */
+export function parseHostConfigBaselineArgs(args: readonly string[]): HostConfigBaselineArgs | { error: string } {
+  let upTo: string | undefined;
+  let force = false;
+  let dryRun = false;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--force') force = true;
+    else if (a === '--dry-run') dryRun = true;
+    else if (a === '--up-to') {
+      const v = args[i + 1];
+      if (v === undefined || v.startsWith('--')) return { error: '--up-to requires a value (e.g. --up-to 2026.10.2)' };
+      upTo = v;
+      i++;
+    } else if (a.startsWith('--up-to=')) {
+      upTo = a.slice('--up-to='.length);
+      if (!upTo) return { error: '--up-to= requires a value (e.g. --up-to=2026.10.2)' };
+    } else {
+      return { error: `unknown argument: ${a}` };
+    }
+  }
+  if (upTo === undefined) {
+    return { error: '--up-to <calver> is required (the release this node was freshly bootstrapped at)' };
+  }
+  if (!isValidVersion(upTo)) return { error: `--up-to ${JSON.stringify(upTo)} is not a CalVer release (e.g. 2026.10.2)` };
+  return { upTo, force, dryRun };
+}
+
+/**
+ * `host-config baseline --up-to <calver> [--force] [--dry-run]` (ADR-056 §5).
+ *
+ * On a FRESH node, stamp `.baseline` for every shipped host-migration <= --up-to
+ * so the first converge does not replay migrations whose end state the bootstrap
+ * of that release already produced. Scripts > --up-to stay pending and run.
+ * Exit: 0 ok · 1 failed (marker write / unreadable ledger / no catalog) ·
+ * 2 usage · 3 refused — the ledger already has converge history (not a fresh
+ * node; --force overrides).
+ */
+export async function hostConfigBaselineCommand(args: string[], deps: Deps): Promise<number> {
+  const parsed = parseHostConfigBaselineArgs(args);
+  if ('error' in parsed) {
+    deps.err(`host-config baseline: ${parsed.error}`);
+    return 2;
+  }
+  const ui = uiOf(deps);
+  const r = await deps.hostConfig.baseline(parsed);
+  if (r.status === 'refused') {
+    ui.fail(`host-config baseline: REFUSED — ${r.reason ?? 'this node is not fresh'}`);
+    return 3;
+  }
+  const invalid = r.invalid.length > 0 ? `, ${r.invalid.length} invalid (never run)` : '';
+  const summary =
+    `host-config baseline${r.dryRun ? ' [dry-run]' : ''}: ` +
+    `${r.stamped.length} ${r.dryRun ? 'would be stamped' : 'stamped'}, ` +
+    `${r.alreadyRecorded.length} already recorded, ${r.pending.length} left pending (> ${r.upTo})${invalid}`;
+  if (r.status === 'failed') {
+    ui.fail(r.reason ? `host-config baseline: FAILED — ${r.reason}` : `${summary} — ${r.failed.length} marker write(s) FAILED`);
+    for (const f of r.failed) ui.fail(`${f.key} — ${f.error}`);
+  } else {
+    ui.ok(summary);
+  }
+  // A dry-run is for review, so it names exactly what it would stamp. Pending
+  // ones are always named: those WILL run on this node's next converge.
+  if (r.dryRun) for (const k of r.stamped) ui.detail(`would stamp  ${k}`);
+  for (const k of r.pending) ui.detail(`pending      ${k} (newer than ${r.upTo} — the next converge runs it)`);
+  return r.status === 'failed' ? 1 : 0;
 }
 
 /** Pick the cluster's CURRENT floor version (lowest parseable kubelet version). */
