@@ -20,7 +20,7 @@
 #
 # Adding a namespace here is a deliberate act: a new exec target in the
 # backend fails with "platform-api may not exec into pods in namespace …"
-# until it is listed. Live check: scripts/test-platform-api-exec-scope.sh.
+# until it is listed. Live check: scripts/test-platform-api-guardrails.sh.
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:

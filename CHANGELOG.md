@@ -102,10 +102,14 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 - **The management API can no longer watch Secrets or delete them in bulk.** Its role granted
   every verb on Secrets in every namespace; it now has only the ones it uses (`get`, `list`,
   `create`, `update`, `patch`, `delete`).
-- **The management API can exec into pods only where it needs to.** An admission policy now
-  limits its `exec` to tenant namespaces and the `platform`, `mail` and `traefik` namespaces;
-  `kube-system`, `flux-system`, `cert-manager`, Longhorn, CNPG and the rest are refused.
-  `scripts/test-platform-api-exec-scope.sh` checks a live cluster.
+- **The management API's own account is fenced in by admission policies.** Its role has to stay
+  broad, so seven policies now limit it to what it actually does: exec only into tenant,
+  `platform`, `mail` and `traefik` pods; no kubelet exec through the node proxy; Flux may only be
+  suspended/resumed or pinned to a release, branch or commit — never pointed elsewhere; only
+  tenant namespaces and tenant RBAC may be written; Secrets and ConfigMaps only in the namespaces
+  it manages; and no workload may be created as a foreign ServiceAccount, or get a new image or
+  host access on a system component. `scripts/test-platform-api-guardrails.sh` checks a live
+  cluster (dry-run only, safe on production).
 
 ## [2026.10.2] - 2026-10-01
 

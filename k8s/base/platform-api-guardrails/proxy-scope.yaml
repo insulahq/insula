@@ -1,0 +1,64 @@
+# Which proxied endpoints platform-api may reach through the apiserver.
+#
+# nodes/proxy reaches the kubelet API of any node, and the kubelet's /exec,
+# /run, /attach and /portForward endpoints execute in any pod on that node —
+# a full bypass of platform-api-pods-exec-scope. platform-api only ever reads
+# /stats/summary (node-health/kubelet-disk.ts, tenants/service.ts,
+# mail-admin/mail-node-storage.ts).
+#
+# services/proxy reaches any Service's port. platform-api only calls the
+# tenant file-manager sidecar and Stalwart's management metrics
+# (mail/stalwart-mgmt).
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: platform-api-proxy-scope
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CONNECT"]
+        resources: ["nodes/proxy", "services/proxy"]
+  matchConditions:
+    - name: platform-api-only
+      expression: "request.userInfo.username == 'system:serviceaccount:platform:platform-api'"
+  variables:
+    - name: isNodeProxy
+      expression: "request.resource.resource == 'nodes'"
+    - name: path
+      expression: "has(object.path) ? object.path : ''"
+    - name: tenantNs
+      expression: >-
+        request.namespace.startsWith('tenant-') ||
+        (request.namespace.startsWith('ns-') && namespaceObject != null &&
+          has(namespaceObject.metadata.annotations) &&
+          'insula.host/tenant-namespace' in namespaceObject.metadata.annotations &&
+          namespaceObject.metadata.annotations['insula.host/tenant-namespace'] == 'true')
+  validations:
+    - expression: "!variables.isNodeProxy || variables.path in ['/stats/summary', 'stats/summary']"
+      messageExpression: >-
+        'platform-api may only read /stats/summary through nodes/proxy, not ' + variables.path +
+        ' (ValidatingAdmissionPolicy platform-api-proxy-scope)'
+      reason: Forbidden
+    - expression: >-
+        variables.isNodeProxy ||
+        (variables.tenantNs && request.name.startsWith('file-manager')) ||
+        (request.namespace == 'mail' && request.name.startsWith('stalwart-mgmt'))
+      messageExpression: >-
+        'platform-api may not proxy to service ' + request.namespace + '/' + request.name +
+        ' (ValidatingAdmissionPolicy platform-api-proxy-scope)'
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: platform-api-proxy-scope
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  policyName: platform-api-proxy-scope
+  validationActions: [Deny]

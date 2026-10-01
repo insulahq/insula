@@ -1,0 +1,89 @@
+# What platform-api may change on the Flux objects that deliver the platform.
+#
+# Flux applies its sources with cluster-admin rights. A platform-api that could
+# repoint a GitRepository (url, ref.name, verify, …) or edit a Kustomization
+# (path, postBuild, patches, prune, serviceAccountName, …) could make Flux apply
+# anything — the quietest escalation the account has. What it actually does:
+#
+#   Kustomization  spec.suspend only — PITR suspends `flux-system/platform`
+#                  while it restores and resumes it afterwards.
+#   GitRepository  spec.ref only, as a release tag (vX.Y.Z or vX.Y.Z-rc.N), the
+#                  main/development branch, or a full commit SHA — platform
+#                  updates and rollback (platform-upgrades/flux-repin.ts). Any
+#                  other ref key may stay only if it is unchanged.
+#
+# Metadata (annotations, labels) is not restricted. platform-api has no create
+# or delete on these kinds at all.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: platform-api-flux-scope
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["kustomize.toolkit.fluxcd.io"]
+        apiVersions: ["*"]
+        operations: ["UPDATE"]
+        resources: ["kustomizations"]
+      - apiGroups: ["source.toolkit.fluxcd.io"]
+        apiVersions: ["*"]
+        operations: ["UPDATE"]
+        resources: ["gitrepositories"]
+  matchConditions:
+    - name: platform-api-only
+      expression: "request.userInfo.username == 'system:serviceaccount:platform:platform-api'"
+  variables:
+    - name: isKustomization
+      expression: "request.resource.resource == 'kustomizations'"
+    # Spec keys that must be unchanged: every key but the one the kind may edit.
+    - name: editable
+      expression: "variables.isKustomization ? 'suspend' : 'ref'"
+    - name: newRef
+      expression: "has(object.spec.ref) ? object.spec.ref : {}"
+    - name: oldRef
+      expression: "has(oldObject.spec.ref) ? oldObject.spec.ref : {}"
+  validations:
+    - expression: >-
+        object.spec.filter(k, k != variables.editable).all(k,
+          k in oldObject.spec && object.spec[k] == oldObject.spec[k]) &&
+        oldObject.spec.filter(k, k != variables.editable).all(k, k in object.spec)
+      messageExpression: >-
+        'platform-api may only change spec.' + variables.editable + ' on ' +
+        request.resource.resource + ' ' + request.namespace + '/' + request.name +
+        ' (ValidatingAdmissionPolicy platform-api-flux-scope)'
+      reason: Forbidden
+    - expression: >-
+        variables.isKustomization ||
+        variables.newRef.all(k, k in ['tag', 'branch', 'commit'] ||
+          (k in variables.oldRef && variables.newRef[k] == variables.oldRef[k]))
+      message: "platform-api may only set spec.ref.tag, spec.ref.branch or spec.ref.commit on a GitRepository (ValidatingAdmissionPolicy platform-api-flux-scope)"
+      reason: Forbidden
+    - expression: >-
+        variables.isKustomization || !('tag' in variables.newRef) ||
+        string(variables.newRef.tag).matches('^v[0-9]+\\.[0-9]+\\.[0-9]+(-rc\\.[0-9]+)?$')
+      message: "platform-api may only pin a release tag (vX.Y.Z or vX.Y.Z-rc.N) (ValidatingAdmissionPolicy platform-api-flux-scope)"
+      reason: Forbidden
+    - expression: >-
+        variables.isKustomization || !('branch' in variables.newRef) ||
+        string(variables.newRef.branch) in ['main', 'development'] ||
+        ('branch' in variables.oldRef && variables.oldRef.branch == variables.newRef.branch)
+      message: "platform-api may only pin the main or development branch (ValidatingAdmissionPolicy platform-api-flux-scope)"
+      reason: Forbidden
+    - expression: >-
+        variables.isKustomization || !('commit' in variables.newRef) ||
+        string(variables.newRef.commit).matches('^[0-9a-f]{40}$')
+      message: "platform-api may only pin a full commit SHA (ValidatingAdmissionPolicy platform-api-flux-scope)"
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: platform-api-flux-scope
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  policyName: platform-api-flux-scope
+  validationActions: [Deny]

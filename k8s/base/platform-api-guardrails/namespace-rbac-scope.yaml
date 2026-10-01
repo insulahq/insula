@@ -1,0 +1,130 @@
+# Namespace and RBAC writes by platform-api — tenant namespaces only.
+#
+# platform-api creates, labels and deletes tenant namespaces (k8s-provisioner,
+# tenant-psa-reconciler, tenant-lifecycle) and nothing else; without this, its
+# `delete` on namespaces reaches kube-system or flux-system.
+#
+# Its only RBAC writes: the `sftp-gateway-exec` Role + RoleBinding in a tenant
+# namespace (pods/exec for platform-system/sftp-gateway — file-manager/
+# k8s-lifecycle.ts), and deleting ClusterRoleBindings whose subjects lived in a
+# tenant namespace being deleted (tenant-lifecycle/hooks/cluster-scoped-refs.ts).
+# A Role it writes may grant nothing but pods/exec, and a RoleBinding may bind
+# only a namespace Role to the sftp-gateway account — so the account cannot
+# hand its own powers to another subject.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: platform-api-namespace-scope
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE", "DELETE"]
+        resources: ["namespaces"]
+  matchConditions:
+    - name: platform-api-only
+      expression: "request.userInfo.username == 'system:serviceaccount:platform:platform-api'"
+  variables:
+    - name: ns
+      expression: "request.operation == 'DELETE' ? oldObject : object"
+    - name: annotated
+      expression: >-
+        has(variables.ns.metadata.annotations) &&
+        'insula.host/tenant-namespace' in variables.ns.metadata.annotations &&
+        variables.ns.metadata.annotations['insula.host/tenant-namespace'] == 'true'
+  validations:
+    - expression: >-
+        variables.ns.metadata.name.startsWith('tenant-') ||
+        (variables.ns.metadata.name.startsWith('ns-') && variables.annotated)
+      messageExpression: >-
+        'platform-api may only create, change or delete tenant namespaces, not ' +
+        variables.ns.metadata.name + ' (ValidatingAdmissionPolicy platform-api-namespace-scope)'
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: platform-api-namespace-scope
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  policyName: platform-api-namespace-scope
+  validationActions: [Deny]
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: platform-api-rbac-scope
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["rbac.authorization.k8s.io"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE", "DELETE"]
+        resources: ["roles", "rolebindings"]
+      - apiGroups: ["rbac.authorization.k8s.io"]
+        apiVersions: ["*"]
+        operations: ["DELETE"]
+        resources: ["clusterrolebindings"]
+  matchConditions:
+    - name: platform-api-only
+      expression: "request.userInfo.username == 'system:serviceaccount:platform:platform-api'"
+  variables:
+    - name: kind
+      expression: "request.resource.resource"
+    - name: writes
+      expression: "request.operation != 'DELETE'"
+    - name: tenantNs
+      expression: >-
+        request.namespace.startsWith('tenant-') ||
+        (request.namespace.startsWith('ns-') && namespaceObject != null &&
+          has(namespaceObject.metadata.annotations) &&
+          'insula.host/tenant-namespace' in namespaceObject.metadata.annotations &&
+          namespaceObject.metadata.annotations['insula.host/tenant-namespace'] == 'true')
+  validations:
+    - expression: "variables.kind == 'clusterrolebindings' || variables.tenantNs"
+      messageExpression: >-
+        'platform-api may only write ' + variables.kind + ' in tenant namespaces, not ' +
+        request.namespace + ' (ValidatingAdmissionPolicy platform-api-rbac-scope)'
+      reason: Forbidden
+    - expression: >-
+        variables.kind != 'clusterrolebindings' ||
+        (has(oldObject.subjects) && size(oldObject.subjects) > 0 &&
+          oldObject.subjects.all(s, has(s.namespace) &&
+            (s.namespace.startsWith('tenant-') || s.namespace.startsWith('ns-'))))
+      messageExpression: >-
+        'platform-api may only delete ClusterRoleBindings whose subjects are all in tenant namespaces, not ' +
+        request.name + ' (ValidatingAdmissionPolicy platform-api-rbac-scope)'
+      reason: Forbidden
+    - expression: >-
+        variables.kind != 'roles' || !variables.writes ||
+        (has(object.rules) && object.rules.all(r,
+          (!has(r.apiGroups) || r.apiGroups.all(g, g == '')) &&
+          has(r.resources) && r.resources.all(x, x == 'pods/exec') &&
+          has(r.verbs) && r.verbs.all(v, v in ['create', 'get'])))
+      message: "a Role written by platform-api may grant only pods/exec (ValidatingAdmissionPolicy platform-api-rbac-scope)"
+      reason: Forbidden
+    - expression: >-
+        variables.kind != 'rolebindings' || !variables.writes ||
+        (object.roleRef.kind == 'Role' && has(object.subjects) &&
+          object.subjects.all(s, s.kind == 'ServiceAccount' &&
+            s.name == 'sftp-gateway' && has(s.namespace) && s.namespace == 'platform-system'))
+      message: "a RoleBinding written by platform-api may only bind a namespace Role to platform-system/sftp-gateway (ValidatingAdmissionPolicy platform-api-rbac-scope)"
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: platform-api-rbac-scope
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  policyName: platform-api-rbac-scope
+  validationActions: [Deny]

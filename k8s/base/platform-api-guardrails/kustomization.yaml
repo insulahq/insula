@@ -1,6 +1,12 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-# Admission-time limits on what the platform-api ServiceAccount may do,
-# where its ClusterRole has to stay broader than the operation needs.
+# Admission-time limits on what the platform-api ServiceAccount may do, where
+# its ClusterRole has to stay broader than the operations it performs.
+# Live check: scripts/test-platform-api-guardrails.sh
 resources:
   - pods-exec-scope.yaml
+  - proxy-scope.yaml
+  - flux-scope.yaml
+  - namespace-rbac-scope.yaml
+  - config-scope.yaml
+  - workload-scope.yaml

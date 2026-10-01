@@ -1,0 +1,177 @@
+# What workloads platform-api may create or change, and under which identity.
+#
+# platform-api can create Pods, Jobs, CronJobs, Deployments, StatefulSets and
+# DaemonSets in any namespace. Unchecked, that is cluster-admin: run a Job as
+# any ServiceAccount (flux-system/kustomize-controller, secrets-backup, …), or
+# swap the image of an existing privileged system workload. This policy keeps
+# the account to what it does (inventory of every workload write):
+#
+# 1. Namespaces: tenant namespaces, platform, platform-system,
+#    platform-tenant-ops, plesk-migration, mail, traefik, longhorn-system,
+#    crowdsec. In kube-system only the image-purge Pod (image-purge-*, the k3s
+#    image — storage/service.ts). Scaling (deployments/scale) is not affected.
+# 2. ServiceAccount on CREATE: `default` in tenant namespaces and everywhere
+#    else, except `platform`, which also uses platform-api (PITR Job),
+#    pg-dump-job, secrets-backup and cluster-state-backup (Jobs copied from the
+#    DR CronJobs). On UPDATE the ServiceAccount may not change.
+# 3. Tenant namespaces: no privileged containers, hostNetwork/hostPID/hostIPC
+#    or hostPath volumes, and only Pod Security "baseline" capabilities — even
+#    when a tenant's namespace is PSA-privileged for host ports.
+# 4. UPDATE outside tenant namespaces may not change a container image, add a
+#    container, or change hostNetwork/hostPID/hostIPC, hostPath volumes or
+#    privileged flags. platform-api patches replicas, suspend, schedules,
+#    annotations, node placement, args and env of system workloads — never
+#    their image or host access.
+#
+# What this cannot stop: platform-api still creates privileged Pods in
+# `platform` (the node terminal) and `kube-system` (image purge) by design, so
+# its token remains able to reach root on a node. See SECURITY_HARDENING.md.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: platform-api-workload-scope
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods"]
+      - apiGroups: ["apps"]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
+      - apiGroups: ["batch"]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["jobs", "cronjobs"]
+  matchConditions:
+    - name: platform-api-only
+      expression: "request.userInfo.username == 'system:serviceaccount:platform:platform-api'"
+  variables:
+    - name: kind
+      expression: "request.resource.resource"
+    - name: isCreate
+      expression: "request.operation == 'CREATE'"
+    - name: ns
+      expression: "request.namespace"
+    - name: tenantNs
+      expression: >-
+        variables.ns.startsWith('tenant-') ||
+        (variables.ns.startsWith('ns-') && namespaceObject != null &&
+          has(namespaceObject.metadata.annotations) &&
+          'insula.host/tenant-namespace' in namespaceObject.metadata.annotations &&
+          namespaceObject.metadata.annotations['insula.host/tenant-namespace'] == 'true')
+    # The pod spec, wherever the kind keeps it.
+    - name: spec
+      expression: >-
+        variables.kind == 'pods' ? object.spec :
+        (variables.kind == 'cronjobs' ? object.spec.jobTemplate.spec.template.spec : object.spec.template.spec)
+    - name: oldSpec
+      expression: >-
+        variables.isCreate ? variables.spec :
+        (variables.kind == 'pods' ? oldObject.spec :
+          (variables.kind == 'cronjobs' ? oldObject.spec.jobTemplate.spec.template.spec : oldObject.spec.template.spec))
+    - name: sa
+      expression: >-
+        has(variables.spec.serviceAccountName) && variables.spec.serviceAccountName != '' ? variables.spec.serviceAccountName :
+        (has(variables.spec.serviceAccount) && variables.spec.serviceAccount != '' ? variables.spec.serviceAccount : 'default')
+    - name: oldSa
+      expression: >-
+        has(variables.oldSpec.serviceAccountName) && variables.oldSpec.serviceAccountName != '' ? variables.oldSpec.serviceAccountName :
+        (has(variables.oldSpec.serviceAccount) && variables.oldSpec.serviceAccount != '' ? variables.oldSpec.serviceAccount : 'default')
+    - name: containers
+      expression: >-
+        variables.spec.containers + (has(variables.spec.initContainers) ? variables.spec.initContainers : [])
+    - name: oldContainers
+      expression: >-
+        variables.oldSpec.containers + (has(variables.oldSpec.initContainers) ? variables.oldSpec.initContainers : [])
+    # Host access, as comparable values: [hostNetwork, hostPID, hostIPC], the
+    # hostPath paths, and the names of privileged containers.
+    - name: hostFlags
+      expression: >-
+        [has(variables.spec.hostNetwork) && variables.spec.hostNetwork,
+         has(variables.spec.hostPID) && variables.spec.hostPID,
+         has(variables.spec.hostIPC) && variables.spec.hostIPC]
+    - name: oldHostFlags
+      expression: >-
+        [has(variables.oldSpec.hostNetwork) && variables.oldSpec.hostNetwork,
+         has(variables.oldSpec.hostPID) && variables.oldSpec.hostPID,
+         has(variables.oldSpec.hostIPC) && variables.oldSpec.hostIPC]
+    - name: hostPaths
+      expression: >-
+        has(variables.spec.volumes) ? variables.spec.volumes.filter(v, has(v.hostPath)).map(v, v.hostPath.path) : []
+    - name: oldHostPaths
+      expression: >-
+        has(variables.oldSpec.volumes) ? variables.oldSpec.volumes.filter(v, has(v.hostPath)).map(v, v.hostPath.path) : []
+    - name: privileged
+      expression: >-
+        variables.containers.filter(c, has(c.securityContext) && has(c.securityContext.privileged) &&
+          c.securityContext.privileged).map(c, c.name)
+    - name: oldPrivileged
+      expression: >-
+        variables.oldContainers.filter(c, has(c.securityContext) && has(c.securityContext.privileged) &&
+          c.securityContext.privileged).map(c, c.name)
+    - name: imagePurge
+      expression: >-
+        variables.ns == 'kube-system' && variables.kind == 'pods' && variables.isCreate &&
+        object.metadata.name.startsWith('image-purge-') &&
+        variables.containers.all(c, c.image.startsWith('rancher/k3s:'))
+  validations:
+    - expression: >-
+        variables.tenantNs || variables.imagePurge ||
+        variables.ns in ['platform', 'platform-system', 'platform-tenant-ops', 'plesk-migration',
+                         'mail', 'traefik', 'longhorn-system', 'crowdsec']
+      messageExpression: >-
+        'platform-api may not create or change ' + variables.kind + ' in namespace ' + variables.ns +
+        ' (ValidatingAdmissionPolicy platform-api-workload-scope)'
+      reason: Forbidden
+    - expression: >-
+        !variables.isCreate || variables.sa == 'default' ||
+        (variables.ns == 'platform' &&
+          variables.sa in ['platform-api', 'pg-dump-job', 'secrets-backup', 'cluster-state-backup'])
+      messageExpression: >-
+        'platform-api may not run a workload as ServiceAccount ' + variables.ns + '/' + variables.sa +
+        ' (ValidatingAdmissionPolicy platform-api-workload-scope)'
+      reason: Forbidden
+    - expression: "variables.isCreate || variables.sa == variables.oldSa"
+      messageExpression: >-
+        'platform-api may not change the ServiceAccount of ' + variables.ns + '/' + request.name +
+        ' (ValidatingAdmissionPolicy platform-api-workload-scope)'
+      reason: Forbidden
+    - expression: >-
+        !variables.tenantNs ||
+        (!variables.hostFlags.exists(f, f) && size(variables.hostPaths) == 0 && size(variables.privileged) == 0)
+      message: "a tenant workload may not be privileged or use hostNetwork, hostPID, hostIPC or hostPath (ValidatingAdmissionPolicy platform-api-workload-scope)"
+      reason: Forbidden
+    - expression: >-
+        !variables.tenantNs ||
+        variables.containers.all(c, !has(c.securityContext) || !has(c.securityContext.capabilities) ||
+          !has(c.securityContext.capabilities.add) ||
+          c.securityContext.capabilities.add.all(x, x in ['AUDIT_WRITE', 'CHOWN', 'DAC_OVERRIDE', 'FOWNER',
+            'FSETID', 'KILL', 'MKNOD', 'NET_BIND_SERVICE', 'SETFCAP', 'SETGID', 'SETPCAP', 'SETUID', 'SYS_CHROOT']))
+      message: "a tenant workload may only add Pod Security baseline capabilities (ValidatingAdmissionPolicy platform-api-workload-scope)"
+      reason: Forbidden
+    - expression: >-
+        variables.isCreate || variables.tenantNs ||
+        (variables.containers.all(c, variables.oldContainers.exists(o, o.name == c.name && o.image == c.image)) &&
+          variables.hostFlags == variables.oldHostFlags &&
+          variables.hostPaths == variables.oldHostPaths &&
+          variables.privileged == variables.oldPrivileged)
+      messageExpression: >-
+        'platform-api may not change images, containers or host access of ' + variables.ns + '/' + request.name +
+        ' (ValidatingAdmissionPolicy platform-api-workload-scope)'
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: platform-api-workload-scope
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  policyName: platform-api-workload-scope
+  validationActions: [Deny]
