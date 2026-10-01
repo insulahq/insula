@@ -16,7 +16,7 @@ import {
 import { ingressRoutes, domains, platformSettings, dnsRecords, deployments, catalogEntries, privateWorkers } from '../../db/schema.js';
 import { clearOrphanedSiteFolder } from './detach.js';
 import { ApiError } from '../../shared/errors.js';
-import { syncRecordToProviders, describeSyncFailure, provisionManagedRecord, deleteManagedRecords, type DnsSyncOutcome } from '../dns-records/service.js';
+import { syncRecordToProviders, describeSyncFailure, provisionManagedRecord, deleteManagedRecords, rowsPublishingSameValue, type DnsSyncOutcome } from '../dns-records/service.js';
 import { reservedHostnamesCoveredBy } from '../system-tenant/reserved-subdomains.js';
 import { resolveIngressBackend, NotIngressableError } from '../domains/k8s-ingress.js';
 import { capabilityOf } from '../multihost/reconciler.js';
@@ -904,41 +904,37 @@ export async function autoDeleteRouteDns(
   //    "app.example.com" → "app"; "example.com" → "@" (apex).
   const recordName = relativeRecordName(hostname, domain.domainName);
 
-  // 3. Delete from external DNS provider(s)
+  // 3. Withdraw every address value at this name from the DNS provider(s):
+  //    the current ingress addresses AND whatever the local rows hold (the
+  //    addresses in force when the route was created). Deletes are scoped to
+  //    one value, so an address dropped from the ingress set since then would
+  //    otherwise outlive the route upstream.
   const settings = await getIngressSettings(db);
-
-  // All routes (apex and subdomain) now use A records
-  // Mirror the create exactly: one delete per ingress address, both families.
-  // An asymmetric delete (single v4 from the raw string, v6 from the raw
-  // override key) left every other node's record orphaned upstream.
-  for (const ip of parseIngressIps(settings.ingressDefaultIpv4)) {
-    await syncRecordToProviders(db, domain.domainName, 'delete', {
-      type: 'A',
-      name: recordName,
-      content: ip,
-      id: 'auto', // provider uses name|type|content composite key
-    }, domainId);
-  }
-  for (const ip of parseIngressIps(settings.ingressDefaultIpv6)) {
-    await syncRecordToProviders(db, domain.domainName, 'delete', {
-      type: 'AAAA',
-      name: recordName,
-      content: ip,
-      id: 'auto',
-    }, domainId);
-  }
-
-  // 4. Remove matching records from local dns_records table
   const localRecords = await db
     .select()
     .from(dnsRecords)
     .where(and(eq(dnsRecords.domainId, domainId), eq(dnsRecords.recordName, recordName)));
+  // Only delete records that match what auto-provisioning would have created (A/AAAA)
+  const addressRows = localRecords.filter((rec) => rec.recordType === 'A' || rec.recordType === 'AAAA');
 
-  for (const rec of localRecords) {
-    // Only delete records that match what auto-provisioning would have created (A/AAAA)
-    if (rec.recordType === 'A' || rec.recordType === 'AAAA') {
-      await db.delete(dnsRecords).where(eq(dnsRecords.id, rec.id));
-    }
+  const values = new Map<string, { type: 'A' | 'AAAA'; content: string }>();
+  for (const ip of parseIngressIps(settings.ingressDefaultIpv4)) values.set(`A|${ip}`, { type: 'A', content: ip });
+  for (const ip of parseIngressIps(settings.ingressDefaultIpv6)) values.set(`AAAA|${ip}`, { type: 'AAAA', content: ip });
+  for (const rec of addressRows) {
+    if (rec.recordValue) values.set(`${rec.recordType}|${rec.recordValue}`, { type: rec.recordType as 'A' | 'AAAA', content: rec.recordValue });
+  }
+  for (const value of values.values()) {
+    await syncRecordToProviders(db, domain.domainName, 'delete', {
+      type: value.type,
+      name: recordName,
+      content: value.content,
+      id: 'auto',
+    }, domainId);
+  }
+
+  // 4. Remove the matching rows from the local dns_records table
+  for (const rec of addressRows) {
+    await db.delete(dnsRecords).where(eq(dnsRecords.id, rec.id));
   }
 }
 
@@ -988,6 +984,14 @@ export async function refreshRouteDnsForDomain(
   let created = 0;
   let removed = 0;
 
+  // Values the re-provision below writes again. Withdrawing one of those first
+  // only opens a window in which the name does not resolve.
+  const settings = await getIngressSettings(db);
+  const reprovisioned = new Set([
+    ...parseIngressIps(settings.ingressDefaultIpv4).map((ip) => `A|${ip}`),
+    ...parseIngressIps(settings.ingressDefaultIpv6).map((ip) => `AAAA|${ip}`),
+  ]);
+
   for (const route of routes) {
     // Drop the rows we own for this hostname first, so a record pointing at a
     // decommissioned node actually disappears instead of accumulating
@@ -999,13 +1003,17 @@ export async function refreshRouteDnsForDomain(
     try {
       const stale = await deleteManagedRecords(db, 'ingress-route', domainId, recordName);
       for (const rec of stale) {
+        removed++;
+        if (reprovisioned.has(`${rec.recordType}|${rec.recordValue}`)) continue;
+        // A hand-made row for the same value is still the operator's record.
+        const shared = await rowsPublishingSameValue(db, domain.domainName, { domainId, recordType: rec.recordType, recordName: rec.recordName }, rec);
+        if (shared.length > 0) continue;
         await syncRecordToProviders(db, domain.domainName, 'delete', {
           type: rec.recordType,
           name: rec.recordName ?? '',
           content: rec.recordValue ?? '',
           id: 'auto',
         }, domainId);
-        removed++;
       }
       const before = created;
       await autoProvisionRouteDns(db, domainId, route.hostname);

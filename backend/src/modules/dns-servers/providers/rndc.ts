@@ -116,4 +116,12 @@ export class RndcDnsProvider implements DnsProviderAdapter {
     // rndc delrecord zone name type content (BIND 9.11+)
     await this.rndc('delrecord', normalized, name, type, content);
   }
+
+  /** `delrecord` with content is already value-scoped; send the same RDATA
+   *  `createRecord` wrote, or the delete matches nothing. */
+  async deleteRecordValue(zone: string, input: DnsRecordInput): Promise<void> {
+    const normalized = zone.endsWith('.') ? zone : `${zone}.`;
+    const name = input.name.endsWith('.') ? input.name : `${input.name}.${normalized}`;
+    await this.rndc('delrecord', normalized, name, input.type, formatContent(input));
+  }
 }

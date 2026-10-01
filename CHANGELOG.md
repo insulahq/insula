@@ -96,6 +96,15 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 - **Joining a second server warns about the 2-member etcd** it creates — the bootstrap output and
   the admin panel's generated join command both say so. A 2-server control plane stops when
   either server is down; go from one server to three, or add workers.
+- **Deleting one DNS record no longer deletes its siblings.** On PowerDNS, deleting a single
+  record in the DNS panel removed **every** value with that name and type — deleting one apex
+  `A` record took the whole apex offline while the panel still listed the remaining addresses.
+  Deletes now remove exactly that one value, and leave it in place when another record in the
+  panel still holds it (for example an older duplicate of a route's address). Editing a record's
+  value no longer leaves the old value answering next to the new one. Route clean-up and
+  "Refresh route DNS" remove only the addresses they replace, and a refresh no longer creates a
+  duplicate of an apex record written as `@`, empty, or the bare domain name. On Cloudflare,
+  Hetzner and ClouDNS, deleting a record works again (it was refused by the provider).
 
 ### Security
 

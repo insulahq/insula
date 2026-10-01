@@ -1,7 +1,7 @@
 import { Resolver } from 'node:dns/promises';
 import type { DnsProviderAdapter, DnsZone, DnsRecord, DnsRecordInput, PowerDnsConfig } from './types.js';
 import { describeFetchFailure, summarizeUpstreamBody } from '../../../shared/fetch-error.js';
-import { fqdn, qualifyName, formatContent } from '../wire-format.js';
+import { fqdn, qualifyName, formatContent, canonicalContent } from '../wire-format.js';
 
 /**
  * PowerDNS Authoritative Server provider (API v4 / v5).
@@ -243,8 +243,10 @@ export class PowerDnsProvider implements DnsProviderAdapter {
       }
     } catch { /* zone might not exist yet */ }
 
-    // Don't add duplicate
-    if (!existingRecords.some(r => r.content === newContent)) {
+    // Don't add duplicate — compared canonically: PowerDNS echoes its own
+    // spelling (a long TXT split into strings, a compressed IPv6).
+    const newCanonical = canonicalContent(input);
+    if (!existingRecords.some(r => sameStoredValue(input.type, recordName, r.content, newCanonical))) {
       existingRecords.push({ content: newContent, disabled: false });
     }
 
@@ -352,11 +354,12 @@ export class PowerDnsProvider implements DnsProviderAdapter {
    * Remove a single value from an RRset, keeping the rest.
    *
    * `deleteRecord` above sends `changetype: DELETE`, which drops the
-   * ENTIRE (name, type) set — correct for "delete this A record", fatal
-   * for ACME DNS-01: an order covering `example.test` and
-   * `*.example.test` puts two TXT values on
-   * `_acme-challenge.example.test`, and cleaning up the first would
-   * strip the second while Let's Encrypt is still checking it.
+   * ENTIRE (name, type) set — never what removing ONE record means. The
+   * panel's delete used it, so deleting one apex A row wiped every other
+   * value at the apex while the panel kept showing them. ACME DNS-01 hits
+   * the same thing: an order covering `example.test` and `*.example.test`
+   * puts two TXT values on `_acme-challenge.example.test`, and cleaning up
+   * the first would strip the second while Let's Encrypt is still checking.
    *
    * Reads the current set, drops the matching value, and REPLACEs with
    * what's left (or DELETEs when nothing is).
@@ -364,22 +367,29 @@ export class PowerDnsProvider implements DnsProviderAdapter {
   async deleteRecordValue(zone: string, input: DnsRecordInput): Promise<void> {
     const normalized = fqdn(zone);
     const recordName = qualifyName(zone, input.name);
-    const target = formatContent(input);
+    const target = canonicalContent(input);
 
     let remaining: Array<{ content: string; disabled: boolean }> = [];
+    let setTtl: number | undefined;
     try {
       const zoneDetail = await this.request<{
-        rrsets?: Array<{ name: string; type: string; records: Array<{ content: string; disabled: boolean }> }>;
+        rrsets?: Array<{ name: string; type: string; ttl?: number; records: Array<{ content: string; disabled: boolean }> }>;
       }>(`/zones/${normalized}`);
       const rrset = zoneDetail.rrsets?.find(
         rr => rr.name.toLowerCase() === recordName.toLowerCase()
           && rr.type.toUpperCase() === input.type.toUpperCase(),
       );
       if (!rrset) return; // already gone — idempotent
-      remaining = rrset.records.filter(r => r.content !== target);
+      remaining = rrset.records.filter(r => !sameStoredValue(input.type, recordName, r.content, target));
       if (remaining.length === rrset.records.length) return; // value not present
-    } catch {
-      return; // zone gone — nothing to clean up
+      setTtl = rrset.ttl;
+    } catch (err) {
+      // Only a missing zone means "nothing to clean up". Any other failure
+      // (auth, network, 5xx) must surface: the panel deletes its row only
+      // after this returns, so swallowing it here left a record that was
+      // gone from the panel and still resolving.
+      if (/PowerDNS API error: 404\b/.test(err instanceof Error ? err.message : '')) return;
+      throw err;
     }
 
     await this.request<void>(`/zones/${normalized}`, {
@@ -390,7 +400,10 @@ export class PowerDnsProvider implements DnsProviderAdapter {
             ? {
                 name: recordName,
                 type: input.type,
-                ttl: input.ttl ?? 60,
+                // The values that stay keep the set's TTL. This defaulted to
+                // 60 (sized for ACME challenges), so deleting one A record of
+                // a 3600-TTL apex quietly dropped the rest to 60.
+                ttl: setTtl ?? input.ttl ?? 3600,
                 changetype: 'REPLACE',
                 records: remaining,
               }
@@ -510,4 +523,13 @@ function parsePriority(type: string, content: string): number | null {
     return Number.isNaN(n) ? null : n;
   }
   return null;
+}
+
+/** Whether a value PowerDNS stored is `canonical` (from `canonicalContent`). */
+function sameStoredValue(type: string, name: string, stored: string, canonical: string): boolean {
+  try {
+    return canonicalContent({ type, name, content: stored }) === canonical;
+  } catch {
+    return stored === canonical;
+  }
 }

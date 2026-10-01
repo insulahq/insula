@@ -1,6 +1,24 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+// One primary PowerDNS-style server whose provider records every call, so a
+// test can assert exactly which values were withdrawn upstream.
+const provider = {
+  createRecord: vi.fn(async () => undefined),
+  deleteRecord: vi.fn(async () => undefined),
+  deleteRecordValue: vi.fn(async () => undefined),
+};
+vi.mock('../dns-servers/service.js', () => ({
+  getActiveServers: vi.fn(async () => []),
+  getActiveServersForDomain: vi.fn(async () => [
+    { id: 's1', displayName: 'ns1', providerType: 'powerdns', enabled: 1, role: 'primary' },
+  ]),
+  getProviderForServer: vi.fn(() => provider),
+}));
+
 import { listDnsRecords, createDnsRecord, updateDnsRecord, deleteDnsRecord } from './service.js';
 import { ApiError } from '../../shared/errors.js';
+
+beforeEach(() => { vi.clearAllMocks(); });
 
 function createMockDb(selectResult: unknown[] = []) {
   const whereFn = vi.fn().mockResolvedValue(selectResult);
@@ -103,24 +121,87 @@ describe('updateDnsRecord', () => {
       status: 404,
     });
   });
+
+  /**
+   * Selects in order: ownership, the row, the row after the write, the
+   * domain, rows sharing the OLD value, rows sharing the NEW value, then the
+   * sync layer's authority lookup.
+   */
+  function dbForEdit(oldValueSiblings: unknown[]) {
+    const updated = { ...RECORD, recordValue: '5.6.7.8' };
+    const results: unknown[][] = [[DOMAIN], [RECORD], [updated], [DOMAIN], oldValueSiblings, [updated], [{ dnsMode: 'primary' }]];
+    const whereFn = vi.fn().mockImplementation(() => Promise.resolve(results.shift() ?? []));
+    return {
+      select: vi.fn().mockReturnValue({ from: vi.fn().mockReturnValue({ where: whereFn }) }),
+      update: vi.fn().mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }) }),
+    } as unknown as Parameters<typeof updateDnsRecord>[0];
+  }
+
+  it('publishes the new value and withdraws the old one', async () => {
+    await updateDnsRecord(dbForEdit([]), 'c1', 'd1', 'r1', { record_value: '5.6.7.8' });
+
+    expect(provider.createRecord).toHaveBeenCalledWith('example.com', expect.objectContaining({ type: 'A', content: '5.6.7.8' }));
+    expect(provider.deleteRecordValue).toHaveBeenCalledWith('example.com', expect.objectContaining({ type: 'A', content: '1.2.3.4' }));
+    expect(provider.deleteRecord).not.toHaveBeenCalled();
+  });
+
+  it('keeps the old value published when another row still holds it', async () => {
+    const twin = { ...RECORD, id: 'r2', recordName: null };
+
+    await updateDnsRecord(dbForEdit([twin]), 'c1', 'd1', 'r1', { record_value: '5.6.7.8' });
+
+    expect(provider.createRecord).toHaveBeenCalled();
+    expect(provider.deleteRecordValue).not.toHaveBeenCalled();
+  });
 });
 
 describe('deleteDnsRecord', () => {
-  it('should delete when record exists', async () => {
-    let callCount = 0;
-    const whereFn = vi.fn().mockImplementation(() => {
-      callCount++;
-      if (callCount === 1) return Promise.resolve([DOMAIN]);
-      return Promise.resolve([RECORD]);
-    });
-    const fromFn = vi.fn().mockReturnValue({ where: whereFn });
-    const selectFn = vi.fn().mockReturnValue({ from: fromFn });
+  /**
+   * The selects deleteDnsRecord makes, in order: ownership check, the row,
+   * the domain, the domain's rows of that type (who else publishes the
+   * value?), then the sync layer's authority lookup.
+   */
+  function dbFor(siblings: unknown[]) {
+    const results: unknown[][] = [[DOMAIN], [RECORD], [DOMAIN], siblings, [{ dnsMode: 'primary' }]];
+    const whereFn = vi.fn().mockImplementation(() => Promise.resolve(results.shift() ?? []));
     const deleteWhere = vi.fn().mockResolvedValue(undefined);
     const deleteFn = vi.fn().mockReturnValue({ where: deleteWhere });
+    const db = {
+      select: vi.fn().mockReturnValue({ from: vi.fn().mockReturnValue({ where: whereFn }) }),
+      delete: deleteFn,
+    } as unknown as Parameters<typeof deleteDnsRecord>[0];
+    return { db, deleteFn };
+  }
 
-    const db = { select: selectFn, delete: deleteFn } as unknown as Parameters<typeof deleteDnsRecord>[0];
+  it("withdraws only this row's value upstream — never the whole name", async () => {
+    const { db, deleteFn } = dbFor([RECORD]);
+
     await deleteDnsRecord(db, 'c1', 'd1', 'r1');
+
+    expect(provider.deleteRecordValue).toHaveBeenCalledWith('example.com', expect.objectContaining({
+      type: 'A', name: '@', content: '1.2.3.4',
+    }));
+    expect(provider.deleteRecord).not.toHaveBeenCalled();
     expect(deleteFn).toHaveBeenCalled();
+  });
+
+  it('leaves the value published when another row (any apex spelling) still holds it', async () => {
+    const twin = { ...RECORD, id: 'r2', recordName: 'example.com' };
+    const { db, deleteFn } = dbFor([RECORD, twin]);
+
+    await deleteDnsRecord(db, 'c1', 'd1', 'r1');
+
+    expect(provider.deleteRecordValue).not.toHaveBeenCalled();
+    expect(provider.deleteRecord).not.toHaveBeenCalled();
+    expect(deleteFn).toHaveBeenCalled();
+  });
+
+  it('keeps the row when the server refuses the deletion', async () => {
+    provider.deleteRecordValue.mockRejectedValueOnce(new Error('PowerDNS API error: 500 — down'));
+    const { db, deleteFn } = dbFor([RECORD]);
+
+    await expect(deleteDnsRecord(db, 'c1', 'd1', 'r1')).rejects.toMatchObject({ code: 'DNS_PUBLISH_FAILED' });
+    expect(deleteFn).not.toHaveBeenCalled();
   });
 
   it('should throw DNS_RECORD_NOT_FOUND for missing record', async () => {

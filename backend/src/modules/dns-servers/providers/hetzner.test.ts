@@ -200,7 +200,9 @@ describe('HetznerDnsProvider', () => {
       expect(records).toHaveLength(2);
       expect(records[0].id).toBe('r1');
       expect(records[0].content).toBe('1.2.3.4');
+      expect(records[0].name).toBe('example.com.');
       expect(records[1].type).toBe('CNAME');
+      expect(records[1].name).toBe('www.example.com.');
     });
 
     it('should throw when zone not found', async () => {

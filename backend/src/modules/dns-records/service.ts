@@ -5,8 +5,10 @@ import { ApiError } from '../../shared/errors.js';
 import { getActiveServers, getActiveServersForDomain, getProviderForServer } from '../dns-servers/service.js';
 import { canManageDnsZone } from '../dns-servers/authority.js';
 import { getReservedPlatformHostnames } from '../system-tenant/reserved-subdomains.js';
-import { computeRecordDiff, type DnsRecordDiffEntry } from './diff.js';
+import { computeRecordDiff, recordKey, type DnsRecordDiffEntry } from './diff.js';
+import { applyRecordChange, type RecordChange } from './publish.js';
 import type { Database } from '../../db/index.js';
+import type { DnsRecordInput } from '../dns-servers/providers/types.js';
 import type { CreateDnsRecordInput, UpdateDnsRecordInput } from './schema.js';
 import type { DnsRecord as DnsRecordRow } from '../../db/schema.js';
 
@@ -37,12 +39,32 @@ export function describeSyncFailure(outcome: Extract<DnsSyncOutcome, { status: '
   return outcome.errors.map((e) => `${e.server}: ${e.message}`).join('; ');
 }
 
+/** One record as callers describe it. `id` is informational: deletes are
+ *  matched on (name, type, value), never on an id. */
+export interface SyncRecord {
+  readonly type: string;
+  readonly name: string;
+  readonly content: string;
+  readonly ttl?: number;
+  readonly priority?: number | null;
+  readonly weight?: number | null;
+  readonly port?: number | null;
+  readonly id?: string;
+}
+
+/** What an `update` replaces — see `RecordChange` in ./publish.ts. */
+export interface SyncUpdate {
+  readonly previous?: SyncRecord;
+  readonly withdrawOnFailure?: boolean;
+}
+
 export async function syncRecordToProviders(
   db: Database,
   domainName: string,
   action: 'create' | 'update' | 'delete',
-  record: { type: string; name: string; content: string; ttl?: number; priority?: number | null; weight?: number | null; port?: number | null; id?: string },
+  record: SyncRecord,
   domainId?: string,
+  update?: SyncUpdate,
 ): Promise<DnsSyncOutcome> {
   try {
     // Phase 2c: gate record writes on DNS authority. Previously this function
@@ -75,7 +97,7 @@ export async function syncRecordToProviders(
           return { status: 'skipped', reason };
         }
 
-        return await pushToServers(servers, domainName, action, record);
+        return await pushToServers(servers, domainName, toRecordChange(action, record, update));
       }
     }
 
@@ -83,7 +105,7 @@ export async function syncRecordToProviders(
     // Callers that hit this path haven't migrated to the domain-scoped API
     // yet; authority can't be resolved without a domain, so we just try.
     const servers = await getActiveServers(db);
-    return await pushToServers(servers, domainName, action, record);
+    return await pushToServers(servers, domainName, toRecordChange(action, record, update));
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.warn('[dns-sync] Failed to get active DNS servers:', message);
@@ -104,8 +126,7 @@ export async function syncRecordToProviders(
 async function pushToServers(
   servers: ReadonlyArray<{ id: string; displayName: string; providerType: string; enabled: number; role: string }>,
   domainName: string,
-  action: 'create' | 'update' | 'delete',
-  record: { type: string; name: string; content: string; ttl?: number; priority?: number | null; weight?: number | null; port?: number | null; id?: string },
+  change: RecordChange,
 ): Promise<DnsSyncOutcome> {
   if (servers.length === 0) {
     return { status: 'skipped', reason: 'no DNS servers are configured for this domain' };
@@ -115,24 +136,10 @@ async function pushToServers(
   for (const server of servers) {
     try {
       const provider = getProviderForServer(server as never, encryptionKey());
-      if (action === 'create' || action === 'update') {
-        await provider.createRecord(domainName, {
-          type: record.type,
-          name: record.name,
-          content: record.content,
-          ttl: record.ttl ?? 3600,
-          // weight/port matter for SRV; without them the provider cannot
-          // build valid content and refuses the record outright.
-          priority: record.priority ?? undefined,
-          weight: record.weight ?? undefined,
-          port: record.port ?? undefined,
-        });
-      } else if (action === 'delete' && record.id) {
-        await provider.deleteRecord(domainName, `${record.name}|${record.type}|${record.content}`);
-      }
+      await applyRecordChange(provider, domainName, change);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      console.warn(`[dns-sync] Failed to ${action} ${record.type} '${record.name}' on ${server.displayName}: ${message}`);
+      console.warn(`[dns-sync] Failed to ${change.action} ${change.record.type} '${change.record.name}' on ${server.displayName}: ${message}`);
       errors.push({ server: server.displayName, message });
     }
   }
@@ -140,6 +147,65 @@ async function pushToServers(
   return errors.length > 0
     ? { status: 'failed', errors }
     : { status: 'published', servers: servers.length };
+}
+
+function toRecordInput(r: SyncRecord): DnsRecordInput {
+  return {
+    type: r.type,
+    name: r.name,
+    content: r.content,
+    ttl: r.ttl ?? 3600,
+    // weight/port matter for SRV; without them the provider cannot
+    // build valid content and refuses the record outright.
+    priority: r.priority ?? undefined,
+    weight: r.weight ?? undefined,
+    port: r.port ?? undefined,
+  };
+}
+
+function toRecordChange(action: 'create' | 'update' | 'delete', record: SyncRecord, update?: SyncUpdate): RecordChange {
+  if (action !== 'update') return { action, record: toRecordInput(record) };
+  return {
+    action,
+    record: toRecordInput(record),
+    previous: update?.previous ? toRecordInput(update.previous) : undefined,
+    withdrawOnFailure: update?.withdrawOnFailure,
+  };
+}
+
+/**
+ * Other rows of this domain that publish the same value as `row`.
+ *
+ * A server keeps ONE copy of a value per (name, type), however many rows
+ * carry it — a hand-made row and a route-managed row for the same apex IP
+ * are a single record upstream. Withdrawing that value for one row would
+ * take it away from the others while the panel kept listing them.
+ */
+export async function rowsPublishingSameValue(
+  db: Database,
+  domainName: string,
+  row: { readonly id?: string; readonly domainId: string; readonly recordType: string; readonly recordName: string | null },
+  value: {
+    readonly recordValue: string | null;
+    readonly priority?: number | null;
+    readonly weight?: number | null;
+    readonly port?: number | null;
+  },
+): Promise<string[]> {
+  const key = recordKey(domainName, {
+    type: row.recordType, name: row.recordName, content: value.recordValue ?? '',
+    priority: value.priority, weight: value.weight, port: value.port,
+  });
+  const siblings = await db
+    .select()
+    .from(dnsRecords)
+    .where(and(eq(dnsRecords.domainId, row.domainId), eq(dnsRecords.recordType, row.recordType as never)));
+  return siblings
+    .filter((r) => r.id !== row.id && recordKey(domainName, {
+      type: r.recordType, name: r.recordName, content: r.recordValue ?? '',
+      priority: r.priority, weight: r.weight, port: r.port,
+    }) === key)
+    .map((r) => r.id);
 }
 
 async function verifyDomainOwnership(db: Database, tenantId: string, domainId: string) {
@@ -345,9 +411,13 @@ export async function updateDnsRecord(
     .from(dnsRecords)
     .where(eq(dnsRecords.id, recordId));
 
-  // Sync updated record to external DNS servers (domain-scoped)
+  // Sync updated record to external DNS servers (domain-scoped). The old
+  // value is withdrawn too — unless another row still publishes it — and the
+  // new one is withdrawn again on failure unless another row already had it.
   const [domain] = await db.select().from(domains).where(eq(domains.id, domainId));
   if (domain && updated) {
+    const oldValueShared = (await rowsPublishingSameValue(db, domain.domainName, updated, record)).length > 0;
+    const newValueShared = (await rowsPublishingSameValue(db, domain.domainName, updated, updated)).length > 0;
     const outcome = await syncRecordToProviders(db, domain.domainName, 'update', {
       type: updated.recordType,
       name: updated.recordName ?? '@',
@@ -357,7 +427,17 @@ export async function updateDnsRecord(
       weight: updated.weight,
       port: updated.port,
       id: recordId,
-    }, domainId);
+    }, domainId, {
+      previous: oldValueShared ? undefined : {
+        type: record.recordType,
+        name: record.recordName ?? '@',
+        content: record.recordValue ?? '',
+        priority: record.priority,
+        weight: record.weight,
+        port: record.port,
+      },
+      withdrawOnFailure: !newValueShared,
+    });
 
     // Restore the pre-edit row so the panel never shows a value the
     // authoritative server never accepted.
@@ -404,10 +484,15 @@ export async function deleteDnsRecord(
   // Delete REMOTELY FIRST, then locally. The reverse order loses the row
   // whenever the provider call fails, leaving a record that is gone from the
   // panel but still resolving in DNS — with nothing left to retry from.
+  //
+  // Only THIS value is withdrawn, and only when no other row publishes it:
+  // deleting a duplicate row must not take the value away from its twin.
   const [domain] = await db.select().from(domains).where(eq(domains.id, domainId));
-  if (domain && record.recordType && record.recordValue) {
+  const shared = domain ? await rowsPublishingSameValue(db, domain.domainName, record, record) : [];
+  if (domain && record.recordType && record.recordValue && shared.length === 0) {
     const outcome = await syncRecordToProviders(db, domain.domainName, 'delete', {
       type: record.recordType, name: record.recordName ?? '@', content: record.recordValue ?? '',
+      priority: record.priority, weight: record.weight, port: record.port,
       id: recordId,
     }, domainId);
 
@@ -623,21 +708,32 @@ export async function provisionManagedRecord(
   // persisting a row for it would advertise a record we never wrote.
   if (outcome.status !== 'published') return outcome;
 
-  const existing = await db
-    .select({ id: dnsRecords.id })
+  // Matched as the SAME record, not the same string: `@`, '' and the bare
+  // zone name are one apex, and `2001:DB8::1` is `2001:db8::1`. An exact
+  // match missed those spellings and inserted a second row for one upstream
+  // value — and deleting either "duplicate" then withdrew the value from both.
+  const wanted = recordKey(domain.domainName, {
+    type: record.type, name: record.name, content: record.content,
+    priority: record.priority, weight: record.weight, port: record.port,
+  });
+  const existing = (await db
+    .select()
     .from(dnsRecords)
     .where(and(
       eq(dnsRecords.domainId, domain.id),
       eq(dnsRecords.recordType, record.type as never),
-      record.name ? eq(dnsRecords.recordName, record.name) : isNull(dnsRecords.recordName),
-      eq(dnsRecords.recordValue, record.content),
-    ));
+    )))
+    .filter((r) => recordKey(domain.domainName, {
+      type: r.recordType, name: r.recordName, content: r.recordValue ?? '',
+      priority: r.priority, weight: r.weight, port: r.port,
+    }) === wanted);
 
   if (existing.length > 0) {
     // Already tracked. Claim ownership if an older row predates managed_by,
-    // so a refresh can replace it instead of orphaning it.
+    // so a refresh can replace it instead of orphaning it — under the name
+    // spelling this owner deletes by.
     await db.update(dnsRecords)
-      .set({ managedBy: owner, ttl: record.ttl ?? 3600 })
+      .set({ managedBy: owner, ttl: record.ttl ?? 3600, recordName: record.name })
       .where(eq(dnsRecords.id, existing[0].id));
     return outcome;
   }
