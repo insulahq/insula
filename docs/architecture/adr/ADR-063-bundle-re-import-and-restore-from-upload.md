@@ -210,6 +210,44 @@ global timer would have to start every tenant's sidecar just to look.
 The rows-last ordering is deliberate: a half-imported bundle must never be visible to the
 restore cart. Either the bundle is registered complete, or it does not exist.
 
+## Implementation invariants
+
+Everything below was learned by running the import against a live cluster. Each one produced a
+failure that looked like something else, so they are recorded here rather than left in commit
+messages.
+
+1. **Stage each unit at its CAPTURE ROOT, never at a staging path.** restic records the absolute
+   path it is given, and every consumer resolves by that prefix: browse strips `FILES_CAPTURE_ROOT`
+   (`/source`), files restore includes `${FILES_CAPTURE_ROOT}/<p>`, mailbox restore reads
+   `${MAILBOX_CAPTURE_ROOT}/${addressDirName(addr)}` (`/capture/<dir>`), and the export strips
+   exactly those prefixes. A snapshot taken from anywhere else is **unreadable while looking
+   perfect** — valid 64-hex id, `completed` row, and an EMPTY browse tree. Both roots are subPath
+   mounts of the one size-limited volume, so a single `emptyDir.sizeLimit` still bounds everything.
+2. **Never `rm -rf` a capture root** — it is a mount point and fails with `Device or resource busy`.
+   Clear contents with `find <root> -mindepth 1 -maxdepth 1 -exec rm -rf {} +`.
+3. **The Job must decrypt.** An encrypted export is the OpenSSL `Salted__` envelope; `tar` cannot
+   read it, so every unit reads as missing. One `read_archive()` reader fronts every pass —
+   `cat` or `openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 -md sha256`, mirroring
+   `streamEncryptedExport`. `/bin/sh` is dash: a failed decrypt does **not** fail the pipeline, so an
+   EMPTY manifest is the signal, not a non-zero exit.
+4. **Two NetworkPolicies, not one.** The tenant namespace's `allow-backup-jobs-egress` and the
+   platform namespace's `allow-backup-files-jobs-to-platform-api` must BOTH admit
+   `platform.io/component: bundle-import`. With only the egress half, restic succeeds (the shim is a
+   separate rule) and only the object upload fails — which reads as a storage problem.
+5. **`priorityClassName: platform-tenant-overhead` plus explicit resources are mandatory.** A tenant
+   ResourceQuota is scoped to `PriorityClass In [tenant-default]`; without the class the quota
+   applies, demands memory requests/limits, and the job-controller can never create a pod.
+   `backoffLimit: 0` does not bound that — it bounds pod FAILURES, not pod CREATE failures — so the
+   Job spins until its deadline. Hence the 90-second "first pod must appear" check.
+6. **Gate on `backup_configurations.enabled`, not `active`.** `active` designates the single Longhorn
+   BackupTarget per cluster and the schema states it is not consulted by the shim path. Resolve the
+   store shim-first; the direct resolver only knows `s3`/`ssh` and returns null for `cifs`.
+7. **`targetKind` comes from the resolved STORE** (`storeKindToTargetKind`, rclone → s3). The
+   `backup_target_kind` enum has no `cifs` value.
+8. **Declared sizes are attacker input.** Quota and containment take `max(declared, measured archive
+   size)`, staging is capped by the tenant's allowance, and the quota is re-checked against what
+   actually landed — the only number that is not an assertion.
+
 ## Consequences
 
 - An imported bundle is indistinguishable from a captured one. Restore, browse, selective
