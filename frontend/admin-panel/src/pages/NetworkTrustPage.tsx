@@ -23,7 +23,6 @@ import {
   AlertCircle,
   CheckCircle2,
   Clock,
-  Copy,
   X,
   Loader2,
 } from 'lucide-react';
@@ -37,10 +36,10 @@ import {
   usePendingPeers,
   useCreatePendingPeer,
   useDeletePendingPeer,
-  fetchBootstrapCommand,
 } from '@/hooks/use-cluster-network';
-import type { TrustedRange, PendingPeer, BootstrapCommandResponse, FirewallBlacklistEntry } from '@insula/api-contracts';
+import type { TrustedRange, PendingPeer, FirewallBlacklistEntry } from '@insula/api-contracts';
 import TrustedProxiesCard from '@/components/TrustedProxiesCard';
+import BootstrapCommandModal from '@/components/security/BootstrapCommandModal';
 
 type TabId = 'trusted-ranges' | 'pending-peers' | 'trusted-proxies' | 'blacklist';
 
@@ -432,7 +431,14 @@ function PendingPeersTab() {
                 className="w-full rounded-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-1.5 text-sm font-mono"
               />
             </Field>
-            <Field label="Role">
+            <Field
+              label="Role"
+              hint={
+                role === 'server'
+                  ? 'Every server is an etcd member. Go from 1 to 3 servers — a 2-server cluster is less available than one. Otherwise join a worker.'
+                  : undefined
+              }
+            >
               <select
                 value={role}
                 onChange={(e) => setRole(e.target.value as 'server' | 'worker')}
@@ -582,77 +588,6 @@ function PendingPeerRow({
   );
 }
 
-function BootstrapCommandModal({ cppName, onClose }: { cppName: string; onClose: () => void }) {
-  const [data, setData] = useState<BootstrapCommandResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    let cancelled = false;
-    fetchBootstrapCommand(cppName)
-      .then((d) => {
-        if (!cancelled) {
-          setData(d);
-          setLoading(false);
-        }
-      })
-      .catch((e: Error) => {
-        if (!cancelled) {
-          setError(e.message);
-          setLoading(false);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [cppName]);
-
-  return (
-    <Modal title={`Bootstrap command — ${cppName}`} onClose={onClose}>
-      {loading && (
-        <div className="flex items-center gap-2 py-6 text-sm text-gray-500">
-          <Loader2 size={14} className="animate-spin" />
-          Fetching command…
-        </div>
-      )}
-      {error && (
-        <div className="rounded border border-red-200 dark:border-red-900 bg-red-50 dark:bg-red-900/20 p-3 text-sm text-red-700 dark:text-red-300">
-          {error}
-        </div>
-      )}
-      {data && (
-        <div className="space-y-4">
-          <div>
-            <h3 className="mb-2 text-sm font-semibold text-gray-900 dark:text-gray-100">
-              Run this on your workstation
-            </h3>
-            <CodeBlock text={data.bootstrapCommand} />
-            <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
-              Replace the token placeholder by running <code className="font-mono bg-gray-100 dark:bg-gray-800 px-1 rounded">cat /var/lib/rancher/k3s/server/node-token</code> on
-              the existing peer at <code className="font-mono bg-gray-100 dark:bg-gray-800 px-1 rounded">{data.serverIp}</code>.
-            </p>
-          </div>
-
-          {data.preAuthCommand && (
-            <details className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/40 p-3">
-              <summary className="cursor-pointer text-sm font-medium text-gray-700 dark:text-gray-300">
-                Break-glass: pre-authorise on every existing peer
-              </summary>
-              <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
-                The reconciler propagates the pending-peer entry within ~30s. If the bootstrap is faster, run
-                this command on your workstation first to pre-authorise on every peer:
-              </p>
-              <div className="mt-2">
-                <CodeBlock text={data.preAuthCommand} />
-              </div>
-            </details>
-          )}
-        </div>
-      )}
-    </Modal>
-  );
-}
-
 // ─── shared atoms ────────────────────────────────────────────────────────
 
 function Th({ children }: { children?: React.ReactNode }) {
@@ -760,31 +695,6 @@ function ReadyBadge({
       <Clock size={12} />
       Pending
     </span>
-  );
-}
-
-function CodeBlock({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
-  const handleCopy = (): void => {
-    void navigator.clipboard.writeText(text).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    });
-  };
-  return (
-    <div className="relative rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-3">
-      <pre className="overflow-x-auto text-xs font-mono text-gray-800 dark:text-gray-200 whitespace-pre-wrap break-all">
-        {text}
-      </pre>
-      <button
-        type="button"
-        onClick={handleCopy}
-        className="absolute top-2 right-2 inline-flex items-center gap-1 rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-2 py-1 text-[11px] text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700"
-      >
-        <Copy size={12} />
-        {copied ? 'Copied' : 'Copy'}
-      </button>
-    </div>
   );
 }
 
