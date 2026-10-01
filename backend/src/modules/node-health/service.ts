@@ -229,3 +229,69 @@ export function shouldNotify(input: {
   const elapsedMs = input.now.getTime() - input.lastNotifiedAt.getTime();
   return elapsedMs >= 24 * 60 * 60 * 1000;
 }
+
+/** The persisted half of a node_health_state row the decision needs. */
+export interface PrevHealthNotifyState {
+  readonly severity: NodeHealthSeverity;
+  readonly lastNotifiedAt: Date | null;
+}
+
+export interface HealthNotifyDecision {
+  readonly notify: boolean;
+  /** The "from" severity for the notification copy ("flagged" vs "still"). */
+  readonly prevSeverityForCopy: NodeHealthSeverity;
+  /** What to persist as `last_notified_at`. */
+  readonly lastNotifiedAt: Date | null;
+}
+
+/**
+ * The severity the operator was last TOLD about, which is not always the
+ * severity last persisted.
+ *
+ * Invariant this relies on: a non-normal row with `last_notified_at IS NULL`
+ * is an episode nobody was told about. Normal operation can never produce one
+ * — entering a non-normal severity always notifies — so only the join grace
+ * window writes it, on purpose (see decideHealthNotification).
+ */
+export function lastAnnouncedSeverity(prev: PrevHealthNotifyState | undefined): NodeHealthSeverity {
+  if (!prev || prev.lastNotifiedAt === null) return 'normal';
+  return prev.severity;
+}
+
+/**
+ * Whether the reconciler notifies for this node now, folding in the join grace
+ * window.
+ *
+ *   suppressed  — never notify, and CLEAR last_notified_at so the episode is
+ *                 recorded as unannounced. The persisted severity stays the
+ *                 real one (the panel shows it).
+ *   otherwise   — the normal transition/24h rule, measured against what was
+ *                 last ANNOUNCED. So a node still CRITICAL when its window
+ *                 closes is a normal→critical transition and fires on the first
+ *                 tick after it, and a node that recovered inside the window
+ *                 sends no "recovered" for a problem nobody was told about.
+ *
+ * The window only holds back NEWS. If the operator was already told this node
+ * is unhealthy (e.g. an established node that a fresh ClusterPendingPeer now
+ * matches while it is re-bootstrapped), suppressing would erase that knowledge
+ * and swallow its "recovered" — so the normal rules apply.
+ */
+export function decideHealthNotification(input: {
+  readonly newSeverity: NodeHealthSeverity;
+  readonly prev: PrevHealthNotifyState | undefined;
+  readonly suppressed: boolean;
+  readonly now: Date;
+}): HealthNotifyDecision {
+  const prevSeverityForCopy = lastAnnouncedSeverity(input.prev);
+  if (input.suppressed && prevSeverityForCopy === 'normal') {
+    return { notify: false, prevSeverityForCopy, lastNotifiedAt: null };
+  }
+  const prevLastNotifiedAt = input.prev?.lastNotifiedAt ?? null;
+  const notify = shouldNotify({
+    newSeverity: input.newSeverity,
+    prevSeverity: prevSeverityForCopy,
+    lastNotifiedAt: prevLastNotifiedAt,
+    now: input.now,
+  });
+  return { notify, prevSeverityForCopy, lastNotifiedAt: notify ? input.now : prevLastNotifiedAt };
+}

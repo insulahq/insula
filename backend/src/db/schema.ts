@@ -3674,6 +3674,10 @@ export const clusterNodes = pgTable('cluster_nodes', {
   // comparison isn't sensitive to the session TimeZone GUC.
   joinedAt: timestamp('joined_at', { withTimezone: true }).notNull().defaultNow(),
   lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull().defaultNow(),
+  // Migration 0139 — first time the node was missing from a successful Node
+  // list; the "removed from the cluster" notification is claimed on this
+  // column so it fires once. NULL while registered. See nodes/lifecycle.ts.
+  removedAt: timestamp('removed_at', { withTimezone: true }),
   notes: text('notes'),
   labels: jsonb('labels').$type<Record<string, string> | null>(),
   taints: jsonb('taints').$type<Array<{ key: string; value?: string; effect: string }> | null>(),

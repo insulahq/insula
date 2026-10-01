@@ -2540,6 +2540,71 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     ];
   })(),
 
+  // ── Node membership: joined / removed ──
+  ...((): SeedTemplate[] => {
+    const joinedVars: readonly NotificationTemplateVariable[] = [
+      ...COMMON_VARS,
+      { name: 'nodeName', type: 'string', required: true },
+      { name: 'nodeRole', type: 'string', required: true },
+      { name: 'addresses', type: 'string', required: true },
+      { name: 'k8sVersion', type: 'string', required: true },
+      { name: 'graceNote', type: 'string', required: true },
+    ];
+    const removedVars: readonly NotificationTemplateVariable[] = [
+      ...COMMON_VARS,
+      { name: 'nodeName', type: 'string', required: true },
+      { name: 'nodeRole', type: 'string', required: true },
+      { name: 'addresses', type: 'string', required: true },
+      { name: 'removalDetail', type: 'string', required: true },
+    ];
+    return [
+      {
+        categoryId: 'admin.node_joined',
+        channel: 'email',
+        locale: 'en',
+        subjectTemplate: '[NODE] {{nodeName}} joined the cluster as a {{nodeRole}}',
+        bodyTemplate: emailMjml(
+          'Node {{nodeName}} joined the cluster',
+          'Cluster node {{nodeName}} registered with Kubernetes as a {{nodeRole}} at {{occurredAt}}. '
+          + 'Addresses: {{addresses}}. Kubernetes version: {{k8sVersion}}. {{graceNote}}',
+        ),
+        bodyFormat: 'mjml',
+        variablesSchema: joinedVars,
+      },
+      {
+        categoryId: 'admin.node_joined',
+        channel: 'in_app',
+        locale: 'en',
+        subjectTemplate: '[NODE] {{nodeName}} joined the cluster',
+        bodyTemplate: '{{nodeName}} joined as a {{nodeRole}}. Addresses: {{addresses}}. Kubernetes {{k8sVersion}}. {{graceNote}}',
+        bodyFormat: 'plaintext',
+        variablesSchema: joinedVars,
+      },
+      {
+        categoryId: 'admin.node_removed',
+        channel: 'email',
+        locale: 'en',
+        subjectTemplate: '[NODE] {{nodeName}} was removed from the cluster',
+        bodyTemplate: emailMjml(
+          'Node {{nodeName}} was removed from the cluster',
+          'Cluster node {{nodeName}} ({{nodeRole}}, {{addresses}}) is no longer part of the cluster, '
+          + 'as of {{occurredAt}}. {{removalDetail}}',
+        ),
+        bodyFormat: 'mjml',
+        variablesSchema: removedVars,
+      },
+      {
+        categoryId: 'admin.node_removed',
+        channel: 'in_app',
+        locale: 'en',
+        subjectTemplate: '[NODE] {{nodeName}} was removed from the cluster',
+        bodyTemplate: '{{nodeName}} ({{nodeRole}}, {{addresses}}) is no longer part of the cluster. {{removalDetail}}',
+        bodyFormat: 'plaintext',
+        variablesSchema: removedVars,
+      },
+    ];
+  })(),
+
   // ── admin.tenant_pod_oom (Phase 1d) ──
   ...((): SeedTemplate[] => {
     const oomVars: readonly NotificationTemplateVariable[] = [

@@ -51,6 +51,8 @@ const STATIC_PATHS: Record<string, string> = {
   'admin.tenant_auto_repinned': '/tenants/list',
   'admin.node_rebooting': '/cluster/nodes',
   'admin.node_startup_complete': '/cluster/nodes',
+  'admin.node_joined': '/cluster/nodes',
+  'admin.node_removed': '/cluster/nodes',
   'admin.node_memory_event_warning': '/cluster/nodes',
   'admin.node_memory_event_critical': '/cluster/nodes',
   'admin.security_hardening_drift': '/security/posture',

@@ -10,6 +10,12 @@ const { mockListNamespacedPod, mockPatchNode, mockReadNode, mockDeleteK8sNode, m
   mockListNode: vi.fn(),
 }));
 
+const { mockNotifyNodeRemoved } = vi.hoisted(() => ({ mockNotifyNodeRemoved: vi.fn().mockResolvedValue(undefined) }));
+vi.mock('../notifications/events.js', () => ({
+  notifyAdminNodeRemoved: mockNotifyNodeRemoved,
+  notifyAdminNodeJoined: vi.fn(),
+}));
+
 vi.mock('../k8s-provisioner/k8s-client.js', () => ({
   createK8sClients: vi.fn().mockReturnValue({
     core: {
@@ -85,6 +91,7 @@ describe('Nodes routes', () => {
     mockReadNode.mockReset();
     mockDeleteK8sNode.mockReset();
     mockListNode.mockReset();
+    mockNotifyNodeRemoved.mockClear();
     // listNode is called by listNodesEnriched on GET /admin/nodes and
     // again by PATCH (to enrich the response). Default to "empty list" —
     // the safeCall wrapper in service.ts uses this same fallback when
@@ -230,8 +237,14 @@ describe('Nodes routes', () => {
       const notFound = Object.assign(new Error('nodes "orphan-3" not found'), { code: 404 });
       mockReadNode.mockRejectedValue(notFound);
 
-      const dbDelete = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
-      // Override delete chain on the mock db: db.delete(table).where(...).
+      // An orphan the node-sync reconciler already announced (removed_at set),
+      // so deleting it from the panel must not announce the removal again.
+      const returning = vi.fn().mockResolvedValue([{
+        name: 'orphan-3', role: 'worker', publicIp: null, publicIpv6: null,
+        lastSeenAt: new Date('2026-09-01T00:00:00Z'), removedAt: new Date('2026-09-01T00:01:00Z'),
+      }]);
+      const dbDelete = vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ returning }) });
+      // Override delete chain on the mock db: db.delete(table).where(...).returning(...).
       (app as unknown as { db: { delete: typeof dbDelete } }).db.delete = dbDelete;
 
       const res = await app.inject({
@@ -251,6 +264,37 @@ describe('Nodes routes', () => {
       expect(dbDelete).toHaveBeenCalled();
       // We never called k8s.deleteNode — there was nothing to delete.
       expect(mockDeleteK8sNode).not.toHaveBeenCalled();
+      // The node-sync reconciler already announced this removal.
+      expect(mockNotifyNodeRemoved).not.toHaveBeenCalled();
+    });
+
+    it('announces the removal when the panel deletes a node nobody announced yet', async () => {
+      const { app, mockDb, adminToken } = await setupApp();
+      mockDb.select.mockReturnValue(makeSelectChain([
+        { name: 'worker-9', role: 'worker', canHostTenantWorkloads: true, labels: {}, taints: [] },
+      ]));
+      mockReadNode.mockRejectedValue(Object.assign(new Error('not found'), { code: 404 }));
+      const returning = vi.fn().mockResolvedValue([{
+        name: 'worker-9', role: 'worker', publicIp: '192.0.2.9', publicIpv6: null,
+        lastSeenAt: new Date('2026-10-01T11:59:00Z'), removedAt: null,
+      }]);
+      (app as unknown as { db: { delete: unknown } }).db.delete = vi.fn()
+        .mockReturnValue({ where: vi.fn().mockReturnValue({ returning }) });
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/admin/nodes/worker-9/delete',
+        headers: { authorization: `Bearer ${adminToken}` },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(mockNotifyNodeRemoved).toHaveBeenCalledTimes(1);
+      expect(mockNotifyNodeRemoved.mock.calls[0][1]).toEqual({
+        nodeName: 'worker-9',
+        nodeRole: 'worker',
+        addresses: '192.0.2.9',
+        removalDetail: 'It was deleted from Cluster → Nodes in the admin panel.',
+      });
     });
 
     it('rejects an invalid node name before touching k8s or db', async () => {

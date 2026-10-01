@@ -61,6 +61,83 @@ wins and the operator never gets two notifications for one node going down.
 Notifications carry `resourceType=node_health` and `resourceId=<node-name>`
 so the admin panel's bell icon can deep-link.
 
+## Joining nodes — the alert grace window
+
+A server or worker that is bootstrapping is NotReady for several minutes, and
+its Calico / Longhorn CSI pods arrive one at a time. Without a grace window that
+read as an outage the moment the node registered. So **notifications** about a
+joining node are held; its **state** is not — the Cluster Nodes page, the Node
+Health tab, `node_health_state` and the memory-event list show the real state
+throughout.
+
+A node is *joining* while either holds:
+
+| Rule | Window |
+|---|---|
+| Its Kubernetes Node object is young | `metadata.creationTimestamp` + grace. Stamped by the API server, so a platform-api restart or a database restore cannot reset it; a node deleted and re-registered gets a fresh window. |
+| A `ClusterPendingPeer` for one of its addresses still exists | CR `creationTimestamp` + grace — capped, so a forgotten CR (TTL up to 24 h) cannot silence a node for a day. |
+
+Grace is **30 minutes** by default: `NODE_JOIN_ALERT_GRACE_MINUTES` on the
+platform-api Deployment (`0` disables it; capped at 1440). Held during the
+window:
+
+| Detector | Notifications held |
+|---|---|
+| `fast-down-watch` (30 s) | `admin.node_down` |
+| `node-health` reconciler (5 min) | `admin.node_event` severity transitions, `admin.node_down`, `admin.node_rebooting`, `admin.node_startup_complete` |
+| Memory events (same tick) | `admin.node_memory_event_*` — the events are still recorded |
+| Calico / Longhorn CSI watcher (5 min) | `admin.node_event` "Calico is missing", "Longhorn CSI regressed", … |
+
+**No health alert is lost.** Each detector keeps a suppressed node out of the
+state it compares against next time, so a node that is *still* unhealthy when
+its window closes is reported on the first tick after it (within ~30 s for
+NotReady, ~5 min for the rest). A node that came up healthy inside the window
+produces no alert and no "recovered" message. Suppression is logged
+(`… is joining (joined recently) — NotReady alert suppressed until 14:32 UTC`),
+and the *joined* notification below states the time alerts resume.
+
+Two deliberate edges:
+
+* **Reboot notices are events, not states, and are not sent late.** A shutdown
+  that began inside the window never produces `admin.node_rebooting` ("is
+  rebooting" twenty minutes after the fact would be false). If the node is
+  still down when the window closes it is reported by `admin.node_down`; when
+  it comes back on a new boot afterwards, `admin.node_startup_complete` fires
+  and says no shutdown notice was sent.
+* **The window holds back news only.** If the operator was already told a node
+  is unhealthy — say an established node that a fresh `ClusterPendingPeer` now
+  matches because it is being re-bootstrapped — that node keeps the normal
+  rules, so its recovery is still reported.
+
+Not covered: the SLO evaluator's per-node resource rules (`node-cpu`,
+`node-memory`, Longhorn disk usage). They need 10–15 minutes of sustained breach
+before firing and are about load, not readiness.
+
+## Node membership notifications
+
+| Category | When | Severity |
+|---|---|---|
+| `admin.node_joined` | a Node registers that the inventory has no row for — or whose row was marked removed (a re-join). Names role, every address, Kubernetes version and when health alerts resume. | info |
+| `admin.node_removed` | a node is deleted from **Cluster → Nodes**, or an inventory node is missing from a **successful, non-empty** Node list (e.g. `kubectl delete node`). | warning |
+
+Both are detected by the 60-second node-sync reconciler from the persisted
+`cluster_nodes` inventory, never from memory, so a platform-api restart
+re-announces nothing:
+
+- **First sync of an empty inventory is the baseline** — a fresh install or a
+  fresh database records every node and announces none.
+- **A failed Node list never declares a removal**, and an empty one is treated
+  as an API anomaly rather than every node leaving at once.
+- **Exactly once across replicas.** Each transition is claimed in SQL
+  (`INSERT … ON CONFLICT DO NOTHING RETURNING`, `UPDATE … SET removed_at …
+  WHERE removed_at IS NULL RETURNING`); only the claimant notifies.
+- The row of a node removed outside the panel is **kept** (shown as an orphan
+  for review) with `cluster_nodes.removed_at` set; removing it from the panel
+  afterwards does not announce the removal a second time.
+- An orphan last seen more than 24 h before it was noticed missing is recorded
+  as removed **without** a notification — that is a node that left long ago
+  (typically before this feature was deployed), not news.
+
 ## Operator surfaces
 
 - **Monitoring → Node Health tab** (`/admin/monitoring`): full per-node

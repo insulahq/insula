@@ -1651,8 +1651,26 @@ export async function deleteNode(
     }
   }
 
-  // 3) Delete from inventory.
-  await db.delete(clusterNodes).where(eq(clusterNodes.name, name));
+  // 3) Delete from inventory — and announce the removal, unless the node-sync
+  //    reconciler already did (it marks `removed_at` when it sees the node go
+  //    missing from the API first). The DELETE's RETURNING is the claim, so the
+  //    two paths can never both announce one removal (nodes/lifecycle.ts).
+  const deletedRows = await db.delete(clusterNodes)
+    .where(eq(clusterNodes.name, name))
+    .returning({
+      name: clusterNodes.name,
+      role: clusterNodes.role,
+      publicIp: clusterNodes.publicIp,
+      publicIpv6: clusterNodes.publicIpv6,
+      lastSeenAt: clusterNodes.lastSeenAt,
+      removedAt: clusterNodes.removedAt,
+    });
+  const unannounced = deletedRows.filter((r) => r.removedAt === null);
+  if (unannounced.length > 0) {
+    const { announceDepartures } = await import('./lifecycle-announce.js');
+    await announceDepartures(db, unannounced, 'admin-panel')
+      .catch((err) => console.warn(`[nodes] removal notification for ${name} failed:`, (err as Error).message));
+  }
 
   // 4) Reap the residue a node deletion leaves behind.
   //
