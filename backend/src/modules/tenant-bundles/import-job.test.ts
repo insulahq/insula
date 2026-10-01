@@ -167,9 +167,20 @@ describe('buildImportScript', () => {
     for (const u of UNITS) {
       const root = unitCaptureRoot(u);
       const backupIdx = script.indexOf(`backup '${root}'`);
-      const rmIdx = script.lastIndexOf(`rm -rf '${root}'`);
+      const clearIdx = script.lastIndexOf(`find '${root}' -mindepth 1`);
       expect(backupIdx, u.name).toBeGreaterThan(-1);
-      expect(rmIdx, u.name).toBeGreaterThan(backupIdx);
+      expect(clearIdx, u.name).toBeGreaterThan(backupIdx);
+    }
+  });
+
+  it('★ never rm -rf a capture root — it is a mount point', () => {
+    // `/source` is a subPath MOUNT, and removing a mount point fails with
+    // "Device or resource busy". That aborted the whole import before a byte
+    // was read. Contents are cleared instead, which works either way.
+    for (const u of UNITS) {
+      const root = unitCaptureRoot(u);
+      expect(script, root).not.toContain(`rm -rf '${root}'`);
+      expect(script, root).toContain(`find '${root}' -mindepth 1 -maxdepth 1 -exec rm -rf {} +`);
     }
   });
 

@@ -325,7 +325,13 @@ export function buildImportScript(input: BuildImportJobInput): string {
       // ★ Extracted AT the capture root, not at a staging path. restic records
       // the absolute path it is given, and browse/restore/export all resolve
       // content by that exact prefix — see unitCaptureRoot.
-      `rm -rf ${sq(p)} && mkdir -p ${sq(p)}`,
+      // ★ CLEAR the root's contents, never `rm -rf` the root itself: the
+      // files capture root is a subPath MOUNT POINT, and removing a mount
+      // point fails with "Device or resource busy" — which failed the whole
+      // import before a single byte was read. `find -mindepth 1` works
+      // whether the path is a mount or a plain directory.
+      `mkdir -p ${sq(p)}`,
+      `find ${sq(p)} -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true`,
       `tar -xzf "$ARCHIVE" -C ${sq(p)} --strip-components=${UNIT_STRIP_COMPONENTS} ${sq(member)} `
         + `|| { echo "ERROR: could not extract ${u.component}/${u.name}"; exit 1; }`,
       `echo "Backing up ${u.component}/${u.name}..."`,
@@ -354,8 +360,9 @@ export function buildImportScript(input: BuildImportJobInput): string {
       `FILES=$(grep -o '"total_files_processed":[0-9]\\+' /tmp/out.json | tail -n1 | sed 's/.*://')`,
       `echo "IMPORT_UNIT_DONE importId=${input.importId} component=${u.component} name=${u.name} snapshot=$SNAP sizeBytes=\${SIZE:-0} addedBytes=\${ADDED:-0} fileCount=\${FILES:-0}"`,
       // Free the space before the next unit — this is what keeps peak staging
-      // falling rather than holding the whole bundle to the end.
-      `rm -rf ${sq(p)}`,
+      // falling rather than holding the whole bundle to the end. Contents
+      // only, for the same mount-point reason as above.
+      `find ${sq(p)} -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true`,
     );
   }
 

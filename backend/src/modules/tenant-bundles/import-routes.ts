@@ -33,6 +33,7 @@ import { and, desc, isNotNull } from 'drizzle-orm';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { ensureFileManagerReady, fileManagerRequest } from '../file-manager/service.js';
 import { deriveFmSecret } from '../file-manager/internal-secret.js';
+import { recordFileManagerAccess } from '../file-manager/idle-cleanup.js';
 import { readArchiveMeta, ArchiveMetaError } from './import-archive-meta.js';
 import { buildImportPreflight, type ImportScope } from './import-preflight.js';
 import { runBundleImport, buildImportLabel, type ImportRunnerDeps } from './import-orchestrator.js';
@@ -72,6 +73,12 @@ async function openUploadedArchive(
   relPath: string,
 ): Promise<Readable> {
   const k8sTenants = createK8sClients(kubeconfigPathOf(app));
+  // ★ Record the access the way every file-manager ROUTE does. Without it the
+  // idle reaper counts the namespace as untouched and scales the sidecar to
+  // zero mid-import — observed on DEV, where repeated attempts raced a
+  // `Scaling down idle file-manager` every ~12 minutes and failed with
+  // ECONNREFUSED against a Service with no endpoints.
+  recordFileManagerAccess(namespace, k8sTenants);
   let directUrl: string | null = null;
   try {
     ({ directUrl } = await ensureFileManagerReady(k8sTenants, namespace, getFileManagerImage(app)));
@@ -103,7 +110,7 @@ async function openUploadedArchive(
   const headers: Record<string, string> = master
     ? { 'X-Platform-Internal': deriveFmSecret(master, namespace) }
     : {};
-  return await new Promise<Readable>((resolve, reject) => {
+  const attempt = (): Promise<Readable> => new Promise<Readable>((resolve, reject) => {
     const req = http.get(url, { headers }, (res) => {
       const status = res.statusCode ?? 500;
       if (status === 404) {
@@ -122,6 +129,18 @@ async function openUploadedArchive(
     req.on('error', (err) => reject(new ApiError('FILE_ERROR',
       `Could not read the uploaded archive: ${err.message}`, 502)));
   });
+
+  try {
+    return await attempt();
+  } catch (err) {
+    // The sidecar can vanish between the readiness probe and this GET (the
+    // idle reaper scales it to zero on its own schedule). One re-ensure +
+    // retry turns that into a slow request rather than a failed import.
+    if (!(err instanceof ApiError) || !String(err.message).includes('ECONNREFUSED')) throw err;
+    app.log.warn({ namespace }, 'bundle-import: file manager went away mid-read — re-ensuring and retrying once');
+    await ensureFileManagerReady(k8sTenants, namespace, getFileManagerImage(app));
+    return await attempt();
+  }
 }
 
 /** file-manager gateway used by the reaper. */
