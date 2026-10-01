@@ -214,6 +214,10 @@ describe('runBundleImport — success path', () => {
     const comps = inserts.find((i) => i.table.includes('backup_components'))!.rows as Array<Record<string, unknown>>;
     expect(comps).toHaveLength(2);
     expect(comps[0]!.sha256).toBe('a'.repeat(64));
+    // the row name matches CAPTURE's (`archive.tar.gz`), not the archive
+    // member name (`archive`), so an imported bundle's rows read identically
+    expect(comps[0]!.artifactName).toBe('archive.tar.gz');
+    expect(comps[1]!.artifactName).toBe('a@example.test');
 
     // …and only then is it flipped to completed
     expect(updates.at(-1)).toMatchObject({ status: 'completed', sizeBytes: 120 });

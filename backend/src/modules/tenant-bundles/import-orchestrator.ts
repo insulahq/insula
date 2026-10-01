@@ -380,7 +380,14 @@ export async function runBundleImport(
         id: randomUUID(),
         backupJobId: bundleId,
         component: u.component as 'files' | 'mailboxes',
-        artifactName: u.name,
+        // ★ The artifact NAME matches what capture writes, not the archive's
+        // member name. The export names the files member `archive` while
+        // capture records the row as `archive.tar.gz`; every consumer keys on
+        // `component`, not this column, so the difference is cosmetic — but
+        // "indistinguishable from a captured bundle" should hold when an
+        // operator compares the rows too. Mailbox rows are already the
+        // address on both sides.
+        artifactName: u.component === 'files' ? 'archive.tar.gz' : u.name,
         status: 'completed' as const,
         sizeBytes: u.sizeBytes,
         // For a restic component this column holds the SNAPSHOT ID — every
