@@ -744,9 +744,8 @@ RELEASE_TAG=""
 
 usage() {
   cat <<'HELPTEXT'
-Usage:
-  bootstrap.sh --domain <FQDN> [OPTIONS]                       CREATE a new cluster
-  bootstrap.sh --join-as <server|worker> --server <IP> --token <TOKEN> [NODE OPTIONS]
+Usage: bootstrap.sh --domain <FQDN> [OPTIONS]                  CREATE a new cluster
+       bootstrap.sh --join-as <server|worker> --server <IP> --token <TOKEN> [NODE OPTIONS]
                                                                JOIN an existing one
 
 Server provisioning and platform installation for insula.

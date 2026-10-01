@@ -143,12 +143,14 @@ skipped=$(
 contains "--skip-smoke leaves no verdict"  "VERDICT=[]"   "$skipped"
 contains "--skip-smoke raises no warning"  "WARNINGS=0"   "$skipped"
 
-echo "ordering: the report is the last thing main() prints:"
-# Structural, not runtime — main() cannot be executed here. Assert the call order
-# inside the server branch: smoke BEFORE print_summary.
+echo "ordering: the report is the last thing a CREATE run prints:"
+# Structural, not runtime — the install flow cannot be executed here. Assert the
+# call order inside run_create_cluster (the create flow; joins never smoke or
+# print this report): smoke BEFORE print_summary, whatever the indentation.
 BS="$REPO_ROOT/scripts/bootstrap.sh"
-smoke_line=$(grep -n '^      run_post_install_smoke$' "$BS" | head -1 | cut -d: -f1)
-summ_line=$(grep -n '^    print_summary$' "$BS" | head -1 | cut -d: -f1)
+create_body="$(sed -n '/^run_create_cluster() {/,/^}/p' "$BS")"
+smoke_line=$(grep -n -E '^[[:space:]]+run_post_install_smoke$' <<<"$create_body" | head -1 | cut -d: -f1)
+summ_line=$(grep -n -E '^[[:space:]]+print_summary$' <<<"$create_body" | head -1 | cut -d: -f1)
 if [[ -n "$smoke_line" && -n "$summ_line" ]] && (( smoke_line < summ_line )); then
   ok "run_post_install_smoke runs BEFORE print_summary (line $smoke_line < $summ_line)"
 else
