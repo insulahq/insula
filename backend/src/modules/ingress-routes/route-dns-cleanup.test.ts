@@ -104,4 +104,18 @@ describe('refreshRouteDnsForDomain', () => {
     expect(result).toMatchObject({ hostnames: 1, removed: 3, failures: [] });
   });
 
+  it("refreshes a route's www companion too — the name that usually serves the site", async () => {
+    const { db } = fakeDb({
+      settings: { ingress_default_ipv4: '203.0.113.1,203.0.113.2' },
+      routes: [{ hostname: 'example.test', wwwRedirect: 'add-www' } as never],
+    });
+
+    const result = await refreshRouteDnsForDomain(db, 'd1');
+
+    expect(provisions).toEqual([
+      'A @ 203.0.113.1', 'A @ 203.0.113.2',
+      'A www 203.0.113.1', 'A www 203.0.113.2',
+    ]);
+    expect(result).toMatchObject({ hostnames: 2, failures: [] });
+  });
 });

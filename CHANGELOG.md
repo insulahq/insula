@@ -105,6 +105,9 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   "Refresh route DNS" remove only the addresses they replace, and a refresh no longer creates a
   duplicate of an apex record written as `@`, empty, or the bare domain name. On Cloudflare,
   Hetzner and ClouDNS, deleting a record works again (it was refused by the provider).
+- **"Refresh route DNS" also updates a route's `www` companion.** A route with *Add www* /
+  *Remove www* has address records on its companion name too; the refresh left those on the old
+  ingress addresses, so `www.<domain>` did not follow a new or removed ingress node.
 
 ### Security
 

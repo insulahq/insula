@@ -976,9 +976,16 @@ export async function refreshRouteDnsForDomain(
   }
 
   const routes = await db
-    .select({ hostname: ingressRoutes.hostname })
+    .select({ hostname: ingressRoutes.hostname, wwwRedirect: ingressRoutes.wwwRedirect })
     .from(ingressRoutes)
     .where(eq(ingressRoutes.domainId, domainId));
+  // A route's www companion (add-www / remove-www) carries its own address
+  // records. Refreshing only the route's hostname left `www.<apex>` — usually
+  // the name that actually serves the site — on the old ingress addresses.
+  const hostnames = Array.from(new Set(routes.flatMap((r) => {
+    const companion = getWwwCompanionHostname(r.hostname, r.wwwRedirect);
+    return companion ? [r.hostname, companion] : [r.hostname];
+  })));
 
   const failures: Array<{ hostname: string; detail: string }> = [];
   let created = 0;
@@ -992,13 +999,13 @@ export async function refreshRouteDnsForDomain(
     ...parseIngressIps(settings.ingressDefaultIpv6).map((ip) => `AAAA|${ip}`),
   ]);
 
-  for (const route of routes) {
+  for (const hostname of hostnames) {
     // Drop the rows we own for this hostname first, so a record pointing at a
     // decommissioned node actually disappears instead of accumulating
     // alongside the new set.
-    const recordName = isApexHostname(route.hostname, domain.domainName)
+    const recordName = isApexHostname(hostname, domain.domainName)
       ? '@'
-      : relativeRecordName(route.hostname, domain.domainName);
+      : relativeRecordName(hostname, domain.domainName);
 
     try {
       const stale = await deleteManagedRecords(db, 'ingress-route', domainId, recordName);
@@ -1016,15 +1023,15 @@ export async function refreshRouteDnsForDomain(
         }, domainId);
       }
       const before = created;
-      await autoProvisionRouteDns(db, domainId, route.hostname);
+      await autoProvisionRouteDns(db, domainId, hostname);
       created = before + 1;
     } catch (err) {
       failures.push({
-        hostname: route.hostname,
+        hostname,
         detail: err instanceof Error ? err.message : String(err),
       });
     }
   }
 
-  return { hostnames: routes.length, created, removed, failures };
+  return { hostnames: hostnames.length, created, removed, failures };
 }
