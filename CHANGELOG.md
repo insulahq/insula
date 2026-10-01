@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.10.2] - 2026-10-01
+
 ### Fixed
 
 - **Mail snapshots no longer prune the backup repository on every run.** The
