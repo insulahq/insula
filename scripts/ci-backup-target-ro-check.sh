@@ -38,6 +38,7 @@ REGISTERED_SITES=(
   "backend/src/modules/backup-config/speedtest.ts::requireWritableTarget"
   "backend/src/modules/backup-config/service.ts::TargetFrozenError"
   "backend/src/modules/tenant-bundles/orchestrator.ts::requireWritableTarget"
+  "backend/src/modules/tenant-bundles/import-orchestrator.ts::requireWritableTarget"
   "backend/src/modules/tenant-bundles/retention.ts::requireWritableTarget"
   "backend/src/modules/tenant-bundles/routes.ts::requireWritableTarget"
   "backend/src/modules/storage-lifecycle/service.ts::requireWritableTarget"

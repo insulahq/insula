@@ -138,6 +138,12 @@ export async function ensureStalwartPrincipals(
       autoReplyBody: mailboxesTable.autoReplyBody,
     })
     .from(mailboxesTable)
+    // Address list only. Callers MUST have already established that every
+    // address's domain belongs to the target tenant
+    // (assertMailboxDomainsOwnedByTenant) — this query cannot do it, because the
+    // executor has no tenantId in scope, and a `fullAddress` lookup is global by
+    // nature. Defence in depth lives at the caller; this comment exists so the
+    // absence of a tenant filter here reads as delegated rather than forgotten.
     .where(inArray(mailboxesTable.fullAddress, addresses as string[]));
   const dbByAddress = new Map<string, typeof dbRows[number]>();
   for (const row of dbRows) {

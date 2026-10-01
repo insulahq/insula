@@ -69,6 +69,39 @@ This is the whole bundle. The **GDPR** button described below is a different
 thing: a smaller, encrypted export of personal data, and it only appears on
 bundles that were created with one.
 
+## Import a bundle you have
+
+**Backups → Import bundle.**
+
+If you hold a bundle archive — one you downloaded from here, or one your
+previous host gave you in this format — you can put it back yourself.
+
+Pick the file and the dialog uploads it, reads it, and then shows you exactly
+what it contains before importing anything: which files and mailboxes it will
+restore into your account, your remaining storage, and anything it cannot
+bring in. Only then does it ask you to confirm.
+
+The result is a normal bundle in your list, labelled **`manual-import`**. You
+can browse it, restore from it, and download it again like any other.
+
+If your archive was downloaded with a passphrase, you will be asked for it.
+
+### What you can and cannot import
+
+You can import your **files** and your **mailboxes**.
+
+You cannot import the `config` or `secrets` parts of a bundle. Those hold
+platform configuration and TLS private keys, and only an administrator can
+restore them — ask your provider if you need them. The dialog lists them as
+skipped rather than quietly leaving them out.
+
+Mailboxes can only be imported for domains already added and verified on your
+account. If a bundle contains mail for a domain you have not set up here, add
+that domain first.
+
+If an import fails, nothing is changed and your uploaded file is kept, so you
+can simply try again without uploading it a second time.
+
 ## Restore from a bundle (the restore cart)
 
 Restoring works like an online shopping cart: you browse a bundle, add the

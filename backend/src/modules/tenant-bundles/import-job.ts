@@ -1,0 +1,597 @@
+/**
+ * Import Job — the mirror of `components/files.ts`'s capture Job (ADR-063).
+ *
+ * Capture runs `restic backup /source` natively in the tenant namespace so each
+ * file becomes its own restic node, which is what makes `restic ls` /
+ * `restore --include` work. Import has to produce snapshots of the SAME shape or
+ * a re-imported bundle is not restorable the way a captured one is — so it runs
+ * the same command against a staged tree, in the same namespace, with the same
+ * creds Secret.
+ *
+ * ★ Why re-ingest at all rather than re-register the snapshot ids from
+ * `meta.json`: the per-tenant restic password is `HKDF(key,
+ * "restic-tenant-<id>")`, derived from THIS cluster's PLATFORM_ENCRYPTION_KEY.
+ * An uploaded bundle's ids name snapshots in a repo this cluster cannot open.
+ * `dr-recover/recreate.ts` re-registers because its bundle is already in this
+ * repo; an upload never is. See ADR-063.
+ *
+ * SHAPE OF THE RUN
+ *   1. Export RESTIC_PASSWORD / AWS_* from the mounted creds Secret (identical
+ *      to capture).
+ *   2. `tar -xzf <archive on the mounted tenant PVC> -C /stage`.
+ *
+ *      ★ The archive arrives through the EXISTING chunked upload path —
+ *      `POST /tenants/:id/files/upload-raw?path=…&offset=…&total=…`, the same
+ *      one the file browser uses. That gives parallel chunks, resumable
+ *      offsets, per-chunk progress and abort for free, and it is already carved
+ *      out of the WAF. It lands under `.insula-imports/` in the tenant's own
+ *      file space, so the Job reads it by mounting the tenant PVC exactly as
+ *      the capture Job mounts `/source` — no second transfer, no new receiver,
+ *      no HMAC download rail.
+ *   3. Assert every unit the caller promised actually landed. A truncated or
+ *      malformed archive otherwise leaves `tar` exiting 0 on a short read;
+ *      asserting the units exist turns that into a hard failure.
+ *   4. Per unit: `restic backup <unit dir> --json`, parse the snapshot id,
+ *      print a machine-readable line, then DELETE the staged unit.
+ *
+ * STAGING SIZE — see ADR-063 D2. Peak is the extracted total at the end of step
+ * 3, falling as step 4 deletes each unit. `emptyDir.sizeLimit` bounds it: the
+ * kubelet evicts this Job rather than filling the node, which is the safe
+ * failure for a manifest that under-declared.
+ *
+ * REAPING — every artifact has an owner:
+ *   - staged unit        deleted after its own `restic backup`
+ *   - staging dir        emptyDir, gone with the pod
+ *   - the Job            `ttlSecondsAfterFinished`
+ *   - partial snapshots  every one is tagged `import=<importId>`, so a failed
+ *                        run is prunable by tag by the caller
+ *   - uploaded archive   under `.insula-imports/` in the tenant's file space.
+ *                        The caller deletes it on success AND on failure, and a
+ *                        sweeper removes abandoned ones — an upload that is
+ *                        never imported would otherwise sit in the tenant's
+ *                        quota forever.
+ */
+import { resolvePlatformImage } from '../../shared/platform-images.js';
+import { PBKDF2_ITERATIONS } from './data-export.js';
+import { FILES_CAPTURE_ROOT } from './components/files.js';
+import { MAILBOX_CAPTURE_ROOT, addressDirName } from './components/mailboxes-restic.js';
+
+/** Where the archive is unpacked inside the Job. */
+export const IMPORT_STAGE_ROOT = '/stage';
+
+/** Same mount point the capture Job uses, so the creds Secret is interchangeable. */
+export const IMPORT_CREDS_MOUNT_PATH = '/var/run/restic-creds';
+
+/**
+ * Tenant file space, mounted READ-ONLY.
+ *
+ * ★ Deliberately NOT `/source`. `/source` is the files component's CAPTURE
+ * root — the absolute path recorded inside every files snapshot — and the
+ * import has to reproduce it exactly (see `unitCaptureRoot`), so the uploaded
+ * archive is read from somewhere else entirely.
+ */
+export const IMPORT_UPLOAD_MOUNT = '/upload';
+
+/**
+ * Directory in the tenant's file space that uploaded archives land in.
+ *
+ * Dot-prefixed so the file browser's normal listing does not put it in a
+ * tenant's face, and fixed so the reaper has exactly one place to sweep.
+ */
+export const IMPORT_UPLOAD_DIR = '.insula-imports';
+
+/** restic's own cache/scratch. Matches the capture Job. */
+const SCRATCH_SIZE = '2Gi';
+
+const TOOLS_IMAGE_DEFAULT = resolvePlatformImage('tenant-backup-tools');
+
+/** A single restic snapshot's worth of data inside the archive. */
+export interface ImportUnit {
+  readonly component: 'files' | 'mailboxes';
+  /**
+   * Entry name under `components/<component>/` in the archive — `archive` for
+   * files, or the mailbox address (ADR-061 gives each mailbox its own snapshot).
+   */
+  readonly name: string;
+  /** Declared size from meta.json. Advisory: used for sizing and progress only. */
+  readonly sizeBytes: number;
+}
+
+/**
+ * A small component (`config` / `secrets`) the Job pushes straight to the
+ * object store through platform-api's existing internal upload endpoint —
+ * the same door a capture Job uses.
+ *
+ * The HMAC token is NOT inlined into the pod spec: it arrives as a key in the
+ * mounted creds Secret. A token in `command` would be readable by anyone with
+ * pod-read in the tenant namespace.
+ */
+export interface ImportObjectUpload {
+  readonly component: 'config' | 'secrets';
+  /** Canonical artifact filename, e.g. `db-rows.json.gz`. */
+  readonly name: string;
+  /** Key under the creds mount holding the HMAC upload token. */
+  readonly tokenKey: string;
+}
+
+export interface BuildImportJobInput {
+  readonly jobName: string;
+  readonly namespace: string;
+  readonly tenantId: string;
+  readonly importId: string;
+  /** Bundle row the imported snapshots will be registered against. */
+  readonly bundleId: string;
+  /** PVC holding the tenant's file space — the uploaded archive lives on it. */
+  readonly pvcName: string;
+  /**
+   * Archive path RELATIVE to the tenant file root, e.g.
+   * `.insula-imports/<importId>.tar.gz`. Validated by `assertSafeArchivePath`.
+   */
+  readonly archiveRelPath: string;
+  readonly units: ReadonlyArray<ImportUnit>;
+  readonly credsSecretName: string;
+  /** e.g. '12Gi' — derived from meta, clamped by the caller. */
+  readonly stageSizeLimit: string;
+  readonly image?: string;
+  readonly activeDeadlineSeconds?: number;
+  readonly pinToNode?: string;
+  /** Extra restic tags. `import=<importId>` is always added. */
+  readonly tags?: ReadonlyArray<string>;
+  /**
+   * Small components pushed to the object store. Admin imports carry
+   * `config`/`secrets`; a tenant self-import carries none (ADR-063 D4).
+   */
+  readonly objectArtifacts?: ReadonlyArray<ImportObjectUpload>;
+  /** e.g. `http://platform-api.platform.svc:3000`. Required iff objectArtifacts is non-empty. */
+  readonly internalApiBase?: string;
+  /**
+   * True when the uploaded archive is the `Salted__` AES-256-CBC envelope the
+   * export produces for an encrypted download.
+   *
+   * ★ The Job cannot `tar` those bytes. Without decryption every unit reads as
+   * missing and the import refuses a perfectly good bundle — which is exactly
+   * what the first real round-trip did, on an archive the platform's own
+   * export had just written.
+   */
+  readonly archiveEncrypted?: boolean;
+  /** Key in the creds mount holding the archive passphrase. Required iff encrypted. */
+  readonly passphraseKey?: string;
+}
+
+/** Creds-Secret key holding the uploaded archive's passphrase. */
+export const ARCHIVE_PASSPHRASE_KEY = 'archive_passphrase';
+
+/** `components/<component>/<name>` — where a unit lands under the stage root. */
+export function unitStagePath(u: ImportUnit): string {
+  return `${IMPORT_STAGE_ROOT}/components/${u.component}/${u.name}`;
+}
+
+/**
+ * The absolute path this unit's data must occupy before `restic backup`.
+ *
+ * ★ THIS IS THE WHOLE POINT. restic records the absolute path it was given,
+ * and every consumer resolves content by that path:
+ *   - browse strips `FILES_CAPTURE_ROOT` (`/source`) — `browse-files-restic.ts`
+ *   - files restore includes `${FILES_CAPTURE_ROOT}/<p>`
+ *   - mailbox restore reads `${MAILBOX_CAPTURE_ROOT}/<addressDirName>`
+ *   - the export strips exactly these prefixes to build the archive
+ *
+ * An import that snapshots its own staging path produces a snapshot nothing
+ * can read: browse returns an EMPTY tree and a restore restores nothing while
+ * reporting success. Verified on DEV — the first successful import was
+ * unbrowsable for precisely this reason.
+ */
+export function unitCaptureRoot(u: ImportUnit): string {
+  if (u.component === 'files') return FILES_CAPTURE_ROOT;
+  // Pre-ADR-061 whole-tenant blob: a FILE, not an address directory.
+  if (!u.name.includes('@')) return `${MAILBOX_CAPTURE_ROOT}/${u.name}`;
+  return `${MAILBOX_CAPTURE_ROOT}/${addressDirName(u.name)}`;
+}
+
+/**
+ * How many leading path components to strip so the archive's entries land at
+ * the capture root. The export writes `components/<component>/<name>/<rel>`,
+ * where `<rel>` is already relative to that root — so exactly three.
+ */
+export const UNIT_STRIP_COMPONENTS = 3;
+
+/**
+ * Shell-quote for single-quoted POSIX context.
+ *
+ * Unit names include mailbox addresses, which come from an UPLOADED archive —
+ * i.e. from whoever produced the file. They reach a shell command line, so they
+ * are quoted here and additionally validated by `assertSafeUnitName` before any
+ * Job is built. Belt and braces: the validator is the control, this is the
+ * containment.
+ */
+function sq(v: string): string {
+  return `'${String(v).replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * Reject a unit name that could escape its directory or the shell.
+ *
+ * Mailbox addresses and `archive` are the only legitimate values. Anything with
+ * a slash, a `..`, a NUL or a shell metacharacter is refused rather than
+ * escaped — an archive containing one is malformed or hostile, and neither is
+ * worth importing.
+ */
+export function assertSafeUnitName(name: string): void {
+  if (!name || name.length > 320) {
+    throw new Error(`import-job: unit name has an implausible length: ${JSON.stringify(name.slice(0, 40))}`);
+  }
+  if (!/^[A-Za-z0-9._@+-]+$/.test(name)) {
+    throw new Error(`import-job: refusing unit name with unexpected characters: ${JSON.stringify(name.slice(0, 40))}`);
+  }
+  if (name === '.' || name === '..' || name.includes('..')) {
+    throw new Error(`import-job: refusing traversal-shaped unit name: ${JSON.stringify(name)}`);
+  }
+}
+
+/**
+ * Reject an archive path that could escape the upload directory.
+ *
+ * The path reaches a shell command line and a filesystem read inside a pod that
+ * has the tenant's whole file space mounted. It is constructed server-side
+ * today, but a traversal here would let a caller read any file on that PVC into
+ * a restic snapshot, so it is validated rather than trusted.
+ */
+export function assertSafeArchivePath(relPath: string): void {
+  if (!relPath.startsWith(`${IMPORT_UPLOAD_DIR}/`)) {
+    throw new Error(`import-job: archive path must live under ${IMPORT_UPLOAD_DIR}/`);
+  }
+  const rest = relPath.slice(IMPORT_UPLOAD_DIR.length + 1);
+  if (!/^[A-Za-z0-9._-]+$/.test(rest) || rest.includes('..')) {
+    throw new Error(`import-job: refusing archive path ${JSON.stringify(relPath)}`);
+  }
+}
+
+/**
+ * Build the POSIX-sh script. Kept POSIX (not bash) for the same reason the
+ * capture script is: the image is debian today and a future swap must not
+ * silently change semantics.
+ */
+/**
+ * Canonical artifact filenames only — the same shape the internal upload route
+ * enforces server-side. Checked here too so a malformed name fails at
+ * build time rather than as a 400 from inside a running Job.
+ */
+/**
+ * Creds-Secret key holding the restic repo URI for a component.
+ *
+ * One key per component because `buildResticRepoUri` is component-scoped:
+ * the `per-component` layout gives `files` and `mailboxes` separate
+ * repositories.
+ */
+export function repoUriKey(component: 'files' | 'mailboxes'): string {
+  return `repo_uri_${component}`;
+}
+
+export function assertSafeArtifactName(name: string): void {
+  if (!/^[A-Za-z0-9._@-]+$/.test(name) || name === '.' || name === '..') {
+    throw new Error(`import artifact name contains unexpected characters: ${JSON.stringify(name)}`);
+  }
+}
+
+export function buildImportScript(input: BuildImportJobInput): string {
+  for (const u of input.units) assertSafeUnitName(u.name);
+  assertSafeArchivePath(input.archiveRelPath);
+  const objects = input.objectArtifacts ?? [];
+  for (const o of objects) {
+    assertSafeArtifactName(o.name);
+    assertSafeArtifactName(o.tokenKey);
+  }
+  if (objects.length > 0 && !input.internalApiBase) {
+    throw new Error('buildImportScript: internalApiBase is required when objectArtifacts are present');
+  }
+  if (input.archiveEncrypted && !input.passphraseKey) {
+    throw new Error('buildImportScript: passphraseKey is required for an encrypted archive');
+  }
+  if (input.passphraseKey) assertSafeArtifactName(input.passphraseKey);
+
+  const tagArgs = [`import=${input.importId}`, ...(input.tags ?? [])]
+    .map((t) => `--tag ${sq(t)}`)
+    .join(' ');
+
+  const lines: string[] = [
+    'set -e',
+    `export RESTIC_PASSWORD="$(cat ${IMPORT_CREDS_MOUNT_PATH}/restic_password)"`,
+    `[ -n "$RESTIC_PASSWORD" ] || { echo "ERROR: restic password missing"; exit 1; }`,
+    `if [ -f ${IMPORT_CREDS_MOUNT_PATH}/aws_access_key_id ]; then export AWS_ACCESS_KEY_ID="$(cat ${IMPORT_CREDS_MOUNT_PATH}/aws_access_key_id)"; fi`,
+    `if [ -f ${IMPORT_CREDS_MOUNT_PATH}/aws_secret_access_key ]; then export AWS_SECRET_ACCESS_KEY="$(cat ${IMPORT_CREDS_MOUNT_PATH}/aws_secret_access_key)"; fi`,
+    `if [ -f ${IMPORT_CREDS_MOUNT_PATH}/aws_region ]; then export AWS_DEFAULT_REGION="$(cat ${IMPORT_CREDS_MOUNT_PATH}/aws_region)"; fi`,
+    `mkdir -p ${IMPORT_STAGE_ROOT}`,
+    `ARCHIVE=${sq(`${IMPORT_UPLOAD_MOUNT}/${input.archiveRelPath}`)}`,
+    `[ -f "$ARCHIVE" ] || { echo "ERROR: uploaded archive not found at $ARCHIVE"; exit 1; }`,
+    // Read straight off the mounted PVC — the chunked upload already put it
+    // there, so there is no second transfer of the bulk.
+    // ★ One reader for every pass over the archive. The encrypted form is the
+    // OpenSSL `Salted__` envelope the export writes, so the parameters mirror
+    // `streamEncryptedExport` exactly: aes-256-cbc, PBKDF2-SHA256, 100k iters.
+    // `-pass file:` keeps the passphrase off argv, like every other secret here.
+    input.archiveEncrypted
+      ? `read_archive() { openssl enc -d -aes-256-cbc -pbkdf2 -iter ${PBKDF2_ITERATIONS} -md sha256 `
+        + `-pass file:${IMPORT_CREDS_MOUNT_PATH}/${input.passphraseKey} -in "$ARCHIVE"; }`
+      : 'read_archive() { cat "$ARCHIVE"; }',
+    'echo "Listing the uploaded archive..."',
+    // A LISTING, not a full extraction. Each unit is then extracted straight
+    // into its own capture root, backed up, and deleted — so peak staging is
+    // the largest single unit rather than the whole bundle. The listing exists
+    // so a truncated or malformed archive is caught BEFORE the first restic
+    // call: /bin/sh is dash, there is no pipefail, and a short read can leave
+    // tar exiting 0.
+    // `./`-prefixed members are normalised away so the presence checks below
+    // can compare exact prefixes.
+    `read_archive | tar -tzf - | sed 's|^[.]/||' > ${IMPORT_STAGE_ROOT}/manifest.txt 2>/dev/null || true`,
+    // /bin/sh is dash — no pipefail — so a failed decrypt leaves tar reading
+    // garbage and the pipeline can still exit 0 with an EMPTY manifest. The
+    // emptiness is the reliable signal, and the wrong passphrase is by far
+    // the likeliest cause, so the message says so.
+    `[ -s ${IMPORT_STAGE_ROOT}/manifest.txt ] || { echo "ERROR: could not read the uploaded archive`
+      + `${input.archiveEncrypted ? ' — wrong passphrase, or the upload is corrupt' : ' — the upload may be corrupt or truncated'}"; exit 1; }`,
+  ];
+
+  // A truncated or malformed archive can leave tar exiting 0 on a short read,
+  // so the reliable completeness signal is that every promised unit is present.
+  // Assert before touching the repo.
+  for (const u of input.units) {
+    const member = `components/${u.component}/${u.name}`;
+    lines.push(
+      // ★ awk's `index($0, m) == 1`, not grep. A unit name is a mailbox
+      // ADDRESS, so it contains regex metacharacters (`.`, `+`) — the first
+      // version of this check anchored with `^\./\?…`, which makes the SLASH
+      // optional rather than the `./` pair and therefore demanded a leading
+      // dot that no archive has. Every promised unit read as missing and the
+      // import refused itself. Exact prefix comparison has no escaping to get
+      // wrong.
+      `awk -v m=${sq(member)} 'index($0, m) == 1 { found = 1; exit } END { exit !found }' `
+      + `${IMPORT_STAGE_ROOT}/manifest.txt `
+      + `|| { echo "ERROR: archive is missing ${u.component}/${u.name} — upload truncated or bundle malformed"; exit 1; }`,
+    );
+  }
+  lines.push(`echo "IMPORT_EXTRACTED units=${input.units.length}"`);
+
+  for (const u of input.units) {
+    const p = unitCaptureRoot(u);
+    const member = `components/${u.component}/${u.name}`;
+    lines.push(
+      `echo "Staging ${u.component}/${u.name} at ${p}..."`,
+      // ★ Extracted AT the capture root, not at a staging path. restic records
+      // the absolute path it is given, and browse/restore/export all resolve
+      // content by that exact prefix — see unitCaptureRoot.
+      // ★ CLEAR the root's contents, never `rm -rf` the root itself: the
+      // files capture root is a subPath MOUNT POINT, and removing a mount
+      // point fails with "Device or resource busy" — which failed the whole
+      // import before a single byte was read. `find -mindepth 1` works
+      // whether the path is a mount or a plain directory.
+      `mkdir -p ${sq(p)}`,
+      `find ${sq(p)} -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true`,
+      `read_archive | tar -xzf - -C ${sq(p)} --strip-components=${UNIT_STRIP_COMPONENTS} ${sq(member)} `
+        + `|| { echo "ERROR: could not extract ${u.component}/${u.name}"; exit 1; }`,
+      `echo "Backing up ${u.component}/${u.name}..."`,
+      // Per COMPONENT, not one repo for the whole import: under the
+      // `per-component` layout `files` and `mailboxes` are DIFFERENT
+      // repositories, and writing both into one would put the mailbox
+      // snapshots somewhere no restore path ever looks. Under `per-tenant`
+      // both keys hold the same URI, so this is correct for both layouts.
+      `REPO="$(cat ${IMPORT_CREDS_MOUNT_PATH}/${repoUriKey(u.component)})"`,
+      `[ -n "$REPO" ] || { echo "ERROR: repo uri missing for ${u.component}"; exit 1; }`,
+      'set +e',
+      `restic -r "$REPO" backup ${sq(p)} ${tagArgs} --tag ${sq(`component=${u.component}`)} --compression auto --pack-size 64 --option s3.connections=5 --json > /tmp/out.json 2>/tmp/err`,
+      'RC=$?',
+      'set -e',
+      // Same acceptance as capture: 3 means "some files unreadable" but a valid
+      // snapshot was still written. Anything else is fatal.
+      '[ "$RC" = "3" ] && echo "WARN: restic backup completed with partial read errors (exit 3)"',
+      '{ [ "$RC" = "0" ] || [ "$RC" = "3" ]; } || { echo "ERROR: restic backup failed (exit $RC)"; tail -n 20 /tmp/err 2>/dev/null || true; exit 1; }',
+      `SNAP=$(grep -o '"snapshot_id":"[0-9a-f]\\{64\\}"' /tmp/out.json | tail -n1 | sed 's/.*":"//;s/"$//')`,
+      '[ -n "$SNAP" ] || { echo "ERROR: no snapshot_id in restic output"; tail -n 40 /tmp/out.json; exit 1; }',
+      `SIZE=$(grep -o '"total_bytes_processed":[0-9]\\+' /tmp/out.json | tail -n1 | sed 's/.*://')`,
+      `ADDED=$(grep -o '"data_added_packed":[0-9]\\+' /tmp/out.json | tail -n1 | sed 's/.*://')`,
+      `[ -n "$ADDED" ] || ADDED=$(grep -o '"data_added":[0-9]\\+' /tmp/out.json | tail -n1 | sed 's/.*://')`,
+      // meta.components.files.fileCount is a REQUIRED field on the bundle
+      // manifest, so it must come out of the run rather than be guessed.
+      `FILES=$(grep -o '"total_files_processed":[0-9]\\+' /tmp/out.json | tail -n1 | sed 's/.*://')`,
+      `echo "IMPORT_UNIT_DONE importId=${input.importId} component=${u.component} name=${u.name} snapshot=$SNAP sizeBytes=\${SIZE:-0} addedBytes=\${ADDED:-0} fileCount=\${FILES:-0}"`,
+      // Free the space before the next unit — this is what keeps peak staging
+      // falling rather than holding the whole bundle to the end. Contents
+      // only, for the same mount-point reason as above.
+      `find ${sq(p)} -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true`,
+    );
+  }
+
+  // Object artifacts go LAST, after every restic unit has succeeded. An import
+  // that dies early therefore leaves nothing in the object store to orphan —
+  // and the orchestrator drops the reserved bundle on failure regardless.
+  for (const o of objects) {
+    const artPath = `${IMPORT_STAGE_ROOT}/obj/${o.name}`;
+    const url = `${input.internalApiBase}/api/v1/internal/bundles/${input.bundleId}`
+      + `/components/${o.component}/${o.name}`;
+    lines.push(
+      `echo "Uploading ${o.component}/${o.name}..."`,
+      `mkdir -p ${IMPORT_STAGE_ROOT}/obj`,
+      `read_archive | tar -xzf - -C ${IMPORT_STAGE_ROOT}/obj --strip-components=2 `
+        + `${sq(`components/${o.component}/${o.name}`)} `
+        + `|| { echo "ERROR: archive is missing ${o.component}/${o.name}"; exit 1; }`,
+      `ART=${sq(artPath)}`,
+      `[ -f "$ART" ] || { echo "ERROR: archive is missing ${o.component}/${o.name}"; exit 1; }`,
+      `TOKEN="$(cat ${IMPORT_CREDS_MOUNT_PATH}/${o.tokenKey})"`,
+      `[ -n "$TOKEN" ] || { echo "ERROR: upload token missing for ${o.component}"; exit 1; }`,
+      // ★ The token goes into a curl CONFIG FILE, never onto the command
+      // line. `?token=$TOKEN` is expanded by the shell before exec, so the
+      // real token would sit in /proc/<pid>/cmdline and `ps` for the life of
+      // the upload (up to 600s). Every other secret in these Jobs is already
+      // read from the creds mount into a variable precisely to stay off
+      // argv; this holds the upload token to the same standard.
+      'umask 077',
+      `printf 'url = "%s?token=%s"\\n' ${sq(url)} "$TOKEN" > /tmp/curlrc`,
+      // --upload-file already implies PUT, which is what the internal route
+      // registers. -f so an HTTP error is a non-zero exit rather than a body.
+      `curl -sS -f --retry 3 --retry-delay 2 --max-time 600 --config /tmp/curlrc --upload-file "$ART" > /dev/null `
+        + `|| { rm -f /tmp/curlrc; echo "ERROR: object upload failed for ${o.component}/${o.name}"; exit 1; }`,
+      'rm -f /tmp/curlrc',
+      `OSIZE=$(wc -c < "$ART" | tr -d " ")`,
+      `echo "IMPORT_OBJECT_DONE importId=${input.importId} component=${o.component} name=${o.name} sizeBytes=\${OSIZE:-0}"`,
+      `rm -f "$ART"`,
+    );
+  }
+
+  lines.push(`echo "IMPORT_DONE importId=${input.importId} units=${input.units.length} objects=${objects.length}"`);
+  return lines.join('\n');
+}
+
+/** Build the whole Job manifest. Mirrors components/files.ts's shape. */
+export function buildImportJobSpec(input: BuildImportJobInput): Record<string, unknown> {
+  const labels = {
+    'platform.io/component': 'bundle-import',
+    'platform.io/tenant-id': input.tenantId,
+    'platform.io/import-id': input.importId,
+    'platform.io/backup-id': input.bundleId,
+  };
+
+  const podSpec: Record<string, unknown> = {
+    restartPolicy: 'Never',
+    // ★ REQUIRED, not cosmetic. A tenant's ResourceQuota is scoped to
+    // `PriorityClass In [tenant-default]`, so a platform Job in the tenant
+    // namespace escapes the tenant's own budget only by carrying this class —
+    // which is what every other tenant-namespace platform Job does. Without
+    // it the quota also demands explicit memory requests/limits, the
+    // job-controller cannot create a pod at all, and the Job sits in
+    // `Running 0/1` with FailedCreate events until the deadline expires.
+    priorityClassName: 'platform-tenant-overhead',
+    containers: [{
+      name: 'import',
+      image: input.image ?? TOOLS_IMAGE_DEFAULT,
+      command: ['/bin/sh', '-c', buildImportScript(input)],
+      // Matches the capture Job: restic's pack buffer (s3.connections=5 x
+      // pack-size=64 = 320 MiB) plus tar's working set fits in 1Gi.
+      resources: {
+        requests: { cpu: '100m', memory: '256Mi' },
+        limits: { cpu: '1500m', memory: '1Gi' },
+      },
+      volumeMounts: [
+        // Read-only: the import must never be able to mutate tenant files. It
+        // only reads the archive it was told to read.
+        { name: 'upload', mountPath: IMPORT_UPLOAD_MOUNT, readOnly: true },
+        { name: 'stage', mountPath: IMPORT_STAGE_ROOT, subPath: 'raw' },
+        // ★ The CAPTURE ROOTS, backed by subPaths of the SAME size-limited
+        // volume — so one `sizeLimit` still bounds everything the import
+        // writes, while each unit sits at the absolute path its snapshot must
+        // record (see unitCaptureRoot).
+        { name: 'stage', mountPath: FILES_CAPTURE_ROOT, subPath: 'files' },
+        { name: 'stage', mountPath: MAILBOX_CAPTURE_ROOT, subPath: 'mail' },
+        { name: 'scratch', mountPath: '/tmp' },
+        { name: 'restic-creds', mountPath: IMPORT_CREDS_MOUNT_PATH, readOnly: true },
+      ],
+    }],
+    volumes: [
+      { name: 'upload', persistentVolumeClaim: { claimName: input.pvcName, readOnly: true } },
+      // sizeLimit is the containment: the kubelet evicts this Job rather than
+      // filling the node root disk when a manifest under-declared its sizes.
+      { name: 'stage', emptyDir: { sizeLimit: input.stageSizeLimit } },
+      { name: 'scratch', emptyDir: { sizeLimit: SCRATCH_SIZE } },
+      { name: 'restic-creds', secret: { secretName: input.credsSecretName, defaultMode: 0o400 } },
+    ],
+  };
+  if (input.pinToNode) podSpec.nodeName = input.pinToNode;
+
+  const deadline = input.activeDeadlineSeconds && input.activeDeadlineSeconds > 0
+    ? { activeDeadlineSeconds: input.activeDeadlineSeconds }
+    : {};
+
+  // The spec is inlined after `kind: 'Job'` rather than built above and
+  // referenced: ci-job-ttl-check scans FORWARD from the `kind` line for
+  // `ttlSecondsAfterFinished`, so a TTL declared earlier reads to the guard
+  // as no TTL at all.
+  return {
+    apiVersion: 'batch/v1',
+    kind: 'Job',
+    metadata: { name: input.jobName, namespace: input.namespace, labels },
+    spec: {
+      // No retries: a re-run would re-extract and re-snapshot, producing a
+      // second set of snapshots for the same import. The caller decides
+      // whether to retry.
+      backoffLimit: 0,
+      ttlSecondsAfterFinished: 600,
+      ...deadline,
+      template: { metadata: { labels }, spec: podSpec },
+    },
+  };
+}
+
+export interface ParsedUnitResult {
+  readonly component: string;
+  readonly name: string;
+  readonly snapshotId: string;
+  readonly sizeBytes: number;
+  readonly addedBytes: number;
+  readonly fileCount: number;
+}
+
+/**
+ * Parse `IMPORT_UNIT_DONE` lines out of the Job log.
+ *
+ * Only a 64-hex snapshot id is accepted. `backup_components.sha256` is read
+ * back as a restic snapshot id by every restore and browse path, and
+ * `buildMailboxesByAddressJobSpec` throws on a malformed one — so a partial
+ * parse must produce NO row rather than a row that fails later.
+ */
+export function parseImportUnitResults(log: string): ParsedUnitResult[] {
+  const out: ParsedUnitResult[] = [];
+  for (const raw of log.split('\n')) {
+    const line = raw.trim();
+    if (!line.startsWith('IMPORT_UNIT_DONE ')) continue;
+    const field = (k: string): string | null => {
+      const m = line.match(new RegExp(`\\b${k}=([^\\s]+)`));
+      return m ? m[1]! : null;
+    };
+    const component = field('component');
+    const name = field('name');
+    const snapshotId = field('snapshot');
+    if (!component || !name || !snapshotId) continue;
+    if (!/^[0-9a-f]{64}$/.test(snapshotId)) continue;
+    if (component !== 'files' && component !== 'mailboxes') continue;
+    out.push({
+      component,
+      name,
+      snapshotId,
+      sizeBytes: Number(field('sizeBytes') ?? 0) || 0,
+      addedBytes: Number(field('addedBytes') ?? 0) || 0,
+      fileCount: Number(field('fileCount') ?? 0) || 0,
+    });
+  }
+  return out;
+}
+
+/** True when the Job printed its terminal success marker. */
+/** An `IMPORT_OBJECT_DONE` line — a small component that reached the store. */
+export interface ParsedObjectResult {
+  readonly component: 'config' | 'secrets';
+  readonly name: string;
+  readonly sizeBytes: number;
+}
+
+/**
+ * Parse `IMPORT_OBJECT_DONE` lines out of the Job log.
+ *
+ * Unlike a restic unit there is no snapshot id to validate, so the guard is
+ * the component name: anything that is not `config`/`secrets` is dropped
+ * rather than becoming a row naming a component this path never writes.
+ */
+export function parseImportObjectResults(log: string): ParsedObjectResult[] {
+  const out: ParsedObjectResult[] = [];
+  for (const line of log.split('\n')) {
+    const m = line.trim().match(
+      /^IMPORT_OBJECT_DONE importId=\S+ component=(\S+) name=(\S+) sizeBytes=(\d+)$/,
+    );
+    if (!m) continue;
+    const component = m[1]!;
+    if (component !== 'config' && component !== 'secrets') continue;
+    out.push({ component, name: m[2]!, sizeBytes: Number(m[3]!) });
+  }
+  return out;
+}
+
+export function importCompleted(log: string, importId: string): boolean {
+  return log.split('\n').some((l) => l.trim().startsWith(`IMPORT_DONE importId=${importId} `));
+}

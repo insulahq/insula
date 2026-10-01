@@ -739,6 +739,23 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
   // Body: { format: 'tar' | 'zip', password?: string }.
   //   - password is only meaningful for tar; the zip variant
   //     ignores it (architectural — see the /zip endpoint comment).
+  // ── GET /api/v1/admin/tenant-bundles/:id/export-preflight ─────────
+  //
+  // What the export will contain and whether anything is in its way. Read-only
+  // and cheap; drives the download dialog so the operator sees a component list
+  // and a queue warning instead of a button that may or may not do something.
+  //
+  // ADVISORY ONLY — it never blocks the download. See export-preflight.ts.
+  app.get('/admin/tenant-bundles/:id/export-preflight', {
+    schema: { tags: ['TenantBundles'], summary: 'Pre-flight check for a bundle export download', security: [{ bearerAuth: [] }] },
+  }, async (request) => {
+    const { id } = request.params as { id: string };
+    const { buildExportPreflight } = await import('./export-preflight.js');
+    const pre = await buildExportPreflight({ db: app.db }, id);
+    if (!pre) throw new ApiError('NOT_FOUND', 'Bundle not found', 404);
+    return success(pre);
+  });
+
   app.post('/admin/tenant-bundles/:id/export-token', {
     schema: { tags: ['TenantBundles'], summary: 'Mint a single-purpose download URL for a bundle', security: [{ bearerAuth: [] }] },
   }, async (request) => {

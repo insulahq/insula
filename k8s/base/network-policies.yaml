@@ -385,7 +385,7 @@ spec:
   # endpoints are HMAC-token-protected; this NP is the L3/L4 boundary
   # so a malicious-but-authenticated pod cannot reach platform-api at
   # all unless it's running in a namespace the platform manages AND
-  # carries a backup-files / restore-files component label.
+  # carries a backup-files / restore-files / bundle-import component label.
   #
   # Without the namespaceSelector scope, ANY pod cluster-wide could
   # set those labels and reach the unauthenticated endpoints (the
@@ -397,7 +397,16 @@ spec:
     - Ingress
   ingress:
     # Tenant namespaces (provisioned by k8s-provisioner with
-    # `platform: k8s-hosting` label) running backup or restore Jobs.
+    # `platform: k8s-hosting` label) running backup, restore or
+    # bundle-import Jobs.
+    #
+    # `bundle-import` (ADR-063) uploads the config/secrets artifacts of an
+    # imported bundle through the same HMAC-token-gated internal endpoint a
+    # capture Job uses. The tenant-side EGRESS policy allowing it is not
+    # enough on its own: this is the ingress half, and without it the Job's
+    # restic units all succeed (the shim is a different rule) and only the
+    # object upload fails -- which reads as a storage problem rather than a
+    # network one. Verified on DEV: shim reachable, platform-api timing out.
     - from:
         - namespaceSelector:
             matchLabels:
@@ -406,7 +415,7 @@ spec:
             matchExpressions:
               - key: platform.io/component
                 operator: In
-                values: [backup-files, restore-files]
+                values: [backup-files, restore-files, bundle-import]
       ports:
         - protocol: TCP
           port: 3000

@@ -7,8 +7,9 @@
  *
  *   - BackupHealthBanner   → /backups (Dashboard, Phase 1)
  *   - BackupHealthTable    → /backups/disaster-recovery (Phase 5)
- *   - BackupBundlesSection → /backups/tenants (future Phase, today
- *     unreachable until that lift)
+ *   - BackupBundlesSection → DELETED. The planned lift never happened;
+ *     /backups/tenants was built independently as TenantsBackupsPage, and
+ *     the component sat unreferenced (and so unreachable) until removal.
  *   - RecentBackupsPanel   → removed (recent activity lives on Dashboard)
  *
  * What remains: the target CRUD form (SSH/S3/CIFS variants), the

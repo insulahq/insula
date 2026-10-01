@@ -4,7 +4,8 @@
  * A separate legend strip would repeat the same names and colours, so the
  * rows do both jobs: each is a legend entry and a toggle. A hidden series
  * stays listed, dimmed and struck through — a series you cannot see and
- * cannot find again is just missing.
+ * cannot find again is just missing. Hovering a row highlights its line on
+ * the chart and fades the others.
  *
  * The TREND column is the point of the table as much as the totals are: a
  * row of numbers says how much, the sparkline says what shape it had. It was
@@ -18,7 +19,20 @@
 import clsx from 'clsx';
 import type { TrafficFrame } from '@insula/api-contracts';
 import { formatTrafficRate, formatTrafficVolume } from '@/lib/format-traffic';
+import { decimateMinMax } from '@/components/charts/chart-scale';
+import { TOTAL_BG, TOTAL_STROKE } from '@/components/charts/TimeSeriesChart';
 import { colourForIndex } from './TrafficChart';
+import { TOTAL_KEY } from './combined-line';
+
+/** The combined row, when the view offers one. */
+export interface SummaryTotal {
+  readonly name: string;
+  readonly points: ReadonlyArray<number | null>;
+  /** Not drawn on the chart right now. */
+  readonly off: boolean;
+  /** Offered but unusable — fewer than two rows are shown. */
+  readonly disabled: boolean;
+}
 
 export interface TrafficSummaryTableProps {
   readonly frame: TrafficFrame;
@@ -26,6 +40,10 @@ export interface TrafficSummaryTableProps {
   readonly onToggle: (key: string) => void;
   /** Column heading for the name column, e.g. `Tenant` or `Direction`. */
   readonly subjectLabel: string;
+  readonly total?: SummaryTotal | null;
+  readonly focusKey?: string | null;
+  /** Hovering a row asks the chart to highlight its line. */
+  readonly onFocus?: (key: string | null) => void;
 }
 
 const SPARK_W = 120;
@@ -56,37 +74,43 @@ function peakOf(points: ReadonlyArray<number | null>): number | null {
  * the numbers to its left already carry magnitude, and a shared scale would
  * flatten every small series into a straight line at the bottom.
  *
- * Gaps break the line here too, for the same reason they do on the chart.
+ * Thinned by keeping each bucket's lowest and highest point. Keeping every
+ * Nth point instead dropped short spikes, so a spike on the chart above could
+ * be missing from its own row. Gaps break the line here too.
  */
 function sparkSegments(points: ReadonlyArray<number | null>): string[] {
   const peak = peakOf(points) ?? 0;
   const max = peak > 0 ? peak : 1;
-  const step = Math.max(1, Math.floor(points.length / 60));
-  const sampled = points.filter((_, i) => i % step === 0);
+  const last = Math.max(1, points.length - 1);
   const segments: string[] = [];
   let run: string[] = [];
-  sampled.forEach((v, i) => {
+  for (const { i, v } of decimateMinMax(points, 60)) {
     if (v === null) {
       if (run.length > 1) segments.push(run.join(' '));
       run = [];
-      return;
+      continue;
     }
-    const x = (i / Math.max(1, sampled.length - 1)) * SPARK_W;
+    const x = (i / last) * SPARK_W;
     const y = SPARK_H - (v / max) * (SPARK_H - 2) - 1;
     run.push(`${x.toFixed(1)},${y.toFixed(1)}`);
-  });
+  }
   if (run.length > 1) segments.push(run.join(' '));
   return segments;
 }
 
+const HEAD = 'whitespace-nowrap border-b border-gray-200 px-2.5 py-2 text-[10.5px] font-semibold uppercase '
+  + 'tracking-[0.1em] text-gray-500 dark:border-gray-700 dark:text-gray-400';
+
 export default function TrafficSummaryTable({
-  frame, hidden, onToggle, subjectLabel,
+  frame, hidden, onToggle, subjectLabel, total, focusKey = null, onFocus,
 }: TrafficSummaryTableProps) {
   const isLatency = frame.unit === 'milliseconds';
-  const rows = frame.series.map((s, i) => {
-    const total = isLatency ? meanOf(s.points) : integrate(s.points, frame.stepSeconds);
-    return { s, colour: colourForIndex(i), total, peak: peakOf(s.points) };
-  });
+  const figure = (points: ReadonlyArray<number | null>): number | null => (
+    isLatency ? meanOf(points) : integrate(points, frame.stepSeconds)
+  );
+  const rows = frame.series.map((s, i) => ({
+    s, colour: colourForIndex(i), total: figure(s.points), peak: peakOf(s.points),
+  }));
   // Share is of the group a row belongs to. A subset of the wire is not a
   // share OF the wire plus the workload rows, and the workload rows do not
   // decompose the wire at all — one grand total across both would be a
@@ -107,51 +131,60 @@ export default function TrafficSummaryTable({
   const groupsInOrder = [...new Set(rows.map((r) => r.s.group))]
     .filter((g): g is NonNullable<typeof g> => Boolean(g));
 
+  const rowFor = (r: typeof rows[number], grand: number) => (
+    <Row
+      key={r.s.key}
+      rowKey={r.s.key}
+      name={r.s.name}
+      points={r.s.points}
+      colour={r.colour}
+      total={r.total}
+      peak={r.peak}
+      share={isLatency || !grand ? '' : `${(((r.total ?? 0) / grand) * 100).toFixed(1)}%`}
+      off={hidden.has(r.s.key)}
+      focused={focusKey === r.s.key}
+      unit={frame.unit}
+      isLatency={isLatency}
+      onToggle={onToggle}
+      onFocus={onFocus}
+    />
+  );
+
   return (
     <>
       <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700">
         <table className="w-full table-fixed border-collapse text-[13.5px]" data-testid="traffic-summary">
           <thead>
             <tr>
-              <th
-                className="w-[26px] whitespace-nowrap border-b border-gray-200 py-2 pl-2.5 pr-0 text-left
-                  text-[10.5px] font-semibold uppercase tracking-[0.1em] text-gray-500
-                  dark:border-gray-700 dark:text-gray-400"
-                aria-label="Colour"
-              />
-              <th className="truncate whitespace-nowrap border-b border-gray-200 px-2.5 py-2 text-left
-                text-[10.5px] font-semibold uppercase tracking-[0.1em] text-gray-500
-                dark:border-gray-700 dark:text-gray-400"
-              >
-                {subjectLabel}
-              </th>
-              <th className="w-[124px] whitespace-nowrap border-b border-gray-200 px-2.5 py-2 text-right
-                text-[10.5px] font-semibold uppercase tracking-[0.1em] text-gray-500
-                dark:border-gray-700 dark:text-gray-400"
-              >
-                {isLatency ? 'Average' : 'Total'}
-              </th>
-              <th className="w-[124px] whitespace-nowrap border-b border-gray-200 px-2.5 py-2 text-right
-                text-[10.5px] font-semibold uppercase tracking-[0.1em] text-gray-500
-                dark:border-gray-700 dark:text-gray-400"
-              >
-                Peak
-              </th>
-              <th className="w-[84px] whitespace-nowrap border-b border-gray-200 px-2.5 py-2 text-right
-                text-[10.5px] font-semibold uppercase tracking-[0.1em] text-gray-500
-                dark:border-gray-700 dark:text-gray-400"
-              >
-                {isLatency ? '' : 'Share'}
-              </th>
-              <th className="w-[132px] whitespace-nowrap border-b border-gray-200 px-2.5 py-2 text-left
-                text-[10.5px] font-semibold uppercase tracking-[0.1em] text-gray-500
-                dark:border-gray-700 dark:text-gray-400"
-              >
-                Trend
-              </th>
+              <th className={clsx(HEAD, 'w-[26px] pl-2.5 pr-0 text-left')} aria-label="Colour" />
+              <th className={clsx(HEAD, 'truncate text-left')}>{subjectLabel}</th>
+              <th className={clsx(HEAD, 'w-[124px] text-right')}>{isLatency ? 'Average' : 'Total'}</th>
+              <th className={clsx(HEAD, 'w-[124px] text-right')}>Peak</th>
+              <th className={clsx(HEAD, 'w-[84px] text-right')}>{isLatency ? '' : 'Share'}</th>
+              <th className={clsx(HEAD, 'w-[132px] text-left')}>Trend</th>
             </tr>
           </thead>
           <tbody>
+            {total && (
+              <Row
+                rowKey={TOTAL_KEY}
+                name={total.name}
+                points={total.points}
+                colourClass={TOTAL_BG}
+                strokeClass={TOTAL_STROKE}
+                total={figure(total.points)}
+                peak={peakOf(total.points)}
+                share={isLatency ? '' : '100%'}
+                off={total.off}
+                disabled={total.disabled}
+                focused={focusKey === TOTAL_KEY}
+                unit={frame.unit}
+                isLatency={isLatency}
+                emphasised
+                onToggle={onToggle}
+                onFocus={onFocus}
+              />
+            )}
             {groupsInOrder.length > 0 && groupsInOrder.flatMap((group) => [
               <tr key={`hd-${group}`}>
                 <td
@@ -163,35 +196,9 @@ export default function TrafficSummaryTable({
                   {GROUP_LABEL[group] ?? group}
                 </td>
               </tr>,
-              ...rows.filter((r) => r.s.group === group).map(({ s, colour, total, peak }) => (
-                <Row
-                  key={s.key}
-                  s={s}
-                  colour={colour}
-                  total={total}
-                  peak={peak}
-                  off={hidden.has(s.key)}
-                  grand={grandOf(s.group)}
-                  isLatency={isLatency}
-                  unit={frame.unit}
-                  onToggle={onToggle}
-                />
-              )),
+              ...rows.filter((r) => r.s.group === group).map((r) => rowFor(r, grandOf(r.s.group))),
             ])}
-            {groupsInOrder.length === 0 && rows.map(({ s, colour, total, peak }) => (
-              <Row
-                key={s.key}
-                s={s}
-                colour={colour}
-                total={total}
-                peak={peak}
-                off={hidden.has(s.key)}
-                grand={grandOf(undefined)}
-                isLatency={isLatency}
-                unit={frame.unit}
-                onToggle={onToggle}
-              />
-            ))}
+            {groupsInOrder.length === 0 && rows.map((r) => rowFor(r, grandOf(undefined)))}
             {rows.length === 0 && (
               <tr>
                 <td colSpan={6} className="py-6 text-center text-gray-500 dark:text-gray-400">
@@ -213,98 +220,105 @@ export default function TrafficSummaryTable({
 }
 
 interface RowProps {
-  readonly s: TrafficFrame['series'][number];
-  readonly colour: string;
+  readonly rowKey: string;
+  readonly name: string;
+  readonly points: ReadonlyArray<number | null>;
+  /** A palette colour; or, for the total, a class pair per theme. */
+  readonly colour?: string;
+  readonly colourClass?: string;
+  readonly strokeClass?: string;
   readonly total: number | null;
   readonly peak: number | null;
+  readonly share: string;
   readonly off: boolean;
-  readonly grand: number;
+  readonly disabled?: boolean;
+  readonly focused: boolean;
+  readonly emphasised?: boolean;
   readonly isLatency: boolean;
   readonly unit: TrafficFrame['unit'];
   readonly onToggle: (key: string) => void;
+  readonly onFocus?: (key: string | null) => void;
 }
 
 /** One series: legend swatch, name, figures, share within its group, shape. */
-function Row({ s, colour, total, peak, off, grand, isLatency, unit, onToggle }: RowProps) {
+function Row({
+  rowKey, name, points, colour, colourClass, strokeClass, total, peak, share, off, disabled = false,
+  focused, emphasised = false, isLatency, unit, onToggle, onFocus,
+}: RowProps) {
+  const cell = 'whitespace-nowrap border-b border-gray-200 dark:border-gray-700';
+  const dim = off && 'opacity-40';
+  const toggle = (): void => { if (!disabled) onToggle(rowKey); };
   return (
-
-                <tr
-                  key={s.key}
-                  data-series={s.key}
-                  tabIndex={0}
-                  role="button"
-                  aria-pressed={!off}
-                  title={off ? 'Show this series' : 'Hide this series'}
-                  onClick={() => onToggle(s.key)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onToggle(s.key); }
-                  }}
-                  className="cursor-pointer hover:bg-gray-100 focus:outline-none
-                    focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500
-                    dark:hover:bg-gray-700/50"
-                >
-                  <td className={clsx(
-                    'whitespace-nowrap border-b border-gray-200 py-2 pl-2.5 pr-0 dark:border-gray-700',
-                    off && 'opacity-40',
-                  )}
-                  >
-                    <span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ background: colour }} />
-                  </td>
-                  <td
-                    className={clsx(
-                      'truncate whitespace-nowrap border-b border-gray-200 px-2.5 py-2',
-                      'text-gray-900 dark:border-gray-700 dark:text-gray-100',
-                      off && 'opacity-40 line-through',
-                    )}
-                    title={s.name}
-                  >
-                    {s.name}
-                  </td>
-                  <td className={clsx(
-                    'whitespace-nowrap border-b border-gray-200 px-2.5 py-2 text-right font-mono tabular-nums',
-                    'text-gray-700 dark:border-gray-700 dark:text-gray-300', off && 'opacity-40',
-                  )}
-                  >
-                    {isLatency ? formatTrafficRate(total, unit) : formatTrafficVolume(total, unit)}
-                  </td>
-                  <td className={clsx(
-                    'whitespace-nowrap border-b border-gray-200 px-2.5 py-2 text-right font-mono tabular-nums',
-                    'text-gray-700 dark:border-gray-700 dark:text-gray-300', off && 'opacity-40',
-                  )}
-                  >
-                    {formatTrafficRate(peak, unit)}
-                  </td>
-                  <td className={clsx(
-                    'whitespace-nowrap border-b border-gray-200 px-2.5 py-2 text-right font-mono tabular-nums',
-                    'text-gray-500 dark:border-gray-700 dark:text-gray-400', off && 'opacity-40',
-                  )}
-                  >
-                    {isLatency || !grand ? '' : `${(((total ?? 0) / grand) * 100).toFixed(1)}%`}
-                  </td>
-                  <td className={clsx(
-                    'border-b border-gray-200 px-2.5 py-2 dark:border-gray-700', off && 'opacity-40',
-                  )}
-                  >
-                    <svg
-                      viewBox={`0 0 ${SPARK_W} ${SPARK_H}`}
-                      width="100%"
-                      height={SPARK_H}
-                      preserveAspectRatio="none"
-                      aria-hidden="true"
-                      className="block"
-                    >
-                      {sparkSegments(s.points).map((pts, si) => (
-                        <polyline
-                          key={si}
-                          points={pts}
-                          fill="none"
-                          stroke={colour}
-                          strokeWidth={1.9}
-                          vectorEffect="non-scaling-stroke"
-                        />
-                      ))}
-                    </svg>
-                  </td>
-                </tr>
+    <tr
+      data-series={rowKey}
+      tabIndex={disabled ? -1 : 0}
+      role="button"
+      aria-pressed={!off}
+      aria-disabled={disabled || undefined}
+      title={disabled
+        ? 'Show at least two rows to use the total'
+        : off ? `Show ${name}` : `Hide ${name}`}
+      onClick={toggle}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }
+      }}
+      // Only a series on the chart can be highlighted there.
+      onMouseEnter={() => { if (!off) onFocus?.(rowKey); }}
+      onMouseLeave={() => onFocus?.(null)}
+      onFocus={() => { if (!off) onFocus?.(rowKey); }}
+      onBlur={() => onFocus?.(null)}
+      className={clsx(
+        'focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500',
+        disabled ? 'cursor-not-allowed' : 'cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700/50',
+        focused && 'bg-gray-100 dark:bg-gray-700/50',
+      )}
+    >
+      <td className={clsx(cell, 'py-2 pl-2.5 pr-0', dim)}>
+        <span
+          className={clsx('inline-block h-2.5 w-2.5 rounded-sm', colourClass)}
+          style={colour ? { background: colour } : undefined}
+        />
+      </td>
+      <td
+        className={clsx(
+          cell, 'truncate px-2.5 py-2 text-gray-900 dark:text-gray-100',
+          emphasised && 'font-semibold', off && 'opacity-40 line-through',
+        )}
+        title={name}
+      >
+        {name}
+      </td>
+      <td className={clsx(cell, 'px-2.5 py-2 text-right font-mono tabular-nums text-gray-700 dark:text-gray-300', dim)}>
+        {isLatency ? formatTrafficRate(total, unit) : formatTrafficVolume(total, unit)}
+      </td>
+      <td className={clsx(cell, 'px-2.5 py-2 text-right font-mono tabular-nums text-gray-700 dark:text-gray-300', dim)}>
+        {formatTrafficRate(peak, unit)}
+      </td>
+      <td className={clsx(cell, 'px-2.5 py-2 text-right font-mono tabular-nums text-gray-500 dark:text-gray-400', dim)}>
+        {share}
+      </td>
+      <td className={clsx('border-b border-gray-200 px-2.5 py-2 dark:border-gray-700', dim)}>
+        <svg
+          viewBox={`0 0 ${SPARK_W} ${SPARK_H}`}
+          width="100%"
+          height={SPARK_H}
+          preserveAspectRatio="none"
+          aria-hidden="true"
+          className="block"
+        >
+          {sparkSegments(points).map((pts, si) => (
+            <polyline
+              key={si}
+              points={pts}
+              fill="none"
+              stroke={colour}
+              className={strokeClass}
+              strokeWidth={1.9}
+              vectorEffect="non-scaling-stroke"
+            />
+          ))}
+        </svg>
+      </td>
+    </tr>
   );
 }

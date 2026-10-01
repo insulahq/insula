@@ -78,6 +78,7 @@ import { ApiError } from '../../../shared/errors.js';
 import { readJobLogTail, tailJobLog } from '../../storage-lifecycle/job-log-tail.js';
 import { createK8sClients, type K8sClients } from '../../k8s-provisioner/k8s-client.js';
 import { ensureStalwartPrincipals } from './ensure-stalwart-principals.js';
+import { assertMailboxDomainsOwnedByTenant } from '../mailbox-domain-ownership.js';
 import { MAILBOX_CAPTURE_ROOT, addressDirName } from '../../tenant-bundles/components/mailboxes-restic.js';
 import { listTenantMailboxAddresses } from '../../tenant-bundles/components/mailboxes.js';
 import { resolveShimBackupTarget } from '../../tenant-bundles/resolve-backup-target.js';
@@ -280,6 +281,19 @@ export async function execMailboxesByAddressItem(args: {
   //     is recreated before this executor runs)
   //   - surfaces MAILBOX_ROW_MISSING if BOTH Stalwart and the DB are
   //     missing this address — operators get a clear remediation path
+  // ★ OWNERSHIP BEFORE SIDE EFFECT. ensureStalwartPrincipals CREATES a Stalwart
+  // domain principal when one is missing, and resolves mailbox rows with a
+  // GLOBALLY scoped `inArray(mailboxes.fullAddress, …)`. Until this line existed
+  // it ran before the snapshot-membership check below, so a selector naming an
+  // address on someone else's domain reached principal creation and only THEN
+  // failed on the missing snapshot — side effect first, validation second.
+  //
+  // `isSafeAddress` above is a shell-safety check, not an ownership one, and
+  // `validateRestoreItemForTenant` never looks at this selector. Capture kept
+  // the blast radius small by accident (bundle contents are the tenant's own
+  // mailboxes); bundle import removes that bound entirely — see ADR-063.
+  await assertMailboxDomainsOwnedByTenant(app.db, job.tenantId, addresses);
+
   const ensure = await ensureStalwartPrincipals({ app, addresses });
   const failedEnsures = ensure.outcomes.filter((o) => o.status === 'failed');
   if (failedEnsures.length > 0) {

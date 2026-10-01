@@ -35,6 +35,7 @@ import {
   belongsToNested, fetchTrafficFrame, fetchTrafficSubjects, nestedNamespaces,
 } from './service.js';
 import { isValidNamespace, UnsupportedTrafficQuery } from './promql.js';
+import { createLiveRouteSource, k8sIngressRouteLister } from './live-ingress-routes.js';
 
 /** Zod issues → one operator-readable 400, rather than a wall of JSON. */
 function parseOrThrow<T>(schema: { safeParse: (v: unknown) => { success: boolean; data?: T; error?: { issues: Array<{ path: PropertyKey[]; message: string }> } } }, value: unknown): T {
@@ -74,6 +75,12 @@ async function guard<T>(fn: () => Promise<T>): Promise<T> {
 export async function trafficRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
 
+  // One cached reader of the live IngressRoutes for every request, so route
+  // series can be named exactly (see route-names.ts). Clients are created on
+  // first use: off-cluster there is no config, and naming falls back.
+  // `config` is optional-chained because a test app may not decorate it.
+  const liveRoutes = createLiveRouteSource(k8sIngressRouteLister(() => app.config?.KUBECONFIG_PATH));
+
   // ── admin ────────────────────────────────────────────────────────────
   app.get('/admin/monitoring/traffic/series', {
     onRequest: [requireRole('super_admin', 'admin', 'billing', 'support', 'read_only')],
@@ -85,7 +92,7 @@ export async function trafficRoutes(app: FastifyInstance): Promise<void> {
     return success(await guard(() => fetchTrafficFrame({
       from: new Date(q.from), to: new Date(q.to), scope: q.scope, subject, pod: q.pod,
       metric: q.metric, direction: q.direction, backups: q.backups,
-    }, { db: app.db })));
+    }, { db: app.db, liveRoutes, log: request.log })));
   });
 
   app.get('/admin/monitoring/traffic/subjects', {
@@ -99,7 +106,7 @@ export async function trafficRoutes(app: FastifyInstance): Promise<void> {
       : q.subject;
     const subjects = await guard(() => fetchTrafficSubjects({
       from: new Date(q.from), to: new Date(q.to), scope: q.scope, subject, metric: q.metric,
-    }, { db: app.db }));
+    }, { db: app.db, liveRoutes, log: request.log }));
     return success({ subjects });
   });
 
@@ -131,7 +138,7 @@ export async function trafficRoutes(app: FastifyInstance): Promise<void> {
       // A platform-scheduled backup is excluded from this tenant's bill, so it
       // is not drawn on their graph either: the two must agree.
       backups: 'included',
-    }, { db: app.db })));
+    }, { db: app.db, liveRoutes, log: request.log })));
   });
 
   app.get('/tenants/:id/traffic/subjects', {
@@ -154,7 +161,7 @@ export async function trafficRoutes(app: FastifyInstance): Promise<void> {
       subject: scope === 'route' ? undefined : namespace,
       restrictToNamespace: namespace,
       metric: q.metric,
-    }, { db: app.db }));
+    }, { db: app.db, liveRoutes, log: request.log }));
     return success({ subjects });
   });
 }

@@ -30,6 +30,8 @@ import {
   alignToTimeline, buildTimeline, chooseStepSeconds, foldTail, integrate, meanOf, rankValue, seriesKey,
 } from './frame.js';
 import type { Database } from '../../db/index.js';
+import type { LiveRouteSource } from './live-ingress-routes.js';
+import { loadExactRouteNamer, type WarnLogger } from './route-naming.js';
 
 const DAY_MS = 86_400_000;
 
@@ -201,14 +203,18 @@ async function tenantHosts(
  * A Traefik service label is `<namespace>-<ingress>-<hash>@kubernetescrd`,
  * which tells an operator nothing. What they want is the domain.
  *
- * WHAT CAN AND CANNOT BE KNOWN. Traefik's counters carry `service` and
- * nothing else — no host, no router (verified against the live store: the
- * only labels are service/job/instance/node/code/method/protocol). A tenant
- * gets ONE IngressRoute object holding all of its routes, and Traefik mints
- * one service per route inside it, distinguished by a hash of the match rule
- * that cannot be inverted. So a service maps to a host only when the tenant
- * serves exactly one host — then every service of theirs necessarily serves
- * it. That covers most tenants (21 of 27 on the reference cluster); the rest
+ * THIS IS THE FALLBACK. Route series are named exactly by
+ * `route-names.ts`: the trailing hash is sha256 over the route's literal
+ * match rule, so hashing every LIVE IngressRoute rule forward and looking the
+ * label up says which host, path and deployment a series is — no inversion
+ * needed. What lands here is what that lookup could not place: a rule that
+ * has since changed or been removed (its old label lingers in the store), a
+ * live-route read that failed, or a namespace that is not a tenant's.
+ *
+ * For those, Traefik's counters carry `service` and nothing else — no host,
+ * no router (the only labels are service/job/instance/node/code/method/
+ * protocol). A service maps to a host only when the tenant serves exactly
+ * one host — then every service of theirs necessarily serves it. The rest
  * are named for their tenant and ingress object, because inventing a domain
  * for them would be a guess presented as a fact.
  */
@@ -319,6 +325,9 @@ export interface TrafficServiceDeps {
   readonly db: Database;
   readonly vm?: VmClientOptions;
   readonly now?: () => Date;
+  /** Live IngressRoutes by Traefik service label; names `route` series exactly. */
+  readonly liveRoutes?: LiveRouteSource;
+  readonly log?: WarnLogger;
 }
 
 export interface FrameOptions {
@@ -410,12 +419,33 @@ export async function fetchTrafficFrame(
     collected.sort((a, b) => (rank(a.key) - rank(b.key)) || (dirRank(a.key) - dirRank(b.key)));
   }
 
+  // Route series are named from the live IngressRoute each one came from
+  // (route-names.ts). Resolved BEFORE the tenant names: a matched route says
+  // exactly which namespace it lives in, nested ones included. Keys are not
+  // touched — only names — and anything unmatched keeps the fallback below.
+  const routeNamer = req.scope === 'route'
+    ? await loadExactRouteNamer(
+      collected.filter((s) => s.kind === 'subject').map((s) => s.name),
+      { db: deps.db, liveRoutes: deps.liveRoutes, tenantView: Boolean(req.restrictToNamespace), log: deps.log },
+    )
+    : null;
+  for (const ns of routeNamer?.namespaces ?? []) namespacesSeen.add(ns);
+  // Left out before anything is ranked, so a solver or a deleted route takes
+  // no top-N slot and adds nothing to `Other`. Judged on the raw label, which
+  // is still the series name at this point.
+  if (routeNamer) {
+    const kept = collected.filter((s) => s.kind !== 'subject' || !routeNamer.hidden(s.name));
+    collected.length = 0;
+    collected.push(...kept);
+  }
+
   const nsToName = await tenantNames(deps.db, [...namespacesSeen]);
   const nsToHosts = req.scope === 'route'
     ? await tenantHosts(deps.db, [...namespacesSeen])
     : new Map<string, string[]>();
   for (const s of collected) {
-    if (s.kind === 'subject') s.name = displayNameFor(req.scope, s.name, nsToName, nsToHosts);
+    if (s.kind !== 'subject') continue;
+    s.name = routeNamer?.name(s.name, nsToName) ?? displayNameFor(req.scope, s.name, nsToName, nsToHosts);
   }
   // Both directions across a SUBJECT breakdown gives two series per subject.
   // Their keys differ but their names do not, so the table listed "SYSTEM"
