@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Archive, Download, Lock, Loader2, AlertCircle, Play, RotateCcw, Trash2 } from 'lucide-react';
+import { Archive, Download, Lock, Loader2, AlertCircle, Play, RotateCcw, Trash2, Upload } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import {
   useTenantBundles,
@@ -7,9 +7,11 @@ import {
   useDeleteRestoreCart,
   useRunBundleNow,
   downloadTenantDataExport,
-  downloadBundleExport,
 } from '@/hooks/use-tenant-backups';
 import { BundleProgressModal } from '@/components/BundleProgressModal';
+import { BundleExportModal } from '@/components/BundleExportModal';
+import { BundleImportModal } from '@/components/BundleImportModal';
+import { useTenantContext } from '@/hooks/use-tenant-context';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
 import TimeCell from '@/components/ui/TimeCell';
@@ -49,6 +51,8 @@ export default function Backups() {
   // so we can open BundleProgressModal. Cleared via modal onClose.
   const [progressBundleId, setProgressBundleId] = useState<string | null>(null);
   const [exporting, setExporting] = useState<string | null>(null);
+  const [showImport, setShowImport] = useState(false);
+  const { tenantId } = useTenantContext();
   // Top-level (Rules of Hooks) — the table renders conditionally below.
   const { sortedData: sortedBundles, sortKey, sortDirection, onSort } = useSortable(bundles, 'createdAt', 'desc');
   // SortableHeader defaults to px-5/py-3 — override to this table's px-6.
@@ -73,6 +77,14 @@ export default function Backups() {
             Your bundles, on-demand captures, and restore tools. Scheduled backups are managed centrally by your platform admins.
           </p>
         </div>
+        <button
+          type="button"
+          onClick={() => setShowImport(true)}
+          className="inline-flex items-center gap-2 rounded-md border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+          data-testid="import-bundle"
+        >
+          <Upload className="h-4 w-4" /> Import bundle
+        </button>
         <button
           type="button"
           onClick={() =>
@@ -254,12 +266,7 @@ export default function Backups() {
                         {(b.status === 'completed' || b.status === 'partial') && (
                           <button
                             type="button"
-                            onClick={async () => {
-                              setExporting(b.id);
-                              try { await downloadBundleExport(b.id); }
-                              catch (e) { window.alert(`Export failed: ${(e as Error).message}`); }
-                              finally { setExporting(null); }
-                            }}
+                            onClick={() => setExporting(b.id)}
                             disabled={exporting === b.id}
                             className="inline-flex items-center gap-1 rounded-md border border-gray-300 px-2 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
                             data-testid={`export-bundle-${b.id}`}
@@ -270,6 +277,12 @@ export default function Backups() {
                               : <Download size={12} />}
                             Export
                           </button>
+                        )}
+                        {/* Inside the cell, not the row: a <div> child of <tr>
+                            is invalid HTML and the parser hoists it out of the
+                            table. The dialog is position:fixed. */}
+                        {exporting === b.id && (
+                          <BundleExportModal bundleId={b.id} onClose={() => setExporting(null)} />
                         )}
                         {b.exportArtifact && b.status === 'completed' && (
                           <button
@@ -353,6 +366,12 @@ export default function Backups() {
           </div>
         </div>
       )}
+    <BundleImportModal
+        open={showImport}
+        onClose={() => setShowImport(false)}
+        scope="tenant"
+        tenantId={tenantId ?? undefined}
+      />
     </div>
   );
 }

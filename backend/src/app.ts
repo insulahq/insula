@@ -123,6 +123,7 @@ import { backupsV2Routes } from './modules/tenant-bundles/routes.js';
 import { backupsV2InternalUploadRoutes } from './modules/tenant-bundles/internal-upload-route.js';
 import { backupsV2InternalDownloadRoutes } from './modules/tenant-bundles/internal-download-route.js';
 import { backupsV2ClientRoutes } from './modules/tenant-bundles/tenant-routes.js';
+import { bundleImportAdminRoutes, bundleImportTenantRoutes } from './modules/tenant-bundles/import-routes.js';
 import { backupRestoreRoutes } from './modules/backup-restore/routes.js';
 import { drRecoverRoutes } from './modules/dr-recover/routes.js';
 import { migrationRoutes } from './modules/migration/routes.js';
@@ -694,6 +695,8 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(backupsV2InternalUploadRoutes, { prefix: '/api/v1' });
   await app.register(backupsV2InternalDownloadRoutes, { prefix: '/api/v1' });
   await app.register(backupsV2ClientRoutes, { prefix: '/api/v1' });
+  await app.register(bundleImportAdminRoutes, { prefix: '/api/v1' });
+  await app.register(bundleImportTenantRoutes, { prefix: '/api/v1' });
   await app.register(backupRestoreRoutes, { prefix: '/api/v1' });
   await app.register(drRecoverRoutes, { prefix: '/api/v1' });
   await app.register(migrationRoutes, { prefix: '/api/v1' });
@@ -2305,6 +2308,39 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           },
         });
         app.addHook('onClose', () => cleanupDraftsStop());
+
+        // Traefik response-buffer spool reaper.
+        //
+        // The `waf-body-limit` buffering middleware spools whole responses to
+        // /tmp/temp-multibuf-* inside Traefik and does NOT remove them when the
+        // client disconnects. That /tmp is an emptyDir on the NODE ROOT disk —
+        // shared with k3s, etcd, containerd and Longhorn — so the leak ends in
+        // DiskPressure, not just wasted space. Four abandoned downloads left
+        // 2.68 GB on the reference cluster.
+        //
+        // Best-effort: without a kubeconfig the reaper simply never starts. A
+        // missing client must not fail app boot over a cleanup sweep.
+        try {
+          const { createK8sClients } = await import('./modules/k8s-provisioner/k8s-client.js');
+          const k8sNodeSpool = await import('@kubernetes/client-node');
+          const spoolKubePath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+          const spoolCore = createK8sClients(spoolKubePath).core;
+          const spoolKc = new k8sNodeSpool.KubeConfig();
+          if (spoolKubePath) spoolKc.loadFromFile(spoolKubePath); else spoolKc.loadFromCluster();
+          const { startIngressSpoolReaper } = await import('./modules/ingress-spool-reaper/scheduler.js');
+          const spoolStop = startIngressSpoolReaper({
+            core: spoolCore,
+            exec: new k8sNodeSpool.Exec(spoolKc),
+            logger: {
+              info: (msg, ctx) => app.log.info(ctx ?? {}, `spool-reaper: ${msg}`),
+              warn: (msg, err) => app.log.warn({ err }, `spool-reaper: ${msg}`),
+            },
+          });
+          app.addHook('onClose', () => spoolStop());
+        } catch (err) {
+          app.log.warn({ err: err instanceof Error ? err.message : String(err) },
+            'spool-reaper: k8s client init failed — Traefik spool sweep disabled');
+        }
 
         // CNPG-backup-health: sister scheduler that watches CNPG Backup
         // CRs (postgresql.cnpg.io/v1, distinct from K8s batch/v1 Jobs)

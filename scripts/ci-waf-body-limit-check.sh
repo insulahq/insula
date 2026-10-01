@@ -49,9 +49,21 @@ else
   else
     note "OK  maxRequestBodyBytes matches the sidecar's SecRequestBodyLimit ($actual)"
   fi
-  # Responses must stay unbuffered or file download + SSE progress break.
+  # maxResponseBodyBytes=0 means NO SIZE LIMIT. It does NOT mean "not
+  # buffered", and the comment here used to claim exactly that. Traefik's
+  # `buffering` middleware spools the response either way: measured on a
+  # production bundle export, the backend's first byte took 0.35 s while the
+  # client got ZERO bytes in 300 s, Traefik RSS stayed flat and its disk grew
+  # 5.5 MB/s into oxy `temp-multibuf-*` files. So 0 means "spool the whole
+  # thing, however big" — which is why large downloads have to be routed
+  # AROUND this middleware (the Method(`GET`) carve-out in the reconciler)
+  # rather than tuned.
+  #
+  # It must still be 0: any positive value makes Traefik 500 a response that
+  # exceeds it, which breaks downloads outright instead of merely delaying
+  # them.
   grep -qE 'maxResponseBodyBytes:[[:space:]]*0' "$MW" \
-    || err "maxResponseBodyBytes must be 0 — a buffered response breaks downloads and SSE"
+    || err "maxResponseBodyBytes must be 0 — a positive value 500s any larger response"
   grep -q 'memRequestBodyBytes:' "$MW" \
     || err "memRequestBodyBytes must be set — it is what bounds RAM under concurrency"
 fi
@@ -112,6 +124,16 @@ for rel in sys.argv[2:]:
 sys.exit(bad)
 PY
 then
+  fail=1
+fi
+
+# 5. A carve-out may drop the cap ONLY on a GET-restricted route.
+#    Checks 3 and 4 are file-level: they confirm the two names appear together
+#    and in the right push order, which a per-route `.filter()` sidesteps
+#    entirely. The invariant that actually matters is per ROUTE — keeping the
+#    WAF while dropping the cap is safe only where there is no request body for
+#    the plugin's unbounded io.ReadAll to read.
+if ! python3 "$SCRIPT_DIR/ci-waf-body-limit-route-scan.py" "$REPO_ROOT"; then
   fail=1
 fi
 

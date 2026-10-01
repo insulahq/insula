@@ -134,8 +134,9 @@ describe('buildIngressRouteBody', () => {
     const routes = spec.routes as Array<Record<string, unknown>>;
     // Select by identity, not index: every new carve-out shifts the positions
     // and this assertion used to break for reasons unrelated to what it tests.
-    // Carve-outs: /files/upload-raw and the WAF-admin API, plus the panel route.
-    expect(routes).toHaveLength(3);
+    // Carve-outs: /files/upload-raw, the WAF-admin API and large downloads,
+    // plus the panel route.
+    expect(routes).toHaveLength(4);
     const panel = routes.find(r => String(r.match) === 'Host(`admin.example.com`)')!;
     expect(panel).toBeDefined();
     expect(panel.match).toBe('Host(`admin.example.com`)');
@@ -190,6 +191,71 @@ describe('buildIngressRouteBody', () => {
     expect(names).toContain('waf-body-limit');
     // It must outrank the bare Host() panel route or it never matches.
     expect(wafAdmin!.priority).toBe(101);
+  });
+
+  it('routes large downloads around BOTH the response buffer and the WAF', () => {
+    const body = buildIngressRouteBody(
+      [{ host: 'admin.example.com', serviceName: 'admin-panel', oauth2: false }],
+      { namespace: 'platform', name: 'platform-ingress', tlsSecretName: 'platform-tls' },
+    );
+    const routes = (body.spec as { routes: Array<Record<string, unknown>> }).routes;
+    const dl = routes.find(r => String(r.match).includes('files/download'));
+    expect(dl).toBeDefined();
+    const names = (dl!.middlewares as Array<{ name: string }>).map(m => m.name);
+    // `waf-body-limit` is a Traefik `buffering` middleware: it spools the whole
+    // RESPONSE to disk before releasing a byte. Measured on a production export:
+    // backend first byte 0.35 s, client first byte never (0 bytes in 300 s),
+    // Traefik RSS flat while its disk grew 5.5 MB/s.
+    expect(names).not.toContain('waf-body-limit');
+    // ★ The WAF goes WITH it. An earlier version kept the WAF and relied on
+    // Method(`GET`) to mean "no request body" — that is not an invariant
+    // Traefik enforces. Measured with the WAF attached and the cap dropped: a
+    // GET carrying a 40 MiB body uploaded all 41,943,040 bytes before
+    // ModSecurity answered, vs 1,113,941 then 413 on a capped route. The plugin
+    // does io.ReadAll(req.Body) with no method check, so that combination IS the
+    // 600 MB Traefik OOM.
+    expect(names).not.toContain('modsecurity-crs');
+    // CrowdSec still applies — IP reputation is orthogonal to body size.
+    expect(names).toContain('crowdsec');
+    // Must outrank the bare Host() panel route and the /oauth2 route (100).
+    expect(dl!.priority).toBe(101);
+    // Kept as scope-narrowing, NOT as the safety mechanism. Asserted so the
+    // carve-out cannot silently widen to verbs these paths never serve.
+    expect(String(dl!.match)).toContain('Method(`GET`)');
+  });
+
+  it('the download pattern covers every streaming route and nothing else', () => {
+    const body = buildIngressRouteBody(
+      [{ host: 'admin.example.com', serviceName: 'admin-panel', oauth2: false }],
+      { namespace: 'platform', name: 'platform-ingress', tlsSecretName: 'platform-tls' },
+    );
+    const routes = (body.spec as { routes: Array<Record<string, unknown>> }).routes;
+    const dl = routes.find(r => String(r.match).includes('files/download'))!;
+    const pattern = String(dl.match).match(/PathRegexp\(`([^`]+)`\)/)![1];
+    const re = new RegExp(pattern);
+    for (const p of [
+      '/api/v1/admin/tenant-bundles/exports/eyJ2IjoxLCJiIjoiYmtwLTEyMyJ9.abc',
+      '/api/v1/admin/tenant-bundles/bkp-123/data-export',
+      '/api/v1/tenant/backups/bundles/bkp-123/data-export',
+      '/api/v1/tenants/t-1/files/download',
+      '/api/v1/system-backup/pg-dump/runs/r-1/download',
+    ]) expect(re.test(p), p).toBe(true);
+    for (const p of [
+      // Small JSON POST — belongs behind the body cap, and it is the step that
+      // was already fast (5 ms). Matching it here would weaken the WAF for no
+      // gain.
+      '/api/v1/admin/tenant-bundles/bkp-123/export-token',
+      // POST-only streaming routes stay behind the cap ON PURPOSE — dropping it
+      // for a POST reopens the unbounded io.ReadAll OOM vector.
+      '/api/v1/admin/tenant-bundles/bkp-123/export',
+      '/api/v1/admin/tenant-bundles/bkp-123/zip',
+      '/api/v1/system-backup/pg-dump/stream',
+      '/api/v1/tenant/backups/bundles/bkp-123/export-token',
+      '/api/v1/admin/tenant-bundles',
+      '/api/v1/tenants/t-1/files/upload-raw',
+      '/api/v1/tenants/t-1/files',
+      '/api/v1/admin/dashboard',
+    ]) expect(re.test(p), p).toBe(false);
   });
 
   it('routes /files/upload-raw around the WAF so upload bodies are never buffered', () => {
@@ -259,9 +325,8 @@ describe('buildIngressRouteBody', () => {
       { namespace: 'platform', name: 'platform-ingress', tlsSecretName: 'platform-tls' },
     );
     const routes = (body.spec as { routes: Array<Record<string, unknown>> }).routes;
-    // [0] = /oauth2, [1] = upload carve-out, [2] = panel route.
-    // upload carve-out + WAF-admin carve-out + /oauth2 + panel route
-    expect(routes).toHaveLength(4);
+    // upload + WAF-admin + download carve-outs, /oauth2, and the panel route.
+    expect(routes).toHaveLength(5);
     // /oauth2 priority route — no auth Middleware (oauth2-proxy IS the auth endpoint).
     expect(routes[0].match).toBe('Host(`admin.example.com`) && PathPrefix(`/oauth2`)');
     expect(routes[0].priority).toBe(100);
@@ -335,7 +400,7 @@ describe('reconcileIngressHosts', () => {
     expect(certApplied.spec.dnsNames).toEqual(['admin.example.com', 'my.example.com']);
     // 2 hosts x (upload carve-out + panel route).
     // 2 hosts x (upload carve-out + WAF-admin carve-out + panel route)
-    expect(ingressApplied.spec.routes).toHaveLength(6);
+    expect(ingressApplied.spec.routes).toHaveLength(8);
   });
 
   // Regression: the carve-out shares host + backend with the panel route, so the
@@ -376,8 +441,8 @@ describe('reconcileIngressHosts', () => {
           // sync and MUST be re-applied — that is the whole point of tracking
           // them in the comparison (see #300, where a correct carve-out was
           // never applied because the reconciler thought it was in sync).
-          { host: 'admin.example.com', serviceName: 'admin-panel', oauth2Backend: null, uploadCarveOut: true, wafAdminCarveOut: true },
-          { host: 'my.example.com', serviceName: 'tenant-panel', oauth2Backend: null, uploadCarveOut: true, wafAdminCarveOut: true },
+          { host: 'admin.example.com', serviceName: 'admin-panel', oauth2Backend: null, uploadCarveOut: true, wafAdminCarveOut: true, downloadCarveOut: true, downloadMiddlewares: ['crowdsec'] },
+          { host: 'my.example.com', serviceName: 'tenant-panel', oauth2Backend: null, uploadCarveOut: true, wafAdminCarveOut: true, downloadCarveOut: true, downloadMiddlewares: ['crowdsec'] },
         ],
         tlsSecret: 'platform-tls',
       },
@@ -395,6 +460,98 @@ describe('reconcileIngressHosts', () => {
     expect(result.changed).toBe(false);
     expect(deps.applyIngressRoute).not.toHaveBeenCalled();
     expect(deps.applyCertificate).not.toHaveBeenCalled();
+  });
+
+  it('re-applies when the live IngressRoute predates the download carve-out', async () => {
+    // The negative arm of the no-op test above. A cluster upgraded into this
+    // change has every other field identical, so without `downloadCarveOut` in
+    // the comparison it reads as in-sync forever and exports keep being spooled
+    // to node disk. Omitting this assertion is how the upload carve-out shipped
+    // as a no-op once already.
+    const deps = mockDeps(
+      {
+        routes: [
+          { host: 'admin.example.com', serviceName: 'admin-panel', oauth2Backend: null, uploadCarveOut: true, wafAdminCarveOut: true, downloadCarveOut: false, downloadMiddlewares: [] },
+          { host: 'my.example.com', serviceName: 'tenant-panel', oauth2Backend: null, uploadCarveOut: true, wafAdminCarveOut: true, downloadCarveOut: true, downloadMiddlewares: ['crowdsec'] },
+        ],
+        tlsSecret: 'platform-tls',
+      },
+      {
+        dnsNames: ['admin.example.com', 'my.example.com'],
+        secretName: 'platform-tls',
+        issuerName: 'letsencrypt-prod-http01',
+      },
+    );
+    const result = await reconcileIngressHosts({
+      adminPanelUrl: 'https://admin.example.com',
+      tenantPanelUrl: 'https://my.example.com',
+      tlsSecretName: 'platform-tls',
+    }, deps);
+    expect(result.changed).toBe(true);
+    expect(deps.applyIngressRoute).toHaveBeenCalled();
+  });
+
+  it('re-applies when the download carve-out exists but still carries the WAF', async () => {
+    // ★ THE BUG THIS PINS. Correcting the carve-out to drop the WAF alongside
+    // the body cap changes only the MIDDLEWARE LIST — the route's `match` is
+    // byte-identical. A comparison that only asked "does a download route
+    // exist?" read as in-sync, so the corrected image ran against a cluster that
+    // kept the vulnerable middleware chain indefinitely. Observed live: the
+    // pod was running the fixed build and the live IngressRoute still listed
+    // ['crowdsec', 'modsecurity-crs'] on the download route.
+    const deps = mockDeps(
+      {
+        routes: [
+          {
+            host: 'admin.example.com', serviceName: 'admin-panel', oauth2Backend: null,
+            uploadCarveOut: true, wafAdminCarveOut: true, downloadCarveOut: true,
+            downloadMiddlewares: ['crowdsec', 'modsecurity-crs'],
+          },
+          {
+            host: 'my.example.com', serviceName: 'tenant-panel', oauth2Backend: null,
+            uploadCarveOut: true, wafAdminCarveOut: true, downloadCarveOut: true,
+            downloadMiddlewares: ['crowdsec'],
+          },
+        ],
+        tlsSecret: 'platform-tls',
+      },
+      { dnsNames: ['admin.example.com', 'my.example.com'], secretName: 'platform-tls', issuerName: 'letsencrypt-prod-http01' },
+    );
+    const result = await reconcileIngressHosts({
+      adminPanelUrl: 'https://admin.example.com',
+      tenantPanelUrl: 'https://my.example.com',
+      tlsSecretName: 'platform-tls',
+    }, deps);
+    expect(result.changed).toBe(true);
+    expect(deps.applyIngressRoute).toHaveBeenCalled();
+  });
+
+  it('re-applies when the download carve-out still carries the body cap', async () => {
+    // The cap is the other half: leaving it re-spools every response to disk.
+    const deps = mockDeps(
+      {
+        routes: [
+          {
+            host: 'admin.example.com', serviceName: 'admin-panel', oauth2Backend: null,
+            uploadCarveOut: true, wafAdminCarveOut: true, downloadCarveOut: true,
+            downloadMiddlewares: ['crowdsec', 'waf-body-limit'],
+          },
+          {
+            host: 'my.example.com', serviceName: 'tenant-panel', oauth2Backend: null,
+            uploadCarveOut: true, wafAdminCarveOut: true, downloadCarveOut: true,
+            downloadMiddlewares: ['crowdsec'],
+          },
+        ],
+        tlsSecret: 'platform-tls',
+      },
+      { dnsNames: ['admin.example.com', 'my.example.com'], secretName: 'platform-tls', issuerName: 'letsencrypt-prod-http01' },
+    );
+    const result = await reconcileIngressHosts({
+      adminPanelUrl: 'https://admin.example.com',
+      tenantPanelUrl: 'https://my.example.com',
+      tlsSecretName: 'platform-tls',
+    }, deps);
+    expect(result.changed).toBe(true);
   });
 
   it('skips reconcile if neither URL is set — never produces an empty IngressRoute', async () => {
@@ -417,7 +574,7 @@ describe('reconcileIngressHosts', () => {
     }, deps);
     const ingressApplied = (deps.applyIngressRoute as ReturnType<typeof vi.fn>).mock.calls[0][0];
     // upload carve-out + panel route for the one surviving host.
-    expect(ingressApplied.spec.routes).toHaveLength(3);
+    expect(ingressApplied.spec.routes).toHaveLength(4);
     expect(ingressApplied.spec.routes.some((r: { match?: string }) => r.match === 'Host(`admin.example.com`)')).toBe(true);
     const certApplied = (deps.applyCertificate as ReturnType<typeof vi.fn>).mock.calls[0][0];
     expect(certApplied.spec.dnsNames).toEqual(['admin.example.com']);
@@ -432,7 +589,7 @@ describe('reconcileIngressHosts', () => {
     }, deps);
     const ingressApplied = (deps.applyIngressRoute as ReturnType<typeof vi.fn>).mock.calls[0][0];
     // upload carve-out + panel route for the one surviving host.
-    expect(ingressApplied.spec.routes).toHaveLength(3);
+    expect(ingressApplied.spec.routes).toHaveLength(4);
     expect(ingressApplied.spec.routes.some((r: { match?: string }) => r.match === 'Host(`my.example.com`)')).toBe(true);
   });
 
@@ -447,7 +604,7 @@ describe('reconcileIngressHosts', () => {
       }, deps);
       const ingressApplied = (deps.applyIngressRoute as ReturnType<typeof vi.fn>).mock.calls[0][0];
       // admin: /oauth2 + upload + waf-admin + panel; tenant: upload + waf-admin + panel.
-      expect(ingressApplied.spec.routes).toHaveLength(7);
+      expect(ingressApplied.spec.routes).toHaveLength(9);
       const oauth2Route = ingressApplied.spec.routes.find(
         (r: { match: string }) => r.match === 'Host(`admin.example.com`) && PathPrefix(`/oauth2`)',
       );

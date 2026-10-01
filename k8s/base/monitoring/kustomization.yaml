@@ -21,5 +21,6 @@ resources:
   - rbac.yaml
   - scrape-config.yaml
   - vmsingle.yaml
+  - streamaggr-config.yaml
   - vmui-ingressroute.yaml
   - netpol.yaml

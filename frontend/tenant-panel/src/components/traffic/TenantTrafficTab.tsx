@@ -18,7 +18,10 @@ import { useBandwidth } from '@/hooks/use-bandwidth';
 import { useTrafficSeries, useTrafficSubjects } from '@/hooks/use-traffic';
 import { extractOperatorError } from '@/lib/extract-operator-error';
 import ErrorPanel from '@/components/ErrorPanel';
-import TrafficChart, { findSpikes } from './TrafficChart';
+import TrafficChart from './TrafficChart';
+import {
+  combinedLine, TOTAL_KEY, totalLabel, totalState, trafficStats,
+} from './combined-line';
 import TrafficStats from './TrafficStats';
 import TrafficSummaryTable from './TrafficSummaryTable';
 import TrafficPicker from './TrafficPicker';
@@ -31,6 +34,16 @@ function spanLabel(r: { from: Date; to: Date }): string {
   if (hours < 48) return `${hours} hours`;
   const days = Math.round(hours / 24);
   return days < 60 ? `${days} days` : `${Math.round(days / 30)} months`;
+}
+
+/**
+ * A dragged range as a query range. The last point stands for the step that
+ * STARTS there, so the range runs to that step's end — otherwise zooming in
+ * would drop the very spike the reader dragged across.
+ */
+function draggedRange(fromIso: string, toIso: string, stepSeconds: number): RangeValue {
+  const to = Math.min(Date.now(), new Date(toIso).getTime() + stepSeconds * 1000);
+  return { from: new Date(fromIso), to: new Date(to), preset: null };
 }
 
 const SCOPES: ReadonlyArray<{ key: TrafficScope; label: string; subjectLabel: string }> = [
@@ -63,7 +76,10 @@ export default function TenantTrafficTab() {
   const [scope, setScope] = useState<TrafficScope>('tenant');
   const [subject, setSubject] = useState<string | null>(null);
   const [metric, setMetric] = useState<TrafficMetric>('traffic');
-  const [hidden, setHidden] = useState<ReadonlySet<string>>(new Set());
+  // The combined line starts OFF — see the admin tab.
+  const [hidden, setHidden] = useState<ReadonlySet<string>>(() => new Set([TOTAL_KEY]));
+  const [focus, setFocus] = useState<string | null>(null);
+  const resetRows = (): void => { setHidden(new Set([TOTAL_KEY])); setFocus(null); };
 
   const metricsForScope = metricsFor(scope);
   const effectiveMetric: TrafficMetric = metricsForScope.some((m) => m.key === metric) ? metric : 'traffic';
@@ -90,37 +106,25 @@ export default function TenantTrafficTab() {
     [subjects],
   );
 
+  // One combined line feeds the tiles, the spike markers, the Total line and
+  // each row's share, so none of them can disagree. It follows the rows shown.
+  const combined = useMemo(() => (frame ? combinedLine(frame, hidden) : null), [frame, hidden]);
   const stats = useMemo(() => {
     if (!frame) return null;
-    const step = frame.stepSeconds;
-    // Only the series still shown. Hiding a row is a way of asking "what
-    // does this look like without that" — tiles that ignored it answered a
-    // different question from the chart directly above them.
-    const shown = frame.series.filter((s) => !hidden.has(s.key));
-    if (shown.length === 0) return null;
-    const measuredAt = (i: number): boolean => shown.some((s) => s.points[i] !== null);
-    const perIndex = frame.times.map((_, i) => shown.reduce((a, s) => {
-      const v = s.points[i];
-      return v === null || v === undefined ? a : a + v;
-    }, 0));
-    const measured = perIndex.filter((_, i) => measuredAt(i));
-    const peak = measured.length ? Math.max(...measured) : 0;
-    const peakAt = frame.times[perIndex.indexOf(peak)];
-    const avg = measured.length ? measured.reduce((a, v) => a + v, 0) / measured.length : 0;
-    const total = perIndex.reduce((a, v) => a + v, 0) * step;
+    const base = trafficStats(frame, hidden);
+    if (!base) return null;
     const sumOf = (name: string): number | null => {
-      const s = shown.find((x) => x.name === name);
-      return s ? s.points.reduce<number>((a, v) => a + (v ?? 0), 0) * step : null;
+      const s = frame.series.find((x) => x.name === name && !hidden.has(x.key));
+      return s ? s.points.reduce<number>((a, v) => a + (v ?? 0), 0) * frame.stepSeconds : null;
     };
-    const spikes = findSpikes(perIndex.map((v, i) => (measuredAt(i) ? v : null))).length;
-    return { peak, peakAt, avg, total, spikes, out: sumOf('Outbound'), in: sumOf('Inbound') };
+    return { ...base, out: sumOf('Outbound'), in: sumOf('Inbound') };
   }, [frame, hidden]);
 
   const scopeMeta = SCOPES.find((s) => s.key === scope) ?? SCOPES[0];
-  // See the admin tab: directions of one subject are independent lines, not
-  // parts of a whole. Only a breakdown across subjects stacks.
+  // A breakdown across applications or routes offers a combined Total; the
+  // account view is one subject's two directions, which it would just repeat.
   const singleSubject = scope === 'tenant' || Boolean(subject);
-  const stacked = Boolean(frame) && frame!.unit !== 'milliseconds' && !singleSubject;
+  const total = frame ? totalState(frame, hidden, !singleSubject) : null;
   const operatorError = error ? extractOperatorError(error) : null;
 
   const pct = bandwidth
@@ -168,7 +172,7 @@ export default function TenantTrafficTab() {
               const next = (k as TrafficScope) ?? 'tenant';
               setScope(next);
               setSubject(null);
-              setHidden(new Set());
+              resetRows();
               if (!metricsFor(next).some((m) => m.key === metric)) setMetric('traffic');
             }}
           />
@@ -182,7 +186,7 @@ export default function TenantTrafficTab() {
               options={options}
               loading={subjectsLoading}
               allLabel={`All ${scopeMeta.subjectLabel.toLowerCase()}s`}
-              onChange={(k) => { setSubject(k); setHidden(new Set()); }}
+              onChange={(k) => { setSubject(k); resetRows(); }}
             />
           </div>
         )}
@@ -196,7 +200,7 @@ export default function TenantTrafficTab() {
                 key={m.key}
                 type="button"
                 aria-pressed={m.key === effectiveMetric}
-                onClick={() => { setMetric(m.key); setHidden(new Set()); }}
+                onClick={() => { setMetric(m.key); resetRows(); }}
                 className={clsx(
                   'px-3 py-2 text-sm first:rounded-l-md last:rounded-r-md',
                   m.key === effectiveMetric
@@ -245,9 +249,9 @@ export default function TenantTrafficTab() {
           {
             key: 'spikes',
             label: 'Spikes flagged',
-            value: String(stats.spikes),
-            sub: stats.spikes ? 'click a marker to zoom' : 'none in this range',
-            alert: stats.spikes > 0,
+            value: String(stats.spikes.length),
+            sub: stats.spikes.length ? 'click a marker to zoom' : 'none in this range',
+            alert: stats.spikes.length > 0,
           },
         ]}
         />
@@ -276,17 +280,41 @@ export default function TenantTrafficTab() {
         )}
         {!isLoading && frame && (
           <>
-            <TrafficChart frame={frame} hidden={hidden} stacked={stacked} />
+            <TrafficChart
+              frame={frame}
+              hidden={hidden}
+              focusKey={focus}
+              combined={total?.offered ? combined : null}
+              showTotal={Boolean(total?.drawn)}
+              spikeIndices={stats?.spikes}
+              onZoom={(centre) => {
+                const c = new Date(centre).getTime();
+                const half = Math.max(1, (range.to.getTime() - range.from.getTime()) / 8);
+                setRange({ from: new Date(c - half), to: new Date(c + half), preset: null });
+              }}
+              onRangeSelect={(a, b) => setRange(draggedRange(a, b, frame.stepSeconds))}
+            />
             <div className="mt-3">
               <TrafficSummaryTable
                 frame={frame}
                 hidden={hidden}
                 subjectLabel={scopeMeta.subjectLabel}
-                onToggle={(key) => setHidden((prev) => {
-                  const next = new Set(prev);
-                  if (next.has(key)) next.delete(key); else next.add(key);
-                  return next;
-                })}
+                total={total?.offered && combined ? {
+                  name: totalLabel(frame.unit),
+                  points: combined,
+                  off: !total.drawn,
+                  disabled: !total.usable,
+                } : null}
+                focusKey={focus}
+                onFocus={setFocus}
+                onToggle={(key) => {
+                  setFocus(null);
+                  setHidden((prev) => {
+                    const next = new Set(prev);
+                    if (next.has(key)) next.delete(key); else next.add(key);
+                    return next;
+                  });
+                }}
               />
             </div>
           </>

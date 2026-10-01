@@ -114,6 +114,26 @@ export async function backupsV2ClientRoutes(app: FastifyInstance): Promise<void>
     return success(detail);
   });
 
+  // ── GET /api/v1/tenant/backups/bundles/:id/export-preflight ───────
+  //
+  // Same dialog data as the admin route, scoped to the caller's own bundle.
+  // Ownership is enforced the same way every handler in this file does it —
+  // tenantId from the JWT in the WHERE clause, so another tenant's bundle is a
+  // 404 and never reaches the preflight.
+  app.get('/tenant/backups/bundles/:id/export-preflight', {
+    schema: { tags: ['TenantBackups'], summary: 'Pre-flight check for my bundle export download', security: [{ bearerAuth: [] }] },
+  }, async (request) => {
+    const { id } = request.params as { id: string };
+    const tenantId = tenantIdFromRequest(request);
+    const [owned] = await app.db.select({ id: backupJobs.id }).from(backupJobs)
+      .where(and(eq(backupJobs.id, id), eq(backupJobs.tenantId, tenantId))).limit(1);
+    if (!owned) throw new ApiError('NOT_FOUND', 'Bundle not found', 404);
+    const { buildExportPreflight } = await import('./export-preflight.js');
+    const pre = await buildExportPreflight({ db: app.db }, id);
+    if (!pre) throw new ApiError('NOT_FOUND', 'Bundle not found', 404);
+    return success(pre);
+  });
+
   // ── POST /api/v1/tenant/backups/bundles/:id/export-token ───────────
   //
   // Mint a single-use download URL for one of the CALLER'S OWN bundles.

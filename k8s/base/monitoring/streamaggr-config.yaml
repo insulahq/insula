@@ -1,0 +1,61 @@
+# vmsingle stream-aggregation config (-streamAggr.config).
+#
+# WHY THIS EXISTS
+# Traefik's two latency histograms were 2,288 series — 13% of the whole TSDB
+# and the single largest thing in it — because Traefik labels every bucket with
+# code x method x protocol on top of entrypoint/service. Both readers throw all
+# of that away:
+#
+#   panel  histogram_quantile(0.95, sum by (le) (
+#            rate(traefik_entrypoint_request_duration_seconds_bucket{entrypoint="websecure"}[5m])))
+#   rule   1 - sum(rate(traefik_service_request_duration_seconds_bucket{
+#                        service=~"(platform|mail)-.*",le="1.2"}[30m]))
+#            / sum(rate(... le="+Inf" ...[30m]))
+#
+# i.e. 1,320 series are stored to answer a question that needs ~11.
+#
+# Relabeling CANNOT fix this: dropping `code`/`method` off a counter collapses
+# several series onto one label set and VM keeps a single arbitrary sample —
+# silently wrong, not merely lossy. Summing has to happen BEFORE storage, which
+# is exactly what stream aggregation does.
+#
+# `outputs: [total]` emits the summed counter increase as an ever-increasing
+# counter, so rate()/increase() over the aggregate behave exactly as they did
+# over the raw series, and counter resets in the inputs are handled.
+# `keep_metric_names: true` keeps the metric name unchanged so NO query has to
+# change (VM allows it only with a single output).
+#
+# Matched raw samples are aggregated AND DROPPED — that is vmsingle's default
+# (-streamAggr.keepInput=false), which is what makes this a saving rather than
+# an addition. Anything not matched here is stored untouched.
+#
+# `by:` IS THE CONTRACT. It must list every label the readers above group by or
+# filter on. Adding a query that filters these histograms on `code`, `method`
+# or `protocol` requires changing this file first — the label will not exist.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vmsingle-streamaggr-config
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+data:
+  streamaggr.yaml: |
+    # Per-entrypoint p95 latency panel. Readers group by `le` and filter on
+    # `entrypoint`; nothing else is used. 1,320 -> entrypoints x le buckets.
+    - match: 'traefik_entrypoint_request_duration_seconds_bucket'
+      interval: 60s
+      by: [entrypoint, le]
+      outputs: [total]
+      keep_metric_names: true
+      ignore_first_intervals: 1
+
+    # platform/mail latency SLO rule. Reader filters on `service` and `le`.
+    # The scrape config already drops this family for tenant services, so the
+    # input here is platform/mail only. 968 -> services x le buckets.
+    - match: 'traefik_service_request_duration_seconds_bucket'
+      interval: 60s
+      by: [service, le]
+      outputs: [total]
+      keep_metric_names: true
+      ignore_first_intervals: 1

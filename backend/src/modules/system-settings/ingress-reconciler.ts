@@ -51,6 +51,23 @@ export interface IngressRouteCurrentSpec {
      *  indistinguishable from it. */
     readonly uploadCarveOut?: boolean;
     readonly wafAdminCarveOut?: boolean;
+    /** True when the live IngressRoute already carries this host's large-download
+     *  carve-out. Same invisibility problem as the two above — see
+     *  DOWNLOAD_PATH_REGEXP. */
+    readonly downloadCarveOut?: boolean;
+    /**
+     * Middleware names actually attached to that carve-out route.
+     *
+     * ★ Presence is not enough, and assuming it was shipped a security fix that
+     * never reached a cluster. When the carve-out was corrected to drop the WAF
+     * as well as the body cap, only the MIDDLEWARE LIST changed — the `match`
+     * string was identical, so a comparison that only asked "does a download
+     * route exist?" read as in-sync and never re-applied. The image carried the
+     * fix and the cluster carried the vulnerability.
+     *
+     * Compared by CONTENT below. A middleware added or removed here is drift.
+     */
+    readonly downloadMiddlewares?: ReadonlyArray<string>;
   }>;
   readonly tlsSecret: string | null;
 }
@@ -201,6 +218,79 @@ const WAF_ADMIN_PATH_REGEXP = '^/api/v1/admin/security/waf-rule-exclusions';
  */
 const UPLOAD_ROUTE_PRIORITY = 101;
 
+/**
+ * Large DOWNLOADS, carved out of the response-buffering middleware.
+ *
+ * `waf-body-limit` is a Traefik `buffering` middleware. Buffering is not
+ * request-only: with `maxResponseBodyBytes: 0` (unlimited) it spools the WHOLE
+ * response to disk before releasing a single byte to the client. Measured on a
+ * production bundle export:
+ *
+ *   backend first byte      0.35 s   (in-pod, same signed token)
+ *   client first byte       NEVER    (0 bytes in 300 s through the ingress)
+ *   Traefik RSS             flat     (138 -> 144 MiB: not memory)
+ *   Traefik disk            +5.5 MB/s while stalled, +0.03 MB/s idle
+ *
+ * The spool files are oxy's `temp-multibuf-*` in Traefik's `/tmp`, which is an
+ * emptyDir on the NODE ROOT filesystem — the same disk as k3s, etcd,
+ * containerd and Longhorn. A 3 GB bundle is ~10 minutes of silence and 3 GB of
+ * node disk; a 25 GB one is over an hour and 25 GB. Worse, the spool is NOT
+ * removed when the client disconnects, so every abandoned download leaks its
+ * full size until the Traefik pod restarts. Four aborted test downloads left
+ * 2.68 GB behind.
+ *
+ * ★ Only `waf-body-limit` is dropped here — `crowdsec` AND `modsecurity-crs`
+ * both stay. That is deliberate and differs from the upload carve-out above,
+ * which drops the WAF too. Verified by reading the madebymode plugin source off
+ * a running Traefik pod: `ServeHTTP` buffers only `req.Body` and ends with
+ * `a.next.ServeHTTP(rw, req)`, passing the RAW ResponseWriter through. It never
+ * wraps or records the response, so it costs nothing on a download and its
+ * request-side inspection is retained. A download request is a GET with an
+ * empty body — there is nothing for the WAF to spool.
+ *
+ * ★ This drops the WAF TOO, exactly like the upload carve-out — and that is a
+ * correction, not a convenience. An earlier version of this route kept
+ * `modsecurity-crs` and dropped only the cap, on the reasoning that a
+ * `Method(`GET`)` term meant there was no request body for the plugin's
+ * unbounded `io.ReadAll(req.Body)` to read.
+ *
+ * THAT REASONING WAS WRONG. `Method()` matches the verb string; it does not and
+ * cannot reject a GET that carries a body, and the plugin has no method check.
+ * Measured against the ingress with the WAF still attached here:
+ *
+ *   GET + 40 MiB body, carved-out path -> uploaded=41,943,040 (ALL of it), 1.11 s
+ *   GET + 40 MiB body, normal path     -> uploaded=1,113,941 then 413, 0.016 s
+ *
+ * The whole body was read before ModSecurity returned its verdict — i.e. the
+ * exact mechanism behind the documented incident where one 600 MB
+ * unauthenticated request OOM-killed the Traefik DaemonSet in ~3 s and took
+ * every site offline. Keeping the WAF without the cap re-opens it for any
+ * client that sets a Content-Length on a GET.
+ *
+ * ★ And the cap cannot be replaced by a smaller one: `waf-body-limit` is a
+ * `buffering` middleware, and ANY buffering middleware spools the whole
+ * RESPONSE to disk regardless of its request settings. Adding a request-only
+ * cap here would re-introduce the multi-minute download stall this carve-out
+ * exists to fix. Dropping both is the only combination that is fast AND safe.
+ *
+ * `Method(`GET`)` is KEPT, but as scope-narrowing only — it stops the carve-out
+ * applying to verbs these paths never legitimately serve. Nothing about the
+ * safety of this route depends on it any more.
+ *
+ * Only the GET download paths are listed. `POST /:id/export`, `POST /:id/zip`
+ * and `POST /system-backup/pg-dump/stream` stream too and stay behind the full
+ * chain on purpose: neither panel uses them (both go through `export-token` ->
+ * signed GET), and they are admin-authenticated. `export-token` itself is a
+ * small JSON POST and belongs behind the cap.
+ */
+const DOWNLOAD_PATH_REGEXP =
+  '^/api/v1/('
+  + 'admin/tenant-bundles/(exports/.+|[^/]+/data-export)'
+  + '|tenant/backups/bundles/[^/]+/data-export'
+  + '|tenants/[^/]+/files/download'
+  + '|system-backup/pg-dump/runs/[^/]+/download'
+  + ')$';
+
 // ─── Pure helpers (exported for testability) ─────────────────────────────
 
 /**
@@ -342,6 +432,24 @@ export function buildIngressRouteBody(
       services: [{ name: r.serviceName, port: 80 }],
     });
 
+    // Large-download carve-out: the panel chain minus the response buffering
+    // AND the WAF, identical to the upload carve-out above. The cap and the WAF
+    // are removed together because the plugin reads any request body regardless
+    // of method — see DOWNLOAD_PATH_REGEXP. CrowdSec (and ForwardAuth when
+    // oauth2 is on) still apply.
+    const downloadMiddlewares = panelMiddlewares.filter(m =>
+      m.name !== WAF_BODY_LIMIT_MIDDLEWARE_NAME && m.name !== PLATFORM_WAF_MIDDLEWARE_NAME);
+    traefikRoutes.push({
+      // Method(`GET`) narrows the carve-out to the verbs these paths serve. It
+      // is NOT what makes it safe — that is the WAF being absent. See the note
+      // on DOWNLOAD_PATH_REGEXP; an earlier version had this backwards.
+      match: `Host(\`${r.host}\`) && PathRegexp(\`${DOWNLOAD_PATH_REGEXP}\`) && Method(\`GET\`)`,
+      kind: 'Rule',
+      priority: UPLOAD_ROUTE_PRIORITY,
+      middlewares: downloadMiddlewares,
+      services: [{ name: r.serviceName, port: 80 }],
+    });
+
     const panelRoute: Record<string, unknown> = {
       match: `Host(\`${r.host}\`)`,
       kind: 'Rule',
@@ -476,7 +584,19 @@ export async function reconcileIngressHosts(
           // Identical reasoning for the WAF-admin carve-out. Adding a carve-out
           // without adding its term here is a silent no-op, which is why this
           // comparison enumerates each one rather than counting routes.
-          r.wafAdminCarveOut
+          r.wafAdminCarveOut &&
+          // And for the large-download carve-out. Heeding the warning above:
+          // omit this term and every cluster that predates the carve-out reads
+          // as in-sync forever, so exports keep being spooled to node disk.
+          r.downloadCarveOut &&
+          // ★ CONTENT, not just presence. The carve-out's middleware list is the
+          // security-relevant part of it: neither the WAF nor the body cap may
+          // be attached (see DOWNLOAD_PATH_REGEXP for why they go together).
+          // Checking only `downloadCarveOut` above let a cluster keep an
+          // out-of-date middleware list forever, because correcting it does not
+          // change the route's `match`.
+          !(r.downloadMiddlewares ?? []).includes(PLATFORM_WAF_MIDDLEWARE_NAME) &&
+          !(r.downloadMiddlewares ?? []).includes(WAF_BODY_LIMIT_MIDDLEWARE_NAME)
         );
       }) &&
       currentRoute.tlsSecret === input.tlsSecretName;
@@ -554,7 +674,7 @@ function defaultDeps(opts: IngressReconcileOptions): IngressReconcileDeps {
           // the oauth2Backend field populated, so the desired-vs-current
           // comparison stays symmetrical with the desired-routes shape.
           .reduce<
-            Array<{ host: string; serviceName: string; oauth2Backend: string | null; uploadCarveOut: boolean; wafAdminCarveOut: boolean }>
+            Array<{ host: string; serviceName: string; oauth2Backend: string | null; uploadCarveOut: boolean; wafAdminCarveOut: boolean; downloadCarveOut: boolean; downloadMiddlewares: string[] }>
           >((acc, route) => {
             const match = String(route.match ?? '');
             const hostMatch = match.match(/Host\(`([^`]+)`\)/);
@@ -562,15 +682,26 @@ function defaultDeps(opts: IngressReconcileOptions): IngressReconcileDeps {
             if (!host) return acc;
             const services = (route.services as Array<Record<string, unknown>>) ?? [];
             const svcName = (services[0]?.name as string | undefined) ?? '';
+            const mwNames = ((route.middlewares as Array<Record<string, unknown>>) ?? [])
+              .map((m) => String(m.name ?? ''));
             const isOauth2Path = /PathPrefix\(`\/oauth2`\)/.test(match);
             const isUpload = match.includes('upload-raw');
             const isWafAdmin = match.includes('waf-rule-exclusions');
+            // Matched on the WHOLE regexp rather than a substring of it. The two
+            // above key on a fragment ('upload-raw'), which silently stops
+            // identifying the route if that fragment is ever edited out of the
+            // pattern. The download pattern covers several unrelated paths, so
+            // there is no single fragment that is safe to key on.
+            const isDownload = match.includes(DOWNLOAD_PATH_REGEXP);
             const existing = acc.find((r) => r.host === host);
             if (existing) {
               if (isUpload) {
                 existing.uploadCarveOut = true;
               } else if (isWafAdmin) {
                 existing.wafAdminCarveOut = true;
+              } else if (isDownload) {
+                existing.downloadCarveOut = true;
+                existing.downloadMiddlewares = mwNames;
               } else if (isOauth2Path) {
                 existing.oauth2Backend = svcName;
               } else {
@@ -579,10 +710,12 @@ function defaultDeps(opts: IngressReconcileOptions): IngressReconcileDeps {
             } else {
               acc.push({
                 host,
-                serviceName: isOauth2Path || isUpload || isWafAdmin ? '' : svcName,
+                serviceName: isOauth2Path || isUpload || isWafAdmin || isDownload ? '' : svcName,
                 oauth2Backend: isOauth2Path ? svcName : null,
                 uploadCarveOut: isUpload,
                 wafAdminCarveOut: isWafAdmin,
+                downloadCarveOut: isDownload,
+                downloadMiddlewares: isDownload ? mwNames : [],
               });
             }
             return acc;

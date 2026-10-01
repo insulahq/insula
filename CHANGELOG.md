@@ -12,6 +12,188 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+
+- **Import a tenant bundle from a direct upload (ADR-063).** A bundle exported
+  from this or another cluster can be uploaded and re-ingested, and the result
+  is indistinguishable from a bundle captured here: it browses, restores,
+  selectively restores and re-exports with no changes to any of those paths.
+  Operators import on **Backups → Tenants → Bundles**, tenants on their own
+  **Backups** page; both surfaces show what will be imported, what will **not**
+  and why, the storage head-room, and any blocker — before committing, because
+  an import is not undone by a button. Every imported bundle carries the
+  `manual-import` label.
+
+  Transport reuses the existing chunked file upload, so there is no new upload
+  surface, no new size ceiling and no second copy of the resumable-chunk logic.
+  The archive lands on the tenant's own file space; a Job then extracts each
+  unit straight into its restic **capture root** and snapshots it there, which
+  is what makes the result readable by restore and browse. Peak disk is the
+  largest single unit, bounded by an `emptyDir.sizeLimit` capped by the
+  tenant's own storage allowance.
+
+  Tenant self-import is restricted to `files` and `mailboxes`: `config`
+  restores platform DB rows and `secrets` carries TLS private keys, so both are
+  dropped with a stated reason rather than silently. Every mailbox address in
+  an upload is checked against a mail domain the **target** tenant owns, before
+  anything is created — an upload, unlike a capture, can name any address it
+  likes. The same ordering defect is fixed in the pre-existing
+  `mailboxes-by-address` restore path: validate, then act.
+
+  Nothing is registered until every promised unit and artifact has landed, so a
+  half-imported bundle is never visible to the restore cart. A failed import
+  forgets its partial snapshots, drops the reserved bundle and deletes its row;
+  it **keeps** the uploaded archive, because that file is the user's and a
+  retry should not cost a multi-GB re-upload. An abandoned upload is reclaimed
+  by a sweeper that skips anything whose import is still live.
+
+  Sizes declared in an uploaded `meta.json` are treated as claims, not
+  measurements: quota and containment use the larger of declared and measured
+  archive size, and the quota is re-checked against what actually landed.
+
+- **Ingress-route traffic is named after the route.** Traefik labels a
+  route's traffic only with `<namespace>-<ingressroute>-<hash of the match
+  rule>`, and the breakdown fell back to `<tenant> · <ingress object> #1/#2`
+  for every tenant serving more than one host. The hash is sha256 of the
+  literal rule, so hashing each LIVE IngressRoute rule and looking the label
+  up names the series exactly: `www.example.test → website` (admin adds
+  `· <tenant>`), `example.test/shop → shop`, and
+  `www.example.test (http → https redirect)` for the port-80 router. The
+  platform's own routes, which read `platform #1 … #4`, are named the same way
+  in the admin panel (`admin.example.test/api → platform-api · platform`). Against a
+  week of production labels, 97 of 103 series were named exactly with no
+  collisions. cert-manager solver series and routes that no longer exist are
+  left out of the breakdown, the table and the picker, and take no top-N slot.
+  When the cluster cannot be read, series keep their previous names and
+  nothing is hidden that could not be verified.
+
+- **Export download dialog with a pre-flight check.** "Download" used to be a
+  button whose only feedback was the browser's own download indicator, which
+  does not appear until the first byte arrives — indistinguishable from a hang.
+  Both panels now open a dialog on click, before any request, naming the step it
+  is on (checking contents → preparing a secure link → handing off to the
+  browser) and listing what the archive will contain with per-component sizes.
+
+  A new `GET …/export-preflight` reports the components and whether the
+  cluster-wide capture gate is full, so an export that will legitimately **queue
+  behind an unrelated tenant's backup** says so instead of appearing stuck. The
+  warning **pauses rather than blocks**: the preflight is advisory, the export
+  would still succeed after waiting, and refusing would be wrong twice over —
+  the answer can go stale between check and click, and a capture finishing a
+  second later would have the UI denying an export that works. A preflight that
+  itself fails also falls through to "download anyway" rather than blocking.
+
+- **Traefik response-buffer spool reaper.** Traefik's `buffering` middleware
+  spools whole responses to `/tmp/temp-multibuf-*` and never removes them when a
+  client disconnects mid-transfer. That `/tmp` is an emptyDir on the **node root
+  filesystem** — the same disk as k3s, etcd, containerd and Longhorn — so the
+  leak ends in DiskPressure eviction rather than merely wasted space. A
+  15-minute sweep in platform-api now removes orphans older than an hour (the
+  age threshold is what keeps it from cutting off an in-flight transfer), and
+  publishes `platform_ingress_spool_bytes` so the leak is visible rather than
+  only swept: if the spool starts outpacing the sweep, that is an upstream
+  regression — most likely a download route that lost its GET carve-out.
+
+  Runs via `pods/exec` from platform-api rather than a sidecar because the spool
+  lives in Traefik's own emptyDir, which no other pod can mount; a sidecar would
+  mean changing Traefik's Helm values, which reaches fresh installs only.
+
+### Fixed
+
+- **Traffic breakdowns: every line is its own tenant again.** A breakdown drew
+  each series as a LINE at the running total of the ones below it, so every
+  tenant above the biggest one repeated its spikes, and the small ones lay on
+  top of each other. Each series is now drawn at its own value on one
+  full-width chart. Paint order follows traffic: lowest first, highest on top.
+  A grey **Total** (sum of the visible rows; **Average** for latency) is
+  offered on every breakdown except Cluster, when there are two or more rows.
+  It is off by default, toggled from its table row, and greyed out while fewer
+  than two rows are shown. Hovering a table row highlights that line and fades
+  the rest; dragging across the chart zooms to that range; spike markers have
+  a 26 px target, grow on hover or keyboard focus and zoom on click. The
+  readout shows each row's share and sits on the side away from the pointer.
+  Axis labels land on round numbers, and the steps pill matches the timezone
+  pill. Both panels.
+
+  Also fixed in the same views: the cluster tiles added *Node-to-node* on top
+  of the wire total it is already inside; a latency breakdown's tiles added
+  the services' averages together; the table's trend sparklines kept every
+  Nth point and dropped short spikes; hiding a row could recolour the others.
+
+- **Large downloads no longer stall for minutes and leak the node's disk.**
+  Bundle exports, tenant file downloads and pg-dump artifacts were routed
+  through `waf-body-limit`, a Traefik `buffering` middleware, which spools the
+  **entire response to disk** before releasing a single byte. Measured on a
+  3 GB production bundle: the backend's first byte took **0.35 s** while the
+  client got **zero bytes in 300 s**; Traefik's RSS stayed flat while its disk
+  grew **5.5 MB/s** (idle control: 0.03 MB/s). A 25 GB bundle would be over an
+  hour of apparent hang. Worse, the spool is **never removed when the client
+  disconnects** — four abandoned downloads left **2.68 GB** of orphaned
+  `temp-multibuf-*` files on Traefik's emptyDir, which is the **node root
+  filesystem** shared with k3s, etcd, containerd and Longhorn.
+
+  GET download routes now bypass that middleware, the same way `files/upload-raw`
+  already bypassed it for uploads. `maxResponseBodyBytes: 0` does **not** mean
+  "unbuffered" — it means "no size limit" — and the CI guard's comment asserting
+  otherwise is corrected.
+
+  The carve-out drops the WAF **together with** the cap, exactly as the existing
+  `files/upload-raw` carve-out does. An earlier iteration kept the WAF and
+  dropped only the cap, on the reasoning that a ``Method(`GET`)`` term meant
+  there was no request body for the plugin's unbounded `io.ReadAll(req.Body)` to
+  read. **That was wrong, and a security review caught it**: `Method()` matches
+  the verb string and does not reject a GET carrying a body. Measured against the
+  ingress, a GET with a 40 MiB body on the carved-out route uploaded **all
+  41,943,040 bytes** before ModSecurity answered, versus 1,113,941-then-413 on a
+  capped route — the same mechanism as the 600 MB request that OOM-killed the
+  Traefik DaemonSet. A smaller request-only cap is not a substitute either: any
+  `buffering` middleware re-spools the whole response.
+
+  POST streaming routes (`/:id/export`, `/:id/zip`, `pg-dump/stream`) stay behind
+  the full chain; neither panel uses them. `ci-waf-body-limit-check.sh` gained a
+  route-level scan enforcing the corrected invariant — **a route that attaches
+  the WAF must attach the cap, with no method exception** — because its existing
+  checks were file-level and a per-route `.filter()` slipped past them.
+
+### Changed
+
+- **vmsingle: cut the metric cardinality that was OOM-killing it, and stop
+  paying VictoriaMetrics' million-series entry price on a 17k-series cluster.**
+  The pod had been running at 85–91% of its 384Mi limit continuously; the
+  memory looked flat only because a cgroup at its ceiling cannot show growth —
+  the real demand escaped as CPU (0.01 → 0.21 cores, all of it garbage
+  collection) and page-cache thrash instead. Four changes, no limit increase:
+  - **Per-cache ceilings.** `-memory.allowedBytes` budgets the caches only as a
+    group, leaving individual caches free to grow to the whole budget.
+    `-storage.cacheSize*` bounds them individually. This is a worst-case bound,
+    **not** a saving: `storage/tsid` and `storage/metricName` report exactly
+    32 MiB resident before *and* after, because that is fastcache's allocation
+    floor. Note `vm_cache_size_max_bytes` misreports these caches — it keeps
+    showing the `-memory.allowedBytes` budget regardless of the override; the
+    startup log is the only honest source.
+  - **Series nothing reads are no longer scraped** (~1,800 series): the whole
+    `kubelet-resource` job, which was 100% redundant with cadvisor and was an
+    unguarded second source of pod-name churn; `container_fs_usage_bytes`;
+    per-volume Longhorn replica/engine state; four CoreDNS histograms; six
+    Traefik families; three cert-manager timestamp families. Verified against
+    every PromQL string in the backend *and* 48h of vmsingle's own
+    `top_queries` on both clusters.
+  - **Pod-name churn guard.** Short-lived guard/reconciler CronJob pods no
+    longer mint a fresh series set every run. Real batch work (backups, barman,
+    mailbox jobs) is deliberately *not* matched — its
+    `container_oom_events_total` is load-bearing. Cadence is unchanged; the
+    detection window was worth more than the series.
+  - **Stream aggregation** sums Traefik's two latency histograms by the labels
+    their readers actually group on, before storage. No query changed.
+
+  `GOMEMLIMIT` stays at 192Mi — it was briefly raised on the assumption that the
+  cache ceilings had freed memory, and measurement refuted that. What fixes the
+  GC spiral is the smaller index, not a bigger limit: measured on DEV across
+  this change, live heap fell 138 → 93 MiB and
+  `go_memstats_next_gc_bytes / go_memstats_alloc_bytes` recovered to ~1.26. That
+  ratio, not the limit, is the durable signal — at `GOGC=40` it should sit near
+  1.40, and drifting under ~1.1 means the limit is binding again.
+
 ## [2026.9.41] - 2026-09-30
 
 ### Fixed

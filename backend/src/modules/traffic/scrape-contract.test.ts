@@ -21,7 +21,18 @@ const yaml = readFileSync(SCRAPE_CONFIG, 'utf8');
 
 /** Pull a `regex: '…'` out of the cadvisor job by the action that follows it. */
 function cadvisorRegex(action: 'keep' | 'drop', mustContain: string): RegExp {
-  const job = yaml.slice(yaml.indexOf('job_name: kubelet-cadvisor'), yaml.indexOf('job_name: kubelet-resource'));
+  // Slice to the NEXT job, whatever it is. This used to name
+  // `job_name: kubelet-resource` as the end marker; that job was later
+  // deleted as redundant, indexOf returned -1, and the slice silently
+  // became "cadvisor to one char before EOF" — every later job's regexes were
+  // suddenly in scope. It still passed, purely because no other job happens to
+  // keep on `container_`. A boundary that survives its neighbour being removed
+  // is the point.
+  const start = yaml.indexOf('job_name: kubelet-cadvisor');
+  expect(start, 'kubelet-cadvisor job not found').toBeGreaterThan(-1);
+  const next = yaml.indexOf('- job_name:', start + 1);
+  expect(next, 'no job after kubelet-cadvisor to bound the slice').toBeGreaterThan(-1);
+  const job = yaml.slice(start, next);
   const found = [...job.matchAll(/regex: '([^']+)'\n\s+action: (keep|drop)/g)]
     .filter(([, re, act]) => act === action && re.includes(mustContain));
   expect(found, `no ${action} rule matching ${mustContain}`).toHaveLength(1);
@@ -42,15 +53,49 @@ describe('cAdvisor keep list', () => {
 
   it('still keeps what the SLO pack and the meter already read', () => {
     for (const m of ['container_memory_working_set_bytes', 'container_cpu_usage_seconds_total',
-      'container_fs_usage_bytes', 'container_oom_events_total', 'machine_memory_bytes', 'machine_cpu_cores']) {
+      'container_oom_events_total', 'machine_memory_bytes', 'machine_cpu_cores']) {
       expect(keep.test(m), m).toBe(true);
     }
+  });
+
+  it('no longer keeps container_fs_usage_bytes — nothing ever read it', () => {
+    // 215 series. Dropped because nothing reads it: no PromQL string in the
+    // backend names it, and it appears in 48h of vmsingle's own top_queries
+    // only inside ad-hoc `count by (job)` diagnostics. Per-tenant storage
+    // usage comes from kubelet_volume_stats_used_bytes (kubelet-volumes job),
+    // which is what resource-metrics.ts actually reads.
+    expect(keep.test('container_fs_usage_bytes')).toBe(false);
   });
 
   it('does not open the floodgates', () => {
     for (const m of ['container_network_receive_packets_total', 'container_tasks_state',
       'container_spec_memory_limit_bytes', 'go_goroutines']) {
       expect(keep.test(m), m).toBe(false);
+    }
+  });
+});
+
+describe('CronJob pod-churn drop', () => {
+  const churn = cadvisorRegex('drop', 'traefik-plugin-guard');
+
+  it('drops the high-frequency guard pods that were minting the churn', () => {
+    // Pod name is a label, so a */2 CronJob mints a fresh series set 720x/day
+    // and each one occupies the index for the full 30d retention.
+    for (const pod of ['traefik-plugin-guard-10000001-aaaaa',
+      'ingress-external-ips-reconciler-10000002-bbbbb', 'version-poller-10000003-ccccc']) {
+      expect(churn.test(pod), pod).toBe(true);
+    }
+  });
+
+  it('does NOT drop real batch work — its OOM events are load-bearing', () => {
+    // These genuinely get OOM-killed and container_oom_events_total for them
+    // feeds the system-container-oom rule. A generic "looks like a CronJob pod"
+    // regex would have swallowed them, which is why the rule lists prefixes.
+    for (const pod of ['bk-files-example-10000004-ddddd', 'bk-mbox-example-10000005-eeeee',
+      'barman-cloud-10000006-fffff', 'platform-cluster-state-backup-10000007-ggggg',
+      'platform-secrets-backup-10000008-hhhhh', 'stalwart-snapshot-cron-200001010000',
+      'platform-api-5f8d9-abcde', 'system-db-1']) {
+      expect(churn.test(pod), pod).toBe(false);
     }
   });
 });
