@@ -134,6 +134,17 @@ describe('BootstrapCommandModal', () => {
     expect(screen.getByText('Cluster version unknown')).toBeInTheDocument();
   });
 
+  it('Escape closes the modal', async () => {
+    fetchBootstrapCommand.mockResolvedValue(WORKER);
+    const onClose = vi.fn();
+    render(<BootstrapCommandModal cppName="w3" onClose={onClose} />);
+    await screen.findByText('Copy all');
+    fireEvent.keyDown(window, { key: 'Enter' });
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it('copies the whole script', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.assign(navigator, { clipboard: { writeText } });

@@ -27,6 +27,13 @@ export default function BootstrapCommandModal({ cppName, onClose }: BootstrapCom
   const [data, setData] = useState<BootstrapCommandResponse | null>(null);
   const [error, setError] = useState<OperatorError | null>(null);
 
+  // Escape closes, like every other admin modal (found by driving it in a real browser).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
   useEffect(() => {
     let cancelled = false;
     fetchBootstrapCommand(cppName)
