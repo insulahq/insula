@@ -12,6 +12,82 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### BREAKING
+
+- **`bootstrap.sh` now decides CREATE vs JOIN from its flags alone.** Create the first server of a
+  new cluster with `bootstrap.sh --domain <apex> …` — **without** `--join-as`. Join an existing
+  cluster with `bootstrap.sh --join-as server|worker --server <ip> --token <token>`. The old
+  first-server form `--join-as server` (no `--server`) is refused with a message showing the new
+  command; update any automation that still uses it. A join refuses cluster-wide flags
+  (`--domain`, `--env`, `--release-tag`, `--acme-*`, `--calico-*`, `--secrets-bundle`,
+  `--backup-target-*`, `--skip-flux`, …) instead of silently applying them.
+
+### Fixed
+
+- **Joining a server no longer re-installs the platform over the live cluster.** A server join
+  used to run the whole cluster install again: it rewrote the cluster configuration with the
+  joining node's defaults (the admin, tenant and webmail certificates switched to the untrusted
+  Let's Encrypt **staging** issuer), reset seed-once settings to their install defaults (the
+  CrowdSec community blocklist was switched off and the platform database's WAL archive was
+  redirected), restarted the mail server, and created a second super-admin account. A join now
+  does node-local work only — hardening, firewall, k3s, node labels, the Longhorn node tag and
+  the operator CLI — and checks before touching the host that `--server` answers and that
+  `--token` belongs to that cluster.
+- **Re-running `bootstrap.sh` on the first server keeps the live cluster as it is.** It keeps the
+  existing certificate issuer and mail IP unless you explicitly pass new ones, leaves the platform
+  manifests to Flux, never overwrites seed-once objects, and no longer seeds a bootstrap admin on
+  an installed platform. It no longer patches the platform Deployments' placement either, so a
+  re-run does not restart the API and panels.
+- **The cluster join token is no longer world-readable.** New server joins keep it in the
+  root-only `k3s.service.env`; a host migration moves it there on servers joined by older
+  releases (applied at the node's next k3s restart — the migration never restarts k3s).
+- **A freshly bootstrapped node no longer replays every historical host migration.** Its ledger
+  is recorded as a baseline of the release it was installed at (`insula host-config baseline`,
+  shown as `baseline` in the host-migration status), so the first hourly converge has nothing to
+  replay. Replaying them had restarted k3s on a new server and stalled a 2-server control plane.
+- **Traefik writes its access log again — on every cluster.** Fresh installs never had one: the
+  install values set the log file and format but not `enabled`, which the Traefik chart requires
+  before it renders any access-log setting. Clusters upgraded from older releases had it only until
+  the 2026.9.18 latency-bucket update, whose Helm upgrade silently removed it. Without the access log
+  the CrowdSec agent had nothing to parse — its HTTP probing and crawling detections could never
+  fire — and no request was recorded anywhere. A host migration now enables it through Traefik's
+  Helm values, so later upgrades keep it (Traefik restarts one node at a time while it applies).
+  The CrowdSec agent now also picks the log up when it starts before Traefik has created the file
+  (a new node, or any node after a reboot) — previously it then never read it.
+  The older 2026.9.9 access-log migration no longer fails with "Duplicate value:
+  traefik-access-log" on a newly joined node, which had blocked platform updates.
+- **Traefik access logs are kept 30 days, then deleted.** They used to be rotated hourly and only
+  seven files kept (a few hours of history), and fresh installs had no rotation at all — nor, on
+  minimal OS images, the `logrotate` tool it needs. Every node now rotates the access log daily
+  (earlier once it passes 200 MB), compresses it, and removes anything older than 30 days.
+  Existing nodes are converted by a host migration, which also installs `logrotate` if missing.
+- **Rollouts spread replicas across nodes again.** Platform, CrowdSec, mail and webmail
+  Deployments count only the new revision's pods when spreading, so a rollout right after a node
+  joins no longer puts every replica on the new, empty node.
+- **The bootstrap transcript no longer contains secrets.** `/var/log/insula-bootstrap.log` is
+  root-only, secret values passed to `kubectl` are redacted in it, and the bootstrap admin
+  password is no longer printed.
+- **The admin panel's "Get bootstrap command" now gives the commands to run on the new node itself.**
+  They download this cluster's own `insula` release, verify its signature against the cluster's
+  release key before installing it (an unverified binary is never installed or run), and join with
+  the right flags — including `--dual-stack` when the cluster is dual-stack. A worker gets a real
+  join token that expires after two hours and is revoked once the node has joined; a server join
+  shows how to read the server token on an existing server (Kubernetes cannot hand that one out).
+  The old workstation command (`--remote`, `--ssh-key`, `peer-firewall-add`) is gone.
+- **A joining node no longer raises "node down / not ready" alerts while it bootstraps.** Health
+  notifications for a node are held for its first 30 minutes (`NODE_JOIN_ALERT_GRACE_MINUTES`); a
+  node that is still unhealthy when that window closes is alerted right away, so nothing is lost.
+- **New notifications: "Node joined the cluster" and "Node removed from the cluster"** — once per
+  event, naming the node, its role and addresses.
+- **Mail reachability checks test only the nodes that actually serve mail.** A non-mail node (for
+  example a newly joined server) showed failing PTR, blocklist and port checks: a renamed setting
+  made every server count as a mail endpoint. The checks now follow the mail placement and
+  port-exposure settings, test IPv4 and IPv6 per node, list standby nodes as "not tested — standby",
+  and the mail health view shows exactly which nodes and addresses were tested.
+- **Joining a second server warns about the 2-member etcd** it creates — the bootstrap output and
+  the admin panel's generated join command both say so. A 2-server control plane stops when
+  either server is down; go from one server to three, or add workers.
+
 ## [2026.10.2] - 2026-10-01
 
 ### Fixed
