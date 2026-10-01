@@ -711,6 +711,8 @@ jobs:
         run: ./scripts/ci-host-migrations-check.sh
       - name: Host-migration ↔ bootstrap parity (baselined fresh nodes)
         run: ./scripts/ci-host-migration-bootstrap-parity.sh
+      - name: Verify no source file hides from grep behind a raw NUL byte
+        run: ./scripts/ci-no-nul-bytes-in-source.sh
       - name: Verify kubelet graceful node shutdown stays wired (bootstrap ≡ host-migration)
         run: ./scripts/ci-graceful-shutdown-check.sh
       - name: Verify no converger tests kubectl JSON by grepping "key":"value"

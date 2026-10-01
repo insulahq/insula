@@ -329,7 +329,7 @@ admission policies, so it cannot lift them.
 
 | Policy | What platform-api may still do |
 |---|---|
-| `platform-api-pods-exec-scope` | exec into pods in tenant namespaces, `platform`, `mail`, `traefik` |
+| `platform-api-pods-exec-scope` | exec into pods in tenant namespaces, `platform`, `mail`, `traefik`, `crowdsec`, `platform-system` (CrowdSec `cscli`) |
 | `platform-api-proxy-scope` | read kubelet `/stats/summary` via `nodes/proxy` (no `/exec`, `/run`, …); proxy only to tenant `file-manager` and `mail/stalwart-mgmt` |
 | `platform-api-flux-scope` | change only `spec.suspend` on a Flux Kustomization, and only `spec.ref` (release tag, `main`/`development` branch, or full commit SHA) on a GitRepository |
 | `platform-api-namespace-scope` | create, label and delete tenant namespaces only |

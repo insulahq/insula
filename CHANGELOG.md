@@ -104,7 +104,7 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   `create`, `update`, `patch`, `delete`).
 - **The management API's own account is fenced in by admission policies.** Its role has to stay
   broad, so seven policies now limit it to what it actually does: exec only into tenant,
-  `platform`, `mail` and `traefik` pods; no kubelet exec through the node proxy; Flux may only be
+  `platform`, `mail`, `traefik` and CrowdSec pods; no kubelet exec through the node proxy; Flux may only be
   suspended/resumed or pinned to a release, branch or commit — never pointed elsewhere; only
   tenant namespaces and tenant RBAC may be written; Secrets and ConfigMaps only in the namespaces
   it manages; and no workload may be created as a foreign ServiceAccount, or get a new image or

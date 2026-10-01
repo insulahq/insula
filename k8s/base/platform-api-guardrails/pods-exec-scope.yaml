@@ -12,10 +12,14 @@
 #   - platform  — system-db (CrowdSec/DB-isolation/Roundcube role reconcilers,
 #                 PITR), the node terminal;
 #   - mail      — Stalwart (health, JMAP, proxy networks, queue, migration);
-#   - traefik   — the ingress spool reaper.
+#   - traefik   — the ingress spool reaper;
+#   - crowdsec  — `cscli` in the LAPI pod (decisions, bouncers, allowlists,
+#                 auto-ban, console — security-hardening/cscli-exec.ts);
+#   - platform-system — `cscli` in the crowdsec-agent pods (scenarios,
+#                 parser metrics).
 #
 # Everything else — kube-system, flux-system, cert-manager, longhorn-system,
-# cnpg-system, crowdsec, calico-*, … — is denied. platform-api cannot lift
+# cnpg-system, calico-*, … — is denied. platform-api cannot lift
 # this: it has no access to admissionregistration.k8s.io.
 #
 # Adding a namespace here is a deliberate act: a new exec target in the
@@ -48,7 +52,7 @@ spec:
         namespaceObject.metadata.annotations['insula.host/tenant-namespace'] == 'true'
   validations:
     - expression: >-
-        variables.ns in ['platform', 'mail', 'traefik'] ||
+        variables.ns in ['platform', 'mail', 'traefik', 'crowdsec', 'platform-system'] ||
         variables.ns.startsWith('tenant-') ||
         (variables.ns.startsWith('ns-') && variables.annotatedTenant)
       messageExpression: >-

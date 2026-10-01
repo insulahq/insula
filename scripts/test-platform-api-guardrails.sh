@@ -72,7 +72,7 @@ exec_check() {
   [[ -z "$pod" ]] && { skip "exec in $ns" "no running pod"; return; }
   expect "$want" "exec in $ns" as_read -n "$ns" exec "$pod" -- true
 }
-for ns in platform mail traefik; do exec_check "$ns" allowed; done
+for ns in platform mail traefik crowdsec platform-system; do exec_check "$ns" allowed; done
 if [[ -n "$TENANT_EXEC_NS" ]]; then exec_check "$TENANT_EXEC_NS" allowed; else skip "exec in tenant-*" "no tenant pod"; fi
 for ns in kube-system flux-system cert-manager longhorn-system cnpg-system; do exec_check "$ns" denied; done
 
