@@ -343,6 +343,58 @@ own key, so a plain download never exposes TLS private keys.
 Use this when a tenant asks for their data, when you are moving a tenant to
 another cluster by hand, or to satisfy a data-portability request.
 
+## Importing a bundle
+
+**Backups → Tenants → Bundles → Import bundle.**
+
+The reverse of an export: take a bundle archive — from this cluster or another
+one — and put it back. The result is a normal bundle. It appears in the tenant's
+bundle list, it browses, it restores, you can export it again. Nothing about the
+restore side knows it arrived by upload.
+
+Pick the archive, choose which tenant it goes into and which backup target
+stores it, and the dialog does the rest: it uploads the file in parallel chunks
+(cancellable, with real progress), reads the manifest, and then **stops and
+shows you what it found** before anything is committed:
+
+- every file and mailbox it will import
+- anything it will **not** import, and why
+- the tenant's storage head-room
+- any reason it cannot proceed at all
+
+Read that screen. An import is not undone by a button.
+
+Imported bundles are labelled **`manual-import`**, plus whatever note you add,
+so they are obvious in the bundle list.
+
+### Encrypted archives
+
+If you exported with a passphrase, supply the same passphrase here. The dialog
+asks for one as soon as you pick a `.enc` file. A wrong passphrase is reported
+as a wrong passphrase, not as a corrupt archive.
+
+### What gets refused
+
+- **Mailboxes on a domain the target tenant does not own.** An export came from
+  a tenant who owned those addresses; an upload is just a file and can claim
+  anything. Every address is checked against the target tenant's verified mail
+  domains before a single mailbox is created. Add and verify the domain first,
+  or import into the tenant that owns it.
+- **A bundle larger than the tenant's storage allowance.** Checked against the
+  archive's real size, not the size it claims, and checked again against what
+  actually landed.
+- **The older whole-tenant mailbox format**, for tenants importing on their own
+  behalf — its addresses cannot be listed before importing, so only an operator
+  can bring one in, and the manual says so on screen.
+
+### If an import fails
+
+Nothing is registered. Either the bundle is complete or it does not exist —
+there is no half-imported bundle for the restore cart to trip over. Partial
+snapshots are removed, and **the uploaded archive is kept** so retrying does not
+mean re-uploading several gigabytes. Abandoned uploads are cleaned up on their
+own.
+
 ## Restoring: the wizard and the cart
 
 Two restore experiences, depending on what you're restoring.
