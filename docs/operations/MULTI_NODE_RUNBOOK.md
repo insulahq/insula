@@ -13,14 +13,83 @@ adding worker nodes. Pairs with ADR-031 (architecture) and
   ingress-nginx DaemonSet, Longhorn replica.
 - **Quorum**: etcd requires a majority of servers to accept writes.
   3 servers tolerate 1 failure; 5 servers tolerate 2. Never run an
-  even count — it can't form a quorum on partition.
+  even count — it can't form a quorum on partition, and 2 servers are
+  strictly *less* available than 1 (see below).
 
 ## Growing the cluster
 
 > Node-join commands below run through the signed `insula` binary
-> (`insula bootstrap …`, ADR-055) — download it to your workstation once
-> and it copies itself to each target over SSH; no repo clone. A checkout's
-> `./scripts/bootstrap.sh` is the dev-path equivalent with identical flags.
+> (`insula bootstrap …`, ADR-055) — either on the new node itself (what the
+> admin panel's *Get bootstrap command* renders), or from your workstation,
+> where `--remote` copies the binary to the target over SSH; no repo clone.
+> Either way, use the binary of **the release the cluster runs** (`insula
+> version` on an existing server), never `latest`: the installer pins k3s per
+> release, so a newer binary installs a different k3s than the cluster runs.
+> A checkout's `./scripts/bootstrap.sh` is the dev-path equivalent with
+> identical flags.
+
+### Create vs join — two different commands
+
+`insula bootstrap` has exactly two modes, and they never mix:
+
+| Mode | Command | What it touches |
+|------|---------|-----------------|
+| **Create** (first server only) | `insula bootstrap --domain <apex> [cluster flags…]` — **no** `--join-as`, `--server` or `--token` | Everything: k3s `--cluster-init`, cluster config, Flux, manifests, cert issuers, the admin seed, databases |
+| **Join** (every other node) | `insula bootstrap --join-as server\|worker --server <existing-node-ip> --token <node-token> [node flags…]` | **Node-local only**: host hardening, firewall, k3s join, node labels/taints, Longhorn node tag (servers), the operator CLI. Never cluster-wide state |
+
+- `--join-as` **requires** both `--server` and `--token`; `--server`/`--token`
+  without `--join-as` is an error.
+- A join accepts only node-scoped flags: `--host-tenant-workloads`,
+  `--k3s-version`, `--k3s-installer-sha256`, `--cluster-network-cidr[-v6]`,
+  `--dual-stack`/`--no-dual-stack`, `--pod-cidr-v6`, `--service-cidr-v6`,
+  `--allow-source`, `--ssh-via-mesh`, `--skip-hardening`, `--skip-vpn`,
+  `--dry-run`, `--plain`, `--platform-ops-release-base`, plus
+  `--remote`/`--ssh-key`/`--ssh-user`. `--dual-stack` must match how the
+  cluster was created.
+- A join **refuses, loudly**, every cluster-scoped flag — `--domain`, `--env`,
+  `--release-tag` (it sets the cluster's Flux source), `--acme-*`,
+  `--trust-ca`, `--stalwart-*`, `--calico-*`, `--with-monitoring`,
+  `--skip-monitoring`/`--skip-flux`/`--skip-longhorn`/`--skip-cnpg`, the smoke
+  flags, the operator-key / secrets-bundle / restore flags,
+  `--backup-target-*`, `--pre-enroll-peer`. Those belong to the first server;
+  `insula bootstrap --help-full` is the authoritative list. (Before this split
+  a server join re-ran the full cluster install against the live cluster —
+  rewriting cluster config, re-applying manifests, seeding a second
+  super_admin and resetting operator settings.)
+- **Pre-enroll first.** Create a `ClusterPendingPeer` for the new node's IP
+  (admin UI → Security → Network Trust → Pending Peers → *Pre-Enroll Node*, or
+  the CR) **before** running the join. Do not `peer-firewall-add` by hand: the
+  firewall reconciler reverts it within seconds, and the pending peer already
+  opens the firewall.
+- **Admin panel → *Get bootstrap command*** (`POST
+  /api/v1/admin/cluster/bootstrap-command/<peer>`, super_admin, audited as
+  `cluster.bootstrap_command.generate`) renders the steps to run **on the new
+  node as root**, as one fail-closed paste block plus per-step copies:
+  download the cluster's own release of `insula`, verify it with `openssl`
+  against the cluster's pinned release key (embedded inline — not fetched from
+  GitHub), install it, then `insula bootstrap --join-as <role> --server
+  '<server-ipv4>' --token … [--dual-stack]`. `--dual-stack` (and any non-default
+  `--pod-cidr-v6`/`--service-cidr-v6`) comes from the `platform-cluster-cidrs`
+  ConfigMap, falling back to the Nodes' `podCIDRs`. A private-underlay cluster
+  (server ExternalIP ≠ InternalIP) gets a marked comment instead of a guessed
+  `--cluster-network-cidr` — the cluster does not record that CIDR.
+  - **Worker:** the platform mints a k3s **agent bootstrap token**
+    (`kube-system/bootstrap-token-<id>`, exactly what `k3s token create`
+    writes, TTL 2 h, owned by the `ClusterPendingPeer` so it dies with the
+    pre-enrolment — at the latest 5 min after the node is claimed). `k3s token
+    list` on a server shows it. A joined worker keeps working after expiry: it
+    authenticates with its node certificate from then on.
+  - **Server:** k3s bootstrap tokens join agents only (the supervisor serves
+    `/v1-k3s/server-bootstrap` to the server token alone, and the server token
+    also decrypts the bootstrap data). The root server token is not readable
+    through the kube API and the platform never serves it, so the first step
+    reads it on an existing server and the join step prompts for it (hidden
+    input, out of shell history).
+- **A join checks the cluster before touching the host.** It fails up front —
+  with nothing on the new node changed — when `https://<server>:6443/cacerts`
+  is unreachable (usually: the node was not pre-enrolled, so the firewall drops
+  it) or when the token's `K10<hash>` prefix does not match that cluster's CA
+  (a token from a different cluster).
 
 > **Dual-stack clusters: `--dual-stack` goes on EVERY node, not just the first.**
 > A node that registers only IPv4 cannot join a cluster whose `--cluster-cidr`
@@ -34,31 +103,54 @@ adding worker nodes. Pairs with ADR-031 (architecture) and
 > so a single-stack cluster cannot gain IPv6 by adding a dual-stack node; that
 > needs a rebuild (see [R13](../roadmap/ROADMAP.md#r13--ipv6-completion)).
 
-### Add a 2nd server (1 → 2 servers; DEGRADED HA, not fully HA)
+### Add servers (1 → 3; never stop at 2)
 
-Two servers don't form a real HA setup (can't tolerate loss — etcd
-refuses writes when either is down). Use this step only as a
-stepping-stone toward 3 servers, typically on the same provisioning
-day.
+> **⚠ A 2-member etcd is LESS available than one server.** Every k3s server
+> is an etcd member and etcd needs a majority, so with 2 members:
+>
+> - **either** node down = no quorum — the control plane stops (twice the
+>   failure surface of a single server, with no tolerance gained);
+> - a node lost **permanently** leaves the survivor unable to recover on its
+>   own — it needs `k3s server --cluster-reset` on the survivor to become a
+>   1-member cluster again;
+> - **every** reboot or k3s upgrade of either node blips the control plane.
+>
+> So add servers to reach **3** (1 → 3, joining the second and third back to
+> back, typically the same provisioning day), or add **workers** instead —
+> workers add capacity without touching etcd.
+
+**When adding servers, add at least TWO more at once (1 → 3), so the cluster
+keeps quorum when any one server fails.**
 
 ```bash
-# On the existing 1st server — grab the join token:
+# 0. Pre-enroll each new node's IP (admin UI → Security → Network Trust → Pre-Enroll Node).
+#    Its "Get bootstrap command" renders steps 1–2 to run on the node itself.
+
+# 1. On the existing 1st server — the cluster's release and the join token:
+ssh root@<server-1> insula version
+# → insula <version>   (use exactly this release's binary below)
 ssh root@<server-1> cat /var/lib/rancher/k3s/server/node-token
-# → K1234...
+# → K10<ca-hash>::server:<password>
 
-# Provision a new VPS, DNS, firewall rules.
-
-# Run bootstrap against the new host:
+# 2. Provision the new VPSes, then JOIN them (node-scoped flags only —
+#    no --domain / --env / --acme-*; the cluster already has those):
 insula bootstrap \
   --remote <server-2-ip> --ssh-key ~/hosting-platform.key \
   --join-as server \
-  --domain example.test \
-  --env staging \
-  --server <server-1-ip> \
-  --token <K1234...>
+  --server <server-1-ipv4> \
+  --token '<node-token>' \
+  --dual-stack   # ONLY if the cluster was created with --dual-stack — otherwise drop this line
+
+# 3. Immediately join the third — 2 servers is a transitional state only:
+insula bootstrap \
+  --remote <server-3-ip> --ssh-key ~/hosting-platform.key \
+  --join-as server \
+  --server <server-1-ipv4> \
+  --token '<node-token>' \
+  --dual-stack   # ONLY if the cluster was created with --dual-stack — otherwise drop this line
 ```
 
-The new server joins the etcd cluster. You can verify with:
+Each new server joins the etcd cluster. You can verify with:
 
 ```bash
 ssh root@<server-1> kubectl get nodes -L insula.host/node-role
@@ -68,9 +160,9 @@ New server appears with the `server` label applied automatically by
 `apply_node_labels_and_taints`. `canHostClientWorkloads` defaults to
 `false` — the server is production-safe by default.
 
-### Add a 3rd server (2 → 3; FULL HA)
+### At 3 servers: full HA
 
-Same flow. Once done, the cluster has real HA:
+Once the third server has joined, the cluster has real HA:
 
 - etcd tolerates the loss of any 1 server.
 - The admin panel's "Cluster Nodes" page shows 3 servers with the
@@ -81,14 +173,18 @@ Same flow. Once done, the cluster has real HA:
 
 ### Add a worker
 
-Workers don't join etcd; they just take tenant workloads.
+Workers don't join etcd; they just take tenant workloads. Pre-enroll the
+worker's IP first. The admin panel's *Get bootstrap command* then hands you a
+complete, run-on-the-node command with a freshly minted 2-hour worker token —
+no need to touch the server token at all. By hand:
 
 ```bash
 insula bootstrap \
   --remote <worker-ip> --ssh-key ~/hosting-platform.key \
   --join-as worker \
-  --server <any-server-ip> \
-  --token <K-token>
+  --server <any-server-ipv4> \
+  --token '<node-token>' \
+  --dual-stack   # ONLY if the cluster was created with --dual-stack — otherwise drop this line
 ```
 
 After the script completes, from the control plane:
@@ -127,7 +223,8 @@ ssh root@<worker-ip> insula host-config status   # read-only converge report
 > host-migration can install one — the migration runner *is* the binary.
 > Re-run the same `insula bootstrap … --join-as worker` command against the
 > node; it is idempotent, keeps the node joined, and installs the CLI plus
-> both timers. Verify with the three commands above. A node that reports
+> both timers. (A worker joined with a panel-minted token: that token has
+> expired — re-run with the server's node-token instead.) Verify with the three commands above. A node that reports
 > `insula: command not found` has never applied a host-migration.
 
 ## Common tasks
@@ -189,8 +286,46 @@ ETCDCTL_API=3 etcdctl member remove <unhealthy-member-id>
 ```
 
 Then `kubectl delete node <unhealthy-nodename>` from the k8s side,
-replace the VPS, and re-run `insula bootstrap --join-as server --server …
---token …` to join a fresh etcd member.
+replace the VPS, pre-enroll its IP, and run `insula bootstrap --join-as
+server --server <healthy-server-ip> --token …` to join a fresh etcd member.
+
+### A 2-server cluster lost one server for good
+
+With only 2 etcd members the survivor has no quorum and cannot recover on
+its own. On the **surviving** server:
+
+```bash
+systemctl stop k3s
+k3s server --cluster-reset        # shrinks etcd to this single member
+systemctl start k3s
+```
+
+Then delete the dead Node object (`kubectl delete node <dead-nodename>`)
+and grow straight to 3 servers as above. This is the scenario the "never
+stop at 2" rule exists to avoid.
+
+### Changing a node's role (server ↔ worker)
+
+The admin UI's node **role** edit (Cluster Nodes) changes only the platform
+label `insula.host/node-role` and the matching taints — i.e. *scheduling*.
+It does **not** change what k3s runs on the host: a node bootstrapped as a
+server stays a k3s server and an etcd member whatever its label says, and a
+worker never gains a control plane.
+
+A real **server → worker demotion** is a remove-and-rejoin:
+
+1. Make sure the remaining servers keep an odd count ≥ 3 (or exactly 1) —
+   demoting one of 3 servers leaves a 2-member etcd (see the warning above).
+2. `kubectl drain <node> --ignore-daemonsets --delete-emptydir-data`.
+3. `kubectl delete node <node>` — k3s removes the node's etcd member on
+   delete; confirm with `etcdctl member list` on a remaining server (and
+   `etcdctl member remove <id>` if it is still listed).
+4. `ssh root@<node> /usr/local/bin/k3s-uninstall.sh`.
+5. Pre-enroll the node's IP again and re-join it with
+   `insula bootstrap --join-as worker --server <server-ip> --token …`.
+
+Worker → server is the same in reverse (`k3s-agent-uninstall.sh`, then
+`--join-as server`), with the same odd-count rule.
 
 ## Monitoring
 

@@ -74,6 +74,8 @@ ui_init() {
   if [[ -n "$UI_LOG_FILE" ]]; then
     mkdir -p "$(dirname "$UI_LOG_FILE")" 2>/dev/null || true
     touch "$UI_LOG_FILE" 2>/dev/null || UI_LOG_FILE=""
+    # Root-only: the transcript records every kubectl call and its output.
+    [[ -n "$UI_LOG_FILE" ]] && chmod 600 "$UI_LOG_FILE" 2>/dev/null
   fi
   return 0
 }

@@ -94,8 +94,10 @@ case "$VMTEST_TIER" in
     VMTEST_RELEASE_TAG="$_tag"
     VMTEST_EXPECT_IMAGE_TAG="$_ver"
     export VMTEST_ENV VMTEST_RELEASE_TAG VMTEST_EXPECT_IMAGE_TAG
-    VMTEST_BOOTSTRAP_EXTRA_ARGS="${VMTEST_BOOTSTRAP_EXTRA_ARGS:-} --release-tag ${_tag}"
-    export VMTEST_BOOTSTRAP_EXTRA_ARGS
+    # --release-tag only sets the Flux source ref — CLUSTER-scoped, so it goes to
+    # the FIRST server only. bootstrap.sh rejects it on a --join-as join.
+    VMTEST_BOOTSTRAP_CREATE_ARGS="${VMTEST_BOOTSTRAP_CREATE_ARGS:-} --release-tag ${_tag}"
+    export VMTEST_BOOTSTRAP_CREATE_ARGS
     echo "── tier=release: testing ${_tag} exactly as an operator installs it ──"
     echo "   env=${VMTEST_ENV}  flux-source=${_tag}  expected image tag=${_ver}"
     ;;
@@ -227,12 +229,15 @@ export VMTEST_PEBBLE_IP VMTEST_DNS_IP VMTEST_MINIO_IP
 # this tier was untestable. Trust + reachability for that CA are wired
 # post-bootstrap (Secret + `pebble` Service below, egress via the
 # stalwart-extra-ca component).
+# --stalwart-acme-directory is CLUSTER-scoped: it goes to the FIRST server only
+# (VMTEST_BOOTSTRAP_CREATE_ARGS). bootstrap.sh rejects it on a --join-as join, so
+# it must never ride in VMTEST_BOOTSTRAP_EXTRA_ARGS, which reaches every node.
 if [[ -n "${VMTEST_PEBBLE_IP:-}" ]]; then
-  case " ${VMTEST_BOOTSTRAP_EXTRA_ARGS:-} " in
+  case " ${VMTEST_BOOTSTRAP_CREATE_ARGS:-} " in
     *" --stalwart-acme-directory "*) : ;;
-    *) VMTEST_BOOTSTRAP_EXTRA_ARGS="${VMTEST_BOOTSTRAP_EXTRA_ARGS:-} --stalwart-acme-directory https://pebble:14000/dir" ;;
+    *) VMTEST_BOOTSTRAP_CREATE_ARGS="${VMTEST_BOOTSTRAP_CREATE_ARGS:-} --stalwart-acme-directory https://pebble:14000/dir" ;;
   esac
-  export VMTEST_BOOTSTRAP_EXTRA_ARGS
+  export VMTEST_BOOTSTRAP_CREATE_ARGS
 fi
 
 # 2) spawn + bootstrap the (heterogeneous) cluster; capture the OS assignment+seed

@@ -52,7 +52,7 @@ export default function DrDrillTab() {
           <li><code className="text-xs bg-gray-100 dark:bg-gray-900 px-1 py-0.5 rounded">git clone</code> the platform repo</li>
           <li>
             <code className="text-xs bg-gray-100 dark:bg-gray-900 px-1 py-0.5 rounded">
-              bash scripts/bootstrap.sh --join-as server --env staging --domain &lt;DOMAIN&gt; --secrets-bundle &lt;bundle&gt; --age-key &lt;key&gt;
+              bash scripts/bootstrap.sh --env staging --domain &lt;DOMAIN&gt; --secrets-bundle &lt;bundle&gt; --age-key &lt;key&gt;
             </code>
           </li>
           <li>Tag the node: <code className="text-xs">kubectl label nodes --all insula.host/node-role=server --overwrite</code></li>

@@ -88,7 +88,7 @@ CERT_MANAGER_CHART_VERSION="v1.20.2"
 SEALED_SECRETS_CHART_VERSION="2.17.4"
 ```
 
-Same Ubuntu LTS version as the staging server. Same cloud-init. Same `bootstrap.sh` invocation — just with different arguments for role (cp/worker) and join token.
+Same Ubuntu LTS version as the staging server. Same cloud-init. Same `bootstrap.sh` — the control plane CREATES the cluster (`--domain …`, no `--join-as`); workers JOIN it (`--join-as worker --server <cp-ip> --token <t>`, node-scoped flags only — a join refuses `--domain`/`--env`/`--acme-*`).
 
 ---
 
@@ -122,8 +122,8 @@ scripts/
   local-vm.sh                      # Entry point
   local-vm/
     cloud-init/
-      control-plane.yaml           # Runs bootstrap.sh as --join-as server
-      worker.yaml                  # Runs bootstrap.sh as --join-as worker with join token
+      control-plane.yaml           # Runs bootstrap.sh as a CREATE (--domain …, no --join-as)
+      worker.yaml                  # Runs bootstrap.sh as a JOIN: --join-as worker --server <cp> --token <t>
     libvirt/
       control-plane.xml.tmpl       # VM definition templates
       worker.xml.tmpl

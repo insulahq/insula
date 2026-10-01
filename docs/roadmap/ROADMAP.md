@@ -1895,18 +1895,25 @@ labels and taints, the Calico MTU calculation, and the host-migration
 converger. It joins the cluster and is quietly unlike every other node —
 which is the shape of failure that takes days to attribute.
 
-**Why this is not already fixed.** `bootstrap.sh --join-as server` exists
-and is the correct replacement for most of these invocations, but the
-surrounding procedures — an HA control-plane join, a rolling k3s upgrade —
-have not been exercised against it. Replacing a *visibly* wrong command
+**Why this is not already fixed.** `bootstrap.sh --join-as server|worker
+--server <existing-node-ip> --token <node-token>` exists and is the correct
+replacement for most of these invocations — a JOIN, which since the
+create/join split does node-local work only (host hardening, firewall, k3s
+join, node labels/taints, Longhorn node tag, operator CLI) and refuses every
+cluster-scoped flag (`--domain`, `--env`, `--acme-*`, `--release-tag`, …).
+Only the first server CREATES (`bootstrap.sh --domain <apex>`, no
+`--join-as`). But the surrounding procedures — an HA control-plane join, a
+rolling k3s upgrade — have not been exercised against it. Replacing a *visibly* wrong command
 with a plausible untested one is worse: the reader stops questioning it.
 Both documents therefore carry a warning that the commands illustrate the
 underlying k3s steps and are not instructions to run.
 
-**Proposal.** Rewrite both procedures around `bootstrap.sh --join-as
-server|worker` and `platform-ops cluster upgrade`, and prove each on a
-throwaway multi-node cluster — the HA join at minimum, since that is the
-one an operator reaches for under pressure. `scripts/vm-integration-tests/`
+**Proposal.** Rewrite both procedures around the join form
+(`bootstrap.sh --join-as server|worker --server … --token …`, after a
+`ClusterPendingPeer` pre-enrol) and `platform-ops cluster upgrade`, and prove
+each on a throwaway multi-node cluster — the HA join at minimum, since that
+is the one an operator reaches for under pressure. The HA join must go 1 → 3
+servers: a 2-member etcd is less available than one server. `scripts/vm-integration-tests/`
 already stands up multiple nodes and is the natural harness.
 
 **Decide before building:** whether the runbooks should keep the raw k3s

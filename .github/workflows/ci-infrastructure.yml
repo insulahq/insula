@@ -207,6 +207,9 @@ jobs:
       - run: ./scripts/test-ci-no-cluster-push.sh
       - run: ./scripts/test-platform-ops-install.sh
       - run: ./scripts/test-bootstrap-summary.sh
+      - run: ./scripts/test-bootstrap-join-mode.sh
+      - run: ./scripts/test-host-migration-k3s-token.sh
+      - run: ./scripts/test-traefik-access-log-values.sh
       - run: ./scripts/test-longhorn-reservation.sh
       - run: ./scripts/test-ci-migration-coverage.sh
       - run: ./scripts/test-vmtier-profile-isolation.sh
@@ -706,6 +709,8 @@ jobs:
           shellcheck --version
       - name: Verify runner validation + embedding + per-script authoring contract
         run: ./scripts/ci-host-migrations-check.sh
+      - name: Host-migration ↔ bootstrap parity (baselined fresh nodes)
+        run: ./scripts/ci-host-migration-bootstrap-parity.sh
       - name: Verify kubelet graceful node shutdown stays wired (bootstrap ≡ host-migration)
         run: ./scripts/ci-graceful-shutdown-check.sh
       - name: Verify no converger tests kubectl JSON by grepping "key":"value"

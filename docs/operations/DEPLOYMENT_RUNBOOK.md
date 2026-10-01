@@ -145,6 +145,13 @@ insula bootstrap \
 
 Retrieve the join token from the control plane: `cat /var/lib/rancher/k3s/server/node-token`
 
+Pre-enroll the node's IP first (admin UI → Security → Network Trust → *Pre-Enroll
+Node*). A join is node-local only: it takes `--join-as`/`--server`/`--token` plus
+node-scoped flags and refuses cluster-wide ones (`--domain`, `--env`, `--acme-*`,
+…), which belong to the first server's create run above. To add **servers** use
+`--join-as server` and grow 1 → 3 — a 2-server etcd is less available than one
+server (see [MULTI_NODE_RUNBOOK.md](./MULTI_NODE_RUNBOOK.md#add-servers-1--3-never-stop-at-2)).
+
 ### Copy kubeconfig to your local machine
 
 After bootstrap completes, copy the kubeconfig for remote `kubectl` access. **Important:** `:6443` is firewalled to the cluster's private/mesh CIDR — see [CLUSTER_NETWORK.md](./CLUSTER_NETWORK.md). Substitute the **mesh / private** IP (NetBird `wt0`, Tailscale, VLAN), not the public IP:

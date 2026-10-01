@@ -118,16 +118,19 @@ never installed on a server.
 chmod +x insula-linux-amd64
 sudo mv insula-linux-amd64 /usr/local/bin/insula
 
-sudo insula bootstrap --join-as server \
+sudo insula bootstrap \
   --domain hosting.example.com \
   --acme-email ops@example.com \
   --allow-source 198.51.100.7
 ```
 
+This **creates** a new cluster with this node as its first server (control
+plane). There is no `--join-as` here — `--join-as` is only for adding nodes to
+an existing cluster (see [multi-node](multi-node.md)).
+
 | Flag | Meaning |
 |---|---|
-| `--join-as server` | This node is the control plane. (The first node is always a `server`.) |
-| `--domain <FQDN>` | Your platform base domain. Required on the first server. |
+| `--domain <FQDN>` | Your platform base domain. Required on the first server — it is what makes this run create a cluster. |
 | `--acme-email <email>` | Email for Let's Encrypt. Required on the first server. |
 | `--allow-source <ip\|cidr>` | Trust this source (e.g. your workstation IP) so `kubectl` and SSH work before the admin panel exists. Repeatable. |
 
@@ -151,7 +154,7 @@ command works on Debian/Ubuntu and on RHEL-family / Amazon Linux 2023.
     ```bash
     git clone https://github.com/insulahq/insula.git
     cd insula
-    sudo ./scripts/bootstrap.sh --join-as server --domain … --acme-email …
+    sudo ./scripts/bootstrap.sh --domain … --acme-email …
     ```
     Only `scripts/` + `k8s/` + `platform/VERSION` are consumed — the rest of the
     repo (backend/frontend/images) ships as prebuilt images and is not needed at
@@ -283,8 +286,11 @@ transient — re-run `scripts/smoke-test-cluster-network.sh` after a few minutes
 - [Create your first tenant and deploy a site](first-tenant.md)
 
 ??? info "Under the hood"
-    - The first server is bootstrapped with `--join-as server` and **no**
-      `--server`/`--token`; those are only used when *joining* additional nodes.
+    - The first server is bootstrapped with **no** `--join-as`, `--server` or
+      `--token` — `--domain` alone creates the cluster. `--join-as
+      server|worker` (which requires `--server` and `--token`) is only for
+      *joining* additional nodes, and a join refuses cluster-wide flags such as
+      `--domain`, `--env` and `--acme-*`.
     - Bootstrap refuses to re-run with a different `--domain`/`--env` than the
       live cluster unless you pass `--force-domain-change`, to prevent clobbering
       every Ingress and certificate pinned to the old value.
