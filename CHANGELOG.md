@@ -80,6 +80,12 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   The same window holds the monitoring alerts about that node — CPU, memory, Longhorn disk usage,
   kernel OOM and its scrape targets. They still show as firing on Monitoring → SLOs; only the
   notification waits, and one that clears inside the window sends nothing.
+- **In the haproxy mail port-exposure modes, a new server gets its mail listener on its own.** A
+  server that joined after "All server nodes" was applied — or a node promoted to server — got no
+  haproxy, so it accepted no mail and failed the mail reachability check until the operator
+  re-applied the mode. The platform now adjusts which nodes run haproxy within a minute of the node
+  set or the mail-node assignment changing, and stops it on nodes that left the set. It waits while
+  a mode flip or mail migration is running.
 - **New notifications: "Node joined the cluster" and "Node removed from the cluster"** — once per
   event, naming the node, its role and addresses.
 - **Mail reachability checks test only the nodes that actually serve mail.** A non-mail node (for

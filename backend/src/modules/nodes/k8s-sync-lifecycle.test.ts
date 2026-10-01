@@ -22,6 +22,12 @@ const h = vi.hoisted(() => ({
   failUpsertFor: null as string | null,
   notifyAdminNodeJoined: vi.fn().mockResolvedValue(undefined),
   notifyAdminNodeRemoved: vi.fn().mockResolvedValue(undefined),
+  syncMailHaproxyLabels: vi.fn().mockResolvedValue({ outcome: 'in-sync' }),
+}));
+
+vi.mock('../mail-admin/haproxy-label-sync.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../mail-admin/haproxy-label-sync.js')>(),
+  syncMailHaproxyLabels: h.syncMailHaproxyLabels,
 }));
 
 vi.mock('../notifications/events.js', () => ({
@@ -254,5 +260,45 @@ describe('syncNodesOnce — membership notifications', () => {
     await sync();
     expect(h.notifyAdminNodeRemoved).not.toHaveBeenCalled();
     expect(h.table.get('ghost')?.removedAt).not.toBeNull();
+  });
+});
+
+describe('syncNodesOnce — mail haproxy labels follow the node set', () => {
+  // Operator report: a server joined in "all server nodes" mail mode got no
+  // haproxy until the mode was re-applied. The node sync now drives the label
+  // sync (mail-admin/haproxy-label-sync.ts) every pass.
+  beforeEach(() => {
+    h.table.clear();
+    h.syncMailHaproxyLabels.mockReset().mockResolvedValue({ outcome: 'in-sync' });
+    listFails = false;
+    h.failUpsertFor = null;
+    live = [
+      { name: 'server-1', createdAt: new Date('2026-01-01T00:00:00Z'), ip: '10.0.0.1' },
+      { name: 'server-2', createdAt: new Date('2026-01-02T00:00:00Z'), ip: '10.0.0.2' },
+    ];
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+
+  it('hands every live Node, with its labels, to the label sync', async () => {
+    await sync();
+    expect(h.syncMailHaproxyLabels).toHaveBeenCalledTimes(1);
+    const [, , nodes] = h.syncMailHaproxyLabels.mock.calls[0];
+    expect(nodes).toEqual([
+      { metadata: { name: 'server-1', labels: { 'insula.host/node-role': 'worker' } } },
+      { metadata: { name: 'server-2', labels: { 'insula.host/node-role': 'worker' } } },
+    ]);
+  });
+
+  it('a failing label sync does not fail the node sync', async () => {
+    h.syncMailHaproxyLabels.mockRejectedValue(new Error('patch forbidden'));
+    await expect(sync()).resolves.toBe(2);
+    expect(console.log).toHaveBeenCalledWith('[mail-haproxy-labels] not syncing: failed: patch forbidden');
+  });
+
+  it('does not run on a failed Node list', async () => {
+    listFails = true;
+    await expect(sync()).rejects.toThrow('ECONNREFUSED');
+    expect(h.syncMailHaproxyLabels).not.toHaveBeenCalled();
   });
 });

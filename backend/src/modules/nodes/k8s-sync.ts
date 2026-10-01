@@ -73,6 +73,11 @@ export async function syncNodesOnce(
   // (fresh dev cluster) — failures are logged and ignored.
   await reconcileLonghornNodeTags(k8s, items);
 
+  // Same kind of mirror for the mail proxy: in the HA mail port-exposure modes
+  // the haproxy node label follows the node set, so a server that joins (or is
+  // promoted/demoted) gets the right listener without re-applying the mode.
+  await syncMailHaproxyLabelsSafely(db, k8s, items);
+
   // Removals are claimed only after every live node was upserted, then
   // announced (lifecycle.ts).
   const departures = await claimDepartures(repo, plan, now);
@@ -158,6 +163,32 @@ async function upsertObservedNodes(pass: UpsertPass): Promise<void> {
   } finally {
     await announceSafely(arrivals.length > 0, async (m) => m.announceArrivals(db, k8s, arrivals, now));
   }
+}
+
+/**
+ * Best-effort, like the Longhorn tag mirror: a failure is logged (once per
+ * distinct outcome) and never fails the node sync. Lazy import keeps the mail
+ * module out of this module's static import graph.
+ */
+async function syncMailHaproxyLabelsSafely(
+  db: Database,
+  k8s: K8sClients,
+  items: ReadonlyArray<{ metadata?: { name?: string; labels?: Record<string, string> } }>,
+): Promise<void> {
+  let sync: typeof import('../mail-admin/haproxy-label-sync.js');
+  try {
+    sync = await import('../mail-admin/haproxy-label-sync.js');
+  } catch (err) {
+    console.warn('[node-sync] mail haproxy label sync unavailable:', (err as Error).message);
+    return;
+  }
+  let line: string | null;
+  try {
+    line = sync.describeHaproxyLabelSync(await sync.syncMailHaproxyLabels(db, k8s.core, sync.toNodeRefs(items)));
+  } catch (err) {
+    line = sync.describeHaproxyLabelSync({ outcome: 'skipped', reason: `failed: ${(err as Error).message}` });
+  }
+  if (line) console.log(line);
 }
 
 /**

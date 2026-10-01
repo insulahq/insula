@@ -449,6 +449,18 @@ export async function ensureMailPortExposureApplied(
  */
 let applyModeMutex: Promise<void> = Promise.resolve();
 
+/** Callers inside (or queued for) applyModeToCluster in this process. */
+let applyModeCallers = 0;
+
+/**
+ * True while a mode switch is applying or queued in THIS process. The
+ * background label sync (haproxy-label-sync.ts) stands down meanwhile — the
+ * switch moves labels in a deliberate order around the Stalwart rollout.
+ */
+export function portExposureApplyInFlight(): boolean {
+  return applyModeCallers > 0;
+}
+
 /**
  * Two-step cluster mutation for the given mode. Extracted from
  * `updateMailPortExposure` so the startup reconciler can reuse it
@@ -463,13 +475,15 @@ async function applyModeToCluster(
   // Chain onto the existing mutex tail. Errors don't poison the chain
   // — we catch the prior result so a failed prior call doesn't prevent
   // subsequent calls from proceeding.
+  applyModeCallers += 1;
   const prior = applyModeMutex.catch(() => undefined);
   let release: () => void;
   applyModeMutex = new Promise<void>((resolve) => { release = resolve; });
-  await prior;
   try {
+    await prior;
     await applyModeToClusterUnlocked(mode, opts, onProgress, db);
   } finally {
+    applyModeCallers -= 1;
     release!();
   }
 }
@@ -979,8 +993,8 @@ const MAIL_PVC_NAME = 'mail-stack-data';
  * derived" and stay safe (the single-node guard + null-active handling
  * in the pure resolvers prevent any all-nodes-haproxy regression).
  */
-async function deriveActiveNodeFromMailPvc(
-  core: import('@kubernetes/client-node').CoreV1Api,
+export async function deriveActiveNodeFromMailPvc(
+  core: Pick<import('@kubernetes/client-node').CoreV1Api, 'readNamespacedPersistentVolumeClaim' | 'readPersistentVolume'>,
 ): Promise<string | null> {
   try {
     const pvc = await core.readNamespacedPersistentVolumeClaim({
