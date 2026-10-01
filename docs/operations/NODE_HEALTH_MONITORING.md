@@ -87,6 +87,7 @@ window:
 | `node-health` reconciler (5 min) | `admin.node_event` severity transitions, `admin.node_down`, `admin.node_rebooting`, `admin.node_startup_complete` |
 | Memory events (same tick) | `admin.node_memory_event_*` — the events are still recorded |
 | Calico / Longhorn CSI watcher (5 min) | `admin.node_event` "Calico is missing", "Longhorn CSI regressed", … |
+| SLO evaluator (60 s) | `admin.slo_alert_*` for any series whose `node` label names the joining node — `node-cpu`, `node-memory`, `longhorn-headroom`, `node-kernel-oom` and `scrape-target-down` for that node's kubelet/Traefik/Longhorn targets |
 
 **No health alert is lost.** Each detector keeps a suppressed node out of the
 state it compares against next time, so a node that is *still* unhealthy when
@@ -109,9 +110,12 @@ Two deliberate edges:
   matches because it is being re-bootstrapped — that node keeps the normal
   rules, so its recovery is still reported.
 
-Not covered: the SLO evaluator's per-node resource rules (`node-cpu`,
-`node-memory`, Longhorn disk usage). They need 10–15 minutes of sustained breach
-before firing and are about load, not readiness.
+SLO alerts follow the same rule with one visible difference: a held alert still
+shows as **firing** on Monitoring → SLOs and in the dashboard's alert count —
+only the notification waits. It is sent on the first evaluator tick after the
+window if the alert is still firing; if it clears inside the window, neither a
+"firing" nor a "resolved" notification is sent. Rules without a `node` label
+(cluster-wide ones, per-pod OOM) are never held.
 
 ## Node membership notifications
 

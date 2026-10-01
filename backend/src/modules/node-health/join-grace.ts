@@ -227,6 +227,36 @@ export async function loadJoinGrace(
   return joinGraceIndex(rawNodes, peers, now, graceMs);
 }
 
+/**
+ * A per-tick, load-on-first-use verdict map for callers that usually do not
+ * need one — the SLO evaluator only asks while a node-scoped rule is
+ * violated, so a healthy cluster costs no API calls. The Node list and the
+ * ClusterPendingPeer list are fetched at most once per loader.
+ *
+ * Never rejects: a failed Node list yields an empty map, i.e. no node is
+ * treated as joining and its alerts go out — the safe direction for a monitor.
+ */
+export function lazyJoinGrace(
+  k8s: Pick<K8sClients, 'core' | 'custom'>,
+  now: Date,
+  graceMs: number = nodeJoinGraceMs(),
+): () => Promise<ReadonlyMap<string, JoinGraceVerdict>> {
+  let loaded: Promise<ReadonlyMap<string, JoinGraceVerdict>> | null = null;
+  return () => {
+    loaded ??= (async () => {
+      if (graceMs <= 0) return new Map<string, JoinGraceVerdict>();
+      try {
+        const list = (await k8s.core.listNode({})) as { items?: readonly RawGraceNode[] };
+        return await loadJoinGrace(k8s, list.items ?? [], now, graceMs);
+      } catch (err) {
+        console.warn('[node-join-grace] Node list failed — alerting as usual:', (err as Error).message);
+        return new Map<string, JoinGraceVerdict>();
+      }
+    })();
+    return loaded;
+  };
+}
+
 /** "14:32 UTC" — what the operator compares against a wall clock. */
 export function formatGraceUntil(until: Date): string {
   return `${until.toISOString().slice(11, 16)} UTC`;

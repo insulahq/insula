@@ -77,6 +77,9 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 - **A joining node no longer raises "node down / not ready" alerts while it bootstraps.** Health
   notifications for a node are held for its first 30 minutes (`NODE_JOIN_ALERT_GRACE_MINUTES`); a
   node that is still unhealthy when that window closes is alerted right away, so nothing is lost.
+  The same window holds the monitoring alerts about that node — CPU, memory, Longhorn disk usage,
+  kernel OOM and its scrape targets. They still show as firing on Monitoring → SLOs; only the
+  notification waits, and one that clears inside the window sends nothing.
 - **New notifications: "Node joined the cluster" and "Node removed from the cluster"** — once per
   event, naming the node, its role and addresses.
 - **Mail reachability checks test only the nodes that actually serve mail.** A non-mail node (for

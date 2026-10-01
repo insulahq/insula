@@ -11,6 +11,7 @@ import {
   formatGraceUntil,
   joinGraceFor,
   joinGraceIndex,
+  lazyJoinGrace,
   listPendingPeerWindows,
   loadJoinGrace,
   nodeJoinGraceMs,
@@ -187,6 +188,43 @@ describe('listPendingPeerWindows', () => {
     const idx = await loadJoinGrace({ custom } as never, [{ metadata: { name: 'n', creationTimestamp: T0 } }], at(0), 0);
     expect(idx.size).toBe(0);
     expect(custom.listClusterCustomObject).not.toHaveBeenCalled();
+  });
+});
+
+describe('lazyJoinGrace', () => {
+  const clients = (nodes: unknown) => ({
+    core: { listNode: vi.fn(async () => { if (nodes instanceof Error) throw nodes; return { items: nodes }; }) },
+    custom: { listClusterCustomObject: vi.fn().mockResolvedValue({ items: [] }) },
+  });
+
+  it('costs nothing until asked, then lists Nodes and peers once however often it is asked', async () => {
+    const k8s = clients([
+      { metadata: { name: 'new', creationTimestamp: at(-5 * MIN) } },
+      { metadata: { name: 'old', creationTimestamp: at(-90 * MIN) } },
+    ]);
+    const load = lazyJoinGrace(k8s as never, at(0), GRACE);
+    expect(k8s.core.listNode).not.toHaveBeenCalled();
+    const [a, b] = await Promise.all([load(), load()]);
+    expect(await load()).toBe(a);
+    expect(b).toBe(a);
+    expect([...a.keys()]).toEqual(['new']);
+    expect(a.get('new')).toEqual({ until: at(25 * MIN), reason: 'new-node' });
+    expect(k8s.core.listNode).toHaveBeenCalledTimes(1);
+    expect(k8s.custom.listClusterCustomObject).toHaveBeenCalledTimes(1);
+  });
+
+  it('treats no node as joining (alerts go out) when the Node list fails', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const k8s = clients(new Error('apiserver down'));
+    expect((await lazyJoinGrace(k8s as never, at(0), GRACE)()).size).toBe(0);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('makes no API call when the window is disabled', async () => {
+    const k8s = clients([{ metadata: { name: 'new', creationTimestamp: at(0) } }]);
+    expect((await lazyJoinGrace(k8s as never, at(0), 0)()).size).toBe(0);
+    expect(k8s.core.listNode).not.toHaveBeenCalled();
   });
 });
 

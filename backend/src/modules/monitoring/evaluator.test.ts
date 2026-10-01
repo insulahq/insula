@@ -329,3 +329,116 @@ describe('monitoring evaluator', () => {
     expect(db._row(MONITORING_UNREACHABLE_RULE_ID)?.state).toBe('resolved');
   });
 });
+
+describe('monitoring evaluator — nodes that are still joining', () => {
+  // Operator requirement: a bootstrapping node must not page. node-health
+  // already honours the 30-minute join grace; the SLO rules keyed by node
+  // (CPU, memory, Longhorn disk, kernel OOM, per-node scrape targets) did not.
+  const CPU = 'container_cpu_usage_seconds_total';
+  const MIN = 60_000;
+  const t0 = new Date('2026-10-01T12:00:00Z');
+  const at = (m: number) => new Date(t0.getTime() + m * MIN);
+  const vm = (needle: string, nodes: string[]) => ({
+    baseUrl: 'http://vm',
+    fetchFn: vi.fn(async (url: string | URL) => {
+      const hit = decodeURIComponent(String(url)).includes(needle);
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          status: 'success',
+          data: { resultType: 'vector', result: hit ? nodes.map((node) => ({ metric: { node }, value: [1, '0.97'] })) : [] },
+        }),
+      } as unknown as Response;
+    }) as never,
+  });
+  const joining = (...nodes: string[]) => vi.fn(async () => new Map(
+    nodes.map((n) => [n, { until: at(30), reason: 'new-node' as const }]),
+  ));
+  const cpuCalls = (spy: typeof notifyFiringSpy) => spy.mock.calls.filter((c) => c[1].ruleId === 'node-cpu');
+  const cpuRow = (db: ReturnType<typeof dbStub>, node: string) => [...db._rows.values()]
+    .find((r) => r.ruleId === 'node-cpu' && (r.subjectLabels as Record<string, string>).node === node);
+
+  it('records a joining node\'s alert as firing but announces only the established node', async () => {
+    const db = dbStub();
+    const load = joining('new-server');
+    const both = vm(CPU, ['new-server', 'old-server']);
+    await evaluateOnce(db as never, logger, both, at(0), { joinGrace: load });
+    await evaluateOnce(db as never, logger, both, at(16), { joinGrace: load });
+
+    expect(cpuRow(db, 'new-server')?.state).toBe('firing');
+    expect(cpuRow(db, 'new-server')?.lastNotifiedAt).toBeNull();
+    expect(cpuRow(db, 'old-server')?.state).toBe('firing');
+    expect(cpuCalls(notifyFiringSpy).map((c) => c[1].subjectLabels)).toEqual([{ node: 'old-server' }]);
+    expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('new-server is joining (joined recently) — SLO alert node-cpu suppressed until 12:30 UTC'));
+  });
+
+  it('announces it on the first tick after the window when it is still firing', async () => {
+    const db = dbStub();
+    const one = vm(CPU, ['new-server']);
+    await evaluateOnce(db as never, logger, one, at(0), { joinGrace: joining('new-server') });
+    await evaluateOnce(db as never, logger, one, at(16), { joinGrace: joining('new-server') });
+    expect(cpuCalls(notifyFiringSpy)).toHaveLength(0);
+
+    await evaluateOnce(db as never, logger, one, at(31), { joinGrace: joining() });
+    expect(cpuCalls(notifyFiringSpy)).toHaveLength(1);
+    expect(cpuCalls(notifyFiringSpy)[0][1].subjectLabels).toEqual({ node: 'new-server' });
+    expect(cpuRow(db, 'new-server')?.lastNotifiedAt).toEqual(at(31));
+
+    // …and only once — the normal 24h throttle applies from here.
+    await evaluateOnce(db as never, logger, one, at(32), { joinGrace: joining() });
+    expect(cpuCalls(notifyFiringSpy)).toHaveLength(1);
+  });
+
+  it('sends nothing at all when it clears inside the window', async () => {
+    const db = dbStub();
+    const load = joining('new-server');
+    await evaluateOnce(db as never, logger, vm(CPU, ['new-server']), at(0), { joinGrace: load });
+    await evaluateOnce(db as never, logger, vm(CPU, ['new-server']), at(16), { joinGrace: load });
+    await evaluateOnce(db as never, logger, vm(CPU, []), at(20), { joinGrace: load });
+
+    expect(cpuRow(db, 'new-server')?.state).toBe('resolved');
+    expect(cpuCalls(notifyFiringSpy)).toHaveLength(0);
+    expect(notifyResolvedSpy.mock.calls.filter((c) => c[1].ruleId === 'node-cpu')).toHaveLength(0);
+  });
+
+  it('does not let an earlier, announced episode swallow the held one', async () => {
+    // The row still carries the timestamp of an alert announced an hour ago.
+    // Reusing it would make the post-window tick read "already sent" (24h
+    // throttle) and the operator would never hear of the new episode.
+    const db = dbStub();
+    db._rows.set('node-cpu\u0000node=new-server', {
+      ruleId: 'node-cpu',
+      subjectKey: 'node=new-server',
+      subjectLabels: { node: 'new-server' },
+      state: 'resolved',
+      lastNotifiedAt: at(-60),
+    });
+    const one = vm(CPU, ['new-server']);
+    await evaluateOnce(db as never, logger, one, at(0), { joinGrace: joining('new-server') });
+    await evaluateOnce(db as never, logger, one, at(16), { joinGrace: joining('new-server') });
+    expect(cpuRow(db, 'new-server')?.lastNotifiedAt).toBeNull();
+
+    await evaluateOnce(db as never, logger, one, at(31), { joinGrace: joining() });
+    expect(cpuCalls(notifyFiringSpy)).toHaveLength(1);
+  });
+
+  it('still announces the resolution of an alert that WAS announced', async () => {
+    const db = dbStub();
+    const one = vm(CPU, ['old-server']);
+    await evaluateOnce(db as never, logger, one, at(0), { joinGrace: joining() });
+    await evaluateOnce(db as never, logger, one, at(16), { joinGrace: joining() });
+    await evaluateOnce(db as never, logger, vm(CPU, []), at(17), { joinGrace: joining() });
+    expect(notifyResolvedSpy.mock.calls.filter((c) => c[1].ruleId === 'node-cpu')).toHaveLength(1);
+  });
+
+  it('never asks for the join grace while nothing names a node', async () => {
+    const db = dbStub();
+    const load = joining('new-server');
+    await evaluateOnce(db as never, logger, vm(CPU, []), at(0), { joinGrace: load });
+    // A cluster-wide rule firing carries no node label either.
+    await evaluateOnce(db as never, logger, { fetchFn: vmFetchStub({ platform_acme_renewals_total: [3] }), baseUrl: 'http://vm' }, at(1), { joinGrace: load });
+    expect(load).not.toHaveBeenCalled();
+    expect(notifyFiringSpy.mock.calls.some((c) => c[1].ruleId === 'acme-order-rate')).toBe(true);
+  });
+});

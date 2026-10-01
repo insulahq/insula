@@ -2180,7 +2180,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         // system. Zero extra pods — see modules/monitoring/.
         {
           const { startMonitoringEvaluator } = await import('./modules/monitoring/scheduler.js');
-          const monitoringHandle = startMonitoringEvaluator(app.db, app.log);
+          const monitoringHandle = startMonitoringEvaluator(app.db, app.log, { k8s: k8sForImapsync });
           app.addHook('onClose', () => monitoringHandle.stop());
         }
 
