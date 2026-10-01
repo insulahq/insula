@@ -27,7 +27,7 @@ const UNITS: ImportUnit[] = [
 
 const BASE: BuildImportJobInput = {
   jobName: 'import-abc',
-  namespace: 'tenant-example-1234abcd',
+  namespace: 'tenant-example-test',
   tenantId: 't-1',
   importId: 'imp-1',
   bundleId: 'bkp-1',
