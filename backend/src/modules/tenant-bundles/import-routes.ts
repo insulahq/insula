@@ -373,6 +373,9 @@ async function startImport(
     initiator,
     label,
     retentionDays,
+    // Only for the encrypted envelope — a plaintext tar.gz needs none, and
+    // passing one would put a secret in a Secret for no reason.
+    ...(extension === 'tar.gz.enc' && passphrase ? { archivePassphrase: passphrase } : {}),
   });
 
   return {

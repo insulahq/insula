@@ -85,7 +85,8 @@ describe('buildImportScript', () => {
     // The ARCHIVE is never fetched over the network — the chunked upload
     // already put it on the PVC, so there is no second transfer of the bulk.
     expect(script).toContain(`${IMPORT_UPLOAD_MOUNT}/.insula-imports/imp-1.tar.gz`);
-    expect(script).toContain('tar -tzf "$ARCHIVE"');
+    expect(script).toContain('read_archive | tar -tzf -');
+    expect(script).toContain('read_archive() { cat "$ARCHIVE"; }');
     expect(script).not.toMatch(/curl[^\n]*\$ARCHIVE/);
     // With no object artifacts there is no network egress at all.
     expect(script).not.toContain('curl');
@@ -138,8 +139,8 @@ describe('buildImportScript', () => {
     // Matched on the manifest reads rather than the member string.
     const checks = [...script.matchAll(new RegExp(`${IMPORT_STAGE_ROOT}/manifest\\.txt`, 'g'))]
       .map((m) => m.index ?? -1);
-    // one write of the manifest + one grep per unit
-    expect(checks).toHaveLength(UNITS.length + 1);
+    // one manifest write + one emptiness guard + one presence check per unit
+    expect(checks).toHaveLength(UNITS.length + 2);
     for (const at of checks) expect(at).toBeLessThan(firstBackup);
     // and each unit is named in some form
     for (const u of UNITS) {
@@ -214,6 +215,56 @@ describe('buildImportScript', () => {
   it('refuses to build at all for a hostile unit name', () => {
     expect(() => buildImportScript({ ...BASE, units: [{ component: 'files', name: "a';id;'", sizeBytes: 1 }] }))
       .toThrow(/unexpected characters/);
+  });
+});
+
+describe('buildImportScript — encrypted archives', () => {
+  const ENC: BuildImportJobInput = { ...BASE, archiveEncrypted: true, passphraseKey: 'archive_passphrase' };
+  const script = buildImportScript(ENC);
+
+  it('★ decrypts before tar, or every unit reads as missing', () => {
+    // The export writes a `Salted__` AES-256-CBC envelope. `tar` cannot read
+    // those bytes: the manifest comes back empty, every promised unit looks
+    // absent, and the import refuses a bundle this platform just produced.
+    // Observed on the first real export->import round trip.
+    expect(script).toContain('read_archive() { openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 -md sha256');
+    expect(script).toContain('read_archive | tar -tzf -');
+    expect(script).toContain('read_archive | tar -xzf -');
+    // never tar straight at the encrypted file
+    expect(script).not.toContain('tar -tzf "$ARCHIVE"');
+    expect(script).not.toContain('tar -xzf "$ARCHIVE"');
+  });
+
+  it('matches the export\'s key derivation exactly', () => {
+    // These three must mirror streamEncryptedExport or the decrypt silently
+    // produces noise rather than failing loudly.
+    expect(script).toContain('-aes-256-cbc');
+    expect(script).toContain('-pbkdf2 -iter 100000');
+    expect(script).toContain('-md sha256');
+  });
+
+  it('★ keeps the passphrase off argv', () => {
+    expect(script).toContain('-pass file:/var/run/restic-creds/archive_passphrase');
+    expect(script).not.toMatch(/-pass\s+pass:/);
+  });
+
+  it('★ treats an empty manifest as a wrong passphrase, not as an empty bundle', () => {
+    // /bin/sh is dash — no pipefail — so a failed decrypt leaves tar reading
+    // garbage and the pipeline can still exit 0.
+    expect(script).toMatch(/\[ -s [^ ]*manifest\.txt \] \|\|/);
+    expect(script).toContain('wrong passphrase, or the upload is corrupt');
+  });
+
+  it('the plaintext path reads the file directly and names no passphrase', () => {
+    const plain = buildImportScript(BASE);
+    expect(plain).toContain('read_archive() { cat "$ARCHIVE"; }');
+    expect(plain).not.toContain('openssl');
+    expect(plain).toContain('the upload may be corrupt or truncated');
+  });
+
+  it('refuses to build an encrypted import with no passphrase key', () => {
+    expect(() => buildImportScript({ ...BASE, archiveEncrypted: true }))
+      .toThrow(/passphraseKey is required/);
   });
 });
 

@@ -35,8 +35,14 @@ export const bundleImportPreflightInputSchema = z.object({
   importId: bundleImportIdSchema,
   /** Extension of the uploaded file; selects the decode pipeline. */
   extension: z.enum(BUNDLE_IMPORT_EXTENSIONS).optional().default('tar.gz'),
-  /** Required for a `Salted__`-encrypted archive. */
-  passphrase: z.string().min(1).max(512).optional(),
+  /**
+   * Required for a `Salted__`-encrypted archive.
+   *
+   * No newlines: it reaches the Job through a Secret read with
+   * `openssl enc -pass file:`, which takes only the FIRST LINE — so an
+   * embedded newline would silently truncate the key rather than fail.
+   */
+  passphrase: z.string().min(1).max(512).regex(/^[^\r\n]+$/, 'passphrase must not contain line breaks').optional(),
 });
 export type BundleImportPreflightInput = z.infer<typeof bundleImportPreflightInputSchema>;
 

@@ -52,6 +52,7 @@
  *                        quota forever.
  */
 import { resolvePlatformImage } from '../../shared/platform-images.js';
+import { PBKDF2_ITERATIONS } from './data-export.js';
 import { FILES_CAPTURE_ROOT } from './components/files.js';
 import { MAILBOX_CAPTURE_ROOT, addressDirName } from './components/mailboxes-restic.js';
 
@@ -143,7 +144,22 @@ export interface BuildImportJobInput {
   readonly objectArtifacts?: ReadonlyArray<ImportObjectUpload>;
   /** e.g. `http://platform-api.platform.svc:3000`. Required iff objectArtifacts is non-empty. */
   readonly internalApiBase?: string;
+  /**
+   * True when the uploaded archive is the `Salted__` AES-256-CBC envelope the
+   * export produces for an encrypted download.
+   *
+   * ★ The Job cannot `tar` those bytes. Without decryption every unit reads as
+   * missing and the import refuses a perfectly good bundle — which is exactly
+   * what the first real round-trip did, on an archive the platform's own
+   * export had just written.
+   */
+  readonly archiveEncrypted?: boolean;
+  /** Key in the creds mount holding the archive passphrase. Required iff encrypted. */
+  readonly passphraseKey?: string;
 }
+
+/** Creds-Secret key holding the uploaded archive's passphrase. */
+export const ARCHIVE_PASSPHRASE_KEY = 'archive_passphrase';
 
 /** `components/<component>/<name>` — where a unit lands under the stage root. */
 export function unitStagePath(u: ImportUnit): string {
@@ -268,6 +284,10 @@ export function buildImportScript(input: BuildImportJobInput): string {
   if (objects.length > 0 && !input.internalApiBase) {
     throw new Error('buildImportScript: internalApiBase is required when objectArtifacts are present');
   }
+  if (input.archiveEncrypted && !input.passphraseKey) {
+    throw new Error('buildImportScript: passphraseKey is required for an encrypted archive');
+  }
+  if (input.passphraseKey) assertSafeArtifactName(input.passphraseKey);
 
   const tagArgs = [`import=${input.importId}`, ...(input.tags ?? [])]
     .map((t) => `--tag ${sq(t)}`)
@@ -285,6 +305,14 @@ export function buildImportScript(input: BuildImportJobInput): string {
     `[ -f "$ARCHIVE" ] || { echo "ERROR: uploaded archive not found at $ARCHIVE"; exit 1; }`,
     // Read straight off the mounted PVC — the chunked upload already put it
     // there, so there is no second transfer of the bulk.
+    // ★ One reader for every pass over the archive. The encrypted form is the
+    // OpenSSL `Salted__` envelope the export writes, so the parameters mirror
+    // `streamEncryptedExport` exactly: aes-256-cbc, PBKDF2-SHA256, 100k iters.
+    // `-pass file:` keeps the passphrase off argv, like every other secret here.
+    input.archiveEncrypted
+      ? `read_archive() { openssl enc -d -aes-256-cbc -pbkdf2 -iter ${PBKDF2_ITERATIONS} -md sha256 `
+        + `-pass file:${IMPORT_CREDS_MOUNT_PATH}/${input.passphraseKey} -in "$ARCHIVE"; }`
+      : 'read_archive() { cat "$ARCHIVE"; }',
     'echo "Listing the uploaded archive..."',
     // A LISTING, not a full extraction. Each unit is then extracted straight
     // into its own capture root, backed up, and deleted — so peak staging is
@@ -294,7 +322,13 @@ export function buildImportScript(input: BuildImportJobInput): string {
     // tar exiting 0.
     // `./`-prefixed members are normalised away so the presence checks below
     // can compare exact prefixes.
-    `tar -tzf "$ARCHIVE" | sed 's|^[.]/||' > ${IMPORT_STAGE_ROOT}/manifest.txt || { echo "ERROR: could not read the uploaded archive"; exit 1; }`,
+    `read_archive | tar -tzf - | sed 's|^[.]/||' > ${IMPORT_STAGE_ROOT}/manifest.txt 2>/dev/null || true`,
+    // /bin/sh is dash — no pipefail — so a failed decrypt leaves tar reading
+    // garbage and the pipeline can still exit 0 with an EMPTY manifest. The
+    // emptiness is the reliable signal, and the wrong passphrase is by far
+    // the likeliest cause, so the message says so.
+    `[ -s ${IMPORT_STAGE_ROOT}/manifest.txt ] || { echo "ERROR: could not read the uploaded archive`
+      + `${input.archiveEncrypted ? ' — wrong passphrase, or the upload is corrupt' : ' — the upload may be corrupt or truncated'}"; exit 1; }`,
   ];
 
   // A truncated or malformed archive can leave tar exiting 0 on a short read,
@@ -332,7 +366,7 @@ export function buildImportScript(input: BuildImportJobInput): string {
       // whether the path is a mount or a plain directory.
       `mkdir -p ${sq(p)}`,
       `find ${sq(p)} -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true`,
-      `tar -xzf "$ARCHIVE" -C ${sq(p)} --strip-components=${UNIT_STRIP_COMPONENTS} ${sq(member)} `
+      `read_archive | tar -xzf - -C ${sq(p)} --strip-components=${UNIT_STRIP_COMPONENTS} ${sq(member)} `
         + `|| { echo "ERROR: could not extract ${u.component}/${u.name}"; exit 1; }`,
       `echo "Backing up ${u.component}/${u.name}..."`,
       // Per COMPONENT, not one repo for the whole import: under the
@@ -376,7 +410,7 @@ export function buildImportScript(input: BuildImportJobInput): string {
     lines.push(
       `echo "Uploading ${o.component}/${o.name}..."`,
       `mkdir -p ${IMPORT_STAGE_ROOT}/obj`,
-      `tar -xzf "$ARCHIVE" -C ${IMPORT_STAGE_ROOT}/obj --strip-components=2 `
+      `read_archive | tar -xzf - -C ${IMPORT_STAGE_ROOT}/obj --strip-components=2 `
         + `${sq(`components/${o.component}/${o.name}`)} `
         + `|| { echo "ERROR: archive is missing ${o.component}/${o.name}"; exit 1; }`,
       `ART=${sq(artPath)}`,

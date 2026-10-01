@@ -58,6 +58,7 @@ import {
   parseImportObjectResults,
   parseImportUnitResults,
   repoUriKey,
+  ARCHIVE_PASSPHRASE_KEY,
   type ImportObjectUpload,
   type ParsedUnitResult,
 } from './import-job.js';
@@ -115,6 +116,13 @@ export interface RunBundleImportInput {
   readonly onProgress?: (msg: string) => Promise<void> | void;
   readonly timeoutMs?: number;
   readonly pinToNode?: string;
+  /**
+   * Passphrase for a `Salted__`-encrypted upload.
+   *
+   * Reaches the Job through the creds Secret, never through the pod spec —
+   * `command` is readable by anyone with pod-read in the tenant namespace.
+   */
+  readonly archivePassphrase?: string;
 }
 
 export interface BundleImportResult {
@@ -268,6 +276,7 @@ export async function runBundleImport(
       env: buildResticEnv(target),
     });
     for (const [component, uri] of repoUriByComponent) stringData[repoUriKey(component)] = uri;
+    if (input.archivePassphrase) stringData[ARCHIVE_PASSPHRASE_KEY] = input.archivePassphrase;
     for (const a of objectArtifacts) {
       stringData[a.tokenKey] = signUploadToken(
         { bundleId, component: a.component, artifactName: a.name, ttlSeconds: UPLOAD_TOKEN_TTL_SECONDS },
@@ -291,6 +300,8 @@ export async function runBundleImport(
       stageSizeLimit: preflight.stageSizeLimit,
       objectArtifacts,
       internalApiBase: deps.platformApiUrl,
+      archiveEncrypted: !!input.archivePassphrase,
+      passphraseKey: input.archivePassphrase ? ARCHIVE_PASSPHRASE_KEY : undefined,
       pinToNode: input.pinToNode,
       activeDeadlineSeconds: Math.max(60, Math.ceil(timeoutMs / 1000) - JOB_DEADLINE_BUFFER_SEC),
     });
