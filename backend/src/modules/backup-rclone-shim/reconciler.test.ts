@@ -527,3 +527,74 @@ describe('reconcileBackupRcloneShim — assignment load error', () => {
     expect(env.cmStore['backup-rclone-shim-config']).toBeUndefined();
   });
 });
+
+// The launcher is Flux-owned and mounted as a file, so nothing restarted the
+// shim when it changed: a flag edit reached the ConfigMap and never a running
+// pod. Its content is now part of the input hash.
+describe('reconcileBackupRcloneShim — launcher.sh drives the rollout', () => {
+  const LAUNCHER_V1 = '#!/bin/sh\nexec rclone serve s3 --buffer-size 2M combined:\n';
+  const LAUNCHER_V2 = '#!/bin/sh\nexec rclone serve s3 --buffer-size 1M combined:\n';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedKey.mockResolvedValue({ rawKey: fixedRawKey(), fingerprint: '630dcd2966c43366', generatedAt: '' });
+    mockedAssign.mockResolvedValue({
+      assignments: [{ className: 'tenant', target: baseS3Target({ id: 's1', name: 'shared-target' }) }],
+      shadowed: [],
+      disabledAssignments: [],
+      orphanedAssignments: [],
+    });
+  });
+
+  function seedLauncher(env: ReturnType<typeof mkClients>, script: string): void {
+    const cm = env.cmStore['backup-rclone-shim-config'] ??= { data: {} };
+    cm.data['launcher.sh'] = script;
+  }
+
+  it('a launcher-only change re-materialises and rolls the DaemonSet', async () => {
+    const env = mkClients();
+    seedLauncher(env, LAUNCHER_V1);
+    const first = await reconcileBackupRcloneShim({} as never, env.clients, 'enc-key', env.log);
+    expect(first.skipped).toBe(false);
+    expect(env.dsPatched).toHaveLength(1);
+
+    seedLauncher(env, LAUNCHER_V2);
+    const second = await reconcileBackupRcloneShim({} as never, env.clients, 'enc-key', env.log);
+    expect(second.state).toBe('STATE_OK');
+    expect(second.skipped).toBe(false);
+    expect(second.inputHash).not.toBe(first.inputHash);
+    expect(env.dsPatched).toHaveLength(2);
+    // The reconciler merge-patches classes.txt only — it must never rewrite
+    // the launcher it reads.
+    expect(env.cmStore['backup-rclone-shim-config'].data['launcher.sh']).toBe(LAUNCHER_V2);
+  });
+
+  it('an unchanged launcher still short-circuits (no restart loop)', async () => {
+    const env = mkClients();
+    seedLauncher(env, LAUNCHER_V2);
+    await reconcileBackupRcloneShim({} as never, env.clients, 'enc-key', env.log);
+    const again = await reconcileBackupRcloneShim({} as never, env.clients, 'enc-key', env.log);
+    expect(again.skipped).toBe(true);
+    expect(env.dsPatched).toHaveLength(1);
+  });
+
+  it('a transient launcher read error neither rolls the shim nor blanks the status hash', async () => {
+    const env = mkClients();
+    seedLauncher(env, LAUNCHER_V2);
+    const first = await reconcileBackupRcloneShim({} as never, env.clients, 'enc-key', env.log);
+    const realRead = env.clients.core.readNamespacedConfigMap;
+    env.clients.core.readNamespacedConfigMap = vi.fn(async (args: { name: string }) => {
+      if (args.name === 'backup-rclone-shim-config') {
+        // eslint-disable-next-line @typescript-eslint/no-throw-literal
+        throw { statusCode: 503, message: 'apiserver unavailable' };
+      }
+      return realRead(args as never);
+    }) as never;
+
+    await expect(
+      reconcileBackupRcloneShim({} as never, env.clients, 'enc-key', env.log),
+    ).rejects.toMatchObject({ statusCode: 503 });
+    expect(env.dsPatched).toHaveLength(1);
+    expect(env.cmStore['backup-rclone-shim-status'].data.inputHash).toBe(first.inputHash);
+  });
+});

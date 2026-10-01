@@ -267,4 +267,20 @@ describe('runResticPrune', () => {
     })).rejects.toThrow(/invalid maxRepackSize/);
     expect(calls).toHaveLength(0);
   });
+
+  it('waits out a live lock when retryLock is set, and only then', async () => {
+    const { calls } = stubSpawn();
+    await runResticPrune({ target: TARGET, passwordHex: PW, repoUri: REPO, retryLock: '5m' });
+    await runResticPrune({ target: TARGET, passwordHex: PW, repoUri: REPO });
+    expect(calls[0]![calls[0]!.indexOf('--retry-lock') + 1]).toBe('5m');
+    expect(calls[1]).not.toContain('--retry-lock');
+  });
+
+  it('rejects a malformed retryLock instead of passing it through', async () => {
+    const { calls } = stubSpawn();
+    await expect(runResticPrune({
+      target: TARGET, passwordHex: PW, repoUri: REPO, retryLock: '5m --no-lock',
+    })).rejects.toThrow(/invalid retryLock/);
+    expect(calls).toHaveLength(0);
+  });
 });

@@ -63,6 +63,7 @@ import {
   CONFIG_HASH_ANNOTATION,
   FIELD_MANAGER,
   INPUT_HASH_ANNOTATION,
+  LAUNCHER_SH_KEY,
   loadBackupTargetKey,
   loadShimAssignments,
   logAssignmentDiagnostics,
@@ -186,6 +187,12 @@ export async function reconcileBackupRcloneShim(
   }
   logAssignmentDiagnostics(loaded, log);
 
+  // ─── 2b. The live launcher.sh — part of the input hash ───────────
+  // Throws on anything but a 404 (see readLauncherScript): a transient read
+  // failure must not change the hash, or every apiserver blip would restart
+  // the shim twice.
+  const launcherScript = await readLauncherScript(clients.core);
+
   // ─── 3. No assignments → empty config ───────────────────────────
   if (loaded.assignments.length === 0) {
     // Emit empty upstream.env + empty classes.txt → shim sleeps.
@@ -201,7 +208,7 @@ export async function reconcileBackupRcloneShim(
       posixMounts: [],
       sshKeyMaterializations: [],
     };
-    const emptyInputHash = computeInputHash(keyInput.rawKey, []);
+    const emptyInputHash = computeInputHash(keyInput.rawKey, [], launcherScript);
     return await materializeAndWriteStatus(
       clients,
       log,
@@ -237,7 +244,7 @@ export async function reconcileBackupRcloneShim(
       errorMessage: msg,
     };
   }
-  const inputHash = computeInputHash(keyInput.rawKey, loaded.assignments);
+  const inputHash = computeInputHash(keyInput.rawKey, loaded.assignments, launcherScript);
 
   // ─── 5. Bail-early if inputs unchanged ──────────────────────────
   const currentInputHash = await readStatusInputHash(clients.core);
@@ -445,6 +452,37 @@ async function mergePatchConfigMapData(
     } as unknown as Parameters<typeof core.patchNamespacedConfigMap>[0],
     MERGE_PATCH,
   );
+}
+
+/**
+ * The static launcher.sh, as the cluster currently has it.
+ *
+ * The launcher holds every rclone flag and is a Flux-owned file mounted into
+ * the pod. Nothing used to restart the shim when it changed, so a flag edit
+ * landed in the ConfigMap and never reached a running process. Folding its
+ * content into the input hash makes a launcher change roll the DaemonSet on
+ * the next tick, exactly like a target change.
+ *
+ * 404 reads as an empty launcher: on a fresh cluster this reconciler can run
+ * before Flux applies the placeholder, and the pod cannot start without the
+ * file anyway — when it lands, the hash changes and the shim rolls onto it.
+ * Any other error is THROWN rather than hashed: hashing '' on a transient
+ * failure would flip the hash, restart the shim, then flip it back and
+ * restart it again.
+ */
+async function readLauncherScript(core: k8s.CoreV1Api): Promise<string> {
+  try {
+    const cm = (await core.readNamespacedConfigMap({
+      name: SHIM_CONFIG_CM_NAME,
+      namespace: SHIM_NAMESPACE,
+    } as unknown as Parameters<typeof core.readNamespacedConfigMap>[0])) as ConfigMapShape;
+    return cm.data?.[LAUNCHER_SH_KEY] ?? '';
+  } catch (err) {
+    const code = (err as { statusCode?: number; code?: number })?.statusCode
+      ?? (err as { code?: number })?.code;
+    if (code === 404) return '';
+    throw err;
+  }
 }
 
 async function readStatusInputHash(
