@@ -23,6 +23,7 @@ import { Download,
   Package, Search, Loader2, Filter, Camera, Archive, RotateCw, AlertCircle, Trash2, Clock,
   ChevronDown,
   ChevronRight,
+  Upload,
 } from 'lucide-react';
 import { useQuery, useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
@@ -37,6 +38,8 @@ import BackupClassPage from './BackupClassPage';
 import RestorationWizard, { type RestoreArtifact } from '@/components/backups/RestorationWizard';
 import { AdminBundleProgressModal } from '@/components/AdminBundleProgressModal';
 import { BundleExportModal } from '@/components/BundleExportModal';
+import { BundleImportModal } from '@/components/BundleImportModal';
+import { useBackupConfigs } from '@/hooks/use-backup-config';
 import { useShimAssignments } from '@/hooks/use-backup-rclone-shim';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
@@ -1083,7 +1086,18 @@ export default function TenantsBackupsPage() {
     shimResp?.data?.assignments?.find((a) => a.className === 'tenant')?.targetId ?? null;
   const tenantTargetBound = !!tenantTargetId;
 
-  const { data: rollupData, isLoading: rollupLoading } = useTenantsRollup();
+  const { data: rollupData, isLoading: rollupLoading, refetch: refetchRollup } = useTenantsRollup();
+  const [showImport, setShowImport] = useState(false);
+  const { data: backupConfigs } = useBackupConfigs();
+  // `enabled`, not `active` — `active` designates the single Longhorn
+  // BackupTarget and is not consulted by the tenant-bundle (shim) path.
+  const importTargets = useMemo(
+    () => (backupConfigs?.data ?? [])
+      .filter((c: { enabled?: number; read_only?: boolean; readOnly?: boolean }) =>
+        (c.enabled ?? 1) !== 0 && !(c.read_only ?? c.readOnly))
+      .map((c: { id: string; name: string }) => ({ id: c.id, name: c.name, active: true })),
+    [backupConfigs],
+  );
   const tenantOptions = useMemo(
     () => (rollupData?.data?.rows ?? [])
       .map((r: TenantBackupOverviewRow) => ({ id: r.tenantId, name: r.tenantName }))
@@ -1227,6 +1241,14 @@ export default function TenantsBackupsPage() {
 
   return (
     <>
+      <BundleImportModal
+        open={showImport}
+        onClose={() => setShowImport(false)}
+        scope="admin"
+        tenants={tenantOptions}
+        targets={importTargets}
+        onImported={() => { void refetchRollup(); }}
+      />
       <BackupClassPage
         icon={Package}
         title="Tenant Backups"
@@ -1258,6 +1280,16 @@ export default function TenantsBackupsPage() {
         backupsTab={
           <div className="space-y-3">
             {errorBanner}
+            <div className="flex items-center justify-end">
+              <button
+                type="button"
+                onClick={() => setShowImport(true)}
+                className="inline-flex items-center gap-2 rounded-md border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+                data-testid="import-bundle"
+              >
+                <Upload className="h-4 w-4" /> Import bundle
+              </button>
+            </div>
             <BackupsTab
               // The page's only up-front fetch is the rollup — the tenant
               // list with each one's backup count and repository size.
