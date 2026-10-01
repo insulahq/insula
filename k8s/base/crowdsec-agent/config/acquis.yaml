@@ -2,6 +2,13 @@
 # One source: Traefik's JSON access log, written to a host file by the Traefik
 # DaemonSet on the same node. Not /var/log/pods — the kubelet wraps stdout in
 # the CRI envelope and the crowdsecurity/traefik parser needs bare JSON.
+#
+# force_inotify: watch the directory even when the file does not exist yet.
+# Without it an agent that starts before Traefik has created the file (a fresh
+# or newly joined node, any node after a reboot that starts the agent first)
+# logs "No matching files" once and then never tails the file — Ready and
+# detecting nothing. With it, the tail starts the moment the file appears.
+force_inotify: true
 filenames:
   - /var/log/traefik/access.log
 labels:

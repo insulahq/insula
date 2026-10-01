@@ -58,6 +58,21 @@ case "$args" in
     ;;
 esac
 
+# The volume without the args is the signature of a later `helm upgrade
+# --reuse-values` having re-rendered the container args (this script patched
+# them outside the release): the volume survives because volumes merge by name.
+# Patching again would fail on "Duplicate value: traefik-access-log" — forever,
+# on every node replaying this script — so leave it to 2026.10.3/0002, which
+# moves the whole access-log configuration into the release values.
+vols="$("$KUBECTL" get daemonset "$DS" -n "$NS" \
+  -o jsonpath='{.spec.template.spec.volumes[*].name}' 2>/dev/null || echo '')"
+case " $vols " in
+  *" traefik-access-log "*)
+    echo "traefik-access-log: volume present but args gone (dropped by a helm upgrade) — deferring to 2026.10.3/0002, which enables it through the release values"
+    exit 0
+    ;;
+esac
+
 echo "traefik-access-log: enabling JSON access log on ${NS}/${DS}"
 
 # Append the access-log flags. A JSON-patch `add` at index '-' appends without
