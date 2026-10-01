@@ -44,6 +44,7 @@ REGISTERED_SITES=(
   "backend/src/modules/storage-lifecycle/service.ts::requireWritableTarget"
   "backend/src/modules/storage-lifecycle/prebundle.ts::requireWritableTarget"
   "backend/src/modules/mail-admin/snapshot.ts::requireWritableTarget"
+  "backend/src/modules/mail-admin/snapshot-prune.ts::requireWritableTarget"
   "backend/src/modules/system-backup/pg-dump-orchestrator.ts::requireWritableTarget"
   "backend/src/modules/system-backup/pg-dump-routes.ts::requireWritableTarget"
 )

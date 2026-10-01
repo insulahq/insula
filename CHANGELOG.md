@@ -12,6 +12,39 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+
+- **Mail snapshots no longer prune the backup repository on every run.** The
+  stalwart-snapshot Job ran `restic forget --prune` after each backup. At a
+  10-minute cadence that was a full prune 144 times a day: every run
+  re-downloaded every tree pack, listed every pack file on the backup target
+  and rewrote the whole index, while the backup itself added about 1.4 MiB.
+  Measured on a production cluster, that came to about 2.1 GB a day pulled from
+  the target, 0.3 GB pushed, 7 GB of in-cluster traffic and over an hour of Job
+  runtime. The Job now only applies retention (`forget`), which still happens
+  on every run, so restore points are unchanged. platform-api prunes the repo
+  at most once a day, across all replicas. A failed prune is retried within the
+  hour, and one interrupted by a platform-api restart is retried within a few
+  hours and reported. Each prune repacks at most 1 GiB, so its lock stays short,
+  and the Job waits that lock out rather than failing. A DR-frozen (read-only)
+  target is never pruned. Kill switch: `MAIL_SNAPSHOT_PRUNE=disable` on
+  platform-api.
+- **Tenant bundle exports pulled about twice what they delivered from the
+  backup target.** The backup shim read ahead 2 MiB on every ranged request and
+  discarded whatever fell past the end of the range, and restic reads one blob
+  at a time. The read-ahead is now 1 MiB, which halves the waste at the same
+  throughput (measured: 1.88× → 1.25× for restic-sized reads, unchanged speed on
+  16 MiB reads). Removing it entirely was measured too and rejected: it made
+  large sequential reads, i.e. restores, about 6× slower.
+- **A change to the backup shim's launcher script never reached a running
+  shim.** The script is a Flux-owned file mounted into the pod, and nothing
+  restarted the shim when it changed. Its content is now part of the shim
+  reconciler's input hash, so a launcher change rolls the shim on the next
+  reconcile like a target change does. Expect one shim restart when this
+  release is applied.
+- **The mail snapshot count always read 1.** The Job counted lines of restic's
+  JSON output, which is a single line. It now counts the snapshots.
+
 ## [2026.10.1] - 2026-10-01
 
 ### Added

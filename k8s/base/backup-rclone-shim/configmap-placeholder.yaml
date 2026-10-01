@@ -21,7 +21,7 @@
 #   - --s3-disable-http2 (HTTP/1.1 = parallel TCP, no HoL blocking)
 #   - --s3-upload-concurrency 3 (upstream is the bottleneck; ~15 MiB
 #     in-flight buffer per stream is the memory price for parallelism)
-#   - --buffer-size 2M (smaller per-file read buffer)
+#   - --buffer-size 1M (read-ahead per ranged GET — see the exec line)
 #   - --s3-memory-pool-flush-time 30s (idle pool returns memory faster)
 #
 # Owned at runtime by platform-api's backup-rclone-shim/reconciler.ts:
@@ -189,6 +189,18 @@ data:
     # restic) retry, so a first-attempt connection-refused mid-rollout is
     # absorbed — never silent data loss.
     ready
+    # --buffer-size 1M, NOT 2M: every ranged GET pulls the requested bytes
+    # PLUS up to this much read-ahead from the upstream, and the read-ahead is
+    # discarded when the range ends. restic reads data one blob at a time, so
+    # at 2M a bundle export pulled ~2.2x what it delivered. Measured against a
+    # CIFS upstream, bytes pulled per byte served:
+    #     request    2M (old)   1M      0
+    #     512 KiB    4.0x       2.0x    1.01x
+    #     1.6 MiB    1.88x      1.25x   1.01x
+    #     16 MiB     1.13x      1.06x   1.01x   (0.52 s / 0.54 s / 2.2 s)
+    # 1M halves the waste at the same speed. 0 removes it but makes big
+    # sequential reads ~6x slower per stream (synchronous upstream reads),
+    # which is restore time. Values under 1M behave like 0.
     exec rclone serve s3 \
       --config "$RCLONE_CONF" \
       --addr "$ADDR" \
@@ -200,7 +212,7 @@ data:
       --vfs-write-back 0s \
       --dir-cache-time 3s \
       --vfs-read-ahead 0 \
-      --buffer-size 2M \
+      --buffer-size 1M \
       --no-modtime \
       --no-checksum \
       --s3-chunk-size 5M \

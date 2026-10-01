@@ -100,7 +100,7 @@ inside the tenant *bundle's* `components/secrets/`, not the secrets-bundle.
 | `--s3-disable-http2` | (present) | HTTP/1.1 = parallel TCP connections (avoids HoL blocking) |
 | `--s3-upload-concurrency` | `3` | Upstream is bottleneck; more buffers just waste memory |
 | `--s3-chunk-size` | `5M` | Balanced — bigger increases multipart RAM cost |
-| `--buffer-size` | `2M` | Per-file read buffer (vs default 16M) |
+| `--buffer-size` | `1M` | Read-ahead per ranged GET. Every byte of it past the end of the range is fetched from the upstream and discarded; at `2M` a restic export pulled ~2.2× what it delivered. `1M` halves that at the same throughput; `0` removes it but cuts large sequential reads (restores) to ~⅙ the speed |
 | `--s3-memory-pool-flush-time` | `30s` | Idle pool returns memory faster |
 
 Steady-state RSS: ~60 MiB idle, ~130 MiB avg under bench load. Peak

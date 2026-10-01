@@ -87,7 +87,7 @@ export type BackupTarget =
       // protocol (S3/SFTP/CIFS/NFS). Live bench on staging measured the
       // shim path at 15.9 MiB/s vs restic native S3 at 10.4 MiB/s — the
       // shim's rclone serve s3 is hand-tuned (HTTP/1.1, --s3-disable-http2,
-      // --s3-upload-concurrency 3, --buffer-size 2M) and outperforms
+      // --s3-upload-concurrency 3, --buffer-size 1M) and outperforms
       // restic's default AWS SDK against Hetzner OS. Also covers
       // CIFS/NFS upstreams that tenant-bundles never supported natively.
       readonly kind: 'shim';
@@ -2174,6 +2174,13 @@ export interface RunResticPruneArgs {
    * one multi-hour stall. Accepts restic size syntax, e.g. '2G'.
    */
   readonly maxRepackSize?: string;
+  /**
+   * Wait this long for a LIVE lock instead of failing at once (restic
+   * `--retry-lock`, e.g. '5m'). For a repo another writer touches on a short
+   * cadence — the mail snapshot Job runs every few minutes — where colliding
+   * with it is routine, not an error worth a notification.
+   */
+  readonly retryLock?: string;
   readonly semaphore?: ResticConcurrencySemaphore;
   readonly timeoutMs?: number;
   /**
@@ -2184,6 +2191,7 @@ export interface RunResticPruneArgs {
 }
 
 const MAX_REPACK_SIZE_RE = /^[0-9]{1,6}[KMGT]$/;
+const RETRY_LOCK_RE = /^[0-9]{1,4}[smh]$/;
 
 /**
  * `restic prune` — the step that actually frees space. Expensive: walks the
@@ -2192,6 +2200,9 @@ const MAX_REPACK_SIZE_RE = /^[0-9]{1,6}[KMGT]$/;
 export async function runResticPrune(args: RunResticPruneArgs): Promise<void> {
   if (args.maxRepackSize !== undefined && !MAX_REPACK_SIZE_RE.test(args.maxRepackSize)) {
     throw new Error(`runResticPrune: invalid maxRepackSize '${args.maxRepackSize}'`);
+  }
+  if (args.retryLock !== undefined && !RETRY_LOCK_RE.test(args.retryLock)) {
+    throw new Error(`runResticPrune: invalid retryLock '${args.retryLock}'`);
   }
   const sem = args.semaphore ?? DEFAULT_SEM;
   const release = await sem.acquire();
@@ -2206,6 +2217,7 @@ export async function runResticPrune(args: RunResticPruneArgs): Promise<void> {
     }
     cliArgs.push('--repo', args.repoUri);
     cliArgs.push(...performanceOpts(args.target));
+    if (args.retryLock) cliArgs.push('--retry-lock', args.retryLock);
     cliArgs.push('prune');
     if (args.maxRepackSize) cliArgs.push('--max-repack-size', args.maxRepackSize);
     await withStaleLockRetry(

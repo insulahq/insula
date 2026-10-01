@@ -549,6 +549,14 @@ function stripSlashes(s: string): string {
 export function computeInputHash(
   rawKey: Buffer,
   assignments: ReadonlyArray<ClassAssignment>,
+  /**
+   * The LIVE static launcher.sh. It carries every rclone flag, and it is a
+   * Flux-owned file mounted into the pod — so before this was hashed, a
+   * flag change reached the ConfigMap and never a running shim. Required,
+   * not optional: a caller that forgets it would silently hash '' and lose
+   * the rollout again.
+   */
+  launcherScript: string,
 ): string {
   const h = createHash('sha256');
   // Renderer-version sentinel. Bump when the OUTPUT format changes
@@ -560,6 +568,7 @@ export function computeInputHash(
   // - v4-combine    : R-X20 always-combined renderer (rclone.conf-based)
   h.update('v4-combine\n');
   h.update(`fp=${fingerprintRawKey(rawKey)}\n`);
+  h.update(`launcher=${createHash('sha256').update(launcherScript).digest('hex')}\n`);
   const sorted = [...assignments].sort((a, b) =>
     a.className.localeCompare(b.className),
   );

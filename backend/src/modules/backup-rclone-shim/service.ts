@@ -68,6 +68,10 @@ export const SHIM_DAEMONSET_NAME = 'backup-rclone-shim';
  *  versitygw doesn't have static buckets; the file is now just an
  *  operator-visible list of which classes the shim is bound for. */
 export const CLASSES_TXT_KEY = 'classes.txt';
+/** ConfigMap data key for the static entrypoint script. Flux owns it
+ *  (configmap-placeholder.yaml); the reconciler only READS it, to fold its
+ *  content into the input hash — see `readLauncherScript` in reconciler.ts. */
+export const LAUNCHER_SH_KEY = 'launcher.sh';
 /** Secret data key for the rendered upstream.env (R-X17 — replaces
  *  the old `rclone.conf` key). Sourced by the shim launcher.sh as
  *  `set -a; . upstream.env; set +a`. */
