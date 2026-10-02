@@ -123,17 +123,23 @@ storage paths. Two path classes:
 | `net-services.sh` | per-run NAT net + a throw-away **services VM** whose own Docker runs PowerDNS/Pebble/MinIO (no host Docker) |
 | `spawn-cluster.sh` | draw a **random OS per node**, overlay-clone, `bootstrap.sh --remote`, wait Ready |
 | `run.sh` | one run (random-OS cluster; `--os`/`--seed` to pin/replay); calls `integration-all.sh` unchanged |
-| `teardown.sh` | throw the whole run away (trap-safe, idempotent) |
+| `stop.sh <run>` | power the run's VMs **off and keep them** (disks, OS, platform, services VM, network); pins each VM's IP first. The default way to put a run away |
+| `start.sh <run>` | power a stopped run back on; waits for SSH and every k3s node Ready; prints the run's coordinates |
+| `rebootstrap.sh <run>` | **re-install the platform on the same VMs**: wipes it with `scripts/destroy-cluster.sh` (OS kept), then the normal create + joins + integration tier (`VMTEST_INTEGRATION_ARGS` etc. as for `run.sh`) |
+| `teardown.sh` | throw the VMs themselves away (trap-safe, idempotent) — only when they are no longer wanted |
 
 ## Guarantees / discipline
 
 - **No hardcoded pins** — `bootstrap.sh` runs verbatim inside the VMs; its version
   pins are the single source of truth. Zero local↔staging drift by construction.
-- **Retained by default** — `run.sh` KEEPS the cluster on EXIT (`VMTEST_KEEP=1`, the
-  default) so follow-up questions don't cost another ~4h run. The next run reclaims
-  older runs automatically, so only the latest is retained; `VMTEST_KEEP_ALL=1` opts
-  out of that. Reclaim explicitly with `teardown.sh <run-id>`. CI should set
-  `VMTEST_KEEP=0`.
+- **Retained by default, stopped when idle** — `run.sh` KEEPS the cluster on EXIT
+  (`VMTEST_KEEP=1`, the default) so follow-up questions don't cost another run. Put
+  it away with `stop.sh <run-id>` (RAM freed, VMs kept) and bring it back with
+  `start.sh`; get a fresh platform on the same VMs with `rebootstrap.sh` instead of
+  spawning new ones. A new `run.sh` STOPS older running runs (never destroys them);
+  `VMTEST_KEEP_ALL=1` leaves them running. Per-run state (service coordinates,
+  credentials, OS assignment) lives in `~/.cache/insula-vmtest/run-<id>.env` (0600).
+  CI should set `VMTEST_KEEP=0`.
 - **Trap-safe teardown** — with `VMTEST_KEEP=0`, `run.sh` tears down on EXIT (set `VMTEST_KEEP_ON_FAIL=1`
   to keep a failed run for debugging). Golden image is cached across runs.
 - **Reuses the real harness** — `integration-all.sh` is called unchanged; the VM

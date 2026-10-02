@@ -70,6 +70,22 @@ ssh_pwauth: false
 package_update: true
 packages: [docker.io, ca-certificates, qemu-guest-agent, dnsmasq-base, sqlite3]
 write_files:
+  # The split-horizon resolver every cluster node uses, as a UNIT so it comes back
+  # after stop.sh/start.sh — a runcmd launch dies with the first reboot and takes
+  # all in-cluster DNS (CoreDNS forwards here) down with it.
+  - path: /etc/systemd/system/vmtest-dnsmasq.service
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=vmtest split-horizon DNS (<apex> -> PowerDNS, rest -> upstream)
+      After=network-online.target docker.service
+      Wants=network-online.target
+      [Service]
+      ExecStart=/bin/sh -c 'exec /usr/sbin/dnsmasq --keep-in-foreground --listen-address=127.0.0.1,\$\$(hostname -I | cut -d" " -f1) --bind-interfaces --no-resolv --server=/${APEX}/127.0.0.1#5300 --server=${VMTEST_UPSTREAM_DNS:-1.1.1.1}'
+      Restart=always
+      RestartSec=2
+      [Install]
+      WantedBy=multi-user.target
   # Pebble config: validate HTTP-01 on :80 (real-ACME semantics) instead of Pebble's
   # test default 5002 — the platform's Traefik ingress answers :80, so the ACME solver
   # challenge is reachable there. cert/key are the image's baked-in test certs. The
@@ -97,7 +113,8 @@ runcmd:
   # --- dnsmasq split-horizon resolver = this VM's IP (VMTEST_DNS_IP for cluster nodes):
   #     <apex> -> PowerDNS:5300 (authoritative); everything else -> upstream. Binds the
   #     VM IP + loopback (Pebble queries 127.0.0.1:53); leaves resolved's stub alone. ---
-  - "/usr/sbin/dnsmasq --listen-address=127.0.0.1,\$(hostname -I | awk '{print \$1}') --bind-interfaces --no-resolv --server=/${APEX}/127.0.0.1#5300 --server=${VMTEST_UPSTREAM_DNS:-1.1.1.1}"
+  - [systemctl, daemon-reload]
+  - [systemctl, enable, --now, vmtest-dnsmasq]
   # --- Pebble test ACME CA (ghcr — docker-hub letsencrypt/pebble does NOT exist).
   #     Image entrypoint is already the pebble binary (/app), so pass only its flags. ---
   - "docker run -d --name pebble --restart=always --network host -e PEBBLE_VA_NOSLEEP=1 -v /root/pebble-config.json:/test/config/pebble-config.json:ro ghcr.io/letsencrypt/pebble:latest -config /test/config/pebble-config.json -dnsserver 127.0.0.1:53"
@@ -105,7 +122,8 @@ runcmd:
   #     OUT to one of these external endpoints, one per supported protocol (s3/ssh/cifs).
   #     All three live on this services-VM IP, so the cluster reaches them over the NAT net.
   # S3 (MinIO) + its bucket (retry: MinIO takes a moment to accept connections). ---
-  - "docker run -d --name minio --restart=always --network host -e MINIO_ROOT_USER=${MINIO_USER} -e MINIO_ROOT_PASSWORD=${MINIO_PW} minio/minio:latest server /data --console-address :9001"
+  - mkdir -p /var/lib/minio
+  - "docker run -d --name minio --restart=always --network host -v /var/lib/minio:/data -e MINIO_ROOT_USER=${MINIO_USER} -e MINIO_ROOT_PASSWORD=${MINIO_PW} minio/minio:latest server /data --console-address :9001"
   - "for i in \$(seq 1 30); do docker run --rm --network host --entrypoint sh minio/mc:latest -c 'mc alias set l http://127.0.0.1:9000 ${MINIO_USER} ${MINIO_PW} && mc mb -p l/${MINIO_BUCKET}' && break || sleep 2; done"
   # SFTP (atmoz/sftp) — user ${SFTP_USER}, share /upload. Bridge-mapped to :2222 so it does
   # NOT clash with the VM's own sshd on :22. Password auth (backup-config ssh_password). ---

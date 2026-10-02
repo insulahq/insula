@@ -53,7 +53,9 @@ _planned=$(( VMTEST_SERVERS * VMTEST_RAM_MB + ${VMTEST_WORKERS:-0} * _worker_ram
 _avail=$(on_host "free -m | awk '/^Mem:/{print \$7}'" 2>/dev/null | tr -dc '0-9')
 _margin="${VMTEST_HOST_MEM_MARGIN_MB:-3072}"
 echo "── host-memory guard: planned guests=${_planned}MB, host available=${_avail:-?}MB, margin=${_margin}MB ──" >&2
-if [[ -n "$_avail" && "$_avail" -gt 0 && $(( _planned + _margin )) -gt "$_avail" ]]; then
+# Reuse mode boots no new guest: the run's VMs already exist and already count
+# against "available", so the planned footprint would be charged twice.
+if [[ "${VMTEST_REUSE:-0}" != "1" && -n "$_avail" && "$_avail" -gt 0 && $(( _planned + _margin )) -gt "$_avail" ]]; then
   echo "ABORT: planned guest memory ${_planned}MB + ${_margin}MB margin exceeds host available ${_avail}MB." >&2
   echo "  Lower VMTEST_RAM_MB / VMTEST_WORKER_RAM_MB / VMTEST_WORKERS / VMTEST_SERVERS, or free host RAM." >&2
   exit 1
@@ -163,8 +165,19 @@ MD
 }
 
 # boot_node <host> <idx> <os> → echoes the node IP
+#
+# VMTEST_REUSE=1 (rebootstrap.sh / run.sh VMTEST_REUSE_RUN): the VM already exists
+# from an earlier run — keep its disk and OS, just make sure it is running and
+# return its (pinned) address. No clone, no cloud-init seed, no new domain.
 boot_node() {
   local host="$1" idx="$2" os="$3" golden overlay mac ip=""
+  if [[ "${VMTEST_REUSE:-0}" == "1" ]]; then
+    VIRSH dominfo "$host" >/dev/null 2>&1 || { echo "reuse: VM ${host} does not exist" >&2; return 1; }
+    [[ "$(VIRSH domstate "$host" 2>/dev/null)" == running ]] || VIRSH start "$host" >&2
+    for _ in $(seq 1 75); do ip=$(vm_ip "$host" "$RUN"); [[ -n "$ip" ]] && break; sleep 4; done
+    [[ -n "$ip" ]] || { echo "no lease for $host after 5 min" >&2; return 1; }
+    echo "$ip"; return 0
+  fi
   golden="$(ensure_golden "$os")"
   overlay="${VMTEST_DISK_DIR}/${host}.qcow2"
   mac=$(printf '52:54:00:%02x:%02x:%02x' "$OCTET" "$((RANDOM%256))" "$idx")
@@ -188,8 +201,14 @@ boot_node() {
 declare -A NODE_OS
 ASSIGN=""
 S1="vmt-${RUN}-s1"
-for s in $(seq 1 "${VMTEST_SERVERS:-1}"); do o="$(pick_os)"; NODE_OS["vmt-${RUN}-s${s}"]="$o"; ASSIGN+="s${s}=${o}  "; done
-for w in $(seq 1 "${VMTEST_WORKERS:-0}"); do o="$(pick_os)"; NODE_OS["vmt-${RUN}-w${w}"]="$o"; ASSIGN+="w${w}=${o}  "; done
+if [[ "${VMTEST_REUSE:-0}" == "1" && -n "${VMTEST_OS_ASSIGN:-}" ]]; then
+  # "s1=debian-13  s2=ubuntu-24.04  w1=…" — the OSes these VMs were built with.
+  for kv in ${VMTEST_OS_ASSIGN}; do NODE_OS["vmt-${RUN}-${kv%%=*}"]="${kv#*=}"; done
+  ASSIGN="${VMTEST_OS_ASSIGN}  "
+else
+  for s in $(seq 1 "${VMTEST_SERVERS:-1}"); do o="$(pick_os)"; NODE_OS["vmt-${RUN}-s${s}"]="$o"; ASSIGN+="s${s}=${o}  "; done
+  for w in $(seq 1 "${VMTEST_WORKERS:-0}"); do o="$(pick_os)"; NODE_OS["vmt-${RUN}-w${w}"]="$o"; ASSIGN+="w${w}=${o}  "; done
+fi
 echo "== spawn: ${VMTEST_SERVERS} server(s) + ${VMTEST_WORKERS} worker(s) on ${SUB}.0/24 =="
 echo "   os-seed=${OS_SEED}  (reproduce with VMTEST_OS_SEED=${OS_SEED})  pool=[${OS_POOL[*]}]"
 echo "   OS assignment:  ${ASSIGN}${VMTEST_OS:+  (PINNED to ${VMTEST_OS})}"
@@ -307,6 +326,21 @@ bootstrap_node() {
 #    --pre-enroll-peer takes individual IPs — /32 — which we don't know yet; the CIDR
 #    mesh-whitelist is the right primitive for a known test subnet).
 S1_IP=$(boot_node "$S1" 11 "${NODE_OS[$S1]}")
+# Reuse mode: the OS stays, the platform goes. destroy-cluster.sh (the same
+# wipe an operator runs before a real re-bootstrap: k3s uninstall, Calico,
+# Longhorn, firewall, host-migration ledger) runs on every cluster node first,
+# so the create + joins below install onto clean hosts.
+if [[ "${VMTEST_REUSE:-0}" == "1" ]]; then
+  _inv="${VMTEST_TMP_DIR}/inventory-${RUN}.txt"; : > "$_inv"
+  for _n in $(VIRSH list --all --name | grep -E "^vmt-${RUN}-(s|w)[0-9]+$" | sort); do
+    _ip=$(boot_node "$_n" 0 "${NODE_OS[$_n]:-}") || exit 1
+    echo "${_n} ${_ip}" >> "$_inv"
+  done
+  echo "── reuse: wiping the platform from $(wc -l < "$_inv") node(s), keeping their OS ──" >&2
+  "$REPO/scripts/destroy-cluster.sh" --inventory "$_inv" --ssh-key "$VMTEST_SSH_KEY" --confirm >&2 \
+    || { echo "ABORT: destroy-cluster.sh failed on the reused nodes" >&2; exit 1; }
+  rm -f "$_inv"
+fi
 # Point cert-manager at the run's Pebble (test ACME CA) so the platform's certs ISSUE
 # for the private apex — real LE can't validate it. Same ACME issuance path as prod,
 # just a test CA; the harness trusts Pebble's root so it VERIFIES certs (no blanket -k).
