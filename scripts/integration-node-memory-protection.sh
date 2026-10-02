@@ -253,12 +253,21 @@ fi
 # Admin notification within the hour-scoped dedupe window (a run <1h after a
 # previous one is deduped against the earlier dispatch — either way a recent
 # notification must exist).
-NOTIF=$(psql_q "SELECT COUNT(*) FROM notifications WHERE title LIKE 'Node memory event%' AND created_at > now() - interval '60 minutes';" | tr -d '[:space:]')
+# By category, not title: the title is now the event's own headline. A
+# backend that has headlines must title a SystemOOM as the node running out
+# of memory; an older one titled every node event "Node memory event (...)".
+NOTIF=$(psql_q "SELECT COUNT(*) FROM notifications WHERE category_id = 'admin.node_memory_event_critical' AND created_at > now() - interval '60 minutes';" | tr -d '[:space:]')
 if [[ "${NOTIF:-0}" -ge 1 ]]; then
-  pass "admin in-app notification present within the dedupe window ($NOTIF)"
+  pass "admin in-app node-memory notification present within the dedupe window ($NOTIF)"
 else
-  fail "no 'Node memory event' admin notification in the last 60 min"
+  fail "no admin.node_memory_event_critical notification in the last 60 min"
 fi
+OOM_TITLE=$(psql_q "SELECT title FROM notifications WHERE category_id = 'admin.node_memory_event_critical' AND created_at > now() - interval '60 minutes' ORDER BY created_at DESC LIMIT 1;")
+case "$OOM_TITLE" in
+  "Node memory event"*|"") ;;  # pre-headline backend, or deduped: nothing to judge
+  *"ran out of memory"*) pass "SystemOOM notification titled as what it is: '$OOM_TITLE'" ;;
+  *) fail "SystemOOM notification titled '$OOM_TITLE' — expected the node running out of memory" ;;
+esac
 
 # ── 4. Metric-based kernel-OOM alerting ──────────────────────────────────────
 echo "→ 4. cgroup OOM metric + SLO rules"
@@ -408,6 +417,20 @@ QUITPOD
     [[ "$QEXIT" == "137" ]] && break
     sleep 5
   done
+  # The backend holds a death until the witness publishes a snapshot taken
+  # after it ("pending" -> not recorded YET). Wait for that snapshot first, or
+  # "no row" below would only mean "not judged yet" and pass for nothing.
+  if [[ "$WITNESS_OK" == "true" && "$QEXIT" == "137" ]]; then
+    QFIN=$(k get pod -n "$E2E_NS" "${RUN_ID}-quit" -o jsonpath='{.status.containerStatuses[0].state.terminated.finishedAt}' 2>/dev/null)
+    QFIN_MS=$(( $(date -d "$QFIN" +%s) * 1000 ))
+    for i in $(seq 1 24); do
+      SNAP_MS=$(k get cm -n platform-system "security-probe-${HOG_NODE}" -o jsonpath='{.data.memcg}' 2>/dev/null | jq -r '.snapshotAtMs // 0')
+      [[ "${SNAP_MS:-0}" -gt $(( QFIN_MS + 5000 )) ]] && break
+      sleep 5
+    done
+    [[ "${SNAP_MS:-0}" -gt $(( QFIN_MS + 5000 )) ]] \
+      || fail "OOM witness on $HOG_NODE published no snapshot after the negative control's exit within 120s"
+  fi
   api -X POST "$ADMIN_HOST/api/v1/admin/node-health/reconcile" >/dev/null
   sleep 5
   QROW=$(api "$ADMIN_HOST/api/v1/admin/node-health/memory-events?limit=100" \
