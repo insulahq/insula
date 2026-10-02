@@ -97,6 +97,15 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   `TENANT_PIN_REPAIR=disable` skips this). Backup, restore and file-manager pods for a stopped tenant
   now run on the node that holds its data instead of wherever the scheduler put them, and nightly
   mailbox backups run on the mail server's node, so their traffic stays on that node.
+- **Moving mail to another server no longer loses the last few minutes of mail.** A planned move —
+  **Migrate** or **Failback** in Mail placement — restored the new server from the standby copy,
+  which is refreshed only every five minutes, so mail that arrived since the last refresh was gone
+  after the move. The move now copies the complete mail store from the old server after mail has
+  stopped there, then switches over; if that copy fails, nothing is moved and mail starts again on
+  the old server. Automatic failover after a server is lost is unchanged (it can only use the last
+  standby copy). The standby copy itself is also kept intact while mail is stopped for a move or a
+  failover — before, a refresh in that window discarded a good copy, and the move restored from the
+  older backup instead.
 - **Mail moves and failovers no longer fail because the webmail was restarted mid-way.** A move
   stops webmail together with mail and starts both again on the new server; a periodic check that
   keeps webmail running started it again in between, on the old server. On a failover that server

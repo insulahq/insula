@@ -44,6 +44,9 @@ on:
       - 'backend/src/modules/mail-events/**'
       - 'backend/src/modules/db-isolation/**'
       - 'images/file-manager/**'
+      # test-standby-replicate.sh exercises the standby copy script shipped in
+      # this image; a script-only change must run its own test.
+      - 'images/tenant-backup-tools/**'
       # ci-host-migrations-check.sh validates the migration scripts themselves
       # (naming, the idempotent:/allow-paths: contract, shellcheck). Without
       # this path a migration-only change never runs its own guard: 2026-09-12,
@@ -118,6 +121,9 @@ on:
       - 'backend/src/modules/mail-events/**'
       - 'backend/src/modules/db-isolation/**'
       - 'images/file-manager/**'
+      # test-standby-replicate.sh exercises the standby copy script shipped in
+      # this image; a script-only change must run its own test.
+      - 'images/tenant-backup-tools/**'
       # ci-host-migrations-check.sh validates the migration scripts themselves
       # (naming, the idempotent:/allow-paths: contract, shellcheck). Without
       # this path a migration-only change never runs its own guard: 2026-09-12,
@@ -209,6 +215,7 @@ jobs:
       - run: ./scripts/test-bootstrap-summary.sh
       - run: ./scripts/test-bootstrap-join-mode.sh
       - run: ./scripts/test-bootstrap-seed-ref.sh
+      - run: ./scripts/test-standby-replicate.sh
       - run: ./scripts/test-host-migration-k3s-token.sh
       - run: ./scripts/test-traefik-access-log-values.sh
       - run: ./scripts/test-stall-watch.sh

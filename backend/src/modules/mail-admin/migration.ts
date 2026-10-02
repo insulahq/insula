@@ -642,6 +642,7 @@ const MIGRATION_STEP_META: Record<string, { label: string; pct: number }> = {
   // standby node). SKIPPED when no mail BackupTarget is configured.
   snapshotting: { label: 'Taking pre-migration mail backup (offsite)', pct: 15 },
   'scaling-down': { label: 'Scaling Stalwart to 0', pct: 30 },
+  'final-sync': { label: 'Copying the latest mail to the target node', pct: 40 },
   'swapping-pvc': { label: 'Swapping PVC to target node', pct: 50 },
   'scaling-up': { label: 'Restoring DataStore on target node', pct: 80 },
   verifying: { label: 'Verifying RocksDB sentinel', pct: 95 },
@@ -941,6 +942,22 @@ export async function waitForServedMailCert(
   return { ok: false, selfSigned, issuer };
 }
 
+/**
+ * Whether a migration copies the quiet source volume to the target before the
+ * swap (Step 3b). Only for a planned move of the live store: not when the
+ * source node is down (DR — keeps the documented standby RPO), not in recovery
+ * mode (the source is broken), not when restoring a chosen snapshot (that
+ * deliberately restores older data), and not for a same-node restore.
+ */
+export function shouldRunFinalSync(input: {
+  readonly sourceNodeReachable: boolean;
+  readonly recoverFromBrokenState: boolean;
+  readonly restoreSnapshotId: string | null;
+  readonly sameNode: boolean;
+}): boolean {
+  return input.sourceNodeReachable && !input.recoverFromBrokenState && !input.restoreSnapshotId && !input.sameNode;
+}
+
 async function runMigrationStateMachine(
   runId: string,
   sourceNode: string,
@@ -1205,6 +1222,63 @@ async function runMigrationStateMachine(
         `${err2 instanceof Error ? err2.message : String(err2)} (after force-delete; ${diag})`,
         500,
       );
+    }
+  }
+
+  // Step 3b: FINAL SYNC — planned moves only (source alive). The target
+  // restores from its standby copy, which the replicate DaemonSet refreshes
+  // every 5 min; without this, mail received since that refresh was lost on
+  // every operator move / failback. Stalwart + Bulwark are at 0 now, so the
+  // copy taken here is the complete, quiet store. A failure aborts the move
+  // and restarts mail on the source (nothing has been swapped yet).
+  if (shouldRunFinalSync({
+    sourceNodeReachable,
+    recoverFromBrokenState: !!opts.recoverFromBrokenState,
+    restoreSnapshotId: opts.restoreSnapshotId ?? null,
+    sameNode: sourceNode === targetNode,
+  })) {
+    // Mail is at 0 from here until the swap: any way out (failure OR operator
+    // cancel) restarts it on the source first — nothing has been moved yet.
+    const restartOnSource = async (why: string): Promise<void> => {
+      log.warn(`[migration ${runId}] ${why} — restarting mail on ${sourceNode}`);
+      await resumeSnapshotCronJob(deps).catch(() => { /* best-effort */ });
+      await restoreMailOnSource(core, apps, null, sourceNode, log).catch((e: unknown) => {
+        log.warn(`[migration ${runId}] restart on ${sourceNode} also failed: ${(e as Error).message}`);
+      });
+    };
+    try {
+      await setStep(db, runId, 'final-sync', 'running', taskId);
+    } catch (err) {
+      if (err instanceof MigrationCancelledError) await restartOnSource('cancelled before the final sync');
+      throw err;
+    }
+    // The snapshot CronJob (every 2 min) mounts the same volume; stop it now,
+    // not at the swap, so it does not compete with the copy. Idempotent with
+    // the swap step's own suspend.
+    await suspendSnapshotCronJobAndDeleteCompletedPods(deps).catch((e: unknown) => {
+      log.warn(`[migration ${runId}] snapshot CronJob suspend before the final sync failed (non-fatal): ${(e as Error).message}`);
+    });
+    const { runFinalStandbySync } = await import('./final-sync.js');
+    const sync = await runFinalStandbySync(
+      {
+        core, apps,
+        log: { info: (m: string) => log.info(m), warn: (m: string) => log.warn(m) },
+        cancelCheck: () => isCancelRequested(db, runId),
+      },
+      { runId, sourceNode, targetNode, pvcName: MAIL_PVC_NAME },
+    );
+    if (!sync.ok && sync.cancelled) {
+      await restartOnSource('cancelled during the final sync');
+      throw new MigrationCancelledError('final-sync');
+    }
+    if (!sync.ok) {
+      await restartOnSource(`final sync failed: ${sync.reason}`);
+      await failRun(
+        db, runId,
+        `final sync to ${targetNode} failed — nothing was moved, mail restarted on ${sourceNode}: ${sync.reason}`,
+        taskId,
+      );
+      return;
     }
   }
 

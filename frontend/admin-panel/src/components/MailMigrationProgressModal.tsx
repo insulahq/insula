@@ -15,6 +15,8 @@ const STEP_LABELS: Record<string, string> = {
   // → scaling-down in that case.
   snapshotting: 'Taking pre-migration mail backup',
   'scaling-down': 'Scaling Stalwart to 0',
+  // Planned moves only (source alive) — skipped on a DR failover.
+  'final-sync': 'Copying the latest mail to the target node',
   'swapping-pvc': 'Swapping PVC to target node',
   'scaling-up': 'Scaling Stalwart up (restoring data via rsync FAST PATH)',
   verifying: 'Verifying restore content',
@@ -27,6 +29,7 @@ const STEP_ORDER = [
   'preflight',
   'snapshotting',
   'scaling-down',
+  'final-sync',
   'swapping-pvc',
   'scaling-up',
   'verifying',

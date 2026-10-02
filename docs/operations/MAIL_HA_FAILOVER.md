@@ -133,6 +133,36 @@ the stack is currently running on** — operators never label nodes manually.
    ssh <secondary> "ls /var/lib/mail-stack-standby/.standby-complete"
    ```
 
+## Planned moves: final sync (v2026.10.3+)
+
+A planned move — `POST /admin/mail/migrate`, `/admin/mail/failback`, or the
+placement page's move-now — has a live source, so nothing it received may be
+lost. After Stalwart + Bulwark are scaled to 0 on the source and before the PVC
+swap, the state machine runs step **`final-sync`** (`mail-admin/final-sync.ts`):
+
+1. a one-shot pod `mail-final-sync-pub-<run>` on the **source** node — the
+   Stalwart rsyncd sidecar's image and `mail-stack-rsyncd-config` — serves the
+   now-quiet `mail-stack-data` volume read-only;
+2. a one-shot pod `mail-final-sync-pull-<run>` on the **target** node runs
+   `standby-replicate.sh` once (`LOOP_INTERVAL_SECONDS=0`) into
+   `/var/lib/mail-stack-standby`, writing a fresh `.standby-complete`;
+3. both pods are deleted; the restore on the target then takes the FAST PATH
+   from that current copy.
+
+NetworkPolicies admit only the puller to the publisher and let the puller reach
+nothing else. Mail is down for this step: usually seconds (a delta against the
+≤5-min-old copy), at most 30 min for a target that never held a copy. **Cancel**
+is honoured while it runs. On a failure or a cancel the move is aborted: nothing
+was swapped yet, the snapshot CronJob is resumed, Stalwart is scaled back up on
+the source, and the run is `failed` (or cancelled) with the reason. Skipped for a DR
+failover (source down — the ≤5 min standby RPO applies), recovery mode,
+restoring a chosen snapshot, and same-node restores (`shouldRunFinalSync`).
+
+The replicate script only invalidates the standby copy once the publisher
+answers: while Stalwart is at 0 (any migration, or the source node lost) a
+DaemonSet tick used to delete `.standby-complete` before a pull that could only
+fail, and the restore then fell back to the older restic backup.
+
 ## Failover scenarios
 
 ### Scenario A: Auto-failover on node death
