@@ -2,7 +2,7 @@
 # scripts/vm-integration-tests/start.sh — power a stopped run back ON.
 #
 # Counterpart of stop.sh: starts the run network, then the services VM (DNS,
-# Pebble, MinIO, SFTP, Samba — their containers restart on their own), the
+# Pebble, S3, SFTP, Samba — their containers restart on their own), the
 # servers, the workers and the runner, waits for SSH on each, and for every
 # k3s node to report Ready. Prints the same coordinates run.sh prints, so a
 # resumed run is driven exactly like a fresh one.
@@ -42,7 +42,7 @@ APEX="$(printf "$VMTEST_APEX_TMPL" "$RUN")"
 STATE_FILE="${VMTEST_STATE_DIR:-$HOME/.cache/insula-vmtest}/run-${RUN}.env"
 
 # ensure_services <svc-ip> — what a reboot of the services VM must bring back.
-# Runs spawned since the services VM got a dnsmasq UNIT and a MinIO volume need
+# Runs spawned since the services VM got a dnsmasq UNIT and the versitygw S3 target need
 # nothing here; older ones started dnsmasq from a one-shot cloud-init command,
 # so after a stop it is gone — and with it every lookup CoreDNS forwards (pods
 # then cannot resolve anything, Traefik never passes its plugin-registry init).
@@ -52,23 +52,25 @@ ensure_services() {
     /usr/sbin/dnsmasq --listen-address=127.0.0.1,${svc} --bind-interfaces --no-resolv \
       --server=/${APEX}/127.0.0.1#5300 --server=${VMTEST_UPSTREAM_DNS:-1.1.1.1}" \
     || { echo "  could not start DNS on the services VM" >&2; return 1; }
-  # MinIO (S3 backup target): recreate it if the container is gone. Needs the
-  # run's saved credentials; without them, say so instead of guessing.
-  if ! _vssh "$svc" "docker inspect minio >/dev/null 2>&1"; then
+  # S3 backup target (versitygw; MinIO on runs before it was replaced — its
+  # images no longer pull, so a missing MinIO is replaced, not recreated).
+  # Needs the run's saved credentials; without them, say so instead of guessing.
+  if ! _vssh "$svc" "docker inspect s3 >/dev/null 2>&1 || docker inspect minio >/dev/null 2>&1"; then
     if [[ -r "$STATE_FILE" ]]; then
       # shellcheck source=/dev/null
       if ( source "$STATE_FILE"
-        _vssh "$svc" "mkdir -p /var/lib/minio && docker run -d --name minio --restart=always --network host \
-          -v /var/lib/minio:/data -e MINIO_ROOT_USER=$(printf %q "$VMTEST_MINIO_USER") \
-          -e MINIO_ROOT_PASSWORD=$(printf %q "$VMTEST_MINIO_PW") minio/minio:latest server /data --console-address :9001 >/dev/null \
-          && for i in \$(seq 1 30); do docker run --rm --network host --entrypoint sh minio/mc:latest -c \
-             'mc alias set l http://127.0.0.1:9000 $(printf %q "$VMTEST_MINIO_USER") $(printf %q "$VMTEST_MINIO_PW") && mc mb -p l/$(printf %q "$VMTEST_MINIO_BUCKET")' >/dev/null 2>&1 && break || sleep 2; done" ); then
-        echo "  services VM: MinIO container recreated"
+        _vssh "$svc" "mkdir -p /var/lib/s3 && docker run -d --name s3 --restart=always --network host \
+          -v /var/lib/s3:/data -e ROOT_ACCESS_KEY_ID=$(printf %q "$VMTEST_MINIO_USER") \
+          -e ROOT_SECRET_ACCESS_KEY=$(printf %q "$VMTEST_MINIO_PW") versity/versitygw:v1.8.0 --port :9000 posix /data >/dev/null \
+          && for i in \$(seq 1 30); do docker run --rm --network host rclone/rclone:1.74.1 mkdir :s3:$(printf %q "$VMTEST_MINIO_BUCKET") \
+             --s3-provider Other --s3-endpoint http://127.0.0.1:9000 --s3-access-key-id $(printf %q "$VMTEST_MINIO_USER") \
+             --s3-secret-access-key $(printf %q "$VMTEST_MINIO_PW") >/dev/null 2>&1 && break || sleep 2; done" ); then
+        echo "  services VM: S3 backup target (versitygw) started"
       else
-        echo "  WARN: could not recreate MinIO on the services VM — S3 backup suites will fail" >&2
+        echo "  WARN: could not start the S3 backup target on the services VM — S3 backup suites will fail" >&2
       fi
     else
-      echo "  WARN: MinIO container missing and no saved state (${STATE_FILE}) — S3 backup suites will fail" >&2
+      echo "  WARN: S3 backup target missing and no saved state (${STATE_FILE}) — S3 backup suites will fail" >&2
     fi
   fi
 }

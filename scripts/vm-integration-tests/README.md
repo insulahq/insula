@@ -120,7 +120,7 @@ storage paths. Two path classes:
 | `lib/driver.sh` | `libvirt-sock`/`ssh-host` backends — domains, net, images, service containers |
 | `lib/waitfor.sh` | bounded ssh / cloud-init / k3s-Ready waits (fail-fast) |
 | `os-images.sh` | fetch + cache golden cloud images (`list` \| `<os>` \| `all`=pool) |
-| `net-services.sh` | per-run NAT net + a throw-away **services VM** whose own Docker runs PowerDNS/Pebble/MinIO (no host Docker) |
+| `net-services.sh` | per-run NAT net + a throw-away **services VM** whose own Docker runs PowerDNS/Pebble/versitygw (S3) (no host Docker) |
 | `spawn-cluster.sh` | draw a **random OS per node**, overlay-clone, `bootstrap.sh --remote`, wait Ready |
 | `run.sh` | one run (random-OS cluster; `--os`/`--seed` to pin/replay); calls `integration-all.sh` unchanged |
 | `stop.sh <run>` | power the run's VMs **off and keep them** (disks, OS, platform, services VM, network); pins each VM's IP first. The default way to put a run away |
