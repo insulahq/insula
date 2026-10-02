@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 const { apexSpy } = vi.hoisted(() => ({ apexSpy: vi.fn(async (): Promise<string | null> => 'example.test') }));
 vi.mock('../system-settings/platform-domain.js', () => ({ getPlatformApex: apexSpy }));
 
-import { resolveSuspendedRedirectUrl, repointSuspendedRedirects } from './suspended-page.js';
+import { resolveSuspendedRedirectUrl, repointSuspendedRedirects, reconcileSuspendedPageIngress } from './suspended-page.js';
 import { suspendNamespaceIngresses } from './ingress-suspend.js';
 
 const log = { info: vi.fn(), warn: vi.fn() };
@@ -75,6 +75,48 @@ describe('repointSuspendedRedirects', () => {
 
     expect(r.failed).toEqual(['tenant-a/r-aaaaaaaa-suspend']);
     expect(r.repointed).toEqual(['tenant-b/r-bbbbbbbb-suspend']);
+  });
+});
+
+describe('reconcileSuspendedPageIngress', () => {
+  /** The page's IngressRoute + Certificate as Flux seeded them, plus one
+   *  tenant still pointing at the old placeholder. */
+  function cluster(opts: { failIngressRoutePatch?: boolean } = {}) {
+    const patches: Array<{ plural: string; name: string; body: unknown }> = [];
+    const custom = {
+      getNamespacedCustomObject: vi.fn(async (a: { plural: string }) => (a.plural === 'ingressroutes'
+        ? { metadata: { annotations: {} }, spec: { routes: [{ match: 'Host(`suspended.old.example.test`)', kind: 'Rule' }] } }
+        : { metadata: { annotations: {} }, spec: { dnsNames: ['suspended.old.example.test'] } })),
+      patchNamespacedCustomObject: vi.fn(async (a: { plural: string; name: string; body: unknown }) => {
+        if (opts.failIngressRoutePatch && a.plural === 'ingressroutes') throw new Error('apiserver timeout');
+        patches.push(a);
+      }),
+      listClusterCustomObject: vi.fn(async () => ({
+        items: [{ metadata: { namespace: 'tenant-a', name: 'r-aaaaaaaa-suspend' }, spec: { redirectRegex: { replacement: 'https://suspended.platform.local/' } } }],
+      })),
+    };
+    return { custom: custom as never, patches };
+  }
+
+  it('moves the page host, its certificate and every suspended tenant to the apex', async () => {
+    const { custom, patches } = cluster();
+
+    const r = await reconcileSuspendedPageIngress(db, custom, log);
+
+    expect(r.host).toBe('suspended.example.test');
+    expect(JSON.stringify(patches.find((p) => p.plural === 'ingressroutes')?.body)).toContain('Host(`suspended.example.test`)');
+    expect(JSON.stringify(patches.find((p) => p.plural === 'certificates')?.body)).toContain('suspended.example.test');
+    expect(patches.find((p) => p.plural === 'middlewares')?.body)
+      .toEqual({ spec: { redirectRegex: { replacement: 'https://suspended.example.test/' } } });
+  });
+
+  it('still re-points tenants when the host patch fails, and does not throw', async () => {
+    const { custom, patches } = cluster({ failIngressRoutePatch: true });
+
+    const r = await reconcileSuspendedPageIngress(db, custom, log);
+
+    expect(r.redirects?.repointed).toEqual(['tenant-a/r-aaaaaaaa-suspend']);
+    expect(patches.some((p) => p.plural === 'middlewares')).toBe(true);
   });
 });
 

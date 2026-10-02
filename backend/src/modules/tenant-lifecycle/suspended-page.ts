@@ -75,12 +75,18 @@ export async function reconcileSuspendedPageIngress(
   let ingressRoute: HostReconcileResult | null = null;
   let certificate: HostReconcileResult | null = null;
   if (host) {
-    ingressRoute = await reconcileIngressRouteHost(
-      custom, { namespace: SUSPENDED_PAGE_NAMESPACE, name: SUSPENDED_PAGE_IR_NAME }, host, log,
-    );
-    certificate = await reconcileCertificateDnsName(
-      custom, { namespace: SUSPENDED_PAGE_NAMESPACE, name: SUSPENDED_PAGE_CERT_NAME }, host, log,
-    );
+    // A failed patch must not cost the redirect re-point below, nor reject
+    // the startup Promise.all this runs in alongside the other hosts.
+    try {
+      ingressRoute = await reconcileIngressRouteHost(
+        custom, { namespace: SUSPENDED_PAGE_NAMESPACE, name: SUSPENDED_PAGE_IR_NAME }, host, log,
+      );
+      certificate = await reconcileCertificateDnsName(
+        custom, { namespace: SUSPENDED_PAGE_NAMESPACE, name: SUSPENDED_PAGE_CERT_NAME }, host, log,
+      );
+    } catch (err) {
+      log.warn({ err, host }, 'suspended-page: host reconcile failed — redirects still re-pointed');
+    }
   }
   const url = await resolveSuspendedRedirectUrl(db);
   const redirects = url ? await repointSuspendedRedirects(custom, url, log) : null;
