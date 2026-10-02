@@ -294,7 +294,10 @@ bootstrap_node() {
   [[ -n "${VMTEST_BOOTSTRAP_EXTRA_ARGS:-}" ]] && extra=(${VMTEST_BOOTSTRAP_EXTRA_ARGS})
 
   local boot_rc=0
-  "$REPO/scripts/bootstrap.sh" --remote "$ip" --ssh-key "$VMTEST_SSH_KEY" \
+  # VMTEST_BOOTSTRAP_SH: install with ANOTHER release's bootstrap.sh (e.g. a
+  # worktree at a published tag) — how an upgrade test builds the "before"
+  # cluster exactly as that release installed it.
+  "${VMTEST_BOOTSTRAP_SH:-$REPO/scripts/bootstrap.sh}" --remote "$ip" --ssh-key "$VMTEST_SSH_KEY" \
     "${mode_args[@]}" ${extra[@]+"${extra[@]}"} "$@" || boot_rc=$?
 
   # Judge the run by what it SAID as well as what it returned. An exit code of 0
@@ -362,8 +365,10 @@ for s in $(seq 2 "${VMTEST_SERVERS:-1}"); do
   SH="vmt-${RUN}-s${s}"; SIP=$(boot_node "$SH" "$((10+s))" "${NODE_OS[$SH]}")
   _before="$(join_snapshot "$S1_IP")"
   bootstrap_node "$SH" "$SIP" server --server "${S1_IP}" --token "$TOKEN" --cluster-network-cidr "${SUB}.0/24"
-  join_assert_unchanged "server join ${SH}" "$_before" "$(join_snapshot "$S1_IP")" || exit 1
-  join_node_hygiene "$SIP" server || exit 1
+  if [[ "${VMTEST_SKIP_JOIN_INVARIANCE:-0}" != "1" ]]; then
+    join_assert_unchanged "server join ${SH}" "$_before" "$(join_snapshot "$S1_IP")" || exit 1
+    join_node_hygiene "$SIP" server || exit 1
+  fi
 done
 for w in $(seq 1 "${VMTEST_WORKERS:-0}"); do
   # Workers carry no etcd/control-plane and few system pods, so they run comfortably smaller
@@ -373,8 +378,12 @@ for w in $(seq 1 "${VMTEST_WORKERS:-0}"); do
         boot_node "$WH" "$((20+w))" "${NODE_OS[$WH]}")
   _before="$(join_snapshot "$S1_IP")"
   bootstrap_node "$WH" "$WIP" worker --server "${S1_IP}" --token "$TOKEN" --cluster-network-cidr "${SUB}.0/24"
-  join_assert_unchanged "worker join ${WH}" "$_before" "$(join_snapshot "$S1_IP")" || exit 1
-  join_node_hygiene "$WIP" worker || exit 1
+  # Skipped only when installing an OLDER release on purpose (its joins re-run the
+  # cluster install — the bug the invariance check exists to catch).
+  if [[ "${VMTEST_SKIP_JOIN_INVARIANCE:-0}" != "1" ]]; then
+    join_assert_unchanged "worker join ${WH}" "$_before" "$(join_snapshot "$S1_IP")" || exit 1
+    join_node_hygiene "$WIP" worker || exit 1
+  fi
 done
 wait_k3s_ready "$S1_IP" 360
 
