@@ -104,6 +104,18 @@ describe('notifyMemoryEvents — one alert per kill, in the category it belongs 
     expect(payload.summary).not.toContain('static-nginx');
   });
 
+  it('dedupes node alerts per kind of event, so a new kind in the same hour still gets through', async () => {
+    const storage = normalizeMemoryEvents([evicted('s1', 'Pod ephemeral local storage usage exceeds the total limit of containers 1Mi. ')], [], NOW);
+    const disk = normalizeMemoryEvents([evicted('d1', 'The node was low on resource: ephemeral-storage. ')], [], NOW);
+    await notifyMemoryEvents(db, storage, ctx);
+    await notifyMemoryEvents(db, disk, ctx);
+    const keys = vi.mocked(notifyAdminNodeMemoryEvents).mock.calls.map((c) => c[3]);
+    expect(keys).toEqual([
+      'node-memory:warning:node-a:pod-storage-limit:2026-10-02T13',
+      'node-memory:warning:node-a:node-disk-pressure:2026-10-02T13',
+    ]);
+  });
+
   it('holds everything on a joining node', async () => {
     const evictions = normalizeMemoryEvents([evicted('e1', 'The node was low on resource: memory. ')], [], NOW);
     await notifyMemoryEvents(db, [...evictions, kill()], { ...ctx, isNotificationSuppressed: () => true });

@@ -52,9 +52,12 @@ export async function notifyMemoryEvents(
       console.log(`[node-health-monitor] ${n.nodeName} is joining — ${n.severity} memory-event notification suppressed (${n.headline})`);
       continue;
     }
+    // Hourly per node, severity AND kind of event: a repeat of the same kind
+    // within the hour is the designed rate limit, but a different kind (disk
+    // pressure after a storage-limit eviction) is news and must get through.
     await notifyAdminNodeMemoryEvents(db, n.severity,
       { nodeName: n.nodeName, headline: n.headline, summary: n.summary },
-      `node-memory:${n.severity}:${n.nodeName}:${hour}`);
+      `node-memory:${n.severity}:${n.nodeName}:${n.kinds.join('+')}:${hour}`);
   }
 
   for (const e of inserted) {
@@ -194,7 +197,14 @@ const MAX_NAMED = 3;
 export function summarizeNodeEvents(
   events: ReadonlyArray<NormalizedMemoryEvent>,
   labelForNamespace: (ns: string) => string | undefined = () => undefined,
-): Array<{ nodeName: string; severity: 'critical' | 'warning'; headline: string; summary: string }> {
+): Array<{
+  nodeName: string;
+  severity: 'critical' | 'warning';
+  headline: string;
+  summary: string;
+  /** What the group contains ('system-oom', eviction causes), sorted — the dedupe dimension. */
+  kinds: string[];
+}> {
   interface Group {
     nodeName: string;
     severity: 'critical' | 'warning';
@@ -247,6 +257,7 @@ export function summarizeNodeEvents(
       severity: g.severity,
       headline: headlines.join('; '),
       summary: `${parts.join('; ')}. ${advice.join(' ')}`,
+      kinds: [...(g.systemOom > 0 ? ['system-oom'] : []), ...causes].sort(),
     };
   });
 }
