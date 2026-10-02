@@ -9,6 +9,11 @@ import {
 } from './reconciler.js';
 import type { Database } from '../../db/index.js';
 
+// A mail migration scales Bulwark to 0 on purpose; mailMigrationInFlight reads
+// mail_migration_runs. Default: nothing in flight.
+const migrationInFlight = vi.fn(async (): Promise<string | null> => null);
+vi.mock('../mail-admin/active-node.js', () => ({ mailMigrationInFlight: () => migrationInFlight() }));
+
 vi.mock('../webmail-settings/service.js', () => ({
   getDefaultWebmailEngine: vi.fn(),
   getDefaultWebmailUrl: vi.fn(),
@@ -346,6 +351,27 @@ describe('reconcileEngineDeployments', () => {
 
   beforeEach(() => {
     vi.mocked(getDefaultWebmailEngine).mockReset();
+  });
+
+  // VM DR drill: the failover scaled the mail stack to 0, a tick of this
+  // reconciler floor-scaled Bulwark back to 1 (a Pending pod pinned to the dead
+  // node), and the migration failed "bulwark did not reach 0 ready replica(s)".
+  it('engine=bulwark at 0 while a mail migration runs: leaves it at 0 (the migration owns the scale)', async () => {
+    vi.mocked(getDefaultWebmailEngine).mockResolvedValue('bulwark');
+    migrationInFlight.mockResolvedValueOnce('run-7');
+    const apps = makeApps({ activeName: 'bulwark', activeReplicas: 0, inactiveName: 'roundcube', inactiveReplicas: 0, inactiveAnnotated: true });
+    const log = makeLog();
+    const result = await reconcileEngineDeployments({} as Database, apps as never, log);
+    expect(result?.activeScaledUp).toBe(false);
+    expect(apps.replaceNamespacedDeploymentScale).not.toHaveBeenCalledWith(expect.objectContaining({ name: 'bulwark' }));
+  });
+
+  it('engine=bulwark at 0 with no migration: floor-scaled to 1 as before', async () => {
+    vi.mocked(getDefaultWebmailEngine).mockResolvedValue('bulwark');
+    const apps = makeApps({ activeName: 'bulwark', activeReplicas: 0, inactiveName: 'roundcube', inactiveReplicas: 0, inactiveAnnotated: true });
+    const result = await reconcileEngineDeployments({} as Database, apps as never, makeLog());
+    expect(result?.activeScaledUp).toBe(true);
+    expect(apps.replaceNamespacedDeploymentScale).toHaveBeenCalledWith(expect.objectContaining({ name: 'bulwark' }));
   });
 
   it('engine=roundcube: scales bulwark to 0 + annotates; leaves roundcube alone (already at 1)', async () => {

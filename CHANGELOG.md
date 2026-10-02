@@ -97,6 +97,11 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   `TENANT_PIN_REPAIR=disable` skips this). Backup, restore and file-manager pods for a stopped tenant
   now run on the node that holds its data instead of wherever the scheduler put them, and nightly
   mailbox backups run on the mail server's node, so their traffic stays on that node.
+- **Mail moves and failovers no longer fail because the webmail was restarted mid-way.** A move
+  stops webmail together with mail and starts both again on the new server; a periodic check that
+  keeps webmail running started it again in between, on the old server. On a failover that server
+  is down, so the move failed and had to be retried — automatic failover took about three times
+  as long. Webmail is now left to the move while one is running.
 - **Mail failover survives losing the database's primary server at the same time.** On a
   high-availability cluster, losing the server that ran both mail and the database primary broke
   automatic mail failover: mail moved to the standby and kept working, but one progress update
