@@ -81,6 +81,13 @@ const updateSubUserMock = vi.fn().mockImplementation(
   },
 );
 
+const placementStore = vi.hoisted(() => ({
+  listPlacements: vi.fn(async (): Promise<Map<string, unknown>> => new Map()),
+  getPlacement: vi.fn(async () => null),
+  listStorageFailovers: vi.fn(async () => []),
+}));
+vi.mock('../tenant-placement/store.js', () => placementStore);
+
 vi.mock('./sub-users-service.js', () => ({
   listSubUsers: (...args: unknown[]) => listSubUsersMock(...args),
   createSubUser: (...args: unknown[]) => createSubUserMock(...args),
@@ -180,6 +187,30 @@ describe('tenant routes', () => {
     const body = res.json();
     expect(body.data).toBeDefined();
     expect(body.pagination).toBeDefined();
+  });
+
+  it('GET /api/v1/tenants carries each row\'s placement, so the column can turn red', async () => {
+    placementStore.listPlacements.mockResolvedValueOnce(new Map([['c1', {
+      tenantId: 'c1', status: 'misplaced', primaryNode: 'node-a', storageTier: 'local',
+      workloadNodes: ['node-b'], attachedNodes: ['node-b'], dataNodes: ['node-b'], actualNodes: ['node-b'],
+      reasons: ['running on node-b'], misplacedSince: new Date('2026-10-02T05:10:00Z'), notifiedAt: null,
+      checkedAt: new Date('2026-10-02T05:30:00Z'),
+    }]]));
+    const res = await app.inject({ method: 'GET', url: '/api/v1/tenants', headers: { authorization: `Bearer ${adminToken}` } });
+    expect(res.statusCode).toBe(200);
+    const rows = res.json().data as Array<{ id: string; placement: unknown }>;
+    const row = rows.find((r) => r.id === 'c1');
+    expect(row?.placement).toEqual({
+      status: 'misplaced', primaryNode: 'node-a', actualNodes: ['node-b'], reasons: ['running on node-b'],
+      misplacedSince: '2026-10-02T05:10:00.000Z', checkedAt: '2026-10-02T05:30:00.000Z',
+    });
+  });
+
+  it('GET /api/v1/tenants still lists tenants when the placement read fails', async () => {
+    placementStore.listPlacements.mockRejectedValueOnce(new Error('relation does not exist'));
+    const res = await app.inject({ method: 'GET', url: '/api/v1/tenants', headers: { authorization: `Bearer ${adminToken}` } });
+    expect(res.statusCode).toBe(200);
+    expect((res.json().data as Array<{ placement: unknown }>).every((r) => r.placement === null)).toBe(true);
   });
 
   it('GET /api/v1/tenants/:id should return tenant', async () => {

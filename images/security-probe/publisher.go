@@ -17,7 +17,9 @@ import (
 // `security-hardening` module — name is security-probe-<nodeName>,
 // data.snapshot is the JSON-encoded Snapshot, OwnerReference points
 // to the parent Node so the ConfigMap garbage-collects when the node
-// is removed.
+// is removed. data.memcg carries the OOM witness (memcg.go) for the
+// backend's node-health module — a separate key, so neither contract
+// can break the other.
 type configMapPublisher struct {
 	client    kubernetes.Interface
 	namespace string
@@ -28,10 +30,14 @@ func newConfigMapPublisher(c kubernetes.Interface, namespace, nodeName string) *
 	return &configMapPublisher{client: c, namespace: namespace, nodeName: nodeName}
 }
 
-func (p *configMapPublisher) publish(ctx context.Context, snap Snapshot) error {
+func (p *configMapPublisher) publish(ctx context.Context, snap Snapshot, memcg MemcgWitnessWire) error {
 	payload, err := json.Marshal(snap)
 	if err != nil {
 		return fmt.Errorf("marshal snapshot: %w", err)
+	}
+	memcgPayload, err := json.Marshal(memcg)
+	if err != nil {
+		return fmt.Errorf("marshal memcg witness: %w", err)
 	}
 
 	// OwnerReference back to the Node — k8s GC removes the ConfigMap
@@ -64,6 +70,7 @@ func (p *configMapPublisher) publish(ctx context.Context, snap Snapshot) error {
 		},
 		Data: map[string]string{
 			"snapshot": string(payload),
+			"memcg":    string(memcgPayload),
 		},
 	}
 

@@ -137,7 +137,19 @@ if [ -z "$BASTION_NODE" ] || [ "$BASTION_NODE" = "$ACTIVE" ]; then
 fi
 BASTION="root@$(node_addr "$BASTION_NODE")"; ACTIVE_ADDR="root@$(node_addr "$ACTIVE")"
 kc(){ ssh $SSH_OPTS "$BASTION" "kubectl $*"; }
-psql1(){ kc "exec -n platform \$(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].metadata.name}') -- psql -U postgres -d platform -tA -c \"$1\"" 2>/dev/null | head -1 | tr -d ' '; }
+# Reads go to whichever system-db instance answers — the primary first, then a
+# replica (all psql1 queries are SELECTs). `items[0]` was the instance on the
+# node this suite stops: every read came back empty and a launched failover
+# read as "never launched". Stopping k3s leaves the primary label on that node.
+psql1(){
+  local pod out
+  for pod in $(kc "get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{range .items[*]}{.metadata.labels.cnpg\\.io/instanceRole}={.metadata.name} {end}'" 2>/dev/null \
+                 | tr ' ' '\n' | grep . | sort | cut -d= -f2); do
+    out=$(kc "exec --request-timeout=20s -n platform $pod -c postgres -- psql -U postgres -d platform -tA -c \"$1\"" 2>/dev/null) \
+      && { printf '%s\n' "$out" | head -1 | tr -d ' '; return 0; }
+  done
+  return 1
+}
 # HA means ANY node loss must be recoverable — including a node hosting
 # platform-api / system-db — so the standby is any node != active (override via
 # STANDBY_NODE). PAPI/DB nodes are surfaced only as diagnostics.
@@ -250,7 +262,7 @@ hdr "SETUP: standby + placement + probe mailbox"
 # Best-effort pre-flight sweep of leftover probe tenants from CRASHED prior runs
 # (the unique per-run DOMAIN already prevents collisions; this just stops orphan
 # tenants — and their retrying Stalwart-Domain destroys — from accumulating).
-for _t in $(kc "exec -n platform \$(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].metadata.name}') -- psql -U postgres -d platform -tA -c \"SELECT id FROM tenants WHERE name LIKE 'itest-drdp%';\"" 2>/dev/null | tr -d ' '); do
+for _t in $(kc "exec -n platform \$(kubectl get pod -n platform -l cnpg.io/cluster=system-db,cnpg.io/instanceRole=primary -o jsonpath='{.items[0].metadata.name}') -- psql -U postgres -d platform -tA -c \"SELECT id FROM tenants WHERE name LIKE 'itest-drdp%';\"" 2>/dev/null | tr -d ' '); do
   [ -n "$_t" ] && AH -X DELETE "$API/tenants/$_t" -o /dev/null 2>/dev/null || true
 done
 kc "label node $STANDBY insula.host/mail-standby=true --overwrite" >/dev/null
@@ -317,10 +329,18 @@ while [ $(date +%s) -lt $END ]; do
   sleep 20
 done
 [ -n "$NEWRUN" ] && ok "dr-watcher launched failover migration ($NEWRUN)" || { no "no failover migration within ${BUDGET}s"; exit 1; }
-END=$(( $(date +%s)+540 ))
-while [ $(date +%s) -lt $END ]; do R=$(psql1 "SELECT state FROM mail_migration_runs WHERE id='$NEWRUN';"); case "$R" in done) break;; failed|rolled-back|cancelled) break;; esac; sleep 5; done
+# Follow the LATEST run: a failed attempt is retried by the dr-watcher, and
+# judging only the first reported a failover that succeeded on attempt 3 as
+# "stalwart not on standby" (then probed mail mid-retry).
+END=$(( $(date +%s)+900 )); ATTEMPTS=0; R=""
+while [ $(date +%s) -lt $END ]; do
+  ATTEMPTS=$(( $(psql1 "SELECT COUNT(*) FROM mail_migration_runs;") - PRE ))
+  R=$(psql1 "SELECT state FROM mail_migration_runs ORDER BY started_at DESC LIMIT 1;")
+  [ "$R" = done ] && break; sleep 5
+done
+[ "$ATTEMPTS" -gt 1 ] && metric "failover needed $ATTEMPTS attempts (earlier ones failed; dr-watcher retried)"
 sleep 5; NODE_NOW=$(kc "get pod -n mail -l app=stalwart-mail -o jsonpath='{.items[0].spec.nodeName}'" 2>/dev/null)
-[ "$NODE_NOW" = "$STANDBY" ] && ok "failover relocated stalwart → $STANDBY" || no "stalwart not on standby (on $NODE_NOW)"
+[ "$NODE_NOW" = "$STANDBY" ] && ok "failover relocated stalwart → $STANDBY (attempt $ATTEMPTS)" || no "stalwart not on standby (on $NODE_NOW; latest run: $R after $ATTEMPTS attempt(s))"
 kill "$PROBE_PID" 2>/dev/null; PROBE_PID=""
 
 hdr "REACHABILITY (metric) + recovery"
@@ -341,7 +361,15 @@ metric "^ mail-port outage window on surviving nodes during relocation (inbound 
 # reachability must be RESTORED by now on surviving nodes
 sleep 5
 r1=$(smtp probe "$S_BASTION" 25); r2=$(smtp probe "$S_STANDBY" 25)
-[ "$r1" = OK ] && [ "$r2" = OK ] && ok "mail reachable again on surviving nodes post-failover" || no "mail NOT reachable post-failover ($S_BASTION=$r1 $S_STANDBY=$r2)"
+# In activeNodeOnly mode only the active mail node binds the mail ports (no
+# HAProxy on the others) — the bastion is not expected to answer there. Every
+# other mode puts HAProxy on the surviving nodes, so both must answer.
+PE_MODE=$(AH "$API/admin/mail/placement" | jg "d['data']['portExposureMode']")
+if [ "$PE_MODE" = activeNodeOnly ]; then
+  [ "$r2" = OK ] && ok "mail reachable again on the new active post-failover (activeNodeOnly)" || no "mail NOT reachable post-failover on the new active ($S_STANDBY=$r2; activeNodeOnly)"
+else
+  [ "$r1" = OK ] && [ "$r2" = OK ] && ok "mail reachable again on surviving nodes post-failover ($PE_MODE)" || no "mail NOT reachable post-failover ($S_BASTION=$r1 $S_STANDBY=$r2; $PE_MODE)"
+fi
 # TLS: the new active must serve a VALID cert covering $MAILHOST (not the
 # self-signed rcgen fallback a restore can leave behind). Invalid cert = FAIL.
 assert_cert_valid "$S_STANDBY" "new active $STANDBY"

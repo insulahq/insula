@@ -45,6 +45,12 @@ export interface PodFact {
    * holds nothing Ready for a few seconds.
    */
   readonly createdAt: string | null;
+  /**
+   * Kind of the pod's controlling owner — `ReplicaSet` for a Deployment's pod,
+   * `Job` for a backup/restore pod. Null for a bare pod. Lets placement count
+   * the tenant's long-running workloads without guessing from pod names.
+   */
+  readonly controllerKind: string | null;
 }
 
 /** One Longhorn replica: which volume it belongs to and where it lives. */
@@ -61,6 +67,12 @@ export interface ReplicaFact {
    * just died gets reported as "rebuilding, no action required".
    */
   readonly running: boolean;
+  /**
+   * Longhorn marked this replica failed (`spec.failedAt`) or it is in error.
+   * A failed replica is not where the data is any more — it is the copy that
+   * gets rebuilt elsewhere. A STOPPED replica (detached volume) still is.
+   */
+  readonly failed: boolean;
 }
 
 export interface VolumeFact {
@@ -94,6 +106,14 @@ export interface VolumeFact {
    * volume — one such ghost was reporting a serving tenant as Down.
    */
   readonly pvcRefLostAt: string | null;
+  /** Longhorn `status.currentNodeID`: the node the volume is attached to, or null. */
+  readonly attachedNode: string | null;
+  /**
+   * Longhorn `status.remountRequestedAt`: when Longhorn last salvaged the
+   * volume (all replicas failed) and asked its workload to remount. Null when
+   * that never happened. The storage-failover signal.
+   */
+  readonly remountRequestedAt: string | null;
 }
 
 export interface TenantFact {

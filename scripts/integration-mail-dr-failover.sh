@@ -61,9 +61,25 @@ run_kubectl() {
   ssh $SSH_OPTS "$BASTION_HOST" "export KUBECONFIG=/etc/rancher/k3s/k3s.yaml && $*"
 }
 
+# Read the platform DB through whichever system-db instance answers — the
+# primary first, then a replica (every query here is a SELECT, which a hot
+# standby serves). A bare `items[0]` was the instance on the very node this test
+# stops: on an HA cluster every read came back empty, and a failover the
+# dr-watcher had launched read as "did not launch". Stopping k3s also leaves the
+# primary LABEL on the unreachable node, so falling through matters.
+db_q() {
+  local pod out
+  for pod in $(run_kubectl "kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{range .items[*]}{.metadata.labels.cnpg\\.io/instanceRole}={.metadata.name} {end}'" 2>/dev/null \
+                 | tr ' ' '\n' | grep . | sort | cut -d= -f2); do
+    out=$(run_kubectl "kubectl exec --request-timeout=20s -n platform $pod -c postgres -- psql -U postgres -d platform -tA -c \"$1\"" 2>/dev/null) \
+      && { printf '%s\n' "$out"; return 0; }
+  done
+  return 1
+}
+
 hdr "DR FAILOVER LIVE TEST"
 
-ACTIVE_NODE=$(run_kubectl "kubectl exec -n platform \$(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].metadata.name}') -- psql -U postgres -d platform -tA -c \"SELECT mail_active_node FROM system_settings;\" 2>/dev/null | head -1")
+ACTIVE_NODE=$(db_q "SELECT mail_active_node FROM system_settings;" | head -1)
 echo "active_mail_node=$ACTIVE_NODE"
 
 if [ "$ACTIVE_NODE" = "$BASTION_NODE" ]; then
@@ -81,7 +97,7 @@ fi
 STANDBY_CANDIDATE=$(run_kubectl "kubectl get node -l 'insula.host/mail-standby=true,insula.host/node-role=server' -o jsonpath='{.items[*].metadata.name}' 2>/dev/null" | tr ' ' '\n' | grep -v -F "$ACTIVE_NODE" | head -1)
 echo "standby_candidate=$STANDBY_CANDIDATE"
 
-THRESHOLD=$(run_kubectl "kubectl exec -n platform \$(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].metadata.name}') -- psql -U postgres -d platform -tA -c \"SELECT mail_failover_threshold_seconds FROM system_settings;\" 2>/dev/null | head -1")
+THRESHOLD=$(db_q "SELECT mail_failover_threshold_seconds FROM system_settings;" | head -1)
 echo "failover_threshold=${THRESHOLD}s, total budget=${DR_FAILOVER_BUDGET}s"
 
 if [ -z "$STANDBY_CANDIDATE" ]; then
@@ -89,7 +105,7 @@ if [ -z "$STANDBY_CANDIDATE" ]; then
   exit 0
 fi
 
-PRE_RUNS=$(run_kubectl "kubectl exec -n platform \$(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].metadata.name}') -- psql -U postgres -d platform -tA -c \"SELECT COUNT(*) FROM mail_migration_runs;\" 2>/dev/null" | head -1 | tr -d ' ')
+PRE_RUNS=$(db_q "SELECT COUNT(*) FROM mail_migration_runs;" | head -1 | tr -d ' ')
 echo "pre_migration_runs=$PRE_RUNS"
 
 # Stop k3s on the active node — kubelet stops, node goes NotReady after
@@ -110,9 +126,9 @@ END=$(( $(date +%s) + DR_FAILOVER_BUDGET ))
 NEW_RUN=""
 DEGRADED_OBSERVED=0
 while [ $(date +%s) -lt "$END" ]; do
-  NOW_RUNS=$(run_kubectl "kubectl exec -n platform \$(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].metadata.name}') -- psql -U postgres -d platform -tA -c \"SELECT COUNT(*) FROM mail_migration_runs;\" 2>/dev/null" | head -1 | tr -d ' ')
+  NOW_RUNS=$(db_q "SELECT COUNT(*) FROM mail_migration_runs;" | head -1 | tr -d ' ')
   NODE_READY=$(run_kubectl "kubectl get node $ACTIVE_NODE -o jsonpath='{.status.conditions[?(@.type==\"Ready\")].status}' 2>/dev/null" | head -1)
-  DR_STATE=$(run_kubectl "kubectl exec -n platform \$(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].metadata.name}') -- psql -U postgres -d platform -tA -c \"SELECT mail_dr_state FROM system_settings;\" 2>/dev/null" | head -1)
+  DR_STATE=$(db_q "SELECT mail_dr_state FROM system_settings;" | head -1)
   echo "  [$(date -Iseconds)] node $ACTIVE_NODE Ready=$NODE_READY dr_state=$DR_STATE migrations=$NOW_RUNS (baseline $PRE_RUNS)"
 
   if [ "$DR_STATE" = "degraded" ] && [ "$DEGRADED_OBSERVED" = "0" ]; then
@@ -121,7 +137,7 @@ while [ $(date +%s) -lt "$END" ]; do
   fi
 
   if [ "$NOW_RUNS" -gt "$PRE_RUNS" ]; then
-    NEW_RUN=$(run_kubectl "kubectl exec -n platform \$(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].metadata.name}') -- psql -U postgres -d platform -tA -c \"SELECT id FROM mail_migration_runs ORDER BY started_at DESC LIMIT 1;\" 2>/dev/null" | head -1 | tr -d ' ')
+    NEW_RUN=$(db_q "SELECT id FROM mail_migration_runs ORDER BY started_at DESC LIMIT 1;" | head -1 | tr -d ' ')
     green "  dr-watcher launched failover migration: $NEW_RUN"
     break
   fi
@@ -133,27 +149,32 @@ if [ -z "$NEW_RUN" ]; then
   exit 1
 fi
 
-hdr "STEP 3: wait for failover migration to complete"
-END=$(( $(date +%s) + 540 ))
+hdr "STEP 3: wait for the failover to complete (following dr-watcher retries)"
+# A failed attempt is not the end: the dr-watcher hands back to 'degraded' and
+# launches a new run. Judge the LATEST run, not the first — following only the
+# first reported a failover that succeeded on attempt 3 as a failure.
+END=$(( $(date +%s) + 900 ))
 LAST_STEP=""
 FINAL=""
+ATTEMPTS=0
 while [ $(date +%s) -lt "$END" ]; do
-  R=$(run_kubectl "kubectl exec -n platform \$(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].metadata.name}') -- psql -U postgres -d platform -tA -c \"SELECT state || ':' || COALESCE(current_step,'?') FROM mail_migration_runs WHERE id='$NEW_RUN';\" 2>/dev/null" | head -1 | tr -d ' ')
+  ATTEMPTS=$(( $(db_q "SELECT COUNT(*) FROM mail_migration_runs;" | head -1 | tr -d ' ') - PRE_RUNS ))
+  R=$(db_q "SELECT left(id::text,8) || ':' || state || ':' || COALESCE(current_step,'?') FROM mail_migration_runs ORDER BY started_at DESC LIMIT 1;" | head -1 | tr -d ' ')
   if [ "$R" != "$LAST_STEP" ]; then
-    echo "  [$(date -Iseconds)] $R"
+    echo "  [$(date -Iseconds)] attempt ${ATTEMPTS}: $R"
     LAST_STEP="$R"
   fi
   case "$R" in
-    done:*) FINAL=done; break ;;
-    failed:*|rolled-back:*|cancelled:*) FINAL=${R%%:*}; break ;;
+    *:done:*) FINAL=done; break ;;
   esac
   sleep 5
 done
 
 if [ "$FINAL" != "done" ]; then
-  red "FAIL: failover migration ended in '$FINAL' (state: $LAST_STEP)"
+  red "FAIL: no failover attempt completed within 900s (${ATTEMPTS} attempt(s); last: $LAST_STEP)"
   exit 1
 fi
+[ "$ATTEMPTS" -gt 1 ] && amber "  METRIC: failover needed ${ATTEMPTS} attempts (earlier ones failed and were retried by the dr-watcher)"
 
 hdr "STEP 4: verify mail-stack pod on new active"
 sleep 5

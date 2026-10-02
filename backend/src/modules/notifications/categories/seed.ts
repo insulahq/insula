@@ -487,6 +487,36 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
     gdprBasis: 'legitimate_interest',
   },
   {
+    id: 'admin.tenant_storage_failover',
+    cls: 'incident',
+    reportsOn: 'storage',
+    displayName: 'Tenant storage failover',
+    description: 'Longhorn lost every replica of a tenant volume (typically a storage stall on '
+      + 'its node), salvaged it and restarted the tenant\'s workloads, which shut down and '
+      + 'remounted the filesystem. Lists where the tenant ran before and after — the restart can '
+      + 'land on a node other than the tenant\'s primary one.',
+    audience: 'admin',
+    defaultSeverity: 'critical',
+    defaultChannels: ALL_NOTIFICATION_CHANNELS,
+    isMandatory: false,
+    gdprBasis: 'legitimate_interest',
+  },
+  {
+    id: 'admin.tenant_misplaced',
+    cls: 'action',
+    reportsOn: 'storage',
+    displayName: 'Tenant not on its primary node',
+    description: 'A tenant\'s workloads or data have been running away from its primary node '
+      + '(the "primary data location" in its Placement card) for several minutes — after a storage '
+      + 'failover, a node outage or a pod that was scheduled elsewhere. Move it back, or make the '
+      + 'node it is on its primary, from the tenant\'s Placement card.',
+    audience: 'admin',
+    defaultSeverity: 'warning',
+    defaultChannels: ALL_NOTIFICATION_CHANNELS,
+    isMandatory: false,
+    gdprBasis: 'legitimate_interest',
+  },
+  {
     id: 'admin.node_removed',
     cls: 'record',
     reportsOn: null,
@@ -502,8 +532,8 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
     id: 'admin.node_memory_event_critical',
     cls: 'incident',
     reportsOn: 'compute',
-    displayName: 'Node memory event (system)',
-    description: 'Kernel SystemOOM on a node, or a SYSTEM workload was evicted under memory pressure — the eviction design (tenants first) should make this rare.',
+    displayName: 'Node out of memory / SYSTEM pod evicted',
+    description: 'The node ran out of memory (kernel SystemOOM), or the kubelet evicted a SYSTEM pod under node pressure (memory, disk or PIDs). The eviction design takes tenant pods first, so either is abnormal. Container OOM kills are reported separately (Tenant workload OOM-killed / Platform workload OOM-killed).',
     audience: 'admin',
     defaultSeverity: 'critical',
     defaultChannels: ALL_NOTIFICATION_CHANNELS,
@@ -516,8 +546,8 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
     id: 'admin.node_memory_event_warning',
     cls: 'action',
     reportsOn: 'compute',
-    displayName: 'Node memory event (tenant evictions)',
-    description: 'Tenant pods were evicted by the kubelet under node memory pressure. This is the designed backpressure; frequent occurrences mean the node is oversubscribed or a tenant needs a bigger plan.',
+    displayName: 'Tenant pods evicted',
+    description: 'The kubelet evicted tenant pods: under node pressure (memory, disk or PIDs - the designed backpressure), or because a pod exceeded its own ephemeral-storage limit. The notification names which. Container OOM kills are reported as Tenant workload OOM-killed, never as evictions.',
     audience: 'admin',
     defaultSeverity: 'warning',
     defaultChannels: ALL_NOTIFICATION_CHANNELS,
@@ -778,9 +808,10 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
     cls: 'action',
     reportsOn: 'compute',
     displayName: 'Tenant workload OOM-killed',
-    description: 'A tenant container was killed by the kernel out-of-memory killer. Repeated kills '
-      + 'usually mean the workload needs a larger memory limit/plan or has a leak — check the '
-      + 'tenant\'s Resource Limits and the deployment.',
+    description: 'A tenant container was killed by the kernel out-of-memory killer - at its own memory limit, or '
+      + 'because the node ran out of memory; the notification says which, from the kernel\'s own counters. A '
+      + 'SIGKILL (exit 137) the platform could not confirm is reported here too, worded as unconfirmed; one the '
+      + 'kernel shows was not memory is not reported.',
     audience: 'admin',
     defaultSeverity: 'warning',
     defaultChannels: ALL_NOTIFICATION_CHANNELS,
@@ -788,6 +819,26 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
     gdprBasis: 'legitimate_interest',
     rateLimitWindowS: 3600,
     rateLimitMax: 30,
+  },
+  // The platform's own containers, which used to be filed as "Node memory
+  // event (system)" — a node category for what is a container event, with a
+  // node-eviction description. Sized by the platform, so investigate-now.
+  {
+    id: 'admin.system_pod_oom',
+    cls: 'incident',
+    reportsOn: 'compute',
+    displayName: 'Platform workload OOM-killed',
+    description: 'A platform container (a system namespace, or a platform-sized pod such as the file manager in a '
+      + 'tenant namespace) was killed by the kernel out-of-memory killer, or SIGKILLed (exit 137) for a cause that '
+      + 'could not be confirmed - the notification says which. Platform workloads are sized by the platform, not '
+      + 'by a tenant plan.',
+    audience: 'admin',
+    defaultSeverity: 'critical',
+    defaultChannels: ALL_NOTIFICATION_CHANNELS,
+    isMandatory: false,
+    gdprBasis: 'legitimate_interest',
+    rateLimitWindowS: 3600,
+    rateLimitMax: 12,
   },
   // ── Monthly bandwidth (BW-3): 80/90 warning, 100 critical (cap active) ──
   {

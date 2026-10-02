@@ -167,6 +167,19 @@ describe('buildMailboxesResticJobSpec', () => {
 
   const pod = spec.spec.template.spec;
 
+  it('must schedule on the node running Stalwart (required, not preferred)', () => {
+    // A capture scheduled on another node drags every message across the
+    // inter-node tunnel — 48 GB in one night on a two-node production cluster.
+    const terms = pod.affinity.podAffinity.requiredDuringSchedulingIgnoredDuringExecution;
+    expect(terms).toEqual([{
+      labelSelector: { matchLabels: { app: 'stalwart-mail' } },
+      namespaces: ['mail'],
+      topologyKey: 'kubernetes.io/hostname',
+    }]);
+    expect(pod.affinity.podAffinity.preferredDuringSchedulingIgnoredDuringExecution).toBeUndefined();
+    expect(pod.nodeName).toBeUndefined();
+  });
+
   it('runs in the mail namespace with the labels the NetworkPolicy selects', () => {
     expect(spec.metadata.namespace).toBe('mail');
     expect(spec.metadata.labels['platform.io/component']).toBe('backup-files');

@@ -1,5 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+// mailMigrationInFlight reads mail_migration_runs; these DB fakes have no
+// execute(). Default: nothing in flight (tests that need one override it).
+const migrationInFlight = vi.fn(async (): Promise<string | null> => null);
+vi.mock('./active-node.js', async (orig) => ({
+  ...(await orig<typeof import('./active-node.js')>()),
+  mailMigrationInFlight: () => migrationInFlight(),
+}));
+
+
 /**
  * port-exposure unit tests — covers the streamline change
  * where the haproxy DaemonSet lifecycle moved out of Flux into
@@ -381,6 +390,16 @@ describe('mail-admin/port-exposure.ensureMailPortExposureApplied — race guard'
     expect(mockPatchDeployment).not.toHaveBeenCalled();
   });
 
+  it('SKIPS reconciliation while a mail migration / DR failover is in flight', async () => {
+    migrationInFlight.mockResolvedValueOnce('run-7');
+    const db = buildRaceDb({ runningTasks: [], mode: 'allServerNodes' });
+    const { ensureMailPortExposureApplied } = await import('./port-exposure.js');
+    await ensureMailPortExposureApplied(db, { kubeconfigPath: undefined, settleMs: 0 });
+    expect(migrationInFlight).toHaveBeenCalled();
+    expect(mockReadDs).not.toHaveBeenCalled();
+    expect(mockPatchDeployment).not.toHaveBeenCalled();
+  });
+
   it('asserts the tasks query is actually issued (guard is exercised, not bypassed)', async () => {
     // Mock that tracks which TABLE was passed to .from(). If the
     // production code never queries `tasks`, the guard is dead code
@@ -608,13 +627,11 @@ describe('mail-admin/port-exposure — derive active node from mail PVC when DB 
     } as unknown as import('../../db/index.js').Database;
   }
 
-  it('DB active set: uses it and EXCLUDES it from haproxy (PVC not consulted)', async () => {
+  it('DB active set, PVC says nothing: uses the stored node and EXCLUDES it from haproxy', async () => {
     mockListNode.mockResolvedValue(threeServerNodes);
     const db = placementDb('nodeB');
     const { updateMailPortExposure } = await import('./port-exposure.js');
     await updateMailPortExposure({ mode: 'allServerNodes' }, db, { kubeconfigPath: undefined, settleMs: 0 });
-    // PVC read must NOT happen — the DB value already supplies the active node.
-    expect(mockReadPvc).not.toHaveBeenCalled();
     // haproxy labelled on nodeA + nodeC (nodeB excluded as active).
     const setTrue = mockPatchNode.mock.calls
       .map((c) => c[0] as { name: string; body: { metadata?: { labels?: Record<string, string | null> } } })
@@ -622,6 +639,25 @@ describe('mail-admin/port-exposure — derive active node from mail PVC when DB 
       .map((a) => a.name)
       .sort();
     expect(setTrue).toEqual(['nodeA', 'nodeC']);
+  });
+
+  // The stored column lags a DR failover that was abandoned mid-run; the PVC
+  // (local-path, RWO) is where Stalwart can actually run.
+  it('PVC bound to nodeC outranks a stale DB value (nodeB): nodeC is EXCLUDED from haproxy', async () => {
+    mockListNode.mockResolvedValue(threeServerNodes);
+    mockReadPvc.mockResolvedValue({
+      metadata: { annotations: { 'volume.kubernetes.io/selected-node': 'nodeC' } },
+      spec: { volumeName: 'pv-xyz' },
+    });
+    const db = placementDb('nodeB');
+    const { updateMailPortExposure } = await import('./port-exposure.js');
+    await updateMailPortExposure({ mode: 'allServerNodes' }, db, { kubeconfigPath: undefined, settleMs: 0 });
+    const setTrue = mockPatchNode.mock.calls
+      .map((c) => c[0] as { name: string; body: { metadata?: { labels?: Record<string, string | null> } } })
+      .filter((a) => a.body.metadata?.labels?.['insula.host/mail-haproxy'] === 'true')
+      .map((a) => a.name)
+      .sort();
+    expect(setTrue).toEqual(['nodeA', 'nodeB']);
   });
 
   it('DB null + PVC pinned to nodeA (via selected-node annotation): nodeA becomes active and is EXCLUDED from haproxy', async () => {

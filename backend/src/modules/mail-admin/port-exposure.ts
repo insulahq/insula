@@ -41,7 +41,7 @@ import { ApiError } from '../../shared/errors.js';
 import { applyPatch } from '../../shared/k8s-patch.js';
 import { isNotFound } from '../../shared/k8s-errors.js';
 import { waitForStalwartRollout } from './rollout-wait.js';
-import { resolveActiveMailNode } from './active-node.js';
+import { mailMigrationInFlight, resolveActiveMailNode } from './active-node.js';
 import { systemSettings, tasks } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import {
@@ -311,6 +311,13 @@ export async function validateModeSwitchAgainstDb(
   db: Database,
   kubeconfigPath: string | undefined,
 ): Promise<string | null> {
+  // Mid-migration the active node is between two answers (the target PVC
+  // exists before any pod does) and the migration strips/restores the haproxy
+  // labels itself — a mode switch now would act on a node that is not settled.
+  if (await mailMigrationInFlight(db)) {
+    return 'A mail migration is in progress — switch port exposure after it finishes.';
+  }
+
   const { settings: stored, nodes } = await loadPlacementAndNodes(db, kubeconfigPath);
 
   // Node-count gate (authoritative, server-side): the HA-proxy modes —
@@ -433,6 +440,10 @@ export async function ensureMailPortExposureApplied(
     // then restart platform-api (or wait for the next pod cycle).
     return;
   }
+  // Same for a mail migration (operator move or DR failover): it owns the
+  // haproxy labels and the active node until it ends (haproxy-label-sync
+  // stands down for the same reason). The next start re-reconciles.
+  if (await mailMigrationInFlight(db)) return;
   // Note on the cross-pod safe-by-SSA invariant: two pods starting at
   // the same time both pass the guard (no in-flight task yet) and both
   // call applyModeToCluster. The Deployment + Service SSA-applies use
@@ -533,7 +544,7 @@ async function applyModeToClusterUnlocked(
 
     // The active node decides where haproxy must NOT go (Stalwart binds the
     // mail hostPorts there). Resolved the same way as the pre-switch
-    // validation (active-node.ts: live pod → stored → mail PVC), so a switch
+    // validation (active-node.ts: live pod → mail PVC → stored), so a switch
     // the API accepted is applied to the same node — on a cold multi-node
     // bootstrap the stored column is still NULL.
     const active = await resolveActiveMailNode(db, core, {

@@ -49,6 +49,7 @@ import {
   wireSecretOwnerRef,
 } from '../../tenant-bundles/components/files.js';
 import { resolvePlatformImage } from '../../../shared/platform-images.js';
+import { resolveTenantDataNode } from '../../tenant-placement/data-node.js';
 
 interface Selector {
   kind: 'full' | 'paths';
@@ -146,9 +147,12 @@ export async function execFilesPathsItem(args: {
         .where(eq(restoreItems.id, item.id));
       await waitForDeploymentsScaledDown(k8s, namespace, quiesced.map((q) => q.name), 120_000);
     }
-    // Resolve the PVC-attaching node AFTER quiescing — a now-detached PVC
-    // returns null so the Job schedules wherever the PVC re-attaches.
-    const pinToNode = await findNodeAttachingPvc(k8s, namespace, pvcName);
+    // Resolve AFTER quiescing: a now-detached PVC resolves to the node holding
+    // its data, so the Job re-attaches the volume there instead of wherever the
+    // scheduler likes (which would make Longhorn copy the volume across).
+    const pinToNode = await resolveRestoreJobNode(app.db, k8s, {
+      tenantId: job.tenantId, namespace, pvcName, logger: app.log,
+    });
 
     await createResticCredsSecret(
       k8s,
@@ -388,29 +392,26 @@ function buildScript(opts: { snapshotId: string; includePaths: ReadonlyArray<str
   ].join('\n');
 }
 
-export async function findNodeAttachingPvc(
+/**
+ * The node a restore Job that mounts the tenant PVC must run on: where the
+ * volume is attached, else where its data lives (see
+ * tenant-placement/data-node.ts). Resolving only "the attached pod's node"
+ * left a stopped (or just-quiesced) tenant's Job unpinned, and Longhorn's data
+ * locality then copied the whole volume to whichever node the scheduler chose.
+ */
+export async function resolveRestoreJobNode(
+  db: FastifyInstance['db'],
   k8s: K8sClients,
-  namespace: string,
-  pvcName: string,
+  args: { tenantId: string; namespace: string; pvcName: string; logger?: { warn: (msg: string) => void } },
 ): Promise<string | null> {
-  try {
-    const res = await k8s.core.listNamespacedPod({ namespace });
-    for (const pod of res.items ?? []) {
-      const phase = pod.status?.phase;
-      if (phase !== 'Running' && phase !== 'Pending') continue;
-      const usesPvc = (pod.spec?.volumes ?? []).some(
-        (v) => v.persistentVolumeClaim?.claimName === pvcName,
-      );
-      if (!usesPvc) continue;
-      const node = pod.spec?.nodeName;
-      if (typeof node === 'string' && /^[a-z0-9.\-]+$/i.test(node) && node.length <= 253) {
-        return node;
-      }
-    }
-    return null;
-  } catch {
-    return null;
-  }
+  const [t] = await db.select({ nodeName: tenants.nodeName }).from(tenants).where(eq(tenants.id, args.tenantId)).limit(1);
+  const choice = await resolveTenantDataNode(k8s, {
+    namespace: args.namespace,
+    pvcName: args.pvcName,
+    pinNode: t?.nodeName ?? null,
+    logger: args.logger,
+  });
+  return choice.node;
 }
 
 /**

@@ -23,6 +23,7 @@ import { multihostMountsFor, loadSiteFoldersFor } from '../multihost/reconciler.
 import { deployCatalogEntry } from './k8s-deployer.js';
 import {
   getTenantNamespace,
+  tenantPlacementOf,
   parseJsonField,
   readEntryFirewall,
   readEntryHostPorts,
@@ -405,6 +406,8 @@ export async function upgradeDeploymentVersion(
 
   try {
     await deployCatalogEntry(k8s, {
+      // The pin rides along on an upgrade too — see TenantPlacement.
+      ...tenantPlacementOf(tenant),
       deploymentName: deployment.name,
       storagePath: deployment.storagePath ?? '',
       namespace,
@@ -755,6 +758,8 @@ export async function rollbackDeploymentVersion(
 
   try {
     await deployCatalogEntry(k8s, {
+      // The pin rides along on an upgrade too — see TenantPlacement.
+      ...tenantPlacementOf(tenant),
       deploymentName: deployment.name,
       storagePath: deployment.storagePath ?? '',
       namespace,

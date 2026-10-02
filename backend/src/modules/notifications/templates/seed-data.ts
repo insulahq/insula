@@ -1850,64 +1850,42 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     ],
   },
 
-  {
-    categoryId: 'admin.node_memory_event_critical',
-    channel: 'email',
-    locale: 'en',
-    subjectTemplate: 'Node memory event on {{nodeName}} (system impact)',
-    bodyTemplate: emailMjml(
-      'Node memory event (system)',
-      '{{summary}} on node {{nodeName}}. System workloads should not be losing this fight — check Monitoring \u2192 Node health.',
-    ),
-    bodyFormat: 'mjml',
-    variablesSchema: [
-      ...COMMON_VARS,
-      { name: 'nodeName', type: 'string', required: true },
-      { name: 'summary', type: 'string', required: true },
-    ],
-  },
-  {
-    categoryId: 'admin.node_memory_event_critical',
-    channel: 'in_app',
-    locale: 'en',
-    subjectTemplate: 'Node memory event (system)',
-    bodyTemplate: '{{summary}} on node {{nodeName}}.',
-    bodyFormat: 'plaintext',
-    variablesSchema: [
-      ...COMMON_VARS,
-      { name: 'nodeName', type: 'string', required: true },
-      { name: 'summary', type: 'string', required: true },
-    ],
-  },
-  {
-    categoryId: 'admin.node_memory_event_warning',
-    channel: 'email',
-    locale: 'en',
-    subjectTemplate: 'Tenant evictions on {{nodeName}} (memory pressure)',
-    bodyTemplate: emailMjml(
-      'Node memory event (tenant evictions)',
-      '{{summary}} on node {{nodeName}}. This is the designed backpressure under memory pressure \u2014 review node headroom / tenant sizing if it repeats.',
-    ),
-    bodyFormat: 'mjml',
-    variablesSchema: [
-      ...COMMON_VARS,
-      { name: 'nodeName', type: 'string', required: true },
-      { name: 'summary', type: 'string', required: true },
-    ],
-  },
-  {
-    categoryId: 'admin.node_memory_event_warning',
-    channel: 'in_app',
-    locale: 'en',
-    subjectTemplate: 'Tenant evictions (memory pressure)',
-    bodyTemplate: '{{summary}} on node {{nodeName}}.',
-    bodyFormat: 'plaintext',
-    variablesSchema: [
-      ...COMMON_VARS,
-      { name: 'nodeName', type: 'string', required: true },
-      { name: 'summary', type: 'string', required: true },
-    ],
-  },
+  // Node memory events = kernel SystemOOM + kubelet evictions ONLY. The
+  // subject is the event's own {{headline}} ("Tenant pods evicted (node disk
+  // pressure)", "Node ran out of memory (kernel OOM killer)"): a fixed
+  // "Tenant evictions (memory pressure)" subject used to sit on container OOM
+  // kills, which are neither. Container kills: admin.tenant_pod_oom /
+  // admin.system_pod_oom.
+  ...((['admin.node_memory_event_critical', 'admin.node_memory_event_warning'] as const).flatMap(
+    (categoryId): SeedTemplate[] => {
+      const vars: readonly NotificationTemplateVariable[] = [
+        ...COMMON_VARS,
+        { name: 'nodeName', type: 'string', required: true },
+        { name: 'headline', type: 'string', required: true },
+        { name: 'summary', type: 'string', required: true },
+      ];
+      return [
+        {
+          categoryId,
+          channel: 'email',
+          locale: 'en',
+          subjectTemplate: '{{headline}} on {{nodeName}}',
+          bodyTemplate: emailMjml('{{headline}}', 'Node {{nodeName}}: {{summary}}'),
+          bodyFormat: 'mjml',
+          variablesSchema: vars,
+        },
+        {
+          categoryId,
+          channel: 'in_app',
+          locale: 'en',
+          subjectTemplate: '{{headline}}',
+          bodyTemplate: 'Node {{nodeName}}: {{summary}}',
+          bodyFormat: 'plaintext',
+          variablesSchema: vars,
+        },
+      ];
+    },
+  )),
 
   {
     categoryId: 'admin.custom_deployment_failed',
@@ -2605,6 +2583,65 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     ];
   })(),
 
+  // ── Tenant placement: storage failover / not on its primary node ──
+  // One notification per reconciler pass, listing every tenant it concerns:
+  // a node-wide storage stall salvages many volumes at once, and one message
+  // per tenant would bury the one fact that matters (it was the node).
+  ...((): SeedTemplate[] => {
+    const placementVars: readonly NotificationTemplateVariable[] = [
+      ...COMMON_VARS,
+      { name: 'summary', type: 'string', required: true },
+      { name: 'details', type: 'string', required: true },
+      { name: 'guidance', type: 'string', required: true },
+    ];
+    return [
+      {
+        categoryId: 'admin.tenant_storage_failover',
+        channel: 'email',
+        locale: 'en',
+        subjectTemplate: '[STORAGE] Storage failover: {{summary}}',
+        bodyTemplate: emailMjml(
+          'Storage failover: {{summary}}',
+          'Longhorn lost every replica of the volume(s) below, salvaged them and restarted the '
+          + 'workloads. Each filesystem was shut down and remounted, and databases ran crash '
+          + 'recovery. {{details}} {{guidance}}',
+        ),
+        bodyFormat: 'mjml',
+        variablesSchema: placementVars,
+      },
+      {
+        categoryId: 'admin.tenant_storage_failover',
+        channel: 'in_app',
+        locale: 'en',
+        subjectTemplate: '[STORAGE] Storage failover: {{summary}}',
+        bodyTemplate: '{{details}} {{guidance}}',
+        bodyFormat: 'plaintext',
+        variablesSchema: placementVars,
+      },
+      {
+        categoryId: 'admin.tenant_misplaced',
+        channel: 'email',
+        locale: 'en',
+        subjectTemplate: '[PLACEMENT] Not on its primary node: {{summary}}',
+        bodyTemplate: emailMjml(
+          'Not on its primary node: {{summary}}',
+          '{{details}} {{guidance}}',
+        ),
+        bodyFormat: 'mjml',
+        variablesSchema: placementVars,
+      },
+      {
+        categoryId: 'admin.tenant_misplaced',
+        channel: 'in_app',
+        locale: 'en',
+        subjectTemplate: '[PLACEMENT] Not on its primary node: {{summary}}',
+        bodyTemplate: '{{details}} {{guidance}}',
+        bodyFormat: 'plaintext',
+        variablesSchema: placementVars,
+      },
+    ];
+  })(),
+
   // ── admin.tenant_pod_oom (Phase 1d) ──
   ...((): SeedTemplate[] => {
     const oomVars: readonly NotificationTemplateVariable[] = [
@@ -2621,7 +2658,9 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
         categoryId: 'admin.tenant_pod_oom',
         channel: 'email',
         locale: 'en',
-        subjectTemplate: '[OOM] Tenant workload {{killSummary}}: {{tenantLabel}} ({{containerName}})',
+        // No "[OOM]" tag: killSummary says what the evidence supports, and
+        // for an unconfirmed SIGKILL that is explicitly NOT an OOM claim.
+        subjectTemplate: 'Tenant workload {{killSummary}}: {{tenantLabel}} ({{containerName}})',
         bodyTemplate: emailMjml(
           'Tenant workload {{killSummary}}: {{tenantLabel}}',
           'Container {{containerName}} in pod {{podName}} (tenant {{tenantLabel}}) {{killDetail}} '
@@ -2634,11 +2673,49 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
         categoryId: 'admin.tenant_pod_oom',
         channel: 'in_app',
         locale: 'en',
-        subjectTemplate: '[OOM] {{tenantLabel}}: {{containerName}} {{killSummary}}',
+        subjectTemplate: '{{tenantLabel}}: {{containerName}} {{killSummary}}',
         bodyTemplate: '{{tenantLabel}} — {{containerName}} in {{podName}} {{killDetail}}'
           + ' ({{restartCount}} restart(s))',
         bodyFormat: 'plaintext',
         variablesSchema: oomVars,
+      },
+    ];
+  })(),
+
+  // ── admin.system_pod_oom: a PLATFORM container OOM-killed / SIGKILLed ──
+  ...((): SeedTemplate[] => {
+    const vars: readonly NotificationTemplateVariable[] = [
+      ...COMMON_VARS,
+      { name: 'component', type: 'string', required: true },
+      { name: 'podName', type: 'string', required: true },
+      { name: 'containerName', type: 'string', required: true },
+      { name: 'nodeName', type: 'string', required: true },
+      { name: 'restartCount', type: 'string', required: true },
+      { name: 'killSummary', type: 'string', required: true },
+      { name: 'killDetail', type: 'string', required: true },
+    ];
+    return [
+      {
+        categoryId: 'admin.system_pod_oom',
+        channel: 'email',
+        locale: 'en',
+        subjectTemplate: 'Platform workload {{killSummary}}: {{component}} ({{containerName}}) on {{nodeName}}',
+        bodyTemplate: emailMjml(
+          'Platform workload {{killSummary}}: {{component}}',
+          'Container {{containerName}} in pod {{podName}} ({{component}}) {{killDetail}} '
+          + 'The container has restarted {{restartCount}} time(s).',
+        ),
+        bodyFormat: 'mjml',
+        variablesSchema: vars,
+      },
+      {
+        categoryId: 'admin.system_pod_oom',
+        channel: 'in_app',
+        locale: 'en',
+        subjectTemplate: 'Platform workload {{killSummary}}: {{component}} ({{containerName}})',
+        bodyTemplate: '{{component}} — {{containerName}} in {{podName}} {{killDetail}} ({{restartCount}} restart(s))',
+        bodyFormat: 'plaintext',
+        variablesSchema: vars,
       },
     ];
   })(),

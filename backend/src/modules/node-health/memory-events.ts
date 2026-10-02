@@ -1,37 +1,38 @@
 /**
- * Node memory events — SystemOOM + pod evictions (operator decision
- * both must be UI-visible and reach admins as notifications).
+ * Node memory events — kernel OOM kills, container OOM kills and kubelet pod
+ * evictions (operator decision: all must be UI-visible and reach admins).
  *
- * Fed by the node-health reconciler's 5-min tick with the raw k8s Event
- * lists (reason=Evicted for Pods, reason=SystemOOM for Nodes). Each
- * distinct occurrence (k8s event uid × aggregation count) is persisted
- * once to `node_memory_events` for the admin UI, and NEW rows dispatch a
- * categorized admin notification:
- *
- *   critical — SystemOOM, or an eviction touching a SYSTEM namespace.
- *              The eviction design (platform-critical PriorityClass +
- *              eviction-hard=memory.available<256Mi) makes system
- *              casualties abnormal by construction, so seeing one is a
- *              red flag.
- *   warning  — tenant-only evictions: the DESIGNED backpressure. Worth
- *              knowing (node oversubscribed / tenant undersized), not an
- *              incident per se.
+ * Fed by the node-health reconciler's 5-min tick with the raw k8s Event lists
+ * (reason=Evicted for Pods, reason=SystemOOM for Nodes, reason=Killing for
+ * probe restarts), every pod's container statuses, and the security-probe's
+ * OOM witness (oom-witness.ts). Each distinct occurrence is persisted once to
+ * `node_memory_events` for the admin UI, with a `cause` that says only what is
+ * known; NEW rows are announced by memory-event-notify.ts.
  *
  * Dedupe layers: the UNIQUE dedupe_key column makes ingestion exactly-once
- * across replicas and restarts; the dispatcher dedupeKey is hour-scoped
- * per (node × class) so a sustained incident notifies at most hourly; the
- * category rate limits back-stop bursts.
+ * across replicas and restarts; the dispatcher dedupe keys stop a re-sent
+ * notification; the category rate limits back-stop bursts.
  */
 
 import { inArray, lt, sql } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
 import { nodeMemoryEvents, tenants } from '../../db/schema.js';
-import { notifyAdminNodeMemoryEvents } from '../notifications/events.js';
-import type { NodeMemoryEvent } from '@insula/api-contracts';
+import type { NodeMemoryEvent, NodeMemoryEventCause } from '@insula/api-contracts';
 import { classifyOom, isExpectedSigkill } from '../../lib/container-termination.js';
 import { isSystemNamespace } from '../../lib/namespace-tier.js';
+import { judgeKills, type KillCause, type OomWitness } from './oom-witness.js';
+import { notifyMemoryEvents } from './memory-event-notify.js';
 
 const RETENTION_MS = 30 * 24 * 60 * 60 * 1000; // UI window: 30 days
+
+/**
+ * How long a kill waits for a witness snapshot that covers it. The probe
+ * publishes within seconds of an OOM and at least every minute, so a live
+ * witness covers a kill by the next reconcile tick; this only bounds a dead
+ * or stalled one — then the kill is recorded on the kubelet's word rather
+ * than never.
+ */
+const EVIDENCE_WAIT_MS = 10 * 60 * 1000;
 
 /**
  * Tenant vs platform is decided by `lib/namespace-tier.ts` — see there for why
@@ -39,7 +40,13 @@ const RETENTION_MS = 30 * 24 * 60 * 60 * 1000; // UI window: 30 days
  * list named 9 of production's 27 namespaces and reported the other eleven
  * platform ones as *tenants*, which is how an admin came to be told that
  * tenant "traefik" was over its memory limit.
+ *
+ * One refinement for container kills: a pod labelled `platform.io/system:
+ * "true"` (the file manager, the SFTP helper, …) lives in a TENANT namespace
+ * but is sized by the platform, not the tenant's plan. Telling an admin to
+ * raise the tenant's plan for it would be wrong, so it counts as platform.
  */
+const PLATFORM_MANAGED_LABEL = 'platform.io/system';
 
 /** Raw k8s Event fields the collector reads (superset of the reconciler's RawEvent). */
 export interface RawMemoryEvent {
@@ -59,24 +66,30 @@ export interface RawMemoryEvent {
   readonly firstTimestamp?: string;
 }
 
+/** Container-kill causes that are reported; `not-oom` never is. */
+export type ReportedKillCause = Exclude<KillCause, 'not-oom'>;
+
 export interface NormalizedMemoryEvent {
   readonly dedupeKey: string;
   readonly kind: 'system-oom' | 'pod-evicted' | 'container-oom';
+  readonly cause: NodeMemoryEventCause;
   readonly nodeName: string;
   readonly namespace: string | null;
   readonly podName: string | null;
   /** OOM-killed container name (container-oom only); null for pod/node events. */
   readonly containerName: string | null;
   readonly systemWorkload: boolean;
+  /**
+   * A platform-sized pod in a TENANT namespace (file manager, …). Only set for
+   * container kills; such a kill is a platform kill even though the namespace
+   * names a tenant.
+   */
+  readonly platformManaged?: boolean;
+  /** container-oom only: what the dispatcher dedupes a per-kill alert on. */
+  readonly podUid?: string;
+  readonly restartCount?: number;
   readonly message: string;
   readonly occurredAt: Date;
-  /**
-   * Whether the kill was CONFIRMED an OOM (kubelet said `OOMKilled`) or only
-   * inferred from exit 137. Not persisted — it shapes the notification wording
-   * so an unconfirmed kill never claims to be an OOM. See
-   * collectOomKilledContainers().
-   */
-  readonly oomConfidence?: 'confirmed' | 'unconfirmed';
 }
 
 /** Pod fields the container-OOM collector reads. */
@@ -85,6 +98,7 @@ export interface RawPod {
     readonly uid?: string;
     readonly name?: string;
     readonly namespace?: string;
+    readonly labels?: Readonly<Record<string, string>>;
     /**
      * Set the moment a pod starts terminating. Its containers are about to be
      * SIGKILLed by design, so exit 137 there means nothing — see the
@@ -112,21 +126,17 @@ interface RawTermination {
   readonly reason?: string;
   readonly exitCode?: number;
   readonly finishedAt?: string;
+  /** `containerd://<64 hex>` — names the container's own cgroup to the witness. */
+  readonly containerID?: string;
 }
 
-/**
- * Containers OOM-killed at their own cgroup limit, read from container
- * STATUS (containerd-sourced) rather than events or metrics. Both of
- * those ride cadvisor's kmsg oomparser — observed permanently broken on
- * a live node — and the per-container metric series is torn
- * down before the 60s scrape can capture a short-lived kill. lastState
- * persists until the NEXT restart, so the 5-min reconciler reliably sees
- * each kill; the dedupe key (uid × container × restartCount × finishedAt)
- * makes re-observations idempotent. Exit 137 with reason "Error" is
- * included: cgroup-v2 group kills are reported that way by some
- * containerd versions (observed on DEV) — the message marks the
- * inference. Pure — unit tested directly.
- */
+/** `containerd://<id>` / `cri-o://<id>` → `<id>`. */
+function bareContainerId(raw: string | undefined): string | undefined {
+  if (!raw) return undefined;
+  const id = raw.replace(/^[a-z-]+:\/\//, '');
+  return id.length > 0 ? id : undefined;
+}
+
 /**
  * Containers the kubelet killed because a probe failed, indexed as
  * `<namespace>/<pod>/<container>` with the times it said so.
@@ -195,10 +205,29 @@ function killedByProbe(
   return times.some((t) => Math.abs(t.getTime() - finishedAt.getTime()) <= PROBE_KILL_WINDOW_MS);
 }
 
+/**
+ * Containers killed by SIGKILL (exit 137) or reported OOMKilled, read from
+ * container STATUS (containerd-sourced) and judged against the kernel's own
+ * OOM counters (the security-probe witness, oom-witness.ts).
+ *
+ * Container status is the durable signal: kubelet SystemOOM events and
+ * cadvisor's container_oom_events_total ride the kmsg oomparser (observed
+ * broken on live nodes, and reading 0 on production through a real OOM
+ * kill). lastState persists until the NEXT restart, so the 5-min reconciler
+ * sees each kill; the dedupe key (uid × container × restartCount × finishedAt)
+ * makes re-observations idempotent.
+ *
+ * What is recorded, and with which cause, is the witness's verdict:
+ * kernel-confirmed OOMs always (even on a draining pod or one that also
+ * failed a probe); a SIGKILL the kernel shows was NOT memory never; and an
+ * unconfirmed exit 137 only when no other explanation exists (not a rollout,
+ * node shutdown or probe restart). Pure — unit tested directly.
+ */
 export function collectOomKilledContainers(
   pods: ReadonlyArray<RawPod>,
   now: Date = new Date(),
   probeKills: ReadonlyMap<string, Date[]> = new Map(),
+  witnesses: ReadonlyMap<string, OomWitness> = new Map(),
 ): NormalizedMemoryEvent[] {
   const cutoff = now.getTime() - RETENTION_MS;
   const out: NormalizedMemoryEvent[] = [];
@@ -208,70 +237,146 @@ export function collectOomKilledContainers(
     const podName = pod.metadata?.name ?? null;
     const nodeName = pod.spec?.nodeName ?? '';
     if (!uid || !nodeName) continue;
+    const platformManaged = pod.metadata?.labels?.[PLATFORM_MANAGED_LABEL] === 'true';
     // A pod that is shutting down has its containers SIGKILLed on purpose once
     // the grace period expires, which is exit 137 — indistinguishable from a
-    // cgroup OOM by exit code alone. Only kubelet's explicit `OOMKilled` counts.
+    // cgroup OOM by exit code alone.
     //
     // Two ways that happens, and this used to test only the first:
     //   deletionTimestamp  — a rollout/scale-down/drain deletes the pod.
     //   status.reason      — a NODE SHUTDOWN never deletes the pod, it marks it
     //                        Failed in place, so deletionTimestamp is ABSENT.
-    // Missing the second reported five reboot corpses as OOMs on production
-    // . See isExpectedSigkill.
+    // Missing the second reported five reboot corpses as OOMs on production.
+    // See isExpectedSigkill.
     const expectedKill = isExpectedSigkill({
       deletionTimestamp: pod.metadata?.deletionTimestamp,
       reason: pod.status?.reason,
     });
-    for (const cs of pod.status?.containerStatuses ?? []) {
+    // Every death in the pod is judged TOGETHER: the witness counts per pod,
+    // and one kernel kill must never explain two deaths (judgeKills).
+    interface Candidate {
+      readonly key: string;
+      readonly status: number;
+      readonly oomKind: 'explicit' | 'inferred';
+      readonly finished: Date;
+      readonly containerName: string;
+      readonly nameOrNull: string | null;
+      readonly restartCount: number;
+      readonly containerId?: string;
+    }
+    const candidates: Candidate[] = [];
+    (pod.status?.containerStatuses ?? []).forEach((cs, status) => {
+      const seen = new Set<string>();
       // A terminal pod (restartPolicy Never) carries the kill in
-      // state.terminated; a restarting one in lastState.terminated.
-      for (const term of [cs.state?.terminated, cs.lastState?.terminated]) {
+      // state.terminated; a restarting one in lastState.terminated. Both can
+      // hold the same termination.
+      for (const [slot, term] of [['state', cs.state?.terminated], ['last', cs.lastState?.terminated]] as const) {
         if (!term) continue;
-        // This module got it right before the others did; it now shares the
-        // classifier so the whole platform agrees on what an OOM is. Note the
-        // inferred arm no longer requires reason==='Error' — a SIGKILL with no
-        // reason set at all is still exit 137.
+        // The shared classifier: 'explicit' = the kubelet said OOMKilled,
+        // 'inferred' = exit 137 only (a SIGKILL from any source).
         const oomKind = classifyOom(term);
         if (!oomKind) continue;
-        const oomExplicit = oomKind === 'explicit';
-        // Drop unconfirmed kills on a terminating pod: that is the rollout
-        // SIGKILL, not an OOM. — the modsec-crs
-        // `audit-redactor` sidecar paged an admin as an OOM every time the WAF
-        // exclusion reconciler rolled the deployment, while its cgroup reported
-        // `oom_kill 0` and a peak of 8.5 MB against a 64 MiB limit, and the
-        // node's kernel ring buffer held no cgroup OOM for it at all.
-        if (!oomExplicit && expectedKill) continue;
         const finished = term.finishedAt ? new Date(term.finishedAt) : null;
         if (!finished || Number.isNaN(finished.getTime()) || finished.getTime() < cutoff) continue;
+        const containerId = bareContainerId(term.containerID);
+        const signature = `${finished.getTime()}:${containerId ?? ''}`;
+        if (seen.has(signature)) continue;
+        seen.add(signature);
+        candidates.push({
+          key: `${status}:${slot}`, status, oomKind, finished, containerId,
+          containerName: cs.name ?? '', nameOrNull: cs.name ?? null, restartCount: cs.restartCount ?? 0,
+        });
+      }
+    });
+    if (candidates.length === 0) continue;
+    const causes = judgeKills(
+      candidates.map((c) => ({ key: c.key, kubelet: c.oomKind, finishedAt: c.finished, containerId: c.containerId })),
+      uid,
+      witnesses.get(nodeName),
+    );
+
+    const recorded = new Set<number>();
+    for (const c of candidates) {
+      // One record per container status.
+      if (recorded.has(c.status)) continue;
+      const fallback: KillCause = c.oomKind === 'explicit' ? 'oom' : 'unconfirmed';
+      let verdict = causes.get(c.key) ?? fallback;
+      if (verdict === 'pending') {
+        // The witness has not published past this death yet. Recording now
+        // would freeze a verdict without its evidence (the dedupe key makes
+        // the first record final) — so wait for the next tick.
+        if (now.getTime() - c.finished.getTime() < EVIDENCE_WAIT_MS) continue;
+        verdict = fallback;
+      }
+      const cause = verdict;
+      // The kernel showed this SIGKILL was not memory. Not a memory event.
+      if (cause === 'not-oom') continue;
+      const kernelConfirmed = cause === 'memory-limit' || cause === 'node-oom';
+      if (c.oomKind === 'inferred' && !kernelConfirmed) {
+        // Drop unconfirmed kills on a terminating pod: that is the rollout
+        // SIGKILL, not an OOM. The modsec-crs `audit-redactor` sidecar paged
+        // an admin as an OOM every time the WAF exclusion reconciler rolled
+        // the deployment, while its cgroup reported `oom_kill 0`.
+        if (expectedKill) continue;
         // Same rule, second source: if the kubelet said it killed this exact
         // container for a failed probe at about this time, that IS the cause.
-        // Only drops the INFERRED arm — an explicit OOMKilled still counts,
-        // because a container can genuinely hit its limit and fail a probe.
-        if (!oomExplicit && killedByProbe(probeKills, namespace, podName, cs.name ?? '', finished)) continue;
-        out.push({
-          dedupeKey: `oomk:${uid}:${cs.name ?? ''}:${cs.restartCount ?? 0}:${finished.getTime()}`,
-          kind: 'container-oom',
-          nodeName,
-          namespace,
-          podName,
-          containerName: cs.name ?? null,
-          systemWorkload: isSystemNamespace(namespace),
-          oomConfidence: oomExplicit ? 'confirmed' : 'unconfirmed',
-          // Say only what is known. Exit 137 is 128+SIGKILL from ANY source —
-          // a cgroup OOM group-kill (which some containerd versions report as
-          // reason "Error"), a liveness-probe restart, a node drain. Claiming
-          // "OOM-killed at its memory limit" for all of them sent admins to
-          // raise a limit on a container using 13% of it.
-          message: oomExplicit
-            ? `container ${cs.name ?? '?'} OOM-killed at its memory limit (restart #${cs.restartCount ?? 0})`
-            : `container ${cs.name ?? '?'} SIGKILLed (exit 137, cause unconfirmed — could be a cgroup OOM group-kill, a probe restart or a node drain; check the container's memory.peak against its limit before raising it) (restart #${cs.restartCount ?? 0})`,
-          occurredAt: finished,
-        });
-        break; // one record per container status — state+lastState can hold the same termination
+        if (killedByProbe(probeKills, namespace, podName, c.containerName, c.finished)) continue;
       }
+      recorded.add(c.status);
+      out.push({
+        dedupeKey: `oomk:${uid}:${c.containerName}:${c.restartCount}:${c.finished.getTime()}`,
+        kind: 'container-oom',
+        cause,
+        nodeName,
+        namespace,
+        podName,
+        containerName: c.nameOrNull,
+        systemWorkload: isSystemNamespace(namespace) || platformManaged,
+        platformManaged,
+        podUid: uid,
+        restartCount: c.restartCount,
+        message: describeKill(cause, c.nameOrNull ?? '?', c.restartCount),
+        occurredAt: c.finished,
+      });
     }
   }
   return out;
+}
+
+/**
+ * The persisted one-line message for a container kill. Says only what the
+ * evidence supports: exit 137 is 128+SIGKILL from ANY source, and claiming
+ * "OOM-killed at its memory limit" for all of them sent admins to raise a
+ * limit on a container using 13% of it.
+ */
+export function describeKill(cause: ReportedKillCause, container: string, restartCount: number): string {
+  const tail = `(restart #${restartCount})`;
+  switch (cause) {
+    case 'memory-limit':
+      return `container ${container} OOM-killed at its memory limit (kernel-confirmed) ${tail}`;
+    case 'node-oom':
+      return `container ${container} killed by the node's out-of-memory killer - the node ran out of memory, not the container's own limit ${tail}`;
+    case 'oom':
+      return `container ${container} OOM-killed (reported by the kubelet; own limit vs node-wide OOM not determined) ${tail}`;
+    case 'unconfirmed':
+      return `container ${container} SIGKILLed (exit 137, cause unconfirmed — could be a cgroup OOM group-kill, a probe restart or a node drain; check the container's memory.peak against its limit before raising it) ${tail}`;
+  }
+}
+
+/**
+ * What a kubelet eviction was about, from the kubelet's own message
+ * (pkg/kubelet/eviction/helpers.go). An eviction is not necessarily memory —
+ * and not necessarily node pressure: a pod that outgrows its own
+ * ephemeral-storage limit is evicted while the node is perfectly healthy.
+ */
+export function classifyEviction(message: string): NodeMemoryEventCause {
+  if (/low on resource: memory/i.test(message) || /MemoryPressure/.test(message)) return 'node-memory-pressure';
+  if (/low on resource: (?:ephemeral-storage|inodes)/i.test(message) || /DiskPressure/.test(message)) return 'node-disk-pressure';
+  if (/low on resource: pids/i.test(message) || /PIDPressure/.test(message)) return 'node-pid-pressure';
+  if (/ephemeral local storage usage exceeds|exceeded its local ephemeral storage limit|Usage of EmptyDir volume .* exceeds the limit/i.test(message)) {
+    return 'pod-storage-limit';
+  }
+  return 'other';
 }
 
 function eventTimestamp(e: RawMemoryEvent): Date | null {
@@ -305,15 +410,17 @@ export function normalizeMemoryEvents(
     const nodeName = e.source?.host ?? e.reportingInstance ?? '';
     if (!uid || !occurredAt || occurredAt.getTime() < cutoff || !nodeName) continue;
     const namespace = e.involvedObject?.namespace ?? null;
+    const message = (e.message ?? '').slice(0, 1000);
     out.push({
       dedupeKey: `${uid}:${e.count ?? 1}`,
       kind: 'pod-evicted',
+      cause: classifyEviction(message),
       nodeName,
       namespace,
       podName: e.involvedObject?.name ?? null,
       containerName: null,
       systemWorkload: isSystemNamespace(namespace),
-      message: (e.message ?? '').slice(0, 1000),
+      message,
       occurredAt,
     });
   }
@@ -327,6 +434,7 @@ export function normalizeMemoryEvents(
     out.push({
       dedupeKey: `${uid}:${e.count ?? 1}`,
       kind: 'system-oom',
+      cause: 'node-oom',
       nodeName,
       namespace: null,
       podName: null,
@@ -341,124 +449,53 @@ export function normalizeMemoryEvents(
   return out;
 }
 
-/**
- * Group NEW events into per-(node × class) notification payloads. Pure —
- * unit tested directly.
- */
-export function summarizeForNotification(
-  inserted: ReadonlyArray<NormalizedMemoryEvent>,
-  labelForNamespace: (ns: string) => string | undefined = () => undefined,
-): Array<{ nodeName: string; severity: 'critical' | 'warning'; summary: string }> {
-  interface Group {
-    nodeName: string;
-    severity: 'critical' | 'warning';
-    oom: number;
-    sysEvict: NormalizedMemoryEvent[];
-    tenantEvict: NormalizedMemoryEvent[];
-    sysOomk: NormalizedMemoryEvent[];
-    tenantOomk: NormalizedMemoryEvent[];
-    sysKill: NormalizedMemoryEvent[];
-    tenantKill: NormalizedMemoryEvent[];
-  }
-  const groups = new Map<string, Group>();
-  for (const e of inserted) {
-    const severity: 'critical' | 'warning' = e.systemWorkload ? 'critical' : 'warning';
-    const key = `${e.nodeName} ${severity}`;
-    const g = groups.get(key) ?? { nodeName: e.nodeName, severity, oom: 0, sysEvict: [], tenantEvict: [], sysOomk: [], tenantOomk: [], sysKill: [], tenantKill: [] };
-    if (e.kind === 'system-oom') g.oom += 1;
-    else if (e.kind === 'container-oom') {
-      // Confirmed OOMs and unconfirmed SIGKILLs are reported separately — they
-      // call for different actions, and merging them is what produced
-      // "raise the tenant's memory limit" for a container that was never
-      // anywhere near its limit.
-      const confirmed = e.oomConfidence !== 'unconfirmed';
-      if (confirmed) (e.systemWorkload ? g.sysOomk : g.tenantOomk).push(e);
-      else (e.systemWorkload ? g.sysKill : g.tenantKill).push(e);
-    }
-    else (e.systemWorkload ? g.sysEvict : g.tenantEvict).push(e);
-    groups.set(key, g);
-  }
-  return [...groups.values()].map((g) => {
-    const parts: string[] = [];
-    if (g.oom > 0) parts.push(`kernel SystemOOM (${g.oom} event${g.oom === 1 ? '' : 's'})`);
-    const named = (label: string, evs: NormalizedMemoryEvent[]): void => {
-      if (evs.length === 0) return;
-      parts.push(`${evs.length} ${label}: ${joinNamed(evs.map((e) => describeEvent(e, labelForNamespace)))}`);
-    };
-    named('SYSTEM pod(s) evicted', g.sysEvict);
-    named('SYSTEM container(s) OOM-killed at their memory limit', g.sysOomk);
-    named('SYSTEM container(s) SIGKILLed (exit 137, cause unconfirmed)', g.sysKill);
-    named('tenant pod(s) evicted', g.tenantEvict);
-    named('tenant container(s) OOM-killed at their memory limit', g.tenantOomk);
-    named('tenant container(s) SIGKILLed (exit 137, cause unconfirmed)', g.tenantKill);
-    // Only advise raising a limit when something actually hit its limit.
-    // An unconfirmed SIGKILL is not evidence of memory pressure.
-    const confirmedOom = g.oom > 0 || g.sysOomk.length > 0 || g.tenantOomk.length > 0;
-    const advice = g.severity === 'warning'
-      ? (confirmedOom
-        ? "Raise the tenant's plan/memory limit if this recurs. Details: Monitoring -> Node health -> Memory events."
-        : 'Check the container\'s memory.peak against its limit before changing anything - exit 137 alone is not an OOM. Details: Monitoring -> Node health -> Memory events.')
-      : (confirmedOom
-        ? 'A SYSTEM workload was hit - investigate now. Details: Monitoring -> Node health -> Memory events.'
-        : 'A SYSTEM container was SIGKILLed, cause unconfirmed - check whether it handles SIGTERM before assuming memory. Details: Monitoring -> Node health -> Memory events.');
-    return { nodeName: g.nodeName, severity: g.severity, summary: `${parts.join('; ')}. ${advice}` };
-  });
-}
-
-/** How many affected objects to name individually before switching to "+N more". */
-const MAX_NAMED = 3;
-
-/**
- * Human identity of one memory event: the tenant NAME (or namespace for SYSTEM
- * workloads) plus pod + container when known. This is what the notification was
- * missing - it named a count and a node and nothing you could act on.
- */
-function describeEvent(
-  e: NormalizedMemoryEvent,
-  labelForNamespace: (ns: string) => string | undefined,
-): string {
-  const who = e.systemWorkload
-    ? (e.namespace ?? 'node')
-    : (e.namespace ? (labelForNamespace(e.namespace) ?? e.namespace) : 'unknown tenant');
-  const prefix = e.systemWorkload ? who : `tenant "${who}"`;
-  const bits: string[] = [];
-  if (e.containerName) bits.push(`container ${e.containerName}`);
-  if (e.podName) bits.push(`pod ${e.podName}`);
-  return bits.length > 0 ? `${prefix} (${bits.join(', ')})` : prefix;
-}
-
-/** Join named descriptions with a "+N more" tail when the list is long. */
-function joinNamed(descriptions: string[]): string {
-  if (descriptions.length <= MAX_NAMED) return descriptions.join('; ');
-  return `${descriptions.slice(0, MAX_NAMED).join('; ')}; +${descriptions.length - MAX_NAMED} more`;
+/** A tenant namespace's id + display name, for naming and deep-linking. */
+export interface TenantRef {
+  readonly id: string;
+  readonly name: string;
 }
 
 /**
- * Map each affected TENANT namespace to its display name for the notification.
- * Only tenant-tier events carry a resolvable namespace; SYSTEM ones use the raw
- * namespace. A namespace with no tenant row (already deleted) is simply absent
- * from the map and the summary falls back to the namespace string.
+ * Map each affected TENANT namespace to its tenant. Only tenant-tier events
+ * carry a resolvable namespace; a namespace with no tenant row (already
+ * deleted) is simply absent and callers fall back to the namespace string.
  */
-async function resolveTenantLabels(
+async function resolveTenants(
   db: Database,
   events: ReadonlyArray<NormalizedMemoryEvent>,
-): Promise<Map<string, string>> {
+): Promise<Map<string, TenantRef>> {
   const namespaces = [...new Set(
-    events.filter((e) => !e.systemWorkload && e.namespace).map((e) => e.namespace as string),
+    events.filter((e) => e.namespace && !isSystemNamespace(e.namespace)).map((e) => e.namespace as string),
   )];
-  const out = new Map<string, string>();
+  const out = new Map<string, TenantRef>();
   if (namespaces.length === 0) return out;
   try {
     const rows = await db
-      .select({ ns: tenants.kubernetesNamespace, name: tenants.name })
+      .select({ id: tenants.id, ns: tenants.kubernetesNamespace, name: tenants.name })
       .from(tenants)
       .where(inArray(tenants.kubernetesNamespace, namespaces));
-    for (const r of rows) if (r.ns) out.set(r.ns, r.name);
+    for (const r of rows) if (r.ns) out.set(r.ns, { id: r.id, name: r.name });
   } catch {
-    // Best-effort: a lookup failure just means the summary shows the namespace
-    // instead of the display name — never block the notification.
+    // Best-effort: a lookup failure just means the notification shows the
+    // namespace instead of the display name — never block the notification.
   }
   return out;
+}
+
+export interface MemoryEventSources {
+  readonly evicted: ReadonlyArray<RawMemoryEvent>;
+  readonly systemOom: ReadonlyArray<RawMemoryEvent>;
+  readonly pods?: ReadonlyArray<RawPod>;
+  /** reason=Killing events — probe restarts, see indexProbeKills(). */
+  readonly killing?: ReadonlyArray<RawMemoryEvent>;
+  /** Per-node OOM witness, see oom-witness.ts. Empty = judge on the kubelet's word. */
+  readonly witnesses?: ReadonlyMap<string, OomWitness>;
+  readonly now?: Date;
+  /**
+   * Nodes whose notifications are held (join grace window, join-grace.ts).
+   * Their events are still RECORDED — only the notification is skipped.
+   */
+  readonly isNotificationSuppressed?: (nodeName: string) => boolean;
 }
 
 /**
@@ -469,22 +506,14 @@ async function resolveTenantLabels(
  */
 export async function recordMemoryEvents(
   db: Database,
-  evicted: ReadonlyArray<RawMemoryEvent>,
-  systemOom: ReadonlyArray<RawMemoryEvent>,
-  pods: ReadonlyArray<RawPod> = [],
-  now: Date = new Date(),
-  killingEvents: ReadonlyArray<RawMemoryEvent> = [],
-  /**
-   * Nodes whose notifications are held (join grace window, join-grace.ts).
-   * Their events are still RECORDED — only the notification is skipped.
-   */
-  isNotificationSuppressed: (nodeName: string) => boolean = () => false,
+  sources: MemoryEventSources,
 ): Promise<{ readonly insertedCount: number }> {
+  const now = sources.now ?? new Date();
   try {
-    const probeKills = indexProbeKills(killingEvents);
+    const probeKills = indexProbeKills(sources.killing ?? []);
     const normalized = [
-      ...normalizeMemoryEvents(evicted, systemOom, now),
-      ...collectOomKilledContainers(pods, now, probeKills),
+      ...normalizeMemoryEvents(sources.evicted, sources.systemOom, now),
+      ...collectOomKilledContainers(sources.pods ?? [], now, probeKills, sources.witnesses ?? new Map()),
     ];
 
     const inserted: NormalizedMemoryEvent[] = [];
@@ -493,6 +522,7 @@ export async function recordMemoryEvents(
         .values({
           dedupeKey: e.dedupeKey,
           kind: e.kind,
+          cause: e.cause,
           nodeName: e.nodeName,
           namespace: e.namespace,
           podName: e.podName,
@@ -509,18 +539,12 @@ export async function recordMemoryEvents(
     await db.delete(nodeMemoryEvents)
       .where(lt(nodeMemoryEvents.occurredAt, new Date(now.getTime() - RETENTION_MS)));
 
-    // Resolve the affected tenant namespaces to their display names so the
-    // notification can say WHO was hit, not just "1 tenant container(s)".
-    const nsToLabel = await resolveTenantLabels(db, inserted);
-    for (const n of summarizeForNotification(inserted, (ns) => nsToLabel.get(ns))) {
-      if (isNotificationSuppressed(n.nodeName)) {
-        console.log(`[node-health-monitor] ${n.nodeName} is joining — ${n.severity} memory-event notification suppressed (${n.summary})`);
-        continue;
-      }
-      const hour = now.toISOString().slice(0, 13); // YYYY-MM-DDTHH
-      await notifyAdminNodeMemoryEvents(db, n.severity, { nodeName: n.nodeName, summary: n.summary },
-        `node-memory:${n.severity}:${n.nodeName}:${hour}`);
-    }
+    const tenantsByNs = await resolveTenants(db, inserted);
+    await notifyMemoryEvents(db, inserted, {
+      now,
+      tenantFor: (ns) => tenantsByNs.get(ns),
+      isNotificationSuppressed: sources.isNotificationSuppressed ?? (() => false),
+    });
 
     return { insertedCount: inserted.length };
   } catch (err) {
@@ -541,6 +565,7 @@ export async function readMemoryEvents(db: Database, limit: number): Promise<Nod
     namespace: r.namespace,
     podName: r.podName,
     systemWorkload: r.systemWorkload,
+    cause: (r.cause ?? null) as NodeMemoryEvent['cause'],
     message: r.message,
     occurredAt: r.occurredAt.toISOString(),
   }));

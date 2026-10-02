@@ -1,5 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+// mailMigrationInFlight reads mail_migration_runs; these DB fakes have no
+// execute(). Default: nothing in flight (tests that need one override it).
+const migrationInFlight = vi.fn(async (): Promise<string | null> => null);
+vi.mock('./active-node.js', async (orig) => ({
+  ...(await orig<typeof import('./active-node.js')>()),
+  mailMigrationInFlight: () => migrationInFlight(),
+}));
+
+
 /**
  * validateModeSwitchAgainstDb node-count gate.
  *
@@ -107,6 +116,15 @@ describe('mail-admin/port-exposure.validateModeSwitchAgainstDb node-count gate',
       expect(err).toBeNull();
     });
   }
+
+  it('REFUSES any switch while a mail migration is in flight (the active node is not settled)', async () => {
+    mockListNode.mockResolvedValue({ items: nodes(3, 0) });
+    const { validateModeSwitchAgainstDb } = await import('./port-exposure.js');
+    for (const mode of ['activeNodeOnly', 'allServerNodes'] as const) {
+      migrationInFlight.mockResolvedValueOnce('run-7');
+      expect(await validateModeSwitchAgainstDb(mode, buildDb(), undefined)).toMatch(/mail migration is in progress/);
+    }
+  });
 
   it('ALWAYS allows activeNodeOnly even on a single-node cluster', async () => {
     mockListNode.mockResolvedValue({ items: nodes(1, 0) });

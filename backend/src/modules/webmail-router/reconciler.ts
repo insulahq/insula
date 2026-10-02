@@ -22,6 +22,7 @@ import type * as k8s from '@kubernetes/client-node';
 import type { Logger } from 'pino';
 import type { Database } from '../../db/index.js';
 import { MERGE_PATCH, JSON_PATCH } from '../../shared/k8s-patch.js';
+import { mailMigrationInFlight } from '../mail-admin/active-node.js';
 import {
   getDefaultWebmailEngine,
   getDefaultWebmailUrl,
@@ -428,7 +429,16 @@ export async function reconcileEngineDeployments(
     // scaled to >=2 for HA, and that's not our call to undo. We only
     // ensure the engine isn't sitting at 0 right after a flip.
     const currentReplicas = live.spec?.replicas ?? 0;
-    if (currentReplicas < ACTIVE_ENGINE_MIN_REPLICAS) {
+    // Bulwark is part of the mail stack: a mail migration (operator move or DR
+    // failover) scales it to 0 on purpose and back up on the target. Floor-
+    // scaling it mid-run created a Pending pod pinned to the source and failed
+    // the migration at scale-down ("bulwark did not reach 0 ready replica(s)").
+    const migrationOwnsScale = currentReplicas < ACTIVE_ENGINE_MIN_REPLICAS
+      && active.name === BULWARK_DEPLOY_NAME
+      && (await mailMigrationInFlight(db)) !== null;
+    if (migrationOwnsScale) {
+      log.info({ name: active.name }, 'webmail-router: mail migration in flight — leaving the active engine at 0 (the migration scales it)');
+    } else if (currentReplicas < ACTIVE_ENGINE_MIN_REPLICAS) {
       await apps.replaceNamespacedDeploymentScale({
         namespace: active.namespace,
         name: active.name,

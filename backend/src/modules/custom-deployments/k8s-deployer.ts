@@ -66,11 +66,14 @@ export interface DeployCustomInput {
    *  Secret (`image-pull-{deploymentId}`). Material is materialised
    *  separately via pat-store.materializePullSecret. */
   readonly hasPullCredential: boolean;
-  /** When provided, used for hard nodeSelector pin (local tier) or
+  /** When set, used for hard nodeSelector pin (local tier) or
    *  soft preferredAffinity (HA tier) — matching the catalog
-   *  deployer's behaviour for tenant pod placement. */
-  readonly nodeName?: string | null;
-  readonly storageTier?: 'local' | 'ha' | null;
+   *  deployer's behaviour for tenant pod placement. Required (null =
+   *  unpinned) for the same reason as the catalog deployer's: an
+   *  optional pin is one a redeploy path forgets, which unpins the
+   *  tenant without anyone noticing. */
+  readonly nodeName: string | null;
+  readonly storageTier: 'local' | 'ha' | null;
 }
 
 const TENANT_DEFAULT_PRIORITY_CLASS = 'tenant-default';

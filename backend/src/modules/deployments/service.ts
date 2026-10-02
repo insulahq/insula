@@ -685,8 +685,7 @@ export async function createDeployment(
         // set; undefined lets the default scheduler choose. Tier (local
         // vs ha) flips the pin between hard nodeSelector and soft
         // preferred affinity (so HA can fail over).
-        nodeName: tenant.nodeName ?? undefined,
-        storageTier: (tenant.storageTier ?? null) as 'local' | 'ha' | null,
+        ...tenantPlacementOf(tenant),
         // Phase 3: propagate the manifest's runtime-firewall block. The
         // deployer stamps it as Pod annotations which the
         // firewall-reconciler converges into the host's nft sets
@@ -1530,6 +1529,8 @@ export async function updateDeploymentResources(
       assertExtraMountsDoNotCollide(deployment.extraMounts, resolved.volumes);
 
       await deployCatalogEntry(k8s, {
+        // The pin rides along on every redeploy — see TenantPlacement.
+        ...(await loadTenantPlacement(db, tenantId)),
         deploymentName: deployment.name,
         storagePath: deployment.storagePath ?? '',
         namespace,
@@ -1834,6 +1835,8 @@ export async function redeployWithCurrentConfig(
     : undefined;
 
   await deployCatalogEntry(k8s, {
+    // The pin rides along on every redeploy — see TenantPlacement.
+    ...(await loadTenantPlacement(db, deployment.tenantId)),
     deploymentName: deployment.name,
     storagePath: deployment.storagePath ?? '',
     namespace,
@@ -1879,6 +1882,35 @@ export async function redeployWithCurrentConfig(
       }
     }
   } catch { /* best-effort */ }
+}
+
+/**
+ * The worker pin and storage tier every `deployCatalogEntry` call must carry.
+ * See `DeployCatalogEntryInput.nodeName` for why it is required: a redeploy
+ * that leaves it out re-renders the Deployment unpinned.
+ */
+export interface TenantPlacement {
+  readonly nodeName: string | null;
+  readonly storageTier: 'local' | 'ha' | null;
+}
+
+export function tenantPlacementOf(
+  tenant: { readonly nodeName?: string | null; readonly storageTier?: string | null } | undefined,
+): TenantPlacement {
+  const tier = tenant?.storageTier;
+  return {
+    nodeName: tenant?.nodeName ?? null,
+    storageTier: tier === 'local' || tier === 'ha' ? tier : null,
+  };
+}
+
+export async function loadTenantPlacement(db: Database, tenantId: string): Promise<TenantPlacement> {
+  const [tenant] = await db
+    .select({ nodeName: tenants.nodeName, storageTier: tenants.storageTier })
+    .from(tenants)
+    .where(eq(tenants.id, tenantId));
+  if (!tenant) throw new ApiError('TENANT_NOT_FOUND', `Tenant '${tenantId}' not found`, 404, { tenant_id: tenantId });
+  return tenantPlacementOf(tenant);
 }
 
 export async function getTenantNamespace(

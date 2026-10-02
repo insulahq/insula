@@ -10,16 +10,16 @@ function fakeSettings(seed: Record<string, string> = {}): { io: SettingsIO; stor
   };
 }
 
-function fakeK8s(opts: { source?: string | null; ref?: unknown } = {}): { k8s: K8sClients; patches: unknown[] } {
+function fakeK8s(opts: { source?: string | null; ref?: unknown; suspend?: { ks?: boolean; repo?: boolean } } = {}): { k8s: K8sClients; patches: unknown[] } {
   const patches: unknown[] = [];
   const k8s = {
     custom: {
       getNamespacedCustomObject: vi.fn(async (a: { plural: string }) => {
         if (a.plural === 'kustomizations') {
           if (opts.source === null) return { spec: {} };
-          return { spec: { sourceRef: { kind: 'GitRepository', name: opts.source ?? 'hosting-platform-production' } } };
+          return { spec: { suspend: opts.suspend?.ks, sourceRef: { kind: 'GitRepository', name: opts.source ?? 'hosting-platform-production' } } };
         }
-        return { spec: { ref: opts.ref ?? { branch: 'stable' } } }; // gitrepositories
+        return { spec: { suspend: opts.suspend?.repo, ref: opts.ref ?? { branch: 'stable' } } }; // gitrepositories
       }),
       patchNamespacedCustomObject: vi.fn(async (a: unknown) => { patches.push(a); }),
     },
@@ -39,6 +39,32 @@ describe('runUpgrade', () => {
     expect(r.repin?.tag).toBe('v2026.7.0');
     expect(patches).toHaveLength(1);
     expect(store.pending_update_version).toBe('2026.7.0'); // in-flight target recorded
+  });
+
+  // The upgrade IS the re-pin, so a suspended Kustomization or source turns it
+  // into a silent no-op ("Flux is reconciling" — and nothing ever rolls). Refused
+  // here, in runUpgrade, so the API, the host CLI (`platform-ops upgrade --apply`)
+  // and the auto-update scheduler all get it — not only the UI's pre-flight.
+  it.each([
+    ['the platform Kustomization', { ks: true }, 'Kustomization/platform'],
+    ['its GitRepository', { repo: true }, 'GitRepository/hosting-platform-production'],
+  ])('apply refuses to re-pin while %s is suspended — no rescue capture, no patch', async (_l, suspend, named) => {
+    const { io, store } = fakeSettings(seedReady);
+    const { k8s, patches } = fakeK8s({ suspend });
+    const capture = vi.fn(async () => ({ ok: true }));
+    const r = await runUpgrade(io, k8s, { mode: 'manual', apply: true, rollback: { capture } });
+    expect(r.applied).toBe(false);
+    expect(r.summary).toContain('suspended');
+    expect(r.summary).toContain(named);
+    expect(patches).toHaveLength(0);
+    expect(capture).not.toHaveBeenCalled();
+    expect(store.pending_update_version).toBeUndefined();
+  });
+
+  it('a dry-run still previews while suspended (the pre-flight names the problem)', async () => {
+    const { io } = fakeSettings(seedReady);
+    const { k8s } = fakeK8s({ suspend: { ks: true } });
+    expect((await runUpgrade(io, k8s, { mode: 'auto', apply: false })).summary).toMatch(/^DRY-RUN/);
   });
 
   it('dry-run (apply=false) resolves + previews but patches nothing', async () => {

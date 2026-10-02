@@ -232,7 +232,9 @@ if [[ -n "$REUSE_RUN" ]]; then
   # The services VM and its containers already exist: power the run on and read
   # their coordinates from the state the original run saved.
   [[ -r "$STATE_FILE" ]] || { echo "ABORT: no saved state for run ${RUN} (${STATE_FILE}) — it predates reuse support; spawn a new run." >&2; exit 1; }
-  "$HERE/start.sh" "$RUN" >&2 || { echo "ABORT: could not start run ${RUN}" >&2; exit 1; }
+  # No k3s wait: the platform is wiped next, and a previous failed install may
+  # have left no k3s at all.
+  "$HERE/start.sh" "$RUN" --no-k3s-wait >&2 || { echo "ABORT: could not start run ${RUN}" >&2; exit 1; }
   # shellcheck source=/dev/null
   source "$STATE_FILE"
   export VMTEST_OS_ASSIGN VMTEST_OS_SEED VMTEST_REUSE=1
@@ -917,6 +919,10 @@ kubectl -n platform rollout restart deploy/platform-api >/dev/null 2>&1 || true
 kubectl -n mail rollout restart deploy/bulwark >/dev/null 2>&1 || true
 for _ in \$(seq 1 36); do [ "\$(kubectl -n platform get certificate platform-ingress -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)" = True ] && { echo "  certs re-issued on the custom issuer"; break; }; sleep 5; done
 kubectl -n mail rollout status deploy/bulwark --timeout=120s >/dev/null 2>&1 || true
+# Wait out OUR OWN platform-api restart too: the abort-on-red smoke gate runs next,
+# and with one replica the old pod's endpoint is gone before ingress sees the new
+# one — a clean v2026.10.2 run aborted on "GET /healthz -> 502" (46/0 a minute later).
+kubectl -n platform rollout status deploy/platform-api --timeout=180s >/dev/null 2>&1 || true
 # ALWAYS bind the services-VM object store as the cluster's backup target before the suites — the
 # services VM exists to provide it, and every backup/DR suite fails its precondition without it
 # (grow NO_SNAPSHOT_TARGET, dr-drill-shim suspended ScheduledBackup, backup-rclone-shim, dr-bundle).

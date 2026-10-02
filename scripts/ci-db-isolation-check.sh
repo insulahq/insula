@@ -104,4 +104,12 @@ grep -qF 'datistemplate = false' "$SQL_TS" \
 printf '%s' "$BOOTSTRAP_SQL" | grep -qF 'datistemplate = false' \
   || fail "bootstrap.sh DBISOSQL heredoc does not exclude template databases"
 
+# (5) both writers let CNPG's replication role into the `postgres` database —
+#     a demoted primary rejoins by connecting there first; without it every
+#     database failover in HA mode left the old primary a dead replica.
+grep -qF "IF has_replica AND d.datname = 'postgres' THEN" "$SQL_TS" \
+  || fail "sql.ts no longer grants the replication role CONNECT on postgres"
+grep -qF "EXECUTE format('GRANT CONNECT ON DATABASE %I TO %I', d.datname, 'streaming_replica');" "$BOOTSTRAP" \
+  || fail "bootstrap.sh no longer grants streaming_replica CONNECT on postgres"
+
 echo "ci-db-isolation-check: OK (converger + bootstrap agree; grants precede revoke; templates excluded)"

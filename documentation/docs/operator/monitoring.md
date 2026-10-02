@@ -372,19 +372,37 @@ fresh check instead of waiting out the 5-minute tick.
 ### Memory events
 
 Below the node table, a **Memory events** card lists every memory incident of
-the last 30 days — kernel **SystemOOM** events, kubelet **pod evictions**, and
-containers **OOM-killed** at their memory limit — with the node, the workload
-hit, and when. The platform is engineered so that under memory pressure
-**tenant workloads are always sacrificed before system workloads** (priority
-tiers + kubelet eviction headroom on every node), so the card doubles as a
-verdict: amber tenant rows are the designed backpressure at work; a red
-**SYSTEM** row means a platform component lost a fight it should never lose —
-investigate.
+the last 30 days — the node running out of memory, kubelet **pod evictions**,
+and containers **OOM-killed** — with the node, the workload hit, and when.
 
-Admins are notified on new events (critical for system workloads, warning for
-tenant evictions), rate-limited so a sustained incident doesn't flood the
-inbox. Two SLO rules back this at the metrics layer: **Kernel OOM killer
-fired** (warning) and **SYSTEM container OOM-killed** (critical).
+Each row says only what is known. The platform reads the kernel's own
+out-of-memory counters for every pod, so a killed container is labelled:
+
+| Label | Meaning |
+|---|---|
+| **OOM at memory limit** | the kernel confirms the pod hit its own memory limit |
+| **OOM (node out of memory)** | the node ran out of memory and the kernel picked this container — raising its limit will not help |
+| **OOM-killed** | the kubelet reported an OOM kill; limit vs node could not be determined |
+| **SIGKILL, cause unconfirmed** (grey) | the container was killed (exit 137) and there was no evidence either way |
+
+A container that was killed for a reason the kernel shows was **not** memory
+(it exited 137 on its own, a liveness probe, a rollout) does not appear at all.
+Evictions are labelled with what the kubelet ran short of — **memory**,
+**disk** or **PID** pressure — or **storage limit** when a pod exceeded its own
+ephemeral-storage limit (an eviction on a healthy node).
+
+The platform is engineered so that under memory pressure **tenant workloads
+are always sacrificed before system workloads** (priority tiers + kubelet
+eviction headroom on every node), so the card doubles as a verdict: amber
+tenant rows are the designed backpressure at work; a red **SYSTEM** row means a
+platform component lost a fight it should never lose — investigate.
+
+Admins get one notification per event, in the category that matches it:
+**Tenant pods evicted** and **Node out of memory / SYSTEM pod evicted** for
+evictions and node-level OOMs (grouped per node per hour), **Tenant workload
+OOM-killed** and **Platform workload OOM-killed** once per container kill. Two
+SLO rules back this at the metrics layer: **Kernel OOM killer fired** (warning)
+and **SYSTEM container OOM-killed** (critical).
 
 ## Cluster health
 

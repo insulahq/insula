@@ -145,6 +145,20 @@ shows live free capacity per node so you can place heavy tenants on roomy
 hardware. Existing placement shows in the tenant's *Placement* card. See
 [Tenants](tenants.md).
 
+The pinned node is the tenant's **primary node**. Every pod that works on the
+tenant's data is placed with it in mind: the tenant's own workloads are held
+to it (local tier), and backup, restore and file-manager pods run on the node
+that holds the tenant's data — so a nightly backup of a stopped tenant no
+longer moves its volume to another node. Mailbox backups run on the node that
+runs the mail server, so their traffic does not cross between nodes.
+
+The platform compares every tenant's actual placement with its primary node
+every minute. A tenant that has been elsewhere for ten minutes raises a
+**Tenant not on its primary node** notification; a Longhorn salvage of a tenant
+volume (all replicas failed, the volume remounted and the workloads restarted)
+raises a **Tenant storage failover** notification at once. Several tenants hit
+by the same event arrive as one notification.
+
 ## What lives elsewhere in Cluster
 
 The other Cluster pages are operator-facing: **Cluster Policies** (HA mode

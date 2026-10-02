@@ -13,6 +13,25 @@ import { STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
 import { STORAGE_QUIESCED_ANNOTATION } from '../../shared/scale-deployment.js';
 import { deriveFmSecret } from './internal-secret.js';
 import { isNotFound } from '../../shared/k8s-errors.js';
+import { resolveTenantDataNode } from '../tenant-placement/data-node.js';
+
+/**
+ * The node holding this tenant's data, for placing a file manager that is
+ * about to start. `unambiguousOnly`: an HA volume with replicas on several
+ * nodes keeps the scheduler's freedom (the preferred pod affinity still draws
+ * it to a running workload). Undefined when nothing is known — the old,
+ * unpinned behaviour.
+ */
+async function resolveFmDataNode(k8s: K8sClients, namespace: string): Promise<string | undefined> {
+  const choice = await resolveTenantDataNode(k8s, {
+    namespace,
+    pvcName: `${namespace}-storage`,
+    pinNode: null,
+    unambiguousOnly: true,
+    logger: { warn: (msg) => console.warn(`[file-manager] ${msg}`) },
+  });
+  return choice.node ?? undefined;
+}
 
 const FM_NAME = 'file-manager';
 const FM_PORT = 8111;
@@ -153,6 +172,15 @@ export async function ensureFileManagerRunning(
     }
   }
 
+  // Where a NEW file manager goes when the caller named no node: the node that
+  // holds the tenant's data (attached volume, else its replica). Unpinned, a
+  // file manager started for a stopped tenant went wherever the scheduler
+  // liked, and Longhorn's data locality then copied the tenant's whole volume
+  // to that node. Only resolved for a create — an existing Deployment keeps
+  // the recreate semantics below unchanged (see the scale-up branch for the
+  // replicas=0 case).
+  const createNode = targetNode ?? (deployExists ? undefined : await resolveFmDataNode(k8s, namespace));
+
   const deployBody = {
       namespace,
       body: {
@@ -179,7 +207,7 @@ export async function ensureFileManagerRunning(
               // on the same node as the tenant workloads and shares the RWO
               // `tenant-storage` PVC. Only added when targetNode is provided;
               // otherwise FM stays unpinned (preferred podAffinity below).
-              ...(targetNode ? { nodeSelector: { 'kubernetes.io/hostname': targetNode } } : {}),
+              ...(createNode ? { nodeSelector: { 'kubernetes.io/hostname': createNode } } : {}),
               // file-manager runs in the tenant namespace because it
               // mounts the tenant's RWO PVC, but it is platform infra,
               // not tenant workload — so it MUST NOT count against the
@@ -508,10 +536,21 @@ export async function ensureFileManagerRunning(
       // created" because nothing ever scheduled the pod. Rescale to
       // 1 via the /scale subresource (cheaper than a full deploy
       // patch and avoids template-touch side effects).
+      //
+      // Scaling up from 0 is also the moment the pod gets placed, so point it
+      // at the tenant's data node first. Changing the template of a Deployment
+      // with no pods disrupts nothing; doing it while the file manager runs
+      // would restart it under the user (which is why this is not done on the
+      // recreate path above). A running workload pod wins — the RWO volume is
+      // attached there and nowhere else can mount it.
+      const scaleUpNode = targetNode ?? await resolveFmDataNode(k8s, namespace);
+      const repin = scaleUpNode && scaleUpNode !== existingNodeHost
+        ? { template: { spec: { nodeSelector: { 'kubernetes.io/hostname': scaleUpNode } } } }
+        : {};
       await k8s.apps.patchNamespacedDeployment({
         name: FM_NAME,
         namespace,
-        body: { spec: { replicas: 1 } },
+        body: { spec: { replicas: 1, ...repin } },
       } as unknown as Parameters<typeof k8s.apps.patchNamespacedDeployment>[0],
         STRATEGIC_MERGE_PATCH);
     }

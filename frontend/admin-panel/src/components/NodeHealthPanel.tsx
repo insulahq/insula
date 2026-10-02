@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { Loader2, RefreshCw, AlertCircle, AlertTriangle, CheckCircle2, Wrench, Flame } from 'lucide-react';
 import StatusBadge from '@/components/ui/StatusBadge';
-import { useNodeHealth, useNodeMemoryEvents, useReconcileNodeHealth, useStalePodCounts, type NodeHealthEntry, type NodeHealthSeverity, type NodeMemoryEvent } from '@/hooks/use-node-health';
+import { useNodeHealth, useNodeMemoryEvents, useReconcileNodeHealth, useStalePodCounts, type NodeHealthEntry, type NodeHealthSeverity } from '@/hooks/use-node-health';
 import NodeRecoveryModal from '@/components/NodeRecoveryModal';
+import { memoryEventBadgeClass, memoryEventLabel } from '@/lib/memory-event-label';
 
 const SEVERITY_BADGE: Record<NodeHealthSeverity, 'error' | 'warning' | 'healthy'> = {
   critical: 'error',
@@ -235,17 +236,11 @@ export default function NodeHealthPanel() {
   );
 }
 
-function memoryEventLabel(e: NodeMemoryEvent): string {
-  if (e.kind === 'system-oom') return 'SystemOOM';
-  if (e.kind === 'container-oom') return e.systemWorkload ? 'OOM-killed (SYSTEM)' : 'OOM-killed';
-  return e.systemWorkload ? 'Evicted (SYSTEM)' : 'Evicted';
-}
-
 /**
- * Recent SystemOOM / pod-eviction events (30-day window). The eviction
- * design takes tenant pods first (platform-critical PriorityClass +
- * eviction-hard=memory.available<256Mi), so system-workload rows are
- * highlighted red — they should not be happening.
+ * Recent kernel OOM kills, container OOM kills and kubelet evictions (30-day
+ * window). The eviction design takes tenant pods first (platform-critical
+ * PriorityClass + eviction-hard=memory.available<256Mi), so system-workload
+ * rows are highlighted red — they should not be happening.
  */
 function MemoryEventsCard() {
   const { data, isLoading, isError } = useNodeMemoryEvents();
@@ -257,7 +252,7 @@ function MemoryEventsCard() {
       <div className="flex items-center gap-2">
         <Flame size={14} className="text-gray-500 dark:text-gray-400" />
         <span className="text-sm font-medium text-gray-900 dark:text-gray-100">Memory events</span>
-        <span className="text-xs text-gray-500 dark:text-gray-400">SystemOOM + kubelet evictions, last 30 days</span>
+        <span className="text-xs text-gray-500 dark:text-gray-400">OOM kills + kubelet evictions, last 30 days</span>
       </div>
 
       {isLoading ? (
@@ -270,7 +265,7 @@ function MemoryEventsCard() {
         </div>
       ) : events.length === 0 ? (
         <div className="rounded border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600 dark:border-gray-700 dark:bg-gray-800/40 dark:text-gray-300">
-          No SystemOOM or eviction events in the last 30 days — memory headroom is holding.
+          No OOM kills or evictions in the last 30 days — memory headroom is holding.
         </div>
       ) : (
         <div className="overflow-x-auto rounded border border-gray-200 dark:border-gray-700">
@@ -289,13 +284,7 @@ function MemoryEventsCard() {
                 <tr key={e.id} className="border-t border-gray-100 dark:border-gray-700/40" data-testid={`memory-event-row-${e.id}`}>
                   <td className="whitespace-nowrap px-3 py-2 text-xs text-gray-600 dark:text-gray-300">{formatRelative(e.occurredAt)}</td>
                   <td className="px-3 py-2">
-                    <span
-                      className={
-                        e.systemWorkload
-                          ? 'inline-block rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-medium text-red-800 dark:bg-red-900/40 dark:text-red-300'
-                          : 'inline-block rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-300'
-                      }
-                    >
+                    <span className={memoryEventBadgeClass(e)} data-testid={`memory-event-label-${e.id}`}>
                       {memoryEventLabel(e)}
                     </span>
                   </td>

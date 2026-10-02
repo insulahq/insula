@@ -86,6 +86,7 @@ import { notifyResticFailure } from '../restic-failure-notify.js';
 import { resolveBundleRepoLayout } from '../repo-layout.js';
 import { makeRepoInitSerialiser } from '../repo-init-lock.js';
 import { resolvePlatformImage } from '../../../shared/platform-images.js';
+import { resolveTenantDataNode } from '../../tenant-placement/data-node.js';
 
 /**
  * PVC mount point inside the capture Job. `restic backup /source`
@@ -433,7 +434,18 @@ export async function captureFilesComponent(
     throw err;
   }
 
-  const pinToNode = await findNodeAttachingPvc(opts.k8s, opts.namespace, opts.pvcName);
+  // Run where the data is. For a running tenant that is the node its pods have
+  // the RWO volume attached on (the only node that CAN mount it). For a stopped
+  // tenant nothing has it attached, and the capture pod used to go wherever the
+  // scheduler liked — after which Longhorn's data locality copied the whole
+  // volume to that node. Pin to the node holding the replica instead.
+  const dataNode = await resolveTenantDataNode(opts.k8s, {
+    namespace: opts.namespace,
+    pvcName: opts.pvcName,
+    pinNode: tenant.nodeName ?? null,
+    logger: lockLog,
+  });
+  const pinToNode = dataNode.node;
   const jobName = `bk-files-${opts.backupId}`.slice(0, 63);
   const credsSecretName = `bk-files-creds-${opts.backupId}`.slice(0, 63);
   const orchestratorTimeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -634,31 +646,6 @@ async function waitForJob(
     }
     if (onProgress) await onProgress('Capturing files…');
     await new Promise((res) => setTimeout(res, 3000));
-  }
-}
-
-async function findNodeAttachingPvc(
-  k8s: K8sClients,
-  namespace: string,
-  pvcName: string,
-): Promise<string | null> {
-  try {
-    const res = await k8s.core.listNamespacedPod({ namespace });
-    for (const pod of res.items ?? []) {
-      const phase = pod.status?.phase;
-      if (phase !== 'Running' && phase !== 'Pending') continue;
-      const usesPvc = (pod.spec?.volumes ?? []).some(
-        (v) => v.persistentVolumeClaim?.claimName === pvcName,
-      );
-      if (!usesPvc) continue;
-      const node = pod.spec?.nodeName;
-      if (typeof node === 'string' && /^[a-z0-9.\-]+$/i.test(node) && node.length <= 253) {
-        return node;
-      }
-    }
-    return null;
-  } catch {
-    return null;
   }
 }
 

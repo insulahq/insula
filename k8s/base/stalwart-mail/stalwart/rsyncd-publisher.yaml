@@ -157,3 +157,53 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
+---
+# Final sync of a planned mail move (backend mail-admin/final-sync.ts): a
+# one-shot rsync publisher on the source node serves the whole mail volume
+# read-only, without auth — exactly like the sidecar above. Only the one-shot
+# puller on the target node may reach it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mail-final-sync-publisher-ingress
+  namespace: mail
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: mail-final-sync
+spec:
+  podSelector:
+    matchLabels:
+      app: mail-final-sync-publisher
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: mail-final-sync-puller
+      ports:
+        - protocol: TCP
+          port: 873
+---
+# ...and the puller may reach only the publisher (it addresses it by pod IP;
+# no DNS, no platform-api report — it runs without a token).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mail-final-sync-puller-egress
+  namespace: mail
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: mail-final-sync
+spec:
+  podSelector:
+    matchLabels:
+      app: mail-final-sync-puller
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: mail-final-sync-publisher
+      ports:
+        - protocol: TCP
+          port: 873

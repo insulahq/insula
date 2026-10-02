@@ -23,10 +23,14 @@
 #   - RocksDB's WAL replay on restore handles partial-write state
 #     (same crash-recovery semantics as a power-loss scenario).
 #
-# Failure modes are non-fatal — the script always returns 0 from the
-# inner run_once function. A failed pull leaves the previous
-# generation in place; standby data may be slightly stale but is
-# still preserved.
+# Failure modes are non-fatal in DaemonSet mode (the loop logs and
+# retries). A publisher that does not answer leaves the previous
+# generation AND its completeness marker in place — Stalwart is scaled
+# to 0 during every mail migration and is gone after a node loss, and
+# deleting a good copy's marker then forced the restore onto the older
+# restic backup. A one-shot run (LOOP_INTERVAL_SECONDS=0 — the
+# migration's final sync) exits non-zero on any failure so its caller
+# knows the copy is not current.
 #
 # Env (from pod spec):
 #   PLATFORM_API_URL          internal platform API URL (for stats POST)
@@ -38,7 +42,7 @@
 
 set -e
 
-STANDBY_DIR=/standby-data
+STANDBY_DIR="${STANDBY_DIR:-/standby-data}"
 PLATFORM_API_URL="${PLATFORM_API_URL:-http://platform-api.platform.svc.cluster.local:3000}"
 PUBLISHER_RSYNC_URL="${PUBLISHER_RSYNC_URL:-rsync://mail-stack-rsyncd.mail.svc.cluster.local/mail-stack/}"
 NODE_NAME="${NODE_NAME:-unknown}"
@@ -54,7 +58,15 @@ mkdir -p "$STANDBY_DIR"
 # stalwart/ + bulwark/ subdirs are created by rsync -a (transferred
 # from the publisher's PVC root). No pre-creation needed.
 
-# Clear the completeness sentinel BEFORE any work so failover readers
+# Only touch the copy when the publisher answers. With no publisher
+# (mail scaled to 0 mid-migration, or its node lost) this iteration would
+# only fail — and clearing the marker first destroyed a good copy.
+if ! rsync --list-only --timeout=15 "$PUBLISHER_RSYNC_URL" >/dev/null 2>&1; then
+  echo "standby-replicate: publisher $PUBLISHER_RSYNC_URL not answering — keeping the previous generation and its completeness marker"
+  return 1
+fi
+
+# Clear the completeness sentinel BEFORE pulling so failover readers
 # (Stalwart + Bulwark restore-state init containers) can never see a
 # stale "complete" marker against a partially-restored tree. The
 # sentinel is re-written ONLY after rsync succeeds below.
@@ -83,8 +95,8 @@ echo "standby-replicate: rsync $PUBLISHER_RSYNC_URL → $STANDBY_DIR/"
 if ! rsync -a --delete --partial --timeout=60 \
      --exclude='lost+found/' \
      "$PUBLISHER_RSYNC_URL" "$STANDBY_DIR/" 2>&1; then
-  echo "standby-replicate: rsync FAILED — leaving previous generation in place"
-  return 0
+  echo "standby-replicate: rsync FAILED — partial copy, no completeness marker"
+  return 1
 fi
 end_ts=$(date +%s)
 duration=$((end_ts - start_ts))

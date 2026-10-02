@@ -114,17 +114,54 @@ the stack is currently running on** — operators never label nodes manually.
      mail_failover_threshold_seconds = 300
    WHERE id = 'system';
    ```
-3. Wait one `dr-watcher` tick (~30s). The startup reconciler runs and:
+3. **Saving placement applies it immediately** (admin panel, or
+   `PATCH /api/v1/admin/mail/placement`) — `ensureMailStackPlacementApplied`:
    - Pins `stalwart-mail` + `bulwark` Deployments to `mailActiveNode`.
-   - Adds `insula.host/mail-standby=true` label to
-     `mailSecondaryNode` + `mailTertiaryNode`.
-   - DaemonSet schedules pods on labelled nodes; first restic pull
+   - Adds `insula.host/mail-standby=true` to every configured candidate
+     except the active node (see above), and removes it elsewhere.
+   - DaemonSet schedules pods on labelled nodes; the first rsync
      populates `/var/lib/mail-stack-standby/{stalwart,bulwark}/` and
-     writes the `.standby-complete` sentinel.
+     writes the `.standby-complete` sentinel (seconds for a small store).
+
+   The SQL in steps 1–2 is NOT applied until the next platform-api start
+   (the same reconciler runs at boot) — prefer the panel/API. Before
+   v2026.10.3 the API save only wrote the DB too, so a standby chosen in the
+   panel stayed unlabelled until the next deploy, and a failover in that
+   window took the slow restic path.
 4. **Verify standby readiness** on each labelled node:
    ```bash
    ssh <secondary> "ls /var/lib/mail-stack-standby/.standby-complete"
    ```
+
+## Planned moves: final sync (v2026.10.3+)
+
+A planned move — `POST /admin/mail/migrate`, `/admin/mail/failback`, or the
+placement page's move-now — has a live source, so nothing it received may be
+lost. After Stalwart + Bulwark are scaled to 0 on the source and before the PVC
+swap, the state machine runs step **`final-sync`** (`mail-admin/final-sync.ts`):
+
+1. a one-shot pod `mail-final-sync-pub-<run>` on the **source** node — the
+   Stalwart rsyncd sidecar's image and `mail-stack-rsyncd-config` — serves the
+   now-quiet `mail-stack-data` volume read-only;
+2. a one-shot pod `mail-final-sync-pull-<run>` on the **target** node runs
+   `standby-replicate.sh` once (`LOOP_INTERVAL_SECONDS=0`) into
+   `/var/lib/mail-stack-standby`, writing a fresh `.standby-complete`;
+3. both pods are deleted; the restore on the target then takes the FAST PATH
+   from that current copy.
+
+NetworkPolicies admit only the puller to the publisher and let the puller reach
+nothing else. Mail is down for this step: usually seconds (a delta against the
+≤5-min-old copy), at most 30 min for a target that never held a copy. **Cancel**
+is honoured while it runs. On a failure or a cancel the move is aborted: nothing
+was swapped yet, the snapshot CronJob is resumed, Stalwart is scaled back up on
+the source, and the run is `failed` (or cancelled) with the reason. Skipped for a DR
+failover (source down — the ≤5 min standby RPO applies), recovery mode,
+restoring a chosen snapshot, and same-node restores (`shouldRunFinalSync`).
+
+The replicate script only invalidates the standby copy once the publisher
+answers: while Stalwart is at 0 (any migration, or the source node lost) a
+DaemonSet tick used to delete `.standby-complete` before a pull that could only
+fail, and the restore then fell back to the older restic backup.
 
 ## Failover scenarios
 
@@ -161,6 +198,26 @@ Active node's kubelet dies, k8s reports `Ready=False/Unknown` within
 
 Total time-to-recovery on a 13 MB working set: ~2-3 minutes from node
 death to Stalwart Ready.
+
+> **When the dead node also held the database primary** (HA mode, CNPG 3
+> instances), CNPG promotes a replica while the mail failover is running —
+> about a minute of failed queries. The state machine's progress and outcome
+> writes retry through that (`withDbRetry`, ~2 min budget). Before v2026.10.3 a
+> single failed progress write abandoned the failover: mail kept running on the
+> standby, but the run stayed `running`, `mailDrState` stayed `failing-over`,
+> and `mailActiveNode` still named the dead node — the next platform-api start
+> re-pinned Stalwart there (Pending: its volume is on the standby). Now:
+> - the active node is resolved live pod → bound mail volume → stored column
+>   (`resolveActiveMailNode`) by the startup/placement reconcile and the DR
+>   watcher, so mail is never pinned away from its data;
+> - a `failing-over` state with no run in flight (and the last run ended over
+>   60 s ago) is released to `degraded`, so the watcher decides again instead of
+>   staying stuck until someone edits `system_settings`.
+>
+> Recovering a cluster still on an older release from that state: set
+> `mail_active_node` to the node the `mail-stack-data` PV is bound to and
+> `mail_dr_state = 'failed-over'`, then delete one platform-api pod (its startup
+> reconcile re-pins Stalwart); fail back as usual afterwards.
 
 > **Operator-triggered failover no longer stalls on a dead source.**
 > `startMailMigration` (the path behind `/admin/mail/failover`, `/failback`

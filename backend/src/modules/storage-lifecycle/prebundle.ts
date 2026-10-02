@@ -60,6 +60,7 @@ import {
 } from '../tenant-bundles/components/files.js';
 import { tailJobLog } from './job-log-tail.js';
 import { resolvePlatformImage } from '../../shared/platform-images.js';
+import { resolveTenantDataNode } from '../tenant-placement/data-node.js';
 
 /** Failure insurance window. The bundle is held this long so a shrink
  *  that dies after the PVC delete still has an off-site rollback source;
@@ -350,9 +351,19 @@ export async function restoreFilesBundleIntoPvc(args: {
     );
     credsCreated = true;
 
+    // The PVC was just recreated (shrink) or created (archive restore), so the
+    // volume has no data anywhere and this Job is its first user: Longhorn's
+    // data locality builds the volume where this pod runs. Unpinned, that was
+    // wherever the scheduler liked — and when the (pinned) workloads came back
+    // on the primary node, Longhorn copied the whole restored volume across.
+    // Run it on the tenant's primary node; without a pin, follow its data.
+    const [tenantRow] = await db.select({ nodeName: tenants.nodeName }).from(tenants).where(eq(tenants.id, tenantId));
+    const pinToNode = tenantRow?.nodeName
+      ?? (await resolveTenantDataNode(k8s, { namespace, pvcName, pinNode: null })).node;
+
     const timeoutMs = args.timeoutMs ?? DEFAULT_RESTORE_TIMEOUT_MS;
     const spec = buildResticRestoreJobSpec({
-      jobName, namespace, pvcName, tenantId, bundleId, credsSecretName, snapshotId,
+      jobName, namespace, pvcName, tenantId, bundleId, credsSecretName, snapshotId, pinToNode,
       // Bound the Job's wall-clock in k8s so a platform-api restart mid-restore
       // doesn't leave it running forever with the PVC + creds mounted.
       activeDeadlineSeconds: Math.max(60, Math.ceil(timeoutMs / 1000) - 60),
@@ -394,6 +405,8 @@ export function buildResticRestoreJobSpec(input: {
   bundleId: string;
   credsSecretName: string;
   snapshotId: string;
+  /** Node to run on (the tenant's primary node); null/absent leaves it to the scheduler. */
+  pinToNode?: string | null;
   activeDeadlineSeconds?: number;
 }): Record<string, unknown> {
   const script = [
@@ -453,6 +466,9 @@ export function buildResticRestoreJobSpec(input: {
           // during a shrink/restore; the priority class keeps this consistent
           // with the capture/snapshot Jobs.
           priorityClassName: 'platform-tenant-overhead',
+          // Same binding as the capture Jobs (files.ts): directly to the node,
+          // because this pod decides where the fresh volume's data lives.
+          ...(input.pinToNode ? { nodeName: input.pinToNode } : {}),
           containers: [{
             name: 'files-restore',
             image: TOOLS_IMAGE_DEFAULT,

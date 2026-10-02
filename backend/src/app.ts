@@ -2213,6 +2213,15 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         const autoRepinHandle = startAutoRepinScheduler({ db: app.db, k8s: k8sForImapsync });
         app.addHook('onClose', () => autoRepinHandle());
 
+        // Tenant placement: where each tenant actually runs and keeps its data
+        // versus its primary node, Longhorn storage failovers (salvages), and
+        // the admin notifications for both. Reads the same fleet facts as the
+        // outage view. Also runs the one-shot repair of node pins that
+        // redeploys stripped (TENANT_PIN_REPAIR=disable to skip it).
+        const { startPlacementReconciler } = await import('./modules/tenant-placement/reconciler.js');
+        const placementHandle = startPlacementReconciler({ db: app.db, k8s: k8sForImapsync, logger: app.log });
+        app.addHook('onClose', () => placementHandle());
+
         // Released-PV janitor — daily sweep reaping the CNPG-recreate
         // leak class only (Released platform/system-db-N PV with a Bound
         // successor; reclaimPolicy=Retain leaks one per instance

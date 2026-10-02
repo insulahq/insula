@@ -85,7 +85,7 @@ window:
 |---|---|
 | `fast-down-watch` (30 s) | `admin.node_down` |
 | `node-health` reconciler (5 min) | `admin.node_event` severity transitions, `admin.node_down`, `admin.node_rebooting`, `admin.node_startup_complete` |
-| Memory events (same tick) | `admin.node_memory_event_*` — the events are still recorded |
+| Memory events (same tick) | `admin.node_memory_event_*`, `admin.tenant_pod_oom`, `admin.system_pod_oom` — the events are still recorded |
 | Calico / Longhorn CSI watcher (5 min) | `admin.node_event` "Calico is missing", "Longhorn CSI regressed", … |
 | SLO evaluator (60 s) | `admin.slo_alert_*` for any series whose `node` label names the joining node — `node-cpu`, `node-memory`, `longhorn-headroom`, `node-kernel-oom` and `scrape-target-down` for that node's kubelet/Traefik/Longhorn targets |
 
@@ -481,3 +481,99 @@ event for two CrowdSec containers that were merely slow to answer `/health` on a
 cold boot. `scripts/ci-oom-classification-check.sh` now fails the build if
 `memory-events.ts` stops calling `indexProbeKills()`, or if the reconciler stops
 fetching `reason=Killing` events (which would make the index silently empty).
+
+### The kernel decides: the OOM witness (2026-10-02)
+
+The guards above only *drop* SIGKILLs the kubelet already explained. Everything
+else used to be an inference from exit 137, and it was wrong in both
+directions on real clusters:
+
+- Production's vmsingle was OOM-killed by its own cgroup (`memory.events
+  oom_kill 2`) and the kubelet reported `Error`/137, so the alert could only say
+  *"cause unconfirmed"*.
+- On DEV a container that simply ran `exit 137` was alerted as a possible OOM.
+- A tenant nginx OOM-killed at its 32 MiB limit reached admins titled **"Tenant
+  evictions (memory pressure)"** (container kills had been bolted onto the
+  eviction category), and again 23 minutes later from a second, hourly OOM scan
+  in the metrics scheduler.
+
+**The witness.** The `security-probe` DaemonSet now mounts `/sys/fs/cgroup`
+read-only and inotify-watches every pod cgroup's `memory.events`
+(`images/security-probe/memcg.go`). Those counters are cumulative,
+hierarchical, and outlive container restarts:
+
+| Counter | Rises when |
+|---|---|
+| `oom` | the pod (or one of its containers) hit its memory limit |
+| `oom_kill` | the OOM killer killed a process in it — at its limit **or** in a node-wide OOM |
+| `oom_group_kill` | a whole container was killed as a group |
+
+It publishes them at `data.memcg` of `platform-system/security-probe-<node>`,
+with every rise bracketed by the reads before and after it. inotify is what
+makes Jobs work: a pod that does not restart loses its whole cgroup within
+seconds of dying, long before any poll.
+
+The pod counters aggregate every container in the pod, so each rise also names
+the containers whose **own** cgroup counted the kill — the
+`cri-containerd-<id>.scope` id is the `lastState.terminated.containerID` the
+kubelet reports. That is what stops one real kill being pinned on a sidecar, or
+on the same container's next restart, that died of something else a minute
+later. When a container cgroup was already gone before it could be read, a rise
+explains at most as many deaths as it counted group kills, nearest first; the
+rest stay `unconfirmed`, and a rise that names fewer containers than it counted
+never rules anyone out.
+
+**The verdict** (`backend/src/modules/node-health/oom-witness.ts:judgeKill`),
+stored as `node_memory_events.cause`:
+
+| `cause` | Evidence | Reported as |
+|---|---|---|
+| `memory-limit` | `oom_kill` and `oom` rose as the container died | OOM-killed at its memory limit (kernel-confirmed) |
+| `node-oom` | `oom_kill` rose, `oom` did not | killed by the node's OOM killer — its own limit is innocent |
+| `oom` | kubelet said `OOMKilled`, the witness adds nothing | OOM-killed (limit vs node not determined) |
+| `unconfirmed` | exit 137, no usable evidence either way | SIGKILLed, cause unconfirmed |
+| `not-oom` | the witness saw across the exit and nothing moved | **not recorded, not notified** |
+
+A death is judged only against a witness snapshot taken **after** it
+(`snapshotAtMs`). The probe republishes within ~2 s of an OOM rise and at least
+every minute; until a covering snapshot is published the kill is held — not
+recorded, because the first record is final — and a witness that never catches
+up (probe down) gets 10 minutes before the kill is recorded on the kubelet's
+word. Found on DEV: judging against the previous snapshot froze three kills as
+kubelet-only verdicts, and for a pod the witness was already watching it would
+have read "watched, no rise" — `not-oom` — and dropped a real OOM alert.
+
+`not-oom` is only ever concluded when the witness could have seen a kill: the
+pod's `memory.events` was watched live with no inotify overflow near the exit,
+or a read landed after the exit, or the counters were still zero when the pod
+was first read after it. Anything less falls back to the kubelet's word. A
+kernel-confirmed OOM is reported even on a draining pod or one that also failed
+a probe. An explicit `OOMKilled` is never denied. The kill-to-exit window is
+120 s, because measured production storage stalls (8–48 s) can hold an OOM-killed process in
+uninterruptible I/O.
+
+**Routing — one notification per event, in the category it belongs to**
+(`node-health/memory-event-notify.ts` is the only sender, enforced by
+`ci-oom-classification-check.sh`):
+
+| Event | Category |
+|---|---|
+| kubelet `Evicted` (true evictions only), tenant | `admin.node_memory_event_warning` "Tenant pods evicted (<resource>)" |
+| kernel SystemOOM, or a SYSTEM pod evicted | `admin.node_memory_event_critical` |
+| tenant container killed | `admin.tenant_pod_oom`, one per kill |
+| platform container killed (system namespace, or a `platform.io/system` pod such as the file manager in a tenant namespace) | `admin.system_pod_oom`, one per kill |
+
+Evictions name the resource the kubelet gave: node memory / disk / PID
+pressure, or a pod exceeding its **own** ephemeral-storage limit (an eviction
+with a perfectly healthy node).
+
+**Checking a node's witness:**
+
+```
+kubectl -n platform-system get cm security-probe-<node> -o jsonpath='{.data.memcg}' \
+  | jq '{available, inotify, overflowsMs, pods: (.pods | with_entries(select(.value.oomKill > 0)))}'
+```
+
+`available:false` with a `reason` means cgroup v1 or no kubepods cgroup — kills
+on that node are judged on the kubelet's word alone.
+

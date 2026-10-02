@@ -1069,8 +1069,8 @@ async function deployToCluster(
       storageSubPath,
       spec,
       hasPullCredential: !!hasPullCredential,
-      nodeName: nodeName ?? undefined,
-      storageTier: storageTier ?? undefined,
+      nodeName: nodeName ?? null,
+      storageTier: storageTier ?? null,
     });
     // Optimistic: status flips to running on the next reconciler tick
     // when k8s reports ready replicas. Until then it stays 'deploying'.
